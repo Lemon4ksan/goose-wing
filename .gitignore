@@ -6,5 +6,4 @@
 *.dylib
 
 # Agentic stuff
-.gemini/audit_swarm/
-.gemini/rfc/
+.gemini/

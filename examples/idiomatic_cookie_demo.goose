@@ -1,0 +1,127 @@
+// Showcase of Idiomatic, Beautiful Goose Syntax for the Industrial Cookie Monster
+import std;
+import wing from "..";
+
+fn assert(cond: bool, msg: const u8[:]) {
+    if !cond {
+        print("FAIL: ", msg);
+        abort(msg);
+    } else {
+        print("  PASS: ", msg);
+    }
+}
+
+fn main() {
+    print("==================================================================");
+    print("      goose-wing Idiomatic Cookie Monster Showcase (UFCS)         ");
+    print("==================================================================\n");
+
+    var jar = wing::new_canonical_cookie_jar();
+    let now_us: i64 = 1700000000 * 1000000;
+
+    // 1. Fluent Builder via UFCS: push returns a reference configured in-place!
+    print("--- 1. Fluent In-Place Cookie Builder ---");
+    jar.add("auth_jwt", "secret_jwt_token_999")
+       .with_domain("api.crypto-dex.io")
+       .with_path("/v1")
+       .with_secure()
+       .with_http_only()
+       .with_same_site(wing::CookieSameSite.Strict)
+       .with_priority(wing::CookiePriority.High)
+       .with_max_age_seconds(86400 * 30, now_us);
+
+    jar.add("theme", "nord-dark")
+       .with_domain("crypto-dex.io")
+       .with_path("/");
+
+    jar.add("visitor_id", "vis_12345")
+       .with_domain("crypto-dex.io")
+       .with_path("/")
+       .with_max_age_seconds(86400 * 365, now_us);
+
+    assert(jar.cookies.len == 3, "All 3 cookies added via fluent builder");
+    assert(jar.cookies[0].name[..] == "auth_jwt", "auth_jwt cookie present");
+    assert(jar.cookies[0].secure, "auth_jwt is Secure");
+    assert(jar.cookies[0].httponly, "auth_jwt is HttpOnly");
+    assert(jar.cookies[0].same_site == wing::CookieSameSite.Strict, "auth_jwt is SameSite=Strict");
+    assert(jar.cookies[0].priority == wing::CookiePriority.High, "auth_jwt is Priority=High");
+
+    // 2. Direct Printing with Universal `format<B>`
+    print("\n--- 2. Direct Renders via Universal format ---");
+    for c in jar.cookies {
+        print("  Rendered Set-Cookie: ", c);
+    }
+
+    // 3. Declarative Filtering with trailing closure and implicit `it`
+    print("\n--- 3. Declarative Filtering via Closure & it ---");
+    let secure_cookies = jar.cookies.filter() { it.secure };
+    print("  Found ", secure_cookies.len, " secure cookie(s)");
+    assert(secure_cookies.len == 1, "Exactly 1 secure cookie");
+
+    let root_cookies = jar.cookies.filter() { it.path[..] == "/" };
+    print("  Found ", root_cookies.len, " root path cookie(s)");
+    assert(root_cookies.len == 2, "Exactly 2 root path cookies");
+
+    // 4. Outgoing Request Header Generation
+    print("\n--- 4. Outgoing Header Generation per RFC 6265 §5.4 ---");
+    var req_header: u8[>..] = [];
+    jar.build_cookie_header(req_header, "api.crypto-dex.io", "/v1/trade", true, now_us);
+    print("  Cookie Header: ", req_header[..]);
+    assert(find(req_header[..], "auth_jwt=secret_jwt_token_999") >= 0, "Contains auth_jwt");
+    assert(find(req_header[..], "theme=nord-dark") >= 0, "Contains theme");
+
+    // 5. Expired Cookie Purge in one line with `retain() { !it.is_expired() }`
+    print("\n--- 5. One-Line Garbage Collection via retain & it ---");
+    jar.add("temp_del", "expired_val")
+       .with_domain("crypto-dex.io")
+       .with_expires_utc(now_us - 1000); // expired 1ms ago
+
+    assert(jar.cookies.len == 4, "Cookie added before purge");
+    let purged_count = jar.purge_expired(now_us);
+    print("  Purged ", purged_count, " expired cookie(s) in one line");
+    assert(purged_count == 1, "Exactly 1 expired cookie purged");
+    assert(jar.cookies.len == 3, "Jar size restored to 3");
+
+    // 6. High-Level URL Ingestion & Dynamic Origin Routing
+    print("\n--- 6. High-Level URL Ingestion & Origin Routing ---");
+    let ingested = jar.set_cookie_header(
+        "https://api.crypto-dex.io/v1/orders",
+        "order_token=ord_live_7766; Secure; HttpOnly; SameSite=Strict; Max-Age=3600",
+        now_us
+    );
+    assert(ingested, "Set-Cookie from HTTPS URL ingested");
+    let val_by_url = jar.get("https://api.crypto-dex.io/v1/orders", "order_token", now_us);
+    assert(val_by_url == "ord_live_7766", "Retrieved cookie value by URL route");
+
+    // Verify origin isolation: insecure HTTP cannot retrieve Secure cookie
+    let val_by_http = jar.get("http://api.crypto-dex.io/v1/orders", "order_token", now_us);
+    assert(val_by_http.len == 0, "Secure cookie isolated from non-secure HTTP");
+
+    // 7. URL-Based Outgoing Request Header
+    print("\n--- 7. URL-Based Request Header Generation ---");
+    var url_req_hdr: u8[>..] = [];
+    jar.build_cookie_header("https://api.crypto-dex.io/v1/orders", url_req_hdr, now_us);
+    print("  URL Request Header: ", url_req_hdr[..]);
+    assert(find(url_req_hdr[..], "order_token=ord_live_7766") >= 0, "Header contains order_token");
+    assert(find(url_req_hdr[..], "auth_jwt=secret_jwt_token_999") >= 0, "Header contains auth_jwt");
+
+    // 8. Formats & Interop (Netscape & JSON)
+    print("\n--- 8. Formats & Interop (Netscape & JSON) ---");
+    var netscape_buf: u8[>..] = [];
+    jar.export_netscape(netscape_buf);
+    assert(find(netscape_buf[..], "#HttpOnly_api.crypto-dex.io") >= 0, "Netscape export contains HttpOnly prefix");
+
+    var json_buf: u8[>..] = [];
+    jar.export_json(json_buf);
+    assert(find(json_buf[..], "\"name\":\"order_token\"") >= 0, "JSON export contains order_token");
+
+    var fresh_jar = wing::new_canonical_cookie_jar();
+    let imported_count = fresh_jar.import_json(json_buf[..], now_us);
+    print("  Imported ", imported_count, " cookies into fresh jar from JSON");
+    assert(imported_count == jar.cookies.len, "All cookies successfully imported");
+    assert(fresh_jar.get("order_token") == "ord_live_7766", "Global getter retrieves imported cookie");
+
+    print("\n------------------------------------------------------------------");
+    print("  IDIOMATIC GOOSE ADAPTATION VERIFIED WITH 100% SUCCESS!          ");
+    print("------------------------------------------------------------------");
+}

@@ -294,3 +294,53 @@ fn ::build_cookie_header<B>(
 ) {
     wing::build_cookie_header(jar, out, host, path, is_secure, now_us);
 }
+
+fn ::build_cookie_header<B>(
+    jar: wing::CanonicalCookieJar&,
+    req_url: const u8[:],
+    out: B&,
+    now_us: i64,
+    partition_key: const u8[:] = ""
+) {
+    wing::build_cookie_header(jar, req_url, out, now_us, partition_key);
+}
+
+fn ::set_cookie_header(
+    jar: wing::CanonicalCookieJar&,
+    req_url: const u8[:],
+    set_cookie_raw: const u8[:],
+    now_us: i64,
+    is_http_api: bool = true
+) -> bool {
+    return wing::set_cookie_header(jar, req_url, set_cookie_raw, now_us, is_http_api);
+}
+
+fn ::get(
+    jar: wing::CanonicalCookieJar&,
+    req_url: const u8[:],
+    name: const u8[:],
+    now_us: i64
+) -> const u8[:] {
+    return wing::get(jar, req_url, name, now_us);
+}
+
+fn ::get(jar: const wing::CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
+    return wing::get(jar, name);
+}
+
+fn ::export_netscape<B>(jar: const wing::CanonicalCookieJar&, out: B&) {
+    wing::export_canonical_netscape(jar, out);
+}
+
+fn ::import_netscape(jar: wing::CanonicalCookieJar&, content: const u8[:], now_us: i64) -> i64 {
+    return wing::import_canonical_netscape(jar, content, now_us);
+}
+
+fn ::export_json<B>(jar: const wing::CanonicalCookieJar&, out: B&) {
+    wing::export_canonical_json(jar, out);
+}
+
+fn ::import_json(jar: wing::CanonicalCookieJar&, json_text: const u8[:], now_us: i64) -> i64 {
+    return wing::import_canonical_json(jar, json_text, now_us);
+}
+

@@ -10,6 +10,11 @@ import core.time;
 // L6-L7: Application-layer DX (Profiles, CookieJar, Unified Request/Response/Session)
 import cookie.constants;
 import cookie.canonical;
+import cookie.psl;
+import cookie.parser;
+import cookie.policy;
+import cookie.engine;
+import cookie.store;
 import app.profile;
 import app.cookie;
 import app.request;
