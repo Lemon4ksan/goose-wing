@@ -6,12 +6,13 @@ An HTTP client stack, zero-allocation time primitives, and Chromium-grade Cookie
 
 ## Overview
 
-The library is organized into three layers:
+The library is organized into four architectural layers:
 
 1. **`core/time.goose`**: Nanosecond-precision calendar and monotonic time engine based on Howard Hinnant's civil calendar algorithms. Includes RFC 3339, RFC 9110 HTTP-Date codecs, Go-compatible `parse_duration`, monotonic `Stopwatch`, and anti-overflow `Deadline`.
 2. **`cookie/`**: Clean-room implementation of Chromium's `net::CookieMonster` adhering to RFC 6265, RFC 6265bis, the Layered Cookies draft, CHIPS (partitioned cookies), and Public Suffix List rules.
-3. **`app/`**: Client session coordinator with browser fingerprint profiles (Chrome 131, Firefox 133, Safari 18), request/response builders, rate limiting, and exponential backoff policies.
-4. **`core/test.goose`**: Zero-allocation testing framework featuring compile-time structural diffing, table-driven runners, high-resolution `MockClock`, and a deterministic Xorshift64* property fuzzer.
+3. **`core/url.goose` & `app/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
+4. **`app/`**: Client session coordinator (`ClientSession`) orchestrating a 6-phase pipeline over `CanonicalCookieJar`, with `BodyRewind` (Request.GetBody), 3-tier SSRF/DNS Rebinding guards, browser profiles (Chrome 131, Firefox 133, Safari 18), and resilience policies.
+5. **`core/test.goose`**: Zero-allocation testing framework featuring compile-time structural diffing, table-driven runners, high-resolution `MockClock`, and a deterministic Xorshift64* property fuzzer.
 
 ## Key Modules
 
@@ -37,15 +38,35 @@ Zero-heap timekeeping and date calculations:
 - **Formatting**: RFC 3339 (with sub-second fractional precision), IMF-fixdate / RFC 1123, RFC 850, and asctime formats per RFC 9110 §5.6.7.
 - **Resilience**: Monotonic `Stopwatch`, deadline checking with `deadline_after(dur)`, token-bucket `RateLimiter`, and exponential `Backoff` with jitter.
 
-### 3. Application Client (`app/`)
+### 3. WHATWG URL, PSL & Redirect FSM (`core/url.goose`, `app/redirect.goose`)
 
-Unified HTTP client ergonomics:
+Browser-grade URL parsing, origin isolation, and redirect state machine:
 
-- **Sessions**: Base URL scoping, persistent cookie jar association, default headers, proxy configuration, and connection pooling settings.
+- **WHATWG URL Parser**: Single continuous byte buffer with compact offset indices (ada-url / sorug pattern), default port stripping, dot-segment collapsing (`/a/b/../c` -> `/a/c`), and relative base resolution.
+- **IPv6 RFC 5952 Compression**: Deterministic zero-run compression finding the longest leftmost run of zeros (`[2001:db8::ff00:42:8329]`, `[::1]`) and IPv4-mapped IPv6 normalization.
+- **Origin Model**: Strict differentiation between `Tuple` (`scheme://host:port`) and `Opaque` (monotonic random nonces), with cross-origin serialization to `"null"`.
+- **Mozilla PSL Scoping**: Full rule matching (Normal, Wildcard `*.`, Exception `!`) with ICANN vs Private tenant isolation (e.g. `foo.github.io` cannot share state with `bar.github.io`).
+- **Redirect State Machine (`RedirectInfo`)**: Deterministic pure function transitions per RFC 9110 and WHATWG Fetch §4.5:
+  - Method mutation: `POST` -> `GET` on 301/302, non-GET/HEAD -> `GET` on 303 (with payload header stripping: `Content-Type`, `Content-Length`, `Transfer-Encoding`).
+  - Method preservation: `POST` stays `POST` on 307/308 with body preservation.
+  - Sensitive header stripping: Purges `Authorization`, `X-API-Key`, `X-Auth-Token`, `X-Access-Token` on cross-origin hops or HTTPS -> HTTP downgrades (defending against CVE-2024-1968, CVE-2026-55553, CVE-2026-64684).
+  - Cookie stripping: Outgoing `Cookie` header is unconditionally stripped before every redirect hop to prevent session hijacking across domains (CVE-2023-45143).
+  - Monotonic chain tainting: Any cross-site hop permanently marks `had_cross_site_hop` to prevent SameSite bypasses.
+
+### 4. Client Session & Security Orchestration (`app/`)
+
+Unified HTTP client ergonomics and defense-in-depth pipeline:
+
+- **6-Phase Execution Pipeline**: Executes requests over `CanonicalCookieJar` with automatic SameSite context evaluation, fresh cookie header synthesis, response Set-Cookie ingestion before 3xx handling, and hop sanitization.
+- **BodyRewind Engine**: Implements the Go `Request.GetBody` pattern: rewindable buffered bodies are seamlessly resent on 307/308 redirects, while unrewindable streams fail cleanly with `RedirectError.UnrewindableBodyStream`.
+- **3-Tier SSRF & DNS Rebinding Guard**:
+  - Tier 1: Hostname validation against loopback (`127.0.0.1`, `[::1]`, `localhost`).
+  - Tier 2: IP subnet blacklisting against RFC 1918 private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, and cloud metadata services (`169.254.169.254`).
+  - Tier 3: DNS Rebinding sweep over all resolved socket IPs before network connection.
+  - Dangerous service port filtering (SSH, Redis, SMTP, etc.).
 - **Browser Profiles**: Preconfigured header baselines (`User-Agent`, `Accept`, `Sec-CH-UA`, `Sec-Fetch-*`) simulating Chrome 131, Firefox 133, Safari 18, and cURL.
-- **Fluent Requests**: Chained configuration for headers, query params, Bearer authentication, URL-encoded forms, and JSON payloads.
 
-### 4. Testing Framework (`core/test.goose`)
+### 5. Testing Framework (`core/test.goose`)
 
 A standalone test library designed for Goose:
 
@@ -170,6 +191,7 @@ The test suite covers full RFC specifications, Chromium edge cases, and property
 
 | Test Suite | File | Focus Areas | Checks |
 |---|---|---|---|
+| **Session & URL Suite** | `tests/session_suite.goose` | WHATWG URL, IPv6 RFC 5952, PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, 3-tier SSRF | 117 checks |
 | **Cookie Vectors** | `tests/max_cookie_vectors.goose` | Matrices 1..16 (Lexer limits, CTL sweep, PSL, prefixes, SameSite, CHIPS, 6-round GC, SQLite v24, clock skew, PRNG fuzzer) | 1,126 checks |
 | **Clean Room Suite** | `tests/cookie_suite.goose` | WPT compliance, domain quotas, eviction ordering, persistence keys | 78 checks |
 | **Time & Calendar** | `tests/time_suite.goose` | Hinnant calendar math, leap years, ReDoS protection, RFC 3339, RFC 9110 | 334 checks |
@@ -181,6 +203,9 @@ To verify syntax and run the verification suites:
 ```powershell
 # Typecheck and compilation validation
 goose check wing.goose
+
+# Run Client Session verification suite (URL, Redirect FSM, SiteForCookies, SSRF Guard)
+goose run tests/session_suite.goose
 
 # Run core cookie verification matrices (14 test modules, 1,126 checks)
 goose run tests/max_cookie_vectors.goose

@@ -13,12 +13,23 @@ enum Profile {
 struct HeaderItem {
     name: u8[..64] = [],
     value: u8[..256] = [],
+    is_sensitive: bool = false,
 }
 
 // ---- header item & ascii helpers ----
 
-fn make_header(name: const u8[:], value: const u8[:]) -> HeaderItem {
-    var header_item = HeaderItem { .. };
+fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
+    return eq_ascii_fold(name, "authorization") ||
+           eq_ascii_fold(name, "proxy-authorization") ||
+           eq_ascii_fold(name, "cookie") ||
+           eq_ascii_fold(name, "x-api-key") ||
+           eq_ascii_fold(name, "x-auth-token") ||
+           eq_ascii_fold(name, "x-access-token");
+}
+
+fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> HeaderItem {
+    let sens = is_sensitive || is_heuristic_sensitive_header(name);
+    var header_item = HeaderItem { is_sensitive: sens, .. };
     header_item.name.append(name);
     header_item.value.append(value);
     return header_item;

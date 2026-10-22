@@ -1,8 +1,12 @@
 // Unified Request model: procedural mutation + trailing-closure builder DSL.
+// Clean Room Implementation for goose-wing with BodyRewind and Security Contexts.
 namespace wing;
 
 import std;
 import json;
+import core.url;
+import cookie.policy;
+import app.profile;
 
 struct QueryItem {
     key: u8[..64] = [],
@@ -15,6 +19,18 @@ struct Request {
     timeout: i64 = 0,
     headers: HeaderItem[..32] = [],
     query_params: QueryItem[..16] = [],
+    rewind_buf: u8[..4096] = [],
+    rewindable: bool = true,
+    body_consumed: bool = false,
+    cors_mode: bool = false,
+    tainted_origin: bool = false,
+    is_main_frame: bool = true,
+    is_reload: bool = false,
+    initiator: Origin = Origin { .. },
+    has_initiator: bool = false,
+    site_for_cookies: SiteForCookies = SiteForCookies { .. },
+    has_site_for_cookies: bool = false,
+    first_party_policy: FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
     body: u8[>..] = [],
 }
 
@@ -75,15 +91,31 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
 // ---- ufcs request mutators ----
 
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
+    let is_sens = is_heuristic_sensitive_header(name);
     for &header_entry in req.headers {
         if eq_ascii_fold(header_entry.name[..], name) {
             header_entry.value.clear();
             header_entry.value.append(value);
+            header_entry.is_sensitive = is_sens;
             return;
         }
     }
     if req.headers.len < 32 {
-        req.headers.push(make_header(name, value));
+        req.headers.push(make_header(name, value, is_sens));
+    }
+}
+
+fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
+    for &header_entry in req.headers {
+        if eq_ascii_fold(header_entry.name[..], name) {
+            header_entry.value.clear();
+            header_entry.value.append(value);
+            header_entry.is_sensitive = true;
+            return;
+        }
+    }
+    if req.headers.len < 32 {
+        req.headers.push(make_header(name, value, true));
     }
 }
 
@@ -92,7 +124,7 @@ fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
 }
 
 fn bearer(req: Request&, token: const u8[:]) {
-    var auth_header = HeaderItem { .. };
+    var auth_header = HeaderItem { is_sensitive: true, .. };
     auth_header.name.append("Authorization");
     auth_header.value.append("Bearer ");
     auth_header.value.append(token);
@@ -100,6 +132,7 @@ fn bearer(req: Request&, token: const u8[:]) {
         if eq_ascii_fold(existing.name[..], "Authorization") {
             existing.value.clear();
             existing.value.append(auth_header.value[..]);
+            existing.is_sensitive = true;
             return;
         }
     }
@@ -137,12 +170,20 @@ fn text(req: Request&, body_str: const u8[:]) {
     header(req, "Content-Type", "text/plain; charset=utf-8");
     req.body.clear();
     req.body.append(body_str);
+    req.rewind_buf.clear();
+    req.rewind_buf.append(body_str);
+    req.rewindable = true;
+    req.body_consumed = false;
 }
 
 fn raw_json(req: Request&, json_str: const u8[:]) {
     header(req, "Content-Type", "application/json");
     req.body.clear();
     req.body.append(json_str);
+    req.rewind_buf.clear();
+    req.rewind_buf.append(json_str);
+    req.rewindable = true;
+    req.body_consumed = false;
 }
 
 fn json<T>(req: Request&, payload: const T&) {
@@ -157,10 +198,39 @@ fn json<T>(req: Request&, payload: const T&) {
         write_json_field(req.body, payload.Acc);
     }
     req.body.push('}');
+    req.rewind_buf.clear();
+    req.rewind_buf.append(req.body[..]);
+    req.rewindable = true;
+    req.body_consumed = false;
 }
 
 fn set_json<T>(req: Request&, payload: const T&) {
     json(req, payload);
+}
+
+fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = false) {
+    req.body.clear();
+    req.body.append(stream_bytes);
+    req.rewindable = rewindable;
+    req.rewind_buf.clear();
+    if rewindable {
+        req.rewind_buf.append(stream_bytes);
+    }
+    req.body_consumed = false;
+}
+
+fn set_initiator(req: Request&, orig: const Origin&) {
+    req.initiator = copy(orig);
+    req.has_initiator = true;
+}
+
+fn set_site_for_cookies(req: Request&, sfc: const SiteForCookies&) {
+    req.site_for_cookies = copy(sfc);
+    req.has_site_for_cookies = true;
+}
+
+fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
+    req.first_party_policy = policy;
 }
 
 // ---- middleware & signers ----

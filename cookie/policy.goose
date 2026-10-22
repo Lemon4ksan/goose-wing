@@ -273,36 +273,158 @@ fn validate_security_cookie_prefixes(
 struct SiteForCookies {
     scheme: u8[..16] = [],
     registrable_domain: u8[..128] = [],
+    schemefully_same: bool = true,
     is_null: bool = false,
 }
 
 fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);
-    var s = SiteForCookies { .. };
+    var s = SiteForCookies { schemefully_same: true, is_null: false, .. };
     s.scheme.append(parsed.scheme[..]);
     extract_etld_plus_one(parsed.host[..], s.registrable_domain);
-    s.is_null = false;
+    return s;
+}
+
+fn site_for_cookies_from_parsed_url(url_val: const Url&) -> SiteForCookies {
+    var s = SiteForCookies { schemefully_same: true, is_null: false, .. };
+    s.scheme.append(scheme(url_val));
+    extract_etld_plus_one(hostname(url_val), s.registrable_domain);
     return s;
 }
 
 fn null_site_for_cookies() -> SiteForCookies {
-    return SiteForCookies { is_null: true };
+    return SiteForCookies { is_null: true, schemefully_same: false };
 }
 
-// Computes SiteForCookies evaluating the full ancestor chain (CTX-01, CTX-02)
-fn compute_site_for_cookies_with_ancestors(top_url: const u8[:], ancestor_urls: const u8[:][:]) -> SiteForCookies {
+fn format_site_for_cookies<B>(out: B&, site: const SiteForCookies&) {
+    out.append("SiteForCookies: {site=");
+    if site.is_null {
+        out.append("null; schemefully_same=false}");
+    } else {
+        out.append(site.scheme[..]);
+        out.append("://");
+        out.append(site.registrable_domain[..]);
+        out.append("; schemefully_same=");
+        out.append(if site.schemefully_same { "true" } else { "false" });
+        out.push('}');
+    }
+}
+
+fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: const u8[:]) {
+    guard !site.is_null else { return; }
+    let frame_site = site_for_cookies_from_url(frame_url);
+
+    if !eq_ascii_fold(site.registrable_domain[..], frame_site.registrable_domain[..]) {
+        site.is_null = true;
+        site.schemefully_same = false;
+        site.scheme.clear();
+        site.registrable_domain.clear();
+        return;
+    }
+
+    if !eq_ascii_fold(site.scheme[..], frame_site.scheme[..]) {
+        site.schemefully_same = false;
+    }
+}
+
+// Computes SiteForCookies evaluating the full ancestor chain (RFC 6265bis §5.2.1 / CTX-01, CTX-02)
+fn compute_site_for_cookies_with_ancestors(
+    top_url: const u8[:],
+    ancestor_urls: const u8[:][:],
+    is_sandboxed: bool = false
+) -> SiteForCookies {
+    if is_sandboxed || starts_with(top_url, "data:") || starts_with(top_url, "about:") {
+        return null_site_for_cookies();
+    }
+
     var top_site = site_for_cookies_from_url(top_url);
     for a_url in ancestor_urls {
-        let a_site = site_for_cookies_from_url(a_url);
-        if a_site.scheme[..] != top_site.scheme[..] || a_site.registrable_domain[..] != top_site.registrable_domain[..] {
+        compare_with_frame_tree_site_and_revise(top_site, a_url);
+        if top_site.is_null {
             return null_site_for_cookies();
         }
     }
     return top_site;
 }
 
-fn is_request_same_site(site: const SiteForCookies&, req_url: const u8[:]) -> bool {
-    if site.is_null { return false; }
+fn is_first_party(site: const SiteForCookies&, req_url: const u8[:], compute_schemefully: bool = true) -> bool {
+    guard !site.is_null else { return false; }
+    if compute_schemefully && !site.schemefully_same { return false; }
+
     let req_site = site_for_cookies_from_url(req_url);
-    return site.scheme[..] == req_site.scheme[..] && site.registrable_domain[..] == req_site.registrable_domain[..];
+    if !eq_ascii_fold(site.registrable_domain[..], req_site.registrable_domain[..]) {
+        return false;
+    }
+    if compute_schemefully && !eq_ascii_fold(site.scheme[..], req_site.scheme[..]) {
+        return false;
+    }
+    return true;
+}
+
+fn is_request_same_site(site: const SiteForCookies&, req_url: const u8[:]) -> bool {
+    return is_first_party(site, req_url, true);
+}
+
+// ---- Chromium net::CookieInclusionStatus codes -----------------------------
+
+let EXCLUDE_UNKNOWN: i64 = 0;
+let EXCLUDE_SAMESITE_STRICT: i64 = 1;
+let EXCLUDE_SAMESITE_LAX: i64 = 2;
+let EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX: i64 = 3;
+let EXCLUDE_SAMESITE_NONE_INSECURE: i64 = 4;
+let EXCLUDE_NONCOOKIEABLE_SCHEME: i64 = 5;
+let EXCLUDE_SECURE_ONLY: i64 = 6;
+let EXCLUDE_HTTP_ONLY: i64 = 7;
+let EXCLUDE_DOMAIN_MISMATCH: i64 = 8;
+let EXCLUDE_NOT_ON_PATH: i64 = 9;
+let EXCLUDE_FAILURE_TO_STORE: i64 = 10;
+let WARN_SAMESITE_LAX_ALLOWING_UNSAFE: i64 = 11;
+let WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION: i64 = 12;
+
+// ---- FirstPartyURLPolicy and IsolationInfo ---------------------------------
+
+enum FirstPartyURLPolicy {
+    NEVER_CHANGE_FIRST_PARTY_URL,
+    UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+}
+
+enum SameSiteContextType {
+    CrossSite,
+    SameSiteLaxMethodUnsafe,
+    SameSiteLax,
+    SameSiteStrict,
+}
+
+struct SameSiteCookieContext {
+    context_type: SameSiteContextType = SameSiteContextType.CrossSite,
+    schemefully_same: bool = true,
+    is_reload: bool = false,
+    had_cross_site_hop: bool = false,
+}
+
+fn new_samesite_context(ctx_type: SameSiteContextType) -> SameSiteCookieContext {
+    return SameSiteCookieContext { context_type: ctx_type, .. };
+}
+
+fn can_set_canonical_cookie_for_context(
+    cookie_val: const CanonicalCookie&,
+    context: const SameSiteCookieContext&,
+    is_main_frame: bool,
+    is_secure_channel: bool
+) -> bool, i64 {
+    // Cross-site subresources or non-main frame navigations cannot set SameSite cookies
+    if !is_main_frame && context.context_type == SameSiteContextType.CrossSite {
+        match cookie_val.same_site {
+            Strict => { return false, EXCLUDE_SAMESITE_STRICT; },
+            Lax => { return false, EXCLUDE_SAMESITE_LAX; },
+            Default => { return false, EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX; },
+            None => {
+                if !is_secure_channel { return false, EXCLUDE_SAMESITE_NONE_INSECURE; }
+            },
+        };
+    }
+    if cookie_val.same_site == CookieSameSite.None && !is_secure_channel {
+        return false, EXCLUDE_SAMESITE_NONE_INSECURE;
+    }
+    return true, EXCLUDE_UNKNOWN;
 }

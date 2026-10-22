@@ -3,6 +3,7 @@ namespace wing;
 
 import std;
 import json;
+import app.profile;
 
 struct Error {
     code: i32 = 0,
@@ -31,6 +32,11 @@ struct Response {
     status_code: i32 = 0,
     effective_url: u8[..512] = [],
     headers: HeaderItem[..32] = [],
+    redirect_count: i64 = 0,
+    url_chain: u8[..256][..16] = [],
+    final_method: u8[..16] = "GET",
+    sent_headers: HeaderItem[..32] = [],
+    set_cookies: u8[..256][..16] = [],
     body: u8[>..] = [],
 }
 
@@ -40,6 +46,10 @@ fn success(res: const Response&) -> bool {
 
 fn is_success(res: const Response&) -> bool {
     return success(res);
+}
+
+fn status(res: const Response&) -> i32 {
+    return res.status_code;
 }
 
 fn redirect(res: const Response&) -> bool {
@@ -53,6 +63,15 @@ fn is_redirect(res: const Response&) -> bool {
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
     for &header_entry in res.headers {
+        if eq_ascii_fold(header_entry.name[..], name) {
+            return header_entry.value[..];
+        }
+    }
+    return "";
+}
+
+fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {
+    for &header_entry in res.sent_headers {
         if eq_ascii_fold(header_entry.name[..], name) {
             return header_entry.value[..];
         }

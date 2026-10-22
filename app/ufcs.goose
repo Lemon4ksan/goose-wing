@@ -378,3 +378,88 @@ fn ::export_json<B>(jar: const wing::CanonicalCookieJar&, out: B&) {
 fn ::import_json(jar: wing::CanonicalCookieJar&, json_text: const u8[:], now_us: i64) -> i64 {
     return wing::import_canonical_json(jar, json_text, now_us);
 }
+
+// --- URL & Origin UFCS Bridges ---
+
+fn ::scheme(u: const wing::Url&) -> const u8[:] { return wing::scheme(u); }
+fn ::host(u: const wing::Url&) -> const u8[:] { return wing::host(u); }
+fn ::port(u: const wing::Url&) -> i32 { return wing::effective_port(u); }
+fn ::effective_port(u: const wing::Url&) -> i32 { return wing::effective_port(u); }
+fn ::pathname(u: const wing::Url&) -> const u8[:] { return wing::pathname(u); }
+fn ::path(u: const wing::Url&) -> const u8[:] { return wing::pathname(u); }
+fn ::search(u: const wing::Url&) -> const u8[:] { return wing::search(u); }
+fn ::origin(u: const wing::Url&) -> wing::Origin { return wing::origin_from_url(u); }
+fn ::is_special(u: const wing::Url&) -> bool { return wing::is_special(u); }
+
+fn ::is_opaque(o: const wing::Origin&) -> bool { return o.kind == wing::OriginKind.Opaque; }
+fn ::is_same_origin(o1: const wing::Origin&, o2: const wing::Origin&) -> bool { return wing::is_same_origin(o1, o2); }
+fn ::serialize<B>(o: const wing::Origin&, out: B&) { wing::serialize_origin(o, out); }
+
+// --- SiteForCookies UFCS Bridges ---
+
+fn ::is_null(sfc: const wing::SiteForCookies&) -> bool { return sfc.is_null; }
+fn ::is_first_party(sfc: const wing::SiteForCookies&, url_str: const u8[:], compute_schemefully: bool = true) -> bool {
+    return wing::is_first_party(sfc, url_str, compute_schemefully);
+}
+fn ::format_site_for_cookies<B>(out: B&, sfc: const wing::SiteForCookies&) { wing::format_site_for_cookies(out, sfc); }
+
+// --- Request, Response, Session UFCS Bridges ---
+
+fn ::initiator(req: wing::Request&, origin_val: const wing::Origin&) { wing::set_initiator(req, origin_val); }
+fn ::set_initiator(req: wing::Request&, origin_val: const wing::Origin&) { wing::set_initiator(req, origin_val); }
+fn ::site_for_cookies(req: wing::Request&, sfc: const wing::SiteForCookies&) { wing::set_site_for_cookies(req, sfc); }
+fn ::set_site_for_cookies(req: wing::Request&, sfc: const wing::SiteForCookies&) { wing::set_site_for_cookies(req, sfc); }
+fn ::first_party_policy(req: wing::Request&, policy: wing::FirstPartyURLPolicy) { wing::set_first_party_policy(req, policy); }
+fn ::set_first_party_policy(req: wing::Request&, policy: wing::FirstPartyURLPolicy) { wing::set_first_party_policy(req, policy); }
+fn ::sensitive_header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::sensitive_header(req, name, value); }
+fn ::set_stream_body(req: wing::Request&, body_bytes: const u8[:], rewindable: bool = false) { wing::set_stream_body(req, body_bytes, rewindable); }
+
+fn ::redirect_count(res: const wing::Response&) -> i64 { return res.redirect_count; }
+fn ::final_method(res: const wing::Response&) -> const u8[:] { return res.final_method[..]; }
+fn ::sent_header(res: const wing::Response&, name: const u8[:]) -> const u8[:] { return wing::sent_header(res, name); }
+
+fn ::set_redirect_mode(session: wing::Session&, mode: wing::RedirectMode) {
+    wing::set_redirect_mode(session, mode);
+}
+fn ::set_max_redirects(session: wing::Session&, count: i64) {
+    wing::set_max_redirects(session, count);
+}
+fn ::set_referrer_policy(session: wing::Session&, policy: wing::ReferrerPolicy) {
+    wing::set_referrer_policy(session, policy);
+}
+fn ::set_clock_us(session: wing::Session&, clock_us: i64) {
+    wing::set_clock_us(session, clock_us);
+}
+fn ::enable_ssrf_guard(session: wing::Session&, deny_local_network: bool = true) {
+    wing::enable_ssrf_guard(session, deny_local_network);
+}
+fn ::mock_route(
+    session: wing::Session&,
+    method: const u8[:],
+    url: const u8[:],
+    status: i32,
+    body: const u8[:]
+) -> wing::MockExchange& {
+    return wing::mock_route(session, method, url, status, body);
+}
+fn ::mock_route(
+    session: wing::Session&,
+    url: const u8[:],
+    status: i32,
+    body: const u8[:]
+) -> wing::MockExchange& {
+    return wing::mock_route(session, "", url, status, body);
+}
+fn ::execute_request(session: wing::Session&, req: const wing::Request&) -> wing::Response, wing::Error {
+    return wing::execute_request(session, req);
+}
+
+fn ::add_mock_header(session: wing::Session&, name: const u8[:], value: const u8[:]) {
+    wing::add_mock_header(session, name, value);
+}
+fn ::add_mock_set_cookie(session: wing::Session&, set_cookie_raw: const u8[:]) {
+    wing::add_mock_set_cookie(session, set_cookie_raw);
+}
+fn ::add_mock_resolved_ip(session: wing::Session&, ip_str: const u8[:]) {
+    wing::add_mock_resolved_ip(session, ip_str);
+}

@@ -7,6 +7,7 @@ import json;
 // L4-L5: Core primitives (Time & Duration, StopWatch, Layout Engine, Test Framework)
 import core.time;
 import core.test;
+import core.url;
 
 // L6-L7: Application-layer DX (Profiles, CookieJar, Unified Request/Response/Session)
 import cookie.constants;
@@ -20,6 +21,7 @@ import app.profile;
 import app.cookie;
 import app.request;
 import app.response;
+import app.redirect;
 import app.session;
 import app.policy;
 import app.ufcs;
