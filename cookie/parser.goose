@@ -365,16 +365,33 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
         "/"
     };
 
-    // Strip port if present from host
-    var colon_idx = -1;
-    for i in host_part.len {
-        if host_part[i] == ':' { colon_idx = i; break; }
-    }
-    let bare_host = if colon_idx >= 0 { host_part[..colon_idx] } else { host_part };
-    if colon_idx >= 0 {
-        let p_val, p_ok = parse_int(host_part[colon_idx + 1..]);
-        if p_ok && p_val > 0 && p_val <= 65535 {
-            u.port = p_val as i32;
+    // Strip port if present from host, handling IPv6 literals "[::1]:port"
+    var bare_host = host_part;
+    if host_part.len > 0 && host_part[0] == '[' {
+        var close_bracket = -1;
+        for i in host_part.len {
+            if host_part[i] == ']' { close_bracket = i; break; }
+        }
+        if close_bracket > 0 {
+            bare_host = host_part[1..close_bracket];
+            if close_bracket + 1 < host_part.len && host_part[close_bracket + 1] == ':' {
+                let p_val, p_ok = parse_int(host_part[close_bracket + 2..]);
+                if p_ok && p_val > 0 && p_val <= 65535 {
+                    u.port = p_val as i32;
+                }
+            }
+        }
+    } else {
+        var colon_idx = -1;
+        for i in host_part.len {
+            if host_part[i] == ':' { colon_idx = i; break; }
+        }
+        if colon_idx >= 0 {
+            bare_host = host_part[..colon_idx];
+            let p_val, p_ok = parse_int(host_part[colon_idx + 1..]);
+            if p_ok && p_val > 0 && p_val <= 65535 {
+                u.port = p_val as i32;
+            }
         }
     }
 

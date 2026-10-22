@@ -22,7 +22,7 @@ fn main() {
     // 1. Fluent Builder via UFCS: push returns a reference configured in-place!
     print("--- 1. Fluent In-Place Cookie Builder ---");
     jar.add("auth_jwt", "secret_jwt_token_999")
-       .with_domain("api.crypto-dex.io")
+       .with_host("api.crypto-dex.io")
        .with_path("/v1")
        .with_secure()
        .with_http_only()
@@ -31,7 +31,7 @@ fn main() {
        .with_max_age_seconds(86400 * 30, now_us);
 
     jar.add("theme", "nord-dark")
-       .with_domain("crypto-dex.io")
+       .with_domain(".crypto-dex.io")
        .with_path("/");
 
     jar.add("visitor_id", "vis_12345")
@@ -41,6 +41,9 @@ fn main() {
 
     assert(jar.cookies.len == 3, "All 3 cookies added via fluent builder");
     assert(jar.cookies[0].name[..] == "auth_jwt", "auth_jwt cookie present");
+    assert(jar.cookies[0].host_only, "auth_jwt is host_only (with_host)");
+    assert(!jar.cookies[1].host_only, "theme is domain cookie (with_domain .crypto-dex.io)");
+    assert(!jar.cookies[2].host_only, "visitor_id is domain cookie (with_domain crypto-dex.io)");
     assert(jar.cookies[0].secure, "auth_jwt is Secure");
     assert(jar.cookies[0].httponly, "auth_jwt is HttpOnly");
     assert(jar.cookies[0].same_site == wing::CookieSameSite.Strict, "auth_jwt is SameSite=Strict");
@@ -163,7 +166,7 @@ fn main() {
     // 12. Standalone Builder & Safe Insert via jar.set(c, now_us)
     print("\n--- 12. Standalone Builder & Safe Insert ---");
     var standalone = wing::canonical_cookie("safe_token", "st_val_99");
-    standalone.with_domain("api.crypto-dex.io")
+    standalone.with_host("api.crypto-dex.io")
               .with_path("/")
               .with_secure()
               .with_http_only();
@@ -180,6 +183,32 @@ fn main() {
     // Same-site request
     let strict_same = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, true, true, true);
     assert(strict_same == "secret_jwt_token_999", "SameSite=Strict cookie sent on same-site request");
+
+    // 14. Polish & Edge Cases: SQLite V24 host_key, IPv6 URL, Server CTL, JSON Scheme Downgrade
+    print("\n--- 14. Edge Cases: SQLite host_key, IPv6, Server CTL, Scheme Downgrade ---");
+    var sql_host_buf: u8[>..] = [];
+    wing::generate_sqlite_delete_sql(sql_host_buf, jar.cookies[0]); // auth_jwt (host_only)
+    assert(find(sql_host_buf[..], "host_key = 'api.crypto-dex.io'") >= 0, "SQLite host_key encodes host-only without leading dot");
+
+    var sql_dom_buf: u8[>..] = [];
+    wing::generate_sqlite_delete_sql(sql_dom_buf, jar.cookies[1]); // theme (domain cookie)
+    assert(find(sql_dom_buf[..], "host_key = '.crypto-dex.io'") >= 0, "SQLite host_key encodes domain cookie WITH leading dot");
+
+    let ipv6_url = wing::parse_canonical_cookie_url("http://[::1]:8080/api/v1");
+    assert(ipv6_url.host[..] == "::1", "IPv6 parsed without brackets into clean host ::1");
+    assert(ipv6_url.port == 8080, "IPv6 port 8080 successfully parsed");
+
+    var srv_cookies: wing::CanonicalCookie[>..] = [];
+    wing::parse_server_cookie_header("valid1=ok; bad_ctl\x01=hacked; valid2=good", now_us, srv_cookies);
+    assert(srv_cookies.len == 2, "Server Cookie parser dropped pair with prohibited CTL byte");
+    assert(srv_cookies[0].name[..] == "valid1", "First clean cookie parsed");
+    assert(srv_cookies[1].name[..] == "valid2", "Second clean cookie parsed");
+
+    let json_downgrade = "[{\"name\":\"sid_downgrade\",\"value\":\"tok123\",\"domain\":\"crypto-dex.io\",\"path\":\"/\",\"source_scheme\":\"secure\",\"source_port\":443}]";
+    var json_test_jar = wing::new_canonical_cookie_jar();
+    let imported_down = json_test_jar.import_json(json_downgrade, now_us);
+    assert(imported_down == 1, "Non-secure cookie with source_scheme:secure imported without channel rejection");
+    assert(json_test_jar.get("sid_downgrade") == "tok123", "Retrieved imported cookie");
 
     print("\n------------------------------------------------------------------");
     print("  IDIOMATIC GOOSE ADAPTATION VERIFIED WITH 100% SUCCESS!          ");

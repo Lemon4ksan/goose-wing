@@ -119,10 +119,27 @@ fn with_value(c: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
     return c;
 }
 
-fn with_domain(c: CanonicalCookie&, d: const u8[:]) -> CanonicalCookie& {
+fn with_domain(c: CanonicalCookie&, d: const u8[:], host_only: bool = false) -> CanonicalCookie& {
     c.domain.clear();
-    c.domain.append(d);
-    c.host_only = (d.len == 0);
+    var clean_d = d;
+    var is_host = host_only;
+    if clean_d.len > 0 && clean_d[0] == '.' {
+        clean_d = clean_d[1..];
+        is_host = false;
+    }
+    c.domain.append(clean_d);
+    c.host_only = is_host;
+    return c;
+}
+
+fn with_host(c: CanonicalCookie&, h: const u8[:]) -> CanonicalCookie& {
+    c.domain.clear();
+    if h.len > 0 && h[0] == '.' {
+        c.domain.append(h[1..]);
+    } else {
+        c.domain.append(h);
+    }
+    c.host_only = true;
     return c;
 }
 

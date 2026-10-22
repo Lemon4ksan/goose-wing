@@ -240,8 +240,12 @@ fn ::with_value(cookie_val: wing::CanonicalCookie&, val: const u8[:]) -> wing::C
     return wing::with_value(cookie_val, val);
 }
 
-fn ::with_domain(cookie_val: wing::CanonicalCookie&, domain_val: const u8[:]) -> wing::CanonicalCookie& {
-    return wing::with_domain(cookie_val, domain_val);
+fn ::with_domain(cookie_val: wing::CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> wing::CanonicalCookie& {
+    return wing::with_domain(cookie_val, domain_val, host_only);
+}
+
+fn ::with_host(cookie_val: wing::CanonicalCookie&, host_val: const u8[:]) -> wing::CanonicalCookie& {
+    return wing::with_host(cookie_val, host_val);
 }
 
 fn ::with_path(cookie_val: wing::CanonicalCookie&, path_val: const u8[:]) -> wing::CanonicalCookie& {

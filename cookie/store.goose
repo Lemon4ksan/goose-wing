@@ -57,6 +57,24 @@ fn append_sql_escaped_string<B>(out: B&, s: const u8[:]) {
     out.push('\'');
 }
 
+// Formats host_key per Chromium SQLitePersistentCookieStore convention:
+// - Host-only cookies (host_only = true) store plain host e.g. 'example.com'
+// - Domain cookies (host_only = false) store leading dot e.g. '.example.com'
+fn append_sqlite_host_key<B>(out: B&, c: const CanonicalCookie&) {
+    out.push('\'');
+    if !c.host_only && (c.domain.len == 0 || c.domain[0] != '.') {
+        out.push('.');
+    }
+    for b in c.domain {
+        if b == '\'' {
+            out.append("''");
+        } else {
+            out.push(b);
+        }
+    }
+    out.push('\'');
+}
+
 // Serializes a CanonicalCookie into a SQLite V24 INSERT OR REPLACE statement.
 fn generate_sqlite_insert_sql<B>(out: B&, c: const CanonicalCookie&) {
     out.append("INSERT OR REPLACE INTO cookies (creation_utc, top_frame_site_key, host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (");
@@ -64,7 +82,7 @@ fn generate_sqlite_insert_sql<B>(out: B&, c: const CanonicalCookie&) {
     out.append(", ");
     append_sql_escaped_string(out, c.partition_key[..]);
     out.append(", ");
-    append_sql_escaped_string(out, c.domain[..]);
+    append_sqlite_host_key(out, c);
     out.append(", ");
     append_sql_escaped_string(out, c.name[..]);
     out.append(", ");
@@ -112,7 +130,7 @@ fn generate_sqlite_delete_sql<B>(out: B&, c: const CanonicalCookie&) {
     out.append("DELETE FROM cookies WHERE top_frame_site_key = ");
     append_sql_escaped_string(out, c.partition_key[..]);
     out.append(" AND host_key = ");
-    append_sql_escaped_string(out, c.domain[..]);
+    append_sqlite_host_key(out, c);
     out.append(" AND name = ");
     append_sql_escaped_string(out, c.name[..]);
     out.append(" AND path = ");
@@ -298,6 +316,12 @@ fn parse_server_cookie_header(
 
         let pair = trim(header_raw[start..end]);
         if pair.len > 0 {
+            // RFC 6265bis §5.4 / §4.2: reject / skip pairs with prohibited control characters (%x00-08, %x0A-1F, %x7F)
+            if has_prohibited_cookie_ctl(pair) {
+                start = end + 1;
+                continue;
+            }
+
             var eq_idx = -1;
             for i in pair.len {
                 if pair[i] == '=' {
@@ -504,7 +528,7 @@ fn import_canonical_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_u
         };
 
         if c.name.len > 0 {
-            let is_sec_url = c.secure;
+            let is_sec_url = c.secure || (c.source_scheme == CookieSourceScheme.Secure);
             let ok = set_canonical_cookie(jar, c, true, is_sec_url, now_us);
             if ok { imported += 1; }
         }
