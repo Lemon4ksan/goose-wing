@@ -168,14 +168,20 @@ fn is_cookie_sendable_for_samesite(
 // Evaluates whether a cookie is sendable under Origin-Bound Cookies (OBC) port isolation.
 // Host-only cookies strictly enforce source_port match.
 // Domain cookies opt-out of port isolation.
-fn is_cookie_sendable_for_obc(c: const CanonicalCookie&, req_scheme: const u8[:], req_port: i32) -> bool {
-    // Scheme check: Secure cookies require secure request scheme
-    if c.source_scheme == CookieSourceScheme.Secure && !eq_ascii_fold(req_scheme, "https") {
+// Trustworthy non-crypto origins (localhost, 127.0.0.1) allow HTTP scheme and port 80/443 interop.
+fn is_cookie_sendable_for_obc(c: const CanonicalCookie&, req_scheme: const u8[:], req_port: i32, host: const u8[:] = "") -> bool {
+    let is_trustworthy = host.len > 0 && is_trustworthy_non_crypto_host(host);
+
+    // Scheme check: Secure cookies require secure request scheme (or trustworthy non-crypto origin)
+    if c.source_scheme == CookieSourceScheme.Secure && !eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
         return false;
     }
 
     // Port check: applied to host-only cookies
     if c.host_only && c.source_port > 0 && req_port > 0 {
+        if is_trustworthy && c.source_port == 443 && req_port == 80 {
+            return true;
+        }
         if c.source_port != req_port {
             return false;
         }

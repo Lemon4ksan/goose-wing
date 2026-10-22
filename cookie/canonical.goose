@@ -196,3 +196,12 @@ fn matches_domain(c: const CanonicalCookie&, host: const u8[:]) -> bool {
 fn matches_path(c: const CanonicalCookie&, req_path: const u8[:]) -> bool {
     return cookie_path_match(req_path, c.path[..]);
 }
+
+// Standalone builder constructor for CanonicalCookie:
+// let c = canonical_cookie("sid", "123").with_domain("example.com").with_secure();
+fn canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
+    var c = CanonicalCookie { .. };
+    c.name.append(name);
+    c.value.append(val);
+    return c;
+}

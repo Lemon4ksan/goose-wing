@@ -447,7 +447,7 @@ fn enforce_chips_quota(jar: CanonicalCookieJar&, partition_key: const u8[:], etl
     for i in jar.cookies.len {
         let c = jar.cookies[i];
         if c.partitioned && c.partition_key[..] == partition_key && cookie_matches_effective_domain(c, etld_plus_one) {
-            let cookie_bytes = payload_size(c) + c.domain.len + c.path.len;
+            let cookie_bytes = payload_size(c); // Strictly NameValueSizeBytes() per Chromium
             total_bytes += cookie_bytes;
             candidates.push(c);
         }
@@ -468,7 +468,7 @@ fn enforce_chips_quota(jar: CanonicalCookieJar&, partition_key: const u8[:], etl
             break;
         }
         let c = candidates[k];
-        let cookie_bytes = payload_size(c) + c.domain.len + c.path.len;
+        let cookie_bytes = payload_size(c); // Strictly NameValueSizeBytes() per Chromium
         total_bytes -= cookie_bytes;
         to_delete_seqs.push(c.creation_seq);
         evicted_count += 1;
@@ -511,7 +511,7 @@ fn set_canonical_cookie(
     var etld_plus_one: u8[..256] = [];
     get_canonical_cookie_effective_domain(c, etld_plus_one);
 
-    // 3. Collision resolution
+    // 3. Collision resolution & Expired Overwrite Handling
     let collision_idx = find_canonical_cookie_collision_index(jar, c);
     if collision_idx >= 0 {
         let existing = jar.cookies[collision_idx];
@@ -520,6 +520,15 @@ fn set_canonical_cookie(
         if would_insecure_overwrite_secure(existing, c, url_is_secure) {
             jar.rejected_security_count += 1;
             return false;
+        }
+
+        // Chromium Expired Overwrite: if new cookie is already expired (Max-Age=0 or past Expires),
+        // immediately remove the collided cookie from memory without keeping a dead record.
+        if is_cookie_expired(c, now_us) {
+            remove_at(jar.cookies, collision_idx);
+            jar.evicted_expired_count += 1;
+            jar.overwritten_count += 1;
+            return true;
         }
 
         // Allowed Overwrite:
@@ -531,6 +540,13 @@ fn set_canonical_cookie(
 
         jar.cookies[collision_idx] = c;
         jar.overwritten_count += 1;
+        return true;
+    }
+
+    // If new cookie is already expired on arrival and no existing cookie collided,
+    // do NOT allocate or push a dead record into jar.cookies, but record expired telemetry.
+    if is_cookie_expired(c, now_us) {
+        jar.evicted_expired_count += 1;
         return true;
     }
 
@@ -604,7 +620,10 @@ fn get_canonical_cookies_for_request(
     is_http_api: bool,
     partition_key: const u8[:],
     now_us: i64,
-    out: CanonicalCookie[>..]&
+    out: CanonicalCookie[>..]&,
+    is_same_site: bool = true,
+    is_top_level_navigation: bool = true,
+    is_safe_method: bool = true
 ) {
     for i in jar.cookies.len {
         var c = jar.cookies[i];
@@ -640,8 +659,13 @@ fn get_canonical_cookies_for_request(
             continue;
         }
 
+        // SameSite policy isolation (RFC 6265bis §5.3.7 & Lax+POST 2-minute window)
+        if !is_cookie_sendable_for_samesite(c, is_same_site, is_top_level_navigation, is_safe_method, now_us) {
+            continue;
+        }
+
         // Origin-Bound Cookies (OBC) port isolation
-        if !is_cookie_sendable_for_obc(c, scheme, port) {
+        if !is_cookie_sendable_for_obc(c, scheme, port, host) {
             continue;
         }
 
@@ -745,9 +769,20 @@ fn set_cookie_header(
     if !ok {
         return false;
     }
-    c.source_scheme = if u.is_secure { CookieSourceScheme.Secure } else { CookieSourceScheme.NonSecure };
-    c.source_port = u.port;
-    return set_canonical_cookie(jar, c, is_http_api, u.is_secure, now_us);
+    // Origin-Bound Cookies: adjust port and scheme for trustworthy non-crypto origins (localhost, 127.0.0.1)
+    adjust_origin_bound_cookies_on_insert(c, u.host[..], u.port, u.is_secure);
+    let effective_secure_channel = u.is_secure || is_trustworthy_non_crypto_host(u.host[..]);
+    return set_canonical_cookie(jar, c, is_http_api, effective_secure_channel, now_us);
+}
+
+// Safely inserts a pre-built CanonicalCookie through full security validation, collision overwrite and GC:
+fn set(jar: CanonicalCookieJar&, c: CanonicalCookie, now_us: i64) -> bool {
+    let is_sec = c.secure || (c.source_scheme == CookieSourceScheme.Secure);
+    return set_canonical_cookie(jar, c, true, is_sec, now_us);
+}
+
+fn insert(jar: CanonicalCookieJar&, c: CanonicalCookie, now_us: i64) -> bool {
+    return set(jar, c, now_us);
 }
 
 // Queries a cookie value by name for a specific request URL.
@@ -755,7 +790,10 @@ fn get(
     jar: CanonicalCookieJar&,
     req_url: const u8[:],
     name: const u8[:],
-    now_us: i64
+    now_us: i64,
+    is_same_site: bool = true,
+    is_top_level_navigation: bool = true,
+    is_safe_method: bool = true
 ) -> const u8[:] {
     let u = parse_canonical_cookie_url(req_url);
     for i in jar.cookies.len {
@@ -768,8 +806,9 @@ fn get(
             if !cookie_domain_match(u.host[..], c.domain[..]) { continue; }
         }
         if !cookie_path_match(u.path[..], c.path[..]) { continue; }
-        if c.secure && !u.is_secure { continue; }
-        if !is_cookie_sendable_for_obc(c, u.scheme[..], u.port) { continue; }
+        if c.secure && !u.is_secure && !is_trustworthy_non_crypto_host(u.host[..]) { continue; }
+        if !is_cookie_sendable_for_samesite(c, is_same_site, is_top_level_navigation, is_safe_method, now_us) { continue; }
+        if !is_cookie_sendable_for_obc(c, u.scheme[..], u.port, u.host[..]) { continue; }
 
         jar.cookies[i].last_access_utc = now_us;
         return jar.cookies[i].value[..];

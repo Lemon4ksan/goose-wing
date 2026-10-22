@@ -315,13 +315,28 @@ fn ::set_cookie_header(
     return wing::set_cookie_header(jar, req_url, set_cookie_raw, now_us, is_http_api);
 }
 
+fn ::canonical_cookie(name: const u8[:], val: const u8[:]) -> wing::CanonicalCookie {
+    return wing::canonical_cookie(name, val);
+}
+
+fn ::set(jar: wing::CanonicalCookieJar&, c: wing::CanonicalCookie, now_us: i64) -> bool {
+    return wing::set(jar, c, now_us);
+}
+
+fn ::insert(jar: wing::CanonicalCookieJar&, c: wing::CanonicalCookie, now_us: i64) -> bool {
+    return wing::insert(jar, c, now_us);
+}
+
 fn ::get(
     jar: wing::CanonicalCookieJar&,
     req_url: const u8[:],
     name: const u8[:],
-    now_us: i64
+    now_us: i64,
+    is_same_site: bool = true,
+    is_top_level_navigation: bool = true,
+    is_safe_method: bool = true
 ) -> const u8[:] {
-    return wing::get(jar, req_url, name, now_us);
+    return wing::get(jar, req_url, name, now_us, is_same_site, is_top_level_navigation, is_safe_method);
 }
 
 fn ::get(jar: const wing::CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {

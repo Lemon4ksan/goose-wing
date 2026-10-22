@@ -296,6 +296,28 @@ fn parse_canonical_set_cookie(
         };
     }
 
+    // Step 5: RFC 6265 §5.3 Step 5 & 6 Domain-attribute validation & PSL rejection
+    if !c.host_only {
+        // Step 5.1: If domain attribute value is a public suffix
+        if is_public_suffix_domain(c.domain[..]) {
+            if default_domain.len > 0 && eq_ascii_fold(c.domain[..], default_domain) {
+                // If domain attribute value matches the canonicalized request-host, convert to host-only
+                c.host_only = true;
+            } else {
+                // Ignore cookie entirely per RFC 6265 §5.3 Step 5
+                return c, CookieDeleteCause.UNKNOWN, false;
+            }
+        }
+
+        // Step 5.2: If canonicalized request-host does not domain-match domain-attribute-value
+        if !c.host_only && default_domain.len > 0 {
+            if !cookie_domain_match(default_domain, c.domain[..]) {
+                // Reject: host is not authorized to set cookie for this domain
+                return c, CookieDeleteCause.UNKNOWN, false;
+            }
+        }
+    }
+
     return c, CookieDeleteCause.UNKNOWN, true;
 }
 

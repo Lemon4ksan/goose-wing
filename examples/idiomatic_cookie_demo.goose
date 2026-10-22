@@ -121,6 +121,66 @@ fn main() {
     assert(imported_count == jar.cookies.len, "All cookies successfully imported");
     assert(fresh_jar.get("order_token") == "ord_live_7766", "Global getter retrieves imported cookie");
 
+    // 9. PSL and Domain-Match Validation on Ingestion (RFC 6265 §5.3 Step 5 & 6)
+    print("\n--- 9. PSL & Domain-Match Ingestion Validation ---");
+    let evil_cross = jar.set_cookie_header("https://evil.com/phish", "steal=1; Domain=bank.com", now_us);
+    assert(!evil_cross, "evil.com blocked from setting Domain=bank.com");
+
+    let evil_psl = jar.set_cookie_header("https://evil.co.uk/page", "track=1; Domain=co.uk", now_us);
+    assert(!evil_psl, "evil.co.uk blocked from setting public suffix Domain=co.uk");
+
+    let parent_sub = jar.set_cookie_header("https://example.com/", "test=1; Domain=sub.example.com", now_us);
+    assert(!parent_sub, "example.com blocked from setting child subdomain Domain=sub.example.com");
+
+    let valid_sub = jar.set_cookie_header("https://sub.example.com/", "auth=1; Domain=example.com", now_us);
+    assert(valid_sub, "sub.example.com allowed to set parent Domain=example.com");
+
+    // 10. Expired Overwrite Memory Hygiene (Max-Age=0)
+    print("\n--- 10. Expired Overwrite Memory Hygiene (Max-Age=0) ---");
+    let initial_count = jar.cookies.len;
+    // Set a temporary cookie
+    jar.set_cookie_header("https://api.crypto-dex.io/v1/", "to_expire=hello; Path=/v1", now_us);
+    assert(jar.cookies.len == initial_count + 1, "to_expire cookie added");
+    // Send Max-Age=0 to delete it
+    jar.set_cookie_header("https://api.crypto-dex.io/v1/", "to_expire=bye; Path=/v1; Max-Age=0", now_us);
+    assert(jar.cookies.len == initial_count, "Existing cookie immediately removed on Max-Age=0 overwrite");
+
+    // Send Max-Age=0 for a non-existent cookie (should NOT allocate dead record)
+    jar.set_cookie_header("https://api.crypto-dex.io/v1/", "ghost_cookie=none; Max-Age=0", now_us);
+    assert(jar.cookies.len == initial_count, "Non-existent expired cookie did NOT push dead record to jar");
+
+    // 11. Localhost Port Rewrite (80 -> 443) & Secure Context Recognition
+    print("\n--- 11. Localhost Port 80 -> 443 Rewrite & Secure Context ---");
+    let local_ok = jar.set_cookie_header(
+        "http://127.0.0.1:80/dev",
+        "__Host-dev_key=secret_123; Secure; Path=/",
+        now_us
+    );
+    assert(local_ok, "__Host- cookie accepted on http://127.0.0.1 as trustworthy secure context");
+    let dev_val = jar.get("http://127.0.0.1:80/dev", "__Host-dev_key", now_us);
+    assert(dev_val == "secret_123", "Retrieved __Host- cookie from http://127.0.0.1");
+
+    // 12. Standalone Builder & Safe Insert via jar.set(c, now_us)
+    print("\n--- 12. Standalone Builder & Safe Insert ---");
+    var standalone = wing::canonical_cookie("safe_token", "st_val_99");
+    standalone.with_domain("api.crypto-dex.io")
+              .with_path("/")
+              .with_secure()
+              .with_http_only();
+    let set_ok = jar.set(standalone, now_us);
+    assert(set_ok, "Standalone cookie safely inserted with full validation");
+    assert(jar.get("safe_token") == "st_val_99", "Retrieved safely inserted cookie");
+
+    // 13. SameSite Cross-Site Isolation
+    print("\n--- 13. SameSite Isolation in Querying ---");
+    // Cross-site subresource (is_same_site = false, is_top_level = false)
+    let strict_cross = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, false, false, true);
+    assert(strict_cross.len == 0, "SameSite=Strict cookie BLOCKED on cross-site subresource");
+
+    // Same-site request
+    let strict_same = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, true, true, true);
+    assert(strict_same == "secret_jwt_token_999", "SameSite=Strict cookie sent on same-site request");
+
     print("\n------------------------------------------------------------------");
     print("  IDIOMATIC GOOSE ADAPTATION VERIFIED WITH 100% SUCCESS!          ");
     print("------------------------------------------------------------------");
