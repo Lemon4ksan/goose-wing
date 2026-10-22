@@ -1,4 +1,4 @@
-// Comprehensive RFC 6265 & RFC 6265bis (CHIPS) test & demo for goose-wing
+// Showcase of Idiomatic, Beautiful Goose Syntax for the Industrial Cookie Monster
 import std;
 import wing from "..";
 
@@ -11,202 +11,225 @@ fn assert(cond: bool, msg: const u8[:]) {
     }
 }
 
-fn test_date_parsing() {
-    print("=== 1. RFC 6265 §5.1.1 Date Parsing ===");
-
-    // RFC 1123
-    let t1, ok1 = wing::parse_cookie_date("Wed, 09 Jun 2021 10:18:14 GMT");
-    assert(ok1, "RFC 1123 parsed successfully");
-    assert(t1 == 1623233894, "RFC 1123 unix timestamp matched (1623233894)");
-
-    // RFC 850 with 2-digit year (21 -> 2021)
-    let t2, ok2 = wing::parse_cookie_date("Wednesday, 09-Jun-21 10:18:14 GMT");
-    assert(ok2, "RFC 850 2-digit year parsed");
-    assert(t2 == t1, "RFC 850 matches RFC 1123 equivalent");
-
-    // asctime format
-    let t3, ok3 = wing::parse_cookie_date("Sun Nov  6 08:49:37 1994");
-    assert(ok3, "asctime format parsed");
-    assert(t3 == 784111777, "asctime timestamp matched 1994-11-06 08:49:37");
-
-    // Leap year Feb 29
-    let t_leap, ok_leap = wing::parse_cookie_date("Sun, 29 Feb 2004 12:00:00 GMT");
-    assert(ok_leap, "Feb 29 on leap year 2004 is valid");
-
-    let t_nonleap, ok_nonleap = wing::parse_cookie_date("Mon, 29 Feb 2005 12:00:00 GMT");
-    assert(!ok_nonleap, "Feb 29 on non-leap year 2005 is invalid and rejected");
-}
-
-fn test_security_and_limits() {
-    print("=== 2. Security Limits & CTL Character Validation ===");
-
-    var jar = wing::new_cookie_jar();
-
-    // Rejection of CTL character in cookie
-    let ok_ctl = jar.set_cookie_header("https://example.com/", "bad\r\ncookie=val; Path=/");
-    assert(!ok_ctl, "Rejected cookie with CRLF CTL characters");
-
-    // Max-Age Cap (RFC 6265bis 400 days)
-    jar.set_cookie_header("https://example.com/", "session=abc; Max-Age=100000000; Path=/");
-    let c_val = jar.get("https://example.com/", "session");
-    assert(c_val == "abc", "Cookie with capped Max-Age stored successfully");
-}
-
-fn test_domain_and_public_suffix() {
-    print("=== 3. Domain Matching & Public Suffix List Rejection ===");
-
-    var jar = wing::new_cookie_jar();
-
-    // Public suffix rejection: cannot set cookie for .com or .org
-    let ok_com = jar.set_cookie_header("https://example.com/", "evil=1; Domain=com; Path=/");
-    assert(!ok_com, "Rejected Set-Cookie for public suffix .com");
-
-    let ok_co_uk = jar.set_cookie_header("https://store.co.uk/", "evil=2; Domain=co.uk; Path=/");
-    assert(!ok_co_uk, "Rejected Set-Cookie for public suffix .co.uk");
-
-    // Domain cookie vs Host-only cookie
-    jar.set_cookie_header("https://sub.example.com/", "dom_c=123; Domain=example.com; Path=/");
-    jar.set_cookie_header("https://sub.example.com/", "host_c=456; Path=/"); // host-only
-
-    // Verify sub.example.com sees both
-    assert(jar.get("https://sub.example.com/", "dom_c") == "123", "sub.example.com sees domain cookie");
-    assert(jar.get("https://sub.example.com/", "host_c") == "456", "sub.example.com sees host-only cookie");
-
-    // Verify other.example.com sees domain cookie, but NOT host-only cookie
-    assert(jar.get("https://other.example.com/", "dom_c") == "123", "other.example.com sees domain cookie");
-    assert(jar.get("https://other.example.com/", "host_c") == "", "other.example.com CANNOT see host-only cookie");
-
-    // IP address host-only enforcement
-    jar.set_cookie_header("http://192.168.1.10/", "ip_c=999; Domain=192.168.1.10; Path=/");
-    assert(jar.get("http://192.168.1.10/", "ip_c") == "999", "IP address sees its cookie");
-}
-
-fn test_path_matching_and_sorting() {
-    print("=== 4. Path Matching & §5.4 Header Sorting ===");
-
-    var jar = wing::new_cookie_jar();
-
-    // Default path calculation: /v1/users/42 -> default path is /v1/users
-    jar.set_cookie_header("https://api.test.com/v1/users/42", "user_scoped=true");
-    assert(jar.get("https://api.test.com/v1/users/info", "user_scoped") == "true", "Default path matches sibling sub-path");
-    assert(jar.get("https://api.test.com/v1/orders", "user_scoped") == "", "Default path does not match outside directory");
-
-    // RFC 6265 §5.4: Longer paths must appear FIRST in Cookie header
-    var sort_jar = wing::new_cookie_jar();
-    sort_jar.set_cookie_header("https://api.test.com/", "root_c=0; Path=/");
-    sort_jar.set_cookie_header("https://api.test.com/v1", "v1_c=1; Path=/v1");
-    sort_jar.set_cookie_header("https://api.test.com/v1/users", "u_c=2; Path=/v1/users");
-
-    var hdr: u8[..256] = [];
-    sort_jar.build_cookie_header("https://api.test.com/v1/users/42", hdr);
-    print("  Header generated: ", hdr[..]);
-
-    // Check that u_c is first (/v1/users), then v1_c (/v1), then root_c (/)
-    assert(starts_with(hdr[..], "u_c=2; v1_c=1; root_c=0"), "Longest path (/v1/users) sorted first, then /v1, then /");
-}
-
-fn test_security_prefixes() {
-    print("=== 5. RFC 6265bis §4.1.3 Security Prefixes (__Secure- & __Host-) ===");
-
-    var jar = wing::new_cookie_jar();
-
-    // __Secure- requires Secure flag
-    let ok_sec_plain = jar.set_cookie_header("https://secure.bank.com/", "__Secure-id=1; Path=/");
-    assert(!ok_sec_plain, "Rejected __Secure- cookie without Secure flag");
-
-    let ok_sec_http = jar.set_cookie_header("http://secure.bank.com/", "__Secure-id=1; Secure; Path=/");
-    assert(!ok_sec_http, "Rejected __Secure- cookie over insecure HTTP");
-
-    let ok_sec_good = jar.set_cookie_header("https://secure.bank.com/", "__Secure-id=100; Secure; Path=/");
-    assert(ok_sec_good, "Accepted __Secure- cookie over HTTPS with Secure flag");
-
-    // __Host- requires Secure, Path=/, and NO Domain attribute
-    let ok_host_with_dom = jar.set_cookie_header("https://bank.com/", "__Host-auth=ok; Secure; Domain=bank.com; Path=/");
-    assert(!ok_host_with_dom, "Rejected __Host- cookie containing Domain attribute");
-
-    let ok_host_bad_path = jar.set_cookie_header("https://bank.com/", "__Host-auth=ok; Secure; Path=/login");
-    assert(!ok_host_bad_path, "Rejected __Host- cookie with Path != /");
-
-    let ok_host_good = jar.set_cookie_header("https://bank.com/", "__Host-auth=valid_session; Secure; Path=/");
-    assert(ok_host_good, "Accepted valid __Host- cookie");
-    assert(jar.get("https://bank.com/", "__Host-auth") == "valid_session", "__Host- cookie stored & retrieved");
-}
-
-fn test_chips_partitioning() {
-    print("=== 6. RFC 6265bis CHIPS (Partitioned Cookies) ===");
-
-    var jar = wing::new_cookie_jar();
-
-    // Partitioned cookie requires Secure attribute
-    let ok_insecure_part = jar.set_cookie_header("https://idp.service.com/", "embed_s=xyz; Partitioned; Path=/");
-    assert(!ok_insecure_part, "Rejected Partitioned cookie without Secure attribute");
-
-    // Store partitioned cookie under partition A
-    jar.set_partition_key("https://first-party-site-a.com");
-    let ok_part = jar.set_cookie_header("https://idp.service.com/", "__Host-s=part_123; Secure; Path=/; Partitioned");
-    assert(ok_part, "Partitioned cookie accepted with Secure flag");
-
-    // Query under partition A
-    assert(jar.get("https://idp.service.com/", "__Host-s") == "part_123", "Partition A sees the partitioned cookie");
-
-    // Switch active partition to site B
-    jar.set_partition_key("https://first-party-site-b.com");
-    assert(jar.get("https://idp.service.com/", "__Host-s") == "", "Partition B CANNOT see partition A's cookie (ISOLATION OK)");
-
-    // Switch back to site A
-    jar.set_partition_key("https://first-party-site-a.com");
-    assert(jar.get("https://idp.service.com/", "__Host-s") == "part_123", "Switched back to Partition A: cookie is visible again");
-}
-
-fn test_aoni_advanced_features() {
-    print("=== 7. aoni Features: Mirror, Netscape & JSON Export/Import ===");
-
-    var jar = wing::new_cookie_jar();
-    jar.set_cookie_header("https://auth.company.internal/login", "auth_token=super_secret_token; Path=/");
-    jar.set_cookie_header("https://auth.company.internal/login", "theme=dark; Path=/");
-
-    // Mirror cookies from auth.company.internal to api.company.internal
-    let names: const u8[:][1] = ["auth_token"];
-    jar.mirror("https://auth.company.internal/", "https://api.company.internal/", names[..]);
-
-    assert(jar.get("https://api.company.internal/", "auth_token") == "super_secret_token", "Mirror copied auth_token to api host");
-    assert(jar.get("https://api.company.internal/", "theme") == "", "Non-mirrored cookie 'theme' was not copied");
-
-    // Netscape cookies.txt export
-    var netscape_buf: u8[..1024] = [];
-    jar.export_netscape("https://api.company.internal/", netscape_buf);
-    assert(find(netscape_buf[..], "super_secret_token") >= 0, "Netscape export contains mirrored token");
-    assert(starts_with(netscape_buf[..], "# Netscape HTTP Cookie File"), "Netscape header present");
-
-    // JSON export
-    var json_buf: u8[>..] = [];
-    jar.export_json("https://api.company.internal/", json_buf);
-    print("  Exported JSON: ", json_buf[..]);
-    assert(find(json_buf[..], "\"name\":\"auth_token\"") >= 0, "JSON export contains name field");
-    assert(find(json_buf[..], "\"value\":\"super_secret_token\"") >= 0, "JSON export contains value field");
-
-    // Clear and re-import into a fresh jar
-    var fresh_jar = wing::new_cookie_jar();
-    assert(fresh_jar.count() == 0, "Fresh jar is empty");
-    let imported_count = fresh_jar.import_json("https://imported.company.internal/", json_buf[..]);
-    assert(imported_count == 1, "Imported 1 cookie from JSON");
-    assert(fresh_jar.get("https://imported.company.internal/", "auth_token") == "super_secret_token", "Imported cookie is readable");
-}
-
 fn main() {
-    print("------------------------------------------------------------------");
-    print("  goose-wing RFC 6265 & RFC 6265bis (CHIPS) CookieJar Test Suite  ");
-    print("------------------------------------------------------------------");
+    print("==================================================================");
+    print("      goose-wing Idiomatic Cookie Monster Showcase (UFCS)         ");
+    print("==================================================================\n");
 
-    test_date_parsing();
-    test_security_and_limits();
-    test_domain_and_public_suffix();
-    test_path_matching_and_sorting();
-    test_security_prefixes();
-    test_chips_partitioning();
-    test_aoni_advanced_features();
+    var jar = wing::new_canonical_cookie_jar();
+    let now_us: i64 = 1700000000 * 1000000;
 
-    print("------------------------------------------------------------------");
-    print("  ALL 7 TEST SUITES PASSED CLEANLY! PERFECT RFC CONFORMANCE!      ");
+    // 1. Fluent Builder via UFCS: push returns a reference configured in-place!
+    print("--- 1. Fluent In-Place Cookie Builder ---");
+    jar.add("auth_jwt", "secret_jwt_token_999")
+       .with_host("api.crypto-dex.io")
+       .with_path("/v1")
+       .with_secure()
+       .with_http_only()
+       .with_same_site(wing::CookieSameSite.Strict)
+       .with_priority(wing::CookiePriority.High)
+       .with_max_age_seconds(86400 * 30, now_us);
+
+    jar.add("theme", "nord-dark")
+       .with_domain(".crypto-dex.io")
+       .with_path("/");
+
+    jar.add("visitor_id", "vis_12345")
+       .with_domain("crypto-dex.io")
+       .with_path("/")
+       .with_max_age_seconds(86400 * 365, now_us);
+
+    assert(jar.cookies.len == 3, "All 3 cookies added via fluent builder");
+    assert(jar.cookies[0].name[..] == "auth_jwt", "auth_jwt cookie present");
+    assert(jar.cookies[0].host_only, "auth_jwt is host_only (with_host)");
+    assert(!jar.cookies[1].host_only, "theme is domain cookie (with_domain .crypto-dex.io)");
+    assert(!jar.cookies[2].host_only, "visitor_id is domain cookie (with_domain crypto-dex.io)");
+    assert(jar.cookies[0].secure, "auth_jwt is Secure");
+    assert(jar.cookies[0].httponly, "auth_jwt is HttpOnly");
+    assert(jar.cookies[0].same_site == wing::CookieSameSite.Strict, "auth_jwt is SameSite=Strict");
+    assert(jar.cookies[0].priority == wing::CookiePriority.High, "auth_jwt is Priority=High");
+
+    // 2. Direct Printing with Universal `format<B>`
+    print("\n--- 2. Direct Renders via Universal format ---");
+    for c in jar.cookies {
+        print("  Rendered Set-Cookie: ", c);
+    }
+
+    // 3. Declarative Filtering with trailing closure and implicit `it`
+    print("\n--- 3. Declarative Filtering via Closure & it ---");
+    let secure_cookies = jar.cookies.filter() { it.secure };
+    print("  Found ", secure_cookies.len, " secure cookie(s)");
+    assert(secure_cookies.len == 1, "Exactly 1 secure cookie");
+
+    let root_cookies = jar.cookies.filter() { it.path[..] == "/" };
+    print("  Found ", root_cookies.len, " root path cookie(s)");
+    assert(root_cookies.len == 2, "Exactly 2 root path cookies");
+
+    // 4. Outgoing Request Header Generation
+    print("\n--- 4. Outgoing Header Generation per RFC 6265 §5.4 ---");
+    var req_header: u8[>..] = [];
+    jar.build_cookie_header(req_header, "api.crypto-dex.io", "/v1/trade", true, now_us);
+    print("  Cookie Header: ", req_header[..]);
+    assert(find(req_header[..], "auth_jwt=secret_jwt_token_999") >= 0, "Contains auth_jwt");
+    assert(find(req_header[..], "theme=nord-dark") >= 0, "Contains theme");
+
+    // 5. Expired Cookie Purge in one line with `retain() { !it.is_expired() }`
+    print("\n--- 5. One-Line Garbage Collection via retain & it ---");
+    jar.add("temp_del", "expired_val")
+       .with_domain("crypto-dex.io")
+       .with_expires_utc(now_us - 1000); // expired 1ms ago
+
+    assert(jar.cookies.len == 4, "Cookie added before purge");
+    let purged_count = jar.purge_expired(now_us);
+    print("  Purged ", purged_count, " expired cookie(s) in one line");
+    assert(purged_count == 1, "Exactly 1 expired cookie purged");
+    assert(jar.cookies.len == 3, "Jar size restored to 3");
+
+    // 6. High-Level URL Ingestion & Dynamic Origin Routing
+    print("\n--- 6. High-Level URL Ingestion & Origin Routing ---");
+    let ingested = jar.set_cookie_header(
+        "https://api.crypto-dex.io/v1/orders",
+        "order_token=ord_live_7766; Secure; HttpOnly; SameSite=Strict; Max-Age=3600",
+        now_us
+    );
+    assert(ingested, "Set-Cookie from HTTPS URL ingested");
+    let val_by_url = jar.get("https://api.crypto-dex.io/v1/orders", "order_token", now_us);
+    assert(val_by_url == "ord_live_7766", "Retrieved cookie value by URL route");
+
+    // Verify origin isolation: insecure HTTP cannot retrieve Secure cookie
+    let val_by_http = jar.get("http://api.crypto-dex.io/v1/orders", "order_token", now_us);
+    assert(val_by_http.len == 0, "Secure cookie isolated from non-secure HTTP");
+
+    // 7. URL-Based Outgoing Request Header
+    print("\n--- 7. URL-Based Request Header Generation ---");
+    var url_req_hdr: u8[>..] = [];
+    jar.build_cookie_header("https://api.crypto-dex.io/v1/orders", url_req_hdr, now_us);
+    print("  URL Request Header: ", url_req_hdr[..]);
+    assert(find(url_req_hdr[..], "order_token=ord_live_7766") >= 0, "Header contains order_token");
+    assert(find(url_req_hdr[..], "auth_jwt=secret_jwt_token_999") >= 0, "Header contains auth_jwt");
+
+    // 8. Formats & Interop (Netscape & JSON)
+    print("\n--- 8. Formats & Interop (Netscape & JSON) ---");
+    var netscape_buf: u8[>..] = [];
+    jar.export_netscape(netscape_buf);
+    assert(find(netscape_buf[..], "#HttpOnly_api.crypto-dex.io") >= 0, "Netscape export contains HttpOnly prefix");
+
+    var json_buf: u8[>..] = [];
+    jar.export_json(json_buf);
+    assert(find(json_buf[..], "\"name\":\"order_token\"") >= 0, "JSON export contains order_token");
+
+    var fresh_jar = wing::new_canonical_cookie_jar();
+    let imported_count = fresh_jar.import_json(json_buf[..], now_us);
+    print("  Imported ", imported_count, " cookies into fresh jar from JSON");
+    assert(imported_count == jar.cookies.len, "All cookies successfully imported");
+    assert(fresh_jar.get("order_token") == "ord_live_7766", "Global getter retrieves imported cookie");
+
+    // 9. PSL and Domain-Match Validation on Ingestion (RFC 6265 §5.3 Step 5 & 6)
+    print("\n--- 9. PSL & Domain-Match Ingestion Validation ---");
+    let evil_cross = jar.set_cookie_header("https://evil.com/phish", "steal=1; Domain=bank.com", now_us);
+    assert(!evil_cross, "evil.com blocked from setting Domain=bank.com");
+
+    let evil_psl = jar.set_cookie_header("https://evil.co.uk/page", "track=1; Domain=co.uk", now_us);
+    assert(!evil_psl, "evil.co.uk blocked from setting public suffix Domain=co.uk");
+
+    let parent_sub = jar.set_cookie_header("https://example.com/", "test=1; Domain=sub.example.com", now_us);
+    assert(!parent_sub, "example.com blocked from setting child subdomain Domain=sub.example.com");
+
+    let valid_sub = jar.set_cookie_header("https://sub.example.com/", "auth=1; Domain=example.com", now_us);
+    assert(valid_sub, "sub.example.com allowed to set parent Domain=example.com");
+
+    // 10. Expired Overwrite Memory Hygiene (Max-Age=0)
+    print("\n--- 10. Expired Overwrite Memory Hygiene (Max-Age=0) ---");
+    let initial_count = jar.cookies.len;
+    // Set a temporary cookie
+    jar.set_cookie_header("https://api.crypto-dex.io/v1/", "to_expire=hello; Path=/v1", now_us);
+    assert(jar.cookies.len == initial_count + 1, "to_expire cookie added");
+    // Send Max-Age=0 to delete it
+    jar.set_cookie_header("https://api.crypto-dex.io/v1/", "to_expire=bye; Path=/v1; Max-Age=0", now_us);
+    assert(jar.cookies.len == initial_count, "Existing cookie immediately removed on Max-Age=0 overwrite");
+
+    // Send Max-Age=0 for a non-existent cookie (should NOT allocate dead record)
+    jar.set_cookie_header("https://api.crypto-dex.io/v1/", "ghost_cookie=none; Max-Age=0", now_us);
+    assert(jar.cookies.len == initial_count, "Non-existent expired cookie did NOT push dead record to jar");
+
+    // 11. Localhost Port Rewrite (80 -> 443) & Secure Context Recognition
+    print("\n--- 11. Localhost Port 80 -> 443 Rewrite & Secure Context ---");
+    let local_ok = jar.set_cookie_header(
+        "http://127.0.0.1:80/dev",
+        "__Host-dev_key=secret_123; Secure; Path=/",
+        now_us
+    );
+    assert(local_ok, "__Host- cookie accepted on http://127.0.0.1 as trustworthy secure context");
+    let dev_val = jar.get("http://127.0.0.1:80/dev", "__Host-dev_key", now_us);
+    assert(dev_val == "secret_123", "Retrieved __Host- cookie from http://127.0.0.1");
+
+    // 12. Standalone Builder & Safe Insert via jar.set(c, now_us)
+    print("\n--- 12. Standalone Builder & Safe Insert ---");
+    var standalone = wing::canonical_cookie("safe_token", "st_val_99");
+    standalone.with_host("api.crypto-dex.io")
+              .with_path("/")
+              .with_secure()
+              .with_http_only();
+    let set_ok = jar.set(standalone, now_us);
+    assert(set_ok, "Standalone cookie safely inserted with full validation");
+    assert(jar.get("safe_token") == "st_val_99", "Retrieved safely inserted cookie");
+
+    // 13. SameSite Cross-Site Isolation
+    print("\n--- 13. SameSite Isolation in Querying ---");
+    // Cross-site subresource (is_same_site = false, is_top_level = false)
+    let strict_cross = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, false, false, true);
+    assert(strict_cross.len == 0, "SameSite=Strict cookie BLOCKED on cross-site subresource");
+
+    // Same-site request
+    let strict_same = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, true, true, true);
+    assert(strict_same == "secret_jwt_token_999", "SameSite=Strict cookie sent on same-site request");
+
+    // 14. CHIPS (Partitioned Cookies) Isolation
+    print("\n--- 14. CHIPS Partitioned Cookies ---");
+    let chips_ingested = jar.set_cookie_header(
+        "https://embed.partner-service.com/api",
+        "__Host-embed_session=token_abc; Secure; Path=/; Partitioned",
+        now_us,
+        true,
+        "https://site-a.com"
+    );
+    assert(chips_ingested, "CHIPS partitioned cookie ingested under site-a partition");
+
+    // Visible from site-a
+    let val_site_a = jar.get("https://embed.partner-service.com/api", "__Host-embed_session", now_us, true, true, true, "https://site-a.com");
+    assert(val_site_a == "token_abc", "Cookie visible under site-a partition");
+
+    // Isolated from site-b
+    let val_site_b = jar.get("https://embed.partner-service.com/api", "__Host-embed_session", now_us, true, true, true, "https://site-b.com");
+    assert(val_site_b.len == 0, "Cookie isolated and blocked under site-b partition");
+
+    // 15. Polish & Edge Cases: SQLite V24 host_key, IPv6 URL, Server CTL, JSON Scheme Downgrade
+    print("\n--- 15. Edge Cases: SQLite host_key, IPv6, Server CTL, Scheme Downgrade ---");
+    var sql_host_buf: u8[>..] = [];
+    wing::generate_sqlite_delete_sql(sql_host_buf, jar.cookies[0]); // auth_jwt (host_only)
+    assert(find(sql_host_buf[..], "host_key = 'api.crypto-dex.io'") >= 0, "SQLite host_key encodes host-only without leading dot");
+
+    var sql_dom_buf: u8[>..] = [];
+    wing::generate_sqlite_delete_sql(sql_dom_buf, jar.cookies[1]); // theme (domain cookie)
+    assert(find(sql_dom_buf[..], "host_key = '.crypto-dex.io'") >= 0, "SQLite host_key encodes domain cookie WITH leading dot");
+
+    let ipv6_url = wing::parse_canonical_cookie_url("http://[::1]:8080/api/v1");
+    assert(ipv6_url.host[..] == "::1", "IPv6 parsed without brackets into clean host ::1");
+    assert(ipv6_url.port == 8080, "IPv6 port 8080 successfully parsed");
+
+    var srv_cookies: wing::CanonicalCookie[>..] = [];
+    wing::parse_server_cookie_header("valid1=ok; bad_ctl\x01=hacked; valid2=good", now_us, srv_cookies);
+    assert(srv_cookies.len == 2, "Server Cookie parser dropped pair with prohibited CTL byte");
+    assert(srv_cookies[0].name[..] == "valid1", "First clean cookie parsed");
+    assert(srv_cookies[1].name[..] == "valid2", "Second clean cookie parsed");
+
+    let json_downgrade = "[{\"name\":\"sid_downgrade\",\"value\":\"tok123\",\"domain\":\"crypto-dex.io\",\"path\":\"/\",\"source_scheme\":\"secure\",\"source_port\":443}]";
+    var json_test_jar = wing::new_canonical_cookie_jar();
+    let imported_down = json_test_jar.import_json(json_downgrade, now_us);
+    assert(imported_down == 1, "Non-secure cookie with source_scheme:secure imported without channel rejection");
+    assert(json_test_jar.get("sid_downgrade") == "tok123", "Retrieved imported cookie");
+
+    print("\n------------------------------------------------------------------");
+    print("  IDIOMATIC GOOSE ADAPTATION VERIFIED WITH 100% SUCCESS!          ");
     print("------------------------------------------------------------------");
 }

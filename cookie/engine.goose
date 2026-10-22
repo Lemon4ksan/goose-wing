@@ -108,6 +108,7 @@ fn get(
     is_same_site: bool = true,
     is_top_level_navigation: bool = true,
     is_safe_method: bool = true,
+    partition_key: const u8[:] = ""
 ) -> const u8[:] {
     let parsed_url = parse_canonical_cookie_url(req_url);
     for cookie_idx in jar.cookies.len {
@@ -117,7 +118,7 @@ fn get(
         if !cookie_matches_request(
             cookie_val, parsed_url.host[..], parsed_url.path[..],
             parsed_url.scheme[..], parsed_url.port, parsed_url.is_secure,
-            true, "", is_same_site, is_top_level_navigation, is_safe_method, now_us
+            true, partition_key, is_same_site, is_top_level_navigation, is_safe_method, now_us
         ) {
             continue;
         }
