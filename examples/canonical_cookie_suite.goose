@@ -1,4 +1,4 @@
-// Master Clean Room Test Suite for Industrial HTTP Cookie Jar
+// Test Suite for Industrial HTTP Cookie Jar
 // Combining Steps 1 through 6 into a single unified verification suite
 // Conforming to Chromium CookieMonster & IETF RFC 6265 / RFC 6265bis specifications.
 import std;

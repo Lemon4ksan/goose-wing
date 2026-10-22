@@ -4,8 +4,9 @@ namespace wing;
 import std;
 import json;
 
-// L4-L5: Core primitives (Time & Duration, StopWatch, Layout Engine)
+// L4-L5: Core primitives (Time & Duration, StopWatch, Layout Engine, Test Framework)
 import core.time;
+import core.test;
 
 // L6-L7: Application-layer DX (Profiles, CookieJar, Unified Request/Response/Session)
 import cookie.constants;
