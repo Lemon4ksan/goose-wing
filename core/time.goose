@@ -1,6 +1,6 @@
 // Standard Date & Time library for Goose (candidate for std::time).
-// Provides Duration arithmetic, monotonic Stopwatch & Deadline, Howard Hinnant's
-// civil calendar math, RFC 3339 / ISO 8601 and RFC 9110 HTTP-Date codecs.
+// Provides nanosecond Duration arithmetic, monotonic Stopwatch & Deadline,
+// Howard Hinnant's O(1) civil calendar math, RFC 3339 / ISO 8601 and RFC 9110 HTTP-Date codecs.
 namespace wing;
 
 import std;
@@ -139,14 +139,14 @@ fn weekday_short_name(weekday_val: Weekday) -> const u8[:] {
 }
 
 // --- Duration: Nanosecond-precision Interval ---
-// In Goose, Duration automatically supports memberwise arithmetic:
-// dur1 + dur2, dur1 - dur2, dur * factor, dur / factor, -dur, +=, -=, *=, /=.
 
+// Represents a signed time interval with nanosecond resolution (~±292 years).
+// Goose automatically provides memberwise struct arithmetic:
+// dur1 + dur2, dur1 - dur2, dur * factor, dur / factor, -dur, +=, -=, *=, /=.
 struct Duration {
     nanos: i64 = 0,
 }
 
-// Constructors
 fn nanos(nanos_count: i64) -> Duration { return Duration { nanos: nanos_count }; }
 fn micros(micros_count: i64) -> Duration { return Duration { nanos: micros_count * MICROSECOND }; }
 fn millis(millis_count: i64) -> Duration { return Duration { nanos: millis_count * MILLISECOND }; }
@@ -156,14 +156,12 @@ fn hours(hours_count: i64) -> Duration { return Duration { nanos: hours_count * 
 fn days(days_count: i64) -> Duration { return Duration { nanos: days_count * DAY }; }
 fn weeks(weeks_count: i64) -> Duration { return Duration { nanos: weeks_count * WEEK }; }
 
-// Long-name constructor aliases
 fn nanoseconds(nanos_count: i64) -> Duration { return nanos(nanos_count); }
 fn microseconds(micros_count: i64) -> Duration { return micros(micros_count); }
 fn milliseconds(millis_count: i64) -> Duration { return millis(millis_count); }
 fn seconds(secs_count: i64) -> Duration { return secs(secs_count); }
 fn minutes(mins_count: i64) -> Duration { return mins(mins_count); }
 
-// Accessors
 fn as_nanos(dur: Duration) -> i64 { return dur.nanos; }
 fn as_micros(dur: Duration) -> i64 { return dur.nanos / MICROSECOND; }
 fn as_millis(dur: Duration) -> i64 { return dur.nanos / MILLISECOND; }
@@ -175,7 +173,6 @@ fn as_secs_f64(dur: Duration) -> f64 { return dur.nanos / 1000000000.0; }
 fn as_mins_f64(dur: Duration) -> f64 { return dur.nanos / (MINUTE as f64); }
 fn as_hours_f64(dur: Duration) -> f64 { return dur.nanos / (HOUR as f64); }
 
-// Method-syntax aliases
 fn nanoseconds(dur: Duration) -> i64 { return as_nanos(dur); }
 fn microseconds(dur: Duration) -> i64 { return as_micros(dur); }
 fn milliseconds(dur: Duration) -> i64 { return as_millis(dur); }
@@ -183,35 +180,35 @@ fn seconds(dur: Duration) -> f64 { return as_secs_f64(dur); }
 fn minutes(dur: Duration) -> f64 { return as_mins_f64(dur); }
 fn hours(dur: Duration) -> f64 { return as_hours_f64(dur); }
 
-// Arithmetic (in addition to Goose native memberwise +, -, *, /, -dur)
 fn add(dur1: Duration, dur2: Duration) -> Duration { return dur1 + dur2; }
 fn sub(dur1: Duration, dur2: Duration) -> Duration { return dur1 - dur2; }
 fn mul(dur: Duration, factor: i64) -> Duration { return dur * factor; }
 fn div(dur: Duration, factor: i64) -> Duration { return dur / factor; }
 fn abs(dur: Duration) -> Duration { return Duration { nanos: if dur.nanos < 0 { -dur.nanos } else { dur.nanos } }; }
 
-// Goose stdlib naming conventions (no is_ prefix)
 fn zero(dur: Duration) -> bool { return dur.nanos == 0; }
 fn negative(dur: Duration) -> bool { return dur.nanos < 0; }
 fn positive(dur: Duration) -> bool { return dur.nanos > 0; }
 
-// Compatibility aliases
 fn is_zero(dur: Duration) -> bool { return zero(dur); }
 fn is_negative(dur: Duration) -> bool { return negative(dur); }
 fn is_positive(dur: Duration) -> bool { return positive(dur); }
 
-// Comparisons & sorting hook (std::sort automatically uses compare)
+// Three-way comparison hook (-1 for less, 0 for equal, +1 for greater).
+// std::sort automatically utilizes this hook.
 fn compare(dur1: Duration, dur2: Duration) -> i64 {
     if dur1.nanos < dur2.nanos { return -1; }
     if dur1.nanos > dur2.nanos { return 1; }
     return 0;
 }
 
+// Truncates duration to a multiple of step_dur (towards zero). Returns dur unchanged if step_dur <= 0.
 fn truncate(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
     return Duration { nanos: dur.nanos - (dur.nanos % step_dur.nanos) };
 }
 
+// Rounds duration to the nearest multiple of step_dur (half rounds away from zero).
 fn round(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
     let is_neg = dur.nanos < 0;
@@ -245,7 +242,8 @@ fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
     }
 }
 
-// Universal format hook for Duration: used by print, str, format
+// Formats duration into human-readable shorthand (e.g. "0s", "250ms", "1.5s", "2h45m").
+// Hook used automatically by print(dur), str(dur), and array printing.
 fn format<B>(out: B&, dur: Duration) {
     if dur.nanos == 0 {
         out.append("0s");
@@ -303,7 +301,8 @@ fn format<B>(out: B&, dur: Duration) {
     }
 }
 
-// Parses duration string like "300ms", "-1.5h", "2h45m", "10s", "100ns"
+// Parses duration string (e.g. "300ms", "-1.5h", "2h45m", "10s", "100ns"). Zero-alloc.
+// Supported units: ns, us/µs, ms, s, m, h, d, w.
 fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     let text = trim(raw_str);
     guard text.len > 0 else { return Duration { 0 }, false; }
@@ -399,6 +398,8 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
 
 // --- Monotonic Benchmarking & Concurrency Primitives ---
 
+// High-resolution monotonic stopwatch backed by the system performance counter.
+// Immune to wall-clock adjustments, NTP slew, and leap seconds.
 struct Stopwatch {
     start_ns: i64 = 0,
 }
@@ -418,6 +419,7 @@ fn restart(watch: Stopwatch&) -> Duration {
     return elapsed_dur;
 }
 
+// Monotonic timeout tracker for network deadlines and cancellation tokens.
 struct Deadline {
     target_mono_ns: i64 = 0,
     has_deadline: bool = false,
@@ -453,7 +455,10 @@ fn sleep(dur: Duration) {
     }
 }
 
-// --- Howard Hinnant Civil Calendar Algorithm (O(1), zero-alloc) ---
+// --- Howard Hinnant Civil Calendar Algorithm ---
+// Converts between proleptic Gregorian calendar (year, month, day) and days since
+// Unix epoch (1970-01-01) in O(1) time without loops, lookup tables, or heap allocations.
+// Reference: Howard Hinnant, "chrono-Compatible Low-Level Date Algorithms" (2013).
 
 fn days_to_civil(days_since_epoch: i64) -> i64, i64, i64 {
     var shifted_days = days_since_epoch + 719468;
@@ -500,10 +505,12 @@ fn days_in_month(year_val: i64, month_val: i64) -> i64 {
 
 // --- Time: Point in Time (Wall-Clock Instant + Civil Projection) ---
 
+// Represents an absolute instant in time with an explicit timezone offset.
+// Monotonic time is strictly separated into Stopwatch and Deadline.
 struct Time {
-    wall_sec: i64 = 0,    // seconds since Unix epoch 1970-01-01 00:00:00 UTC
-    nsec: i32 = 0,        // nanoseconds [0, 999999999]
-    tz_offset: i32 = 0,   // seconds east of UTC (0 = UTC)
+    wall_sec: i64 = 0,    // Seconds elapsed since Unix epoch 1970-01-01 00:00:00 UTC.
+    nsec: i32 = 0,        // Subsecond fractional nanoseconds in range [0, 999_999_999].
+    tz_offset: i32 = 0,   // Seconds east of UTC (e.g. +10800 for UTC+3, -18000 for UTC-5; 0 = UTC).
 }
 
 fn now() -> Time {
@@ -555,7 +562,7 @@ fn date(year_val: i64, month_num: i64, day_val: i64, hour_val: i64 = 0, min_val:
     return date(year_val, month_from_number(month_num), day_val, hour_val, min_val, sec_val, nsec_val, tz_offset);
 }
 
-// Civil decomposition
+// Decomposes local instant into civil components: year, month, day, hour, minute, second.
 fn civil_parts(time_val: Time) -> i64, i64, i64, i64, i64, i64 {
     let local_secs = time_val.wall_sec + time_val.tz_offset;
     var days_count = local_secs / 86400;
@@ -637,7 +644,8 @@ fn sub_duration(time_val: Time, dur: Duration) -> Time {
     return sub(time_val, dur);
 }
 
-// Correct month & year calendar arithmetic with end-of-month clamping (e.g. Jan 31 + 1 month = Feb 28/29)
+// Adds months with end-of-month clamping (e.g. Jan 31 + 1 month -> Feb 28/29).
+// Unlike Go's AddDate, this never accidentally overflows into a subsequent month.
 fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
     let current_year, current_month, current_day, hour_val, min_val, sec_val = civil_parts(time_val);
     var new_year = current_year;
@@ -656,6 +664,7 @@ fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
     };
 }
 
+// Adds years with leap-day clamping (e.g. Feb 29, 2024 + 1 year -> Feb 28, 2025).
 fn add_years_clamped(time_val: Time, years_count: i64) -> Time {
     return add_months_clamped(time_val, years_count * 12);
 }
@@ -685,7 +694,8 @@ fn until(time_val: Time) -> Duration {
     return time_val.sub(now());
 }
 
-// Comparisons & sorting hook (std::sort automatically uses compare)
+// Three-way comparison hook (-1 for earlier, 0 for equal, +1 for later).
+// std::sort automatically utilizes this hook.
 fn compare(time_val: Time, other_time: Time) -> i64 {
     if time_val.wall_sec != other_time.wall_sec {
         return if time_val.wall_sec < other_time.wall_sec { -1 } else { 1 };
@@ -708,6 +718,7 @@ fn after(time_val: Time, other_time: Time) -> bool {
     return compare(time_val, other_time) > 0;
 }
 
+// Truncates time to a multiple of dur since Unix epoch. Returns time_val unchanged if dur <= 0.
 fn truncate(time_val: Time, dur: Duration) -> Time {
     if dur.nanos <= 0 { return time_val; }
     let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
@@ -718,6 +729,7 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
     return truncated_time;
 }
 
+// Rounds time to the nearest multiple of dur since Unix epoch (half rounds up).
 fn round(time_val: Time, dur: Duration) -> Time {
     if dur.nanos <= 0 { return time_val; }
     let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
@@ -755,7 +767,7 @@ fn tz_offset(time_val: Time) -> i32 {
     return time_val.tz_offset;
 }
 
-// Calendar Boundaries
+// Civil Calendar Boundaries
 fn start_of_day(time_val: Time) -> Time {
     let year_val, month_val, day_val, _, _, _ = civil_parts(time_val);
     return date(year_val, month_from_number(month_val), day_val, 0, 0, 0, 0, time_val.tz_offset);
@@ -787,8 +799,6 @@ fn end_of_year(time_val: Time) -> Time {
     return date(year_val, Month.December, 31, 23, 59, 59, 999999999, time_val.tz_offset);
 }
 
-// --- High-Speed Formatter Helpers ---
-
 inline fn append_2d<B>(out: B&, value: i64) {
     let clamped_val = if value < 0 { 0 } else if value > 99 { 99 } else { value };
     out.push(('0' as i64 + clamped_val / 10) as u8);
@@ -803,7 +813,8 @@ inline fn append_4d<B>(out: B&, value: i64) {
     out.push(('0' as i64 + clamped_val % 10) as u8);
 }
 
-// RFC 3339 / ISO 8601 Formatter ("2006-01-02T15:04:05Z" or "2006-01-02T15:04:05+03:00")
+// Formats Time into RFC 3339 / ISO 8601 string (e.g. "2026-10-22T23:18:18Z" or "2026-10-22T23:18:18+03:00").
+// Streaming zero-allocation formatter directly appending to out.
 fn format_rfc3339<B>(out: B&, time_val: Time) {
     let year_val, month_val, day_val, hour_val, min_val, sec_val = civil_parts(time_val);
     append_4d(out, year_val);
@@ -836,6 +847,7 @@ fn format_rfc3339<B>(out: B&, time_val: Time) {
     }
 }
 
+// Formats Time into RFC 3339 with nanosecond fractional precision (e.g. "2026-10-22T23:18:18.5Z").
 fn format_rfc3339_nano<B>(out: B&, time_val: Time) {
     let year_val, month_val, day_val, hour_val, min_val, sec_val = civil_parts(time_val);
     append_4d(out, year_val);
@@ -869,7 +881,7 @@ fn format_rfc3339_nano<B>(out: B&, time_val: Time) {
     }
 }
 
-// Universal format hook for Time: used by print, str, format
+// Universal format hook for Time: used automatically by print(time_val) and str(time_val).
 fn format<B>(out: B&, time_val: Time) {
     format_rfc3339(out, time_val);
 }
@@ -882,7 +894,8 @@ fn format<B>(out: B&, weekday_val: Weekday) {
     out.append(weekday_name(weekday_val));
 }
 
-// Parses RFC 3339 / ISO 8601 strings into Time
+// Parses RFC 3339 / ISO 8601 strings into Time (e.g. "2026-10-22T23:18:18Z", "2026-10-22T23:18:18+03:00").
+// Validates calendar bounds and timezone offset. Zero-allocation.
 fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     let text = trim(raw_str);
     guard text.len >= 19 else { return Time { .. }, false; }
@@ -951,7 +964,8 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     }, true;
 }
 
-// RFC 1123 / HTTP-Date Formatter ("Mon, 02 Jan 2006 15:04:05 GMT")
+// Formats Time into RFC 9110 §5.6.7 / RFC 1123 IMF-fixdate (e.g. "Thu, 22 Oct 2026 23:18:18 GMT").
+// Always formats in UTC/GMT regardless of local timezone offset.
 fn format_http<B>(out: B&, time_val: Time) {
     let utc_time = time_val.utc();
     let year_val, month_val, day_val, hour_val, min_val, sec_val = civil_parts(utc_time);
@@ -996,7 +1010,11 @@ fn parse_month_name(token: const u8[:]) -> i64 {
     return 0;
 }
 
-// Parses RFC 9110 §5.6.7 HTTP-Date (IMF-fixdate, RFC 850, asctime) into Time
+// Parses RFC 9110 §5.6.7 HTTP-Date formats:
+// 1. IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT" (preferred RFC 1123 format)
+// 2. RFC 850:     "Sunday, 06-Nov-94 08:49:37 GMT" (obsolete 2-digit year format)
+// 3. ANSI asctime: "Sun Nov  6 08:49:37 1994" (obsolete fixed-width format)
+// Returns (Time, false) if the string is malformed or represents an invalid calendar date.
 fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
     let text = trim(raw_str);
     guard text.len >= 24 else { return Time { .. }, false; }
