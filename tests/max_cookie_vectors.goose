@@ -216,6 +216,22 @@ fn run_ingestion_matrix(t: wing::T&) {
             expect_persistent: false, expect_port: 8080,
         },
         IngestionVector {
+            id: "DOM-13 (Intranet single-label host forces host_only=true)",
+            url: "http://intranet-server/", set_cookie: "k=v; Domain=intranet-server", from_http: true,
+            expect_accepted: true, expect_name: "k", expect_val: "v",
+            expect_domain: "intranet-server", expect_path: "/",
+            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            expect_persistent: false, expect_port: 80,
+        },
+        IngestionVector {
+            id: "SHAD-01 (Cookie Crumbles: nameless cookie simulating __Host- rejected)",
+            url: "http://sub.example.com/", set_cookie: "=__Host-sid=attacker_val; Domain=example.com", from_http: true,
+            expect_accepted: false, expect_name: "", expect_val: "",
+            expect_domain: "", expect_path: "",
+            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            expect_persistent: false, expect_port: 80,
+        },
+        IngestionVector {
             id: "OBC-03 (Trustworthy localhost:80 with Secure upgrades port to 443)",
             url: "http://127.0.0.1:80/login", set_cookie: "__Host-s=1; Secure; Path=/", from_http: true,
             expect_accepted: true, expect_name: "__Host-s", expect_val: "1",

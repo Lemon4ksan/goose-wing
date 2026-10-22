@@ -193,7 +193,11 @@ fn add(dur1: Duration, dur2: Duration) -> Duration { return dur1 + dur2; }
 fn sub(dur1: Duration, dur2: Duration) -> Duration { return dur1 - dur2; }
 fn mul(dur: Duration, factor: i64) -> Duration { return dur * factor; }
 fn div(dur: Duration, factor: i64) -> Duration { return dur / factor; }
-fn abs(dur: Duration) -> Duration { return Duration { nanos: if dur.nanos < 0 { -dur.nanos } else { dur.nanos } }; }
+fn abs(dur: Duration) -> Duration {
+    let min_i64 = -9223372036854775807 - 1;
+    if dur.nanos == min_i64 { return Duration { nanos: 9223372036854775807 }; }
+    return Duration { nanos: if dur.nanos < 0 { -dur.nanos } else { dur.nanos } };
+}
 
 // Duration predicates (Goose stdlib naming convention without is_ prefix).
 
@@ -216,18 +220,26 @@ fn compare(dur1: Duration, dur2: Duration) -> i64 {
 // Truncates duration to a multiple of step_dur (towards zero). Returns dur unchanged if step_dur <= 0.
 fn truncate(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
-    return Duration { nanos: dur.nanos - (dur.nanos % step_dur.nanos) };
+    let is_neg = dur.nanos < 0;
+    let abs_nanos = if is_neg { -dur.nanos } else { dur.nanos };
+    let truncated_abs = (abs_nanos / step_dur.nanos) * step_dur.nanos;
+    return Duration { nanos: if is_neg { -truncated_abs } else { truncated_abs } };
 }
 
 // Rounds duration to the nearest multiple of step_dur (half rounds away from zero).
 fn round(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
+    let min_i64 = -9223372036854775807 - 1;
+    let max_i64 = 9223372036854775807;
+    if dur.nanos == min_i64 { return dur; }
     let is_neg = dur.nanos < 0;
     let abs_nanos = if is_neg { -dur.nanos } else { dur.nanos };
-    let remainder = abs_nanos % step_dur.nanos;
-    var base_nanos = abs_nanos - remainder;
-    if (remainder * 2) >= step_dur.nanos {
-        base_nanos += step_dur.nanos;
+    let quotient = abs_nanos / step_dur.nanos;
+    let remainder = abs_nanos - quotient * step_dur.nanos;
+    var base_nanos = quotient * step_dur.nanos;
+    if remainder >= step_dur.nanos - remainder {
+        if base_nanos > max_i64 - step_dur.nanos { base_nanos = max_i64; }
+        else { base_nanos += step_dur.nanos; }
     }
     return Duration { nanos: if is_neg { -base_nanos } else { base_nanos } };
 }
@@ -237,6 +249,11 @@ fn round(dur: Duration, step_dur: Duration) -> Duration {
 fn format<B>(out: B&, dur: Duration) {
     if dur.nanos == 0 {
         out.append("0s");
+        return;
+    }
+    let min_i64 = -9223372036854775807 - 1;
+    if dur.nanos == min_i64 {
+        out.append("-2562047h47m16.854775808s");
         return;
     }
     var total_nanos = dur.nanos;
@@ -305,7 +322,9 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     } else if text[0] == '+' {
         cursor = 1;
     }
+    guard cursor < text.len else { return Duration { 0 }, false; }
 
+    let max_i64 = 9223372036854775807;
     var total_nanos: i64 = 0;
 
     while cursor < text.len {
@@ -328,6 +347,7 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
 
         let component_nanos, ok_comp = parse_duration_component(num_str, unit_mult);
         guard ok_comp else { return Duration { 0 }, false; }
+        guard total_nanos <= max_i64 - component_nanos else { return Duration { 0 }, false; }
 
         total_nanos += component_nanos;
     }
@@ -366,10 +386,13 @@ struct Deadline {
 }
 
 fn deadline_after(dur: Duration) -> Deadline {
+    let now_ns = clock_ns();
     if dur.nanos <= 0 {
-        return Deadline { target_mono_ns: clock_ns(), has_deadline: true };
+        return Deadline { target_mono_ns: now_ns, has_deadline: true };
     }
-    return Deadline { target_mono_ns: clock_ns() + dur.nanos, has_deadline: true };
+    let max_i64 = 9223372036854775807;
+    let target = if dur.nanos > max_i64 - now_ns { max_i64 } else { now_ns + dur.nanos };
+    return Deadline { target_mono_ns: target, has_deadline: true };
 }
 
 fn expired(deadline_val: const Deadline&) -> bool {
@@ -465,15 +488,24 @@ fn now() -> Time {
 }
 
 fn unix(secs_count: i64, nano_count: i64 = 0) -> Time {
-    var sec_val = secs_count + nano_count / 1000000000;
-    var nsec_val = (nano_count % 1000000000) as i32;
-    if nsec_val < 0 {
-        sec_val -= 1;
-        nsec_val += 1000000000;
+    var sec_val = secs_count;
+    var nsec_val: i64 = 0;
+    if nano_count >= 0 {
+        sec_val += nano_count / 1000000000;
+        nsec_val = nano_count % 1000000000;
+    } else {
+        let pos_nanos = -nano_count;
+        let s = pos_nanos / 1000000000;
+        let rem_ns = pos_nanos % 1000000000;
+        sec_val -= s;
+        if rem_ns > 0 {
+            sec_val -= 1;
+            nsec_val = 1000000000 - rem_ns;
+        }
     }
     return Time {
         wall_sec: sec_val,
-        nsec: nsec_val,
+        nsec: nsec_val as i32,
         tz_offset: 0,
     };
 }
@@ -506,9 +538,8 @@ fn date(year_val: i64, month_num: i64, day_val: i64, hour_val: i64 = 0, min_val:
 fn civil_parts(time_val: Time) -> i64, i64, i64, i64, i64, i64 {
     let local_secs = time_val.wall_sec + time_val.tz_offset;
     var days_count = local_secs / 86400;
-    var remainder_secs = local_secs % 86400;
-    if remainder_secs < 0 {
-        remainder_secs += 86400;
+    let remainder_secs = local_secs % 86400;
+    if local_secs < 0 && remainder_secs != 0 {
         days_count -= 1;
     }
 
@@ -572,26 +603,42 @@ fn add(time_val: Time, dur: Duration) -> Time {
 
 fn sub(time_val: Time, other_time: Time) -> Duration {
     let sec_diff = time_val.wall_sec - other_time.wall_sec;
-    let nsec_diff = (time_val.nsec as i64) - other_time.nsec;
+    let nsec_diff = time_val.nsec - other_time.nsec;
     return Duration { nanos: sec_diff * 1000000000 + nsec_diff };
 }
 
 fn sub(time_val: Time, dur: Duration) -> Time {
-    return add(time_val, Duration { nanos: -dur.nanos });
+    var sec_val = time_val.wall_sec - dur.nanos / 1000000000;
+    var nsec_val = time_val.nsec - (dur.nanos % 1000000000);
+    if nsec_val >= 1000000000 {
+        sec_val += 1;
+        nsec_val -= 1000000000;
+    } else if nsec_val < 0 {
+        sec_val -= 1;
+        nsec_val += 1000000000;
+    }
+    return Time {
+        wall_sec: sec_val,
+        nsec: nsec_val as i32,
+        tz_offset: time_val.tz_offset,
+    };
 }
 
 fn sub_duration(time_val: Time, dur: Duration) -> Time {
     return sub(time_val, dur);
 }
 
-// Adds months with end-of-month clamping (e.g. Jan 31 + 1 month -> Feb 28/29).
-// Unlike Go's AddDate, this never accidentally overflows into a subsequent month.
+// Adds months with end-of-month clamping (e.g. Jan 31 + 1 month -> Feb 28/29) in O(1) time.
+// This never accidentally overflows into a subsequent month.
 fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
     let current_year, current_month, current_day, hour_val, min_val, sec_val = civil_parts(time_val);
-    var new_year = current_year;
-    var new_month = current_month + months_count;
-    while new_month > 12 { new_month -= 12; new_year += 1; }
-    while new_month < 1 { new_month += 12; new_year -= 1; }
+    let zero_based = (current_month - 1) + months_count;
+    var new_year = current_year + (zero_based / 12);
+    var new_month = (zero_based % 12) + 1;
+    if new_month < 1 {
+        new_month += 12;
+        new_year -= 1;
+    }
 
     let max_day_in_month = days_in_month(new_year, new_month);
     let clamped_day = if current_day > max_day_in_month { max_day_in_month } else { current_day };
@@ -662,9 +709,11 @@ fn after(time_val: Time, other_time: Time) -> bool {
 fn truncate(time_val: Time, dur: Duration) -> Time {
     if dur.nanos <= 0 { return time_val; }
     let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-    let remainder = total_nanos % dur.nanos;
-    let base_nanos = total_nanos - remainder;
-    var truncated_time = unix(base_nanos / 1000000000, base_nanos % 1000000000);
+    let is_neg = total_nanos < 0;
+    let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
+    let truncated_abs = (abs_nanos / dur.nanos) * dur.nanos;
+    let base_nanos = if is_neg { -truncated_abs } else { truncated_abs };
+    var truncated_time = unix(0, base_nanos);
     truncated_time.tz_offset = time_val.tz_offset;
     return truncated_time;
 }
@@ -673,12 +722,16 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
 fn round(time_val: Time, dur: Duration) -> Time {
     if dur.nanos <= 0 { return time_val; }
     let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-    let remainder = total_nanos % dur.nanos;
-    var base_nanos = total_nanos - remainder;
-    if (remainder * 2) >= dur.nanos {
+    let is_neg = total_nanos < 0;
+    let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
+    let quotient = abs_nanos / dur.nanos;
+    let remainder = abs_nanos - quotient * dur.nanos;
+    var base_nanos = quotient * dur.nanos;
+    if remainder >= dur.nanos - remainder {
         base_nanos += dur.nanos;
     }
-    var rounded_time = unix(base_nanos / 1000000000, base_nanos % 1000000000);
+    let rounded_nanos = if is_neg { -base_nanos } else { base_nanos };
+    var rounded_time = unix(0, rounded_nanos);
     rounded_time.tz_offset = time_val.tz_offset;
     return rounded_time;
 }
@@ -692,9 +745,10 @@ fn in_offset(time_val: Time, tz_offset_seconds: i32) -> Time {
 }
 
 fn in_tz(time_val: Time, hours_offset: i64, minutes_offset: i64 = 0) -> Time {
-    let sign = if hours_offset < 0 { -1 } else { 1 };
+    let sign = if hours_offset < 0 || minutes_offset < 0 { -1 } else { 1 };
     let abs_hours = if hours_offset < 0 { -hours_offset } else { hours_offset };
-    let total_secs = sign * (abs_hours * 3600 + minutes_offset * 60);
+    let abs_mins = if minutes_offset < 0 { -minutes_offset } else { minutes_offset };
+    let total_secs = sign * (abs_hours * 3600 + abs_mins * 60);
     return in_offset(time_val, total_secs as i32);
 }
 
@@ -762,15 +816,15 @@ fn format_rfc3339<B>(out: B&, time_val: Time) {
     if time_val.tz_offset == 0 {
         out.push('Z');
     } else {
-        var offset_val = time_val.tz_offset;
+        var offset_val: i64 = time_val.tz_offset as i64;
         if offset_val < 0 {
             out.push('-');
             offset_val = -offset_val;
         } else {
             out.push('+');
         }
-        let offset_hours = (offset_val / 3600) as i64;
-        let offset_mins = ((offset_val % 3600) / 60) as i64;
+        let offset_hours = offset_val / 3600;
+        let offset_mins = (offset_val % 3600) / 60;
         append_2d(out, offset_hours);
         out.push(':');
         append_2d(out, offset_mins);
@@ -796,15 +850,15 @@ fn format_rfc3339_nano<B>(out: B&, time_val: Time) {
     if time_val.tz_offset == 0 {
         out.push('Z');
     } else {
-        var offset_val = time_val.tz_offset;
+        var offset_val: i64 = time_val.tz_offset as i64;
         if offset_val < 0 {
             out.push('-');
             offset_val = -offset_val;
         } else {
             out.push('+');
         }
-        let offset_hours = (offset_val / 3600) as i64;
-        let offset_mins = ((offset_val % 3600) / 60) as i64;
+        let offset_hours = offset_val / 3600;
+        let offset_mins = (offset_val % 3600) / 60;
         append_2d(out, offset_hours);
         out.push(':');
         append_2d(out, offset_mins);
@@ -834,25 +888,24 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
         return Time { .. }, false;
     }
 
-    let year_val, ok_year = parse_int(text[..4]);
-    let month_val, ok_month = parse_int(text[5..7]);
-    let day_val, ok_day = parse_int(text[8..10]);
-    let hour_val, ok_hour = parse_int(text[11..13]);
-    let min_val, ok_min = parse_int(text[14..16]);
-    let sec_val, ok_sec = parse_int(text[17..19]);
+    let year_val, ok_year = parse_digits(text[..4]);
+    let month_val, ok_month = parse_digits(text[5..7]);
+    let day_val, ok_day = parse_digits(text[8..10]);
+    let hour_val, ok_hour = parse_digits(text[11..13]);
+    let min_val, ok_min = parse_digits(text[14..16]);
+    let sec_val, ok_sec = parse_digits(text[17..19]);
 
     guard ok_year && ok_month && ok_day && ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
-    guard month_val >= 1 && month_val <= 12 && day_val >= 1 && day_val <= 31 else { return Time { .. }, false; }
+    guard year_val >= 1 && month_val >= 1 && month_val <= 12 && day_val >= 1 && day_val <= days_in_month(year_val, month_val) else { return Time { .. }, false; }
     guard hour_val >= 0 && hour_val <= 23 && min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60 else { return Time { .. }, false; }
 
-    let nsec_val, cursor = parse_fractional_nanos(text, 19);
+    let nsec_val, cursor, ok_frac = parse_fractional_nanos(text, 19);
+    guard ok_frac else { return Time { .. }, false; }
 
-    var offset_val: i32 = 0;
-    if cursor < text.len {
-        let parsed_offset, ok_offset = parse_timezone_offset(text[cursor..]);
-        guard ok_offset else { return Time { .. }, false; }
-        offset_val = parsed_offset;
-    }
+    guard cursor < text.len else { return Time { .. }, false; }
+    let parsed_offset, ok_offset = parse_timezone_offset(text[cursor..]);
+    guard ok_offset else { return Time { .. }, false; }
+    let offset_val = parsed_offset;
 
     let days_count = civil_to_days(year_val, month_val, day_val);
     let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val - offset_val;
@@ -899,14 +952,17 @@ fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
     }
 
     if comma_idx > 0 {
+        let day_prefix = text[..comma_idx];
         let rest = trim(text[comma_idx + 1..]);
         var has_dash = false;
         for scan_idx in rest.len {
             if rest[scan_idx] == '-' { has_dash = true; break; }
         }
         if has_dash {
+            guard is_valid_weekday_name(day_prefix) else { return Time { .. }, false; }
             return parse_rfc850_date(rest);
         }
+        guard is_valid_weekday_short(day_prefix) else { return Time { .. }, false; }
         return parse_imf_fixdate(rest);
     }
 
@@ -951,6 +1007,43 @@ fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
     }
 }
 
+fn parse_digits(s: const u8[:]) -> i64, bool {
+    guard s.len > 0 else { return 0, false; }
+    let max_i64 = 9223372036854775807;
+    var val: i64 = 0;
+    for idx in s.len {
+        let ch = s[idx];
+        guard ch >= '0' && ch <= '9' else { return 0, false; }
+        let d = (ch - '0') as i64;
+        guard val <= (max_i64 - d) / 10 else { return 0, false; }
+        val = val * 10 + d;
+    }
+    return val, true;
+}
+
+fn is_valid_weekday_short(token: const u8[:]) -> bool {
+    guard token.len == 3 else { return false; }
+    var clean_buf: u8[3] = [0; 3];
+    for char_idx in 3 {
+        let char_byte = token[char_idx];
+        clean_buf[char_idx] = if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte };
+    }
+    let s = clean_buf[..];
+    return s == "sun" || s == "mon" || s == "tue" || s == "wed" || s == "thu" || s == "fri" || s == "sat";
+}
+
+fn is_valid_weekday_name(token: const u8[:]) -> bool {
+    if is_valid_weekday_short(token) { return true; }
+    guard token.len >= 6 && token.len <= 9 else { return false; }
+    var clean_buf: u8[9] = [0; 9];
+    for char_idx in token.len {
+        let char_byte = token[char_idx];
+        clean_buf[char_idx] = if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte };
+    }
+    let s = clean_buf[..token.len];
+    return s == "sunday" || s == "monday" || s == "tuesday" || s == "wednesday" || s == "thursday" || s == "friday" || s == "saturday";
+}
+
 fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
     if unit_str == "ns" { return NANOSECOND, true; }
     if unit_str == "us" || unit_str == "µs" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
@@ -963,53 +1056,64 @@ fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
     return 0, false;
 }
 
-fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64 {
-    guard fraction_str.len > 0 else { return 0; }
-    var fraction_val: i64 = 0;
-    var div_scale: i64 = 1;
+fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64, bool {
+    guard fraction_str.len > 0 else { return 0, true; }
+    var fraction_nanos_9d: i64 = 0;
+    var scale: i64 = 100000000;
     for frac_idx in fraction_str.len {
-        if frac_idx >= 9 { break; }
         let char_byte = fraction_str[frac_idx];
-        if char_byte >= '0' && char_byte <= '9' {
-            fraction_val = fraction_val * 10 + (char_byte - '0');
-            div_scale *= 10;
+        guard char_byte >= '0' && char_byte <= '9' else { return 0, false; }
+        if scale > 0 {
+            fraction_nanos_9d += (char_byte - '0') * scale;
+            scale /= 10;
         }
     }
-    return (fraction_val * unit_mult) / div_scale;
+    if unit_mult >= SECOND {
+        return fraction_nanos_9d * (unit_mult / SECOND), true;
+    }
+    return (fraction_nanos_9d * unit_mult) / SECOND, true;
 }
 
 fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
     var dot_pos = -1;
     for scan_idx in num_str.len {
-        if num_str[scan_idx] == '.' { dot_pos = scan_idx; break; }
+        if num_str[scan_idx] == '.' {
+            if dot_pos >= 0 { return 0, false; }
+            dot_pos = scan_idx;
+        }
     }
 
+    let max_i64 = 9223372036854775807;
+
     if dot_pos < 0 {
-        let int_val, int_ok = parse_int(num_str);
+        let int_val, int_ok = parse_digits(num_str);
         guard int_ok else { return 0, false; }
+        guard int_val <= max_i64 / unit_mult else { return 0, false; }
         return int_val * unit_mult, true;
     }
 
     let whole_str = num_str[..dot_pos];
     let fraction_str = num_str[dot_pos + 1..];
+    guard whole_str.len > 0 && fraction_str.len > 0 else { return 0, false; }
 
-    var whole_val: i64 = 0;
-    if whole_str.len > 0 {
-        let parsed_val, ok_whole = parse_int(whole_str);
-        guard ok_whole else { return 0, false; }
-        whole_val = parsed_val;
-    }
+    let whole_val, ok_whole = parse_digits(whole_str);
+    guard ok_whole else { return 0, false; }
+    guard whole_val <= max_i64 / unit_mult else { return 0, false; }
+    let whole_nanos = whole_val * unit_mult;
 
-    let fraction_nanos = parse_scaled_fraction(fraction_str, unit_mult);
-    return whole_val * unit_mult + fraction_nanos, true;
+    let fraction_nanos, ok_frac = parse_scaled_fraction(fraction_str, unit_mult);
+    guard ok_frac else { return 0, false; }
+    guard whole_nanos <= max_i64 - fraction_nanos else { return 0, false; }
+    return whole_nanos + fraction_nanos, true;
 }
 
-fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64 {
+fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64, bool {
     var cursor = start_pos;
     if cursor >= text.len || (text[cursor] != '.' && text[cursor] != ',') {
-        return 0, cursor;
+        return 0, cursor, true;
     }
     cursor++;
+    let digit_start = cursor;
     var nsec_val: i64 = 0;
     var scale: i64 = 100000000;
     while cursor < text.len && (text[cursor] >= '0' && text[cursor] <= '9') {
@@ -1019,29 +1123,37 @@ fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64 {
         }
         cursor++;
     }
-    return nsec_val, cursor;
+    guard cursor > digit_start else { return 0, cursor, false; }
+    return nsec_val, cursor, true;
 }
 
 fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
     guard tz_text.len > 0 else { return 0, false; }
     let tz_char = tz_text[0];
     if tz_char == 'Z' || tz_char == 'z' {
+        guard tz_text.len == 1 else { return 0, false; }
         return 0, true;
     }
     guard tz_char == '+' || tz_char == '-' else { return 0, false; }
 
     let sign = if tz_char == '-' { -1 } else { 1 };
-    var cursor = 1;
-    guard cursor + 2 <= tz_text.len else { return 0, false; }
-    let off_hours, ok_tz_h = parse_int(tz_text[cursor..cursor + 2]);
-    guard ok_tz_h else { return 0, false; }
-    cursor += 2;
+    guard tz_text.len >= 3 else { return 0, false; }
+    let off_hours, ok_tz_h = parse_digits(tz_text[1..3]);
+    guard ok_tz_h && off_hours <= 23 else { return 0, false; }
 
-    if cursor < tz_text.len && tz_text[cursor] == ':' { cursor++; }
     var off_mins: i64 = 0;
-    if cursor + 2 <= tz_text.len {
-        let parsed_mins, ok_tz_m = parse_int(tz_text[cursor..cursor + 2]);
-        if ok_tz_m { off_mins = parsed_mins; }
+    if tz_text.len == 3 {
+        off_mins = 0;
+    } else if tz_text.len == 5 {
+        let parsed_mins, ok_tz_m = parse_digits(tz_text[3..5]);
+        guard ok_tz_m && parsed_mins <= 59 else { return 0, false; }
+        off_mins = parsed_mins;
+    } else if tz_text.len == 6 && tz_text[3] == ':' {
+        let parsed_mins, ok_tz_m = parse_digits(tz_text[4..6]);
+        guard ok_tz_m && parsed_mins <= 59 else { return 0, false; }
+        off_mins = parsed_mins;
+    } else {
+        return 0, false;
     }
 
     let offset_seconds = sign * (off_hours * 3600 + off_mins * 60);
@@ -1049,7 +1161,7 @@ fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
 }
 
 fn parse_month_name(token: const u8[:]) -> i64 {
-    guard token.len >= 3 else { return 0; }
+    guard token.len == 3 else { return 0; }
     var clean_buf: u8[3] = [0; 3];
     for char_idx in 3 {
         let char_byte = token[char_idx];
@@ -1072,8 +1184,10 @@ fn parse_month_name(token: const u8[:]) -> i64 {
 }
 
 fn make_validated_civil_time(year_val: i64, month_val: i64, day_val: i64, hour_val: i64, min_val: i64, sec_val: i64) -> Time, bool {
+    guard year_val >= 1 else { return Time { .. }, false; }
+    guard month_val >= 1 && month_val <= 12 else { return Time { .. }, false; }
     guard day_val >= 1 && day_val <= days_in_month(year_val, month_val) else { return Time { .. }, false; }
-    guard hour_val <= 23 && min_val <= 59 && sec_val <= 59 else { return Time { .. }, false; }
+    guard hour_val >= 0 && hour_val <= 23 && min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60 else { return Time { .. }, false; }
 
     let days_count = civil_to_days(year_val, month_val, day_val);
     let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val;
@@ -1081,15 +1195,15 @@ fn make_validated_civil_time(year_val: i64, month_val: i64, day_val: i64, hour_v
 }
 
 fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
-    guard rest.len >= 20 && rest[2] == ' ' && rest[6] == ' ' && rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' else {
+    guard rest.len == 24 && rest[2] == ' ' && rest[6] == ' ' && rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' && rest[20..24] == " GMT" else {
         return Time { .. }, false;
     }
-    let day_val, ok_day = parse_int(rest[..2]);
+    let day_val, ok_day = parse_digits(rest[..2]);
     let month_val = parse_month_name(rest[3..6]);
-    let year_val, ok_year = parse_int(rest[7..11]);
-    let hour_val, ok_hour = parse_int(rest[12..14]);
-    let min_val, ok_min = parse_int(rest[15..17]);
-    let sec_val, ok_sec = parse_int(rest[18..20]);
+    let year_val, ok_year = parse_digits(rest[7..11]);
+    let hour_val, ok_hour = parse_digits(rest[12..14]);
+    let min_val, ok_min = parse_digits(rest[15..17]);
+    let sec_val, ok_sec = parse_digits(rest[18..20]);
 
     guard ok_day && month_val > 0 && ok_year && ok_hour && ok_min && ok_sec else {
         return Time { .. }, false;
@@ -1102,9 +1216,9 @@ fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     for scan_idx in rest.len {
         if rest[scan_idx] == '-' { first_dash = scan_idx; break; }
     }
-    guard first_dash > 0 else { return Time { .. }, false; }
+    guard first_dash >= 1 && first_dash <= 2 else { return Time { .. }, false; }
 
-    let day_val, ok_day = parse_int(rest[..first_dash]);
+    let day_val, ok_day = parse_digits(rest[..first_dash]);
     guard ok_day else { return Time { .. }, false; }
 
     let after_day = rest[first_dash + 1..];
@@ -1112,43 +1226,45 @@ fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     for scan_idx in after_day.len {
         if after_day[scan_idx] == '-' { second_dash = scan_idx; break; }
     }
-    guard second_dash > 0 else { return Time { .. }, false; }
+    guard second_dash == 3 else { return Time { .. }, false; }
 
     let month_val = parse_month_name(after_day[..second_dash]);
     guard month_val > 0 else { return Time { .. }, false; }
 
     let after_month = after_day[second_dash + 1..];
-    guard after_month.len >= 11 && after_month[2] == ' ' && after_month[5] == ':' && after_month[8] == ':' else {
+    guard after_month.len == 15 && after_month[2] == ' ' && after_month[5] == ':' && after_month[8] == ':' && after_month[11..15] == " GMT" else {
         return Time { .. }, false;
     }
 
-    let parsed_year, ok_year = parse_int(after_month[..2]);
+    let parsed_year, ok_year = parse_digits(after_month[..2]);
     guard ok_year else { return Time { .. }, false; }
     let year_val = if parsed_year >= 70 { 1900 + parsed_year } else { 2000 + parsed_year };
 
-    let hour_val, ok_hour = parse_int(after_month[3..5]);
-    let min_val, ok_min = parse_int(after_month[6..8]);
-    let sec_val, ok_sec = parse_int(after_month[9..11]);
+    let hour_val, ok_hour = parse_digits(after_month[3..5]);
+    let min_val, ok_min = parse_digits(after_month[6..8]);
+    let sec_val, ok_sec = parse_digits(after_month[9..11]);
     guard ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
 
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
 }
 
 fn parse_asctime_date(text: const u8[:]) -> Time, bool {
-    guard text.len >= 24 && text[3] == ' ' && text[7] == ' ' && text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ' else {
+    guard text.len == 24 && text[3] == ' ' && text[7] == ' ' && text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ' else {
         return Time { .. }, false;
     }
+    guard is_valid_weekday_short(text[..3]) else { return Time { .. }, false; }
     let month_val = parse_month_name(text[4..7]);
     guard month_val > 0 else { return Time { .. }, false; }
 
     let day_part = trim(text[8..10]);
-    let day_val, ok_day = parse_int(day_part);
+    guard text[8] == ' ' || (text[8] >= '0' && text[8] <= '9') else { return Time { .. }, false; }
+    let day_val, ok_day = parse_digits(day_part);
     guard ok_day else { return Time { .. }, false; }
 
-    let hour_val, ok_hour = parse_int(text[11..13]);
-    let min_val, ok_min = parse_int(text[14..16]);
-    let sec_val, ok_sec = parse_int(text[17..19]);
-    let year_val, ok_year = parse_int(text[20..24]);
+    let hour_val, ok_hour = parse_digits(text[11..13]);
+    let min_val, ok_min = parse_digits(text[14..16]);
+    let sec_val, ok_sec = parse_digits(text[17..19]);
+    let year_val, ok_year = parse_digits(text[20..24]);
     guard ok_hour && ok_min && ok_sec && ok_year else { return Time { .. }, false; }
 
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);

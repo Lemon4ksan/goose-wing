@@ -223,6 +223,16 @@ fn validate_security_cookie_prefixes(
     is_secure_channel: bool,
     is_http_api: bool,
 ) -> bool {
+    // Anti-Shadowing / Cookie Crumbles defense (USENIX Security / SHAD-01):
+    // A nameless cookie cannot have a value starting with security prefixes
+    if cookie_name.len == 0 {
+        let val = cookie_val.value[..];
+        if starts_with(val, "__Host-") || starts_with(val, "__Secure-") ||
+           starts_with(val, "__Http-") || starts_with(val, "__Host-Http-") {
+            return false;
+        }
+    }
+
     // Prefix: __Secure-
     if starts_with(cookie_name, "__Secure-") {
         if !cookie_val.secure || !is_secure_channel { return false; }

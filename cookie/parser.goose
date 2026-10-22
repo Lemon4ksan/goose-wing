@@ -453,6 +453,12 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
         return false;
     }
 
+    // Single-label intranet hosts without dots cannot have domain cookies (DOM-13)
+    if count_dots(cookie_ref.domain[..]) == 0 {
+        cookie_ref.host_only = true;
+        return true;
+    }
+
     if default_domain.len > 0 && !cookie_domain_match(default_domain, cookie_ref.domain[..]) {
         return false;
     }
