@@ -20,17 +20,17 @@ fn new_backoff(base: Duration, max_delay: Duration, factor: f64 = 2.0) -> Backof
     };
 }
 
-fn delay(b: const Backoff&, attempt: i64) -> Duration {
-    if attempt <= 0 { return Duration { nanos: b.base_ns }; }
-    var current: f64 = b.base_ns;
-    for i in attempt {
-        current *= b.factor;
-        if current >= b.max_ns {
-            return Duration { nanos: b.max_ns };
+fn delay(backoff: const Backoff&, attempt: i64) -> Duration {
+    if attempt <= 0 { return Duration { nanos: backoff.base_ns }; }
+    var current: f64 = backoff.base_ns;
+    for step_idx in attempt {
+        current *= backoff.factor;
+        if current >= backoff.max_ns {
+            return Duration { nanos: backoff.max_ns };
         }
     }
     let res = current as i64;
-    return Duration { nanos: if res > b.max_ns { b.max_ns } else { res } };
+    return Duration { nanos: if res > backoff.max_ns { backoff.max_ns } else { res } };
 }
 
 // --- Token Bucket Rate Limiter ---
@@ -43,25 +43,25 @@ struct RateLimiter {
 }
 
 fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
-    let b = if burst > 0 { burst as f64 } else { 1.0 };
+    let capacity = if burst > 0 { burst as f64 } else { 1.0 };
     return RateLimiter {
         rate_per_sec: rate_per_sec,
-        burst_capacity: b,
-        tokens: b,
+        burst_capacity: capacity,
+        tokens: capacity,
         last_update_mono_ns: clock_ns(),
     };
 }
 
-fn allow(rl: RateLimiter&) -> bool {
+fn allow(limiter: RateLimiter&) -> bool {
     let now_mono = clock_ns();
-    let elapsed_sec = (now_mono - rl.last_update_mono_ns) as f64 / 1000000000.0;
-    rl.last_update_mono_ns = now_mono;
-    rl.tokens += elapsed_sec * rl.rate_per_sec;
-    if rl.tokens > rl.burst_capacity {
-        rl.tokens = rl.burst_capacity;
+    let elapsed_sec = (now_mono - limiter.last_update_mono_ns) as f64 / 1000000000.0;
+    limiter.last_update_mono_ns = now_mono;
+    limiter.tokens += elapsed_sec * limiter.rate_per_sec;
+    if limiter.tokens > limiter.burst_capacity {
+        limiter.tokens = limiter.burst_capacity;
     }
-    if rl.tokens >= 1.0 {
-        rl.tokens -= 1.0;
+    if limiter.tokens >= 1.0 {
+        limiter.tokens -= 1.0;
         return true;
     }
     return false;
