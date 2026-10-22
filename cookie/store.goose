@@ -109,18 +109,18 @@ struct WriteBackBatcher {
     total_coalesced_ops: i64 = 0,
 
     // Resizable queue must be the final field
-    pending_ops: PendingStoreOp[>..] = [],
+    ops: PendingStoreOp[>..] = [],
 }
 
 // Constructs a new WriteBackBatcher with default Chromium thresholds.
-fn new_write_back_batcher() -> WriteBackBatcher {
+fn new_write_back_batcher(now_ms: i64 = 0) -> WriteBackBatcher {
     return WriteBackBatcher {
         max_batch_size: K_COMMIT_AFTER_BATCH_SIZE,
         commit_interval_ms: K_COMMIT_INTERVAL_MS,
-        last_commit_ms: 0,
+        last_commit_ms: now_ms,
         total_committed_ops: 0,
         total_coalesced_ops: 0,
-        pending_ops: [],
+        ops: [],
     };
 }
 
@@ -133,8 +133,8 @@ fn queue_store_mutation(
     operation_type: StoreOpType,
     cookie_val: const CanonicalCookie&,
 ) {
-    for op_idx in batcher.pending_ops.len {
-        if are_cookies_store_identical(batcher.pending_ops[op_idx].cookie, cookie_val) {
+    for op_idx in batcher.ops.len {
+        if are_cookies_store_identical(batcher.ops[op_idx].cookie, cookie_val) {
             if coalesce_store_mutation(batcher, op_idx, operation_type, cookie_val) {
                 return;
             }
@@ -144,15 +144,23 @@ fn queue_store_mutation(
     var pending = PendingStoreOp { .. };
     pending.op_type = operation_type;
     pending.cookie = cookie_val;
-    batcher.pending_ops.push(pending);
+    batcher.ops.push(pending);
+}
+
+fn queue_insert(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) {
+    queue_store_mutation(batcher, StoreOpType.InsertOrUpdate, cookie_val);
+}
+
+fn queue_delete(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) {
+    queue_store_mutation(batcher, StoreOpType.Delete, cookie_val);
 }
 
 // Checks if the write-back batcher needs to commit based on batch size or time.
 fn should_commit_batch(batcher: const WriteBackBatcher&, now_ms: i64) -> bool {
-    if batcher.pending_ops.len >= batcher.max_batch_size {
+    if batcher.ops.len >= batcher.max_batch_size {
         return true;
     }
-    if batcher.pending_ops.len > 0 && (now_ms - batcher.last_commit_ms) >= batcher.commit_interval_ms {
+    if batcher.ops.len > 0 && (now_ms - batcher.last_commit_ms) >= batcher.commit_interval_ms {
         return true;
     }
     return false;
@@ -164,13 +172,13 @@ fn flush_store_batch<B>(
     out_sql: B&,
     now_ms: i64,
 ) -> i64 {
-    guard batcher.pending_ops.len > 0 else { return 0; }
+    guard batcher.ops.len > 0 else { return 0; }
 
     out_sql.append("BEGIN TRANSACTION;\n");
-    let total_operations = batcher.pending_ops.len;
+    let total_operations = batcher.ops.len;
 
-    for op_idx in batcher.pending_ops.len {
-        let pending_op = batcher.pending_ops[op_idx];
+    for op_idx in batcher.ops.len {
+        let pending_op = batcher.ops[op_idx];
         if pending_op.op_type == StoreOpType.InsertOrUpdate {
             generate_sqlite_insert_sql(out_sql, pending_op.cookie);
         } else {
@@ -181,7 +189,7 @@ fn flush_store_batch<B>(
     out_sql.append("COMMIT;\n");
     batcher.total_committed_ops += total_operations;
     batcher.last_commit_ms = now_ms;
-    batcher.pending_ops.clear();
+    batcher.ops.clear();
     return total_operations;
 }
 
@@ -324,7 +332,10 @@ fn import_canonical_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_u
                       has_prohibited_cookie_ctl(parsed_cookie.path[..]);
         let has_payload = parsed_cookie.name.len > 0 || parsed_cookie.value.len > 0;
 
-        if !has_ctl && has_payload {
+        // CRY-02: SQLite kValuesExistInBothEncryptedAndPlaintext rejection
+        let both_encrypted_and_plain = parsed_cookie.value.len > 0 && parsed_cookie.encrypted_value.len > 0;
+
+        if !has_ctl && has_payload && !both_encrypted_and_plain {
             if set_canonical_cookie(jar, parsed_cookie, true, parsed_cookie.secure, now_us) {
                 imported_count += 1;
             }
@@ -411,20 +422,20 @@ fn coalesce_store_mutation(
     operation_type: StoreOpType,
     cookie_val: const CanonicalCookie&,
 ) -> bool {
-    let existing_op = batcher.pending_ops[op_idx].op_type;
+    let existing_op = batcher.ops[op_idx].op_type;
     if existing_op == StoreOpType.InsertOrUpdate && operation_type == StoreOpType.InsertOrUpdate {
-        batcher.pending_ops[op_idx].cookie = cookie_val;
+        batcher.ops[op_idx].cookie = cookie_val;
         batcher.total_coalesced_ops += 1;
         return true;
     }
     if existing_op == StoreOpType.InsertOrUpdate && operation_type == StoreOpType.Delete {
-        remove_at(batcher.pending_ops, op_idx);
+        remove_at(batcher.ops, op_idx);
         batcher.total_coalesced_ops += 1;
         return true;
     }
     if existing_op == StoreOpType.Delete && operation_type == StoreOpType.InsertOrUpdate {
-        batcher.pending_ops[op_idx].op_type = StoreOpType.InsertOrUpdate;
-        batcher.pending_ops[op_idx].cookie = cookie_val;
+        batcher.ops[op_idx].op_type = StoreOpType.InsertOrUpdate;
+        batcher.ops[op_idx].cookie = cookie_val;
         batcher.total_coalesced_ops += 1;
         return true;
     }
@@ -433,6 +444,35 @@ fn coalesce_store_mutation(
         return true;
     }
     return false;
+}
+
+fn generate_sqlite_insert_sql<B>(cookie_val: const CanonicalCookie&, out: B&) {
+    generate_sqlite_insert_sql(out, cookie_val);
+}
+
+fn parse_server_cookie_header(raw_header: const u8[:]) -> CanonicalCookie[>..] {
+    var out: CanonicalCookie[>..] = [];
+    parse_server_cookie_header(raw_header, 0, out);
+    return out;
+}
+
+fn get_server_cookie(cookies: const CanonicalCookie[:], name: const u8[:]) -> const u8[:] {
+    for i in cookies.len {
+        if cookies[i].name[..] == name {
+            return cookies[i].value[..];
+        }
+    }
+    return "";
+}
+
+// Constant-time byte slice comparison to prevent timing side-channel attacks (CRY-05)
+fn constant_time_eq(a: const u8[:], b: const u8[:]) -> bool {
+    guard a.len == b.len else { return false; }
+    var diff: u8 = 0;
+    for i in a.len {
+        diff |= a[i] ^ b[i];
+    }
+    return diff == 0;
 }
 
 fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const CanonicalCookie&) -> bool {

@@ -334,8 +334,8 @@ fn ::set_cookie_header(
     return wing::set_cookie_header(jar, req_url, set_cookie_raw, now_us, is_http_api, partition_key);
 }
 
-fn ::canonical_cookie(name: const u8[:], val: const u8[:]) -> wing::CanonicalCookie {
-    return wing::canonical_cookie(name, val);
+fn ::new_canonical_cookie(name: const u8[:], val: const u8[:]) -> wing::CanonicalCookie {
+    return wing::new_canonical_cookie(name, val);
 }
 
 fn ::set(jar: wing::CanonicalCookieJar&, cookie_val: wing::CanonicalCookie, now_us: i64) -> bool {

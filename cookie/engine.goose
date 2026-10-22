@@ -40,6 +40,7 @@ struct CanonicalCookieJar {
     expired_overwrite_count: i64 = 0,
     rejected_security_count: i64 = 0,
     strict_secure_cookies: bool = false,
+    access_update_threshold_us: i64 = 60000000, // 60s (Chromium kDefaultAccessUpdateThresholdSeconds)
 
     cookies: CanonicalCookie[>..] = [],
 }
@@ -65,6 +66,7 @@ fn new_canonical_cookie_jar() -> CanonicalCookieJar {
         expired_overwrite_count: 0,
         rejected_security_count: 0,
         strict_secure_cookies: false,
+        access_update_threshold_us: 60000000,
         cookies: [],
     };
 }
@@ -87,6 +89,57 @@ fn purge_expired(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     let evicted_count = before_count - jar.cookies.len;
     jar.evicted_expired_count += evicted_count;
     return evicted_count;
+}
+
+// ---- Selective Deletion Engine (Matrix 14: CookieDeletionInfo) --------------
+
+struct CookieDeletionInfo {
+    start_utc: i64 = 0,
+    end_utc: i64 = 0,
+    session_only: bool = false,
+    domain: u8[..128] = [],
+    name: u8[..128] = [],
+    partition_key: u8[..256] = [],
+    top_frame_site_key: u8[..256] = [],
+    purge_non_secure: bool = false,
+}
+
+fn cookie_matches_deletion_filter(c: const CanonicalCookie&, filter: const CookieDeletionInfo&) -> bool {
+    if filter.start_utc > 0 && c.creation_utc < filter.start_utc { return false; }
+    if filter.end_utc > 0 && c.creation_utc > filter.end_utc { return false; }
+    if filter.session_only && c.persistent { return false; }
+    if filter.domain.len > 0 && !eq_ascii_fold(c.domain[..], filter.domain[..]) { return false; }
+    if filter.name.len > 0 && c.name[..] != filter.name[..] { return false; }
+    if filter.partition_key.len > 0 && c.partition_key[..] != filter.partition_key[..] { return false; }
+    if filter.top_frame_site_key.len > 0 && c.partition_key[..] != filter.top_frame_site_key[..] { return false; }
+    if filter.purge_non_secure && (c.secure || c.source_scheme == CookieSourceScheme.Secure) { return false; }
+    return true; // Matches filter -> should be deleted
+}
+
+fn delete_matching(jar: CanonicalCookieJar&, filter: const CookieDeletionInfo&) -> i64 {
+    let before = jar.cookies.len;
+    jar.cookies.retain() { !cookie_matches_deletion_filter(it, filter) };
+    return before - jar.cookies.len;
+}
+
+fn delete_all_created_in_time_range(jar: CanonicalCookieJar&, start_utc: i64, end_utc: i64) -> i64 {
+    let before = jar.cookies.len;
+    jar.cookies.retain() {
+        !(it.creation_utc >= start_utc && (end_utc == 0 || it.creation_utc <= end_utc))
+    };
+    return before - jar.cookies.len;
+}
+
+fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = false) -> i64 {
+    let before = jar.cookies.len;
+    jar.cookies.retain() {
+        if purge_non_secure && (!it.secure && it.source_scheme != CookieSourceScheme.Secure) {
+            false
+        } else {
+            it.persistent
+        }
+    };
+    return before - jar.cookies.len;
 }
 
 // Safely inserts a pre-built CanonicalCookie through full security validation, collision overwrite and GC.
@@ -123,7 +176,10 @@ fn get(
             continue;
         }
 
-        jar.cookies[cookie_idx].last_access_utc = now_us;
+        let delta_us = now_us - jar.cookies[cookie_idx].last_access_utc;
+        if jar.access_update_threshold_us <= 0 || delta_us >= jar.access_update_threshold_us {
+            jar.cookies[cookie_idx].last_access_utc = now_us;
+        }
         return jar.cookies[cookie_idx].value[..];
     }
     return "";
@@ -167,7 +223,7 @@ fn set_canonical_cookie(
         return handle_cookie_collision(jar, new_cookie, collision_idx, url_is_secure, now_us);
     }
 
-    if is_cookie_expired(new_cookie, now_us) {
+    if is_expired(new_cookie, now_us) {
         jar.evicted_expired_count += 1;
         return true;
     }
@@ -276,6 +332,32 @@ fn build_cookie_header<B>(
     format_cookie_header_value(out, matched[..]);
 }
 
+// Builds an outgoing HTTP Cookie header for a request with explicit is_http_api and partition_key
+fn build_request_cookie_header<B>(
+    jar: CanonicalCookieJar&,
+    req_url: const u8[:],
+    is_http_api: bool,
+    partition_key: const u8[:],
+    now_us: i64,
+    out: B&
+) {
+    let parsed_url = parse_canonical_cookie_url(req_url);
+    var matched: CanonicalCookie[>..] = [];
+    get_canonical_cookies_for_request(
+        jar,
+        parsed_url.host[..],
+        parsed_url.path[..],
+        parsed_url.scheme[..],
+        parsed_url.port,
+        parsed_url.is_secure,
+        is_http_api,
+        partition_key,
+        now_us,
+        matched
+    );
+    format_cookie_header_value(out, matched[..]);
+}
+
 // URL-based overload for get_canonical_cookies_for_request.
 fn get_canonical_cookies_for_request(
     jar: CanonicalCookieJar&,
@@ -338,8 +420,11 @@ fn get_canonical_cookies_for_request(
             continue;
         }
 
-        jar.cookies[cookie_idx].last_access_utc = now_us;
-        cookie_val.last_access_utc = now_us;
+        let delta_us = now_us - jar.cookies[cookie_idx].last_access_utc;
+        if jar.access_update_threshold_us <= 0 || delta_us >= jar.access_update_threshold_us {
+            jar.cookies[cookie_idx].last_access_utc = now_us;
+            cookie_val.last_access_utc = now_us;
+        }
         out.push(cookie_val);
     }
 
@@ -482,7 +567,7 @@ fn enforce_post_insertion_quotas(
     etld_plus_one: const u8[:],
     now_us: i64,
 ) {
-    if new_cookie.partitioned && new_cookie.partition_key.len > 0 {
+    if (new_cookie.partitioned || new_cookie.partition_key.len > 0) && new_cookie.partition_key.len > 0 {
         enforce_chips_quota(jar, new_cookie.partition_key[..], etld_plus_one, now_us);
     }
     garbage_collect_per_domain(jar, etld_plus_one, now_us);
@@ -512,7 +597,7 @@ fn gather_chips_candidates<B>(
 ) {
     for cookie_idx in jar.cookies.len {
         let cookie_val = jar.cookies[cookie_idx];
-        if cookie_val.partitioned &&
+        if (cookie_val.partitioned || cookie_val.partition_key.len > 0) &&
            cookie_val.partition_key[..] == partition_key &&
            cookie_matches_effective_domain(cookie_val, etld_plus_one) {
             total_bytes += payload_size(cookie_val);
@@ -530,7 +615,7 @@ fn priority_rank(priority_level: CookiePriority) -> i32 {
 }
 
 fn get_canonical_cookie_effective_domain<B>(cookie_val: const CanonicalCookie&, out: B&) {
-    if cookie_val.host_only || ip_address_literal(cookie_val.domain[..]) {
+    if ip_address_literal(cookie_val.domain[..]) || count_dots(cookie_val.domain[..]) == 0 {
         out.append(cookie_val.domain[..]);
     } else {
         extract_etld_plus_one(cookie_val.domain[..], out);
@@ -645,7 +730,7 @@ fn evict_domain_expired_cookies(jar: CanonicalCookieJar&, etld_plus_one: const u
     var expired_seqs: i64[>..] = [];
     for cookie_idx in jar.cookies.len {
         let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) && is_cookie_expired(cookie_val, now_us) {
+        if cookie_matches_effective_domain(cookie_val, etld_plus_one) && is_expired(cookie_val, now_us) {
             expired_seqs.push(cookie_val.creation_seq);
         }
     }
@@ -793,7 +878,7 @@ fn evict_global_expired_cookies(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     var expired_seqs: i64[>..] = [];
     for cookie_idx in jar.cookies.len {
         let cookie_val = jar.cookies[cookie_idx];
-        if is_cookie_expired(cookie_val, now_us) {
+        if is_expired(cookie_val, now_us) {
             expired_seqs.push(cookie_val.creation_seq);
         }
     }
@@ -844,7 +929,7 @@ fn handle_cookie_collision(
 
     // Chromium Expired Overwrite: if new cookie is already expired (Max-Age=0 or past Expires),
     // immediately remove the collided cookie from memory without keeping a dead record.
-    if is_cookie_expired(new_cookie, now_us) {
+    if is_expired(new_cookie, now_us) {
         remove_at(jar.cookies, collision_idx);
         jar.evicted_expired_count += 1;
         jar.overwritten_count += 1;
@@ -877,7 +962,7 @@ fn cookie_matches_request(
     is_safe_method: bool,
     now_us: i64,
 ) -> bool {
-    if is_cookie_expired(cookie_val, now_us) { return false; }
+    if is_expired(cookie_val, now_us) { return false; }
     if !matches_domain(cookie_val, host) { return false; }
     if !matches_path(cookie_val, path) { return false; }
     if cookie_val.secure && !is_secure && !trustworthy_non_crypto_host(host) { return false; }

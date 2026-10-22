@@ -267,3 +267,42 @@ fn validate_security_cookie_prefixes(
 
     return true;
 }
+
+// ---- SiteForCookies and Navigation Context (RFC 6265bis / Chromium net::SiteForCookies) ----
+
+struct SiteForCookies {
+    scheme: u8[..16] = [],
+    registrable_domain: u8[..128] = [],
+    is_null: bool = false,
+}
+
+fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
+    let parsed = parse_canonical_cookie_url(url);
+    var s = SiteForCookies { .. };
+    s.scheme.append(parsed.scheme[..]);
+    extract_etld_plus_one(parsed.host[..], s.registrable_domain);
+    s.is_null = false;
+    return s;
+}
+
+fn null_site_for_cookies() -> SiteForCookies {
+    return SiteForCookies { is_null: true };
+}
+
+// Computes SiteForCookies evaluating the full ancestor chain (CTX-01, CTX-02)
+fn compute_site_for_cookies_with_ancestors(top_url: const u8[:], ancestor_urls: const u8[:][:]) -> SiteForCookies {
+    var top_site = site_for_cookies_from_url(top_url);
+    for a_url in ancestor_urls {
+        let a_site = site_for_cookies_from_url(a_url);
+        if a_site.scheme[..] != top_site.scheme[..] || a_site.registrable_domain[..] != top_site.registrable_domain[..] {
+            return null_site_for_cookies();
+        }
+    }
+    return top_site;
+}
+
+fn is_request_same_site(site: const SiteForCookies&, req_url: const u8[:]) -> bool {
+    if site.is_null { return false; }
+    let req_site = site_for_cookies_from_url(req_url);
+    return site.scheme[..] == req_site.scheme[..] && site.registrable_domain[..] == req_site.registrable_domain[..];
+}

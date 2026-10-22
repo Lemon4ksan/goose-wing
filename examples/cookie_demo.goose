@@ -165,7 +165,7 @@ fn main() {
 
     // 12. Standalone Builder & Safe Insert via jar.set(c, now_us)
     print("\n--- 12. Standalone Builder & Safe Insert ---");
-    var standalone = wing::canonical_cookie("safe_token", "st_val_99");
+    var standalone = wing::new_canonical_cookie("safe_token", "st_val_99");
     standalone.with_host("api.crypto-dex.io")
               .with_path("/")
               .with_secure()

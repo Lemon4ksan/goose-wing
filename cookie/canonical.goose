@@ -18,6 +18,7 @@ import cookie.store;
 struct CanonicalCookie {
     name: u8[..256] = [],
     value: u8[..4096] = [],
+    encrypted_value: u8[..4096] = [],
     domain: u8[..256] = [],
     path: u8[..256] = "/",
     creation_utc: i64 = 0,     // Microsecond UTC timestamp (immutable across overwrites)
@@ -37,8 +38,8 @@ struct CanonicalCookie {
     creation_seq: i64 = 0,
 }
 
-// Standalone builder constructor for CanonicalCookie.
-fn canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
+// Standalone constructor for CanonicalCookie.
+fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
     new_cookie.name.append(name);
     new_cookie.value.append(val);
@@ -57,16 +58,6 @@ fn expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
 
 // Idiomatic boolean alias for expired(cookie_val, now_us).
 fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return expired(cookie_val, now_us);
-}
-
-// Compatibility alias for legacy callers.
-fn cookie_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return expired(cookie_val, now_us);
-}
-
-// Compatibility alias for legacy callers.
-fn is_cookie_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     return expired(cookie_val, now_us);
 }
 

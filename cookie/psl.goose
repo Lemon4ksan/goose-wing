@@ -85,6 +85,11 @@ fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.append(uri_path[..last_slash_idx]);
 }
 
+// RFC 6265 §5.1.4: Compute default cookie path alias
+fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
+    default_cookie_path_calc(uri_path, out);
+}
+
 // RFC 6265 §5.1.4: Path-Match algorithm.
 // Matches request path against cookie path prefix.
 fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {

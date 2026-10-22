@@ -63,7 +63,7 @@ struct Runner {
 
 // Constructors
 
-fn runner(suite_name: const u8[:], verbosity: Verbosity = Verbosity.Normal) -> Runner {
+fn new_runner(suite_name: const u8[:], verbosity: Verbosity = Verbosity.Normal) -> Runner {
     var r = Runner {
         suite_name: [],
         total_tests: 0,
@@ -79,11 +79,7 @@ fn runner(suite_name: const u8[:], verbosity: Verbosity = Verbosity.Normal) -> R
     return r;
 }
 
-fn new_runner(suite_name: const u8[:], verbosity: Verbosity = Verbosity.Normal) -> Runner {
-    return runner(suite_name, verbosity);
-}
-
-fn test(name: const u8[:], level: i64 = 0) -> T {
+fn new_test(name: const u8[:], level: i64 = 0) -> T {
     var t = T {
         name: [],
         failed: false,
@@ -97,10 +93,6 @@ fn test(name: const u8[:], level: i64 = 0) -> T {
     };
     t.name.append(name);
     return t;
-}
-
-fn new_test(name: const u8[:], level: i64 = 0) -> T {
-    return test(name, level);
 }
 
 // Diagnostics registration
@@ -148,12 +140,8 @@ struct MockClock {
     now_us: i64 = 1700000000000000, // Deterministic epoch instant in microseconds
 }
 
-fn mock_clock(initial_us: i64 = 1700000000000000) -> MockClock {
-    return MockClock { now_us: initial_us };
-}
-
 fn new_mock_clock(initial_us: i64 = 1700000000000000) -> MockClock {
-    return mock_clock(initial_us);
+    return MockClock { now_us: initial_us };
 }
 
 fn advance_us(c: MockClock&, delta_us: i64) -> i64 {
@@ -181,13 +169,9 @@ struct FuzzRng {
     state: u64 = 0x853c49e6748fea9b,
 }
 
-fn fuzz_rng(seed: u64 = 0x853c49e6748fea9b) -> FuzzRng {
+fn new_fuzz_rng(seed: u64 = 0x853c49e6748fea9b) -> FuzzRng {
     let s = if seed == 0 { 0x853c49e6748fea9b } else { seed };
     return FuzzRng { state: s };
-}
-
-fn new_fuzz_rng(seed: u64 = 0x853c49e6748fea9b) -> FuzzRng {
-    return fuzz_rng(seed);
 }
 
 fn next_u64(rng: FuzzRng&) -> u64 {
@@ -535,6 +519,46 @@ fn require_bytes_eq(t: T&, got: const u8[:], want: const u8[:], label: const u8[
     return true;
 }
 
+fn require_ne<Val>(t: T&, got: Val, want: Val, label: const u8[:] = "") -> bool {
+    if !assert_ne(t, got, want, label) {
+        t.aborted = true;
+        return false;
+    }
+    return true;
+}
+
+fn require_gt<Val>(t: T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    if !assert_gt(t, got, bound, label) {
+        t.aborted = true;
+        return false;
+    }
+    return true;
+}
+
+fn require_ge<Val>(t: T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    if !assert_ge(t, got, bound, label) {
+        t.aborted = true;
+        return false;
+    }
+    return true;
+}
+
+fn require_lt<Val>(t: T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    if !assert_lt(t, got, bound, label) {
+        t.aborted = true;
+        return false;
+    }
+    return true;
+}
+
+fn require_le<Val>(t: T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    if !assert_le(t, got, bound, label) {
+        t.aborted = true;
+        return false;
+    }
+    return true;
+}
+
 // ---- subtest execution, table runner & suite lifecycle ---------------------
 
 fn run<F: fn(T&)>(test_context: T&, sub_name: const u8[:]) -> bool {
@@ -680,13 +704,9 @@ type test::Verbosity = wing::Verbosity;
 type test::MockClock = wing::MockClock;
 type test::FuzzRng = wing::FuzzRng;
 
-fn test::runner(suite_name: const u8[:], verbosity: Verbosity = Verbosity.Normal) -> Runner { return wing::runner(suite_name, verbosity); }
 fn test::new_runner(suite_name: const u8[:], verbosity: Verbosity = Verbosity.Normal) -> Runner { return wing::new_runner(suite_name, verbosity); }
-fn test::test(name: const u8[:]) -> T { return wing::test(name); }
 fn test::new_test(name: const u8[:], level: i64 = 0) -> T { return wing::new_test(name, level); }
-fn test::mock_clock(initial_us: i64 = 1700000000000000) -> MockClock { return wing::mock_clock(initial_us); }
 fn test::new_mock_clock(initial_us: i64 = 1700000000000000) -> MockClock { return wing::new_mock_clock(initial_us); }
-fn test::fuzz_rng(seed: u64 = 0x853c49e6748fea9b) -> FuzzRng { return wing::fuzz_rng(seed); }
 fn test::new_fuzz_rng(seed: u64 = 0x853c49e6748fea9b) -> FuzzRng { return wing::new_fuzz_rng(seed); }
 
 fn test::advance_us(c: MockClock&, delta_us: i64) -> i64 { return wing::advance_us(c, delta_us); }
@@ -810,6 +830,26 @@ fn ::require_eq<Val>(t: wing::T&, got: Val, want: Val, label: const u8[:] = "") 
 
 fn ::require_bytes_eq(t: wing::T&, got: const u8[:], want: const u8[:], label: const u8[:] = "") -> bool {
     return wing::require_bytes_eq(t, got, want, label);
+}
+
+fn ::require_ne<Val>(t: wing::T&, got: Val, want: Val, label: const u8[:] = "") -> bool {
+    return wing::require_ne(t, got, want, label);
+}
+
+fn ::require_gt<Val>(t: wing::T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    return wing::require_gt(t, got, bound, label);
+}
+
+fn ::require_ge<Val>(t: wing::T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    return wing::require_ge(t, got, bound, label);
+}
+
+fn ::require_lt<Val>(t: wing::T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    return wing::require_lt(t, got, bound, label);
+}
+
+fn ::require_le<Val>(t: wing::T&, got: Val, bound: Val, label: const u8[:] = "") -> bool {
+    return wing::require_le(t, got, bound, label);
 }
 
 fn ::skip(t: wing::T&, reason: const u8[:] = "") {
