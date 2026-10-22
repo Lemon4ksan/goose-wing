@@ -4,6 +4,7 @@
 namespace wing;
 
 // --- Session UFCS bridges ---
+
 fn ::set_base_url(session: wing::Session&, url: const u8[:]) { wing::set_base_url(session, url); }
 fn ::set_profile(session: wing::Session&, profile: wing::Profile) { wing::set_profile(session, profile); }
 fn ::set_proxy(session: wing::Session&, proxy_url: const u8[:]) { wing::set_proxy(session, proxy_url); }
@@ -53,6 +54,7 @@ fn ::delete<BuilderFn: fn(wing::Request&)>(session: wing::Session&, url: const u
 }
 
 // --- Request UFCS bridges ---
+
 fn ::header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::header(req, name, value); }
 fn ::set_header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::set_header(req, name, value); }
 fn ::bearer(req: wing::Request&, token: const u8[:]) { wing::bearer(req, token); }
@@ -67,6 +69,7 @@ fn ::json<T>(req: wing::Request&, payload: const T&) { wing::json(req, payload);
 fn ::set_json<T>(req: wing::Request&, payload: const T&) { wing::set_json(req, payload); }
 
 // --- Response & Error UFCS bridges ---
+
 fn ::ok(err: const wing::Error&) -> bool { return wing::ok(err); }
 fn ::is_success(res: const wing::Response&) -> bool { return wing::is_success(res); }
 fn ::is_redirect(res: const wing::Response&) -> bool { return wing::is_redirect(res); }
@@ -76,6 +79,7 @@ fn ::json<T>(res: const wing::Response&, out: T&) -> wing::Error { return wing::
 fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing::decode_json<T>(res); }
 
 // --- CookieJar UFCS bridges ---
+
 fn ::set(jar: wing::CookieJar&, name: const u8[:], value: const u8[:], domain: const u8[:], path: const u8[:]) {
     wing::set(jar, name, value, domain, path);
 }
@@ -123,6 +127,7 @@ fn ::import_json(jar: wing::CookieJar&, target_url: const u8[:], json_text: cons
 }
 
 // --- Time & Duration UFCS bridges ---
+
 fn ::as_nanos(dur: wing::Duration) -> i64 { return wing::as_nanos(dur); }
 fn ::as_micros(dur: wing::Duration) -> i64 { return wing::as_micros(dur); }
 fn ::as_millis(dur: wing::Duration) -> i64 { return wing::as_millis(dur); }
@@ -148,6 +153,7 @@ fn ::div(dur: wing::Duration, factor: i64) -> wing::Duration { return wing::div(
 fn ::abs(dur: wing::Duration) -> wing::Duration { return wing::abs(dur); }
 
 // Goose stdlib naming conventions (no is_ prefix) and compatibility aliases
+
 fn ::zero(dur: wing::Duration) -> bool { return wing::zero(dur); }
 fn ::is_zero(dur: wing::Duration) -> bool { return wing::is_zero(dur); }
 fn ::negative(dur: wing::Duration) -> bool { return wing::negative(dur); }
@@ -160,6 +166,7 @@ fn ::round(dur: wing::Duration, step_dur: wing::Duration) -> wing::Duration { re
 fn ::format<B>(out: B&, dur: wing::Duration) { wing::format(out, dur); }
 
 // Time inspectors
+
 fn ::year(time_val: wing::Time) -> i64 { return wing::year(time_val); }
 fn ::month(time_val: wing::Time) -> wing::Month { return wing::month(time_val); }
 fn ::month_number(time_val: wing::Time) -> i64 { return wing::month_number(time_val); }
@@ -178,6 +185,7 @@ fn ::zero(time_val: wing::Time) -> bool { return wing::zero(time_val); }
 fn ::is_zero(time_val: wing::Time) -> bool { return wing::is_zero(time_val); }
 
 // Time arithmetic
+
 fn ::add(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::add(time_val, dur); }
 fn ::sub(time_val: wing::Time, other_time: wing::Time) -> wing::Duration { return wing::sub(time_val, other_time); }
 fn ::sub(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::sub(time_val, dur); }
@@ -192,12 +200,14 @@ fn ::truncate(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return 
 fn ::round(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::round(time_val, dur); }
 
 // Timezones
+
 fn ::utc(time_val: wing::Time) -> wing::Time { return wing::utc(time_val); }
 fn ::in_offset(time_val: wing::Time, tz_offset_seconds: i32) -> wing::Time { return wing::in_offset(time_val, tz_offset_seconds); }
 fn ::in_tz(time_val: wing::Time, hours_offset: i64, minutes_offset: i64 = 0) -> wing::Time { return wing::in_tz(time_val, hours_offset, minutes_offset); }
 fn ::tz_offset(time_val: wing::Time) -> i32 { return wing::tz_offset(time_val); }
 
 // Calendar Math & Navigation
+
 fn ::add_months_clamped(time_val: wing::Time, months_count: i64) -> wing::Time { return wing::add_months_clamped(time_val, months_count); }
 fn ::add_years_clamped(time_val: wing::Time, years_count: i64) -> wing::Time { return wing::add_years_clamped(time_val, years_count); }
 fn ::days_in_month(time_val: wing::Time) -> i64 { return wing::days_in_month(time_val); }
@@ -213,20 +223,24 @@ fn ::start_of_year(time_val: wing::Time) -> wing::Time { return wing::start_of_y
 fn ::end_of_year(time_val: wing::Time) -> wing::Time { return wing::end_of_year(time_val); }
 
 // Formatting
+
 fn ::format_rfc3339<B>(out: B&, time_val: wing::Time) { wing::format_rfc3339(out, time_val); }
 fn ::format_rfc3339_nano<B>(out: B&, time_val: wing::Time) { wing::format_rfc3339_nano(out, time_val); }
 fn ::format_http<B>(out: B&, time_val: wing::Time) { wing::format_http(out, time_val); }
 
 // Stopwatch
+
 fn ::elapsed(watch: const wing::Stopwatch&) -> wing::Duration { return wing::elapsed(watch); }
 fn ::restart(watch: wing::Stopwatch&) -> wing::Duration { return wing::restart(watch); }
 
 // Deadline Primitives
+
 fn ::expired(deadline_val: const wing::Deadline&) -> bool { return wing::expired(deadline_val); }
 fn ::is_expired(deadline_val: const wing::Deadline&) -> bool { return wing::is_expired(deadline_val); }
 fn ::remaining(deadline_val: const wing::Deadline&) -> wing::Duration { return wing::remaining(deadline_val); }
 
 // Policy Bridges (Backoff & RateLimiter)
+
 fn ::delay(backoff: const wing::Backoff&, attempt: i64) -> wing::Duration { return wing::delay(backoff, attempt); }
 fn ::allow(limiter: wing::RateLimiter&) -> bool { return wing::allow(limiter); }
 
@@ -323,12 +337,12 @@ fn ::canonical_cookie(name: const u8[:], val: const u8[:]) -> wing::CanonicalCoo
     return wing::canonical_cookie(name, val);
 }
 
-fn ::set(jar: wing::CanonicalCookieJar&, c: wing::CanonicalCookie, now_us: i64) -> bool {
-    return wing::set(jar, c, now_us);
+fn ::set(jar: wing::CanonicalCookieJar&, cookie_val: wing::CanonicalCookie, now_us: i64) -> bool {
+    return wing::set(jar, cookie_val, now_us);
 }
 
-fn ::insert(jar: wing::CanonicalCookieJar&, c: wing::CanonicalCookie, now_us: i64) -> bool {
-    return wing::insert(jar, c, now_us);
+fn ::insert(jar: wing::CanonicalCookieJar&, cookie_val: wing::CanonicalCookie, now_us: i64) -> bool {
+    return wing::insert(jar, cookie_val, now_us);
 }
 
 fn ::get(
@@ -362,4 +376,3 @@ fn ::export_json<B>(jar: const wing::CanonicalCookieJar&, out: B&) {
 fn ::import_json(jar: wing::CanonicalCookieJar&, json_text: const u8[:], now_us: i64) -> i64 {
     return wing::import_canonical_json(jar, json_text, now_us);
 }
-

@@ -4,7 +4,7 @@ namespace wing;
 
 import std;
 
-// --- Structural & Security Limits (Chromium CookieMonster & RFC 6265bis) ---
+// ---- architectural limits ----
 
 // Maximum cookie lifetime capped at 400 days (kMinutesIn400Days = 576000 minutes).
 let K_MINUTES_IN_400_DAYS: i64 = 576000;
@@ -44,7 +44,7 @@ let K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES: i64 = 10240; // 10 KB quota
 let K_COMMIT_INTERVAL_MS: i64 = 30000;    // 30 seconds
 let K_COMMIT_AFTER_BATCH_SIZE: i64 = 512; // 512 mutations
 
-// --- Enumerations ---
+// ---- same-site enumeration ----
 
 // RFC 6265bis SameSite mode.
 enum CookieSameSite {
@@ -54,8 +54,8 @@ enum CookieSameSite {
     None,    // Permitted cross-site, strictly requires Secure flag
 }
 
-fn same_site_to_string(s: CookieSameSite) -> const u8[:] {
-    return match s {
+fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
+    return match same_site_mode {
         Default => "Default",
         Lax => "Lax",
         Strict => "Strict",
@@ -70,6 +70,8 @@ fn parse_cookie_same_site(val: const u8[:]) -> CookieSameSite {
     return CookieSameSite.Default;
 }
 
+// ---- priority enumeration ----
+
 // Retention priority level during memory GC (cookie_constants.h).
 enum CookiePriority {
     Low,
@@ -77,8 +79,8 @@ enum CookiePriority {
     High,
 }
 
-fn priority_to_string(p: CookiePriority) -> const u8[:] {
-    return match p {
+fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
+    return match priority_level {
         Low => "Low",
         Medium => "Medium",
         High => "High",
@@ -91,6 +93,8 @@ fn parse_cookie_priority(val: const u8[:]) -> CookiePriority {
     return CookiePriority.Medium;
 }
 
+// ---- source scheme enumeration ----
+
 // Origin-Bound Cookies (OBC) source scheme.
 enum CookieSourceScheme {
     Unset,
@@ -98,13 +102,15 @@ enum CookieSourceScheme {
     Secure,
 }
 
-fn source_scheme_to_string(s: CookieSourceScheme) -> const u8[:] {
-    return match s {
+fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
+    return match source_scheme {
         Unset => "Unset",
         NonSecure => "NonSecure",
         Secure => "Secure",
     };
 }
+
+// ---- deletion cause enumeration ----
 
 // Deletion cause taxonomy for telemetry and persistence (Chromium CookieMonster).
 enum CookieDeleteCause {
@@ -121,8 +127,8 @@ enum CookieDeleteCause {
     NON_SECURE,
 }
 
-fn delete_cause_code(c: CookieDeleteCause) -> i64 {
-    return match c {
+fn delete_cause_code(delete_cause: CookieDeleteCause) -> i64 {
+    return match delete_cause {
         UNKNOWN => 0,
         EXPIRED => 1,
         OVERWRITE => 2,
@@ -137,8 +143,8 @@ fn delete_cause_code(c: CookieDeleteCause) -> i64 {
     };
 }
 
-fn delete_cause_to_string(c: CookieDeleteCause) -> const u8[:] {
-    return match c {
+fn delete_cause_to_string(delete_cause: CookieDeleteCause) -> const u8[:] {
+    return match delete_cause {
         UNKNOWN => "UNKNOWN",
         EXPIRED => "EXPIRED",
         OVERWRITE => "OVERWRITE",

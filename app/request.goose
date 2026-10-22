@@ -18,29 +18,29 @@ struct Request {
     body: u8[>..] = [],
 }
 
-// --- Overloaded JSON field writers for compile-time struct reflection ---
+// ---- json reflection writers ----
 
-fn write_json_field(out: u8[>..]&, v: const u8[:]) {
-    json::format_string(out, v);
+fn write_json_field(out: u8[>..]&, val_str: const u8[:]) {
+    json::format_string(out, val_str);
 }
 
-fn write_json_field(out: u8[>..]&, v: i64) {
-    json::format_int(out, v);
+fn write_json_field(out: u8[>..]&, val_i64: i64) {
+    json::format_int(out, val_i64);
 }
 
-fn write_json_field(out: u8[>..]&, v: i32) {
-    json::format_int(out, v);
+fn write_json_field(out: u8[>..]&, val_i32: i32) {
+    json::format_int(out, val_i32);
 }
 
-fn write_json_field(out: u8[>..]&, v: f64) {
-    json::format_number(out, v);
+fn write_json_field(out: u8[>..]&, val_f64: f64) {
+    json::format_number(out, val_f64);
 }
 
-fn write_json_field(out: u8[>..]&, v: bool) {
-    json::format_bool(out, v);
+fn write_json_field(out: u8[>..]&, val_bool: bool) {
+    json::format_bool(out, val_bool);
 }
 
-// --- Request Factories (Standalone & Trailing Closure) ---
+// ---- request factories ----
 
 fn new_request(method: const u8[:], url: const u8[:]) -> Request {
     var req = Request { .. };
@@ -72,13 +72,13 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
     return new_request("POST", url, F);
 }
 
-// --- UFCS Request Mutators (work identically inside `{ req => ... }` and outside) ---
+// ---- ufcs request mutators ----
 
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
-    for &h in req.headers {
-        if eq_ascii_fold(h.name[..], name) {
-            h.value.clear();
-            h.value.append(value);
+    for &header_entry in req.headers {
+        if eq_ascii_fold(header_entry.name[..], name) {
+            header_entry.value.clear();
+            header_entry.value.append(value);
             return;
         }
     }
@@ -92,19 +92,19 @@ fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
 }
 
 fn bearer(req: Request&, token: const u8[:]) {
-    var h = HeaderItem { .. };
-    h.name.append("Authorization");
-    h.value.append("Bearer ");
-    h.value.append(token);
+    var auth_header = HeaderItem { .. };
+    auth_header.name.append("Authorization");
+    auth_header.value.append("Bearer ");
+    auth_header.value.append(token);
     for &existing in req.headers {
         if eq_ascii_fold(existing.name[..], "Authorization") {
             existing.value.clear();
-            existing.value.append(h.value[..]);
+            existing.value.append(auth_header.value[..]);
             return;
         }
     }
     if req.headers.len < 32 {
-        req.headers.push(h);
+        req.headers.push(auth_header);
     }
 }
 
@@ -114,10 +114,10 @@ fn set_bearer(req: Request&, token: const u8[:]) {
 
 fn query(req: Request&, key: const u8[:], value: const u8[:]) {
     if req.query_params.len < 16 {
-        var q = QueryItem { .. };
-        q.key.append(key);
-        q.value.append(value);
-        req.query_params.push(q);
+        var param_item = QueryItem { .. };
+        param_item.key.append(key);
+        param_item.value.append(value);
+        req.query_params.push(param_item);
     }
 }
 
@@ -163,7 +163,7 @@ fn set_json<T>(req: Request&, payload: const T&) {
     json(req, payload);
 }
 
-// --- Composable Middleware & Signers (operate on Request& before session.do) ---
+// ---- middleware & signers ----
 
 fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
     header(req, "X-Trace-Id", trace_id);

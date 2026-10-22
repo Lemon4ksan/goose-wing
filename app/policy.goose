@@ -4,8 +4,6 @@ namespace wing;
 import std;
 import core.time;
 
-// --- Exponential Backoff ---
-
 // Exponential backoff policy for retrying failed network requests.
 struct Backoff {
     base_ns: i64 = 100 * MILLISECOND, // Base initial retry delay in nanoseconds.

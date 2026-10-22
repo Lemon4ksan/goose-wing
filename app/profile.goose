@@ -15,25 +15,29 @@ struct HeaderItem {
     value: u8[..256] = [],
 }
 
+// ---- header item & ascii helpers ----
+
 fn make_header(name: const u8[:], value: const u8[:]) -> HeaderItem {
-    var h = HeaderItem { .. };
-    h.name.append(name);
-    h.value.append(value);
-    return h;
+    var header_item = HeaderItem { .. };
+    header_item.name.append(name);
+    header_item.value.append(value);
+    return header_item;
 }
 
-fn eq_ascii_fold(a: const u8[:], b: const u8[:]) -> bool {
-    guard a.len == b.len else { return false; }
-    for i in a.len {
-        let ca = if a[i] >= 'A' && a[i] <= 'Z' { a[i] + 32 } else { a[i] };
-        let cb = if b[i] >= 'A' && b[i] <= 'Z' { b[i] + 32 } else { b[i] };
-        if ca != cb { return false; }
+fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
+    guard str_a.len == str_b.len else { return false; }
+    for char_idx in str_a.len {
+        let char_a = if str_a[char_idx] >= 'A' && str_a[char_idx] <= 'Z' { str_a[char_idx] + 32 } else { str_a[char_idx] };
+        let char_b = if str_b[char_idx] >= 'A' && str_b[char_idx] <= 'Z' { str_b[char_idx] + 32 } else { str_b[char_idx] };
+        if char_a != char_b { return false; }
     }
     return true;
 }
 
-fn profile_user_agent(p: Profile) -> const u8[:] {
-    return match p {
+// ---- profile user-agents ----
+
+fn profile_user_agent(profile: Profile) -> const u8[:] {
+    return match profile {
         None => "goose-wing/0.1",
         Chrome131 => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         Firefox133 => "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
@@ -41,8 +45,8 @@ fn profile_user_agent(p: Profile) -> const u8[:] {
     };
 }
 
-fn profile_name(p: Profile) -> const u8[:] {
-    return match p {
+fn profile_name(profile: Profile) -> const u8[:] {
+    return match profile {
         None => "None",
         Chrome131 => "Chrome131",
         Firefox133 => "Firefox133",

@@ -22,87 +22,92 @@ struct Session {
     jar: CookieJar = CookieJar { .. },
 }
 
-// --- Session Factories ---
+// ---- session factories ----
 
 fn new_session() -> Session {
     return Session { .. };
 }
 
 fn new_session(cfg: SessionConfig) -> Session {
-    var s = Session {
+    var session = Session {
         profile: cfg.profile,
         timeout_ms: cfg.timeout_ms,
         follow_redirects: cfg.follow_redirects,
         ..
     };
-    s.base_url.append(cfg.base_url);
-    s.proxy_url.append(cfg.proxy_url);
-    s.jar.enabled = cfg.cookie_jar;
-    return s;
+    session.base_url.append(cfg.base_url);
+    session.proxy_url.append(cfg.proxy_url);
+    session.jar.enabled = cfg.cookie_jar;
+    return session;
 }
 
 fn new_session(base_url: const u8[:]) -> Session {
-    var s = Session { .. };
-    s.base_url.append(base_url);
-    return s;
+    var session = Session { .. };
+    session.base_url.append(base_url);
+    return session;
 }
 
 fn new_session<F: fn(Session&)>(base_url: const u8[:]) -> Session {
-    var s = new_session(base_url);
-    F(&s);
-    return s;
+    var session = new_session(base_url);
+    F(&session);
+    return session;
 }
 
 fn new_session<F: fn(Session&)>() -> Session {
-    var s = new_session();
-    F(&s);
-    return s;
+    var session = new_session();
+    F(&session);
+    return session;
 }
 
-// --- UFCS Session Mutators & Accessors ---
+// ---- ufcs session mutators & accessors ----
 
-fn set_base_url(s: Session&, url: const u8[:]) {
-    s.base_url.clear();
-    s.base_url.append(url);
+fn set_base_url(session: Session&, url: const u8[:]) {
+    session.base_url.clear();
+    session.base_url.append(url);
 }
 
-fn set_profile(s: Session&, p: Profile) {
-    s.profile = p;
+fn set_profile(session: Session&, profile: Profile) {
+    session.profile = profile;
 }
 
-fn set_proxy(s: Session&, proxy_url: const u8[:]) {
-    s.proxy_url.clear();
-    s.proxy_url.append(proxy_url);
+fn set_proxy(session: Session&, proxy_url: const u8[:]) {
+    session.proxy_url.clear();
+    session.proxy_url.append(proxy_url);
 }
 
-fn set_timeout_ms(s: Session&, ms: i64) {
-    s.timeout_ms = ms;
+fn set_timeout_ms(session: Session&, ms: i64) {
+    session.timeout_ms = ms;
 }
 
-fn set_cookie(s: Session&, name: const u8[:], value: const u8[:]) {
+fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
     var domain: u8[..128] = [];
     var path: u8[..256] = "/";
-    if s.base_url.len > 0 {
-        let u = parse_cookie_url(s.base_url[..]);
-        domain.append(u.host[..]);
-        if u.path.len > 0 { path.clear(); path.append(u.path[..]); }
+    if session.base_url.len > 0 {
+        let parsed_url = parse_cookie_url(session.base_url[..]);
+        domain.append(parsed_url.host[..]);
+        if parsed_url.path.len > 0 { path.clear(); path.append(parsed_url.path[..]); }
     }
-    set(s.jar, name, value, domain[..], path[..]);
+    set(session.jar, name, value, domain[..], path[..]);
 }
 
-fn cookie(s: const Session&, name: const u8[:]) -> const u8[:] {
-    return get(s.jar, s.base_url[..], name);
+fn cookie(session: const Session&, name: const u8[:]) -> const u8[:] {
+    return get(session.jar, session.base_url[..], name);
 }
 
-fn default_header(s: Session&, name: const u8[:], value: const u8[:]) {
-    if s.default_headers.len < 16 {
-        s.default_headers.push(make_header(name, value));
+fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
+    if session.default_headers.len < 16 {
+        session.default_headers.push(make_header(name, value));
     }
 }
 
-// --- URL Resolution Helper ---
+// ---- url resolution helper ----
 
-fn build_effective_url(base_url: const u8[:], req_url: const u8[:], query_params: const QueryItem[:], out: u8[..512]&) {
+fn build_effective_url(
+    base_url: const u8[:],
+    req_url: const u8[:],
+    query_params: const QueryItem[:],
+    out: u8[..512]&
+) {
     out.clear();
     if req_url.len >= 7 && (req_url[..7] == "http://" || (req_url.len >= 8 && req_url[..8] == "https://")) {
         out.append(req_url);
@@ -115,24 +120,24 @@ fn build_effective_url(base_url: const u8[:], req_url: const u8[:], query_params
     }
 
     if query_params.len > 0 {
-        var has_q = false;
-        for c in out {
-            if c == '?' { has_q = true; break; }
+        var has_query_mark = false;
+        for char_byte in out {
+            if char_byte == '?' { has_query_mark = true; break; }
         }
-        for &q, idx in query_params {
-            if idx == 0 && !has_q {
+        for &query_item, param_idx in query_params {
+            if param_idx == 0 && !has_query_mark {
                 out.push('?');
             } else {
                 out.push('&');
             }
-            out.append(q.key[..]);
+            out.append(query_item.key[..]);
             out.push('=');
-            out.append(q.value[..]);
+            out.append(query_item.value[..]);
         }
     }
 }
 
-// --- Core Execution Pipeline (`session.do` & Express Verbs) ---
+// ---- core execution pipeline ----
 
 fn do(session: Session&, req: const Request&) -> Response, Error {
     var resp = Response { status_code: 200, .. };
@@ -155,11 +160,11 @@ fn do(session: Session&, req: const Request&) -> Response, Error {
         }
     }
 
-    for &dh in session.default_headers {
-        print("       ", dh.name, ": ", dh.value);
+    for &default_header_entry in session.default_headers {
+        print("       ", default_header_entry.name, ": ", default_header_entry.value);
     }
-    for &h in req.headers {
-        print("       ", h.name, ": ", h.value);
+    for &header_entry in req.headers {
+        print("       ", header_entry.name, ": ", header_entry.value);
     }
     if req.body.len > 0 {
         print("       Body (", req.body.len, " bytes): ", req.body);
@@ -179,48 +184,43 @@ fn do<F: fn(Request&)>(session: Session&, req: const Request&) -> Response, Erro
     return do(session, modified);
 }
 
-// Express GET (plain)
+// ---- express verbs ----
+
 fn get(session: Session&, url: const u8[:]) -> Response, Error {
     let req = new_request("GET", url);
     return do(session, req);
 }
 
-// Express GET (with trailing closure)
 fn get<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Error {
     var req = new_request("GET", url);
     F(&req);
     return do(session, req);
 }
 
-// Express POST (with trailing closure)
 fn post<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Error {
     var req = new_request("POST", url);
     F(&req);
     return do(session, req);
 }
 
-// Express POST JSON (one-liner)
 fn post_json<T>(session: Session&, url: const u8[:], payload: const T&) -> Response, Error {
     var req = new_request("POST", url);
     json(req, payload);
     return do(session, req);
 }
 
-// Express PUT (with trailing closure)
 fn put<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Error {
     var req = new_request("PUT", url);
     F(&req);
     return do(session, req);
 }
 
-// Express PUT JSON (one-liner)
 fn put_json<T>(session: Session&, url: const u8[:], payload: const T&) -> Response, Error {
     var req = new_request("PUT", url);
     json(req, payload);
     return do(session, req);
 }
 
-// Express DELETE (plain & trailing closure)
 fn delete(session: Session&, url: const u8[:]) -> Response, Error {
     let req = new_request("DELETE", url);
     return do(session, req);

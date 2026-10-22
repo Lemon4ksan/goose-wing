@@ -8,12 +8,14 @@ import cookie.constants;
 import cookie.canonical;
 import cookie.psl;
 
-// Checks whether s contains prohibited ASCII Control Characters (CTLs: %x00-08 / %x0A-1F / %x7F).
+// ---- control characters & date tokens ----
+
+// Checks whether string contains prohibited ASCII Control Characters (CTLs: %x00-08 / %x0A-1F / %x7F).
 // RFC 6265bis §5.5 Step 1 & §5.7 Step 3 / Chromium Issue #1420 & #1531.
 // Note: HTAB (%x09) is non-prohibited horizontal whitespace.
-fn has_prohibited_cookie_ctl(s: const u8[:]) -> bool {
-    for b in s {
-        if (b <= 0x08) || (b >= 0x0A && b <= 0x1F) || b == 0x7F {
+fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
+    for char_byte in cookie_str {
+        if (char_byte <= 0x08) || (char_byte >= 0x0A && char_byte <= 0x1F) || char_byte == 0x7F {
             return true;
         }
     }
@@ -22,32 +24,37 @@ fn has_prohibited_cookie_ctl(s: const u8[:]) -> bool {
 
 // RFC 6265 §5.1.1: delimiter characters for cookie-date tokenization.
 // delimiter = %x09 / %x20-2F / %x3B-40 / %x5B-60 / %x7B-7E
-fn is_cookie_date_delimiter(b: u8) -> bool {
-    return b == 0x09 || (b >= 0x20 && b <= 0x2F) || (b >= 0x3B && b <= 0x40) ||
-           (b >= 0x5B && b <= 0x60) || (b >= 0x7B && b <= 0x7E);
+fn is_cookie_date_delimiter(char_byte: u8) -> bool {
+    return char_byte == 0x09 ||
+           (char_byte >= 0x20 && char_byte <= 0x2F) ||
+           (char_byte >= 0x3B && char_byte <= 0x40) ||
+           (char_byte >= 0x5B && char_byte <= 0x60) ||
+           (char_byte >= 0x7B && char_byte <= 0x7E);
 }
 
 // Converts a 3-letter month prefix to a 1-based month number [1..12].
-fn parse_cookie_month_name(tok: const u8[:]) -> i64 {
-    guard tok.len >= 3 else { return 0; }
-    var b0 = if tok[0] >= 'A' && tok[0] <= 'Z' { tok[0] + 32 } else { tok[0] };
-    var b1 = if tok[1] >= 'A' && tok[1] <= 'Z' { tok[1] + 32 } else { tok[1] };
-    var b2 = if tok[2] >= 'A' && tok[2] <= 'Z' { tok[2] + 32 } else { tok[2] };
+fn parse_cookie_month_name(token: const u8[:]) -> i64 {
+    guard token.len >= 3 else { return 0; }
+    var char0 = if token[0] >= 'A' && token[0] <= 'Z' { token[0] + 32 } else { token[0] };
+    var char1 = if token[1] >= 'A' && token[1] <= 'Z' { token[1] + 32 } else { token[1] };
+    var char2 = if token[2] >= 'A' && token[2] <= 'Z' { token[2] + 32 } else { token[2] };
 
-    if b0 == 'j' && b1 == 'a' && b2 == 'n' { return 1; }
-    if b0 == 'f' && b1 == 'e' && b2 == 'b' { return 2; }
-    if b0 == 'm' && b1 == 'a' && b2 == 'r' { return 3; }
-    if b0 == 'a' && b1 == 'p' && b2 == 'r' { return 4; }
-    if b0 == 'm' && b1 == 'a' && b2 == 'y' { return 5; }
-    if b0 == 'j' && b1 == 'u' && b2 == 'n' { return 6; }
-    if b0 == 'j' && b1 == 'u' && b2 == 'l' { return 7; }
-    if b0 == 'a' && b1 == 'u' && b2 == 'g' { return 8; }
-    if b0 == 's' && b1 == 'e' && b2 == 'p' { return 9; }
-    if b0 == 'o' && b1 == 'c' && b2 == 't' { return 10; }
-    if b0 == 'n' && b1 == 'o' && b2 == 'v' { return 11; }
-    if b0 == 'd' && b1 == 'e' && b2 == 'c' { return 12; }
+    if char0 == 'j' && char1 == 'a' && char2 == 'n' { return 1; }
+    if char0 == 'f' && char1 == 'e' && char2 == 'b' { return 2; }
+    if char0 == 'm' && char1 == 'a' && char2 == 'r' { return 3; }
+    if char0 == 'a' && char1 == 'p' && char2 == 'r' { return 4; }
+    if char0 == 'm' && char1 == 'a' && char2 == 'y' { return 5; }
+    if char0 == 'j' && char1 == 'u' && char2 == 'n' { return 6; }
+    if char0 == 'j' && char1 == 'u' && char2 == 'l' { return 7; }
+    if char0 == 'a' && char1 == 'u' && char2 == 'g' { return 8; }
+    if char0 == 's' && char1 == 'e' && char2 == 'p' { return 9; }
+    if char0 == 'o' && char1 == 'c' && char2 == 't' { return 10; }
+    if char0 == 'n' && char1 == 'o' && char2 == 'v' { return 11; }
+    if char0 == 'd' && char1 == 'e' && char2 == 'c' { return 12; }
     return 0;
 }
+
+// ---- rfc 6265 date parser ----
 
 // Parses an RFC 6265 §5.1.1 cookie date string, returning microsecond UTC timestamp.
 // Implements 4-flag greedy token parsing, 2-digit year normalization, leap year checks,
@@ -67,88 +74,34 @@ fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
     var month: i64 = 0;
     var year: i64 = 0;
 
-    var at = 0;
-    while at < raw.len {
-        while at < raw.len && is_cookie_date_delimiter(raw[at]) { at++; }
-        if at >= raw.len { break; }
-        let tok_start = at;
-        while at < raw.len && !is_cookie_date_delimiter(raw[at]) { at++; }
-        let tok = raw[tok_start..at];
+    var scan_pos = 0;
+    while scan_pos < raw.len {
+        while scan_pos < raw.len && is_cookie_date_delimiter(raw[scan_pos]) { scan_pos++; }
+        if scan_pos >= raw.len { break; }
+        let token_start = scan_pos;
+        while scan_pos < raw.len && !is_cookie_date_delimiter(raw[scan_pos]) { scan_pos++; }
+        let token = raw[token_start..scan_pos];
 
-        // 1. Time token: 1*2DIGIT ":" 1*2DIGIT ":" 1*2DIGIT
-        if !found_time && tok.len >= 5 {
-            var c1 = -1;
-            var c2 = -1;
-            for i in tok.len {
-                if tok[i] == ':' {
-                    if c1 < 0 { c1 = i; } else if c2 < 0 { c2 = i; break; }
-                }
-            }
-            if c1 > 0 && c2 > c1 {
-                let h_val, h_ok = parse_int(tok[..c1]);
-                let m_val, m_ok = parse_int(tok[c1 + 1..c2]);
-                let s_val, s_ok = parse_int(tok[c2 + 1..]);
-                if h_ok && m_ok && s_ok {
-                    hour = h_val;
-                    minute = m_val;
-                    second = s_val;
-                    found_time = true;
-                    continue;
-                }
-            }
+        if !found_time && try_parse_cookie_time(token, hour, minute, second) {
+            found_time = true;
+            continue;
         }
-
-        // 2. Day of month token: 1*2DIGIT
-        if !found_dom {
-            var all_digits = true;
-            for b in tok {
-                if b < '0' || b > '9' { all_digits = false; break; }
-            }
-            if all_digits && (tok.len == 1 || tok.len == 2) {
-                let d_val, d_ok = parse_int(tok);
-                if d_ok && d_val >= 1 && d_val <= 31 {
-                    day = d_val;
-                    found_dom = true;
-                    continue;
-                }
-            }
+        if !found_dom && try_parse_cookie_dom(token, day) {
+            found_dom = true;
+            continue;
         }
-
-        // 3. Month token: 3+ alphabetic characters
-        if !found_month {
-            let m_val = parse_cookie_month_name(tok);
-            if m_val > 0 {
-                month = m_val;
-                found_month = true;
-                continue;
-            }
+        if !found_month && try_parse_cookie_month(token, month) {
+            found_month = true;
+            continue;
         }
-
-        // 4. Year token: 2*4DIGIT
-        if !found_year {
-            var all_digits = true;
-            for b in tok {
-                if b < '0' || b > '9' { all_digits = false; break; }
-            }
-            if all_digits && (tok.len == 2 || tok.len == 4) {
-                let y_val, y_ok = parse_int(tok);
-                if y_ok {
-                    year = y_val;
-                    found_year = true;
-                    continue;
-                }
-            }
+        if !found_year && try_parse_cookie_year(token, year) {
+            found_year = true;
+            continue;
         }
     }
 
-    // Step 3: 2-digit year normalization per RFC 6265 §5.1.1
-    if year >= 70 && year <= 99 {
-        year += 1900;
-    } else if year >= 0 && year <= 69 {
-        year += 2000;
-    }
+    year = normalize_cookie_year(year);
 
-    // Step 5: Calendar boundaries validation
     guard found_time && found_dom && found_month && found_year else { return 0, false; }
     guard month >= 1 && month <= 12 else { return 0, false; }
     guard day >= 1 && day <= days_in_month(year, month) else { return 0, false; }
@@ -159,6 +112,8 @@ fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
     let total_sec = total_days * 86400 + hour * 3600 + minute * 60 + second;
     return total_sec * 1000000, true; // Return microseconds UTC
 }
+
+// ---- set-cookie header parser ----
 
 // Ingestion Pipeline: Parses a Set-Cookie header field into CanonicalCookie.
 // Implements:
@@ -171,155 +126,50 @@ fn parse_canonical_set_cookie(
     header_val: const u8[:],
     default_domain: const u8[:],
     default_path: const u8[:],
-    now_us: i64
+    now_us: i64,
 ) -> CanonicalCookie, CookieDeleteCause, bool {
-    var c = CanonicalCookie { .. };
+    var parsed_cookie = CanonicalCookie { .. };
 
     // Step 1: Reject empty header or presence of prohibited CTLs
-    if header_val.len == 0 {
-        return c, CookieDeleteCause.UNKNOWN, false;
+    guard header_val.len > 0 else {
+        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
     if has_prohibited_cookie_ctl(header_val) {
-        return c, CookieDeleteCause.CONTROL_CHAR, false;
+        return parsed_cookie, CookieDeleteCause.CONTROL_CHAR, false;
     }
 
-    // Step 2: Separate name-value-pair from unparsed-attributes
-    var semi_pos = -1;
-    for i in header_val.len {
-        if header_val[i] == ';' { semi_pos = i; break; }
-    }
-    let name_val_part = if semi_pos >= 0 { header_val[..semi_pos] } else { header_val };
-    let unparsed_attrs = if semi_pos >= 0 { header_val[semi_pos + 1..] } else { "" };
-
-    // Step 3: Split name and value by first '='
-    var eq_pos = -1;
-    for i in name_val_part.len {
-        if name_val_part[i] == '=' { eq_pos = i; break; }
-    }
-    guard eq_pos >= 0 else { return c, CookieDeleteCause.UNKNOWN, false; }
-
-    let raw_name = trim(name_val_part[..eq_pos]);
-    let raw_val = trim(name_val_part[eq_pos + 1..]);
-
-    guard raw_name.len > 0 else { return c, CookieDeleteCause.UNKNOWN, false; }
-
-    // Unified payload size limit (Issue #1340: name + value <= 4096 bytes)
-    if raw_name.len + raw_val.len > K_MAX_COOKIE_NAME_VAL_LEN {
-        return c, CookieDeleteCause.UNKNOWN, false;
+    // Step 2 & 3: Parse name-value-pair
+    let unparsed_attrs, payload_ok = parse_cookie_payload_pair(header_val, parsed_cookie);
+    guard payload_ok else {
+        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    c.name.append(raw_name);
-
-    // DQUOTE handling: quotes are PRESERVED in cookie-value per RFC 6265bis §5.6
-    c.value.append(raw_val);
-
-    c.domain.append(default_domain);
-    to_lower(c.domain[..]);
-    c.path.clear();
-    c.path.append(default_path);
-    c.host_only = true;
-    c.creation_utc = now_us;
-    c.last_access_utc = now_us;
-    c.last_update_utc = now_us;
-
-    var has_max_age = false;
+    parsed_cookie.domain.append(default_domain);
+    to_lower(parsed_cookie.domain[..]);
+    parsed_cookie.path.clear();
+    parsed_cookie.path.append(default_path);
+    parsed_cookie.host_only = true;
+    parsed_cookie.creation_utc = now_us;
+    parsed_cookie.last_access_utc = now_us;
+    parsed_cookie.last_update_utc = now_us;
 
     // Step 4: Iterative unparsed-attributes loop
+    var has_max_age = false;
     if unparsed_attrs.len > 0 {
-        each_split(unparsed_attrs, ';') { raw_av =>
-            let av = trim(raw_av);
-            if av.len > 0 {
-                var attr_eq = -1;
-                for i in av.len {
-                    if av[i] == '=' { attr_eq = i; break; }
-                }
-                let a_name = if attr_eq >= 0 { trim(av[..attr_eq]) } else { av };
-                let a_val = if attr_eq >= 0 { trim(av[attr_eq + 1..]) } else { "" };
-
-                // Attribute value length limit: if > 1024, IGNORE this attribute only!
-                if a_val.len <= K_MAX_COOKIE_ATTR_VAL_LEN {
-                    if eq_ascii_fold(a_name, "httponly") {
-                        c.httponly = true;
-                    } else if eq_ascii_fold(a_name, "secure") {
-                        c.secure = true;
-                    } else if eq_ascii_fold(a_name, "partitioned") {
-                        c.partitioned = true;
-                    } else if eq_ascii_fold(a_name, "samesite") {
-                        c.same_site = parse_cookie_same_site(a_val);
-                    } else if eq_ascii_fold(a_name, "priority") {
-                        c.priority = parse_cookie_priority(a_val);
-                    } else if eq_ascii_fold(a_name, "domain") {
-                        if a_val.len > 0 && a_val[a_val.len - 1] != '.' {
-                            let clean_dom = if a_val[0] == '.' { a_val[1..] } else { a_val };
-                            c.domain.clear();
-                            c.domain.append(clean_dom);
-                            to_lower(c.domain[..]);
-                            c.host_only = false;
-                        }
-                    } else if eq_ascii_fold(a_name, "path") {
-                        if a_val.len > 0 && a_val[0] == '/' {
-                            c.path.clear();
-                            c.path.append(a_val);
-                        }
-                    } else if eq_ascii_fold(a_name, "max-age") {
-                        let ma_val, ma_ok = parse_int(a_val);
-                        if ma_ok {
-                            has_max_age = true;
-                            c.persistent = true;
-                            if ma_val <= 0 {
-                                // Expired overwrite
-                                c.expires_utc = now_us - 1000000;
-                            } else {
-                                var delta_us = ma_val * 1000000;
-                                if delta_us > K_MAX_COOKIE_AGE_US {
-                                    delta_us = K_MAX_COOKIE_AGE_US; // 400 days cap
-                                }
-                                c.expires_utc = now_us + delta_us;
-                            }
-                        }
-                    } else if eq_ascii_fold(a_name, "expires") {
-                        // Max-Age has absolute priority over Expires per RFC 6265 §5.3 Step 3
-                        if !has_max_age {
-                            let exp_us, exp_ok = parse_cookie_date_us(a_val);
-                            if exp_ok {
-                                c.persistent = true;
-                                if exp_us > now_us && (exp_us - now_us > K_MAX_COOKIE_AGE_US) {
-                                    c.expires_utc = now_us + K_MAX_COOKIE_AGE_US; // 400 days cap
-                                } else {
-                                    c.expires_utc = exp_us;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        each_split(unparsed_attrs, ';') { raw_attr =>
+            apply_parsed_cookie_attribute(parsed_cookie, raw_attr, has_max_age, now_us);
         };
     }
 
-    // Step 5: RFC 6265 §5.3 Step 5 & 6 Domain-attribute validation & PSL rejection
-    if !c.host_only {
-        // Step 5.1: If domain attribute value is a public suffix
-        if is_public_suffix_domain(c.domain[..]) {
-            if default_domain.len > 0 && eq_ascii_fold(c.domain[..], default_domain) {
-                // If domain attribute value matches the canonicalized request-host, convert to host-only
-                c.host_only = true;
-            } else {
-                // Ignore cookie entirely per RFC 6265 §5.3 Step 5
-                return c, CookieDeleteCause.UNKNOWN, false;
-            }
-        }
-
-        // Step 5.2: If canonicalized request-host does not domain-match domain-attribute-value
-        if !c.host_only && default_domain.len > 0 {
-            if !cookie_domain_match(default_domain, c.domain[..]) {
-                // Reject: host is not authorized to set cookie for this domain
-                return c, CookieDeleteCause.UNKNOWN, false;
-            }
-        }
+    // Step 5: Domain-attribute validation & PSL rejection
+    if !validate_parsed_cookie_domain(parsed_cookie, default_domain) {
+        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    return c, CookieDeleteCause.UNKNOWN, true;
+    return parsed_cookie, CookieDeleteCause.UNKNOWN, true;
 }
+
+// ---- cookie url parser ----
 
 // CanonicalCookieURL represents a dissected URL for cookie routing and origin binding.
 struct CanonicalCookieURL {
@@ -332,74 +182,296 @@ struct CanonicalCookieURL {
 
 // Parses an arbitrary HTTP/HTTPS URL into its CanonicalCookieURL components.
 fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
-    var u = CanonicalCookieURL { .. };
-    var rest = raw_url;
-    if starts_with(rest, "https://") {
-        u.scheme.append("https");
-        u.is_secure = true;
-        u.port = 443;
-        rest = rest[8..];
-    } else if starts_with(rest, "http://") {
-        u.scheme.append("http");
-        u.is_secure = false;
-        u.port = 80;
-        rest = rest[7..];
+    var parsed_url = CanonicalCookieURL { .. };
+    var rest_url = raw_url;
+
+    if starts_with(rest_url, "https://") {
+        parsed_url.scheme.append("https");
+        parsed_url.is_secure = true;
+        parsed_url.port = 443;
+        rest_url = rest_url[8..];
+    } else if starts_with(rest_url, "http://") {
+        parsed_url.scheme.append("http");
+        parsed_url.is_secure = false;
+        parsed_url.port = 80;
+        rest_url = rest_url[7..];
     }
 
     // Split host and path
+    let host_part, path_part = split_url_host_and_path(rest_url);
+
+    // Extract host and port handling IPv6 literals
+    extract_url_host_and_port(host_part, parsed_url.host, parsed_url.port);
+    to_lower(parsed_url.host[..]);
+
+    parsed_url.path.clear();
+    parsed_url.path.append(path_part);
+    return parsed_url;
+}
+
+// ---- internal implementation helpers ----
+
+fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i64&) -> bool {
+    guard token.len >= 5 else { return false; }
+    var colon_pos1 = -1;
+    var colon_pos2 = -1;
+    for char_idx in token.len {
+        if token[char_idx] == ':' {
+            if colon_pos1 < 0 { colon_pos1 = char_idx; }
+            else if colon_pos2 < 0 { colon_pos2 = char_idx; break; }
+        }
+    }
+    guard colon_pos1 > 0 && colon_pos2 > colon_pos1 else { return false; }
+
+    let hour_val, hour_ok = parse_int(token[..colon_pos1]);
+    let minute_val, minute_ok = parse_int(token[colon_pos1 + 1..colon_pos2]);
+    let second_val, second_ok = parse_int(token[colon_pos2 + 1..]);
+    guard hour_ok && minute_ok && second_ok else { return false; }
+
+    hour = hour_val;
+    minute = minute_val;
+    second = second_val;
+    return true;
+}
+
+fn try_parse_cookie_dom(token: const u8[:], day: i64&) -> bool {
+    guard token.len == 1 || token.len == 2 else { return false; }
+    for char_byte in token {
+        if char_byte < '0' || char_byte > '9' { return false; }
+    }
+    let day_val, day_ok = parse_int(token);
+    guard day_ok && day_val >= 1 && day_val <= 31 else { return false; }
+    day = day_val;
+    return true;
+}
+
+fn try_parse_cookie_month(token: const u8[:], month: i64&) -> bool {
+    let month_val = parse_cookie_month_name(token);
+    guard month_val > 0 else { return false; }
+    month = month_val;
+    return true;
+}
+
+fn try_parse_cookie_year(token: const u8[:], year: i64&) -> bool {
+    guard token.len == 2 || token.len == 4 else { return false; }
+    for char_byte in token {
+        if char_byte < '0' || char_byte > '9' { return false; }
+    }
+    let year_val, year_ok = parse_int(token);
+    guard year_ok else { return false; }
+    year = year_val;
+    return true;
+}
+
+fn normalize_cookie_year(year: i64) -> i64 {
+    if year >= 70 && year <= 99 { return year + 1900; }
+    if year >= 0 && year <= 69 { return year + 2000; }
+    return year;
+}
+
+fn parse_cookie_payload_pair(
+    header_val: const u8[:],
+    cookie_ref: CanonicalCookie&,
+) -> const u8[:], bool {
+    var semi_pos = -1;
+    for char_idx in header_val.len {
+        if header_val[char_idx] == ';' { semi_pos = char_idx; break; }
+    }
+    let name_val_part = if semi_pos >= 0 { header_val[..semi_pos] } else { header_val };
+    let unparsed_attrs = if semi_pos >= 0 { header_val[semi_pos + 1..] } else { "" };
+
+    var eq_pos = -1;
+    for char_idx in name_val_part.len {
+        if name_val_part[char_idx] == '=' { eq_pos = char_idx; break; }
+    }
+    guard eq_pos >= 0 else { return "", false; }
+
+    let raw_name = trim(name_val_part[..eq_pos]);
+    let raw_val = trim(name_val_part[eq_pos + 1..]);
+    guard raw_name.len > 0 else { return "", false; }
+
+    if raw_name.len + raw_val.len > K_MAX_COOKIE_NAME_VAL_LEN {
+        return "", false;
+    }
+
+    cookie_ref.name.append(raw_name);
+    cookie_ref.value.append(raw_val);
+    return unparsed_attrs, true;
+}
+
+fn apply_parsed_cookie_attribute(
+    cookie_ref: CanonicalCookie&,
+    raw_attr: const u8[:],
+    has_max_age: bool&,
+    now_us: i64,
+) {
+    let clean_attr = trim(raw_attr);
+    guard clean_attr.len > 0 else { return; }
+
+    var attr_eq_pos = -1;
+    for char_idx in clean_attr.len {
+        if clean_attr[char_idx] == '=' { attr_eq_pos = char_idx; break; }
+    }
+    let attr_name = if attr_eq_pos >= 0 { trim(clean_attr[..attr_eq_pos]) } else { clean_attr };
+    let attr_val = if attr_eq_pos >= 0 { trim(clean_attr[attr_eq_pos + 1..]) } else { "" };
+
+    // Attribute value length limit: if > 1024, ignore this attribute only
+    guard attr_val.len <= K_MAX_COOKIE_ATTR_VAL_LEN else { return; }
+
+    if eq_ascii_fold(attr_name, "httponly") {
+        cookie_ref.httponly = true;
+    } else if eq_ascii_fold(attr_name, "secure") {
+        cookie_ref.secure = true;
+    } else if eq_ascii_fold(attr_name, "partitioned") {
+        cookie_ref.partitioned = true;
+    } else if eq_ascii_fold(attr_name, "samesite") {
+        cookie_ref.same_site = parse_cookie_same_site(attr_val);
+    } else if eq_ascii_fold(attr_name, "priority") {
+        cookie_ref.priority = parse_cookie_priority(attr_val);
+    } else if eq_ascii_fold(attr_name, "domain") {
+        apply_parsed_domain_attribute(cookie_ref, attr_val);
+    } else if eq_ascii_fold(attr_name, "path") {
+        apply_parsed_path_attribute(cookie_ref, attr_val);
+    } else if eq_ascii_fold(attr_name, "max-age") {
+        apply_parsed_max_age_attribute(cookie_ref, attr_val, has_max_age, now_us);
+    } else if eq_ascii_fold(attr_name, "expires") {
+        apply_parsed_expires_attribute(cookie_ref, attr_val, has_max_age, now_us);
+    }
+}
+
+fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
+    guard attr_val.len > 0 && attr_val[attr_val.len - 1] != '.' else { return; }
+    let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
+    cookie_ref.domain.clear();
+    cookie_ref.domain.append(clean_domain);
+    to_lower(cookie_ref.domain[..]);
+    cookie_ref.host_only = false;
+}
+
+fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
+    guard attr_val.len > 0 && attr_val[0] == '/' else { return; }
+    cookie_ref.path.clear();
+    cookie_ref.path.append(attr_val);
+}
+
+fn apply_parsed_max_age_attribute(
+    cookie_ref: CanonicalCookie&,
+    attr_val: const u8[:],
+    has_max_age: bool&,
+    now_us: i64,
+) {
+    let max_age_val, max_age_ok = parse_int(attr_val);
+    guard max_age_ok else { return; }
+
+    has_max_age = true;
+    cookie_ref.persistent = true;
+    if max_age_val <= 0 {
+        // Expired overwrite
+        cookie_ref.expires_utc = now_us - 1000000;
+        return;
+    }
+
+    var delta_us = max_age_val * 1000000;
+    if delta_us > K_MAX_COOKIE_AGE_US {
+        delta_us = K_MAX_COOKIE_AGE_US; // 400 days cap
+    }
+    cookie_ref.expires_utc = now_us + delta_us;
+}
+
+fn apply_parsed_expires_attribute(
+    cookie_ref: CanonicalCookie&,
+    attr_val: const u8[:],
+    has_max_age: bool,
+    now_us: i64,
+) {
+    // Max-Age has absolute priority over Expires per RFC 6265 §5.3 Step 3
+    guard !has_max_age else { return; }
+
+    let expires_us, expires_ok = parse_cookie_date_us(attr_val);
+    guard expires_ok else { return; }
+
+    cookie_ref.persistent = true;
+    if expires_us > now_us && (expires_us - now_us > K_MAX_COOKIE_AGE_US) {
+        cookie_ref.expires_utc = now_us + K_MAX_COOKIE_AGE_US; // 400 days cap
+    } else {
+        cookie_ref.expires_utc = expires_us;
+    }
+}
+
+fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
+    guard !cookie_ref.host_only else { return true; }
+
+    // If domain attribute value is a public suffix
+    if public_suffix_domain(cookie_ref.domain[..]) {
+        if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
+            cookie_ref.host_only = true;
+            return true;
+        }
+        return false; // Public suffix rejected
+    }
+
+    // Host must domain-match specified domain attribute
+    if default_domain.len > 0 && !cookie_domain_match(default_domain, cookie_ref.domain[..]) {
+        return false;
+    }
+
+    return true;
+}
+
+fn split_url_host_and_path(rest_url: const u8[:]) -> const u8[:], const u8[:] {
     var slash_idx = -1;
-    for i in rest.len {
-        if rest[i] == '/' || rest[i] == '?' {
-            slash_idx = i;
+    for char_idx in rest_url.len {
+        if rest_url[char_idx] == '/' || rest_url[char_idx] == '?' {
+            slash_idx = char_idx;
             break;
         }
     }
-    let host_part = if slash_idx >= 0 { rest[..slash_idx] } else { rest };
-    let path_part = if slash_idx >= 0 && rest[slash_idx] == '/' {
-        var q_idx = -1;
-        for j in slash_idx..rest.len {
-            if rest[j] == '?' { q_idx = j; break; }
+    let host_part = if slash_idx >= 0 { rest_url[..slash_idx] } else { rest_url };
+    let path_part = if slash_idx >= 0 && rest_url[slash_idx] == '/' {
+        var query_idx = -1;
+        for scan_idx in slash_idx..rest_url.len {
+            if rest_url[scan_idx] == '?' { query_idx = scan_idx; break; }
         }
-        if q_idx >= 0 { rest[slash_idx..q_idx] } else { rest[slash_idx..] }
+        if query_idx >= 0 { rest_url[slash_idx..query_idx] } else { rest_url[slash_idx..] }
     } else {
         "/"
     };
+    return host_part, path_part;
+}
 
-    // Strip port if present from host, handling IPv6 literals "[::1]:port"
-    var bare_host = host_part;
-    if host_part.len > 0 && host_part[0] == '[' {
+fn extract_url_host_and_port<B>(host_part: const u8[:], bare_host_out: B&, port_out: i32&) {
+    bare_host_out.clear();
+    guard host_part.len > 0 else { return; }
+
+    if host_part[0] == '[' {
         var close_bracket = -1;
-        for i in host_part.len {
-            if host_part[i] == ']' { close_bracket = i; break; }
+        for char_idx in host_part.len {
+            if host_part[char_idx] == ']' { close_bracket = char_idx; break; }
         }
         if close_bracket > 0 {
-            bare_host = host_part[1..close_bracket];
+            bare_host_out.append(host_part[1..close_bracket]);
             if close_bracket + 1 < host_part.len && host_part[close_bracket + 1] == ':' {
-                let p_val, p_ok = parse_int(host_part[close_bracket + 2..]);
-                if p_ok && p_val > 0 && p_val <= 65535 {
-                    u.port = p_val as i32;
+                let port_val, port_ok = parse_int(host_part[close_bracket + 2..]);
+                if port_ok && port_val > 0 && port_val <= 65535 {
+                    port_out = port_val as i32;
                 }
             }
-        }
-    } else {
-        var colon_idx = -1;
-        for i in host_part.len {
-            if host_part[i] == ':' { colon_idx = i; break; }
-        }
-        if colon_idx >= 0 {
-            bare_host = host_part[..colon_idx];
-            let p_val, p_ok = parse_int(host_part[colon_idx + 1..]);
-            if p_ok && p_val > 0 && p_val <= 65535 {
-                u.port = p_val as i32;
-            }
+            return;
         }
     }
 
-    u.host.append(bare_host);
-    to_lower(u.host[..]);
+    var colon_idx = -1;
+    for char_idx in host_part.len {
+        if host_part[char_idx] == ':' { colon_idx = char_idx; break; }
+    }
+    if colon_idx >= 0 {
+        bare_host_out.append(host_part[..colon_idx]);
+        let port_val, port_ok = parse_int(host_part[colon_idx + 1..]);
+        if port_ok && port_val > 0 && port_val <= 65535 {
+            port_out = port_val as i32;
+        }
+        return;
+    }
 
-    u.path.clear();
-    u.path.append(path_part);
-    return u;
+    bare_host_out.append(host_part);
 }
-
