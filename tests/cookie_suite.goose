@@ -1,8 +1,5 @@
-// ============================================================================
-// tests/clean_room_cookie_suite.goose
 // Industrial Clean Room Verification Suite for CanonicalCookieJar via core/test
 // Conforming to RFC 6265, RFC 6265bis, CHIPS, Chromium CookieMonster, WPT & USENIX.
-// ============================================================================
 import std;
 import wing from "..";
 
