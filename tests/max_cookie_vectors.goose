@@ -152,6 +152,14 @@ fn run_ingestion_matrix(t: wing::T&) {
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
+            id: "DOM-03 (Multiple leading dots Domain=..example.com ignored -> host-only)",
+            url: "https://sub.example.com/", set_cookie: "k=v; Domain=..example.com", from_http: true,
+            expect_accepted: true, expect_name: "k", expect_val: "v",
+            expect_domain: "sub.example.com", expect_path: "/",
+            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            expect_persistent: false, expect_port: 443,
+        },
+        IngestionVector {
             id: "DOM-05 (Empty Domain= ignored -> host-only)",
             url: "https://example.com/", set_cookie: "k=v; Domain=", from_http: true,
             expect_accepted: true, expect_name: "k", expect_val: "v",
@@ -344,6 +352,68 @@ fn run_server_header_first_win(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 5. Database Load Sanitization (CTL-08) & Nameless Cookie Import
+// ----------------------------------------------------------------------------
+fn run_ctl_sanitization_and_nameless_import(t: wing::T&) {
+    let now_us = 1700000000000000;
+    var jar = wing::new_canonical_cookie_jar();
+
+    // 1. JSON import supporting nameless omnomnom cookies
+    var json_data: u8[..512] = [];
+    format(
+        json_data,
+        "[{\"name\":\"valid\",\"value\":\"ok\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":true},",
+        "{\"name\":\"\",\"value\":\"nameless_val\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":true}]"
+    );
+
+    let count = wing::import_canonical_json(jar, json_data[..], now_us);
+    t.assert_eq(count, 2, "Both valid named and nameless cookies imported from JSON");
+    t.assert_eq(jar.cookies.len, 2);
+    t.assert_bytes_eq(jar.cookies[0].name[..], "valid");
+    t.assert_bytes_eq(jar.cookies[1].name[..], "");
+    t.assert_bytes_eq(jar.cookies[1].value[..], "nameless_val");
+
+    // 2. CTL-08: Direct or loaded cookie containing control chars rejected by engine
+    var corrupt_cookie = wing::CanonicalCookie { .. };
+    corrupt_cookie.name.append("bad");
+    corrupt_cookie.value.append("corrupt\x01val");
+    corrupt_cookie.domain.append("example.com");
+    corrupt_cookie.path.clear();
+    corrupt_cookie.path.append("/");
+    let corrupt_inserted = wing::set_canonical_cookie(jar, corrupt_cookie, true, true, now_us);
+    t.assert_false(corrupt_inserted, "CTL-08: Cookie with CTL byte %x01 rejected upon loading/insertion");
+}
+
+// ----------------------------------------------------------------------------
+// 6. GC-04: strict_secure_cookies Policy Priority Eviction
+// ----------------------------------------------------------------------------
+fn run_gc_strict_secure_policy(t: wing::T&) {
+    let now_us = 1700000000000000;
+    var jar = wing::new_canonical_cookie_jar();
+    jar.strict_secure_cookies = true;
+
+    // Insert 100 Secure cookies
+    for i in 100 {
+        var h: u8[..64] = [];
+        format(h, "sec_", i, "=1; Secure");
+        wing::set_cookie_header(jar, "https://example.com/", h[..], now_us + i);
+    }
+    // Insert 80 Non-Secure cookies (total 180 = max limit)
+    for i in 80 {
+        var h: u8[..64] = [];
+        format(h, "nonsec_", i, "=1");
+        wing::set_cookie_header(jar, "http://example.com/", h[..], now_us + 100 + i);
+    }
+    t.assert_eq(jar.cookies.len, 180);
+
+    // 181st cookie triggers domain GC with strict_secure_cookies=true
+    // GC-04: All non-secure cookies are evicted first!
+    wing::set_cookie_header(jar, "http://example.com/", "trigger=1", now_us + 200);
+    t.assert_le(jar.cookies.len, 101, "all non-secure cookies evicted under strict_secure_cookies policy");
+    t.assert_gt(jar.rejected_security_count, 0);
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -352,6 +422,8 @@ fn main() {
     wing::run_case(runner, "2. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep", run_exhaustive_ctl_sweep);
     wing::run_case(runner, "3. RFC 6265 §5.1.4 Path-Matching Engine & Default-Path Rules", run_path_matching_matrix);
     wing::run_case(runner, "4. Server-Side Ingoing Cookie Header Parser (First-Win Invariant)", run_server_header_first_win);
+    wing::run_case(runner, "5. Database Load Sanitization (CTL-08) & Nameless Cookie Import", run_ctl_sanitization_and_nameless_import);
+    wing::run_case(runner, "6. GC-04: strict_secure_cookies Policy Priority Eviction", run_gc_strict_secure_policy);
     let ok = wing::finish(runner);
     assert(ok);
 }

@@ -333,6 +333,14 @@ fn parse_cookie_payload_pair(
         return "", false;
     }
 
+    if raw_name.len == 0 {
+        // Nameless cookie security invariant (omnomnom / RFC 6265bis / SHAD-01 / SHAD-02):
+        // Value of a nameless cookie must not contain '=' to prevent key shadowing
+        for char_byte in raw_val {
+            if char_byte == '=' { return "", false; }
+        }
+    }
+
     cookie_ref.name.append(raw_name);
     cookie_ref.value.append(raw_val);
     return unparsed_attrs, true;
@@ -380,6 +388,8 @@ fn apply_parsed_cookie_attribute(
 fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
     guard attr_val.len > 0 && attr_val[attr_val.len - 1] != '.' else { return; }
     let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
+    // RFC 6265 §5.2.3: If domain still begins with '.', ignore the domain attribute
+    guard clean_domain.len > 0 && clean_domain[0] != '.' else { return; }
     cookie_ref.domain.clear();
     cookie_ref.domain.append(clean_domain);
     to_lower(cookie_ref.domain[..]);

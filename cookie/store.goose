@@ -318,9 +318,16 @@ fn import_canonical_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_u
         var parsed_cookie = CanonicalCookie { .. };
         read_canonical_cookie_json_object(json_reader, parsed_cookie);
 
-        if parsed_cookie.name.len > 0 &&
-           set_canonical_cookie(jar, parsed_cookie, true, parsed_cookie.secure, now_us) {
-            imported_count += 1;
+        // CTL-08: Corrupted cookies containing control chars purged upon loading
+        let has_ctl = has_prohibited_cookie_ctl(parsed_cookie.name[..]) ||
+                      has_prohibited_cookie_ctl(parsed_cookie.value[..]) ||
+                      has_prohibited_cookie_ctl(parsed_cookie.path[..]);
+        let has_payload = parsed_cookie.name.len > 0 || parsed_cookie.value.len > 0;
+
+        if !has_ctl && has_payload {
+            if set_canonical_cookie(jar, parsed_cookie, true, parsed_cookie.secure, now_us) {
+                imported_count += 1;
+            }
         }
     };
 

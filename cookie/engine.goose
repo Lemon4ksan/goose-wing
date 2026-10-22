@@ -39,6 +39,7 @@ struct CanonicalCookieJar {
     evicted_chips_count: i64 = 0,
     expired_overwrite_count: i64 = 0,
     rejected_security_count: i64 = 0,
+    strict_secure_cookies: bool = false,
 
     cookies: CanonicalCookie[>..] = [],
 }
@@ -63,6 +64,7 @@ fn new_canonical_cookie_jar() -> CanonicalCookieJar {
         evicted_chips_count: 0,
         expired_overwrite_count: 0,
         rejected_security_count: 0,
+        strict_secure_cookies: false,
         cookies: [],
     };
 }
@@ -357,6 +359,13 @@ fn garbage_collect_per_domain(jar: CanonicalCookieJar&, etld_plus_one: const u8[
     total_evicted += expired_evicted;
     domain_count -= expired_evicted;
 
+    // GC-04: strict_secure_cookies policy evicts all non-secure cookies first
+    if jar.strict_secure_cookies {
+        let non_sec_evicted = evict_domain_non_secure_cookies(jar, etld_plus_one);
+        total_evicted += non_sec_evicted;
+        domain_count -= non_sec_evicted;
+    }
+
     guard domain_count > jar.target_cookies_per_domain else { return total_evicted; }
 
     var need_to_evict = domain_count - jar.target_cookies_per_domain;
@@ -644,6 +653,21 @@ fn evict_domain_expired_cookies(jar: CanonicalCookieJar&, etld_plus_one: const u
     retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, expired_seqs[..]) };
     jar.evicted_expired_count += expired_seqs.len;
     return expired_seqs.len;
+}
+
+fn evict_domain_non_secure_cookies(jar: CanonicalCookieJar&, etld_plus_one: const u8[:]) -> i64 {
+    var non_sec_seqs: i64[>..] = [];
+    for cookie_idx in jar.cookies.len {
+        let cookie_val = jar.cookies[cookie_idx];
+        if cookie_matches_effective_domain(cookie_val, etld_plus_one) && !cookie_val.secure {
+            non_sec_seqs.push(cookie_val.creation_seq);
+        }
+    }
+    guard non_sec_seqs.len > 0 else { return 0; }
+
+    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, non_sec_seqs[..]) };
+    jar.rejected_security_count += non_sec_seqs.len;
+    return non_sec_seqs.len;
 }
 
 fn calculate_domain_priority_excesses(

@@ -95,6 +95,14 @@ fn validate_canonical_cookie_security(
 ) -> bool {
     let cookie_name = cookie_val.name[..];
 
+    // Prohibited CTL rejection (DELETE_COOKIE_CONTROL_CHAR = 11 / crbug.com/238041)
+    if has_prohibited_cookie_ctl(cookie_name) ||
+       has_prohibited_cookie_ctl(cookie_val.value[..]) ||
+       has_prohibited_cookie_ctl(cookie_val.domain[..]) ||
+       has_prohibited_cookie_ctl(cookie_val.path[..]) {
+        return false;
+    }
+
     // Non-HTTP API restrictions
     if !is_http_api {
         if cookie_val.httponly { return false; } // Script cannot set HttpOnly
