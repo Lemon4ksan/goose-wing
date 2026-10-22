@@ -301,6 +301,59 @@ fn format<B>(out: B&, dur: Duration) {
     }
 }
 
+fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
+    if unit_str == "ns" { return NANOSECOND, true; }
+    if unit_str == "us" || unit_str == "µs" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
+    if unit_str == "ms" { return MILLISECOND, true; }
+    if unit_str == "s" { return SECOND, true; }
+    if unit_str == "m" { return MINUTE, true; }
+    if unit_str == "h" { return HOUR, true; }
+    if unit_str == "d" { return DAY, true; }
+    if unit_str == "w" { return WEEK, true; }
+    return 0, false;
+}
+
+fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64 {
+    guard fraction_str.len > 0 else { return 0; }
+    var fraction_val: i64 = 0;
+    var div_scale: i64 = 1;
+    for frac_idx in fraction_str.len {
+        if frac_idx >= 9 { break; }
+        let char_byte = fraction_str[frac_idx];
+        if char_byte >= '0' && char_byte <= '9' {
+            fraction_val = fraction_val * 10 + (char_byte - '0');
+            div_scale *= 10;
+        }
+    }
+    return (fraction_val * unit_mult) / div_scale;
+}
+
+fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
+    var dot_pos = -1;
+    for scan_idx in num_str.len {
+        if num_str[scan_idx] == '.' { dot_pos = scan_idx; break; }
+    }
+
+    if dot_pos < 0 {
+        let int_val, int_ok = parse_int(num_str);
+        guard int_ok else { return 0, false; }
+        return int_val * unit_mult, true;
+    }
+
+    let whole_str = num_str[..dot_pos];
+    let fraction_str = num_str[dot_pos + 1..];
+
+    var whole_val: i64 = 0;
+    if whole_str.len > 0 {
+        let parsed_val, ok_whole = parse_int(whole_str);
+        guard ok_whole else { return 0, false; }
+        whole_val = parsed_val;
+    }
+
+    let fraction_nanos = parse_scaled_fraction(fraction_str, unit_mult);
+    return whole_val * unit_mult + fraction_nanos, true;
+}
+
 // Parses duration string (e.g. "300ms", "-1.5h", "2h45m", "10s", "100ns"). Zero-alloc.
 // Supported units: ns, us/µs, ms, s, m, h, d, w.
 fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
@@ -319,77 +372,27 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     var total_nanos: i64 = 0;
 
     while cursor < text.len {
-        var num_start = cursor;
+        let num_start = cursor;
         while cursor < text.len && ((text[cursor] >= '0' && text[cursor] <= '9') || text[cursor] == '.') {
             cursor++;
         }
         let num_str = text[num_start..cursor];
         guard num_str.len > 0 else { return Duration { 0 }, false; }
 
-        var unit_start = cursor;
+        let unit_start = cursor;
         while cursor < text.len && !((text[cursor] >= '0' && text[cursor] <= '9') || text[cursor] == '+' || text[cursor] == '-') {
             cursor++;
         }
         let unit_str = text[unit_start..cursor];
         guard unit_str.len > 0 else { return Duration { 0 }, false; }
 
-        var unit_mult: i64 = 0;
-        if unit_str == "ns" {
-            unit_mult = NANOSECOND;
-        } else if unit_str == "us" || unit_str == "µs" || unit_str == "\xc2\xb5s" {
-            unit_mult = MICROSECOND;
-        } else if unit_str == "ms" {
-            unit_mult = MILLISECOND;
-        } else if unit_str == "s" {
-            unit_mult = SECOND;
-        } else if unit_str == "m" {
-            unit_mult = MINUTE;
-        } else if unit_str == "h" {
-            unit_mult = HOUR;
-        } else if unit_str == "d" {
-            unit_mult = DAY;
-        } else if unit_str == "w" {
-            unit_mult = WEEK;
-        } else {
-            return Duration { 0 }, false;
-        }
+        let unit_mult, ok_unit = duration_unit_multiplier(unit_str);
+        guard ok_unit else { return Duration { 0 }, false; }
 
-        var dot_pos = -1;
-        for scan_idx in num_str.len {
-            if num_str[scan_idx] == '.' { dot_pos = scan_idx; break; }
-        }
+        let component_nanos, ok_comp = parse_duration_component(num_str, unit_mult);
+        guard ok_comp else { return Duration { 0 }, false; }
 
-        if dot_pos < 0 {
-            let int_val, int_ok = parse_int(num_str);
-            guard int_ok else { return Duration { 0 }, false; }
-            total_nanos += int_val * unit_mult;
-        } else {
-            let whole_str = num_str[..dot_pos];
-            let fraction_str = num_str[dot_pos + 1..];
-
-            var whole_val: i64 = 0;
-            if whole_str.len > 0 {
-                let parsed_val, ok_whole = parse_int(whole_str);
-                guard ok_whole else { return Duration { 0 }, false; }
-                whole_val = parsed_val;
-            }
-
-            total_nanos += whole_val * unit_mult;
-
-            if fraction_str.len > 0 {
-                var fraction_val: i64 = 0;
-                var div_scale: i64 = 1;
-                for frac_idx in fraction_str.len {
-                    if frac_idx >= 9 { break; }
-                    let char_byte = fraction_str[frac_idx];
-                    if char_byte >= '0' && char_byte <= '9' {
-                        fraction_val = fraction_val * 10 + (char_byte - '0');
-                        div_scale *= 10;
-                    }
-                }
-                total_nanos += (fraction_val * unit_mult) / div_scale;
-            }
-        }
+        total_nanos += component_nanos;
     }
 
     if is_neg { total_nanos = -total_nanos; }
@@ -894,6 +897,50 @@ fn format<B>(out: B&, weekday_val: Weekday) {
     out.append(weekday_name(weekday_val));
 }
 
+fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64 {
+    var cursor = start_pos;
+    if cursor >= text.len || (text[cursor] != '.' && text[cursor] != ',') {
+        return 0, cursor;
+    }
+    cursor++;
+    var nsec_val: i64 = 0;
+    var scale: i64 = 100000000;
+    while cursor < text.len && (text[cursor] >= '0' && text[cursor] <= '9') {
+        if scale > 0 {
+            nsec_val += (text[cursor] - '0') * scale;
+            scale /= 10;
+        }
+        cursor++;
+    }
+    return nsec_val, cursor;
+}
+
+fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
+    guard tz_text.len > 0 else { return 0, false; }
+    let tz_char = tz_text[0];
+    if tz_char == 'Z' || tz_char == 'z' {
+        return 0, true;
+    }
+    guard tz_char == '+' || tz_char == '-' else { return 0, false; }
+
+    let sign = if tz_char == '-' { -1 } else { 1 };
+    var cursor = 1;
+    guard cursor + 2 <= tz_text.len else { return 0, false; }
+    let off_hours, ok_tz_h = parse_int(tz_text[cursor..cursor + 2]);
+    guard ok_tz_h else { return 0, false; }
+    cursor += 2;
+
+    if cursor < tz_text.len && tz_text[cursor] == ':' { cursor++; }
+    var off_mins: i64 = 0;
+    if cursor + 2 <= tz_text.len {
+        let parsed_mins, ok_tz_m = parse_int(tz_text[cursor..cursor + 2]);
+        if ok_tz_m { off_mins = parsed_mins; }
+    }
+
+    let offset_seconds = sign * (off_hours * 3600 + off_mins * 60);
+    return offset_seconds as i32, true;
+}
+
 // Parses RFC 3339 / ISO 8601 strings into Time (e.g. "2026-10-22T23:18:18Z", "2026-10-22T23:18:18+03:00").
 // Validates calendar bounds and timezone offset. Zero-allocation.
 fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
@@ -915,43 +962,13 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     guard month_val >= 1 && month_val <= 12 && day_val >= 1 && day_val <= 31 else { return Time { .. }, false; }
     guard hour_val >= 0 && hour_val <= 23 && min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60 else { return Time { .. }, false; }
 
-    var cursor = 19;
-    var nsec_val: i64 = 0;
-
-    if cursor < text.len && (text[cursor] == '.' || text[cursor] == ',') {
-        cursor++;
-        var scale: i64 = 100000000;
-        while cursor < text.len && (text[cursor] >= '0' && text[cursor] <= '9') {
-            if scale > 0 {
-                nsec_val += (text[cursor] - '0') * scale;
-                scale /= 10;
-            }
-            cursor++;
-        }
-    }
+    let nsec_val, cursor = parse_fractional_nanos(text, 19);
 
     var offset_val: i32 = 0;
     if cursor < text.len {
-        let tz_char = text[cursor];
-        if tz_char == 'Z' || tz_char == 'z' {
-            offset_val = 0;
-        } else if tz_char == '+' || tz_char == '-' {
-            let sign = if tz_char == '-' { -1 } else { 1 };
-            cursor++;
-            if cursor + 2 <= text.len {
-                let off_hours, ok_tz_h = parse_int(text[cursor..cursor + 2]);
-                cursor += 2;
-                if cursor < text.len && text[cursor] == ':' { cursor++; }
-                var off_mins: i64 = 0;
-                if cursor + 2 <= text.len {
-                    let parsed_mins, ok_tz_m = parse_int(text[cursor..cursor + 2]);
-                    if ok_tz_m { off_mins = parsed_mins; }
-                }
-                if ok_tz_h {
-                    offset_val = ((sign * (off_hours * 3600 + off_mins * 60)) as i32);
-                }
-            }
-        }
+        let parsed_offset, ok_offset = parse_timezone_offset(text[cursor..]);
+        guard ok_offset else { return Time { .. }, false; }
+        offset_val = parsed_offset;
     }
 
     let days_count = civil_to_days(year_val, month_val, day_val);
@@ -1010,6 +1027,92 @@ fn parse_month_name(token: const u8[:]) -> i64 {
     return 0;
 }
 
+fn make_validated_civil_time(year_val: i64, month_val: i64, day_val: i64, hour_val: i64, min_val: i64, sec_val: i64) -> Time, bool {
+    guard day_val >= 1 && day_val <= days_in_month(year_val, month_val) else { return Time { .. }, false; }
+    guard hour_val <= 23 && min_val <= 59 && sec_val <= 59 else { return Time { .. }, false; }
+
+    let days_count = civil_to_days(year_val, month_val, day_val);
+    let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val;
+    return unix(total_secs, 0), true;
+}
+
+// Parses RFC 1123 IMF-fixdate: "06 Nov 1994 08:49:37 GMT"
+fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
+    guard rest.len >= 20 && rest[2] == ' ' && rest[6] == ' ' && rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' else {
+        return Time { .. }, false;
+    }
+    let day_val, ok_day = parse_int(rest[..2]);
+    let month_val = parse_month_name(rest[3..6]);
+    let year_val, ok_year = parse_int(rest[7..11]);
+    let hour_val, ok_hour = parse_int(rest[12..14]);
+    let min_val, ok_min = parse_int(rest[15..17]);
+    let sec_val, ok_sec = parse_int(rest[18..20]);
+
+    guard ok_day && month_val > 0 && ok_year && ok_hour && ok_min && ok_sec else {
+        return Time { .. }, false;
+    }
+    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
+}
+
+// Parses obsolete RFC 850 date: "06-Nov-94 08:49:37 GMT"
+fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
+    var first_dash = -1;
+    for scan_idx in rest.len {
+        if rest[scan_idx] == '-' { first_dash = scan_idx; break; }
+    }
+    guard first_dash > 0 else { return Time { .. }, false; }
+
+    let day_val, ok_day = parse_int(rest[..first_dash]);
+    guard ok_day else { return Time { .. }, false; }
+
+    let after_day = rest[first_dash + 1..];
+    var second_dash = -1;
+    for scan_idx in after_day.len {
+        if after_day[scan_idx] == '-' { second_dash = scan_idx; break; }
+    }
+    guard second_dash > 0 else { return Time { .. }, false; }
+
+    let month_val = parse_month_name(after_day[..second_dash]);
+    guard month_val > 0 else { return Time { .. }, false; }
+
+    let after_month = after_day[second_dash + 1..];
+    guard after_month.len >= 11 && after_month[2] == ' ' && after_month[5] == ':' && after_month[8] == ':' else {
+        return Time { .. }, false;
+    }
+
+    let parsed_year, ok_year = parse_int(after_month[..2]);
+    guard ok_year else { return Time { .. }, false; }
+    let year_val = if parsed_year >= 70 { 1900 + parsed_year } else { 2000 + parsed_year };
+
+    let hour_val, ok_hour = parse_int(after_month[3..5]);
+    let min_val, ok_min = parse_int(after_month[6..8]);
+    let sec_val, ok_sec = parse_int(after_month[9..11]);
+    guard ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
+
+    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
+}
+
+// Parses obsolete ANSI C asctime: "Sun Nov  6 08:49:37 1994"
+fn parse_asctime_date(text: const u8[:]) -> Time, bool {
+    guard text.len >= 24 && text[3] == ' ' && text[7] == ' ' && text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ' else {
+        return Time { .. }, false;
+    }
+    let month_val = parse_month_name(text[4..7]);
+    guard month_val > 0 else { return Time { .. }, false; }
+
+    let day_part = trim(text[8..10]);
+    let day_val, ok_day = parse_int(day_part);
+    guard ok_day else { return Time { .. }, false; }
+
+    let hour_val, ok_hour = parse_int(text[11..13]);
+    let min_val, ok_min = parse_int(text[14..16]);
+    let sec_val, ok_sec = parse_int(text[17..19]);
+    let year_val, ok_year = parse_int(text[20..24]);
+    guard ok_hour && ok_min && ok_sec && ok_year else { return Time { .. }, false; }
+
+    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
+}
+
 // Parses RFC 9110 §5.6.7 HTTP-Date formats:
 // 1. IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT" (preferred RFC 1123 format)
 // 2. RFC 850:     "Sunday, 06-Nov-94 08:49:37 GMT" (obsolete 2-digit year format)
@@ -1019,103 +1122,22 @@ fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
     let text = trim(raw_str);
     guard text.len >= 24 else { return Time { .. }, false; }
 
-    var day_val: i64 = 0;
-    var month_val: i64 = 0;
-    var year_val: i64 = 0;
-    var hour_val: i64 = 0;
-    var min_val: i64 = 0;
-    var sec_val: i64 = 0;
-
     var comma_idx = -1;
     for scan_idx in text.len {
         if text[scan_idx] == ',' { comma_idx = scan_idx; break; }
     }
 
     if comma_idx > 0 {
-        var rest = trim(text[comma_idx + 1..]);
-        var first_dash = -1;
+        let rest = trim(text[comma_idx + 1..]);
+        var has_dash = false;
         for scan_idx in rest.len {
-            if rest[scan_idx] == '-' { first_dash = scan_idx; break; }
+            if rest[scan_idx] == '-' { has_dash = true; break; }
         }
-
-        if first_dash > 0 {
-            // RFC 850: "06-Nov-94 08:49:37 GMT"
-            let parsed_day, ok_day = parse_int(rest[..first_dash]);
-            guard ok_day else { return Time { .. }, false; }
-            day_val = parsed_day;
-
-            rest = rest[first_dash + 1..];
-            var second_dash = -1;
-            for scan_idx in rest.len {
-                if rest[scan_idx] == '-' { second_dash = scan_idx; break; }
-            }
-            guard second_dash > 0 else { return Time { .. }, false; }
-            let parsed_month = parse_month_name(rest[..second_dash]);
-            guard parsed_month > 0 else { return Time { .. }, false; }
-            month_val = parsed_month;
-
-            rest = rest[second_dash + 1..];
-            guard rest.len >= 11 && rest[2] == ' ' && rest[5] == ':' && rest[8] == ':' else {
-                return Time { .. }, false;
-            }
-            let parsed_year, ok_year = parse_int(rest[..2]);
-            guard ok_year else { return Time { .. }, false; }
-            year_val = if parsed_year >= 70 { 1900 + parsed_year } else { 2000 + parsed_year };
-
-            let parsed_hour, ok_hour = parse_int(rest[3..5]);
-            let parsed_min, ok_min = parse_int(rest[6..8]);
-            let parsed_sec, ok_sec = parse_int(rest[9..11]);
-            guard ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
-            hour_val = parsed_hour; min_val = parsed_min; sec_val = parsed_sec;
-        } else {
-            // IMF-fixdate: "06 Nov 1994 08:49:37 GMT"
-            guard rest.len >= 20 && rest[2] == ' ' && rest[6] == ' ' && rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' else {
-                return Time { .. }, false;
-            }
-            let parsed_day, ok_day = parse_int(rest[..2]);
-            guard ok_day else { return Time { .. }, false; }
-            day_val = parsed_day;
-
-            let parsed_month = parse_month_name(rest[3..6]);
-            guard parsed_month > 0 else { return Time { .. }, false; }
-            month_val = parsed_month;
-
-            let parsed_year, ok_year = parse_int(rest[7..11]);
-            guard ok_year else { return Time { .. }, false; }
-            year_val = parsed_year;
-
-            let parsed_hour, ok_hour = parse_int(rest[12..14]);
-            let parsed_min, ok_min = parse_int(rest[15..17]);
-            let parsed_sec, ok_sec = parse_int(rest[18..20]);
-            guard ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
-            hour_val = parsed_hour; min_val = parsed_min; sec_val = parsed_sec;
+        if has_dash {
+            return parse_rfc850_date(rest);
         }
-    } else {
-        // ANSI C asctime: "Sun Nov  6 08:49:37 1994"
-        guard text.len >= 24 && text[3] == ' ' && text[7] == ' ' && text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ' else {
-            return Time { .. }, false;
-        }
-        let parsed_month = parse_month_name(text[4..7]);
-        guard parsed_month > 0 else { return Time { .. }, false; }
-        month_val = parsed_month;
-
-        let day_part = trim(text[8..10]);
-        let parsed_day, ok_day = parse_int(day_part);
-        guard ok_day else { return Time { .. }, false; }
-        day_val = parsed_day;
-
-        let parsed_hour, ok_hour = parse_int(text[11..13]);
-        let parsed_min, ok_min = parse_int(text[14..16]);
-        let parsed_sec, ok_sec = parse_int(text[17..19]);
-        let parsed_year, ok_year = parse_int(text[20..24]);
-        guard ok_hour && ok_min && ok_sec && ok_year else { return Time { .. }, false; }
-        hour_val = parsed_hour; min_val = parsed_min; sec_val = parsed_sec; year_val = parsed_year;
+        return parse_imf_fixdate(rest);
     }
 
-    guard day_val >= 1 && day_val <= days_in_month(year_val, month_val) else { return Time { .. }, false; }
-    guard hour_val <= 23 && min_val <= 59 && sec_val <= 59 else { return Time { .. }, false; }
-
-    let days_count = civil_to_days(year_val, month_val, day_val);
-    let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val;
-    return unix(total_secs, 0), true;
+    return parse_asctime_date(text);
 }
