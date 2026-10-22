@@ -229,3 +229,68 @@ fn ::remaining(deadline_val: const wing::Deadline&) -> wing::Duration { return w
 // Policy Bridges (Backoff & RateLimiter)
 fn ::delay(backoff: const wing::Backoff&, attempt: i64) -> wing::Duration { return wing::delay(backoff, attempt); }
 fn ::allow(limiter: wing::RateLimiter&) -> bool { return wing::allow(limiter); }
+
+// --- CanonicalCookie & CanonicalCookieJar UFCS bridges ---
+
+fn ::add(jar: wing::CanonicalCookieJar&, name: const u8[:], val: const u8[:]) -> wing::CanonicalCookie& {
+    return wing::add(jar, name, val);
+}
+
+fn ::with_value(cookie_val: wing::CanonicalCookie&, val: const u8[:]) -> wing::CanonicalCookie& {
+    return wing::with_value(cookie_val, val);
+}
+
+fn ::with_domain(cookie_val: wing::CanonicalCookie&, domain_val: const u8[:]) -> wing::CanonicalCookie& {
+    return wing::with_domain(cookie_val, domain_val);
+}
+
+fn ::with_path(cookie_val: wing::CanonicalCookie&, path_val: const u8[:]) -> wing::CanonicalCookie& {
+    return wing::with_path(cookie_val, path_val);
+}
+
+fn ::with_secure(cookie_val: wing::CanonicalCookie&, secure_flag: bool = true) -> wing::CanonicalCookie& {
+    return wing::with_secure(cookie_val, secure_flag);
+}
+
+fn ::with_http_only(cookie_val: wing::CanonicalCookie&, http_only_flag: bool = true) -> wing::CanonicalCookie& {
+    return wing::with_http_only(cookie_val, http_only_flag);
+}
+
+fn ::with_same_site(cookie_val: wing::CanonicalCookie&, same_site_mode: wing::CookieSameSite) -> wing::CanonicalCookie& {
+    return wing::with_same_site(cookie_val, same_site_mode);
+}
+
+fn ::with_priority(cookie_val: wing::CanonicalCookie&, priority_level: wing::CookiePriority) -> wing::CanonicalCookie& {
+    return wing::with_priority(cookie_val, priority_level);
+}
+
+fn ::with_partition_key(cookie_val: wing::CanonicalCookie&, key: const u8[:]) -> wing::CanonicalCookie& {
+    return wing::with_partition_key(cookie_val, key);
+}
+
+fn ::with_max_age_seconds(cookie_val: wing::CanonicalCookie&, seconds: i64, now_us: i64) -> wing::CanonicalCookie& {
+    return wing::with_max_age_seconds(cookie_val, seconds, now_us);
+}
+
+fn ::with_expires_utc(cookie_val: wing::CanonicalCookie&, expires_us: i64) -> wing::CanonicalCookie& {
+    return wing::with_expires_utc(cookie_val, expires_us);
+}
+
+fn ::with_source(cookie_val: wing::CanonicalCookie&, scheme: wing::CookieSourceScheme, port: i32) -> wing::CanonicalCookie& {
+    return wing::with_source(cookie_val, scheme, port);
+}
+
+fn ::purge_expired(jar: wing::CanonicalCookieJar&, now_us: i64) -> i64 {
+    return wing::purge_expired(jar, now_us);
+}
+
+fn ::build_cookie_header<B>(
+    jar: wing::CanonicalCookieJar&,
+    out: B&,
+    host: const u8[:],
+    path: const u8[:],
+    is_secure: bool,
+    now_us: i64
+) {
+    wing::build_cookie_header(jar, out, host, path, is_secure, now_us);
+}

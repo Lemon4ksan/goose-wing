@@ -1,12 +1,23 @@
-// Standard Date & Time library for Goose (candidate for std::time).
-// Provides nanosecond Duration arithmetic, monotonic Stopwatch & Deadline,
-// Howard Hinnant's O(1) civil calendar math, RFC 3339 / ISO 8601 and RFC 9110 HTTP-Date codecs.
+// The Goose standard date & time library: candidate for `std::time`.
+//
+// Core Types:
+//   Duration   - signed nanosecond span (~±292 years) with memberwise arithmetic (+, -, *, /, -dur).
+//   Time       - wall-clock instant (wall_sec since Unix epoch 1970-01-01, subsecond nsec, tz_offset).
+//   Stopwatch  - high-resolution monotonic timer for latency measurements.
+//   Deadline   - monotonic timeout and cancellation tracker.
+//   Month      - calendar month enum (January .. December).
+//   Weekday    - civil weekday enum (Sunday .. Saturday).
+//
+// Standards & Specifications:
+//   RFC 3339 / ISO 8601 formatting and zero-allocation parsing.
+//   RFC 9110 §5.6.7 HTTP-Date formatting (IMF-fixdate) and parsing (IMF, RFC 850, asctime).
+//   Howard Hinnant's O(1) proleptic Gregorian civil calendar math.
 namespace wing;
 
 import std;
 import os;
 
-// --- Nanosecond Duration Constants ---
+// ---- duration constants & calendar enums -----------------------------------
 
 let NANOSECOND:  i64 = 1;
 let MICROSECOND: i64 = 1000 * NANOSECOND;
@@ -16,8 +27,6 @@ let MINUTE:      i64 = 60 * SECOND;
 let HOUR:        i64 = 60 * MINUTE;
 let DAY:         i64 = 24 * HOUR;
 let WEEK:        i64 = 7 * DAY;
-
-// --- Month and Weekday Enums & Tables ---
 
 enum Month {
     January,
@@ -138,7 +147,7 @@ fn weekday_short_name(weekday_val: Weekday) -> const u8[:] {
     return WEEKDAY_SHORT_NAMES[weekday_number(weekday_val)];
 }
 
-// --- Duration: Nanosecond-precision Interval ---
+// ---- duration: nanosecond-precision interval -------------------------------
 
 // Represents a signed time interval with nanosecond resolution (~±292 years).
 // Goose automatically provides memberwise struct arithmetic:
@@ -186,6 +195,8 @@ fn mul(dur: Duration, factor: i64) -> Duration { return dur * factor; }
 fn div(dur: Duration, factor: i64) -> Duration { return dur / factor; }
 fn abs(dur: Duration) -> Duration { return Duration { nanos: if dur.nanos < 0 { -dur.nanos } else { dur.nanos } }; }
 
+// Duration predicates (Goose stdlib naming convention without is_ prefix).
+
 fn zero(dur: Duration) -> bool { return dur.nanos == 0; }
 fn negative(dur: Duration) -> bool { return dur.nanos < 0; }
 fn positive(dur: Duration) -> bool { return dur.nanos > 0; }
@@ -219,27 +230,6 @@ fn round(dur: Duration, step_dur: Duration) -> Duration {
         base_nanos += step_dur.nanos;
     }
     return Duration { nanos: if is_neg { -base_nanos } else { base_nanos } };
-}
-
-fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
-    if fraction_val <= 0 { return; }
-    var digits: u8[9] = [0; 9];
-    var current_val = fraction_val;
-    for digit_idx in num_digits {
-        let array_idx = num_digits - 1 - digit_idx;
-        digits[array_idx] = ('0' as i64 + (current_val % 10)) as u8;
-        current_val /= 10;
-    }
-    var last_non_zero = num_digits - 1;
-    while last_non_zero >= 0 && digits[last_non_zero] == '0' {
-        last_non_zero--;
-    }
-    if last_non_zero >= 0 {
-        out.push('.');
-        for copy_idx in (last_non_zero + 1) {
-            out.push(digits[copy_idx]);
-        }
-    }
 }
 
 // Formats duration into human-readable shorthand (e.g. "0s", "250ms", "1.5s", "2h45m").
@@ -301,59 +291,6 @@ fn format<B>(out: B&, dur: Duration) {
     }
 }
 
-fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
-    if unit_str == "ns" { return NANOSECOND, true; }
-    if unit_str == "us" || unit_str == "µs" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
-    if unit_str == "ms" { return MILLISECOND, true; }
-    if unit_str == "s" { return SECOND, true; }
-    if unit_str == "m" { return MINUTE, true; }
-    if unit_str == "h" { return HOUR, true; }
-    if unit_str == "d" { return DAY, true; }
-    if unit_str == "w" { return WEEK, true; }
-    return 0, false;
-}
-
-fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64 {
-    guard fraction_str.len > 0 else { return 0; }
-    var fraction_val: i64 = 0;
-    var div_scale: i64 = 1;
-    for frac_idx in fraction_str.len {
-        if frac_idx >= 9 { break; }
-        let char_byte = fraction_str[frac_idx];
-        if char_byte >= '0' && char_byte <= '9' {
-            fraction_val = fraction_val * 10 + (char_byte - '0');
-            div_scale *= 10;
-        }
-    }
-    return (fraction_val * unit_mult) / div_scale;
-}
-
-fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
-    var dot_pos = -1;
-    for scan_idx in num_str.len {
-        if num_str[scan_idx] == '.' { dot_pos = scan_idx; break; }
-    }
-
-    if dot_pos < 0 {
-        let int_val, int_ok = parse_int(num_str);
-        guard int_ok else { return 0, false; }
-        return int_val * unit_mult, true;
-    }
-
-    let whole_str = num_str[..dot_pos];
-    let fraction_str = num_str[dot_pos + 1..];
-
-    var whole_val: i64 = 0;
-    if whole_str.len > 0 {
-        let parsed_val, ok_whole = parse_int(whole_str);
-        guard ok_whole else { return 0, false; }
-        whole_val = parsed_val;
-    }
-
-    let fraction_nanos = parse_scaled_fraction(fraction_str, unit_mult);
-    return whole_val * unit_mult + fraction_nanos, true;
-}
-
 // Parses duration string (e.g. "300ms", "-1.5h", "2h45m", "10s", "100ns"). Zero-alloc.
 // Supported units: ns, us/µs, ms, s, m, h, d, w.
 fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
@@ -399,7 +336,7 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     return Duration { nanos: total_nanos }, true;
 }
 
-// --- Monotonic Benchmarking & Concurrency Primitives ---
+// ---- monotonic primitives: stopwatch & deadline ---------------------------
 
 // High-resolution monotonic stopwatch backed by the system performance counter.
 // Immune to wall-clock adjustments, NTP slew, and leap seconds.
@@ -458,11 +395,11 @@ fn sleep(dur: Duration) {
     }
 }
 
-// --- Howard Hinnant Civil Calendar Algorithm ---
+// ---- civil calendar math (Howard Hinnant) ----------------------------------
+
 // Converts between proleptic Gregorian calendar (year, month, day) and days since
 // Unix epoch (1970-01-01) in O(1) time without loops, lookup tables, or heap allocations.
 // Reference: Howard Hinnant, "chrono-Compatible Low-Level Date Algorithms" (2013).
-
 fn days_to_civil(days_since_epoch: i64) -> i64, i64, i64 {
     var shifted_days = days_since_epoch + 719468;
     let era = (if shifted_days >= 0 { shifted_days } else { shifted_days - 146096 }) / 146097;
@@ -506,7 +443,7 @@ fn days_in_month(year_val: i64, month_val: i64) -> i64 {
     }
 }
 
-// --- Time: Point in Time (Wall-Clock Instant + Civil Projection) ---
+// ---- time: wall-clock instant & civil projection ---------------------------
 
 // Represents an absolute instant in time with an explicit timezone offset.
 // Monotonic time is strictly separated into Stopwatch and Deadline.
@@ -747,6 +684,7 @@ fn round(time_val: Time, dur: Duration) -> Time {
 }
 
 // Timezone adjustments
+
 fn in_offset(time_val: Time, tz_offset_seconds: i32) -> Time {
     var shifted_time = time_val;
     shifted_time.tz_offset = tz_offset_seconds;
@@ -771,6 +709,7 @@ fn tz_offset(time_val: Time) -> i32 {
 }
 
 // Civil Calendar Boundaries
+
 fn start_of_day(time_val: Time) -> Time {
     let year_val, month_val, day_val, _, _, _ = civil_parts(time_val);
     return date(year_val, month_from_number(month_val), day_val, 0, 0, 0, 0, time_val.tz_offset);
@@ -787,7 +726,7 @@ fn start_of_month(time_val: Time) -> Time {
 }
 
 fn end_of_month(time_val: Time) -> Time {
-    let year_val, month_val, _, _, _, _ = civil_parts(time_val);
+    let year_val, month_val, day_val, _, _, _ = civil_parts(time_val);
     let last_day = days_in_month(year_val, month_val);
     return date(year_val, month_from_number(month_val), last_day, 23, 59, 59, 999999999, time_val.tz_offset);
 }
@@ -802,19 +741,7 @@ fn end_of_year(time_val: Time) -> Time {
     return date(year_val, Month.December, 31, 23, 59, 59, 999999999, time_val.tz_offset);
 }
 
-inline fn append_2d<B>(out: B&, value: i64) {
-    let clamped_val = if value < 0 { 0 } else if value > 99 { 99 } else { value };
-    out.push(('0' as i64 + clamped_val / 10) as u8);
-    out.push(('0' as i64 + clamped_val % 10) as u8);
-}
-
-inline fn append_4d<B>(out: B&, value: i64) {
-    let clamped_val = if value < 0 { 0 } else if value > 9999 { 9999 } else { value };
-    out.push(('0' as i64 + (clamped_val / 1000) % 10) as u8);
-    out.push(('0' as i64 + (clamped_val / 100) % 10) as u8);
-    out.push(('0' as i64 + (clamped_val / 10) % 10) as u8);
-    out.push(('0' as i64 + clamped_val % 10) as u8);
-}
+// ---- codecs: RFC 3339 & RFC 9110 HTTP-Date (public API) --------------------
 
 // Formats Time into RFC 3339 / ISO 8601 string (e.g. "2026-10-22T23:18:18Z" or "2026-10-22T23:18:18+03:00").
 // Streaming zero-allocation formatter directly appending to out.
@@ -897,50 +824,6 @@ fn format<B>(out: B&, weekday_val: Weekday) {
     out.append(weekday_name(weekday_val));
 }
 
-fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64 {
-    var cursor = start_pos;
-    if cursor >= text.len || (text[cursor] != '.' && text[cursor] != ',') {
-        return 0, cursor;
-    }
-    cursor++;
-    var nsec_val: i64 = 0;
-    var scale: i64 = 100000000;
-    while cursor < text.len && (text[cursor] >= '0' && text[cursor] <= '9') {
-        if scale > 0 {
-            nsec_val += (text[cursor] - '0') * scale;
-            scale /= 10;
-        }
-        cursor++;
-    }
-    return nsec_val, cursor;
-}
-
-fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
-    guard tz_text.len > 0 else { return 0, false; }
-    let tz_char = tz_text[0];
-    if tz_char == 'Z' || tz_char == 'z' {
-        return 0, true;
-    }
-    guard tz_char == '+' || tz_char == '-' else { return 0, false; }
-
-    let sign = if tz_char == '-' { -1 } else { 1 };
-    var cursor = 1;
-    guard cursor + 2 <= tz_text.len else { return 0, false; }
-    let off_hours, ok_tz_h = parse_int(tz_text[cursor..cursor + 2]);
-    guard ok_tz_h else { return 0, false; }
-    cursor += 2;
-
-    if cursor < tz_text.len && tz_text[cursor] == ':' { cursor++; }
-    var off_mins: i64 = 0;
-    if cursor + 2 <= tz_text.len {
-        let parsed_mins, ok_tz_m = parse_int(tz_text[cursor..cursor + 2]);
-        if ok_tz_m { off_mins = parsed_mins; }
-    }
-
-    let offset_seconds = sign * (off_hours * 3600 + off_mins * 60);
-    return offset_seconds as i32, true;
-}
-
 // Parses RFC 3339 / ISO 8601 strings into Time (e.g. "2026-10-22T23:18:18Z", "2026-10-22T23:18:18+03:00").
 // Validates calendar bounds and timezone offset. Zero-allocation.
 fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
@@ -1004,6 +887,167 @@ fn format_http<B>(out: B&, time_val: Time) {
     out.append(" GMT");
 }
 
+// Parses RFC 9110 §5.6.7 HTTP-Date formats (IMF-fixdate, RFC 850, asctime).
+// Returns (Time, false) if the string is malformed or represents an invalid calendar date.
+fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
+    let text = trim(raw_str);
+    guard text.len >= 24 else { return Time { .. }, false; }
+
+    var comma_idx = -1;
+    for scan_idx in text.len {
+        if text[scan_idx] == ',' { comma_idx = scan_idx; break; }
+    }
+
+    if comma_idx > 0 {
+        let rest = trim(text[comma_idx + 1..]);
+        var has_dash = false;
+        for scan_idx in rest.len {
+            if rest[scan_idx] == '-' { has_dash = true; break; }
+        }
+        if has_dash {
+            return parse_rfc850_date(rest);
+        }
+        return parse_imf_fixdate(rest);
+    }
+
+    return parse_asctime_date(text);
+}
+
+// ---- internal implementation helpers ---------------------------------------
+// Formatting helpers, unit multipliers, and sub-parsers.
+
+inline fn append_2d<B>(out: B&, value: i64) {
+    let clamped_val = if value < 0 { 0 } else if value > 99 { 99 } else { value };
+    out.push(('0' as i64 + clamped_val / 10) as u8);
+    out.push(('0' as i64 + clamped_val % 10) as u8);
+}
+
+inline fn append_4d<B>(out: B&, value: i64) {
+    let clamped_val = if value < 0 { 0 } else if value > 9999 { 9999 } else { value };
+    out.push(('0' as i64 + (clamped_val / 1000) % 10) as u8);
+    out.push(('0' as i64 + (clamped_val / 100) % 10) as u8);
+    out.push(('0' as i64 + (clamped_val / 10) % 10) as u8);
+    out.push(('0' as i64 + clamped_val % 10) as u8);
+}
+
+fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
+    if fraction_val <= 0 { return; }
+    var digits: u8[9] = [0; 9];
+    var current_val = fraction_val;
+    for digit_idx in num_digits {
+        let array_idx = num_digits - 1 - digit_idx;
+        digits[array_idx] = ('0' as i64 + (current_val % 10)) as u8;
+        current_val /= 10;
+    }
+    var last_non_zero = num_digits - 1;
+    while last_non_zero >= 0 && digits[last_non_zero] == '0' {
+        last_non_zero--;
+    }
+    if last_non_zero >= 0 {
+        out.push('.');
+        for copy_idx in (last_non_zero + 1) {
+            out.push(digits[copy_idx]);
+        }
+    }
+}
+
+fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
+    if unit_str == "ns" { return NANOSECOND, true; }
+    if unit_str == "us" || unit_str == "µs" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
+    if unit_str == "ms" { return MILLISECOND, true; }
+    if unit_str == "s" { return SECOND, true; }
+    if unit_str == "m" { return MINUTE, true; }
+    if unit_str == "h" { return HOUR, true; }
+    if unit_str == "d" { return DAY, true; }
+    if unit_str == "w" { return WEEK, true; }
+    return 0, false;
+}
+
+fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64 {
+    guard fraction_str.len > 0 else { return 0; }
+    var fraction_val: i64 = 0;
+    var div_scale: i64 = 1;
+    for frac_idx in fraction_str.len {
+        if frac_idx >= 9 { break; }
+        let char_byte = fraction_str[frac_idx];
+        if char_byte >= '0' && char_byte <= '9' {
+            fraction_val = fraction_val * 10 + (char_byte - '0');
+            div_scale *= 10;
+        }
+    }
+    return (fraction_val * unit_mult) / div_scale;
+}
+
+fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
+    var dot_pos = -1;
+    for scan_idx in num_str.len {
+        if num_str[scan_idx] == '.' { dot_pos = scan_idx; break; }
+    }
+
+    if dot_pos < 0 {
+        let int_val, int_ok = parse_int(num_str);
+        guard int_ok else { return 0, false; }
+        return int_val * unit_mult, true;
+    }
+
+    let whole_str = num_str[..dot_pos];
+    let fraction_str = num_str[dot_pos + 1..];
+
+    var whole_val: i64 = 0;
+    if whole_str.len > 0 {
+        let parsed_val, ok_whole = parse_int(whole_str);
+        guard ok_whole else { return 0, false; }
+        whole_val = parsed_val;
+    }
+
+    let fraction_nanos = parse_scaled_fraction(fraction_str, unit_mult);
+    return whole_val * unit_mult + fraction_nanos, true;
+}
+
+fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64 {
+    var cursor = start_pos;
+    if cursor >= text.len || (text[cursor] != '.' && text[cursor] != ',') {
+        return 0, cursor;
+    }
+    cursor++;
+    var nsec_val: i64 = 0;
+    var scale: i64 = 100000000;
+    while cursor < text.len && (text[cursor] >= '0' && text[cursor] <= '9') {
+        if scale > 0 {
+            nsec_val += (text[cursor] - '0') * scale;
+            scale /= 10;
+        }
+        cursor++;
+    }
+    return nsec_val, cursor;
+}
+
+fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
+    guard tz_text.len > 0 else { return 0, false; }
+    let tz_char = tz_text[0];
+    if tz_char == 'Z' || tz_char == 'z' {
+        return 0, true;
+    }
+    guard tz_char == '+' || tz_char == '-' else { return 0, false; }
+
+    let sign = if tz_char == '-' { -1 } else { 1 };
+    var cursor = 1;
+    guard cursor + 2 <= tz_text.len else { return 0, false; }
+    let off_hours, ok_tz_h = parse_int(tz_text[cursor..cursor + 2]);
+    guard ok_tz_h else { return 0, false; }
+    cursor += 2;
+
+    if cursor < tz_text.len && tz_text[cursor] == ':' { cursor++; }
+    var off_mins: i64 = 0;
+    if cursor + 2 <= tz_text.len {
+        let parsed_mins, ok_tz_m = parse_int(tz_text[cursor..cursor + 2]);
+        if ok_tz_m { off_mins = parsed_mins; }
+    }
+
+    let offset_seconds = sign * (off_hours * 3600 + off_mins * 60);
+    return offset_seconds as i32, true;
+}
+
 fn parse_month_name(token: const u8[:]) -> i64 {
     guard token.len >= 3 else { return 0; }
     var clean_buf: u8[3] = [0; 3];
@@ -1036,7 +1080,6 @@ fn make_validated_civil_time(year_val: i64, month_val: i64, day_val: i64, hour_v
     return unix(total_secs, 0), true;
 }
 
-// Parses RFC 1123 IMF-fixdate: "06 Nov 1994 08:49:37 GMT"
 fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
     guard rest.len >= 20 && rest[2] == ' ' && rest[6] == ' ' && rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' else {
         return Time { .. }, false;
@@ -1054,7 +1097,6 @@ fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
 }
 
-// Parses obsolete RFC 850 date: "06-Nov-94 08:49:37 GMT"
 fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     var first_dash = -1;
     for scan_idx in rest.len {
@@ -1092,7 +1134,6 @@ fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
 }
 
-// Parses obsolete ANSI C asctime: "Sun Nov  6 08:49:37 1994"
 fn parse_asctime_date(text: const u8[:]) -> Time, bool {
     guard text.len >= 24 && text[3] == ' ' && text[7] == ' ' && text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ' else {
         return Time { .. }, false;
@@ -1111,33 +1152,4 @@ fn parse_asctime_date(text: const u8[:]) -> Time, bool {
     guard ok_hour && ok_min && ok_sec && ok_year else { return Time { .. }, false; }
 
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
-}
-
-// Parses RFC 9110 §5.6.7 HTTP-Date formats:
-// 1. IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT" (preferred RFC 1123 format)
-// 2. RFC 850:     "Sunday, 06-Nov-94 08:49:37 GMT" (obsolete 2-digit year format)
-// 3. ANSI asctime: "Sun Nov  6 08:49:37 1994" (obsolete fixed-width format)
-// Returns (Time, false) if the string is malformed or represents an invalid calendar date.
-fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
-    let text = trim(raw_str);
-    guard text.len >= 24 else { return Time { .. }, false; }
-
-    var comma_idx = -1;
-    for scan_idx in text.len {
-        if text[scan_idx] == ',' { comma_idx = scan_idx; break; }
-    }
-
-    if comma_idx > 0 {
-        let rest = trim(text[comma_idx + 1..]);
-        var has_dash = false;
-        for scan_idx in rest.len {
-            if rest[scan_idx] == '-' { has_dash = true; break; }
-        }
-        if has_dash {
-            return parse_rfc850_date(rest);
-        }
-        return parse_imf_fixdate(rest);
-    }
-
-    return parse_asctime_date(text);
 }
