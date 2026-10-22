@@ -5,26 +5,7 @@ namespace wing;
 import std;
 import cookie.constants;
 
-// ---- ip address validation ----
-
-// Checks whether host is an IPv4 or IPv6 literal.
-// Per RFC 6265 §5.1.3, domain-matching MUST NOT match suffixes on IP addresses.
-fn ip_address_literal(host: const u8[:]) -> bool {
-    guard host.len > 0 else { return false; }
-
-    // IPv6 literals contain colons
-    for char_byte in host {
-        if char_byte == ':' { return true; }
-    }
-
-    return is_valid_ipv4_format(host);
-}
-
-fn is_ip_address_literal(host: const u8[:]) -> bool {
-    return ip_address_literal(host);
-}
-
-// ---- public suffix engine ----
+// ---- public suffix & rfc 6265 scoping api --------------------------------
 
 // Determines if domain is a public suffix (cannot set domain cookies for it).
 fn public_suffix_domain(domain: const u8[:]) -> bool {
@@ -35,8 +16,6 @@ fn public_suffix_domain(domain: const u8[:]) -> bool {
 fn is_public_suffix_domain(domain: const u8[:]) -> bool {
     return public_suffix_domain(domain);
 }
-
-// ---- etld+1 extraction ----
 
 // Extracts the effective top-level domain plus one label (eTLD+1).
 // Used by CookieMonster for the primary 2-level hash indexing (CookieMap) and
@@ -52,37 +31,14 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
         return;
     }
 
-    // Identify last three dot positions from right to left
     var last_dot = -1;
     var second_last_dot = -1;
     var third_last_dot = -1;
     find_trailing_dot_positions(clean_host, last_dot, second_last_dot, third_last_dot);
 
-    // Check two-level suffix (e.g. sub.example.co.uk -> co.uk is eTLD, example.co.uk is eTLD+1)
-    if second_last_dot >= 0 {
-        let candidate_two_level_tld = clean_host[second_last_dot + 1..];
-        if is_known_two_level_suffix(candidate_two_level_tld) {
-            let start_pos = if third_last_dot >= 0 { third_last_dot + 1 } else { 0 };
-            out.append(clean_host[start_pos..]);
-            return;
-        }
-    }
-
-    // Check single-level suffix (e.g. sub.example.com -> com is eTLD, example.com is eTLD+1)
-    if last_dot >= 0 {
-        let candidate_one_level_tld = clean_host[last_dot + 1..];
-        if is_known_one_level_suffix(candidate_one_level_tld) {
-            let start_pos = if second_last_dot >= 0 { second_last_dot + 1 } else { 0 };
-            out.append(clean_host[start_pos..]);
-            return;
-        }
-    }
-
-    // Fallback: return clean host
-    out.append(clean_host);
+    let start_pos = find_etld_start(clean_host, last_dot, second_last_dot, third_last_dot);
+    out.append(clean_host[start_pos..]);
 }
-
-// ---- rfc 6265 matching algorithms ----
 
 // RFC 6265 §5.1.3: Domain-Match algorithm.
 // S matches D if S == D, or D is a suffix of S with leading '.' and S is not an IP address.
@@ -109,7 +65,7 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
 }
 
 // RFC 6265 §5.1.4: Default-Path computation.
-// Extracts the path directory of request URI path.
+// Extracts the directory prefix of the request URI path.
 fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.clear();
     if uri_path.len == 0 || uri_path[0] != '/' {
@@ -145,7 +101,60 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
     return false;
 }
 
-// ---- internal implementation helpers ----
+// Checks whether host is an IPv4 or IPv6 literal.
+// Per RFC 6265 §5.1.3, domain-matching MUST NOT match suffixes on IP addresses.
+fn ip_address_literal(host: const u8[:]) -> bool {
+    guard host.len > 0 else { return false; }
+    for char_byte in host {
+        if char_byte == ':' { return true; }
+    }
+    return is_valid_ipv4_format(host);
+}
+
+fn is_ip_address_literal(host: const u8[:]) -> bool {
+    return ip_address_literal(host);
+}
+
+// ---- internal implementation helpers ---------------------------------------
+
+fn find_etld_start(clean_host: const u8[:], last_dot: i64, second_last_dot: i64, third_last_dot: i64) -> i64 {
+    if second_last_dot >= 0 && is_known_two_level_suffix(clean_host[second_last_dot + 1..]) {
+        return if third_last_dot >= 0 { third_last_dot + 1 } else { 0 };
+    }
+    if last_dot >= 0 && is_known_one_level_suffix(clean_host[last_dot + 1..]) {
+        return if second_last_dot >= 0 { second_last_dot + 1 } else { 0 };
+    }
+    return 0;
+}
+
+fn find_trailing_dot_positions(
+    str_val: const u8[:],
+    last_dot: i64&,
+    second_last_dot: i64&,
+    third_last_dot: i64&,
+) {
+    for step_idx in str_val.len {
+        let scan_idx = str_val.len - 1 - step_idx;
+        if str_val[scan_idx] == '.' {
+            if last_dot < 0 {
+                last_dot = scan_idx;
+            } else if second_last_dot < 0 {
+                second_last_dot = scan_idx;
+            } else if third_last_dot < 0 {
+                third_last_dot = scan_idx;
+                break;
+            }
+        }
+    }
+}
+
+fn count_dots(str_val: const u8[:]) -> i64 {
+    var dot_count = 0;
+    for char_byte in str_val {
+        if char_byte == '.' { dot_count++; }
+    }
+    return dot_count;
+}
 
 fn is_valid_ipv4_format(host: const u8[:]) -> bool {
     var dot_count = 0;
@@ -168,35 +177,6 @@ fn is_valid_ipv4_format(host: const u8[:]) -> bool {
     }
 
     return dot_count == 3 && octet_digits > 0 && octet_val <= 255;
-}
-
-fn count_dots(str_val: const u8[:]) -> i64 {
-    var dot_count = 0;
-    for char_byte in str_val {
-        if char_byte == '.' { dot_count++; }
-    }
-    return dot_count;
-}
-
-fn find_trailing_dot_positions(
-    str_val: const u8[:],
-    last_dot: i64&,
-    second_last_dot: i64&,
-    third_last_dot: i64&,
-) {
-    for step_idx in str_val.len {
-        let scan_idx = str_val.len - 1 - step_idx;
-        if str_val[scan_idx] == '.' {
-            if last_dot < 0 {
-                last_dot = scan_idx;
-            } else if second_last_dot < 0 {
-                second_last_dot = scan_idx;
-            } else if third_last_dot < 0 {
-                third_last_dot = scan_idx;
-                break;
-            }
-        }
-    }
 }
 
 // Checks if domain string is a known two-level public suffix (e.g. "co.uk", "com.au").

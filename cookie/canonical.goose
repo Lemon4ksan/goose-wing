@@ -10,6 +10,8 @@ import cookie.policy;
 import cookie.engine;
 import cookie.store;
 
+// ---- canonical cookie model ---------------------------------------------
+
 // CanonicalCookie represents the atomic, fully-validated state of an HTTP cookie
 // in memory and persistent storage, containing origin bindings, microsecond lifecycle
 // timestamps, partition keys, and security isolation metadata.
@@ -18,14 +20,14 @@ struct CanonicalCookie {
     value: u8[..4096] = [],
     domain: u8[..256] = [],
     path: u8[..256] = "/",
-    creation_utc: i64 = 0,     // microsecond UTC timestamp (immutable across overwrites)
-    last_access_utc: i64 = 0,  // microsecond UTC timestamp (LRA key)
-    last_update_utc: i64 = 0,  // microsecond UTC timestamp
-    expires_utc: i64 = 0,      // microsecond UTC timestamp (capped at 400 days)
-    partition_key: u8[..256] = [], // scheme + eTLD+1 (CHIPS top frame)
+    creation_utc: i64 = 0,     // Microsecond UTC timestamp (immutable across overwrites)
+    last_access_utc: i64 = 0,  // Microsecond UTC timestamp (Least Recently Accessed key)
+    last_update_utc: i64 = 0,  // Microsecond UTC timestamp
+    expires_utc: i64 = 0,      // Microsecond UTC timestamp (capped at 400 days)
+    partition_key: u8[..256] = [], // Scheme + eTLD+1 (CHIPS top frame site key)
     source_port: i32 = -1,     // 1..65535 or -1 (unset/unknown)
     host_only: bool = true,
-    persistent: bool = false,  // true if Max-Age or Expires set
+    persistent: bool = false,  // True if Max-Age or Expires was specified
     secure: bool = false,
     httponly: bool = false,
     partitioned: bool = false,
@@ -43,20 +45,32 @@ fn canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     return new_cookie;
 }
 
-// ---- state & expiration predicates ----
+// ---- lifecycle & expiration predicates -----------------------------------
 
-// Returns true if cookie is expired relative to current microsecond timestamp now_us.
-fn cookie_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
+// Evaluates whether a cookie is expired relative to microsecond timestamp now_us.
+// Session cookies (persistent == false) never expire automatically by time.
+fn expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if !cookie_val.persistent { return false; }
     if cookie_val.expires_utc <= 0 { return true; }
     return cookie_val.expires_utc <= now_us;
 }
 
-fn is_cookie_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return cookie_expired(cookie_val, now_us);
+// Idiomatic boolean alias for expired(cookie_val, now_us).
+fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
+    return expired(cookie_val, now_us);
 }
 
-// Cookie Incrementalism: Check if the cookie is still within the 2-minute
+// Compatibility alias for legacy callers.
+fn cookie_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
+    return expired(cookie_val, now_us);
+}
+
+// Compatibility alias for legacy callers.
+fn is_cookie_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
+    return expired(cookie_val, now_us);
+}
+
+// Cookie Incrementalism: evaluates if the cookie is still within the 2-minute
 // Lax-allowing-unsafe (Lax+POST) window from its creation_utc.
 fn in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if cookie_val.same_site != CookieSameSite.Default { return false; }
@@ -73,65 +87,7 @@ fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
     return cookie_val.name.len + cookie_val.value.len;
 }
 
-// ---- key generation & serialization ----
-
-// Computes the canonical unique key for collision resolution.
-// In modern CookieMonster with OBC & CHIPS, cookies are unique on:
-// (name, domain, path, host_only, partition_key, source_scheme, source_port).
-fn format_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    out.append(cookie_val.name[..]);
-    out.push('\0');
-    out.append(cookie_val.domain[..]);
-    out.push('\0');
-    out.append(cookie_val.path[..]);
-    out.push('\0');
-    out.append(if cookie_val.host_only { "H" } else { "D" });
-    out.push('\0');
-    out.append(cookie_val.partition_key[..]);
-    out.push('\0');
-    format(out, cookie_val.source_port as i64);
-    out.push('\0');
-    out.append(source_scheme_to_string(cookie_val.source_scheme));
-}
-
-// Classic RFC 6265 unique key (name, domain, path) for legacy equivalence checks.
-fn format_legacy_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    out.append(cookie_val.name[..]);
-    out.push('\0');
-    out.append(cookie_val.domain[..]);
-    out.push('\0');
-    out.append(cookie_val.path[..]);
-}
-
-// Serializes CanonicalCookie into a standard Set-Cookie string.
-fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    out.append(cookie_val.name[..]);
-    out.push('=');
-    out.append(cookie_val.value[..]);
-
-    if !cookie_val.host_only && cookie_val.domain.len > 0 {
-        out.append("; Domain=");
-        out.append(cookie_val.domain[..]);
-    }
-    if cookie_val.path.len > 0 {
-        out.append("; Path=");
-        out.append(cookie_val.path[..]);
-    }
-    if cookie_val.secure { out.append("; Secure"); }
-    if cookie_val.httponly { out.append("; HttpOnly"); }
-    if cookie_val.partitioned { out.append("; Partitioned"); }
-
-    if cookie_val.same_site != CookieSameSite.Default {
-        out.append("; SameSite=");
-        out.append(same_site_to_string(cookie_val.same_site));
-    }
-    if cookie_val.priority != CookiePriority.Medium {
-        out.append("; Priority=");
-        out.append(priority_to_string(cookie_val.priority));
-    }
-}
-
-// ---- fluent in-place builder methods (UFCS) ----
+// ---- fluent in-place builder methods (ufcs) ------------------------------
 
 fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
     cookie_ref.value.clear();
@@ -219,15 +175,7 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
     return cookie_ref;
 }
 
-// ---- matching predicate methods (UFCS) ----
-
-fn expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return cookie_expired(cookie_val, now_us);
-}
-
-fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return cookie_expired(cookie_val, now_us);
-}
+// ---- matching & routing predicates (ufcs) --------------------------------
 
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
     if cookie_val.host_only {
@@ -238,4 +186,62 @@ fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool
 
 fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bool {
     return cookie_path_match(req_path, cookie_val.path[..]);
+}
+
+// ---- unique key formatting & serialization --------------------------------
+
+// Computes the canonical unique key for collision resolution.
+// In modern CookieMonster with OBC & CHIPS, cookies are unique on:
+// (name, domain, path, host_only, partition_key, source_scheme, source_port).
+fn format_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
+    out.append(cookie_val.name[..]);
+    out.push('\0');
+    out.append(cookie_val.domain[..]);
+    out.push('\0');
+    out.append(cookie_val.path[..]);
+    out.push('\0');
+    out.append(if cookie_val.host_only { "H" } else { "D" });
+    out.push('\0');
+    out.append(cookie_val.partition_key[..]);
+    out.push('\0');
+    format(out, cookie_val.source_port as i64);
+    out.push('\0');
+    out.append(source_scheme_to_string(cookie_val.source_scheme));
+}
+
+// Classic RFC 6265 unique key (name, domain, path) for legacy equivalence checks.
+fn format_legacy_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
+    out.append(cookie_val.name[..]);
+    out.push('\0');
+    out.append(cookie_val.domain[..]);
+    out.push('\0');
+    out.append(cookie_val.path[..]);
+}
+
+// Serializes CanonicalCookie into a standard Set-Cookie string.
+fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
+    out.append(cookie_val.name[..]);
+    out.push('=');
+    out.append(cookie_val.value[..]);
+
+    if !cookie_val.host_only && cookie_val.domain.len > 0 {
+        out.append("; Domain=");
+        out.append(cookie_val.domain[..]);
+    }
+    if cookie_val.path.len > 0 {
+        out.append("; Path=");
+        out.append(cookie_val.path[..]);
+    }
+    if cookie_val.secure { out.append("; Secure"); }
+    if cookie_val.httponly { out.append("; HttpOnly"); }
+    if cookie_val.partitioned { out.append("; Partitioned"); }
+
+    if cookie_val.same_site != CookieSameSite.Default {
+        out.append("; SameSite=");
+        out.append(same_site_to_string(cookie_val.same_site));
+    }
+    if cookie_val.priority != CookiePriority.Medium {
+        out.append("; Priority=");
+        out.append(priority_to_string(cookie_val.priority));
+    }
 }

@@ -110,6 +110,12 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
     };
 }
 
+fn parse_cookie_source_scheme(val: const u8[:]) -> CookieSourceScheme {
+    if eq_ascii_fold(val, "secure") { return CookieSourceScheme.Secure; }
+    if eq_ascii_fold(val, "nonsecure") { return CookieSourceScheme.NonSecure; }
+    return CookieSourceScheme.Unset;
+}
+
 // ---- deletion cause enumeration ----
 
 // Deletion cause taxonomy for telemetry and persistence (Chromium CookieMonster).
