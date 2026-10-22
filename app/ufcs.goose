@@ -126,9 +126,13 @@ fn ::import_json(jar: wing::CookieJar&, target_url: const u8[:], json_text: cons
 fn ::as_nanos(d: wing::Duration) -> i64 { return wing::as_nanos(d); }
 fn ::as_micros(d: wing::Duration) -> i64 { return wing::as_micros(d); }
 fn ::as_millis(d: wing::Duration) -> i64 { return wing::as_millis(d); }
-fn ::as_seconds(d: wing::Duration) -> f64 { return wing::as_seconds(d); }
-fn ::as_minutes(d: wing::Duration) -> f64 { return wing::as_minutes(d); }
-fn ::as_hours(d: wing::Duration) -> f64 { return wing::as_hours(d); }
+fn ::as_secs(d: wing::Duration) -> i64 { return wing::as_secs(d); }
+fn ::as_mins(d: wing::Duration) -> i64 { return wing::as_mins(d); }
+fn ::as_hours(d: wing::Duration) -> i64 { return wing::as_hours(d); }
+fn ::as_days(d: wing::Duration) -> i64 { return wing::as_days(d); }
+fn ::as_secs_f64(d: wing::Duration) -> f64 { return wing::as_secs_f64(d); }
+fn ::as_mins_f64(d: wing::Duration) -> f64 { return wing::as_mins_f64(d); }
+fn ::as_hours_f64(d: wing::Duration) -> f64 { return wing::as_hours_f64(d); }
 
 fn ::nanoseconds(d: wing::Duration) -> i64 { return wing::nanoseconds(d); }
 fn ::microseconds(d: wing::Duration) -> i64 { return wing::microseconds(d); }
@@ -155,7 +159,6 @@ fn ::month(t: wing::Time) -> wing::Month { return wing::month(t); }
 fn ::month_number(t: wing::Time) -> i64 { return wing::month_number(t); }
 fn ::day(t: wing::Time) -> i64 { return wing::day(t); }
 fn ::weekday(t: wing::Time) -> wing::Weekday { return wing::weekday(t); }
-fn ::year_day(t: wing::Time) -> i64 { return wing::year_day(t); }
 fn ::clock(t: wing::Time) -> i64, i64, i64 { return wing::clock(t); }
 fn ::hour(t: wing::Time) -> i64 { return wing::hour(t); }
 fn ::minute(t: wing::Time) -> i64 { return wing::minute(t); }
@@ -170,23 +173,50 @@ fn ::is_zero(t: wing::Time) -> bool { return wing::is_zero(t); }
 // Time arithmetic
 fn ::add(t: wing::Time, d: wing::Duration) -> wing::Time { return wing::add(t, d); }
 fn ::sub(t: wing::Time, u: wing::Time) -> wing::Duration { return wing::sub(t, u); }
-fn ::add_date(t: wing::Time, years: i64, months: i64, days: i64) -> wing::Time { return wing::add_date(t, years, months, days); }
+fn ::sub(t: wing::Time, d: wing::Duration) -> wing::Time { return wing::sub(t, d); }
+fn ::sub_duration(t: wing::Time, d: wing::Duration) -> wing::Time { return wing::sub_duration(t, d); }
 fn ::since(t: wing::Time) -> wing::Duration { return wing::since(t); }
 fn ::until(t: wing::Time) -> wing::Duration { return wing::until(t); }
 fn ::equal(t: wing::Time, u: wing::Time) -> bool { return wing::equal(t, u); }
 fn ::before(t: wing::Time, u: wing::Time) -> bool { return wing::before(t, u); }
 fn ::after(t: wing::Time, u: wing::Time) -> bool { return wing::after(t, u); }
+fn ::compare(t: wing::Time, u: wing::Time) -> i64 { return wing::compare(t, u); }
+fn ::truncate(t: wing::Time, d: wing::Duration) -> wing::Time { return wing::truncate(t, d); }
+fn ::round(t: wing::Time, d: wing::Duration) -> wing::Time { return wing::round(t, d); }
 
 // Timezones
 fn ::utc(t: wing::Time) -> wing::Time { return wing::utc(t); }
-fn ::in_location(t: wing::Time, tz_offset: i32) -> wing::Time { return wing::in_location(t, tz_offset); }
+fn ::in_offset(t: wing::Time, tz_offset: i32) -> wing::Time { return wing::in_offset(t, tz_offset); }
+fn ::in_tz(t: wing::Time, hours: i64, minutes: i64 = 0) -> wing::Time { return wing::in_tz(t, hours, minutes); }
+fn ::tz_offset(t: wing::Time) -> i32 { return wing::tz_offset(t); }
+
+// Calendar Math & Navigation
+fn ::add_months_clamped(t: wing::Time, months: i64) -> wing::Time { return wing::add_months_clamped(t, months); }
+fn ::add_years_clamped(t: wing::Time, years: i64) -> wing::Time { return wing::add_years_clamped(t, years); }
+fn ::days_in_month(t: wing::Time) -> i64 { return wing::days_in_month(t); }
+fn ::days_in_year(t: wing::Time) -> i64 { return wing::days_in_year(t); }
+fn ::is_leap_year(t: wing::Time) -> bool { return wing::is_leap_year(t); }
+
+fn ::start_of_day(t: wing::Time) -> wing::Time { return wing::start_of_day(t); }
+fn ::end_of_day(t: wing::Time) -> wing::Time { return wing::end_of_day(t); }
+fn ::start_of_month(t: wing::Time) -> wing::Time { return wing::start_of_month(t); }
+fn ::end_of_month(t: wing::Time) -> wing::Time { return wing::end_of_month(t); }
+fn ::start_of_year(t: wing::Time) -> wing::Time { return wing::start_of_year(t); }
+fn ::end_of_year(t: wing::Time) -> wing::Time { return wing::end_of_year(t); }
 
 // Formatting
 fn ::format_rfc3339<B>(out: B&, t: wing::Time) { wing::format_rfc3339(out, t); }
+fn ::format_rfc3339_nano<B>(out: B&, t: wing::Time) { wing::format_rfc3339_nano(out, t); }
 fn ::format_http<B>(out: B&, t: wing::Time) { wing::format_http(out, t); }
-fn ::format_date_time<B>(out: B&, t: wing::Time) { wing::format_date_time(out, t); }
-fn ::format_time<B>(out: B&, t: wing::Time, layout: const u8[:]) { wing::format_time(out, t, layout); }
 
 // Stopwatch
 fn ::elapsed(sw: const wing::Stopwatch&) -> wing::Duration { return wing::elapsed(sw); }
 fn ::restart(sw: wing::Stopwatch&) -> wing::Duration { return wing::restart(sw); }
+
+// Deadline Primitives
+fn ::is_expired(dl: const wing::Deadline&) -> bool { return wing::is_expired(dl); }
+fn ::remaining(dl: const wing::Deadline&) -> wing::Duration { return wing::remaining(dl); }
+
+// Policy Bridges (Backoff & RateLimiter)
+fn ::delay(b: const wing::Backoff&, attempt: i64) -> wing::Duration { return wing::delay(b, attempt); }
+fn ::allow(rl: wing::RateLimiter&) -> bool { return wing::allow(rl); }
