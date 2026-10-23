@@ -584,6 +584,117 @@ fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
     return new_url(new_href[..]);
 }
 
+// ---- dual-mode url resolution (rfc reference vs backend endpoint) ---------
+
+// Resolves a relative URL reference against a base URL strictly conforming to RFC 3986 / WHATWG URL Standard (Browser behavior).
+// If `base_url` path does not end with '/' (e.g. "http://example.com/api"), resolving "/v1" or "v1" will replace "/api"
+// with "/v1", exactly as web browsers, HTML links, and RFC specifications dictate.
+// Examples:
+//   "http://example.com/api"  + "/v1"  -> "http://example.com/v1"
+//   "http://example.com/api"  + "v1"   -> "http://example.com/v1"
+//   "http://example.com/api/" + "v1"   -> "http://example.com/api/v1"
+//   "http://example.com/api/" + "/v1"  -> "http://example.com/v1"
+fn resolve_reference(base_url: const Url&, relative_ref: const u8[:]) -> Url {
+    return new_url(relative_ref, base_url);
+}
+
+fn parse_reference(base_url: const Url&, relative_ref: const u8[:]) -> Url, UrlParseError {
+    return parse_url_with_base(relative_ref, base_url);
+}
+
+// Resolves an API endpoint against a base URL using Backend / Service semantics (API Client behavior).
+// Unlike RFC 3986 reference resolution, the base URL's pathname is treated as a permanent route prefix (e.g. "/api" or "/v1")
+// regardless of whether `base_url` ends with a trailing slash.
+// Examples:
+//   "http://example.com/api"  + "/v1"       -> "http://example.com/api/v1"
+//   "http://example.com/api"  + "v1"        -> "http://example.com/api/v1"
+//   "http://example.com/api/" + "/v1"       -> "http://example.com/api/v1"
+//   "http://example.com/api"  + "/v1/users?p=1#top" -> "http://example.com/api/v1/users?p=1#top"
+//   "http://example.com/api"  + "https://other.com/metrics" -> "https://other.com/metrics" (absolute URL override)
+fn resolve_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url {
+    let res_url, err = parse_endpoint(base_url, endpoint);
+    return res_url;
+}
+
+fn join_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url {
+    return resolve_endpoint(base_url, endpoint);
+}
+
+fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseError {
+    guard base_url.valid else {
+        return Url { valid: false, .. }, UrlParseError.RelativeWithoutBase;
+    }
+
+    var cleaned_endpoint: u8[..512] = [];
+    clean_input_string(endpoint, cleaned_endpoint);
+    guard cleaned_endpoint.len > 0 else {
+        // Empty endpoint keeps base URL with fragment stripped
+        return resolve_reference(base_url, ""), UrlParseError.None;
+    }
+
+    let ep_str = cleaned_endpoint[..];
+
+    // If endpoint is an absolute URL (e.g. https://... or custom://...), it overrides base completely
+    var colon_pos = -1;
+    for scan_idx in ep_str.len {
+        let char_byte = ep_str[scan_idx];
+        if char_byte == ':' { colon_pos = scan_idx; break; }
+        if char_byte == '/' || char_byte == '\\' || char_byte == '?' || char_byte == '#' { break; }
+    }
+    if colon_pos > 0 {
+        let abs_url, abs_err = parse_url(ep_str);
+        if abs_url.valid {
+            return abs_url, UrlParseError.None;
+        }
+    }
+
+    // Protocol-relative (//...) inherits scheme from base
+    if ep_str.len >= 2 && ep_str[0] == '/' && ep_str[1] == '/' {
+        return parse_url_with_base(ep_str, base_url);
+    }
+
+    // Hash-only (#frag) or Query-only (?query) delegates to reference resolution
+    if ep_str[0] == '#' || ep_str[0] == '?' {
+        return parse_url_with_base(ep_str, base_url);
+    }
+
+    // Split endpoint into path vs query/hash
+    var q_pos = -1;
+    var h_pos = -1;
+    for scan_idx in ep_str.len {
+        let char_byte = ep_str[scan_idx];
+        if char_byte == '?' && q_pos < 0 && h_pos < 0 {
+            q_pos = scan_idx;
+        } else if char_byte == '#' && h_pos < 0 {
+            h_pos = scan_idx;
+            break;
+        }
+    }
+
+    let path_end = if q_pos >= 0 { q_pos } else if h_pos >= 0 { h_pos } else { ep_str.len };
+    let raw_subpath = ep_str[..path_end];
+    let query_and_hash = ep_str[path_end..];
+
+    // Build combined path: base_pathname + "/" + subpath (stripping leading slashes from subpath)
+    var combined: u8[..512] = [];
+    let base_path = pathname(base_url);
+    combined.append(base_path);
+
+    if combined.len == 0 || combined[combined.len - 1] != '/' {
+        combined.push('/');
+    }
+
+    var sub_start = 0;
+    while sub_start < raw_subpath.len && (raw_subpath[sub_start] == '/' || raw_subpath[sub_start] == '\\') {
+        sub_start++;
+    }
+    combined.append(raw_subpath[sub_start..]);
+    combined.append(query_and_hash);
+
+    // Resolve combined path against base URL authority
+    return parse_url_with_base(combined[..], base_url);
+}
+
 // ---- origin and site derivations -------------------------------------------
 
 fn origin_from_url(url_val: const Url&) -> Origin {

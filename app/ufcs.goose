@@ -341,3 +341,9 @@ fn ::appending_path_component(url_val: wing::Url, component: const u8[:]) -> win
 fn ::appending(url_val: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(url_val, component); }
 fn ::appending_path(url_val: wing::Url, subpath: const u8[:]) -> wing::Url { return wing::appending_path(url_val, subpath); }
 fn ::appending_path_extension(url_val: wing::Url, ext: const u8[:]) -> wing::Url { return wing::appending_path_extension(url_val, ext); }
+
+// ---- dual-mode resolution ufcs bridges -------------------------------------
+
+fn ::resolve_reference(base_url: const wing::Url&, relative_ref: const u8[:]) -> wing::Url { return wing::resolve_reference(base_url, relative_ref); }
+fn ::resolve_endpoint(base_url: const wing::Url&, endpoint: const u8[:]) -> wing::Url { return wing::resolve_endpoint(base_url, endpoint); }
+fn ::join_endpoint(base_url: const wing::Url&, endpoint: const u8[:]) -> wing::Url { return wing::join_endpoint(base_url, endpoint); }

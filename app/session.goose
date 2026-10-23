@@ -422,7 +422,11 @@ fn build_effective_url(
     out: u8[..512]&
 ) {
     out.clear();
-    if req_url.len >= 7 && (req_url[..7] == "http://" || (req_url.len >= 8 && req_url[..8] == "https://")) {
+    let parsed_base = new_url(base_url);
+    if parsed_base.valid {
+        let eff_url = resolve_endpoint(parsed_base, req_url);
+        out.append(href(eff_url));
+    } else if req_url.len >= 7 && (req_url[..7] == "http://" || (req_url.len >= 8 && req_url[..8] == "https://")) {
         out.append(req_url);
     } else {
         out.append(base_url);

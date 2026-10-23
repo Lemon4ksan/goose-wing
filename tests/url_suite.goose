@@ -969,6 +969,106 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 5. Dual-Mode URL Resolution: RFC 3986 Reference vs Backend Endpoint Joining
+// ----------------------------------------------------------------------------
+fn test_dual_mode_resolution_rfc_vs_endpoint(t: wing::T&) {
+    t.run("Mode 1: Browser / RFC 3986 Reference Resolution (resolve_reference)") { sub =>
+        // Base without trailing slash: "/api" is treated as a leaf file and replaced
+        let base_no_slash = wing::new_url("http://example.com/api");
+
+        // Root-relative reference "/v1" replaces path
+        let ref_slash = wing::resolve_reference(base_no_slash, "/v1");
+        sub.assert_bytes_eq(wing::pathname(ref_slash), "/v1", "RFC: /v1 replaces /api");
+        sub.assert_bytes_eq(wing::href(ref_slash), "http://example.com/v1", "RFC: href is http://example.com/v1");
+
+        // Relative reference "v1" replaces last component
+        let ref_noslash = wing::resolve_reference(base_no_slash, "v1");
+        sub.assert_bytes_eq(wing::pathname(ref_noslash), "/v1", "RFC: v1 replaces /api");
+        sub.assert_bytes_eq(wing::href(ref_noslash), "http://example.com/v1", "RFC: href is http://example.com/v1");
+
+        // Query only and hash only preserve base path
+        let ref_q = wing::resolve_reference(base_no_slash, "?filter=active");
+        sub.assert_bytes_eq(wing::href(ref_q), "http://example.com/api?filter=active", "RFC: query preserves /api");
+
+        let ref_h = wing::resolve_reference(base_no_slash, "#details");
+        sub.assert_bytes_eq(wing::href(ref_h), "http://example.com/api#details", "RFC: hash preserves /api");
+
+        // Base with trailing slash: "http://example.com/api/"
+        let base_with_slash = wing::new_url("http://example.com/api/");
+
+        // Root-relative "/v1" STILL replaces path to "/v1"
+        let ref_ws_root = wing::resolve_reference(base_with_slash, "/v1");
+        sub.assert_bytes_eq(wing::pathname(ref_ws_root), "/v1", "RFC: /v1 on base with slash replaces to /v1");
+
+        // Relative "v1" nests inside "api/"
+        let ref_ws_rel = wing::resolve_reference(base_with_slash, "v1");
+        sub.assert_bytes_eq(wing::pathname(ref_ws_rel), "/api/v1", "RFC: v1 on base with slash nests to /api/v1");
+    };
+
+    t.run("Mode 2: Backend API / Service Endpoint Joining (resolve_endpoint)") { sub =>
+        // Base without trailing slash: "/api" is preserved as a permanent prefix
+        let base_no_slash = wing::new_url("http://example.com/api");
+
+        // Leading slash does NOT wipe out /api prefix
+        let ep_slash = wing::resolve_endpoint(base_no_slash, "/v1");
+        sub.assert_bytes_eq(wing::pathname(ep_slash), "/api/v1", "Backend: /api prefix preserved on /v1");
+        sub.assert_bytes_eq(wing::href(ep_slash), "http://example.com/api/v1", "Backend: href is http://example.com/api/v1");
+
+        // Without leading slash gives identical result
+        let ep_noslash = wing::resolve_endpoint(base_no_slash, "v1");
+        sub.assert_bytes_eq(wing::pathname(ep_noslash), "/api/v1", "Backend: /api prefix preserved on v1");
+        sub.assert_bytes_eq(wing::href(ep_noslash), "http://example.com/api/v1", "Backend: href matches");
+
+        // Deep subpaths with query and fragment
+        let ep_deep = wing::resolve_endpoint(base_no_slash, "/v1/users?limit=20#top");
+        sub.assert_bytes_eq(wing::pathname(ep_deep), "/api/v1/users", "Backend: deep path preserved");
+        sub.assert_bytes_eq(wing::search(ep_deep), "?limit=20", "Backend: query preserved");
+        sub.assert_bytes_eq(wing::hash(ep_deep), "#top", "Backend: hash preserved");
+        sub.assert_bytes_eq(wing::href(ep_deep), "http://example.com/api/v1/users?limit=20#top", "Backend: full href matches");
+
+        // Base with trailing slash: "http://example.com/api/" does not produce double slash
+        let base_with_slash = wing::new_url("http://example.com/api/");
+        let ep_ws_slash = wing::resolve_endpoint(base_with_slash, "/v1");
+        sub.assert_bytes_eq(wing::pathname(ep_ws_slash), "/api/v1", "Backend: no double slash on /api/ + /v1");
+
+        let ep_ws_noslash = wing::resolve_endpoint(base_with_slash, "v1");
+        sub.assert_bytes_eq(wing::pathname(ep_ws_noslash), "/api/v1", "Backend: no double slash on /api/ + v1");
+
+        // Multi-level service prefix
+        let base_service = wing::new_url("https://gateway.internal/service/v1");
+        let ep_service = wing::resolve_endpoint(base_service, "/items/42");
+        sub.assert_bytes_eq(wing::pathname(ep_service), "/service/v1/items/42", "Backend: multi-level prefix preserved");
+
+        // Root base without path
+        let base_root = wing::new_url("http://example.com");
+        let ep_root = wing::resolve_endpoint(base_root, "/v1");
+        sub.assert_bytes_eq(wing::pathname(ep_root), "/v1", "Backend: root base gets /v1");
+
+        // Dot-segment collapsing within endpoint
+        let ep_dots = wing::resolve_endpoint(base_service, "../v2/items");
+        sub.assert_bytes_eq(wing::pathname(ep_dots), "/service/v2/items", "Backend: dot segments collapsed");
+
+        // Absolute URL in endpoint overrides base URL
+        let ep_abs = wing::resolve_endpoint(base_no_slash, "https://auth.company.com/oauth/token");
+        sub.assert_bytes_eq(wing::href(ep_abs), "https://auth.company.com/oauth/token", "Backend: absolute URL overrides base");
+
+        // Protocol-relative endpoint
+        let ep_proto = wing::resolve_endpoint(base_no_slash, "//cdn.other.com/assets/logo.png");
+        sub.assert_bytes_eq(wing::href(ep_proto), "http://cdn.other.com/assets/logo.png", "Backend: protocol-relative inherits scheme");
+
+        // UFCS syntax verification
+        let ufcs_ref = base_no_slash.resolve_reference("/v1");
+        sub.assert_bytes_eq(wing::href(ufcs_ref), "http://example.com/v1", "UFCS: base.resolve_reference");
+
+        let ufcs_ep = base_no_slash.resolve_endpoint("/v1");
+        sub.assert_bytes_eq(wing::href(ufcs_ep), "http://example.com/api/v1", "UFCS: base.resolve_endpoint");
+
+        let ufcs_join = base_no_slash.join_endpoint("/v1");
+        sub.assert_bytes_eq(wing::href(ufcs_join), "http://example.com/api/v1", "UFCS: base.join_endpoint");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -978,6 +1078,7 @@ fn main() {
     wing::run_case(runner, "2. File URL & Path Manipulation", test_swift_style_file_and_path_api);
     wing::run_case(runner, "3. WHATWG URL Standard & Security Audit Verification", test_whatwg_audit_fixes);
     wing::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
+    wing::run_case(runner, "5. Dual-Mode Resolution: RFC 3986 Reference vs Backend Endpoint", test_dual_mode_resolution_rfc_vs_endpoint);
 
     let ok = wing::finish(runner);
     assert(ok);
