@@ -15,12 +15,16 @@ Write-Host "============================================================" -Foreg
 Write-Host " goose-wing High-Performance Test Runner" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
-# Helper to start process with reliable ExitCode
-function Start-GooseProcess([string]$fileName, [string]$cmdArgs) {
+# Helper to start process with redirected output (avoids terminal cursor collisions)
+function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect = $true) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $fileName
     $psi.Arguments = $cmdArgs
     $psi.UseShellExecute = $false
+    if ($redirect) {
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+    }
     return [System.Diagnostics.Process]::Start($psi)
 }
 
@@ -28,11 +32,14 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs) {
 Write-Host "`n[1/3] Typechecking wing library..." -ForegroundColor Yellow
 $swCore = [System.Diagnostics.Stopwatch]::StartNew()
 $wingPath = Join-Path $root "wing.goose"
-$checkProc = Start-GooseProcess "goose" "check `"$wingPath`""
+$checkProc = Start-GooseProcess "goose" "check `"$wingPath`"" $true
+$checkOut = $checkProc.StandardOutput.ReadToEnd()
 $checkProc.WaitForExit()
 $swCore.Stop()
+
 if ($checkProc.ExitCode -ne 0) {
     Write-Host "FATAL: goose check wing.goose failed!" -ForegroundColor Red
+    Write-Host $checkOut -ForegroundColor Yellow
     exit 1
 }
 Write-Host "  OK: wing library typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
@@ -49,41 +56,69 @@ if ($CheckOnly) {
     Write-Host "`n[2/2] Running multi-test typecheck on $($testFiles.Count) suites..." -ForegroundColor Yellow
     $swCheck = [System.Diagnostics.Stopwatch]::StartNew()
     $fileList = ($testFiles | ForEach-Object { "`"$($_.FullName)`"" }) -join " "
-    $multiProc = Start-GooseProcess "goose" ("--check --multi-test " + $fileList)
+    $multiProc = Start-GooseProcess "goose" ("--check --multi-test " + $fileList) $true
+    $multiOut = $multiProc.StandardOutput.ReadToEnd()
     $multiProc.WaitForExit()
     $swCheck.Stop()
+
     if ($multiProc.ExitCode -ne 0) {
         Write-Host "FATAL: Test typechecking failed!" -ForegroundColor Red
+        Write-Host $multiOut -ForegroundColor Yellow
         exit 1
     }
+    Write-Host "  OK: All $($testFiles.Count) suites typechecked cleanly in $($swCheck.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
     Write-Host "`n============================================================" -ForegroundColor Cyan
-    Write-Host " All $($testFiles.Count) suites typechecked cleanly in $($swCheck.Elapsed.TotalSeconds.ToString('F2'))s!" -ForegroundColor Green
+    Write-Host " Typecheck Complete: 100% Valid ($($swCheck.Elapsed.TotalSeconds.ToString('F2'))s)" -ForegroundColor Green
     Write-Host "============================================================" -ForegroundColor Cyan
     exit 0
 }
 
-# 4. Parallel compilation using CPU cores
+# 4. Parallel compilation using CPU cores (flicker-free tracking)
 Write-Host "`n[2/3] Compiling $($testFiles.Count) suites in parallel ($optFlag)..." -ForegroundColor Yellow
 $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
 
 $buildTasks = @()
 foreach ($file in $testFiles) {
     $exeName = [System.IO.Path]::ChangeExtension($file.FullName, ".exe")
-    $args = "build $optFlag -o `"$exeName`" `"$($file.FullName)`""
-    $proc = Start-GooseProcess "goose" $args
+    $cmdArgs = "build $optFlag -o `"$exeName`" `"$($file.FullName)`""
+    $swTask = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = Start-GooseProcess "goose" $cmdArgs $true
     $buildTasks += [PSCustomObject]@{
         File = $file
         Exe = $exeName
         Process = $proc
+        Stopwatch = $swTask
     }
 }
 
+$pending = [System.Collections.ArrayList]::new()
+$buildTasks | ForEach-Object { [void]$pending.Add($_) }
 $buildFailed = 0
-foreach ($task in $buildTasks) {
-    $task.Process.WaitForExit()
-    if ($task.Process.ExitCode -ne 0) {
-        Write-Host "  FAIL: Build error for $($task.File.Name)" -ForegroundColor Red
-        $buildFailed++
+$completedCount = 0
+$totalCount = $pending.Count
+
+while ($pending.Count -gt 0) {
+    Start-Sleep -Milliseconds 50
+    for ($i = $pending.Count - 1; $i -ge 0; $i--) {
+        $task = $pending[$i]
+        if ($task.Process.HasExited) {
+            $completedCount++
+            $task.Process.WaitForExit()
+            $task.Stopwatch.Stop()
+            $elapsedSec = $task.Stopwatch.Elapsed.TotalSeconds.ToString("F1")
+
+            if ($task.Process.ExitCode -eq 0) {
+                Write-Host "  [$completedCount/$totalCount] Built $($task.File.Name) ($elapsedSec s)" -ForegroundColor Green
+            } else {
+                Write-Host "  [$completedCount/$totalCount] FAIL: $($task.File.Name) (code $($task.Process.ExitCode))" -ForegroundColor Red
+                $out = $task.Process.StandardOutput.ReadToEnd()
+                $err = $task.Process.StandardError.ReadToEnd()
+                if ($out) { Write-Host $out -ForegroundColor Yellow }
+                if ($err) { Write-Host $err -ForegroundColor Red }
+                $buildFailed++
+            }
+            $pending.RemoveAt($i)
+        }
     }
 }
 $swBuild.Stop()
@@ -92,9 +127,9 @@ if ($buildFailed -ne 0) {
     Write-Host "FATAL: $buildFailed suite(s) failed to compile!" -ForegroundColor Red
     exit 1
 }
-Write-Host "  OK: All $($testFiles.Count) suites compiled in $($swBuild.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
+Write-Host "  OK: All $($testFiles.Count) suites compiled cleanly in $($swBuild.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
 
-# 5. Execute test suites
+# 5. Execute test suites sequentially with formatted reports
 Write-Host "`n[3/3] Executing verification suites..." -ForegroundColor Yellow
 $swRun = [System.Diagnostics.Stopwatch]::StartNew()
 $passedSuites = 0
@@ -103,7 +138,7 @@ $failedSuites = 0
 foreach ($task in $buildTasks) {
     try {
         Write-Host "`n>>> Running tests/$($task.File.Name)..." -ForegroundColor Cyan
-        $runProc = Start-GooseProcess $task.Exe ""
+        $runProc = Start-GooseProcess $task.Exe "" $false
         $runProc.WaitForExit()
         if ($runProc.ExitCode -eq 0) {
             $passedSuites++
