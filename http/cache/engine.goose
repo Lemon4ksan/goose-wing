@@ -69,28 +69,6 @@ fn hash_fnv1a(s: const u8[:]) -> u32 {
     return h;
 }
 
-// Formats an integer into an inline ASCII buffer without dynamic allocation.
-fn format_int_buffer(out_buf: u8[..64]&, val: i64) {
-    out_buf.clear();
-    if val == 0 {
-        out_buf.push('0');
-        return;
-    }
-    var temp: u8[32] = [0; 32];
-    var pos: i64 = 0;
-    var n = if val < 0 { -val } else { val };
-    while n > 0 {
-        temp[pos] = ('0' + (n % 10)) as u8;
-        n /= 10;
-        pos++;
-    }
-    if val < 0 { out_buf.push('-'); }
-    while pos > 0 {
-        pos--;
-        out_buf.push(temp[pos]);
-    }
-}
-
 // Converts a CachedEntry to an application Response, attaching calculated Age header (RFC 9111 §5.1).
 fn entry_to_response(entry: const CachedEntry&, cur_now: Time, out_resp: Response&) {
     out_resp.status_code = entry.status_code;
@@ -100,7 +78,7 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: Time, out_resp: Respons
     out_resp.final_method.append(entry.method[..]);
 
     out_resp.headers.clear();
-    for h_entry in entry.headers.entries {
+    for &h_entry in entry.headers.entries {
         let h_name = entry.headers.raw_buf[h_entry.name_begin..h_entry.name_end];
         let h_val = entry.headers.raw_buf[h_entry.values_begin..h_entry.values_end];
         if !eq_ascii_fold(h_name, "age") && out_resp.headers.len < 32 {
@@ -110,18 +88,18 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: Time, out_resp: Respons
 
     var cur_ts = entry.timestamps;
     cur_ts.now = cur_now;
-    let date_raw = get_header(entry.headers, "date");
+    let date_raw = entry.headers.get_header("date");
     var date_time = cur_ts.response_time;
     if date_raw.len > 0 {
         let d, ok_d = parse_http_date(date_raw);
         if ok_d { date_time = d; }
     }
     let apparent_age = compute_apparent_age(cur_ts.response_time, date_time);
-    let orig_age = parse_age_header(get_header(entry.headers, "age"));
+    let orig_age = parse_age_header(entry.headers.get_header("age"));
     let cur_age = compute_current_age(apparent_age, orig_age, cur_ts);
 
     var age_str: u8[..64] = [];
-    format_int_buffer(age_str, cur_age);
+    format(age_str, cur_age);
     if out_resp.headers.len < 32 {
         out_resp.headers.push(make_header("Age", age_str[..]));
     }
@@ -188,9 +166,9 @@ fn new_cache_writers() -> CacheWriters {
 // Registers or joins an in-flight network transaction for key.
 // Returns (is_leader, flight_idx). Leader executes network fetch; joiner shares result.
 fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
-    for idx in writers.flights.len {
-        if writers.flights[idx].is_active && writers.flights[idx].key[..] == key {
-            writers.flights[idx].waiter_count++;
+    for &flight, idx in writers.flights {
+        if flight.is_active && flight.key[..] == key {
+            flight.waiter_count++;
             return false, idx;
         }
     }
@@ -215,8 +193,7 @@ fn finish_writer(writers: CacheWriters&, flight_idx: i64) {
     guard flight_idx >= 0 && flight_idx < writers.flights.len else { return; }
     writers.flights[flight_idx].completed = true;
     writers.flights[flight_idx].is_active = false;
-    writers.flights[flight_idx] = writers.flights[writers.flights.len - 1];
-    writers.flights.pop();
+    writers.flights.swap_remove(flight_idx);
 }
 
 // Marks the in-flight writer transaction as aborted and frees its slot.
@@ -224,8 +201,7 @@ fn abort_writer(writers: CacheWriters&, flight_idx: i64) {
     guard flight_idx >= 0 && flight_idx < writers.flights.len else { return; }
     writers.flights[flight_idx].aborted = true;
     writers.flights[flight_idx].is_active = false;
-    writers.flights[flight_idx] = writers.flights[writers.flights.len - 1];
-    writers.flights.pop();
+    writers.flights.swap_remove(flight_idx);
 }
 
 // ---- http cache engine container -------------------------------------------
@@ -288,7 +264,7 @@ fn lru_touch(cache: HttpCache&, idx: i64) {
 // Converts request headers from app Request to HeaderMap.
 fn request_headers_to_map(req: const Request&) -> HeaderMap {
     var map = new_header_map();
-    for &h in req.headers { append_header(map, h.name[..], h.value[..]); }
+    for &h in req.headers { map.append_header(h.name[..], h.value[..]); }
     return map;
 }
 
@@ -296,13 +272,13 @@ fn request_headers_to_map(req: const Request&) -> HeaderMap {
 fn response_headers_to_map(resp: const Response&) -> HeaderMap {
     var map = new_header_map();
     map.status_code = resp.status_code;
-    for &h in resp.headers { append_header(map, h.name[..], h.value[..]); }
+    for &h in resp.headers { map.append_header(h.name[..], h.value[..]); }
     return map;
 }
 
 // Checks if request contains Authorization or Proxy-Authorization.
 fn request_has_authorization(req_headers: const HeaderMap&) -> bool {
-    return has_header(req_headers, "authorization") || has_header(req_headers, "proxy-authorization");
+    return req_headers.has_header("authorization") || req_headers.has_header("proxy-authorization");
 }
 
 // Checks whether two URLs share the same origin, preventing cross-origin poisoning (RFC 9111 §4.4).
@@ -329,15 +305,14 @@ fn find_matching_entry(
     var matched_idx: i64 = -1;
     var newest_date_unix: i64 = -1;
 
-    for idx in cache.entries.len {
-        let entry = cache.entries[idx];
+    for &entry, idx in cache.entries {
         if !entry.is_valid || entry.security_zeroed { continue; }
         if entry.url_hash != req_hash || entry.url[..] != req_url { continue; }
         if is_get && entry.head_only { continue; }
         if entry.vary.has_star { continue; }
-        if !matches_vary(entry.vary, req_headers) { continue; }
+        if !entry.vary.matches_vary(req_headers) { continue; }
 
-        let date_raw = get_header(entry.headers, "date");
+        let date_raw = entry.headers.get_header("date");
         var d_unix: i64 = 0;
         if date_raw.len > 0 {
             let d_val, ok_d = parse_http_date(date_raw);
@@ -360,11 +335,11 @@ fn build_revalidation_headers(entry: const CachedEntry&) -> HeaderMap {
         etag_buf.push('"');
         etag_buf.append(entry.etag.tag[..]);
         etag_buf.push('"');
-        append_header(cond, "If-None-Match", etag_buf[..]);
+        cond.append_header("If-None-Match", etag_buf[..]);
     }
-    let lm_raw = get_header(entry.headers, "last-modified");
+    let lm_raw = entry.headers.get_header("last-modified");
     if lm_raw.len > 0 {
-        append_header(cond, "If-Modified-Since", lm_raw);
+        cond.append_header("If-Modified-Since", lm_raw);
     }
     return cond;
 }
@@ -387,21 +362,21 @@ fn lookup(
         return dec;
     }
 
-    let req_headers = request_headers_to_map(req);
+    let req_headers = req.request_headers_to_map();
     let req_cc = parse_cache_control_headers(req_headers, true, cache.options.ignore_cargo_cult);
 
-    if is_no_store(req_cc) {
+    if req_cc.is_no_store() {
         cache.total_misses++;
         dec.kind = LookupResultKind.Miss;
         return dec;
     }
 
     let req_hash = hash_fnv1a(req.url[..]);
-    let matched_idx = find_matching_entry(cache, req.url[..], req_hash, req_headers, is_get);
+    let matched_idx = cache.find_matching_entry(req.url[..], req_hash, req_headers, is_get);
 
     if matched_idx < 0 {
         cache.total_misses++;
-        if is_only_if_cached(req_cc) {
+        if req_cc.is_only_if_cached() {
             dec.kind = LookupResultKind.Fail504;
             dec.status_code = 504;
             return dec;
@@ -411,9 +386,9 @@ fn lookup(
     }
 
     // Touch LRU on access
-    lru_touch(cache, matched_idx);
+    cache.lru_touch(matched_idx);
 
-    let matched_entry = cache.entries[matched_idx];
+    let matched_entry = &cache.entries[matched_idx];
     var ts = matched_entry.timestamps;
     ts.now = cur_now;
     if cur_mono.nanos > 0 {
@@ -431,11 +406,11 @@ fn lookup(
         cache.total_hits++;
         dec.kind = LookupResultKind.Hit;
         dec.entry_idx = matched_idx;
-        entry_to_response(matched_entry, cur_now, dec.cached_response);
+        matched_entry.entry_to_response(cur_now, dec.cached_response);
         return dec;
     }
 
-    if is_only_if_cached(req_cc) {
+    if req_cc.is_only_if_cached() {
         cache.total_misses++;
         dec.kind = LookupResultKind.Fail504;
         dec.status_code = 504;
@@ -445,7 +420,7 @@ fn lookup(
     cache.total_revalidations++;
     dec.kind = LookupResultKind.Revalidate;
     dec.entry_idx = matched_idx;
-    dec.conditional_headers = build_revalidation_headers(matched_entry);
+    dec.conditional_headers = matched_entry.build_revalidation_headers();
     return dec;
 }
 
@@ -466,15 +441,15 @@ fn freshen_cached_entry_304(
     }
 
     var entry = &cache.entries[revalidate_entry_idx];
-    let resp_304_headers = response_headers_to_map(resp);
-    merge_cached_headers_304(entry.headers, resp_304_headers);
+    let resp_304_headers = resp.response_headers_to_map();
+    entry.headers.merge_cached_headers_304(resp_304_headers);
 
     entry.timestamps.response_time = ts.response_time;
     entry.timestamps.response_mono = ts.response_mono;
     entry.cc = parse_cache_control_headers(entry.headers, false, cache.options.ignore_cargo_cult);
 
-    lru_touch(cache, revalidate_entry_idx);
-    entry_to_response(cache.entries[revalidate_entry_idx], ts.response_time, dec.response);
+    cache.lru_touch(revalidate_entry_idx);
+    entry.entry_to_response(ts.response_time, dec.response);
     dec.kind = ResponseDecisionKind.FreshenAndReturn;
     dec.entry_idx = revalidate_entry_idx;
     return dec;
@@ -488,15 +463,15 @@ fn is_response_cacheable(
     resp: const Response&,
     resp_cc: const CacheControl&
 ) -> bool {
-    if is_no_store(req_cc) || is_no_store(resp_cc) { return false; }
-    if is_must_understand(resp_cc) && !is_heuristically_cacheable_status(resp.status_code) { return false; }
+    if req_cc.is_no_store() || resp_cc.is_no_store() { return false; }
+    if resp_cc.is_must_understand() && !is_heuristically_cacheable_status(resp.status_code) { return false; }
 
     if cache.options.shared {
-        if is_private(resp_cc) && resp_cc.private_fields.len == 0 && !cache.options.cache_private {
+        if resp_cc.is_private() && resp_cc.private_fields.len == 0 && !cache.options.cache_private {
             return false;
         }
-        if request_has_authorization(req_headers) {
-            let auth_ok = is_public(resp_cc) || is_must_revalidate(resp_cc) || has_s_maxage(resp_cc);
+        if req_headers.request_has_authorization() {
+            let auth_ok = resp_cc.is_public() || resp_cc.is_must_revalidate() || resp_cc.has_s_maxage();
             if !auth_ok { return false; }
         }
     }
@@ -506,12 +481,12 @@ fn is_response_cacheable(
 
 // Stores or updates a cached entry using O(1) LRU insertion and eviction.
 fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const HeaderMap&) -> i64 {
-    for idx in cache.entries.len {
-        if cache.entries[idx].url_hash == entry.url_hash &&
-           cache.entries[idx].url[..] == entry.url[..] &&
-           matches_vary(cache.entries[idx].vary, req_headers) {
-            cache.entries[idx] = entry;
-            lru_touch(cache, idx);
+    for &existing, idx in cache.entries {
+        if existing.url_hash == entry.url_hash &&
+           existing.url[..] == entry.url[..] &&
+           existing.vary.matches_vary(req_headers) {
+            existing = entry;
+            cache.lru_touch(idx);
             return idx;
         }
     }
@@ -519,15 +494,15 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
     if cache.entries.len < 64 {
         cache.entries.push(entry);
         let new_idx = (cache.entries.len - 1) as i32;
-        lru_push_front(cache, new_idx);
+        cache.lru_push_front(new_idx);
         return new_idx;
     }
 
     // Evict LRU tail in O(1) without shifting any elements
     let victim_idx = cache.lru_tail;
-    lru_detach(cache, victim_idx);
-    cache.entries[victim_idx] = entry;
-    lru_push_front(cache, victim_idx);
+    cache.lru_detach(victim_idx);
+    cache.entries[victim_idx as i64] = entry;
+    cache.lru_push_front(victim_idx);
     return victim_idx;
 }
 
@@ -549,13 +524,13 @@ fn on_response(
                     eq_ascii_fold(req.method[..], "DELETE") || eq_ascii_fold(req.method[..], "PATCH");
 
     if is_unsafe && resp.status_code >= 200 && resp.status_code < 400 {
-        check_invalidation(cache, req, resp);
+        cache.check_invalidation(req, resp);
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
 
     if resp.status_code == 304 {
-        return freshen_cached_entry_304(cache, revalidate_entry_idx, resp, ts);
+        return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts);
     }
 
     guard is_get || is_head else {
@@ -563,49 +538,51 @@ fn on_response(
         return dec;
     }
 
-    let req_headers = request_headers_to_map(req);
+    let req_headers = req.request_headers_to_map();
     let req_cc = parse_cache_control_headers(req_headers, true, cache.options.ignore_cargo_cult);
-    let resp_headers = response_headers_to_map(resp);
+    let resp_headers = resp.response_headers_to_map();
     let resp_cc = parse_cache_control_headers(resp_headers, false, cache.options.ignore_cargo_cult);
 
-    guard is_response_cacheable(cache, req_cc, req_headers, resp, resp_cc) else {
+    guard cache.is_response_cacheable(req_cc, req_headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
 
-    let vary_snap = record_vary_snapshot(get_header(resp_headers, "vary"), req_headers);
+    let vary_snap = record_vary_snapshot(resp_headers.get_header("vary"), req_headers);
     guard !vary_snap.has_star else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
 
     var sanitized = new_header_map();
-    sanitize_for_storage(resp_headers, sanitized, cache.options.shared, resp_cc);
+    resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
 
-    let lm_raw = get_header(resp_headers, "last-modified");
+    let lm_raw = resp_headers.get_header("last-modified");
     var lm_time = Time { .. };
     if lm_raw.len > 0 {
         let p_lm, ok_lm = parse_http_date(lm_raw);
         if ok_lm { lm_time = p_lm; }
     }
 
-    var entry = new_cached_entry();
-    entry.url_hash = hash_fnv1a(req.url[..]);
+    var entry = CachedEntry {
+        url_hash: hash_fnv1a(req.url[..]),
+        status_code: resp.status_code,
+        headers: sanitized,
+        cc: resp_cc,
+        etag: parse_etag(resp_headers.get_header("etag")),
+        last_modified: lm_time,
+        timestamps: ts,
+        vary: vary_snap,
+        head_only: is_head,
+        security_zeroed: false,
+        is_valid: true,
+        ..
+    };
     entry.url.append(req.url[..]);
     entry.method.append(req.method[..]);
-    entry.status_code = resp.status_code;
-    entry.headers = sanitized;
-    entry.cc = resp_cc;
-    entry.etag = parse_etag(get_header(resp_headers, "etag"));
-    entry.last_modified = lm_time;
-    entry.timestamps = ts;
-    entry.vary = vary_snap;
     entry.body.append(resp.body[..]);
-    entry.head_only = is_head;
-    entry.security_zeroed = false;
-    entry.is_valid = true;
 
-    let store_idx = upsert_cache_entry(cache, entry, req_headers);
+    let store_idx = cache.upsert_cache_entry(entry, req_headers);
     cache.total_stores++;
     dec.kind = ResponseDecisionKind.StoreAndReturn;
     dec.entry_idx = store_idx;
@@ -618,13 +595,13 @@ fn on_response(
 fn invalidate_matching_url(cache: HttpCache&, target_url: const u8[:]) -> i64 {
     var count: i64 = 0;
     let target_hash = hash_fnv1a(target_url);
-    for idx in cache.entries.len {
-        if cache.entries[idx].is_valid &&
-           cache.entries[idx].url_hash == target_hash &&
-           cache.entries[idx].url[..] == target_url {
-            cache.entries[idx].is_valid = false;
-            cache.entries[idx].security_zeroed = true;
-            lru_detach(cache, idx as i32);
+    for &entry, idx in cache.entries {
+        if entry.is_valid &&
+           entry.url_hash == target_hash &&
+           entry.url[..] == target_url {
+            entry.is_valid = false;
+            entry.security_zeroed = true;
+            cache.lru_detach(idx as i32);
             count++;
         }
     }
@@ -634,16 +611,16 @@ fn invalidate_matching_url(cache: HttpCache&, target_url: const u8[:]) -> i64 {
 // Invalidates stored responses on unsafe method completion (POST, PUT, DELETE, PATCH).
 // Invalidates the request URI and any same-origin Location and Content-Location URIs (RFC 9111 §4.4).
 fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Response&) -> i64 {
-    var count = invalidate_matching_url(cache, req.url[..]);
+    var count = cache.invalidate_matching_url(req.url[..]);
 
-    let loc_raw = header(resp, "Location");
+    let loc_raw = resp.header("Location");
     if loc_raw.len > 0 && is_same_origin_url(loc_raw, req.url[..]) {
-        count += invalidate_matching_url(cache, loc_raw);
+        count += cache.invalidate_matching_url(loc_raw);
     }
 
-    let cl_raw = header(resp, "Content-Location");
+    let cl_raw = resp.header("Content-Location");
     if cl_raw.len > 0 && is_same_origin_url(cl_raw, req.url[..]) {
-        count += invalidate_matching_url(cache, cl_raw);
+        count += cache.invalidate_matching_url(cl_raw);
     }
 
     cache.total_invalidations += count;

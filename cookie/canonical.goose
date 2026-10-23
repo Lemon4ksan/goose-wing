@@ -50,28 +50,18 @@ fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie 
 // Evaluates whether a cookie is expired relative to microsecond timestamp now_us.
 // Session cookies (persistent == false) never expire automatically by time.
 // Persistent cookies expire if expires_utc <= now_us or expires_utc <= 0.
-fn expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
+fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if !cookie_val.persistent { return false; }
     if cookie_val.expires_utc <= 0 { return true; }
     return cookie_val.expires_utc <= now_us;
 }
 
-// Idiomatic boolean alias for expired(cookie_val, now_us).
-fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return expired(cookie_val, now_us);
-}
-
 // Whether a cookie with default SameSite is within the 2-minute window allowing
 // unsafe top-level navigations (RFC 6265bis Lax-allowing-unsafe).
-fn in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
+fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if cookie_val.same_site != CookieSameSite.Default { return false; }
     let elapsed_us = now_us - cookie_val.creation_utc;
     return elapsed_us >= 0 && elapsed_us <= K_LAX_ALLOWING_UNSAFE_WINDOW_US;
-}
-
-// Idiomatic boolean alias for in_lax_allowing_unsafe_window(cookie_val, now_us).
-fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    return in_lax_allowing_unsafe_window(cookie_val, now_us);
 }
 
 // Combined size of name and value in bytes (RFC 6265bis Section 5.5).

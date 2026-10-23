@@ -7,14 +7,14 @@ import core.time;
 
 // ---- 1. RFC 8305 and HEv3 normative constants ------------------------------
 
-let HE_RESOLUTION_DELAY_MS: i64 = 50;              // 50 ms DNS resolution delay (RD)
-let HE_FIRST_ADDRESS_FAMILY_COUNT: i32 = 1;        // Step for address family interleaving
-let HE_DEFAULT_CAD_MS: i64 = 250;                 // 250 ms default Connection Attempt Delay
-let HE_MIN_CAD_MS: i64 = 100;                     // 100 ms recommended minimum dynamic CAD
-let HE_ABSOLUTE_FLOOR_CAD_MS: i64 = 10;           // Strict absolute floor (>= 10 ms to prevent congestion collapse)
-let HE_MAX_CAD_MS: i64 = 2000;                    // 2000 ms maximum CAD
-let HE_LAST_RESORT_SYNTHESIS_DELAY_MS: i64 = 2000;// 2000 ms Last Resort Local Synthesis Delay
-let HE_ADDRESS_FAMILY_CACHE_TTL_SEC: i64 = 600;   // 600 seconds (10 minutes) winner cache TTL
+const HE_RESOLUTION_DELAY_MS: i64 = 50;              // 50 ms DNS resolution delay (RD)
+const HE_FIRST_ADDRESS_FAMILY_COUNT: i32 = 1;        // Step for address family interleaving
+const HE_DEFAULT_CAD_MS: i64 = 250;                  // 250 ms default Connection Attempt Delay
+const HE_MIN_CAD_MS: i64 = 100;                      // 100 ms recommended minimum dynamic CAD
+const HE_ABSOLUTE_FLOOR_CAD_MS: i64 = 10;            // Strict absolute floor (>= 10 ms to prevent congestion collapse)
+const HE_MAX_CAD_MS: i64 = 2000;                     // 2000 ms maximum CAD
+const HE_LAST_RESORT_SYNTHESIS_DELAY_MS: i64 = 2000; // 2000 ms Last Resort Local Synthesis Delay
+const HE_ADDRESS_FAMILY_CACHE_TTL_SEC: i64 = 600;    // 600 seconds (10 minutes) winner cache TTL
 
 // Computes Connection Attempt Delay (CAD) strictly enforcing the >= 10 ms absolute floor.
 fn compute_effective_cad_ms(

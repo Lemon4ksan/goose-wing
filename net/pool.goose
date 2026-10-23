@@ -97,8 +97,8 @@ fn proxy_chain_equals(a: const ProxyChain&, b: const ProxyChain&) -> bool {
     if a.is_direct != b.is_direct { return false; }
     if a.is_direct && b.is_direct { return true; }
     if a.servers.len != b.servers.len { return false; }
-    for i in a.servers.len {
-        if !proxy_server_equals(a.servers[i], b.servers[i]) { return false; }
+    for &s_a, i in a.servers {
+        if !s_a.proxy_server_equals(b.servers[i]) { return false; }
     }
     return true;
 }
@@ -199,10 +199,10 @@ fn new_pool_key(
 
 fn pool_key_equals(a: const PoolKey&, b: const PoolKey&) -> bool {
     if a.scheme != b.scheme { return false; }
-    if !origin_endpoint_equals(a.origin_endpoint, b.origin_endpoint) { return false; }
-    if !proxy_chain_equals(a.proxy_chain, b.proxy_chain) { return false; }
-    if !network_anonymization_key_equals(a.partition_key, b.partition_key) { return false; }
-    if !tls_and_dns_policy_equals(a.tls_and_dns_policy, b.tls_and_dns_policy) { return false; }
+    if !a.origin_endpoint.origin_endpoint_equals(b.origin_endpoint) { return false; }
+    if !a.proxy_chain.proxy_chain_equals(b.proxy_chain) { return false; }
+    if !a.partition_key.network_anonymization_key_equals(b.partition_key) { return false; }
+    if !a.tls_and_dns_policy.tls_and_dns_policy_equals(b.tls_and_dns_policy) { return false; }
     return true;
 }
 
@@ -290,15 +290,15 @@ fn pop_want(q: WantQueue&) -> WantConn, bool {
 
 // Cancels a waiter by request ID without shifting elements in the queue.
 fn cancel_want(q: WantQueue&, req_id: u64) -> bool {
-    for idx in q.head_pos..q.head.len {
-        if q.head[idx].req_id == req_id {
-            q.head[idx].cancelled = true;
+    for &item in q.head[q.head_pos..] {
+        if item.req_id == req_id {
+            item.cancelled = true;
             return true;
         }
     }
-    for idx in q.tail.len {
-        if q.tail[idx].req_id == req_id {
-            q.tail[idx].cancelled = true;
+    for &item in q.tail {
+        if item.req_id == req_id {
+            item.cancelled = true;
             return true;
         }
     }
@@ -415,9 +415,9 @@ fn can_coalesce_h2_connection(
     }
 
     // Partition key, proxy chain, and privacy mode must match 100%
-    guard network_anonymization_key_equals(conn.key.partition_key, target_key.partition_key) &&
-          proxy_chain_equals(conn.key.proxy_chain, target_key.proxy_chain) &&
-          tls_and_dns_policy_equals(conn.key.tls_and_dns_policy, target_key.tls_and_dns_policy) else {
+    guard conn.key.partition_key.network_anonymization_key_equals(target_key.partition_key) &&
+          conn.key.proxy_chain.proxy_chain_equals(target_key.proxy_chain) &&
+          conn.key.tls_and_dns_policy.tls_and_dns_policy_equals(target_key.tls_and_dns_policy) else {
         return false, false;
     }
 
@@ -477,8 +477,8 @@ fn new_stream_pool(
 
 // Finds an existing connection group or creates a new one.
 fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
-    for idx in pool.groups.len {
-        if pool_key_equals(pool.groups[idx].key, key) {
+    for &grp, idx in pool.groups {
+        if grp.key.pool_key_equals(key) {
             return idx as i32;
         }
     }
@@ -499,11 +499,11 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
     var oldest_idx = -1;
     var oldest_idle_ns: i64 = 0;
 
-    for idx in pool.conns.len {
-        if !pool.conns[idx].closed && pool.conns[idx].active_allocations == 0 {
-            if oldest_idx == -1 || pool.conns[idx].idle_at_ns < oldest_idle_ns {
+    for &c, idx in pool.conns {
+        if !c.closed && c.active_allocations == 0 {
+            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
                 oldest_idx = idx as i32;
-                oldest_idle_ns = pool.conns[idx].idle_at_ns;
+                oldest_idle_ns = c.idle_at_ns;
             }
         }
     }
@@ -527,17 +527,17 @@ fn acquire_pooled_connection(
 ) -> i32, bool {
     // 1. Direct pool match for exact key
     for &c in pool.conns {
-        if !c.closed && pool_key_equals(c.key, key) {
+        if !c.closed && c.key.pool_key_equals(key) {
             if c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic {
                 if c.active_allocations < c.max_concurrent_streams {
-                    if is_connection_healthy(c, now_ns, do_extensive_checks) {
+                    if c.is_connection_healthy(now_ns, do_extensive_checks) {
                         c.active_allocations++;
                         c.use_count++;
                         return c.conn_id, true;
                     }
                 }
             } else if c.active_allocations == 0 {
-                if is_connection_healthy(c, now_ns, do_extensive_checks) {
+                if c.is_connection_healthy(now_ns, do_extensive_checks) {
                     c.active_allocations = 1;
                     c.use_count++;
                     return c.conn_id, true;
@@ -550,11 +550,11 @@ fn acquire_pooled_connection(
     if pool.enable_ip_coalescing_h2 && key.scheme == PoolScheme.Https && target_resolved_ip.len > 0 {
         for &c in pool.conns {
             if !c.closed && c.active_allocations < c.max_concurrent_streams {
-                let can_coalesce, is_negative = can_coalesce_h2_connection(c, key, target_resolved_ip);
+                let can_coalesce, is_negative = c.can_coalesce_h2_connection(key, target_resolved_ip);
                 if is_negative {
                     pool.negative_ip_pool_result_count++;
                 }
-                if can_coalesce && is_connection_healthy(c, now_ns, do_extensive_checks) {
+                if can_coalesce && c.is_connection_healthy(now_ns, do_extensive_checks) {
                     c.active_allocations++;
                     c.use_count++;
                     return c.conn_id, true;
@@ -579,7 +579,7 @@ fn register_connection(
     if respect_limits == RespectLimits.Enabled {
         let total_active_conns = pool.conns.len;
         if total_active_conns >= pool.socket_soft_cap {
-            evict_oldest_idle_connection(pool, now_ns);
+            pool.evict_oldest_idle_connection(now_ns);
         }
     }
 
@@ -604,7 +604,7 @@ fn register_connection(
 
     pool.conns.push(conn);
 
-    let grp_idx = find_or_create_group(pool, key);
+    let grp_idx = pool.find_or_create_group(key);
     if grp_idx >= 0 {
         pool.groups[grp_idx].active_conns++;
     }

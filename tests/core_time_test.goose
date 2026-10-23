@@ -69,14 +69,14 @@ fn test_duration_arithmetic_and_bounds(t: wing::T&) {
         let neg = wing::secs(-5);
         let min_i64_dur = wing::Duration { nanos: -9223372036854775807 - 1 };
 
-        sub.assert_true(pos.positive() && pos.is_positive());
-        sub.assert_false(pos.negative() || pos.zero());
+        sub.assert_true(pos.is_positive());
+        sub.assert_false(pos.is_negative() || pos.is_zero());
 
-        sub.assert_true(zero_dur.zero() && zero_dur.is_zero());
-        sub.assert_false(zero_dur.positive() || zero_dur.negative());
+        sub.assert_true(zero_dur.is_zero());
+        sub.assert_false(zero_dur.is_positive() || zero_dur.is_negative());
 
-        sub.assert_true(neg.negative() && neg.is_negative());
-        sub.assert_false(neg.positive() || neg.zero());
+        sub.assert_true(neg.is_negative());
+        sub.assert_false(neg.is_positive() || neg.is_zero());
 
         sub.assert_eq(pos.abs().as_secs(), 5);
         sub.assert_eq(zero_dur.abs().as_nanos(), 0);
@@ -119,7 +119,7 @@ fn test_duration_truncation_and_rounding(t: wing::T&) {
         // i64.min truncation must stay negative (towards zero), never wrap to positive
         let min_dur = wing::Duration { nanos: -9223372036854775807 - 1 };
         let trunc_min = wing::truncate(min_dur, wing::secs(1));
-        sub.assert_true(trunc_min.negative(), "truncate(min_i64) must remain negative");
+        sub.assert_true(trunc_min.is_negative(), "truncate(min_i64) must remain negative");
         sub.assert_eq(trunc_min.as_nanos(), -9223372036000000000, "truncate(min_i64) rounds toward zero");
     };
 
@@ -282,31 +282,29 @@ fn test_stopwatch_and_deadline_overflow(t: wing::T&) {
 
     t.run("Deadline Standard Lifecycle") { sub =>
         let dl = wing::deadline_after(wing::millis(15));
-        sub.assert_false(dl.expired());
         sub.assert_false(dl.is_expired());
         sub.assert_gt(dl.remaining().as_nanos(), 0);
 
         wing::sleep(wing::millis(20));
-        sub.assert_true(dl.expired());
         sub.assert_true(dl.is_expired());
         sub.assert_eq(dl.remaining().as_nanos(), 0);
 
         // Non-positive deadline expires immediately
         let dl_zero = wing::deadline_after(wing::nanos(0));
-        sub.assert_true(dl_zero.expired());
+        sub.assert_true(dl_zero.is_expired());
         let dl_neg = wing::deadline_after(wing::millis(-5));
-        sub.assert_true(dl_neg.expired());
+        sub.assert_true(dl_neg.is_expired());
 
         // Unset deadline never expires
         let dl_none = wing::Deadline { target_mono_ns: 0, has_deadline: false };
-        sub.assert_false(dl_none.expired());
+        sub.assert_false(dl_none.is_expired());
         sub.assert_eq(dl_none.remaining().as_nanos(), 9223372036854775807);
     };
 
     t.run("CRITICAL: Deadline Maximum Duration Anti-Overflow Vulnerability Test") { sub =>
         // If clock_ns() + i64.max overflows to negative, deadline would immediately expire!
         let dl_max = wing::deadline_after(wing::Duration { nanos: 9223372036854775807 });
-        sub.assert_false(dl_max.expired(), "deadline with i64.max timeout MUST NOT overflow and expire immediately");
+        sub.assert_false(dl_max.is_expired(), "deadline with i64.max timeout MUST NOT overflow and expire immediately");
         sub.assert_gt(dl_max.remaining().as_nanos(), 1000000000000);
     };
 }
@@ -317,26 +315,26 @@ fn test_stopwatch_and_deadline_overflow(t: wing::T&) {
 fn test_hinnant_civil_calendar_and_leap_years(t: wing::T&) {
     t.run("400-Year Gregorian Leap Year Rules") { sub =>
         // Standard leap years (divisible by 4, not 100)
-        sub.assert_true(wing::leap_year(2024));
-        sub.assert_true(wing::leap_year(2028));
-        sub.assert_true(wing::leap_year(1996));
-        sub.assert_true(wing::leap_year(1984));
+        sub.assert_true(wing::is_leap_year(2024));
+        sub.assert_true(wing::is_leap_year(2028));
+        sub.assert_true(wing::is_leap_year(1996));
+        sub.assert_true(wing::is_leap_year(1984));
 
         // Standard non-leap years
-        sub.assert_false(wing::leap_year(2025));
-        sub.assert_false(wing::leap_year(2023));
-        sub.assert_false(wing::leap_year(2021));
+        sub.assert_false(wing::is_leap_year(2025));
+        sub.assert_false(wing::is_leap_year(2023));
+        sub.assert_false(wing::is_leap_year(2021));
 
         // Century non-leap years (divisible by 100, not 400)
-        sub.assert_false(wing::leap_year(1900));
-        sub.assert_false(wing::leap_year(2100));
-        sub.assert_false(wing::leap_year(1800));
-        sub.assert_false(wing::leap_year(1700));
+        sub.assert_false(wing::is_leap_year(1900));
+        sub.assert_false(wing::is_leap_year(2100));
+        sub.assert_false(wing::is_leap_year(1800));
+        sub.assert_false(wing::is_leap_year(1700));
 
         // Century leap years (divisible by 400)
-        sub.assert_true(wing::leap_year(2000));
-        sub.assert_true(wing::leap_year(2400));
-        sub.assert_true(wing::leap_year(1600));
+        sub.assert_true(wing::is_leap_year(2000));
+        sub.assert_true(wing::is_leap_year(2400));
+        sub.assert_true(wing::is_leap_year(1600));
     };
 
     t.run("Days in Month Calendar Matrix") { sub =>

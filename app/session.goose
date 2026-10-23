@@ -319,17 +319,13 @@ fn validate_url_against_ssrf(url_val: const Url&, policy: const SsrfGuardPolicy&
 
     let raw_port = url_val.port;
     let port_val = if raw_port == 0 { 0 } else { effective_port(url_val) };
-    if policy.denied_ports.len > 0 {
-        for denied in policy.denied_ports {
-            if port_val == denied { return RedirectError.SsrfBlockedUrl; }
-        }
+    if policy.denied_ports.contains(port_val) {
+        return RedirectError.SsrfBlockedUrl;
     }
     if policy.allowed_ports.len > 0 {
-        var port_allowed = false;
-        for allowed in policy.allowed_ports {
-            if port_val == allowed { port_allowed = true; break; }
+        if !policy.allowed_ports.contains(port_val) {
+            return RedirectError.SsrfBlockedUrl;
         }
-        if !port_allowed { return RedirectError.SsrfBlockedUrl; }
     } else if policy.deny_local_network && is_dangerous_service_port(port_val) {
         return RedirectError.SsrfBlockedUrl;
     }
@@ -512,10 +508,7 @@ fn trust_location_host(session: Session&, host_name: const u8[:]) {
 }
 
 fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {
-    for &h in session.trusted_location_hosts {
-        if eq_ascii_fold(h[..], host_name) { return true; }
-    }
-    return false;
+    return session.trusted_location_hosts.any() { eq_ascii_fold(it[..], host_name) };
 }
 
 fn mock_route(
@@ -582,14 +575,14 @@ fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
     raw_hdr.append(value);
     raw_hdr.append("; Path=/");
     if session.base_url.len > 0 {
-        set_cookie_header(session.jar, session.base_url[..], raw_hdr[..], session.virtual_clock_us);
+        session.jar.set_cookie_header(session.base_url[..], raw_hdr[..], session.virtual_clock_us);
     } else {
-        set_cookie_header(session.jar, "https://example.com/", raw_hdr[..], session.virtual_clock_us);
+        session.jar.set_cookie_header("https://example.com/", raw_hdr[..], session.virtual_clock_us);
     }
 }
 
 fn cookie(session: const Session&, name: const u8[:]) -> const u8[:] {
-    return get(session.jar, name);
+    return session.jar.get(name);
 }
 
 fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
@@ -599,6 +592,43 @@ fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
 }
 
 // ---- url resolution helper -------------------------------------------------
+
+// Appends query parameters to a URL buffer, preserving trailing fragment if present (RFC 3986 Section 4.1).
+fn append_query_params_preserving_fragment(
+    out: u8[..2048]&,
+    query_params: const QueryItem[:]
+) {
+    guard query_params.len > 0 else { return; }
+
+    var hash_pos = -1;
+    var has_query_mark = false;
+    for scan_idx in out.len {
+        let b = out[scan_idx];
+        if b == '?' && hash_pos < 0 { has_query_mark = true; }
+        else if b == '#' && hash_pos < 0 { hash_pos = scan_idx; }
+    }
+
+    var hash_buf: u8[..512] = [];
+    if hash_pos >= 0 {
+        hash_buf.append(out[hash_pos..]);
+        out.resize(hash_pos);
+    }
+
+    for &query_item, param_idx in query_params {
+        if param_idx == 0 && !has_query_mark {
+            out.push('?');
+        } else {
+            out.push('&');
+        }
+        out.append(query_item.key[..]);
+        out.push('=');
+        out.append(query_item.value[..]);
+    }
+
+    if hash_buf.len > 0 {
+        out.append(hash_buf[..]);
+    }
+}
 
 // Builds the effective request URL from base_url, req_url, and query_params.
 // Fragments are preserved and appended after query parameters (RFC 3986 Section 4.1).
@@ -623,36 +653,7 @@ fn build_effective_url(
         out.append(req_url);
     }
 
-    if query_params.len > 0 {
-        var hash_pos = -1;
-        var has_query_mark = false;
-        for scan_idx in out.len {
-            let b = out[scan_idx];
-            if b == '?' && hash_pos < 0 { has_query_mark = true; }
-            else if b == '#' && hash_pos < 0 { hash_pos = scan_idx; }
-        }
-
-        var hash_buf: u8[..512] = [];
-        if hash_pos >= 0 {
-            hash_buf.append(out[hash_pos..]);
-            out.resize(hash_pos);
-        }
-
-        for &query_item, param_idx in query_params {
-            if param_idx == 0 && !has_query_mark {
-                out.push('?');
-            } else {
-                out.push('&');
-            }
-            out.append(query_item.key[..]);
-            out.push('=');
-            out.append(query_item.value[..]);
-        }
-
-        if hash_buf.len > 0 {
-            out.append(hash_buf[..]);
-        }
-    }
+    append_query_params_preserving_fragment(out, query_params);
 }
 
 // ---- 6-phase execution pipeline (execute_pipeline) -------------------------
@@ -735,13 +736,12 @@ fn prepare_hop_cookie_header(
     safe_method: bool,
 ) {
     var matched_cookies: CanonicalCookie[>..] = [];
-    get_canonical_cookies_for_request(
-        session.jar,
-        hostname(current_url),
-        pathname(current_url),
-        scheme(current_url),
-        effective_port(current_url),
-        is_secure_scheme(current_url),
+    session.jar.get_canonical_cookies_for_request(
+        current_url.hostname(),
+        current_url.pathname(),
+        current_url.scheme(),
+        current_url.effective_port(),
+        current_url.is_secure_scheme(),
         true,
         "",
         session.virtual_clock_us,
@@ -770,17 +770,17 @@ fn ingest_hop_response_cookies(
 ) {
     for &set_cookie_str in set_cookies {
         var def_path: u8[..256] = [];
-        default_cookie_path_calc(pathname(current_url), def_path);
-        var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(set_cookie_str[..], hostname(current_url), def_path[..], session.virtual_clock_us);
+        default_cookie_path_calc(current_url.pathname(), def_path);
+        var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(set_cookie_str[..], current_url.hostname(), def_path[..], session.virtual_clock_us);
         if cookie_ok {
             let can_write, code = can_set_canonical_cookie_for_context(
                 parsed_cookie,
                 samesite_eval,
                 ctx.is_main_frame,
-                is_secure_scheme(current_url)
+                current_url.is_secure_scheme()
             );
             if can_write {
-                set_cookie_header(session.jar, href(current_url), set_cookie_str[..], session.virtual_clock_us);
+                session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us);
             }
         }
     }
@@ -995,6 +995,31 @@ fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfG
     return validate_resolved_ips_against_ssrf(ips_slice[..route.resolved_ips.len], guard_config);
 }
 
+// Synthesizes an HTTP Response from a matched MockExchange.
+fn build_mock_response(
+    route: const MockExchange&,
+    current_url: const Url&,
+    sent_headers: const HeaderItem[:]
+) -> Response {
+    var resp = Response {
+        status_code: route.status_code,
+        effective_url: copy(current_url.href),
+        ..
+    };
+    for &h in route.headers {
+        resp.headers.push(copy(h));
+    }
+    for &sc in route.set_cookies {
+        resp.set_cookies.push(copy(sc));
+    }
+    resp.body.append(route.body[..]);
+    for &sent_h in sent_headers {
+        resp.sent_headers.push(copy(sent_h));
+    }
+    return resp;
+}
+
+// Executes a mock or echo response hop, verifying IP addresses against SSRF policies.
 fn execute_mock_or_echo_hop(
     session: Session&,
     ctx: RequestExecutionContext&,
@@ -1009,7 +1034,6 @@ fn execute_mock_or_echo_hop(
     for &route in session.mock_routes {
         if (route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method)) &&
            (route.pattern_url[..] == curr_href || starts_with(curr_href, route.pattern_url[..])) {
-            // Validate IP addresses against SSRF policy
             let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
             if dns_err != RedirectError.None {
                 out_dns_err = dns_err;
@@ -1019,23 +1043,7 @@ fn execute_mock_or_echo_hop(
                     ..
                 };
             }
-
-            var resp = Response {
-                status_code: route.status_code,
-                effective_url: copy(current_url.href),
-                ..
-            };
-            for &h in route.headers {
-                resp.headers.push(copy(h));
-            }
-            for &sc in route.set_cookies {
-                resp.set_cookies.push(copy(sc));
-            }
-            resp.body.append(route.body[..]);
-            for &sent_h in ctx.headers {
-                resp.sent_headers.push(copy(sent_h));
-            }
-            return resp;
+            return build_mock_response(route, current_url, ctx.headers[..]);
         }
     }
 

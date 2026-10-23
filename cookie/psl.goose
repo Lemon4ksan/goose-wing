@@ -43,13 +43,13 @@ fn new_psl_database() -> PslDatabase {
 // ---- public suffix & rfc 6265 scoping api ----------------------------------
 
 // Whether domain is a public suffix (cannot set domain cookies for it).
-fn public_suffix_domain(domain: const u8[:]) -> bool {
+fn is_public_suffix_domain(domain: const u8[:]) -> bool {
     var clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
     if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
         clean_domain = clean_domain[..clean_domain.len - 1];
     }
     guard clean_domain.len > 0 else { return false; }
-    if ip_address_literal(clean_domain) { return false; }
+    if is_ip_address_literal(clean_domain) { return false; }
 
     var suffix: u8[..128] = [];
     let icann = compute_public_suffix(clean_domain, suffix);
@@ -57,10 +57,6 @@ fn public_suffix_domain(domain: const u8[:]) -> bool {
 
     // If domain exactly equals its public suffix, it is a public suffix
     return eq_ascii_fold(clean_domain, suffix[..]);
-}
-
-fn is_public_suffix_domain(domain: const u8[:]) -> bool {
-    return public_suffix_domain(domain);
 }
 
 // The public suffix of domain, following Mozilla PSL precedence (!exception > *.wildcard > rule).
@@ -71,7 +67,7 @@ fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
         clean_domain = clean_domain[..clean_domain.len - 1];
     }
     guard clean_domain.len > 0 else { return false; }
-    if ip_address_literal(clean_domain) { return false; }
+    if is_ip_address_literal(clean_domain) { return false; }
 
     return compute_public_suffix(clean_domain, out_suffix);
 }
@@ -86,7 +82,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     guard clean_host.len > 0 else { return; }
 
     // IP literals and single-label intranet hosts (e.g. localhost) do not have eTLD+1
-    if ip_address_literal(clean_host) || count_dots(clean_host) == 0 {
+    if is_ip_address_literal(clean_host) || count_dots(clean_host) == 0 {
         out.append(clean_host);
         return;
     }
@@ -136,7 +132,7 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     if eq_ascii_fold(clean_host, clean_domain) {
         return true;
     }
-    if ip_address_literal(clean_host) {
+    if is_ip_address_literal(clean_host) {
         return false;
     }
     if clean_host.len > clean_domain.len {
@@ -190,16 +186,12 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
 }
 
 // Whether host is an IPv4 or IPv6 literal. IP literals do not domain-match.
-fn ip_address_literal(host: const u8[:]) -> bool {
+fn is_ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
     for char_byte in host {
         if char_byte == ':' { return true; }
     }
     return is_valid_ipv4_format(host);
-}
-
-fn is_ip_address_literal(host: const u8[:]) -> bool {
-    return ip_address_literal(host);
 }
 
 // ---- runtime updatable psl database ----------------------------------------

@@ -141,7 +141,7 @@ fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityT
     }
 
     let parsed_date, ok_date = parse_http_date(s);
-    if ok_date && !zero(cached_last_modified) {
+    if ok_date && !is_zero(cached_last_modified) {
         return unix(parsed_date) == unix(cached_last_modified);
     }
     return false;

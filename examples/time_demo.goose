@@ -40,7 +40,6 @@ fn test_duration_basics() {
     assert(native_div.as_secs_f64() == 10.0, "Native operator: wing::secs(20) / 2 == 10s");
 
     let native_neg = -wing::secs(5);
-    assert(native_neg.negative(), "Native operator: -wing::secs(5) is negative");
     assert(native_neg.is_negative(), "Native operator: -wing::secs(5) is_negative");
     assert(native_neg.abs().as_secs_f64() == 5.0, "abs(-5s) == 5s");
 
@@ -48,14 +47,14 @@ fn test_duration_basics() {
     accumulating_dur += wing::secs(5);
     assert(accumulating_dur.as_secs_f64() == 15.0, "Native operator: += 5s accumulates to 15s");
 
-    // Goose stdlib naming predicates (no is_ prefix)
+    // Predicates
     let zero_dur = wing::nanos(0);
-    assert(zero_dur.zero(), "zero_dur.zero() == true");
-    assert(!zero_dur.positive() && !zero_dur.negative(), "zero_dur is neither positive nor negative");
+    assert(zero_dur.is_zero(), "zero_dur.is_zero() == true");
+    assert(!zero_dur.is_positive() && !zero_dur.is_negative(), "zero_dur is neither positive nor negative");
 
     let positive_dur = wing::secs(1);
-    assert(positive_dur.positive(), "positive_dur.positive() == true");
-    assert(!positive_dur.zero(), "positive_dur.zero() == false");
+    assert(positive_dur.is_positive(), "positive_dur.is_positive() == true");
+    assert(!positive_dur.is_zero(), "positive_dur.is_zero() == false");
 
     // Truncate and round
     let rounded = wing::round(wing::secs(75), wing::mins(1));
@@ -200,12 +199,10 @@ fn test_stopwatch_and_deadline() {
 
     // Deadline (testing both stdlib expired() and compat is_expired())
     let deadline = wing::deadline_after(wing::millis(20));
-    assert(!deadline.expired(), "Deadline is not initially expired (expired())");
     assert(!deadline.is_expired(), "Deadline is not initially expired (is_expired())");
     assert(deadline.remaining().as_nanos() > 0, "Remaining duration > 0");
 
     wing::sleep(wing::millis(25));
-    assert(deadline.expired(), "Deadline expired after sleep (expired())");
     assert(deadline.is_expired(), "Deadline expired after sleep (is_expired())");
     assert(deadline.remaining().as_nanos() == 0, "Expired deadline remaining() == 0");
 }
@@ -258,9 +255,7 @@ fn test_clamped_calendar_math() {
     assert(jan31_non_leap.days_in_month() == 31, "Jan has 31 days");
     assert(feb_leap_clamped.days_in_month() == 29, "Feb 2024 has 29 days");
     assert(feb_clamped.days_in_month() == 28, "Feb 2025 has 28 days");
-    assert(jan31_leap.leap_year(), "2024 is leap year (leap_year())");
-    assert(jan31_leap.is_leap_year(), "2024 is leap year (is_leap_year())");
-    assert(!jan31_non_leap.leap_year(), "2025 is not leap year");
+    assert(jan31_leap.is_leap_year(), "2024 is leap year");
     assert(jan31_leap.days_in_year() == 366, "2024 has 366 days");
     assert(jan31_non_leap.days_in_year() == 365, "2025 has 365 days");
 }

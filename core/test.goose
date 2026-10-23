@@ -107,16 +107,11 @@ fn skip(t: T&, reason: const u8[:] = "") {
 
 // Predicates
 
-fn failed(t: const T&) -> bool { return t.failed; }
-fn is_failed(t: const T&) -> bool { return failed(t); }
-fn ok(t: const T&) -> bool { return !t.failed; }
-fn is_ok(t: const T&) -> bool { return ok(t); }
-fn passed(t: const T&) -> bool { return !t.failed && !t.skipped; }
-fn is_passed(t: const T&) -> bool { return passed(t); }
-fn aborted(t: const T&) -> bool { return t.aborted; }
-fn is_aborted(t: const T&) -> bool { return aborted(t); }
-fn skipped(t: const T&) -> bool { return t.skipped; }
-fn is_skipped(t: const T&) -> bool { return skipped(t); }
+fn is_failed(t: const T&) -> bool { return t.failed; }
+fn is_ok(t: const T&) -> bool { return !t.failed; }
+fn is_passed(t: const T&) -> bool { return !t.failed && !t.skipped; }
+fn is_aborted(t: const T&) -> bool { return t.aborted; }
+fn is_skipped(t: const T&) -> bool { return t.skipped; }
 fn count(t: const T&) -> i64 { return t.assertions_count; }
 fn failures_len(t: const T&) -> i64 { return t.failures_count; }
 
@@ -884,15 +879,10 @@ fn ::skip(t: wing::T&, reason: const u8[:] = "") {
     wing::skip(t, reason);
 }
 
-fn ::failed(t: const wing::T&) -> bool { return wing::failed(t); }
 fn ::is_failed(t: const wing::T&) -> bool { return wing::is_failed(t); }
-fn ::ok(t: const wing::T&) -> bool { return wing::ok(t); }
 fn ::is_ok(t: const wing::T&) -> bool { return wing::is_ok(t); }
-fn ::passed(t: const wing::T&) -> bool { return wing::passed(t); }
 fn ::is_passed(t: const wing::T&) -> bool { return wing::is_passed(t); }
-fn ::aborted(t: const wing::T&) -> bool { return wing::aborted(t); }
 fn ::is_aborted(t: const wing::T&) -> bool { return wing::is_aborted(t); }
-fn ::skipped(t: const wing::T&) -> bool { return wing::skipped(t); }
 fn ::is_skipped(t: const wing::T&) -> bool { return wing::is_skipped(t); }
 fn ::count(t: const wing::T&) -> i64 { return wing::count(t); }
 fn ::failures_len(t: const wing::T&) -> i64 { return wing::failures_len(t); }

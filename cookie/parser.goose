@@ -457,7 +457,7 @@ fn apply_parsed_expires_attribute(
 fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
     guard !cookie_ref.host_only else { return true; }
 
-    if ip_address_literal(cookie_ref.domain[..]) || (default_domain.len > 0 && ip_address_literal(default_domain)) {
+    if is_ip_address_literal(cookie_ref.domain[..]) || (default_domain.len > 0 && is_ip_address_literal(default_domain)) {
         if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
             cookie_ref.host_only = true;
             return true;
@@ -465,7 +465,7 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
         return false;
     }
 
-    if public_suffix_domain(cookie_ref.domain[..]) {
+    if is_public_suffix_domain(cookie_ref.domain[..]) {
         if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
             cookie_ref.host_only = true;
             return true;

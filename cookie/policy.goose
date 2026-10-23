@@ -10,27 +10,17 @@ import cookie.psl;
 // ---- http method & origin trust --------------------------------------------
 
 // Checks whether an HTTP method is considered safe per RFC 9110 (GET, HEAD, OPTIONS, TRACE).
-fn safe_http_method(method: const u8[:]) -> bool {
+fn is_safe_http_method(method: const u8[:]) -> bool {
     return eq_ascii_fold(method, "GET") ||
            eq_ascii_fold(method, "HEAD") ||
            eq_ascii_fold(method, "OPTIONS") ||
            eq_ascii_fold(method, "TRACE");
 }
 
-// Idiomatic boolean alias for safe_http_method(method).
-fn is_safe_http_method(method: const u8[:]) -> bool {
-    return safe_http_method(method);
-}
-
 // Whether host is a local loopback origin (localhost, 127.0.0.1, ::1).
-fn trustworthy_non_crypto_host(host: const u8[:]) -> bool {
+fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
     let clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
     return clean_host == "localhost" || clean_host == "127.0.0.1" || clean_host == "::1";
-}
-
-// Idiomatic boolean alias for trustworthy_non_crypto_host(host).
-fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
-    return trustworthy_non_crypto_host(host);
 }
 
 // ---- origin-bound adjustment -----------------------------------------------
@@ -48,7 +38,7 @@ fn adjust_origin_bound_cookies_on_insert(
         return;
     }
 
-    if trustworthy_non_crypto_host(host) && cookie_ref.secure && (port == 80 || port <= 0) {
+    if is_trustworthy_non_crypto_host(host) && cookie_ref.secure && (port == 80 || port <= 0) {
         cookie_ref.source_scheme = CookieSourceScheme.Secure;
         cookie_ref.source_port = 443; // Automatic port rewrite
     } else {
@@ -115,7 +105,7 @@ fn validate_canonical_cookie_security(
 
 // Schemeful Same-Site: compares two origins by (scheme, eTLD+1).
 // Transition between http://example.com and https://example.com is cross-site!
-fn schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const u8[:], host2: const u8[:]) -> bool {
+fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const u8[:], host2: const u8[:]) -> bool {
     guard eq_ascii_fold(scheme1, scheme2) else { return false; }
 
     var etld1: u8[..128] = [];
@@ -126,14 +116,10 @@ fn schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const 
     return eq_ascii_fold(etld1[..], etld2[..]);
 }
 
-fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const u8[:], host2: const u8[:]) -> bool {
-    return schemeful_same_site(scheme1, host1, scheme2, host2);
-}
-
 // ---- request sendability evaluation ----------------------------------------
 
 // Whether a cookie is sendable in the given request context (RFC 6265bis).
-fn cookie_sendable_for_samesite(
+fn is_cookie_sendable_for_samesite(
     cookie_val: const CanonicalCookie&,
     is_same_site: bool,
     is_top_level_navigation: bool,
@@ -158,30 +144,20 @@ fn cookie_sendable_for_samesite(
             if is_safe_method {
                 true
             } else {
-                in_lax_allowing_unsafe_window(cookie_val, now_us)
+                is_in_lax_allowing_unsafe_window(cookie_val, now_us)
             }
         },
     };
 }
 
-fn is_cookie_sendable_for_samesite(
-    cookie_val: const CanonicalCookie&,
-    is_same_site: bool,
-    is_top_level_navigation: bool,
-    is_safe_method: bool,
-    now_us: i64,
-) -> bool {
-    return cookie_sendable_for_samesite(cookie_val, is_same_site, is_top_level_navigation, is_safe_method, now_us);
-}
-
 // Evaluates sendability under Origin-Bound Cookies (OBC) port isolation.
-fn cookie_sendable_for_obc(
+fn is_cookie_sendable_for_obc(
     cookie_val: const CanonicalCookie&,
     req_scheme: const u8[:],
     req_port: i32,
     host: const u8[:] = "",
 ) -> bool {
-    let is_trustworthy = host.len > 0 && trustworthy_non_crypto_host(host);
+    let is_trustworthy = host.len > 0 && is_trustworthy_non_crypto_host(host);
 
     // Scheme check: Secure cookies require secure request scheme (or trustworthy non-crypto origin)
     if cookie_val.source_scheme == CookieSourceScheme.Secure && !eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
@@ -199,15 +175,6 @@ fn cookie_sendable_for_obc(
     }
 
     return true;
-}
-
-fn is_cookie_sendable_for_obc(
-    cookie_val: const CanonicalCookie&,
-    req_scheme: const u8[:],
-    req_port: i32,
-    host: const u8[:] = "",
-) -> bool {
-    return cookie_sendable_for_obc(cookie_val, req_scheme, req_port, host);
 }
 
 // ---- internal implementation helpers ---------------------------------------

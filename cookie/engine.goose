@@ -46,28 +46,7 @@ struct CanonicalCookieJar {
 
 // Factory constructor for CanonicalCookieJar.
 fn new_canonical_cookie_jar() -> CanonicalCookieJar {
-    return CanonicalCookieJar {
-        max_cookies_per_domain: K_DOMAIN_MAX_COOKIES,
-        purge_cookies_per_domain: K_DOMAIN_PURGE_COOKIES,
-        target_cookies_per_domain: K_DOMAIN_TARGET_COOKIES,
-        quota_low: K_DOMAIN_COOKIES_QUOTA_LOW,
-        quota_medium: K_DOMAIN_COOKIES_QUOTA_MEDIUM,
-        quota_high: K_DOMAIN_COOKIES_QUOTA_HIGH,
-        max_cookies_global: K_MAX_COOKIES,
-        purge_cookies_global: K_PURGE_COOKIES,
-        target_cookies_global: K_GLOBAL_TARGET_COOKIES,
-        seq_counter: 1,
-        overwritten_count: 0,
-        evicted_expired_count: 0,
-        evicted_domain_count: 0,
-        evicted_global_count: 0,
-        evicted_chips_count: 0,
-        expired_overwrite_count: 0,
-        rejected_security_count: 0,
-        strict_secure_cookies: false,
-        access_update_threshold_us: 60000000,
-        cookies: [],
-    };
+    return CanonicalCookieJar { .. };
 }
 
 // Adds a new cookie directly to the jar in-place and returns a reference for fluent chaining:
@@ -120,7 +99,7 @@ fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: co
 // Removes all cookies matching filter and returns the number of deleted cookies.
 fn delete_matching(jar: CanonicalCookieJar&, filter: const CookieDeletionInfo&) -> i64 {
     let before_count = jar.cookies.len;
-    jar.cookies.retain() { !cookie_matches_deletion_filter(it, filter) };
+    jar.cookies.retain() { !it.cookie_matches_deletion_filter(filter) };
     return before_count - jar.cookies.len;
 }
 
@@ -149,12 +128,12 @@ fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = fal
 // Safely inserts a pre-built CanonicalCookie through full security validation, collision overwrite and GC.
 fn set(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bool {
     let is_sec = cookie_val.secure || (cookie_val.source_scheme == CookieSourceScheme.Secure);
-    return set_canonical_cookie(jar, cookie_val, true, is_sec, now_us);
+    return jar.set_canonical_cookie(cookie_val, true, is_sec, now_us);
 }
 
 // Alias for set(jar, cookie_val, now_us).
 fn insert(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bool {
-    return set(jar, cookie_val, now_us);
+    return jar.set(cookie_val, now_us);
 }
 
 // Queries a cookie value by name for a specific request URL.
@@ -169,32 +148,31 @@ fn get(
     partition_key: const u8[:] = ""
 ) -> const u8[:] {
     let parsed_url = parse_canonical_cookie_url(req_url);
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
+    for &cookie_val in jar.cookies {
         if cookie_val.name[..] != name { continue; }
 
-        if !cookie_matches_request(
-            cookie_val, parsed_url.host[..], parsed_url.path[..],
+        if !cookie_val.cookie_matches_request(
+            parsed_url.host[..], parsed_url.path[..],
             parsed_url.scheme[..], parsed_url.port, parsed_url.is_secure,
             true, partition_key, is_same_site, is_top_level_navigation, is_safe_method, now_us
         ) {
             continue;
         }
 
-        let delta_us = now_us - jar.cookies[cookie_idx].last_access_utc;
+        let delta_us = now_us - cookie_val.last_access_utc;
         if jar.access_update_threshold_us <= 0 || delta_us >= jar.access_update_threshold_us {
-            jar.cookies[cookie_idx].last_access_utc = now_us;
+            cookie_val.last_access_utc = now_us;
         }
-        return jar.cookies[cookie_idx].value[..];
+        return cookie_val.value[..];
     }
     return "";
 }
 
 // Queries a cookie value by name globally from the jar (first match).
 fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
-    for cookie_idx in jar.cookies.len {
-        if jar.cookies[cookie_idx].name[..] == name {
-            return jar.cookies[cookie_idx].value[..];
+    for &cookie_val in jar.cookies {
+        if cookie_val.name[..] == name {
+            return cookie_val.value[..];
         }
     }
     return "";
@@ -213,32 +191,32 @@ fn set_canonical_cookie(
     now_us: i64,
 ) -> bool {
     // 1. Security invariants validation
-    if !validate_canonical_cookie_security(new_cookie, url_is_secure, is_http_api) ||
+    if !new_cookie.validate_canonical_cookie_security(url_is_secure, is_http_api) ||
        (!is_http_api && !validate_script_cookie_name(new_cookie.name[..])) {
         jar.rejected_security_count += 1;
         return false;
     }
 
     // 2. Collision resolution & Expired Overwrite Handling
-    let collision_idx = find_canonical_cookie_collision_index(jar, new_cookie);
+    let collision_idx = jar.find_canonical_cookie_collision_index(new_cookie);
     if collision_idx >= 0 {
-        return handle_cookie_collision(jar, new_cookie, collision_idx, url_is_secure, now_us);
+        return jar.handle_cookie_collision(new_cookie, collision_idx, url_is_secure, now_us);
     }
 
-    if is_expired(new_cookie, now_us) {
+    if new_cookie.is_expired(now_us) {
         jar.evicted_expired_count += 1;
         return true;
     }
 
     // 3. RFC 6265bis Section 5.6: Secure Shadowing Protection
-    if has_secure_shadowing_collision(jar, new_cookie, url_is_secure) {
+    if jar.has_secure_shadowing_collision(new_cookie, url_is_secure) {
         jar.rejected_security_count += 1;
         return false;
     }
 
     // 4. Calculate effective domain & insert
     var etld_plus_one: u8[..256] = [];
-    get_canonical_cookie_effective_domain(new_cookie, etld_plus_one);
+    new_cookie.get_canonical_cookie_effective_domain(etld_plus_one);
 
     new_cookie.creation_utc = now_us;
     new_cookie.last_update_utc = now_us;
@@ -248,7 +226,7 @@ fn set_canonical_cookie(
     jar.cookies.push(new_cookie);
 
     // 5. Enforce quotas & background GC
-    enforce_post_insertion_quotas(jar, new_cookie, etld_plus_one[..], now_us);
+    jar.enforce_post_insertion_quotas(new_cookie, etld_plus_one[..], now_us);
     return true;
 }
 
@@ -281,9 +259,9 @@ fn set_cookie_header(
         parsed_cookie.partition_key.append(partition_key);
     }
 
-    adjust_origin_bound_cookies_on_insert(parsed_cookie, parsed_url.host[..], parsed_url.port, parsed_url.is_secure);
-    let effective_secure_channel = parsed_url.is_secure || trustworthy_non_crypto_host(parsed_url.host[..]);
-    return set_canonical_cookie(jar, parsed_cookie, is_http_api, effective_secure_channel, now_us);
+    parsed_cookie.adjust_origin_bound_cookies_on_insert(parsed_url.host[..], parsed_url.port, parsed_url.is_secure);
+    let effective_secure_channel = parsed_url.is_secure || is_trustworthy_non_crypto_host(parsed_url.host[..]);
+    return jar.set_canonical_cookie(parsed_cookie, is_http_api, effective_secure_channel, now_us);
 }
 
 // Ingests a raw Set-Cookie header for req_url with an explicit CHIPS partition key.
@@ -294,7 +272,7 @@ fn set_cookie_header(
     now_us: i64,
     partition_key: const u8[:],
 ) -> bool {
-    return set_cookie_header(jar, req_url, set_cookie_raw, now_us, true, partition_key);
+    return jar.set_cookie_header(req_url, set_cookie_raw, now_us, true, partition_key);
 }
 
 // ---- outgoing request routing & serialization ------------------------------
@@ -309,8 +287,8 @@ fn build_cookie_header<B>(
     now_us: i64,
 ) {
     var matched: CanonicalCookie[>..] = [];
-    get_canonical_cookies_for_request(
-        jar, host, path,
+    jar.get_canonical_cookies_for_request(
+        host, path,
         if is_secure { "https" } else { "http" },
         if is_secure { 443 } else { 80 },
         is_secure, true, "", now_us, matched
@@ -328,8 +306,7 @@ fn build_cookie_header<B>(
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
     var matched: CanonicalCookie[>..] = [];
-    get_canonical_cookies_for_request(
-        jar,
+    jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
         parsed_url.path[..],
         parsed_url.scheme[..],
@@ -354,8 +331,7 @@ fn build_request_cookie_header<B>(
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
     var matched: CanonicalCookie[>..] = [];
-    get_canonical_cookies_for_request(
-        jar,
+    jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
         parsed_url.path[..],
         parsed_url.scheme[..],
@@ -382,8 +358,7 @@ fn get_canonical_cookies_for_request(
     is_safe_method: bool = true,
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
-    get_canonical_cookies_for_request(
-        jar,
+    jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
         parsed_url.path[..],
         parsed_url.scheme[..],
@@ -419,11 +394,9 @@ fn get_canonical_cookies_for_request(
     is_top_level_navigation: bool = true,
     is_safe_method: bool = true,
 ) {
-    for cookie_idx in jar.cookies.len {
-        var cookie_val = jar.cookies[cookie_idx];
-
-        if !cookie_matches_request(
-            cookie_val, host, path, scheme, port,
+    for &cookie_val in jar.cookies {
+        if !cookie_val.cookie_matches_request(
+            host, path, scheme, port,
             is_secure, is_http_api, partition_key,
             is_same_site, is_top_level_navigation, is_safe_method,
             now_us
@@ -431,15 +404,14 @@ fn get_canonical_cookies_for_request(
             continue;
         }
 
-        let delta_us = now_us - jar.cookies[cookie_idx].last_access_utc;
+        let delta_us = now_us - cookie_val.last_access_utc;
         if jar.access_update_threshold_us <= 0 || delta_us >= jar.access_update_threshold_us {
-            jar.cookies[cookie_idx].last_access_utc = now_us;
             cookie_val.last_access_utc = now_us;
         }
         out.push(cookie_val);
     }
 
-    stable_sort(out[..]) { cookie_a, cookie_b => request_cookie_order_less(cookie_a, cookie_b) };
+    out.stable_sort() { cookie_a, cookie_b => cookie_a.request_cookie_order_less(cookie_b) };
 }
 
 // ---- quotas & garbage collection engine ------------------------------------
@@ -448,17 +420,17 @@ fn get_canonical_cookies_for_request(
 // Trigger: domain count > max_cookies_per_domain (180).
 // Target: reduce down to target_cookies_per_domain (150).
 fn garbage_collect_per_domain(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], now_us: i64) -> i64 {
-    var domain_count = count_domain_cookies(jar, etld_plus_one);
+    var domain_count = jar.count_domain_cookies(etld_plus_one);
     guard domain_count > jar.max_cookies_per_domain else { return 0; }
 
     var total_evicted: i64 = 0;
-    let expired_evicted = evict_domain_expired_cookies(jar, etld_plus_one, now_us);
+    let expired_evicted = jar.evict_domain_expired_cookies(etld_plus_one, now_us);
     total_evicted += expired_evicted;
     domain_count -= expired_evicted;
 
     // GC-04: strict_secure_cookies policy evicts all non-secure cookies first
     if jar.strict_secure_cookies {
-        let non_sec_evicted = evict_domain_non_secure_cookies(jar, etld_plus_one);
+        let non_sec_evicted = jar.evict_domain_non_secure_cookies(etld_plus_one);
         total_evicted += non_sec_evicted;
         domain_count -= non_sec_evicted;
     }
@@ -469,12 +441,12 @@ fn garbage_collect_per_domain(jar: CanonicalCookieJar&, etld_plus_one: const u8[
     var low_excess: i64 = 0;
     var med_excess: i64 = 0;
     var high_excess: i64 = 0;
-    calculate_domain_priority_excesses(jar, etld_plus_one, low_excess, med_excess, high_excess);
+    jar.calculate_domain_priority_excesses(etld_plus_one, low_excess, med_excess, high_excess);
 
-    total_evicted += purge_domain_priority_rounds(jar, etld_plus_one, need_to_evict, low_excess, med_excess, high_excess);
+    total_evicted += jar.purge_domain_priority_rounds(etld_plus_one, need_to_evict, low_excess, med_excess, high_excess);
 
     if need_to_evict > 0 {
-        let fallback_evicted = purge_domain_fallback(jar, etld_plus_one, need_to_evict);
+        let fallback_evicted = jar.purge_domain_fallback(etld_plus_one, need_to_evict);
         jar.evicted_domain_count += fallback_evicted;
         total_evicted += fallback_evicted;
     }
@@ -490,13 +462,13 @@ fn garbage_collect_global(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     guard jar.cookies.len > jar.max_cookies_global else { return 0; }
 
     var total_evicted: i64 = 0;
-    let expired_evicted = evict_global_expired_cookies(jar, now_us);
+    let expired_evicted = jar.evict_global_expired_cookies(now_us);
     total_evicted += expired_evicted;
 
     guard jar.cookies.len > jar.target_cookies_global else { return total_evicted; }
 
     let need_to_evict = jar.cookies.len - jar.target_cookies_global;
-    let non_immune_evicted = evict_global_non_immune_cookies(jar, need_to_evict, now_us);
+    let non_immune_evicted = jar.evict_global_non_immune_cookies(need_to_evict, now_us);
     jar.evicted_global_count += non_immune_evicted;
     total_evicted += non_immune_evicted;
 
@@ -515,25 +487,24 @@ fn enforce_chips_quota(
 
     var candidates: CanonicalCookie[>..] = [];
     var total_bytes: i64 = 0;
-    gather_chips_candidates(jar, partition_key, etld_plus_one, candidates, total_bytes);
+    jar.gather_chips_candidates(partition_key, etld_plus_one, candidates, total_bytes);
 
     guard total_bytes > K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES else { return 0; }
 
-    stable_sort(candidates[..]) { cookie_a, cookie_b => chips_lra_candidate_less(cookie_a, cookie_b) };
+    candidates.stable_sort() { a, b => a.chips_lra_candidate_less(b) };
 
     var to_delete_seqs: i64[>..] = [];
     var evicted_count: i64 = 0;
 
-    for candidate_idx in candidates.len {
+    for &candidate_cookie in candidates {
         if total_bytes <= K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES { break; }
-        let candidate_cookie = candidates[candidate_idx];
-        total_bytes -= payload_size(candidate_cookie);
+        total_bytes -= candidate_cookie.payload_size();
         to_delete_seqs.push(candidate_cookie.creation_seq);
         evicted_count += 1;
     }
 
     if to_delete_seqs.len > 0 {
-        retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, to_delete_seqs[..]) };
+        jar.cookies.retain() { !to_delete_seqs.contains(it.creation_seq) };
         jar.evicted_chips_count += evicted_count;
     }
 
@@ -559,8 +530,8 @@ fn purge_domain_priority_rounds(
         );
         if quota_allowed <= 0 { continue; }
 
-        let round_evicted = purge_domain_priority_round(
-            jar, etld_plus_one, target_prio, protect_sec, quota_allowed
+        let round_evicted = jar.purge_domain_priority_round(
+            etld_plus_one, target_prio, protect_sec, quota_allowed
         );
         if round_evicted <= 0 { continue; }
 
@@ -579,10 +550,10 @@ fn enforce_post_insertion_quotas(
     now_us: i64,
 ) {
     if (new_cookie.partitioned || new_cookie.partition_key.len > 0) && new_cookie.partition_key.len > 0 {
-        enforce_chips_quota(jar, new_cookie.partition_key[..], etld_plus_one, now_us);
+        jar.enforce_chips_quota(new_cookie.partition_key[..], etld_plus_one, now_us);
     }
-    garbage_collect_per_domain(jar, etld_plus_one, now_us);
-    garbage_collect_global(jar, now_us);
+    jar.garbage_collect_per_domain(etld_plus_one, now_us);
+    jar.garbage_collect_global(now_us);
 }
 
 fn has_secure_shadowing_collision(
@@ -590,13 +561,7 @@ fn has_secure_shadowing_collision(
     new_cookie: const CanonicalCookie&,
     url_is_secure: bool,
 ) -> bool {
-    for cookie_idx in jar.cookies.len {
-        let existing = jar.cookies[cookie_idx];
-        if would_insecure_overwrite_secure(existing, new_cookie, url_is_secure) {
-            return true;
-        }
-    }
-    return false;
+    return jar.cookies.any() { it.would_insecure_overwrite_secure(new_cookie, url_is_secure) };
 }
 
 fn gather_chips_candidates<B>(
@@ -606,12 +571,11 @@ fn gather_chips_candidates<B>(
     candidates: B&,
     total_bytes: i64&,
 ) {
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
+    for &cookie_val in jar.cookies {
         if (cookie_val.partitioned || cookie_val.partition_key.len > 0) &&
            cookie_val.partition_key[..] == partition_key &&
-           cookie_matches_effective_domain(cookie_val, etld_plus_one) {
-            total_bytes += payload_size(cookie_val);
+           cookie_val.matches_effective_domain(etld_plus_one) {
+            total_bytes += cookie_val.payload_size();
             candidates.push(cookie_val);
         }
     }
@@ -626,22 +590,21 @@ fn priority_rank(priority_level: CookiePriority) -> i32 {
 }
 
 fn get_canonical_cookie_effective_domain<B>(cookie_val: const CanonicalCookie&, out: B&) {
-    if ip_address_literal(cookie_val.domain[..]) || count_dots(cookie_val.domain[..]) == 0 {
+    if is_ip_address_literal(cookie_val.domain[..]) || count_dots(cookie_val.domain[..]) == 0 {
         out.append(cookie_val.domain[..]);
     } else {
         extract_etld_plus_one(cookie_val.domain[..], out);
     }
 }
 
-fn cookie_matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus_one: const u8[:]) -> bool {
+fn matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus_one: const u8[:]) -> bool {
     var candidate_etld: u8[..256] = [];
     get_canonical_cookie_effective_domain(cookie_val, candidate_etld);
     return eq_ascii_fold(candidate_etld[..], target_etld_plus_one);
 }
 
 fn find_canonical_cookie_collision_index(jar: const CanonicalCookieJar&, new_cookie: const CanonicalCookie&) -> i64 {
-    for cookie_idx in jar.cookies.len {
-        let existing = jar.cookies[cookie_idx];
+    for &existing, cookie_idx in jar.cookies {
         if existing.name[..] == new_cookie.name[..] &&
            existing.domain[..] == new_cookie.domain[..] &&
            existing.path[..] == new_cookie.path[..] &&
@@ -674,19 +637,12 @@ fn would_insecure_overwrite_secure(
 
 fn count_domain_cookies(jar: const CanonicalCookieJar&, etld_plus_one: const u8[:]) -> i64 {
     var count: i64 = 0;
-    for cookie_idx in jar.cookies.len {
-        if cookie_matches_effective_domain(jar.cookies[cookie_idx], etld_plus_one) {
+    for &cookie in jar.cookies {
+        if cookie.matches_effective_domain(etld_plus_one) {
             count += 1;
         }
     }
     return count;
-}
-
-fn seq_not_in_list(seq: i64, list: const i64[:]) -> bool {
-    for list_seq in list {
-        if seq == list_seq { return false; }
-    }
-    return true;
 }
 
 fn domain_gc_candidate_less(cookie_a: const CanonicalCookie&, cookie_b: const CanonicalCookie&) -> bool {
@@ -744,30 +700,28 @@ fn request_cookie_order_less(cookie_a: const CanonicalCookie&, cookie_b: const C
 
 fn evict_domain_expired_cookies(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], now_us: i64) -> i64 {
     var expired_seqs: i64[>..] = [];
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) && is_expired(cookie_val, now_us) {
+    for &cookie_val in jar.cookies {
+        if cookie_val.matches_effective_domain(etld_plus_one) && cookie_val.is_expired(now_us) {
             expired_seqs.push(cookie_val.creation_seq);
         }
     }
     guard expired_seqs.len > 0 else { return 0; }
 
-    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, expired_seqs[..]) };
+    jar.cookies.retain() { !expired_seqs.contains(it.creation_seq) };
     jar.evicted_expired_count += expired_seqs.len;
     return expired_seqs.len;
 }
 
 fn evict_domain_non_secure_cookies(jar: CanonicalCookieJar&, etld_plus_one: const u8[:]) -> i64 {
     var non_sec_seqs: i64[>..] = [];
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) && !cookie_val.secure {
+    for &cookie_val in jar.cookies {
+        if cookie_val.matches_effective_domain(etld_plus_one) && !cookie_val.secure {
             non_sec_seqs.push(cookie_val.creation_seq);
         }
     }
     guard non_sec_seqs.len > 0 else { return 0; }
 
-    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, non_sec_seqs[..]) };
+    jar.cookies.retain() { !non_sec_seqs.contains(it.creation_seq) };
     jar.rejected_security_count += non_sec_seqs.len;
     return non_sec_seqs.len;
 }
@@ -783,9 +737,8 @@ fn calculate_domain_priority_excesses(
     var med_count: i64 = 0;
     var high_count: i64 = 0;
 
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
-        if !cookie_matches_effective_domain(cookie_val, etld_plus_one) { continue; }
+    for &cookie_val in jar.cookies {
+        if !cookie_val.matches_effective_domain(etld_plus_one) { continue; }
         match cookie_val.priority {
             Low => { low_count += 1; },
             Medium => { med_count += 1; },
@@ -832,9 +785,8 @@ fn purge_domain_priority_round(
     quota_allowed: i64,
 ) -> i64 {
     var candidates: CanonicalCookie[>..] = [];
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) &&
+    for &cookie_val in jar.cookies {
+        if cookie_val.matches_effective_domain(etld_plus_one) &&
            cookie_val.priority == target_prio &&
            (!protect_sec || !cookie_val.secure) {
             candidates.push(cookie_val);
@@ -842,7 +794,7 @@ fn purge_domain_priority_round(
     }
     guard candidates.len > 0 else { return 0; }
 
-    stable_sort(candidates[..]) { cookie_a, cookie_b => domain_gc_candidate_less(cookie_a, cookie_b) };
+    candidates.stable_sort() { cookie_a, cookie_b => cookie_a.domain_gc_candidate_less(cookie_b) };
 
     let evict_count = min(quota_allowed, candidates.len);
     var to_delete_seqs: i64[>..] = [];
@@ -850,7 +802,7 @@ fn purge_domain_priority_round(
         to_delete_seqs.push(candidates[candidate_idx].creation_seq);
     }
 
-    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, to_delete_seqs[..]) };
+    jar.cookies.retain() { !to_delete_seqs.contains(it.creation_seq) };
     return evict_count;
 }
 
@@ -872,42 +824,39 @@ fn deduct_domain_priority_excess(
 
 fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], need_to_evict: i64) -> i64 {
     var fallback_candidates: CanonicalCookie[>..] = [];
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) {
+    for &cookie_val in jar.cookies {
+        if cookie_val.matches_effective_domain(etld_plus_one) {
             fallback_candidates.push(cookie_val);
         }
     }
-    stable_sort(fallback_candidates[..]) { cookie_a, cookie_b => fallback_gc_candidate_less(cookie_a, cookie_b) };
+    fallback_candidates.stable_sort() { cookie_a, cookie_b => cookie_a.fallback_gc_candidate_less(cookie_b) };
 
     let evict_fallback = min(need_to_evict, fallback_candidates.len);
     var fallback_seqs: i64[>..] = [];
     for candidate_idx in evict_fallback {
         fallback_seqs.push(fallback_candidates[candidate_idx].creation_seq);
     }
-    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, fallback_seqs[..]) };
+    jar.cookies.retain() { !fallback_seqs.contains(it.creation_seq) };
     return evict_fallback;
 }
 
 fn evict_global_expired_cookies(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     var expired_seqs: i64[>..] = [];
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
-        if is_expired(cookie_val, now_us) {
+    for &cookie_val in jar.cookies {
+        if cookie_val.is_expired(now_us) {
             expired_seqs.push(cookie_val.creation_seq);
         }
     }
     guard expired_seqs.len > 0 else { return 0; }
 
-    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, expired_seqs[..]) };
+    jar.cookies.retain() { !expired_seqs.contains(it.creation_seq) };
     jar.evicted_expired_count += expired_seqs.len;
     return expired_seqs.len;
 }
 
 fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64, now_us: i64) -> i64 {
     var candidates: CanonicalCookie[>..] = [];
-    for cookie_idx in jar.cookies.len {
-        let cookie_val = jar.cookies[cookie_idx];
+    for &cookie_val in jar.cookies {
         let elapsed_us = now_us - cookie_val.last_access_utc;
         if elapsed_us >= K_SAFE_FROM_GLOBAL_PURGE_US {
             candidates.push(cookie_val);
@@ -915,7 +864,7 @@ fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64,
     }
     guard candidates.len > 0 else { return 0; }
 
-    stable_sort(candidates[..]) { cookie_a, cookie_b => global_gc_candidate_less(cookie_a, cookie_b) };
+    candidates.stable_sort() { cookie_a, cookie_b => cookie_a.global_gc_candidate_less(cookie_b) };
 
     let evict_count = min(need_to_evict, candidates.len);
     var to_delete_seqs: i64[>..] = [];
@@ -923,7 +872,7 @@ fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64,
         to_delete_seqs.push(candidates[candidate_idx].creation_seq);
     }
 
-    retain(jar.cookies) { cookie_val => seq_not_in_list(cookie_val.creation_seq, to_delete_seqs[..]) };
+    jar.cookies.retain() { !to_delete_seqs.contains(it.creation_seq) };
     return evict_count;
 }
 
@@ -937,15 +886,15 @@ fn handle_cookie_collision(
     let existing = jar.cookies[collision_idx];
 
     // RFC 6265bis Section 5.6 / Chromium: Non-secure cannot overwrite existing Secure cookie
-    if would_insecure_overwrite_secure(existing, new_cookie, url_is_secure) {
+    if existing.would_insecure_overwrite_secure(new_cookie, url_is_secure) {
         jar.rejected_security_count += 1;
         return false;
     }
 
     // Chromium Expired Overwrite: if new cookie is already expired (Max-Age=0 or past Expires),
     // immediately remove the collided cookie from memory without keeping a dead record.
-    if is_expired(new_cookie, now_us) {
-        remove_at(jar.cookies, collision_idx);
+    if new_cookie.is_expired(now_us) {
+        jar.cookies.remove_at(collision_idx);
         jar.evicted_expired_count += 1;
         jar.overwritten_count += 1;
         jar.expired_overwrite_count += 1;
@@ -977,13 +926,13 @@ fn cookie_matches_request(
     is_safe_method: bool,
     now_us: i64,
 ) -> bool {
-    if is_expired(cookie_val, now_us) { return false; }
-    if !matches_domain(cookie_val, host) { return false; }
-    if !matches_path(cookie_val, path) { return false; }
-    if cookie_val.secure && !is_secure && !trustworthy_non_crypto_host(host) { return false; }
+    if cookie_val.is_expired(now_us) { return false; }
+    if !cookie_val.matches_domain(host) { return false; }
+    if !cookie_val.matches_path(path) { return false; }
+    if cookie_val.secure && !is_secure && !is_trustworthy_non_crypto_host(host) { return false; }
     if cookie_val.httponly && !is_http_api { return false; }
-    if !is_cookie_sendable_for_samesite(cookie_val, is_same_site, is_top_level_navigation, is_safe_method, now_us) { return false; }
-    if !is_cookie_sendable_for_obc(cookie_val, scheme, port, host) { return false; }
+    if !cookie_val.is_cookie_sendable_for_samesite(is_same_site, is_top_level_navigation, is_safe_method, now_us) { return false; }
+    if !cookie_val.is_cookie_sendable_for_obc(scheme, port, host) { return false; }
     if cookie_val.partitioned && cookie_val.partition_key[..] != partition_key { return false; }
     return true;
 }

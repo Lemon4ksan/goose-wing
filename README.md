@@ -311,7 +311,7 @@ fn run_time_example() {
     // Civil calendar projections
     let year = parsed_time.year();       // 2026
     let month = parsed_time.month();     // October
-    let is_leap = parsed_time.leap_year(); // false
+    let is_leap = parsed_time.is_leap_year(); // false
 
     // Go-compatible duration parsing
     let dur, dur_ok = wing::parse_duration("2h45m30s");

@@ -577,7 +577,7 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
         is_httponly
     );
 
-    if !cookie_ref.host_only && public_suffix_domain(cookie_ref.domain[..]) {
+    if !cookie_ref.host_only && is_public_suffix_domain(cookie_ref.domain[..]) {
         return false;
     }
     if cookie_ref.name.len + cookie_ref.value.len > K_MAX_COOKIE_NAME_VAL_LEN {

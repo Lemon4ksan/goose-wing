@@ -166,6 +166,33 @@ struct Socks5Reply {
     bytes_consumed: i64 = 0,
 }
 
+// Calculates expected wire length of SOCKS5 connect reply based on ATYP (RFC 1928 Section 5).
+fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
+    if atyp == SOCKS5_ATYP_IPV4 {
+        return 4 + 4 + 2, Socks5Error.None;
+    } else if atyp == SOCKS5_ATYP_IPV6 {
+        return 4 + 16 + 2, Socks5Error.None;
+    } else if atyp == SOCKS5_ATYP_DOMAIN {
+        guard buf.len >= 5 else { return 0, Socks5Error.BufferTruncated; }
+        let domain_len = buf[4] as i64;
+        return 4 + 1 + domain_len + 2, Socks5Error.None;
+    }
+    return 0, Socks5Error.AddressTypeNotSupported;
+}
+
+// Maps RFC 1928 REP octet to corresponding Socks5Error variant.
+fn socks5_rep_to_error(rep: u8) -> Socks5Error {
+    if rep == SOCKS5_REP_SUCCEEDED { return Socks5Error.None; }
+    if rep == SOCKS5_REP_GENERAL_FAILURE { return Socks5Error.ServerFailure; }
+    if rep == SOCKS5_REP_NOT_ALLOWED { return Socks5Error.ConnectionNotAllowed; }
+    if rep == SOCKS5_REP_NET_UNREACHABLE { return Socks5Error.NetworkUnreachable; }
+    if rep == SOCKS5_REP_HOST_UNREACHABLE { return Socks5Error.HostUnreachable; }
+    if rep == SOCKS5_REP_CONN_REFUSED { return Socks5Error.ConnectionRefused; }
+    if rep == SOCKS5_REP_TTL_EXPIRED { return Socks5Error.TtlExpired; }
+    if rep == SOCKS5_REP_CMD_NOT_SUPPORTED { return Socks5Error.CommandNotSupported; }
+    return Socks5Error.AddressTypeNotSupported;
+}
+
 // Parses Phase 4 Server Connect Reply [VER=0x05, REP, RSV=0x00, ATYP, BND.ADDR, BND.PORT].
 // Completely consumes bound address and port to ensure no leftover protocol bytes.
 fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
@@ -174,20 +201,8 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
 
     let rep = buf[1];
     let atyp = buf[3];
-    var needed_len: i64 = 4;
-
-    if atyp == SOCKS5_ATYP_IPV4 {
-        needed_len += 4 + 2; // 4 bytes IP + 2 bytes port
-    } else if atyp == SOCKS5_ATYP_IPV6 {
-        needed_len += 16 + 2; // 16 bytes IP + 2 bytes port
-    } else if atyp == SOCKS5_ATYP_DOMAIN {
-        guard buf.len >= 5 else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
-        let domain_len = buf[4] as i64;
-        needed_len += 1 + domain_len + 2;
-    } else {
-        return Socks5Reply { .. }, Socks5Error.AddressTypeNotSupported;
-    }
-
+    let needed_len, err = socks5_needed_length(buf, atyp);
+    guard err == Socks5Error.None else { return Socks5Reply { .. }, err; }
     guard buf.len >= needed_len else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
 
     let p_hi = buf[needed_len - 2] as u16;
@@ -201,25 +216,7 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
         bytes_consumed: needed_len,
     };
 
-    if rep == SOCKS5_REP_SUCCEEDED {
-        return res, Socks5Error.None;
-    } else if rep == SOCKS5_REP_GENERAL_FAILURE {
-        return res, Socks5Error.ServerFailure;
-    } else if rep == SOCKS5_REP_NOT_ALLOWED {
-        return res, Socks5Error.ConnectionNotAllowed;
-    } else if rep == SOCKS5_REP_NET_UNREACHABLE {
-        return res, Socks5Error.NetworkUnreachable;
-    } else if rep == SOCKS5_REP_HOST_UNREACHABLE {
-        return res, Socks5Error.HostUnreachable;
-    } else if rep == SOCKS5_REP_CONN_REFUSED {
-        return res, Socks5Error.ConnectionRefused;
-    } else if rep == SOCKS5_REP_TTL_EXPIRED {
-        return res, Socks5Error.TtlExpired;
-    } else if rep == SOCKS5_REP_CMD_NOT_SUPPORTED {
-        return res, Socks5Error.CommandNotSupported;
-    } else {
-        return res, Socks5Error.AddressTypeNotSupported;
-    }
+    return res, socks5_rep_to_error(rep);
 }
 
 // ---- 3. HTTP CONNECT tunnel & TLS buffer hygiene ---------------------------

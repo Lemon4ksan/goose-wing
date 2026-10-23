@@ -80,34 +80,41 @@ if ($CheckOnly) {
     exit 0
 }
 
-# 4. Parallel compilation using CPU cores (flicker-free tracking)
-Write-Host "`n[2/3] Compiling $($testFiles.Count) suites in parallel ($optFlag)..." -ForegroundColor Yellow
+# 4. Parallel compilation using bounded worker pool (prevents temp file collisions & I/O thrashing)
+$maxConcurrent = [Math]::Min(8, [Environment]::ProcessorCount)
+Write-Host "`n[2/3] Compiling $($testFiles.Count) suites (max $maxConcurrent parallel, $optFlag)..." -ForegroundColor Yellow
 $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
 
 $buildTasks = @()
+$queue = [System.Collections.Queue]::new()
 foreach ($file in $testFiles) {
     $exeName = [System.IO.Path]::ChangeExtension($file.FullName, ".exe")
-    $cmdArgs = "build $optFlag -o `"$exeName`" `"$($file.FullName)`""
-    $swTask = [System.Diagnostics.Stopwatch]::StartNew()
-    $proc = Start-GooseProcess "goose" $cmdArgs $true
-    $buildTasks += [PSCustomObject]@{
+    $queue.Enqueue([PSCustomObject]@{
         File = $file
         Exe = $exeName
-        Process = $proc
-        Stopwatch = $swTask
-    }
+        Process = $null
+        Stopwatch = $null
+    })
 }
 
-$pending = [System.Collections.ArrayList]::new()
-$buildTasks | ForEach-Object { [void]$pending.Add($_) }
+$running = [System.Collections.ArrayList]::new()
 $buildFailed = 0
 $completedCount = 0
-$totalCount = $pending.Count
+$totalCount = $queue.Count
 
-while ($pending.Count -gt 0) {
+while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+    while ($running.Count -lt $maxConcurrent -and $queue.Count -gt 0) {
+        $task = $queue.Dequeue()
+        $cmdArgs = "build $optFlag -o `"$($task.Exe)`" `"$($task.File.FullName)`""
+        $task.Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $task.Process = Start-GooseProcess "goose" $cmdArgs $true
+        [void]$running.Add($task)
+        $buildTasks += $task
+    }
+
     Start-Sleep -Milliseconds 50
-    for ($i = $pending.Count - 1; $i -ge 0; $i--) {
-        $task = $pending[$i]
+    for ($i = $running.Count - 1; $i -ge 0; $i--) {
+        $task = $running[$i]
         if ($task.Process.HasExited) {
             $completedCount++
             $task.Process.WaitForExit()
@@ -124,7 +131,7 @@ while ($pending.Count -gt 0) {
                 if ($err) { Write-Host $err -ForegroundColor Red }
                 $buildFailed++
             }
-            $pending.RemoveAt($i)
+            $running.RemoveAt($i)
         }
     }
 }

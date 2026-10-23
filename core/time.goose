@@ -203,15 +203,11 @@ fn abs(dur: Duration) -> Duration {
     return Duration { nanos: if dur.nanos < 0 { -dur.nanos } else { dur.nanos } };
 }
 
-// Duration predicates (Goose stdlib naming convention without is_ prefix).
+// Duration predicates
 
-fn zero(dur: Duration) -> bool { return dur.nanos == 0; }
-fn negative(dur: Duration) -> bool { return dur.nanos < 0; }
-fn positive(dur: Duration) -> bool { return dur.nanos > 0; }
-
-fn is_zero(dur: Duration) -> bool { return zero(dur); }
-fn is_negative(dur: Duration) -> bool { return negative(dur); }
-fn is_positive(dur: Duration) -> bool { return positive(dur); }
+fn is_zero(dur: Duration) -> bool { return dur.nanos == 0; }
+fn is_negative(dur: Duration) -> bool { return dur.nanos < 0; }
+fn is_positive(dur: Duration) -> bool { return dur.nanos > 0; }
 
 // Three-way comparison hook (-1 for less, 0 for equal, +1 for greater).
 // std::sort automatically utilizes this hook.
@@ -452,13 +448,9 @@ fn deadline_after(dur: Duration) -> Deadline {
     return Deadline { target_mono_ns: target, has_deadline: true };
 }
 
-fn expired(deadline_val: const Deadline&) -> bool {
+fn is_expired(deadline_val: const Deadline&) -> bool {
     if !deadline_val.has_deadline { return false; }
     return clock_ns() >= deadline_val.target_mono_ns;
-}
-
-fn is_expired(deadline_val: const Deadline&) -> bool {
-    return expired(deadline_val);
 }
 
 fn remaining(deadline_val: const Deadline&) -> Duration {
@@ -506,19 +498,15 @@ fn civil_to_days(year_val: i64, month_val: i64, day_val: i64) -> i64 {
     return era * 146097 + day_of_era - 719468;
 }
 
-fn leap_year(year_val: i64) -> bool {
-    return (year_val % 4 == 0 && year_val % 100 != 0) || (year_val % 400 == 0);
-}
-
 fn is_leap_year(year_val: i64) -> bool {
-    return leap_year(year_val);
+    return (year_val % 4 == 0 && year_val % 100 != 0) || (year_val % 400 == 0);
 }
 
 fn days_in_month(year_val: i64, month_val: i64) -> i64 {
     match month_val {
         1, 3, 5, 7, 8, 10, 12 => 31,
         4, 6, 9, 11 => 30,
-        2 => if leap_year(year_val) { 29 } else { 28 },
+        2 => if is_leap_year(year_val) { 29 } else { 28 },
         _ => 0,
     }
 }
@@ -641,8 +629,7 @@ fn unix(time_val: Time) -> i64 { return time_val.wall_sec; }
 fn unix_milli(time_val: Time) -> i64 { return time_val.wall_sec * 1000 + time_val.nsec / 1000000; }
 fn unix_micro(time_val: Time) -> i64 { return time_val.wall_sec * 1000000 + time_val.nsec / 1000; }
 fn unix_nano(time_val: Time) -> i64 { return time_val.wall_sec * 1000000000 + time_val.nsec; }
-fn zero(time_val: Time) -> bool { return time_val.wall_sec == 0 && time_val.nsec == 0; }
-fn is_zero(time_val: Time) -> bool { return zero(time_val); }
+fn is_zero(time_val: Time) -> bool { return time_val.wall_sec == 0 && time_val.nsec == 0; }
 
 // --- Time Arithmetic ---
 
@@ -739,15 +726,11 @@ fn days_in_month(time_val: Time) -> i64 {
 }
 
 fn days_in_year(time_val: Time) -> i64 {
-    return if leap_year(time_val.year()) { 366 } else { 365 };
-}
-
-fn leap_year(time_val: Time) -> bool {
-    return leap_year(time_val.year());
+    return if is_leap_year(time_val.year()) { 366 } else { 365 };
 }
 
 fn is_leap_year(time_val: Time) -> bool {
-    return leap_year(time_val);
+    return is_leap_year(time_val.year());
 }
 
 fn since(time_val: Time) -> Duration {

@@ -401,6 +401,47 @@ fn compute_new_referrer<B>(
 
 // ---- header sanitization on redirect ---------------------------------------
 
+// Strips payload and conditional validator headers when a redirect mutates request to GET (RFC 9110 Section 15.4).
+fn remove_payload_and_conditional_headers(headers: HeaderItem[..32]&) {
+    remove_header_by_name(headers, "Content-Type");
+    remove_header_by_name(headers, "Content-Length");
+    remove_header_by_name(headers, "Content-Encoding");
+    remove_header_by_name(headers, "Content-Language");
+    remove_header_by_name(headers, "Content-Location");
+    remove_header_by_name(headers, "Transfer-Encoding");
+    remove_header_by_name(headers, "Digest");
+    remove_header_by_name(headers, "If-Match");
+    remove_header_by_name(headers, "If-None-Match");
+    remove_header_by_name(headers, "If-Modified-Since");
+    remove_header_by_name(headers, "If-Unmodified-Since");
+    remove_header_by_name(headers, "If-Range");
+    remove_header_by_name(headers, "Expect");
+    remove_header_by_name(headers, "TE");
+}
+
+// Sanitizes or drops Origin header on cross-origin redirect hops (WHATWG Fetch Section 4.4).
+fn sanitize_origin_header_on_redirect(
+    headers: HeaderItem[..32]&,
+    is_cross_origin: bool,
+    tainted_origin: bool,
+    cors_mode: bool,
+    clear_body: bool,
+) {
+    for &hdr in headers {
+        if eq_ascii_fold(hdr.name[..], "Origin") {
+            if is_cross_origin || tainted_origin {
+                if cors_mode || tainted_origin {
+                    hdr.value.clear();
+                    hdr.value.append("null");
+                } else if clear_body {
+                    remove_header_by_name(headers, "Origin");
+                    break;
+                }
+            }
+        }
+    }
+}
+
 // Sanitizes outbound headers across redirect hops. Strips Cookie headers, removes
 // credentials on cross-origin or scheme downgrades, and drops payload headers
 // when mutating to GET.
@@ -422,38 +463,19 @@ fn sanitize_headers_on_redirect(
 
     // Strip payload and representation headers when mutating to GET.
     if redirect_info.clear_body {
-        remove_header_by_name(headers, "Content-Type");
-        remove_header_by_name(headers, "Content-Length");
-        remove_header_by_name(headers, "Content-Encoding");
-        remove_header_by_name(headers, "Content-Language");
-        remove_header_by_name(headers, "Content-Location");
-        remove_header_by_name(headers, "Transfer-Encoding");
-        remove_header_by_name(headers, "Digest");
-        remove_header_by_name(headers, "If-Match");
-        remove_header_by_name(headers, "If-None-Match");
-        remove_header_by_name(headers, "If-Modified-Since");
-        remove_header_by_name(headers, "If-Unmodified-Since");
-        remove_header_by_name(headers, "If-Range");
-        remove_header_by_name(headers, "Expect");
-        remove_header_by_name(headers, "TE");
+        remove_payload_and_conditional_headers(headers);
     }
 
     // Origin header sanitization (WHATWG Fetch)
-    for &hdr in headers {
-        if eq_ascii_fold(hdr.name[..], "Origin") {
-            if redirect_info.is_cross_origin || tainted_origin {
-                if cors_mode || tainted_origin {
-                    hdr.value.clear();
-                    hdr.value.append("null");
-                } else if redirect_info.clear_body {
-                    remove_header_by_name(headers, "Origin");
-                    break;
-                }
-            }
-        }
-    }
+    sanitize_origin_header_on_redirect(
+        headers,
+        redirect_info.is_cross_origin,
+        tainted_origin,
+        cors_mode,
+        redirect_info.clear_body
+    );
 
-    // 5. Referer Header Application
+    // Referer Header Application
     remove_header_by_name(headers, "Referer");
     if enable_referer && redirect_info.new_referrer.len > 0 {
         if headers.len < 32 {

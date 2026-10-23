@@ -59,9 +59,9 @@ fn param_by_name(
     req_path: const u8[:],
 ) -> const u8[:], bool {
     for idx in params.len {
-        let k = param_key(params, idx, route_template);
+        let k = params.param_key(idx, route_template);
         if k == name {
-            return param_val(params, idx, req_path), true;
+            return params.param_val(idx, req_path), true;
         }
     }
     return "", false;
@@ -118,8 +118,8 @@ fn update_param_suffix_flag(existing_type: NodeType, new_suffix: const u8[:]) ->
 // Searches the static indices array of a node for a child matching first_byte.
 fn find_child_by_byte(tree: const RadixTree&, cur_idx: i32, b: u8) -> i32 {
     let c_idx = cur_idx as i64;
-    for i in tree.nodes[c_idx].indices.len {
-        if tree.nodes[c_idx].indices[i] == b {
+    for &byte_val, i in tree.nodes[c_idx].indices {
+        if byte_val == b {
             return tree.nodes[c_idx].children[i];
         }
     }

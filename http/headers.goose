@@ -1113,7 +1113,7 @@ fn has_header(map: const HeaderMap&, name: const u8[:]) -> bool {
         return map.inline_slots[slot] != 0xFF;
     }
     let hname = hash_header_name(name);
-    for entry in map.entries {
+    for &entry in map.entries {
         if entry.name_hash == hname {
             let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
             if eq_ascii_fold(entry_name, name) {
@@ -1137,7 +1137,7 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
     }
 
     let hname = hash_header_name(name);
-    for entry in map.entries {
+    for &entry in map.entries {
         if entry.name_hash == hname {
             let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
             if eq_ascii_fold(entry_name, name) {
@@ -1208,16 +1208,16 @@ fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     // If already exists, overwrite value of first occurrence and prune subsequent occurrences
     guard is_valid_header_name(name) && is_valid_header_value(value) else { return false; }
 
-    if has_header(map, name) {
-        remove_header(map, name);
+    if map.has_header(name) {
+        map.remove_header(name);
     }
-    return append_header(map, name, value);
+    return map.append_header(name, value);
 }
 
 fn set_inline(map: HeaderMap&, id: WellKnownHeader, value: const u8[:]) -> bool {
     guard id != WellKnownHeader.Unknown else { return false; }
     let name = well_known_header_name(id);
-    return insert_header(map, name, value);
+    return map.insert_header(name, value);
 }
 
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
@@ -1239,8 +1239,7 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     var new_commas: bool[..128] = [];
     for i in 64 { map.inline_slots[i] = 0xFF; }
 
-    for i in map.entries.len {
-        let e = map.entries[i];
+    for &e, i in map.entries {
         let ename = map.raw_buf[e.name_begin..e.name_end];
         if eq_ascii_fold(ename, name) {
             found = true;
@@ -1324,7 +1323,7 @@ fn get_combined(map: const HeaderMap&, name: const u8[:], out: u8[>..]&) -> bool
 
 fn get_all_values(map: const HeaderMap&, name: const u8[:], out_values: u8[..256][>..]&) {
     let hname = hash_header_name(name);
-    for entry in map.entries {
+    for &entry in map.entries {
         if entry.name_hash == hname {
             let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
             if eq_ascii_fold(entry_name, name) {
@@ -1353,7 +1352,7 @@ fn get_set_cookie(map: const HeaderMap&, out_cookies: u8[..1024][>..]&) {
 
 // Chromium raw_headers_ format: lines separated by \0, terminated by \0\0
 fn raw_headers(map: const HeaderMap&, out: u8[>..]&) {
-    for entry in map.entries {
+    for &entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
         let val = map.raw_buf[entry.values_begin..entry.values_end];
         out.append(name);
@@ -1429,19 +1428,19 @@ fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
 
 // Merges fresh headers from a 304 Not Modified response into cached headers
 fn merge_with_headers_304(cached_headers: HeaderMap&, response_304: const HeaderMap&) {
-    for entry in response_304.entries {
+    for &entry in response_304.entries {
         let name = response_304.raw_buf[entry.name_begin..entry.name_end];
         if should_update_header_304(entry.flags, name) {
             let val = response_304.raw_buf[entry.values_begin..entry.values_end];
-            insert_header(cached_headers, name, val);
+            cached_headers.insert_header(name, val);
         }
     }
 }
 
 // Filters headers according to Chromium persistence flags
 fn persist_headers(src: const HeaderMap&, dst: HeaderMap&, flags: u32) {
-    reset_for_keep_alive(dst);
-    for entry in src.entries {
+    dst.reset_for_keep_alive();
+    for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
         let val = src.raw_buf[entry.values_begin..entry.values_end];
 
@@ -1458,7 +1457,7 @@ fn persist_headers(src: const HeaderMap&, dst: HeaderMap&, flags: u32) {
             continue;
         }
 
-        append_header(dst, name, val);
+        dst.append_header(name, val);
     }
 }
 
@@ -1479,7 +1478,7 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
 }
 
 fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..16]&) {
-    for entry in src.entries {
+    for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
         if eq_ascii_fold(name, "connection") {
             let val = src.raw_buf[entry.values_begin..entry.values_end];
@@ -1507,12 +1506,12 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..16]&)
 // Copies headers from src to dst, omitting standard hop-by-hop headers and
 // any header listed in a Connection header token (RFC 9110 Section 7.6.1).
 fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
-    reset_for_keep_alive(dst);
+    dst.reset_for_keep_alive();
 
     var custom_tokens: u8[..64][..16] = [];
-    collect_connection_tokens(src, custom_tokens);
+    src.collect_connection_tokens(custom_tokens);
 
-    for entry in src.entries {
+    for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
         let val = src.raw_buf[entry.values_begin..entry.values_end];
 
@@ -1520,18 +1519,12 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
             continue;
         }
 
-        var is_custom_hop = false;
-        for &tok in custom_tokens {
-            if eq_ascii_fold(name, tok[..]) {
-                is_custom_hop = true;
-                break;
-            }
-        }
+        let is_custom_hop = custom_tokens.any() { eq_ascii_fold(name, it[..]) };
         if is_custom_hop {
             continue;
         }
 
-        append_header(dst, name, val);
+        dst.append_header(name, val);
     }
 }
 

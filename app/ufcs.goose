@@ -103,13 +103,10 @@ fn ::mul(dur: wing::Duration, factor: i64) -> wing::Duration { return wing::mul(
 fn ::div(dur: wing::Duration, factor: i64) -> wing::Duration { return wing::div(dur, factor); }
 fn ::abs(dur: wing::Duration) -> wing::Duration { return wing::abs(dur); }
 
-// Goose stdlib naming conventions (no is_ prefix) and compatibility aliases
+// Duration predicates
 
-fn ::zero(dur: wing::Duration) -> bool { return wing::zero(dur); }
 fn ::is_zero(dur: wing::Duration) -> bool { return wing::is_zero(dur); }
-fn ::negative(dur: wing::Duration) -> bool { return wing::negative(dur); }
 fn ::is_negative(dur: wing::Duration) -> bool { return wing::is_negative(dur); }
-fn ::positive(dur: wing::Duration) -> bool { return wing::positive(dur); }
 fn ::is_positive(dur: wing::Duration) -> bool { return wing::is_positive(dur); }
 
 fn ::truncate(dur: wing::Duration, step_dur: wing::Duration) -> wing::Duration { return wing::truncate(dur, step_dur); }
@@ -132,7 +129,6 @@ fn ::unix(time_val: wing::Time) -> i64 { return wing::unix(time_val); }
 fn ::unix_milli(time_val: wing::Time) -> i64 { return wing::unix_milli(time_val); }
 fn ::unix_micro(time_val: wing::Time) -> i64 { return wing::unix_micro(time_val); }
 fn ::unix_nano(time_val: wing::Time) -> i64 { return wing::unix_nano(time_val); }
-fn ::zero(time_val: wing::Time) -> bool { return wing::zero(time_val); }
 fn ::is_zero(time_val: wing::Time) -> bool { return wing::is_zero(time_val); }
 
 // Time arithmetic
@@ -163,7 +159,6 @@ fn ::add_months_clamped(time_val: wing::Time, months_count: i64) -> wing::Time {
 fn ::add_years_clamped(time_val: wing::Time, years_count: i64) -> wing::Time { return wing::add_years_clamped(time_val, years_count); }
 fn ::days_in_month(time_val: wing::Time) -> i64 { return wing::days_in_month(time_val); }
 fn ::days_in_year(time_val: wing::Time) -> i64 { return wing::days_in_year(time_val); }
-fn ::leap_year(time_val: wing::Time) -> bool { return wing::leap_year(time_val); }
 fn ::is_leap_year(time_val: wing::Time) -> bool { return wing::is_leap_year(time_val); }
 
 fn ::start_of_day(time_val: wing::Time) -> wing::Time { return wing::start_of_day(time_val); }
@@ -186,7 +181,6 @@ fn ::restart(watch: wing::Stopwatch&) -> wing::Duration { return wing::restart(w
 
 // Deadline Primitives
 
-fn ::expired(deadline_val: const wing::Deadline&) -> bool { return wing::expired(deadline_val); }
 fn ::is_expired(deadline_val: const wing::Deadline&) -> bool { return wing::is_expired(deadline_val); }
 fn ::remaining(deadline_val: const wing::Deadline&) -> wing::Duration { return wing::remaining(deadline_val); }
 
