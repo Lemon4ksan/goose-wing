@@ -347,6 +347,21 @@ fn decode_block_codes<B>(
     max_output_bytes: i64 = 0,
 ) -> CompressError {
     loop {
+        // Fast path: tight inline decoding of consecutive 9-bit literals
+        while r.bit_count >= 15 {
+            let fast_val = lit_table.fast[(r.bit_buf & 0x1FF) as i64];
+            if fast_val < 0 { break; }
+            let sym = fast_val & 0xFFFF;
+            if sym >= 256 { break; }
+            let fast_len = fast_val >> 16;
+            r.bit_buf >>= fast_len;
+            r.bit_count -= fast_len;
+            if max_output_bytes > 0 && (out.len - out_start_pos) >= max_output_bytes {
+                return CompressError.OutputBufferOverflow;
+            }
+            out.push(sym as u8);
+        }
+
         let sym, ok_sym = decode_huffman_symbol(r, lit_table);
         guard ok_sym else { return CompressError.InputBufferTruncated; }
         guard sym >= 0 else { return CompressError.InvalidHuffmanCode; }
@@ -393,21 +408,14 @@ fn decode_block_codes<B>(
                 let m_len = match_len as i64;
                 if dist_i64 >= m_len {
                     out.append(out[back_idx .. back_idx + m_len]);
-                } else if dist_i64 == 1 {
-                    let b = out[back_idx];
-                    for i in match_len {
-                        out.push(b);
-                    }
                 } else {
-                    var m: i64 = 0;
-                    while m + dist_i64 <= m_len {
-                        out.append(out[out.len - dist_i64 .. out.len]);
-                        m += dist_i64;
-                    }
-                    while m < m_len {
-                        let b = out[out.len - dist_i64];
-                        out.push(b);
-                        m++;
+                    var curr: i64 = 0;
+                    while curr < m_len {
+                        let avail = curr + dist_i64;
+                        let rem = m_len - curr;
+                        let step = if avail < rem { avail } else { rem };
+                        out.append(out[back_idx .. back_idx + step]);
+                        curr += step;
                     }
                 }
             } else {

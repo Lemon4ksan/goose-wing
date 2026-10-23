@@ -138,17 +138,8 @@ fn compute_backoff_jitter_ms(
     rng_seed: u64&
 ) -> i64 {
     // Compute capped deterministic exponential target t = min(c, b * 2^a)
-    var exp_val = cfg.base_ms;
-    var shift = attempt;
-    if shift > 30 { shift = 30; } // Prevent bit shift overflow
-    for i in shift {
-        exp_val *= 2;
-        if exp_val >= cfg.cap_ms {
-            exp_val = cfg.cap_ms;
-            break;
-        }
-    }
-    let target_t = if exp_val > cfg.cap_ms { cfg.cap_ms } else { exp_val };
+    let exp_bound = shl_sat_u64(cfg.base_ms as u64, (if attempt > 60 { 60 } else { attempt }) as u32);
+    let target_t = ct_min_u64(cfg.cap_ms as u64, exp_bound) as! i64;
 
     return match cfg.strategy {
         None => target_t,

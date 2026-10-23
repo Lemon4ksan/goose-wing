@@ -23,23 +23,15 @@ fn compute_effective_cad_ms(
     min_cad_ms: i64 = HE_MIN_CAD_MS,
     max_cad_ms: i64 = HE_MAX_CAD_MS
 ) -> i64 {
-    var eff_min = if min_cad_ms < HE_ABSOLUTE_FLOOR_CAD_MS { HE_ABSOLUTE_FLOOR_CAD_MS } else { min_cad_ms };
-    var eff_max = if max_cad_ms < eff_min { eff_min } else { max_cad_ms };
+    let eff_min = ct_max_i64(min_cad_ms, HE_ABSOLUTE_FLOOR_CAD_MS);
+    let eff_max = ct_max_i64(max_cad_ms, eff_min);
 
     if !rtt_known {
         return HE_DEFAULT_CAD_MS;
     }
 
-    var rtt = observed_rtt_ms;
-    if rtt < eff_min { rtt = eff_min; }
-    if rtt > eff_max { rtt = eff_max; }
-
-    // Absolute normative safety barrier
-    if rtt < HE_ABSOLUTE_FLOOR_CAD_MS {
-        rtt = HE_ABSOLUTE_FLOOR_CAD_MS;
-    }
-
-    return rtt;
+    let clamped = clamp_i64(observed_rtt_ms, eff_min, eff_max);
+    return ct_max_i64(clamped, HE_ABSOLUTE_FLOOR_CAD_MS);
 }
 
 // ---- 2. DNS query models and candidate classification ----------------------

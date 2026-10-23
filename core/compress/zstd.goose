@@ -143,33 +143,40 @@ fn zstd_peek_bits(r: ZstdBitReader&, n: i32) -> u32 {
     }
     let start_bit = r.bit_pos - n;
     let byte_offset = start_bit >> 3;
-    let bit_offset = (start_bit & 7) as u64;
+    let bit_end = start_bit + n;
 
     var chunk: u64 = 0;
-    if byte_offset == r.cache_offset {
+    if r.cache_offset >= 0 && start_bit >= (r.cache_offset * 8) && bit_end <= ((r.cache_offset + 8) * 8) {
         chunk = r.cache_chunk;
     } else {
-        let rem = r.src.len - byte_offset;
+        var new_offset = if byte_offset >= 4 { byte_offset - 4 } else { 0 };
+        if new_offset + 8 > r.src.len {
+            new_offset = if r.src.len >= 8 { r.src.len - 8 } else { 0 };
+        }
+        let rem = r.src.len - new_offset;
         if rem >= 8 {
-            let b0 = r.src[byte_offset] as u64;
-            let b1 = r.src[byte_offset + 1] as u64;
-            let b2 = r.src[byte_offset + 2] as u64;
-            let b3 = r.src[byte_offset + 3] as u64;
-            let b4 = r.src[byte_offset + 4] as u64;
-            let b5 = r.src[byte_offset + 5] as u64;
-            let b6 = r.src[byte_offset + 6] as u64;
-            let b7 = r.src[byte_offset + 7] as u64;
+            let b0 = r.src[new_offset] as u64;
+            let b1 = r.src[new_offset + 1] as u64;
+            let b2 = r.src[new_offset + 2] as u64;
+            let b3 = r.src[new_offset + 3] as u64;
+            let b4 = r.src[new_offset + 4] as u64;
+            let b5 = r.src[new_offset + 5] as u64;
+            let b6 = r.src[new_offset + 6] as u64;
+            let b7 = r.src[new_offset + 7] as u64;
             chunk = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
-            r.cache_offset = byte_offset;
+            r.cache_offset = new_offset;
             r.cache_chunk = chunk;
         } else {
             var i: i64 = 0;
             while i < rem {
-                chunk |= (r.src[byte_offset + i] as u64) << ((i * 8) as u64);
+                chunk |= (r.src[new_offset + i] as u64) << ((i * 8) as u64);
                 i++;
             }
+            r.cache_offset = new_offset;
+            r.cache_chunk = chunk;
         }
     }
+    let bit_offset = (start_bit - (r.cache_offset * 8)) as u64;
     let shifted = chunk >> bit_offset;
     let mask = if n == 32 { 0xFFFFFFFF as u64 } else { ((1 as u64) << (n as u64)) - 1 };
     return (shifted & mask) as u32;
@@ -589,11 +596,23 @@ fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]
     let t_log = table.table_log;
 
     while decoded < count && !r.underflow {
-        let bits = (zstd_peek_bits(r, t_log) as i32) & mask;
-        let entry = table.entries[bits];
-        lit_buf.push(entry.symbol);
-        zstd_consume_bits(r, entry.nb_bits);
-        decoded++;
+        let min_bit = r.cache_offset * 8;
+        while decoded < count && r.cache_offset >= 0 && (r.bit_pos - t_log) >= min_bit {
+            let start_bit = r.bit_pos - t_log;
+            let bit_offset = (start_bit - min_bit) as u64;
+            let bits = ((r.cache_chunk >> bit_offset) as i32) & mask;
+            let entry = table.entries[bits];
+            lit_buf.push(entry.symbol);
+            r.bit_pos -= entry.nb_bits;
+            decoded++;
+        }
+        if decoded < count && !r.underflow {
+            let bits = (zstd_peek_bits(r, t_log) as i32) & mask;
+            let entry = table.entries[bits];
+            lit_buf.push(entry.symbol);
+            zstd_consume_bits(r, entry.nb_bits);
+            decoded++;
+        }
     }
 
     return decoded == count;
@@ -912,9 +931,9 @@ fn decode_sequences<B>(
         let ml_extra_bits = ML_EXTRA_BITS[ml_code as i64] as i32;
         let ll_extra_bits = LL_EXTRA_BITS[ll_code as i64] as i32;
 
-        let of_extra = zstd_read_bits(r, of_extra_bits);
-        let ml_extra = zstd_read_bits(r, ml_extra_bits);
-        let ll_extra = zstd_read_bits(r, ll_extra_bits);
+        let of_extra = if of_extra_bits > 0 { zstd_read_bits(r, of_extra_bits) } else { 0 };
+        let ml_extra = if ml_extra_bits > 0 { zstd_read_bits(r, ml_extra_bits) } else { 0 };
+        let ll_extra = if ll_extra_bits > 0 { zstd_read_bits(r, ll_extra_bits) } else { 0 };
 
         let lit_len = LL_BASE[ll_code as i64] + ll_extra;
         let match_len = ML_BASE[ml_code as i64] + ml_extra;
@@ -983,40 +1002,27 @@ fn decode_sequences<B>(
             let src_idx = (out_buf.len as i64) - off;
             if off >= m_len {
                 out_buf.append(out_buf[src_idx .. src_idx + m_len]);
-            } else if off == 1 {
-                let b = out_buf[src_idx];
-                let pattern: u8[16] = [b; 16];
-                var m: i64 = 0;
-                while m + 16 <= m_len {
-                    out_buf.append(pattern[..]);
-                    m += 16;
-                }
-                while m < m_len {
-                    out_buf.push(b);
-                    m++;
-                }
             } else {
-                var m: i64 = 0;
-                while m + off <= m_len {
-                    out_buf.append(out_buf[src_idx + m .. src_idx + m + off]);
-                    m += off;
-                }
-                while m < m_len {
-                    out_buf.push(out_buf[src_idx + m]);
-                    m++;
+                var curr: i64 = 0;
+                while curr < m_len {
+                    let avail = curr + off;
+                    let rem = m_len - curr;
+                    let step = if avail < rem { avail } else { rem };
+                    out_buf.append(out_buf[src_idx .. src_idx + step]);
+                    curr += step;
                 }
             }
         }
 
         // Update states for next sequence
         if seq_i + 1 < nb_seq {
-            let ll_bits = zstd_read_bits(r, ll_entry.nb_bits as i32);
+            let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
             state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
 
-            let ml_bits = zstd_read_bits(r, ml_entry.nb_bits as i32);
+            let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits as i32) } else { 0 };
             state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
 
-            let of_bits = zstd_read_bits(r, of_entry.nb_bits as i32);
+            let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
             state_of = (of_entry.new_state as i64) + (of_bits as i64);
         }
 

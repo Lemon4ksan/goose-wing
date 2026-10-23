@@ -170,12 +170,7 @@ fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter {
 }
 
 inline fn fnv1a_hash(data: const u8[:]) -> u64 {
-    var h: u64 = 0xcbf29ce484222325;
-    for b in data {
-        h ^= b;
-        h *= 0x100000001b3;
-    }
-    return h;
+    return fnv1a_64(data);
 }
 
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
