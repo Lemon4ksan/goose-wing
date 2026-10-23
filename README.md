@@ -445,9 +445,9 @@ All verification suites live in `tests/` and adhere to a strict, scalable `<subs
 | `app_*` | Client session pipelines, redirect FSM, profiles, request/response | `app_session_test.goose` |
 | `sec_*` | Security regressions, CVE validations, constant-time cryptography, CSRF/CORS, GCRA | `sec_ct_test.goose`, `sec_csrf_test.goose`, `sec_rate_limiter_test.goose`, `sec_cve_test.goose`, `sec_protocol_test.goose`, `sec_cookie_test.goose`, `sec_concurrency_test.goose` |
 | `server_*` | Zero-allocation Radix Router, Tako v2 pool, pipeline orchestration | `server_router_test.goose` |
+| `cache_*` | RFC 9111 HTTP caching engine, freshness hierarchy, 304 merge & revalidation | `cache_engine_test.goose` |
 | *Future: `proto_*`* | Wire protocols (HTTP/1.1, HTTP/2, HTTP/3, QUIC, WebSocket) | `proto_h1_test.goose`, `proto_h2_test.goose`, `proto_quic_test.goose` |
 | *Future: `compress_*`* | Compression codecs (Deflate/zlib, Brotli, Zstandard) | `compress_zstd_test.goose`, `compress_brotli_test.goose` |
-| *Future: `cache_*`* | RFC 9111 HTTP caching engine & revalidation | `cache_engine_test.goose` |
 
 ### Suite Breakdown
 
@@ -470,7 +470,8 @@ All verification suites live in `tests/` and adhere to a strict, scalable `<subs
 | **Resource Isolation & CORS** | `tests/sec_csrf_test.goose` | W3C Fetch Metadata 9-row decision matrix, fail-closed cookie gate, Vary & HSTS injection, protocol-specific CORS origin matching | 41 checks |
 | **GCRA Virtual Scheduling** | `tests/sec_rate_limiter_test.goose` | GCRA TAT virtual scheduling, anti-starvation slot reservation (governor #16), 256-shard hash table, 5% DDoS sampling, IETF RateLimit-* headers | 38 checks |
 | **Zero-Alloc Router & Pipeline** | `tests/server_router_test.goose` | Compressed Radix Trie, ZeroAllocParams stack spans, insertion order independence (matchit #83), static precedence, 405 Method Not Allowed + Allow, Tako v2 6-mechanism pool, unified pipeline | 45 checks |
-| **Total** | **17 verification suites** | | **2,756 checks** |
+| **RFC 9111 HTTP Cache Engine** | `tests/cache_engine_test.goose` | Single-pass Cache-Control bitmask, delta-seconds clamp, freshness math, clock skew protection, ETag weak/strong, Vary normalization (CVE-2026-93750), max-stale guards (CVE-2026-93748), 304 merge, request collapsing | 98 checks |
+| **Total** | **18 verification suites** | | **2,854 checks** |
 
 ### Running the Tests
 

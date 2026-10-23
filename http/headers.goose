@@ -25,6 +25,7 @@ const PERSIST_ALL: u32 = 0;
 const PERSIST_SANS_COOKIES: u32 = 1;
 const PERSIST_SANS_CHALLENGES: u32 = 2;
 const PERSIST_SANS_NON_CACHEABLE: u32 = 4;
+const PERSIST_SANS_SECURITY_STATE: u32 = 8;
 
 // ---- header error enumeration ----------------------------------------------
 
@@ -1462,12 +1463,17 @@ fn serialize_headers(map: const HeaderMap&, out: u8[>..]&) {
 // ---- chromium 304 not modified merge & cache persistence --------------------
 
 fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
-    // RFC 9110 Section 15.4.5 & Chromium HttpResponseHeaders::ShouldUpdateHeader
-    // Never update cookies or security state or hop-by-hop headers
+    // RFC 9110 Section 15.4.5, RFC 9111 Section 3.2 & Chromium HttpResponseHeaders::ShouldUpdateHeader
+    // Never update cookies, auth challenges, security state, or hop-by-hop headers
     if (entry_flags & (HEADER_FLAG_COOKIE_STATE | HEADER_FLAG_CHALLENGE | HEADER_FLAG_SECURITY_STATE | HEADER_FLAG_NON_CACHEABLE)) != 0 {
         return false;
     }
-    if eq_ascii_fold(name, "content-range") || eq_ascii_fold(name, "content-length") {
+    if eq_ascii_fold(name, "content-range") ||
+       eq_ascii_fold(name, "content-length") ||
+       eq_ascii_fold(name, "content-encoding") ||
+       eq_ascii_fold(name, "content-type") ||
+       eq_ascii_fold(name, "content-md5") ||
+       eq_ascii_fold(name, "content-language") {
         return false;
     }
     return true;
@@ -1498,6 +1504,9 @@ fn persist_headers(src: const HeaderMap&, dst: HeaderMap&, flags: u32) {
             continue;
         }
         if (flags & PERSIST_SANS_NON_CACHEABLE) != 0 && (entry.flags & HEADER_FLAG_NON_CACHEABLE) != 0 {
+            continue;
+        }
+        if (flags & PERSIST_SANS_SECURITY_STATE) != 0 && (entry.flags & HEADER_FLAG_SECURITY_STATE) != 0 {
             continue;
         }
 

@@ -444,3 +444,27 @@ fn ::release_header_map(pool: wing::HeaderMapPool&, idx: i32) { wing::release_he
 fn ::acquire_extensions(pool: wing::ExtensionsPool&) -> i32 { return wing::acquire_extensions(pool); }
 fn ::release_extensions(pool: wing::ExtensionsPool&, idx: i32) { wing::release_extensions(pool, idx); }
 fn ::check_connection_tick(timer: wing::ConnectionTimer&, now_ns: u64) -> bool { return wing::check_connection_tick(timer, now_ns); }
+
+// ---- http cache ufcs bridges -----------------------------------------------
+
+fn ::is_no_store(cc: const wing::CacheControl&) -> bool { return wing::is_no_store(cc); }
+fn ::is_no_cache(cc: const wing::CacheControl&) -> bool { return wing::is_no_cache(cc); }
+fn ::is_must_revalidate(cc: const wing::CacheControl&) -> bool { return wing::is_must_revalidate(cc); }
+fn ::is_proxy_revalidate(cc: const wing::CacheControl&) -> bool { return wing::is_proxy_revalidate(cc); }
+fn ::is_must_understand(cc: const wing::CacheControl&) -> bool { return wing::is_must_understand(cc); }
+fn ::is_private(cc: const wing::CacheControl&) -> bool { return wing::is_private(cc); }
+fn ::is_public(cc: const wing::CacheControl&) -> bool { return wing::is_public(cc); }
+fn ::is_immutable(cc: const wing::CacheControl&) -> bool { return wing::is_immutable(cc); }
+fn ::is_only_if_cached(cc: const wing::CacheControl&) -> bool { return wing::is_only_if_cached(cc); }
+fn ::weak_eq(a: const wing::EntityTag&, b: const wing::EntityTag&) -> bool { return wing::weak_eq(a, b); }
+fn ::strong_eq(a: const wing::EntityTag&, b: const wing::EntityTag&) -> bool { return wing::strong_eq(a, b); }
+fn ::matches_vary(snap: const wing::VarySnapshot&, incoming_req_headers: const wing::HeaderMap&) -> bool { return wing::matches_vary(snap, incoming_req_headers); }
+fn ::lookup(cache: wing::HttpCache&, req: const wing::Request&, cur_now: wing::Time, cur_mono: wing::MonotonicInstant = wing::MonotonicInstant { .. }) -> wing::LookupDecision {
+    return wing::lookup(cache, req, cur_now, cur_mono);
+}
+fn ::on_response(cache: wing::HttpCache&, req: const wing::Request&, resp: const wing::Response&, ts: const wing::CacheTimestamps&, revalidate_entry_idx: i64 = -1) -> wing::ResponseDecision {
+    return wing::on_response(cache, req, resp, ts, revalidate_entry_idx);
+}
+fn ::check_invalidation(cache: wing::HttpCache&, req: const wing::Request&, resp: const wing::Response&) -> i64 {
+    return wing::check_invalidation(cache, req, resp);
+}

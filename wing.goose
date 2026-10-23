@@ -40,6 +40,13 @@ import http.mime;
 import http.multipart;
 import http.h2_framer;
 
+// ---- http cache engine (rfc 9111) ------------------------------------------
+
+import http.cache.cache_control;
+import http.cache.freshness;
+import http.cache.validators;
+import http.cache.engine;
+
 // ---- security --------------------------------------------------------------
 
 import security.ct;
