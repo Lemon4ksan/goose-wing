@@ -5,10 +5,14 @@ import std;
 import core.compress.checksum;
 import core.compress.deflate;
 
-// Compresses src into out using RFC 1950 Zlib format.
-fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
+// Compresses src into out using RFC 1950 Zlib format with optional preset dictionary.
+fn zlib_compress_with_dict<B>(src: const u8[:], out: B&, level: i32 = 6, dict: const u8[:] = "") -> bool {
     let cmf: u8 = 0x78; // CM=8 (deflate), CINFO=7 (32K window)
     var flg: u32 = if level >= 6 { 0x80 } else { 0x00 }; // FLEVEL
+
+    if dict.len > 0 {
+        flg |= 0x20; // FDICT bit
+    }
 
     // Compute FCHECK such that (CMF * 256 + FLG) is a multiple of 31
     let rem = ((cmf as u32) * 256 + flg) % 31;
@@ -19,8 +23,16 @@ fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
     out.push(cmf);
     out.push((flg & 0xFF) as u8);
 
+    if dict.len > 0 {
+        let dict_adler = adler32(dict);
+        out.push(((dict_adler >> 24) & 0xFF) as u8);
+        out.push(((dict_adler >> 16) & 0xFF) as u8);
+        out.push(((dict_adler >> 8) & 0xFF) as u8);
+        out.push((dict_adler & 0xFF) as u8);
+    }
+
     // Deflate compressed payload
-    guard deflate(src, out, level) else { return false; }
+    guard deflate_with_dict(src, out, level, dict) else { return false; }
 
     // 4-byte Adler-32 in Big-Endian
     let a = adler32(src);
@@ -32,9 +44,14 @@ fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
     return true;
 }
 
-// Decompresses RFC 1950 Zlib stream from src into out.
-// Validates headers, FCHECK, Adler-32 checksum.
-fn zlib_decompress<B>(src: const u8[:], out: B&) -> CompressError {
+// Compresses src into out using RFC 1950 Zlib format.
+fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
+    return zlib_compress_with_dict(src, out, level, "");
+}
+
+// Decompresses RFC 1950 Zlib stream from src into out with optional preset dictionary.
+// Validates headers, FCHECK, DICTID, Adler-32 checksum.
+fn zlib_decompress_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> CompressError {
     guard src.len >= 6 else { return CompressError.InputBufferTruncated; }
 
     let cmf = src[0] as u32;
@@ -50,19 +67,28 @@ fn zlib_decompress<B>(src: const u8[:], out: B&) -> CompressError {
         return CompressError.InvalidHeader;
     }
 
-    // FDICT (bit 5) indicates preset dictionary (not supported in raw RFC 1950)
     let fdict = (flg >> 5) & 1;
-    guard fdict == 0 else {
-        return CompressError.InvalidHeader;
+    var deflate_start: i64 = 2;
+
+    if fdict != 0 {
+        guard src.len >= 10 else { return CompressError.InputBufferTruncated; }
+        let expected_dict_id = ((src[2] as u32) << 24) |
+                               ((src[3] as u32) << 16) |
+                               ((src[4] as u32) << 8) |
+                               (src[5] as u32);
+        guard dict.len > 0 else { return CompressError.NeedDictionary; }
+        let actual_dict_id = adler32(dict);
+        guard actual_dict_id == expected_dict_id else { return CompressError.DictionaryMismatch; }
+        deflate_start = 6;
     }
 
     let deflate_end = src.len - 4;
-    guard 2 <= deflate_end else { return CompressError.InputBufferTruncated; }
+    guard deflate_start <= deflate_end else { return CompressError.InputBufferTruncated; }
 
-    let deflate_payload = src[2..deflate_end];
+    let deflate_payload = src[deflate_start..deflate_end];
     let out_start = out.len;
 
-    let err = inflate(deflate_payload, out);
+    let err = inflate_with_dict(deflate_payload, out, dict);
     guard err == CompressError.None else { return err; }
 
     let decomp_slice = out[out_start..];
@@ -79,4 +105,10 @@ fn zlib_decompress<B>(src: const u8[:], out: B&) -> CompressError {
     }
 
     return CompressError.None;
+}
+
+// Decompresses RFC 1950 Zlib stream from src into out.
+// Validates headers, FCHECK, Adler-32 checksum.
+fn zlib_decompress<B>(src: const u8[:], out: B&) -> CompressError {
+    return zlib_decompress_with_dict(src, out, "");
 }

@@ -22,6 +22,8 @@ enum CompressError {
     RepeatWithoutPreviousLength,
     ChecksumMismatch,
     SizeMismatch,
+    NeedDictionary,
+    DictionaryMismatch,
 }
 
 // ---- rfc 1951 constants & lookup tables -----------------------------------
@@ -262,6 +264,8 @@ fn decode_block_codes<B>(
     lit_table: const HuffmanTable&,
     dist_table: const HuffmanTable&,
     out: B&,
+    dict: const u8[:] = "",
+    out_start_pos: i64 = 0,
 ) -> CompressError {
     loop {
         let sym, ok_sym = decode_huffman_symbol(r, lit_table);
@@ -294,14 +298,21 @@ fn decode_block_codes<B>(
                 match_dist += dxval as i32;
             }
 
-            guard (match_dist as i64) <= out.len else { return CompressError.DistanceOutOfBounds; }
-
-            // Copy match bytes backwards from output buffer (supporting overlapping runs)
-            let copy_dist = match_dist as i64;
+            let dist_i64 = match_dist as i64;
             for i in match_len {
-                let back_idx = out.len - copy_dist;
-                let b = out[back_idx];
-                out.push(b);
+                let curr_decoded = out.len - out_start_pos;
+                if dist_i64 <= curr_decoded {
+                    let back_idx = out.len - dist_i64;
+                    let b = out[back_idx];
+                    out.push(b);
+                } else {
+                    guard dict.len > 0 else { return CompressError.DistanceOutOfBounds; }
+                    let dict_back = dist_i64 - curr_decoded;
+                    guard dict_back <= dict.len else { return CompressError.DistanceOutOfBounds; }
+                    let dict_idx = dict.len - dict_back;
+                    let b = dict[dict_idx];
+                    out.push(b);
+                }
             }
         }
     }
@@ -310,6 +321,12 @@ fn decode_block_codes<B>(
 
 // Inflates RFC 1951 raw deflate stream from src into out.
 fn inflate<B>(src: const u8[:], out: B&) -> CompressError {
+    return inflate_with_dict(src, out, "");
+}
+
+// Inflates RFC 1951 raw deflate stream from src into out with a preset dictionary.
+fn inflate_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:]) -> CompressError {
+    let out_start_pos = out.len;
     var r = new_bit_reader(src);
     var is_final: u32 = 0;
 
@@ -354,7 +371,7 @@ fn inflate<B>(src: const u8[:], out: B&) -> CompressError {
             var dist_lens: i32[32] = [5; 32];
             construct_huffman_table(dist_lens[..], 32, fixed_dist);
 
-            let err = decode_block_codes(r, fixed_lit, fixed_dist, out);
+            let err = decode_block_codes(r, fixed_lit, fixed_dist, out, dict, out_start_pos);
             guard err == CompressError.None else { return err; }
         } else if btype == 2 {
             // Dynamic Huffman block
@@ -432,7 +449,7 @@ fn inflate<B>(src: const u8[:], out: B&) -> CompressError {
             let res_dist = construct_huffman_table(lit_dist_lens[nlen..nlen + ndist], ndist, dyn_dist);
             guard res_dist >= 0 else { return CompressError.CodeLengthsOverSubscribed; }
 
-            let err = decode_block_codes(r, dyn_lit, dyn_dist, out);
+            let err = decode_block_codes(r, dyn_lit, dyn_dist, out, dict, out_start_pos);
             guard err == CompressError.None else { return err; }
         } else {
             return CompressError.InvalidBlockType;
@@ -440,6 +457,240 @@ fn inflate<B>(src: const u8[:], out: B&) -> CompressError {
     }
 
     return CompressError.None;
+}
+
+// ---- dynamic huffman builder (moffat-katajainen in-place algorithm) --------
+
+struct SymFreq {
+    key: i32 = 0,
+    sym: i32 = 0,
+}
+
+// In-place minimum redundancy code length calculation (Alistair Moffat & Jyrki Katajainen, 1996).
+// Runs in O(N) time without tree pointer allocations.
+fn calculate_minimum_redundancy(A: SymFreq[>..]&, n: i32) {
+    if n <= 0 { return; }
+    if n == 1 {
+        A[0].key = 1;
+        return;
+    }
+    A[0].key += A[1].key;
+    var root: i32 = 0;
+    var leaf: i32 = 2;
+    for next_idx in 1..(n - 1) {
+        if leaf >= n || A[root].key < A[leaf].key {
+            A[next_idx].key = A[root].key;
+            A[root].key = next_idx;
+            root++;
+        } else {
+            A[next_idx].key = A[leaf].key;
+            leaf++;
+        }
+        if leaf >= n || (root < next_idx && A[root].key < A[leaf].key) {
+            A[next_idx].key += A[root].key;
+            A[root].key = next_idx;
+            root++;
+        } else {
+            A[next_idx].key += A[leaf].key;
+            leaf++;
+        }
+    }
+    A[n - 2].key = 0;
+    var back_idx = n - 3;
+    while back_idx >= 0 {
+        let parent = A[back_idx].key;
+        A[back_idx].key = A[parent].key + 1;
+        back_idx--;
+    }
+    var avbl: i32 = 1;
+    var used: i32 = 0;
+    var dpth: i32 = 0;
+    root = n - 2;
+    var next_slot = n - 1;
+    while avbl > 0 {
+        while root >= 0 && A[root].key == dpth {
+            used++;
+            root--;
+        }
+        while avbl > used {
+            A[next_slot].key = dpth;
+            next_slot--;
+            avbl--;
+        }
+        avbl = 2 * used;
+        dpth++;
+        used = 0;
+    }
+}
+
+// Limits canonical Huffman code table max code size to max_code_size (<= 15 bits).
+fn enforce_max_code_size(num_codes: i32[33]&, code_list_len: i32, max_code_size: i32) {
+    if code_list_len <= 1 { return; }
+    var idx = max_code_size + 1;
+    while idx <= 32 {
+        num_codes[max_code_size] += num_codes[idx];
+        num_codes[idx] = 0;
+        idx++;
+    }
+    var total: u32 = 0;
+    var i = max_code_size;
+    while i > 0 {
+        total += (num_codes[i] as u32) << ((max_code_size - i) as u32);
+        i--;
+    }
+    let target = (1 as u32) << (max_code_size as u32);
+    while total != target {
+        num_codes[max_code_size]--;
+        var j = max_code_size - 1;
+        while j > 0 {
+            if num_codes[j] > 0 {
+                num_codes[j]--;
+                num_codes[j + 1] += 2;
+                break;
+            }
+            j--;
+        }
+        total--;
+    }
+}
+
+// Builds canonical Huffman bit lengths and bit-reversed codes for a frequency table.
+fn build_huffman_codes(
+    counts: const i32[:],
+    max_code_size: i32,
+    code_lens: i32[>..]&,
+    codes: u16[>..]&,
+) {
+    code_lens.clear();
+    codes.clear();
+    for i in counts.len {
+        code_lens.push(0);
+        codes.push(0);
+    }
+
+    var syms: SymFreq[>..] = [];
+    for i in counts.len {
+        if counts[i] > 0 {
+            syms.push(SymFreq { key: counts[i], sym: i as i32 });
+        }
+    }
+
+    if syms.len == 0 {
+        return;
+    }
+    if syms.len == 1 {
+        let s = syms[0].sym as i64;
+        code_lens[s] = 1;
+        codes[s] = 0;
+        return;
+    }
+
+    sort(syms) { x, y => x.key < y.key };
+    calculate_minimum_redundancy(syms, syms.len as i32);
+
+    var num_codes: i32[33] = [0; 33];
+    for &s in syms {
+        if s.key >= 0 && s.key <= 32 {
+            num_codes[s.key]++;
+        }
+    }
+
+    enforce_max_code_size(num_codes, syms.len as i32, max_code_size);
+
+    var cur_sym_idx = syms.len as i32;
+    for len_val in 1..(max_code_size + 1) {
+        var count = num_codes[len_val];
+        while count > 0 {
+            cur_sym_idx--;
+            let target_sym = syms[cur_sym_idx as i64].sym as i64;
+            code_lens[target_sym] = len_val;
+            count--;
+        }
+    }
+
+    var next_code: u32[33] = [0; 33];
+    var running_code: u32 = 0;
+    for len_val in 1..(max_code_size + 1) {
+        running_code = (running_code + (num_codes[len_val - 1] as u32)) << 1;
+        next_code[len_val] = running_code;
+    }
+
+    for i in counts.len {
+        let l = code_lens[i];
+        if l > 0 {
+            let c = next_code[l];
+            next_code[l]++;
+            var rev: u16 = 0;
+            for k in l {
+                if ((c >> ((l - 1 - k) as u32)) & 1) != 0 {
+                    rev |= (1 as u16) << (k as u16);
+                }
+            }
+            codes[i] = rev;
+        }
+    }
+}
+
+// Run-length encoded representation of literal/distance code lengths.
+struct RleToken {
+    sym: i32 = 0,
+    extra_val: u32 = 0,
+    extra_bits: i32 = 0,
+}
+
+fn rle_encode_lengths(lens: const i32[:], out: RleToken[>..]&) {
+    out.clear();
+    var i: i64 = 0;
+    let n = lens.len;
+    while i < n {
+        let cur = lens[i];
+        var run: i64 = 1;
+        while i + run < n && lens[i + run] == cur {
+            run++;
+        }
+        if cur == 0 {
+            while run >= 11 {
+                let take = if run < 138 { run } else { 138 };
+                out.push(RleToken { sym: 18, extra_val: (take - 11) as u32, extra_bits: 7 });
+                run -= take;
+                i += take;
+            }
+            if run >= 3 {
+                out.push(RleToken { sym: 17, extra_val: (run - 3) as u32, extra_bits: 3 });
+                i += run;
+            } else {
+                for k in run {
+                    out.push(RleToken { sym: 0, extra_val: 0, extra_bits: 0 });
+                    i++;
+                }
+            }
+        } else {
+            out.push(RleToken { sym: cur, extra_val: 0, extra_bits: 0 });
+            i++;
+            run--;
+            while run >= 3 {
+                let take = if run < 6 { run } else { 6 };
+                out.push(RleToken { sym: 16, extra_val: (take - 3) as u32, extra_bits: 2 });
+                run -= take;
+                i += take;
+            }
+            for k in run {
+                out.push(RleToken { sym: cur, extra_val: 0, extra_bits: 0 });
+                i++;
+            }
+        }
+    }
+}
+
+// Flat LZ77 token representing an uncompressed literal or a length-distance match.
+struct LzToken {
+    is_match: bool = false,
+    sym: u16 = 0,
+    extra_val: u16 = 0,
+    extra_bits: u8 = 0,
+    dist_sym: u8 = 0,
+    dist_extra_val: u16 = 0,
+    dist_extra_bits: u8 = 0,
 }
 
 // ---- compressor: rfc 1951 deflate ------------------------------------------
@@ -468,11 +719,21 @@ fn find_distance_symbol(d: i32) -> i32, i32, u32 {
     return 0, 0, 0;
 }
 
-// Compresses src into out using RFC 1951 Deflate.
+// Compresses src into out as an RFC 1951 Deflate block.
 // - level == 0: Stored uncompressed blocks.
-// - level >= 1: LZ77 match-finding + Fixed Huffman coding.
-fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
-    var w = BitWriter { bit_buf: 0, bit_count: 0 };
+// - level 1..5: Fast LZ77 match-finding + Fixed Huffman coding.
+// - level >= 6: Full LZ77 match-finding + Dynamic Huffman coding (optimal trees).
+// - is_final: Sets BFINAL bit (1 if last block, 0 if streaming intermediate).
+// - dict: Optional pre-shared dictionary (up to 32 KB).
+fn deflate_block<B>(
+    src: const u8[:],
+    out: B&,
+    w: BitWriter&,
+    level: i32 = 6,
+    is_final: bool = true,
+    dict: const u8[:] = "",
+) -> bool {
+    let bfinal_bit: u32 = if is_final { 1 } else { 0 };
 
     if level == 0 {
         // Stored block mode
@@ -480,7 +741,7 @@ fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
         while offset < src.len || src.len == 0 {
             let remaining = src.len - offset;
             let block_size = if remaining < 65535 { remaining } else { 65535 };
-            let is_last = (offset + block_size >= src.len);
+            let is_last = is_final && (offset + block_size >= src.len);
 
             // BFINAL (1 bit) + BTYPE 00 (2 bits)
             write_bits(w, if is_last { 1 } else { 0 }, 1, out);
@@ -503,22 +764,38 @@ fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
         return true;
     }
 
-    // Level >= 1: LZ77 + Fixed Huffman encoding
-    // BFINAL = 1 (1 bit) | BTYPE = 01 (2 bits) -> 3 bits: 1 | (1 << 1) = 3
-    write_bits(w, 3, 3, out);
+    // Pass 1: LZ77 match finder and token accumulation
+    var tokens: LzToken[>..] = [];
+    var lit_count: i32[288] = [0; 288];
+    var dist_count: i32[32] = [0; 32];
 
     var head: i32[4096] = [-1; 4096];
     var prev: i32[32768] = [-1; 32768];
 
-    var pos: i64 = 0;
-    while pos < src.len {
+    let dict_slice = if dict.len > 32768 { dict[dict.len - 32768..] } else { dict };
+    let dict_len = dict_slice.len;
+    let total_len = dict_len + src.len;
+
+    if dict_len >= 3 {
+        for p in (dict_len - 2) {
+            let b0 = dict_slice[p] as i32;
+            let b1 = dict_slice[p + 1] as i32;
+            let b2 = dict_slice[p + 2] as i32;
+            let h = ((b0 << 8) ^ (b1 << 4) ^ b2) & 4095;
+            prev[p & 32767] = head[h];
+            head[h] = p as i32;
+        }
+    }
+
+    var pos: i64 = dict_len;
+    while pos < total_len {
         var best_len: i32 = 0;
         var best_dist: i32 = 0;
 
-        if pos + 2 < src.len {
-            let b0 = src[pos] as i32;
-            let b1 = src[pos + 1] as i32;
-            let b2 = src[pos + 2] as i32;
+        if pos + 2 < total_len {
+            let b0 = (if pos < dict_len { dict_slice[pos] } else { src[pos - dict_len] }) as i32;
+            let b1 = (if pos + 1 < dict_len { dict_slice[pos + 1] } else { src[pos + 1 - dict_len] }) as i32;
+            let b2 = (if pos + 2 < dict_len { dict_slice[pos + 2] } else { src[pos + 2 - dict_len] }) as i32;
             let h = ((b0 << 8) ^ (b1 << 4) ^ b2) & 4095;
 
             var cand = head[h];
@@ -533,10 +810,15 @@ fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
                 if dist > 32768 || dist <= 0 { break; }
 
                 var l: i32 = 0;
-                let rem = (src.len - pos) as i32;
+                let rem = (total_len - pos) as i32;
                 let max_l = if rem < 258 { rem } else { 258 };
 
-                while l < max_l && src[pos + (l as i64)] == src[(cand as i64) + (l as i64)] {
+                while l < max_l {
+                    let p_s = pos + (l as i64);
+                    let p_c = (cand as i64) + (l as i64);
+                    let byte_s = if p_s < dict_len { dict_slice[p_s] } else { src[p_s - dict_len] };
+                    let byte_c = if p_c < dict_len { dict_slice[p_c] } else { src[p_c - dict_len] };
+                    if byte_s != byte_c { break; }
                     l++;
                 }
 
@@ -553,27 +835,27 @@ fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
 
         if best_len >= 3 {
             let sym, xbits, xval = find_length_symbol(best_len);
-            let lit_code = FIXED_LIT_CODE[sym] as u32;
-            let lit_nbits = FIXED_LIT_LEN[sym] as i32;
-            write_bits(w, lit_code, lit_nbits, out);
-            if xbits > 0 {
-                write_bits(w, xval, xbits, out);
-            }
-
             let dsym, dxbits, dxval = find_distance_symbol(best_dist);
-            let dist_code = FIXED_DIST_CODE[dsym] as u32;
-            write_bits(w, dist_code, 5, out);
-            if dxbits > 0 {
-                write_bits(w, dxval, dxbits, out);
-            }
 
-            // Insert skipped positions into hash chain
+            tokens.push(LzToken {
+                is_match: true,
+                sym: sym as u16,
+                extra_val: xval as u16,
+                extra_bits: xbits as u8,
+                dist_sym: dsym as u8,
+                dist_extra_val: dxval as u16,
+                dist_extra_bits: dxbits as u8,
+            });
+
+            lit_count[sym]++;
+            dist_count[dsym]++;
+
             for k in 1..best_len {
                 let skip_pos = pos + (k as i64);
-                if skip_pos + 2 < src.len {
-                    let sb0 = src[skip_pos] as i32;
-                    let sb1 = src[skip_pos + 1] as i32;
-                    let sb2 = src[skip_pos + 2] as i32;
+                if skip_pos + 2 < total_len {
+                    let sb0 = (if skip_pos < dict_len { dict_slice[skip_pos] } else { src[skip_pos - dict_len] }) as i32;
+                    let sb1 = (if skip_pos + 1 < dict_len { dict_slice[skip_pos + 1] } else { src[skip_pos + 1 - dict_len] }) as i32;
+                    let sb2 = (if skip_pos + 2 < dict_len { dict_slice[skip_pos + 2] } else { src[skip_pos + 2 - dict_len] }) as i32;
                     let sh = ((sb0 << 8) ^ (sb1 << 4) ^ sb2) & 4095;
                     prev[skip_pos & 32767] = head[sh];
                     head[sh] = skip_pos as i32;
@@ -581,19 +863,181 @@ fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
             }
             pos += best_len as i64;
         } else {
-            let b = src[pos] as i32;
-            let lit_code = FIXED_LIT_CODE[b] as u32;
-            let lit_nbits = FIXED_LIT_LEN[b] as i32;
-            write_bits(w, lit_code, lit_nbits, out);
+            let b = src[pos - dict_len] as u16;
+            tokens.push(LzToken {
+                is_match: false,
+                sym: b,
+                extra_val: 0,
+                extra_bits: 0,
+                dist_sym: 0,
+                dist_extra_val: 0,
+                dist_extra_bits: 0,
+            });
+            lit_count[b as i64]++;
             pos++;
         }
     }
 
-    // Emit End-of-Block (EOB 256)
-    let eob_code = FIXED_LIT_CODE[256] as u32;
-    let eob_nbits = FIXED_LIT_LEN[256] as i32;
-    write_bits(w, eob_code, eob_nbits, out);
-    flush_bits(w, out);
+    // End-of-Block token (EOB 256)
+    tokens.push(LzToken {
+        is_match: false,
+        sym: 256,
+        extra_val: 0,
+        extra_bits: 0,
+        dist_sym: 0,
+        dist_extra_val: 0,
+        dist_extra_bits: 0,
+    });
+    lit_count[256]++;
 
+    // If level 1..5 or tiny payload (< 128 bytes), emit fast Fixed Huffman
+    if level < 6 || src.len < 128 {
+        write_bits(w, bfinal_bit | (1 << 1), 3, out);
+
+        for &tok in tokens {
+            if tok.is_match {
+                let sym_idx = tok.sym as i64;
+                let lit_code = FIXED_LIT_CODE[sym_idx] as u32;
+                let lit_nbits = FIXED_LIT_LEN[sym_idx] as i32;
+                write_bits(w, lit_code, lit_nbits, out);
+                if tok.extra_bits > 0 {
+                    write_bits(w, tok.extra_val as u32, tok.extra_bits as i32, out);
+                }
+
+                let dsym_idx = tok.dist_sym as i64;
+                let dist_code = FIXED_DIST_CODE[dsym_idx] as u32;
+                write_bits(w, dist_code, 5, out);
+                if tok.dist_extra_bits > 0 {
+                    write_bits(w, tok.dist_extra_val as u32, tok.dist_extra_bits as i32, out);
+                }
+            } else {
+                let sym_idx = tok.sym as i64;
+                let lit_code = FIXED_LIT_CODE[sym_idx] as u32;
+                let lit_nbits = FIXED_LIT_LEN[sym_idx] as i32;
+                write_bits(w, lit_code, lit_nbits, out);
+            }
+        }
+        if is_final {
+            flush_bits(w, out);
+        }
+        return true;
+    }
+
+    // Level >= 6: Dynamic Huffman Blocks (RFC 1951 BTYPE 10)
+    var total_dists: i32 = 0;
+    for i in 32 { total_dists += dist_count[i]; }
+    if total_dists == 0 {
+        dist_count[0] = 1;
+    }
+
+    var dyn_lit_lens: i32[>..] = [];
+    var dyn_lit_codes: u16[>..] = [];
+    build_huffman_codes(lit_count[..], 15, dyn_lit_lens, dyn_lit_codes);
+
+    var dyn_dist_lens: i32[>..] = [];
+    var dyn_dist_codes: u16[>..] = [];
+    build_huffman_codes(dist_count[..], 15, dyn_dist_lens, dyn_dist_codes);
+
+    var nlen: i32 = 286;
+    while nlen > 257 && dyn_lit_lens[(nlen - 1) as i64] == 0 {
+        nlen--;
+    }
+
+    var ndist: i32 = 30;
+    while ndist > 1 && dyn_dist_lens[(ndist - 1) as i64] == 0 {
+        ndist--;
+    }
+
+    var combined_lens: i32[>..] = [];
+    for i in nlen {
+        combined_lens.push(dyn_lit_lens[i as i64]);
+    }
+    for j in ndist {
+        combined_lens.push(dyn_dist_lens[j as i64]);
+    }
+
+    var rle_tokens: RleToken[>..] = [];
+    rle_encode_lengths(combined_lens[..], rle_tokens);
+
+    var code_len_counts: i32[19] = [0; 19];
+    for &rt in rle_tokens {
+        if rt.sym >= 0 && rt.sym < 19 {
+            code_len_counts[rt.sym]++;
+        }
+    }
+
+    var hclen_lens: i32[>..] = [];
+    var hclen_codes: u16[>..] = [];
+    build_huffman_codes(code_len_counts[..], 7, hclen_lens, hclen_codes);
+
+    var ncode: i32 = 19;
+    while ncode > 4 && hclen_lens[CODE_LENGTH_ORDER[(ncode - 1) as i64] as i64] == 0 {
+        ncode--;
+    }
+
+    write_bits(w, bfinal_bit | (2 << 1), 3, out);
+    write_bits(w, (nlen - 257) as u32, 5, out); // HLIT
+    write_bits(w, (ndist - 1) as u32, 5, out);   // HDIST
+    write_bits(w, (ncode - 4) as u32, 4, out);   // HCLEN
+
+    for i in ncode {
+        let order_sym = CODE_LENGTH_ORDER[i as i64] as i64;
+        let clen_val = hclen_lens[order_sym] as u32;
+        write_bits(w, clen_val, 3, out);
+    }
+
+    for &rt in rle_tokens {
+        let sym_idx = rt.sym as i64;
+        let c = hclen_codes[sym_idx] as u32;
+        let l = hclen_lens[sym_idx];
+        write_bits(w, c, l, out);
+        if rt.extra_bits > 0 {
+            write_bits(w, rt.extra_val, rt.extra_bits, out);
+        }
+    }
+
+    for &tok in tokens {
+        if tok.is_match {
+            let sym_idx = tok.sym as i64;
+            let c = dyn_lit_codes[sym_idx] as u32;
+            let l = dyn_lit_lens[sym_idx];
+            write_bits(w, c, l, out);
+            if tok.extra_bits > 0 {
+                write_bits(w, tok.extra_val as u32, tok.extra_bits as i32, out);
+            }
+
+            let dsym_idx = tok.dist_sym as i64;
+            let dc = dyn_dist_codes[dsym_idx] as u32;
+            let dl = dyn_dist_lens[dsym_idx];
+            write_bits(w, dc, dl, out);
+            if tok.dist_extra_bits > 0 {
+                write_bits(w, tok.dist_extra_val as u32, tok.dist_extra_bits as i32, out);
+            }
+        } else {
+            let sym_idx = tok.sym as i64;
+            let c = dyn_lit_codes[sym_idx] as u32;
+            let l = dyn_lit_lens[sym_idx];
+            write_bits(w, c, l, out);
+        }
+    }
+
+    if is_final {
+        flush_bits(w, out);
+    }
     return true;
+}
+
+// Compresses src into out using RFC 1951 Deflate.
+// - level == 0: Stored uncompressed blocks.
+// - level 1..5: Fast LZ77 match-finding + Fixed Huffman coding.
+// - level >= 6: Full LZ77 match-finding + Dynamic Huffman coding (optimal trees).
+fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
+    var w = BitWriter { bit_buf: 0, bit_count: 0 };
+    return deflate_block(src, out, w, level, true, "");
+}
+
+// Compresses src into out using RFC 1951 Deflate with a preset dictionary.
+fn deflate_with_dict<B>(src: const u8[:], out: B&, level: i32, dict: const u8[:]) -> bool {
+    var w = BitWriter { bit_buf: 0, bit_count: 0 };
+    return deflate_block(src, out, w, level, true, dict);
 }
