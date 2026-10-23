@@ -223,34 +223,56 @@ fn run_file_url_example() {
 
 ## Verification & Test Suite
 
-The test suite covers full RFC specifications, Chromium edge cases, and property-based randomized testing:
+The test suite covers full RFC specifications, Chromium edge cases, audit regressions, and property-based randomized testing across **2,150+ checks**:
+
+### Test Taxonomy
+
+All verification suites live in `tests/` and adhere to a strict, scalable `<subsystem>_<topic>_test.goose` convention:
+
+| Subsystem Prefix | Scope & Responsibilities | Example Files |
+|---|---|---|
+| `core_*` | Core runtime primitives (time, calendar, URL, sync, concurrency, actors) | `core_time_test.goose`, `core_url_test.goose`, `core_sync_test.goose` |
+| `cookie_*` | RFC 6265bis engine, WPT clean-room compliance, and 1..16 edge vectors | `cookie_engine_test.goose`, `cookie_vectors_test.goose` |
+| `app_*` | Client session pipelines, redirect FSM, profiles, request/response | `app_session_test.goose` |
+| `sec_*` | Security regressions, CVE validations, threat model assertions | `sec_cve_test.goose`, `sec_protocol_test.goose`, `sec_cookie_test.goose`, `sec_concurrency_test.goose` |
+| *Future: `proto_*`* | Wire protocols (HTTP/1.1, HTTP/2, HTTP/3, QUIC, WebSocket) | `proto_h1_test.goose`, `proto_h2_test.goose`, `proto_quic_test.goose` |
+| *Future: `compress_*`* | Compression codecs (Deflate/zlib, Brotli, Zstandard) | `compress_zstd_test.goose`, `compress_brotli_test.goose` |
+| *Future: `cache_*`* | RFC 9111 HTTP caching engine & revalidation | `cache_engine_test.goose` |
+
+### Suite Breakdown
 
 | Test Suite | File | Focus Areas | Checks |
 |---|---|---|---|
-| **Session & URL Suite** | `tests/session_suite.goose` | WHATWG URL, IPv6 RFC 5952, Swift File URLs & Path API, PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, 3-tier SSRF | 153 checks |
-| **Cookie Vectors** | `tests/max_cookie_vectors.goose` | Matrices 1..16 (Lexer limits, CTL sweep, PSL, prefixes, SameSite, CHIPS, 6-round GC, SQLite v24, clock skew, PRNG fuzzer) | 1,126 checks |
-| **Clean Room Suite** | `tests/cookie_suite.goose` | WPT compliance, domain quotas, eviction ordering, persistence keys | 78 checks |
-| **Time & Calendar** | `tests/time_suite.goose` | Hinnant calendar math, leap years, ReDoS protection, RFC 3339, RFC 9110 | 334 checks |
+| **Core Time & Calendar** | `tests/core_time_test.goose` | Hinnant calendar math, leap years, ReDoS protection, RFC 3339, RFC 9110 HTTP-date | 334 checks |
+| **Core WHATWG URL** | `tests/core_url_test.goose` | WHATWG URL, IPv6 RFC 5952, Swift File URLs & Path API, dual-mode resolution, UrlView zero-copy | 357 checks |
+| **Core Concurrency** | `tests/core_sync_test.goose` | BatonMutex, Semaphore, CyclicBarrier, CSP patterns, Actors, OTP supervision trees | 68 checks |
+| **Clean Room Cookie Jar** | `tests/cookie_engine_test.goose` | WPT compliance, domain quotas, eviction ordering, persistence keys | 78 checks |
+| **Cookie Edge Matrices** | `tests/cookie_vectors_test.goose` | Matrices 1..16 (Lexer limits, CTL sweep, PSL, prefixes, SameSite, CHIPS, 6-round GC, SQLite v24, clock skew, PRNG fuzzer) | 1,113 checks |
+| **App Client Session** | `tests/app_session_test.goose` | PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, SSRF Guard | 80 checks |
+| **CVE Security Regression** | `tests/sec_cve_test.goose` | CVE-2021-28918/29922 (octal/hex IP SSRF), CVE-2024-24790 (RFC 6761 localhost), CVE-2023-26159 (CRLF headers), CVE-2022-27776 (port leaks), CVE-2023-27534 (URL/query ambiguity), CVE-2016-8616 (PSL import) | 35 checks |
+| **Protocol Security** | `tests/sec_protocol_test.goose` | IPv4-mapped IPv6 SSRF defense, HTTPS->HTTP scheme downgrade header stripping, file URL drive normalization | 36 checks |
+| **Cookie Chaos Defense** | `tests/sec_cookie_test.goose` | RFC 6265bis §5.6 cookie shadowing, case-insensitive prefixes (`__Host-`, `__Secure-`), Max-Age 400-day capping | 38 checks |
+| **Concurrency Hardening** | `tests/sec_concurrency_test.goose` | WaitGroup capacity limits, bounded channel timeouts, worker crash containment & supervisor restarts | 18 checks |
+| **Total** | **10 verification suites** | | **2,157 checks** |
 
 ### Running the Tests
 
-To verify syntax and run the verification suites:
+To typecheck the entire library and run verification suites:
 
 ```powershell
 # Typecheck and compilation validation
 goose check wing.goose
 
-# Run Client Session verification suite (URL, Redirect FSM, SiteForCookies, SSRF Guard)
-goose run tests/session_suite.goose
+# Run individual test suites via compilation (supports threads & JIT)
+goose build -o tests/core_time_test.exe tests/core_time_test.goose; .\tests\core_time_test.exe
+goose build -o tests/core_url_test.exe tests/core_url_test.goose; .\tests\core_url_test.exe
+goose build -o tests/cookie_engine_test.exe tests/cookie_engine_test.goose; .\tests\cookie_engine_test.exe
+goose build -o tests/cookie_vectors_test.exe tests/cookie_vectors_test.goose; .\tests\cookie_vectors_test.exe
+goose build -o tests/app_session_test.exe tests/app_session_test.goose; .\tests\app_session_test.exe
+goose build -o tests/sec_cve_test.exe tests/sec_cve_test.goose; .\tests\sec_cve_test.exe
 
-# Run core cookie verification matrices (14 test modules, 1,126 checks)
-goose run tests/max_cookie_vectors.goose
-
-# Run Clean Room CookieMonster test suite
-goose run tests/cookie_suite.goose
-
-# Run standard time & calendar test suite
-goose run tests/time_suite.goose
+# Or run all 10 suites via automated script
+.\scripts\test_all.ps1
 
 # Run end-to-end demonstrations
 goose run examples/unified_demo.goose
