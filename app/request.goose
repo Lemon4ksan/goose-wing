@@ -102,31 +102,32 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
 // ---- ufcs request mutators -------------------------------------------------
 
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
-    let is_sens = is_heuristic_sensitive_header(name);
+    let hdr = make_header(name, value);
     for &header_entry in req.headers {
-        if eq_ascii_fold(header_entry.name[..], name) {
+        if eq_ascii_fold(header_entry.name[..], hdr.name[..]) {
             header_entry.value.clear();
-            header_entry.value.append(value);
-            header_entry.is_sensitive = is_sens;
+            header_entry.value.append(hdr.value[..]);
+            header_entry.is_sensitive = hdr.is_sensitive;
             return;
         }
     }
     if req.headers.len < 32 {
-        req.headers.push(make_header(name, value, is_sens));
+        req.headers.push(hdr);
     }
 }
 
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
+    let hdr = make_header(name, value, true);
     for &header_entry in req.headers {
-        if eq_ascii_fold(header_entry.name[..], name) {
+        if eq_ascii_fold(header_entry.name[..], hdr.name[..]) {
             header_entry.value.clear();
-            header_entry.value.append(value);
+            header_entry.value.append(hdr.value[..]);
             header_entry.is_sensitive = true;
             return;
         }
     }
     if req.headers.len < 32 {
-        req.headers.push(make_header(name, value, true));
+        req.headers.push(hdr);
     }
 }
 

@@ -13,6 +13,7 @@ namespace wing;
 
 import std;
 import core.time;
+import core.url;
 import cookie.constants;
 import cookie.canonical;
 import cookie.psl;
@@ -121,6 +122,21 @@ struct CanonicalCookieURL {
 // Parses an arbitrary HTTP/HTTPS URL into its CanonicalCookieURL components.
 fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     var parsed_url = CanonicalCookieURL { .. };
+    let parsed = new_url(raw_url);
+    if parsed.valid {
+        parsed_url.scheme.append(scheme(parsed));
+        parsed_url.is_secure = is_secure_scheme(parsed);
+        let h_str = hostname(parsed);
+        let clean_h = if h_str.len > 2 && h_str[0] == '[' && h_str[h_str.len - 1] == ']' { h_str[1..h_str.len - 1] } else { h_str };
+        parsed_url.host.append(clean_h);
+        to_lower(parsed_url.host[..]);
+        parsed_url.path.clear();
+        let p_str = pathname(parsed);
+        parsed_url.path.append(if p_str.len > 0 { p_str } else { "/" });
+        parsed_url.port = effective_port(parsed);
+        return parsed_url;
+    }
+
     var rest_url = raw_url;
 
     if starts_with(rest_url, "https://") {

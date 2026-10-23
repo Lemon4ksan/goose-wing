@@ -59,34 +59,84 @@ fn is_private_ipv4_octets(octet0: i32, octet1: i32) -> bool {
     return false;
 }
 
-fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
-    var dot_count = 0;
-    var octets: i32[4] = [0, 0, 0, 0];
-    var octet_idx = 0;
-    var current_num = 0;
-    var digits_count = 0;
+fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
+    guard part.len > 0 else { return 0, false; }
+    var base: u64 = 10;
+    var start_idx = 0;
+    if part.len >= 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
+        base = 16;
+        start_idx = 2;
+        guard part.len > 2 else { return 0, false; }
+    } else if part.len >= 2 && part[0] == '0' {
+        base = 8;
+        start_idx = 1;
+    }
 
-    for char_byte in clean_ip {
-        if char_byte == '.' {
-            if digits_count == 0 || current_num > 255 || octet_idx >= 3 { return false; }
-            octets[octet_idx] = current_num as i32;
-            octet_idx++;
-            current_num = 0;
-            digits_count = 0;
-            dot_count++;
-        } else if char_byte >= '0' && char_byte <= '9' {
-            current_num = current_num * 10 + (char_byte - '0');
-            digits_count++;
-            if digits_count > 3 { return false; }
+    var val: u64 = 0;
+    for i in start_idx..part.len {
+        let b = part[i];
+        let digit: u64 = if b >= '0' && b <= '9' { b - '0' }
+                         else if base == 16 && b >= 'a' && b <= 'f' { b - 'a' + 10 }
+                         else if base == 16 && b >= 'A' && b <= 'F' { b - 'A' + 10 }
+                         else { return 0, false; };
+        if digit >= base { return 0, false; }
+        val = val * base + digit;
+        if val > 0xFFFFFFFF { return 0, false; }
+    }
+    return val, true;
+}
+
+fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
+    guard clean_ip.len > 0 else { return false; }
+    var parts: u8[..32][..4] = [];
+    var cur: u8[..32] = [];
+    for b in clean_ip {
+        if b == '.' {
+            guard parts.len < 4 else { return false; }
+            parts.push(copy(cur));
+            cur.clear();
         } else {
-            return false;
+            if cur.len < 32 { cur.push(b); } else { return false; }
         }
     }
-    if dot_count != 3 || digits_count == 0 || current_num > 255 || octet_idx != 3 {
-        return false;
-    }
-    octets[3] = current_num as i32;
+    guard parts.len < 4 else { return false; }
+    parts.push(copy(cur));
 
+    let n = parts.len;
+    guard n >= 1 && n <= 4 else { return false; }
+
+    var nums: u64[4] = [0, 0, 0, 0];
+    for i in n {
+        let val, ok = parse_ipv4_part(parts[i][..]);
+        guard ok else { return false; }
+        nums[i] = val;
+    }
+
+    var ip_u32: u64 = 0;
+    if n == 1 {
+        guard nums[0] <= 0xFFFFFFFF else { return false; }
+        ip_u32 = nums[0];
+    } else if n == 2 {
+        guard nums[0] <= 0xFF && nums[1] <= 0xFFFFFF else { return false; }
+        ip_u32 = (nums[0] << 24) | nums[1];
+    } else if n == 3 {
+        guard nums[0] <= 0xFF && nums[1] <= 0xFF && nums[2] <= 0xFFFF else { return false; }
+        ip_u32 = (nums[0] << 24) | (nums[1] << 16) | nums[2];
+    } else if n == 4 {
+        guard nums[0] <= 0xFF && nums[1] <= 0xFF && nums[2] <= 0xFF && nums[3] <= 0xFF else { return false; }
+        ip_u32 = (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3];
+    }
+
+    octets[0] = ((ip_u32 >> 24) & 0xFF) as u8;
+    octets[1] = ((ip_u32 >> 16) & 0xFF) as u8;
+    octets[2] = ((ip_u32 >> 8) & 0xFF) as u8;
+    octets[3] = (ip_u32 & 0xFF) as u8;
+    return true;
+}
+
+fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
+    var octets: u8[4] = [0, 0, 0, 0];
+    guard parse_flexible_ipv4(clean_ip, octets) else { return false; }
     return is_private_ipv4_octets(octets[0], octets[1]);
 }
 
@@ -126,9 +176,35 @@ fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
     return is_private_ipv4_octets(octet0, octet1);
 }
 
+fn is_localhost_name(host: const u8[:]) -> bool {
+    if eq_ascii_fold(host, "localhost") || eq_ascii_fold(host, "localhost.") {
+        return true;
+    }
+    if ends_with(host, ".localhost") || ends_with(host, ".localhost.") {
+        return true;
+    }
+    return false;
+}
+
+fn parse_hex_u16(s: const u8[:]) -> i32 {
+    var val: i32 = 0;
+    for b in s {
+        let h = if b >= '0' && b <= '9' { (b - '0') as i32 }
+                else if b >= 'a' && b <= 'f' { (b - 'a' + 10) as i32 }
+                else if b >= 'A' && b <= 'F' { (b - 'A' + 10) as i32 }
+                else { break; };
+        val = (val << 4) | h;
+    }
+    return val;
+}
+
 // IP Literal Classification for RFC 1918, RFC 3927 (Link-Local / Cloud Metadata), Loopback
 fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     guard ip_str.len > 0 else { return false; }
+
+    if is_localhost_name(ip_str) {
+        return true;
+    }
 
     // Check IPv6 loopback and special ranges
     if ip_str == "::1" || ip_str == "[::1]" || ip_str == "::" || ip_str == "[::]" {
@@ -147,20 +223,63 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     }
     let norm_ip = if lower_buf.len > 0 { lower_buf[..] } else { clean_ip };
 
+    if is_localhost_name(norm_ip) {
+        return true;
+    }
+
     if norm_ip == "::1" || norm_ip == "::" {
         return true;
     }
 
-    if starts_with(norm_ip, "fc") || starts_with(norm_ip, "fd") || // Unique Local fc00::/7
-       starts_with(norm_ip, "fe8") || starts_with(norm_ip, "fe9") || // Link-local fe80::/10
-       starts_with(norm_ip, "fea") || starts_with(norm_ip, "feb") {
-        return true;
-    }
+    var has_colon = false;
+    for b in norm_ip { if b == ':' { has_colon = true; break; } }
 
-    // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh)
-    if starts_with(norm_ip, "::ffff:") {
-        let suffix = norm_ip[7..];
-        return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+    if has_colon {
+        var comp_buf: u8[..64] = [];
+        let ipv6_ok = parse_and_compress_ipv6(norm_ip, comp_buf);
+        let eff_ip = if ipv6_ok { comp_buf[..] } else { norm_ip };
+
+        if eff_ip == "::1" || eff_ip == "::" {
+            return true;
+        }
+
+        if starts_with(eff_ip, "fc") || starts_with(eff_ip, "fd") || // Unique Local fc00::/7
+           starts_with(eff_ip, "fe8") || starts_with(eff_ip, "fe9") || // Link-local fe80::/10
+           starts_with(eff_ip, "fea") || starts_with(eff_ip, "feb") {
+            return true;
+        }
+
+        // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh)
+        if starts_with(eff_ip, "::ffff:") {
+            let suffix = eff_ip[7..];
+            return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+        }
+
+        // IPv4-compatible IPv6 (::x.x.x.x or ::hhhh:hhhh)
+        if starts_with(eff_ip, "::") && !starts_with(eff_ip, "::ffff:") {
+            let suffix = eff_ip[2..];
+            return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+        }
+
+        // NAT64 well-known prefix 64:ff9b::/96
+        if starts_with(eff_ip, "64:ff9b::") {
+            let suffix = eff_ip[9..];
+            return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+        }
+
+        // 6to4 prefix 2002::/16
+        if starts_with(eff_ip, "2002:") {
+            let rem = eff_ip[5..];
+            var colon_idx = -1;
+            for i in rem.len { if rem[i] == ':' { colon_idx = i; break; } }
+            let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
+            let hex_val1 = parse_hex_u16(p1);
+            let o0 = (hex_val1 >> 8) & 0xFF;
+            let o1 = hex_val1 & 0xFF;
+            return is_private_ipv4_octets(o0, o1);
+        }
+
+        return false;
     }
 
     return is_private_ipv4(norm_ip);
@@ -486,10 +605,20 @@ fn build_effective_url(
     }
 
     if query_params.len > 0 {
+        var hash_pos = -1;
         var has_query_mark = false;
-        for char_byte in out {
-            if char_byte == '?' { has_query_mark = true; break; }
+        for scan_idx in out.len {
+            let b = out[scan_idx];
+            if b == '?' && hash_pos < 0 { has_query_mark = true; }
+            else if b == '#' && hash_pos < 0 { hash_pos = scan_idx; }
         }
+
+        var hash_buf: u8[..512] = [];
+        if hash_pos >= 0 {
+            hash_buf.append(out[hash_pos..]);
+            out.resize(hash_pos);
+        }
+
         for &query_item, param_idx in query_params {
             if param_idx == 0 && !has_query_mark {
                 out.push('?');
@@ -499,6 +628,10 @@ fn build_effective_url(
             out.append(query_item.key[..]);
             out.push('=');
             out.append(query_item.value[..]);
+        }
+
+        if hash_buf.len > 0 {
+            out.append(hash_buf[..]);
         }
     }
 }

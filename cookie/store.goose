@@ -557,6 +557,7 @@ fn populate_netscape_cookie_fields(
 fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCookie&) -> bool {
     var line = raw_line;
     guard line.len > 0 else { return false; }
+    if has_prohibited_cookie_ctl(line) { return false; }
 
     var is_httponly = false;
     if starts_with(line, "#HttpOnly_") {
@@ -584,6 +585,13 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
         line[tab_positions[5] + 1..],
         is_httponly
     );
+
+    if !cookie_ref.host_only && public_suffix_domain(cookie_ref.domain[..]) {
+        return false;
+    }
+    if cookie_ref.name.len + cookie_ref.value.len > K_MAX_COOKIE_NAME_VAL_LEN {
+        return false;
+    }
     return true;
 }
 

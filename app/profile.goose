@@ -34,14 +34,28 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
            eq_ascii_fold(name, "cookie") ||
            eq_ascii_fold(name, "x-api-key") ||
            eq_ascii_fold(name, "x-auth-token") ||
-           eq_ascii_fold(name, "x-access-token");
+           eq_ascii_fold(name, "x-access-token") ||
+           eq_ascii_fold(name, "x-signature-256") ||
+           eq_ascii_fold(name, "x-csrf-token") ||
+           eq_ascii_fold(name, "x-xsrf-token") ||
+           eq_ascii_fold(name, "www-authenticate") ||
+           eq_ascii_fold(name, "proxy-authenticate") ||
+           eq_ascii_fold(name, "x-amz-security-token");
+}
+
+fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
+    for b in src {
+        if b != '\r' && b != '\n' && b != 0 {
+            out.push(b);
+        }
+    }
 }
 
 fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> HeaderItem {
     let sens = is_sensitive || is_heuristic_sensitive_header(name);
     var header_item = HeaderItem { is_sensitive: sens, .. };
-    header_item.name.append(name);
-    header_item.value.append(value);
+    sanitize_header_bytes(name, header_item.name);
+    sanitize_header_bytes(value, header_item.value);
     return header_item;
 }
 

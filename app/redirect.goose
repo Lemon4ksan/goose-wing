@@ -112,6 +112,7 @@ struct RedirectInfo {
     insecure_scheme_was_upgraded: bool = false,
     is_cross_origin: bool = false,
     is_scheme_downgrade: bool = false,
+    is_port_changed: bool = false,
     is_cross_site_tainted: bool = false,
     clear_body: bool = false,
     error: RedirectError = RedirectError.None,
@@ -306,11 +307,13 @@ fn compute_redirect_info(
     // 4. HTTP Method Mutation & Body Clearing (RFC 9110 / WHATWG Fetch)
     mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
 
-    // 5. Origin and Scheme Comparison (CVE-2024-1968 defense)
+    // 5. Origin and Scheme Comparison (CVE-2024-1968, CVE-2022-27776 defense)
     let same_orig = is_same_origin_url(current_url, info.new_url);
     let is_downgrade = (scheme(current_url) == "https" && scheme(info.new_url) == "http");
+    let port_changed = effective_port(current_url) != effective_port(info.new_url);
     info.is_scheme_downgrade = is_downgrade;
     info.is_cross_origin = !same_orig || is_downgrade;
+    info.is_port_changed = port_changed;
 
     // 6. Referrer-Policy and Referrer Computation
     if response_referrer_policy_header.len > 0 {
@@ -421,7 +424,7 @@ fn sanitize_headers_on_redirect(
     // 2. Sensitive Header Stripping on Cross-Origin or Scheme Downgrade
     // Covers Authorization, Proxy-Authorization, X-API-Key, X-Auth-Token, X-Access-Token
     // Defends against CVE-2024-1968, CVE-2026-55553, CVE-2026-64684
-    if redirect_info.is_scheme_downgrade || (redirect_info.is_cross_origin && !trusted_location_forwarding) {
+    if redirect_info.is_scheme_downgrade || (redirect_info.is_cross_origin && (!trusted_location_forwarding || redirect_info.is_port_changed)) {
         remove_sensitive_headers(headers);
     }
 
@@ -434,6 +437,13 @@ fn sanitize_headers_on_redirect(
         remove_header_by_name(headers, "Content-Location");
         remove_header_by_name(headers, "Transfer-Encoding");
         remove_header_by_name(headers, "Digest");
+        remove_header_by_name(headers, "If-Match");
+        remove_header_by_name(headers, "If-None-Match");
+        remove_header_by_name(headers, "If-Modified-Since");
+        remove_header_by_name(headers, "If-Unmodified-Since");
+        remove_header_by_name(headers, "If-Range");
+        remove_header_by_name(headers, "Expect");
+        remove_header_by_name(headers, "TE");
     }
 
     // 4. Origin Header Sanitization (Mozilla #1444278 / WHATWG Fetch)

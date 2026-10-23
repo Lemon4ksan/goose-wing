@@ -663,8 +663,7 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
     var cleaned_endpoint: u8[..2048] = [];
     clean_input_string(endpoint, cleaned_endpoint);
     guard cleaned_endpoint.len > 0 else {
-        // Empty endpoint keeps base URL with fragment stripped
-        return resolve_reference(base_url, ""), UrlParseError.None;
+        return copy(base_url), UrlParseError.None;
     }
 
     let ep_str = cleaned_endpoint[..];
