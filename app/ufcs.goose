@@ -365,12 +365,38 @@ fn ::is_valid(view: const wing::UrlView&) -> bool { return wing::is_valid(view);
 // ---- concurrency & sync ufcs bridges ---------------------------------------
 
 fn ::add_worker(wg: wing::WaitGroup&, worker_id: i64) -> bool { return wing::add_worker(wg, worker_id); }
+fn ::worker_count(wg: const wing::WaitGroup&) -> i64 { return wing::worker_count(wg); }
 fn ::wait_all(wg: wing::WaitGroup&) -> bool { return wing::wait_all(wg); }
 fn ::wait_all(wg: wing::WaitGroup&, out_diagnostics: u8[>..]&) -> bool { return wing::wait_all(wg, out_diagnostics); }
 fn ::failed_count(wg: const wing::WaitGroup&) -> i64 { return wing::failed_count(wg); }
 
+fn ::acquire(sem: wing::Semaphore&) -> wing::SemPermit { return wing::acquire(sem); }
+fn ::try_acquire(sem: wing::Semaphore&) -> wing::SemPermit, bool { return wing::try_acquire(sem); }
+fn ::release(sem: wing::Semaphore&, permit: wing::SemPermit) -> bool { return wing::release(sem, permit); }
+
+fn ::count_down(latch: wing::CountDownLatch&) -> bool { return wing::count_down(latch); }
+fn ::latch_wait(latch: wing::CountDownLatch&) { wing::latch_wait(latch); }
+
+fn ::push_unordered(r: wing::Reassembler&, item: wing::ReassemblerItem) { wing::push_unordered(r, item); }
+fn ::pop_next_in_order(r: wing::Reassembler&) -> wing::ReassemblerItem, bool { return wing::pop_next_in_order(r); }
+fn ::pending_count(r: const wing::Reassembler&) -> i64 { return wing::pending_count(r); }
+
+fn ::stash(sb: wing::StashBuffer&, env: wing::StashedEnvelope) { wing::stash(sb, env); }
+fn ::unstash_all(sb: wing::StashBuffer&, out_pending: wing::StashedEnvelope[>..]&) -> i64 { return wing::unstash_all(sb, out_pending); }
+fn ::stash_count(sb: const wing::StashBuffer&) -> i64 { return wing::stash_count(sb); }
+fn ::is_empty(sb: const wing::StashBuffer&) -> bool { return wing::is_empty(sb); }
+
+fn ::push(mb: wing::PriorityMailbox&, priority: u32, payload_type: u16, val: i64) { wing::push(mb, priority, payload_type, val); }
+fn ::pop(mb: wing::PriorityMailbox&) -> wing::PriorityItem, bool { return wing::pop(mb); }
+fn ::count(mb: const wing::PriorityMailbox&) -> i64 { return wing::count(mb); }
+
 fn ::add_worker(sup: wing::Supervisor&, worker_id: i64) -> bool { return wing::add_worker(sup, worker_id); }
+fn ::add_child(sup: wing::Supervisor&, spec: wing::ChildSpec, worker_id: i64) -> bool { return wing::add_child(sup, spec, worker_id); }
+fn ::child_count(sup: const wing::Supervisor&) -> i64 { return wing::child_count(sup); }
 fn ::wait_all(sup: wing::Supervisor&) -> bool { return wing::wait_all(sup); }
 fn ::wait_all(sup: wing::Supervisor&, out_diagnostics: u8[>..]&) -> bool { return wing::wait_all(sup, out_diagnostics); }
 fn ::failed_count(sup: const wing::Supervisor&) -> i64 { return wing::failed_count(sup); }
 fn ::success_count(sup: const wing::Supervisor&) -> i64 { return wing::success_count(sup); }
+fn ::is_auto_shutdown(sup: const wing::Supervisor&) -> bool { return wing::is_auto_shutdown(sup); }
+fn ::should_restart_child(sup: const wing::Supervisor&, child_idx: i64, reason: const wing::ExitReason&) -> bool { return wing::should_restart_child(sup, child_idx, reason); }
+fn ::record_failure(sup: wing::Supervisor&, child_idx: i64, current_time_s: i64) -> bool { return wing::record_failure(sup, child_idx, current_time_s); }
