@@ -765,7 +765,7 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
     return Response { .. }, make_error(310, "redirect", "maximum redirect hops exceeded");
 }
 
-fn validate_mock_route_dns(route: const MockRoute&, guard_config: const SSRFGuardConfig&) -> RedirectError {
+fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SSRFGuardConfig&) -> RedirectError {
     if route.resolved_ips.len == 0 {
         return RedirectError.None;
     }
