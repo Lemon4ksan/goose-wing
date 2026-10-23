@@ -391,7 +391,7 @@ fn add_mock_resolved_ip(session: Session&, ip_str: const u8[:]) {
 }
 
 fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
-    var raw_hdr: u8[..512] = [];
+    var raw_hdr: u8[..2048] = [];
     raw_hdr.append(name);
     raw_hdr.push('=');
     raw_hdr.append(value);
@@ -419,7 +419,7 @@ fn build_effective_url(
     base_url: const u8[:],
     req_url: const u8[:],
     query_params: const QueryItem[:],
-    out: u8[..512]&
+    out: u8[..2048]&
 ) {
     out.clear();
     let parsed_base = new_url(base_url);
@@ -476,7 +476,7 @@ struct RequestExecutionContext {
     tainted_origin: bool = false,
     had_cross_site_hop: bool = false,
     cors_mode: bool = false,
-    current_referrer: u8[..512] = [],
+    current_referrer: u8[..2048] = [],
     current_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
     body: u8[>..] = [],
 }
@@ -552,7 +552,7 @@ fn prepare_hop_cookie_header(
 
     remove_header_by_name(ctx.headers, "Cookie");
     if matched_cookies.len > 0 {
-        var cookie_hdr_val: u8[..512] = [];
+        var cookie_hdr_val: u8[..2048] = [];
         format_cookie_header_value(cookie_hdr_val, matched_cookies[..]);
         if cookie_hdr_val.len > 0 && ctx.headers.len < 32 {
             ctx.headers.push(make_header("Cookie", cookie_hdr_val[..], true));
@@ -682,7 +682,7 @@ fn init_execution_context(session: const Session&, req: const Request&, parsed_i
 }
 
 fn execute_request(session: Session&, req: const Request&) -> Response, Error {
-    var raw_eff_url: u8[..512] = [];
+    var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
     let parsed_initial, parse_err = parse_url(raw_eff_url[..]);

@@ -107,7 +107,7 @@ struct RedirectInfo {
     new_method: u8[..16] = [],
     new_url: Url = Url { .. },
     new_site_for_cookies: SiteForCookies = SiteForCookies { .. },
-    new_referrer: u8[..512] = [],
+    new_referrer: u8[..2048] = [],
     new_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
     insecure_scheme_was_upgraded: bool = false,
     is_cross_origin: bool = false,
@@ -356,7 +356,7 @@ fn compute_new_referrer<B>(
     out.clear();
 
     // Strips username, password, and hash for referrer baseline
-    var clean_source: u8[..512] = [];
+    var clean_source: u8[..2048] = [];
     clean_source.append(scheme(source_url));
     clean_source.append("://");
     clean_source.append(host(source_url));

@@ -1069,6 +1069,61 @@ fn test_dual_mode_resolution_rfc_vs_endpoint(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// Case 6: Large & Dynamic URLs (UrlView and 2048-Byte Buffer)
+// ----------------------------------------------------------------------------
+fn test_dynamic_and_large_urls(t: wing::T&) {
+    t.run("Case 6.1: 2048-Byte Buffer for Large URLs with JWT Query") { sub =>
+        // Construct a 1200-byte URL with a large query token
+        var large_input: u8[>..] = [];
+        large_input.append("https://auth.company.internal/oauth/callback?code=abc&state=");
+        for i in 1000 {
+            large_input.push('x');
+        }
+        large_input.append("&session_id=12345#auth_success");
+
+        sub.assert_true(large_input.len > 1050, "Input is over 1050 bytes");
+
+        // Parses cleanly into Url (exceeding previous 512B cap)
+        let parsed_url = wing::new_url(large_input[..]);
+        sub.assert_true(parsed_url.valid, "Parsed large URL is valid");
+        sub.assert_bytes_eq(wing::scheme(parsed_url), "https", "Scheme is https");
+        sub.assert_bytes_eq(wing::hostname(parsed_url), "auth.company.internal", "Host matches");
+        sub.assert_bytes_eq(wing::pathname(parsed_url), "/oauth/callback", "Path matches");
+        sub.assert_bytes_eq(wing::hash(parsed_url), "#auth_success", "Hash matches");
+        sub.assert_true(wing::search(parsed_url).len > 1000, "Search query is over 1000 bytes");
+
+        // Dynamic builder into u8[>..]
+        var dynamic_out: u8[>..] = [];
+        wing::format_url(dynamic_out, parsed_url);
+        sub.assert_bytes_eq(dynamic_out[..], large_input[..], "format_url reproduces full large URL");
+    };
+
+    t.run("Case 6.2: UrlView Zero-Copy Arbitrary-Length Streaming Inspection") { sub =>
+        // Construct an arbitrary 5000-byte URL
+        var huge_input: u8[>..] = [];
+        huge_input.append("https://user:pass@streaming.cdn.org:8443/blob/stream/data?payload=");
+        for i in 4000 {
+            huge_input.push('A');
+        }
+        huge_input.append("#playback_pos_42");
+
+        let view = wing::new_url_view(huge_input[..]);
+        sub.assert_true(view.valid, "UrlView is valid for 5000-byte URL");
+        sub.assert_bytes_eq(wing::scheme(view), "https", "UrlView scheme is https");
+        sub.assert_bytes_eq(wing::host(view), "streaming.cdn.org", "UrlView host matches");
+        sub.assert_eq(wing::port(view) as i64, 8443, "UrlView port is 8443");
+        sub.assert_bytes_eq(wing::pathname(view), "/blob/stream/data", "UrlView pathname matches");
+        sub.assert_bytes_eq(wing::hash(view), "#playback_pos_42", "UrlView hash matches");
+        sub.assert_true(wing::search(view).len > 4000, "UrlView search query is over 4000 bytes");
+
+        // Dynamic builder for UrlView
+        var view_out: u8[>..] = [];
+        wing::format_url_view(view_out, view);
+        sub.assert_bytes_eq(view_out[..], huge_input[..], "format_url_view reproduces 5000-byte URL");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -1079,6 +1134,7 @@ fn main() {
     wing::run_case(runner, "3. WHATWG URL Standard & Security Audit Verification", test_whatwg_audit_fixes);
     wing::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
     wing::run_case(runner, "5. Dual-Mode Resolution: RFC 3986 Reference vs Backend Endpoint", test_dual_mode_resolution_rfc_vs_endpoint);
+    wing::run_case(runner, "6. Large & Dynamic URLs (UrlView and 2048-Byte Buffer)", test_dynamic_and_large_urls);
 
     let ok = wing::finish(runner);
     assert(ok);

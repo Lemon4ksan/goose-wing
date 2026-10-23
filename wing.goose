@@ -20,6 +20,7 @@ import json;
 import core.time;
 import core.test;
 import core.url;
+import core.sync;
 
 // ---- canonical cookie engine (chromium cookiemonster architecture) ---------
 

@@ -41,7 +41,7 @@ fn is_ok(err: UrlParseError) -> bool {
 // Url represents a canonical WHATWG URL with a single normalized contiguous buffer
 // (href) and compact index offsets, eliminating substring heap allocations.
 struct Url {
-    href: u8[..512] = [],
+    href: u8[..2048] = [],
     scheme_end: i32 = -1,     // Index of ':' separating scheme
     username_start: i32 = -1,
     username_end: i32 = -1,
@@ -61,6 +61,41 @@ struct Url {
     is_special: bool = false,
     has_opaque_path: bool = false,
     valid: bool = false,
+}
+
+// UrlView represents a zero-copy, non-owning view of a URL of arbitrary length.
+// It holds slices directly pointing into the original input without buffer capacity limits,
+// making it suitable for streaming inspection and arbitrarily long URLs (e.g. data URIs or huge tokens).
+struct UrlView {
+    raw: const u8[:] = "",
+    scheme: const u8[:] = "",
+    username: const u8[:] = "",
+    password: const u8[:] = "",
+    host: const u8[:] = "",
+    port: i32 = -1,
+    pathname: const u8[:] = "",
+    search: const u8[:] = "",
+    hash: const u8[:] = "",
+    is_special: bool = false,
+    valid: bool = false,
+}
+
+fn href(view: const UrlView&) -> const u8[:] { return view.raw; }
+fn scheme(view: const UrlView&) -> const u8[:] { return view.scheme; }
+fn host(view: const UrlView&) -> const u8[:] { return view.host; }
+fn hostname(view: const UrlView&) -> const u8[:] { return view.host; }
+fn pathname(view: const UrlView&) -> const u8[:] { return view.pathname; }
+fn search(view: const UrlView&) -> const u8[:] { return view.search; }
+fn hash(view: const UrlView&) -> const u8[:] { return view.hash; }
+fn port(view: const UrlView&) -> i32 { return view.port; }
+fn is_valid(view: const UrlView&) -> bool { return view.valid; }
+
+fn format_url(out: u8[>..]&, url_val: const Url&) {
+    out.append(url_val.href[..]);
+}
+
+fn format_url_view(out: u8[>..]&, view: const UrlView&) {
+    out.append(view.raw);
 }
 
 // ---- origin and registrable site models ------------------------------------
@@ -280,7 +315,7 @@ fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) {
 // Normalizes drive letters (C:\... -> file:///C:/...), UNC paths (\\server\share -> file://server/share),
 // and percent-encodes spaces and special characters.
 fn new_file_url(file_path: const u8[:]) -> Url {
-    var raw_href: u8[..512] = [];
+    var raw_href: u8[..2048] = [];
     raw_href.append("file://");
 
     guard file_path.len > 0 else {
@@ -335,7 +370,7 @@ fn file_path<B>(url_val: const Url&, out: B&) -> bool {
     let raw_pathname = pathname(url_val);
     guard raw_pathname.len > 0 else { return false; }
 
-    var decoded: u8[..512] = [];
+    var decoded: u8[..2048] = [];
     percent_decode(raw_pathname, decoded);
 
     // Windows UNC network path (\\server\share\file.txt)
@@ -446,7 +481,7 @@ fn deleting_path_extension(url_val: Url) -> Url {
     let path_start = url_val.pathname_start as i64;
     let path_end = url_val.pathname_end as i64;
 
-    var new_href: u8[..512] = [];
+    var new_href: u8[..2048] = [];
     new_href.append(url_val.href[..path_start]);
     new_href.append(raw_path[..eff_path_len - dot_and_ext_len]);
     if has_slash {
@@ -493,7 +528,7 @@ fn deleting_last_path_component(url_val: Url) -> Url {
     let path_start = url_val.pathname_start as i64;
     let path_end = url_val.pathname_end as i64;
 
-    var new_href: u8[..512] = [];
+    var new_href: u8[..2048] = [];
     new_href.append(url_val.href[..path_start]);
     new_href.append(raw_path[..new_path_end]);
     if path_end < url_val.href.len {
@@ -509,7 +544,7 @@ fn appending_path_component(url_val: Url, component: const u8[:]) -> Url {
     guard url_val.valid && component.len > 0 else { return url_val; }
 
     let path_end = url_val.pathname_end as i64;
-    var new_href: u8[..512] = [];
+    var new_href: u8[..2048] = [];
     let cur_path = pathname(url_val);
 
     new_href.append(url_val.href[..path_end]);
@@ -532,7 +567,7 @@ fn appending_path(url_val: Url, subpath: const u8[:]) -> Url {
     guard url_val.valid && subpath.len > 0 else { return url_val; }
 
     let path_end = url_val.pathname_end as i64;
-    var new_href: u8[..512] = [];
+    var new_href: u8[..2048] = [];
     let cur_path = pathname(url_val);
 
     new_href.append(url_val.href[..path_end]);
@@ -569,7 +604,7 @@ fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
     let path_start = url_val.pathname_start as i64;
     let path_end = url_val.pathname_end as i64;
 
-    var new_href: u8[..512] = [];
+    var new_href: u8[..2048] = [];
     new_href.append(url_val.href[..path_start]);
     new_href.append(raw_path[..eff_path_len]);
     new_href.push('.');
@@ -625,7 +660,7 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
         return Url { valid: false, .. }, UrlParseError.RelativeWithoutBase;
     }
 
-    var cleaned_endpoint: u8[..512] = [];
+    var cleaned_endpoint: u8[..2048] = [];
     clean_input_string(endpoint, cleaned_endpoint);
     guard cleaned_endpoint.len > 0 else {
         // Empty endpoint keeps base URL with fragment stripped
@@ -676,7 +711,7 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
     let query_and_hash = ep_str[path_end..];
 
     // Build combined path: base_pathname + "/" + subpath (stripping leading slashes from subpath)
-    var combined: u8[..512] = [];
+    var combined: u8[..2048] = [];
     let base_path = pathname(base_url);
     combined.append(base_path);
 
@@ -919,7 +954,7 @@ fn resolve_fragment_on_opaque_base(
 fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
     var out_url = Url { valid: false, .. };
 
-    var cleaned: u8[..512] = [];
+    var cleaned: u8[..2048] = [];
     clean_input_string(raw_input, cleaned);
     guard cleaned.len > 0 else {
         if has_base {
@@ -1194,6 +1229,157 @@ fn parse_port_number(port_str: const u8[:]) -> i32, bool {
         }
     }
     return val as i32, true;
+}
+
+fn is_alpha_byte(b: u8) -> bool {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z');
+}
+
+fn is_alphanumeric_byte(b: u8) -> bool {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
+}
+
+// Parses a URL of arbitrary length into a zero-copy, non-owning UrlView with zero heap allocations.
+fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
+    var view = UrlView { valid: false, .. };
+    guard raw_input.len > 0 else {
+        return view, UrlParseError.EmptyInput;
+    }
+
+    view.raw = raw_input;
+
+    // Find scheme separator ':'
+    var colon_idx = -1;
+    for scan_idx in raw_input.len {
+        let char_byte = raw_input[scan_idx];
+        if char_byte == ':' { colon_idx = scan_idx; break; }
+        if char_byte == '/' || char_byte == '\\' || char_byte == '?' || char_byte == '#' { break; }
+    }
+
+    guard colon_idx > 0 else {
+        return view, UrlParseError.InvalidScheme;
+    }
+
+    let scheme_slice = raw_input[..colon_idx];
+    guard is_alpha_byte(scheme_slice[0]) else {
+        return view, UrlParseError.InvalidScheme;
+    }
+    for char_byte in scheme_slice[1..] {
+        guard is_alphanumeric_byte(char_byte) || char_byte == '+' || char_byte == '-' || char_byte == '.' else {
+            return view, UrlParseError.InvalidScheme;
+        }
+    }
+    view.scheme = scheme_slice;
+    view.is_special = is_special_scheme(scheme_slice);
+
+    var cursor = colon_idx + 1;
+
+    // Check for authority "//"
+    let has_auth = cursor + 1 < raw_input.len &&
+        (raw_input[cursor] == '/' || (view.is_special && raw_input[cursor] == '\\')) &&
+        (raw_input[cursor + 1] == '/' || (view.is_special && raw_input[cursor + 1] == '\\'));
+
+    if has_auth {
+        cursor += 2;
+        let auth_start = cursor;
+        var auth_end = raw_input.len;
+        for scan_idx in auth_start..raw_input.len {
+            let char_byte = raw_input[scan_idx];
+            if char_byte == '/' || (view.is_special && char_byte == '\\') || char_byte == '?' || char_byte == '#' {
+                auth_end = scan_idx;
+                break;
+            }
+        }
+        cursor = auth_end;
+        let authority = raw_input[auth_start..auth_end];
+
+        var at_idx = -1;
+        for scan_idx in authority.len {
+            if authority[scan_idx] == '@' { at_idx = scan_idx; }
+        }
+
+        var host_port_slice = authority;
+        if at_idx >= 0 {
+            let userinfo = authority[..at_idx];
+            host_port_slice = authority[at_idx + 1..];
+            var user_colon = -1;
+            for scan_idx in userinfo.len {
+                if userinfo[scan_idx] == ':' { user_colon = scan_idx; break; }
+            }
+            if user_colon >= 0 {
+                view.username = userinfo[..user_colon];
+                view.password = userinfo[user_colon + 1..];
+            } else {
+                view.username = userinfo;
+            }
+        }
+
+        if host_port_slice.len > 0 && host_port_slice[0] == '[' {
+            var close_bracket = -1;
+            for scan_idx in host_port_slice.len {
+                if host_port_slice[scan_idx] == ']' { close_bracket = scan_idx; break; }
+            }
+            if close_bracket > 0 {
+                view.host = host_port_slice[1..close_bracket];
+                if close_bracket + 1 < host_port_slice.len && host_port_slice[close_bracket + 1] == ':' {
+                    let port_str = host_port_slice[close_bracket + 2..];
+                    let port_num, port_ok = parse_port_number(port_str);
+                    if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }
+                }
+            } else {
+                return view, UrlParseError.InvalidIpv6;
+            }
+        } else {
+            var host_colon = -1;
+            for scan_idx in host_port_slice.len {
+                if host_port_slice[scan_idx] == ':' { host_colon = scan_idx; break; }
+            }
+            if host_colon >= 0 {
+                view.host = host_port_slice[..host_colon];
+                let port_str = host_port_slice[host_colon + 1..];
+                let port_num, port_ok = parse_port_number(port_str);
+                if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }
+            } else {
+                view.host = host_port_slice;
+            }
+        }
+    }
+
+    let rest = raw_input[cursor..];
+    var q_pos = -1;
+    var h_pos = -1;
+    for scan_idx in rest.len {
+        let char_byte = rest[scan_idx];
+        if char_byte == '?' && q_pos < 0 && h_pos < 0 {
+            q_pos = scan_idx;
+        } else if char_byte == '#' && h_pos < 0 {
+            h_pos = scan_idx;
+            break;
+        }
+    }
+
+    if q_pos >= 0 {
+        view.pathname = rest[..q_pos];
+        if h_pos >= 0 {
+            view.search = rest[q_pos..h_pos];
+            view.hash = rest[h_pos..];
+        } else {
+            view.search = rest[q_pos..];
+        }
+    } else if h_pos >= 0 {
+        view.pathname = rest[..h_pos];
+        view.hash = rest[h_pos..];
+    } else {
+        view.pathname = rest;
+    }
+
+    view.valid = true;
+    return view, UrlParseError.None;
+}
+
+fn new_url_view(raw_input: const u8[:]) -> UrlView {
+    let view, err = parse_url_view(raw_input);
+    return view;
 }
 
 fn extract_host_and_port_canonical<B>(
@@ -1712,7 +1898,7 @@ fn resolve_relative_path_against_base(
     out_url.href.append(base_href[..auth_end]);
     copy_base_authority_offsets(out_url, base_url);
 
-    var combined_path: u8[..512] = [];
+    var combined_path: u8[..2048] = [];
 
     if rel_input[0] == '/' || (is_spec && rel_input[0] == '\\') {
         // Root relative path

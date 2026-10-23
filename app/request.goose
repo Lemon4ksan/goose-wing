@@ -26,7 +26,7 @@ struct QueryItem {
 
 struct Request {
     method: u8[..16] = "GET",
-    url: u8[..512] = [],
+    url: u8[..2048] = [],
     timeout: i64 = 0,
     headers: HeaderItem[..32] = [],
     query_params: QueryItem[..16] = [],

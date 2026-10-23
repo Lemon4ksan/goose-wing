@@ -40,7 +40,7 @@ fn ok(err: const Error&) -> bool {
 
 struct Response {
     status_code: i32 = 0,
-    effective_url: u8[..512] = [],
+    effective_url: u8[..2048] = [],
     headers: HeaderItem[..32] = [],
     redirect_count: i64 = 0,
     url_chain: u8[..256][..16] = [],

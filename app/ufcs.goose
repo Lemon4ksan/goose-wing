@@ -347,3 +347,22 @@ fn ::appending_path_extension(url_val: wing::Url, ext: const u8[:]) -> wing::Url
 fn ::resolve_reference(base_url: const wing::Url&, relative_ref: const u8[:]) -> wing::Url { return wing::resolve_reference(base_url, relative_ref); }
 fn ::resolve_endpoint(base_url: const wing::Url&, endpoint: const u8[:]) -> wing::Url { return wing::resolve_endpoint(base_url, endpoint); }
 fn ::join_endpoint(base_url: const wing::Url&, endpoint: const u8[:]) -> wing::Url { return wing::join_endpoint(base_url, endpoint); }
+
+// ---- url view ufcs bridges -------------------------------------------------
+
+fn ::parse_url_view(raw_input: const u8[:]) -> wing::UrlView, wing::UrlParseError { return wing::parse_url_view(raw_input); }
+fn ::new_url_view(raw_input: const u8[:]) -> wing::UrlView { return wing::new_url_view(raw_input); }
+fn ::href(view: const wing::UrlView&) -> const u8[:] { return wing::href(view); }
+fn ::scheme(view: const wing::UrlView&) -> const u8[:] { return wing::scheme(view); }
+fn ::host(view: const wing::UrlView&) -> const u8[:] { return wing::host(view); }
+fn ::hostname(view: const wing::UrlView&) -> const u8[:] { return wing::hostname(view); }
+fn ::pathname(view: const wing::UrlView&) -> const u8[:] { return wing::pathname(view); }
+fn ::search(view: const wing::UrlView&) -> const u8[:] { return wing::search(view); }
+fn ::hash(view: const wing::UrlView&) -> const u8[:] { return wing::hash(view); }
+fn ::port(view: const wing::UrlView&) -> i32 { return wing::port(view); }
+fn ::is_valid(view: const wing::UrlView&) -> bool { return wing::is_valid(view); }
+
+// ---- concurrency & sync ufcs bridges ---------------------------------------
+
+fn ::add_worker(wg: wing::WaitGroup&, worker_id: i64) { wing::add_worker(wg, worker_id); }
+fn ::wait_all(wg: wing::WaitGroup&) -> bool { return wing::wait_all(wg); }
