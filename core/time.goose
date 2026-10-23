@@ -220,6 +220,11 @@ fn compare(dur1: Duration, dur2: Duration) -> i64 {
 // Truncates duration to a multiple of step_dur (towards zero). Returns dur unchanged if step_dur <= 0.
 fn truncate(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
+    let min_i64 = -9223372036854775807 - 1;
+    if dur.nanos == min_i64 {
+        let q = (min_i64 + 1) / step_dur.nanos;
+        return Duration { nanos: q * step_dur.nanos };
+    }
     let is_neg = dur.nanos < 0;
     let abs_nanos = if is_neg { -dur.nanos } else { dur.nanos };
     let truncated_abs = (abs_nanos / step_dur.nanos) * step_dur.nanos;
@@ -517,18 +522,14 @@ fn now() -> Time {
 
 fn unix(secs_count: i64, nano_count: i64 = 0) -> Time {
     var sec_val = secs_count;
-    var nsec_val: i64 = 0;
-    if nano_count >= 0 {
-        sec_val += nano_count / 1000000000;
-        nsec_val = nano_count % 1000000000;
-    } else {
-        let pos_nanos = -nano_count;
-        let s = pos_nanos / 1000000000;
-        let rem_ns = pos_nanos % 1000000000;
-        sec_val -= s;
-        if rem_ns > 0 {
+    var nsec_val = nano_count;
+    if nsec_val < 0 || nsec_val >= 1000000000 {
+        let n = nsec_val / 1000000000;
+        sec_val += n;
+        nsec_val -= n * 1000000000;
+        if nsec_val < 0 {
+            nsec_val += 1000000000;
             sec_val -= 1;
-            nsec_val = 1000000000 - rem_ns;
         }
     }
     return Time {
@@ -631,7 +632,18 @@ fn add(time_val: Time, dur: Duration) -> Time {
 
 fn sub(time_val: Time, other_time: Time) -> Duration {
     let sec_diff = time_val.wall_sec - other_time.wall_sec;
-    let nsec_diff = time_val.nsec - other_time.nsec;
+    let nsec_diff: i64 = time_val.nsec - other_time.nsec;
+    let max_dur_sec: i64 = 9223372036; // 9223372036854775807 / 1e9 (~292 years)
+    let max_i64: i64 = 9223372036854775807;
+    let min_i64: i64 = -9223372036854775807 - 1;
+
+    // Saturated arithmetic matching Go's Time.Sub overflow protection
+    if sec_diff > max_dur_sec || (sec_diff == max_dur_sec && nsec_diff > 854775807) {
+        return Duration { nanos: max_i64 };
+    }
+    if sec_diff < -max_dur_sec || (sec_diff == -max_dur_sec && nsec_diff < -854775808) {
+        return Duration { nanos: min_i64 };
+    }
     return Duration { nanos: sec_diff * 1000000000 + nsec_diff };
 }
 
@@ -734,34 +746,116 @@ fn after(time_val: Time, other_time: Time) -> bool {
 }
 
 // Truncates time to a multiple of dur since Unix epoch. Returns time_val unchanged if dur <= 0.
+// Immune to nanosecond overflow past year 2262 / pre-1678 for whole-second and sub-second steps.
 fn truncate(time_val: Time, dur: Duration) -> Time {
     if dur.nanos <= 0 { return time_val; }
-    let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-    let is_neg = total_nanos < 0;
-    let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
-    let truncated_abs = (abs_nanos / dur.nanos) * dur.nanos;
-    let base_nanos = if is_neg { -truncated_abs } else { truncated_abs };
-    var truncated_time = unix(0, base_nanos);
-    truncated_time.tz_offset = time_val.tz_offset;
-    return truncated_time;
+
+    // Multiple of whole seconds (e.g. 1s, 1m, 1h, 1d)
+    if dur.nanos >= 1000000000 && (dur.nanos % 1000000000 == 0) {
+        let step_secs = dur.nanos / 1000000000;
+        var rem = time_val.wall_sec % step_secs;
+        var trunc_sec = time_val.wall_sec - rem;
+        if rem < 0 {
+            trunc_sec -= step_secs;
+        }
+        return Time {
+            wall_sec: trunc_sec,
+            nsec: 0,
+            tz_offset: time_val.tz_offset,
+        };
+    }
+
+    // Sub-second step that divides 1 second evenly (e.g. 1ms, 10ms, 100ms, 500ms, 1us)
+    if dur.nanos < 1000000000 && (1000000000 % dur.nanos == 0) {
+        let trunc_nsec = (time_val.nsec / dur.nanos) * dur.nanos;
+        return Time {
+            wall_sec: time_val.wall_sec,
+            nsec: trunc_nsec as i32,
+            tz_offset: time_val.tz_offset,
+        };
+    }
+
+    // General case: bounded within ~292 years
+    let max_sec: i64 = 9223372036;
+    if time_val.wall_sec >= -max_sec && time_val.wall_sec <= max_sec {
+        let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
+        let is_neg = total_nanos < 0;
+        let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
+        let truncated_abs = (abs_nanos / dur.nanos) * dur.nanos;
+        let base_nanos = if is_neg { -truncated_abs } else { truncated_abs };
+        var truncated_time = unix(0, base_nanos);
+        truncated_time.tz_offset = time_val.tz_offset;
+        return truncated_time;
+    }
+
+    return time_val;
 }
 
 // Rounds time to the nearest multiple of dur since Unix epoch (half rounds up).
+// Immune to nanosecond overflow past year 2262 / pre-1678 for whole-second and sub-second steps.
 fn round(time_val: Time, dur: Duration) -> Time {
     if dur.nanos <= 0 { return time_val; }
-    let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-    let is_neg = total_nanos < 0;
-    let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
-    let quotient = abs_nanos / dur.nanos;
-    let remainder = abs_nanos - quotient * dur.nanos;
-    var base_nanos = quotient * dur.nanos;
-    if remainder >= dur.nanos - remainder {
-        base_nanos += dur.nanos;
+
+    // Multiple of whole seconds (e.g. 1s, 1m, 1h)
+    if dur.nanos >= 1000000000 && (dur.nanos % 1000000000 == 0) {
+        let step_secs = dur.nanos / 1000000000;
+        var rem = time_val.wall_sec % step_secs;
+        var base_sec = time_val.wall_sec - rem;
+        var rem_nanos = rem * 1000000000 + time_val.nsec;
+        if rem_nanos < 0 {
+            base_sec -= step_secs;
+            rem_nanos += step_secs * 1000000000;
+        }
+        if rem_nanos >= (dur.nanos + 1) / 2 {
+            base_sec += step_secs;
+        }
+        return Time {
+            wall_sec: base_sec,
+            nsec: 0,
+            tz_offset: time_val.tz_offset,
+        };
     }
-    let rounded_nanos = if is_neg { -base_nanos } else { base_nanos };
-    var rounded_time = unix(0, rounded_nanos);
-    rounded_time.tz_offset = time_val.tz_offset;
-    return rounded_time;
+
+    // Sub-second step that divides 1 second evenly
+    if dur.nanos < 1000000000 && (1000000000 % dur.nanos == 0) {
+        let nsec_64: i64 = time_val.nsec;
+        let quotient = nsec_64 / dur.nanos;
+        let rem = nsec_64 % dur.nanos;
+        var base_nsec = quotient * dur.nanos;
+        var sec_add: i64 = 0;
+        if rem >= (dur.nanos + 1) / 2 {
+            base_nsec += dur.nanos;
+            if base_nsec >= 1000000000 {
+                base_nsec -= 1000000000;
+                sec_add = 1;
+            }
+        }
+        return Time {
+            wall_sec: time_val.wall_sec + sec_add,
+            nsec: base_nsec as i32,
+            tz_offset: time_val.tz_offset,
+        };
+    }
+
+    // General case: bounded within ~292 years
+    let max_sec: i64 = 9223372036;
+    if time_val.wall_sec >= -max_sec && time_val.wall_sec <= max_sec {
+        let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
+        let is_neg = total_nanos < 0;
+        let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
+        let quotient = abs_nanos / dur.nanos;
+        let remainder = abs_nanos - quotient * dur.nanos;
+        var base_nanos = quotient * dur.nanos;
+        if remainder >= dur.nanos - remainder {
+            base_nanos += dur.nanos;
+        }
+        let rounded_nanos = if is_neg { -base_nanos } else { base_nanos };
+        var rounded_time = unix(0, rounded_nanos);
+        rounded_time.tz_offset = time_val.tz_offset;
+        return rounded_time;
+    }
+
+    return time_val;
 }
 
 // Timezone adjustments
@@ -1122,12 +1216,15 @@ fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
 
     let whole_str = num_str[..dot_pos];
     let fraction_str = num_str[dot_pos + 1..];
-    guard whole_str.len > 0 && fraction_str.len > 0 else { return 0, false; }
+    guard (whole_str.len > 0 || fraction_str.len > 0) && fraction_str.len > 0 else { return 0, false; }
 
-    let whole_val, ok_whole = parse_digits(whole_str);
-    guard ok_whole else { return 0, false; }
-    guard whole_val <= max_i64 / unit_mult else { return 0, false; }
-    let whole_nanos = whole_val * unit_mult;
+    var whole_nanos: i64 = 0;
+    if whole_str.len > 0 {
+        let whole_val, ok_whole = parse_digits(whole_str);
+        guard ok_whole else { return 0, false; }
+        guard whole_val <= max_i64 / unit_mult else { return 0, false; }
+        whole_nanos = whole_val * unit_mult;
+    }
 
     let fraction_nanos, ok_frac = parse_scaled_fraction(fraction_str, unit_mult);
     guard ok_frac else { return 0, false; }

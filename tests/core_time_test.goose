@@ -117,6 +117,12 @@ fn test_duration_truncation_and_rounding(t: wing::T&) {
         // Negative truncation (towards zero)
         sub.assert_eq(wing::truncate(wing::secs(-75), wing::mins(1)).as_secs(), -60);
         sub.assert_eq(wing::truncate(wing::secs(-59), wing::mins(1)).as_secs(), 0);
+
+        // i64.min truncation must stay negative (towards zero), never wrap to positive
+        let min_dur = wing::Duration { nanos: -9223372036854775807 - 1 };
+        let trunc_min = wing::truncate(min_dur, wing::secs(1));
+        sub.assert_true(trunc_min.negative(), "truncate(min_i64) must remain negative");
+        sub.assert_eq(trunc_min.as_nanos(), -9223372036000000000, "truncate(min_i64) rounds toward zero");
     };
 
     t.run("Rounding Half-Away-From-Zero") { sub =>
@@ -218,6 +224,11 @@ fn test_duration_format_and_parse_security(t: wing::T&) {
         let d9, ok9 = wing::parse_duration("+10s");
         sub.require_true(ok9);
         sub.assert_eq(d9.as_secs(), 10);
+
+        // Leading dot shorthand (Go compatibility, e.g. .5s)
+        let d_lead, ok_lead = wing::parse_duration(".5s");
+        sub.require_true(ok_lead, ".5s leading dot must parse cleanly");
+        sub.assert_eq(d_lead.as_millis(), 500);
     };
 
     t.run("ParseDuration Malicious & Malformed Vectors (Injection & Overflow Rejection)") { sub =>
@@ -420,6 +431,13 @@ fn test_time_construction_and_pre1970(t: wing::T&) {
         let tm_norm = wing::unix(100, -250000000);
         sub.assert_eq(tm_norm.unix(), 99, "negative nanos must decrement sec");
         sub.assert_eq(tm_norm.nanosecond(), 750000000, "nanos must be normalized in [0, 999_999_999]");
+
+        // min_i64 nanoseconds normalization (must stay in the past, never wrap to future)
+        let min_i64_nanos = -9223372036854775807 - 1;
+        let tm_min_ns = wing::unix(0, min_i64_nanos);
+        sub.assert_lt(tm_min_ns.unix(), 0, "unix(0, min_i64) must be in the past");
+        sub.assert_eq(tm_min_ns.unix(), -9223372037);
+        sub.assert_eq(tm_min_ns.nanosecond(), 145224192);
     };
 
     t.run("Calendar Boundary Projections") { sub =>
@@ -481,6 +499,16 @@ fn test_time_arithmetic_and_redos_immunity(t: wing::T&) {
         // Subtraction with i64.min Duration must not crash or negate
         let t_min_sub = t1.sub(wing::Duration { nanos: -9223372036854775807 - 1 });
         sub.assert_gt(t_min_sub.unix(), t1.unix(), "subtracting negative i64.min duration must advance time forward");
+
+        // Saturated subtraction across > 292 years (Go issue #20678)
+        let t_future = wing::date(2500, wing::Month.January, 1, 0, 0, 0, 0, 0);
+        let t_epoch = wing::unix(0, 0);
+        let diff_huge = t_future.sub(t_epoch);
+        sub.assert_eq(diff_huge.as_nanos(), 9223372036854775807, "difference > 292 years must saturate to max_i64");
+
+        let diff_neg_huge = t_epoch.sub(t_future);
+        let min_i64_val = -9223372036854775807 - 1;
+        sub.assert_eq(diff_neg_huge.as_nanos(), min_i64_val, "negative difference > 292 years must saturate to min_i64");
     };
 
     t.run("Clamped Month & Year Arithmetic") { sub =>
@@ -557,6 +585,13 @@ fn test_time_truncation_rounding_and_timezones(t: wing::T&) {
         let tm_pre = wing::unix(-3600, 0);
         let round_pre = tm_pre.round(wing::mins(15));
         sub.assert_eq(round_pre.unix(), -3600);
+
+        // Post-2262 date truncation without nanosecond overflow
+        let t_2500 = wing::date(2500, wing::Month.January, 1, 14, 25, 45, 0, 0);
+        let t_2500_trunc = t_2500.truncate(wing::hours(1));
+        sub.assert_eq(t_2500_trunc.year(), 2500, "year must remain 2500");
+        sub.assert_eq(t_2500_trunc.hour(), 14);
+        sub.assert_eq(t_2500_trunc.minute(), 0);
     };
 
     t.run("Timezone Offsets & in_tz Minute Handling") { sub =>
