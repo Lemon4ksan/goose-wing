@@ -37,6 +37,7 @@ struct CanonicalCookie {
     partition_key: u8[..256] = [], // Scheme + eTLD+1 (CHIPS top frame site key)
     source_port: i32 = -1,     // 1..65535 or -1 (unset/unknown)
     host_only: bool = true,
+    has_domain_attr: bool = false,
     persistent: bool = false,  // True if Max-Age or Expires was specified
     secure: bool = false,
     httponly: bool = false,
@@ -96,6 +97,7 @@ fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie
 }
 
 fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> CanonicalCookie& {
+    cookie_ref.has_domain_attr = true;
     cookie_ref.domain.clear();
     var clean_domain = domain_val;
     var is_host = host_only;

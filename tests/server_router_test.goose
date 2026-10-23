@@ -1,0 +1,354 @@
+// Zero-Allocation Radix Tree, Tako v2 Pool & Server Pipeline Verification Suite
+import std;
+import wing from "..";
+
+// ----------------------------------------------------------------------------
+// 1. Zero-Allocation Parameter Extraction & Byte Spans
+// ----------------------------------------------------------------------------
+fn test_zero_alloc_params(t: wing::T&) {
+    t.run("Span Slicing Without Heap Allocations") { sub =>
+        var params = wing::ZeroAllocParams { .. };
+        let req_path = "/users/alice99/settings";
+        let template = "/users/{username}/settings";
+
+        // Record span for username: val is "alice99" at [7..14], key is "{username}" at [7..17]
+        sub.assert_true(wing::add_param(params, 8, 16, 7, 14), "param added to span storage");
+        sub.assert_eq(params.len, 1, "params count is 1");
+
+        let val = wing::param_val(params, 0, req_path);
+        sub.assert_eq(val, "alice99", "zero-copy value extraction");
+
+        let key = wing::param_key(params, 0, template);
+        sub.assert_eq(key, "username", "zero-copy key template extraction");
+
+        // Clear params in place
+        wing::clear(params);
+        sub.assert_eq(params.len, 0, "params cleared");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 2. Radix Trie: Static Precedence, Catch-All & Method Isolation
+// ----------------------------------------------------------------------------
+fn test_radix_trie_routing(t: wing::T&) {
+    t.run("Static Route Priority Over Parameter") { sub =>
+        var tree = wing::new_radix_tree();
+        wing::insert_route(tree, "/users/{id}", 101);
+        wing::insert_route(tree, "/users/profile", 202);
+
+        var params = wing::ZeroAllocParams { .. };
+
+        // Exact static route must take precedence
+        let match_profile = wing::match_path(tree, "/users/profile", params);
+        let ok_profile = match match_profile {
+            Found f => f.handler_id == 202,
+            _ => false,
+        };
+        sub.assert_true(ok_profile, "static route /users/profile matches handler 202 (not /users/{id})");
+
+        // Dynamic route matches
+        let match_dyn = wing::match_path(tree, "/users/42", params);
+        let ok_dyn = match match_dyn {
+            Found f => f.handler_id == 101,
+            _ => false,
+        };
+        sub.assert_true(ok_dyn, "dynamic route /users/42 matches handler 101");
+        sub.assert_eq(wing::param_val(params, 0, "/users/42"), "42", "extracted id param '42'");
+    };
+
+    t.run("Catch-All Route Matching") { sub =>
+        var tree = wing::new_radix_tree();
+        wing::insert_route(tree, "/assets/{*filepath}", 303);
+
+        var params = wing::ZeroAllocParams { .. };
+        let match_res = wing::match_path(tree, "/assets/images/icons/logo.png", params);
+        let ok = match match_res {
+            Found f => f.handler_id == 303,
+            _ => false,
+        };
+        sub.assert_true(ok, "catchall matches multi-segment remainder");
+        sub.assert_eq(wing::param_val(params, 0, "/assets/images/icons/logo.png"), "images/icons/logo.png", "captured filepath");
+    };
+
+    t.run("matchit Issue #83 Monotonic Suffix Preservation") { sub =>
+        // Order A: Insert {id}.json first, then {id}/comments.json
+        var tree_a = wing::new_radix_tree();
+        wing::insert_route(tree_a, "/posts/{id}.json", 1);
+        wing::insert_route(tree_a, "/posts/{id}/comments.json", 2);
+
+        var p_a = wing::ZeroAllocParams { .. };
+        let m1_a = wing::match_path(tree_a, "/posts/999.json", p_a);
+        let ok1_a = match m1_a {
+            Found f => f.handler_id == 1,
+            _ => false,
+        };
+        sub.assert_true(ok1_a, "Order A: /posts/999.json matches handler 1");
+
+        let m2_a = wing::match_path(tree_a, "/posts/999/comments.json", p_a);
+        let ok2_a = match m2_a {
+            Found f => f.handler_id == 2,
+            _ => false,
+        };
+        sub.assert_true(ok2_a, "Order A: /posts/999/comments.json matches handler 2");
+
+        // Order B: Insert {id}/comments.json first, then {id}.json
+        // Naive radix trees fail this because splitting overwrites suffix: true with suffix: false!
+        var tree_b = wing::new_radix_tree();
+        wing::insert_route(tree_b, "/posts/{id}/comments.json", 2);
+        wing::insert_route(tree_b, "/posts/{id}.json", 1);
+
+        var p_b = wing::ZeroAllocParams { .. };
+        let m1_b = wing::match_path(tree_b, "/posts/999.json", p_b);
+        let ok1_b = match m1_b {
+            Found f => f.handler_id == 1,
+            _ => false,
+        };
+        sub.assert_true(ok1_b, "Order B: /posts/999.json matches handler 1 (Issue #83 fixed!)");
+
+        let m2_b = wing::match_path(tree_b, "/posts/999/comments.json", p_b);
+        let ok2_b = match m2_b {
+            Found f => f.handler_id == 2,
+            _ => false,
+        };
+        sub.assert_true(ok2_b, "Order B: /posts/999/comments.json matches handler 2");
+    };
+
+    t.run("Multi-Method Isolation & 405 Method Not Allowed") { sub =>
+        var router = wing::new_radix_router();
+        wing::add_route(router, "GET", "/api/items", 10);
+        wing::add_route(router, "POST", "/api/items", 20);
+
+        var params = wing::ZeroAllocParams { .. };
+
+        // GET matches
+        let m_get = wing::match_route(router, "GET", "/api/items", params);
+        let ok_get = match m_get {
+            Found f => f.handler_id == 10,
+            _ => false,
+        };
+        sub.assert_true(ok_get, "GET /api/items found");
+
+        // POST matches
+        let m_post = wing::match_route(router, "POST", "/api/items", params);
+        let ok_post = match m_post {
+            Found f => f.handler_id == 20,
+            _ => false,
+        };
+        sub.assert_true(ok_post, "POST /api/items found");
+
+        // PUT is not allowed -> returns 405 with Allow: GET, POST
+        let m_put = wing::match_route(router, "PUT", "/api/items", params);
+        let ok_put = match m_put {
+            MethodNotAllowed mna => find(mna.allow_header[..], "GET") >= 0 && find(mna.allow_header[..], "POST") >= 0,
+            _ => false,
+        };
+        sub.assert_true(ok_put, "PUT /api/items returns MethodNotAllowed with Allow header containing GET and POST");
+
+        // Completely unknown route returns NotFound (404)
+        let m_none = wing::match_route(router, "GET", "/unknown/path", params);
+        let ok_none = match m_none {
+            NotFound => true,
+            _ => false,
+        };
+        sub.assert_true(ok_none, "unknown path returns NotFound");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 3. Tako v2 6-Mechanism Server Pool
+// ----------------------------------------------------------------------------
+fn test_tako_v2_pool_mechanisms(t: wing::T&) {
+    t.run("HeaderMapPool Acquisition and Clean Release") { sub =>
+        var pool = wing::new_header_map_pool();
+        let s0 = wing::acquire_header_map(pool);
+        let s1 = wing::acquire_header_map(pool);
+
+        sub.assert_true(s0 >= 0 && s1 >= 0 && s0 != s1, "acquired distinct header map slots");
+        sub.assert_true(pool.pool[s0].in_use, "slot marked in_use");
+
+        wing::release_header_map(pool, s0);
+        sub.assert_false(pool.pool[s0].in_use, "slot released and in_use cleared");
+
+        // Reacquire should reuse slot s0
+        let s2 = wing::acquire_header_map(pool);
+        sub.assert_eq(s2, s0, "reacquired released slot");
+    };
+
+    t.run("ExtensionsPool Sanitization (Zero State Leakage)") { sub =>
+        var pool = wing::new_extensions_pool();
+        let idx = wing::acquire_extensions(pool);
+        sub.assert_true(idx >= 0, "acquired extensions slot");
+
+        // Populate slot with sensitive request state
+        pool.slots[idx].peer_ip.append("192.168.1.50");
+        pool.slots[idx].matched_route.append("/admin/secrets");
+        wing::add_param(pool.slots[idx].params, 1, 2, 3, 4);
+        pool.slots[idx].populated_entries = 0xFF;
+
+        // Release slot: must wipe all fields
+        wing::release_extensions(pool, idx);
+        sub.assert_false(pool.slots[idx].in_use, "slot released");
+        sub.assert_eq(pool.slots[idx].peer_ip.len, 0, "peer_ip sanitized");
+        sub.assert_eq(pool.slots[idx].matched_route.len, 0, "matched_route sanitized");
+        sub.assert_eq(pool.slots[idx].params.len, 0, "params sanitized");
+        sub.assert_eq(pool.slots[idx].populated_entries, 0, "populated_entries sanitized");
+    };
+
+    t.run("SyncHeadRelease & ConnectionTimer Slowloris Sweep") { sub =>
+        var shr = wing::new_sync_head_release();
+        sub.assert_false(shr.head_buffer_released, "starts unreleased");
+        wing::mark_head_released(shr, 4096);
+        sub.assert_true(shr.head_buffer_released, "marked released");
+        sub.assert_eq(shr.bytes_consumed, 4096, "consumed 4096 bytes");
+
+        // ConnectionTimer: 10s deadline
+        let start_ns: u64 = 1000000000;
+        var timer = wing::new_connection_timer(10000000000, start_ns);
+
+        // Within deadline
+        sub.assert_true(wing::check_connection_tick(timer, start_ns + 5000000000), "tick ok at 5s");
+
+        // Beyond deadline: Slowloris sweep terminates connection
+        sub.assert_false(wing::check_connection_tick(timer, start_ns + 11000000000), "tick fails after deadline exceeded");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 4. Unified Defense-in-Depth Pipeline Integration
+// ----------------------------------------------------------------------------
+fn test_unified_server_pipeline(t: wing::T&) {
+    t.run("End-to-End Handled Request Lifecycle") { sub =>
+        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        var cfg = wing::new_server_pipeline_config("example.com", quota);
+        wing::add_route(cfg.router, "GET", "/api/v1/users/{id}", 42);
+
+        var conn_timer = wing::new_connection_timer(30000000000, 1000000000);
+        var req = wing::new_request("GET", "/api/v1/users/777");
+        req.headers.push(wing::make_header("Host", "example.com"));
+        req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
+        req.headers.push(wing::make_header("Sec-Fetch-Dest", "empty"));
+
+        var res = wing::new_response();
+        var fut = wing::new_inline_handler_future(0);
+
+        let outcome = wing::execute_pipeline(cfg, conn_timer, "127.0.0.1", req, 1000000000, res, fut);
+        let ok_handled = match outcome {
+            Handled => true,
+            _ => false,
+        };
+        sub.assert_true(ok_handled, "pipeline returned Handled");
+        sub.assert_eq(res.status_code, 200, "status code 200 OK");
+        sub.assert_eq(fut.vtable_tag, 42, "handler 42 invoked");
+    };
+
+    t.run("Pipeline Rate Limiting Defense (Stage 1)") { sub =>
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 0); // strictly 1 req/s
+        var cfg = wing::new_server_pipeline_config("example.com", quota);
+        wing::add_route(cfg.router, "GET", "/health", 1);
+
+        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var req = wing::new_request("GET", "/health");
+        req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+
+        var res1 = wing::new_response();
+        var fut1 = wing::new_inline_handler_future(0);
+        let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res1, fut1);
+        sub.assert_true(out1 == wing::PipelineOutcome.Handled, "first request handled");
+
+        // Second request at same nanosecond -> Rate Limited
+        var res2 = wing::new_response();
+        var fut2 = wing::new_inline_handler_future(0);
+        let out2 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res2, fut2);
+        sub.assert_true(out2 == wing::PipelineOutcome.RateLimited, "second request rate limited");
+        sub.assert_eq(res2.status_code, 429, "status code 429 Too Many Requests");
+    };
+
+    t.run("Pipeline CSRF Defense (Stage 2)") { sub =>
+        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        var cfg = wing::new_server_pipeline_config("example.com", quota);
+        wing::add_route(cfg.router, "POST", "/api/transfer", 99);
+
+        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var evil_req = wing::new_request("POST", "/api/transfer");
+        evil_req.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
+        evil_req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
+
+        var res = wing::new_response();
+        var fut = wing::new_inline_handler_future(0);
+        let out = wing::execute_pipeline(cfg, timer, "192.168.1.1", evil_req, 1000000000, res, fut);
+        sub.assert_true(out == wing::PipelineOutcome.CsrfRejected, "cross-site mutation rejected by CSRF guard");
+        sub.assert_eq(res.status_code, 403, "status code 403 Forbidden");
+    };
+
+    t.run("Pipeline Routing & 405 Method Not Allowed (Stage 3)") { sub =>
+        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        var cfg = wing::new_server_pipeline_config("example.com", quota);
+        wing::add_route(cfg.router, "GET", "/api/data", 10);
+
+        var timer = wing::new_connection_timer(30000000000, 1000000000);
+
+        // POST to GET-only route -> 405 Method Not Allowed
+        var req_post = wing::new_request("POST", "/api/data");
+        req_post.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+
+        var res = wing::new_response();
+        var fut = wing::new_inline_handler_future(0);
+        let out = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_post, 1000000000, res, fut);
+        sub.assert_true(out == wing::PipelineOutcome.MethodNotAllowed, "method not allowed triggered");
+        sub.assert_eq(res.status_code, 405, "status code 405");
+
+        var has_allow = false;
+        for &hdr in res.headers {
+            if wing::eq_ascii_fold(hdr.name[..], "Allow") {
+                has_allow = true;
+                sub.assert_contains(hdr.value[..], "GET", "Allow header indicates GET");
+            }
+        }
+        sub.assert_true(has_allow, "Allow header returned");
+    };
+
+    t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 §10.1.1 / Go #21803)") { sub =>
+        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        var cfg = wing::new_server_pipeline_config("example.com", quota);
+        wing::add_route(cfg.router, "POST", "/upload", 42);
+
+        var timer = wing::new_connection_timer(30000000000, 1000000000);
+
+        // 1. Valid Expect: 100-continue proceeds to pipeline routing
+        var req_100 = wing::new_request("POST", "/upload");
+        req_100.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        req_100.headers.push(wing::make_header("Expect", "100-continue"));
+
+        var res1 = wing::new_response();
+        var fut1 = wing::new_inline_handler_future(0);
+        let out1 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_100, 1000000000, res1, fut1);
+        sub.assert_true(out1 == wing::PipelineOutcome.Handled, "Expect: 100-continue on valid route handled");
+
+        // 2. Unknown Expect: foo-bar -> 417 Expectation Failed
+        var req_unknown = wing::new_request("POST", "/upload");
+        req_unknown.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        req_unknown.headers.push(wing::make_header("Expect", "unknown-feature-flag"));
+
+        var res2 = wing::new_response();
+        var fut2 = wing::new_inline_handler_future(0);
+        let out2 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_unknown, 1000000000, res2, fut2);
+        sub.assert_true(out2 == wing::PipelineOutcome.ExpectationFailed, "unknown Expect rejected with ExpectationFailed");
+        sub.assert_eq(res2.status_code, 417, "RFC 9110 status code 417 Expectation Failed");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// Suite Runner
+// ----------------------------------------------------------------------------
+fn main() {
+    var runner = wing::new_runner("Zero-Alloc Radix Router, Pool & Server Pipeline Suite", wing::Verbosity.Verbose);
+
+    wing::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
+    wing::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
+    wing::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
+    wing::run_case(runner, "4. Unified Defense-in-Depth Pipeline Integration", test_unified_server_pipeline);
+
+    let ok = wing::finish(runner);
+    assert(ok);
+}

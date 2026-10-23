@@ -58,7 +58,10 @@ fn new_psl_database() -> PslDatabase {
 // Determines if domain is a public suffix (cannot set domain cookies for it).
 // Evaluates both ICANN and Private suffixes (e.g. "co.uk", "com", "github.io").
 fn public_suffix_domain(domain: const u8[:]) -> bool {
-    let clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
+    var clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
+    if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
+        clean_domain = clean_domain[..clean_domain.len - 1];
+    }
     guard clean_domain.len > 0 else { return false; }
     if ip_address_literal(clean_domain) { return false; }
 
@@ -81,7 +84,10 @@ fn is_public_suffix_domain(domain: const u8[:]) -> bool {
 // 3. Fallback rule '*' applies if no rule matches (icann = false).
 fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
     out_suffix.clear();
-    let clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
+    var clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
+    if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
+        clean_domain = clean_domain[..clean_domain.len - 1];
+    }
     guard clean_domain.len > 0 else { return false; }
     if ip_address_literal(clean_domain) { return false; }
 
@@ -94,7 +100,10 @@ fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
 // private suffixes like github.io (foo.github.io -> foo.github.io).
 fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.clear();
-    let clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
+    var clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
+    if clean_host.len > 0 && clean_host[clean_host.len - 1] == '.' {
+        clean_host = clean_host[..clean_host.len - 1];
+    }
     guard clean_host.len > 0 else { return; }
 
     // IP literals and single-label intranet hosts (e.g. localhost) do not have eTLD+1
@@ -124,10 +133,12 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
         }
         let start_pos = if last_dot_in_prefix >= 0 { last_dot_in_prefix + 1 } else { 0 };
         out.append(clean_host[start_pos..]);
+        to_lower(out[..]);
         return;
     }
 
     out.append(clean_host);
+    to_lower(out[..]);
 }
 
 // RFC 6265 Section 5.1.3: Domain-Match algorithm.
@@ -135,8 +146,14 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
 fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
 
-    let clean_host = if host[0] == '.' { host[1..] } else { host };
-    let clean_domain = if cookie_domain[0] == '.' { cookie_domain[1..] } else { cookie_domain };
+    var clean_host = if host[0] == '.' { host[1..] } else { host };
+    if clean_host.len > 0 && clean_host[clean_host.len - 1] == '.' {
+        clean_host = clean_host[..clean_host.len - 1];
+    }
+    var clean_domain = if cookie_domain[0] == '.' { cookie_domain[1..] } else { cookie_domain };
+    if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
+        clean_domain = clean_domain[..clean_domain.len - 1];
+    }
 
     if eq_ascii_fold(clean_host, clean_domain) {
         return true;
@@ -246,33 +263,38 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
     out.clear();
     guard clean_domain.len > 0 else { return false; }
 
+    var lower_domain: u8[..128] = [];
+    lower_domain.append(clean_domain);
+    to_lower(lower_domain[..]);
+    let norm_domain = lower_domain[..];
+
     // 1. Exception rules have absolute priority
-    if is_known_exception_rule(clean_domain, out) {
+    if is_known_exception_rule(norm_domain, out) {
         return true;
     }
 
     // 2. Wildcard rules
-    if is_known_wildcard_rule(clean_domain, out) {
+    if is_known_wildcard_rule(norm_domain, out) {
         return true;
     }
 
     // 3. Known multi-level and private suffixes (e.g. github.io, blogspot.co.uk)
     var is_icann = true;
-    if check_known_explicit_suffix(clean_domain, out, is_icann) {
+    if check_known_explicit_suffix(norm_domain, out, is_icann) {
         return is_icann;
     }
 
     // 4. Fallback rule: single top-level label
     var last_dot_idx = -1;
-    for scan_idx in clean_domain.len {
-        if clean_domain[scan_idx] == '.' {
+    for scan_idx in norm_domain.len {
+        if norm_domain[scan_idx] == '.' {
             last_dot_idx = scan_idx;
         }
     }
     if last_dot_idx >= 0 {
-        out.append(clean_domain[last_dot_idx + 1..]);
+        out.append(norm_domain[last_dot_idx + 1..]);
     } else {
-        out.append(clean_domain);
+        out.append(norm_domain);
     }
     return false; // Fallback rule is non-ICANN
 }
@@ -324,6 +346,11 @@ fn is_known_wildcard_rule<B>(domain: const u8[:], out: B&) -> bool {
     // Wildcard rule *.kawasaki.jp
     if ends_with_dot_suffix(domain, "kawasaki.jp") {
         extract_wildcard_suffix(domain, "kawasaki.jp", out);
+        return true;
+    }
+    // Wildcard rule *.kobe.jp
+    if ends_with_dot_suffix(domain, "kobe.jp") {
+        extract_wildcard_suffix(domain, "kobe.jp", out);
         return true;
     }
     // Wildcard rule *.bd
@@ -433,6 +460,7 @@ fn is_known_three_level_suffix(suffix_str: const u8[:], is_icann: bool&) -> bool
 fn is_known_private_two_level_suffix(suffix_str: const u8[:]) -> bool {
     return suffix_str == "github.io" ||
            suffix_str == "alwaysdata.net" ||
+           suffix_str == "amazonaws.com" ||
            suffix_str == "dyndns.org" ||
            suffix_str == "blogspot.com" ||
            suffix_str == "vercel.app" ||

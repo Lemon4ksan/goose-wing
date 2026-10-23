@@ -6,13 +6,27 @@ An HTTP client stack, zero-allocation time primitives, and Chromium-grade Cookie
 
 ## Overview
 
-The library is organized into four architectural layers:
+The library is organized into eight architectural layers:
 
 1. **`core/time.goose`**: Nanosecond-precision calendar and monotonic time engine based on Howard Hinnant's civil calendar algorithms. Includes RFC 3339, RFC 9110 HTTP-Date codecs, Go-compatible `parse_duration`, monotonic `Stopwatch`, and anti-overflow `Deadline`.
 2. **`cookie/`**: Clean-room implementation of Chromium's `net::CookieMonster` adhering to RFC 6265, RFC 6265bis, the Layered Cookies draft, CHIPS (partitioned cookies), and Public Suffix List rules.
-3. **`core/url.goose` & `app/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, Swift Foundation-grade File URL and path manipulation API (cross-platform Windows/POSIX path normalization, component inspection, and fluent UFCS chaining), `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
-4. **`app/`**: Client session coordinator (`ClientSession`) orchestrating a 6-phase pipeline over `CanonicalCookieJar`, with `BodyRewind` (Request.GetBody), 3-tier SSRF/DNS Rebinding guards, browser profiles (Chrome 131, Firefox 133, Safari 18), and resilience policies.
-5. **`core/test.goose`**: Zero-allocation testing framework featuring compile-time structural diffing, table-driven runners, high-resolution `MockClock`, and a deterministic Xorshift64* property fuzzer.
+3. **`http/`**: High-performance zero-heap HTTP stack:
+   - `http/headers.goose`: Continuous Chromium `\0\0` flat buffer, 64-bit SWAR vectorized tokenization, 16-byte `HeaderEntry`, 64 O(1) inline slots for `WellKnownHeader`, RFC 9110 §5.3 / RFC 6265bis Set-Cookie fold isolation (`HEADER_FLAG_NO_COMMA_FOLD`), Chromium 304 merge, and HTTP cache persistence filtering.
+   - `http/mime.goose`: Chromium-grade `HttpUtil::StrictUnquote` parser, RFC 9110 §8.3 Media Type parser, RFC 6266 / RFC 7578 Content-Disposition parser, and Structured Field Values (SFV) engine per RFC 8941 & RFC 9651 (`sf-integer`, `sf-decimal`, `sf-string`, `sf-token`, `sf-binary`, `sf-boolean`, `sf-date`, `sf-displaystring`, lists, and dictionaries).
+   - `http/multipart.goose`: Streaming zero-copy `multipart/form-data` parser with 70-character RFC 2046 boundary cap and 16-bit BMH shift table (CVE-2026-19484 defense), RFC 9110 Range request parser with 16-range ceiling and interval coalescing (CVE-2011-3192 Apache Killer defense), 416 Range Not Satisfiable generator, sub-second `If-Range` truncation, and `serve_range_request` window reader.
+4. **`core/url.goose` & `app/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, Swift Foundation-grade File URL and path manipulation API (cross-platform Windows/POSIX path normalization, component inspection, and fluent UFCS chaining), `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
+5. **`app/`**: Client session coordinator (`ClientSession`) orchestrating a 6-phase pipeline over `CanonicalCookieJar`, with `BodyRewind` (Request.GetBody), 3-tier SSRF/DNS Rebinding guards, browser profiles (Chrome 131, Firefox 133, Safari 18), and resilience policies.
+6. **`security/`**: High-performance zero-allocation application security:
+   - `security/ct.goose`: Branchless constant-time arithmetic (`ct_eq`, `ct_select`), log-redacting `KeySlot` (`secrecy` pattern), Dudect statistical Welch's $t$-test runner with outlier filtering ($>2000\,\text{ns}$), pure-Goose zero-dependency crypto (NIST SHA-256, RFC 4231 HMAC-SHA256, RFC 5869 HKDF-SHA256, RFC 8439 ChaCha20/HChaCha20/Poly1305, XChaCha20-Poly1305 AEAD, AES-256 block cipher, GHASH, AES-256-GCM AEAD, RFC 4648 Base64URL).
+   - `security/crypto_jar.goose`: Cryptographic cookie container (`PrivateJar` with 53B/65B overhead and AAD binding + `SignedJar` with 45B overhead + `KeyStore` rotation).
+   - `security/csrf.goose`: W3C Fetch Metadata resource isolation policy $\pi_{FM}(r) = (\sigma, \mu, \delta, u, m)$ covering the 9-row decision matrix (Go 1.25 `net/http.CrossOriginProtection` + Better Auth), fail-closed cookie gate, and mandatory `Vary` / HSTS header injection.
+   - `security/cors.goose`: Strict protocol-specific CORS engine with origin matching, wildcard credentials rejection, preflight/actual CORS verification.
+   - `security/rate_limiter.goose`: GCRA Rate Limiter with virtual scheduling TAT on monotonic time, fixing `governor` Issue #16 multi-cell starvation via priority slot reservation (`gcra_reserve_n`), 256-micro-shard hash table (`ShardedGcraLimiter`), 5% probabilistic DDoS sampling, and IETF `RateLimit-*` headers.
+7. **`server/`**: Zero-allocation routing and high-throughput connection pool:
+   - `server/router.goose`: Compressed Radix Trie with `ZeroAllocParams`, strict insertion-order independence (fixing `matchit` Issue #83 / commit `f607f73`), static route precedence, multi-method isolation, automatic `405 Method Not Allowed` with `Allow` header generation.
+   - `server/pool.goose`: Tako v2 6-mechanism connection pool (`HeaderMapPool`, sanitized `ExtensionsPool`, bitmask flags, `SyncHeadRelease`, `InlineHandlerFuture`, `ConnectionTimer` Slowloris sweep).
+   - `server/pipeline.goose`: Unified ascending-complexity server pipeline ($O(1) \to O(k) \to O(\log N) \to \text{Handler}$).
+8. **`core/test.goose`**: Zero-allocation testing framework featuring compile-time structural diffing, table-driven runners, high-resolution `MockClock`, and a deterministic Xorshift64* property fuzzer.
 
 ## Key Modules
 
@@ -72,13 +86,99 @@ Unified HTTP client ergonomics and defense-in-depth pipeline:
   - Dangerous service port filtering (SSH, Redis, SMTP, etc.).
 - **Browser Profiles**: Preconfigured header baselines (`User-Agent`, `Accept`, `Sec-CH-UA`, `Sec-Fetch-*`) simulating Chrome 131, Firefox 133, Safari 18, and cURL.
 
-### 5. Testing Framework (`core/test.goose`)
+### 5. HTTP Engine: Zero-Heap Headers, MIME, SFV & Streaming Multipart (`http/`)
+
+Zero-allocation HTTP/1.x, HTTP/2, and HTTP/3 application primitives:
+
+- **Zero-Heap HeaderMap (`http/headers.goose`)**:
+  - **Memory Layout**: Flat 8 KB continuous byte buffer (`raw_buf`) with embedded `\0\0` termination (Chromium `raw_headers_` model) and 128 compact 16-byte `HeaderEntry` records (`name_begin`, `name_end`, `values_begin`, `values_end`, `next_idx`, `flags`, `well_known_id`, `name_hash`).
+  - **O(1) Inline Header Slots**: 64 compile-time slots (`inline_slots[64]`) for instant zero-hash lookups of canonical HTTP headers (`content-type`, `authorization`, `set-cookie`, `host`, `user-agent`, etc.).
+  - **Vectorized Tokenization (SWAR)**: 64-bit SIMD Within A Register routines (`swar_has_zero_byte`, `swar_has_byte`, `swar_has_ctl_or_del`) for rapid scanning of delimiters and illegal control characters.
+  - **RFC 9110 §5.3 / RFC 6265bis Isolation**: Strict `HEADER_FLAG_NO_COMMA_FOLD` isolation preventing folding of `Set-Cookie` or `WWW-Authenticate` into comma-separated lines.
+  - **Security & Regressions**: Defense against httparse PR #223 (whitespace-only lines cause clean syntax error), `obs-fold` line folding, Chromium 304 cache header merging, and HTTP cache persistence bitmask filtering.
+  - **Connection Recycling**: Instant `reset_for_keep_alive()` zeroing indices and preserving pre-allocated buffer capacity across keep-alive connections.
+
+- **MIME & Structured Field Values (`http/mime.goose`)**:
+  - **Chromium `HttpUtil::StrictUnquote`**: Validates quoted strings per Chromium security invariants (rejects single quotes, trailing unescaped slashes, unclosed quotes, and correctly preserves double-escaped slashes `\\` as single `\`).
+  - **RFC 9110 §8.3 Media Type & RFC 6266 / RFC 7578 Content-Disposition**: Robust parameter parsing with case-insensitive token folding and strict whitespace stripping.
+  - **RFC 8941 & RFC 9651 SFV Engine**: Complete structured header codec supporting `sf-integer`, fixed-point `sf-decimal` (milliths scaled by $10^3$), `sf-string`, `sf-token`, `sf-binary` (base64), `sf-boolean`, `sf-date` (`@<epoch>`), and `sf-displaystring` (`%"` UTF-8).
+  - **SFV Invariants**: Hard failure on uppercase dictionary keys per RFC 8941 §3.1.2, in-place dictionary mutation, and inner lists with item parameters.
+
+- **Streaming Multipart & Range Engine (`http/multipart.goose`)**:
+  - **Boundary Validation (CVE-2026-19484 Barrier 1)**: Strict enforcement of RFC 2046 §5.1.1 70-character boundary length limit, stopping allocation bomb attacks prior to buffer allocation.
+  - **Boyer-Moore-Horspool Search (CVE-2026-19484 Barrier 2)**: 16-bit shift table (`u16[256]`) guaranteeing forward progress and $O(N)$ streaming search.
+  - **Lookbehind Streaming Buffer**: Trailing window retention (`boundary.len + 4`) to seamlessly resume parsing when boundary delimiters span across network packet chunks.
+  - **RFC 9110 Range Parser & Coalescing (CVE-2011-3192 Defense)**: Hard ceiling of 16 ranges (defending against Apache Killer algorithmic DoS) and automatic coalescing of overlapping ($s_2 \le e_1$) and contiguous ($s_2 = e_1 + 1$) range slices.
+  - **Sub-Second `If-Range` Truncation**: RFC 9110 compliant validator truncating validator dates to 1-second precision before comparisons.
+  - **Higher-Order Window Reader (`serve_range_request`)**: Unified zero-copy range slice emitter with trailing closure execution.
+
+### 6. Testing Framework (`core/test.goose`)
 
 A standalone test library designed for Goose:
 
 - **Assertions**: `assert_eq`, `assert_bytes_eq`, `assert_struct_eq`, `assert_true`, `assert_in_delta`, `assert_contains`, plus terminating `require_*` variants.
 - **Virtual Mock Clock**: `new_mock_clock(initial_us)` for time-travel testing with `advance_sec`, `advance_ms`, and `advance_days`.
 - **Property Fuzzer**: Zero-allocation Xorshift64* PRNG (`new_fuzz_rng`) for randomized invariant testing.
+
+### 7. Cryptography & CryptoJar (`security/ct.goose`, `security/crypto_jar.goose`)
+
+High-performance zero-dependency cryptographic foundation and tamper-proof cookie jar:
+
+- **Branchless Constant-Time Math**: `ct_eq`, `ct_select`, and `ct_is_zero` preventing compiler-introduced timing side-channels.
+- **Log-Redacted Secret Storage (`KeySlot`)**: Rust `secrecy` pattern redacting private keys from memory dumps and log output (`display_redacted`), bound to zeroize-on-drop semantics.
+- **Dudect Statistical Harness**: High-resolution Welch's $t$-test runner with outlier filtering ($>2000\,\text{ns}$) proving $|t| < 4.5$ hypothesis under 10,000+ trial iterations.
+- **Pure-Goose Cryptographic Primitives**:
+  - NIST SHA-256 and RFC 4231 HMAC-SHA256 with bitwise state rotation.
+  - RFC 5869 HKDF-SHA256 (Extract & Expand) key derivation.
+  - RFC 8439 ChaCha20, HChaCha20, Poly1305, and XChaCha20-Poly1305 AEAD with 192-bit nonces (immune to random nonce collisions).
+  - AES-256 Block Cipher and GHASH Galois Field multiplier over $GF(2^{128})$ powering AES-256-GCM AEAD.
+  - RFC 4648 Base64URL encoder/decoder without padding.
+- **CryptoJar**:
+  - **`PrivateJar`**: Encrypted + authenticated cookie container with cookie name bound in Additional Authenticated Data (AAD), defending against cross-cookie swapping attacks. Supports XChaCha20-Poly1305 (53B overhead) and AES-256-GCM (65B overhead).
+  - **`SignedJar`**: HMAC-SHA256 signed tamper-evident container with 45B overhead.
+  - **`KeyStore`**: Seamless key rotation supporting active primary key and fallback retired verification keys.
+
+### 8. Resource Isolation: CSRF & CORS (`security/csrf.goose`, `security/cors.goose`)
+
+Stateless deterministic defense-in-depth resource isolation:
+
+- **W3C Fetch Metadata Resource Isolation Policy $\pi_{FM}(r) = (\sigma, \mu, \delta, u, m)$**:
+  - Complete 9-row decision matrix combining Go 1.25 `net/http.CrossOriginProtection` and Better Auth semantics.
+  - Granular `Sec-Fetch-Site` inspection (`same-origin`, `same-site`, `none`, `cross-site`, `missing`).
+  - Safe-list top-level navigations (`Sec-Fetch-Mode: navigate` with GET/HEAD) defending against CSRF while allowing external links.
+  - Fail-closed cookie gate: strictly rejects cross-site state-changing requests before payload decryption or session access.
+  - Mandatory response header injection: `Vary: Sec-Fetch-Site, Sec-Fetch-Mode, Sec-Fetch-Dest` and `Strict-Transport-Security`.
+- **Protocol-Specific CORS Engine**:
+  - Strict scheme-host-port matching avoiding insecure wildcard origins (`*`) when credentials are requested.
+  - Fast-path preflight `OPTIONS` short-circuiting with maximum cache age (`Access-Control-Max-Age`).
+
+### 9. GCRA Rate Limiter (`security/rate_limiter.goose`)
+
+Mathematical Generic Cell Rate Algorithm (GCRA) traffic shaper:
+
+- **Virtual Scheduling Model**: Tracks Theoretical Arrival Time ($TAT$) on monotonic nanosecond clocks: $TAT \leftarrow \max(t, TAT) + T$.
+- **Anti-Starvation Multi-Cell Priority Reservation (`gcra_reserve_n`)**: Fixes `governor` Issue #16 where bulk requests starve under continuous small requests by atomically reserving future execution slots.
+- **256-Micro-Shard Table (`ShardedGcraLimiter`)**: Low-overhead lock-free CAS emulation with deterministic FNV-1a distribution for multi-million ops/sec throughput.
+- **5% Probabilistic DDoS Sampling**: High-load bypass reducing hash table pressure by 95% during volumetric attack floods.
+- **IETF RFC Standard Headers**: Synthesizes `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset` compliant headers.
+
+### 10. High-Performance Radix Router & Tako v2 Server Pool (`server/`)
+
+Zero-allocation HTTP request routing and server lifecycle management:
+
+- **Compressed Radix Trie (`server/router.goose`)**:
+  - `ZeroAllocParams`: Fixed-capacity parameter extraction storing 0-byte slice references on the stack without heap allocation.
+  - Insertion Order Independence: Solves `matchit` Issue #83 / commit `f607f73` ensuring `{id}.json` and `{id}/comments.json` yield identical routing regardless of insertion order.
+  - Static Route Precedence: Always prioritizes exact static matches over parameterized or wildcard nodes.
+  - Multi-Method Isolation: HTTP-method-specific route tables generating RFC-compliant `405 Method Not Allowed` with dynamically built `Allow` headers.
+- **Tako v2 6-Mechanism Connection Pool (`server/pool.goose`)**:
+  - `HeaderMapPool`: Flat-buffer header recycling avoiding per-request allocations.
+  - `ExtensionsPool`: Request extensions pool with strict sanitization on release preventing inter-request memory leaks.
+  - Bitmask Flags (`ENTRIES`): Bitwise tracking of active and recycled structures.
+  - `SyncHeadRelease`: Immediate zero-copy pipeline handoff.
+  - `InlineHandlerFuture`: Stack-allocated request completion futures.
+  - `ConnectionTimer`: Slowloris attack sweeper terminating idle and hung connections.
+- **Unified Server Pipeline (`server/pipeline.goose`)**: Ascending computational complexity pipeline ($O(1) \to O(k) \to O(\log N) \to \text{Handler}$).
 
 ## Usage Examples
 
@@ -221,9 +321,117 @@ fn run_file_url_example() {
 }
 ```
 
+### Tamper-Proof Cryptographic Cookies (`CryptoJar`)
+
+```goose
+import wing;
+
+fn run_crypto_jar_example() {
+    // Initialize key store with 32-byte secret (e.g. from KMS or env)
+    var raw_key: u8[..32] = [];
+    raw_key.append_slice("my-super-secret-key-32-bytes-long");
+    let key_slot = wing::new_key_slot(raw_key);
+    let store = wing::new_key_store(key_slot);
+
+    // PrivateJar: authenticated encryption (XChaCha20-Poly1305 with AAD binding)
+    var private_jar = wing::new_private_jar(store, wing::CipherType.XChaCha20Poly1305);
+    var ciphertext: u8[..256] = [];
+    private_jar.seal("session_id", "usr_998124_admin_privileges", ciphertext);
+
+    // Decrypt and verify AAD binding
+    var decrypted: u8[..256] = [];
+    if private_jar.open("session_id", ciphertext, decrypted) {
+        print("Authenticated Session: ", decrypted);
+    }
+
+    // Swapping attack defense: opening under wrong cookie name fails cleanly
+    var fake_out: u8[..256] = [];
+    let swapped = private_jar.open("wrong_name", ciphertext, fake_out);
+    // swapped == false
+}
+```
+
+### W3C Fetch Metadata & Fail-Closed CSRF Protection
+
+```goose
+import wing;
+
+fn run_csrf_filter_example() {
+    let policy = wing::new_w3c_fetch_metadata_policy();
+    var req = wing::new_request();
+    req.method = wing::Method.Post;
+    req.url.parse("https://bank.internal/api/transfer");
+
+    // Incoming request headers
+    req.headers.set("Sec-Fetch-Site", "cross-site");
+    req.headers.set("Sec-Fetch-Mode", "cors");
+    req.headers.set("Sec-Fetch-Dest", "empty");
+
+    // Evaluate against 9-row Fetch Metadata decision matrix
+    let verdict = policy.evaluate(req);
+    guard verdict.allowed else {
+        print("Blocked CSRF attack: status=", verdict.status_code, " reason=", verdict.reason);
+        return;
+    }
+}
+```
+
+### GCRA Rate Limiter & Multi-Cell Reservation
+
+```goose
+import wing;
+
+fn run_rate_limiter_example() {
+    // 100 requests per minute with burst capacity of 10
+    let limiter = wing::new_gcra_limiter(100, wing::secs(60), 10);
+    let now = wing::now_monotonic_us();
+
+    // Check single cell conformance
+    var check_res = limiter.check(now);
+    if check_res.allowed {
+        print("Request allowed! Remaining burst: ", check_res.burst_remaining);
+    }
+
+    // Anti-starvation priority reservation for batch processing (5 cells)
+    var reserve_res = limiter.reserve_n(5, now);
+    if reserve_res.allowed {
+        print("Batch approved, delay until execution: ", reserve_res.delay_us, "us");
+    }
+}
+```
+
+### Zero-Allocation Radix Router
+
+```goose
+import wing;
+
+fn run_router_example() {
+    var router = wing::new_router();
+
+    // Register routes with typed route handlers
+    router.insert(wing::Method.Get, "/api/v1/users", 1);
+    router.insert(wing::Method.Get, "/api/v1/users/{id}", 2);
+    router.insert(wing::Method.Get, "/api/v1/users/{id}/comments", 3);
+    router.insert(wing::Method.Get, "/static/*path", 4);
+
+    // Fast zero-allocation path lookup
+    var params = wing::new_zero_alloc_params();
+    let handler_id, status = router.lookup(wing::Method.Get, "/api/v1/users/42", params);
+
+    if status == wing::RouteLookupStatus.Matched {
+        print("Matched handler: ", handler_id);
+        print("User ID: ", params.get("id")); // "42" without heap allocation
+    } else if status == wing::RouteLookupStatus.MethodNotAllowed {
+        var allow_buf: u8[..64] = [];
+        router.get_allowed_methods("/api/v1/users/42", allow_buf);
+        print("405 Method Not Allowed. Allowed methods: ", allow_buf);
+    }
+}
+```
+
 ## Verification & Test Suite
 
-The test suite covers full RFC specifications, Chromium edge cases, audit regressions, and property-based randomized testing across **2,150+ checks**:
+The test suite covers full RFC specifications, Chromium edge cases, audit regressions, mathematical timing tests, and property-based randomized testing across **2,750+ checks**:
 
 ### Test Taxonomy
 
@@ -233,8 +441,10 @@ All verification suites live in `tests/` and adhere to a strict, scalable `<subs
 |---|---|---|
 | `core_*` | Core runtime primitives (time, calendar, URL, sync, concurrency, actors) | `core_time_test.goose`, `core_url_test.goose`, `core_sync_test.goose` |
 | `cookie_*` | RFC 6265bis engine, WPT clean-room compliance, and 1..16 edge vectors | `cookie_engine_test.goose`, `cookie_vectors_test.goose` |
+| `http_*` | Zero-heap HeaderMap, MIME / SFV (RFC 8941/9651), streaming multipart & Range | `http_headers_test.goose`, `http_mime_test.goose`, `http_multipart_test.goose` |
 | `app_*` | Client session pipelines, redirect FSM, profiles, request/response | `app_session_test.goose` |
-| `sec_*` | Security regressions, CVE validations, threat model assertions | `sec_cve_test.goose`, `sec_protocol_test.goose`, `sec_cookie_test.goose`, `sec_concurrency_test.goose` |
+| `sec_*` | Security regressions, CVE validations, constant-time cryptography, CSRF/CORS, GCRA | `sec_ct_test.goose`, `sec_csrf_test.goose`, `sec_rate_limiter_test.goose`, `sec_cve_test.goose`, `sec_protocol_test.goose`, `sec_cookie_test.goose`, `sec_concurrency_test.goose` |
+| `server_*` | Zero-allocation Radix Router, Tako v2 pool, pipeline orchestration | `server_router_test.goose` |
 | *Future: `proto_*`* | Wire protocols (HTTP/1.1, HTTP/2, HTTP/3, QUIC, WebSocket) | `proto_h1_test.goose`, `proto_h2_test.goose`, `proto_quic_test.goose` |
 | *Future: `compress_*`* | Compression codecs (Deflate/zlib, Brotli, Zstandard) | `compress_zstd_test.goose`, `compress_brotli_test.goose` |
 | *Future: `cache_*`* | RFC 9111 HTTP caching engine & revalidation | `cache_engine_test.goose` |
@@ -248,12 +458,19 @@ All verification suites live in `tests/` and adhere to a strict, scalable `<subs
 | **Core Concurrency** | `tests/core_sync_test.goose` | BatonMutex, Semaphore, CyclicBarrier, CSP patterns, Actors, OTP supervision trees | 68 checks |
 | **Clean Room Cookie Jar** | `tests/cookie_engine_test.goose` | WPT compliance, domain quotas, eviction ordering, persistence keys | 78 checks |
 | **Cookie Edge Matrices** | `tests/cookie_vectors_test.goose` | Matrices 1..16 (Lexer limits, CTL sweep, PSL, prefixes, SameSite, CHIPS, 6-round GC, SQLite v24, clock skew, PRNG fuzzer) | 1,113 checks |
+| **HTTP Headers & Lexical** | `tests/http_headers_test.goose` | Zero-heap HeaderMap, 64-bit SWAR tokenization, O(1) inline slots, Set-Cookie fold isolation, httparse #223, 304 merge | 65 checks |
+| **HTTP MIME & SFV** | `tests/http_mime_test.goose` | Chromium StrictUnquote, RFC 9110 MediaType, RFC 8941/9651 SFV (integers, fixed-point decimals, tokens, dates, UTF-8 display strings) | 87 checks |
+| **HTTP Multipart & Range** | `tests/http_multipart_test.goose` | Streaming multipart BMH shift table (CVE-2026-19484), 70-byte boundary cap, RFC 9110 Range & coalescing (CVE-2011-3192), 416 handler | 60 checks |
 | **App Client Session** | `tests/app_session_test.goose` | PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, SSRF Guard | 80 checks |
 | **CVE Security Regression** | `tests/sec_cve_test.goose` | CVE-2021-28918/29922 (octal/hex IP SSRF), CVE-2024-24790 (RFC 6761 localhost), CVE-2023-26159 (CRLF headers), CVE-2022-27776 (port leaks), CVE-2023-27534 (URL/query ambiguity), CVE-2016-8616 (PSL import) | 35 checks |
 | **Protocol Security** | `tests/sec_protocol_test.goose` | IPv4-mapped IPv6 SSRF defense, HTTPS->HTTP scheme downgrade header stripping, file URL drive normalization | 36 checks |
 | **Cookie Chaos Defense** | `tests/sec_cookie_test.goose` | RFC 6265bis §5.6 cookie shadowing, case-insensitive prefixes (`__Host-`, `__Secure-`), Max-Age 400-day capping | 38 checks |
 | **Concurrency Hardening** | `tests/sec_concurrency_test.goose` | WaitGroup capacity limits, bounded channel timeouts, worker crash containment & supervisor restarts | 18 checks |
-| **Total** | **10 verification suites** | | **2,157 checks** |
+| **Constant-Time & CryptoJar** | `tests/sec_ct_test.goose` | Constant-time math, Dudect Welch's $t$-test ($|t| < 4.5$), SHA-256, HMAC, HKDF, ChaCha20, Poly1305, XChaCha20, AES-256, GHASH, AES-GCM, Base64URL, PrivateJar (53B/65B), SignedJar (45B), KeyStore rotation | 263 checks |
+| **Resource Isolation & CORS** | `tests/sec_csrf_test.goose` | W3C Fetch Metadata 9-row decision matrix, fail-closed cookie gate, Vary & HSTS injection, protocol-specific CORS origin matching | 41 checks |
+| **GCRA Virtual Scheduling** | `tests/sec_rate_limiter_test.goose` | GCRA TAT virtual scheduling, anti-starvation slot reservation (governor #16), 256-shard hash table, 5% DDoS sampling, IETF RateLimit-* headers | 38 checks |
+| **Zero-Alloc Router & Pipeline** | `tests/server_router_test.goose` | Compressed Radix Trie, ZeroAllocParams stack spans, insertion order independence (matchit #83), static precedence, 405 Method Not Allowed + Allow, Tako v2 6-mechanism pool, unified pipeline | 45 checks |
+| **Total** | **17 verification suites** | | **2,756 checks** |
 
 ### Running the Tests
 
@@ -264,16 +481,18 @@ To typecheck the entire library and run verification suites:
 goose check wing.goose
 
 # Run individual test suites via compilation (supports threads & JIT)
-goose build -o tests/core_time_test.exe tests/core_time_test.goose; .\tests\core_time_test.exe
-goose build -o tests/core_url_test.exe tests/core_url_test.goose; .\tests\core_url_test.exe
-goose build -o tests/cookie_engine_test.exe tests/cookie_engine_test.goose; .\tests\cookie_engine_test.exe
+goose build -o tests/sec_ct_test.exe tests/sec_ct_test.goose; .\tests\sec_ct_test.exe
+goose build -o tests/sec_csrf_test.exe tests/sec_csrf_test.goose; .\tests\sec_csrf_test.exe
+goose build -o tests/sec_rate_limiter_test.exe tests/sec_rate_limiter_test.goose; .\tests\sec_rate_limiter_test.exe
+goose build -o tests/server_router_test.exe tests/server_router_test.goose; .\tests\server_router_test.exe
+goose build -o tests/http_headers_test.exe tests/http_headers_test.goose; .\tests\http_headers_test.exe
 goose build -o tests/cookie_vectors_test.exe tests/cookie_vectors_test.goose; .\tests\cookie_vectors_test.exe
-goose build -o tests/app_session_test.exe tests/app_session_test.goose; .\tests\app_session_test.exe
-goose build -o tests/sec_cve_test.exe tests/sec_cve_test.goose; .\tests\sec_cve_test.exe
 
-# Or run all 10 suites via automated script
+# Or run all 17 suites in parallel via automated test runner
 .\scripts\test_all.ps1
+```
 
+```powershell
 # Run end-to-end demonstrations
 goose run examples/unified_demo.goose
 goose run examples/cookie_demo.goose

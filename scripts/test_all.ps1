@@ -51,19 +51,26 @@ if ($testFiles.Count -eq 0) {
     exit 0
 }
 
-# 3. Check-only mode (ultra fast, ~1.5s for all suites)
+# 3. Check-only mode
 if ($CheckOnly) {
-    Write-Host "`n[2/2] Running multi-test typecheck on $($testFiles.Count) suites..." -ForegroundColor Yellow
+    Write-Host "`n[2/2] Running typecheck on $($testFiles.Count) suites in parallel..." -ForegroundColor Yellow
     $swCheck = [System.Diagnostics.Stopwatch]::StartNew()
-    $fileList = ($testFiles | ForEach-Object { "`"$($_.FullName)`"" }) -join " "
-    $multiProc = Start-GooseProcess "goose" ("--check --multi-test " + $fileList) $true
-    $multiOut = $multiProc.StandardOutput.ReadToEnd()
-    $multiProc.WaitForExit()
+    $checkTasks = @()
+    foreach ($file in $testFiles) {
+        $proc = Start-GooseProcess "goose" "check `"$($file.FullName)`"" $true
+        $checkTasks += [PSCustomObject]@{ File = $file; Process = $proc }
+    }
+    $failed = 0
+    foreach ($task in $checkTasks) {
+        $task.Process.WaitForExit()
+        if ($task.Process.ExitCode -ne 0) {
+            Write-Host "FATAL: Typechecking $($task.File.Name) failed!" -ForegroundColor Red
+            Write-Host $task.Process.StandardOutput.ReadToEnd() -ForegroundColor Yellow
+            $failed++
+        }
+    }
     $swCheck.Stop()
-
-    if ($multiProc.ExitCode -ne 0) {
-        Write-Host "FATAL: Test typechecking failed!" -ForegroundColor Red
-        Write-Host $multiOut -ForegroundColor Yellow
+    if ($failed -gt 0) {
         exit 1
     }
     Write-Host "  OK: All $($testFiles.Count) suites typechecked cleanly in $($swCheck.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
@@ -137,6 +144,11 @@ $failedSuites = 0
 
 foreach ($task in $buildTasks) {
     try {
+        if (-not (Test-Path $task.Exe)) {
+            Write-Host "  FAIL: tests/$($task.File.Name) executable not found" -ForegroundColor Red
+            $failedSuites++
+            continue
+        }
         Write-Host "`n>>> Running tests/$($task.File.Name)..." -ForegroundColor Cyan
         $runProc = Start-GooseProcess $task.Exe "" $false
         $runProc.WaitForExit()

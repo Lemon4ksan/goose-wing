@@ -400,3 +400,54 @@ fn ::success_count(sup: const wing::Supervisor&) -> i64 { return wing::success_c
 fn ::is_auto_shutdown(sup: const wing::Supervisor&) -> bool { return wing::is_auto_shutdown(sup); }
 fn ::should_restart_child(sup: const wing::Supervisor&, child_idx: i64, reason: const wing::ExitReason&) -> bool { return wing::should_restart_child(sup, child_idx, reason); }
 fn ::record_failure(sup: wing::Supervisor&, child_idx: i64, current_time_s: i64) -> bool { return wing::record_failure(sup, child_idx, current_time_s); }
+
+// ---- http headers, mime, and multipart ufcs bridges -----------------------
+
+fn ::has_header(map: const wing::HeaderMap&, name: const u8[:]) -> bool { return wing::has_header(map, name); }
+fn ::get_header(map: const wing::HeaderMap&, name: const u8[:]) -> const u8[:] { return wing::get_header(map, name); }
+fn ::header(map: const wing::HeaderMap&, name: const u8[:]) -> const u8[:] { return wing::get_header(map, name); }
+fn ::get_inline(map: const wing::HeaderMap&, id: wing::WellKnownHeader) -> const u8[:] { return wing::get_inline(map, id); }
+fn ::set_inline(map: wing::HeaderMap&, id: wing::WellKnownHeader, value: const u8[:]) -> bool { return wing::set_inline(map, id, value); }
+fn ::insert_header(map: wing::HeaderMap&, name: const u8[:], value: const u8[:]) -> bool { return wing::insert_header(map, name, value); }
+fn ::append_header(map: wing::HeaderMap&, name: const u8[:], value: const u8[:]) -> bool { return wing::append_header(map, name, value); }
+fn ::remove_header(map: wing::HeaderMap&, name: const u8[:]) -> bool { return wing::remove_header(map, name); }
+fn ::reset_for_keep_alive(map: wing::HeaderMap&) { wing::reset_for_keep_alive(map); }
+fn ::get_combined(map: const wing::HeaderMap&, name: const u8[:], out: u8[>..]&) -> bool { return wing::get_combined(map, name, out); }
+fn ::get_all_values(map: const wing::HeaderMap&, name: const u8[:], out_values: u8[..256][>..]&) { wing::get_all_values(map, name, out_values); }
+fn ::get_set_cookie(map: const wing::HeaderMap&, out_cookies: u8[..1024][>..]&) { wing::get_set_cookie(map, out_cookies); }
+fn ::raw_headers(map: const wing::HeaderMap&, out: u8[>..]&) { wing::raw_headers(map, out); }
+fn ::serialize_headers(map: const wing::HeaderMap&, out: u8[>..]&) { wing::serialize_headers(map, out); }
+fn ::merge_with_headers_304(cached: wing::HeaderMap&, response_304: const wing::HeaderMap&) { wing::merge_with_headers_304(cached, response_304); }
+fn ::persist_headers(src: const wing::HeaderMap&, dst: wing::HeaderMap&, flags: u32) { wing::persist_headers(src, dst, flags); }
+
+fn ::param(mt: const wing::MediaType&, key: const u8[:]) -> const u8[:] { return wing::param(mt, key); }
+fn ::has_param(mt: const wing::MediaType&, key: const u8[:]) -> bool { return wing::has_param(mt, key); }
+fn ::is_multipart(mt: const wing::MediaType&) -> bool { return wing::is_multipart(mt); }
+fn ::boundary(mt: const wing::MediaType&) -> const u8[:] { return wing::boundary(mt); }
+fn ::charset(mt: const wing::MediaType&) -> const u8[:] { return wing::charset(mt); }
+fn ::parse_content_disposition(raw: const u8[:]) -> wing::MediaType, bool { return wing::parse_content_disposition(raw); }
+
+// ---- security & server ufcs bridges ----------------------------------------
+
+fn ::add_key(store: wing::KeyStore&, slot: wing::KeySlot) -> bool { return wing::add_key(store, slot); }
+fn ::active_key(store: const wing::KeyStore&) -> wing::KeySlot, bool { return wing::active_key(store); }
+fn ::find_key(store: const wing::KeyStore&, key_id: u32) -> wing::KeySlot, bool { return wing::find_key(store, key_id); }
+fn ::revoke_key(store: wing::KeyStore&, key_id: u32) -> bool { return wing::revoke_key(store, key_id); }
+
+fn ::add_trusted_origin(guard_cfg: wing::CrossOriginGuard&, origin_str: const u8[:]) -> bool { return wing::add_trusted_origin(guard_cfg, origin_str); }
+fn ::add_exempt_path(guard_cfg: wing::CrossOriginGuard&, path_str: const u8[:]) -> bool { return wing::add_exempt_path(guard_cfg, path_str); }
+
+fn ::add_allowed_origin(policy: wing::CorsPolicy&, origin_pattern: const u8[:]) -> bool { return wing::add_allowed_origin(policy, origin_pattern); }
+
+fn ::add_route(router: wing::RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, entries_mask: u32 = 0) -> bool {
+    return wing::add_route(router, method, path, handler_id, entries_mask);
+}
+fn ::match_route(router: const wing::RadixRouter&, method: const u8[:], path: const u8[:], params: wing::ZeroAllocParams&) -> wing::RouteMatchResult {
+    return wing::match_route(router, method, path, params);
+}
+
+fn ::acquire_header_map(pool: wing::HeaderMapPool&) -> i32 { return wing::acquire_header_map(pool); }
+fn ::release_header_map(pool: wing::HeaderMapPool&, idx: i32) { wing::release_header_map(pool, idx); }
+fn ::acquire_extensions(pool: wing::ExtensionsPool&) -> i32 { return wing::acquire_extensions(pool); }
+fn ::release_extensions(pool: wing::ExtensionsPool&, idx: i32) { wing::release_extensions(pool, idx); }
+fn ::check_connection_tick(timer: wing::ConnectionTimer&, now_ns: u64) -> bool { return wing::check_connection_tick(timer, now_ns); }

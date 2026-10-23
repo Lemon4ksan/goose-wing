@@ -210,11 +210,24 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     if ip_str == "::1" || ip_str == "[::1]" || ip_str == "::" || ip_str == "[::]" {
         return true;
     }
-    let clean_ip = if ip_str.len > 2 && ip_str[0] == '[' && ip_str[ip_str.len - 1] == ']' {
+    var clean_ip = if ip_str.len > 2 && ip_str[0] == '[' && ip_str[ip_str.len - 1] == ']' {
         ip_str[1..ip_str.len - 1]
     } else {
         ip_str
     };
+
+    // Strip IPv6 Zone ID / Scope ID (%... or %25...) to prevent SSRF / proxy filter bypass (CVE-2025-22870 / Go #71984)
+    var pct_idx = -1;
+    for i in clean_ip.len {
+        if clean_ip[i] == '%' { pct_idx = i; break; }
+    }
+    if pct_idx >= 0 {
+        clean_ip = clean_ip[..pct_idx];
+    }
+
+    if clean_ip.len > 0 && clean_ip[clean_ip.len - 1] == '.' {
+        clean_ip = clean_ip[..clean_ip.len - 1];
+    }
 
     var lower_buf: u8[..64] = [];
     if clean_ip.len <= 64 {
@@ -245,7 +258,10 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
 
         if starts_with(eff_ip, "fc") || starts_with(eff_ip, "fd") || // Unique Local fc00::/7
            starts_with(eff_ip, "fe8") || starts_with(eff_ip, "fe9") || // Link-local fe80::/10
-           starts_with(eff_ip, "fea") || starts_with(eff_ip, "feb") {
+           starts_with(eff_ip, "fea") || starts_with(eff_ip, "feb") ||
+           starts_with(eff_ip, "fec") || starts_with(eff_ip, "fed") || // Site-local fec0::/10
+           starts_with(eff_ip, "fee") || starts_with(eff_ip, "fef") ||
+           starts_with(eff_ip, "ff") {                                 // Multicast ff00::/8
             return true;
         }
 
@@ -264,6 +280,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         // NAT64 well-known prefix 64:ff9b::/96
         if starts_with(eff_ip, "64:ff9b::") {
             let suffix = eff_ip[9..];
+            if suffix.len == 0 { return true; } // 64:ff9b:: maps to 0.0.0.0
             return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
         }
 
@@ -286,12 +303,24 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
 }
 
 fn is_dangerous_service_port(port_num: i32) -> bool {
-    return port_num == 22 ||    // SSH
-           port_num == 25 ||    // SMTP
-           port_num == 6379 ||  // Redis
-           port_num == 11211 || // Memcached
-           port_num == 2375 ||  // Docker
-           port_num == 2376;
+    return port_num <= 0 ||      // Port 0 (reserved / loopback alias)
+           port_num == 21 ||     // FTP
+           port_num == 22 ||     // SSH
+           port_num == 23 ||     // Telnet
+           port_num == 25 ||     // SMTP
+           port_num == 69 ||     // TFTP
+           port_num == 110 ||    // POP3
+           port_num == 143 ||    // IMAP
+           port_num == 2375 ||   // Docker
+           port_num == 2376 ||   // Docker TLS
+           port_num == 2379 ||   // etcd client
+           port_num == 2380 ||   // etcd peer
+           port_num == 3306 ||   // MySQL
+           port_num == 5432 ||   // PostgreSQL
+           port_num == 6379 ||   // Redis
+           port_num == 11211 ||  // Memcached
+           port_num == 27017 ||  // MongoDB
+           port_num == 28017;    // MongoDB Web Status
 }
 
 fn validate_url_against_ssrf(url_val: const Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
@@ -301,7 +330,8 @@ fn validate_url_against_ssrf(url_val: const Url&, policy: const SsrfGuardPolicy&
         return RedirectError.SchemeDowngradeBlocked;
     }
 
-    let port_val = effective_port(url_val);
+    let raw_port = url_val.port;
+    let port_val = if raw_port == 0 { 0 } else { effective_port(url_val) };
     if policy.denied_ports.len > 0 {
         for denied in policy.denied_ports {
             if port_val == denied { return RedirectError.SsrfBlockedUrl; }
@@ -951,7 +981,7 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
     return Response { .. }, make_error(310, "redirect", "maximum redirect hops exceeded");
 }
 
-fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SSRFGuardConfig&) -> RedirectError {
+fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfGuardPolicy&) -> RedirectError {
     if route.resolved_ips.len == 0 {
         return RedirectError.None;
     }

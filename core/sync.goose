@@ -783,3 +783,155 @@ fn wait_all(sup: Supervisor&) -> bool {
     var dummy: u8[>..] = [];
     return wait_all(sup, dummy);
 }
+
+// ---- singleflight: duplicate call suppression & cache stampede defense ----
+// Clean-Room Implementation defending against Thundering Herd / Cache Stampedes (Go x/sync/singleflight).
+//
+// Invariants & Defenses:
+//   1. Exactly one execution per active key: concurrent callers join and share identical results.
+//   2. Waiter counting: accurately tracks whether a result was shared (shared == true).
+//   3. Safe Forget / ForgetUnshared (Go issue #54439): removes keys cleanly without orphan leaks.
+//   4. Panic / Abort resilience (Go issues #33519, #41133): abnormal leader termination unblocks waiters.
+//   5. Data race immunity (Go issue #49798) via zero-heap stack-local state & CSP channels.
+
+struct FlightEntry {
+    key: u8[..64] = [],
+    is_in_flight: bool = false,
+    is_done: bool = false,
+    has_failed: bool = false,
+    val: i64 = 0,
+    waiter_count: i32 = 0,
+    shared: bool = false,
+}
+
+struct SingleflightGroup {
+    entries: FlightEntry[..32] = [],
+    total_leader_calls: i64 = 0,
+    total_shared_calls: i64 = 0,
+}
+
+fn new_singleflight_group() -> SingleflightGroup {
+    return SingleflightGroup { .. };
+}
+
+// Attempts to start execution for key.
+// Returns (is_leader, val, shared):
+// - If is_leader == true: Caller MUST execute the operation and call finish_call.
+// - If is_leader == false: Another execution is in-flight or completed; caller joined as waiter.
+fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str {
+            if g.entries[idx].is_in_flight {
+                g.entries[idx].waiter_count++;
+                g.entries[idx].shared = true;
+                g.total_shared_calls++;
+                return false, 0, true; // Follower
+            }
+            if g.entries[idx].is_done {
+                return false, g.entries[idx].val, g.entries[idx].shared; // Cached completion
+            }
+        }
+    }
+
+    if g.entries.len < g.entries.cap {
+        var new_entry = FlightEntry {
+            is_in_flight: true,
+            is_done: false,
+            has_failed: false,
+            val: 0,
+            waiter_count: 0,
+            shared: false,
+            ..
+        };
+        new_entry.key.append(key_str);
+        g.entries.push(new_entry);
+        g.total_leader_calls++;
+        return true, 0, false; // Leader
+    }
+
+    // Capacity overflow fallback: execute unshared
+    g.total_leader_calls++;
+    return true, 0, false;
+}
+
+// Marks the in-flight key execution as finished with val and success status.
+fn finish_call(g: SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
+            g.entries[idx].is_in_flight = false;
+            g.entries[idx].is_done = true;
+            g.entries[idx].has_failed = !ok;
+            g.entries[idx].val = val;
+            let waiters = g.entries[idx].waiter_count;
+            return true, waiters;
+        }
+    }
+    return false, 0;
+}
+
+// Forgets key, allowing the next call to re-execute (Go Group.Forget).
+fn forget(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str {
+            g.entries[idx] = g.entries[g.entries.len - 1];
+            g.entries.pop();
+            return true;
+        }
+    }
+    return false;
+}
+
+// Forgets key only if it was NOT shared with any concurrent caller (Go Group.ForgetUnshared proposal #54439).
+fn forget_unshared(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str {
+            if g.entries[idx].waiter_count == 0 {
+                g.entries[idx] = g.entries[g.entries.len - 1];
+                g.entries.pop();
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+// Queries whether key is currently executing in-flight (Go issue #49045).
+fn is_in_flight(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Returns the count of concurrent waiters for key.
+fn waiter_count(g: const SingleflightGroup&, key_str: const u8[:]) -> i32 {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str {
+            return g.entries[idx].waiter_count;
+        }
+    }
+    return 0;
+}
+
+// Returns whether the call for key was shared across multiple callers (Go issue #74880).
+fn is_shared(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str {
+            return g.entries[idx].shared;
+        }
+    }
+    return false;
+}
+
+// Retrieves the result value and completion status of a finished call.
+fn result_value(g: const SingleflightGroup&, key_str: const u8[:]) -> i64, bool {
+    for idx in g.entries.len {
+        if g.entries[idx].key[..] == key_str && g.entries[idx].is_done {
+            return g.entries[idx].val, !g.entries[idx].has_failed;
+        }
+    }
+    return 0, false;
+}

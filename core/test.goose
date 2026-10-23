@@ -165,6 +165,48 @@ fn advance_days(clock: MockClock&, days: i64) -> i64 {
     return clock.now_us;
 }
 
+fn monotonic_now(clock: const MockClock&) -> MonotonicInstant {
+    let ns = if clock.now_us > 0 { (clock.now_us as u64) * 1000 } else { 0 as u64 };
+    return MonotonicInstant { nanos: ns };
+}
+
+// Nanosecond-precision deterministic monotonic clock for GCRA and sub-microsecond tests
+struct MockMonoClock {
+    now_ns: u64 = 1000000000,
+}
+
+fn new_mock_mono_clock(initial_ns: u64 = 1000000000) -> MockMonoClock {
+    return MockMonoClock { now_ns: initial_ns };
+}
+
+fn advance_ns(clock: MockMonoClock&, delta_ns: u64) -> u64 {
+    clock.now_ns += delta_ns;
+    return clock.now_ns;
+}
+
+fn advance_us(clock: MockMonoClock&, delta_us: u64) -> u64 {
+    clock.now_ns += delta_us * 1000;
+    return clock.now_ns;
+}
+
+fn advance_ms(clock: MockMonoClock&, delta_ms: u64) -> u64 {
+    clock.now_ns += delta_ms * 1000000;
+    return clock.now_ns;
+}
+
+fn advance_sec(clock: MockMonoClock&, delta_sec: u64) -> u64 {
+    clock.now_ns += delta_sec * 1000000000;
+    return clock.now_ns;
+}
+
+fn now(clock: const MockMonoClock&) -> MonotonicInstant {
+    return MonotonicInstant { nanos: clock.now_ns };
+}
+
+fn monotonic_now(clock: const MockMonoClock&) -> MonotonicInstant {
+    return MonotonicInstant { nanos: clock.now_ns };
+}
+
 // Deterministic Xorshift64* generator for zero-allocation property fuzzing
 struct FuzzRng {
     state: u64 = 0x853c49e6748fea9b,

@@ -50,6 +50,10 @@ struct Response {
     body: u8[>..] = [],
 }
 
+fn new_response() -> Response {
+    return Response { .. };
+}
+
 fn success(res: const Response&) -> bool {
     return res.status_code >= 200 && res.status_code < 300;
 }

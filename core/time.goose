@@ -358,6 +358,34 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
 
 // ---- monotonic primitives: stopwatch & deadline ---------------------------
 
+// High-resolution monotonic instant (CLOCK_MONOTONIC / performance counter in nanoseconds).
+struct MonotonicInstant {
+    nanos: u64 = 0,
+}
+
+fn monotonic_now() -> MonotonicInstant {
+    let raw_ns = clock_ns();
+    return MonotonicInstant { nanos: if raw_ns > 0 { raw_ns as u64 } else { 0 } };
+}
+
+fn new_monotonic_instant(nanos_val: u64) -> MonotonicInstant {
+    return MonotonicInstant { nanos: nanos_val };
+}
+
+fn as_nanos(inst: MonotonicInstant) -> u64 {
+    return inst.nanos;
+}
+
+fn duration_since(now_inst: MonotonicInstant, anchor: MonotonicInstant) -> Duration {
+    if now_inst.nanos <= anchor.nanos {
+        return Duration { nanos: 0 };
+    }
+    let diff = now_inst.nanos - anchor.nanos;
+    let max_i64 = 9223372036854775807 as u64;
+    let clamped = if diff > max_i64 { max_i64 } else { diff };
+    return Duration { nanos: clamped as i64 };
+}
+
 // High-resolution monotonic stopwatch backed by the system performance counter.
 // Immune to wall-clock adjustments, NTP slew, and leap seconds.
 struct Stopwatch {

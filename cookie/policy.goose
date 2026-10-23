@@ -264,11 +264,11 @@ fn validate_security_cookie_prefixes(
     if starts_with_case_folded(cookie_name, "__host-http-") {
         if !is_http_api { return false; }
         if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
-        if !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
+        if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
     } else if starts_with_case_folded(cookie_name, "__host-") {
         // Prefix: __Host-
         if !cookie_val.secure || !is_secure_channel { return false; }
-        if !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
+        if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
     } else if starts_with_case_folded(cookie_name, "__http-") {
         // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
         if !is_http_api { return false; }

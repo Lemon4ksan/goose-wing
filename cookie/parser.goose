@@ -67,6 +67,10 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
+    if (starts_with_case_folded(parsed_cookie.name[..], "__host-") || starts_with_case_folded(parsed_cookie.name[..], "__host-http-")) && parsed_cookie.has_domain_attr {
+        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+    }
+
     return parsed_cookie, CookieDeleteCause.UNKNOWN, true;
 }
 
@@ -400,6 +404,7 @@ fn apply_parsed_cookie_attribute(
     } else if eq_ascii_fold(attr_name, "priority") {
         cookie_ref.priority = parse_cookie_priority(attr_val);
     } else if eq_ascii_fold(attr_name, "domain") {
+        cookie_ref.has_domain_attr = true;
         apply_parsed_domain_attribute(cookie_ref, attr_val);
     } else if eq_ascii_fold(attr_name, "path") {
         apply_parsed_path_attribute(cookie_ref, attr_val);

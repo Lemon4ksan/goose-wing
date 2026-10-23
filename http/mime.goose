@@ -1,0 +1,900 @@
+// Media Type (Content-Type/Content-Disposition) & RFC 8941/9651 Structured Field Values for Goose.
+// Clean Room Implementation adhering to RFC 9110 §8.3, Chromium HttpUtil::StrictUnquote,
+// and the RFC 8941 / RFC 9651 (SFV with Date & Display String) specifications.
+//
+// Core Types:
+//   MediaType   - Normalized type/subtype with structured attribute-value parameters.
+//   SfvItem     - Structured field bare item with optional parameter mapping.
+//   SfvList     - Structured field list containing items and inner lists.
+//   SfvDict     - Structured field dictionary of key-value members.
+//
+// Standards & Invariants:
+//   HttpUtil::StrictUnquote - Rejects single quotes, unclosed quotes, and escaped terminal quotes.
+//   RFC 8941 / RFC 9651 - Strict atomicity of failure: any parse error discards entire header field.
+//   sf-integer: 15 digits max [-999_999_999_999_999, 999_999_999_999_999].
+//   sf-decimal: 12 int digits, 1..3 frac digits, stored as fixed-point milliths (i64 scaled * 1000).
+//   sf-string: ASCII %x20-7E, escaped only as \" or \\, supporting >= 1024 bytes.
+//   sf-token: (ALPHA / *) *(tchar / ":" / "/").
+//   Dictionary keys: (lcalpha / *) *(lcalpha / DIGIT / "_" / "-" / "." / "*") (uppercase -> HARD FAIL).
+//   sf-date (RFC 9651): "@" sf-integer (Unix epoch seconds).
+//   sf-displaystring (RFC 9651): %" DQUOTE *(unescaped / pct-encoded) DQUOTE with UTF-8 validation.
+namespace wing;
+
+import std;
+import app.profile;
+import http.headers;
+
+// ---- strict unquote (chromium httputil::strictunquote) ----------------------
+
+// Unquotes a quoted-string per RFC 9110 / Chromium HttpUtil::StrictUnquote:
+// 1. Must be enclosed in double quotes (len >= 2, s[0] == '"', s[s.len-1] == '"').
+// 2. Single quotes (') are NEVER accepted as delimiters.
+// 3. Terminal double quote CANNOT be escaped (odd number of backslashes before closing quote -> false).
+// 4. Escaped pairs \" and \\ are decoded to " and \.
+// 5. Rejects embedded NUL/CR/LF/CTL characters.
+fn strict_unquote(input: const u8[:], out: u8[>..]&) -> bool {
+    guard input.len >= 2 else { return false; }
+    guard input[0] == '"' && input[input.len - 1] == '"' else { return false; }
+
+    // Check terminal quote escaping: count trailing backslashes immediately before closing quote
+    var slash_count: i64 = 0;
+    var idx = input.len - 2;
+    while idx >= 1 && input[idx] == '\\' {
+        slash_count++;
+        idx--;
+    }
+    // If odd number of slashes precedes terminal quote, the terminal quote is escaped!
+    guard (slash_count % 2) == 0 else { return false; }
+
+    var i: i64 = 1;
+    let end_idx = input.len - 1;
+    while i < end_idx {
+        let b = input[i];
+        if b == '\\' {
+            guard i + 1 < end_idx else { return false; }
+            let next_b = input[i + 1];
+            // Quoted-pair allows visible ASCII and space
+            guard (next_b >= 0x20 && next_b <= 0x7E) || next_b == '\t' else { return false; }
+            out.push(next_b);
+            i += 2;
+        } else {
+            // Rejects CTLs except HTAB
+            if b < 0x20 {
+                guard b == '\t' else { return false; }
+            } else if b == 0x7F {
+                return false;
+            }
+            out.push(b);
+            i++;
+        }
+    }
+    return true;
+}
+
+fn strict_unquote_buf<B>(input: const u8[:], out: B&) -> bool {
+    var scratch: u8[>..] = [];
+    if !strict_unquote(input, scratch) {
+        return false;
+    }
+    out.clear();
+    out.append(scratch[..]);
+    return true;
+}
+
+// Liberal unquote for legacy or non-critical headers
+fn unquote(input: const u8[:], out: u8[>..]&) -> bool {
+    guard input.len >= 2 && input[0] == '"' && input[input.len - 1] == '"' else {
+        out.append(input);
+        return true;
+    }
+    return strict_unquote(input, out);
+}
+
+// ---- media type (content-type & content-disposition parser) -----------------
+
+struct MediaTypeParam {
+    name: u8[..64] = [],
+    value: u8[..256] = [],
+}
+
+struct MediaType {
+    mime_type: u8[..64] = [],
+    type_name: u8[..32] = [],
+    subtype: u8[..32] = [],
+    params: MediaTypeParam[..16] = [],
+    valid: bool = false,
+}
+
+fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
+    var rem = rem_in;
+    while rem.len > 0 {
+        var next_semi: i64 = -1;
+        var in_quotes = false;
+        for i in rem.len {
+            let b = rem[i];
+            if b == '"' {
+                in_quotes = !in_quotes;
+            } else if b == ';' && !in_quotes {
+                next_semi = i;
+                break;
+            }
+        }
+
+        let param_token = if next_semi >= 0 { rem[..next_semi] } else { rem };
+        rem = if next_semi >= 0 { rem[next_semi + 1..] } else { "" };
+
+        let p_trim = trim_lws(param_token);
+        if p_trim.len == 0 { continue; }
+
+        var eq_pos: i64 = -1;
+        for i in p_trim.len {
+            if p_trim[i] == '=' {
+                eq_pos = i;
+                break;
+            }
+        }
+        guard eq_pos > 0 else { return false; }
+
+        let p_name = trim_lws(p_trim[..eq_pos]);
+        let p_val_raw = trim_lws(p_trim[eq_pos + 1..]);
+        guard is_valid_header_name(p_name) else { return false; }
+
+        var p_item = MediaTypeParam { .. };
+        p_item.name.append(p_name);
+        to_lower(p_item.name[..]);
+
+        if p_val_raw.len > 0 && p_val_raw[0] == '"' {
+            guard strict_unquote_buf(p_val_raw, p_item.value) else { return false; }
+        } else {
+            guard is_valid_header_value(p_val_raw) else { return false; }
+            p_item.value.append(p_val_raw);
+        }
+
+        if mt.params.len < 16 {
+            mt.params.push(p_item);
+        }
+    }
+    return true;
+}
+
+fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
+    var mt = MediaType { .. };
+    let trimmed = trim_lws(raw);
+    guard trimmed.len > 0 else { return mt, false; }
+    if has_embedded_nulls(trimmed) { return mt, false; }
+
+    // Find end of type/subtype (first ';' or end of string)
+    var semi_pos: i64 = -1;
+    for i in trimmed.len {
+        if trimmed[i] == ';' {
+            semi_pos = i;
+            break;
+        }
+    }
+
+    let mime_part = if semi_pos >= 0 { trim_lws(trimmed[..semi_pos]) } else { trim_lws(trimmed) };
+    var slash_pos: i64 = -1;
+    for i in mime_part.len {
+        if mime_part[i] == '/' {
+            slash_pos = i;
+            break;
+        }
+    }
+
+    guard slash_pos > 0 && slash_pos + 1 < mime_part.len else { return mt, false; }
+    let raw_type = mime_part[..slash_pos];
+    let raw_sub = mime_part[slash_pos + 1..];
+
+    guard is_valid_header_name(raw_type) && is_valid_header_name(raw_sub) else { return mt, false; }
+
+    mt.type_name.append(raw_type);
+    to_lower(mt.type_name[..]);
+    mt.subtype.append(raw_sub);
+    to_lower(mt.subtype[..]);
+
+    mt.mime_type.append(mt.type_name[..]);
+    mt.mime_type.push('/');
+    mt.mime_type.append(mt.subtype[..]);
+
+    // Parse parameters
+    if semi_pos >= 0 {
+        guard parse_media_parameters(trimmed[semi_pos + 1..], mt) else { return mt, false; }
+    }
+
+    mt.valid = true;
+    return mt, true;
+}
+
+// RFC 6266 / RFC 7578: Content-Disposition parser
+// disposition = disposition-type *( ";" disposition-parm )
+fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
+    var mt = MediaType { .. };
+    let trimmed = trim_lws(raw);
+    guard trimmed.len > 0 else { return mt, false; }
+    if has_embedded_nulls(trimmed) { return mt, false; }
+
+    var semi_pos: i64 = -1;
+    for i in trimmed.len {
+        if trimmed[i] == ';' {
+            semi_pos = i;
+            break;
+        }
+    }
+
+    let disp_part = if semi_pos >= 0 { trim_lws(trimmed[..semi_pos]) } else { trim_lws(trimmed) };
+    guard is_valid_header_name(disp_part) else { return mt, false; }
+
+    mt.type_name.append(disp_part);
+    to_lower(mt.type_name[..]);
+    mt.mime_type.append(mt.type_name[..]);
+
+    if semi_pos >= 0 {
+        guard parse_media_parameters(trimmed[semi_pos + 1..], mt) else { return mt, false; }
+    }
+
+    mt.valid = true;
+    return mt, true;
+}
+
+fn param(mt: const MediaType&, key: const u8[:]) -> const u8[:] {
+    for &p in mt.params {
+        if eq_ascii_fold(p.name[..], key) {
+            return p.value[..];
+        }
+    }
+    return "";
+}
+
+fn has_param(mt: const MediaType&, key: const u8[:]) -> bool {
+    for &p in mt.params {
+        if eq_ascii_fold(p.name[..], key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn is_multipart(mt: const MediaType&) -> bool {
+    return eq_ascii_fold(mt.type_name[..], "multipart");
+}
+
+fn boundary(mt: const MediaType&) -> const u8[:] {
+    return param(mt, "boundary");
+}
+
+fn charset(mt: const MediaType&) -> const u8[:] {
+    return param(mt, "charset");
+}
+
+// ---- structured field values (sfv: rfc 8941 & rfc 9651) ---------------------
+
+enum SfvType {
+    Integer,
+    Decimal,
+    String,
+    Token,
+    ByteSequence,
+    Boolean,
+    Date,
+    DisplayString,
+}
+
+struct SfvBareItem {
+    kind: SfvType = SfvType.Boolean,
+    int_val: i64 = 0,               // For Integer, Date, and Decimal (scaled * 1000 in milliths)
+    bool_val: bool = false,         // For Boolean
+    text: u8[..1088] = [],          // For String, Token, ByteSequence, DisplayString (>= 1024 bytes per RFC 8941)
+}
+
+struct SfvParam {
+    key: u8[..64] = [],
+    value: SfvBareItem = SfvBareItem { .. },
+}
+
+struct SfvItem {
+    bare: SfvBareItem = SfvBareItem { .. },
+    params: SfvParam[..16] = [],
+}
+
+struct SfvMember {
+    is_inner_list: bool = false,
+    item: SfvItem = SfvItem { .. },
+    inner_list: SfvItem[..32] = [],
+    inner_params: SfvParam[..16] = [],
+}
+
+struct SfvList {
+    members: SfvMember[..64] = [],
+    valid: bool = true,
+}
+
+struct SfvDictEntry {
+    key: u8[..64] = [],
+    member: SfvMember = SfvMember { .. },
+}
+
+struct SfvDict {
+    entries: SfvDictEntry[..64] = [],
+    valid: bool = true,
+}
+
+// Helper: skips optional ASCII whitespace SP and HTAB
+fn sfv_skip_ows(raw: const u8[:], cursor: i64&) {
+    while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') {
+        cursor++;
+    }
+}
+
+// RFC 8941 §3.1.2: Dictionary key parser
+// key = ( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )
+fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
+    guard cursor < raw.len else { return false; }
+    let first = raw[cursor];
+    // First char MUST be lowercase ASCII 'a'..'z' or '*'
+    guard (first >= 'a' && first <= 'z') || first == '*' else { return false; }
+
+    out_key.clear();
+    out_key.push(first);
+    cursor++;
+
+    while cursor < raw.len {
+        let b = raw[cursor];
+        if (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.' || b == '*' {
+            if out_key.len < 64 {
+                out_key.push(b);
+            }
+            cursor++;
+        } else if b >= 'A' && b <= 'Z' {
+            // Uppercase in key is a STRICT SYNTAX ERROR per RFC 8941 §3.1.2
+            return false;
+        } else {
+            break;
+        }
+    }
+    return true;
+}
+
+// RFC 8941 §3.3.1: sf-integer
+// ["-"] 1*15DIGIT in range [-999_999_999_999_999, 999_999_999_999_999]
+fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor < raw.len else { return false; }
+    var is_neg = false;
+    var start_pos = cursor;
+
+    if raw[cursor] == '-' {
+        is_neg = true;
+        cursor++;
+        guard cursor < raw.len else { return false; }
+    }
+
+    var num_val: i64 = 0;
+    var int_digit_count: i64 = 0;
+    guard cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' else { return false; }
+
+    while cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' {
+        int_digit_count++;
+        guard int_digit_count <= 15 else { return false; }
+        let d = raw[cursor] - '0';
+        num_val = num_val * 10 + d;
+        cursor++;
+    }
+
+    // Check for Decimal '.'
+    if cursor < raw.len && raw[cursor] == '.' {
+        // sf-decimal: up to 12 int digits, 1..3 frac digits
+        guard int_digit_count >= 1 && int_digit_count <= 12 else { return false; }
+        cursor++; // skip '.'
+        guard cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' else { return false; }
+
+        var frac_digits: i64 = 0;
+        var frac_val: i64 = 0;
+        while cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' {
+            frac_digits++;
+            guard frac_digits <= 3 else { return false; } // Max 3 fractional digits
+            frac_val = frac_val * 10 + (raw[cursor] - '0');
+            cursor++;
+        }
+
+        // Scale to milliths (thousandths)
+        if frac_digits == 1 { frac_val *= 100; }
+        else if frac_digits == 2 { frac_val *= 10; }
+
+        var total_scaled = num_val * 1000 + frac_val;
+        if is_neg { total_scaled = -total_scaled; }
+
+        out_bare.kind = SfvType.Decimal;
+        out_bare.int_val = total_scaled;
+        return true;
+    }
+
+    // sf-integer: 1 to 15 digits
+    guard int_digit_count >= 1 && int_digit_count <= 15 else { return false; }
+    let max_val: i64 = 999999999999999;
+    guard num_val <= max_val else { return false; }
+
+    out_bare.kind = SfvType.Integer;
+    out_bare.int_val = if is_neg { -num_val } else { num_val };
+    return true;
+}
+
+// RFC 8941 §3.3.3: sf-string
+// DQUOTE *chr DQUOTE, printable ASCII %x20-7E, escaped only as \" or \\
+fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor < raw.len && raw[cursor] == '"' else { return false; }
+    cursor++; // skip initial '"'
+
+    out_bare.kind = SfvType.String;
+    out_bare.text.clear();
+
+    while cursor < raw.len {
+        let b = raw[cursor];
+        if b == '"' {
+            cursor++; // successfully consumed closing '"'
+            return true;
+        } else if b == '\\' {
+            cursor++;
+            guard cursor < raw.len else { return false; }
+            let esc = raw[cursor];
+            // RFC 8941 §3.3.3: ONLY \" and \\ are permitted escape sequences
+            guard esc == '"' || esc == '\\' else { return false; }
+            if out_bare.text.len < 1088 {
+                out_bare.text.push(esc);
+            }
+            cursor++;
+        } else {
+            // Printable ASCII %x20-7E only
+            guard b >= 0x20 && b <= 0x7E else { return false; }
+            if out_bare.text.len < 1088 {
+                out_bare.text.push(b);
+            }
+            cursor++;
+        }
+    }
+    return false; // Unclosed string
+}
+
+// RFC 8941 §3.3.4: sf-token
+// ( ALPHA / "*" ) *( tchar / ":" / "/" )
+fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor < raw.len else { return false; }
+    let first = raw[cursor];
+    guard (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '*' else { return false; }
+
+    out_bare.kind = SfvType.Token;
+    out_bare.text.clear();
+    out_bare.text.push(first);
+    cursor++;
+
+    while cursor < raw.len {
+        let b = raw[cursor];
+        if is_tchar(b) || b == ':' || b == '/' {
+            if out_bare.text.len < 1088 {
+                out_bare.text.push(b);
+            }
+            cursor++;
+        } else {
+            break;
+        }
+    }
+    return true;
+}
+
+// RFC 8941 §3.3.5: sf-binary
+// ":" *(base64) ":"
+fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor < raw.len && raw[cursor] == ':' else { return false; }
+    cursor++; // skip initial ':'
+
+    out_bare.kind = SfvType.ByteSequence;
+    out_bare.text.clear();
+
+    var b64_bytes: u8[..1088] = [];
+    while cursor < raw.len && raw[cursor] != ':' {
+        let b = raw[cursor];
+        guard (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '+' || b == '/' || b == '=' else {
+            return false;
+        }
+        if b64_bytes.len < 1088 {
+            b64_bytes.push(b);
+        }
+        cursor++;
+    }
+    guard cursor < raw.len && raw[cursor] == ':' else { return false; }
+    cursor++; // skip closing ':'
+
+    // Decode Base64
+    guard decode_base64(b64_bytes[..], out_bare.text) else { return false; }
+    return true;
+}
+
+fn b64_val(c: u8) -> i32 {
+    if c >= 'A' && c <= 'Z' { return c - 'A'; }
+    if c >= 'a' && c <= 'z' { return c - 'a' + 26; }
+    if c >= '0' && c <= '9' { return c - '0' + 52; }
+    if c == '+' { return 62; }
+    if c == '/' { return 63; }
+    return -1;
+}
+
+fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
+    guard (src.len % 4) == 0 else { return false; }
+    var i: i64 = 0;
+    while i < src.len {
+        let c0 = src[i];
+        let c1 = src[i + 1];
+        let c2 = src[i + 2];
+        let c3 = src[i + 3];
+
+        let v0 = b64_val(c0);
+        let v1 = b64_val(c1);
+        guard v0 >= 0 && v1 >= 0 else { return false; }
+
+        if c2 == '=' {
+            guard c3 == '=' && i + 4 == src.len else { return false; }
+            guard (v1 & 0x0F) == 0 else { return false; } // non-zero pad bits
+            out.push(((v0 << 2) | (v1 >> 4)) as u8);
+        } else if c3 == '=' {
+            guard i + 4 == src.len else { return false; }
+            let v2 = b64_val(c2);
+            guard v2 >= 0 else { return false; }
+            guard (v2 & 0x03) == 0 else { return false; } // non-zero pad bits
+            out.push(((v0 << 2) | (v1 >> 4)) as u8);
+            out.push(((v1 << 4) | (v2 >> 2)) as u8);
+        } else {
+            let v2 = b64_val(c2);
+            let v3 = b64_val(c3);
+            guard v2 >= 0 && v3 >= 0 else { return false; }
+            out.push(((v0 << 2) | (v1 >> 4)) as u8);
+            out.push(((v1 << 4) | (v2 >> 2)) as u8);
+            out.push(((v2 << 6) | v3) as u8);
+        }
+        i += 4;
+    }
+    return true;
+}
+
+// RFC 8941 §3.3.6: sf-boolean ("?0" or "?1")
+fn parse_sfv_boolean(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor + 1 < raw.len && raw[cursor] == '?' else { return false; }
+    let b = raw[cursor + 1];
+    guard b == '0' || b == '1' else { return false; }
+    out_bare.kind = SfvType.Boolean;
+    out_bare.bool_val = (b == '1');
+    cursor += 2;
+    return true;
+}
+
+// RFC 9651 §3.3.7: sf-date ("@" sf-integer)
+fn parse_sfv_date(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor < raw.len && raw[cursor] == '@' else { return false; }
+    cursor++; // skip '@'
+    var item = SfvBareItem { .. };
+    guard parse_sfv_integer_or_decimal(raw, cursor, item) else { return false; }
+    guard item.kind == SfvType.Integer else { return false; } // Decimal date is forbidden
+    out_bare.kind = SfvType.Date;
+    out_bare.int_val = item.int_val;
+    return true;
+}
+
+// RFC 9651 §3.3.8: sf-displaystring (%" DQUOTE *(unescaped / pct-encoded) DQUOTE)
+fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor + 1 < raw.len && raw[cursor] == '%' && raw[cursor + 1] == '"' else { return false; }
+    cursor += 2; // skip %"
+
+    out_bare.kind = SfvType.DisplayString;
+    out_bare.text.clear();
+
+    while cursor < raw.len {
+        let b = raw[cursor];
+        if b == '"' {
+            cursor++; // consumed closing quote
+            // Validate that decoded bytes are valid UTF-8
+            guard validate_utf8(out_bare.text[..]) else { return false; }
+            return true;
+        } else if b == '%' {
+            // Percent-encoded byte %xx: MUST use lowercase hex digits per RFC 9651 §3.3.8
+            guard cursor + 2 < raw.len else { return false; }
+            let h0 = raw[cursor + 1];
+            let h1 = raw[cursor + 2];
+            let v0 = if (h0 >= '0' && h0 <= '9') { h0 - '0' } else if (h0 >= 'a' && h0 <= 'f') { h0 - 'a' + 10 } else { -1 };
+            let v1 = if (h1 >= '0' && h1 <= '9') { h1 - '0' } else if (h1 >= 'a' && h1 <= 'f') { h1 - 'a' + 10 } else { -1 };
+            guard v0 >= 0 && v1 >= 0 else { return false; } // Uppercase hex (A-F) is FORBIDDEN
+            let decoded_byte = ((v0 << 4) | v1) as u8;
+            if out_bare.text.len < 1088 {
+                out_bare.text.push(decoded_byte);
+            }
+            cursor += 3;
+        } else {
+            // Printable ASCII %x20-7E except % and "
+            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
+            if out_bare.text.len < 1088 {
+                out_bare.text.push(b);
+            }
+            cursor++;
+        }
+    }
+    return false;
+}
+
+// UTF-8 byte sequence validator
+fn validate_utf8(data: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i < data.len {
+        let b0 = data[i];
+        if b0 <= 0x7F {
+            i++;
+        } else if (b0 & 0xE0) == 0xC0 {
+            guard i + 1 < data.len else { return false; }
+            let b1 = data[i + 1];
+            guard (b1 & 0xC0) == 0x80 else { return false; }
+            guard b0 >= 0xC2 else { return false; } // Overlong
+            i += 2;
+        } else if (b0 & 0xF0) == 0xE0 {
+            guard i + 2 < data.len else { return false; }
+            let b1 = data[i + 1];
+            let b2 = data[i + 2];
+            guard (b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 else { return false; }
+            if b0 == 0xE0 && b1 < 0xA0 { return false; } // Overlong
+            if b0 == 0xED && b1 >= 0xA0 { return false; } // UTF-16 surrogates U+D800..U+DFFF
+            i += 3;
+        } else if (b0 & 0xF8) == 0xF0 {
+            guard i + 3 < data.len else { return false; }
+            let b1 = data[i + 1];
+            let b2 = data[i + 2];
+            let b3 = data[i + 3];
+            guard (b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80 else { return false; }
+            if b0 == 0xF0 && b1 < 0x90 { return false; } // Overlong
+            if b0 == 0xF4 && b1 > 0x8F { return false; } // Above U+10FFFF
+            guard b0 <= 0xF4 else { return false; }
+            i += 4;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// RFC 8941 §3.3: Bare item dispatcher
+fn parse_sfv_bare_item(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    guard cursor < raw.len else { return false; }
+    let b = raw[cursor];
+
+    if b == '"' {
+        return parse_sfv_string(raw, cursor, out_bare);
+    }
+    if b == '%' && cursor + 1 < raw.len && raw[cursor + 1] == '"' {
+        return parse_sfv_display_string(raw, cursor, out_bare);
+    }
+    if b == '?' {
+        return parse_sfv_boolean(raw, cursor, out_bare);
+    }
+    if b == '@' {
+        return parse_sfv_date(raw, cursor, out_bare);
+    }
+    if b == ':' {
+        return parse_sfv_binary(raw, cursor, out_bare);
+    }
+    if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '*' {
+        return parse_sfv_token(raw, cursor, out_bare);
+    }
+    if (b >= '0' && b <= '9') || b == '-' {
+        return parse_sfv_integer_or_decimal(raw, cursor, out_bare);
+    }
+    return false;
+}
+
+// RFC 8941 §3.1.2: Parameters parser (*( ";" *SP key [ "=" bare-item ] ))
+fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..16]&) -> bool {
+    while cursor < raw.len && raw[cursor] == ';' {
+        cursor++; // skip ';'
+        sfv_skip_ows(raw, cursor);
+
+        var param_key: u8[..64] = [];
+        guard parse_sfv_key(raw, cursor, param_key) else { return false; }
+
+        var param_val = SfvBareItem { kind: SfvType.Boolean, bool_val: true, .. };
+        if cursor < raw.len && raw[cursor] == '=' {
+            cursor++; // skip '='
+            guard parse_sfv_bare_item(raw, cursor, param_val) else { return false; }
+        }
+
+        // Add or overwrite duplicate param key
+        var found = false;
+        for &p in out_params {
+            if p.key[..] == param_key[..] {
+                p.value = param_val;
+                found = true;
+                break;
+            }
+        }
+        if !found && out_params.len < 16 {
+            var new_p = SfvParam { key: param_key, value: param_val };
+            out_params.push(new_p);
+        }
+    }
+    return true;
+}
+
+// RFC 8941 §3.3: Item parser
+fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
+    var cursor: i64 = 0;
+    sfv_skip_ows(raw, cursor);
+    guard cursor < raw.len else { return false; }
+
+    var bare = SfvBareItem { .. };
+    guard parse_sfv_bare_item(raw, cursor, bare) else { return false; }
+
+    var params: SfvParam[..16] = [];
+    guard parse_sfv_parameters(raw, cursor, params) else { return false; }
+
+    sfv_skip_ows(raw, cursor);
+    guard cursor == raw.len else { return false; } // Strict atomicity: no trailing junk!
+
+    out.bare = bare;
+    out.params.clear();
+    for p in params { out.params.push(p); }
+    return true;
+}
+
+// RFC 8941 §3.1: List parser (supports items and inner lists)
+fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
+    out.members.clear();
+    out.valid = false;
+
+    var cursor: i64 = 0;
+    sfv_skip_ows(raw, cursor);
+    if cursor == raw.len {
+        out.valid = true;
+        return true; // Empty list is valid
+    }
+
+    while cursor < raw.len {
+        var member = SfvMember { .. };
+        if raw[cursor] == '(' {
+            // Inner List
+            member.is_inner_list = true;
+            cursor++; // skip '('
+            while cursor < raw.len {
+                sfv_skip_ows(raw, cursor);
+                if cursor < raw.len && raw[cursor] == ')' {
+                    cursor++; // skip ')'
+                    break;
+                }
+                var item = SfvItem { .. };
+                var bare = SfvBareItem { .. };
+                guard parse_sfv_bare_item(raw, cursor, bare) else { return false; }
+                item.bare = bare;
+                guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
+                if member.inner_list.len < 32 {
+                    member.inner_list.push(item);
+                }
+                guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
+            }
+            guard parse_sfv_parameters(raw, cursor, member.inner_params) else { return false; }
+        } else {
+            // Standalone Item
+            member.is_inner_list = false;
+            guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
+            guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
+        }
+
+        if out.members.len < 64 {
+            out.members.push(member);
+        }
+
+        sfv_skip_ows(raw, cursor);
+        if cursor == raw.len { break; }
+        guard raw[cursor] == ',' else { return false; }
+        cursor++; // skip ','
+        sfv_skip_ows(raw, cursor);
+        guard cursor < raw.len else { return false; } // Trailing comma without item is forbidden
+    }
+
+    out.valid = true;
+    return true;
+}
+
+// RFC 8941 §3.2: Dictionary parser
+fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
+    out.entries.clear();
+    out.valid = false;
+
+    var cursor: i64 = 0;
+    sfv_skip_ows(raw, cursor);
+    if cursor == raw.len {
+        out.valid = true;
+        return true; // Empty dictionary is valid
+    }
+
+    while cursor < raw.len {
+        var key: u8[..64] = [];
+        guard parse_sfv_key(raw, cursor, key) else { return false; }
+
+        var member = SfvMember { .. };
+        if cursor < raw.len && raw[cursor] == '=' {
+            cursor++; // skip '='
+            if cursor < raw.len && raw[cursor] == '(' {
+                // Inner List value
+                member.is_inner_list = true;
+                cursor++; // skip '('
+                while cursor < raw.len {
+                    sfv_skip_ows(raw, cursor);
+                    if cursor < raw.len && raw[cursor] == ')' {
+                        cursor++;
+                        break;
+                    }
+                    var item = SfvItem { .. };
+                    guard parse_sfv_bare_item(raw, cursor, item.bare) else { return false; }
+                    guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
+                    if member.inner_list.len < 32 {
+                        member.inner_list.push(item);
+                    }
+                    guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
+                }
+                guard parse_sfv_parameters(raw, cursor, member.inner_params) else { return false; }
+            } else {
+                // Item value
+                member.is_inner_list = false;
+                guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
+                guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
+            }
+        } else {
+            // Bare key with no '=' defaults to boolean true with optional parameters!
+            member.is_inner_list = false;
+            member.item.bare = SfvBareItem { kind: SfvType.Boolean, bool_val: true, .. };
+            guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
+        }
+
+        // Duplicate key updates in-place per RFC 8941 §3.2
+        var found = false;
+        for &entry in out.entries {
+            if entry.key[..] == key[..] {
+                entry.member = member;
+                found = true;
+                break;
+            }
+        }
+        if !found && out.entries.len < 64 {
+            var new_entry = SfvDictEntry { key: key, member: member };
+            out.entries.push(new_entry);
+        }
+
+        sfv_skip_ows(raw, cursor);
+        if cursor == raw.len { break; }
+        guard raw[cursor] == ',' else { return false; }
+        cursor++; // skip ','
+        sfv_skip_ows(raw, cursor);
+        guard cursor < raw.len else { return false; }
+    }
+
+    out.valid = true;
+    return true;
+}
+
+// Decimal serialization per RFC 8941 §4.1.5
+fn serialize_sfv_decimal(scaled_milli: i64, out: u8[>..]&) {
+    if scaled_milli < 0 {
+        out.push('-');
+    }
+    let abs_val = if scaled_milli < 0 { -scaled_milli } else { scaled_milli };
+    let int_part = abs_val / 1000;
+    var frac_part = abs_val % 1000;
+
+    format(out, int_part);
+    out.push('.');
+
+    // At least 1 digit after dot, strip trailing zeros
+    if frac_part == 0 {
+        out.push('0');
+    } else if (frac_part % 100) == 0 {
+        format(out, frac_part / 100);
+    } else if (frac_part % 10) == 0 {
+        let d = frac_part / 10;
+        if d < 10 { out.push('0'); }
+        format(out, d);
+    } else {
+        if frac_part < 10 { out.push('0'); out.push('0'); }
+        else if frac_part < 100 { out.push('0'); }
+        format(out, frac_part);
+    }
+}
