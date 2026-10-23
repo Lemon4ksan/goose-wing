@@ -59,7 +59,7 @@ struct MultipartMessage {
 // are u16 so jump offsets up to 65535 bytes do not overflow to zero.
 fn build_bmh_shift_table(needle: const u8[:], table: u16[256]&) {
     let needle_len = needle.len;
-    let default_shift = if needle_len > 65535 { 65535 as u16 } else { needle_len as u16 };
+    let default_shift = ct_min_i64(needle_len, 65535) as u16;
 
     for i in 256 {
         table[i] = default_shift;
@@ -421,7 +421,7 @@ fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: Normali
         Suffix => {
             let suf = spec.start;
             if suf > 0 {
-                norm.start = if resource_len > suf { resource_len - suf } else { 0 };
+                norm.start = ct_max_i64(0, resource_len - suf);
                 norm.end_pos = resource_len - 1;
                 has_norm = true;
             }
@@ -444,7 +444,7 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
     for i in 1..raw_ranges.len {
         let next_r = raw_ranges[i];
         if next_r.start <= merged.end_pos || (merged.end_pos < 9223372036854775807 && next_r.start <= merged.end_pos + 1) {
-            merged.end_pos = if next_r.end_pos > merged.end_pos { next_r.end_pos } else { merged.end_pos };
+            merged.end_pos = ct_max_i64(merged.end_pos, next_r.end_pos);
         } else {
             if out_ranges.len < 16 {
                 out_ranges.push(merged);

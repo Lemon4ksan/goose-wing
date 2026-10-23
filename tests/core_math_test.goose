@@ -230,6 +230,29 @@ fn test_bit_manipulation_and_endianness(t: wing::T&) {
         sub.assert_eq(wing::bswap32(0x12345678), 0x78563412, "bswap32");
         sub.assert_eq(wing::bswap64(0x0102030405060708), 0x0807060504030201, "bswap64");
     };
+
+    t.run("Little-Endian and Big-Endian codecs") { sub =>
+        let test_buf: u8[8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        sub.assert_eq(wing::read_le_u32(test_buf[..], 0), 0x04030201, "read_le_u32");
+        sub.assert_eq(wing::read_le_u64(test_buf[..], 0), 0x0807060504030201, "read_le_u64");
+
+        sub.assert_eq(wing::read_be_u16(test_buf[..], 0), 0x0102, "read_be_u16");
+        sub.assert_eq(wing::read_be_u24(test_buf[..], 0), 0x010203, "read_be_u24");
+        sub.assert_eq(wing::read_be_u32(test_buf[..], 0), 0x01020304, "read_be_u32");
+        sub.assert_eq(wing::read_be_u64(test_buf[..], 0), 0x0102030405060708, "read_be_u64");
+
+        var out: u8[..16] = [];
+        wing::write_be_u16(out, 0x1234);
+        sub.assert_eq(out[0], 0x12, "write_be_u16 byte 0");
+        sub.assert_eq(out[1], 0x34, "write_be_u16 byte 1");
+
+        out.clear();
+        wing::write_be_u32(out, 0x12345678);
+        sub.assert_eq(out[0], 0x12, "write_be_u32 byte 0");
+        sub.assert_eq(out[1], 0x34, "write_be_u32 byte 1");
+        sub.assert_eq(out[2], 0x56, "write_be_u32 byte 2");
+        sub.assert_eq(out[3], 0x78, "write_be_u32 byte 3");
+    };
 }
 
 // ----------------------------------------------------------------------------

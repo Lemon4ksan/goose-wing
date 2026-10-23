@@ -708,10 +708,10 @@ fn swar_has_ctl_or_del(w: u64) -> bool {
 
 // Fast header name hash (FNV-1a 32-bit case-folded)
 fn hash_header_name(name: const u8[:]) -> u32 {
-    var h: u32 = 0x811c9dc5;
+    var h: u32 = FNV1A_32_OFFSET;
     for b in name {
         let folded = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
-        h = (h ^ folded) * 0x01000193;
+        h = (h ^ folded) * FNV1A_32_PRIME;
     }
     return h;
 }

@@ -94,10 +94,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
         guard b >= '0' && b <= '9' else {
             return 0;
         }
-        val = val * 10 + (b - '0');
-        if val > MAX_DELTA_SECONDS {
-            val = MAX_DELTA_SECONDS;
-        }
+        val = ct_min_i64(val * 10 + (b - '0'), MAX_DELTA_SECONDS);
     }
     return val;
 }
@@ -107,7 +104,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
 // Computes apparent_age = max(0, response_time - date_value).
 fn compute_apparent_age(response_time: Time, date_value: Time) -> i64 {
     let diff = unix(response_time) - unix(date_value);
-    return if diff > 0 { diff } else { 0 };
+    return ct_max_i64(0, diff);
 }
 
 // Computes response_delay = max(0, response_time - request_time).
@@ -115,17 +112,15 @@ fn compute_apparent_age(response_time: Time, date_value: Time) -> i64 {
 fn compute_response_delay(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
         let dur = duration_since(ts.response_mono, ts.request_mono);
-        let s = as_secs(dur);
-        return if s > 0 { s } else { 0 };
+        return ct_max_i64(0, as_secs(dur));
     }
     let diff = unix(ts.response_time) - unix(ts.request_time);
-    return if diff > 0 { diff } else { 0 };
+    return ct_max_i64(0, diff);
 }
 
 // Computes corrected_initial_age = max(apparent_age, age_hdr + response_delay).
 fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay: i64) -> i64 {
-    let corrected_age_value = age_hdr + response_delay;
-    return if apparent_age > corrected_age_value { apparent_age } else { corrected_age_value };
+    return ct_max_i64(apparent_age, age_hdr + response_delay);
 }
 
 // Computes resident_time = max(0, now - response_time).
@@ -133,11 +128,10 @@ fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay
 fn compute_resident_time(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
         let dur = duration_since(ts.now_mono, ts.response_mono);
-        let s = as_secs(dur);
-        return if s > 0 { s } else { 0 };
+        return ct_max_i64(0, as_secs(dur));
     }
     let diff = unix(ts.now) - unix(ts.response_time);
-    return if diff > 0 { diff } else { 0 };
+    return ct_max_i64(0, diff);
 }
 
 // Computes current_age = corrected_initial_age + resident_time.
@@ -145,8 +139,7 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
     let delay = compute_response_delay(ts);
     let initial_age = compute_corrected_initial_age(apparent_age, age_hdr, delay);
     let resident = compute_resident_time(ts);
-    let current_age = initial_age + resident;
-    return if current_age > MAX_DELTA_SECONDS { MAX_DELTA_SECONDS } else { current_age };
+    return ct_min_i64(initial_age + resident, MAX_DELTA_SECONDS);
 }
 
 // ---- freshness lifetime helpers --------------------------------------------
@@ -167,7 +160,7 @@ fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: Time) -> i
     }
 
     let diff = unix(exp_time) - unix(base_time);
-    return (if diff > 0 { diff } else { 0 }), true;
+    return ct_max_i64(0, diff), true;
 }
 
 // Computes heuristic freshness lifetime (default 10% of Date - Last-Modified) (RFC 9111 §4.2.2).
@@ -191,7 +184,7 @@ fn compute_last_modified_heuristic(resp_headers: const HeaderMap&, ref_time: Tim
     guard delta > 0 else { return 0; }
 
     let heuristic = (delta * heuristic_fraction) / 100;
-    return if heuristic > 0 { heuristic } else { 0 };
+    return ct_max_i64(0, heuristic);
 }
 
 // Computes freshness lifetime according to RFC 9111 priority hierarchy.

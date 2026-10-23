@@ -128,6 +128,31 @@ inline fn ct_abs_i64(x: i64) -> i64 {
     return (x ^ mask) - mask;
 }
 
+// Branchless signed minimum (32-bit).
+inline fn ct_min_i32(a: i32, b: i32) -> i32 {
+    let diff = a - b;
+    let s = ((diff ^ ((a ^ b) & (diff ^ a))) >> 31) & 1;
+    let mask = 0 - s;
+    let ua = a as! u32;
+    let ub = b as! u32;
+    return ((ub & (~mask as! u32)) | (ua & (mask as! u32))) as! i32;
+}
+
+// Branchless signed maximum (32-bit).
+inline fn ct_max_i32(a: i32, b: i32) -> i32 {
+    let diff = b - a;
+    let s = ((diff ^ ((a ^ b) & (diff ^ b))) >> 31) & 1;
+    let mask = 0 - s;
+    let ua = a as! u32;
+    let ub = b as! u32;
+    return ((ub & (~mask as! u32)) | (ua & (mask as! u32))) as! i32;
+}
+
+// Clamps signed 32-bit value into [low, high].
+inline fn clamp_i32(val: i32, low: i32, high: i32) -> i32 {
+    return ct_min_i32(ct_max_i32(val, low), high);
+}
+
 // Clamps unsigned 32-bit value into [low, high].
 inline fn clamp_u32(val: u32, low: u32, high: u32) -> u32 {
     return ct_min_u32(ct_max_u32(val, low), high);

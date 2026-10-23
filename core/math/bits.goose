@@ -104,6 +104,52 @@ inline fn read_le_u32(data: const u8[:], offset: i64) -> u32 {
 
 // Reads a 64-bit unsigned integer in Little-Endian byte order from slice.
 inline fn read_le_u64(data: const u8[:], offset: i64) -> u64 {
-    return (read_le_u32(data, offset)) |
-           ((read_le_u32(data, offset + 4) as u64) << 32);
+    let hi = (read_le_u32(data, offset + 4) as u64) << 32;
+    return (read_le_u32(data, offset)) | hi;
+}
+
+// Reads a 16-bit unsigned integer in Big-Endian (Network) byte order from slice.
+inline fn read_be_u16(data: const u8[:], offset: i64) -> u16 {
+    return ((data[offset] as u16) << 8) | (data[offset + 1]);
+}
+
+// Reads a 24-bit unsigned integer in Big-Endian (Network) byte order from slice.
+inline fn read_be_u24(data: const u8[:], offset: i64) -> u32 {
+    return ((data[offset] as u32) << 16) |
+           ((data[offset + 1] as u32) << 8) |
+           (data[offset + 2]);
+}
+
+// Reads a 32-bit unsigned integer in Big-Endian (Network) byte order from slice.
+inline fn read_be_u32(data: const u8[:], offset: i64) -> u32 {
+    return ((data[offset] as u32) << 24) |
+           ((data[offset + 1] as u32) << 16) |
+           ((data[offset + 2] as u32) << 8) |
+           (data[offset + 3]);
+}
+
+// Reads a 64-bit unsigned integer in Big-Endian (Network) byte order from slice.
+inline fn read_be_u64(data: const u8[:], offset: i64) -> u64 {
+    let hi = (read_be_u32(data, offset) as u64) << 32;
+    return hi | (read_be_u32(data, offset + 4));
+}
+
+// Writes a 16-bit unsigned integer in Big-Endian (Network) byte order into an appendable buffer.
+inline fn write_be_u16<B>(out: B&, val: u16) {
+    out.push(((val >> 8) & 0xFF) as u8);
+    out.push((val & 0xFF) as u8);
+}
+
+// Writes a 32-bit unsigned integer in Big-Endian (Network) byte order into an appendable buffer.
+inline fn write_be_u32<B>(out: B&, val: u32) {
+    out.push(((val >> 24) & 0xFF) as u8);
+    out.push(((val >> 16) & 0xFF) as u8);
+    out.push(((val >> 8) & 0xFF) as u8);
+    out.push((val & 0xFF) as u8);
+}
+
+// Writes a 64-bit unsigned integer in Big-Endian (Network) byte order into an appendable buffer.
+inline fn write_be_u64<B>(out: B&, val: u64) {
+    write_be_u32(out, (val >> 32) as! u32);
+    write_be_u32(out, (val & 0xFFFFFFFF) as! u32);
 }

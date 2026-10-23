@@ -595,24 +595,59 @@ fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]
     let mask = (1 << table.table_log) - 1;
     let t_log = table.table_log;
 
+    if r.src.len >= 8 && !r.underflow {
+        let last_byte = r.src[r.src.len - 1];
+        var stop_bit: i32 = 0;
+        var tmp = last_byte;
+        while (tmp & 0x80) == 0 {
+            stop_bit++;
+            tmp <<= 1;
+        }
+        stop_bit++; // skip the 1 bit itself
+
+        var ptr: i64 = r.src.len - 8;
+        var bit_container = xxh64_read_le64(r.src, ptr);
+        var bits_consumed = stop_bit;
+
+        while decoded < count {
+            if bits_consumed > 32 && ptr > 0 {
+                let shift_bytes = if ptr < (bits_consumed >> 3) { ptr } else { bits_consumed >> 3 };
+                ptr -= shift_bytes;
+                bits_consumed -= (shift_bytes * 8) as i32;
+                bit_container = xxh64_read_le64(r.src, ptr);
+            }
+
+            if bits_consumed + t_log > 64 {
+                break;
+            }
+
+            let bits = ((bit_container << (bits_consumed as u64)) >> ((64 - t_log) as u64)) as i32;
+            let entry = table.entries[bits];
+            lit_buf.push(entry.symbol);
+            bits_consumed += entry.nb_bits;
+            decoded++;
+        }
+
+        if decoded == count {
+            return true;
+        }
+
+        // Synchronize fallback bit reader for remaining symbols
+        let remaining_bits = if ptr == 0 {
+            if 64 >= bits_consumed { (64 - bits_consumed) as i64 } else { 0 }
+        } else {
+            ptr * 8 + (64 - (bits_consumed as i64))
+        };
+        r.bit_pos = remaining_bits;
+        r.cache_offset = -1;
+    }
+
     while decoded < count && !r.underflow {
-        let min_bit = r.cache_offset * 8;
-        while decoded < count && r.cache_offset >= 0 && (r.bit_pos - t_log) >= min_bit {
-            let start_bit = r.bit_pos - t_log;
-            let bit_offset = (start_bit - min_bit) as u64;
-            let bits = ((r.cache_chunk >> bit_offset) as i32) & mask;
-            let entry = table.entries[bits];
-            lit_buf.push(entry.symbol);
-            r.bit_pos -= entry.nb_bits;
-            decoded++;
-        }
-        if decoded < count && !r.underflow {
-            let bits = (zstd_peek_bits(r, t_log) as i32) & mask;
-            let entry = table.entries[bits];
-            lit_buf.push(entry.symbol);
-            zstd_consume_bits(r, entry.nb_bits);
-            decoded++;
-        }
+        let bits = (zstd_peek_bits(r, t_log) as i32) & mask;
+        let entry = table.entries[bits];
+        lit_buf.push(entry.symbol);
+        zstd_consume_bits(r, entry.nb_bits);
+        decoded++;
     }
 
     return decoded == count;
@@ -908,12 +943,41 @@ fn decode_sequences<B>(
 
     // Reverse bitstream for sequences
     let seq_bitstream = src[offset .. block_end];
+    if seq_bitstream.len == 0 { return CompressError.CorruptedBitstream; }
+
     var r = new_zstd_bit_reader(seq_bitstream);
     if r.underflow { return CompressError.CorruptedBitstream; }
 
-    var state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
-    var state_of = zstd_read_bits(r, of_table.table_log) as i64;
-    var state_ml = zstd_read_bits(r, ml_table.table_log) as i64;
+    var state_ll: i64 = 0;
+    var state_of: i64 = 0;
+    var state_ml: i64 = 0;
+
+    let use_fast_dstream = seq_bitstream.len >= 8;
+    var ptr: i64 = 0;
+    var bit_container: u64 = 0;
+    var bits_consumed: i32 = 0;
+
+    if use_fast_dstream {
+        ptr = seq_bitstream.len - 8;
+        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+        let last_byte = seq_bitstream[seq_bitstream.len - 1];
+        if last_byte == 0 { return CompressError.CorruptedBitstream; }
+        let high_bit = zstd_high_bit(last_byte as u32);
+        bits_consumed = 8 - high_bit;
+
+        state_ll = ((bit_container << (bits_consumed as u64)) >> ((64 - ll_table.table_log) as u64)) as i64;
+        bits_consumed += ll_table.table_log;
+
+        state_of = ((bit_container << (bits_consumed as u64)) >> ((64 - of_table.table_log) as u64)) as i64;
+        bits_consumed += of_table.table_log;
+
+        state_ml = ((bit_container << (bits_consumed as u64)) >> ((64 - ml_table.table_log) as u64)) as i64;
+        bits_consumed += ml_table.table_log;
+    } else {
+        state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
+        state_of = zstd_read_bits(r, of_table.table_log) as i64;
+        state_ml = zstd_read_bits(r, ml_table.table_log) as i64;
+    }
 
     var lit_ptr: i64 = 0;
 
@@ -931,9 +995,35 @@ fn decode_sequences<B>(
         let ml_extra_bits = ML_EXTRA_BITS[ml_code as i64] as i32;
         let ll_extra_bits = LL_EXTRA_BITS[ll_code as i64] as i32;
 
-        let of_extra = if of_extra_bits > 0 { zstd_read_bits(r, of_extra_bits) } else { 0 };
-        let ml_extra = if ml_extra_bits > 0 { zstd_read_bits(r, ml_extra_bits) } else { 0 };
-        let ll_extra = if ll_extra_bits > 0 { zstd_read_bits(r, ll_extra_bits) } else { 0 };
+        var of_extra: u32 = 0;
+        var ml_extra: u32 = 0;
+        var ll_extra: u32 = 0;
+
+        if use_fast_dstream {
+            if bits_consumed > 32 && ptr > 0 {
+                let shift_bytes = if ptr < (bits_consumed >> 3) { ptr } else { bits_consumed >> 3 };
+                ptr -= shift_bytes;
+                bits_consumed -= (shift_bytes * 8) as i32;
+                bit_container = xxh64_read_le64(seq_bitstream, ptr);
+            }
+
+            if of_extra_bits > 0 {
+                of_extra = ((bit_container << (bits_consumed as u64)) >> ((64 - of_extra_bits) as u64)) as u32;
+                bits_consumed += of_extra_bits;
+            }
+            if ml_extra_bits > 0 {
+                ml_extra = ((bit_container << (bits_consumed as u64)) >> ((64 - ml_extra_bits) as u64)) as u32;
+                bits_consumed += ml_extra_bits;
+            }
+            if ll_extra_bits > 0 {
+                ll_extra = ((bit_container << (bits_consumed as u64)) >> ((64 - ll_extra_bits) as u64)) as u32;
+                bits_consumed += ll_extra_bits;
+            }
+        } else {
+            of_extra = if of_extra_bits > 0 { zstd_read_bits(r, of_extra_bits) } else { 0 };
+            ml_extra = if ml_extra_bits > 0 { zstd_read_bits(r, ml_extra_bits) } else { 0 };
+            ll_extra = if ll_extra_bits > 0 { zstd_read_bits(r, ll_extra_bits) } else { 0 };
+        }
 
         let lit_len = LL_BASE[ll_code as i64] + ll_extra;
         let match_len = ML_BASE[ml_code as i64] + ml_extra;
@@ -989,7 +1079,14 @@ fn decode_sequences<B>(
         }
 
         if lit_len > 0 {
-            out_buf.append(lit_buf[lit_ptr .. lit_ptr + (lit_len as i64)]);
+            if lit_len == 1 {
+                out_buf.push(lit_buf[lit_ptr]);
+            } else if lit_len == 2 {
+                out_buf.push(lit_buf[lit_ptr]);
+                out_buf.push(lit_buf[lit_ptr + 1]);
+            } else {
+                out_buf.append(lit_buf[lit_ptr .. lit_ptr + (lit_len as i64)]);
+            }
             lit_ptr += lit_len as i64;
         }
 
@@ -1001,7 +1098,23 @@ fn decode_sequences<B>(
             }
             let src_idx = (out_buf.len as i64) - off;
             if off >= m_len {
-                out_buf.append(out_buf[src_idx .. src_idx + m_len]);
+                if m_len == 3 {
+                    out_buf.push(out_buf[src_idx]);
+                    out_buf.push(out_buf[src_idx + 1]);
+                    out_buf.push(out_buf[src_idx + 2]);
+                } else if m_len == 4 {
+                    out_buf.push(out_buf[src_idx]);
+                    out_buf.push(out_buf[src_idx + 1]);
+                    out_buf.push(out_buf[src_idx + 2]);
+                    out_buf.push(out_buf[src_idx + 3]);
+                } else {
+                    out_buf.append(out_buf[src_idx .. src_idx + m_len]);
+                }
+            } else if off == 1 {
+                let b = out_buf[src_idx];
+                for i in match_len {
+                    out_buf.push(b);
+                }
             } else {
                 var curr: i64 = 0;
                 while curr < m_len {
@@ -1016,14 +1129,47 @@ fn decode_sequences<B>(
 
         // Update states for next sequence
         if seq_i + 1 < nb_seq {
-            let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
-            state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
+            if use_fast_dstream {
+                if bits_consumed > 32 && ptr > 0 {
+                    let shift_bytes = if ptr < (bits_consumed >> 3) { ptr } else { bits_consumed >> 3 };
+                    ptr -= shift_bytes;
+                    bits_consumed -= (shift_bytes * 8) as i32;
+                    bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                }
 
-            let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits as i32) } else { 0 };
-            state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
+                var ll_bits: u32 = 0;
+                if ll_entry.nb_bits > 0 {
+                    let nb = ll_entry.nb_bits as i32;
+                    ll_bits = ((bit_container << (bits_consumed as u64)) >> ((64 - nb) as u64)) as u32;
+                    bits_consumed += nb;
+                }
+                state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
 
-            let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
-            state_of = (of_entry.new_state as i64) + (of_bits as i64);
+                var ml_bits: u32 = 0;
+                if ml_entry.nb_bits > 0 {
+                    let nb = ml_entry.nb_bits as i32;
+                    ml_bits = ((bit_container << (bits_consumed as u64)) >> ((64 - nb) as u64)) as u32;
+                    bits_consumed += nb;
+                }
+                state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
+
+                var of_bits: u32 = 0;
+                if of_entry.nb_bits > 0 {
+                    let nb = of_entry.nb_bits as i32;
+                    of_bits = ((bit_container << (bits_consumed as u64)) >> ((64 - nb) as u64)) as u32;
+                    bits_consumed += nb;
+                }
+                state_of = (of_entry.new_state as i64) + (of_bits as i64);
+            } else {
+                let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
+                state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
+
+                let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits as i32) } else { 0 };
+                state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
+
+                let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
+                state_of = (of_entry.new_state as i64) + (of_bits as i64);
+            }
         }
 
         seq_i++;
@@ -1308,4 +1454,3 @@ fn zstd_compress<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true
 
     return true;
 }
-

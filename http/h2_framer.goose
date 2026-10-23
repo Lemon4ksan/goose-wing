@@ -85,14 +85,10 @@ fn parse_h2_frame_header(raw: const u8[:]) -> H2FrameHeader, H2ErrorCode {
         return hdr, H2ErrorCode.FrameSizeError;
     }
 
-    let len_val = ((raw[0] as i32) << 16) | ((raw[1] as i32) << 8) | raw[2];
+    let len_val = read_be_u24(raw, 0) as! i32;
     let f_type = byte_to_frame_type(raw[3]);
     let flags_val = raw[4];
-
-    let s_id = (((raw[5] as i32) & 0x7F) << 24) |
-               ((raw[6] as i32) << 16) |
-               ((raw[7] as i32) << 8) |
-               raw[8];
+    let s_id = (read_be_u32(raw, 5) & 0x7FFFFFFF) as! i32;
 
     hdr.payload_len = len_val;
     hdr.frame_type = f_type;

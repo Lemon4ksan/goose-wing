@@ -51,10 +51,7 @@ fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
 
 // Reads a 32-bit big-endian unsigned integer from src at offset.
 fn read_zlib_u32_be(src: const u8[:], offset: i64) -> u32 {
-    let b0 = (src[offset] as u32) << 24;
-    let b1 = (src[offset + 1] as u32) << 16;
-    let b2 = (src[offset + 2] as u32) << 8;
-    return b0 | b1 | b2 | src[offset + 3];
+    return read_be_u32(src, offset);
 }
 
 // Decompresses RFC 1950 Zlib stream from src into out with optional preset dictionary and quota guard.

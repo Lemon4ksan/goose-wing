@@ -401,28 +401,15 @@ const XXH64_PRIME4: u64 = 0x85EBCA77C2B2AE63;
 const XXH64_PRIME5: u64 = 0x27D4EB2F165667C5;
 
 fn xxh64_rotl(x: u64, r: u64) -> u64 {
-    return (x << r) | (x >> (64 - r));
+    return rotl64(x, r as u32);
 }
 
 fn xxh64_read_le64(buf: const u8[:], offset: i64) -> u64 {
-    let b0 = buf[offset] as u64;
-    let b1 = buf[offset + 1] as u64;
-    let b2 = buf[offset + 2] as u64;
-    let b3 = buf[offset + 3] as u64;
-    let b4 = buf[offset + 4] as u64;
-    let b5 = buf[offset + 5] as u64;
-    let b6 = buf[offset + 6] as u64;
-    let b7 = buf[offset + 7] as u64;
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) |
-           (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+    return read_le_u64(buf, offset);
 }
 
 fn xxh64_read_le32(buf: const u8[:], offset: i64) -> u32 {
-    let b0 = buf[offset] as u32;
-    let b1 = buf[offset + 1] as u32;
-    let b2 = buf[offset + 2] as u32;
-    let b3 = buf[offset + 3] as u32;
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    return read_le_u32(buf, offset);
 }
 
 fn xxh64_round(acc: u64, input: u64) -> u64 {

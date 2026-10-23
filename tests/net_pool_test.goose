@@ -67,6 +67,16 @@ fn test_pool_key_dimensions_and_isolation(t: wing::T&) {
         sub.assert_false(wing::pool_key_equals(key1, key_doh), "Secure DNS policy mismatch isolates socket group");
         sub.assert_false(wing::pool_key_equals(key1, key_cert), "Cert network fetch flag mismatch isolates socket group");
         sub.assert_false(wing::pool_key_equals(key1, key_net), "Target network ID mismatch isolates socket group");
+
+        let h1 = wing::pool_key_hash(key1);
+        let h2 = wing::pool_key_hash(key2);
+        let h_case = wing::pool_key_hash(key_case);
+        let h_port = wing::pool_key_hash(key_port);
+        let h_scheme = wing::pool_key_hash(key_scheme);
+        sub.assert_eq(h1, h2, "Identical PoolKey produces identical hash");
+        sub.assert_eq(h1, h_case, "Case-folded host produces identical hash");
+        sub.assert_ne(h1, h_port, "Port difference changes hash");
+        sub.assert_ne(h1, h_scheme, "Scheme difference changes hash");
     };
 
     t.run("Preconnect Scheme Normalization") { sub =>

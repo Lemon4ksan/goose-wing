@@ -29,7 +29,7 @@ enum ContainerFormat {
 // Auto-detects the container format of a compressed byte stream.
 fn detect_container_format(src: const u8[:]) -> ContainerFormat {
     if src.len >= 4 {
-        let magic = (src[0]) | ((src[1] as u32) << 8) | ((src[2] as u32) << 16) | ((src[3] as u32) << 24);
+        let magic = read_le_u32(src, 0);
         if magic == 0xFD2FB528 {
             return ContainerFormat.Zstd;
         }

@@ -431,7 +431,7 @@ fn apply_parsed_max_age_attribute(
     }
 
     let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
-    let capped_sec = if max_age_val > max_allowed_seconds { max_allowed_seconds } else { max_age_val };
+    let capped_sec = ct_min_i64(max_age_val, max_allowed_seconds);
     cookie_ref.expires_utc = now_us + capped_sec * 1000000;
 }
 

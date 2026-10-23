@@ -20,15 +20,9 @@ let K_OVERHEAD_HMAC_SHA256: i64  = 45; // 1 + 4 + 8 + 32
 // Binds creation timestamp and cookie name to prevent replay and context swapping.
 fn build_cookie_aad<B>(ver: u8, key_id: u32, timestamp_sec: i64, cookie_name: const u8[:], out: B&) {
     out.push(ver);
-    out.push(((key_id >> 24) & 0xFF) as u8);
-    out.push(((key_id >> 16) & 0xFF) as u8);
-    out.push(((key_id >> 8) & 0xFF) as u8);
-    out.push((key_id & 0xFF) as u8);
-    for i in 8 {
-        out.push(((timestamp_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
-    }
-    out.push(((cookie_name.len >> 8) & 0xFF) as u8);
-    out.push((cookie_name.len & 0xFF) as u8);
+    write_be_u32(out, key_id);
+    write_be_u64(out, timestamp_sec as u64);
+    write_be_u16(out, cookie_name.len as u16);
     out.append(cookie_name);
 }
 
@@ -37,19 +31,10 @@ fn build_cookie_aad<B>(ver: u8, key_id: u32, timestamp_sec: i64, cookie_name: co
 // Length prefixes prevent boundary collisions between cookie name and payload.
 fn build_signed_to_sign<B>(key_id: u32, cookie_sec: i64, cookie_name: const u8[:], payload: const u8[:], out: B&) {
     out.push(WIRE_VER_HMAC_SHA256);
-    out.push(((key_id >> 24) & 0xFF) as u8);
-    out.push(((key_id >> 16) & 0xFF) as u8);
-    out.push(((key_id >> 8) & 0xFF) as u8);
-    out.push((key_id & 0xFF) as u8);
-    for i in 8 {
-        out.push(((cookie_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
-    }
-    out.push(((cookie_name.len >> 8) & 0xFF) as u8);
-    out.push((cookie_name.len & 0xFF) as u8);
-    out.push(((payload.len >> 24) & 0xFF) as u8);
-    out.push(((payload.len >> 16) & 0xFF) as u8);
-    out.push(((payload.len >> 8) & 0xFF) as u8);
-    out.push((payload.len & 0xFF) as u8);
+    write_be_u32(out, key_id);
+    write_be_u64(out, cookie_sec as u64);
+    write_be_u16(out, cookie_name.len as u16);
+    write_be_u32(out, payload.len as u32);
     out.append(payload);
 }
 
@@ -151,10 +136,7 @@ fn seal_binary_hkdf_aes<B>(
     out: B&,
 ) -> bool {
     out.push(WIRE_VER_HKDF_AES_GCM);
-    out.push(((slot.key_id >> 24) & 0xFF) as u8);
-    out.push(((slot.key_id >> 16) & 0xFF) as u8);
-    out.push(((slot.key_id >> 8) & 0xFF) as u8);
-    out.push((slot.key_id & 0xFF) as u8);
+    write_be_u32(out, slot.key_id);
 
     var salt: u8[32] = [0; 32];
     var nonce12: u8[12] = [0; 12];
@@ -194,14 +176,8 @@ fn seal_binary_xchacha20<B>(
     out: B&,
 ) -> bool {
     out.push(WIRE_VER_XCHACHA20);
-    out.push(((slot.key_id >> 24) & 0xFF) as u8);
-    out.push(((slot.key_id >> 16) & 0xFF) as u8);
-    out.push(((slot.key_id >> 8) & 0xFF) as u8);
-    out.push((slot.key_id & 0xFF) as u8);
-
-    for i in 8 {
-        out.push(((now_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
-    }
+    write_be_u32(out, slot.key_id);
+    write_be_u64(out, now_sec as u64);
 
     var nonce24: u8[24] = [0; 24];
     for i in 8 {
@@ -340,11 +316,7 @@ fn private_jar_open_binary(
 ) -> bool {
     guard raw_wire.len >= 53 else { return false; }
     let ver = raw_wire[0];
-
-    let key_id = ((raw_wire[1] as u32) << 24) |
-                 ((raw_wire[2] as u32) << 16) |
-                 ((raw_wire[3] as u32) << 8) |
-                 raw_wire[4];
+    let key_id = read_be_u32(raw_wire, 1);
 
     let slot, ok_key = find_key(jar.store, key_id);
     guard ok_key else { return false; }
@@ -413,14 +385,8 @@ fn signed_jar_seal_binary<B>(
     guard ok_key else { return false; }
 
     out.push(WIRE_VER_HMAC_SHA256);
-    out.push(((slot.key_id >> 24) & 0xFF) as u8);
-    out.push(((slot.key_id >> 16) & 0xFF) as u8);
-    out.push(((slot.key_id >> 8) & 0xFF) as u8);
-    out.push((slot.key_id & 0xFF) as u8);
-
-    for i in 8 {
-        out.push(((now_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
-    }
+    write_be_u32(out, slot.key_id);
+    write_be_u64(out, now_sec as u64);
     out.append(payload);
 
     var to_sign_stack: u8[..4200] = [];
@@ -449,17 +415,12 @@ fn signed_jar_open_binary(
     let ver = raw_wire[0];
     guard ver == WIRE_VER_HMAC_SHA256 else { return false; }
 
-    let key_id = ((raw_wire[1] as u32) << 24) |
-                 ((raw_wire[2] as u32) << 16) |
-                 ((raw_wire[3] as u32) << 8) |
-                 raw_wire[4];
+    let key_id = read_be_u32(raw_wire, 1);
 
     let slot, ok_key = find_key(jar.store, key_id);
     guard ok_key else { return false; }
 
-    var ts: u64 = 0;
-    for i in 8 { ts = (ts << 8) | raw_wire[5 + i]; }
-    let cookie_sec = ts as i64;
+    let cookie_sec = read_be_u64(raw_wire, 5) as! i64;
 
     if now_sec > 0 {
         if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }

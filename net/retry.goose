@@ -117,16 +117,13 @@ fn new_backoff_config(
     };
 }
 
-// Pseudo-random uniform integer in range [min_val, max_val] using local Xorshift64*.
-fn uniform_random(seed: u64&, min_val: i64, max_val: i64) -> i64 {
+// Pseudo-random uniform integer in range [min_val, max_val] using WyRand and Lemire fast-range.
+inline fn uniform_random(seed: u64&, min_val: i64, max_val: i64) -> i64 {
     guard max_val > min_val else { return min_val; }
-    // Xorshift64* step
-    seed ^= seed >> 12;
-    seed ^= seed << 25;
-    seed ^= seed >> 27;
-    let rnd = seed * 2685821657736338717;
+    seed += WYP0_V42;
+    let rnd = wymum(seed ^ WYP1_V42, seed);
     let range = (max_val - min_val + 1) as u64;
-    let offset = (rnd % range) as i64;
+    let offset = fast_range_biased_u64(rnd, range) as! i64;
     return min_val + offset;
 }
 
@@ -164,7 +161,7 @@ fn compute_backoff_jitter_ms(
             let prev = if prev_sleep_ms > 0 { prev_sleep_ms } else { cfg.base_ms };
             let upper = prev * 3;
             let rnd_sleep = uniform_random(rng_seed, cfg.base_ms, upper);
-            let sleep_ms = if rnd_sleep > cfg.cap_ms { cfg.cap_ms } else { rnd_sleep };
+            let sleep_ms = ct_min_i64(rnd_sleep, cfg.cap_ms);
             prev_sleep_ms = sleep_ms;
             sleep_ms
         },
@@ -195,8 +192,7 @@ fn parse_retry_after_ms(
     if all_digits {
         let secs, ok_s = parse_digits(clean);
         guard ok_s && secs >= 0 else { return 0, false; }
-        let ms = if secs > 9223372036854775 { 9223372036854775 } else { secs * 1000 };
-        return ms, true;
+        return retry_after_sec_to_ms_sat(secs), true;
     }
 
     // 2. Check for HTTP-date (IMF-fixdate, e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
@@ -337,7 +333,7 @@ fn allow_retry_budget(budget: AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
     let window_secs = budget.window_duration_ns / 1000000000;
     let allowed_by_ratio = (budget.total_requests * budget.max_retry_ratio_pct) / 100;
     let allowed_by_floor = budget.min_retries_per_sec * window_secs;
-    let total_allowed = if allowed_by_ratio > allowed_by_floor { allowed_by_ratio } else { allowed_by_floor };
+    let total_allowed = ct_max_i64(allowed_by_ratio, allowed_by_floor);
 
     if budget.retried_requests < total_allowed {
         budget.retried_requests++;

@@ -57,18 +57,14 @@ struct GcraCell {
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
     let t = quota.emission_interval_ns;
     let tau = quota.delay_tolerance_ns;
-    let max_cost = if t > 0 { 0xFFFFFFFFFFFFFFFF / t } else { 0 };
-    let delta = if cost_n > max_cost { 0xFFFFFFFFFFFFFFFF } else { cost_n * t };
+    let delta = mul_sat_u64(cost_n, t);
 
     let tat_old = cell.tat_ns;
-    let tat_base = if now_ns > tat_old { now_ns } else { tat_old };
-    var tat_new = tat_base + delta;
-    if tat_new < tat_base {
-        tat_new = 0xFFFFFFFFFFFFFFFF;
-    }
+    let tat_base = ct_max_u64(now_ns, tat_old);
+    let tat_new = add_sat_u64(tat_base, delta);
 
     let limit_window = tau + t;
-    let t_allow = if tat_new > limit_window { tat_new - limit_window } else { 0 as u64 };
+    let t_allow = sub_sat_u64(tat_new, limit_window);
 
     if now_ns < t_allow {
         let retry_after = t_allow - now_ns;
@@ -89,7 +85,7 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
         rem = quota.burst;
     }
 
-    let reset_after = if tat_new > now_ns { tat_new - now_ns } else { 0 as u64 };
+    let reset_after = sub_sat_u64(tat_new, now_ns);
 
     return RateLimitDecision.Allowed {
         remaining_burst: rem,
@@ -109,22 +105,18 @@ fn gcra_reserve_n(
 ) -> RateLimitDecision {
     let t = quota.emission_interval_ns;
     let tau = quota.delay_tolerance_ns;
-    let max_cost = if t > 0 { 0xFFFFFFFFFFFFFFFF / t } else { 0 };
-    let delta = if cost_n > max_cost { 0xFFFFFFFFFFFFFFFF } else { cost_n * t };
+    let delta = mul_sat_u64(cost_n, t);
 
     let tat_old = cell.tat_ns;
-    let tat_base = if now_ns > tat_old { now_ns } else { tat_old };
-    var tat_new = tat_base + delta;
-    if tat_new < tat_base {
-        tat_new = 0xFFFFFFFFFFFFFFFF;
-    }
+    let tat_base = ct_max_u64(now_ns, tat_old);
+    let tat_new = add_sat_u64(tat_base, delta);
 
     let limit_window = tau + t;
-    let t_allow = if tat_new > limit_window { tat_new - limit_window } else { 0 as u64 };
+    let t_allow = sub_sat_u64(tat_new, limit_window);
 
     if now_ns >= t_allow {
         cell.tat_ns = tat_new;
-        let reset_after = if tat_new > now_ns { tat_new - now_ns } else { 0 as u64 };
+        let reset_after = sub_sat_u64(tat_new, now_ns);
         return RateLimitDecision.Allowed {
             remaining_burst: quota.burst,
             new_tat_ns: tat_new,

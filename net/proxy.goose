@@ -153,8 +153,7 @@ fn build_socks5_connect_request(
     }
 
     // DST.PORT (2 bytes, big-endian)
-    out.push(((port >> 8) & 0xFF) as u8);
-    out.push((port & 0xFF) as u8);
+    write_be_u16(out, port);
 
     return Socks5Error.None;
 }
@@ -168,15 +167,20 @@ struct Socks5Reply {
 
 // Calculates expected wire length of SOCKS5 connect reply based on ATYP (RFC 1928 Section 5).
 fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
-    if atyp == SOCKS5_ATYP_IPV4 {
-        return 4 + 4 + 2, Socks5Error.None;
-    } else if atyp == SOCKS5_ATYP_IPV6 {
-        return 4 + 16 + 2, Socks5Error.None;
-    } else if atyp == SOCKS5_ATYP_DOMAIN {
-        guard buf.len >= 5 else { return 0, Socks5Error.BufferTruncated; }
-        let domain_len = buf[4] as i64;
-        return 4 + 1 + domain_len + 2, Socks5Error.None;
+    if atyp != SOCKS5_ATYP_IPV4 && atyp != SOCKS5_ATYP_IPV6 && atyp != SOCKS5_ATYP_DOMAIN {
+        return 0, Socks5Error.AddressTypeNotSupported;
     }
+    if atyp == SOCKS5_ATYP_DOMAIN && buf.len < 5 {
+        return 0, Socks5Error.BufferTruncated;
+    }
+    if buf.len >= 5 {
+        let expected_len = socks5_expected_frame_len_ct(buf);
+        if expected_len > 0 {
+            return expected_len, Socks5Error.None;
+        }
+    }
+    if atyp == SOCKS5_ATYP_IPV4 { return 10, Socks5Error.None; }
+    if atyp == SOCKS5_ATYP_IPV6 { return 22, Socks5Error.None; }
     return 0, Socks5Error.AddressTypeNotSupported;
 }
 
@@ -205,9 +209,7 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     guard err == Socks5Error.None else { return Socks5Reply { .. }, err; }
     guard buf.len >= needed_len else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
 
-    let p_hi = buf[needed_len - 2] as u16;
-    let p_lo = buf[needed_len - 1] as u16;
-    let bnd_port = (p_hi << 8) | p_lo;
+    let bnd_port = read_be_u16(buf, needed_len - 2);
 
     let res = Socks5Reply {
         reply_code: rep,
@@ -372,7 +374,7 @@ fn feed_header_bytes(
 ) -> SlowlorisViolation {
     if reader.headers_complete { return SlowlorisViolation.None; }
 
-    let elapsed_ns = if now_mono_ns > reader.header_read_start_ns { now_mono_ns - reader.header_read_start_ns } else { 0 };
+    let elapsed_ns = ct_max_i64(0, now_mono_ns - reader.header_read_start_ns);
 
     // Barrier 1: Monotonic Cumulative Header Deadline (never reset per-byte!)
     if elapsed_ns >= reader.config.response_header_timeout_ns {
