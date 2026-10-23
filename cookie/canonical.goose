@@ -1,5 +1,14 @@
-// Canonical Cookie Model (CanonicalCookie)
+// Canonical Cookie Model (CanonicalCookie).
 // Clean room implementation of Chromium CookieMonster canonical data structure and semantics.
+//
+// Core Types:
+//   CanonicalCookie - In-memory and persistent cookie entity with microsecond lifecycle timestamps.
+//
+// Standards & Specifications:
+//   RFC 6265bis Section 5.3 - Storage model, microsecond timestamps, and canonicalization.
+//   RFC 6265bis Section 5.4 - Canonical unique key collision resolution.
+//   CHIPS (Cookies Having Independent Partitioned State) top-frame partition key model.
+//   Origin-Bound Cookies (OBC) source scheme and source port binding.
 namespace wing;
 
 import std;
@@ -10,7 +19,7 @@ import cookie.policy;
 import cookie.engine;
 import cookie.store;
 
-// ---- canonical cookie model ---------------------------------------------
+// ---- canonical cookie model ------------------------------------------------
 
 // CanonicalCookie represents the atomic, fully-validated state of an HTTP cookie
 // in memory and persistent storage, containing origin bindings, microsecond lifecycle
@@ -46,7 +55,7 @@ fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie 
     return new_cookie;
 }
 
-// ---- lifecycle & expiration predicates -----------------------------------
+// ---- lifecycle & expiration predicates -------------------------------------
 
 // Evaluates whether a cookie is expired relative to microsecond timestamp now_us.
 // Session cookies (persistent == false) never expire automatically by time.
@@ -73,12 +82,12 @@ fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: 
     return in_lax_allowing_unsafe_window(cookie_val, now_us);
 }
 
-// Combined payload size in bytes (RFC 6265bis §5.5: name + value <= 4096 bytes).
+// Combined payload size in bytes (RFC 6265bis Section 5.5: name + value <= 4096 bytes).
 fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
     return cookie_val.name.len + cookie_val.value.len;
 }
 
-// ---- fluent in-place builder methods (ufcs) ------------------------------
+// ---- fluent in-place builder methods (ufcs) --------------------------------
 
 fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
     cookie_ref.value.clear();

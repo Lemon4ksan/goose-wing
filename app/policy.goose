@@ -1,8 +1,18 @@
 // Networking and resilience policies for goose-wing (Backoff, RateLimiter).
+//
+// Core Types:
+//   Backoff     - Exponential backoff retry policy with duration caps and multiplicative factors.
+//   RateLimiter - Token bucket rate limiter for pacing outbound network requests.
+//
+// Standards & Specifications:
+//   Exponential backoff with upper bound duration saturation.
+//   Continuous-replenishment Token Bucket rate limiting algorithm.
 namespace wing;
 
 import std;
 import core.time;
+
+// ---- exponential backoff policy --------------------------------------------
 
 // Exponential backoff policy for retrying failed network requests.
 struct Backoff {
@@ -33,7 +43,7 @@ fn delay(backoff: const Backoff&, attempt: i64) -> Duration {
     return Duration { nanos: if res > backoff.max_ns { backoff.max_ns } else { res } };
 }
 
-// --- Token Bucket Rate Limiter ---
+// ---- token bucket rate limiter ---------------------------------------------
 
 // Token bucket rate limiter for pacing outbound network requests.
 struct RateLimiter {

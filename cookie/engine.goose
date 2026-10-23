@@ -1,5 +1,16 @@
 // Chromium CookieMonster Canonical In-Memory Storage & Multi-Round GC Engine.
 // Clean Room Implementation for goose-wing conforming to RFC 6265bis, CHIPS, OBC & Chromium V24.
+//
+// Core Types:
+//   CanonicalCookieJar - Multi-tier memory store with 6-round domain GC and global eviction.
+//   CookieDeletionInfo - Filter criteria for selective and bulk session cookie deletion.
+//
+// Standards & Specifications:
+//   Chromium net::CookieMonster hysteresis GC (180 domain cap / 3300 global cap).
+//   Chromium 6-round priority eviction algorithm with Round 4 High-NonSecure priority.
+//   30-day global purge immunity window for active cookies.
+//   RFC 6265 Section 5.4 Header ordering (longest path first, then earliest creation_utc).
+//   Immutable creation_utc preservation across updates and collision overwrites.
 namespace wing;
 
 import std;
@@ -10,7 +21,7 @@ import cookie.policy;
 import cookie.parser;
 import cookie.store;
 
-// ---- canonical cookie monster jar container -----------------------------
+// ---- canonical cookie monster jar container --------------------------------
 
 // CanonicalCookieJar represents the in-memory state of the Chromium-grade CookieMonster engine,
 // featuring 2-level hierarchical indexing (eTLD+1), 6-round priority eviction GC, CHIPS memory quotas,
@@ -91,7 +102,7 @@ fn purge_expired(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     return evicted_count;
 }
 
-// ---- Selective Deletion Engine (Matrix 14: CookieDeletionInfo) --------------
+// ---- selective deletion engine (cookie deletion filter) --------------------
 
 struct CookieDeletionInfo {
     start_utc: i64 = 0,
@@ -104,34 +115,34 @@ struct CookieDeletionInfo {
     purge_non_secure: bool = false,
 }
 
-fn cookie_matches_deletion_filter(c: const CanonicalCookie&, filter: const CookieDeletionInfo&) -> bool {
-    if filter.start_utc > 0 && c.creation_utc < filter.start_utc { return false; }
-    if filter.end_utc > 0 && c.creation_utc > filter.end_utc { return false; }
-    if filter.session_only && c.persistent { return false; }
-    if filter.domain.len > 0 && !eq_ascii_fold(c.domain[..], filter.domain[..]) { return false; }
-    if filter.name.len > 0 && c.name[..] != filter.name[..] { return false; }
-    if filter.partition_key.len > 0 && c.partition_key[..] != filter.partition_key[..] { return false; }
-    if filter.top_frame_site_key.len > 0 && c.partition_key[..] != filter.top_frame_site_key[..] { return false; }
-    if filter.purge_non_secure && (c.secure || c.source_scheme == CookieSourceScheme.Secure) { return false; }
+fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: const CookieDeletionInfo&) -> bool {
+    if filter.start_utc > 0 && cookie_val.creation_utc < filter.start_utc { return false; }
+    if filter.end_utc > 0 && cookie_val.creation_utc > filter.end_utc { return false; }
+    if filter.session_only && cookie_val.persistent { return false; }
+    if filter.domain.len > 0 && !eq_ascii_fold(cookie_val.domain[..], filter.domain[..]) { return false; }
+    if filter.name.len > 0 && cookie_val.name[..] != filter.name[..] { return false; }
+    if filter.partition_key.len > 0 && cookie_val.partition_key[..] != filter.partition_key[..] { return false; }
+    if filter.top_frame_site_key.len > 0 && cookie_val.partition_key[..] != filter.top_frame_site_key[..] { return false; }
+    if filter.purge_non_secure && (cookie_val.secure || cookie_val.source_scheme == CookieSourceScheme.Secure) { return false; }
     return true; // Matches filter -> should be deleted
 }
 
 fn delete_matching(jar: CanonicalCookieJar&, filter: const CookieDeletionInfo&) -> i64 {
-    let before = jar.cookies.len;
+    let before_count = jar.cookies.len;
     jar.cookies.retain() { !cookie_matches_deletion_filter(it, filter) };
-    return before - jar.cookies.len;
+    return before_count - jar.cookies.len;
 }
 
 fn delete_all_created_in_time_range(jar: CanonicalCookieJar&, start_utc: i64, end_utc: i64) -> i64 {
-    let before = jar.cookies.len;
+    let before_count = jar.cookies.len;
     jar.cookies.retain() {
         !(it.creation_utc >= start_utc && (end_utc == 0 || it.creation_utc <= end_utc))
     };
-    return before - jar.cookies.len;
+    return before_count - jar.cookies.len;
 }
 
 fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = false) -> i64 {
-    let before = jar.cookies.len;
+    let before_count = jar.cookies.len;
     jar.cookies.retain() {
         if purge_non_secure && (!it.secure && it.source_scheme != CookieSourceScheme.Secure) {
             false
@@ -139,7 +150,7 @@ fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = fal
             it.persistent
         }
     };
-    return before - jar.cookies.len;
+    return before_count - jar.cookies.len;
 }
 
 // Safely inserts a pre-built CanonicalCookie through full security validation, collision overwrite and GC.
@@ -195,7 +206,7 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
     return "";
 }
 
-// ---- ingestion & insertion pipeline --------------------------------------
+// ---- ingestion & insertion pipeline ----------------------------------------
 
 // Ingestion entry point into the Canonical Cookie Monster Jar:
 // 1. Enforces multi-tier security invariants (prefixes, secure requirements, script API checks).
@@ -228,7 +239,7 @@ fn set_canonical_cookie(
         return true;
     }
 
-    // 3. RFC 6265bis §5.6: Secure Shadowing Protection
+    // 3. RFC 6265bis Section 5.6: Secure Shadowing Protection
     if has_secure_shadowing_collision(jar, new_cookie, url_is_secure) {
         jar.rejected_security_count += 1;
         return false;
@@ -286,7 +297,7 @@ fn set_cookie_header(
     return set_cookie_header(jar, req_url, set_cookie_raw, now_us, true, partition_key);
 }
 
-// ---- outgoing request routing & serialization ----------------------------
+// ---- outgoing request routing & serialization ------------------------------
 
 // High-level declarative helper for generating outgoing HTTP Cookie header.
 fn build_cookie_header<B>(
@@ -390,7 +401,7 @@ fn get_canonical_cookies_for_request(
 
 // Queries and extracts matching cookies for an outgoing HTTP request.
 // Updates last_access_utc for retrieved cookies.
-// Returns cookies sorted per RFC 6265 §5.4:
+// Returns cookies sorted per RFC 6265 Section 5.4:
 // 1. Longest Path first (path.len descending)
 // 2. Earliest creation_utc first (creation_utc ascending)
 fn get_canonical_cookies_for_request(
@@ -431,7 +442,7 @@ fn get_canonical_cookies_for_request(
     stable_sort(out[..]) { cookie_a, cookie_b => request_cookie_order_less(cookie_a, cookie_b) };
 }
 
-// ---- quotas & garbage collection engine ----------------------------------
+// ---- quotas & garbage collection engine ------------------------------------
 
 // Executes Domain Garbage Collection for a specific effective domain (eTLD+1).
 // Trigger: domain count > max_cookies_per_domain (180).
@@ -921,7 +932,7 @@ fn handle_cookie_collision(
 ) -> bool {
     let existing = jar.cookies[collision_idx];
 
-    // RFC 6265bis §5.6 / Chromium: Non-secure cannot overwrite existing Secure cookie
+    // RFC 6265bis Section 5.6 / Chromium: Non-secure cannot overwrite existing Secure cookie
     if would_insecure_overwrite_secure(existing, new_cookie, url_is_secure) {
         jar.rejected_security_count += 1;
         return false;

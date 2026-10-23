@@ -162,7 +162,7 @@ fn test_duration_format_and_parse_security(t: wing::T&) {
         sub.assert_bytes_eq(buf[..], "500ns");
 
         buf.clear(); wing::format(buf, wing::micros(750));
-        sub.assert_bytes_eq(buf[..], "750µs");
+        sub.assert_bytes_eq(buf[..], "750us");
 
         buf.clear(); wing::format(buf, wing::millis(250));
         sub.assert_bytes_eq(buf[..], "250ms");
@@ -692,7 +692,7 @@ fn test_rfc3339_codec_and_attack_vectors(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 10. RFC 9110 §5.6.7 HTTP-Date Formatting & 3-Format Parser Security
+// 10. RFC 9110 Section 5.6.7 HTTP-Date Formatting & 3-Format Parser Security
 // ----------------------------------------------------------------------------
 fn test_http_date_rfc9110_and_attack_vectors(t: wing::T&) {
     t.run("HTTP-Date Format Always in GMT") { sub =>
@@ -726,7 +726,7 @@ fn test_http_date_rfc9110_and_attack_vectors(t: wing::T&) {
 
     t.run("HTTP-Date Attack Vectors & Syntax Bypass Rejection") { sub =>
         let bad_http_vectors = [
-            // Non-GMT Timezone Trailers (RFC 9110 §5.6.7 mandates GMT only)
+            // Non-GMT Timezone Trailers (RFC 9110 Section 5.6.7 mandates GMT only)
             StringVector { input: "Thu, 22 Oct 2026 23:18:18 UTC", expect_ok: false, desc: "UTC trailer rejected" },
             StringVector { input: "Thu, 22 Oct 2026 23:18:18 PST", expect_ok: false, desc: "PST trailer rejected" },
             StringVector { input: "Thu, 22 Oct 2026 23:18:18 +0000", expect_ok: false, desc: "Numeric offset rejected" },
@@ -781,7 +781,7 @@ fn main() {
     wing::run_case(runner, "7. Time Arithmetic, Comparisons & ReDoS / DoS Immunity", test_time_arithmetic_and_redos_immunity);
     wing::run_case(runner, "8. Time Truncation, Rounding & Timezones", test_time_truncation_rounding_and_timezones);
     wing::run_case(runner, "9. RFC 3339 / ISO 8601 Codec & Attack Vectors", test_rfc3339_codec_and_attack_vectors);
-    wing::run_case(runner, "10. RFC 9110 §5.6.7 HTTP-Date Formatting & 3-Format Parser Security", test_http_date_rfc9110_and_attack_vectors);
+    wing::run_case(runner, "10. RFC 9110 Section 5.6.7 HTTP-Date Formatting & 3-Format Parser Security", test_http_date_rfc9110_and_attack_vectors);
 
     let ok = wing::finish(runner);
     assert(ok);

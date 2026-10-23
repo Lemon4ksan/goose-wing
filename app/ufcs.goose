@@ -1,9 +1,15 @@
 // Global UFCS bridges so callers outside `namespace wing` can invoke
 // `req.header(...)`, `session.post(...) { req => ... }`, and `res.is_success()`
 // using natural method-call syntax (`val.f(arg)` -> `::f(val, arg)`).
+//
+// Core Types:
+//   Global namespace functions (`fn ::...`) providing universal Uniform Function Call Syntax.
+//
+// Standards & Specifications:
+//   Goose v2026.3 UFCS Resolution Model (top-level method dispatch across module namespaces).
 namespace wing;
 
-// --- Session UFCS bridges ---
+// ---- session ufcs bridges --------------------------------------------------
 
 fn ::set_base_url(session: wing::Session&, url: const u8[:]) { wing::set_base_url(session, url); }
 fn ::set_profile(session: wing::Session&, profile: wing::Profile) { wing::set_profile(session, profile); }
@@ -53,7 +59,7 @@ fn ::delete<BuilderFn: fn(wing::Request&)>(session: wing::Session&, url: const u
     return wing::delete(session, url, BuilderFn);
 }
 
-// --- Request UFCS bridges ---
+// ---- request ufcs bridges --------------------------------------------------
 
 fn ::header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::header(req, name, value); }
 fn ::set_header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::set_header(req, name, value); }
@@ -68,7 +74,7 @@ fn ::raw_json(req: wing::Request&, json_str: const u8[:]) { wing::raw_json(req, 
 fn ::json<T>(req: wing::Request&, payload: const T&) { wing::json(req, payload); }
 fn ::set_json<T>(req: wing::Request&, payload: const T&) { wing::set_json(req, payload); }
 
-// --- Response & Error UFCS bridges ---
+// ---- response & error ufcs bridges -----------------------------------------
 
 fn ::ok(err: const wing::Error&) -> bool { return wing::ok(err); }
 fn ::is_success(res: const wing::Response&) -> bool { return wing::is_success(res); }
@@ -78,8 +84,7 @@ fn ::text(res: const wing::Response&) -> const u8[:] { return wing::text(res); }
 fn ::json<T>(res: const wing::Response&, out: T&) -> wing::Error { return wing::json(res, out); }
 fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing::decode_json<T>(res); }
 
-
-// --- Time & Duration UFCS bridges ---
+// ---- time & duration ufcs bridges ------------------------------------------
 
 fn ::as_nanos(dur: wing::Duration) -> i64 { return wing::as_nanos(dur); }
 fn ::as_micros(dur: wing::Duration) -> i64 { return wing::as_micros(dur); }
@@ -197,7 +202,7 @@ fn ::remaining(deadline_val: const wing::Deadline&) -> wing::Duration { return w
 fn ::delay(backoff: const wing::Backoff&, attempt: i64) -> wing::Duration { return wing::delay(backoff, attempt); }
 fn ::allow(limiter: wing::RateLimiter&) -> bool { return wing::allow(limiter); }
 
-// --- CanonicalCookie & CanonicalCookieJar UFCS bridges ---
+// ---- cookie & cookie jar ufcs bridges --------------------------------------
 
 fn ::add(jar: wing::CanonicalCookieJar&, name: const u8[:], val: const u8[:]) -> wing::CanonicalCookie& {
     return wing::add(jar, name, val);
@@ -312,27 +317,27 @@ fn ::import_json(jar: wing::CanonicalCookieJar&, json_text: const u8[:], now_us:
     return wing::import_canonical_json(jar, json_text, now_us);
 }
 
-// --- URL & Origin UFCS Bridges ---
+// ---- url & origin ufcs bridges ---------------------------------------------
 
-fn ::scheme(u: const wing::Url&) -> const u8[:] { return wing::scheme(u); }
-fn ::host(u: const wing::Url&) -> const u8[:] { return wing::host(u); }
-fn ::port(u: const wing::Url&) -> i32 { return wing::effective_port(u); }
-fn ::effective_port(u: const wing::Url&) -> i32 { return wing::effective_port(u); }
-fn ::pathname(u: const wing::Url&) -> const u8[:] { return wing::pathname(u); }
-fn ::path(u: const wing::Url&) -> const u8[:] { return wing::pathname(u); }
-fn ::search(u: const wing::Url&) -> const u8[:] { return wing::search(u); }
-fn ::origin(u: const wing::Url&) -> wing::Origin { return wing::origin_from_url(u); }
-fn ::is_special(u: const wing::Url&) -> bool { return wing::is_special(u); }
+fn ::scheme(url_val: const wing::Url&) -> const u8[:] { return wing::scheme(url_val); }
+fn ::host(url_val: const wing::Url&) -> const u8[:] { return wing::host(url_val); }
+fn ::port(url_val: const wing::Url&) -> i32 { return wing::effective_port(url_val); }
+fn ::effective_port(url_val: const wing::Url&) -> i32 { return wing::effective_port(url_val); }
+fn ::pathname(url_val: const wing::Url&) -> const u8[:] { return wing::pathname(url_val); }
+fn ::path(url_val: const wing::Url&) -> const u8[:] { return wing::pathname(url_val); }
+fn ::search(url_val: const wing::Url&) -> const u8[:] { return wing::search(url_val); }
+fn ::origin(url_val: const wing::Url&) -> wing::Origin { return wing::origin_from_url(url_val); }
+fn ::is_special(url_val: const wing::Url&) -> bool { return wing::is_special(url_val); }
 
-// --- File & Path UFCS Bridges ---
+// ---- file & path ufcs bridges -----------------------------------------------
 
-fn ::is_file_url(u: const wing::Url&) -> bool { return wing::is_file_url(u); }
-fn ::file_path<B>(u: const wing::Url&, out: B&) -> bool { return wing::file_path(u, out); }
-fn ::last_path_component(u: const wing::Url&) -> const u8[:] { return wing::last_path_component(u); }
-fn ::path_extension(u: const wing::Url&) -> const u8[:] { return wing::path_extension(u); }
-fn ::deleting_path_extension(u: wing::Url) -> wing::Url { return wing::deleting_path_extension(u); }
-fn ::deleting_last_path_component(u: wing::Url) -> wing::Url { return wing::deleting_last_path_component(u); }
-fn ::appending_path_component(u: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(u, component); }
-fn ::appending(u: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(u, component); }
-fn ::appending_path(u: wing::Url, subpath: const u8[:]) -> wing::Url { return wing::appending_path(u, subpath); }
-fn ::appending_path_extension(u: wing::Url, ext: const u8[:]) -> wing::Url { return wing::appending_path_extension(u, ext); }
+fn ::is_file_url(url_val: const wing::Url&) -> bool { return wing::is_file_url(url_val); }
+fn ::file_path<B>(url_val: const wing::Url&, out: B&) -> bool { return wing::file_path(url_val, out); }
+fn ::last_path_component(url_val: const wing::Url&) -> const u8[:] { return wing::last_path_component(url_val); }
+fn ::path_extension(url_val: const wing::Url&) -> const u8[:] { return wing::path_extension(url_val); }
+fn ::deleting_path_extension(url_val: wing::Url) -> wing::Url { return wing::deleting_path_extension(url_val); }
+fn ::deleting_last_path_component(url_val: wing::Url) -> wing::Url { return wing::deleting_last_path_component(url_val); }
+fn ::appending_path_component(url_val: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(url_val, component); }
+fn ::appending(url_val: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(url_val, component); }
+fn ::appending_path(url_val: wing::Url, subpath: const u8[:]) -> wing::Url { return wing::appending_path(url_val, subpath); }
+fn ::appending_path_extension(url_val: wing::Url, ext: const u8[:]) -> wing::Url { return wing::appending_path_extension(url_val, ext); }

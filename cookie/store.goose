@@ -1,5 +1,16 @@
-// Persistence Engine, Chromium SQLite V24 Schema, Write-Back Batcher & Formats
-// Clean Room Implementation conforming to Chromium SQLitePersistentCookieStore and RFC 6265bis §5.4.
+// Persistence Engine, Chromium SQLite V24 Schema, Write-Back Batcher & Formats.
+// Clean Room Implementation conforming to Chromium SQLitePersistentCookieStore and RFC 6265bis Section 5.4.
+//
+// Core Types:
+//   StoreOpType       - Store mutation operation taxonomy (InsertOrUpdate, Delete).
+//   PendingStoreOp    - Single pending mutation record with attached CanonicalCookie.
+//   WriteBackBatcher  - Queue coalescing and transaction write-back batching engine.
+//
+// Standards & Specifications:
+//   Chromium SQLite PersistentCookieStore Schema Version 24 (6-column composite primary key).
+//   RFC 6265bis Section 5.4 Server-side incoming Cookie header parsing (first appearance wins).
+//   Netscape cookies.txt format import and export specification.
+//   Structured Chromium V24 JSON serialization and deserialization.
 namespace wing;
 
 import std;
@@ -11,7 +22,7 @@ import cookie.parser;
 import cookie.policy;
 import cookie.engine;
 
-// ---- chromium sqlite v24 schema & query generator ------------------------
+// ---- chromium sqlite v24 schema & query generator --------------------------
 
 // Generates the official Chromium SQLite V24 schema DDL and indices.
 fn generate_sqlite_v24_schema<B>(out: B&) {
@@ -87,7 +98,7 @@ fn generate_sqlite_session_cleanup_sql<B>(out: B&) {
     out.append("DELETE FROM cookies WHERE is_persistent = 0;\n");
 }
 
-// ---- write-back mutation batcher -----------------------------------------
+// ---- write-back mutation batcher -------------------------------------------
 
 enum StoreOpType {
     InsertOrUpdate,
@@ -193,9 +204,9 @@ fn flush_store_batch<B>(
     return total_operations;
 }
 
-// ---- outgoing header value formatting & ingestion -------------------------
+// ---- outgoing header value formatting & ingestion --------------------------
 
-// Formats cookies into an outgoing HTTP request Cookie header value per RFC 6265 §5.4.
+// Formats cookies into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
 fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
     for cookie_idx in cookies.len {
         if cookie_idx > 0 {
@@ -209,7 +220,7 @@ fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
 }
 
 // Parses an incoming Cookie: header on the server side into distinct name-value pairs.
-// RFC 6265bis §5.4: If duplicate names are received, the FIRST appearance is preserved!
+// RFC 6265bis Section 5.4: If duplicate names are received, the FIRST appearance is preserved!
 fn parse_server_cookie_header(raw_header: const u8[:], now_us: i64, out: CanonicalCookie[>..]&) {
     guard raw_header.len > 0 else { return; }
 
@@ -222,7 +233,7 @@ fn parse_server_cookie_header(raw_header: const u8[:], out: CanonicalCookie[>..]
     parse_server_cookie_header(raw_header, 0, out);
 }
 
-// ---- netscape cookies.txt format interop ---------------------------------
+// ---- netscape cookies.txt format interop -----------------------------------
 
 // Exports cookies formatted as a standard Netscape cookies.txt file.
 fn export_canonical_netscape<B>(jar: const CanonicalCookieJar&, out: B&) {
@@ -282,7 +293,7 @@ fn import_canonical_netscape(jar: CanonicalCookieJar&, content: const u8[:], now
     return imported_count;
 }
 
-// ---- structured chromium v24 json interop --------------------------------
+// ---- structured chromium v24 json interop ----------------------------------
 
 // Exports the CanonicalCookieJar to structured Chromium V24 JSON format.
 fn export_canonical_json(jar: const CanonicalCookieJar&, out: u8[>..]&) {
@@ -457,22 +468,22 @@ fn parse_server_cookie_header(raw_header: const u8[:]) -> CanonicalCookie[>..] {
 }
 
 fn get_server_cookie(cookies: const CanonicalCookie[:], name: const u8[:]) -> const u8[:] {
-    for i in cookies.len {
-        if cookies[i].name[..] == name {
-            return cookies[i].value[..];
+    for cookie_idx in cookies.len {
+        if cookies[cookie_idx].name[..] == name {
+            return cookies[cookie_idx].value[..];
         }
     }
     return "";
 }
 
 // Constant-time byte slice comparison to prevent timing side-channel attacks (CRY-05)
-fn constant_time_eq(a: const u8[:], b: const u8[:]) -> bool {
-    guard a.len == b.len else { return false; }
-    var diff: u8 = 0;
-    for i in a.len {
-        diff |= a[i] ^ b[i];
+fn constant_time_eq(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
+    guard bytes_a.len == bytes_b.len else { return false; }
+    var diff_accum: u8 = 0;
+    for byte_idx in bytes_a.len {
+        diff_accum |= bytes_a[byte_idx] ^ bytes_b[byte_idx];
     }
-    return diff == 0;
+    return diff_accum == 0;
 }
 
 fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const CanonicalCookie&) -> bool {
@@ -498,7 +509,7 @@ fn parse_single_server_cookie_pair(pair_slice: const u8[:], now_us: i64, out: Ca
     let cookie_val = if eq_pos >= 0 { trim(clean_pair[eq_pos + 1..]) } else { "" };
     guard cookie_name.len > 0 else { return; }
 
-    // RFC 6265bis §5.4: Preserves FIRST appearance
+    // RFC 6265bis Section 5.4: Preserves FIRST appearance
     for existing_idx in out.len {
         if out[existing_idx].name[..] == cookie_name {
             return;

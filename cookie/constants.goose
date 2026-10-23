@@ -1,14 +1,25 @@
 // Chromium CookieMonster & IETF RFC 6265bis Architectural Constants and Enumerations.
 // Clean Room Implementation for goose-wing.
+//
+// Core Types:
+//   CookieSameSite      - RFC 6265bis cross-site security mode (Default, Lax, Strict, None).
+//   CookiePriority      - Chromium CookieMonster cache retention priority (Low, Medium, High).
+//   CookieSourceScheme  - Origin-Bound Cookies (OBC) source scheme (Unset, NonSecure, Secure).
+//   CookieDeleteCause   - Deletion taxonomy enum for telemetry and audit logging.
+//
+// Standards & Specifications:
+//   RFC 6265bis Cookies: State Management Mechanism (IETF Draft).
+//   Chromium net::CookieMonster architectural hysteresis thresholds & eviction quotas.
+//   CHIPS (Cookies Having Independent Partitioned State) memory quotas.
 namespace wing;
 
 import std;
 
-// ---- architectural limits ----
+// ---- architectural limits --------------------------------------------------
 
 // Maximum cookie lifetime capped at 400 days (kMinutesIn400Days = 576000 minutes).
 let K_MINUTES_IN_400_DAYS: i64 = 576000;
-let K_MAX_COOKIE_AGE_US: i64 = 576000 * 60 * 1000000; // 34,560,000,000,000 µs
+let K_MAX_COOKIE_AGE_US: i64 = 576000 * 60 * 1000000; // 34,560,000,000,000 us
 
 // Size limits: payload (name + value) vs attributes.
 // RFC 6265bis Issue #1340 / Chromium M95+ unified limits.
@@ -32,10 +43,10 @@ let K_GLOBAL_TARGET_COOKIES: i64 = 3000;  // Remaining cookies global quota (330
 
 // Immunity window: active cookies accessed within 30 days are immune from global purge.
 let K_SAFE_FROM_GLOBAL_PURGE_DAYS: i64 = 30;
-let K_SAFE_FROM_GLOBAL_PURGE_US: i64 = 30 * 86400 * 1000000; // 2,592,000,000,000 µs
+let K_SAFE_FROM_GLOBAL_PURGE_US: i64 = 30 * 86400 * 1000000; // 2,592,000,000,000 us
 
 // Cookie Incrementalism: Lax-allowing-unsafe (Lax+POST) 2-minute exception window.
-let K_LAX_ALLOWING_UNSAFE_WINDOW_US: i64 = 120 * 1000000; // 2 minutes (120,000,000 µs)
+let K_LAX_ALLOWING_UNSAFE_WINDOW_US: i64 = 120 * 1000000; // 2 minutes (120,000,000 us)
 
 // CHIPS: Maximum memory bytes (name + value) per (PartitionKey, eTLD+1) domain.
 let K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES: i64 = 10240; // 10 KB quota
@@ -44,7 +55,7 @@ let K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES: i64 = 10240; // 10 KB quota
 let K_COMMIT_INTERVAL_MS: i64 = 30000;    // 30 seconds
 let K_COMMIT_AFTER_BATCH_SIZE: i64 = 512; // 512 mutations
 
-// ---- same-site enumeration ----
+// ---- same-site enumeration -------------------------------------------------
 
 // RFC 6265bis SameSite mode.
 enum CookieSameSite {
@@ -63,14 +74,14 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
     };
 }
 
-fn parse_cookie_same_site(val: const u8[:]) -> CookieSameSite {
-    if eq_ascii_fold(val, "strict") { return CookieSameSite.Strict; }
-    if eq_ascii_fold(val, "lax") { return CookieSameSite.Lax; }
-    if eq_ascii_fold(val, "none") { return CookieSameSite.None; }
+fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
+    if eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
+    if eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
+    if eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
     return CookieSameSite.Default;
 }
 
-// ---- priority enumeration ----
+// ---- priority enumeration --------------------------------------------------
 
 // Retention priority level during memory GC (cookie_constants.h).
 enum CookiePriority {
@@ -87,13 +98,13 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
     };
 }
 
-fn parse_cookie_priority(val: const u8[:]) -> CookiePriority {
-    if eq_ascii_fold(val, "low") { return CookiePriority.Low; }
-    if eq_ascii_fold(val, "high") { return CookiePriority.High; }
+fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
+    if eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
+    if eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
     return CookiePriority.Medium;
 }
 
-// ---- source scheme enumeration ----
+// ---- source scheme enumeration ---------------------------------------------
 
 // Origin-Bound Cookies (OBC) source scheme.
 enum CookieSourceScheme {
@@ -110,13 +121,13 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
     };
 }
 
-fn parse_cookie_source_scheme(val: const u8[:]) -> CookieSourceScheme {
-    if eq_ascii_fold(val, "secure") { return CookieSourceScheme.Secure; }
-    if eq_ascii_fold(val, "nonsecure") { return CookieSourceScheme.NonSecure; }
+fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
+    if eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
+    if eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
     return CookieSourceScheme.Unset;
 }
 
-// ---- deletion cause enumeration ----
+// ---- deletion cause enumeration --------------------------------------------
 
 // Deletion cause taxonomy for telemetry and persistence (Chromium CookieMonster).
 enum CookieDeleteCause {

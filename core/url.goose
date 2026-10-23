@@ -1,5 +1,17 @@
-// WHATWG Canonical URL, Origin Security Model & RegistrableSite Engine.
-// RFC 3986, RFC 5952, RFC 5890, and Chromium url::Origin / url::SchemeHostPort.
+// The Goose standard URL, Origin & Path library: candidate for `std::url`.
+//
+// Core Types:
+//   Url             - Canonical WHATWG URL with contiguous buffer and compact index offsets.
+//   Origin          - Security origin model differentiating Tuple (scheme, host, port) and Opaque.
+//   OriginKind      - Origin classification enum (Tuple, Opaque).
+//   RegistrableSite - Schemeful Same-Site identity tuple (scheme, eTLD+1 registrable domain).
+//   UrlParseError   - Explicit lexical and structural parse diagnostics enum.
+//
+// Standards & Specifications:
+//   WHATWG URL Living Standard (single-buffer ada-url / sorug index-offset model).
+//   RFC 5952 IPv6 canonical zero-run compression and IPv4-mapped IPv6 normalization.
+//   RFC 6265bis Schemeful Same-Site and HTML5 Origin serialization rules.
+//   Swift Foundation-style cross-platform File URL normalization and path manipulation.
 namespace wing;
 
 import std;
@@ -101,13 +113,13 @@ fn parse_url_with_base(raw_input: const u8[:], base_url: const Url&) -> Url, Url
 }
 
 fn new_url(raw_input: const u8[:]) -> Url {
-    let u, err = parse_url(raw_input);
-    return u;
+    let parsed_url, err = parse_url(raw_input);
+    return parsed_url;
 }
 
 fn new_url(raw_input: const u8[:], base_url: const Url&) -> Url {
-    let u, err = parse_url_with_base(raw_input, base_url);
-    return u;
+    let parsed_url, err = parse_url_with_base(raw_input, base_url);
+    return parsed_url;
 }
 
 // ---- url component accessors (ufcs friendly) -------------------------------
@@ -155,10 +167,10 @@ fn port_str(url_val: const Url&) -> const u8[:] {
 fn effective_port(url_val: const Url&) -> i32 {
     guard url_val.valid else { return -1; }
     if url_val.port > 0 { return url_val.port; }
-    let s = scheme(url_val);
-    if s == "http" || s == "ws" { return 80; }
-    if s == "https" || s == "wss" { return 443; }
-    if s == "ftp" { return 21; }
+    let scheme_str = scheme(url_val);
+    if scheme_str == "http" || scheme_str == "ws" { return 80; }
+    if scheme_str == "https" || scheme_str == "wss" { return 443; }
+    if scheme_str == "ftp" { return 21; }
     return -1;
 }
 
@@ -185,14 +197,14 @@ fn is_special(url_val: const Url&) -> bool {
 
 fn is_http_or_https(url_val: const Url&) -> bool {
     guard url_val.valid else { return false; }
-    let s = scheme(url_val);
-    return s == "http" || s == "https";
+    let scheme_str = scheme(url_val);
+    return scheme_str == "http" || scheme_str == "https";
 }
 
 fn is_secure_scheme(url_val: const Url&) -> bool {
     guard url_val.valid else { return false; }
-    let s = scheme(url_val);
-    return s == "https" || s == "wss";
+    let scheme_str = scheme(url_val);
+    return scheme_str == "https" || scheme_str == "wss";
 }
 
 // ---- file urls and swift-like path manipulation ----------------------------
@@ -245,6 +257,24 @@ fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) {
     }
 }
 
+fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) {
+    for char_byte in raw_subpath {
+        if char_byte == '\\' {
+            out.push('/');
+        } else if char_byte == ' ' {
+            out.append("%20");
+        } else if char_byte == '#' {
+            out.append("%23");
+        } else if char_byte == '?' {
+            out.append("%3F");
+        } else if char_byte == '%' {
+            out.append("%25");
+        } else {
+            out.push(char_byte);
+        }
+    }
+}
+
 // Constructs a file: URL from a native operating system file path (Windows or POSIX).
 // Normalizes drive letters (C:\... -> file:///C:/...), UNC paths (\\server\share -> file://server/share),
 // and percent-encodes spaces and special characters.
@@ -259,22 +289,7 @@ fn new_file_url(file_path: const u8[:]) -> Url {
 
     // Windows UNC path (e.g. \\server\share\file.txt or //server/share/file.txt)
     if file_path.len >= 2 && (file_path[0] == '\\' || file_path[0] == '/') && (file_path[1] == '\\' || file_path[1] == '/') {
-        let unc_remainder = file_path[2..];
-        for char_byte in unc_remainder {
-            if char_byte == '\\' {
-                raw_href.push('/');
-            } else if char_byte == ' ' {
-                raw_href.append("%20");
-            } else if char_byte == '#' {
-                raw_href.append("%23");
-            } else if char_byte == '?' {
-                raw_href.append("%3F");
-            } else if char_byte == '%' {
-                raw_href.append("%25");
-            } else {
-                raw_href.push(char_byte);
-            }
-        }
+        append_encoded_subpath(file_path[2..], raw_href);
         return new_url(raw_href[..]);
     }
 
@@ -284,55 +299,22 @@ fn new_file_url(file_path: const u8[:]) -> Url {
         file_path[1] == ':';
 
     if is_windows_drive {
-        raw_href.push('/'); // file:///C:/...
+        raw_href.push('/');
         raw_href.push(file_path[0]);
         raw_href.push(':');
-        var rest_idx = 2;
-        if rest_idx < file_path.len && (file_path[rest_idx] == '/' || file_path[rest_idx] == '\\') {
-            raw_href.push('/');
-            rest_idx++;
-        } else {
-            raw_href.push('/');
-        }
-        while rest_idx < file_path.len {
-            let char_byte = file_path[rest_idx];
-            if char_byte == '\\' {
-                raw_href.push('/');
-            } else if char_byte == ' ' {
-                raw_href.append("%20");
-            } else if char_byte == '#' {
-                raw_href.append("%23");
-            } else if char_byte == '?' {
-                raw_href.append("%3F");
-            } else if char_byte == '%' {
-                raw_href.append("%25");
-            } else {
-                raw_href.push(char_byte);
-            }
-            rest_idx++;
+        raw_href.push('/');
+        let rest_start = if file_path.len > 2 && (file_path[2] == '/' || file_path[2] == '\\') { 3 } else { 2 };
+        if rest_start < file_path.len {
+            append_encoded_subpath(file_path[rest_start..], raw_href);
         }
         return new_url(raw_href[..]);
     }
 
     // POSIX absolute or relative path
     if file_path[0] != '/' && file_path[0] != '\\' {
-        raw_href.push('/'); // Ensure file:///relative
+        raw_href.push('/');
     }
-    for char_byte in file_path {
-        if char_byte == '\\' {
-            raw_href.push('/');
-        } else if char_byte == ' ' {
-            raw_href.append("%20");
-        } else if char_byte == '#' {
-            raw_href.append("%23");
-        } else if char_byte == '?' {
-            raw_href.append("%3F");
-        } else if char_byte == '%' {
-            raw_href.append("%25");
-        } else {
-            raw_href.push(char_byte);
-        }
-    }
+    append_encoded_subpath(file_path, raw_href);
     return new_url(raw_href[..]);
 }
 
@@ -522,22 +504,7 @@ fn appending_path(url_val: Url, subpath: const u8[:]) -> Url {
     }
 
     let clean_sub = if subpath[0] == '/' || subpath[0] == '\\' { subpath[1..] } else { subpath };
-
-    for char_byte in clean_sub {
-        if char_byte == '\\' {
-            new_href.push('/');
-        } else if char_byte == ' ' {
-            new_href.append("%20");
-        } else if char_byte == '#' {
-            new_href.append("%23");
-        } else if char_byte == '?' {
-            new_href.append("%3F");
-        } else if char_byte == '%' {
-            new_href.append("%25");
-        } else {
-            new_href.push(char_byte);
-        }
-    }
+    append_encoded_subpath(clean_sub, new_href);
 
     if path_end < url_val.href.len {
         new_href.append(url_val.href[path_end..]);
@@ -571,14 +538,14 @@ fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
 
 fn origin_from_url(url_val: const Url&) -> Origin {
     guard url_val.valid else { return new_opaque_origin(); }
-    let s = scheme(url_val);
+    let scheme_str = scheme(url_val);
 
-    if s == "http" || s == "https" || s == "ws" || s == "wss" || s == "ftp" {
+    if scheme_str == "http" || scheme_str == "https" || scheme_str == "ws" || scheme_str == "wss" || scheme_str == "ftp" {
         let eff_port = effective_port(url_val);
-        return new_origin_tuple(s, hostname(url_val), eff_port);
+        return new_origin_tuple(scheme_str, hostname(url_val), eff_port);
     }
 
-    if s == "file" {
+    if scheme_str == "file" {
         return new_opaque_origin();
     }
 
@@ -589,11 +556,11 @@ fn origin_from_url(url_val: const Url&) -> Origin {
 fn registrable_site_from_url(url_val: const Url&) -> RegistrableSite {
     var site = RegistrableSite { .. };
     guard url_val.valid else { return site; }
-    let s = scheme(url_val);
-    site.scheme.append(s);
+    let scheme_str = scheme(url_val);
+    site.scheme.append(scheme_str);
 
-    let h = hostname(url_val);
-    extract_etld_plus_one(h, site.registrable_domain);
+    let host_str = hostname(url_val);
+    extract_etld_plus_one(host_str, site.registrable_domain);
     return site;
 }
 
@@ -622,12 +589,12 @@ fn serialize_origin<B>(origin_val: Origin, out: B&) {
     out.append("://");
     out.append(origin_val.host[..]);
 
-    let s = origin_val.scheme[..];
-    let is_def_port = (s == "http" && origin_val.port == 80) ||
-                      (s == "https" && origin_val.port == 443) ||
-                      (s == "ws" && origin_val.port == 80) ||
-                      (s == "wss" && origin_val.port == 443) ||
-                      (s == "ftp" && origin_val.port == 21) ||
+    let scheme_str = origin_val.scheme[..];
+    let is_def_port = (scheme_str == "http" && origin_val.port == 80) ||
+                      (scheme_str == "https" && origin_val.port == 443) ||
+                      (scheme_str == "ws" && origin_val.port == 80) ||
+                      (scheme_str == "wss" && origin_val.port == 443) ||
+                      (scheme_str == "ftp" && origin_val.port == 21) ||
                       (origin_val.port <= 0);
     if !is_def_port {
         out.push(':');
@@ -684,23 +651,66 @@ fn clean_input_string<B>(raw: const u8[:], out: B&) {
     }
 
     for scan_idx in start_idx..end_idx {
-        let b = raw[scan_idx];
-        if b != 0x09 && b != 0x0A && b != 0x0D {
-            out.push(b);
+        let char_byte = raw[scan_idx];
+        if char_byte != 0x09 && char_byte != 0x0A && char_byte != 0x0D {
+            out.push(char_byte);
         }
     }
 }
 
-fn has_forbidden_host_code_point(h: const u8[:]) -> bool {
-    for b in h {
-        if b == 0x00 || b == 0x09 || b == 0x0A || b == 0x0D || b == 0x20 ||
-           b == '#' || b == '/' || b == ':' || b == '<' || b == '>' ||
-           b == '?' || b == '@' || b == '[' || b == '\\' || b == ']' ||
-           b == '^' || b == '|' {
+fn has_forbidden_host_code_point(host_str: const u8[:]) -> bool {
+    for char_byte in host_str {
+        if char_byte == 0x00 || char_byte == 0x09 || char_byte == 0x0A || char_byte == 0x0D || char_byte == 0x20 ||
+           char_byte == '#' || char_byte == '/' || char_byte == ':' || char_byte == '<' || char_byte == '>' ||
+           char_byte == '?' || char_byte == '@' || char_byte == '[' || char_byte == '\\' || char_byte == ']' ||
+           char_byte == '^' || char_byte == '|' {
             return true;
         }
     }
     return false;
+}
+
+fn parse_opaque_path_url(
+    out_url: Url&,
+    scheme_str: const u8[:],
+    remainder: const u8[:],
+) -> Url, UrlParseError {
+    out_url.has_opaque_path = true;
+    out_url.href.append(scheme_str);
+    out_url.href.push(':');
+    out_url.scheme_end = scheme_str.len as i32;
+
+    out_url.pathname_start = out_url.href.len as i32;
+    var query_pos = -1;
+    var hash_pos = -1;
+    for scan_idx in remainder.len {
+        if remainder[scan_idx] == '?' && query_pos < 0 && hash_pos < 0 {
+            query_pos = scan_idx;
+        } else if remainder[scan_idx] == '#' && hash_pos < 0 {
+            hash_pos = scan_idx;
+            break;
+        }
+    }
+
+    let path_end = if query_pos >= 0 { query_pos } else if hash_pos >= 0 { hash_pos } else { remainder.len };
+    out_url.href.append(remainder[..path_end]);
+    out_url.pathname_end = out_url.href.len as i32;
+
+    if query_pos >= 0 {
+        out_url.search_start = out_url.href.len as i32;
+        let q_end = if hash_pos >= 0 { hash_pos } else { remainder.len };
+        out_url.href.append(remainder[query_pos..q_end]);
+        out_url.search_end = out_url.href.len as i32;
+    }
+
+    if hash_pos >= 0 {
+        out_url.hash_start = out_url.href.len as i32;
+        out_url.href.append(remainder[hash_pos..]);
+        out_url.hash_end = out_url.href.len as i32;
+    }
+
+    out_url.valid = true;
+    return out_url, UrlParseError.None;
 }
 
 fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
@@ -717,13 +727,13 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
     // 1. Scheme state machine
     var colon_idx = -1;
     for scan_idx in input_bytes.len {
-        let b = input_bytes[scan_idx];
-        if b == ':' {
+        let char_byte = input_bytes[scan_idx];
+        if char_byte == ':' {
             colon_idx = scan_idx;
             break;
         }
-        let is_scheme_char = (scan_idx == 0 && ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z'))) ||
-                             (scan_idx > 0 && ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '+' || b == '-' || b == '.'));
+        let is_scheme_char = (scan_idx == 0 && ((char_byte >= 'a' && char_byte <= 'z') || (char_byte >= 'A' && char_byte <= 'Z'))) ||
+                             (scan_idx > 0 && ((char_byte >= 'a' && char_byte <= 'z') || (char_byte >= 'A' && char_byte <= 'Z') || (char_byte >= '0' && char_byte <= '9') || char_byte == '+' || char_byte == '-' || char_byte == '.'));
         if !is_scheme_char {
             break; // Not a valid scheme prefix
         }
@@ -755,42 +765,7 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
 
     // Non-special scheme with opaque path (e.g. mailto:user@example.com, data:text/html,...)
     if !is_spec && (colon_idx > 0) && (remainder.len == 0 || remainder[0] != '/') {
-        out_url.has_opaque_path = true;
-        out_url.href.append(scheme_str[..]);
-        out_url.href.push(':');
-        out_url.scheme_end = scheme_str.len as i32;
-
-        out_url.pathname_start = out_url.href.len as i32;
-        var query_pos = -1;
-        var hash_pos = -1;
-        for scan_idx in remainder.len {
-            if remainder[scan_idx] == '?' && query_pos < 0 && hash_pos < 0 {
-                query_pos = scan_idx;
-            } else if remainder[scan_idx] == '#' && hash_pos < 0 {
-                hash_pos = scan_idx;
-                break;
-            }
-        }
-
-        let path_end = if query_pos >= 0 { query_pos } else if hash_pos >= 0 { hash_pos } else { remainder.len };
-        out_url.href.append(remainder[..path_end]);
-        out_url.pathname_end = out_url.href.len as i32;
-
-        if query_pos >= 0 {
-            out_url.search_start = out_url.href.len as i32;
-            let q_end = if hash_pos >= 0 { hash_pos } else { remainder.len };
-            out_url.href.append(remainder[query_pos..q_end]);
-            out_url.search_end = out_url.href.len as i32;
-        }
-
-        if hash_pos >= 0 {
-            out_url.hash_start = out_url.href.len as i32;
-            out_url.href.append(remainder[hash_pos..]);
-            out_url.hash_end = out_url.href.len as i32;
-        }
-
-        out_url.valid = true;
-        return out_url, UrlParseError.None;
+        return parse_opaque_path_url(out_url, scheme_str[..], remainder);
     }
 
     // Authority and Host Parsing for Special schemes (or // authority)
@@ -821,6 +796,82 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
     return resolve_relative_path_against_base(out_url, base_url, remainder);
 }
 
+fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) {
+    var colon_pos = -1;
+    for scan_idx in userinfo.len {
+        if userinfo[scan_idx] == ':' {
+            colon_pos = scan_idx;
+            break;
+        }
+    }
+
+    out_url.username_start = out_url.href.len as i32;
+    if colon_pos >= 0 {
+        out_url.href.append(userinfo[..colon_pos]);
+        out_url.username_end = out_url.href.len as i32;
+        out_url.href.push(':');
+        out_url.password_start = out_url.href.len as i32;
+        out_url.href.append(userinfo[colon_pos + 1..]);
+        out_url.password_end = out_url.href.len as i32;
+    } else {
+        out_url.href.append(userinfo);
+        out_url.username_end = out_url.href.len as i32;
+    }
+    out_url.href.push('@');
+}
+
+fn apply_canonical_host_and_port(
+    out_url: Url&,
+    scheme_str: const u8[:],
+    host_port_part: const u8[:],
+) -> UrlParseError {
+    var raw_host: u8[..256] = [];
+    var port_val: i32 = -1;
+    let is_file = scheme_str == "file";
+
+    if host_port_part.len == 0 {
+        if !is_file {
+            return UrlParseError.MissingHost;
+        }
+        out_url.host_start = out_url.href.len as i32;
+        out_url.host_end = out_url.href.len as i32;
+        out_url.port = -1;
+        return UrlParseError.None;
+    }
+
+    let extract_err = extract_host_and_port_canonical(host_port_part, raw_host, port_val);
+    guard extract_err == UrlParseError.None else {
+        return extract_err;
+    }
+
+    // In WHATWG URL, "localhost" on a file: URL normalizes to an empty host ("")
+    if is_file && raw_host == "localhost" {
+        raw_host.clear();
+    }
+
+    guard raw_host.len > 0 || is_file else {
+        return UrlParseError.MissingHost;
+    }
+
+    to_lower(raw_host[..]);
+
+    out_url.host_start = out_url.href.len as i32;
+    out_url.href.append(raw_host[..]);
+    out_url.host_end = out_url.href.len as i32;
+
+    let def_port = default_port_for_scheme(scheme_str);
+    if !is_file && port_val > 0 && port_val != def_port {
+        out_url.port_start = out_url.href.len as i32;
+        out_url.href.push(':');
+        format(out_url.href, port_val as i64);
+        out_url.port_end = out_url.href.len as i32;
+        out_url.port = port_val;
+    } else {
+        out_url.port = -1;
+    }
+    return UrlParseError.None;
+}
+
 fn parse_absolute_authority_url(
     out_url: Url&,
     scheme_str: const u8[:],
@@ -833,8 +884,8 @@ fn parse_absolute_authority_url(
 
     var end_of_auth = auth_and_path.len;
     for scan_idx in auth_and_path.len {
-        let b = auth_and_path[scan_idx];
-        if b == '/' || (is_spec && b == '\\') || b == '?' || b == '#' {
+        let char_byte = auth_and_path[scan_idx];
+        if char_byte == '/' || (is_spec && char_byte == '\\') || char_byte == '?' || char_byte == '#' {
             end_of_auth = scan_idx;
             break;
         }
@@ -855,73 +906,13 @@ fn parse_absolute_authority_url(
     if at_pos >= 0 {
         let userinfo = auth_str[..at_pos];
         host_port_part = auth_str[at_pos + 1..];
-
-        var colon_pos = -1;
-        for scan_idx in userinfo.len {
-            if userinfo[scan_idx] == ':' {
-                colon_pos = scan_idx;
-                break;
-            }
-        }
-
-        out_url.username_start = out_url.href.len as i32;
-        if colon_pos >= 0 {
-            out_url.href.append(userinfo[..colon_pos]);
-            out_url.username_end = out_url.href.len as i32;
-            out_url.href.push(':');
-            out_url.password_start = out_url.href.len as i32;
-            out_url.href.append(userinfo[colon_pos + 1..]);
-            out_url.password_end = out_url.href.len as i32;
-        } else {
-            out_url.href.append(userinfo);
-            out_url.username_end = out_url.href.len as i32;
-        }
-        out_url.href.push('@');
+        append_userinfo_to_url(out_url, userinfo);
     }
 
     // Host & Port Parsing
-    var raw_host: u8[..256] = [];
-    var port_val: i32 = -1;
-    let is_file = scheme_str == "file";
-
-    if host_port_part.len == 0 {
-        if !is_file {
-            return out_url, UrlParseError.MissingHost;
-        }
-        out_url.host_start = out_url.href.len as i32;
-        out_url.host_end = out_url.href.len as i32;
-        out_url.port = -1;
-    } else {
-        let extract_err = extract_host_and_port_canonical(host_port_part, raw_host, port_val);
-        guard extract_err == UrlParseError.None else {
-            return out_url, extract_err;
-        }
-
-        // In WHATWG URL, "localhost" on a file: URL normalizes to an empty host ("")
-        if is_file && raw_host == "localhost" {
-            raw_host.clear();
-        }
-
-        guard raw_host.len > 0 || is_file else {
-            return out_url, UrlParseError.MissingHost;
-        }
-
-        to_lower(raw_host[..]);
-
-        out_url.host_start = out_url.href.len as i32;
-        out_url.href.append(raw_host[..]);
-        out_url.host_end = out_url.href.len as i32;
-
-        let def_port = default_port_for_scheme(scheme_str);
-        if !is_file && port_val > 0 && port_val != def_port {
-            out_url.port_start = out_url.href.len as i32;
-            out_url.href.push(':');
-            format(out_url.href, port_val as i64);
-            out_url.port_end = out_url.href.len as i32;
-            out_url.port = port_val;
-        } else {
-            out_url.port = -1;
-        }
+    let host_err = apply_canonical_host_and_port(out_url, scheme_str, host_port_part);
+    guard host_err == UrlParseError.None else {
+        return out_url, host_err;
     }
 
     // Pathname, Search, and Hash
@@ -987,12 +978,12 @@ fn extract_host_and_port_canonical<B>(
         }
     }
 
-    let h_str = if colon_idx >= 0 { host_port[..colon_idx] } else { host_port };
-    guard !has_forbidden_host_code_point(h_str) else {
+    let host_str = if colon_idx >= 0 { host_port[..colon_idx] } else { host_port };
+    guard !has_forbidden_host_code_point(host_str) else {
         return UrlParseError.ForbiddenHostCodePoint;
     }
 
-    host_out.append(h_str);
+    host_out.append(host_str);
 
     if colon_idx >= 0 {
         let p_str = host_port[colon_idx + 1..];
@@ -1007,101 +998,152 @@ fn extract_host_and_port_canonical<B>(
     return UrlParseError.None;
 }
 
+// Parses a dotted-quad IPv4 suffix e.g. ::ffff:192.0.2.1 into 2 x 16-bit pieces
+fn parse_ipv4_mapped_pieces(
+    rem_slice: const u8[:],
+    pieces: u16[8]&,
+    piece_count: i64&,
+) -> bool {
+    guard piece_count <= 6 else { return false; }
+    var octets: i32[4] = [0, 0, 0, 0];
+    var octet_idx = 0;
+    var current_num = 0;
+    var digits_count = 0;
+
+    for char_byte in rem_slice {
+        if char_byte == '.' {
+            if digits_count == 0 || current_num > 255 || octet_idx >= 3 { return false; }
+            octets[octet_idx] = current_num as i32;
+            octet_idx++;
+            current_num = 0;
+            digits_count = 0;
+        } else if char_byte >= '0' && char_byte <= '9' {
+            current_num = current_num * 10 + (char_byte - '0');
+            digits_count++;
+            if digits_count > 3 { return false; }
+        } else {
+            return false;
+        }
+    }
+
+    if digits_count == 0 || current_num > 255 || octet_idx != 3 { return false; }
+    octets[3] = current_num as i32;
+
+    pieces[piece_count] = ((octets[0] << 8) | octets[1]) as u16;
+    piece_count++;
+    pieces[piece_count] = ((octets[2] << 8) | octets[3]) as u16;
+    piece_count++;
+    return true;
+}
+
+// Finds the longest continuous run of zero pieces for RFC 5952 canonical compression
+fn find_longest_zero_run(pieces: const u16[8]&) -> i64, i64 {
+    var best_run_start: i64 = -1;
+    var best_run_len: i64 = 0;
+    var current_run_start: i64 = -1;
+    var current_run_len: i64 = 0;
+
+    for piece_idx in 8 {
+        if pieces[piece_idx] == 0 {
+            if current_run_start < 0 {
+                current_run_start = piece_idx;
+                current_run_len = 1;
+            } else {
+                current_run_len++;
+            }
+        } else {
+            if current_run_len > best_run_len {
+                best_run_start = current_run_start;
+                best_run_len = current_run_len;
+            }
+            current_run_start = -1;
+            current_run_len = 0;
+        }
+    }
+
+    if current_run_len > best_run_len {
+        best_run_start = current_run_start;
+        best_run_len = current_run_len;
+    }
+
+    if best_run_len < 2 {
+        best_run_start = -1;
+        best_run_len = 0;
+    }
+
+    return best_run_start, best_run_len;
+}
+
 // RFC 5952 / WHATWG IPv6 Parser and Zero-Run Canonical Compression
 fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
     out.clear();
     var pieces: u16[8] = [0, 0, 0, 0, 0, 0, 0, 0];
-    var piece_count = 0;
-    var double_colon_pos = -1;
+    var piece_count: i64 = 0;
+    var double_colon_pos: i64 = -1;
 
-    var s = raw_ipv6;
-    if starts_with(s, "::") {
+    var rem_slice = raw_ipv6;
+    if starts_with(rem_slice, "::") {
         double_colon_pos = 0;
-        s = s[2..];
+        rem_slice = rem_slice[2..];
     }
 
-    while s.len > 0 && piece_count < 8 {
+    while rem_slice.len > 0 && piece_count < 8 {
         var colon_idx = -1;
-        for scan_idx in s.len {
-            if s[scan_idx] == ':' {
+        for scan_idx in rem_slice.len {
+            if rem_slice[scan_idx] == ':' {
                 colon_idx = scan_idx;
                 break;
             }
         }
 
-        let piece_str = if colon_idx >= 0 { s[..colon_idx] } else { s };
+        let piece_str = if colon_idx >= 0 { rem_slice[..colon_idx] } else { rem_slice };
         if piece_str.len == 0 {
             if double_colon_pos >= 0 { return false; } // Multiple '::'
             double_colon_pos = piece_count;
-            s = s[1..];
+            rem_slice = rem_slice[1..];
             continue;
         }
 
         // Check for dotted-quad IPv4 suffix e.g. ::ffff:192.0.2.1
         var has_dot = false;
-        for b in piece_str {
-            if b == '.' { has_dot = true; break; }
+        for char_byte in piece_str {
+            if char_byte == '.' { has_dot = true; break; }
         }
 
         if has_dot {
-            if piece_count > 6 { return false; }
-            var octets: i32[4] = [0, 0, 0, 0];
-            var octet_idx = 0;
-            var num = 0;
-            var digits = 0;
-            for b in s {
-                if b == '.' {
-                    if digits == 0 || num > 255 || octet_idx >= 3 { return false; }
-                    octets[octet_idx] = num as i32;
-                    octet_idx++;
-                    num = 0;
-                    digits = 0;
-                } else if b >= '0' && b <= '9' {
-                    num = num * 10 + (b - '0');
-                    digits++;
-                    if digits > 3 { return false; }
-                } else {
-                    return false;
-                }
-            }
-            if digits == 0 || num > 255 || octet_idx != 3 { return false; }
-            octets[3] = num as i32;
-
-            pieces[piece_count] = ((octets[0] << 8) | octets[1]) as u16;
-            piece_count++;
-            pieces[piece_count] = ((octets[2] << 8) | octets[3]) as u16;
-            piece_count++;
-            s = s[s.len..];
+            let parsed_ipv4 = parse_ipv4_mapped_pieces(rem_slice, pieces, piece_count);
+            guard parsed_ipv4 else { return false; }
+            rem_slice = rem_slice[rem_slice.len..];
             break;
         }
 
-        // Hex piece
+        // Hex piece (1 to 4 hex digits)
         if piece_str.len > 4 { return false; }
-        var val: u32 = 0;
-        for b in piece_str {
-            let h = if b >= '0' && b <= '9' { b - '0' }
-                    else if b >= 'a' && b <= 'f' { b - 'a' + 10 }
-                    else if b >= 'A' && b <= 'F' { b - 'A' + 10 }
-                    else { return false; };
-            val = (val << 4) | (h as u32);
+        var piece_val: u32 = 0;
+        for char_byte in piece_str {
+            let hex_digit = if char_byte >= '0' && char_byte <= '9' { char_byte - '0' }
+                            else if char_byte >= 'a' && char_byte <= 'f' { char_byte - 'a' + 10 }
+                            else if char_byte >= 'A' && char_byte <= 'F' { char_byte - 'A' + 10 }
+                            else { return false; };
+            piece_val = (piece_val << 4) | (hex_digit as u32);
         }
-        pieces[piece_count] = val as u16;
+        pieces[piece_count] = piece_val as u16;
         piece_count++;
 
         if colon_idx >= 0 {
-            if colon_idx + 1 < s.len && s[colon_idx + 1] == ':' {
+            if colon_idx + 1 < rem_slice.len && rem_slice[colon_idx + 1] == ':' {
                 if double_colon_pos >= 0 { return false; }
                 double_colon_pos = piece_count;
-                s = s[colon_idx + 2..];
+                rem_slice = rem_slice[colon_idx + 2..];
             } else {
-                s = s[colon_idx + 1..];
+                rem_slice = rem_slice[colon_idx + 1..];
             }
         } else {
-            s = s[s.len..];
+            rem_slice = rem_slice[rem_slice.len..];
         }
     }
 
-    if s.len > 0 { return false; }
+    if rem_slice.len > 0 { return false; }
 
     if double_colon_pos >= 0 {
         let missing = 8 - piece_count;
@@ -1119,52 +1161,21 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
 
     guard piece_count == 8 else { return false; }
 
-    // Find longest run of zeros for compression
-    var best_run_start = -1;
-    var best_run_len = 0;
-    var current_run_start = -1;
-    var current_run_len = 0;
+    let best_run_start, best_run_len = find_longest_zero_run(pieces);
 
-    for i in 8 {
-        if pieces[i] == 0 {
-            if current_run_start < 0 {
-                current_run_start = i;
-                current_run_len = 1;
-            } else {
-                current_run_len++;
-            }
-        } else {
-            if current_run_len > best_run_len {
-                best_run_start = current_run_start;
-                best_run_len = current_run_len;
-            }
-            current_run_start = -1;
-            current_run_len = 0;
-        }
-    }
-    if current_run_len > best_run_len {
-        best_run_start = current_run_start;
-        best_run_len = current_run_len;
-    }
-
-    if best_run_len < 2 {
-        best_run_start = -1;
-        best_run_len = 0;
-    }
-
-    // Format output
-    var idx = 0;
-    while idx < 8 {
-        if idx == best_run_start {
+    // Format canonical output string
+    var format_idx: i64 = 0;
+    while format_idx < 8 {
+        if format_idx == best_run_start {
             out.append("::");
-            idx += best_run_len;
+            format_idx += best_run_len;
             continue;
         }
-        if idx > 0 && !(idx == best_run_start + best_run_len && best_run_start == 0) && out.len > 0 && out[out.len - 1] != ':' {
+        if format_idx > 0 && !(format_idx == best_run_start + best_run_len && best_run_start == 0) && out.len > 0 && out[out.len - 1] != ':' {
             out.push(':');
         }
-        format_hex_u16(out, pieces[idx]);
-        idx++;
+        format_hex_u16(out, pieces[format_idx]);
+        format_idx++;
     }
     return true;
 }
@@ -1174,15 +1185,15 @@ fn format_hex_u16<B>(out: B&, val: u16) {
         out.push('0');
         return;
     }
-    var buf: u8[..4] = [];
-    var v = val;
-    while v > 0 {
-        let rem = (v & 0x0F) as u8;
-        buf.push(if rem < 10 { '0' + rem } else { 'a' + (rem - 10) });
-        v >>= 4;
+    var hex_buf: u8[..4] = [];
+    var cur_val = val;
+    while cur_val > 0 {
+        let rem = (cur_val & 0x0F) as u8;
+        hex_buf.push(if rem < 10 { '0' + rem } else { 'a' + (rem - 10) });
+        cur_val >>= 4;
     }
-    for rev in buf.len {
-        out.push(buf[buf.len - 1 - rev]);
+    for rev_idx in hex_buf.len {
+        out.push(hex_buf[hex_buf.len - 1 - rev_idx]);
     }
 }
 
@@ -1191,10 +1202,10 @@ fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond
     var query_pos = -1;
     var hash_pos = -1;
     for scan_idx in path_and_beyond.len {
-        let b = path_and_beyond[scan_idx];
-        if b == '?' && query_pos < 0 && hash_pos < 0 {
+        let char_byte = path_and_beyond[scan_idx];
+        if char_byte == '?' && query_pos < 0 && hash_pos < 0 {
             query_pos = scan_idx;
-        } else if b == '#' && hash_pos < 0 {
+        } else if char_byte == '#' && hash_pos < 0 {
             hash_pos = scan_idx;
             break;
         }
@@ -1238,14 +1249,14 @@ fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond
 fn parse_and_collapse_dot_segments(raw_path: const u8[:], is_spec: bool, out_segments: u8[..64][..16]&) {
     var seg: u8[..64] = [];
     for scan_idx in raw_path.len {
-        let b = raw_path[scan_idx];
-        if b == '/' || (is_spec && b == '\\') {
+        let char_byte = raw_path[scan_idx];
+        if char_byte == '/' || (is_spec && char_byte == '\\') {
             if seg.len > 0 {
                 process_single_dot_segment(seg[..], out_segments);
                 seg.clear();
             }
         } else {
-            if seg.len < 64 { seg.push(b); }
+            if seg.len < 64 { seg.push(char_byte); }
         }
     }
     if seg.len > 0 {
@@ -1270,7 +1281,24 @@ fn process_single_dot_segment(seg: const u8[:], out_segments: u8[..64][..16]&) {
     out_segments.push(entry);
 }
 
-fn resolve_relative_path_against_base(out_url: Url&, base_url: const Url&, rel_input: const u8[:]) -> Url, UrlParseError {
+fn copy_base_authority_offsets(out_url: Url&, base_url: const Url&) {
+    out_url.scheme_end = base_url.scheme_end;
+    out_url.username_start = base_url.username_start;
+    out_url.username_end = base_url.username_end;
+    out_url.password_start = base_url.password_start;
+    out_url.password_end = base_url.password_end;
+    out_url.host_start = base_url.host_start;
+    out_url.host_end = base_url.host_end;
+    out_url.port_start = base_url.port_start;
+    out_url.port_end = base_url.port_end;
+    out_url.port = base_url.port;
+}
+
+fn resolve_relative_path_against_base(
+    out_url: Url&,
+    base_url: const Url&,
+    rel_input: const u8[:],
+) -> Url, UrlParseError {
     guard rel_input.len > 0 else {
         // Empty relative input copies base URL
         out_url = copy(base_url);
@@ -1285,20 +1313,11 @@ fn resolve_relative_path_against_base(out_url: Url&, base_url: const Url&, rel_i
         let base_href = href(base_url);
         let base_no_hash = if base_url.hash_start >= 0 { base_href[..base_url.hash_start] } else { base_href };
         out_url.href.append(base_no_hash);
-        out_url.scheme_end = base_url.scheme_end;
-        out_url.username_start = base_url.username_start;
-        out_url.username_end = base_url.username_end;
-        out_url.password_start = base_url.password_start;
-        out_url.password_end = base_url.password_end;
-        out_url.host_start = base_url.host_start;
-        out_url.host_end = base_url.host_end;
-        out_url.port_start = base_url.port_start;
-        out_url.port_end = base_url.port_end;
+        copy_base_authority_offsets(out_url, base_url);
         out_url.pathname_start = base_url.pathname_start;
         out_url.pathname_end = base_url.pathname_end;
         out_url.search_start = base_url.search_start;
         out_url.search_end = base_url.search_end;
-        out_url.port = base_url.port;
 
         out_url.hash_start = out_url.href.len as i32;
         out_url.href.append(rel_input);
@@ -1312,18 +1331,9 @@ fn resolve_relative_path_against_base(out_url: Url&, base_url: const Url&, rel_i
         let base_href = href(base_url);
         let base_path_end = if base_url.pathname_end >= 0 { base_url.pathname_end } else { base_url.host_end };
         out_url.href.append(base_href[..base_path_end]);
-        out_url.scheme_end = base_url.scheme_end;
-        out_url.username_start = base_url.username_start;
-        out_url.username_end = base_url.username_end;
-        out_url.password_start = base_url.password_start;
-        out_url.password_end = base_url.password_end;
-        out_url.host_start = base_url.host_start;
-        out_url.host_end = base_url.host_end;
-        out_url.port_start = base_url.port_start;
-        out_url.port_end = base_url.port_end;
+        copy_base_authority_offsets(out_url, base_url);
         out_url.pathname_start = base_url.pathname_start;
         out_url.pathname_end = base_url.pathname_end;
-        out_url.port = base_url.port;
 
         var hash_pos = -1;
         for scan_idx in rel_input.len {
@@ -1349,16 +1359,7 @@ fn resolve_relative_path_against_base(out_url: Url&, base_url: const Url&, rel_i
     let base_href = href(base_url);
     let auth_end = if base_url.port_end > base_url.host_end { base_url.port_end } else { base_url.host_end };
     out_url.href.append(base_href[..auth_end]);
-    out_url.scheme_end = base_url.scheme_end;
-    out_url.username_start = base_url.username_start;
-    out_url.username_end = base_url.username_end;
-    out_url.password_start = base_url.password_start;
-    out_url.password_end = base_url.password_end;
-    out_url.host_start = base_url.host_start;
-    out_url.host_end = base_url.host_end;
-    out_url.port_start = base_url.port_start;
-    out_url.port_end = base_url.port_end;
-    out_url.port = base_url.port;
+    copy_base_authority_offsets(out_url, base_url);
 
     var combined_path: u8[..512] = [];
 
@@ -1367,13 +1368,13 @@ fn resolve_relative_path_against_base(out_url: Url&, base_url: const Url&, rel_i
         combined_path.append(rel_input);
     } else {
         // Directory relative path
-        let base_p = pathname(base_url);
+        let base_path = pathname(base_url);
         var last_slash = -1;
-        for scan_idx in base_p.len {
-            if base_p[scan_idx] == '/' { last_slash = scan_idx; }
+        for scan_idx in base_path.len {
+            if base_path[scan_idx] == '/' { last_slash = scan_idx; }
         }
         if last_slash >= 0 {
-            combined_path.append(base_p[..last_slash + 1]);
+            combined_path.append(base_path[..last_slash + 1]);
         } else {
             combined_path.push('/');
         }

@@ -1,9 +1,19 @@
 // Response representation and inspection helpers for goose-wing.
+//
+// Core Types:
+//   Error    - Diagnostic error structure (code, stage, message).
+//   Response - HTTP response entity containing status code, headers, URL chain, and body.
+//
+// Standards & Specifications:
+//   RFC 9110 HTTP Status Codes and Redirection Classification.
+//   Static reflection-based JSON deserialization into typed Goose structs.
 namespace wing;
 
 import std;
 import json;
 import app.profile;
+
+// ---- error model & diagnostics ---------------------------------------------
 
 struct Error {
     code: i32 = 0,
@@ -26,7 +36,7 @@ fn ok(err: const Error&) -> bool {
     return err.code == 0;
 }
 
-// ---- response model & inspectors ----
+// ---- response model & inspectors -------------------------------------------
 
 struct Response {
     status_code: i32 = 0,
@@ -83,7 +93,7 @@ fn text(res: const Response&) -> const u8[:] {
     return res.body[..];
 }
 
-// ---- json reflection readers ----
+// ---- json reflection readers -----------------------------------------------
 
 fn read_json_field(reader: json::Reader&, dst: i64&) {
     dst = json::read_int(reader);
@@ -108,7 +118,7 @@ fn read_json_field(reader: json::Reader&, dst) {
     dst.append(str_val);
 }
 
-// ---- json response decoding ----
+// ---- json response decoding -------------------------------------------------
 
 fn json<T>(res: const Response&, out: T&) -> Error {
     var reader = json::reader(res.body[..]);

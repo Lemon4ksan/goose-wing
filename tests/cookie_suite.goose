@@ -140,7 +140,7 @@ fn test_domain_psl_ip_and_path_matching(t: wing::T&) {
         sub.assert_true(ip_jar.cookies[0].host_only);
     };
 
-    t.run("RFC 6265 §5.1.4 Path Matching Engine") { sub =>
+    t.run("RFC 6265 Section 5.1.4 Path Matching Engine") { sub =>
         sub.assert_true(wing::cookie_path_match("/sub", "/sub"));
         sub.assert_true(wing::cookie_path_match("/sub/", "/sub"));
         sub.assert_true(wing::cookie_path_match("/sub/page", "/sub"));
@@ -331,13 +331,13 @@ fn test_chips_and_10kb_quota(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 9. RFC 6265 §5.4 Header Sorting & Persistence Key Model
+// 9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model
 // ----------------------------------------------------------------------------
 fn test_header_sorting_and_persistence_key(t: wing::T&) {
     var clock = wing::new_mock_clock();
     var jar = wing::new_canonical_cookie_jar();
 
-    t.run("RFC 6265 §5.4 Cookie Header Sorting (Longest Path First, Earliest Creation First)") { sub =>
+    t.run("RFC 6265 Section 5.4 Cookie Header Sorting (Longest Path First, Earliest Creation First)") { sub =>
         // 1. Shorter path, earlier creation
         wing::set_cookie_header(jar, "https://example.com/sub/page", "short_path=1; Path=/sub", wing::advance_sec(clock, 1));
         // 2. Longer path, later creation
@@ -349,7 +349,7 @@ fn test_header_sorting_and_persistence_key(t: wing::T&) {
         wing::build_cookie_header(jar, "https://example.com/sub/page", out_hdr, clock.now_us);
 
         // Longest path (/sub/page) MUST come first, followed by earlier /sub, followed by later /sub
-        sub.assert_contains(out_hdr[..], "long_path=2; short_path=1; another_short=3", "RFC 6265 §5.4 sorting order");
+        sub.assert_contains(out_hdr[..], "long_path=2; short_path=1; another_short=3", "RFC 6265 Section 5.4 sorting order");
     };
 
     t.run("SQL Persistence Key Model (host_only prefixing)") { sub =>
@@ -373,13 +373,13 @@ fn main() {
 
     wing::run_case(runner, "1. Lexer, 4096B/1024B Quotas, CTL & WPT Nameless", test_lexer_limits_and_ctl);
     wing::run_case(runner, "2. Date Tokenizer, 400-Day Cap & Expired Overwrite", test_dates_400d_cap_and_expired_overwrite);
-    wing::run_case(runner, "3. Domain, PSL, IPv4/IPv6 & Path-Match (RFC 6265 §5.1.3, §5.1.4)", test_domain_psl_ip_and_path_matching);
+    wing::run_case(runner, "3. Domain, PSL, IPv4/IPv6 & Path-Match (RFC 6265 Section 5.1.3, Section 5.1.4)", test_domain_psl_ip_and_path_matching);
     wing::run_case(runner, "4. Layered Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)", test_layered_prefixes_table);
     wing::run_case(runner, "5. SameSite Lax+POST 120s Window & OBC IPv6 Port Upgrade", test_samesite_lax_post_window_and_obc);
     wing::run_case(runner, "6. 6-Round Domain GC Asymmetry (Round 4 vs Round 5)", test_gc_6_rounds_asymmetry_and_global_immunity);
     wing::run_case(runner, "7. Global Garbage Collection & 30-Day Purge Immunity", test_global_gc_and_30_day_immunity);
     wing::run_case(runner, "8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement", test_chips_and_10kb_quota);
-    wing::run_case(runner, "9. RFC 6265 §5.4 Header Sorting & Persistence Key Model", test_header_sorting_and_persistence_key);
+    wing::run_case(runner, "9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model", test_header_sorting_and_persistence_key);
 
     let ok = wing::finish(runner);
     assert(ok);

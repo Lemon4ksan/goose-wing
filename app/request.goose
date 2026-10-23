@@ -1,5 +1,14 @@
 // Unified Request model: procedural mutation + trailing-closure builder DSL.
 // Clean Room Implementation for goose-wing with BodyRewind and Security Contexts.
+//
+// Core Types:
+//   QueryItem - Single URL query parameter key-value pair.
+//   Request   - HTTP request entity with body buffer, rewind capability, and security isolation contexts.
+//
+// Standards & Specifications:
+//   RFC 9110 HTTP Request Semantics and Header Management.
+//   BodyRewind streaming support for HTTP redirect chains.
+//   Origin Initiator and SiteForCookies security bindings.
 namespace wing;
 
 import std;
@@ -7,6 +16,8 @@ import json;
 import core.url;
 import cookie.policy;
 import app.profile;
+
+// ---- request & query item models -------------------------------------------
 
 struct QueryItem {
     key: u8[..64] = [],
@@ -34,7 +45,7 @@ struct Request {
     body: u8[>..] = [],
 }
 
-// ---- json reflection writers ----
+// ---- json reflection writers -----------------------------------------------
 
 fn write_json_field(out: u8[>..]&, val_str: const u8[:]) {
     json::format_string(out, val_str);
@@ -56,7 +67,7 @@ fn write_json_field(out: u8[>..]&, val_bool: bool) {
     json::format_bool(out, val_bool);
 }
 
-// ---- request factories ----
+// ---- request factories -----------------------------------------------------
 
 fn new_request(method: const u8[:], url: const u8[:]) -> Request {
     var req = Request { .. };
@@ -88,7 +99,7 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
     return new_request("POST", url, F);
 }
 
-// ---- ufcs request mutators ----
+// ---- ufcs request mutators -------------------------------------------------
 
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
     let is_sens = is_heuristic_sensitive_header(name);
@@ -233,7 +244,7 @@ fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
     req.first_party_policy = policy;
 }
 
-// ---- middleware & signers ----
+// ---- middleware & signers --------------------------------------------------
 
 fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
     header(req, "X-Trace-Id", trace_id);

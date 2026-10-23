@@ -1,11 +1,23 @@
-// Public Suffix List (PSL) & RFC 6265 §5.1 Domain and Path Matching Engine.
+// Public Suffix List (PSL) & RFC 6265 Section 5.1 Domain and Path Matching Engine.
 // Clean Room Implementation for goose-wing conforming to Mozilla PSL specifications.
+//
+// Core Types:
+//   PslRuleType     - Suffix rule taxonomy (Normal, Wildcard, Exception).
+//   PslSection     - Mozilla PSL section authority (Icann, Private).
+//   PslRule         - Single compiled suffix rule entry.
+//   PslDatabase     - In-memory collection of dynamic PSL rules.
+//
+// Standards & Specifications:
+//   Mozilla Public Suffix List specification and precedence rules (!exception > *.wildcard > normal).
+//   RFC 6265 Section 5.1.3 - Domain-Match algorithm and IP literal exclusion.
+//   RFC 6265 Section 5.1.4 - Default-Path extraction and Path-Match prefix rules.
+//   eTLD+1 extraction for schemeful same-site boundaries and tenant isolation.
 namespace wing;
 
 import std;
 import cookie.constants;
 
-// ---- public suffix data structures and enumerations -----------------------
+// ---- public suffix data structures and enumerations ------------------------
 
 enum PslRuleType {
     Normal,
@@ -29,10 +41,10 @@ struct PslDatabase {
 }
 
 fn new_psl_rule(pattern: const u8[:], rule_type: PslRuleType, section: PslSection) -> PslRule {
-    var r = PslRule { rule_type: rule_type, section: section, .. };
-    r.pattern.append(pattern);
-    to_lower(r.pattern[..]);
-    return r;
+    var new_rule = PslRule { rule_type: rule_type, section: section, .. };
+    new_rule.pattern.append(pattern);
+    to_lower(new_rule.pattern[..]);
+    return new_rule;
 }
 
 fn new_psl_database() -> PslDatabase {
@@ -41,7 +53,7 @@ fn new_psl_database() -> PslDatabase {
     return db;
 }
 
-// ---- public suffix & rfc 6265 scoping api --------------------------------
+// ---- public suffix & rfc 6265 scoping api ----------------------------------
 
 // Determines if domain is a public suffix (cannot set domain cookies for it).
 // Evaluates both ICANN and Private suffixes (e.g. "co.uk", "com", "github.io").
@@ -118,7 +130,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.append(clean_host);
 }
 
-// RFC 6265 §5.1.3: Domain-Match algorithm.
+// RFC 6265 Section 5.1.3: Domain-Match algorithm.
 // S matches D if S == D, or D is a suffix of S with leading '.' and S is not an IP address.
 fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
@@ -142,7 +154,7 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     return false;
 }
 
-// RFC 6265 §5.1.4: Default-Path computation.
+// RFC 6265 Section 5.1.4: Default-Path computation.
 // Extracts the directory prefix of the request URI path.
 fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.clear();
@@ -163,12 +175,12 @@ fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.append(uri_path[..last_slash_idx]);
 }
 
-// RFC 6265 §5.1.4: Compute default cookie path alias
+// RFC 6265 Section 5.1.4: Compute default cookie path alias
 fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
     default_cookie_path_calc(uri_path, out);
 }
 
-// RFC 6265 §5.1.4: Path-Match algorithm.
+// RFC 6265 Section 5.1.4: Path-Match algorithm.
 // Matches request path against cookie path prefix.
 fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
     let normalized_req_path = if req_path.len == 0 { "/" } else { req_path };
@@ -185,7 +197,7 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
 }
 
 // Checks whether host is an IPv4 or IPv6 literal.
-// Per RFC 6265 §5.1.3, domain-matching MUST NOT match suffixes on IP addresses.
+// Per RFC 6265 Section 5.1.3, domain-matching MUST NOT match suffixes on IP addresses.
 fn ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
     for char_byte in host {
@@ -410,26 +422,26 @@ fn check_known_explicit_suffix<B>(domain: const u8[:], out: B&, is_icann: bool&)
     return false;
 }
 
-fn is_known_three_level_suffix(s: const u8[:], is_icann: bool&) -> bool {
-    if s == "blogspot.co.uk" || s == "s3.amazonaws.com" || s == "elb.amazonaws.com" {
+fn is_known_three_level_suffix(suffix_str: const u8[:], is_icann: bool&) -> bool {
+    if suffix_str == "blogspot.co.uk" || suffix_str == "s3.amazonaws.com" || suffix_str == "elb.amazonaws.com" {
         is_icann = false;
         return true;
     }
     return false;
 }
 
-fn is_known_private_two_level_suffix(s: const u8[:]) -> bool {
-    return s == "github.io" ||
-           s == "alwaysdata.net" ||
-           s == "dyndns.org" ||
-           s == "blogspot.com" ||
-           s == "vercel.app" ||
-           s == "pages.dev" ||
-           s == "netlify.app" ||
-           s == "herokuapp.com" ||
-           s == "azurewebsites.net" ||
-           s == "cloudfront.net" ||
-           s == "myshopify.com";
+fn is_known_private_two_level_suffix(suffix_str: const u8[:]) -> bool {
+    return suffix_str == "github.io" ||
+           suffix_str == "alwaysdata.net" ||
+           suffix_str == "dyndns.org" ||
+           suffix_str == "blogspot.com" ||
+           suffix_str == "vercel.app" ||
+           suffix_str == "pages.dev" ||
+           suffix_str == "netlify.app" ||
+           suffix_str == "herokuapp.com" ||
+           suffix_str == "azurewebsites.net" ||
+           suffix_str == "cloudfront.net" ||
+           suffix_str == "myshopify.com";
 }
 
 fn find_trailing_dot_positions(

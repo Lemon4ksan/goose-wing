@@ -293,7 +293,7 @@ fn run_exhaustive_ctl_sweep(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. RFC 6265 §5.1.4 Path-Matching Engine & Default-Path Rules
+// 3. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules
 // ----------------------------------------------------------------------------
 struct PathMatchVector {
     id: const u8[:],
@@ -319,7 +319,7 @@ fn run_path_matching_matrix(t: wing::T&) {
         sub.assert_eq(got, v.expect_match, v.id);
     };
 
-    t.run("Default-Path Algorithm RFC 6265 §5.1.4 (PATH-01..PATH-06)") { sub =>
+    t.run("Default-Path Algorithm RFC 6265 Section 5.1.4 (PATH-01..PATH-06)") { sub =>
         var out: u8[..128] = [];
 
         wing::compute_default_cookie_path("", out);
@@ -531,12 +531,12 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 7. RFC 6265 §5.4 Ordering, Server First-Win & SQLite V24 Coalescing
+// 7. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing
 // ----------------------------------------------------------------------------
 fn run_serialization_server_first_win_and_sqlite_v24(t: wing::T&) {
     var clock = wing::new_mock_clock();
 
-    t.run("SER-01 & SRV-01: RFC 6265 §5.4 Path-Length Ordering and Server First-Win Protection") { sub =>
+    t.run("SER-01 & SRV-01: RFC 6265 Section 5.4 Path-Length Ordering and Server First-Win Protection") { sub =>
         var jar = wing::new_canonical_cookie_jar();
 
         // Set 3 cookies named 'sid' with different paths and creation timestamps:
@@ -698,7 +698,7 @@ fn run_matrix_14_selective_deletion(t: wing::T&) {
         sub.assert_eq(jar.cookies[1].name[..], "c4");
     };
 
-    t.run("DEL-02 & DEL-04: Session Cookie Deletion and Cookie Incrementalism §3.5") { sub =>
+    t.run("DEL-02 & DEL-04: Session Cookie Deletion and Cookie Incrementalism Section 3.5") { sub =>
         var jar = wing::new_canonical_cookie_jar();
         // c1: Session cookie (no Max-Age/Expires)
         wing::set_cookie_header(jar, "https://example.com/", "c_sess=1; Path=/", 1000);
@@ -708,7 +708,7 @@ fn run_matrix_14_selective_deletion(t: wing::T&) {
         wing::set_cookie_header(jar, "http://example.com/", "c_plain=3; Max-Age=3600; Path=/", 1000);
         sub.require_eq(jar.cookies.len, 3);
 
-        // DEL-04: Incrementalism §3.5: purge non-secure cookies on session end
+        // DEL-04: Incrementalism Section 3.5: purge non-secure cookies on session end
         let purged = wing::delete_session_cookies(jar, true);
         sub.assert_eq(purged, 2, "Session cookie (c_sess) and NonSecure persistent cookie (c_plain) purged");
         sub.assert_eq(jar.cookies.len, 1);
@@ -743,7 +743,7 @@ fn run_matrix_15_and_16_crypto_and_attacks(t: wing::T&) {
         sub.assert_false(wing::constant_time_eq("short", "longer_token"));
     };
 
-    t.run("ATK-01: Set-Cookie Comma Folding Invariant (RFC 6265bis §1)") { sub =>
+    t.run("ATK-01: Set-Cookie Comma Folding Invariant (RFC 6265bis Section 1)") { sub =>
         var jar = wing::new_canonical_cookie_jar();
         // Comma inside Path attribute must NOT split the cookie
         let ok = wing::set_cookie_header(jar, "https://example.com/c,d=e", "a=b; Path=/c,d=e", 1000);
@@ -865,11 +865,11 @@ fn main() {
 
     wing::run_case(runner, "1. Exhaustive Ingestion Matrix (LEX, TIME, DOM, PSL, IPv6, OBC)", run_ingestion_matrix);
     wing::run_case(runner, "2. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep", run_exhaustive_ctl_sweep);
-    wing::run_case(runner, "3. RFC 6265 §5.1.4 Path-Matching Engine & Default-Path Rules", run_path_matching_matrix);
+    wing::run_case(runner, "3. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules", run_path_matching_matrix);
     wing::run_case(runner, "4. SameSite, Lax+POST 120s & Schemeful Same-Site Matrix", run_samesite_and_redirect_matrix);
     wing::run_case(runner, "5. CHIPS Partition Isolation & 10,240B Byte Quota Enforcement", run_chips_partition_quota_and_isolation);
     wing::run_case(runner, "6. GC OBC (Domain-before-Host) & Global 30-Day Purge Immunity", run_gc_obc_domain_before_host_and_global_purge);
-    wing::run_case(runner, "7. RFC 6265 §5.4 Ordering, Server First-Win & SQLite V24 Coalescing", run_serialization_server_first_win_and_sqlite_v24);
+    wing::run_case(runner, "7. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing", run_serialization_server_first_win_and_sqlite_v24);
     wing::run_case(runner, "8. Matrix 11: LastAccessDate Throttling, Monotonicity & Clock Skew", run_matrix_11_clock_skew_and_throttling);
     wing::run_case(runner, "9. Matrix 13: SiteForCookies Ancestor Frame Hierarchy & Context", run_matrix_13_site_for_cookies_and_ancestors);
     wing::run_case(runner, "10. Matrix 14: Selective Deletion & Session Cleanup", run_matrix_14_selective_deletion);

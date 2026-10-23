@@ -1,7 +1,17 @@
 // Browser fingerprint profiles and header presets for goose-wing.
+//
+// Core Types:
+//   Profile     - Browser fingerprint presets enum (Chrome131, Firefox133, Safari18, None).
+//   HeaderItem  - Single HTTP header key-value pair with sensitive credential tagging.
+//
+// Standards & Specifications:
+//   RFC 9110 HTTP Semantics Header Name Case-Insensitivity (ASCII fold).
+//   Heuristic sensitivity classification for credential headers (Authorization, Cookie, API Keys).
 namespace wing;
 
 import std;
+
+// ---- browser profiles & header models --------------------------------------
 
 enum Profile {
     None,
@@ -16,7 +26,7 @@ struct HeaderItem {
     is_sensitive: bool = false,
 }
 
-// ---- header item & ascii helpers ----
+// ---- header item & ascii helpers -------------------------------------------
 
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
     return eq_ascii_fold(name, "authorization") ||
@@ -45,7 +55,7 @@ fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
     return true;
 }
 
-// ---- profile user-agents ----
+// ---- profile user-agents ---------------------------------------------------
 
 fn profile_user_agent(profile: Profile) -> const u8[:] {
     return match profile {

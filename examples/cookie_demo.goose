@@ -66,7 +66,7 @@ fn main() {
     assert(root_cookies.len == 2, "Exactly 2 root path cookies");
 
     // 4. Outgoing Request Header Generation
-    print("\n--- 4. Outgoing Header Generation per RFC 6265 §5.4 ---");
+    print("\n--- 4. Outgoing Header Generation per RFC 6265 Section 5.4 ---");
     var req_header: u8[>..] = [];
     jar.build_cookie_header(req_header, "api.crypto-dex.io", "/v1/trade", true, now_us);
     print("  Cookie Header: ", req_header[..]);
@@ -124,7 +124,7 @@ fn main() {
     assert(imported_count == jar.cookies.len, "All cookies successfully imported");
     assert(fresh_jar.get("order_token") == "ord_live_7766", "Global getter retrieves imported cookie");
 
-    // 9. PSL and Domain-Match Validation on Ingestion (RFC 6265 §5.3 Step 5 & 6)
+    // 9. PSL and Domain-Match Validation on Ingestion (RFC 6265 Section 5.3 Step 5 & 6)
     print("\n--- 9. PSL & Domain-Match Ingestion Validation ---");
     let evil_cross = jar.set_cookie_header("https://evil.com/phish", "steal=1; Domain=bank.com", now_us);
     assert(!evil_cross, "evil.com blocked from setting Domain=bank.com");

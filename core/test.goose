@@ -145,24 +145,24 @@ fn new_mock_clock(initial_us: i64 = 1700000000000000) -> MockClock {
     return MockClock { now_us: initial_us };
 }
 
-fn advance_us(c: MockClock&, delta_us: i64) -> i64 {
-    c.now_us += delta_us;
-    return c.now_us;
+fn advance_us(clock: MockClock&, delta_us: i64) -> i64 {
+    clock.now_us += delta_us;
+    return clock.now_us;
 }
 
-fn advance_ms(c: MockClock&, delta_ms: i64) -> i64 {
-    c.now_us += delta_ms * 1000;
-    return c.now_us;
+fn advance_ms(clock: MockClock&, delta_ms: i64) -> i64 {
+    clock.now_us += delta_ms * 1000;
+    return clock.now_us;
 }
 
-fn advance_sec(c: MockClock&, delta_sec: i64) -> i64 {
-    c.now_us += delta_sec * 1000000;
-    return c.now_us;
+fn advance_sec(clock: MockClock&, delta_sec: i64) -> i64 {
+    clock.now_us += delta_sec * 1000000;
+    return clock.now_us;
 }
 
-fn advance_days(c: MockClock&, days: i64) -> i64 {
-    c.now_us += days * 86400000000;
-    return c.now_us;
+fn advance_days(clock: MockClock&, days: i64) -> i64 {
+    clock.now_us += days * 86400000000;
+    return clock.now_us;
 }
 
 // Deterministic Xorshift64* generator for zero-allocation property fuzzing
@@ -171,8 +171,8 @@ struct FuzzRng {
 }
 
 fn new_fuzz_rng(seed: u64 = 0x853c49e6748fea9b) -> FuzzRng {
-    let s = if seed == 0 { 0x853c49e6748fea9b } else { seed };
-    return FuzzRng { state: s };
+    let initial_state = if seed == 0 { 0x853c49e6748fea9b } else { seed };
+    return FuzzRng { state: initial_state };
 }
 
 fn next_u64(rng: FuzzRng&) -> u64 {

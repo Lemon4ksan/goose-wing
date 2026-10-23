@@ -1,5 +1,17 @@
 // Deterministic HTTP Redirect State Machine (ComputeRedirectInfo & RedirectUtil).
 // RFC 9110, W3C Referrer Policy, RFC 6265bis #1331/#1348, and Chromium net::RedirectInfo.
+//
+// Core Types:
+//   RedirectMode    - Redirection handling strategy (Follow, Manual, Error).
+//   ReferrerPolicy  - W3C Referrer-Policy specification enum.
+//   RedirectError   - Lexical, scheme, SSRF, or credential diagnostic error enum.
+//   RedirectInfo    - Output record tracking mutated method, target URL, referrers, and security status.
+//
+// Standards & Specifications:
+//   RFC 9110 HTTP Redirection Status Codes (301, 302, 303 method mutation; 307, 308 method preservation).
+//   W3C Referrer Policy Specification (compute_new_referrer).
+//   CVE-2023-45143, CVE-2024-1968, CVE-2026-55553 Sensitive header stripping on cross-origin / downgrade hops.
+//   RFC 6265bis #1348 Monotonic cross-site redirect chain tainting.
 namespace wing;
 
 import std;
@@ -75,8 +87,8 @@ fn parse_referrer_policy(val: const u8[:]) -> ReferrerPolicy {
     return chosen;
 }
 
-fn referrer_policy_to_string(p: ReferrerPolicy) -> const u8[:] {
-    return match p {
+fn referrer_policy_to_string(policy: ReferrerPolicy) -> const u8[:] {
+    return match policy {
         NoReferrer => "no-referrer",
         NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
         Origin => "origin",
@@ -142,6 +154,119 @@ fn compute_redirect_info(
     );
 }
 
+fn mutate_redirect_method<B>(
+    status_code: i32,
+    current_method: const u8[:],
+    out_method: B&,
+    clear_body: bool&
+) {
+    out_method.clear();
+    if status_code == 301 || status_code == 302 {
+        if eq_ascii_fold(current_method, "POST") {
+            out_method.append("GET");
+            clear_body = true;
+        } else {
+            out_method.append(current_method);
+            clear_body = false;
+        }
+    } else if status_code == 303 {
+        if !eq_ascii_fold(current_method, "GET") && !eq_ascii_fold(current_method, "HEAD") {
+            out_method.append("GET");
+            clear_body = true;
+        } else {
+            out_method.append(current_method);
+            clear_body = false;
+        }
+    } else { // 307 Temporary Redirect and 308 Permanent Redirect preserve method and body
+        out_method.append(current_method);
+        clear_body = false;
+    }
+}
+
+fn inherit_target_fragment(
+    target_url: Url&,
+    current_url: const Url&,
+    clean_loc: const u8[:],
+    preserve_fragment_on_redirect_url: const u8[:]
+) {
+    let target_hash = hash(target_url);
+    let curr_hash = hash(current_url);
+    if target_hash.len == 0 && curr_hash.len > 0 {
+        if preserve_fragment_on_redirect_url.len == 0 || clean_loc != preserve_fragment_on_redirect_url {
+            target_url.hash_start = target_url.href.len as i32;
+            target_url.href.append(curr_hash);
+            target_url.hash_end = target_url.href.len as i32;
+        }
+    }
+}
+
+fn compute_redirect_site_for_cookies(
+    current_url: const Url&,
+    new_url: const Url&,
+    first_party_policy: FirstPartyURLPolicy,
+    current_site_for_cookies: const SiteForCookies&,
+    url_chain: const Url[:],
+    initiator: const Origin&,
+    has_initiator: bool,
+    had_cross_site_hop: bool,
+) -> SiteForCookies, bool {
+    let same_site_step = is_schemeful_same_site_urls(current_url, new_url);
+
+    if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
+        // Subresources / background requests: once tainted, remains null forever
+        let is_first_p = is_first_party(current_site_for_cookies, href(new_url), true);
+        let initiator_ok = !has_initiator || is_same_site_origin_url(initiator, new_url);
+
+        if had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
+            return null_site_for_cookies(), true;
+        }
+        return copy(current_site_for_cookies), false;
+    }
+
+    // Main-frame top-level navigation: SiteForCookies updates to target
+    let new_site = site_for_cookies_from_parsed_url(new_url);
+    var chain_tainted = had_cross_site_hop || !same_site_step;
+    if has_initiator && !is_same_site_origin_url(initiator, new_url) {
+        chain_tainted = true;
+    }
+    for &hop_url in url_chain {
+        if !is_schemeful_same_site_urls(hop_url, new_url) {
+            chain_tainted = true;
+        }
+    }
+    return new_site, chain_tainted;
+}
+
+fn validate_redirect_target(
+    location_header: const u8[:],
+    current_url: const Url&,
+    cors_mode: bool,
+    tainted_origin: bool
+) -> Url, RedirectError {
+    let clean_loc = trim(location_header);
+    guard clean_loc.len > 0 else {
+        return Url { .. }, RedirectError.MissingLocation;
+    }
+
+    let parsed_target, parse_err = parse_url_with_base(clean_loc, current_url);
+    guard parsed_target.valid else {
+        return Url { .. }, RedirectError.InvalidLocationUrl;
+    }
+
+    if !is_http_or_https(parsed_target) {
+        return Url { .. }, RedirectError.ForbiddenRedirectScheme;
+    }
+
+    if cors_mode && has_credentials(parsed_target) {
+        let same_orig = is_same_origin_url(current_url, parsed_target);
+        if !same_orig || tainted_origin {
+            return Url { .. }, RedirectError.CorsCredentialsInRedirectUrl;
+        }
+    }
+
+    return parsed_target, RedirectError.None;
+}
+
 fn compute_redirect_info(
     status_code: i32,
     current_method: const u8[:],
@@ -167,67 +292,19 @@ fn compute_redirect_info(
         ..
     };
 
-    // 1. Location Header Validation
-    let clean_loc = trim(location_header);
-    guard clean_loc.len > 0 else {
-        info.error = RedirectError.MissingLocation;
+    // 1 & 2. Location & CORS Validation
+    let parsed_target, val_err = validate_redirect_target(location_header, current_url, cors_mode, tainted_origin);
+    guard val_err == RedirectError.None else {
+        info.error = val_err;
         return info;
-    }
-
-    let parsed_target, parse_err = parse_url_with_base(clean_loc, current_url);
-    guard parsed_target.valid else {
-        info.error = RedirectError.InvalidLocationUrl;
-        return info;
-    }
-
-    if !is_http_or_https(parsed_target) {
-        info.error = RedirectError.ForbiddenRedirectScheme;
-        return info;
-    }
-
-    // 2. CORS Credentials in Redirect Target Check
-    if cors_mode && has_credentials(parsed_target) {
-        let same_orig = is_same_origin_url(current_url, parsed_target);
-        if !same_orig || tainted_origin {
-            info.error = RedirectError.CorsCredentialsInRedirectUrl;
-            return info;
-        }
     }
 
     // 3. Fragment Inheritance (WHATWG Fetch / Chromium NetworkDelegate)
     info.new_url = parsed_target;
-    let target_hash = hash(parsed_target);
-    let curr_hash = hash(current_url);
-    if target_hash.len == 0 && curr_hash.len > 0 {
-        if preserve_fragment_on_redirect_url.len == 0 || clean_loc != preserve_fragment_on_redirect_url {
-            // Append current fragment to new_url href
-            info.new_url.hash_start = info.new_url.href.len as i32;
-            info.new_url.href.append(curr_hash);
-            info.new_url.hash_end = info.new_url.href.len as i32;
-        }
-    }
+    inherit_target_fragment(info.new_url, current_url, trim(location_header), preserve_fragment_on_redirect_url);
 
     // 4. HTTP Method Mutation & Body Clearing (RFC 9110 / WHATWG Fetch)
-    if status_code == 301 || status_code == 302 {
-        if eq_ascii_fold(current_method, "POST") {
-            info.new_method.append("GET");
-            info.clear_body = true;
-        } else {
-            info.new_method.append(current_method);
-            info.clear_body = false;
-        }
-    } else if status_code == 303 {
-        if !eq_ascii_fold(current_method, "GET") && !eq_ascii_fold(current_method, "HEAD") {
-            info.new_method.append("GET");
-            info.clear_body = true;
-        } else {
-            info.new_method.append(current_method);
-            info.clear_body = false;
-        }
-    } else { // 307 Temporary Redirect and 308 Permanent Redirect preserve method and body
-        info.new_method.append(current_method);
-        info.clear_body = false;
-    }
+    mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
 
     // 5. Origin and Scheme Comparison (CVE-2024-1968 defense)
     let same_orig = is_same_origin_url(current_url, info.new_url);
@@ -250,36 +327,18 @@ fn compute_redirect_info(
     );
 
     // 7. SiteForCookies & Monotonic Redirect Chain Tainting (RFC 6265bis #1348)
-    let same_site_step = is_schemeful_same_site_urls(current_url, info.new_url);
-
-    if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
-        // Subresources / background requests: once tainted, remains null forever
-        let is_first_p = is_first_party(current_site_for_cookies, href(info.new_url), true);
-        let initiator_ok = !has_initiator || is_same_site_origin_url(initiator, info.new_url);
-
-        if had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
-            info.new_site_for_cookies = null_site_for_cookies();
-            info.is_cross_site_tainted = true;
-        } else {
-            info.new_site_for_cookies = copy(current_site_for_cookies);
-            info.is_cross_site_tainted = false;
-        }
-    } else {
-        // Main-frame top-level navigation: SiteForCookies updates to target
-        info.new_site_for_cookies = site_for_cookies_from_parsed_url(info.new_url);
-
-        // SameSite=Strict requires zero cross-site hops across the entire chain
-        var chain_tainted = had_cross_site_hop || !same_site_step;
-        if has_initiator && !is_same_site_origin_url(initiator, info.new_url) {
-            chain_tainted = true;
-        }
-        for &hop_url in url_chain {
-            if !is_schemeful_same_site_urls(hop_url, info.new_url) {
-                chain_tainted = true;
-            }
-        }
-        info.is_cross_site_tainted = chain_tainted;
-    }
+    let sfc, tainted = compute_redirect_site_for_cookies(
+        current_url,
+        info.new_url,
+        first_party_policy,
+        current_site_for_cookies,
+        url_chain,
+        initiator,
+        has_initiator,
+        had_cross_site_hop
+    );
+    info.new_site_for_cookies = sfc;
+    info.is_cross_site_tainted = tainted;
 
     return info;
 }

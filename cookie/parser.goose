@@ -1,5 +1,14 @@
-// Lexical Analyzer, Set-Cookie Parser & RFC 6265 §5.1.1 Date Tokenizer.
+// Lexical Analyzer, Set-Cookie Parser & RFC 6265 Section 5.1.1 Date Tokenizer.
 // Clean Room Implementation for goose-wing conforming to Chromium CookieMonster and RFC 6265bis.
+//
+// Core Types:
+//   CanonicalCookieURL - Dissected URL model with origin binding, path, and security scheme.
+//
+// Standards & Specifications:
+//   RFC 6265bis Section 5.5 - Subcomponent payload and attribute size limits (4096B payload / 1024B attribute).
+//   RFC 6265bis Section 5.1.1 - Greedy 4-token date parsing algorithm and year normalization.
+//   W3C Web Platform Tests (WPT) nameless cookie security invariants (SHAD-01, SHAD-02).
+//   Strict ASCII Control Character (CTL) rejection (0x00-0x08, 0x0A-0x1F, 0x7F).
 namespace wing;
 
 import std;
@@ -8,7 +17,7 @@ import cookie.constants;
 import cookie.canonical;
 import cookie.psl;
 
-// ---- ingestion pipeline & set-cookie parser -----------------------------
+// ---- ingestion pipeline & set-cookie parser --------------------------------
 
 // Ingestion Pipeline: Parses a Set-Cookie header field into CanonicalCookie.
 // Implements:
@@ -61,7 +70,7 @@ fn parse_canonical_set_cookie(
 }
 
 // Checks whether string contains prohibited ASCII Control Characters (CTLs: %x00-08 / %x0A-1F / %x7F).
-// RFC 6265bis §5.5 Step 1 & §5.7 Step 3 / Chromium Issue #1420 & #1531.
+// RFC 6265bis Section 5.5 Step 1 & Section 5.7 Step 3 / Chromium Issue #1420 & #1531.
 // Note: HTAB (%x09) is non-prohibited horizontal whitespace.
 fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
     for char_byte in cookie_str {
@@ -72,9 +81,9 @@ fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
     return false;
 }
 
-// ---- rfc 6265 §5.1.1 date parser -----------------------------------------
+// ---- rfc 6265 Section 5.1.1 date parser -------------------------------------------
 
-// Parses an RFC 6265 §5.1.1 cookie date string, returning microsecond UTC timestamp.
+// Parses an RFC 6265 Section 5.1.1 cookie date string, returning microsecond UTC timestamp.
 // Implements 4-flag greedy token parsing, 2-digit year normalization, leap year checks,
 // and 1601 minimum year bound (Windows FILETIME base).
 fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
@@ -388,7 +397,7 @@ fn apply_parsed_cookie_attribute(
 fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
     guard attr_val.len > 0 && attr_val[attr_val.len - 1] != '.' else { return; }
     let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
-    // RFC 6265 §5.2.3: If domain still begins with '.', ignore the domain attribute
+    // RFC 6265 Section 5.2.3: If domain still begins with '.', ignore the domain attribute
     guard clean_domain.len > 0 && clean_domain[0] != '.' else { return; }
     cookie_ref.domain.clear();
     cookie_ref.domain.append(clean_domain);

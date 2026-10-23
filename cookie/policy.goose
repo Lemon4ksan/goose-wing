@@ -1,5 +1,17 @@
 // Multi-tier Security, Isolation & Cookie Policy Engine.
 // Clean Room Implementation of draft-ietf-httpbis-layered-cookies, RFC 6265bis SameSite & OBC.
+//
+// Core Types:
+//   SiteForCookies         - Navigation context and ancestor frame hierarchy for first-party validation.
+//   SameSiteContextType    - Context classification enum (CrossSite, SameSiteLaxMethodUnsafe, SameSiteLax, SameSiteStrict).
+//   SameSiteCookieContext  - Context state container tracking reload, hops, and schemeful match.
+//   FirstPartyURLPolicy    - Redirect policy for updating top-level first party URLs.
+//
+// Standards & Specifications:
+//   draft-ietf-httpbis-layered-cookies - Prefix rules (__Secure-, __Host-, __Http-, __Host-Http-).
+//   RFC 6265bis - Schemeful Same-Site (scheme + eTLD+1) and Lax-allowing-unsafe 120s window.
+//   W3C Secure Contexts / Chromium OBC - Origin-Bound Cookies port isolation and non-crypto origin interop.
+//   Chromium net::CookieInclusionStatus diagnostic error and warning constants.
 namespace wing;
 
 import std;
@@ -7,7 +19,7 @@ import cookie.constants;
 import cookie.canonical;
 import cookie.psl;
 
-// ---- http method & origin trust ----
+// ---- http method & origin trust --------------------------------------------
 
 // Checks whether an HTTP method is considered safe per RFC 9110 (GET, HEAD, OPTIONS, TRACE).
 fn safe_http_method(method: const u8[:]) -> bool {
@@ -32,7 +44,7 @@ fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
     return trustworthy_non_crypto_host(host);
 }
 
-// ---- origin-bound adjustment ----
+// ---- origin-bound adjustment -----------------------------------------------
 
 // Rewrites source_port and source_scheme for trustworthy non-cryptographic origins.
 // Chromium OBC: if a trustworthy non-cryptographic origin sets a Secure cookie on default port 80,
@@ -59,10 +71,10 @@ fn adjust_origin_bound_cookies_on_insert(
     }
 }
 
-// ---- script api & prefix security validation ----
+// ---- script api & prefix security validation -------------------------------
 
 // Validates cookie name against non-HTTP script APIs (document.cookie, CookieStore API).
-// draft-ietf-httpbis-layered-cookies §4.1.3 & WHATWG:
+// draft-ietf-httpbis-layered-cookies Section 4.1.3 & WHATWG:
 // Case-insensitive check: if byte-lowercased name starts with "__http-" or "__host-http-",
 // return false to prevent script shadowing of protected HTTP-only cookies.
 fn validate_script_cookie_name(name: const u8[:]) -> bool {
@@ -116,7 +128,7 @@ fn validate_canonical_cookie_security(
     return validate_security_cookie_prefixes(cookie_val, cookie_name, is_secure_channel, is_http_api);
 }
 
-// ---- schemeful same-site engine ----
+// ---- schemeful same-site engine --------------------------------------------
 
 // Schemeful Same-Site: compares two origins by (scheme, eTLD+1).
 // Transition between http://example.com and https://example.com is cross-site!
@@ -135,7 +147,7 @@ fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: con
     return schemeful_same_site(scheme1, host1, scheme2, host2);
 }
 
-// ---- request sendability evaluation ----
+// ---- request sendability evaluation ----------------------------------------
 
 // Evaluates whether a cookie is sendable for a request under RFC 6265bis SameSite rules.
 // Implements:
@@ -223,7 +235,7 @@ fn is_cookie_sendable_for_obc(
     return cookie_sendable_for_obc(cookie_val, req_scheme, req_port, host);
 }
 
-// ---- internal implementation helpers ----
+// ---- internal implementation helpers ---------------------------------------
 
 fn validate_security_cookie_prefixes(
     cookie_val: const CanonicalCookie&,
@@ -234,9 +246,9 @@ fn validate_security_cookie_prefixes(
     // Anti-Shadowing / Cookie Crumbles defense (USENIX Security / SHAD-01):
     // A nameless cookie cannot have a value starting with security prefixes
     if cookie_name.len == 0 {
-        let val = cookie_val.value[..];
-        if starts_with(val, "__Host-") || starts_with(val, "__Secure-") ||
-           starts_with(val, "__Http-") || starts_with(val, "__Host-Http-") {
+        let cookie_value = cookie_val.value[..];
+        if starts_with(cookie_value, "__Host-") || starts_with(cookie_value, "__Secure-") ||
+           starts_with(cookie_value, "__Http-") || starts_with(cookie_value, "__Host-Http-") {
             return false;
         }
     }
@@ -268,7 +280,7 @@ fn validate_security_cookie_prefixes(
     return true;
 }
 
-// ---- SiteForCookies and Navigation Context (RFC 6265bis / Chromium net::SiteForCookies) ----
+// ---- site for cookies and navigation context -------------------------------
 
 struct SiteForCookies {
     scheme: u8[..16] = [],
@@ -279,17 +291,17 @@ struct SiteForCookies {
 
 fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);
-    var s = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    s.scheme.append(parsed.scheme[..]);
-    extract_etld_plus_one(parsed.host[..], s.registrable_domain);
-    return s;
+    var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
+    site.scheme.append(parsed.scheme[..]);
+    extract_etld_plus_one(parsed.host[..], site.registrable_domain);
+    return site;
 }
 
 fn site_for_cookies_from_parsed_url(url_val: const Url&) -> SiteForCookies {
-    var s = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    s.scheme.append(scheme(url_val));
-    extract_etld_plus_one(hostname(url_val), s.registrable_domain);
-    return s;
+    var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
+    site.scheme.append(scheme(url_val));
+    extract_etld_plus_one(hostname(url_val), site.registrable_domain);
+    return site;
 }
 
 fn null_site_for_cookies() -> SiteForCookies {
@@ -327,7 +339,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
     }
 }
 
-// Computes SiteForCookies evaluating the full ancestor chain (RFC 6265bis §5.2.1 / CTX-01, CTX-02)
+// Computes SiteForCookies evaluating the full ancestor chain (RFC 6265bis Section 5.2.1 / CTX-01, CTX-02)
 fn compute_site_for_cookies_with_ancestors(
     top_url: const u8[:],
     ancestor_urls: const u8[:][:],

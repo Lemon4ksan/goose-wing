@@ -1,7 +1,7 @@
 // The Goose standard date & time library: candidate for `std::time`.
 //
 // Core Types:
-//   Duration   - signed nanosecond span (~±292 years) with memberwise arithmetic (+, -, *, /, -dur).
+//   Duration   - signed nanosecond span (~+/-292 years) with memberwise arithmetic (+, -, *, /, -dur).
 //   Time       - wall-clock instant (wall_sec since Unix epoch 1970-01-01, subsecond nsec, tz_offset).
 //   Stopwatch  - high-resolution monotonic timer for latency measurements.
 //   Deadline   - monotonic timeout and cancellation tracker.
@@ -10,7 +10,7 @@
 //
 // Standards & Specifications:
 //   RFC 3339 / ISO 8601 formatting and zero-allocation parsing.
-//   RFC 9110 §5.6.7 HTTP-Date formatting (IMF-fixdate) and parsing (IMF, RFC 850, asctime).
+//   RFC 9110 Section 5.6.7 HTTP-Date formatting (IMF-fixdate) and parsing (IMF, RFC 850, asctime).
 //   Howard Hinnant's O(1) proleptic Gregorian civil calendar math.
 namespace wing;
 
@@ -149,7 +149,7 @@ fn weekday_short_name(weekday_val: Weekday) -> const u8[:] {
 
 // ---- duration: nanosecond-precision interval -------------------------------
 
-// Represents a signed time interval with nanosecond resolution (~±292 years).
+// Represents a signed time interval with nanosecond resolution (~+/-292 years).
 // Goose automatically provides memberwise struct arithmetic:
 // dur1 + dur2, dur1 - dur2, dur * factor, dur / factor, -dur, +=, -=, *=, /=.
 struct Duration {
@@ -273,7 +273,7 @@ fn format<B>(out: B&, dur: Duration) {
         let fraction_nanos = total_nanos % MICROSECOND;
         format(out, micros_val);
         append_trimmed_fraction(out, fraction_nanos, 3);
-        out.append("µs");
+        out.append("us");
         return;
     }
 
@@ -309,7 +309,7 @@ fn format<B>(out: B&, dur: Duration) {
 }
 
 // Parses duration string (e.g. "300ms", "-1.5h", "2h45m", "10s", "100ns"). Zero-alloc.
-// Supported units: ns, us/µs, ms, s, m, h, d, w.
+// Supported units: ns, us/us, ms, s, m, h, d, w.
 fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     let text = trim(raw_str);
     guard text.len > 0 else { return Duration { 0 }, false; }
@@ -917,7 +917,7 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     }, true;
 }
 
-// Formats Time into RFC 9110 §5.6.7 / RFC 1123 IMF-fixdate (e.g. "Thu, 22 Oct 2026 23:18:18 GMT").
+// Formats Time into RFC 9110 Section 5.6.7 / RFC 1123 IMF-fixdate (e.g. "Thu, 22 Oct 2026 23:18:18 GMT").
 // Always formats in UTC/GMT regardless of local timezone offset.
 fn format_http<B>(out: B&, time_val: Time) {
     let utc_time = time_val.utc();
@@ -940,7 +940,7 @@ fn format_http<B>(out: B&, time_val: Time) {
     out.append(" GMT");
 }
 
-// Parses RFC 9110 §5.6.7 HTTP-Date formats (IMF-fixdate, RFC 850, asctime).
+// Parses RFC 9110 Section 5.6.7 HTTP-Date formats (IMF-fixdate, RFC 850, asctime).
 // Returns (Time, false) if the string is malformed or represents an invalid calendar date.
 fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
     let text = trim(raw_str);
@@ -1007,16 +1007,16 @@ fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
     }
 }
 
-fn parse_digits(s: const u8[:]) -> i64, bool {
-    guard s.len > 0 else { return 0, false; }
+fn parse_digits(str_val: const u8[:]) -> i64, bool {
+    guard str_val.len > 0 else { return 0, false; }
     let max_i64 = 9223372036854775807;
     var val: i64 = 0;
-    for idx in s.len {
-        let ch = s[idx];
+    for idx in str_val.len {
+        let ch = str_val[idx];
         guard ch >= '0' && ch <= '9' else { return 0, false; }
-        let d = (ch - '0') as i64;
-        guard val <= (max_i64 - d) / 10 else { return 0, false; }
-        val = val * 10 + d;
+        let digit_val = (ch - '0') as i64;
+        guard val <= (max_i64 - digit_val) / 10 else { return 0, false; }
+        val = val * 10 + digit_val;
     }
     return val, true;
 }
@@ -1046,7 +1046,7 @@ fn is_valid_weekday_name(token: const u8[:]) -> bool {
 
 fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
     if unit_str == "ns" { return NANOSECOND, true; }
-    if unit_str == "us" || unit_str == "µs" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
+    if unit_str == "us" || unit_str == "us" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
     if unit_str == "ms" { return MILLISECOND, true; }
     if unit_str == "s" { return SECOND, true; }
     if unit_str == "m" { return MINUTE, true; }

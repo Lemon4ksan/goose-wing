@@ -1,5 +1,18 @@
 // Session state, configuration, and execution pipeline for goose-wing.
 // URL, ClientSession, Redirect State Machine, 3-Tier SSRF Guard, and CanonicalCookieJar.
+//
+// Core Types:
+//   SsrfGuardPolicy         - 3-tier SSRF defense policy (loopback, private ranges, cloud metadata, dangerous ports).
+//   SessionConfig           - Declarative initial configuration for ClientSession.
+//   Session                 - Stateful HTTP client session with cookie jar, redirect state machine, and SSRF guard.
+//   MockExchange            - Deterministic mock routing exchange for unit and end-to-end integration testing.
+//   RequestExecutionContext - Internal pipeline state container tracking hop history, headers, and security contexts.
+//
+// Standards & Specifications:
+//   Chromium net::URLRequest 6-phase pipeline architecture.
+//   RFC 9110 HTTP Redirection, Method mutation, and Request.GetBody body rewinding.
+//   RFC 6265bis Schemeful Same-Site & CHIPS partition key injection.
+//   RFC 1918 / RFC 3927 Cloud metadata & DNS rebinding protection.
 namespace wing;
 
 import std;
@@ -9,7 +22,6 @@ import cookie.canonical;
 import cookie.policy;
 import cookie.engine;
 import app.profile;
-import app.cookie;
 import app.request;
 import app.response;
 import app.redirect;
@@ -38,41 +50,41 @@ fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
     var dot_count = 0;
     var octets: i32[4] = [0, 0, 0, 0];
     var octet_idx = 0;
-    var num = 0;
-    var digits = 0;
+    var current_num = 0;
+    var digits_count = 0;
 
-    for b in clean_ip {
-        if b == '.' {
-            if digits == 0 || num > 255 || octet_idx >= 3 { return false; }
-            octets[octet_idx] = num as i32;
+    for char_byte in clean_ip {
+        if char_byte == '.' {
+            if digits_count == 0 || current_num > 255 || octet_idx >= 3 { return false; }
+            octets[octet_idx] = current_num as i32;
             octet_idx++;
-            num = 0;
-            digits = 0;
+            current_num = 0;
+            digits_count = 0;
             dot_count++;
-        } else if b >= '0' && b <= '9' {
-            num = num * 10 + (b - '0');
-            digits++;
-            if digits > 3 { return false; }
+        } else if char_byte >= '0' && char_byte <= '9' {
+            current_num = current_num * 10 + (char_byte - '0');
+            digits_count++;
+            if digits_count > 3 { return false; }
         } else {
             return false;
         }
     }
-    if dot_count != 3 || digits == 0 || num > 255 || octet_idx != 3 {
+    if dot_count != 3 || digits_count == 0 || current_num > 255 || octet_idx != 3 {
         return false;
     }
-    octets[3] = num as i32;
+    octets[3] = current_num as i32;
 
-    let o0 = octets[0];
-    let o1 = octets[1];
+    let octet0 = octets[0];
+    let octet1 = octets[1];
 
-    if o0 == 0 { return true; }                         // 0.0.0.0/8
-    if o0 == 10 { return true; }                        // 10.0.0.0/8
-    if o0 == 127 { return true; }                       // 127.0.0.0/8 Loopback
-    if o0 == 169 && o1 == 254 { return true; }          // 169.254.0.0/16 Link-Local / Cloud Metadata
-    if o0 == 172 && (o1 >= 16 && o1 <= 31) { return true; } // 172.16.0.0/12
-    if o0 == 192 && o1 == 168 { return true; }          // 192.168.0.0/16
-    if o0 == 100 && (o1 >= 64 && o1 <= 127) { return true; } // 100.64.0.0/10 CGNAT
-    if o0 >= 224 { return true; }                       // 224.0.0.0/4 Multicast & Reserved
+    if octet0 == 0 { return true; }                             // 0.0.0.0/8
+    if octet0 == 10 { return true; }                            // 10.0.0.0/8
+    if octet0 == 127 { return true; }                           // 127.0.0.0/8 Loopback
+    if octet0 == 169 && octet1 == 254 { return true; }          // 169.254.0.0/16 Link-Local / Cloud Metadata
+    if octet0 == 172 && (octet1 >= 16 && octet1 <= 31) { return true; } // 172.16.0.0/12
+    if octet0 == 192 && octet1 == 168 { return true; }          // 192.168.0.0/16
+    if octet0 == 100 && (octet1 >= 64 && octet1 <= 127) { return true; } // 100.64.0.0/10 CGNAT
+    if octet0 >= 224 { return true; }                           // 224.0.0.0/4 Multicast & Reserved
 
     return false;
 }
@@ -105,13 +117,13 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     return is_private_ipv4(clean_ip);
 }
 
-fn is_dangerous_service_port(p: i32) -> bool {
-    return p == 22 ||   // SSH
-           p == 25 ||   // SMTP
-           p == 6379 || // Redis
-           p == 11211 || // Memcached
-           p == 2375 || // Docker
-           p == 2376;
+fn is_dangerous_service_port(port_num: i32) -> bool {
+    return port_num == 22 ||    // SSH
+           port_num == 25 ||    // SMTP
+           port_num == 6379 ||  // Redis
+           port_num == 11211 || // Memcached
+           port_num == 2375 ||  // Docker
+           port_num == 2376;
 }
 
 fn validate_url_against_ssrf(url_val: const Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
@@ -121,25 +133,25 @@ fn validate_url_against_ssrf(url_val: const Url&, policy: const SsrfGuardPolicy&
         return RedirectError.SchemeDowngradeBlocked;
     }
 
-    let p = effective_port(url_val);
+    let port_val = effective_port(url_val);
     if policy.denied_ports.len > 0 {
         for denied in policy.denied_ports {
-            if p == denied { return RedirectError.SsrfBlockedUrl; }
+            if port_val == denied { return RedirectError.SsrfBlockedUrl; }
         }
     }
     if policy.allowed_ports.len > 0 {
         var port_allowed = false;
         for allowed in policy.allowed_ports {
-            if p == allowed { port_allowed = true; break; }
+            if port_val == allowed { port_allowed = true; break; }
         }
         if !port_allowed { return RedirectError.SsrfBlockedUrl; }
-    } else if policy.deny_local_network && is_dangerous_service_port(p) {
+    } else if policy.deny_local_network && is_dangerous_service_port(port_val) {
         return RedirectError.SsrfBlockedUrl;
     }
 
-    let h = hostname(url_val);
+    let host_str = hostname(url_val);
     if policy.deny_local_network {
-        if is_private_or_reserved_ip(h) {
+        if is_private_or_reserved_ip(host_str) {
             return RedirectError.SsrfBlockedIp;
         }
     }
@@ -199,7 +211,7 @@ struct Session {
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
 
-// ---- session factories ----
+// ---- session factories -----------------------------------------------------
 
 fn new_session() -> Session {
     var sess = Session {
@@ -289,15 +301,15 @@ fn enable_ssrf_guard(session: Session&, deny_local_network: bool = true) {
     session.ssrf_guard.deny_local_network = deny_local_network;
 }
 
-fn allow_port(session: Session&, p: i32) {
+fn allow_port(session: Session&, port_num: i32) {
     if session.ssrf_guard.allowed_ports.len < 16 {
-        session.ssrf_guard.allowed_ports.push(p);
+        session.ssrf_guard.allowed_ports.push(port_num);
     }
 }
 
-fn deny_port(session: Session&, p: i32) {
+fn deny_port(session: Session&, port_num: i32) {
     if session.ssrf_guard.denied_ports.len < 16 {
-        session.ssrf_guard.denied_ports.push(p);
+        session.ssrf_guard.denied_ports.push(port_num);
     }
 }
 
@@ -307,10 +319,10 @@ fn set_clock_us(session: Session&, now_us: i64) {
 
 fn trust_location_host(session: Session&, host_name: const u8[:]) {
     if session.trusted_location_hosts.len < 8 {
-        var h: u8[..128] = [];
-        h.append(host_name);
-        to_lower(h[..]);
-        session.trusted_location_hosts.push(h);
+        var host_buf: u8[..128] = [];
+        host_buf.append(host_name);
+        to_lower(host_buf[..]);
+        session.trusted_location_hosts.push(host_buf);
     }
 }
 
@@ -340,9 +352,9 @@ fn mock_route(
 
 fn add_mock_set_cookie(route: MockExchange&, set_cookie_raw: const u8[:]) {
     if route.set_cookies.len < 8 {
-        var sc: u8[..256] = [];
-        sc.append(set_cookie_raw);
-        route.set_cookies.push(sc);
+        var cookie_buf: u8[..256] = [];
+        cookie_buf.append(set_cookie_raw);
+        route.set_cookies.push(cookie_buf);
     }
 }
 
@@ -366,9 +378,9 @@ fn add_mock_header(session: Session&, name: const u8[:], value: const u8[:]) {
 
 fn add_mock_resolved_ip(route: MockExchange&, ip_str: const u8[:]) {
     if route.resolved_ips.len < 4 {
-        var ip: u8[..64] = [];
-        ip.append(ip_str);
-        route.resolved_ips.push(ip);
+        var ip_buf: u8[..64] = [];
+        ip_buf.append(ip_str);
+        route.resolved_ips.push(ip_buf);
     }
 }
 
@@ -401,7 +413,7 @@ fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
     }
 }
 
-// ---- url resolution helper ----
+// ---- url resolution helper -------------------------------------------------
 
 fn build_effective_url(
     base_url: const u8[:],
@@ -465,15 +477,162 @@ struct RequestExecutionContext {
     body: u8[>..] = [],
 }
 
-fn execute_request(session: Session&, req: const Request&) -> Response, Error {
-    var raw_eff_url: u8[..512] = [];
-    build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
+fn validate_hop_prerequisites(session: const Session&, current_url: const Url&) -> Error {
+    if session.https_only && scheme(current_url) != "https" {
+        return make_error(400, "ssrf_guard", "https_only policy violated");
+    }
+    let ssrf_err = validate_url_against_ssrf(current_url, session.ssrf_guard);
+    if ssrf_err != RedirectError.None {
+        return make_error(403, "ssrf_guard", redirect_error_to_string(ssrf_err));
+    }
+    return no_error();
+}
 
-    let parsed_initial, parse_err = parse_url(raw_eff_url[..]);
-    guard parsed_initial.valid else {
-        return Response { .. }, make_error(400, "url_parse", "invalid request url");
+fn compute_hop_samesite_context(
+    ctx: const RequestExecutionContext&,
+    current_url: const Url&,
+    safe_method: bool,
+) -> SameSiteCookieContext {
+    var samesite_ctx_type = SameSiteContextType.CrossSite;
+    let is_first_p = is_first_party(ctx.site_for_cookies, href(current_url), true);
+
+    if ctx.is_main_frame {
+        if ctx.had_cross_site_hop {
+            samesite_ctx_type = if safe_method { SameSiteContextType.SameSiteLax } else { SameSiteContextType.CrossSite };
+        } else if is_first_p {
+            samesite_ctx_type = SameSiteContextType.SameSiteStrict;
+        } else if safe_method {
+            samesite_ctx_type = SameSiteContextType.SameSiteLax;
+        } else {
+            samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
+        }
+    } else {
+        if ctx.had_cross_site_hop || !is_first_p {
+            samesite_ctx_type = SameSiteContextType.CrossSite;
+        } else {
+            samesite_ctx_type = SameSiteContextType.SameSiteStrict;
+        }
     }
 
+    return SameSiteCookieContext {
+        context_type: samesite_ctx_type,
+        schemefully_same: ctx.site_for_cookies.schemefully_same,
+        is_reload: ctx.is_reload,
+        had_cross_site_hop: ctx.had_cross_site_hop,
+    };
+}
+
+fn prepare_hop_cookie_header(
+    session: Session&,
+    ctx: RequestExecutionContext&,
+    current_url: const Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    safe_method: bool,
+) {
+    var matched_cookies: CanonicalCookie[>..] = [];
+    get_canonical_cookies_for_request(
+        session.jar,
+        hostname(current_url),
+        pathname(current_url),
+        scheme(current_url),
+        effective_port(current_url),
+        is_secure_scheme(current_url),
+        true,
+        "",
+        session.virtual_clock_us,
+        matched_cookies,
+        samesite_eval.context_type != SameSiteContextType.CrossSite,
+        ctx.is_main_frame,
+        safe_method
+    );
+
+    remove_header_by_name(ctx.headers, "Cookie");
+    if matched_cookies.len > 0 {
+        var cookie_hdr_val: u8[..512] = [];
+        format_cookie_header_value(cookie_hdr_val, matched_cookies[..]);
+        if cookie_hdr_val.len > 0 && ctx.headers.len < 32 {
+            ctx.headers.push(make_header("Cookie", cookie_hdr_val[..], true));
+        }
+    }
+}
+
+fn ingest_hop_response_cookies(
+    session: Session&,
+    ctx: const RequestExecutionContext&,
+    current_url: const Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    set_cookies: const u8[..256][..16]&,
+) {
+    for &set_cookie_str in set_cookies {
+        var def_path: u8[..256] = [];
+        default_cookie_path_calc(pathname(current_url), def_path);
+        var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(set_cookie_str[..], hostname(current_url), def_path[..], session.virtual_clock_us);
+        if cookie_ok {
+            let can_write, code = can_set_canonical_cookie_for_context(
+                parsed_cookie,
+                samesite_eval,
+                ctx.is_main_frame,
+                is_secure_scheme(current_url)
+            );
+            if can_write {
+                set_cookie_header(session.jar, href(current_url), set_cookie_str[..], session.virtual_clock_us);
+            }
+        }
+    }
+}
+
+fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response&) {
+    resp.redirect_count = ctx.redirect_count;
+    resp.final_method.clear();
+    resp.final_method.append(ctx.current_method[..]);
+    for &hop_u in ctx.url_chain {
+        if resp.url_chain.len < 16 {
+            var u_str: u8[..256] = [];
+            u_str.append(href(hop_u));
+            resp.url_chain.push(u_str);
+        }
+    }
+}
+
+fn apply_redirect_transition(
+    session: const Session&,
+    ctx: RequestExecutionContext&,
+    redirect_info: const RedirectInfo&,
+) -> Error {
+    ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
+    ctx.site_for_cookies = redirect_info.new_site_for_cookies;
+    ctx.current_method.clear();
+    ctx.current_method.append(redirect_info.new_method[..]);
+    ctx.current_referrer.clear();
+    ctx.current_referrer.append(redirect_info.new_referrer[..]);
+    ctx.current_referrer_policy = redirect_info.new_referrer_policy;
+
+    if redirect_info.clear_body {
+        ctx.body.clear();
+        ctx.body_consumed = false;
+    } else {
+        // 307 or 308 redirect preserves method and body
+        if !ctx.rewindable && ctx.body_consumed {
+            return make_error(400, "body_rewind", "http: cannot rewind body");
+        }
+        ctx.body.clear();
+        ctx.body.append(ctx.rewind_buf[..]);
+        ctx.body_consumed = false;
+    }
+
+    let is_trusted = is_trusted_location_host(session, hostname(redirect_info.new_url));
+    sanitize_headers_on_redirect(
+        ctx.headers,
+        redirect_info,
+        ctx.cors_mode,
+        ctx.tainted_origin,
+        session.enable_referer,
+        is_trusted
+    );
+    return no_error();
+}
+
+fn init_execution_context(session: const Session&, req: const Request&, parsed_initial: const Url&) -> RequestExecutionContext {
     var ctx = RequestExecutionContext {
         current_method: copy(req.method),
         rewindable: req.rewindable,
@@ -507,142 +666,59 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
         ctx.site_for_cookies = site_for_cookies_from_parsed_url(parsed_initial);
     }
 
-    // Default headers and request headers
-    for &dh in session.default_headers {
-        ctx.headers.push(copy(dh));
+    for &default_hdr in session.default_headers {
+        ctx.headers.push(copy(default_hdr));
     }
-    for &rh in req.headers {
-        ctx.headers.push(copy(rh));
+    for &req_hdr in req.headers {
+        ctx.headers.push(copy(req_hdr));
     }
 
     ctx.url_chain.push(parsed_initial);
+    return ctx;
+}
 
-    // Main redirect execution loop
+fn execute_request(session: Session&, req: const Request&) -> Response, Error {
+    var raw_eff_url: u8[..512] = [];
+    build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
+
+    let parsed_initial, parse_err = parse_url(raw_eff_url[..]);
+    guard parsed_initial.valid else {
+        return Response { .. }, make_error(400, "url_parse", "invalid request url");
+    }
+
+    var ctx = init_execution_context(session, req, parsed_initial);
+
+    // Main redirect execution loop (Chromium net::URLRequest 6-phase pipeline)
     while ctx.redirect_count <= ctx.max_redirects {
         let current_url = ctx.url_chain[ctx.url_chain.len - 1];
 
-        // --------------------------------------------------------------------
         // Phase 1: Pre-validation of Hop
-        // --------------------------------------------------------------------
-        if session.https_only && scheme(current_url) != "https" {
-            return Response { .. }, make_error(400, "ssrf_guard", "https_only policy violated");
-        }
-        let ssrf_err = validate_url_against_ssrf(current_url, session.ssrf_guard);
-        if ssrf_err != RedirectError.None {
-            return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(ssrf_err));
-        }
+        let pre_err = validate_hop_prerequisites(session, current_url);
+        guard ok(pre_err) else { return Response { .. }, pre_err; }
 
-        // --------------------------------------------------------------------
-        // Phase 2: Compute SameSiteCookieContext & Read CanonicalCookieJar
-        // --------------------------------------------------------------------
-        var samesite_ctx_type = SameSiteContextType.CrossSite;
-        let is_first_p = is_first_party(ctx.site_for_cookies, href(current_url), true);
+        // Phase 2 & 3: Compute SameSite Context & Synthesize Fresh Cookie Header
         let safe_method = is_safe_http_method(ctx.current_method[..]);
+        let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
+        prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
 
-        if ctx.is_main_frame {
-            if ctx.had_cross_site_hop {
-                samesite_ctx_type = if safe_method { SameSiteContextType.SameSiteLax } else { SameSiteContextType.CrossSite };
-            } else if is_first_p {
-                samesite_ctx_type = SameSiteContextType.SameSiteStrict;
-            } else if safe_method {
-                samesite_ctx_type = SameSiteContextType.SameSiteLax;
-            } else {
-                samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
-            }
-        } else {
-            if ctx.had_cross_site_hop || !is_first_p {
-                samesite_ctx_type = SameSiteContextType.CrossSite;
-            } else {
-                samesite_ctx_type = SameSiteContextType.SameSiteStrict;
-            }
-        }
-
-        let samesite_eval = SameSiteCookieContext {
-            context_type: samesite_ctx_type,
-            schemefully_same: ctx.site_for_cookies.schemefully_same,
-            is_reload: ctx.is_reload,
-            had_cross_site_hop: ctx.had_cross_site_hop,
-        };
-
-        var matched_cookies: CanonicalCookie[>..] = [];
-        get_canonical_cookies_for_request(
-            session.jar,
-            hostname(current_url),
-            pathname(current_url),
-            scheme(current_url),
-            effective_port(current_url),
-            is_secure_scheme(current_url),
-            true,
-            "",
-            session.virtual_clock_us,
-            matched_cookies,
-            samesite_eval.context_type != SameSiteContextType.CrossSite,
-            ctx.is_main_frame,
-            safe_method
-        );
-
-        // --------------------------------------------------------------------
-        // Phase 3: Synthesize Fresh Cookie Header (CVE-2023-45143 Defense)
-        // --------------------------------------------------------------------
-        remove_header_by_name(ctx.headers, "Cookie");
-        if matched_cookies.len > 0 {
-            var cookie_hdr_val: u8[..512] = [];
-            format_cookie_header_value(cookie_hdr_val, matched_cookies[..]);
-            if cookie_hdr_val.len > 0 && ctx.headers.len < 32 {
-                ctx.headers.push(make_header("Cookie", cookie_hdr_val[..], true));
-            }
-        }
-
-        // --------------------------------------------------------------------
         // Phase 4: Network Transaction & Ingest Set-Cookie Before 3xx Analysis
-        // --------------------------------------------------------------------
         var dns_rebinding_err = RedirectError.None;
         var resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
-        if dns_rebinding_err != RedirectError.None {
+        guard dns_rebinding_err == RedirectError.None else {
             return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
         }
         ctx.body_consumed = true;
+        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
 
-        // Ingest response Set-Cookie headers into CanonicalCookieJar
-        for &sc in resp.set_cookies {
-            var def_path: u8[..256] = [];
-            default_cookie_path_calc(pathname(current_url), def_path);
-            var parsed_c, cause, ok_c = parse_canonical_set_cookie(sc[..], hostname(current_url), def_path[..], session.virtual_clock_us);
-            if ok_c {
-                let can_write, code = can_set_canonical_cookie_for_context(
-                    parsed_c,
-                    samesite_eval,
-                    ctx.is_main_frame,
-                    is_secure_scheme(current_url)
-                );
-                if can_write {
-                    set_cookie_header(session.jar, href(current_url), sc[..], session.virtual_clock_us);
-                }
-            }
-        }
-
-        // --------------------------------------------------------------------
         // Phase 5: 3xx Detection & ComputeRedirectInfo
-        // --------------------------------------------------------------------
         let loc_hdr = header(resp, "Location");
         let is_red = is_redirect(resp) && loc_hdr.len > 0;
 
         if !is_red {
-            // Final response reached
-            resp.redirect_count = ctx.redirect_count;
-            resp.final_method.clear();
-            resp.final_method.append(ctx.current_method[..]);
-            for &hop_u in ctx.url_chain {
-                if resp.url_chain.len < 16 {
-                    var u_str: u8[..256] = [];
-                    u_str.append(href(hop_u));
-                    resp.url_chain.push(u_str);
-                }
-            }
+            finalize_success_response(ctx, resp);
             return resp, no_error();
         }
 
-        // Redirect received
         if ctx.redirect_mode == RedirectMode.Manual {
             resp.redirect_count = ctx.redirect_count;
             return resp, no_error();
@@ -678,45 +754,26 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
             return resp, make_error(310, "redirect", redirect_error_to_string(redirect_info.error));
         }
 
-        // --------------------------------------------------------------------
-        // Phase 6: Sanitization & Body Rewind (Request.GetBody Pattern)
-        // --------------------------------------------------------------------
-        ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
-        ctx.site_for_cookies = redirect_info.new_site_for_cookies;
-        ctx.current_method.clear();
-        ctx.current_method.append(redirect_info.new_method[..]);
-        ctx.current_referrer.clear();
-        ctx.current_referrer.append(redirect_info.new_referrer[..]);
-        ctx.current_referrer_policy = redirect_info.new_referrer_policy;
-
-        if redirect_info.clear_body {
-            ctx.body.clear();
-            ctx.body_consumed = false;
-        } else {
-            // 307 or 308 redirect preserves method and body
-            if !ctx.rewindable && ctx.body_consumed {
-                return resp, make_error(400, "body_rewind", "http: cannot rewind body");
-            }
-            ctx.body.clear();
-            ctx.body.append(ctx.rewind_buf[..]);
-            ctx.body_consumed = false;
-        }
-
-        let is_trusted = is_trusted_location_host(session, hostname(redirect_info.new_url));
-        sanitize_headers_on_redirect(
-            ctx.headers,
-            redirect_info,
-            ctx.cors_mode,
-            ctx.tainted_origin,
-            session.enable_referer,
-            is_trusted
-        );
+        // Phase 6: Sanitization & Body Rewind
+        let redirect_err = apply_redirect_transition(session, ctx, redirect_info);
+        guard ok(redirect_err) else { return resp, redirect_err; }
 
         ctx.url_chain.push(redirect_info.new_url);
         ctx.redirect_count += 1;
     }
 
     return Response { .. }, make_error(310, "redirect", "maximum redirect hops exceeded");
+}
+
+fn validate_mock_route_dns(route: const MockRoute&, guard_config: const SSRFGuardConfig&) -> RedirectError {
+    if route.resolved_ips.len == 0 {
+        return RedirectError.None;
+    }
+    var ips_slice: const u8[:][4] = ["", "", "", ""];
+    for idx in route.resolved_ips.len {
+        ips_slice[idx] = route.resolved_ips[idx][..];
+    }
+    return validate_resolved_ips_against_ssrf(ips_slice[..route.resolved_ips.len], guard_config);
 }
 
 fn execute_mock_or_echo_hop(
@@ -734,20 +791,14 @@ fn execute_mock_or_echo_hop(
         if (route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method)) &&
            (route.pattern_url[..] == curr_href || starts_with(curr_href, route.pattern_url[..])) {
             // Validate DNS IPs for SSRF Rebinding Guard
-            if route.resolved_ips.len > 0 {
-                var ips_slice: const u8[:][4] = ["", "", "", ""];
-                for idx in route.resolved_ips.len {
-                    ips_slice[idx] = route.resolved_ips[idx][..];
-                }
-                let dns_err = validate_resolved_ips_against_ssrf(ips_slice[..route.resolved_ips.len], session.ssrf_guard);
-                if dns_err != RedirectError.None {
-                    out_dns_err = dns_err;
-                    return Response {
-                        status_code: 403,
-                        effective_url: copy(current_url.href),
-                        ..
-                    };
-                }
+            let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
+            if dns_err != RedirectError.None {
+                out_dns_err = dns_err;
+                return Response {
+                    status_code: 403,
+                    effective_url: copy(current_url.href),
+                    ..
+                };
             }
 
             var resp = Response {
@@ -785,7 +836,7 @@ fn execute_mock_or_echo_hop(
     return resp;
 }
 
-// ---- high-level dispatch entry points ----
+// ---- high-level dispatch entry points --------------------------------------
 
 fn do(session: Session&, req: const Request&) -> Response, Error {
     return execute_request(session, req);
@@ -798,7 +849,7 @@ fn do<F: fn(Request&)>(session: Session&, req: const Request&) -> Response, Erro
     return do(session, modified);
 }
 
-// ---- express verbs ----
+// ---- express verbs ---------------------------------------------------------
 
 fn get(session: Session&, url: const u8[:]) -> Response, Error {
     let req = new_request("GET", url);
