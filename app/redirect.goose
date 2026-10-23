@@ -1,4 +1,4 @@
-// HTTP redirect state machine and header sanitization (RFC 9110 §15.4, WHATWG Fetch §4.5).
+// HTTP redirect state machine and header sanitization (RFC 9110 Section 15.4, WHATWG Fetch Section 4.5).
 // Handles method rewriting, referrer policy calculation, and sensitive header stripping.
 namespace wing;
 

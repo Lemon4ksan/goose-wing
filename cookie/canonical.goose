@@ -37,7 +37,7 @@ struct CanonicalCookie {
 }
 
 // Constructs a CanonicalCookie, verifying that name and value do not exceed
-// 4096 bytes and contain no control characters (RFC 6265bis §5.5).
+// 4096 bytes and contain no control characters (RFC 6265bis Section 5.5).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
     new_cookie.name.append(name);
@@ -73,7 +73,7 @@ fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: 
     return in_lax_allowing_unsafe_window(cookie_val, now_us);
 }
 
-// Combined size of name and value in bytes (RFC 6265bis §5.5).
+// Combined size of name and value in bytes (RFC 6265bis Section 5.5).
 fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
     return cookie_val.name.len + cookie_val.value.len;
 }

@@ -1,4 +1,4 @@
-// Media types (RFC 9110 §8.3) and Structured Field Values (RFC 8941, RFC 9651).
+// Media types (RFC 9110 Section 8.3) and Structured Field Values (RFC 8941, RFC 9651).
 // Provides media type / parameter parsing, strict unquoting, and SFV item,
 // list, and dictionary decoding.
 namespace wing;
@@ -9,7 +9,7 @@ import http.headers;
 
 // ---- string unquoting ------------------------------------------------------
 
-// Unquotes a double-quoted string (RFC 9110 §5.6.4).
+// Unquotes a double-quoted string (RFC 9110 Section 5.6.4).
 // Rejects unclosed quotes, escaped trailing delimiters, and control characters.
 fn strict_unquote(input: const u8[:], out: u8[>..]&) -> bool {
     guard input.len >= 2 else { return false; }

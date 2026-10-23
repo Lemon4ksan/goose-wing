@@ -10,7 +10,7 @@ import cookie.psl;
 
 // ---- ingestion pipeline & set-cookie parser --------------------------------
 
-// Parses a Set-Cookie header value into a CanonicalCookie (RFC 6265bis §5.5).
+// Parses a Set-Cookie header value into a CanonicalCookie (RFC 6265bis Section 5.5).
 // Enforces payload length caps, validates control characters, and applies TTL limits.
 fn parse_canonical_set_cookie(
     header_val: const u8[:],
@@ -60,7 +60,7 @@ fn parse_canonical_set_cookie(
 }
 
 // Whether s contains ASCII control characters (%x00-08, %x0A-1F, %x7F).
-// HTAB (%x09) is permitted (RFC 6265bis §5.5).
+// HTAB (%x09) is permitted (RFC 6265bis Section 5.5).
 fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
     for char_byte in cookie_str {
         if (char_byte <= 0x08) || (char_byte >= 0x0A && char_byte <= 0x1F) || char_byte == 0x7F {
@@ -72,7 +72,7 @@ fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
 
 // ---- date parser -----------------------------------------------------------
 
-// Parses a cookie date string into a microsecond UTC timestamp (RFC 6265 §5.1.1).
+// Parses a cookie date string into a microsecond UTC timestamp (RFC 6265 Section 5.1.1).
 fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
     guard raw.len > 0 else { return 0, false; }
 

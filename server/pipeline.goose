@@ -71,7 +71,7 @@ fn execute_pipeline(
         return PipelineOutcome.SlowlorisClosed;
     }
 
-    // Expect header validation (RFC 9110 §10.1.1: reject unknown expectations with 417)
+    // Expect header validation (RFC 9110 Section 10.1.1: reject unknown expectations with 417)
     for &hdr in req.headers {
         if eq_ascii_fold(hdr.name[..], "expect") {
             let exp_val = hdr.value[..];

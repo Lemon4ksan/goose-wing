@@ -73,6 +73,7 @@ fn ::is_success(res: const wing::Response&) -> bool { return wing::is_success(re
 fn ::is_redirect(res: const wing::Response&) -> bool { return wing::is_redirect(res); }
 fn ::header(res: const wing::Response&, name: const u8[:]) -> const u8[:] { return wing::header(res, name); }
 fn ::text(res: const wing::Response&) -> const u8[:] { return wing::text(res); }
+fn ::decode_body(res: wing::Response&) -> bool { return wing::decode_body(res); }
 fn ::json<T>(res: const wing::Response&, out: T&) -> wing::Error { return wing::json(res, out); }
 fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing::decode_json<T>(res); }
 

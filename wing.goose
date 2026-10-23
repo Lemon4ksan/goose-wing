@@ -12,6 +12,7 @@ import core.time;
 import core.test;
 import core.url;
 import core.sync;
+import core.compress;
 
 // ---- cookie engine ---------------------------------------------------------
 

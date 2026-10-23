@@ -1,5 +1,5 @@
 // Cookie persistence, SQLite schema generation, batching, and file formats
-// (RFC 6265bis §5.4, Netscape cookies.txt).
+// (RFC 6265bis Section 5.4, Netscape cookies.txt).
 namespace wing;
 
 import std;

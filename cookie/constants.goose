@@ -9,7 +9,7 @@ import std;
 let K_MINUTES_IN_400_DAYS: i64 = 576000;
 let K_MAX_COOKIE_AGE_US: i64 = 576000 * 60 * 1000000; // 34,560,000,000,000 us
 
-// Payload and attribute length limits (RFC 6265bis §5.5).
+// Payload and attribute length limits (RFC 6265bis Section 5.5).
 let K_MAX_COOKIE_NAME_VAL_LEN: i64 = 4096; // Exceeding this rejects the entire cookie.
 let K_MAX_COOKIE_ATTR_VAL_LEN: i64 = 1024; // Exceeding this ignores the attribute only.
 

@@ -1,4 +1,4 @@
-// Public Suffix List rules, eTLD+1 extraction, and domain/path matching (RFC 6265 §5.1).
+// Public Suffix List rules, eTLD+1 extraction, and domain/path matching (RFC 6265 Section 5.1).
 namespace wing;
 
 import std;
@@ -120,7 +120,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     to_lower(out[..]);
 }
 
-// Matches host against cookie domain (RFC 6265 §5.1.3).
+// Matches host against cookie domain (RFC 6265 Section 5.1.3).
 fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
 
@@ -149,7 +149,7 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     return false;
 }
 
-// Computes the default cookie path from request URI path (RFC 6265 §5.1.4).
+// Computes the default cookie path from request URI path (RFC 6265 Section 5.1.4).
 fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.clear();
     if uri_path.len == 0 || uri_path[0] != '/' {
@@ -174,7 +174,7 @@ fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
     default_cookie_path_calc(uri_path, out);
 }
 
-// Whether request path matches cookie path prefix (RFC 6265 §5.1.4).
+// Whether request path matches cookie path prefix (RFC 6265 Section 5.1.4).
 fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
     let normalized_req_path = if req_path.len == 0 { "/" } else { req_path };
     let normalized_cookie_path = if cookie_path.len == 0 { "/" } else { cookie_path };

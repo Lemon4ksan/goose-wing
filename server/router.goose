@@ -299,7 +299,7 @@ fn insert_route(
 }
 
 // Resolves dot-segments (. and ..), collapses duplicate slashes, and strips query strings and fragments.
-// Output always begins with '/' and clamps at root boundary (RFC 3986 §5.2.4).
+// Output always begins with '/' and clamps at root boundary (RFC 3986 Section 5.2.4).
 fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
     out.clear();
     guard raw_path.len > 0 else {

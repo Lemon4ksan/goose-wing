@@ -637,7 +637,7 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
            eq_ascii_fold(coding, "compress");
 }
 
-// Validates a Transfer-Encoding header value (RFC 9112 §6.3, §7.1).
+// Validates a Transfer-Encoding header value (RFC 9112 Section 6.3, Section 7.1).
 // Only chunked, gzip, deflate, and compress are recognized; if chunked is
 // present, it must appear last and exactly once.
 fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
@@ -726,7 +726,7 @@ fn hash_header_name(name: const u8[:]) -> u32 {
 
 // ---- wire parser -----------------------------------------------------------
 
-// Parses an HTTP/1.x header block into map (RFC 9112 §5.2).
+// Parses an HTTP/1.x header block into map (RFC 9112 Section 5.2).
 // Header names and values are indexed as offsets into the map's buffer.
 // Obsolete line folding (obs-fold) is rejected unless allow_obs_fold is set.
 fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
@@ -1015,7 +1015,7 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             is_first_header = false;
         }
 
-        // Advance past CRLF, rejecting bare CR (RFC 9112 §2.2)
+        // Advance past CRLF, rejecting bare CR (RFC 9112 Section 2.2)
         cursor = line_end;
         if cursor < buf_len && map.raw_buf[cursor] == '\r' {
             guard cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' else {
@@ -1522,7 +1522,7 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
 }
 
 // Copies headers from src to dst, omitting standard hop-by-hop headers and
-// any header listed in a Connection header token (RFC 9110 §7.6.1).
+// any header listed in a Connection header token (RFC 9110 Section 7.6.1).
 fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
     reset_for_keep_alive(dst);
 
@@ -1597,7 +1597,7 @@ enum ChunkedDecodeError {
 }
 
 // decode_chunked_body parses and decodes an HTTP/1.1 chunked transfer-encoded stream.
-// Decodes a chunked transfer-encoded payload into out_body (RFC 9112 §7.1).
+// Decodes a chunked transfer-encoded payload into out_body (RFC 9112 Section 7.1).
 // Chunk size lines and data chunks must end with CRLF; bare LF returns an error.
 fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput; }
@@ -1616,7 +1616,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         }
         guard found_newline else { return ChunkedDecodeError.UnexpectedEof; }
 
-        // Bare LF is forbidden in chunk-size lines (RFC 9112 §7.1)
+        // Bare LF is forbidden in chunk-size lines (RFC 9112 Section 7.1)
         if line_end == cursor || raw[line_end - 1] != '\r' {
             return ChunkedDecodeError.BareLfInChunkSize;
         }
@@ -1746,7 +1746,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         out_body.append(chunk_data);
         cursor += csize;
 
-        // Chunk data must be terminated by CRLF, not bare LF (RFC 9112 §7.1)
+        // Chunk data must be terminated by CRLF, not bare LF (RFC 9112 Section 7.1)
         if raw[cursor] == '\n' {
             return ChunkedDecodeError.BareLfInChunkData;
         }

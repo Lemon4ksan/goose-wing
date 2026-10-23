@@ -4,6 +4,7 @@ namespace wing;
 import std;
 import json;
 import app.profile;
+import core.compress;
 
 // ---- error model & diagnostics ---------------------------------------------
 
@@ -87,6 +88,40 @@ fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {
 
 fn text(res: const Response&) -> const u8[:] {
     return res.body[..];
+}
+
+// Automatically decompresses response.body if Content-Encoding is gzip or deflate.
+// Replaces res.body in-place with decompressed bytes and clears the Content-Encoding header.
+// Returns true if body was successfully decompressed or if uncompressed; false on corrupted stream.
+fn decode_body(res: Response&) -> bool {
+    let enc = header(res, "content-encoding");
+    if eq_ascii_fold(enc, "gzip") {
+        var uncompressed: u8[>..] = [];
+        let ok_d, err = decompress_gzip(res.body[..], uncompressed);
+        if ok_d {
+            res.body.clear();
+            res.body.append(uncompressed[..]);
+            return true;
+        }
+        return false;
+    } else if eq_ascii_fold(enc, "deflate") {
+        var uncompressed: u8[>..] = [];
+        let ok_z, err_z = decompress_zlib(res.body[..], uncompressed);
+        if ok_z {
+            res.body.clear();
+            res.body.append(uncompressed[..]);
+            return true;
+        }
+        uncompressed.clear();
+        let ok_d, err_d = decompress_deflate(res.body[..], uncompressed);
+        if ok_d {
+            res.body.clear();
+            res.body.append(uncompressed[..]);
+            return true;
+        }
+        return false;
+    }
+    return true;
 }
 
 // ---- json reflection readers -----------------------------------------------

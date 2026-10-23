@@ -164,7 +164,7 @@ fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
     return is_private_ipv4_octets(octet0, octet1);
 }
 
-// Whether host is localhost or a subdomain of localhost (RFC 6761 §6.3).
+// Whether host is localhost or a subdomain of localhost (RFC 6761 Section 6.3).
 fn is_localhost_name(host: const u8[:]) -> bool {
     if eq_ascii_fold(host, "localhost") || eq_ascii_fold(host, "localhost.") {
         return true;
@@ -604,7 +604,7 @@ fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
 // ---- url resolution helper -------------------------------------------------
 
 // Builds the effective request URL from base_url, req_url, and query_params.
-// Fragments are preserved and appended after query parameters (RFC 3986 §4.1).
+// Fragments are preserved and appended after query parameters (RFC 3986 Section 4.1).
 fn build_effective_url(
     base_url: const u8[:],
     req_url: const u8[:],

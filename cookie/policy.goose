@@ -79,7 +79,7 @@ fn validate_script_cookie_name(name: const u8[:]) -> bool {
 }
 
 // Validates cookie security invariants for prefixes (__Secure-, __Host-,
-// __Http-, __Host-Http-), Partitioned attributes, and SameSite=None (RFC 6265bis §5.6).
+// __Http-, __Host-Http-), Partitioned attributes, and SameSite=None (RFC 6265bis Section 5.6).
 fn validate_canonical_cookie_security(
     cookie_val: const CanonicalCookie&,
     is_secure_channel: bool,

@@ -1,5 +1,5 @@
 // Multipart form-data parsing (RFC 7578, RFC 2046) and HTTP range request
-// handling (RFC 9110 §14, §13.1.5).
+// handling (RFC 9110 Section 14, Section 13.1.5).
 namespace wing;
 
 import std;
@@ -13,7 +13,7 @@ import http.mime;
 enum MultipartError {
     None,
     EmptyInput,
-    InvalidBoundaryLength,      // outside 1..70 characters (RFC 2046 §5.1.1)
+    InvalidBoundaryLength,      // outside 1..70 characters (RFC 2046 Section 5.1.1)
     InvalidBoundaryCharacters,
     MissingBoundaryDelimiter,
     PrematureEOF,
@@ -96,7 +96,7 @@ fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, 
     return -1;
 }
 
-// Whether boundary contains only characters allowed by RFC 2046 §5.1.1.
+// Whether boundary contains only characters allowed by RFC 2046 Section 5.1.1.
 fn validate_boundary_string(boundary: const u8[:]) -> bool {
     guard boundary.len >= 1 && boundary.len <= 70 else { return false; }
     for b in boundary {
@@ -116,7 +116,7 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
 
 // Parses a multipart/form-data payload according to RFC 7578 and RFC 2046.
 //
-// The boundary must be between 1 and 70 ASCII characters (RFC 2046 §5.1.1).
+// The boundary must be between 1 and 70 ASCII characters (RFC 2046 Section 5.1.1).
 // Delimiters are matched using a 16-bit Boyer-Moore-Horspool shift table,
 // requiring CRLF, LF, or '--' immediately after the boundary to avoid prefix
 // collisions. Total memory and part counts are bounded by options.
@@ -124,7 +124,7 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     var msg = MultipartMessage { .. };
     guard body.len > 0 else { return msg, MultipartError.EmptyInput; }
 
-    // Boundary length is bounded to 1..70 characters (RFC 2046 §5.1.1).
+    // Boundary length is bounded to 1..70 characters (RFC 2046 Section 5.1.1).
     guard boundary.len >= 1 && boundary.len <= 70 else {
         msg.valid = false;
         return msg, MultipartError.InvalidBoundaryLength;
@@ -370,7 +370,7 @@ fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     return n, true;
 }
 
-// Parses an HTTP Range header into normalized intervals (RFC 9110 §14.1.2).
+// Parses an HTTP Range header into normalized intervals (RFC 9110 Section 14.1.2).
 // When with_coalesce is true, overlapping and adjacent ranges are merged.
 fn parse_range_header(
     header_val: const u8[:],
@@ -495,7 +495,7 @@ fn parse_range_header(
         }
     }
 
-    // If no ranges overlap resource, 416 Range Not Satisfiable (RFC 9110 §14.4).
+    // If no ranges overlap resource, 416 Range Not Satisfiable (RFC 9110 Section 14.4).
     if raw_ranges.len == 0 {
         rs.is_satisfiable = false;
         return rs, RangeError.Unsatisfiable;
@@ -543,7 +543,7 @@ fn parse_range_header(
     return rs, RangeError.None;
 }
 
-// Appends a formatted Content-Range header value (RFC 9110 §14.4).
+// Appends a formatted Content-Range header value (RFC 9110 Section 14.4).
 fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&) {
     out.append("bytes ");
     if start >= 0 && end_pos >= start {
@@ -562,7 +562,7 @@ fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&)
 }
 
 // Evaluates an If-Range condition against an ETag or modification time.
-// Weak ETags are rejected; date comparisons truncate to whole seconds (RFC 9110 §13.1.5).
+// Weak ETags are rejected; date comparisons truncate to whole seconds (RFC 9110 Section 13.1.5).
 fn evaluate_if_range(
     if_range_header: const u8[:],
     etag: const u8[:],
@@ -581,7 +581,7 @@ fn evaluate_if_range(
     let parsed_date, date_ok = parse_http_date(trimmed);
     guard date_ok else { return false; }
 
-    // Compare timestamps truncated to whole seconds (RFC 9110 §13.1.5).
+    // Compare timestamps truncated to whole seconds (RFC 9110 Section 13.1.5).
     let mod_sec = unix(mod_time);
     let parsed_sec = unix(parsed_date);
     return mod_sec == parsed_sec;

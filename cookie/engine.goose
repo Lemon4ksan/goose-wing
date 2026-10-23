@@ -197,7 +197,7 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 // ---- ingestion & insertion pipeline ----------------------------------------
 
 // Inserts new_cookie into jar, enforcing prefix rules (__Host-, __Secure-),
-// origin security, overwrite precedence, and memory quotas (RFC 6265bis §5.6).
+// origin security, overwrite precedence, and memory quotas (RFC 6265bis Section 5.6).
 // Returns false if the cookie violates security policies.
 fn set_canonical_cookie(
     jar: CanonicalCookieJar&,

@@ -73,7 +73,7 @@ struct H2FrameHeader {
     valid: bool = false,
 }
 
-// Decodes a 9-byte HTTP/2 binary frame header (RFC 9113 §4.1).
+// Decodes a 9-byte HTTP/2 binary frame header (RFC 9113 Section 4.1).
 // Masks out the reserved high bit of the stream identifier.
 fn parse_h2_frame_header(raw: const u8[:]) -> H2FrameHeader, H2ErrorCode {
     var hdr = H2FrameHeader { .. };
@@ -141,7 +141,7 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
         return H2ErrorCode.FrameSizeError;
     }
 
-    // 2. Stream ID 0 Validation (RFC 9113 §5.1.1)
+    // 2. Stream ID 0 Validation (RFC 9113 Section 5.1.1)
     if hdr.stream_id == 0 {
         // Stream 0 must not carry DATA, HEADERS, PRIORITY, RST_STREAM, or CONTINUATION
         if hdr.frame_type == H2FrameType.Data ||
@@ -193,7 +193,7 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
 
     // 4. HEADERS frame processing
     if hdr.frame_type == H2FrameType.Headers {
-        // Client stream IDs must be odd (RFC 9113 §5.1.1)
+        // Client stream IDs must be odd (RFC 9113 Section 5.1.1)
         if (hdr.stream_id % 2) == 0 {
             return H2ErrorCode.ProtocolError;
         }
@@ -231,7 +231,7 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
     return H2ErrorCode.NoError;
 }
 
-// Validates an HTTP/2 SETTINGS parameter (RFC 9113 §6.5.2).
+// Validates an HTTP/2 SETTINGS parameter (RFC 9113 Section 6.5.2).
 fn validate_h2_setting(param_id: u16, val: u32) -> H2ErrorCode {
     // SETTINGS_ENABLE_PUSH (0x2): value must be 0 or 1
     if param_id == 0x2 {
@@ -247,7 +247,7 @@ fn validate_h2_setting(param_id: u16, val: u32) -> H2ErrorCode {
         }
     }
 
-    // SETTINGS_MAX_FRAME_SIZE (0x5) must be between 16384 and 16777215 (RFC 9113 §6.5.2)
+    // SETTINGS_MAX_FRAME_SIZE (0x5) must be between 16384 and 16777215 (RFC 9113 Section 6.5.2)
     if param_id == 0x5 {
         if val < 16384 || val > 16777215 {
             return H2ErrorCode.ProtocolError;
