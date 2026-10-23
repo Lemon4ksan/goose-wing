@@ -427,11 +427,9 @@ fn apply_parsed_max_age_attribute(
         return;
     }
 
-    var delta_us = max_age_val * 1000000;
-    if delta_us > K_MAX_COOKIE_AGE_US {
-        delta_us = K_MAX_COOKIE_AGE_US; // 400 days cap
-    }
-    cookie_ref.expires_utc = now_us + delta_us;
+    let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
+    let capped_sec = if max_age_val > max_allowed_seconds { max_allowed_seconds } else { max_age_val };
+    cookie_ref.expires_utc = now_us + capped_sec * 1000000;
 }
 
 fn apply_parsed_expires_attribute(

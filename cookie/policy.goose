@@ -73,19 +73,24 @@ fn adjust_origin_bound_cookies_on_insert(
 
 // ---- script api & prefix security validation -------------------------------
 
+fn starts_with_case_folded(str_val: const u8[:], prefix: const u8[:]) -> bool {
+    guard str_val.len >= prefix.len else { return false; }
+    for char_idx in prefix.len {
+        let b1 = str_val[char_idx];
+        let b2 = prefix[char_idx];
+        let c1 = if b1 >= 'A' && b1 <= 'Z' { b1 + 32 } else { b1 };
+        let c2 = if b2 >= 'A' && b2 <= 'Z' { b2 + 32 } else { b2 };
+        if c1 != c2 { return false; }
+    }
+    return true;
+}
+
 // Validates cookie name against non-HTTP script APIs (document.cookie, CookieStore API).
 // draft-ietf-httpbis-layered-cookies Section 4.1.3 & WHATWG:
 // Case-insensitive check: if byte-lowercased name starts with "__http-" or "__host-http-",
 // return false to prevent script shadowing of protected HTTP-only cookies.
 fn validate_script_cookie_name(name: const u8[:]) -> bool {
-    var lower_buf: u8[..64] = [];
-    let check_len = if name.len < 16 { name.len } else { 16 };
-    for char_idx in check_len {
-        let char_byte = name[char_idx];
-        lower_buf.push(if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte });
-    }
-    let lower_prefix = lower_buf[..];
-    if starts_with(lower_prefix, "__http-") || starts_with(lower_prefix, "__host-http-") {
+    if starts_with_case_folded(name, "__http-") || starts_with_case_folded(name, "__host-http-") {
         return false;
     }
     return true;
@@ -247,34 +252,30 @@ fn validate_security_cookie_prefixes(
     // A nameless cookie cannot have a value starting with security prefixes
     if cookie_name.len == 0 {
         let cookie_value = cookie_val.value[..];
-        if starts_with(cookie_value, "__Host-") || starts_with(cookie_value, "__Secure-") ||
-           starts_with(cookie_value, "__Http-") || starts_with(cookie_value, "__Host-Http-") {
+        if starts_with_case_folded(cookie_value, "__host-http-") ||
+           starts_with_case_folded(cookie_value, "__host-") ||
+           starts_with_case_folded(cookie_value, "__http-") ||
+           starts_with_case_folded(cookie_value, "__secure-") {
             return false;
         }
     }
 
-    // Prefix: __Secure-
-    if starts_with(cookie_name, "__Secure-") {
-        if !cookie_val.secure || !is_secure_channel { return false; }
-    }
-
-    // Prefix: __Host-
-    if starts_with(cookie_name, "__Host-") {
-        if !cookie_val.secure || !is_secure_channel { return false; }
-        if !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
-    }
-
-    // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
-    if starts_with(cookie_name, "__Http-") {
-        if !is_http_api { return false; }
-        if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
-    }
-
-    // Prefix: __Host-Http- (draft-ietf-httpbis-layered-cookies)
-    if starts_with(cookie_name, "__Host-Http-") {
+    // Prefix: __Host-Http- (draft-ietf-httpbis-layered-cookies, check before __Host- / __Http-)
+    if starts_with_case_folded(cookie_name, "__host-http-") {
         if !is_http_api { return false; }
         if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
         if !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
+    } else if starts_with_case_folded(cookie_name, "__host-") {
+        // Prefix: __Host-
+        if !cookie_val.secure || !is_secure_channel { return false; }
+        if !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
+    } else if starts_with_case_folded(cookie_name, "__http-") {
+        // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
+        if !is_http_api { return false; }
+        if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
+    } else if starts_with_case_folded(cookie_name, "__secure-") {
+        // Prefix: __Secure-
+        if !cookie_val.secure || !is_secure_channel { return false; }
     }
 
     return true;

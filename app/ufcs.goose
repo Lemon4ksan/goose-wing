@@ -364,5 +364,13 @@ fn ::is_valid(view: const wing::UrlView&) -> bool { return wing::is_valid(view);
 
 // ---- concurrency & sync ufcs bridges ---------------------------------------
 
-fn ::add_worker(wg: wing::WaitGroup&, worker_id: i64) { wing::add_worker(wg, worker_id); }
+fn ::add_worker(wg: wing::WaitGroup&, worker_id: i64) -> bool { return wing::add_worker(wg, worker_id); }
 fn ::wait_all(wg: wing::WaitGroup&) -> bool { return wing::wait_all(wg); }
+fn ::wait_all(wg: wing::WaitGroup&, out_diagnostics: u8[>..]&) -> bool { return wing::wait_all(wg, out_diagnostics); }
+fn ::failed_count(wg: const wing::WaitGroup&) -> i64 { return wing::failed_count(wg); }
+
+fn ::add_worker(sup: wing::Supervisor&, worker_id: i64) -> bool { return wing::add_worker(sup, worker_id); }
+fn ::wait_all(sup: wing::Supervisor&) -> bool { return wing::wait_all(sup); }
+fn ::wait_all(sup: wing::Supervisor&, out_diagnostics: u8[>..]&) -> bool { return wing::wait_all(sup, out_diagnostics); }
+fn ::failed_count(sup: const wing::Supervisor&) -> i64 { return wing::failed_count(sup); }
+fn ::success_count(sup: const wing::Supervisor&) -> i64 { return wing::success_count(sup); }

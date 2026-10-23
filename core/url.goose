@@ -332,7 +332,7 @@ fn new_file_url(file_path: const u8[:]) -> Url {
     // Windows Drive letter (e.g. C:\Users\... or C:/Users/... or c:...)
     let is_windows_drive = file_path.len >= 2 &&
         ((file_path[0] >= 'a' && file_path[0] <= 'z') || (file_path[0] >= 'A' && file_path[0] <= 'Z')) &&
-        file_path[1] == ':';
+        (file_path[1] == ':' || file_path[1] == '|');
 
     if is_windows_drive {
         raw_href.push('/');
@@ -1029,7 +1029,7 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
 
     // Special schemes or URLs with // authority
     if is_spec {
-        if scheme_str == "file" {
+        if scheme_str == "file" && (colon_idx > 0 || slash_count >= 2) {
             let auth_start = if slash_count >= 2 { 2 } else { 0 };
             return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[auth_start..]);
         }
@@ -1740,7 +1740,12 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
                 last_was_dot = false;
                 out_url.href.push('/');
                 let cur_start = out_url.href.len as i32;
-                out_url.href.append(seg);
+                if is_file && seg_starts.len == 0 && is_windows_drive_segment(seg) && seg[1] == '|' {
+                    out_url.href.push(seg[0]);
+                    out_url.href.push(':');
+                } else {
+                    out_url.href.append(seg);
+                }
                 if seg_starts.len < 64 {
                     seg_starts.push(cur_start);
                 }
@@ -1902,6 +1907,20 @@ fn resolve_relative_path_against_base(
 
     if rel_input[0] == '/' || (is_spec && rel_input[0] == '\\') {
         // Root relative path
+        if is_file_url(base_url) {
+            let base_path = pathname(base_url);
+            let has_base_drive = base_path.len >= 3 && base_path[0] == '/' && is_windows_drive_segment(base_path[1..3]);
+            var rel_has_drive = false;
+            let rel_start = if rel_input.len > 1 && (rel_input[1] == '/' || rel_input[1] == '\\') { 2 } else { 1 };
+            if rel_input.len >= rel_start + 2 && is_windows_drive_segment(rel_input[rel_start..rel_start + 2]) {
+                rel_has_drive = true;
+            }
+            if has_base_drive && !rel_has_drive {
+                combined_path.push('/');
+                combined_path.push(base_path[1]);
+                combined_path.push(':');
+            }
+        }
         combined_path.append(rel_input);
     } else {
         // Directory relative path

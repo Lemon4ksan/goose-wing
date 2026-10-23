@@ -662,9 +662,14 @@ fn would_insecure_overwrite_secure(
 ) -> bool {
     if !existing.secure { return false; }
     if url_is_secure { return false; }
-    return existing.name[..] == new_cookie.name[..] &&
-           cookie_domain_match(existing.domain[..], new_cookie.domain[..]) &&
-           cookie_path_match(existing.path[..], new_cookie.path[..]);
+    if existing.name[..] != new_cookie.name[..] { return false; }
+    if existing.partition_key[..] != new_cookie.partition_key[..] { return false; }
+
+    let domain_matches = cookie_domain_match(existing.domain[..], new_cookie.domain[..]) ||
+                         cookie_domain_match(new_cookie.domain[..], existing.domain[..]);
+    guard domain_matches else { return false; }
+
+    return cookie_path_match(new_cookie.path[..], existing.path[..]);
 }
 
 fn count_domain_cookies(jar: const CanonicalCookieJar&, etld_plus_one: const u8[:]) -> i64 {

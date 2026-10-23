@@ -46,6 +46,19 @@ fn new_ssrf_guard_policy() -> SsrfGuardPolicy {
     };
 }
 
+fn is_private_ipv4_octets(octet0: i32, octet1: i32) -> bool {
+    if octet0 == 0 { return true; }                                      // 0.0.0.0/8
+    if octet0 == 10 { return true; }                                     // 10.0.0.0/8
+    if octet0 == 127 { return true; }                                    // 127.0.0.0/8 Loopback
+    if octet0 == 169 && octet1 == 254 { return true; }                   // 169.254.0.0/16 Link-Local / Cloud Metadata
+    if octet0 == 172 && (octet1 >= 16 && octet1 <= 31) { return true; }  // 172.16.0.0/12
+    if octet0 == 192 && octet1 == 168 { return true; }                   // 192.168.0.0/16
+    if octet0 == 100 && (octet1 >= 64 && octet1 <= 127) { return true; } // 100.64.0.0/10 CGNAT
+    if octet0 >= 224 { return true; }                                    // 224.0.0.0/4 Multicast & Reserved
+
+    return false;
+}
+
 fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
     var dot_count = 0;
     var octets: i32[4] = [0, 0, 0, 0];
@@ -74,19 +87,43 @@ fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
     }
     octets[3] = current_num as i32;
 
-    let octet0 = octets[0];
-    let octet1 = octets[1];
+    return is_private_ipv4_octets(octets[0], octets[1]);
+}
 
-    if octet0 == 0 { return true; }                             // 0.0.0.0/8
-    if octet0 == 10 { return true; }                            // 10.0.0.0/8
-    if octet0 == 127 { return true; }                           // 127.0.0.0/8 Loopback
-    if octet0 == 169 && octet1 == 254 { return true; }          // 169.254.0.0/16 Link-Local / Cloud Metadata
-    if octet0 == 172 && (octet1 >= 16 && octet1 <= 31) { return true; } // 172.16.0.0/12
-    if octet0 == 192 && octet1 == 168 { return true; }          // 192.168.0.0/16
-    if octet0 == 100 && (octet1 >= 64 && octet1 <= 127) { return true; } // 100.64.0.0/10 CGNAT
-    if octet0 >= 224 { return true; }                           // 224.0.0.0/4 Multicast & Reserved
+fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
+    var colon_idx = -1;
+    for scan_idx in suffix.len {
+        if suffix[scan_idx] == ':' {
+            if colon_idx >= 0 { return false; }
+            colon_idx = scan_idx;
+        }
+    }
+    guard colon_idx > 0 && colon_idx + 1 < suffix.len else { return false; }
+    let part1 = suffix[..colon_idx];
+    let part2 = suffix[colon_idx + 1..];
+    guard part1.len >= 1 && part1.len <= 4 && part2.len >= 1 && part2.len <= 4 else { return false; }
 
-    return false;
+    var val1: i32 = 0;
+    for char_byte in part1 {
+        let hex_val = if char_byte >= '0' && char_byte <= '9' { (char_byte - '0') as i32 }
+                      else if char_byte >= 'a' && char_byte <= 'f' { (char_byte - 'a' + 10) as i32 }
+                      else if char_byte >= 'A' && char_byte <= 'F' { (char_byte - 'A' + 10) as i32 }
+                      else { return false; };
+        val1 = (val1 << 4) | hex_val;
+    }
+
+    var val2: i32 = 0;
+    for char_byte in part2 {
+        let hex_val = if char_byte >= '0' && char_byte <= '9' { (char_byte - '0') as i32 }
+                      else if char_byte >= 'a' && char_byte <= 'f' { (char_byte - 'a' + 10) as i32 }
+                      else if char_byte >= 'A' && char_byte <= 'F' { (char_byte - 'A' + 10) as i32 }
+                      else { return false; };
+        val2 = (val2 << 4) | hex_val;
+    }
+
+    let octet0 = (val1 >> 8) & 0xFF;
+    let octet1 = val1 & 0xFF;
+    return is_private_ipv4_octets(octet0, octet1);
 }
 
 // IP Literal Classification for RFC 1918, RFC 3927 (Link-Local / Cloud Metadata), Loopback
@@ -103,18 +140,30 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         ip_str
     };
 
-    if starts_with(clean_ip, "fc") || starts_with(clean_ip, "fd") || // Unique Local fc00::/7
-       starts_with(clean_ip, "fe8") || starts_with(clean_ip, "fe9") || // Link-local fe80::/10
-       starts_with(clean_ip, "fea") || starts_with(clean_ip, "feb") {
+    var lower_buf: u8[..64] = [];
+    if clean_ip.len <= 64 {
+        lower_buf.append(clean_ip);
+        to_lower(lower_buf[..]);
+    }
+    let norm_ip = if lower_buf.len > 0 { lower_buf[..] } else { clean_ip };
+
+    if norm_ip == "::1" || norm_ip == "::" {
         return true;
     }
 
-    // IPv4-mapped IPv6 ::ffff:x.x.x.x
-    if starts_with(clean_ip, "::ffff:") {
-        return is_private_ipv4(clean_ip[7..]);
+    if starts_with(norm_ip, "fc") || starts_with(norm_ip, "fd") || // Unique Local fc00::/7
+       starts_with(norm_ip, "fe8") || starts_with(norm_ip, "fe9") || // Link-local fe80::/10
+       starts_with(norm_ip, "fea") || starts_with(norm_ip, "feb") {
+        return true;
     }
 
-    return is_private_ipv4(clean_ip);
+    // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh)
+    if starts_with(norm_ip, "::ffff:") {
+        let suffix = norm_ip[7..];
+        return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+    }
+
+    return is_private_ipv4(norm_ip);
 }
 
 fn is_dangerous_service_port(port_num: i32) -> bool {

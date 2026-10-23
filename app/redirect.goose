@@ -421,7 +421,7 @@ fn sanitize_headers_on_redirect(
     // 2. Sensitive Header Stripping on Cross-Origin or Scheme Downgrade
     // Covers Authorization, Proxy-Authorization, X-API-Key, X-Auth-Token, X-Access-Token
     // Defends against CVE-2024-1968, CVE-2026-55553, CVE-2026-64684
-    if (redirect_info.is_cross_origin || redirect_info.is_scheme_downgrade) && !trusted_location_forwarding {
+    if redirect_info.is_scheme_downgrade || (redirect_info.is_cross_origin && !trusted_location_forwarding) {
         remove_sensitive_headers(headers);
     }
 
