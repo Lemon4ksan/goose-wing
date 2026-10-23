@@ -195,6 +195,378 @@ fn is_secure_scheme(url_val: const Url&) -> bool {
     return s == "https" || s == "wss";
 }
 
+// ---- file urls and swift-like path manipulation ----------------------------
+
+fn hex_digit_to_val(char_byte: u8) -> i32 {
+    if char_byte >= '0' && char_byte <= '9' { return char_byte - '0'; }
+    if char_byte >= 'a' && char_byte <= 'f' { return char_byte - 'a' + 10; }
+    if char_byte >= 'A' && char_byte <= 'F' { return char_byte - 'A' + 10; }
+    return -1;
+}
+
+fn percent_decode<B>(input_bytes: const u8[:], out: B&) {
+    out.clear();
+    var scan_idx = 0;
+    while scan_idx < input_bytes.len {
+        if input_bytes[scan_idx] == '%' && scan_idx + 2 < input_bytes.len {
+            let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);
+            let low_nibble = hex_digit_to_val(input_bytes[scan_idx + 2]);
+            if high_nibble >= 0 && low_nibble >= 0 {
+                let decoded_char = ((high_nibble << 4) | low_nibble) as u8;
+                out.push(decoded_char);
+                scan_idx += 3;
+                continue;
+            }
+        }
+        out.push(input_bytes[scan_idx]);
+        scan_idx++;
+    }
+}
+
+fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) {
+    for char_byte in raw_segment {
+        if char_byte == ' ' {
+            out.append("%20");
+        } else if char_byte == '#' {
+            out.append("%23");
+        } else if char_byte == '?' {
+            out.append("%3F");
+        } else if char_byte == '%' {
+            out.append("%25");
+        } else if char_byte < 0x20 || char_byte == 0x7F {
+            out.push('%');
+            let high_val = (char_byte >> 4) & 0x0F;
+            let low_val = char_byte & 0x0F;
+            out.push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 });
+            out.push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 });
+        } else {
+            out.push(char_byte);
+        }
+    }
+}
+
+// Constructs a file: URL from a native operating system file path (Windows or POSIX).
+// Normalizes drive letters (C:\... -> file:///C:/...), UNC paths (\\server\share -> file://server/share),
+// and percent-encodes spaces and special characters.
+fn new_file_url(file_path: const u8[:]) -> Url {
+    var raw_href: u8[..512] = [];
+    raw_href.append("file://");
+
+    guard file_path.len > 0 else {
+        raw_href.push('/');
+        return new_url(raw_href[..]);
+    }
+
+    // Windows UNC path (e.g. \\server\share\file.txt or //server/share/file.txt)
+    if file_path.len >= 2 && (file_path[0] == '\\' || file_path[0] == '/') && (file_path[1] == '\\' || file_path[1] == '/') {
+        let unc_remainder = file_path[2..];
+        for char_byte in unc_remainder {
+            if char_byte == '\\' {
+                raw_href.push('/');
+            } else if char_byte == ' ' {
+                raw_href.append("%20");
+            } else if char_byte == '#' {
+                raw_href.append("%23");
+            } else if char_byte == '?' {
+                raw_href.append("%3F");
+            } else if char_byte == '%' {
+                raw_href.append("%25");
+            } else {
+                raw_href.push(char_byte);
+            }
+        }
+        return new_url(raw_href[..]);
+    }
+
+    // Windows Drive letter (e.g. C:\Users\... or C:/Users/... or c:...)
+    let is_windows_drive = file_path.len >= 2 &&
+        ((file_path[0] >= 'a' && file_path[0] <= 'z') || (file_path[0] >= 'A' && file_path[0] <= 'Z')) &&
+        file_path[1] == ':';
+
+    if is_windows_drive {
+        raw_href.push('/'); // file:///C:/...
+        raw_href.push(file_path[0]);
+        raw_href.push(':');
+        var rest_idx = 2;
+        if rest_idx < file_path.len && (file_path[rest_idx] == '/' || file_path[rest_idx] == '\\') {
+            raw_href.push('/');
+            rest_idx++;
+        } else {
+            raw_href.push('/');
+        }
+        while rest_idx < file_path.len {
+            let char_byte = file_path[rest_idx];
+            if char_byte == '\\' {
+                raw_href.push('/');
+            } else if char_byte == ' ' {
+                raw_href.append("%20");
+            } else if char_byte == '#' {
+                raw_href.append("%23");
+            } else if char_byte == '?' {
+                raw_href.append("%3F");
+            } else if char_byte == '%' {
+                raw_href.append("%25");
+            } else {
+                raw_href.push(char_byte);
+            }
+            rest_idx++;
+        }
+        return new_url(raw_href[..]);
+    }
+
+    // POSIX absolute or relative path
+    if file_path[0] != '/' && file_path[0] != '\\' {
+        raw_href.push('/'); // Ensure file:///relative
+    }
+    for char_byte in file_path {
+        if char_byte == '\\' {
+            raw_href.push('/');
+        } else if char_byte == ' ' {
+            raw_href.append("%20");
+        } else if char_byte == '#' {
+            raw_href.append("%23");
+        } else if char_byte == '?' {
+            raw_href.append("%3F");
+        } else if char_byte == '%' {
+            raw_href.append("%25");
+        } else {
+            raw_href.push(char_byte);
+        }
+    }
+    return new_url(raw_href[..]);
+}
+
+// Determines if this URL represents a file-system URL (scheme == "file").
+fn is_file_url(url_val: const Url&) -> bool {
+    return url_val.valid && scheme(url_val) == "file";
+}
+
+// Extracts the native operating system file path from a file: URL.
+// Decodes percent-encoded bytes (%20 -> space), drops the leading slash before Windows drive letters,
+// and normalizes separators to the native Windows backslash when a drive letter is present.
+fn file_path<B>(url_val: const Url&, out: B&) -> bool {
+    out.clear();
+    guard is_file_url(url_val) else { return false; }
+
+    let raw_pathname = pathname(url_val);
+    guard raw_pathname.len > 0 else { return false; }
+
+    var decoded: u8[..512] = [];
+    percent_decode(raw_pathname, decoded);
+
+    // Check if path has a Windows drive letter, e.g. /C:/Users/... or /c:/...
+    let has_windows_drive = decoded.len >= 3 &&
+        decoded[0] == '/' &&
+        ((decoded[1] >= 'a' && decoded[1] <= 'z') || (decoded[1] >= 'A' && decoded[1] <= 'Z')) &&
+        decoded[2] == ':';
+
+    if has_windows_drive {
+        // Drop leading '/' before drive letter: C:\Users\...
+        for scan_idx in 1..decoded.len {
+            let char_byte = decoded[scan_idx];
+            if char_byte == '/' {
+                out.push('\\');
+            } else {
+                out.push(char_byte);
+            }
+        }
+        return true;
+    }
+
+    // POSIX path: preserve leading '/' and forward slashes
+    out.append(decoded[..]);
+    return true;
+}
+
+// Returns the last path component of the URL path (like Swift url.lastPathComponent).
+// Example: file:///a/b/c.pdf -> "c.pdf", file:///a/b/ -> "b", file:/// -> "/"
+fn last_path_component(url_val: const Url&) -> const u8[:] {
+    let raw_path = pathname(url_val);
+    guard raw_path.len > 0 else { return ""; }
+
+    var end_idx = raw_path.len;
+    while end_idx > 1 && raw_path[end_idx - 1] == '/' {
+        end_idx--;
+    }
+
+    if end_idx == 1 && raw_path[0] == '/' {
+        return raw_path[..1]; // Root slash
+    }
+
+    var last_slash_idx = -1;
+    for scan_idx in end_idx {
+        if raw_path[scan_idx] == '/' {
+            last_slash_idx = scan_idx;
+        }
+    }
+
+    if last_slash_idx >= 0 {
+        return raw_path[last_slash_idx + 1..end_idx];
+    }
+    return raw_path[..end_idx];
+}
+
+// Returns the path extension of the last path component (like Swift url.pathExtension).
+// Example: "report.pdf" -> "pdf", "archive.tar.gz" -> "gz", ".gitignore" -> ""
+fn path_extension(url_val: const Url&) -> const u8[:] {
+    let component = last_path_component(url_val);
+    guard component.len > 1 else { return ""; }
+
+    var last_dot_idx = -1;
+    for scan_idx in component.len {
+        if component[scan_idx] == '.' {
+            last_dot_idx = scan_idx;
+        }
+    }
+
+    // In Swift: leading dot (.gitignore) or trailing dot (file.) has no extension
+    if last_dot_idx <= 0 || last_dot_idx == (component.len - 1) {
+        return "";
+    }
+
+    return component[last_dot_idx + 1..];
+}
+
+// Returns a new URL with the path extension removed from the last path component (like Swift url.deletingPathExtension()).
+// Example: file:///a/b/report.pdf -> file:///a/b/report
+fn deleting_path_extension(url_val: Url) -> Url {
+    guard url_val.valid else { return url_val; }
+    let ext = path_extension(url_val);
+    guard ext.len > 0 else { return url_val; }
+
+    let dot_and_ext_len = ext.len + 1; // ".ext"
+    let path_end = url_val.pathname_end as i64;
+    guard path_end >= dot_and_ext_len else { return url_val; }
+
+    var new_href: u8[..512] = [];
+    new_href.append(url_val.href[..path_end - dot_and_ext_len]);
+    if path_end < url_val.href.len {
+        new_href.append(url_val.href[path_end..]);
+    }
+
+    return new_url(new_href[..]);
+}
+
+// Returns a new URL pointing to the parent directory (like Swift url.deletingLastPathComponent()).
+// Example: file:///a/b/c.txt -> file:///a/b/, file:///a/b/ -> file:///a/
+fn deleting_last_path_component(url_val: Url) -> Url {
+    guard url_val.valid else { return url_val; }
+    let raw_path = pathname(url_val);
+    guard raw_path.len > 1 else { return url_val; }
+
+    var end_idx = raw_path.len;
+    while end_idx > 1 && raw_path[end_idx - 1] == '/' {
+        end_idx--;
+    }
+
+    if end_idx <= 1 {
+        return url_val;
+    }
+
+    var last_slash_idx = -1;
+    for scan_idx in end_idx {
+        if raw_path[scan_idx] == '/' {
+            last_slash_idx = scan_idx;
+        }
+    }
+
+    let new_path_end = if last_slash_idx <= 0 { 1 } else { last_slash_idx + 1 };
+    let path_start = url_val.pathname_start as i64;
+    let path_end = url_val.pathname_end as i64;
+
+    var new_href: u8[..512] = [];
+    new_href.append(url_val.href[..path_start]);
+    new_href.append(raw_path[..new_path_end]);
+    if path_end < url_val.href.len {
+        new_href.append(url_val.href[path_end..]);
+    }
+
+    return new_url(new_href[..]);
+}
+
+// Appends a single path component to the URL path (like Swift url.appending(component:)).
+// Safely ensures single-slash separation and percent-encodes spaces and special characters.
+fn appending_path_component(url_val: Url, component: const u8[:]) -> Url {
+    guard url_val.valid && component.len > 0 else { return url_val; }
+
+    let path_end = url_val.pathname_end as i64;
+    var new_href: u8[..512] = [];
+    let cur_path = pathname(url_val);
+
+    new_href.append(url_val.href[..path_end]);
+    if cur_path.len == 0 || cur_path[cur_path.len - 1] != '/' {
+        new_href.push('/');
+    }
+
+    let clean_comp = if component[0] == '/' || component[0] == '\\' { component[1..] } else { component };
+    percent_encode_path_segment(clean_comp, new_href);
+
+    if path_end < url_val.href.len {
+        new_href.append(url_val.href[path_end..]);
+    }
+
+    return new_url(new_href[..]);
+}
+
+// Appends a relative subpath (which may contain multiple slashes) to the URL path (like Swift url.appending(path:)).
+fn appending_path(url_val: Url, subpath: const u8[:]) -> Url {
+    guard url_val.valid && subpath.len > 0 else { return url_val; }
+
+    let path_end = url_val.pathname_end as i64;
+    var new_href: u8[..512] = [];
+    let cur_path = pathname(url_val);
+
+    new_href.append(url_val.href[..path_end]);
+    if cur_path.len == 0 || cur_path[cur_path.len - 1] != '/' {
+        new_href.push('/');
+    }
+
+    let clean_sub = if subpath[0] == '/' || subpath[0] == '\\' { subpath[1..] } else { subpath };
+
+    for char_byte in clean_sub {
+        if char_byte == '\\' {
+            new_href.push('/');
+        } else if char_byte == ' ' {
+            new_href.append("%20");
+        } else if char_byte == '#' {
+            new_href.append("%23");
+        } else if char_byte == '?' {
+            new_href.append("%3F");
+        } else if char_byte == '%' {
+            new_href.append("%25");
+        } else {
+            new_href.push(char_byte);
+        }
+    }
+
+    if path_end < url_val.href.len {
+        new_href.append(url_val.href[path_end..]);
+    }
+
+    return new_url(new_href[..]);
+}
+
+// Appends a file extension to the last path component (like Swift url.appendingPathExtension()).
+// Example: file:///data/report + "json" -> file:///data/report.json
+fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
+    guard url_val.valid && ext.len > 0 else { return url_val; }
+
+    let clean_ext = if ext[0] == '.' { ext[1..] } else { ext };
+    guard clean_ext.len > 0 else { return url_val; }
+
+    let path_end = url_val.pathname_end as i64;
+    var new_href: u8[..512] = [];
+    new_href.append(url_val.href[..path_end]);
+    new_href.push('.');
+    percent_encode_path_segment(clean_ext, new_href);
+
+    if path_end < url_val.href.len {
+        new_href.append(url_val.href[path_end..]);
+    }
+
+    return new_url(new_href[..]);
+}
+
 // ---- origin and site derivations -------------------------------------------
 
 fn origin_from_url(url_val: const Url&) -> Origin {
@@ -432,6 +804,9 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
     } else if !is_spec && remainder.len >= 2 && remainder[0] == '/' && remainder[1] == '/' {
         has_authority = true;
         authority_start = 2;
+    } else if scheme_str == "file" && remainder.len >= 1 && (remainder[0] == '/' || remainder[0] == '\\') {
+        has_authority = true;
+        authority_start = 0;
     }
 
     if has_authority {
@@ -507,30 +882,46 @@ fn parse_absolute_authority_url(
     // Host & Port Parsing
     var raw_host: u8[..256] = [];
     var port_val: i32 = -1;
-    let extract_err = extract_host_and_port_canonical(host_port_part, raw_host, port_val);
-    guard extract_err == UrlParseError.None else {
-        return out_url, extract_err;
-    }
+    let is_file = scheme_str == "file";
 
-    guard raw_host.len > 0 else {
-        return out_url, UrlParseError.MissingHost;
-    }
-
-    to_lower(raw_host[..]);
-
-    out_url.host_start = out_url.href.len as i32;
-    out_url.href.append(raw_host[..]);
-    out_url.host_end = out_url.href.len as i32;
-
-    let def_port = default_port_for_scheme(scheme_str);
-    if port_val > 0 && port_val != def_port {
-        out_url.port_start = out_url.href.len as i32;
-        out_url.href.push(':');
-        format(out_url.href, port_val as i64);
-        out_url.port_end = out_url.href.len as i32;
-        out_url.port = port_val;
-    } else {
+    if host_port_part.len == 0 {
+        if !is_file {
+            return out_url, UrlParseError.MissingHost;
+        }
+        out_url.host_start = out_url.href.len as i32;
+        out_url.host_end = out_url.href.len as i32;
         out_url.port = -1;
+    } else {
+        let extract_err = extract_host_and_port_canonical(host_port_part, raw_host, port_val);
+        guard extract_err == UrlParseError.None else {
+            return out_url, extract_err;
+        }
+
+        // In WHATWG URL, "localhost" on a file: URL normalizes to an empty host ("")
+        if is_file && raw_host == "localhost" {
+            raw_host.clear();
+        }
+
+        guard raw_host.len > 0 || is_file else {
+            return out_url, UrlParseError.MissingHost;
+        }
+
+        to_lower(raw_host[..]);
+
+        out_url.host_start = out_url.href.len as i32;
+        out_url.href.append(raw_host[..]);
+        out_url.host_end = out_url.href.len as i32;
+
+        let def_port = default_port_for_scheme(scheme_str);
+        if !is_file && port_val > 0 && port_val != def_port {
+            out_url.port_start = out_url.href.len as i32;
+            out_url.href.push(':');
+            format(out_url.href, port_val as i64);
+            out_url.port_end = out_url.href.len as i32;
+            out_url.port = port_val;
+        } else {
+            out_url.port = -1;
+        }
     }
 
     // Pathname, Search, and Hash

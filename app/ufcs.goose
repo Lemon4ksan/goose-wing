@@ -395,6 +395,19 @@ fn ::is_opaque(o: const wing::Origin&) -> bool { return o.kind == wing::OriginKi
 fn ::is_same_origin(o1: const wing::Origin&, o2: const wing::Origin&) -> bool { return wing::is_same_origin(o1, o2); }
 fn ::serialize<B>(o: const wing::Origin&, out: B&) { wing::serialize_origin(o, out); }
 
+// --- File & Path UFCS Bridges ---
+
+fn ::is_file_url(u: const wing::Url&) -> bool { return wing::is_file_url(u); }
+fn ::file_path<B>(u: const wing::Url&, out: B&) -> bool { return wing::file_path(u, out); }
+fn ::last_path_component(u: const wing::Url&) -> const u8[:] { return wing::last_path_component(u); }
+fn ::path_extension(u: const wing::Url&) -> const u8[:] { return wing::path_extension(u); }
+fn ::deleting_path_extension(u: wing::Url) -> wing::Url { return wing::deleting_path_extension(u); }
+fn ::deleting_last_path_component(u: wing::Url) -> wing::Url { return wing::deleting_last_path_component(u); }
+fn ::appending_path_component(u: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(u, component); }
+fn ::appending(u: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(u, component); }
+fn ::appending_path(u: wing::Url, subpath: const u8[:]) -> wing::Url { return wing::appending_path(u, subpath); }
+fn ::appending_path_extension(u: wing::Url, ext: const u8[:]) -> wing::Url { return wing::appending_path_extension(u, ext); }
+
 // --- SiteForCookies UFCS Bridges ---
 
 fn ::is_null(sfc: const wing::SiteForCookies&) -> bool { return sfc.is_null; }

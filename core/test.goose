@@ -30,7 +30,7 @@ enum Verbosity {
 }
 
 struct Failure {
-    subtest: u8[..64] = [],
+    subtest: u8[..128] = [],
     summary: u8[..128] = [],
     detail: u8[..512] = [],
 }
@@ -102,7 +102,8 @@ fn record_failure<B1, B2>(t: T&, summary: B1, detail: B2) {
     t.failures_count += 1;
     if t.failures.len < t.failures.cap {
         var entry = Failure { .. };
-        entry.subtest.append(t.name[..]);
+        let name_slice = if t.name.len > entry.subtest.cap { t.name[..entry.subtest.cap] } else { t.name[..] };
+        entry.subtest.append(name_slice);
         format(entry.summary, summary);
         format(entry.detail, detail);
         t.failures.push(entry);

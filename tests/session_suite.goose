@@ -545,6 +545,136 @@ fn test_body_rewind_and_ssrf_guard(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 7. File URL & Path Manipulation Suite
+// ----------------------------------------------------------------------------
+fn test_swift_style_file_and_path_api(t: wing::T&) {
+    t.run("new_file_url Cross-Platform Normalization") { sub =>
+        // 1. Windows path with backslashes
+        let url_win = wing::new_file_url("C:\\Users\\senya\\Documents\\report.pdf");
+        sub.assert_true(url_win.valid, "valid windows file url");
+        sub.assert_true(wing::is_file_url(url_win), "is_file_url is true");
+        sub.assert_bytes_eq(wing::scheme(url_win), "file", "scheme is file");
+        sub.assert_bytes_eq(wing::pathname(url_win), "/C:/Users/senya/Documents/report.pdf", "normalized to file:///C:/...");
+
+        // 2. Windows path with spaces
+        let url_spaces = wing::new_file_url("C:\\Program Files\\My App\\app.exe");
+        sub.assert_bytes_eq(wing::pathname(url_spaces), "/C:/Program%20Files/My%20App/app.exe", "spaces percent-encoded to %20");
+
+        // 3. POSIX absolute path
+        let url_posix = wing::new_file_url("/var/log/system.log");
+        sub.assert_bytes_eq(wing::pathname(url_posix), "/var/log/system.log", "posix path preserved");
+
+        // 4. Windows UNC network path
+        let url_unc = wing::new_file_url("\\\\nas\\share\\backup.zip");
+        sub.assert_bytes_eq(wing::host(url_unc), "nas", "UNC host parsed");
+        sub.assert_bytes_eq(wing::pathname(url_unc), "/share/backup.zip", "UNC pathname parsed");
+    };
+
+    t.run("file_path Native Operating System Path Extraction") { sub =>
+        // Windows path round-trip
+        let url_win = wing::new_file_url("C:\\Program Files\\app\\data.json");
+        var os_path_win: u8[..256] = [];
+        let ok_win = wing::file_path(url_win, os_path_win);
+        sub.assert_true(ok_win, "file_path succeeded on windows url");
+        sub.assert_bytes_eq(os_path_win[..], "C:\\Program Files\\app\\data.json", "round-trip windows path with native backslashes");
+
+        // POSIX path round-trip
+        let url_posix = wing::new_file_url("/etc/nginx/nginx.conf");
+        var os_path_posix: u8[..256] = [];
+        let ok_posix = wing::file_path(url_posix, os_path_posix);
+        sub.assert_true(ok_posix, "file_path succeeded on posix url");
+        sub.assert_bytes_eq(os_path_posix[..], "/etc/nginx/nginx.conf", "round-trip posix path");
+
+        // Non-file URL returns false
+        let url_web = wing::new_url("https://example.com/file.txt");
+        var os_path_web: u8[..64] = [];
+        sub.assert_false(wing::file_path(url_web, os_path_web), "file_path fails on non-file URL");
+    };
+
+    t.run("last_path_component & path_extension (Swift-style)") { sub =>
+        let url_file = wing::new_file_url("C:\\Projects\\app\\report.final.pdf");
+        sub.assert_bytes_eq(wing::last_path_component(url_file), "report.final.pdf", "lastPathComponent with dots");
+        sub.assert_bytes_eq(wing::path_extension(url_file), "pdf", "pathExtension is pdf");
+
+        // Multi-extension archive
+        let url_tar = wing::new_url("https://archive.org/data.tar.gz");
+        sub.assert_bytes_eq(wing::last_path_component(url_tar), "data.tar.gz", "last component is data.tar.gz");
+        sub.assert_bytes_eq(wing::path_extension(url_tar), "gz", "extension is gz");
+
+        // Hidden file without extension (.gitignore)
+        let url_hidden = wing::new_file_url("C:\\Repo\\.gitignore");
+        sub.assert_bytes_eq(wing::last_path_component(url_hidden), ".gitignore", "last component is .gitignore");
+        sub.assert_bytes_eq(wing::path_extension(url_hidden), "", "hidden file leading dot has no extension");
+
+        // Folder with trailing slash
+        let url_dir = wing::new_file_url("C:\\Projects\\src\\");
+        sub.assert_bytes_eq(wing::last_path_component(url_dir), "src", "trailing slash ignored for lastPathComponent");
+        sub.assert_bytes_eq(wing::path_extension(url_dir), "", "directory has no extension");
+
+        // Root path
+        let url_root = wing::new_url("file:///");
+        sub.assert_bytes_eq(wing::last_path_component(url_root), "/", "root lastPathComponent is /");
+    };
+
+    t.run("deleting_path_extension & deleting_last_path_component") { sub =>
+        let url1 = wing::new_file_url("C:\\Docs\\report.pdf");
+        let no_ext = wing::deleting_path_extension(url1);
+        sub.assert_bytes_eq(wing::pathname(no_ext), "/C:/Docs/report", "deletingPathExtension removes .pdf");
+        sub.assert_bytes_eq(wing::path_extension(no_ext), "", "now has no extension");
+
+        // Deleting last component moves to parent folder
+        let parent = wing::deleting_last_path_component(url1);
+        sub.assert_bytes_eq(wing::pathname(parent), "/C:/Docs/", "deletingLastPathComponent points to parent folder");
+
+        // Chained navigation up
+        let grandparent = wing::deleting_last_path_component(parent);
+        sub.assert_bytes_eq(wing::pathname(grandparent), "/C:/", "grandparent points to drive root");
+    };
+
+    t.run("appending_path_component, appending_path, appending_path_extension") { sub =>
+        let base_url = wing::new_file_url("C:\\Projects\\my_app");
+
+        // Append component
+        let assets_url = wing::appending_path_component(base_url, "assets");
+        sub.assert_bytes_eq(wing::pathname(assets_url), "/C:/Projects/my_app/assets", "appended component");
+
+        // Append component with spaces (must be encoded)
+        let img_url = wing::appending_path_component(assets_url, "app logo.svg");
+        sub.assert_bytes_eq(wing::pathname(img_url), "/C:/Projects/my_app/assets/app%20logo.svg", "spaces encoded in appended component");
+
+        // Append multi-segment subpath
+        let deep_url = wing::appending_path(base_url, "src/components/button.goose");
+        sub.assert_bytes_eq(wing::pathname(deep_url), "/C:/Projects/my_app/src/components/button.goose", "appended multi-segment subpath");
+
+        // Append extension
+        let file_no_ext = wing::new_file_url("C:\\Data\\payload");
+        let with_ext = wing::appending_path_extension(file_no_ext, "json");
+        sub.assert_bytes_eq(wing::pathname(with_ext), "/C:/Data/payload.json", "appended .json extension");
+
+        // Append extension with leading dot (.xml)
+        let with_dot_ext = wing::appending_path_extension(file_no_ext, ".xml");
+        sub.assert_bytes_eq(wing::pathname(with_dot_ext), "/C:/Data/payload.xml", "leading dot stripped before appending extension");
+    };
+
+    t.run("Swift-Style UFCS Method Chaining") { sub =>
+        // url.appending(...).appending_path_extension(...)
+        let base = wing::new_file_url("C:\\Workspace");
+        let final_url = base.appending("build")
+                            .appending("release")
+                            .appending("binary")
+                            .appending_path_extension("exe");
+
+        sub.assert_bytes_eq(wing::pathname(final_url), "/C:/Workspace/build/release/binary.exe", "fluent chained path construction");
+        sub.assert_bytes_eq(final_url.last_path_component(), "binary.exe", "UFCS last_path_component");
+        sub.assert_bytes_eq(final_url.path_extension(), "exe", "UFCS path_extension");
+
+        var native_out: u8[..256] = [];
+        sub.assert_true(final_url.file_path(native_out), "UFCS file_path succeeded");
+        sub.assert_bytes_eq(native_out[..], "C:\\Workspace\\build\\release\\binary.exe", "native Windows path ready for OS calls");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -556,6 +686,7 @@ fn main() {
     wing::run_case(runner, "4. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
     wing::run_case(runner, "5. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_clientsession_pipeline_and_cookies);
     wing::run_case(runner, "6. BodyRewind, SSRF Guard & DNS Rebinding Defense", test_body_rewind_and_ssrf_guard);
+    wing::run_case(runner, "7. File URL & Path Manipulation", test_swift_style_file_and_path_api);
 
     let ok = wing::finish(runner);
     assert(ok);

@@ -10,7 +10,7 @@ The library is organized into four architectural layers:
 
 1. **`core/time.goose`**: Nanosecond-precision calendar and monotonic time engine based on Howard Hinnant's civil calendar algorithms. Includes RFC 3339, RFC 9110 HTTP-Date codecs, Go-compatible `parse_duration`, monotonic `Stopwatch`, and anti-overflow `Deadline`.
 2. **`cookie/`**: Clean-room implementation of Chromium's `net::CookieMonster` adhering to RFC 6265, RFC 6265bis, the Layered Cookies draft, CHIPS (partitioned cookies), and Public Suffix List rules.
-3. **`core/url.goose` & `app/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
+3. **`core/url.goose` & `app/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, Swift Foundation-grade File URL and path manipulation API (cross-platform Windows/POSIX path normalization, component inspection, and fluent UFCS chaining), `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
 4. **`app/`**: Client session coordinator (`ClientSession`) orchestrating a 6-phase pipeline over `CanonicalCookieJar`, with `BodyRewind` (Request.GetBody), 3-tier SSRF/DNS Rebinding guards, browser profiles (Chrome 131, Firefox 133, Safari 18), and resilience policies.
 5. **`core/test.goose`**: Zero-allocation testing framework featuring compile-time structural diffing, table-driven runners, high-resolution `MockClock`, and a deterministic Xorshift64* property fuzzer.
 
@@ -38,11 +38,17 @@ Zero-heap timekeeping and date calculations:
 - **Formatting**: RFC 3339 (with sub-second fractional precision), IMF-fixdate / RFC 1123, RFC 850, and asctime formats per RFC 9110 §5.6.7.
 - **Resilience**: Monotonic `Stopwatch`, deadline checking with `deadline_after(dur)`, token-bucket `RateLimiter`, and exponential `Backoff` with jitter.
 
-### 3. WHATWG URL, PSL & Redirect FSM (`core/url.goose`, `app/redirect.goose`)
+### 3. WHATWG URL, PSL, File URLs & Redirect FSM (`core/url.goose`, `app/redirect.goose`)
 
-Browser-grade URL parsing, origin isolation, and redirect state machine:
+Browser-grade URL parsing, Swift-like path manipulation, origin isolation, and redirect state machine:
 
 - **WHATWG URL Parser**: Single continuous byte buffer with compact offset indices (ada-url / sorug pattern), default port stripping, dot-segment collapsing (`/a/b/../c` -> `/a/c`), and relative base resolution.
+- **Swift-Style File URLs & Paths**: First-class support for file paths with bidirectional normalization:
+  - `new_file_url(path)`: Normalizes Windows drive letters (`C:\...` -> `file:///C:/...`, spaces -> `%20`), POSIX paths (`/var/log/...`), and Windows UNC shares (`\\nas\share` -> `file://nas/share`).
+  - `file_path(url, out)`: Decodes `%20`, drops leading slashes before drive letters, and maps separators back to native OS backslashes (`C:\...`).
+  - **Component Inspection**: `last_path_component(url)` (ignoring trailing slashes) and `path_extension(url)` (correctly identifying extensions like `.tar.gz` while ignoring hidden files like `.gitignore`).
+  - **Mutations & Navigation**: `deleting_last_path_component` (parent directory), `deleting_path_extension`, `appending_path_component`, `appending_path` (multi-segment subpaths), and `appending_path_extension`.
+  - **Fluent UFCS Chaining**: `base.appending("build").appending("bin").appending_path_extension("exe")`.
 - **IPv6 RFC 5952 Compression**: Deterministic zero-run compression finding the longest leftmost run of zeros (`[2001:db8::ff00:42:8329]`, `[::1]`) and IPv4-mapped IPv6 normalization.
 - **Origin Model**: Strict differentiation between `Tuple` (`scheme://host:port`) and `Opaque` (monotonic random nonces), with cross-origin serialization to `"null"`.
 - **Mozilla PSL Scoping**: Full rule matching (Normal, Wildcard `*.`, Exception `!`) with ICANN vs Private tenant isolation (e.g. `foo.github.io` cannot share state with `bar.github.io`).
@@ -185,13 +191,43 @@ fn run_time_example() {
 }
 ```
 
+### File URLs & Fluent Path Chaining
+
+```goose
+import wing;
+
+fn run_file_url_example() {
+    // Construct normalized file URL from native Windows path (spaces -> %20)
+    let project_dir = wing::new_file_url("C:\\Users\\senya\\My Projects");
+
+    // Fluent UFCS method chaining for subpaths and extensions
+    let binary_url = project_dir.appending("build")
+                                .appending("release")
+                                .appending("goose-server")
+                                .appending_path_extension("exe");
+
+    // Path component inspection (Swift Foundation style)
+    let filename = binary_url.last_path_component(); // "goose-server.exe"
+    let file_ext = binary_url.path_extension();      // "exe"
+
+    // Navigate to parent directory
+    let parent_dir = binary_url.deleting_last_path_component(); // file:///C:/Users/senya/My%20Projects/build/release/
+
+    // Extract native OS path for system calls (replaces / with \, decodes %20)
+    var native_path: u8[..256] = [];
+    if binary_url.file_path(native_path) {
+        print("Ready for OS exec: ", native_path); // "C:\Users\user\My Projects\build\release\goose-server.exe"
+    }
+}
+```
+
 ## Verification & Test Suite
 
 The test suite covers full RFC specifications, Chromium edge cases, and property-based randomized testing:
 
 | Test Suite | File | Focus Areas | Checks |
 |---|---|---|---|
-| **Session & URL Suite** | `tests/session_suite.goose` | WHATWG URL, IPv6 RFC 5952, PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, 3-tier SSRF | 117 checks |
+| **Session & URL Suite** | `tests/session_suite.goose` | WHATWG URL, IPv6 RFC 5952, Swift File URLs & Path API, PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, 3-tier SSRF | 153 checks |
 | **Cookie Vectors** | `tests/max_cookie_vectors.goose` | Matrices 1..16 (Lexer limits, CTL sweep, PSL, prefixes, SameSite, CHIPS, 6-round GC, SQLite v24, clock skew, PRNG fuzzer) | 1,126 checks |
 | **Clean Room Suite** | `tests/cookie_suite.goose` | WPT compliance, domain quotas, eviction ordering, persistence keys | 78 checks |
 | **Time & Calendar** | `tests/time_suite.goose` | Hinnant calendar math, leap years, ReDoS protection, RFC 3339, RFC 9110 | 334 checks |
