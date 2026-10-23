@@ -293,13 +293,18 @@ fn zstream_decompress_write_limit<B>(
     // Phase 1: Parse container header
     if !d.header_parsed {
         if d.format == ContainerFormat.Auto {
-            if d.in_buf.len < 10 {
+            if d.in_buf.len < 4 {
                 return CompressError.None;
             }
             d.format = detect_container_format(d.in_buf[..]);
+            if d.format == ContainerFormat.Auto || (d.format == ContainerFormat.Raw && d.in_buf.len < 10) {
+                return CompressError.None;
+            }
         }
 
-        if d.format == ContainerFormat.Gzip {
+        if d.format == ContainerFormat.Zstd {
+            d.header_parsed = true;
+        } else if d.format == ContainerFormat.Gzip {
             let offset, err = parse_gzip_header_offset(d.in_buf[..], 0);
             if err == CompressError.InputBufferTruncated {
                 return CompressError.None;
@@ -332,6 +337,27 @@ fn zstream_decompress_write_limit<B>(
         } else {
             d.header_parsed = true;
         }
+    }
+
+    // Phase 1.5: Zstandard Frame Streaming
+    if d.format == ContainerFormat.Zstd {
+        if !d.is_finished {
+            var temp_out: u8[>..] = [];
+            let z_limit = if max_output_bytes > 0 { max_output_bytes } else { -1 };
+            let err = zstd_decompress_with_limit(d.in_buf[..], temp_out, z_limit);
+            if err == CompressError.InputBufferTruncated {
+                return CompressError.None; // Partial frame: wait for more bytes
+            }
+            guard err == CompressError.None else { return err; }
+
+            out.append(temp_out[..]);
+            d.total_out += temp_out.len as u64;
+            drain_in_buf(d, d.in_buf.len);
+            d.deflate_finished = true;
+            d.is_finished = true;
+            return CompressError.None;
+        }
+        return CompressError.None;
     }
 
     // Phase 2: Decompress Deflate payload

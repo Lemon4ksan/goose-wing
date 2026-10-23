@@ -866,6 +866,29 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         sub.assert_true(decoded, "decode_body must handle Content-Encoding: zstd");
         sub.assert_eq(res.body[..], raw_payload, "Decoded HTTP body must match original payload");
     };
+
+    t.run("ZStreamDecompressor Chunked Streaming for Zstandard") { sub =>
+        let message = "Chunked TCP slice streaming test vector for RFC 8878 Zstandard frames.";
+        var wire: u8[>..] = [];
+        wing::compress_zstd(message, wire, true);
+
+        // Feed arbitrary chunks (13 bytes at a time) to ZStreamDecompressor in Auto mode
+        var dec = wing::new_zstream_decompressor(wing::ContainerFormat.Auto);
+        var restored: u8[>..] = [];
+        var offset: i64 = 0;
+        let chunk_size: i64 = 13;
+
+        while offset < wire.len {
+            let rem = wire.len - offset;
+            let take = if rem < chunk_size { rem } else { chunk_size };
+            let err = wing::zstream_decompress_write_limit(dec, wire[offset .. offset + take], restored);
+            sub.assert_eq(err, wing::CompressError.None, "zstream_decompress_write_limit must succeed on chunk");
+            offset += take;
+        }
+
+        sub.assert_true(dec.is_finished, "ZStreamDecompressor must be finished");
+        sub.assert_eq(restored[..], message, "ZStream chunk-streamed Zstd must match original payload");
+    };
 }
 
 fn main() {

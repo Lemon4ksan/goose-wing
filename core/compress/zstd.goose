@@ -985,7 +985,12 @@ fn decode_sequences<B>(
                 out_buf.append(out_buf[src_idx .. src_idx + m_len]);
             } else if off == 1 {
                 let b = out_buf[src_idx];
+                let pattern: u8[16] = [b; 16];
                 var m: i64 = 0;
+                while m + 16 <= m_len {
+                    out_buf.append(pattern[..]);
+                    m += 16;
+                }
                 while m < m_len {
                     out_buf.push(b);
                     m++;
