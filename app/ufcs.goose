@@ -78,53 +78,6 @@ fn ::text(res: const wing::Response&) -> const u8[:] { return wing::text(res); }
 fn ::json<T>(res: const wing::Response&, out: T&) -> wing::Error { return wing::json(res, out); }
 fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing::decode_json<T>(res); }
 
-// --- CookieJar UFCS bridges ---
-
-fn ::set(jar: wing::CookieJar&, name: const u8[:], value: const u8[:], domain: const u8[:], path: const u8[:]) {
-    wing::set(jar, name, value, domain, path);
-}
-fn ::get(jar: const wing::CookieJar&, req_url: const u8[:], name: const u8[:]) -> const u8[:] {
-    return wing::get(jar, req_url, name);
-}
-fn ::get(jar: const wing::CookieJar&, name: const u8[:]) -> const u8[:] {
-    return wing::get(jar, name);
-}
-fn ::set_cookie_header(jar: wing::CookieJar&, req_url: const u8[:], set_cookie_raw: const u8[:]) -> bool {
-    return wing::set_cookie_header(jar, req_url, set_cookie_raw);
-}
-fn ::build_cookie_header<B>(jar: wing::CookieJar&, req_url: const u8[:], out: B&) {
-    wing::build_cookie_header(jar, req_url, out);
-}
-fn ::count(jar: const wing::CookieJar&) -> i64 {
-    return wing::count(jar);
-}
-fn ::clear(jar: wing::CookieJar&) {
-    wing::clear(jar);
-}
-fn ::clear_session_cookies(jar: wing::CookieJar&) {
-    wing::clear_session_cookies(jar);
-}
-fn ::set_partition_key(jar: wing::CookieJar&, key: const u8[:]) {
-    wing::set_partition_key(jar, key);
-}
-fn ::set_proxy_key(jar: wing::CookieJar&, key: const u8[:]) {
-    wing::set_proxy_key(jar, key);
-}
-fn ::add_public_suffix(jar: wing::CookieJar&, suffix: const u8[:]) {
-    wing::add_public_suffix(jar, suffix);
-}
-fn ::mirror(jar: wing::CookieJar&, source_url: const u8[:], target_url: const u8[:], cookie_names: const u8[:][:]) {
-    wing::mirror(jar, source_url, target_url, cookie_names);
-}
-fn ::export_netscape<B>(jar: wing::CookieJar&, req_url: const u8[:], out: B&) {
-    wing::export_netscape(jar, req_url, out);
-}
-fn ::export_json(jar: wing::CookieJar&, req_url: const u8[:], out: u8[>..]&) {
-    wing::export_json(jar, req_url, out);
-}
-fn ::import_json(jar: wing::CookieJar&, target_url: const u8[:], json_text: const u8[:]) -> i64 {
-    return wing::import_json(jar, target_url, json_text);
-}
 
 // --- Time & Duration UFCS bridges ---
 
@@ -250,10 +203,6 @@ fn ::add(jar: wing::CanonicalCookieJar&, name: const u8[:], val: const u8[:]) ->
     return wing::add(jar, name, val);
 }
 
-fn ::with_value(cookie_val: wing::CanonicalCookie&, val: const u8[:]) -> wing::CanonicalCookie& {
-    return wing::with_value(cookie_val, val);
-}
-
 fn ::with_domain(cookie_val: wing::CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> wing::CanonicalCookie& {
     return wing::with_domain(cookie_val, domain_val, host_only);
 }
@@ -282,20 +231,12 @@ fn ::with_priority(cookie_val: wing::CanonicalCookie&, priority_level: wing::Coo
     return wing::with_priority(cookie_val, priority_level);
 }
 
-fn ::with_partition_key(cookie_val: wing::CanonicalCookie&, key: const u8[:]) -> wing::CanonicalCookie& {
-    return wing::with_partition_key(cookie_val, key);
-}
-
 fn ::with_max_age_seconds(cookie_val: wing::CanonicalCookie&, seconds: i64, now_us: i64) -> wing::CanonicalCookie& {
     return wing::with_max_age_seconds(cookie_val, seconds, now_us);
 }
 
 fn ::with_expires_utc(cookie_val: wing::CanonicalCookie&, expires_us: i64) -> wing::CanonicalCookie& {
     return wing::with_expires_utc(cookie_val, expires_us);
-}
-
-fn ::with_source(cookie_val: wing::CanonicalCookie&, scheme: wing::CookieSourceScheme, port: i32) -> wing::CanonicalCookie& {
-    return wing::with_source(cookie_val, scheme, port);
 }
 
 fn ::purge_expired(jar: wing::CanonicalCookieJar&, now_us: i64) -> i64 {
@@ -334,16 +275,8 @@ fn ::set_cookie_header(
     return wing::set_cookie_header(jar, req_url, set_cookie_raw, now_us, is_http_api, partition_key);
 }
 
-fn ::new_canonical_cookie(name: const u8[:], val: const u8[:]) -> wing::CanonicalCookie {
-    return wing::new_canonical_cookie(name, val);
-}
-
 fn ::set(jar: wing::CanonicalCookieJar&, cookie_val: wing::CanonicalCookie, now_us: i64) -> bool {
     return wing::set(jar, cookie_val, now_us);
-}
-
-fn ::insert(jar: wing::CanonicalCookieJar&, cookie_val: wing::CanonicalCookie, now_us: i64) -> bool {
-    return wing::insert(jar, cookie_val, now_us);
 }
 
 fn ::get(
@@ -391,10 +324,6 @@ fn ::search(u: const wing::Url&) -> const u8[:] { return wing::search(u); }
 fn ::origin(u: const wing::Url&) -> wing::Origin { return wing::origin_from_url(u); }
 fn ::is_special(u: const wing::Url&) -> bool { return wing::is_special(u); }
 
-fn ::is_opaque(o: const wing::Origin&) -> bool { return o.kind == wing::OriginKind.Opaque; }
-fn ::is_same_origin(o1: const wing::Origin&, o2: const wing::Origin&) -> bool { return wing::is_same_origin(o1, o2); }
-fn ::serialize<B>(o: const wing::Origin&, out: B&) { wing::serialize_origin(o, out); }
-
 // --- File & Path UFCS Bridges ---
 
 fn ::is_file_url(u: const wing::Url&) -> bool { return wing::is_file_url(u); }
@@ -407,72 +336,3 @@ fn ::appending_path_component(u: wing::Url, component: const u8[:]) -> wing::Url
 fn ::appending(u: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(u, component); }
 fn ::appending_path(u: wing::Url, subpath: const u8[:]) -> wing::Url { return wing::appending_path(u, subpath); }
 fn ::appending_path_extension(u: wing::Url, ext: const u8[:]) -> wing::Url { return wing::appending_path_extension(u, ext); }
-
-// --- SiteForCookies UFCS Bridges ---
-
-fn ::is_null(sfc: const wing::SiteForCookies&) -> bool { return sfc.is_null; }
-fn ::is_first_party(sfc: const wing::SiteForCookies&, url_str: const u8[:], compute_schemefully: bool = true) -> bool {
-    return wing::is_first_party(sfc, url_str, compute_schemefully);
-}
-fn ::format_site_for_cookies<B>(out: B&, sfc: const wing::SiteForCookies&) { wing::format_site_for_cookies(out, sfc); }
-
-// --- Request, Response, Session UFCS Bridges ---
-
-fn ::initiator(req: wing::Request&, origin_val: const wing::Origin&) { wing::set_initiator(req, origin_val); }
-fn ::set_initiator(req: wing::Request&, origin_val: const wing::Origin&) { wing::set_initiator(req, origin_val); }
-fn ::site_for_cookies(req: wing::Request&, sfc: const wing::SiteForCookies&) { wing::set_site_for_cookies(req, sfc); }
-fn ::set_site_for_cookies(req: wing::Request&, sfc: const wing::SiteForCookies&) { wing::set_site_for_cookies(req, sfc); }
-fn ::first_party_policy(req: wing::Request&, policy: wing::FirstPartyURLPolicy) { wing::set_first_party_policy(req, policy); }
-fn ::set_first_party_policy(req: wing::Request&, policy: wing::FirstPartyURLPolicy) { wing::set_first_party_policy(req, policy); }
-fn ::sensitive_header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::sensitive_header(req, name, value); }
-fn ::set_stream_body(req: wing::Request&, body_bytes: const u8[:], rewindable: bool = false) { wing::set_stream_body(req, body_bytes, rewindable); }
-
-fn ::redirect_count(res: const wing::Response&) -> i64 { return res.redirect_count; }
-fn ::final_method(res: const wing::Response&) -> const u8[:] { return res.final_method[..]; }
-fn ::sent_header(res: const wing::Response&, name: const u8[:]) -> const u8[:] { return wing::sent_header(res, name); }
-
-fn ::set_redirect_mode(session: wing::Session&, mode: wing::RedirectMode) {
-    wing::set_redirect_mode(session, mode);
-}
-fn ::set_max_redirects(session: wing::Session&, count: i64) {
-    wing::set_max_redirects(session, count);
-}
-fn ::set_referrer_policy(session: wing::Session&, policy: wing::ReferrerPolicy) {
-    wing::set_referrer_policy(session, policy);
-}
-fn ::set_clock_us(session: wing::Session&, clock_us: i64) {
-    wing::set_clock_us(session, clock_us);
-}
-fn ::enable_ssrf_guard(session: wing::Session&, deny_local_network: bool = true) {
-    wing::enable_ssrf_guard(session, deny_local_network);
-}
-fn ::mock_route(
-    session: wing::Session&,
-    method: const u8[:],
-    url: const u8[:],
-    status: i32,
-    body: const u8[:]
-) -> wing::MockExchange& {
-    return wing::mock_route(session, method, url, status, body);
-}
-fn ::mock_route(
-    session: wing::Session&,
-    url: const u8[:],
-    status: i32,
-    body: const u8[:]
-) -> wing::MockExchange& {
-    return wing::mock_route(session, "", url, status, body);
-}
-fn ::execute_request(session: wing::Session&, req: const wing::Request&) -> wing::Response, wing::Error {
-    return wing::execute_request(session, req);
-}
-
-fn ::add_mock_header(session: wing::Session&, name: const u8[:], value: const u8[:]) {
-    wing::add_mock_header(session, name, value);
-}
-fn ::add_mock_set_cookie(session: wing::Session&, set_cookie_raw: const u8[:]) {
-    wing::add_mock_set_cookie(session, set_cookie_raw);
-}
-fn ::add_mock_resolved_ip(session: wing::Session&, ip_str: const u8[:]) {
-    wing::add_mock_resolved_ip(session, ip_str);
-}
