@@ -781,12 +781,39 @@ fn parse_opaque_path_url(
     return out_url, UrlParseError.None;
 }
 
+fn resolve_fragment_on_opaque_base(
+    out_url: Url&,
+    base_url: const Url&,
+    frag_input: const u8[:],
+) -> Url, UrlParseError {
+    let base_href = href(base_url);
+    let base_no_hash = if base_url.hash_start >= 0 { base_href[..base_url.hash_start] } else { base_href };
+    out_url.href.append(base_no_hash);
+    out_url.has_opaque_path = true;
+    out_url.is_special = base_url.is_special;
+    out_url.scheme_end = base_url.scheme_end;
+    out_url.pathname_start = base_url.pathname_start;
+    out_url.pathname_end = base_url.pathname_end;
+    out_url.search_start = base_url.search_start;
+    out_url.search_end = base_url.search_end;
+
+    out_url.hash_start = out_url.href.len as i32;
+    out_url.href.append(frag_input);
+    out_url.hash_end = out_url.href.len as i32;
+
+    out_url.valid = true;
+    return out_url, UrlParseError.None;
+}
+
 fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
     var out_url = Url { valid: false, .. };
 
     var cleaned: u8[..512] = [];
     clean_input_string(raw_input, cleaned);
     guard cleaned.len > 0 else {
+        if has_base {
+            return resolve_relative_path_against_base(out_url, base_url, "");
+        }
         return out_url, UrlParseError.EmptyInput;
     }
 
@@ -815,7 +842,7 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
         return out_url, UrlParseError.InvalidScheme;
     }
 
-    var scheme_str: u8[..16] = [];
+    var scheme_str: u8[..64] = [];
     var remainder_start = 0;
 
     if colon_idx > 0 {
@@ -828,8 +855,12 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
         guard has_base else {
             return out_url, UrlParseError.RelativeWithoutBase;
         }
-        guard !base_url.has_opaque_path else {
-            return out_url, UrlParseError.OpaqueBaseCannotResolveRelative;
+        if base_url.has_opaque_path {
+            // WHATWG URL Section 4.4: fragment-only relative URL on opaque-path base is allowed
+            guard input_bytes.len > 0 && input_bytes[0] == '#' else {
+                return out_url, UrlParseError.OpaqueBaseCannotResolveRelative;
+            }
+            return resolve_fragment_on_opaque_base(out_url, base_url, input_bytes);
         }
         scheme_str.append(scheme(base_url));
     }
@@ -855,6 +886,10 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
         if scheme_str == "file" {
             let auth_start = if slash_count >= 2 { 2 } else { 0 };
             return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[auth_start..]);
+        }
+        if slash_count == 3 {
+            // Exactly 3 slashes in special scheme (e.g. https:///path): scheme:// followed by /path has empty host
+            return out_url, UrlParseError.MissingHost;
         }
         if slash_count >= 2 {
             return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[slash_count..]);
@@ -900,18 +935,37 @@ fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) {
         }
     }
 
+    let raw_user = if colon_pos >= 0 { userinfo[..colon_pos] } else { userinfo };
+    let raw_pass = if colon_pos >= 0 { userinfo[colon_pos + 1..] } else { "" };
+
+    // If both username and password are empty (e.g. :@), omit userinfo completely per WHATWG URL
+    guard raw_user.len > 0 || raw_pass.len > 0 else {
+        return;
+    }
+
     out_url.username_start = out_url.href.len as i32;
-    if colon_pos >= 0 {
-        out_url.href.append(userinfo[..colon_pos]);
-        out_url.username_end = out_url.href.len as i32;
+    for char_byte in raw_user {
+        if char_byte == '@' {
+            out_url.href.append("%40");
+        } else {
+            out_url.href.push(char_byte);
+        }
+    }
+    out_url.username_end = out_url.href.len as i32;
+
+    if raw_pass.len > 0 {
         out_url.href.push(':');
         out_url.password_start = out_url.href.len as i32;
-        out_url.href.append(userinfo[colon_pos + 1..]);
+        for char_byte in raw_pass {
+            if char_byte == '@' {
+                out_url.href.append("%40");
+            } else {
+                out_url.href.push(char_byte);
+            }
+        }
         out_url.password_end = out_url.href.len as i32;
-    } else {
-        out_url.href.append(userinfo);
-        out_url.username_end = out_url.href.len as i32;
     }
+
     out_url.href.push('@');
 }
 
@@ -1018,6 +1072,19 @@ fn parse_absolute_authority_url(
     return out_url, UrlParseError.None;
 }
 
+fn parse_port_number(port_str: const u8[:]) -> i32, bool {
+    guard port_str.len > 0 else { return -1, false; }
+    var val: i64 = 0;
+    for char_byte in port_str {
+        guard char_byte >= '0' && char_byte <= '9' else { return -1, false; }
+        val = val * 10 + (char_byte - '0');
+        if val > 65535 {
+            return -1, false;
+        }
+    }
+    return val as i32, true;
+}
+
 fn extract_host_and_port_canonical<B>(
     host_port: const u8[:],
     host_out: B&,
@@ -1057,11 +1124,11 @@ fn extract_host_and_port_canonical<B>(
             }
             let p_str = host_port[close_bracket + 2..];
             if p_str.len > 0 {
-                let p_num, p_ok = parse_int(p_str);
-                guard p_ok && p_num >= 0 && p_num <= 65535 else {
+                let p_num, p_ok = parse_port_number(p_str);
+                guard p_ok else {
                     return UrlParseError.InvalidPort;
                 }
-                port_out = p_num as i32;
+                port_out = p_num;
             }
         }
         return UrlParseError.None;
@@ -1089,11 +1156,11 @@ fn extract_host_and_port_canonical<B>(
     if colon_idx >= 0 {
         let p_str = host_port[colon_idx + 1..];
         if p_str.len > 0 {
-            let p_num, p_ok = parse_int(p_str);
-            guard p_ok && p_num >= 0 && p_num <= 65535 else {
+            let p_num, p_ok = parse_port_number(p_str);
+            guard p_ok else {
                 return UrlParseError.InvalidPort;
             }
-            port_out = p_num as i32;
+            port_out = p_num;
         }
     }
 
@@ -1458,8 +1525,20 @@ fn resolve_relative_path_against_base(
     rel_input: const u8[:],
 ) -> Url, UrlParseError {
     guard rel_input.len > 0 else {
-        // Empty relative input copies base URL
-        out_url = copy(base_url);
+        // Empty relative input copies base URL with fragment stripped per WHATWG URL Section 4.4
+        let base_href = href(base_url);
+        let base_no_hash = if base_url.hash_start >= 0 { base_href[..base_url.hash_start] } else { base_href };
+        out_url.href.append(base_no_hash);
+        copy_base_authority_offsets(out_url, base_url);
+        out_url.pathname_start = base_url.pathname_start;
+        out_url.pathname_end = base_url.pathname_end;
+        out_url.search_start = base_url.search_start;
+        out_url.search_end = base_url.search_end;
+        out_url.hash_start = -1;
+        out_url.hash_end = -1;
+        out_url.has_opaque_path = base_url.has_opaque_path;
+        out_url.is_special = base_url.is_special;
+        out_url.valid = true;
         return out_url, UrlParseError.None;
     }
 

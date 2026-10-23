@@ -416,6 +416,559 @@ fn test_whatwg_audit_fixes(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 4. Canonical WPT & Edge Case Test Vectors (Categories 2 through 8)
+// ----------------------------------------------------------------------------
+fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
+    t.run("Category 2: Lexer, C0 Controls, Spaces & Scheme Parsing (LEX-01..09)") { sub =>
+        // LEX-01: Trim C0 control characters and spaces (<= 0x20) around edges
+        let url_lex01, err_lex01 = wing::parse_url("\x00\x01\x1F https://example.com/path \x20\x09\x0A");
+        sub.assert_true(url_lex01.valid, "LEX-01: valid after edge trimming");
+        sub.assert_bytes_eq(wing::href(url_lex01), "https://example.com/path", "LEX-01: trimmed href matches");
+
+        // LEX-02: Strip internal ASCII tab (0x09), LF (0x0A), CR (0x0D) across all parts
+        let url_lex02, err_lex02 = wing::parse_url("ht\ttp\n://ex\rample.com/a\tb\nc?q=1\t2#h\nash");
+        sub.assert_true(url_lex02.valid, "LEX-02: valid after internal tab/newline stripping");
+        sub.assert_bytes_eq(wing::href(url_lex02), "http://example.com/abc?q=12#hash", "LEX-02: internal tabs/newlines removed");
+
+        // LEX-03: Lowercase scheme and host, preserve pathname casing
+        let url_lex03, err_lex03 = wing::parse_url("HTTP://ExAmPlE.CoM/Path");
+        sub.assert_true(url_lex03.valid, "LEX-03: valid mixed case URL");
+        sub.assert_bytes_eq(wing::href(url_lex03), "http://example.com/Path", "LEX-03: scheme/host lowercased, pathname preserved");
+
+        // LEX-04: Forbidden C0 byte 0x01 in host rejected
+        let url_lex04, err_lex04 = wing::parse_url("http://exam\x01ple.com/");
+        sub.assert_false(url_lex04.valid, "LEX-04: C0 in host rejected");
+        sub.assert_true(err_lex04 == wing::UrlParseError.ForbiddenHostCodePoint, "LEX-04: ForbiddenHostCodePoint on 0x01");
+
+        // LEX-05: Forbidden byte 0x7F in host rejected
+        let url_lex05, err_lex05 = wing::parse_url("http://exam\x7Fple.com/");
+        sub.assert_false(url_lex05.valid, "LEX-05: 0x7F DEL in host rejected");
+        sub.assert_true(err_lex05 == wing::UrlParseError.ForbiddenHostCodePoint, "LEX-05: ForbiddenHostCodePoint on 0x7F");
+
+        // LEX-06: Raw percent '%' in special scheme host rejected
+        let url_lex06, err_lex06 = wing::parse_url("http://example%2ecom/");
+        sub.assert_false(url_lex06.valid, "LEX-06: percent in host rejected");
+        sub.assert_true(err_lex06 == wing::UrlParseError.ForbiddenHostCodePoint, "LEX-06: ForbiddenHostCodePoint on %");
+
+        // LEX-07: Scheme starting with digit rejected
+        let url_lex07, err_lex07 = wing::parse_url("123://example.com");
+        sub.assert_false(url_lex07.valid, "LEX-07: scheme starting with digit rejected");
+        sub.assert_true(err_lex07 == wing::UrlParseError.InvalidScheme, "LEX-07: InvalidScheme on leading digit");
+
+        // LEX-08: Scheme containing +, -, ., and digits from second char accepted
+        let url_lex08, err_lex08 = wing::parse_url("a+b-c.1://example.com/test");
+        sub.assert_true(url_lex08.valid, "LEX-08: valid scheme with +, -, ., digits");
+        sub.assert_bytes_eq(wing::scheme(url_lex08), "a+b-c.1", "LEX-08: scheme matches");
+        sub.assert_bytes_eq(wing::href(url_lex08), "a+b-c.1://example.com/test", "LEX-08: href matches");
+
+        // LEX-09: Empty input or whitespace-only input rejected
+        let url_lex09_empty, err_lex09_empty = wing::parse_url("");
+        sub.assert_false(url_lex09_empty.valid, "LEX-09: empty input rejected");
+        sub.assert_true(err_lex09_empty == wing::UrlParseError.EmptyInput, "LEX-09: EmptyInput error on empty string");
+
+        let url_lex09_ws, err_lex09_ws = wing::parse_url(" \t\r\n ");
+        sub.assert_false(url_lex09_ws.valid, "LEX-09: whitespace-only rejected");
+        sub.assert_true(err_lex09_ws == wing::UrlParseError.EmptyInput, "LEX-09: EmptyInput on whitespace");
+    };
+
+    t.run("Category 3: Authority, Userinfo & Interop Collisions (AUTH-01..08)") { sub =>
+        // AUTH-01: Backslashes equivalent to slashes in special schemes
+        let url_auth01 = wing::new_url("http:\\\\example.com\\a\\b");
+        sub.assert_true(url_auth01.valid, "AUTH-01: valid backslashes url");
+        sub.assert_bytes_eq(wing::href(url_auth01), "http://example.com/a/b", "AUTH-01: backslashes normalized to slashes");
+
+        // AUTH-02: Special schemes absorb leading slashes
+        let url_auth02 = wing::new_url("https://///example.com/test");
+        sub.assert_true(url_auth02.valid, "AUTH-02: valid multi-slash url");
+        sub.assert_bytes_eq(wing::href(url_auth02), "https://example.com/test", "AUTH-02: excess leading slashes absorbed");
+
+        // AUTH-03: Single slash with different special scheme from base does not downgrade
+        let base_auth03 = wing::new_url("http://old.com/dir/p");
+        let url_auth03 = wing::new_url("https:/example.com/login", base_auth03);
+        sub.assert_true(url_auth03.valid, "AUTH-03: valid https URL");
+        sub.assert_bytes_eq(wing::href(url_auth03), "https://example.com/login", "AUTH-03: scheme remains https and host is example.com");
+
+        // AUTH-04: Single slash with same scheme as base resolves from base root
+        let base_auth04 = wing::new_url("http://example.com/dir/p");
+        let url_auth04 = wing::new_url("http:/secure/login", base_auth04);
+        sub.assert_true(url_auth04.valid, "AUTH-04: valid relative resolution");
+        sub.assert_bytes_eq(wing::href(url_auth04), "http://example.com/secure/login", "AUTH-04: single slash resolves from root of base");
+
+        // AUTH-05: Last @ in authority serves as userinfo delimiter per WHATWG URL
+        let url_auth05 = wing::new_url("http://user@evil.com:pass@good.com/");
+        sub.assert_true(url_auth05.valid, "AUTH-05: valid userinfo with multiple @");
+        sub.assert_bytes_eq(wing::hostname(url_auth05), "good.com", "AUTH-05: host after last @ is good.com");
+        sub.assert_bytes_eq(wing::username(url_auth05), "user%40evil.com", "AUTH-05: username has @ encoded as %40");
+        sub.assert_bytes_eq(wing::password(url_auth05), "pass", "AUTH-05: password is pass");
+
+        // AUTH-06: Empty username and empty password (:@) omitted in serialization
+        let url_auth06 = wing::new_url("https://:@example.com/path");
+        sub.assert_true(url_auth06.valid, "AUTH-06: valid empty credentials url");
+        sub.assert_bytes_eq(wing::href(url_auth06), "https://example.com/path", "AUTH-06: :@ omitted from href");
+        sub.assert_false(wing::has_credentials(url_auth06), "AUTH-06: has_credentials is false");
+
+        // AUTH-07: Empty password after colon (user:@) omits colon before @
+        let url_auth07 = wing::new_url("https://user:@example.com/");
+        sub.assert_true(url_auth07.valid, "AUTH-07: valid user without password");
+        sub.assert_bytes_eq(wing::href(url_auth07), "https://user@example.com/", "AUTH-07: empty password omits colon");
+        sub.assert_bytes_eq(wing::username(url_auth07), "user", "AUTH-07: username is user");
+        sub.assert_bytes_eq(wing::password(url_auth07), "", "AUTH-07: password is empty");
+
+        // AUTH-08: Empty username with password (:pass@) retains leading colon
+        let url_auth08 = wing::new_url("https://:pass@example.com/");
+        sub.assert_true(url_auth08.valid, "AUTH-08: valid password without user");
+        sub.assert_bytes_eq(wing::href(url_auth08), "https://:pass@example.com/", "AUTH-08: retains leading colon");
+        sub.assert_bytes_eq(wing::username(url_auth08), "", "AUTH-08: username is empty");
+        sub.assert_bytes_eq(wing::password(url_auth08), "pass", "AUTH-08: password is pass");
+    };
+
+    t.run("Category 4: IPv6 RFC 5952 Canonical Compression & Ports (IPV6-01..10, PORT-01..07)") { sub =>
+        // IPV6-01: Zero run compressed to :: and leading zeros stripped
+        let url_ip01 = wing::new_url("http://[2001:0db8:0000:0000:0000:0000:1428:57ab]/");
+        sub.assert_bytes_eq(wing::href(url_ip01), "http://[2001:db8::1428:57ab]/", "IPV6-01: zero run compressed to ::");
+
+        // IPV6-02: Single zero block is not compressed to ::
+        let url_ip02 = wing::new_url("http://[2001:db8:0:1:1:1:1:1]/");
+        sub.assert_bytes_eq(wing::href(url_ip02), "http://[2001:db8:0:1:1:1:1:1]/", "IPV6-02: single zero block not compressed");
+
+        // IPV6-03: Two equal zero runs compress the first run
+        let url_ip03 = wing::new_url("http://[2001:db8:0:0:1:0:0:1]/");
+        sub.assert_bytes_eq(wing::href(url_ip03), "http://[2001:db8::1:0:0:1]/", "IPV6-03: first equal zero run compressed");
+
+        // IPV6-04: Loopback address compressed and port separation
+        let url_ip04 = wing::new_url("http://[0:0:0:0:0:0:0:1]:8080/");
+        sub.assert_bytes_eq(wing::hostname(url_ip04), "[::1]", "IPV6-04: hostname is [::1]");
+        sub.assert_bytes_eq(wing::host(url_ip04), "[::1]:8080", "IPV6-04: host is [::1]:8080");
+
+        // IPV6-05: All eight zero groups compressed to [::]
+        let url_ip05 = wing::new_url("http://[0:0:0:0:0:0:0:0]/");
+        sub.assert_bytes_eq(wing::href(url_ip05), "http://[::]/", "IPV6-05: all zeros compressed to [::]");
+
+        // IPV6-06: IPv4-mapped IPv6 suffix parsed into 2 hex blocks
+        let url_ip06 = wing::new_url("http://[::ffff:192.0.2.128]/");
+        sub.assert_bytes_eq(wing::href(url_ip06), "http://[::ffff:c000:280]/", "IPV6-06: mapped IPv4 hex converted");
+
+        // IPV6-07: Single leading colon rejected
+        let url_ip07, err_ip07 = wing::parse_url("http://[:1:2:3:4:5:6:7]/");
+        sub.assert_false(url_ip07.valid, "IPV6-07: single leading colon rejected");
+        sub.assert_true(err_ip07 == wing::UrlParseError.InvalidIpv6, "IPV6-07: InvalidIpv6");
+
+        // IPV6-08: Trailing colon rejected
+        let url_ip08, err_ip08 = wing::parse_url("http://[fe80::1:]/");
+        sub.assert_false(url_ip08.valid, "IPV6-08: trailing colon rejected");
+        sub.assert_true(err_ip08 == wing::UrlParseError.InvalidIpv6, "IPV6-08: InvalidIpv6");
+
+        // IPV6-09: Multiple :: compressions rejected
+        let url_ip09, err_ip09 = wing::parse_url("http://[2001::db8::1]/");
+        sub.assert_false(url_ip09.valid, "IPV6-09: double :: rejected");
+        sub.assert_true(err_ip09 == wing::UrlParseError.InvalidIpv6, "IPV6-09: InvalidIpv6");
+
+        // IPV6-10: Leading zeros in IPv4 octets within IPv6 rejected
+        let url_ip10, err_ip10 = wing::parse_url("http://[::ffff:192.168.001.1]/");
+        sub.assert_false(url_ip10.valid, "IPV6-10: leading zero in IPv4 octet rejected");
+        sub.assert_true(err_ip10 == wing::UrlParseError.InvalidIpv6, "IPV6-10: InvalidIpv6");
+
+        // PORT-01: Default ports stripped in special schemes
+        let u_p1_1 = wing::new_url("http://example.com:80/");
+        let u_p1_2 = wing::new_url("https://example.com:443/");
+        let u_p1_3 = wing::new_url("ws://example.com:80/");
+        let u_p1_4 = wing::new_url("wss://example.com:443/");
+        sub.assert_bytes_eq(wing::href(u_p1_1), "http://example.com/", "PORT-01: http:80 stripped");
+        sub.assert_bytes_eq(wing::href(u_p1_2), "https://example.com/", "PORT-01: https:443 stripped");
+        sub.assert_bytes_eq(wing::href(u_p1_3), "ws://example.com/", "PORT-01: ws:80 stripped");
+        sub.assert_bytes_eq(wing::href(u_p1_4), "wss://example.com/", "PORT-01: wss:443 stripped");
+
+        // PORT-02: Non-default ports preserved
+        let u_p2_1 = wing::new_url("http://example.com:443/");
+        let u_p2_2 = wing::new_url("https://example.com:80/");
+        sub.assert_bytes_eq(wing::href(u_p2_1), "http://example.com:443/", "PORT-02: http:443 preserved");
+        sub.assert_bytes_eq(wing::href(u_p2_2), "https://example.com:80/", "PORT-02: https:80 preserved");
+
+        // PORT-03: Leading zeros stripped from port and default port eliminated
+        let url_port03 = wing::new_url("http://example.com:00000000000080/");
+        sub.assert_bytes_eq(wing::href(url_port03), "http://example.com/", "PORT-03: leading zeros stripped and port 80 omitted");
+
+        // PORT-04: Port 0 is valid
+        let url_port04 = wing::new_url("http://example.com:0/");
+        sub.assert_bytes_eq(wing::href(url_port04), "http://example.com:0/", "PORT-04: port 0 serialized");
+        sub.assert_bytes_eq(wing::port_str(url_port04), "0", "PORT-04: port_str is 0");
+        sub.assert_eq(wing::effective_port(url_port04), 0, "PORT-04: effective port is 0");
+
+        // PORT-05: Empty port after colon ignored
+        let u_p5_1 = wing::new_url("http://example.com:/");
+        let u_p5_2 = wing::new_url("http://[::1]:/");
+        sub.assert_bytes_eq(wing::href(u_p5_1), "http://example.com/", "PORT-05: empty port on host ignored");
+        sub.assert_bytes_eq(wing::href(u_p5_2), "http://[::1]/", "PORT-05: empty port on IPv6 ignored");
+
+        // PORT-06: Port out of range (> 65535) or double port rejected
+        let url_p6_high, err_p6_high = wing::parse_url("http://example.com:65536/");
+        sub.assert_false(url_p6_high.valid, "PORT-06: 65536 rejected");
+        sub.assert_true(err_p6_high == wing::UrlParseError.InvalidPort, "PORT-06: InvalidPort on 65536");
+
+        let url_p6_double, err_p6_double = wing::parse_url("http://127.0.0.1:11211:80/");
+        sub.assert_false(url_p6_double.valid, "PORT-06: double port rejected");
+        sub.assert_true(err_p6_double == wing::UrlParseError.InvalidPort, "PORT-06: InvalidPort on double port");
+
+        // PORT-07: Missing host in special scheme rejected
+        let url_p7_mh1, err_p7_mh1 = wing::parse_url("http://:80/path");
+        sub.assert_false(url_p7_mh1.valid, "PORT-07: empty host in http rejected");
+        sub.assert_true(err_p7_mh1 == wing::UrlParseError.MissingHost, "PORT-07: MissingHost on http://:80");
+
+        let url_p7_mh2, err_p7_mh2 = wing::parse_url("https:///path");
+        sub.assert_false(url_p7_mh2.valid, "PORT-07: empty host in https rejected");
+        sub.assert_true(err_p7_mh2 == wing::UrlParseError.MissingHost, "PORT-07: MissingHost on https:///path");
+    };
+
+    t.run("Category 5: Path Collapsing, Dot-Segments & Relative Resolution (PATH-01..07, REL-01..07)") { sub =>
+        // PATH-01: Trailing slash preserved after ..
+        let u_path01 = wing::new_url("https://example.com/a/b/..");
+        sub.assert_bytes_eq(wing::pathname(u_path01), "/a/", "PATH-01: trailing slash after ..");
+
+        // PATH-02: Trailing slash preserved after .
+        let u_path02 = wing::new_url("https://example.com/a/b/.");
+        sub.assert_bytes_eq(wing::pathname(u_path02), "/a/b/", "PATH-02: trailing slash after .");
+
+        // PATH-03: Percent-encoded dot segments recognized case-insensitively
+        let u_path03_1 = wing::new_url("https://example.com/a/b/%2e");
+        let u_path03_2 = wing::new_url("https://example.com/a/b/%2E%2e");
+        sub.assert_bytes_eq(wing::pathname(u_path03_1), "/a/b/", "PATH-03: %2e preserved as dot");
+        sub.assert_bytes_eq(wing::pathname(u_path03_2), "/a/", "PATH-03: %2E%2e popped like ..");
+
+        // PATH-04: Popping above root is absorbed
+        let u_path04 = wing::new_url("https://example.com/../../../a/b");
+        sub.assert_bytes_eq(wing::pathname(u_path04), "/a/b", "PATH-04: above root absorbed");
+
+        // PATH-05: Empty path segments (//) preserved
+        let u_path05 = wing::new_url("https://example.com/api//v1///users");
+        sub.assert_bytes_eq(wing::pathname(u_path05), "/api//v1///users", "PATH-05: // preserved");
+
+        // PATH-06: Long 120-byte segment preserved without truncation
+        var long_a: u8[..256] = [];
+        long_a.append("https://example.com/v1/");
+        for idx in 120 {
+            long_a.push('a');
+        }
+        long_a.append("/profile");
+        let url_p6 = wing::new_url(long_a[..]);
+        sub.assert_true(url_p6.valid, "PATH-06: 120B segment url valid");
+        sub.assert_bytes_eq(wing::pathname(url_p6), long_a[19..], "PATH-06: 120B segment not truncated");
+
+        // PATH-07: Deep path with 25 segments preserved
+        var deep_path: u8[..256] = [];
+        deep_path.append("https://example.com");
+        for seg_idx in 25 {
+            deep_path.append("/s");
+            format(deep_path, (seg_idx + 1) as i64);
+        }
+        let url_p7 = wing::new_url(deep_path[..]);
+        sub.assert_true(url_p7.valid, "PATH-07: 25 segments valid");
+        sub.assert_bytes_eq(wing::last_path_component(url_p7), "s25", "PATH-07: 25th segment preserved");
+
+        // REL-01: Empty relative URL strips fragment from base
+        let base_rel = wing::new_url("https://example.com/a/b?q=1#old");
+        let url_rel01 = wing::new_url("", base_rel);
+        sub.assert_bytes_eq(wing::href(url_rel01), "https://example.com/a/b?q=1", "REL-01: empty rel strips hash");
+
+        // REL-02: Hash-only relative replaces hash
+        let url_rel02 = wing::new_url("#new-frag", base_rel);
+        sub.assert_bytes_eq(wing::href(url_rel02), "https://example.com/a/b?q=1#new-frag", "REL-02: replaces hash");
+
+        // REL-03: Query and hash relative replaces search and hash
+        let base_rel_q = wing::new_url("https://example.com/a/b?old=1#old");
+        let url_rel03 = wing::new_url("?new-query#frag", base_rel_q);
+        sub.assert_bytes_eq(wing::href(url_rel03), "https://example.com/a/b?new-query#frag", "REL-03: replaces search and hash");
+
+        // REL-04: Relative without trailing slash drops last component of base
+        let base_no_slash = wing::new_url("https://example.com/a/b");
+        let url_rel04 = wing::new_url("c/d.html", base_no_slash);
+        sub.assert_bytes_eq(wing::href(url_rel04), "https://example.com/a/c/d.html", "REL-04: drops b and appends c/d.html");
+
+        // REL-05: Relative with trailing slash appends inside directory
+        let base_with_slash = wing::new_url("https://example.com/a/b/");
+        let url_rel05 = wing::new_url("c/d.html", base_with_slash);
+        sub.assert_bytes_eq(wing::href(url_rel05), "https://example.com/a/b/c/d.html", "REL-05: appends inside directory b/");
+
+        // REL-06: Network-path (//...) inherits scheme from base
+        let url_rel06 = wing::new_url("//cdn.example.org/app.js", base_no_slash);
+        sub.assert_bytes_eq(wing::href(url_rel06), "https://cdn.example.org/app.js", "REL-06: inherits https from base");
+
+        // REL-07: Empty query and hash boundary (?#)
+        let url_rel07 = wing::new_url("https://example.com?#");
+        sub.assert_bytes_eq(wing::href(url_rel07), "https://example.com/?#", "REL-07: href includes ?#");
+        sub.assert_bytes_eq(wing::search(url_rel07), "?", "REL-07: search is ?");
+        sub.assert_bytes_eq(wing::hash(url_rel07), "#", "REL-07: hash is #");
+    };
+
+    t.run("Category 6: Non-Special URLs & Opaque Paths (NSPEC-01..07)") { sub =>
+        // NSPEC-01: Non-special scheme with opaque path
+        let url_ns01 = wing::new_url("mailto:user@example.com?subject=Test#top");
+        sub.assert_true(url_ns01.has_opaque_path, "NSPEC-01: opaque path true");
+        sub.assert_bytes_eq(wing::pathname(url_ns01), "user@example.com", "NSPEC-01: pathname is user@example.com");
+        sub.assert_bytes_eq(wing::search(url_ns01), "?subject=Test", "NSPEC-01: search parsed");
+        sub.assert_bytes_eq(wing::hash(url_ns01), "#top", "NSPEC-01: hash parsed");
+
+        // NSPEC-02: Relative path cannot resolve against opaque base
+        let base_ns02 = wing::new_url("mailto:user@example.com");
+        let url_ns02, err_ns02 = wing::parse_url_with_base("subpage.html", base_ns02);
+        sub.assert_false(url_ns02.valid, "NSPEC-02: relative against opaque base rejected");
+        sub.assert_true(err_ns02 == wing::UrlParseError.OpaqueBaseCannotResolveRelative, "NSPEC-02: OpaqueBaseCannotResolveRelative");
+
+        // NSPEC-03: Fragment-only replacement allowed against opaque base
+        let base_ns03 = wing::new_url("data:text/html,<h1>Hi</h1>#section1");
+        let url_ns03 = wing::new_url("#section2", base_ns03);
+        sub.assert_true(url_ns03.valid, "NSPEC-03: fragment replacement on opaque base succeeded");
+        sub.assert_bytes_eq(wing::href(url_ns03), "data:text/html,<h1>Hi</h1>#section2", "NSPEC-03: hash replaced on opaque base");
+
+        // NSPEC-04: Non-special scheme does not convert backslash to slash
+        let url_ns04 = wing::new_url("git://github.com/a\\b/c");
+        sub.assert_bytes_eq(wing::href(url_ns04), "git://github.com/a\\b/c", "NSPEC-04: backslash preserved in non-special scheme");
+
+        // NSPEC-05: Non-special scheme allows empty host
+        let url_ns05 = wing::new_url("git:///repo/path");
+        sub.assert_true(url_ns05.valid, "NSPEC-05: valid non-special empty host");
+        sub.assert_bytes_eq(wing::hostname(url_ns05), "", "NSPEC-05: hostname is empty");
+        sub.assert_bytes_eq(wing::pathname(url_ns05), "/repo/path", "NSPEC-05: pathname is /repo/path");
+
+        // NSPEC-06: Non-special scheme with single slash has hierarchical path with dot collapsing
+        let url_ns06 = wing::new_url("custom:/a/b/../c");
+        sub.assert_true(url_ns06.valid, "NSPEC-06: valid hierarchical non-special");
+        sub.assert_false(url_ns06.has_opaque_path, "NSPEC-06: has_opaque_path is false");
+        sub.assert_bytes_eq(wing::href(url_ns06), "custom:/a/c", "NSPEC-06: collapsed path to custom:/a/c");
+
+        // NSPEC-07: Relative resolution against non-special base with slash
+        let base_ns07 = wing::new_url("git://host/");
+        let url_ns07 = wing::new_url("path", base_ns07);
+        sub.assert_bytes_eq(wing::href(url_ns07), "git://host/path", "NSPEC-07: resolved against non-special base");
+    };
+
+    t.run("Category 7: File URLs & Swift Path Manipulation (FILE-01..09)") { sub =>
+        // FILE-01: localhost host on file: URL is normalized to empty host
+        let url_f01 = wing::new_url("file://localhost/etc/hosts");
+        sub.assert_bytes_eq(wing::href(url_f01), "file:///etc/hosts", "FILE-01: localhost normalized to empty host");
+        sub.assert_bytes_eq(wing::hostname(url_f01), "", "FILE-01: hostname is empty");
+
+        // FILE-02: Windows drive letter normalization and encoding
+        let url_f02 = wing::new_file_url("C:\\Users\\Admin\\my doc#1.txt");
+        sub.assert_bytes_eq(wing::href(url_f02), "file:///C:/Users/Admin/my%20doc%231.txt", "FILE-02: normalized drive letter and encoded #");
+
+        // FILE-03: file_path conversion from file: URL to Windows path
+        let url_f03 = wing::new_url("file:///C:/Users/my%20doc.txt");
+        var win_path: u8[..256] = [];
+        let ok_f03 = wing::file_path(url_f03, win_path);
+        sub.assert_true(ok_f03, "FILE-03: file_path succeeded");
+        sub.assert_bytes_eq(win_path[..], "C:\\Users\\my doc.txt", "FILE-03: decoded Windows path");
+
+        // FILE-04: UNC network share round-trip
+        let url_f04 = wing::new_file_url("\\\\server\\share\\folder\\file.txt");
+        sub.assert_bytes_eq(wing::href(url_f04), "file://server/share/folder/file.txt", "FILE-04: UNC host in href");
+        var unc_path: u8[..256] = [];
+        let ok_f04 = wing::file_path(url_f04, unc_path);
+        sub.assert_true(ok_f04, "FILE-04: file_path succeeded for UNC");
+        sub.assert_bytes_eq(unc_path[..], "\\\\server\\share\\folder\\file.txt", "FILE-04: UNC path preserved");
+
+        // FILE-05: Windows drive root cannot be popped by ..
+        let url_f05 = wing::new_url("file:///C:/Users/../..");
+        sub.assert_bytes_eq(wing::href(url_f05), "file:///C:/", "FILE-05: popping above drive root stays at file:///C:/");
+
+        // FILE-06: deleting_path_extension on directory with trailing slash
+        let url_f06_base = wing::new_url("file:///a/b/archive.tar/");
+        let url_f06 = wing::deleting_path_extension(url_f06_base);
+        sub.assert_bytes_eq(wing::pathname(url_f06), "/a/b/archive/", "FILE-06: trailing slash preserved after extension deletion");
+
+        // FILE-07: appending_path_extension before trailing slash
+        let url_f07_base = wing::new_url("file:///a/b/dir/");
+        let url_f07 = wing::appending_path_extension(url_f07_base, "Bak");
+        sub.assert_bytes_eq(wing::pathname(url_f07), "/a/b/dir.Bak/", "FILE-07: extension appended before trailing slash");
+
+        // FILE-08: Leading and trailing dots are not considered extensions
+        let url_f08_git = wing::new_url("file:///a/.gitignore");
+        let url_f08_dot = wing::new_url("file:///a/file.");
+        sub.assert_bytes_eq(wing::path_extension(url_f08_git), "", "FILE-08: .gitignore has empty extension");
+        sub.assert_bytes_eq(wing::path_extension(url_f08_dot), "", "FILE-08: trailing dot has empty extension");
+
+        // FILE-09: deleting_last_path_component on drive root stays at drive root
+        let url_f09_root = wing::new_url("file:///C:/");
+        let url_f09 = wing::deleting_last_path_component(url_f09_root);
+        sub.assert_bytes_eq(wing::pathname(url_f09), "/C:/", "FILE-09: deletingLastPathComponent on C:/ stays at /C:/");
+    };
+
+    t.run("Category 8: Origin, PSL & Schemeful Same-Site RFC 6265bis (SEC-01..10)") { sub =>
+        // SEC-01: Tuple origin omits default port 443
+        let url_sec01 = wing::new_url("https://Example.COM:443/a");
+        var orig_str01: u8[..64] = [];
+        wing::serialize_origin(wing::origin_from_url(url_sec01), orig_str01);
+        sub.assert_bytes_eq(orig_str01[..], "https://example.com", "SEC-01: default port omitted");
+
+        // SEC-02: Non-default port serialized in origin
+        let url_sec02 = wing::new_url("https://example.com:8443/a");
+        var orig_str02: u8[..64] = [];
+        wing::serialize_origin(wing::origin_from_url(url_sec02), orig_str02);
+        sub.assert_bytes_eq(orig_str02[..], "https://example.com:8443", "SEC-02: non-default port serialized");
+
+        // SEC-03: blob: inherits nested origin tuple
+        let url_sec03 = wing::new_url("blob:https://example.com:8443/550e8400-e29b");
+        let orig_blob = wing::origin_from_url(url_sec03);
+        sub.assert_true(orig_blob.kind == wing::OriginKind.Tuple, "SEC-03: blob origin is Tuple");
+        sub.assert_bytes_eq(orig_blob.scheme[..], "https", "SEC-03: blob inherited scheme");
+        sub.assert_bytes_eq(orig_blob.host[..], "example.com", "SEC-03: blob inherited host");
+        sub.assert_eq(orig_blob.port, 8443, "SEC-03: blob inherited port 8443");
+
+        // SEC-04: file: and data: origins are opaque with distinct nonces
+        let url_sec04_file = wing::new_url("file:///path");
+        let url_sec04_data = wing::new_url("data:text/plain,hi");
+        let orig_file = wing::origin_from_url(url_sec04_file);
+        let orig_data = wing::origin_from_url(url_sec04_data);
+        var ser_file: u8[..64] = [];
+        var ser_data: u8[..64] = [];
+        wing::serialize_origin(orig_file, ser_file);
+        wing::serialize_origin(orig_data, ser_data);
+        sub.assert_bytes_eq(ser_file[..], "null", "SEC-04: file origin serialized to null");
+        sub.assert_bytes_eq(ser_data[..], "null", "SEC-04: data origin serialized to null");
+        sub.assert_false(wing::is_same_origin(orig_file, orig_data), "SEC-04: distinct opaque origins are not same-origin");
+
+        // SEC-05: ICANN multi-part suffix (co.uk) eTLD+1 extraction
+        let url_sec05 = wing::new_url("https://sub.books.amazon.co.uk/p");
+        let site_uk = wing::registrable_site_from_url(url_sec05);
+        sub.assert_bytes_eq(site_uk.scheme[..], "https", "SEC-05: scheme is https");
+        sub.assert_bytes_eq(site_uk.registrable_domain[..], "amazon.co.uk", "SEC-05: eTLD+1 is amazon.co.uk");
+
+        // SEC-06: PSL private section tenant isolation (github.io)
+        let url_sec06_a = wing::new_url("https://tenantA.github.io");
+        let url_sec06_b = wing::new_url("https://tenantB.github.io");
+        let same_site_tenants = wing::is_schemeful_same_site_urls(url_sec06_a, url_sec06_b);
+        sub.assert_false(same_site_tenants, "SEC-06: different tenants on private suffix are cross-site");
+
+        // SEC-07: Subdomains and ports on same eTLD+1 with same scheme are schemeful same-site
+        let url_sec07_a = wing::new_url("https://a.example.com:8000");
+        let url_sec07_b = wing::new_url("https://b.example.com:9000");
+        let same_site_sub = wing::is_schemeful_same_site_urls(url_sec07_a, url_sec07_b);
+        sub.assert_true(same_site_sub, "SEC-07: subdomains and different ports are same-site");
+
+        // SEC-08: Scheme difference (https vs http) is cross-site
+        let url_sec08_a = wing::new_url("https://example.com");
+        let url_sec08_b = wing::new_url("http://example.com");
+        let same_site_diff_scheme = wing::is_schemeful_same_site_urls(url_sec08_a, url_sec08_b);
+        sub.assert_false(same_site_diff_scheme, "SEC-08: scheme mismatch is cross-site");
+
+        // SEC-09: Empty registrable domain (data:, about:) is never same-site
+        let url_sec09_a = wing::new_url("data:text/html,1");
+        let url_sec09_b = wing::new_url("data:text/html,2");
+        let same_site_data = wing::is_schemeful_same_site_urls(url_sec09_a, url_sec09_b);
+        sub.assert_false(same_site_data, "SEC-09: data: URLs are never same-site");
+
+        // SEC-10: IP literals compare entire host and scheme
+        let url_sec10_a1 = wing::new_url("http://127.0.0.1:8080/");
+        let url_sec10_a2 = wing::new_url("http://127.0.0.1:9090/");
+        let ip_same = wing::is_schemeful_same_site_urls(url_sec10_a1, url_sec10_a2);
+        sub.assert_true(ip_same, "SEC-10: same IPv4 with different ports is same-site");
+
+        let url_sec10_b1 = wing::new_url("http://127.0.0.1/");
+        let url_sec10_b2 = wing::new_url("http://127.0.0.2/");
+        let ip_diff = wing::is_schemeful_same_site_urls(url_sec10_b1, url_sec10_b2);
+        sub.assert_false(ip_diff, "SEC-10: different IPv4 addresses are cross-site");
+    };
+
+    t.run("Exhaustive Non-Happy Path Matrix: Errors, Bounds & Injection Rejection") { sub =>
+        // 1. RelativeWithoutBase error when no base is provided
+        let u_nobase_1, err_nobase_1 = wing::parse_url("../path");
+        sub.assert_false(u_nobase_1.valid, "NEG: ../path rejected without base");
+        sub.assert_true(err_nobase_1 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on ../path");
+
+        let u_nobase_2, err_nobase_2 = wing::parse_url("/absolute/path");
+        sub.assert_false(u_nobase_2.valid, "NEG: /path rejected without base");
+        sub.assert_true(err_nobase_2 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on /path");
+
+        let u_nobase_3, err_nobase_3 = wing::parse_url("?search");
+        sub.assert_false(u_nobase_3.valid, "NEG: ?search rejected without base");
+        sub.assert_true(err_nobase_3 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on ?search");
+
+        let u_nobase_4, err_nobase_4 = wing::parse_url("#fragment");
+        sub.assert_false(u_nobase_4.valid, "NEG: #frag rejected without base");
+        sub.assert_true(err_nobase_4 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on #frag");
+
+        let u_nobase_5, err_nobase_5 = wing::parse_url("rel/leaf");
+        sub.assert_false(u_nobase_5.valid, "NEG: rel/leaf rejected without base");
+        sub.assert_true(err_nobase_5 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on rel/leaf");
+
+        // 2. Strict IPv6 syntax rejections
+        let u_ipv6_too_many, err_ipv6_tm = wing::parse_url("http://[1:2:3:4:5:6:7:8:9]/");
+        sub.assert_false(u_ipv6_too_many.valid, "NEG: 9-piece IPv6 rejected");
+        sub.assert_true(err_ipv6_tm == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 9 pieces");
+
+        let u_ipv6_too_few, err_ipv6_tf = wing::parse_url("http://[1:2:3]/");
+        sub.assert_false(u_ipv6_too_few.valid, "NEG: 3-piece IPv6 without :: rejected");
+        sub.assert_true(err_ipv6_tf == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 3 pieces");
+
+        let u_ipv6_triple, err_ipv6_triple = wing::parse_url("http://[fe80:::1]/");
+        sub.assert_false(u_ipv6_triple.valid, "NEG: triple colon IPv6 rejected");
+        sub.assert_true(err_ipv6_triple == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on :::");
+
+        let u_ipv6_nonhex, err_ipv6_nonhex = wing::parse_url("http://[zz::1]/");
+        sub.assert_false(u_ipv6_nonhex.valid, "NEG: non-hex IPv6 rejected");
+        sub.assert_true(err_ipv6_nonhex == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on zz");
+
+        let u_ipv6_v4_high, err_ipv6_v4_high = wing::parse_url("http://[::192.168.1.300]/");
+        sub.assert_false(u_ipv6_v4_high.valid, "NEG: IPv4 mapped octet > 255 rejected");
+        sub.assert_true(err_ipv6_v4_high == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on octet 300");
+
+        let u_ipv6_v4_short, err_ipv6_v4_short = wing::parse_url("http://[::192.168.1]/");
+        sub.assert_false(u_ipv6_v4_short.valid, "NEG: IPv4 mapped incomplete octets rejected");
+        sub.assert_true(err_ipv6_v4_short == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 3 octets");
+
+        let u_ipv6_v4_long, err_ipv6_v4_long = wing::parse_url("http://[::192.168.1.1.1]/");
+        sub.assert_false(u_ipv6_v4_long.valid, "NEG: IPv4 mapped 5 octets rejected");
+        sub.assert_true(err_ipv6_v4_long == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 5 octets");
+
+        // 3. Port parsing rejections
+        let u_port_huge, err_port_huge = wing::parse_url("http://example.com:999999/");
+        sub.assert_false(u_port_huge.valid, "NEG: port 999999 rejected");
+        sub.assert_true(err_port_huge == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on 999999");
+
+        let u_port_alpha, err_port_alpha = wing::parse_url("http://example.com:abc/");
+        sub.assert_false(u_port_alpha.valid, "NEG: port abc rejected");
+        sub.assert_true(err_port_alpha == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on abc");
+
+        let u_port_neg, err_port_neg = wing::parse_url("http://example.com:-1/");
+        sub.assert_false(u_port_neg.valid, "NEG: port -1 rejected");
+        sub.assert_true(err_port_neg == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on -1");
+
+        let u_port_space, err_port_space = wing::parse_url("http://example.com: 80/");
+        sub.assert_false(u_port_space.valid, "NEG: space in port rejected");
+        sub.assert_true(err_port_space == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on space in port");
+
+        // 4. Host forbidden character rejections
+        let u_host_space, err_host_space = wing::parse_url("http://exam ple.com/");
+        sub.assert_false(u_host_space.valid, "NEG: space in host rejected");
+        sub.assert_true(err_host_space == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on space");
+
+        let u_host_lt, err_host_lt = wing::parse_url("http://exam<ple.com/");
+        sub.assert_false(u_host_lt.valid, "NEG: < in host rejected");
+        sub.assert_true(err_host_lt == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on <");
+
+        let u_host_gt, err_host_gt = wing::parse_url("http://exam>ple.com/");
+        sub.assert_false(u_host_gt.valid, "NEG: > in host rejected");
+        sub.assert_true(err_host_gt == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on >");
+
+        let u_host_pipe, err_host_pipe = wing::parse_url("http://exam|ple.com/");
+        sub.assert_false(u_host_pipe.valid, "NEG: | in host rejected");
+        sub.assert_true(err_host_pipe == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on |");
+
+        // 5. Invalid scheme initial character rejections
+        let u_scheme_excl, err_scheme_excl = wing::parse_url("!https://example.com/");
+        sub.assert_false(u_scheme_excl.valid, "NEG: !scheme rejected");
+        sub.assert_true(err_scheme_excl == wing::UrlParseError.InvalidScheme, "NEG: InvalidScheme on !");
+
+        let u_scheme_dash, err_scheme_dash = wing::parse_url("-http://example.com/");
+        sub.assert_false(u_scheme_dash.valid, "NEG: -scheme rejected");
+        sub.assert_true(err_scheme_dash == wing::UrlParseError.InvalidScheme, "NEG: InvalidScheme on -");
+
+        let u_scheme_plus, err_scheme_plus = wing::parse_url("+ftp://example.com/");
+        sub.assert_false(u_scheme_plus.valid, "NEG: +scheme rejected");
+        sub.assert_true(err_scheme_plus == wing::UrlParseError.InvalidScheme, "NEG: InvalidScheme on +");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -424,6 +977,7 @@ fn main() {
     wing::run_case(runner, "1. WHATWG URL Parser, IPv6 RFC 5952 Compression & Origin", test_url_parser_and_origin);
     wing::run_case(runner, "2. File URL & Path Manipulation", test_swift_style_file_and_path_api);
     wing::run_case(runner, "3. WHATWG URL Standard & Security Audit Verification", test_whatwg_audit_fixes);
+    wing::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
 
     let ok = wing::finish(runner);
     assert(ok);
