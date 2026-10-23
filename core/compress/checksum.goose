@@ -294,17 +294,8 @@ fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
 
     // Process 8 bytes per iteration (Slicing-by-8)
     while offset + 8 <= buf.len {
-        let b0 = buf[offset] as u32;
-        let b1 = buf[offset + 1] as u32;
-        let b2 = buf[offset + 2] as u32;
-        let b3 = buf[offset + 3] as u32;
-        let w1 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-
-        let b4 = buf[offset + 4] as u32;
-        let b5 = buf[offset + 5] as u32;
-        let b6 = buf[offset + 6] as u32;
-        let b7 = buf[offset + 7] as u32;
-        let w2 = b4 | (b5 << 8) | (b6 << 16) | (b7 << 24);
+        let w1 = read_le_u32(buf, offset);
+        let w2 = read_le_u32(buf, offset + 4);
 
         c ^= w1;
 
@@ -325,7 +316,7 @@ fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
 
     // Process trailing bytes (0..7)
     while offset < buf.len {
-        let idx = ((c ^ buf[offset]) & 0xFF) as i64;
+        let idx = ((c ^ buf[offset]) & 0xFF) as u8;
         c = CRC32_TABLE_0[idx] ^ (c >> 8);
         offset++;
     }
@@ -355,22 +346,23 @@ fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
 
         // Unroll 16 bytes per iteration
         while offset + 16 <= end_idx {
-            s1 += buf[offset]; s2 += s1;
-            s1 += buf[offset + 1]; s2 += s1;
-            s1 += buf[offset + 2]; s2 += s1;
-            s1 += buf[offset + 3]; s2 += s1;
-            s1 += buf[offset + 4]; s2 += s1;
-            s1 += buf[offset + 5]; s2 += s1;
-            s1 += buf[offset + 6]; s2 += s1;
-            s1 += buf[offset + 7]; s2 += s1;
-            s1 += buf[offset + 8]; s2 += s1;
-            s1 += buf[offset + 9]; s2 += s1;
-            s1 += buf[offset + 10]; s2 += s1;
-            s1 += buf[offset + 11]; s2 += s1;
-            s1 += buf[offset + 12]; s2 += s1;
-            s1 += buf[offset + 13]; s2 += s1;
-            s1 += buf[offset + 14]; s2 += s1;
-            s1 += buf[offset + 15]; s2 += s1;
+            let s = buf[offset .. offset + 16];
+            s1 += s[0]; s2 += s1;
+            s1 += s[1]; s2 += s1;
+            s1 += s[2]; s2 += s1;
+            s1 += s[3]; s2 += s1;
+            s1 += s[4]; s2 += s1;
+            s1 += s[5]; s2 += s1;
+            s1 += s[6]; s2 += s1;
+            s1 += s[7]; s2 += s1;
+            s1 += s[8]; s2 += s1;
+            s1 += s[9]; s2 += s1;
+            s1 += s[10]; s2 += s1;
+            s1 += s[11]; s2 += s1;
+            s1 += s[12]; s2 += s1;
+            s1 += s[13]; s2 += s1;
+            s1 += s[14]; s2 += s1;
+            s1 += s[15]; s2 += s1;
             offset += 16;
         }
 
@@ -400,33 +392,33 @@ const XXH64_PRIME3: u64 = 0x165667B19E3779F9;
 const XXH64_PRIME4: u64 = 0x85EBCA77C2B2AE63;
 const XXH64_PRIME5: u64 = 0x27D4EB2F165667C5;
 
-fn xxh64_rotl(x: u64, r: u64) -> u64 {
+inline fn xxh64_rotl(x: u64, r: u64) -> u64 {
     return rotl64(x, r as u32);
 }
 
-fn xxh64_read_le64(buf: const u8[:], offset: i64) -> u64 {
+inline fn xxh64_read_le64(buf: const u8[:], offset: i64) -> u64 {
     return read_le_u64(buf, offset);
 }
 
-fn xxh64_read_le32(buf: const u8[:], offset: i64) -> u32 {
+inline fn xxh64_read_le32(buf: const u8[:], offset: i64) -> u32 {
     return read_le_u32(buf, offset);
 }
 
-fn xxh64_round(acc: u64, input: u64) -> u64 {
+inline fn xxh64_round(acc: u64, input: u64) -> u64 {
     var a = acc + input * XXH64_PRIME2;
     a = xxh64_rotl(a, 31);
     a = a * XXH64_PRIME1;
     return a;
 }
 
-fn xxh64_merge_round(acc: u64, val: u64) -> u64 {
+inline fn xxh64_merge_round(acc: u64, val: u64) -> u64 {
     let v = xxh64_round(0, val);
     var a = acc ^ v;
     a = a * XXH64_PRIME1 + XXH64_PRIME4;
     return a;
 }
 
-fn xxh64_avalanche(hash: u64) -> u64 {
+inline fn xxh64_avalanche(hash: u64) -> u64 {
     var h = hash ^ (hash >> 33);
     h = h * XXH64_PRIME2;
     h = h ^ (h >> 29);
@@ -447,12 +439,13 @@ fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
         var v3 = seed;
         var v4 = seed - XXH64_PRIME1;
 
-        let limit = len - 31;
-        while offset < limit {
-            v1 = xxh64_round(v1, xxh64_read_le64(buf, offset)); offset += 8;
-            v2 = xxh64_round(v2, xxh64_read_le64(buf, offset)); offset += 8;
-            v3 = xxh64_round(v3, xxh64_read_le64(buf, offset)); offset += 8;
-            v4 = xxh64_round(v4, xxh64_read_le64(buf, offset)); offset += 8;
+        while offset + 32 <= buf.len {
+            let s = buf[offset .. offset + 32];
+            v1 = xxh64_round(v1, xxh64_read_le64(s, 0));
+            v2 = xxh64_round(v2, xxh64_read_le64(s, 8));
+            v3 = xxh64_round(v3, xxh64_read_le64(s, 16));
+            v4 = xxh64_round(v4, xxh64_read_le64(s, 24));
+            offset += 32;
         }
 
         h64 = xxh64_rotl(v1, 1) + xxh64_rotl(v2, 7) + xxh64_rotl(v3, 12) + xxh64_rotl(v4, 18);
@@ -466,20 +459,20 @@ fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
 
     h64 += len as u64;
 
-    while offset + 8 <= len {
+    while offset + 8 <= buf.len {
         let k1 = xxh64_round(0, xxh64_read_le64(buf, offset));
         offset += 8;
         h64 = h64 ^ k1;
         h64 = xxh64_rotl(h64, 27) * XXH64_PRIME1 + XXH64_PRIME4;
     }
 
-    if offset + 4 <= len {
+    if offset + 4 <= buf.len {
         h64 = h64 ^ (xxh64_read_le32(buf, offset) * XXH64_PRIME1);
         offset += 4;
         h64 = xxh64_rotl(h64, 23) * XXH64_PRIME2 + XXH64_PRIME3;
     }
 
-    while offset < len {
+    while offset < buf.len {
         h64 = h64 ^ (buf[offset] * XXH64_PRIME5);
         offset += 1;
         h64 = xxh64_rotl(h64, 11) * XXH64_PRIME1;

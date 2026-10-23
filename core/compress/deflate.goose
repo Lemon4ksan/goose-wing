@@ -38,25 +38,29 @@ const CODE_LENGTH_ORDER: i32[19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
 ];
 
-const LENS_BASE: i32[29] = [
+const LENS_BASE: i32[32] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
-    35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258
+    35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
+    0, 0, 0
 ];
 
-const LENS_EXTRA: i32[29] = [
+const LENS_EXTRA: i32[32] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
-    3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
+    3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+    0, 0, 0
 ];
 
-const DISTS_BASE: i32[30] = [
+const DISTS_BASE: i32[32] = [
     1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
     257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
-    8193, 12289, 16385, 24577
+    8193, 12289, 16385, 24577,
+    0, 0
 ];
 
-const DISTS_EXTRA: i32[30] = [
+const DISTS_EXTRA: i32[32] = [
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
-    7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+    7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0
 ];
 
 // Precomputed fixed literal/length Huffman code tables (bit-reversed for LSB-first emission)
@@ -278,16 +282,8 @@ fn decode_huffman_symbol(r: BitReader&, table: const HuffmanTable&) -> i32, bool
     // Refill bit buffer up to 56 bits for single-cycle lookup
     if r.bit_count < 15 {
         if r.pos + 8 <= r.src.len {
-            let b0 = r.src[r.pos] as u64;
-            let b1 = r.src[r.pos + 1] as u64;
-            let b2 = r.src[r.pos + 2] as u64;
-            let b3 = r.src[r.pos + 3] as u64;
-            let b4 = r.src[r.pos + 4] as u64;
-            let b5 = r.src[r.pos + 5] as u64;
-            let b6 = r.src[r.pos + 6] as u64;
-            let b7 = r.src[r.pos + 7] as u64;
-            let chunk = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
-            r.bit_buf |= chunk << (r.bit_count as u64);
+            let chunk = read_le_u64(r.src, r.pos);
+            r.bit_buf |= chunk << ((r.bit_count & 63) as u64);
             let bytes_added = (63 - r.bit_count) >> 3;
             r.pos += bytes_added;
             r.bit_count += bytes_added * 8;
@@ -295,7 +291,7 @@ fn decode_huffman_symbol(r: BitReader&, table: const HuffmanTable&) -> i32, bool
             while r.bit_count <= 56 && r.pos < r.src.len {
                 let b = r.src[r.pos] as u64;
                 r.pos++;
-                r.bit_buf |= b << (r.bit_count as u64);
+                r.bit_buf |= b << ((r.bit_count & 63) as u64);
                 r.bit_count += 8;
             }
         }
@@ -377,8 +373,8 @@ fn decode_block_codes<B>(
             let len_idx = sym - 257;
             guard len_idx < 29 else { return CompressError.CorruptedBitstream; }
 
-            let extra_bits = LENS_EXTRA[len_idx];
-            var match_len = LENS_BASE[len_idx];
+            let extra_bits = LENS_EXTRA[len_idx & 31];
+            var match_len = LENS_BASE[len_idx & 31];
             if extra_bits > 0 {
                 let xval, ok_x = read_bits(r, extra_bits);
                 guard ok_x else { return CompressError.InputBufferTruncated; }
@@ -389,8 +385,8 @@ fn decode_block_codes<B>(
             guard ok_dist else { return CompressError.InputBufferTruncated; }
             guard dist_sym >= 0 && dist_sym < 30 else { return CompressError.InvalidDistanceCode; }
 
-            let dist_extra = DISTS_EXTRA[dist_sym];
-            var match_dist = DISTS_BASE[dist_sym];
+            let dist_extra = DISTS_EXTRA[dist_sym & 31];
+            var match_dist = DISTS_BASE[dist_sym & 31];
             if dist_extra > 0 {
                 let dxval, ok_dx = read_bits(r, dist_extra);
                 guard ok_dx else { return CompressError.InputBufferTruncated; }

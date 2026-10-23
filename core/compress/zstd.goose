@@ -20,30 +20,36 @@ const ZSTD_BLOCK_TYPE_RESERVED: u32 = 3;
 
 // ---- sequence codes lookup tables (rfc 8878 tables 16 & 17) ---------------
 
-const LL_BASE: u32[36] = [
+const LL_BASE: u32[64] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024,
-    2048, 4096, 8192, 16384, 32768, 65536
+    2048, 4096, 8192, 16384, 32768, 65536,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 ];
 
-const LL_EXTRA_BITS: u8[36] = [
+const LL_EXTRA_BITS: u8[64] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10,
-    11, 12, 13, 14, 15, 16
+    11, 12, 13, 14, 15, 16,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 ];
 
-const ML_BASE: u32[53] = [
+const ML_BASE: u32[64] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
     35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515,
-    1027, 2051, 4099, 8195, 16387, 32771, 65539
+    1027, 2051, 4099, 8195, 16387, 32771, 65539,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 ];
 
-const ML_EXTRA_BITS: u8[53] = [
+const ML_EXTRA_BITS: u8[64] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9,
-    10, 11, 12, 13, 14, 15, 16
+    10, 11, 12, 13, 14, 15, 16,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 ];
 
 // Predefined FSE normalized distributions (RFC 8878 section 3.1.1.3.2.2)
@@ -67,19 +73,17 @@ const OF_DEFAULT_DIST: i16[29] = [
 
 // ---- helper bit functions --------------------------------------------------
 
-fn zstd_high_bit(v: u32) -> i32 {
+inline fn zstd_high_bit(v: u32) -> i32 {
     if v == 0 { return -1; }
-    var bit: i32 = 31;
-    while bit >= 0 {
-        if ((v >> (bit as u8)) & 1) != 0 {
-            return bit;
-        }
-        bit--;
-    }
-    return -1;
+    return (63 - clz(v)) as i32;
 }
 
-// ---- reverse bit reader (rfc 8878 section 4.2.2 / 3.1.1.3.2.1.2) -----------
+// Branchless extraction of nb bits (0 <= nb <= 32) from bit_container at bits_consumed.
+inline fn zstd_extract_bits(bit_container: u64, bits_consumed: u32, nb: u32) -> u32 {
+    return ((bit_container << (bits_consumed & 63)) >> ((64 - nb) & 63)) as u32;
+}
+
+// ---- reverse bit reader (rfc 8878 section 4.2.2) -----------
 
 struct ZstdBitReader {
     src: const u8[:] = "",
@@ -262,6 +266,199 @@ struct FseTable {
     entries: FseEntry[512] = [FseEntry {}; 512],
     table_log: i32 = 0,
     is_defined: bool = false,
+}
+
+const LL_DEFAULT_ENTRIES: FseEntry[64] = [
+    FseEntry { symbol: 0, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 0, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 1, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 3, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 4, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 6, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 7, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 9, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 10, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 12, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 14, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 16, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 18, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 19, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 21, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 22, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 24, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 25, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 26, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 27, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 29, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 31, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 0, nb_bits: 4, new_state: 32 },
+    FseEntry { symbol: 1, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 2, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 4, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 5, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 7, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 8, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 10, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 11, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 13, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 16, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 17, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 19, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 20, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 22, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 23, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 25, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 25, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 26, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 28, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 30, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 0, nb_bits: 4, new_state: 48 },
+    FseEntry { symbol: 1, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 2, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 3, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 5, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 6, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 8, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 9, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 11, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 12, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 15, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 17, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 18, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 20, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 21, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 23, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 24, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 35, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 34, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 33, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 32, nb_bits: 6, new_state: 0 },
+];
+
+const OF_DEFAULT_ENTRIES: FseEntry[32] = [
+    FseEntry { symbol: 0, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 6, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 9, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 15, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 21, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 3, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 7, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 12, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 18, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 23, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 5, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 8, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 14, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 20, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 2, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 7, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 11, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 17, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 22, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 4, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 8, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 13, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 19, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 1, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 6, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 10, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 16, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 28, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 27, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 26, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 25, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 24, nb_bits: 5, new_state: 0 },
+];
+
+const ML_DEFAULT_ENTRIES: FseEntry[64] = [
+    FseEntry { symbol: 0, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 1, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 2, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 3, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 5, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 6, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 8, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 10, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 13, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 16, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 19, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 22, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 25, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 28, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 31, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 33, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 35, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 37, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 39, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 41, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 43, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 45, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 1, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 2, nb_bits: 4, new_state: 0 },
+    FseEntry { symbol: 3, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 4, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 6, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 7, nb_bits: 5, new_state: 0 },
+    FseEntry { symbol: 9, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 12, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 15, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 18, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 21, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 24, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 27, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 30, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 32, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 34, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 36, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 38, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 40, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 42, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 44, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 1, nb_bits: 4, new_state: 32 },
+    FseEntry { symbol: 1, nb_bits: 4, new_state: 48 },
+    FseEntry { symbol: 2, nb_bits: 4, new_state: 16 },
+    FseEntry { symbol: 4, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 5, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 7, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 8, nb_bits: 5, new_state: 32 },
+    FseEntry { symbol: 11, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 14, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 17, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 20, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 23, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 26, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 29, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 52, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 51, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 50, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 49, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 48, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 47, nb_bits: 6, new_state: 0 },
+    FseEntry { symbol: 46, nb_bits: 6, new_state: 0 },
+];
+
+inline fn fse_init_default_ll(out_table: FseTable&) {
+    out_table.table_log = 6;
+    out_table.is_defined = true;
+    for i in 64 {
+        out_table.entries[i] = LL_DEFAULT_ENTRIES[i];
+    }
+}
+
+inline fn fse_init_default_of(out_table: FseTable&) {
+    out_table.table_log = 5;
+    out_table.is_defined = true;
+    for i in 32 {
+        out_table.entries[i] = OF_DEFAULT_ENTRIES[i];
+    }
+}
+
+inline fn fse_init_default_ml(out_table: FseTable&) {
+    out_table.table_log = 6;
+    out_table.is_defined = true;
+    for i in 64 {
+        out_table.entries[i] = ML_DEFAULT_ENTRIES[i];
+    }
 }
 
 fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: FseTable&) -> bool {
@@ -594,10 +791,12 @@ fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]
     var decoded: i64 = 0;
     let mask = (1 << table.table_log) - 1;
     let t_log = table.table_log;
+    let t_log_u32 = t_log as u32;
+    let rshift = (64 - t_log_u32) as u64;
 
-    if r.src.len >= 8 && !r.underflow {
+    if r.src.len >= 8 && !r.underflow && t_log > 0 {
         let last_byte = r.src[r.src.len - 1];
-        var stop_bit: i32 = 0;
+        var stop_bit: u32 = 0;
         var tmp = last_byte;
         while (tmp & 0x80) == 0 {
             stop_bit++;
@@ -606,22 +805,60 @@ fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]
         stop_bit++; // skip the 1 bit itself
 
         var ptr: i64 = r.src.len - 8;
+        if stop_bit == 8 && ptr > 0 {
+            ptr--;
+            stop_bit = 0;
+        }
         var bit_container = xxh64_read_le64(r.src, ptr);
-        var bits_consumed = stop_bit;
+        var bits_consumed: u32 = stop_bit;
+
+        // Fast 4x unrolled loop: 4 symbols * 11 max bits = 44 bits <= 57 available bits
+        while decoded + 4 <= count && ptr >= 8 {
+            let b0 = (((bit_container << bits_consumed) >> rshift) as! i64) & 2047;
+            let e0 = table.entries[b0];
+            bits_consumed += e0.nb_bits;
+
+            let b1 = (((bit_container << bits_consumed) >> rshift) as! i64) & 2047;
+            let e1 = table.entries[b1];
+            bits_consumed += e1.nb_bits;
+
+            let b2 = (((bit_container << bits_consumed) >> rshift) as! i64) & 2047;
+            let e2 = table.entries[b2];
+            bits_consumed += e2.nb_bits;
+
+            let b3 = (((bit_container << bits_consumed) >> rshift) as! i64) & 2047;
+            let e3 = table.entries[b3];
+            bits_consumed += e3.nb_bits;
+
+            lit_buf.push(e0.symbol);
+            lit_buf.push(e1.symbol);
+            lit_buf.push(e2.symbol);
+            lit_buf.push(e3.symbol);
+            decoded += 4;
+
+            ptr -= bits_consumed >> 3;
+            bits_consumed &= 7;
+            if ptr >= 0 && ptr + 8 <= r.src.len {
+                bit_container = xxh64_read_le64(r.src, ptr);
+            }
+        }
 
         while decoded < count {
             if bits_consumed > 32 && ptr > 0 {
-                let shift_bytes = if ptr < (bits_consumed >> 3) { ptr } else { bits_consumed >> 3 };
+                let avail = (bits_consumed >> 3) as i64;
+                let shift_bytes = if ptr < avail { ptr } else { avail };
                 ptr -= shift_bytes;
-                bits_consumed -= (shift_bytes * 8) as i32;
-                bit_container = xxh64_read_le64(r.src, ptr);
+                bits_consumed -= (shift_bytes * 8) as u32;
+                if ptr >= 0 && ptr + 8 <= r.src.len {
+                    bit_container = xxh64_read_le64(r.src, ptr);
+                }
             }
 
-            if bits_consumed + t_log > 64 {
+            if bits_consumed + t_log_u32 > 64 {
                 break;
             }
 
-            let bits = ((bit_container << (bits_consumed as u64)) >> ((64 - t_log) as u64)) as i32;
+            let bits = (((bit_container << bits_consumed) >> rshift) as! i64) & 2047;
             let entry = table.entries[bits];
             lit_buf.push(entry.symbol);
             bits_consumed += entry.nb_bits;
@@ -643,7 +880,7 @@ fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]
     }
 
     while decoded < count && !r.underflow {
-        let bits = (zstd_peek_bits(r, t_log) as i32) & mask;
+        let bits = (zstd_peek_bits(r, t_log) & mask) & 2047;
         let entry = table.entries[bits];
         lit_buf.push(entry.symbol);
         zstd_consume_bits(r, entry.nb_bits);
@@ -655,8 +892,13 @@ fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]
 
 // ---- literals section decoder (rfc 8878 section 3.1.1.3.1) ----------------
 
-fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>..]&, huf_table: HufTable&) -> bool {
-    if offset >= block_end { return false; }
+struct DecodedLiterals {
+    ok: bool = false,
+    slice: const u8[:] = "",
+}
+
+fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>..]&, huf_table: HufTable&) -> DecodedLiterals {
+    if offset >= block_end { return DecodedLiterals { ok: false }; }
     let header_byte = src[offset];
     let lit_type = header_byte & 3;
     let size_format = (header_byte >> 2) & 3;
@@ -671,13 +913,13 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             regenerated_size = header_byte >> 3;
         } else if size_format == 1 {
             lh_size = 2;
-            if offset + 2 > block_end { return false; }
+            if offset + 2 > block_end { return DecodedLiterals { ok: false }; }
             let b0 = src[offset] as i64;
             let b1 = src[offset + 1] as i64;
             regenerated_size = (b0 >> 4) | (b1 << 4);
         } else {
             lh_size = 3;
-            if offset + 3 > block_end { return false; }
+            if offset + 3 > block_end { return DecodedLiterals { ok: false }; }
             let b0 = src[offset] as i64;
             let b1 = src[offset + 1] as i64;
             let b2 = src[offset + 2] as i64;
@@ -686,28 +928,27 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         offset += lh_size;
 
         if lit_type == 0 {
-            // Raw Literals
-            if offset + regenerated_size > block_end { return false; }
-            lit_buf.append(src[offset .. offset + regenerated_size]);
+            // Raw Literals: Zero copy directly from src!
+            if offset + regenerated_size > block_end { return DecodedLiterals { ok: false }; }
+            let lit_slice = src[offset .. offset + regenerated_size];
             offset += regenerated_size;
-            return true;
+            return DecodedLiterals { ok: true, slice: lit_slice };
         } else {
             // RLE Literals
-            if offset >= block_end { return false; }
+            if offset >= block_end { return DecodedLiterals { ok: false }; }
             let b = src[offset];
             offset++;
-            var i: i64 = 0;
-            while i < regenerated_size {
-                lit_buf.push(b);
-                i++;
-            }
-            return true;
+            lit_buf.clear();
+            lit_buf.resize(regenerated_size, b);
+            return DecodedLiterals { ok: true, slice: lit_buf[..] };
         }
     } else {
         // Compressed (2) or Treeless (3)
         if lit_type == 3 && !huf_table.is_defined {
-            return false; // Treeless without prior Huffman table
+            return DecodedLiterals { ok: false }; // Treeless without prior Huffman table
         }
+
+        lit_buf.clear();
 
         var lh_size: i64 = 3;
         var single_stream = false;
@@ -717,7 +958,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         if size_format == 0 {
             single_stream = true;
             lh_size = 3;
-            if offset + 3 > block_end { return false; }
+            if offset + 3 > block_end { return DecodedLiterals { ok: false }; }
             let b0 = src[offset] as u32;
             let b1 = src[offset + 1] as u32;
             let b2 = src[offset + 2] as u32;
@@ -727,7 +968,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         } else if size_format == 1 {
             single_stream = false;
             lh_size = 3;
-            if offset + 3 > block_end { return false; }
+            if offset + 3 > block_end { return DecodedLiterals { ok: false }; }
             let b0 = src[offset] as u32;
             let b1 = src[offset + 1] as u32;
             let b2 = src[offset + 2] as u32;
@@ -737,7 +978,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         } else if size_format == 2 {
             single_stream = false;
             lh_size = 4;
-            if offset + 4 > block_end { return false; }
+            if offset + 4 > block_end { return DecodedLiterals { ok: false }; }
             let b0 = src[offset] as u32;
             let b1 = src[offset + 1] as u32;
             let b2 = src[offset + 2] as u32;
@@ -748,7 +989,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         } else {
             single_stream = false;
             lh_size = 5;
-            if offset + 5 > block_end { return false; }
+            if offset + 5 > block_end { return DecodedLiterals { ok: false }; }
             let b0 = src[offset] as u32;
             let b1 = src[offset + 1] as u32;
             let b2 = src[offset + 2] as u32;
@@ -760,14 +1001,14 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         }
         offset += lh_size;
 
-        if offset + compressed_size > block_end { return false; }
+        if offset + compressed_size > block_end { return DecodedLiterals { ok: false }; }
         let c_start = offset;
         let c_end = offset + compressed_size;
 
         if lit_type == 2 {
             // Read Huffman tree description
             if !huf_read_table(src, offset, huf_table) {
-                return false;
+                return DecodedLiterals { ok: false };
             }
         }
 
@@ -775,11 +1016,11 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let stream_slice = src[offset .. c_end];
             var r = new_zstd_bit_reader(stream_slice);
             if !huf_decode_stream(r, huf_table, lit_buf, regenerated_size) {
-                return false;
+                return DecodedLiterals { ok: false };
             }
         } else {
             // 4 streams: read 6-byte Jump Table
-            if offset + 6 > c_end { return false; }
+            if offset + 6 > c_end { return DecodedLiterals { ok: false }; }
             let s1 = src[offset] | ((src[offset + 1] as i64) << 8);
             let s2 = src[offset + 2] | ((src[offset + 3] as i64) << 8);
             let s3 = src[offset + 4] | ((src[offset + 5] as i64) << 8);
@@ -787,30 +1028,30 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
 
             let total_streams = c_end - offset;
             let s4 = total_streams - s1 - s2 - s3;
-            if s4 < 0 { return false; }
+            if s4 < 0 { return DecodedLiterals { ok: false }; }
 
             let stream_size_chunk = (regenerated_size + 3) / 4;
             let rem_last = regenerated_size - stream_size_chunk * 3;
 
             // Stream 1
             var r1 = new_zstd_bit_reader(src[offset .. offset + s1]); offset += s1;
-            if !huf_decode_stream(r1, huf_table, lit_buf, stream_size_chunk) { return false; }
+            if !huf_decode_stream(r1, huf_table, lit_buf, stream_size_chunk) { return DecodedLiterals { ok: false }; }
 
             // Stream 2
             var r2 = new_zstd_bit_reader(src[offset .. offset + s2]); offset += s2;
-            if !huf_decode_stream(r2, huf_table, lit_buf, stream_size_chunk) { return false; }
+            if !huf_decode_stream(r2, huf_table, lit_buf, stream_size_chunk) { return DecodedLiterals { ok: false }; }
 
             // Stream 3
             var r3 = new_zstd_bit_reader(src[offset .. offset + s3]); offset += s3;
-            if !huf_decode_stream(r3, huf_table, lit_buf, stream_size_chunk) { return false; }
+            if !huf_decode_stream(r3, huf_table, lit_buf, stream_size_chunk) { return DecodedLiterals { ok: false }; }
 
             // Stream 4
             var r4 = new_zstd_bit_reader(src[offset .. offset + s4]); offset += s4;
-            if !huf_decode_stream(r4, huf_table, lit_buf, rem_last) { return false; }
+            if !huf_decode_stream(r4, huf_table, lit_buf, rem_last) { return DecodedLiterals { ok: false }; }
         }
 
         offset = c_end;
-        return true;
+        return DecodedLiterals { ok: true, slice: lit_buf[..] };
     }
 }
 
@@ -873,7 +1114,7 @@ fn decode_sequences<B>(
 
     // Build or update LL table
     if ll_mode == 0 {
-        fse_build_dtable(LL_DEFAULT_DIST[..], 35, 6, ll_table);
+        fse_init_default_ll(ll_table);
     } else if ll_mode == 1 {
         // RLE: 1 byte symbol
         if offset >= block_end { return CompressError.InputBufferTruncated; }
@@ -897,7 +1138,7 @@ fn decode_sequences<B>(
 
     // Build or update OF table
     if of_mode == 0 {
-        fse_build_dtable(OF_DEFAULT_DIST[..], 28, 5, of_table);
+        fse_init_default_of(of_table);
     } else if of_mode == 1 {
         if offset >= block_end { return CompressError.InputBufferTruncated; }
         let sym = src[offset]; offset++;
@@ -920,7 +1161,7 @@ fn decode_sequences<B>(
 
     // Build or update ML table
     if ml_mode == 0 {
-        fse_build_dtable(ML_DEFAULT_DIST[..], 52, 6, ml_table);
+        fse_init_default_ml(ml_table);
     } else if ml_mode == 1 {
         if offset >= block_end { return CompressError.InputBufferTruncated; }
         let sym = src[offset]; offset++;
@@ -965,13 +1206,13 @@ fn decode_sequences<B>(
         let high_bit = zstd_high_bit(last_byte as u32);
         bits_consumed = 8 - high_bit;
 
-        state_ll = ((bit_container << (bits_consumed as u64)) >> ((64 - ll_table.table_log) as u64)) as i64;
+        state_ll = ((bit_container << (bits_consumed & 63)) >> ((64 - ll_table.table_log) & 63)) as i64;
         bits_consumed += ll_table.table_log;
 
-        state_of = ((bit_container << (bits_consumed as u64)) >> ((64 - of_table.table_log) as u64)) as i64;
+        state_of = ((bit_container << (bits_consumed & 63)) >> ((64 - of_table.table_log) & 63)) as i64;
         bits_consumed += of_table.table_log;
 
-        state_ml = ((bit_container << (bits_consumed as u64)) >> ((64 - ml_table.table_log) as u64)) as i64;
+        state_ml = ((bit_container << (bits_consumed & 63)) >> ((64 - ml_table.table_log) & 63)) as i64;
         bits_consumed += ml_table.table_log;
     } else {
         state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
@@ -983,17 +1224,17 @@ fn decode_sequences<B>(
 
     var seq_i: i64 = 0;
     while seq_i < nb_seq {
-        let of_entry = of_table.entries[state_of];
-        let ml_entry = ml_table.entries[state_ml];
-        let ll_entry = ll_table.entries[state_ll];
+        let of_entry = of_table.entries[state_of & 511];
+        let ml_entry = ml_table.entries[state_ml & 511];
+        let ll_entry = ll_table.entries[state_ll & 511];
 
         let of_code = of_entry.symbol as u32;
         let ml_code = ml_entry.symbol as u32;
         let ll_code = ll_entry.symbol as u32;
 
         let of_extra_bits = of_code as i32;
-        let ml_extra_bits = ML_EXTRA_BITS[ml_code as i64] as i32;
-        let ll_extra_bits = LL_EXTRA_BITS[ll_code as i64] as i32;
+        let ml_extra_bits = ML_EXTRA_BITS[(ml_code & 63) as i64] as i32;
+        let ll_extra_bits = LL_EXTRA_BITS[(ll_code & 63) as i64] as i32;
 
         var of_extra: u32 = 0;
         var ml_extra: u32 = 0;
@@ -1008,15 +1249,15 @@ fn decode_sequences<B>(
             }
 
             if of_extra_bits > 0 {
-                of_extra = ((bit_container << (bits_consumed as u64)) >> ((64 - of_extra_bits) as u64)) as u32;
+                of_extra = ((bit_container << (bits_consumed & 63)) >> ((64 - of_extra_bits) & 63)) as u32;
                 bits_consumed += of_extra_bits;
             }
             if ml_extra_bits > 0 {
-                ml_extra = ((bit_container << (bits_consumed as u64)) >> ((64 - ml_extra_bits) as u64)) as u32;
+                ml_extra = ((bit_container << (bits_consumed & 63)) >> ((64 - ml_extra_bits) & 63)) as u32;
                 bits_consumed += ml_extra_bits;
             }
             if ll_extra_bits > 0 {
-                ll_extra = ((bit_container << (bits_consumed as u64)) >> ((64 - ll_extra_bits) as u64)) as u32;
+                ll_extra = ((bit_container << (bits_consumed & 63)) >> ((64 - ll_extra_bits) & 63)) as u32;
                 bits_consumed += ll_extra_bits;
             }
         } else {
@@ -1025,8 +1266,8 @@ fn decode_sequences<B>(
             ll_extra = if ll_extra_bits > 0 { zstd_read_bits(r, ll_extra_bits) } else { 0 };
         }
 
-        let lit_len = LL_BASE[ll_code as i64] + ll_extra;
-        let match_len = ML_BASE[ml_code as i64] + ml_extra;
+        let lit_len = LL_BASE[(ll_code & 63) as i64] + ll_extra;
+        let match_len = ML_BASE[(ml_code & 63) as i64] + ml_extra;
         let offset_val = (1 << of_code) + of_extra;
 
         var offset: u32 = 0;
@@ -1079,15 +1320,9 @@ fn decode_sequences<B>(
         }
 
         if lit_len > 0 {
-            if lit_len == 1 {
-                out_buf.push(lit_buf[lit_ptr]);
-            } else if lit_len == 2 {
-                out_buf.push(lit_buf[lit_ptr]);
-                out_buf.push(lit_buf[lit_ptr + 1]);
-            } else {
-                out_buf.append(lit_buf[lit_ptr .. lit_ptr + (lit_len as i64)]);
-            }
-            lit_ptr += lit_len as i64;
+            let l_len = lit_len as i64;
+            out_buf.append(lit_buf[lit_ptr .. lit_ptr + l_len]);
+            lit_ptr += l_len;
         }
 
         if match_len > 0 {
@@ -1098,23 +1333,10 @@ fn decode_sequences<B>(
             }
             let src_idx = (out_buf.len as i64) - off;
             if off >= m_len {
-                if m_len == 3 {
-                    out_buf.push(out_buf[src_idx]);
-                    out_buf.push(out_buf[src_idx + 1]);
-                    out_buf.push(out_buf[src_idx + 2]);
-                } else if m_len == 4 {
-                    out_buf.push(out_buf[src_idx]);
-                    out_buf.push(out_buf[src_idx + 1]);
-                    out_buf.push(out_buf[src_idx + 2]);
-                    out_buf.push(out_buf[src_idx + 3]);
-                } else {
-                    out_buf.append(out_buf[src_idx .. src_idx + m_len]);
-                }
+                out_buf.append(out_buf[src_idx .. src_idx + m_len]);
             } else if off == 1 {
                 let b = out_buf[src_idx];
-                for i in match_len {
-                    out_buf.push(b);
-                }
+                out_buf.resize(out_buf.len + m_len, b);
             } else {
                 var curr: i64 = 0;
                 while curr < m_len {
@@ -1137,29 +1359,32 @@ fn decode_sequences<B>(
                     bit_container = xxh64_read_le64(seq_bitstream, ptr);
                 }
 
-                var ll_bits: u32 = 0;
                 if ll_entry.nb_bits > 0 {
-                    let nb = ll_entry.nb_bits as i32;
-                    ll_bits = ((bit_container << (bits_consumed as u64)) >> ((64 - nb) as u64)) as u32;
+                    let nb = (ll_entry.nb_bits & 63) as i32;
+                    let ll_bits = ((bit_container << (bits_consumed & 63)) >> ((64 - nb) & 63)) as u32;
                     bits_consumed += nb;
+                    state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
+                } else {
+                    state_ll = ll_entry.new_state as i64;
                 }
-                state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
 
-                var ml_bits: u32 = 0;
                 if ml_entry.nb_bits > 0 {
-                    let nb = ml_entry.nb_bits as i32;
-                    ml_bits = ((bit_container << (bits_consumed as u64)) >> ((64 - nb) as u64)) as u32;
+                    let nb = (ml_entry.nb_bits & 63) as i32;
+                    let ml_bits = ((bit_container << (bits_consumed & 63)) >> ((64 - nb) & 63)) as u32;
                     bits_consumed += nb;
+                    state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
+                } else {
+                    state_ml = ml_entry.new_state as i64;
                 }
-                state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
 
-                var of_bits: u32 = 0;
                 if of_entry.nb_bits > 0 {
-                    let nb = of_entry.nb_bits as i32;
-                    of_bits = ((bit_container << (bits_consumed as u64)) >> ((64 - nb) as u64)) as u32;
+                    let nb = (of_entry.nb_bits & 63) as i32;
+                    let of_bits = ((bit_container << (bits_consumed & 63)) >> ((64 - nb) & 63)) as u32;
                     bits_consumed += nb;
+                    state_of = (of_entry.new_state as i64) + (of_bits as i64);
+                } else {
+                    state_of = of_entry.new_state as i64;
                 }
-                state_of = (of_entry.new_state as i64) + (of_bits as i64);
             } else {
                 let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
                 state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
@@ -1290,6 +1515,7 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
         var ll_table = FseTable {};
         var ml_table = FseTable {};
         var of_table = FseTable {};
+        var lit_buf: u8[>..] = [];
 
         let frame_start_out = out_buf.len;
         var last_block = false;
@@ -1327,14 +1553,10 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
                 }
                 let rle_byte = src[offset];
                 offset = block_end;
-                var i: i64 = 0;
-                while i < block_size {
-                    out_buf.push(rle_byte);
-                    i++;
-                }
+                out_buf.resize(out_buf.len + block_size, rle_byte);
             } else if block_type == ZSTD_BLOCK_TYPE_COMPRESSED {
-                var lit_buf: u8[>..] = [];
-                if !decode_literals(src, offset, block_end, lit_buf, huf_table) {
+                let lits = decode_literals(src, offset, block_end, lit_buf, huf_table);
+                if !lits.ok {
                     return CompressError.CorruptedBitstream;
                 }
 
@@ -1342,7 +1564,7 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
                     src,
                     offset,
                     block_end,
-                    lit_buf[..],
+                    lits.slice,
                     out_buf,
                     rep,
                     ll_table,
