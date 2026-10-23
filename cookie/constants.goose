@@ -1,57 +1,44 @@
-// Chromium CookieMonster & IETF RFC 6265bis Architectural Constants and Enumerations.
-// Clean Room Implementation for goose-wing.
-//
-// Core Types:
-//   CookieSameSite      - RFC 6265bis cross-site security mode (Default, Lax, Strict, None).
-//   CookiePriority      - Chromium CookieMonster cache retention priority (Low, Medium, High).
-//   CookieSourceScheme  - Origin-Bound Cookies (OBC) source scheme (Unset, NonSecure, Secure).
-//   CookieDeleteCause   - Deletion taxonomy enum for telemetry and audit logging.
-//
-// Standards & Specifications:
-//   RFC 6265bis Cookies: State Management Mechanism (IETF Draft).
-//   Chromium net::CookieMonster architectural hysteresis thresholds & eviction quotas.
-//   CHIPS (Cookies Having Independent Partitioned State) memory quotas.
+// Cookie storage limits, timing constants, and enumerations (RFC 6265bis, CHIPS).
 namespace wing;
 
 import std;
 
-// ---- architectural limits --------------------------------------------------
+// ---- limits and constants --------------------------------------------------
 
-// Maximum cookie lifetime capped at 400 days (kMinutesIn400Days = 576000 minutes).
+// Maximum cookie lifetime (400 days).
 let K_MINUTES_IN_400_DAYS: i64 = 576000;
 let K_MAX_COOKIE_AGE_US: i64 = 576000 * 60 * 1000000; // 34,560,000,000,000 us
 
-// Size limits: payload (name + value) vs attributes.
-// RFC 6265bis Issue #1340 / Chromium M95+ unified limits.
+// Payload and attribute length limits (RFC 6265bis §5.5).
 let K_MAX_COOKIE_NAME_VAL_LEN: i64 = 4096; // Exceeding this rejects the entire cookie.
 let K_MAX_COOKIE_ATTR_VAL_LEN: i64 = 1024; // Exceeding this ignores the attribute only.
 
-// Domain Garbage Collection thresholds (hysteresis model).
+// Domain garbage collection thresholds.
 let K_DOMAIN_MAX_COOKIES: i64 = 180;       // Threshold to trigger domain GC.
-let K_DOMAIN_PURGE_COOKIES: i64 = 30;     // Number of cookies to evict in domain GC.
+let K_DOMAIN_PURGE_COOKIES: i64 = 30;      // Number of cookies to evict in domain GC.
 let K_DOMAIN_TARGET_COOKIES: i64 = 150;    // Remaining cookies per domain quota (180 - 30).
 
-// Domain priority quotas (Chromium CookieMonster 6-round protection).
+// Priority quotas for domain eviction.
 let K_DOMAIN_COOKIES_QUOTA_LOW: i64 = 30;
 let K_DOMAIN_COOKIES_QUOTA_MEDIUM: i64 = 50;
 let K_DOMAIN_COOKIES_QUOTA_HIGH: i64 = 70; // 150 - 30 - 50 = 70
 
-// Global Garbage Collection thresholds.
+// Global garbage collection thresholds.
 let K_MAX_COOKIES: i64 = 3300;            // Threshold to trigger global GC.
 let K_PURGE_COOKIES: i64 = 300;           // Number of cookies to evict in global GC.
 let K_GLOBAL_TARGET_COOKIES: i64 = 3000;  // Remaining cookies global quota (3300 - 300).
 
-// Immunity window: active cookies accessed within 30 days are immune from global purge.
+// Active cookies accessed within 30 days are exempt from global purge.
 let K_SAFE_FROM_GLOBAL_PURGE_DAYS: i64 = 30;
 let K_SAFE_FROM_GLOBAL_PURGE_US: i64 = 30 * 86400 * 1000000; // 2,592,000,000,000 us
 
-// Cookie Incrementalism: Lax-allowing-unsafe (Lax+POST) 2-minute exception window.
+// Window for Lax-allowing-unsafe exception (120 seconds).
 let K_LAX_ALLOWING_UNSAFE_WINDOW_US: i64 = 120 * 1000000; // 2 minutes (120,000,000 us)
 
-// CHIPS: Maximum memory bytes (name + value) per (PartitionKey, eTLD+1) domain.
+// Maximum bytes per partition key and domain (CHIPS).
 let K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES: i64 = 10240; // 10 KB quota
 
-// Persistence engine: commit interval and batch size.
+// Persistence commit interval and batch size.
 let K_COMMIT_INTERVAL_MS: i64 = 30000;    // 30 seconds
 let K_COMMIT_AFTER_BATCH_SIZE: i64 = 512; // 512 mutations
 
@@ -83,7 +70,7 @@ fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
 
 // ---- priority enumeration --------------------------------------------------
 
-// Retention priority level during memory GC (cookie_constants.h).
+// Eviction priority levels during garbage collection.
 enum CookiePriority {
     Low,
     Medium, // Default priority (COOKIE_PRIORITY_DEFAULT)
@@ -106,7 +93,7 @@ fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
 
 // ---- source scheme enumeration ---------------------------------------------
 
-// Origin-Bound Cookies (OBC) source scheme.
+// Source scheme for origin-bound cookies.
 enum CookieSourceScheme {
     Unset,
     NonSecure,
@@ -129,7 +116,7 @@ fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
 
 // ---- deletion cause enumeration --------------------------------------------
 
-// Deletion cause taxonomy for telemetry and persistence (Chromium CookieMonster).
+// Deletion reason for persistence and notifications.
 enum CookieDeleteCause {
     UNKNOWN,
     EXPIRED,

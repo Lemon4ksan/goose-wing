@@ -1,4 +1,4 @@
-// Constant-Time Primitives, Pure-Goose Cryptography & CryptoJar Verification Suite
+// Tests for constant-time primitives, cryptographic functions, and CryptoJar.
 import std;
 import wing from "..";
 
@@ -366,7 +366,7 @@ fn test_crypto_jar_container(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Constant-Time Primitives, Pure Crypto & CryptoJar Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Constant-Time & CryptoJar Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
     wing::run_case(runner, "2. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);

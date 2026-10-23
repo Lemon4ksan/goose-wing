@@ -1,11 +1,4 @@
-// Concurrency, Actor & CSP Verification Suite for wing (core::sync).
-// Verifies:
-//   1. Multithreading, Actors & Crash Containment (WaitGroup, Actor counter, Contained worker).
-//   2. Classical Concurrency Primitives (BatonMutex, Semaphore / Bulkhead, CountDownLatch).
-//   3. CyclicBarrier (Two-Phase Turnstile Generation Epoch Synchronization).
-//   4. CSP Patterns (Reassembler In-Order Streaming, Envelope StaticChan, Rendezvous).
-//   5. Actor Subsystem (PriorityMailbox Heap, StashBuffer Transitions, 16-byte ActorRef).
-//   6. OTP Supervision Trees (ChildSpec, RestartType, Intensity Limiting, AutoShutdown).
+// Tests for concurrency primitives, actors, channels, and singleflight.
 import std;
 import os;
 import wing from "..";

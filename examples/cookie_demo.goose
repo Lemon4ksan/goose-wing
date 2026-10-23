@@ -1,4 +1,4 @@
-// Showcase of Idiomatic, Beautiful Goose Syntax for the Industrial Cookie Monster
+// Example demonstrating cookie jar usage and method chaining.
 import std;
 import wing from "..";
 
@@ -13,7 +13,7 @@ fn assert(cond: bool, msg: const u8[:]) {
 
 fn main() {
     print("==================================================================");
-    print("      goose-wing Idiomatic Cookie Monster Showcase (UFCS)         ");
+    print("      goose-wing Cookie Jar Example (UFCS)                        ");
     print("==================================================================\n");
 
     var jar = wing::new_canonical_cookie_jar();

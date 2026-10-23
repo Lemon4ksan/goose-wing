@@ -1,17 +1,5 @@
-// Deterministic HTTP Redirect State Machine (ComputeRedirectInfo & RedirectUtil).
-// RFC 9110, W3C Referrer Policy, RFC 6265bis #1331/#1348, and Chromium net::RedirectInfo.
-//
-// Core Types:
-//   RedirectMode    - Redirection handling strategy (Follow, Manual, Error).
-//   ReferrerPolicy  - W3C Referrer-Policy specification enum.
-//   RedirectError   - Lexical, scheme, SSRF, or credential diagnostic error enum.
-//   RedirectInfo    - Output record tracking mutated method, target URL, referrers, and security status.
-//
-// Standards & Specifications:
-//   RFC 9110 HTTP Redirection Status Codes (301, 302, 303 method mutation; 307, 308 method preservation).
-//   W3C Referrer Policy Specification (compute_new_referrer).
-//   CVE-2023-45143, CVE-2024-1968, CVE-2026-55553 Sensitive header stripping on cross-origin / downgrade hops.
-//   RFC 6265bis #1348 Monotonic cross-site redirect chain tainting.
+// HTTP redirect state machine and header sanitization (RFC 9110 §15.4, WHATWG Fetch §4.5).
+// Handles method rewriting, referrer policy calculation, and sensitive header stripping.
 namespace wing;
 
 import std;
@@ -120,6 +108,8 @@ struct RedirectInfo {
 
 // ---- pure function compute_redirect_info -----------------------------------
 
+// Computes redirect metadata for an HTTP redirect response (RFC 9110, WHATWG Fetch).
+// Mutates method and body flags, sets cross-origin status, and calculates referrer.
 fn compute_redirect_info(
     current_method: const u8[:],
     status_code: i32,
@@ -268,6 +258,8 @@ fn validate_redirect_target(
     return parsed_target, RedirectError.None;
 }
 
+// Computes redirect metadata for an HTTP redirect response (RFC 9110, WHATWG Fetch).
+// Mutates method and body flags, sets cross-origin status, and calculates referrer.
 fn compute_redirect_info(
     status_code: i32,
     current_method: const u8[:],
@@ -307,7 +299,7 @@ fn compute_redirect_info(
     // 4. HTTP Method Mutation & Body Clearing (RFC 9110 / WHATWG Fetch)
     mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
 
-    // 5. Origin and Scheme Comparison (CVE-2024-1968, CVE-2022-27776 defense)
+    // 5. Origin and scheme comparison
     let same_orig = is_same_origin_url(current_url, info.new_url);
     let is_downgrade = (scheme(current_url) == "https" && scheme(info.new_url) == "http");
     let port_changed = effective_port(current_url) != effective_port(info.new_url);
@@ -407,8 +399,11 @@ fn compute_new_referrer<B>(
     };
 }
 
-// ---- header sanitization on redirect (cve defense) -------------------------
+// ---- header sanitization on redirect ---------------------------------------
 
+// Sanitizes outbound headers across redirect hops. Strips Cookie headers, removes
+// credentials on cross-origin or scheme downgrades, and drops payload headers
+// when mutating to GET.
 fn sanitize_headers_on_redirect(
     headers: HeaderItem[..32]&,
     redirect_info: const RedirectInfo&,
@@ -417,18 +412,15 @@ fn sanitize_headers_on_redirect(
     enable_referer: bool,
     trusted_location_forwarding: bool = false
 ) {
-    // 1. CVE-2023-45143: Cookie header is NEVER preserved across hops; always stripped
-    // and freshly synthesized from CanonicalCookieJar for new_url.
+    // Cookie header is stripped and re-evaluated from the cookie jar for the new URL.
     remove_header_by_name(headers, "Cookie");
 
-    // 2. Sensitive Header Stripping on Cross-Origin or Scheme Downgrade
-    // Covers Authorization, Proxy-Authorization, X-API-Key, X-Auth-Token, X-Access-Token
-    // Defends against CVE-2024-1968, CVE-2026-55553, CVE-2026-64684
+    // Strip sensitive headers on cross-origin redirects or scheme downgrades.
     if redirect_info.is_scheme_downgrade || (redirect_info.is_cross_origin && (!trusted_location_forwarding || redirect_info.is_port_changed)) {
         remove_sensitive_headers(headers);
     }
 
-    // 3. Payload and Representation Header Stripping on Method Mutation to GET (crbug #40686262)
+    // Strip payload and representation headers when mutating to GET.
     if redirect_info.clear_body {
         remove_header_by_name(headers, "Content-Type");
         remove_header_by_name(headers, "Content-Length");
@@ -446,7 +438,7 @@ fn sanitize_headers_on_redirect(
         remove_header_by_name(headers, "TE");
     }
 
-    // 4. Origin Header Sanitization (Mozilla #1444278 / WHATWG Fetch)
+    // Origin header sanitization (WHATWG Fetch)
     for &hdr in headers {
         if eq_ascii_fold(hdr.name[..], "Origin") {
             if redirect_info.is_cross_origin || tainted_origin {

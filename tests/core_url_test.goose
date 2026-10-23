@@ -1,5 +1,4 @@
-// Verification Suite for WHATWG URL, IPv6 RFC 5952, Origin Model & Swift-Style Path APIs
-// Conforming to WHATWG URL Standard and RFC 5952 IPv6 representation.
+// Tests for URL parsing, IPv6 formatting, and path resolution.
 import std;
 import wing from "..";
 

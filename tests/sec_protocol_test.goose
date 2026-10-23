@@ -1,8 +1,4 @@
-// Consolidated verification suite for Red-Protocol audit findings (Rounds 1, 2, and 3).
-// Covers:
-//   Round 1: IPv4-mapped IPv6 address filtering in SSRF guard and DNS rebinding defense.
-//   Round 2: Sensitive header sanitization on HTTPS-to-HTTP scheme downgrade.
-//   Round 3: WHATWG URL Section 4.4 File URL Windows drive letter pipe normalization and root-relative resolution.
+// Tests for SSRF guard filtering, scheme downgrade sanitization, and URL resolution.
 import std;
 import wing from "..";
 
@@ -214,7 +210,7 @@ fn test_file_url_windows_drive_compliance(t: wing::T&) {
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Red-Protocol Consolidated Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Protocol Security Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
     wing::run_case(runner, "2. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);

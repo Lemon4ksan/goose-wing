@@ -1,12 +1,4 @@
-// Response representation and inspection helpers for goose-wing.
-//
-// Core Types:
-//   Error    - Diagnostic error structure (code, stage, message).
-//   Response - HTTP response entity containing status code, headers, URL chain, and body.
-//
-// Standards & Specifications:
-//   RFC 9110 HTTP Status Codes and Redirection Classification.
-//   Static reflection-based JSON deserialization into typed Goose structs.
+// HTTP response representation, header inspectors, and JSON decoding (RFC 9110).
 namespace wing;
 
 import std;

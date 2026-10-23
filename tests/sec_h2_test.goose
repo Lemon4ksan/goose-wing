@@ -1,10 +1,4 @@
-// Verification Suite for HTTP/2 Framer Security & DoS Defenses
-// Conforming to RFC 9113 (HTTP/2) and defending against historical Go x/net/http2 vulnerabilities:
-//   1. CVE-2024-27983: CONTINUATION Flood & Stream Interleaving Attack.
-//   2. CVE-2023-44487: Rapid Reset Attack (flood of HEADERS + RST_STREAM).
-//   3. Go Issue #78477: SETTINGS_MAX_FRAME_SIZE=0 Infinite Loop Defense.
-//   4. RFC 9113 §5.1.1: Stream ID Parity (Client Odd, Stream 0 Isolation).
-//   5. CVE-2019-9512 / CVE-2019-9515: PING Flood & Settings Flood Defense.
+// Tests for HTTP/2 framer validation and frame limits (RFC 9113).
 import std;
 import wing from "..";
 
@@ -53,7 +47,7 @@ fn test_continuation_flood_and_interleaving(t: wing::T&) {
         sub.assert_true(framer.state == wing::H2ConnState.Closed);
     };
 
-    t.run("H2-02: Stream Interleaving While Expecting CONTINUATION Rejection (RFC 9113 §4.3)") { sub =>
+    t.run("H2-02: Stream Interleaving While Expecting CONTINUATION Rejection (RFC 9113 Section 4.3)") { sub =>
         var framer = wing::new_h2_security_framer();
 
         // HEADERS on stream 1 without END_HEADERS
@@ -210,7 +204,7 @@ fn test_rapid_reset_and_dos_floods(t: wing::T&) {
 }
 
 fn test_settings_and_stream_id_invariants(t: wing::T&) {
-    t.run("SETTING-01: SETTINGS_MAX_FRAME_SIZE=0 Infinite Loop Defense (Go #78477)") { sub =>
+    t.run("SETTING-01: SETTINGS_MAX_FRAME_SIZE=0 Infinite Loop Defense ") { sub =>
         // Setting 0 must trigger ProtocolError
         let err0 = wing::validate_h2_setting(0x5, 0);
         sub.assert_eq(err0, wing::H2ErrorCode.ProtocolError, "SETTINGS_MAX_FRAME_SIZE=0 must return ProtocolError");
@@ -232,7 +226,7 @@ fn test_settings_and_stream_id_invariants(t: wing::T&) {
         sub.assert_eq(err_ovf, wing::H2ErrorCode.ProtocolError, "SETTINGS_MAX_FRAME_SIZE > 16777215 must return ProtocolError");
     };
 
-    t.run("STREAM-01: Stream ID Parity & Connection-Level Isolation (RFC 9113 §5.1.1)") { sub =>
+    t.run("STREAM-01: Stream ID Parity & Connection-Level Isolation (RFC 9113 Section 5.1.1)") { sub =>
         var framer = wing::new_h2_security_framer();
 
         // 1. Client HEADERS on even stream (stream 2) -> ProtocolError
@@ -271,11 +265,11 @@ fn test_settings_and_stream_id_invariants(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("HTTP/2 Framer Security & DoS Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("HTTP/2 Framer Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. CONTINUATION Flood & Interleaving Guard (CVE-2024-27983)", test_continuation_flood_and_interleaving);
     wing::run_case(runner, "2. Rapid Reset & Resource DoS Floods (CVE-2023-44487 & CVE-2019-9512)", test_rapid_reset_and_dos_floods);
-    wing::run_case(runner, "3. SETTINGS & Stream ID Invariants (Go #78477 & RFC 9113)", test_settings_and_stream_id_invariants);
+    wing::run_case(runner, "3. SETTINGS & Stream ID Invariants ", test_settings_and_stream_id_invariants);
 
     let ok = wing::finish(runner);
     assert(ok);

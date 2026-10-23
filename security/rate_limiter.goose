@@ -1,22 +1,4 @@
-// Non-Blocking GCRA (Generic Cell Rate Algorithm) Rate Limiter & Probabilistic DDoS Shield.
-// Clean-Room Implementation conforming to brandur/redis-cell, governor, and IETF RateLimit Drafts.
-//
-// Core Types:
-//   GcraQuota         - Mathematical rate parameters (T: emission interval, tau: burst tolerance).
-//   RateLimitDecision - Decision enum (Allowed with remaining tokens, Reserved slot, Rejected).
-//   GcraCell          - Single 64-bit Theoretical Arrival Time (TAT) state.
-//   ShardedGcraLimiter- 256-micro-shard lock-free hash table defending against hot-key contention.
-//   ProbabilisticGcra - 5% sampling mode for extreme DDoS floods (>1M req/s) with 20x scaled cost.
-//
-// Mathematical Model:
-//   - T = P / L (emission interval)
-//   - tau = T * B (delay tolerance)
-//   - Delta = n * T
-//   - TAT_base = max(t_now, TAT_old)
-//   - TAT_new = TAT_base + Delta
-//   - t_allow = TAT_new - (tau + T)
-//   - If t_now < t_allow: Rejected (retry_after = t_allow - t_now)
-//   - If t_now >= t_allow: Allowed (TAT_old <- TAT_new)
+// Generic Cell Rate Algorithm (GCRA) leaky-bucket rate limiter.
 namespace wing;
 
 import std;
@@ -34,6 +16,8 @@ struct GcraQuota {
     burst: u64 = 0,
 }
 
+// Calculates GCRA quota parameters from sustained limit, period, and burst tolerance.
+// T = period / limit (emission interval), tau = T * burst (delay tolerance).
 fn new_gcra_quota(limit: u64, period_dur: Duration, burst: u64 = 0) -> GcraQuota {
     let p_ns = if period_dur.nanos > 0 { period_dur.nanos as u64 } else { 1000000000 as u64 };
     let l = if limit > 0 { limit } else { 1 as u64 };
@@ -68,7 +52,8 @@ struct GcraCell {
     tat_ns: u64 = 0,
 }
 
-// Core GCRA calculation for cost n cells
+// Evaluates rate limit admission for a request consuming cost_n tokens at now_ns.
+// Returns Allowed with remaining capacity, or Rejected with retry_after_ns.
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
     let t = quota.emission_interval_ns;
     let tau = quota.delay_tolerance_ns;
@@ -113,9 +98,8 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     };
 }
 
-// Priority slot reservation fixing governor Issue #16 (multi-cell starvation).
-// If a heavy request (cost_n >= 2) arrives early, but wait time <= max_wait_ns,
-// it advances TAT in advance, securing its position before smaller requests.
+// Reserves cell capacity in advance up to max_wait_ns for multi-cost requests.
+// Returns Reserved if the caller can wait, Allowed if immediate, or Rejected if wait exceeds max_wait_ns.
 fn gcra_reserve_n(
     quota: const GcraQuota&,
     cell: GcraCell&,
@@ -238,7 +222,7 @@ fn check_keyed_rate_limit(
     return gcra_check_n(limiter.quota, temp_cell, cost_n, now_ns);
 }
 
-// ---- probabilistic gcra for extreme ddos mitigation (>1M req/s) ------------
+// ---- probabilistic sampled gcra -------------------------------------------
 
 struct ProbabilisticGcra {
     quota: GcraQuota = GcraQuota { .. },

@@ -1,16 +1,4 @@
-// Cryptographic Cookie Container (CryptoJar: PrivateJar & SignedJar) with Key Rotation.
-// Clean-Room Implementation conforming to RFC 6265bis, OWASP, and AEAD Wire Formats.
-//
-// Core Types:
-//   CookieWireVersion - Wire format protocol version enum (XChaCha20, HkdfAesGcm, HmacSha256).
-//   KeyStore          - Multi-key rotation container with O(1) active key lookup and automatic expiry tracking.
-//   PrivateJar        - AEAD encryption/decryption container with context binding (AAD).
-//   SignedJar         - Authenticated integrity container with constant-time HMAC verification.
-//
-// Wire Formats (prior to Base64URL encoding):
-//   PrivateJar (XChaCha20)   : ver (1B = 0x01) | key_id (4B) | timestamp (8B) | nonce (24B) | ciphertext (NB) | tag (16B) [53B overhead]
-//   PrivateJar (HKDF-AES-GCM): ver (1B = 0x02) | key_id (4B) | salt (32B)     | nonce (12B) | ciphertext (NB) | tag (16B) [65B overhead]
-//   SignedJar  (HMAC-SHA256) : ver (1B = 0x03) | key_id (4B) | timestamp (8B) | payload (NB) | mac (32B)                 [45B overhead]
+// Cryptographic cookie containers (PrivateJar AEAD and SignedJar HMAC) with key rotation.
 namespace wing;
 
 import std;
@@ -27,19 +15,47 @@ let K_OVERHEAD_XCHACHA20: i64    = 53; // 1 + 4 + 8 + 24 + 16
 let K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
 let K_OVERHEAD_HMAC_SHA256: i64  = 45; // 1 + 4 + 8 + 32
 
-// Builds AAD (Additional Authenticated Data) for context binding:
-// AAD = version_byte || key_id (4B big-endian) || cookie_name
-fn build_cookie_aad<B>(ver: u8, key_id: u32, cookie_name: const u8[:], out: B&) {
+// Additional Authenticated Data (AAD) for context binding:
+// ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
+// Binds creation timestamp and cookie name to prevent replay and context swapping.
+fn build_cookie_aad<B>(ver: u8, key_id: u32, timestamp_sec: i64, cookie_name: const u8[:], out: B&) {
     out.push(ver);
     out.push(((key_id >> 24) & 0xFF) as u8);
     out.push(((key_id >> 16) & 0xFF) as u8);
     out.push(((key_id >> 8) & 0xFF) as u8);
     out.push((key_id & 0xFF) as u8);
+    for i in 8 {
+        out.push(((timestamp_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
+    }
+    out.push(((cookie_name.len >> 8) & 0xFF) as u8);
+    out.push((cookie_name.len & 0xFF) as u8);
     out.append(cookie_name);
+}
+
+// Framed HMAC input buffer for SignedJar:
+// ver (1B) || key_id (4B) || timestamp (8B) || cookie_name_len (2B) || cookie_name || payload_len (4B) || payload.
+// Length prefixes prevent boundary collisions between cookie name and payload.
+fn build_signed_to_sign<B>(key_id: u32, cookie_sec: i64, cookie_name: const u8[:], payload: const u8[:], out: B&) {
+    out.push(WIRE_VER_HMAC_SHA256);
+    out.push(((key_id >> 24) & 0xFF) as u8);
+    out.push(((key_id >> 16) & 0xFF) as u8);
+    out.push(((key_id >> 8) & 0xFF) as u8);
+    out.push((key_id & 0xFF) as u8);
+    for i in 8 {
+        out.push(((cookie_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
+    }
+    out.push(((cookie_name.len >> 8) & 0xFF) as u8);
+    out.push((cookie_name.len & 0xFF) as u8);
+    out.push(((payload.len >> 24) & 0xFF) as u8);
+    out.push(((payload.len >> 16) & 0xFF) as u8);
+    out.push(((payload.len >> 8) & 0xFF) as u8);
+    out.push((payload.len & 0xFF) as u8);
+    out.append(payload);
 }
 
 // ---- multi-key rotation container (KeyStore) -------------------------------
 
+// Key rotation store supporting an active primary key and retired keys.
 struct KeyStore {
     keys: KeySlot[..8] = [],
     active_idx: i64 = 0,
@@ -101,6 +117,8 @@ fn needs_rotation(slot: const KeySlot&, now_sec: i64) -> bool {
 
 // ---- privatejar (authenticated encryption with context binding) -------------
 
+// Encrypted cookie jar using AEAD (XChaCha20-Poly1305 or HKDF-AES-GCM).
+// Wire format: version (1B) | key_id (4B) | timestamp/salt | nonce | ciphertext | tag.
 struct PrivateJar {
     store: KeyStore = KeyStore { .. },
     use_hkdf_aes: bool = false, // false = XChaCha20-Poly1305 (default), true = HKDF + AES-256-GCM
@@ -141,14 +159,23 @@ fn private_jar_seal_binary<B>(
         for i in 32 { out.push(salt[i]); }
         for i in 12 { out.push(nonce12[i]); }
 
-        var aad: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_name, aad);
-
-        var ct: u8[>..] = [];
-        let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad[..], ct);
-        out.append(ct[..]);
-        for i in 16 { out.push(tag[i]); }
-        return true;
+        var aad_stack: u8[..256] = [];
+        if (15 + cookie_name.len) <= aad_stack.cap {
+            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
+            var ct: u8[>..] = [];
+            let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], ct);
+            out.append(ct[..]);
+            for i in 16 { out.push(tag[i]); }
+            return true;
+        } else {
+            var aad_dyn: u8[>..] = [];
+            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
+            var ct: u8[>..] = [];
+            let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], ct);
+            out.append(ct[..]);
+            for i in 16 { out.push(tag[i]); }
+            return true;
+        }
     }
 
     // Default: XChaCha20-Poly1305 (24-byte nonce, 100% collision-free)
@@ -170,14 +197,23 @@ fn private_jar_seal_binary<B>(
     }
     for i in 24 { out.push(nonce24[i]); }
 
-    var aad: u8[>..] = [];
-    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_name, aad);
-
-    var ct: u8[>..] = [];
-    let tag = xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad[..], ct);
-    out.append(ct[..]);
-    for i in 16 { out.push(tag[i]); }
-    return true;
+    var aad_stack: u8[..256] = [];
+    if (15 + cookie_name.len) <= aad_stack.cap {
+        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_stack);
+        var ct: u8[>..] = [];
+        let tag = xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], ct);
+        out.append(ct[..]);
+        for i in 16 { out.push(tag[i]); }
+        return true;
+    } else {
+        var aad_dyn: u8[>..] = [];
+        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_dyn);
+        var ct: u8[>..] = [];
+        let tag = xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_dyn[..], ct);
+        out.append(ct[..]);
+        for i in 16 { out.push(tag[i]); }
+        return true;
+    }
 }
 
 // Verifies authentication tag, context binding, and decrypts payload into out_plaintext.
@@ -221,10 +257,15 @@ fn private_jar_open_binary(
         var tag: u8[16] = [0; 16];
         for i in 16 { tag[i] = raw_wire[37 + ct_len + i]; }
 
-        var aad: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_name, aad);
-
-        return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad[..], tag, out_plaintext);
+        var aad_stack: u8[..256] = [];
+        if (15 + cookie_name.len) <= aad_stack.cap {
+            build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
+            return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext);
+        } else {
+            var aad_dyn: u8[>..] = [];
+            build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_dyn);
+            return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_dyn[..], tag, out_plaintext);
+        }
     } else if ver == WIRE_VER_HKDF_AES_GCM {
         guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
 
@@ -234,16 +275,30 @@ fn private_jar_open_binary(
         var nonce12: u8[12] = [0; 12];
         for i in 12 { nonce12[i] = raw_wire[37 + i]; }
 
+        var ts: u64 = 0;
+        for i in 8 { ts |= (salt32[8 + i] as u64) << (i * 8); }
+        let cookie_sec = ts as i64;
+
+        if now_sec > 0 && cookie_sec > 0 {
+            if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
+            if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
+        }
+
         let ct_len = raw_wire.len - K_OVERHEAD_HKDF_AES_GCM;
         let ct = raw_wire[49..49 + ct_len];
 
         var tag: u8[16] = [0; 16];
         for i in 16 { tag[i] = raw_wire[49 + ct_len + i]; }
 
-        var aad: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_name, aad);
-
-        return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad[..], tag, out_plaintext);
+        var aad_stack: u8[..256] = [];
+        if (15 + cookie_name.len) <= aad_stack.cap {
+            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
+            return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext);
+        } else {
+            var aad_dyn: u8[>..] = [];
+            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_dyn);
+            return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_dyn[..], tag, out_plaintext);
+        }
     }
 
     return false;
@@ -281,6 +336,8 @@ fn private_jar_open(
 
 // ---- signedjar (authenticated integrity with hmac-sha256) ------------------
 
+// Authenticated cookie jar using HMAC-SHA256 signatures.
+// Wire format: version (1B) | key_id (4B) | timestamp (8B) | payload | mac (32B).
 struct SignedJar {
     store: KeyStore = KeyStore { .. },
 }
@@ -312,21 +369,19 @@ fn signed_jar_seal_binary<B>(
     }
     out.append(payload);
 
-    var to_sign: u8[>..] = [];
-    to_sign.push(WIRE_VER_HMAC_SHA256);
-    to_sign.push(((slot.key_id >> 24) & 0xFF) as u8);
-    to_sign.push(((slot.key_id >> 16) & 0xFF) as u8);
-    to_sign.push(((slot.key_id >> 8) & 0xFF) as u8);
-    to_sign.push((slot.key_id & 0xFF) as u8);
-    for i in 8 {
-        to_sign.push(((now_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
+    var to_sign_stack: u8[..4200] = [];
+    if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
+        build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_stack);
+        let mac = hmac_sha256(slot.master_key[..], to_sign_stack[..]);
+        for i in 32 { out.push(mac[i]); }
+        return true;
+    } else {
+        var to_sign_dyn: u8[>..] = [];
+        build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_dyn);
+        let mac = hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
+        for i in 32 { out.push(mac[i]); }
+        return true;
     }
-    to_sign.append(cookie_name);
-    to_sign.append(payload);
-
-    let mac = hmac_sha256(slot.master_key[..], to_sign[..]);
-    for i in 32 { out.push(mac[i]); }
-    return true;
 }
 
 fn signed_jar_open_binary(
@@ -363,23 +418,21 @@ fn signed_jar_open_binary(
     var tag: u8[32] = [0; 32];
     for i in 32 { tag[i] = raw_wire[13 + payload_len + i]; }
 
-    var to_sign: u8[>..] = [];
-    to_sign.push(WIRE_VER_HMAC_SHA256);
-    to_sign.push(((slot.key_id >> 24) & 0xFF) as u8);
-    to_sign.push(((slot.key_id >> 16) & 0xFF) as u8);
-    to_sign.push(((slot.key_id >> 8) & 0xFF) as u8);
-    to_sign.push((slot.key_id & 0xFF) as u8);
-    for i in 8 {
-        to_sign.push(((cookie_sec as u64 >> ((7 - i) * 8)) & 0xFF) as u8);
+    var to_sign_stack: u8[..4200] = [];
+    if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
+        build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_stack);
+        let expected_mac = hmac_sha256(slot.master_key[..], to_sign_stack[..]);
+        guard ct_eq_tag32(expected_mac, tag) else { return false; }
+        out_payload.append(payload);
+        return true;
+    } else {
+        var to_sign_dyn: u8[>..] = [];
+        build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_dyn);
+        let expected_mac = hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
+        guard ct_eq_tag32(expected_mac, tag) else { return false; }
+        out_payload.append(payload);
+        return true;
     }
-    to_sign.append(cookie_name);
-    to_sign.append(payload);
-
-    let expected_mac = hmac_sha256(slot.master_key[..], to_sign[..]);
-    guard ct_eq_tag32(expected_mac, tag) else { return false; }
-
-    out_payload.append(payload);
-    return true;
 }
 
 fn signed_jar_seal<B>(

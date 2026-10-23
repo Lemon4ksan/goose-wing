@@ -1,4 +1,4 @@
-// GCRA Virtual Scheduling, Anti-Starvation & Sharded Rate Limiter Verification Suite
+// Tests for GCRA rate limiter, burst tolerance, and sharded storage.
 import std;
 import wing from "..";
 
@@ -239,7 +239,7 @@ fn test_ietf_rate_limit_headers(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("GCRA Virtual Scheduling & Rate Limiter Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Rate Limiter Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Mathematical GCRA TAT Scheduling & Burst Tolerance", test_gcra_tat_and_burst);
     wing::run_case(runner, "2. Anti-Starvation Multi-Cell Priority Reservation", test_anti_starvation_reservation);

@@ -1,19 +1,10 @@
-// Verification Suite for Go URL & Query Edge Cases & CVE Defenses
-// Conforming to WHATWG URL Standard, RFC 3986, and Go issue tracker resolutions.
-// Covers:
-//   1. CVE-2021-31525 (Go #45571 / #78594): Semicolon query splitting rejection / literal preservation.
-//   2. CVE-2026-25679 (Go #77578): Bracketed IPv6 literal not at start of host rejection.
-//   3. CVE-2025-47912 (Go #75678 / #75712): Insufficient validation of bracketed IPv6 hostnames.
-//   4. Go #69443: Port number overflow (> 65535) and non-numeric port rejection.
-//   5. Go #75223: Unbracketed colons in hostnames rejection.
-//   6. Go #70130: Mixed percent-encoded dot segments ('.%2e', '%2e.', '%2e%2e') path sanitization.
-//   7. Go #72013 & #69930: Userinfo credentials with special characters ('@', ':', '/') isolation.
+// Tests for URL and query string parsing edge cases.
 import std;
 import wing from "..";
 
 fn test_semicolon_query_splitting_defense(t: wing::T&) {
-    t.run("QUERY-01: Semicolon is treated as literal content, NOT parameter separator (CVE-2021-31525 / Go #45571)") { sub =>
-        // In Go before 1.17, "a=1;b=2" was split into two parameters a=1 and b=2.
+    t.run("QUERY-01: Semicolon is treated as literal content, NOT parameter separator (CVE-2021-31525)") { sub =>
+        // In naive implementations, before 1.17, "a=1;b=2" was split into two parameters a=1 and b=2.
         // Under WHATWG URL, only '&' is a delimiter; ';' is literal data.
         let raw = "?a=1;b=2";
         let q = wing::parse_query_params(raw);
@@ -52,7 +43,7 @@ fn test_semicolon_query_splitting_defense(t: wing::T&) {
 }
 
 fn test_ipv6_host_security_bypasses(t: wing::T&) {
-    t.run("IPV6-01: Bracketed IPv6 not at start of host rejection (CVE-2026-25679 / Go #77578)") { sub =>
+    t.run("IPV6-01: Bracketed IPv6 not at start of host rejection (CVE-2026-25679)") { sub =>
         // Host with prefix before bracket: bad[::1]
         let u1 = wing::new_url("http://bad[::1]/");
         sub.assert_false(u1.valid, "Host with prefix before [ must be rejected");
@@ -66,7 +57,7 @@ fn test_ipv6_host_security_bypasses(t: wing::T&) {
         sub.assert_false(u3.valid, "evil.com[::1] must be rejected");
     };
 
-    t.run("IPV6-02: Insufficient validation of bracketed IPv6 hostnames (CVE-2025-47912 / Go #75678)") { sub =>
+    t.run("IPV6-02: Insufficient validation of bracketed IPv6 hostnames (CVE-2025-47912)") { sub =>
         // Missing closing bracket
         let u1 = wing::new_url("http://[::1/path");
         sub.assert_false(u1.valid, "Unclosed [ must be rejected");
@@ -86,7 +77,7 @@ fn test_ipv6_host_security_bypasses(t: wing::T&) {
 }
 
 fn test_port_number_boundaries_and_overflow(t: wing::T&) {
-    t.run("PORT-01: Port > 65535 rejection (Go #69443)") { sub =>
+    t.run("PORT-01: Port > 65535 rejection ") { sub =>
         // Boundary: 65536
         let u1 = wing::new_url("http://example.com:65536/");
         sub.assert_false(u1.valid, "Port 65536 must be rejected as invalid port");
@@ -105,7 +96,7 @@ fn test_port_number_boundaries_and_overflow(t: wing::T&) {
         sub.assert_eq(wing::effective_port(u4), 65535);
     };
 
-    t.run("PORT-02: Non-numeric and malformed port rejection (Go #75223)") { sub =>
+    t.run("PORT-02: Non-numeric and malformed port rejection ") { sub =>
         // Non-numeric port
         let u1 = wing::new_url("http://example.com:foo/");
         sub.assert_false(u1.valid, "Non-numeric port :foo must be rejected");
@@ -121,7 +112,7 @@ fn test_port_number_boundaries_and_overflow(t: wing::T&) {
 }
 
 fn test_path_traversal_and_userinfo(t: wing::T&) {
-    t.run("TRAV-01: Mixed percent-encoded dot segments sanitization (Go #70130)") { sub =>
+    t.run("TRAV-01: Mixed percent-encoded dot segments sanitization ") { sub =>
         // .%2e ("..")
         let u1 = wing::new_url("https://example.com/api/.%2e/admin");
         sub.assert_true(u1.valid);
@@ -138,7 +129,7 @@ fn test_path_traversal_and_userinfo(t: wing::T&) {
         sub.assert_bytes_eq(wing::pathname(u3), "/admin", "%2e%2e collapsed as ..");
     };
 
-    t.run("USER-01: Userinfo credentials with special characters (Go #72013 & #69930)") { sub =>
+    t.run("USER-01: Userinfo credentials with special characters ") { sub =>
         // User with @ escaped in username
         let u1 = wing::new_url("https://alice%40example.com:secret@api.service.com/");
         sub.assert_true(u1.valid);
@@ -155,12 +146,12 @@ fn test_path_traversal_and_userinfo(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("URL & Query Security Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("URL & Query Suite", wing::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Semicolon Query Splitting Defense (CVE-2021-31525 / Go #45571)", test_semicolon_query_splitting_defense);
+    wing::run_case(runner, "1. Semicolon Query Splitting Defense (CVE-2021-31525)", test_semicolon_query_splitting_defense);
     wing::run_case(runner, "2. IPv6 Host Security Bypasses (CVE-2026-25679 & CVE-2025-47912)", test_ipv6_host_security_bypasses);
-    wing::run_case(runner, "3. Port Number Boundaries & Overflow Defense (Go #69443 & #75223)", test_port_number_boundaries_and_overflow);
-    wing::run_case(runner, "4. Path Traversal & Userinfo Isolation (Go #70130 & #72013)", test_path_traversal_and_userinfo);
+    wing::run_case(runner, "3. Port Number Boundaries & Overflow Defense ", test_port_number_boundaries_and_overflow);
+    wing::run_case(runner, "4. Path Traversal & Userinfo Isolation ", test_path_traversal_and_userinfo);
 
     let ok = wing::finish(runner);
     assert(ok);

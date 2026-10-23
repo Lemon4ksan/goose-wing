@@ -1,14 +1,4 @@
-// Lexical Analyzer, Set-Cookie Parser & RFC 6265 Section 5.1.1 Date Tokenizer.
-// Clean Room Implementation for goose-wing conforming to Chromium CookieMonster and RFC 6265bis.
-//
-// Core Types:
-//   CanonicalCookieURL - Dissected URL model with origin binding, path, and security scheme.
-//
-// Standards & Specifications:
-//   RFC 6265bis Section 5.5 - Subcomponent payload and attribute size limits (4096B payload / 1024B attribute).
-//   RFC 6265bis Section 5.1.1 - Greedy 4-token date parsing algorithm and year normalization.
-//   W3C Web Platform Tests (WPT) nameless cookie security invariants (SHAD-01, SHAD-02).
-//   Strict ASCII Control Character (CTL) rejection (0x00-0x08, 0x0A-0x1F, 0x7F).
+// Set-Cookie header parsing, date tokenization, and cookie URL models (RFC 6265bis).
 namespace wing;
 
 import std;
@@ -20,13 +10,8 @@ import cookie.psl;
 
 // ---- ingestion pipeline & set-cookie parser --------------------------------
 
-// Ingestion Pipeline: Parses a Set-Cookie header field into CanonicalCookie.
-// Implements:
-// 1. Strict CTL validation (DELETE_COOKIE_CONTROL_CHAR = 11).
-// 2. Separate payload (name+value <= 4096) and attribute (<= 1024) limits.
-// 3. DQUOTE preservation in cookie-value.
-// 4. Max-Age priority over Expires, with 400-day TTL cap.
-// 5. Attribute parsing for HttpOnly, Secure, SameSite, Priority, Partitioned, Domain, Path.
+// Parses a Set-Cookie header value into a CanonicalCookie (RFC 6265bis §5.5).
+// Enforces payload length caps, validates control characters, and applies TTL limits.
 fn parse_canonical_set_cookie(
     header_val: const u8[:],
     default_domain: const u8[:],
@@ -74,9 +59,8 @@ fn parse_canonical_set_cookie(
     return parsed_cookie, CookieDeleteCause.UNKNOWN, true;
 }
 
-// Checks whether string contains prohibited ASCII Control Characters (CTLs: %x00-08 / %x0A-1F / %x7F).
-// RFC 6265bis Section 5.5 Step 1 & Section 5.7 Step 3 / Chromium Issue #1420 & #1531.
-// Note: HTAB (%x09) is non-prohibited horizontal whitespace.
+// Whether s contains ASCII control characters (%x00-08, %x0A-1F, %x7F).
+// HTAB (%x09) is permitted (RFC 6265bis §5.5).
 fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
     for char_byte in cookie_str {
         if (char_byte <= 0x08) || (char_byte >= 0x0A && char_byte <= 0x1F) || char_byte == 0x7F {
@@ -86,11 +70,9 @@ fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
     return false;
 }
 
-// ---- rfc 6265 Section 5.1.1 date parser -------------------------------------------
+// ---- date parser -----------------------------------------------------------
 
-// Parses an RFC 6265 Section 5.1.1 cookie date string, returning microsecond UTC timestamp.
-// Implements 4-flag greedy token parsing, 2-digit year normalization, leap year checks,
-// and 1601 minimum year bound (Windows FILETIME base).
+// Parses a cookie date string into a microsecond UTC timestamp (RFC 6265 §5.1.1).
 fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
     guard raw.len > 0 else { return 0, false; }
 
@@ -123,7 +105,8 @@ struct CanonicalCookieURL {
     is_secure: bool = false,
 }
 
-// Parses an arbitrary HTTP/HTTPS URL into its CanonicalCookieURL components.
+// Parses a URL into CanonicalCookieURL components, normalizing IPv6 brackets
+// and defaulting empty paths to '/' (RFC 6265bis).
 fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     var parsed_url = CanonicalCookieURL { .. };
     let parsed = new_url(raw_url);
@@ -363,8 +346,7 @@ fn parse_cookie_payload_pair(
     }
 
     if raw_name.len == 0 {
-        // Nameless cookie security invariant (omnomnom / RFC 6265bis / SHAD-01 / SHAD-02):
-        // Value of a nameless cookie must not contain '=' to prevent key shadowing
+        // Nameless cookie values must not contain '=' to prevent key shadowing
         for char_byte in raw_val {
             if char_byte == '=' { return "", false; }
         }
@@ -491,7 +473,7 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
         return false;
     }
 
-    // Single-label intranet hosts without dots cannot have domain cookies (DOM-13)
+    // Single-label hosts without dots cannot set domain cookies
     if count_dots(cookie_ref.domain[..]) == 0 {
         cookie_ref.host_only = true;
         return true;

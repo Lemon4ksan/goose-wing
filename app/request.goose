@@ -1,14 +1,5 @@
-// Unified Request model: procedural mutation + trailing-closure builder DSL.
-// Clean Room Implementation for goose-wing with BodyRewind and Security Contexts.
-//
-// Core Types:
-//   QueryItem - Single URL query parameter key-value pair.
-//   Request   - HTTP request entity with body buffer, rewind capability, and security isolation contexts.
-//
-// Standards & Specifications:
-//   RFC 9110 HTTP Request Semantics and Header Management.
-//   BodyRewind streaming support for HTTP redirect chains.
-//   Origin Initiator and SiteForCookies security bindings.
+// HTTP request representation with headers, query parameters, body rewind,
+// and security context metadata (RFC 9110).
 namespace wing;
 
 import std;
@@ -101,6 +92,8 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
 
 // ---- ufcs request mutators -------------------------------------------------
 
+// Sets a header on the request. Matches existing headers case-insensitively,
+// drops control characters, and marks credential headers sensitive.
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
     let hdr = make_header(name, value);
     for &header_entry in req.headers {
@@ -116,6 +109,7 @@ fn header(req: Request&, name: const u8[:], value: const u8[:]) {
     }
 }
 
+// Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
     let hdr = make_header(name, value, true);
     for &header_entry in req.headers {

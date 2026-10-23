@@ -1,6 +1,4 @@
-// Total Security, Robustness & Edge-Case Verification Suite for core/time.goose
-// Defending against integer overflow, ReDoS/DoS loops, sign injection,
-// calendar overflows, malformed syntax, and precision loss.
+// Tests for core/time: duration arithmetic, calendar math, and RFC 3339 codecs.
 import std;
 import wing from "..";
 
@@ -500,7 +498,7 @@ fn test_time_arithmetic_and_redos_immunity(t: wing::T&) {
         let t_min_sub = t1.sub(wing::Duration { nanos: -9223372036854775807 - 1 });
         sub.assert_gt(t_min_sub.unix(), t1.unix(), "subtracting negative i64.min duration must advance time forward");
 
-        // Saturated subtraction across > 292 years (Go issue #20678)
+        // Saturated subtraction across > 292 years (industry benchmark)
         let t_future = wing::date(2500, wing::Month.January, 1, 0, 0, 0, 0, 0);
         let t_epoch = wing::unix(0, 0);
         let diff_huge = t_future.sub(t_epoch);
@@ -805,7 +803,7 @@ fn test_http_date_rfc9110_and_attack_vectors(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Standard Time & Duration Total Security Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Time & Duration Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Duration Arithmetic, i64.min/max, Signs & Accessors", test_duration_arithmetic_and_bounds);
     wing::run_case(runner, "2. Duration Truncation and Rounding (Boundary & Half-Way)", test_duration_truncation_and_rounding);

@@ -1,17 +1,4 @@
-// Public Suffix List (PSL) & RFC 6265 Section 5.1 Domain and Path Matching Engine.
-// Clean Room Implementation for goose-wing conforming to Mozilla PSL specifications.
-//
-// Core Types:
-//   PslRuleType     - Suffix rule taxonomy (Normal, Wildcard, Exception).
-//   PslSection     - Mozilla PSL section authority (Icann, Private).
-//   PslRule         - Single compiled suffix rule entry.
-//   PslDatabase     - In-memory collection of dynamic PSL rules.
-//
-// Standards & Specifications:
-//   Mozilla Public Suffix List specification and precedence rules (!exception > *.wildcard > normal).
-//   RFC 6265 Section 5.1.3 - Domain-Match algorithm and IP literal exclusion.
-//   RFC 6265 Section 5.1.4 - Default-Path extraction and Path-Match prefix rules.
-//   eTLD+1 extraction for schemeful same-site boundaries and tenant isolation.
+// Public Suffix List rules, eTLD+1 extraction, and domain/path matching (RFC 6265 §5.1).
 namespace wing;
 
 import std;
@@ -55,8 +42,7 @@ fn new_psl_database() -> PslDatabase {
 
 // ---- public suffix & rfc 6265 scoping api ----------------------------------
 
-// Determines if domain is a public suffix (cannot set domain cookies for it).
-// Evaluates both ICANN and Private suffixes (e.g. "co.uk", "com", "github.io").
+// Whether domain is a public suffix (cannot set domain cookies for it).
 fn public_suffix_domain(domain: const u8[:]) -> bool {
     var clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
     if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
@@ -77,11 +63,7 @@ fn is_public_suffix_domain(domain: const u8[:]) -> bool {
     return public_suffix_domain(domain);
 }
 
-// Computes the public suffix of a domain and returns whether it belongs to the ICANN section.
-// Follows Mozilla PSL precedence:
-// 1. Exception rules (!rule) take absolute priority (suffix is rule without leftmost label).
-// 2. Wildcard (*.rule) and Normal (rule) matching most labels win.
-// 3. Fallback rule '*' applies if no rule matches (icann = false).
+// The public suffix of domain, following Mozilla PSL precedence (!exception > *.wildcard > rule).
 fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
     out_suffix.clear();
     var clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
@@ -95,9 +77,6 @@ fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
 }
 
 // Extracts the effective top-level domain plus one label (eTLD+1).
-// Used by CookieMonster for the primary 2-level hash indexing (CookieMap) and
-// the 180-cookie domain quota tree boundary, with strict tenant isolation for
-// private suffixes like github.io (foo.github.io -> foo.github.io).
 fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.clear();
     var clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
@@ -141,8 +120,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     to_lower(out[..]);
 }
 
-// RFC 6265 Section 5.1.3: Domain-Match algorithm.
-// S matches D if S == D, or D is a suffix of S with leading '.' and S is not an IP address.
+// Matches host against cookie domain (RFC 6265 §5.1.3).
 fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
 
@@ -171,8 +149,7 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     return false;
 }
 
-// RFC 6265 Section 5.1.4: Default-Path computation.
-// Extracts the directory prefix of the request URI path.
+// Computes the default cookie path from request URI path (RFC 6265 §5.1.4).
 fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.clear();
     if uri_path.len == 0 || uri_path[0] != '/' {
@@ -192,13 +169,12 @@ fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
     out.append(uri_path[..last_slash_idx]);
 }
 
-// RFC 6265 Section 5.1.4: Compute default cookie path alias
+// Compute default cookie path alias
 fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
     default_cookie_path_calc(uri_path, out);
 }
 
-// RFC 6265 Section 5.1.4: Path-Match algorithm.
-// Matches request path against cookie path prefix.
+// Whether request path matches cookie path prefix (RFC 6265 §5.1.4).
 fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
     let normalized_req_path = if req_path.len == 0 { "/" } else { req_path };
     let normalized_cookie_path = if cookie_path.len == 0 { "/" } else { cookie_path };
@@ -213,8 +189,7 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
     return false;
 }
 
-// Checks whether host is an IPv4 or IPv6 literal.
-// Per RFC 6265 Section 5.1.3, domain-matching MUST NOT match suffixes on IP addresses.
+// Whether host is an IPv4 or IPv6 literal. IP literals do not domain-match.
 fn ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
     for char_byte in host {

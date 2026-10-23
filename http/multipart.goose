@@ -1,21 +1,5 @@
-// Streaming multipart/form-data parser and RFC 9110 Range request coalescing engine for Goose.
-// Clean Room Implementation defending against:
-//   - CVE-2026-19484 / CVE-2024-13444: 16-bit BMH shift table preventing 8-bit table overflow / spinloop.
-//   - CVE-2011-3192 (Apache Killer): 16-range ceiling and O(N log N) range coalescing.
-//   - Sub-second If-Range timestamp mismatch: Seconds truncation for filesystem modification times.
-//
-// Core Types:
-//   MultipartOptions  - Configurable memory budgets, part ceilings, and payload thresholds.
-//   MultipartPart     - Parsed multipart entity with disposition metadata, headers, and body.
-//   MultipartMessage  - Sequence of decoded parts.
-//   RangeSet          - Coalesced and validated byte ranges.
-//
-// Standards & Specifications:
-//   RFC 2046 §5.1.1 - Boundary length strictly bounded to 1..70 ASCII characters.
-//   RFC 7578 - Returning Values from Forms: multipart/form-data.
-//   RFC 9110 §14 - HTTP Range Requests, Content-Range, Range Coalescing, and 416 Not Satisfiable.
-//   RFC 9110 §13.1.5 - If-Range validation (weak ETags forbidden, HTTP-Date seconds truncation).
-//   draft-wright-http-patch-byterange - Byte Range PATCH validation (Content-Range vs Content-Length).
+// Multipart form-data parsing (RFC 7578, RFC 2046) and HTTP range request
+// handling (RFC 9110 §14, §13.1.5).
 namespace wing;
 
 import std;
@@ -29,7 +13,7 @@ import http.mime;
 enum MultipartError {
     None,
     EmptyInput,
-    InvalidBoundaryLength,      // < 1 or > 70 characters (RFC 2046 §5.1.1 / CVE-2026-19484 defense)
+    InvalidBoundaryLength,      // outside 1..70 characters (RFC 2046 §5.1.1)
     InvalidBoundaryCharacters,
     MissingBoundaryDelimiter,
     PrematureEOF,
@@ -69,11 +53,10 @@ struct MultipartMessage {
     parts: MultipartPart[>..] = [],
 }
 
-// ---- 16-bit boyer-moore-horspool shift table (cve-2026-19484 defense) ------
+// ---- boyer-moore-horspool search -------------------------------------------
 
-// Builds a 16-bit Boyer-Moore-Horspool shift table.
-// Storing step sizes as u16 (instead of u8) ensures that jump distances >= 256
-// (e.g. from 252-byte boundary + 4-byte \r\n-- prefix) NEVER truncate to 0!
+// Computes the Boyer-Moore-Horspool shift table for needle. Shift values
+// are u16 so jump offsets up to 65535 bytes do not overflow to zero.
 fn build_bmh_shift_table(needle: const u8[:], table: u16[256]&) {
     let needle_len = needle.len;
     let default_shift = if needle_len > 65535 { 65535 as u16 } else { needle_len as u16 };
@@ -90,7 +73,7 @@ fn build_bmh_shift_table(needle: const u8[:], table: u16[256]&) {
     }
 }
 
-// Performs fast BMH search in haystack
+// The index of needle in haystack starting from start_pos, or -1.
 fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, start_pos: i64 = 0) -> i64 {
     let n_len = needle.len;
     let h_len = haystack.len;
@@ -107,13 +90,13 @@ fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, 
         }
         let last_b = haystack[i] as i64;
         let shift = table[last_b] as i64;
-        // Strict forward progress invariant (step >= 1)
+        // Shift at least one byte on mismatch.
         i += if shift > 0 { shift } else { 1 };
     }
     return -1;
 }
 
-// Validates boundary characters and length per RFC 2046 §5.1.1 (1..70 chars)
+// Whether boundary contains only characters allowed by RFC 2046 §5.1.1.
 fn validate_boundary_string(boundary: const u8[:]) -> bool {
     guard boundary.len >= 1 && boundary.len <= 70 else { return false; }
     for b in boundary {
@@ -129,14 +112,19 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
     return true;
 }
 
-// ---- streaming multipart parser --------------------------------------------
+// ---- multipart parsing -----------------------------------------------------
 
+// Parses a multipart/form-data payload according to RFC 7578 and RFC 2046.
+//
+// The boundary must be between 1 and 70 ASCII characters (RFC 2046 §5.1.1).
+// Delimiters are matched using a 16-bit Boyer-Moore-Horspool shift table,
+// requiring CRLF, LF, or '--' immediately after the boundary to avoid prefix
+// collisions. Total memory and part counts are bounded by options.
 fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartOptions = default_multipart_options()) -> MultipartMessage, MultipartError {
     var msg = MultipartMessage { .. };
     guard body.len > 0 else { return msg, MultipartError.EmptyInput; }
 
-    // Barrier 1: RFC 2046 §5.1.1 boundary length check (1..70 chars)
-    // Defends against CVE-2026-19484 before initializing parser buffers!
+    // Boundary length is bounded to 1..70 characters (RFC 2046 §5.1.1).
     guard boundary.len >= 1 && boundary.len <= 70 else {
         msg.valid = false;
         return msg, MultipartError.InvalidBoundaryLength;
@@ -159,7 +147,6 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     var part_delim: u8[..76] = "\n--";
     part_delim.append(boundary);
 
-    // Barrier 2: 16-bit shift table
     var shift_table: u16[256] = [0; 256];
     build_bmh_shift_table(part_delim[..], shift_table);
 
@@ -192,7 +179,7 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
 
     // Loop through parts
     while cursor < body.len {
-        // Skip optional transport padding (RFC 2046 §5.1.1)
+        // Skip optional transport padding (RFC 2046 Section 5.1.1)
         while cursor < body.len && (body[cursor] == ' ' || body[cursor] == '\t') {
             cursor++;
         }
@@ -327,7 +314,7 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     return msg, MultipartError.None;
 }
 
-// ---- rfc 9110 range requests & coalescing (cve-2011-3192 defense) -----------
+// ---- range requests and coalescing -----------------------------------------
 
 enum RangeError {
     None,
@@ -335,7 +322,7 @@ enum RangeError {
     InvalidUnit,                // Only 'bytes' is supported
     MalformedRange,
     Unsatisfiable,              // 416 Range Not Satisfiable
-    ExceededMaxRanges,          // > 16 ranges (CVE-2011-3192 Apache Killer defense)
+    ExceededMaxRanges,          // > 16 ranges
     TooManyEmptyElements,       // Ceiling on empty commas
 }
 
@@ -383,7 +370,8 @@ fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     return n, true;
 }
 
-// Parses and coalesces RFC 9110 §14 byte ranges
+// Parses an HTTP Range header into normalized intervals (RFC 9110 §14.1.2).
+// When with_coalesce is true, overlapping and adjacent ranges are merged.
 fn parse_range_header(
     header_val: const u8[:],
     resource_len: i64,
@@ -422,7 +410,7 @@ fn parse_range_header(
             continue;
         }
 
-        // Hard limit on requested ranges before coalescing (CVE-2011-3192 Apache Killer defense)
+        // Limit requested ranges before coalescing.
         guard specs.len < max_ranges else {
             return rs, RangeError.ExceededMaxRanges;
         }
@@ -507,13 +495,13 @@ fn parse_range_header(
         }
     }
 
-    // If no ranges overlap resource, 416 Range Not Satisfiable per RFC 9110 §14.4
+    // If no ranges overlap resource, 416 Range Not Satisfiable (RFC 9110 §14.4).
     if raw_ranges.len == 0 {
         rs.is_satisfiable = false;
         return rs, RangeError.Unsatisfiable;
     }
 
-    // Coalesce overlapping and adjacent ranges: s2 <= e1 + 1 ==> [s1, max(e1, e2)]
+    // Coalesce overlapping and adjacent ranges: [s1, max(e1, e2)] when s2 <= e1 + 1.
     if with_coalesce && raw_ranges.len > 1 {
         // Insertion sort by start offset
         for i in 1..raw_ranges.len {
@@ -555,7 +543,7 @@ fn parse_range_header(
     return rs, RangeError.None;
 }
 
-// Formats Content-Range header value (e.g. "bytes 0-499/1000" or "bytes */1000")
+// Appends a formatted Content-Range header value (RFC 9110 §14.4).
 fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&) {
     out.append("bytes ");
     if start >= 0 && end_pos >= start {
@@ -573,9 +561,8 @@ fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&)
     }
 }
 
-// RFC 9110 §13.1.5: If-Range condition evaluation
-// Weak ETags NEVER match in If-Range.
-// HTTP-dates are truncated to whole seconds before comparison with filesystem mod_time!
+// Evaluates an If-Range condition against an ETag or modification time.
+// Weak ETags are rejected; date comparisons truncate to whole seconds (RFC 9110 §13.1.5).
 fn evaluate_if_range(
     if_range_header: const u8[:],
     etag: const u8[:],
@@ -586,7 +573,7 @@ fn evaluate_if_range(
 
     // If strong ETag (starts with '"' and ends with '"', not weak W/"...")
     if trimmed[0] == '"' && trimmed[trimmed.len - 1] == '"' {
-        guard !starts_with_ignore_case(trimmed, "w/") else { return false; } // Weak ETags forbidden!
+        guard !starts_with_ignore_case(trimmed, "w/") else { return false; } // Weak ETags forbidden
         return trimmed == etag;
     }
 
@@ -594,14 +581,13 @@ fn evaluate_if_range(
     let parsed_date, date_ok = parse_http_date(trimmed);
     guard date_ok else { return false; }
 
-    // Truncate filesystem mod_time to whole seconds per RFC 9110 §13.1.5
+    // Compare timestamps truncated to whole seconds (RFC 9110 §13.1.5).
     let mod_sec = unix(mod_time);
     let parsed_sec = unix(parsed_date);
     return mod_sec == parsed_sec;
 }
 
-// draft-wright-http-patch-byterange validator
-// Verifies Content-Range on incoming PATCH part and matches against payload length
+// Validates a Content-Range header for a byte-range PATCH payload.
 fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i64, i64, bool {
     let trimmed = trim_lws(content_range_val);
     guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes ") else {
@@ -644,7 +630,7 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
     return start_val, end_val, true;
 }
 
-// Serves RFC 9110 Range request without requiring io.ReadSeeker
+// Handles an RFC 9110 range request, writing status, headers, and body slices.
 fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     req_range_header: const u8[:],
     if_range_header: const u8[:],

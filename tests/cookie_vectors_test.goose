@@ -1,5 +1,4 @@
-// Industrial Verification & Security Attack Vectors for CanonicalCookieJar
-// Conforming to RFC 6265, RFC 6265bis, CHIPS, CookieMonster, WPT & USENIX Security.
+// Test vectors for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 import std;
 import wing from "..";
 
@@ -861,7 +860,7 @@ fn run_property_based_fuzzer(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Maximum Cookie Edge-Case & Security Vectors (Matrices 1..16 & Fuzzer)", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Cookie Vectors Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Exhaustive Ingestion Matrix (LEX, TIME, DOM, PSL, IPv6, OBC)", run_ingestion_matrix);
     wing::run_case(runner, "2. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep", run_exhaustive_ctl_sweep);

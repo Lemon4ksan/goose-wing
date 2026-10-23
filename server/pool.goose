@@ -1,13 +1,4 @@
-// Tako v2 Zero-Allocation Server State & Memory Pooling Engine.
-// Clean-Room Implementation conforming to Tako v2 and high-performance server architectures.
-//
-// 6 Core Architectural Mechanisms:
-//   1. HeaderMap Pool      - Recycles HeaderMap structures without per-request heap allocation.
-//   2. Extensions Reuse    - In-place overwrite of connection and route metadata with automatic scrub.
-//   3. ENTRIES Mask        - Compile/dispatch bitmask populating only requested fields (CONN, PARAMS, etc).
-//   4. Sync Head Release   - Synchronous route dispatch in Service::call saving 8 KB socket buffers.
-//   5. InlineHandlerFuture - 48-byte inline handler execution state avoiding Box<dyn Future> allocation.
-//   6. Connection Timer    - Single monotonic timer ticking every half-deadline against Slowloris.
+// Server state, connection timers, and pooled buffers for request processing.
 namespace wing;
 
 import std;
@@ -15,7 +6,7 @@ import core.time;
 import app.profile;
 import server.router;
 
-// ---- mechanism 3: entries extractor bitmask --------------------------------
+// ---- extractor bitmasks ----------------------------------------------------
 
 let ENTRY_NONE:     u32 = 0;
 let ENTRY_CONN:     u32 = 1 << 0;
@@ -24,7 +15,7 @@ let ENTRY_COOKIES:  u32 = 1 << 2;
 let ENTRY_SECURITY: u32 = 1 << 3;
 let ENTRY_ALL:      u32 = 0x0F;
 
-// ---- mechanism 1: headermap pool -------------------------------------------
+// ---- header map pool -------------------------------------------------------
 
 struct PooledHeaderMap {
     headers: HeaderItem[..32] = [],
@@ -56,7 +47,7 @@ fn release_header_map(pool: HeaderMapPool&, idx: i32) {
     pool.pool[idx].in_use = false;
 }
 
-// ---- mechanism 2: extensions pool with sanitization ------------------------
+// ---- extensions pool -------------------------------------------------------
 
 struct RequestExtensions {
     peer_ip: u8[..48] = [],
@@ -101,7 +92,7 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[s_idx].in_use = false;
 }
 
-// ---- mechanism 4: synchronous head release (saving 8 kb socket buffer) -----
+// ---- head buffer release ---------------------------------------------------
 
 struct SyncHeadRelease {
     head_buffer_released: bool = false,
@@ -117,7 +108,7 @@ fn mark_head_released(shr: SyncHeadRelease&, consumed: i64) {
     shr.bytes_consumed = consumed;
 }
 
-// ---- mechanism 5: inline handler future (48-byte inline storage) -----------
+// ---- inline handler future -------------------------------------------------
 
 struct InlineHandlerFuture {
     vtable_tag: u16 = 0,
@@ -144,7 +135,7 @@ fn poll_future(fut: InlineHandlerFuture&) -> bool {
     return true;
 }
 
-// ---- mechanism 6: connection timer (slowloris protection) ------------------
+// ---- connection timer ------------------------------------------------------
 
 struct ConnectionTimer {
     active_req_seq: u64 = 0,

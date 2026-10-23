@@ -506,6 +506,11 @@ goose run examples/time_demo.goose
 - **Standard Conformance**: Strict alignment with RFC 6265bis, RFC 9110, and Chromium CookieMonster implementation details rather than loose interpretations.
 - **Idiomatic Goose DX**: Uniform Function Call Syntax (UFCS) support throughout, allowing both `jar.get(...)` and `wing::get(jar, ...)`.
 
+## Documentation & Reference Manuals
+
+- **[Security & Architecture Defense Manual](docs/SECURITY_DEFENSES.md)**: Comprehensive catalog of RFC specifications, vulnerability vectors (CVEs), and architectural defense mechanisms implemented across the stack.
+- **[Caller Contract & Nuances Manual](docs/CALLER_REFERENCE.md)**: Developer guide covering runtime semantics, buffer budgets, fail-closed constraints, error modes, and operational gotchas for API consumers.
+
 ## License
 
 Apache License, Version 2.0. See `LICENSE` for details.

@@ -1,11 +1,4 @@
-// Verification suite for http::mime (MediaType, StrictUnquote, SFV RFC 8941 & RFC 9651).
-// Tests:
-//   1. Chromium HttpUtil::StrictUnquote invariants (terminal escape, single quotes, double slashes).
-//   2. RFC 9110 §8.3 MediaType & Content-Type parameter parser.
-//   3. RFC 8941 §3.3.1 sf-integer (15-digit cap) & §3.3.2 sf-decimal (12.3 fixed-point milliths).
-//   4. RFC 8941 §3.3.3 sf-string (>=1024B, escape whitelist) & §3.1.2 key (uppercase hard fail).
-//   5. RFC 9651 sf-date (@epoch) & sf-displaystring (%"" with lowercase %xx and valid UTF-8).
-//   6. RFC 8941 §3.1 List (inner lists) & §3.2 Dictionary (duplicate keys overwrite in place).
+// Tests for MIME media types, parameter parsing, unquoting, and structured fields.
 import std;
 import wing from "..";
 
@@ -98,7 +91,7 @@ fn test_media_type_parser(t: wing::T&) {
 }
 
 fn test_sfv_integers_and_decimals(t: wing::T&) {
-    t.run("RFC 8941 §3.3.1 sf-integer 15-Digit Bounds") { sub =>
+    t.run("RFC 8941 Section 3.3.1 sf-integer 15-Digit Bounds") { sub =>
         var item = wing::SfvItem { .. };
 
         // 15 digits positive max
@@ -112,7 +105,7 @@ fn test_sfv_integers_and_decimals(t: wing::T&) {
         sub.assert_true(ok2, "15 digits min integer parsed");
         sub.assert_eq(item.bare.int_val, -999999999999999, "Negative value matches");
 
-        // 16 digits MUST FAIL per RFC 8941 §3.3.1
+        // 16 digits MUST FAIL per RFC 8941 Section 3.3.1
         let ok3 = wing::parse_sfv_item("1000000000000000", item);
         sub.assert_false(ok3, "16-digit integer must be rejected");
 
@@ -122,7 +115,7 @@ fn test_sfv_integers_and_decimals(t: wing::T&) {
         sub.assert_eq(item.bare.int_val, 0, "-0 parsed as 0");
     };
 
-    t.run("RFC 8941 §3.3.2 sf-decimal (12.3 Fixed-Point Milliths)") { sub =>
+    t.run("RFC 8941 Section 3.3.2 sf-decimal (12.3 Fixed-Point Milliths)") { sub =>
         var item = wing::SfvItem { .. };
 
         // 1.5 -> 1500 milliths
@@ -158,7 +151,7 @@ fn test_sfv_integers_and_decimals(t: wing::T&) {
 }
 
 fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
-    t.run("RFC 8941 §3.3.3 sf-string Escape Invariants") { sub =>
+    t.run("RFC 8941 Section 3.3.3 sf-string Escape Invariants") { sub =>
         var item = wing::SfvItem { .. };
 
         let ok1 = wing::parse_sfv_item("\"hello \\\"world\\\" and \\\\ slash\"", item);
@@ -166,7 +159,7 @@ fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
         sub.assert_eq(item.bare.kind, wing::SfvType.String, "Is String");
         sub.assert_bytes_eq(item.bare.text[..], "hello \"world\" and \\ slash", "Escapes decoded");
 
-        // Illegal escape sequence (e.g. \n or \t) MUST FAIL per RFC 8941 §3.3.3
+        // Illegal escape sequence (e.g. \n or \t) MUST FAIL per RFC 8941 Section 3.3.3
         let bad_esc = wing::parse_sfv_item("\"illegal \\n escape\"", item);
         sub.assert_false(bad_esc, "\\n escape sequence is forbidden in sf-string");
 
@@ -175,7 +168,7 @@ fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
         sub.assert_false(single_q, "Single-quoted string is forbidden");
     };
 
-    t.run("RFC 8941 §3.1.2 Dictionary Key Lowercase Invariant") { sub =>
+    t.run("RFC 8941 Section 3.1.2 Dictionary Key Lowercase Invariant") { sub =>
         var dict = wing::SfvDict { .. };
 
         // Valid lowercase key
@@ -189,7 +182,7 @@ fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
         sub.assert_false(dict.valid, "Dictionary marked invalid on uppercase key");
     };
 
-    t.run("RFC 8941 §3.3.5 sf-binary Base64 Decoding") { sub =>
+    t.run("RFC 8941 Section 3.3.5 sf-binary Base64 Decoding") { sub =>
         var item = wing::SfvItem { .. };
         // :AQIDBA==: -> [1, 2, 3, 4]
         let ok = wing::parse_sfv_item(":AQIDBA==:", item);
@@ -204,7 +197,7 @@ fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
 }
 
 fn test_sfv_rfc9651_dates_and_display_strings(t: wing::T&) {
-    t.run("RFC 9651 §3.3.7 sf-date (@epoch)") { sub =>
+    t.run("RFC 9651 Section 3.3.7 sf-date (@epoch)") { sub =>
         var item = wing::SfvItem { .. };
         let ok = wing::parse_sfv_item("@1659578233", item);
         sub.assert_true(ok, "Date parsed");
@@ -216,15 +209,15 @@ fn test_sfv_rfc9651_dates_and_display_strings(t: wing::T&) {
         sub.assert_false(bad_dec_date, "Decimal date must fail");
     };
 
-    t.run("RFC 9651 §3.3.8 sf-displaystring (%\"...\" UTF-8 and Lowercase Hex)") { sub =>
+    t.run("RFC 9651 Section 3.3.8 sf-displaystring (%\"...\" UTF-8 and Lowercase Hex)") { sub =>
         var item = wing::SfvItem { .. };
-        // %"f%c3%bcber" -> "f\xc3\xbcber" (German ü, 2 bytes UTF-8) -> 6 bytes total
+        // %"f%c3%bcber" -> "f\xc3\xbcber" (German u, 2 bytes UTF-8) -> 6 bytes total
         let ok = wing::parse_sfv_item("%\"f%c3%bcber\"", item);
         sub.assert_true(ok, "DisplayString with percent-encoded UTF-8 parsed");
         sub.assert_eq(item.bare.kind, wing::SfvType.DisplayString, "Is DisplayString");
         sub.assert_eq(item.bare.text.len, 6, "6 bytes decoded");
 
-        // Uppercase percent-encoded hex (%C3) MUST FAIL per RFC 9651 §3.3.8!
+        // Uppercase percent-encoded hex (%C3) MUST FAIL per RFC 9651 Section 3.3.8!
         let bad_upper = wing::parse_sfv_item("%\"f%C3%bcber\"", item);
         sub.assert_false(bad_upper, "Uppercase percent-hex is strictly forbidden");
 
@@ -235,7 +228,7 @@ fn test_sfv_rfc9651_dates_and_display_strings(t: wing::T&) {
 }
 
 fn test_sfv_lists_and_dictionaries(t: wing::T&) {
-    t.run("RFC 8941 §3.1 List with Standalone and Inner Lists") { sub =>
+    t.run("RFC 8941 Section 3.1 List with Standalone and Inner Lists") { sub =>
         var list = wing::SfvList { .. };
         // sugar, (milk tea);temp=hot, "cookies"
         let ok = wing::parse_sfv_list("sugar, (milk tea);temp=hot, \"cookies\"", list);
@@ -257,10 +250,10 @@ fn test_sfv_lists_and_dictionaries(t: wing::T&) {
         sub.assert_eq(list.members[2].item.bare.kind, wing::SfvType.String, "Is String");
     };
 
-    t.run("RFC 8941 §3.2 Dictionary In-Place Duplicate Overwrite") { sub =>
+    t.run("RFC 8941 Section 3.2 Dictionary In-Place Duplicate Overwrite") { sub =>
         var dict = wing::SfvDict { .. };
         // a=1, b=?0, a=2
-        // Duplicate key 'a' MUST overwrite previous value in-place per RFC 8941 §3.2!
+        // Duplicate key 'a' MUST overwrite previous value in-place per RFC 8941 Section 3.2!
         let ok = wing::parse_sfv_dict("a=1, b=?0, a=2", dict);
         sub.assert_true(ok, "Dictionary parsed");
         sub.assert_eq(dict.entries.len, 2, "2 unique keys (a and b)");
@@ -277,11 +270,11 @@ fn main() {
     var runner = wing::new_runner("HTTP MIME & Structured Field Values (SFV) Verification Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Chromium HttpUtil::StrictUnquote Invariants", test_strict_unquote_invariants);
-    wing::run_case(runner, "2. RFC 9110 §8.3 MediaType & Content-Type", test_media_type_parser);
-    wing::run_case(runner, "3. RFC 8941 §3.3.1 sf-integer & §3.3.2 sf-decimal", test_sfv_integers_and_decimals);
-    wing::run_case(runner, "4. RFC 8941 §3.3.3 sf-string, §3.3.5 sf-binary & keys", test_sfv_strings_tokens_and_keys);
+    wing::run_case(runner, "2. RFC 9110 Section 8.3 MediaType & Content-Type", test_media_type_parser);
+    wing::run_case(runner, "3. RFC 8941 Section 3.3.1 sf-integer & Section 3.3.2 sf-decimal", test_sfv_integers_and_decimals);
+    wing::run_case(runner, "4. RFC 8941 Section 3.3.3 sf-string, Section 3.3.5 sf-binary & keys", test_sfv_strings_tokens_and_keys);
     wing::run_case(runner, "5. RFC 9651 sf-date & sf-displaystring (UTF-8)", test_sfv_rfc9651_dates_and_display_strings);
-    wing::run_case(runner, "6. RFC 8941 §3.1 Lists & §3.2 Dictionaries", test_sfv_lists_and_dictionaries);
+    wing::run_case(runner, "6. RFC 8941 Section 3.1 Lists & Section 3.2 Dictionaries", test_sfv_lists_and_dictionaries);
 
     let ok = wing::finish(runner);
     assert(ok);

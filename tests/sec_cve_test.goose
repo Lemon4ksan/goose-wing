@@ -296,7 +296,7 @@ fn test_cve_netscape_import_security(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("CVE Coverage Regression Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("CVE Regression Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. CVE-2021-28918 & CVE-2021-29922 (Octal/Hex/Dword/Shorthand IPv4 SSRF)", test_cve_ipv4_formats_ssrf);
     wing::run_case(runner, "2. CVE-2024-24790 & RFC 6761 (Localhost, Uncompressed IPv6 & Tunnel SSRF)", test_cve_localhost_and_ipv6_tunnels_ssrf);

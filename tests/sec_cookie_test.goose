@@ -1,8 +1,4 @@
-// Consolidated verification suite for Cookie-Chaos audit findings (Rounds 1, 2, and 3).
-// Covers:
-//   Round 1: RFC 6265bis Section 5.6 Insecure cookie shadowing protection (COOKIE-CHAOS-01).
-//   Round 2: RFC 6265bis Section 5.4 Case-insensitive security prefix enforcement (COOKIE-CHAOS-02).
-//   Round 3: RFC 6265bis Section 5.3 Max-Age 64-bit integer overflow protection and 400-day capping (COOKIE-CHAOS-03).
+// Tests for cookie security prefix enforcement and Max-Age bounds.
 import std;
 import wing from "..";
 
@@ -146,7 +142,7 @@ fn test_max_age_overflow_and_capping(t: wing::T&) {
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Cookie-Chaos Consolidated Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Cookie Invariants Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
     wing::run_case(runner, "2. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);

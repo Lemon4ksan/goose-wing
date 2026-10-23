@@ -1,19 +1,4 @@
-// The Goose standard test library: candidate for `std::test`.
-//
-// Core Types:
-//   T          - Test execution context and bounded failure diagnostics collector.
-//   Runner     - Test suite lifecycle coordinator, timing reporter, and accumulator.
-//   Failure    - Diagnostic record containing subtest name, summary, and structural diff.
-//   Verbosity  - Suite reporting level enum (Silent, Normal, Verbose, Golden).
-//   MockClock  - High-resolution deterministic virtual clock (microsecond scale).
-//   FuzzRng    - Zero-allocation deterministic PRNG (Xorshift64*) for property fuzzing.
-//   CallRecord - Typed spy and stub recording invocation count and canned return values.
-//
-// Standards & Specifications:
-//   Go testify (assert, require, suite, mock) idioms adapted for Goose zero-heap model.
-//   Compile-time structural diffing via `const for <N, A> in fields<T>`.
-//   Deterministic golden output mode for reproducible bit-for-bit test runners.
-//   Chromium CookieMonster and WPT test harness patterns.
+// Test execution context, assertions, mock clocks, and test suite runners.
 namespace wing;
 
 import std;
@@ -170,7 +155,7 @@ fn monotonic_now(clock: const MockClock&) -> MonotonicInstant {
     return MonotonicInstant { nanos: ns };
 }
 
-// Nanosecond-precision deterministic monotonic clock for GCRA and sub-microsecond tests
+// Deterministic monotonic clock for testing.
 struct MockMonoClock {
     now_ns: u64 = 1000000000,
 }
@@ -207,7 +192,7 @@ fn monotonic_now(clock: const MockMonoClock&) -> MonotonicInstant {
     return MonotonicInstant { nanos: clock.now_ns };
 }
 
-// Deterministic Xorshift64* generator for zero-allocation property fuzzing
+// Deterministic Xorshift64* generator for property testing.
 struct FuzzRng {
     state: u64 = 0x853c49e6748fea9b,
 }
@@ -492,7 +477,7 @@ fn assert_not_contains(t: T&, haystack: const u8[:], needle: const u8[:], label:
     return true;
 }
 
-// Multiset element matching without order dependency (Zero-Heap, bounded to 256 elements)
+// Asserts that two slices contain the same elements regardless of order (up to 256 elements).
 fn assert_elements_match<Val>(t: T&, a: const Val[:], b: const Val[:], label: const u8[:] = "") -> bool {
     if t.aborted { return false; }
     t.assertions_count += 1;

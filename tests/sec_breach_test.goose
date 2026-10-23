@@ -1,11 +1,4 @@
-// Red Team Security Verification Suite: Perimeter-Breach & Concurrency
-// Covers:
-//   1. RFC 6265bis Section 5.6: __Host- & __Secure- Cookie Prefix Invariants & Domain Smuggling (Go #19438)
-//   2. SSRF Filter Bypasses & IPv6 Zone ID / Scope ID Proxy Smuggling (CVE-2025-22870, Go #71984)
-//   3. Dangerous Service Ports & Port 0 SSRF Bypass (CWE-918 / CWE-200)
-//   4. Public Suffix Boundary Attacks & FQDN Edge Cases (Go #32979, #11686, #69026, #73385, #23671, #25254)
-//   5. Token Bucket & GCRA Burst / Concurrency Limits (Go x/time/rate #69419, #80698, #54082, #65508)
-//   6. Singleflight Thundering Herd & Cache Stampede Defense (Go x/sync/singleflight #33519, #41133, #31420, #42092, #74880)
+// Security tests for cookie prefixes, SSRF filter bypasses, and port validation.
 import std;
 import wing from "..";
 
@@ -156,8 +149,8 @@ fn test_ssrf_filter_bypasses(t: wing::T&) {
         sub.assert_true(wing::is_private_or_reserved_ip("10.0.0.1."), "10.0.0.1. with trailing dot must be blocked");
     };
 
-    t.run("SSRF-05: IPv6 Zone ID / Scope ID Proxy Smuggling & SSRF Bypass (CVE-2025-22870 / Go #71984)") { sub =>
-        // In Go CVE-2025-22870, [::1%25.example.com]:80 bypassed proxy filters because .example.com was treated as host
+    t.run("SSRF-05: IPv6 Zone ID / Scope ID Proxy Smuggling & SSRF Bypass (CVE-2025-22870)") { sub =>
+        // In CVE-2025-22870, [::1%25.example.com]:80 bypassed proxy filters because .example.com was treated as host
         // Goose recognizes stripped base ::1 and fe80::1 as reserved/loopback/link-local:
         sub.assert_true(wing::is_private_or_reserved_ip("[::1%25.example.com]"), "Bracketed ::1 with %25 zone ID must be blocked");
         sub.assert_true(wing::is_private_or_reserved_ip("::1%25.example.com"), "Bare ::1 with %25 zone ID must be blocked");
@@ -274,7 +267,7 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
         sub.assert_false(ok_other, "Domain=other.kobe.jp must be rejected under *.kobe.jp wildcard");
     };
 
-    t.run("PSL-04: FQDN Trailing-dot normalization (Go issue #11686)") { sub =>
+    t.run("PSL-04: FQDN Trailing-dot normalization (industry benchmark)") { sub =>
         var etld1: u8[..128] = [];
         wing::extract_etld_plus_one("example.com.", etld1);
         sub.assert_eq(etld1[..], "example.com", "example.com. with trailing dot must derive example.com");
@@ -287,7 +280,7 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
         sub.assert_true(matches, "cookie_domain_match must handle trailing dot FQDN");
     };
 
-    t.run("PSL-05: IP address literal immunity (Go issue #32979)") { sub =>
+    t.run("PSL-05: IP address literal immunity (industry benchmark)") { sub =>
         var etld_ip: u8[..128] = [];
         wing::extract_etld_plus_one("127.0.0.1", etld_ip);
         sub.assert_eq(etld_ip[..], "127.0.0.1", "IP literal must not be parsed through PSL");
@@ -297,7 +290,7 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
         sub.assert_false(match_ip, "IP address must never match sub-domain suffixes");
     };
 
-    t.run("PSL-06: Case insensitivity in PSL evaluations (Go issue #25254)") { sub =>
+    t.run("PSL-06: Case insensitivity in PSL evaluations (industry benchmark)") { sub =>
         var etld_upper: u8[..128] = [];
         wing::extract_etld_plus_one("FOO.EXAMPLE.COM", etld_upper);
         sub.assert_eq(etld_upper[..], "example.com", "Uppercase FOO.EXAMPLE.COM must derive lowercase example.com");
@@ -334,7 +327,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
         };
     };
 
-    t.run("RATE-02: Cost > burst pitfall (Go #80698)") { sub =>
+    t.run("RATE-02: Cost > burst pitfall ") { sub =>
         let quota = wing::new_gcra_quota(1, wing::seconds(1), 5);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
@@ -440,7 +433,7 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
         sub.assert_true(wing::is_in_flight(g, key), "Key must be marked in-flight");
     };
 
-    t.run("FLIGHT-02: Result broadcast and shared flag accuracy (Go #74880)") { sub =>
+    t.run("FLIGHT-02: Result broadcast and shared flag accuracy ") { sub =>
         var g = wing::new_singleflight_group();
         let key = "db:query:orders";
 
@@ -477,7 +470,7 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
         sub.assert_false(wing::is_shared(g, key), "Single caller execution must not be marked shared");
     };
 
-    t.run("FLIGHT-04: Explicit Forget & re-execution (Go #31420 / #42092)") { sub =>
+    t.run("FLIGHT-04: Explicit Forget & re-execution ") { sub =>
         var g = wing::new_singleflight_group();
         let key = "cache:stock:price";
 
@@ -494,7 +487,7 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
         sub.assert_true(is_lead_next, "After forget, next call must be a new leader");
     };
 
-    t.run("FLIGHT-05: ForgetUnshared proposal (Go #54439)") { sub =>
+    t.run("FLIGHT-05: ForgetUnshared proposal ") { sub =>
         var g = wing::new_singleflight_group();
 
         // 1. Shared key
@@ -515,7 +508,7 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
         sub.assert_true(forgot_unshared, "forget_unshared must remove unshared key");
     };
 
-    t.run("FLIGHT-06: Error / Failure unblocking (Go #33519 / #41133 deadlock prevention)") { sub =>
+    t.run("FLIGHT-06: Error / Failure unblocking ") { sub =>
         var g = wing::new_singleflight_group();
         let key = "db:broken_query";
 
@@ -542,7 +535,7 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Perimeter-Breach Security Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Perimeter Security Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. RFC 6265bis Section 5.6 (__Host- & __Secure- Prefix Invariants)", test_host_and_secure_cookie_prefix_smuggling);
     wing::run_case(runner, "2. SSRF Filter Bypasses & IPv6 Zone ID Proxy Smuggling (CVE-2025-22870)", test_ssrf_filter_bypasses);

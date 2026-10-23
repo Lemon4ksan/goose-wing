@@ -1,5 +1,4 @@
-// Verification Suite for ClientSession, Mozilla PSL, Same-Site & Redirect State Machine
-// Conforming to Mozilla PSL, RFC 9110, RFC 6265bis, and WHATWG Fetch Section 4.5.
+// Tests for ClientSession, redirect policies, and cookie handling.
 import std;
 import wing from "..";
 

@@ -1,17 +1,4 @@
-// The Goose concurrency, actor, and CSP subsystem: candidate for `core::sync`.
-//
-// Concurrency Model:
-//   Goose adheres to the Share-Nothing / Actor / Communicating Sequential Processes (CSP) model.
-//   There is no shared mutable memory, no data races, no memory barriers, and no mutex locks.
-//   Threads communicate exclusively via typed message queues (qput, qget, qpoll, qlimit).
-//
-// Subsystems:
-//   1. core::sync::rt          - Runtime primitives, channels, capacity limits, safe timeouts, polling.
-//   2. core::sync::primitives  - BatonMutex (ownership token), Semaphore / Bulkhead, WaitGroup, CountDownLatch, CyclicBarrier.
-//   3. core::sync::csp         - StaticChan, Envelope tagging, Rendezvous (BiChan), SelectMux, Reassembler.
-//   4. core::sync::actor       - 16-byte ActorRef, cast / call protocol, StashBuffer, PriorityMailbox (binary heap).
-//   5. core::sync::supervisor  - Fault tolerance, OTP-grade supervisor trees (OneForOne, OneForAll, RestForOne, SimpleOneForOne),
-//                                RestartType (Permanent, Transient, Temporary), AutoShutdown, intensity tracking.
+// Concurrency primitives, actor message passing, CSP channels, supervisor trees, and singleflight call suppression.
 namespace wing;
 
 import std;
@@ -784,15 +771,8 @@ fn wait_all(sup: Supervisor&) -> bool {
     return wait_all(sup, dummy);
 }
 
-// ---- singleflight: duplicate call suppression & cache stampede defense ----
-// Clean-Room Implementation defending against Thundering Herd / Cache Stampedes (Go x/sync/singleflight).
-//
-// Invariants & Defenses:
-//   1. Exactly one execution per active key: concurrent callers join and share identical results.
-//   2. Waiter counting: accurately tracks whether a result was shared (shared == true).
-//   3. Safe Forget / ForgetUnshared (Go issue #54439): removes keys cleanly without orphan leaks.
-//   4. Panic / Abort resilience (Go issues #33519, #41133): abnormal leader termination unblocks waiters.
-//   5. Data race immunity (Go issue #49798) via zero-heap stack-local state & CSP channels.
+// ---- singleflight: duplicate call suppression -----------------------------
+// Suppresses duplicate concurrent executions for the same key.
 
 struct FlightEntry {
     key: u8[..64] = [],
@@ -814,10 +794,11 @@ fn new_singleflight_group() -> SingleflightGroup {
     return SingleflightGroup { .. };
 }
 
-// Attempts to start execution for key.
-// Returns (is_leader, val, shared):
-// - If is_leader == true: Caller MUST execute the operation and call finish_call.
-// - If is_leader == false: Another execution is in-flight or completed; caller joined as waiter.
+// Registers or joins an execution for key_str.
+// Returns (is_leader, val, shared).
+// If is_leader is true, the caller executes the operation and calls finish_call.
+// If is_leader is false and execution is in-flight, returns (false, 0, true).
+// If already completed, returns the cached result.
 fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
     for idx in g.entries.len {
         if g.entries[idx].key[..] == key_str {
@@ -855,6 +836,7 @@ fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool
 }
 
 // Marks the in-flight key execution as finished with val and success status.
+// Returns (true, waiter_count) if the key was found in-flight.
 fn finish_call(g: SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 {
     for idx in g.entries.len {
         if g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
@@ -869,7 +851,8 @@ fn finish_call(g: SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool =
     return false, 0;
 }
 
-// Forgets key, allowing the next call to re-execute (Go Group.Forget).
+// forget evicts key_str from the group immediately, allowing the next caller to execute as leader.
+// Returns true if the key was found and removed, false otherwise.
 fn forget(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
     for idx in g.entries.len {
         if g.entries[idx].key[..] == key_str {
@@ -881,7 +864,8 @@ fn forget(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
     return false;
 }
 
-// Forgets key only if it was NOT shared with any concurrent caller (Go Group.ForgetUnshared proposal #54439).
+// Removes key_str only if it was not shared with any concurrent caller (waiter_count == 0).
+// Returns true if removed, false if preserved.
 fn forget_unshared(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
     for idx in g.entries.len {
         if g.entries[idx].key[..] == key_str {
@@ -896,7 +880,7 @@ fn forget_unshared(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
     return false;
 }
 
-// Queries whether key is currently executing in-flight (Go issue #49045).
+// Queries whether key is currently executing in-flight.
 fn is_in_flight(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
     for idx in g.entries.len {
         if g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
@@ -916,7 +900,7 @@ fn waiter_count(g: const SingleflightGroup&, key_str: const u8[:]) -> i32 {
     return 0;
 }
 
-// Returns whether the call for key was shared across multiple callers (Go issue #74880).
+// Returns whether the call for key was shared across multiple callers.
 fn is_shared(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
     for idx in g.entries.len {
         if g.entries[idx].key[..] == key_str {

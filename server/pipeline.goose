@@ -1,13 +1,4 @@
-// Unified Defense-in-Depth Server Pipeline for goose-wing.
-// Clean-Room Implementation orchestrating security/ and server/ subsystems.
-//
-// Pipeline Execution Order (Ascending Computational Complexity):
-//   Stage 0 (~5 ns)   : ConnectionTimer / Slowloris Liveliness Gate (core/time monotonic).
-//   Stage 1 (~100 ns) : Sharded GCRA Rate Limiter & DDoS Shield (security/rate_limiter).
-//   Stage 2 (~50 ns)  : W3C Fetch Metadata Resource Isolation & CORS Engine (security/csrf, security/cors).
-//   Stage 3 (~100 ns) : Zero-Allocation Radix Trie Routing & 405 Gate (server/router).
-//   Stage 4 (~50 us)  : Selective ENTRIES Extraction & Constant-Time CryptoJar (security/crypto_jar).
-//   Stage 5           : Inline Handler Execution & Tako v2 State Pool Recycle (server/pool).
+// Server request execution pipeline with rate limiting, CORS/CSRF evaluation, routing, and pooling.
 namespace wing;
 
 import std;
@@ -62,7 +53,7 @@ enum PipelineOutcome {
     ExpectationFailed,
 }
 
-// Executes an incoming request through the multi-tier defense pipeline
+// Executes an incoming request through the configured pipeline stages.
 fn execute_pipeline(
     cfg: ServerPipelineConfig&,
     conn_timer: ConnectionTimer&,
@@ -72,7 +63,7 @@ fn execute_pipeline(
     res: Response&,
     out_future: InlineHandlerFuture&,
 ) -> PipelineOutcome {
-    // Stage 0: Liveliness / Slowloris check
+    // Connection liveliness / timeout check
     notify_request_start(conn_timer);
     guard check_connection_tick(conn_timer, now_ns) else {
         notify_request_end(conn_timer);
@@ -80,7 +71,7 @@ fn execute_pipeline(
         return PipelineOutcome.SlowlorisClosed;
     }
 
-    // Stage 0.5: RFC 9110 §10.1.1 Expect Header Validation (Go #21803 / #36026)
+    // Expect header validation (RFC 9110 §10.1.1: reject unknown expectations with 417)
     for &hdr in req.headers {
         if eq_ascii_fold(hdr.name[..], "expect") {
             let exp_val = hdr.value[..];
@@ -92,7 +83,7 @@ fn execute_pipeline(
         }
     }
 
-    // Stage 1: Non-blocking GCRA Rate Limiter
+    // Rate limiter check
     let rl_decision = check_keyed_rate_limit(cfg.limiter, client_ip, 1, now_ns);
     apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
     if !is_allowed(rl_decision) {
@@ -100,7 +91,7 @@ fn execute_pipeline(
         return PipelineOutcome.RateLimited;
     }
 
-    // Stage 2: CORS and Fetch Metadata Guard
+    // CORS and Fetch Metadata isolation check
     let cors_res = evaluate_cors(cfg.cors_policy, req, res);
     if cors_res == CorsResult.AllowedPreflight {
         notify_request_end(conn_timer);
@@ -120,7 +111,7 @@ fn execute_pipeline(
         _ => {},
     };
 
-    // Stage 3: Zero-Allocation Radix Trie Routing
+    // Radix trie route matching
     let ext_slot_idx = acquire_extensions(cfg.ext_pool);
     let e_idx = ext_slot_idx as i64;
     cfg.ext_pool.slots[e_idx].peer_ip.append(client_ip);
@@ -142,7 +133,7 @@ fn execute_pipeline(
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
-            // Stage 4: Extractor mask (ENTRIES) & selective cookie decryption
+            // Cookie decryption
             if (f.entries_mask & ENTRY_COOKIES) != 0 {
                 // Decrypt session cookie if present
                 for idx in req.headers.len {
@@ -156,7 +147,7 @@ fn execute_pipeline(
                 }
             }
 
-            // Stage 5: Synchronous handler dispatch via InlineHandlerFuture
+            // Handler dispatch
             out_future = new_inline_handler_future(f.handler_id as u16);
             poll_future(out_future);
 

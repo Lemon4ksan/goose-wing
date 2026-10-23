@@ -1,15 +1,4 @@
-// Constant-Time Primitives, Secret Memory Hygiene, Dudect Verifier & Pure-Goose Crypto Core.
-// Clean-Room Implementation for goose-wing (security/ct).
-//
-// Core Types:
-//   KeySlot       - Secret 256-bit key container with automatic log redaction and zeroization.
-//   DudectContext - Two-class Welch's t-test statistical timing leakage analyzer with outlier cropping.
-//
-// Cryptographic Primitives (Zero External Dependencies):
-//   Constant-Time : ct_eq_u8, ct_eq_u32, ct_select_u8, ct_eq_bytes, ct_eq_tag16, ct_eq_tag32, secure_zeroize.
-//   Hash & MAC    : SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 2104), HKDF-SHA256 (RFC 5869).
-//   AEAD Ciphers  : XChaCha20-Poly1305 (RFC 8439 + draft-irtf-cfrg-xchacha), HKDF + AES-256-GCM.
-//   Wire Encoding : Base64URL (RFC 4648 Section 5, URL-safe unpadded).
+// Constant-time primitives, key zeroization, SHA-256/HMAC/HKDF, and cryptographic codecs.
 namespace wing;
 
 import std;

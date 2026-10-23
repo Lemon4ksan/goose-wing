@@ -1,15 +1,9 @@
-// Zero-Heap Clean-Room HTTP/2 Binary Framer & Security State Machine
-// Conforming to RFC 9113 (HTTP/2) and defending against historical CVEs:
-//   1. CVE-2024-27983: CONTINUATION Flood (unbounded CONTINUATION frames DoS).
-//   2. CVE-2023-44487: Rapid Reset Attack (flood of HEADERS followed immediately by RST_STREAM).
-//   3. Go Issue #78477: SETTINGS_MAX_FRAME_SIZE=0 infinite loop DoS.
-//   4. CVE-2019-9512 / CVE-2019-9515: PING Flood & Settings Flood.
-//   5. RFC 9113 §5.1.1: Stream ID parity (client odd, server even, stream 0 connection-level).
+// HTTP/2 frame parsing, validation, and connection state machine (RFC 9113).
 namespace wing;
 
 import std;
 
-// ---- http/2 frame types (rfc 9113 §6) --------------------------------------
+// ---- frame types -----------------------------------------------------------
 
 enum H2FrameType {
     Data,          // 0x0
@@ -41,7 +35,7 @@ fn byte_to_frame_type(b: u8) -> H2FrameType {
     };
 }
 
-// ---- http/2 flags (rfc 9113) -----------------------------------------------
+// ---- frame flags -----------------------------------------------------------
 
 let H2_FLAG_END_STREAM:  u8 = 0x01;
 let H2_FLAG_ACK:         u8 = 0x01;
@@ -49,7 +43,7 @@ let H2_FLAG_END_HEADERS: u8 = 0x04;
 let H2_FLAG_PADDED:      u8 = 0x08;
 let H2_FLAG_PRIORITY:    u8 = 0x20;
 
-// ---- http/2 error codes (rfc 9113 §7) --------------------------------------
+// ---- error codes -----------------------------------------------------------
 
 enum H2ErrorCode {
     NoError,            // 0x0
@@ -63,12 +57,12 @@ enum H2ErrorCode {
     Cancel,             // 0x8
     CompressionError,   // 0x9
     ConnectError,       // 0xa
-    EnhanceYourCalm,    // 0xb - Flood / DDoS protection triggered
+    EnhanceYourCalm,    // 0xb - flood or quota limit triggered
     InadequateSecurity, // 0xc
     Http11Required,     // 0xd
 }
 
-// ---- parsed 9-byte frame header --------------------------------------------
+// ---- frame header ----------------------------------------------------------
 
 struct H2FrameHeader {
     payload_len: i32 = 0,     // 24-bit unsigned int
@@ -79,7 +73,8 @@ struct H2FrameHeader {
     valid: bool = false,
 }
 
-// Decodes standard 9-byte HTTP/2 frame header from raw buffer
+// Decodes a 9-byte HTTP/2 binary frame header (RFC 9113 §4.1).
+// Masks out the reserved high bit of the stream identifier.
 fn parse_h2_frame_header(raw: const u8[:]) -> H2FrameHeader, H2ErrorCode {
     var hdr = H2FrameHeader { .. };
     guard raw.len >= 9 else {
@@ -107,7 +102,7 @@ fn parse_h2_frame_header(raw: const u8[:]) -> H2FrameHeader, H2ErrorCode {
     return hdr, H2ErrorCode.NoError;
 }
 
-// ---- http/2 security state machine & dos shield ----------------------------
+// ---- connection state and limits -------------------------------------------
 
 enum H2ConnState {
     Idle,
@@ -121,24 +116,23 @@ struct H2SecurityFramer {
     continuation_count: i32 = 0,
     header_block_bytes: i32 = 0,
 
-    // DDoS & Flood counters
     rapid_reset_count: i32 = 0,
     ping_flood_count: i32 = 0,
     settings_flood_count: i32 = 0,
 
-    // Thresholds
-    max_frame_size: i32 = 16384,          // Default 16 KB
+    max_frame_size: i32 = 16384,          // default 16 KB
     max_header_block_bytes: i32 = 8192,   // 8 KB cumulative limit
-    max_continuation_frames: i32 = 5,     // CVE-2024-27983 bound
-    max_rapid_resets: i32 = 100,          // CVE-2023-44487 bound
-    max_unack_pings: i32 = 10,            // CVE-2019-9512 bound
+    max_continuation_frames: i32 = 5,     // limit on consecutive CONTINUATION frames
+    max_rapid_resets: i32 = 100,          // reset flood threshold
+    max_unack_pings: i32 = 10,            // unacknowledged ping limit
 }
 
 fn new_h2_security_framer() -> H2SecurityFramer {
     return H2SecurityFramer { .. };
 }
 
-// Processes incoming frame header through the security state machine
+// Validates an incoming frame header and transitions the connection state machine.
+// Enforces stream ID parity, CONTINUATION sequence rules, frame sizes, and flood limits.
 fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) -> H2ErrorCode {
     guard hdr.valid else { return H2ErrorCode.ProtocolError; }
 
@@ -149,7 +143,7 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
 
     // 2. Stream ID 0 Validation (RFC 9113 §5.1.1)
     if hdr.stream_id == 0 {
-        // Stream 0 MUST NOT carry DATA, HEADERS, PRIORITY, RST_STREAM, or CONTINUATION
+        // Stream 0 must not carry DATA, HEADERS, PRIORITY, RST_STREAM, or CONTINUATION
         if hdr.frame_type == H2FrameType.Data ||
            hdr.frame_type == H2FrameType.Headers ||
            hdr.frame_type == H2FrameType.RstStream ||
@@ -157,15 +151,14 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
             return H2ErrorCode.ProtocolError;
         }
     } else {
-        // Non-zero stream MUST NOT carry SETTINGS or PING
+        // Non-zero stream must not carry SETTINGS or PING
         if hdr.frame_type == H2FrameType.Settings || hdr.frame_type == H2FrameType.Ping {
             return H2ErrorCode.ProtocolError;
         }
     }
 
-    // 3. CVE-2024-27983: CONTINUATION Flood & Interleaving Guard
+    // 3. CONTINUATION frames must follow HEADERS on the same stream without interleaving
     if framer.state == H2ConnState.ExpectContinuation {
-        // In ExpectContinuation, ONLY CONTINUATION frames on the exact same stream are allowed
         if hdr.frame_type != H2FrameType.Continuation || hdr.stream_id != framer.continuation_stream_id {
             framer.state = H2ConnState.Closed;
             return H2ErrorCode.ProtocolError;
@@ -174,13 +167,13 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
         framer.continuation_count++;
         guard framer.continuation_count <= framer.max_continuation_frames else {
             framer.state = H2ConnState.Closed;
-            return H2ErrorCode.EnhanceYourCalm; // CONTINUATION flood attack thwarted
+            return H2ErrorCode.EnhanceYourCalm;
         }
 
         framer.header_block_bytes += hdr.payload_len;
         guard framer.header_block_bytes <= framer.max_header_block_bytes else {
             framer.state = H2ConnState.Closed;
-            return H2ErrorCode.EnhanceYourCalm; // Header block size bomb thwarted
+            return H2ErrorCode.EnhanceYourCalm;
         }
 
         // END_HEADERS completes the header block
@@ -193,7 +186,7 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
         return H2ErrorCode.NoError;
     }
 
-    // If a CONTINUATION arrives while NOT expecting it -> ProtocolError
+    // If a CONTINUATION arrives while not expecting it
     if hdr.frame_type == H2FrameType.Continuation {
         return H2ErrorCode.ProtocolError;
     }
@@ -215,17 +208,17 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
         return H2ErrorCode.NoError;
     }
 
-    // 5. CVE-2023-44487: Rapid Reset Defense
+    // 5. RST_STREAM flood limit
     if hdr.frame_type == H2FrameType.RstStream {
         framer.rapid_reset_count++;
         if framer.rapid_reset_count > framer.max_rapid_resets {
             framer.state = H2ConnState.Closed;
-            return H2ErrorCode.EnhanceYourCalm; // Rapid Reset DoS thwarted
+            return H2ErrorCode.EnhanceYourCalm;
         }
         return H2ErrorCode.NoError;
     }
 
-    // 6. CVE-2019-9512 / CVE-2019-9515: PING & Settings Flood Defense
+    // 6. PING flood limit
     if hdr.frame_type == H2FrameType.Ping {
         if (hdr.flags & H2_FLAG_ACK) == 0 {
             framer.ping_flood_count++;
@@ -238,7 +231,7 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
     return H2ErrorCode.NoError;
 }
 
-// Validates a SETTINGS parameter pair (RFC 9113 §6.5.2 / Go #78477)
+// Validates an HTTP/2 SETTINGS parameter (RFC 9113 §6.5.2).
 fn validate_h2_setting(param_id: u16, val: u32) -> H2ErrorCode {
     // SETTINGS_ENABLE_PUSH (0x2): value must be 0 or 1
     if param_id == 0x2 {
@@ -254,9 +247,7 @@ fn validate_h2_setting(param_id: u16, val: u32) -> H2ErrorCode {
         }
     }
 
-    // SETTINGS_MAX_FRAME_SIZE (0x5): Go Issue #78477 defense
-    // Range must be strictly between 16,384 (16 KB) and 16,777,215 (16 MB).
-    // Setting 0 or < 16384 causes infinite loops in naive implementations.
+    // SETTINGS_MAX_FRAME_SIZE (0x5) must be between 16384 and 16777215 (RFC 9113 §6.5.2)
     if param_id == 0x5 {
         if val < 16384 || val > 16777215 {
             return H2ErrorCode.ProtocolError;

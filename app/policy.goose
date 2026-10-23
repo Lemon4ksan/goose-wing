@@ -1,12 +1,4 @@
-// Networking and resilience policies for goose-wing (Backoff, RateLimiter).
-//
-// Core Types:
-//   Backoff     - Exponential backoff retry policy with duration caps and multiplicative factors.
-//   RateLimiter - Token bucket rate limiter for pacing outbound network requests.
-//
-// Standards & Specifications:
-//   Exponential backoff with upper bound duration saturation.
-//   Continuous-replenishment Token Bucket rate limiting algorithm.
+// Networking and retry policies: exponential backoff and token bucket rate limiting.
 namespace wing;
 
 import std;
@@ -29,7 +21,7 @@ fn new_backoff(base: Duration, max_delay: Duration, factor: f64 = 2.0) -> Backof
     };
 }
 
-// Calculates retry delay for the given attempt count (0-indexed). Capped at max_ns.
+// The retry delay for an attempt (0-indexed), capped at max_ns.
 fn delay(backoff: const Backoff&, attempt: i64) -> Duration {
     if attempt <= 0 { return Duration { nanos: backoff.base_ns }; }
     var current: f64 = backoff.base_ns;
@@ -45,7 +37,7 @@ fn delay(backoff: const Backoff&, attempt: i64) -> Duration {
 
 // ---- token bucket rate limiter ---------------------------------------------
 
-// Token bucket rate limiter for pacing outbound network requests.
+// Token bucket rate limiter for pacing requests.
 struct RateLimiter {
     rate_per_sec: f64 = 1.0,         // Tokens replenished per second.
     burst_capacity: f64 = 1.0,       // Maximum token capacity (allowed burst size).
@@ -63,7 +55,7 @@ fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
     };
 }
 
-// Attempts to consume 1 token. Returns true if request is allowed, or false if rate limit is exhausted.
+// Attempts to consume one token. Returns false if the balance is exhausted.
 fn allow(limiter: RateLimiter&) -> bool {
     let now_mono = clock_ns();
     let elapsed_sec = (now_mono - limiter.last_update_mono_ns) as f64 / 1000000000.0;

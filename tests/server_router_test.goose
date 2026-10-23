@@ -1,4 +1,4 @@
-// Zero-Allocation Radix Tree, Tako v2 Pool & Server Pipeline Verification Suite
+// Tests for radix tree routing, buffer pools, and server execution pipeline.
 import std;
 import wing from "..";
 
@@ -308,7 +308,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
         sub.assert_true(has_allow, "Allow header returned");
     };
 
-    t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 §10.1.1 / Go #21803)") { sub =>
+    t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 Section 10.1.1)") { sub =>
         let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
@@ -342,7 +342,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Zero-Alloc Radix Router, Pool & Server Pipeline Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Server Router & Pipeline Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
     wing::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);

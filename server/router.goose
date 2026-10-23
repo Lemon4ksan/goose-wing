@@ -1,17 +1,4 @@
-// Zero-Allocation Compressed Radix Trie Router with Parameter Suffix Splitting.
-// Clean-Room Implementation conforming to matchit, httprouter, and Axum routing rules.
-//
-// Core Types:
-//   NodeType        - Node classification enum (Root, Static, Param { suffix: bool }, CatchAll).
-//   ParamSpan       - Byte offset index pair (u16) into URI buffer without string copying.
-//   ZeroAllocParams - Fixed-capacity stack buffer for up to 8 matched route parameters.
-//   RadixRouter     - Per-HTTP-method compressed prefix trie with automatic 405 Method Not Allowed.
-//
-// Critical Architectural Invariants:
-//   - Zero heap allocations during route lookup (matchit / http.zig pattern).
-//   - Monotonic Param suffix preservation (defending against matchit Issue #83 / commit f607f73).
-//   - Static routes (/foo) take precedence over dynamic (/{id}) and greedy (/{*rest}).
-//   - CatchAll (/{*rest}) captures path remainder without leading slash, rejecting empty matches.
+// Compressed radix trie router with parameter extraction and path canonicalization.
 namespace wing;
 
 import std;
@@ -211,7 +198,14 @@ fn traverse_or_insert_static(tree: RadixTree&, cur_idx: i32&, seg: const u8[:]) 
     return true;
 }
 
-// Inserts a route into the Radix tree
+// insert_route inserts a route path into the RadixTree with automatic common-prefix compression.
+//
+// Supports:
+// - Static routes: "/api/v1/users"
+// - Named parameters: "/users/{id}" and suffix patterns "/files/{name}.png"
+// - Greedy catch-alls: "/static/{*filepath}"
+//
+// Invariant: Insertion order does not alter matching precedence; static routes always precede dynamic parameters.
 fn insert_route(
     tree: RadixTree&,
     path: const u8[:],
@@ -304,7 +298,100 @@ fn insert_route(
     return true;
 }
 
-// ---- zero-allocation router lookup -----------------------------------------
+// Resolves dot-segments (. and ..), collapses duplicate slashes, and strips query strings and fragments.
+// Output always begins with '/' and clamps at root boundary (RFC 3986 §5.2.4).
+fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
+    out.clear();
+    guard raw_path.len > 0 else {
+        out.push('/');
+        return;
+    }
+
+    var s = raw_path;
+
+    // 1. Separate query string (?) and fragment (#)
+    var path_end = s.len;
+    for i in s.len {
+        let b = s[i];
+        if b == '?' || b == '#' {
+            path_end = i;
+            break;
+        }
+    }
+    s = s[..path_end];
+
+    // 2. Strip absolute-URI scheme and authority if present (RFC 9112 Section 3.2.2)
+    var colon_slash = -1;
+    for i in s.len {
+        if s[i] == ':' && i + 2 < s.len && s[i + 1] == '/' && s[i + 2] == '/' {
+            colon_slash = i;
+            break;
+        }
+    }
+    if colon_slash > 0 {
+        let after_scheme = s[colon_slash + 3..];
+        var auth_end = after_scheme.len;
+        for j in after_scheme.len {
+            if after_scheme[j] == '/' {
+                auth_end = j;
+                break;
+            }
+        }
+        s = after_scheme[auth_end..];
+    }
+
+    // 3. Remove dot segments and collapse consecutive slashes (RFC 3986 Section 5.2.4)
+    var seg_starts: i32[..32] = [];
+    var scan_idx = 0;
+    while scan_idx < s.len && s[scan_idx] == '/' {
+        scan_idx += 1;
+    }
+
+    while scan_idx < s.len {
+        let seg_start = scan_idx;
+        while scan_idx < s.len && s[scan_idx] != '/' {
+            scan_idx += 1;
+        }
+        let seg = s[seg_start..scan_idx];
+
+        while scan_idx < s.len && s[scan_idx] == '/' {
+            scan_idx += 1;
+        }
+
+        // Single dot segment: . or %2e
+        if seg == "." || eq_ascii_fold(seg, "%2e") {
+            continue;
+        }
+
+        // Double dot segment: .. or %2e%2e
+        let is_dot_dot = seg == ".." ||
+                         eq_ascii_fold(seg, ".%2e") ||
+                         eq_ascii_fold(seg, "%2e.") ||
+                         eq_ascii_fold(seg, "%2e%2e");
+
+        if is_dot_dot {
+            if seg_starts.len > 0 {
+                let pop_to = seg_starts[seg_starts.len - 1] as i64;
+                out.resize(pop_to - 1);
+                seg_starts.pop();
+            }
+            continue;
+        }
+
+        guard out.len + seg.len + 1 <= out.cap else { break; }
+        out.push('/');
+        if seg_starts.len < seg_starts.cap {
+            seg_starts.push(out.len as i32);
+        }
+        out.append(seg);
+    }
+
+    if out.len == 0 {
+        out.push('/');
+    }
+}
+
+// ---- route matching --------------------------------------------------------
 
 enum RouteMatchResult {
     Found { handler_id: i32, entries_mask: u32 },
@@ -312,17 +399,21 @@ enum RouteMatchResult {
     MethodNotAllowed { allow_header: u8[..64] },
 }
 
-// Matches a path against a single RadixTree without heap allocations
+// Matches path against the RadixTree, recording parameter spans into params.
 fn match_path(
     tree: const RadixTree&,
     path: const u8[:],
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
-    guard tree.root_idx >= 0 && path.len > 0 else { return RouteMatchResult.NotFound; }
+    var canon_path: u8[..512] = [];
+    canonicalize_route_path(path, canon_path);
+    let eff_path = canon_path[..];
+
+    guard tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
     params.clear();
 
     var cur_idx = tree.root_idx;
-    var rem = path;
+    var rem = eff_path;
     var cursor: u16 = 0;
 
     while cur_idx >= 0 {
@@ -421,6 +512,7 @@ fn match_path(
 
 // ---- multi-method radix router ---------------------------------------------
 
+// Method-segregated radix routing table supporting static, parameterized, and wildcard routes.
 struct MethodTree {
     method: u8[..8] = "GET",
     tree: RadixTree = RadixTree { .. },
@@ -441,6 +533,8 @@ fn new_radix_router() -> RadixRouter {
     return r;
 }
 
+// Registers a route pattern for an HTTP method in the router.
+// Supports static routes ("/users"), parameters ("/:id" or "/{id}"), and wildcards ("/*path").
 fn add_route(
     router: RadixRouter&,
     method: const u8[:],
@@ -456,7 +550,9 @@ fn add_route(
     return false;
 }
 
-// Resolves a route for (method, path); returns Found, NotFound, or MethodNotAllowed with Allow header.
+// Matches a request method and path against registered routes.
+// Automatically canonicalizes path before matching.
+// Returns RouteMatchResult: Found with handler_id, NotFound, or MethodNotAllowed with Allow header.
 fn match_route(
     router: const RadixRouter&,
     method: const u8[:],

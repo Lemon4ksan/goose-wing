@@ -1,17 +1,5 @@
-// Multi-tier Security, Isolation & Cookie Policy Engine.
-// Clean Room Implementation of draft-ietf-httpbis-layered-cookies, RFC 6265bis SameSite & OBC.
-//
-// Core Types:
-//   SiteForCookies         - Navigation context and ancestor frame hierarchy for first-party validation.
-//   SameSiteContextType    - Context classification enum (CrossSite, SameSiteLaxMethodUnsafe, SameSiteLax, SameSiteStrict).
-//   SameSiteCookieContext  - Context state container tracking reload, hops, and schemeful match.
-//   FirstPartyURLPolicy    - Redirect policy for updating top-level first party URLs.
-//
-// Standards & Specifications:
-//   draft-ietf-httpbis-layered-cookies - Prefix rules (__Secure-, __Host-, __Http-, __Host-Http-).
-//   RFC 6265bis - Schemeful Same-Site (scheme + eTLD+1) and Lax-allowing-unsafe 120s window.
-//   W3C Secure Contexts / Chromium OBC - Origin-Bound Cookies port isolation and non-crypto origin interop.
-//   Chromium net::CookieInclusionStatus diagnostic error and warning constants.
+// Cookie security and isolation policy: SameSite, prefixes, and Origin-Bound Cookies
+// (RFC 6265bis, CHIPS).
 namespace wing;
 
 import std;
@@ -33,8 +21,7 @@ fn is_safe_http_method(method: const u8[:]) -> bool {
     return safe_http_method(method);
 }
 
-// Checks whether host is a trustworthy non-cryptographic origin (e.g. localhost, 127.0.0.1, ::1)
-// per W3C Secure Contexts / Chromium origin-bound cookies.
+// Whether host is a local loopback origin (localhost, 127.0.0.1, ::1).
 fn trustworthy_non_crypto_host(host: const u8[:]) -> bool {
     let clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
     return clean_host == "localhost" || clean_host == "127.0.0.1" || clean_host == "::1";
@@ -46,10 +33,7 @@ fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
 
 // ---- origin-bound adjustment -----------------------------------------------
 
-// Rewrites source_port and source_scheme for trustworthy non-cryptographic origins.
-// Chromium OBC: if a trustworthy non-cryptographic origin sets a Secure cookie on default port 80,
-// source_port is modified to 443 and source_scheme marked as Secure so future standard HTTPS access
-// is not blocked by port mismatch.
+// Rewrites source_port and source_scheme for local loopback origins (Chromium OBC).
 fn adjust_origin_bound_cookies_on_insert(
     cookie_ref: CanonicalCookie&,
     host: const u8[:],
@@ -85,10 +69,8 @@ fn starts_with_case_folded(str_val: const u8[:], prefix: const u8[:]) -> bool {
     return true;
 }
 
-// Validates cookie name against non-HTTP script APIs (document.cookie, CookieStore API).
-// draft-ietf-httpbis-layered-cookies Section 4.1.3 & WHATWG:
-// Case-insensitive check: if byte-lowercased name starts with "__http-" or "__host-http-",
-// return false to prevent script shadowing of protected HTTP-only cookies.
+// Validates cookie names accessed from non-HTTP script APIs to prevent
+// shadowing protected prefixes.
 fn validate_script_cookie_name(name: const u8[:]) -> bool {
     if starts_with_case_folded(name, "__http-") || starts_with_case_folded(name, "__host-http-") {
         return false;
@@ -96,15 +78,8 @@ fn validate_script_cookie_name(name: const u8[:]) -> bool {
     return true;
 }
 
-// Validates cookie security invariants across prefixes, channels, and APIs.
-// Implements:
-// 1. __Secure- (case-sensitive on HTTP): requires Secure + Secure origin.
-// 2. __Host- (case-sensitive on HTTP): requires Secure + Secure origin + host_only + Path=/.
-// 3. __Http- (case-sensitive on HTTP): requires Secure + Secure origin + HttpOnly; rejected from script.
-// 4. __Host-Http- (case-sensitive on HTTP): requires Secure + Secure origin + HttpOnly + host_only + Path=/; rejected from script.
-// 5. Partitioned (CHIPS): requires Secure.
-// 6. SameSite=None: strictly requires Secure.
-// 7. Non-HTTP script context: prohibits HttpOnly, blocks byte-lowercased __http- / __host-http-.
+// Validates cookie security invariants for prefixes (__Secure-, __Host-,
+// __Http-, __Host-Http-), Partitioned attributes, and SameSite=None (RFC 6265bis §5.6).
 fn validate_canonical_cookie_security(
     cookie_val: const CanonicalCookie&,
     is_secure_channel: bool,
@@ -112,7 +87,7 @@ fn validate_canonical_cookie_security(
 ) -> bool {
     let cookie_name = cookie_val.name[..];
 
-    // Prohibited CTL rejection (DELETE_COOKIE_CONTROL_CHAR = 11 / crbug.com/238041)
+    // Reject control characters
     if has_prohibited_cookie_ctl(cookie_name) ||
        has_prohibited_cookie_ctl(cookie_val.value[..]) ||
        has_prohibited_cookie_ctl(cookie_val.domain[..]) ||
@@ -154,12 +129,7 @@ fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: con
 
 // ---- request sendability evaluation ----------------------------------------
 
-// Evaluates whether a cookie is sendable for a request under RFC 6265bis SameSite rules.
-// Implements:
-// - SameSite=Strict: sendable only in same-site context.
-// - SameSite=Lax: sendable same-site OR top-level cross-site navigation with safe method (GET/HEAD).
-// - SameSite=Default: Lax with Lax-allowing-unsafe (Lax+POST) 2-minute window from creation_utc.
-// - SameSite=None: sendable cross-site if channel is secure.
+// Whether a cookie is sendable in the given request context (RFC 6265bis).
 fn cookie_sendable_for_samesite(
     cookie_val: const CanonicalCookie&,
     is_same_site: bool,
@@ -201,10 +171,7 @@ fn is_cookie_sendable_for_samesite(
     return cookie_sendable_for_samesite(cookie_val, is_same_site, is_top_level_navigation, is_safe_method, now_us);
 }
 
-// Evaluates whether a cookie is sendable under Origin-Bound Cookies (OBC) port isolation.
-// Host-only cookies strictly enforce source_port match.
-// Domain cookies opt-out of port isolation.
-// Trustworthy non-crypto origins (localhost, 127.0.0.1) allow HTTP scheme and port 80/443 interop.
+// Evaluates sendability under Origin-Bound Cookies (OBC) port isolation.
 fn cookie_sendable_for_obc(
     cookie_val: const CanonicalCookie&,
     req_scheme: const u8[:],
@@ -248,8 +215,7 @@ fn validate_security_cookie_prefixes(
     is_secure_channel: bool,
     is_http_api: bool,
 ) -> bool {
-    // Anti-Shadowing / Cookie Crumbles defense (USENIX Security / SHAD-01):
-    // A nameless cookie cannot have a value starting with security prefixes
+    // Nameless cookies cannot have values starting with security prefixes
     if cookie_name.len == 0 {
         let cookie_value = cookie_val.value[..];
         if starts_with_case_folded(cookie_value, "__host-http-") ||

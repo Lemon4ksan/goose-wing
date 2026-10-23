@@ -1,14 +1,4 @@
-// Canonical Cookie Model (CanonicalCookie).
-// Clean room implementation of Chromium CookieMonster canonical data structure and semantics.
-//
-// Core Types:
-//   CanonicalCookie - In-memory and persistent cookie entity with microsecond lifecycle timestamps.
-//
-// Standards & Specifications:
-//   RFC 6265bis Section 5.3 - Storage model, microsecond timestamps, and canonicalization.
-//   RFC 6265bis Section 5.4 - Canonical unique key collision resolution.
-//   CHIPS (Cookies Having Independent Partitioned State) top-frame partition key model.
-//   Origin-Bound Cookies (OBC) source scheme and source port binding.
+// Canonical cookie data structure and serialization (RFC 6265bis, CHIPS).
 namespace wing;
 
 import std;
@@ -21,9 +11,7 @@ import cookie.store;
 
 // ---- canonical cookie model ------------------------------------------------
 
-// CanonicalCookie represents the atomic, fully-validated state of an HTTP cookie
-// in memory and persistent storage, containing origin bindings, microsecond lifecycle
-// timestamps, partition keys, and security isolation metadata.
+// Represents a validated HTTP cookie in memory or persistent storage.
 struct CanonicalCookie {
     name: u8[..256] = [],
     value: u8[..4096] = [],
@@ -48,7 +36,8 @@ struct CanonicalCookie {
     creation_seq: i64 = 0,
 }
 
-// Standalone constructor for CanonicalCookie.
+// Constructs a CanonicalCookie, verifying that name and value do not exceed
+// 4096 bytes and contain no control characters (RFC 6265bis §5.5).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
     new_cookie.name.append(name);
@@ -60,6 +49,7 @@ fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie 
 
 // Evaluates whether a cookie is expired relative to microsecond timestamp now_us.
 // Session cookies (persistent == false) never expire automatically by time.
+// Persistent cookies expire if expires_utc <= now_us or expires_utc <= 0.
 fn expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if !cookie_val.persistent { return false; }
     if cookie_val.expires_utc <= 0 { return true; }
@@ -71,8 +61,8 @@ fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     return expired(cookie_val, now_us);
 }
 
-// Cookie Incrementalism: evaluates if the cookie is still within the 2-minute
-// Lax-allowing-unsafe (Lax+POST) window from its creation_utc.
+// Whether a cookie with default SameSite is within the 2-minute window allowing
+// unsafe top-level navigations (RFC 6265bis Lax-allowing-unsafe).
 fn in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if cookie_val.same_site != CookieSameSite.Default { return false; }
     let elapsed_us = now_us - cookie_val.creation_utc;
@@ -83,7 +73,7 @@ fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: 
     return in_lax_allowing_unsafe_window(cookie_val, now_us);
 }
 
-// Combined payload size in bytes (RFC 6265bis Section 5.5: name + value <= 4096 bytes).
+// Combined size of name and value in bytes (RFC 6265bis §5.5).
 fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
     return cookie_val.name.len + cookie_val.value.len;
 }
@@ -192,8 +182,7 @@ fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bo
 
 // ---- unique key formatting & serialization --------------------------------
 
-// Computes the canonical unique key for collision resolution.
-// In modern CookieMonster with OBC & CHIPS, cookies are unique on:
+// Computes the canonical unique key for collision resolution:
 // (name, domain, path, host_only, partition_key, source_scheme, source_port).
 fn format_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(cookie_val.name[..]);
@@ -211,7 +200,7 @@ fn format_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(source_scheme_to_string(cookie_val.source_scheme));
 }
 
-// Classic RFC 6265 unique key (name, domain, path) for legacy equivalence checks.
+// Unique key tuple (name, domain, path) for legacy equivalence checks.
 fn format_legacy_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(cookie_val.name[..]);
     out.push('\0');
@@ -220,7 +209,7 @@ fn format_legacy_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(cookie_val.path[..]);
 }
 
-// Serializes CanonicalCookie into a standard Set-Cookie string.
+// Serializes cookie into a Set-Cookie header string.
 fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(cookie_val.name[..]);
     out.push('=');

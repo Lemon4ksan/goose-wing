@@ -1,16 +1,5 @@
-// Chromium CookieMonster Canonical In-Memory Storage & Multi-Round GC Engine.
-// Clean Room Implementation for goose-wing conforming to RFC 6265bis, CHIPS, OBC & Chromium V24.
-//
-// Core Types:
-//   CanonicalCookieJar - Multi-tier memory store with 6-round domain GC and global eviction.
-//   CookieDeletionInfo - Filter criteria for selective and bulk session cookie deletion.
-//
-// Standards & Specifications:
-//   Chromium net::CookieMonster hysteresis GC (180 domain cap / 3300 global cap).
-//   Chromium 6-round priority eviction algorithm with Round 4 High-NonSecure priority.
-//   30-day global purge immunity window for active cookies.
-//   RFC 6265 Section 5.4 Header ordering (longest path first, then earliest creation_utc).
-//   Immutable creation_utc preservation across updates and collision overwrites.
+// In-memory cookie jar with hierarchical indexing and priority eviction
+// (RFC 6265bis, CHIPS).
 namespace wing;
 
 import std;
@@ -21,11 +10,10 @@ import cookie.policy;
 import cookie.parser;
 import cookie.store;
 
-// ---- canonical cookie monster jar container --------------------------------
+// ---- canonical cookie jar container ----------------------------------------
 
-// CanonicalCookieJar represents the in-memory state of the Chromium-grade CookieMonster engine,
-// featuring 2-level hierarchical indexing (eTLD+1), 6-round priority eviction GC, CHIPS memory quotas,
-// Origin-Bound Cookie isolation, and microsecond-precision LRA updates.
+// An in-memory cookie store indexed by eTLD+1, with priority-based eviction
+// and partition key isolation.
 struct CanonicalCookieJar {
     // Quotas and thresholds
     max_cookies_per_domain: i64 = K_DOMAIN_MAX_COOKIES,       // 180
@@ -208,12 +196,9 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 
 // ---- ingestion & insertion pipeline ----------------------------------------
 
-// Ingestion entry point into the Canonical Cookie Monster Jar:
-// 1. Enforces multi-tier security invariants (prefixes, secure requirements, script API checks).
-// 2. Checks collision and overwrite rules (non-secure cannot overwrite secure).
-// 3. On overwrite: PRESERVES creation_utc immutable invariant!
-// 4. On new insert: assigns creation_utc and creation_seq.
-// 5. Triggers CHIPS quota, Domain GC, and Global GC.
+// Inserts new_cookie into jar, enforcing prefix rules (__Host-, __Secure-),
+// origin security, overwrite precedence, and memory quotas (RFC 6265bis §5.6).
+// Returns false if the cookie violates security policies.
 fn set_canonical_cookie(
     jar: CanonicalCookieJar&,
     new_cookie: CanonicalCookie&,
@@ -262,6 +247,14 @@ fn set_canonical_cookie(
 }
 
 // Ingests a raw Set-Cookie header directly for a given request URL.
+//
+// Caller Contract & Nuances:
+// - Security Channel: HTTPS URLs and localhost/127.0.0.1/[::1] endpoints are treated as trustworthy secure contexts.
+// - Layered Prefixes: __Secure- requires a secure channel; __Host- requires secure context, Path=/, and NO Domain.
+// - CTL Characters: Any ASCII control byte (0x00..0x1F or 0x7F) causes set_cookie_header to return false immediately.
+// - Size Caps: Name + Value must not exceed 4,096 bytes (returns false if exceeded).
+// - Collision Overwrites: Overwriting an existing cookie preserves its original creation_utc timestamp.
+// - Access Throttling: Repeated reads within 60 seconds throttle last_access_utc updates to prevent write storms.
 fn set_cookie_header(
     jar: CanonicalCookieJar&,
     req_url: const u8[:],
@@ -485,7 +478,7 @@ fn garbage_collect_per_domain(jar: CanonicalCookieJar&, etld_plus_one: const u8[
 // Executes Global Garbage Collection across the entire jar.
 // Trigger: total cookies > max_cookies_global (3300).
 // Target: reduce down to target_cookies_global (3000).
-// 30-Day Purge Immunity: cookies accessed within the last 30 days are immune!
+// Cookies accessed within the last 30 days are protected from global eviction.
 fn garbage_collect_global(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     guard jar.cookies.len > jar.max_cookies_global else { return 0; }
 

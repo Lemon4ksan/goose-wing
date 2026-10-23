@@ -1,11 +1,4 @@
-// Comprehensive Verification Suite for http::headers (HeaderMap, Lexer, RFC 9110, RFC 6265bis).
-// Tests:
-//   1. Zero-Heap HeaderMap, 16-byte HeaderEntry & 64 O(1) WellKnownHeader inline slots.
-//   2. RFC 9110 §5.3 & RFC 6265bis: Set-Cookie NO_COMMA_FOLD Isolation & Cookie Iterators.
-//   3. Lexical Validation & 64-bit SWAR: CTL/CRLF/Embedded NUL rejection, HTTP/2 lowercase check.
-//   4. httparse PR #223 / Issue #222 regression: Whitespace-only lines produce hard syntax errors.
-//   5. obs-fold Smuggling Defense & Archival Compatibility Mode.
-//   6. Chromium Net Parity: raw_headers_ \0\0 serialization, 304 Merge, and Cache Persistence.
+// Tests for HeaderMap, header parsing, validation, and iteration.
 import std;
 import wing from "..";
 
@@ -78,11 +71,11 @@ fn test_rfc9110_and_cookie_fold_isolation(t: wing::T&) {
 
         var combined: u8[>..] = [];
         let ok = wing::get_combined(map, "Vary", combined);
-        sub.assert_true(ok, "Vary is comma-foldable per RFC 9110 §5.3");
+        sub.assert_true(ok, "Vary is comma-foldable per RFC 9110 Section 5.3");
         sub.assert_bytes_eq(combined[..], "Accept-Encoding, User-Agent, Origin", "Vary folded correctly");
     };
 
-    t.run("Absolute Prohibition of Set-Cookie Folding (RFC 6265bis & RFC 9110 §5.3)") { sub =>
+    t.run("Absolute Prohibition of Set-Cookie Folding (RFC 6265bis & RFC 9110 Section 5.3)") { sub =>
         var map = wing::new_header_map();
         wing::append_header(map, "Set-Cookie", "session_id=abc; Secure; HttpOnly; SameSite=Strict");
         wing::append_header(map, "Set-Cookie", "theme=dark; Path=/; Max-Age=86400");
@@ -132,7 +125,7 @@ fn test_lexical_validation_and_swar(t: wing::T&) {
         sub.assert_false(wing::is_valid_header_name("Header\tTab"), "Tab in name is invalid");
     };
 
-    t.run("RFC 9113 §8.2.1: HTTP/2 Wire Lowercase ASCII Validation") { sub =>
+    t.run("RFC 9113 Section 8.2.1: HTTP/2 Wire Lowercase ASCII Validation") { sub =>
         sub.assert_true(wing::is_valid_header_name_h2("content-type"), "Lowercase is valid in HTTP/2");
         sub.assert_true(wing::is_valid_header_name_h2(":path"), "Pseudo-header is valid");
         sub.assert_false(wing::is_valid_header_name_h2("Content-Type"), "Uppercase is FORBIDDEN on wire in HTTP/2");
@@ -152,7 +145,7 @@ fn test_lexical_validation_and_swar(t: wing::T&) {
         sub.assert_true(wing::is_valid_header_value("normal value with \t tab"), "HTAB accepted in value");
     };
 
-    t.run("Whitespace before Colon Rejection (RFC 9110 §5.1)") { sub =>
+    t.run("Whitespace before Colon Rejection (RFC 9110 Section 5.1)") { sub =>
         var map = wing::new_header_map();
         let raw = "Host : example.com\r\n\r\n";
         let err = wing::parse_headers(raw, map);

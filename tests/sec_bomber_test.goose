@@ -1,17 +1,4 @@
-// Security Verification Suite for Team Payload-Bomber:
-// Target Subsystem: http/multipart.goose (Multipart & RFC 9110 Range Parser Hardening)
-//
-// Vulnerability & Hardening Coverage:
-//   1. CWE-190: 64-bit Integer Overflow in RFC 9110 Range offsets & parse_i64_slice.
-//   2. RFC 2046 / RFC 7578: Multipart delimiter search and line endings (LF vs CRLF).
-//   3. CWE-400 / CVE-2011-3192: Algorithmic limits and boundary range coalescing.
-//   4. Go Issue #81741 / CVE-2026-94440: Memory limit bypass when parsing MIME headers (< 400 bytes).
-//   5. Go Issue #81858 / CVE-2026-78667: Lack of limit on size/count of parsed Range headers (200+ ranges).
-//   6. RFC 2046 §5.1.1: Transport padding and line-ending desync resistance (bare UNIX \n--).
-//   7. Go Issue #59153 / CVE-2023-24536 & CVE-2022-41725: 10,000+ parts boundary flood & memory quotas.
-//   8. RFC 2046 §5.1.1 / Chromium HttpUtil::StrictUnquote: Malformed boundary quoting & character sets.
-//   9. Go Issues #10616, #14085, #46042: ReDoS resistance and nested boundary prefix collision isolation.
-//  10. Go Issues #45789, #63629, #19183: Content-Disposition directory traversal & optional filename fields.
+// Tests for multipart form-data and HTTP range parser bounds and edge cases.
 import std;
 import wing from "..";
 
@@ -180,13 +167,13 @@ fn test_range_limits_and_coalescing(t: wing::T&) {
         sub.assert_eq(err_dos, wing::RangeError.TooManyEmptyElements, "Excessive empty elements rejected");
     };
 
-    t.run("Go Issue #81262: Range bytes=-0 Must Be Rejected as Malformed") { sub =>
+    t.run("Range bytes=-0 Must Be Rejected as Malformed") { sub =>
         // RFC 9110: bytes=-0 requests 0 bytes from suffix, which is invalid
         let rs, err = wing::parse_range_header("bytes=-0", 1000);
         sub.assert_eq(err, wing::RangeError.MalformedRange, "bytes=-0 must return MalformedRange, not 206 with invalid Content-Range");
     };
 
-    t.run("Go Issue #81378: Case-Insensitive Bytes= Unit Accepted") { sub =>
+    t.run("Case-Insensitive Bytes= Unit Accepted") { sub =>
         let rs1, err1 = wing::parse_range_header("BYTES=0-100", 1000);
         sub.assert_eq(err1, wing::RangeError.None, "Uppercase BYTES= must be accepted");
         sub.assert_eq(rs1.ranges.len, 1);
@@ -195,7 +182,7 @@ fn test_range_limits_and_coalescing(t: wing::T&) {
         sub.assert_eq(err2, wing::RangeError.None, "Mixed case Bytes= must be accepted");
     };
 
-    t.run("Go Issue #81508: Unsupported Range Unit Returns InvalidUnit") { sub =>
+    t.run("Unsupported Range Unit Returns InvalidUnit") { sub =>
         let rs, err = wing::parse_range_header("items=0-10", 1000);
         sub.assert_eq(err, wing::RangeError.InvalidUnit, "Unsupported unit 'items' must return InvalidUnit");
     };
@@ -270,8 +257,8 @@ fn test_mime_headers_memory_limit_bypass(t: wing::T&) {
 // ----------------------------------------------------------------------------
 fn test_range_header_size_and_count_limits(t: wing::T&) {
     t.run("200+ Ranges Requested Rejected in O(1) Time (#81858 / CVE-2026-78667)") { sub =>
-        // In Go #81858, a Range header with > 200 ranges caused CPU exhaustion.
-        // In Goose, max_ranges is 16 by default. It must reject at range 17 in O(1) time.
+        // In , a Range header with > 200 ranges caused CPU exhaustion.
+        // In naive implementations, ose, max_ranges is 16 by default. It must reject at range 17 in O(1) time.
         var attack_hdr: u8[>..] = "bytes=";
         for i in 205 {
             if i > 0 { attack_hdr.append(", "); }
@@ -510,7 +497,7 @@ fn test_malformed_boundary_quoting_and_lexical(t: wing::T&) {
 // ----------------------------------------------------------------------------
 fn test_redos_and_nested_boundaries(t: wing::T&) {
     t.run("Prefix Collision: Inner Boundary Has Outer Boundary as Prefix (#10616)") { sub =>
-        // Go Issue #10616: outer boundary is a prefix of inner boundary
+        // outer boundary is a prefix of inner boundary
         let outer_bnd = "NextPart_12345";
         var body: u8[>..] = [];
         body.append("--NextPart_12345\r\n");
@@ -526,7 +513,7 @@ fn test_redos_and_nested_boundaries(t: wing::T&) {
     };
 
     t.run("Boundary Substring Without Preceding Newline Treated as Body Data (#14085)") { sub =>
-        // Go Issue #14085: part contains --boundary inside a line
+        // part contains --boundary inside a line
         let boundary = "MidLineBnd";
         var body: u8[>..] = [];
         body.append("--MidLineBnd\r\n");
@@ -594,7 +581,7 @@ fn test_redos_and_nested_boundaries(t: wing::T&) {
 // ----------------------------------------------------------------------------
 fn test_mime_disposition_and_filename_traversal(t: wing::T&) {
     t.run("Directory Path Traversal in Multipart Filename (#45789)") { sub =>
-        // Go Issue #45789: filename with directory path (../../etc/shadow or C:\\Windows\\cmd.exe)
+        // filename with directory path (../../etc/shadow or C:\\Windows\\cmd.exe)
         let boundary = "TravBnd";
         var body: u8[>..] = [];
         body.append("--TravBnd\r\n");
@@ -611,7 +598,7 @@ fn test_mime_disposition_and_filename_traversal(t: wing::T&) {
     };
 
     t.run("Empty Field Name Part Ingestion (#63629)") { sub =>
-        // Go Issue #63629: parts with empty name="" must not be dropped
+        // parts with empty name="" must not be dropped
         let boundary = "EmptyNameBnd";
         var body: u8[>..] = [];
         body.append("--EmptyNameBnd\r\n");
@@ -628,7 +615,7 @@ fn test_mime_disposition_and_filename_traversal(t: wing::T&) {
     };
 
     t.run("Optional Filename in Content-Disposition (#19183)") { sub =>
-        // Go Issue #19183: filename parameter is optional in RFC 7578
+        // filename parameter is optional in RFC 7578
         let boundary = "OptFnBnd";
         var body: u8[>..] = [];
         body.append("--OptFnBnd\r\n");
@@ -649,7 +636,7 @@ fn test_mime_disposition_and_filename_traversal(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Payload-Bomber Multipart & Range Hardening Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Multipart & Range Edge Cases Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. 64-Bit Integer Overflow in Range Offsets (CWE-190)", test_range_offset_i64_overflow);
     wing::run_case(runner, "2. Multipart Delimiter & Line Endings (LF vs CRLF)", test_multipart_lf_delimiter_and_line_endings);

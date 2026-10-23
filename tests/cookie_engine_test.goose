@@ -1,5 +1,4 @@
-// Industrial Clean Room Verification Suite for CanonicalCookieJar via core/test
-// Conforming to RFC 6265, RFC 6265bis, CHIPS, Chromium CookieMonster, WPT & USENIX.
+// Tests for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 import std;
 import wing from "..";
 
@@ -369,7 +368,7 @@ fn test_header_sorting_and_persistence_key(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Clean Room CookieMonster Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("CanonicalCookieJar Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. Lexer, 4096B/1024B Quotas, CTL & WPT Nameless", test_lexer_limits_and_ctl);
     wing::run_case(runner, "2. Date Tokenizer, 400-Day Cap & Expired Overwrite", test_dates_400d_cap_and_expired_overwrite);

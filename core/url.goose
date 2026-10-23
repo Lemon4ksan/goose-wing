@@ -1,17 +1,4 @@
-// The Goose standard URL, Origin & Path library: candidate for `std::url`.
-//
-// Core Types:
-//   Url             - Canonical WHATWG URL with contiguous buffer and compact index offsets.
-//   Origin          - Security origin model differentiating Tuple (scheme, host, port) and Opaque.
-//   OriginKind      - Origin classification enum (Tuple, Opaque).
-//   RegistrableSite - Schemeful Same-Site identity tuple (scheme, eTLD+1 registrable domain).
-//   UrlParseError   - Explicit lexical and structural parse diagnostics enum.
-//
-// Standards & Specifications:
-//   WHATWG URL Living Standard (single-buffer ada-url / sorug index-offset model).
-//   RFC 5952 IPv6 canonical zero-run compression and IPv4-mapped IPv6 normalization.
-//   RFC 6265bis Schemeful Same-Site and HTML5 Origin serialization rules.
-//   Swift Foundation-style cross-platform File URL normalization and path manipulation.
+// URL parsing, normalization, and origin handling (WHATWG URL Standard, RFC 3986, RFC 5952).
 namespace wing;
 
 import std;
@@ -139,20 +126,30 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
 
 // ---- parsing factories and api ---------------------------------------------
 
+// Parses an absolute URL into a normalized Url. Schemes and hosts are
+// lowercased, default ports are omitted, IPv6 literals use canonical
+// compression (RFC 5952), and path dot-segments are normalized in place.
 fn parse_url(raw_input: const u8[:]) -> Url, UrlParseError {
     let dummy_base = Url { valid: false, .. };
     return parse_url_internal(raw_input, dummy_base, false);
 }
 
+// parse_url_with_base parses raw_input relative to base_url according to WHATWG URL resolution.
+//
+// If raw_input is an absolute URL, base_url is ignored. If raw_input is relative and base_url.valid
+// is false, returns UrlParseError.RelativeWithoutBase.
 fn parse_url_with_base(raw_input: const u8[:], base_url: const Url&) -> Url, UrlParseError {
     return parse_url_internal(raw_input, base_url, base_url.valid);
 }
 
+// new_url parses raw_input into a Url, returning a Url with .valid == false if parsing fails.
+// Convenience factory for parse_url where the caller inspects url.valid directly.
 fn new_url(raw_input: const u8[:]) -> Url {
     let parsed_url, err = parse_url(raw_input);
     return parsed_url;
 }
 
+// new_url parses raw_input relative to base_url, returning a Url with .valid == false if parsing fails.
 fn new_url(raw_input: const u8[:], base_url: const Url&) -> Url {
     let parsed_url, err = parse_url_with_base(raw_input, base_url);
     return parsed_url;
@@ -655,6 +652,19 @@ fn join_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url {
     return resolve_endpoint(base_url, endpoint);
 }
 
+// parse_endpoint resolves an API endpoint against base_url using API Client / Microservice semantics.
+//
+// Caller Contract & Nuances:
+// - Empty Endpoint Preservation: If endpoint is empty (""), returns an exact copy of base_url
+//   without stripping existing fragments ('#') or query strings ('?').
+// - Absolute Override: If endpoint has an explicit scheme (e.g. "https://other.com/v1"),
+//   it overrides base_url completely.
+// - Route Prefix Semantics: Unlike RFC 3986 reference resolution (which treats "/api/v1" as a file
+//   and strips "v1" when joining a relative reference), parse_endpoint treats base_url path as
+//   a permanent service mount prefix (e.g. "/api" + "/v1" -> "/api/v1").
+// - Protocol-Relative Inheritance: Endpoints starting with "//" inherit scheme from base_url.
+// - Query and Fragment Isolation: Endpoint queries and fragments are appended/merged cleanly
+//   without delimiter corruption.
 fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseError {
     guard base_url.valid else {
         return Url { valid: false, .. }, UrlParseError.RelativeWithoutBase;
@@ -1238,7 +1248,15 @@ fn is_alphanumeric_byte(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
 }
 
-// Parses a URL of arbitrary length into a zero-copy, non-owning UrlView with zero heap allocations.
+// parse_url_view parses a URL of arbitrary length into a non-owning UrlView with zero heap allocations.
+//
+// Key Characteristics & Lifetimes:
+// - Non-Owning Zero-Copy: Slices (scheme, host, path, query, hash) point directly into raw_input.
+//   The caller MUST ensure raw_input outlives the UrlView.
+// - Unbounded Length: Unlike the self-contained Url struct (capped at 2048 bytes), UrlView can parse
+//   arbitrarily large URLs (e.g. 10KB+ data URLs or massive query strings) without copying memory.
+// - Conformance: Implements the exact same RFC 3986 / WHATWG parsing rules, IPv6 bracket validation,
+//   and default port identification as parse_url.
 fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
     var view = UrlView { valid: false, .. };
     guard raw_input.len > 0 else {
@@ -1976,11 +1994,8 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) {
     }
 }
 
-// Parses raw query search string (e.g. "?a=1&b=2" or "a=1&b=2") into key-value pairs.
-// In strict adherence to WHATWG URL and RFC 3986 (defending against Go CVE-2021-31525):
-// 1. Only '&' is recognized as a parameter separator. Semicolons (';') are treated as literal value content.
-// 2. Percent-encoded sequences (%20, +) are normalized.
-// 3. Overflow or malformed tokens are handled cleanly without memory panics.
+// Parses a query string into key-value pairs, decoding percent sequences.
+// Only '&' is treated as a parameter delimiter; ';' is kept as literal content.
 fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
     var list = QueryParamsList { .. };
     var input = raw_search;

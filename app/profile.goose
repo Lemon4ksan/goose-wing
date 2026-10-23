@@ -1,12 +1,4 @@
-// Browser fingerprint profiles and header presets for goose-wing.
-//
-// Core Types:
-//   Profile     - Browser fingerprint presets enum (Chrome131, Firefox133, Safari18, None).
-//   HeaderItem  - Single HTTP header key-value pair with sensitive credential tagging.
-//
-// Standards & Specifications:
-//   RFC 9110 HTTP Semantics Header Name Case-Insensitivity (ASCII fold).
-//   Heuristic sensitivity classification for credential headers (Authorization, Cookie, API Keys).
+// Browser fingerprint presets and header sensitivity classification (RFC 9110).
 namespace wing;
 
 import std;
@@ -28,6 +20,8 @@ struct HeaderItem {
 
 // ---- header item & ascii helpers -------------------------------------------
 
+// Whether name is a credential or session header that should be stripped on
+// cross-origin redirects or scheme downgrades.
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
     return eq_ascii_fold(name, "authorization") ||
            eq_ascii_fold(name, "proxy-authorization") ||
@@ -43,6 +37,7 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
            eq_ascii_fold(name, "x-amz-security-token");
 }
 
+// Appends src to out with CR, LF, and NUL bytes omitted (RFC 9110 §5.5).
 fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     for b in src {
         if b != '\r' && b != '\n' && b != 0 {
@@ -51,6 +46,7 @@ fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     }
 }
 
+// A sanitized HeaderItem, detecting sensitive headers and stripping control bytes.
 fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> HeaderItem {
     let sens = is_sensitive || is_heuristic_sensitive_header(name);
     var header_item = HeaderItem { is_sensitive: sens, .. };

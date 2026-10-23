@@ -1,14 +1,4 @@
-// Strict CORS Policy Engine with Protocol-Specific Wildcard Validation.
-// Clean-Room Implementation conforming to W3C CORS and OWASP Cheat Sheets.
-//
-// Core Types:
-//   CorsPolicy - Declarative CORS configuration with credential safety invariants.
-//   CorsResult - Outcome of CORS evaluation (NoCors, AllowedActual, AllowedPreflight, RejectedOrigin).
-//
-// Security Invariants:
-//   - Disallow wildcard '*' in Access-Control-Allow-Origin when allow_credentials == true.
-//   - Protocol-specific matching: 'https://*.example.com' never matches 'http://app.example.com'.
-//   - Reject 'null' origin when allow_credentials == true.
+// Cross-Origin Resource Sharing (CORS) policy engine.
 namespace wing;
 
 import std;
@@ -100,7 +90,7 @@ fn is_cors_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) ->
 
     for idx in policy.allowed_origins.len {
         let pat = policy.allowed_origins[idx][..];
-        // OWASP invariant: Never allow '*' with credentials
+        // Wildcard origin is forbidden when credentials are enabled
         if policy.allow_credentials && pat == "*" {
             continue;
         }
@@ -111,7 +101,9 @@ fn is_cors_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) ->
     return false;
 }
 
-// Evaluates CORS and attaches response headers for actual or preflight requests.
+// Evaluates CORS rules against request Origin and populates response headers.
+// Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
+// Wildcard '*' origin is disallowed when allow_credentials is true.
 fn evaluate_cors(policy: const CorsPolicy&, req: const Request&, res: Response&) -> CorsResult {
     var origin_idx: i32 = -1;
     for idx in req.headers.len {

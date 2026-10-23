@@ -1,37 +1,16 @@
-// Media Type (Content-Type/Content-Disposition) & RFC 8941/9651 Structured Field Values for Goose.
-// Clean Room Implementation adhering to RFC 9110 §8.3, Chromium HttpUtil::StrictUnquote,
-// and the RFC 8941 / RFC 9651 (SFV with Date & Display String) specifications.
-//
-// Core Types:
-//   MediaType   - Normalized type/subtype with structured attribute-value parameters.
-//   SfvItem     - Structured field bare item with optional parameter mapping.
-//   SfvList     - Structured field list containing items and inner lists.
-//   SfvDict     - Structured field dictionary of key-value members.
-//
-// Standards & Invariants:
-//   HttpUtil::StrictUnquote - Rejects single quotes, unclosed quotes, and escaped terminal quotes.
-//   RFC 8941 / RFC 9651 - Strict atomicity of failure: any parse error discards entire header field.
-//   sf-integer: 15 digits max [-999_999_999_999_999, 999_999_999_999_999].
-//   sf-decimal: 12 int digits, 1..3 frac digits, stored as fixed-point milliths (i64 scaled * 1000).
-//   sf-string: ASCII %x20-7E, escaped only as \" or \\, supporting >= 1024 bytes.
-//   sf-token: (ALPHA / *) *(tchar / ":" / "/").
-//   Dictionary keys: (lcalpha / *) *(lcalpha / DIGIT / "_" / "-" / "." / "*") (uppercase -> HARD FAIL).
-//   sf-date (RFC 9651): "@" sf-integer (Unix epoch seconds).
-//   sf-displaystring (RFC 9651): %" DQUOTE *(unescaped / pct-encoded) DQUOTE with UTF-8 validation.
+// Media types (RFC 9110 §8.3) and Structured Field Values (RFC 8941, RFC 9651).
+// Provides media type / parameter parsing, strict unquoting, and SFV item,
+// list, and dictionary decoding.
 namespace wing;
 
 import std;
 import app.profile;
 import http.headers;
 
-// ---- strict unquote (chromium httputil::strictunquote) ----------------------
+// ---- string unquoting ------------------------------------------------------
 
-// Unquotes a quoted-string per RFC 9110 / Chromium HttpUtil::StrictUnquote:
-// 1. Must be enclosed in double quotes (len >= 2, s[0] == '"', s[s.len-1] == '"').
-// 2. Single quotes (') are NEVER accepted as delimiters.
-// 3. Terminal double quote CANNOT be escaped (odd number of backslashes before closing quote -> false).
-// 4. Escaped pairs \" and \\ are decoded to " and \.
-// 5. Rejects embedded NUL/CR/LF/CTL characters.
+// Unquotes a double-quoted string (RFC 9110 §5.6.4).
+// Rejects unclosed quotes, escaped trailing delimiters, and control characters.
 fn strict_unquote(input: const u8[:], out: u8[>..]&) -> bool {
     guard input.len >= 2 else { return false; }
     guard input[0] == '"' && input[input.len - 1] == '"' else { return false; }
@@ -90,7 +69,7 @@ fn unquote(input: const u8[:], out: u8[>..]&) -> bool {
     return strict_unquote(input, out);
 }
 
-// ---- media type (content-type & content-disposition parser) -----------------
+// ---- media type parsing ----------------------------------------------------
 
 struct MediaTypeParam {
     name: u8[..64] = [],
@@ -266,7 +245,7 @@ fn charset(mt: const MediaType&) -> const u8[:] {
     return param(mt, "charset");
 }
 
-// ---- structured field values (sfv: rfc 8941 & rfc 9651) ---------------------
+// ---- structured field values -----------------------------------------------
 
 enum SfvType {
     Integer,
@@ -325,7 +304,7 @@ fn sfv_skip_ows(raw: const u8[:], cursor: i64&) {
     }
 }
 
-// RFC 8941 §3.1.2: Dictionary key parser
+// RFC 8941 Section 3.1.2: Dictionary key parser
 // key = ( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )
 fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     guard cursor < raw.len else { return false; }
@@ -345,7 +324,7 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
             }
             cursor++;
         } else if b >= 'A' && b <= 'Z' {
-            // Uppercase in key is a STRICT SYNTAX ERROR per RFC 8941 §3.1.2
+            // Uppercase in key is a STRICT SYNTAX ERROR per RFC 8941 Section 3.1.2
             return false;
         } else {
             break;
@@ -354,7 +333,7 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     return true;
 }
 
-// RFC 8941 §3.3.1: sf-integer
+// RFC 8941 Section 3.3.1: sf-integer
 // ["-"] 1*15DIGIT in range [-999_999_999_999_999, 999_999_999_999_999]
 fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
@@ -417,7 +396,7 @@ fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBar
     return true;
 }
 
-// RFC 8941 §3.3.3: sf-string
+// RFC 8941 Section 3.3.3: sf-string
 // DQUOTE *chr DQUOTE, printable ASCII %x20-7E, escaped only as \" or \\
 fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len && raw[cursor] == '"' else { return false; }
@@ -435,7 +414,7 @@ fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
             cursor++;
             guard cursor < raw.len else { return false; }
             let esc = raw[cursor];
-            // RFC 8941 §3.3.3: ONLY \" and \\ are permitted escape sequences
+            // RFC 8941 Section 3.3.3: ONLY \" and \\ are permitted escape sequences
             guard esc == '"' || esc == '\\' else { return false; }
             if out_bare.text.len < 1088 {
                 out_bare.text.push(esc);
@@ -453,7 +432,7 @@ fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
     return false; // Unclosed string
 }
 
-// RFC 8941 §3.3.4: sf-token
+// RFC 8941 Section 3.3.4: sf-token
 // ( ALPHA / "*" ) *( tchar / ":" / "/" )
 fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
@@ -479,7 +458,7 @@ fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bo
     return true;
 }
 
-// RFC 8941 §3.3.5: sf-binary
+// RFC 8941 Section 3.3.5: sf-binary
 // ":" *(base64) ":"
 fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len && raw[cursor] == ':' else { return false; }
@@ -553,7 +532,7 @@ fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
     return true;
 }
 
-// RFC 8941 §3.3.6: sf-boolean ("?0" or "?1")
+// RFC 8941 Section 3.3.6: sf-boolean ("?0" or "?1")
 fn parse_sfv_boolean(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor + 1 < raw.len && raw[cursor] == '?' else { return false; }
     let b = raw[cursor + 1];
@@ -564,7 +543,7 @@ fn parse_sfv_boolean(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> 
     return true;
 }
 
-// RFC 9651 §3.3.7: sf-date ("@" sf-integer)
+// RFC 9651 Section 3.3.7: sf-date ("@" sf-integer)
 fn parse_sfv_date(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len && raw[cursor] == '@' else { return false; }
     cursor++; // skip '@'
@@ -576,7 +555,7 @@ fn parse_sfv_date(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> boo
     return true;
 }
 
-// RFC 9651 §3.3.8: sf-displaystring (%" DQUOTE *(unescaped / pct-encoded) DQUOTE)
+// RFC 9651 Section 3.3.8: sf-displaystring (%" DQUOTE *(unescaped / pct-encoded) DQUOTE)
 fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor + 1 < raw.len && raw[cursor] == '%' && raw[cursor + 1] == '"' else { return false; }
     cursor += 2; // skip %"
@@ -592,7 +571,7 @@ fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareIte
             guard validate_utf8(out_bare.text[..]) else { return false; }
             return true;
         } else if b == '%' {
-            // Percent-encoded byte %xx: MUST use lowercase hex digits per RFC 9651 §3.3.8
+            // Percent-encoded byte %xx: MUST use lowercase hex digits per RFC 9651 Section 3.3.8
             guard cursor + 2 < raw.len else { return false; }
             let h0 = raw[cursor + 1];
             let h1 = raw[cursor + 2];
@@ -654,7 +633,7 @@ fn validate_utf8(data: const u8[:]) -> bool {
     return true;
 }
 
-// RFC 8941 §3.3: Bare item dispatcher
+// RFC 8941 Section 3.3: Bare item dispatcher
 fn parse_sfv_bare_item(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
     let b = raw[cursor];
@@ -683,7 +662,7 @@ fn parse_sfv_bare_item(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -
     return false;
 }
 
-// RFC 8941 §3.1.2: Parameters parser (*( ";" *SP key [ "=" bare-item ] ))
+// RFC 8941 Section 3.1.2: Parameters parser (*( ";" *SP key [ "=" bare-item ] ))
 fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..16]&) -> bool {
     while cursor < raw.len && raw[cursor] == ';' {
         cursor++; // skip ';'
@@ -715,7 +694,7 @@ fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..1
     return true;
 }
 
-// RFC 8941 §3.3: Item parser
+// RFC 8941 Section 3.3: Item parser
 fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
     var cursor: i64 = 0;
     sfv_skip_ows(raw, cursor);
@@ -736,7 +715,7 @@ fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
     return true;
 }
 
-// RFC 8941 §3.1: List parser (supports items and inner lists)
+// RFC 8941 Section 3.1: List parser (supports items and inner lists)
 fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
     out.members.clear();
     out.valid = false;
@@ -794,7 +773,7 @@ fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
     return true;
 }
 
-// RFC 8941 §3.2: Dictionary parser
+// RFC 8941 Section 3.2: Dictionary parser
 fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
     out.entries.clear();
     out.valid = false;
@@ -845,7 +824,7 @@ fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
             guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
         }
 
-        // Duplicate key updates in-place per RFC 8941 §3.2
+        // Duplicate key updates in-place per RFC 8941 Section 3.2
         var found = false;
         for &entry in out.entries {
             if entry.key[..] == key[..] {
@@ -871,7 +850,7 @@ fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
     return true;
 }
 
-// Decimal serialization per RFC 8941 §4.1.5
+// Decimal serialization per RFC 8941 Section 4.1.5
 fn serialize_sfv_decimal(scaled_milli: i64, out: u8[>..]&) {
     if scaled_milli < 0 {
         out.push('-');

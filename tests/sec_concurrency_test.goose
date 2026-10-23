@@ -1,8 +1,4 @@
-// Consolidated verification suite for Async-Breaker audit findings (Rounds 1, 2, and 3).
-// Covers:
-//   Round 1: WaitGroup capacity limit and premature completion (ASYNC-01).
-//   Round 2: Non-positive queue bounds and expired timeout handling (ASYNC-02).
-//   Round 3: Contained worker crash diagnostic preservation and Supervisor pattern (ASYNC-03).
+// Tests for concurrency primitives, channel limits, and worker supervisors.
 import std;
 import wing from "..";
 
@@ -154,7 +150,7 @@ fn test_crash_diagnostics_and_supervision(t: wing::T&) {
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Async-Breaker Consolidated Verification Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Concurrency & Supervision Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. WaitGroup Capacity Limit", test_wait_group_capacity_and_completion);
     wing::run_case(runner, "2. Queue Bounds & Timeout Handling", test_queue_bounds_and_timeout);

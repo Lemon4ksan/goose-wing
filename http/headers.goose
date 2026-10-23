@@ -1,21 +1,6 @@
-// High-performance Zero-Heap HTTP Header Map & RFC 9110 Lexical Engine for Goose.
-// Clean Room Implementation adhering to RFC 9110, RFC 9113, RFC 6265bis, Chromium net/http,
-// Envoy HeaderMap, and Hyperium http::HeaderMap.
-//
-// Core Types:
-//   HeaderEntry     - 16-byte aligned descriptor with buffer offsets, flags, and next_idx link.
-//   WellKnownHeader - 64 static slots for O(1) direct indexing of frequent RFC 9110 headers.
-//   HeaderMap       - Two-phase fixed-capacity zero-heap container with recyclable connection state.
-//   HeaderParseError- Formal parse and validation failure enumeration.
-//
-// Standards & Invariants:
-//   RFC 9110 §5.1 / §5.5 - Strict tchar name validation, CTL/CRLF injection rejection.
-//   RFC 9110 §5.3 / RFC 6265bis - Strict NO_COMMA_FOLD isolation for Set-Cookie, Set-Cookie2,
-//                                 Clear-Site-Data, WWW-Authenticate, and Proxy-Authenticate.
-//   RFC 9113 §8.2.1 - Wire lowercase ASCII enforcement for HTTP/2 & HTTP/3 headers.
-//   httparse PR #223 / Issue #222 - Whitespace-only header lines produce hard syntax errors.
-//   Chromium HttpResponseHeaders - Continuous raw_headers_ with \0 delimiters and \0\0 terminator,
-//                                  RFC 9110 304 Not Modified merging and cache persistence filtering.
+// HTTP header parsing and storage (RFC 9110, RFC 9112).
+// Stores names and values as offset slices into a contiguous buffer with
+// dedicated lookup slots for frequent standard headers.
 namespace wing;
 
 import std;
@@ -24,7 +9,7 @@ import app.profile;
 // ---- header bitmask flags & persistence constants --------------------------
 
 const HEADER_FLAG_NONE: u8 = 0;
-const HEADER_FLAG_NO_COMMA_FOLD: u8 = 1;       // 0x01: Set-Cookie, WWW-Authenticate, Proxy-Authenticate (RFC 9110 §5.3 / RFC 6265bis)
+const HEADER_FLAG_NO_COMMA_FOLD: u8 = 1;       // 0x01: Set-Cookie, WWW-Authenticate, Proxy-Authenticate (RFC 9110 Section 5.3 / RFC 6265bis)
 const HEADER_FLAG_SENSITIVE: u8 = 2;           // 0x02: Authorization, Cookie, API Keys, etc.
 const HEADER_FLAG_CONTINUATION: u8 = 4;        // 0x04: Virtual continuation node (name_begin == name_end)
 const HEADER_FLAG_CONTAINS_COMMA: u8 = 8;      // 0x08: Value contains comma (absl::InlinedVector<bool, 100> equivalent)
@@ -412,7 +397,7 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
         flags |= HEADER_FLAG_SECURITY_STATE;
     }
 
-    // Hop-by-hop non-cacheables (RFC 9110 §7.6.1 + proxy-connection)
+    // Hop-by-hop non-cacheables (RFC 9110 Section 7.6.1 + proxy-connection)
     if id == WellKnownHeader.Connection || id == WellKnownHeader.KeepAlive || id == WellKnownHeader.TransferEncoding ||
        id == WellKnownHeader.TE || id == WellKnownHeader.Trailer || id == WellKnownHeader.Upgrade ||
        id == WellKnownHeader.ProxyAuthorization || id == WellKnownHeader.ProxyAuthenticate {
@@ -501,7 +486,7 @@ fn reset_for_keep_alive(map: HeaderMap&) {
     map.valid = true;
 }
 
-// ---- lexical validation & 64-bit swar engine -------------------------------
+// ---- lexical validation & fast word operations -----------------------------
 
 fn is_tchar(b: u8) -> bool {
     if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
@@ -520,7 +505,7 @@ fn is_valid_header_name(name: const u8[:]) -> bool {
     return true;
 }
 
-// RFC 9113 §8.2.1: Wire lowercase ASCII validation for HTTP/2 & HTTP/3 headers
+// RFC 9113 Section 8.2.1: Wire lowercase ASCII validation for HTTP/2 & HTTP/3 headers
 fn is_valid_header_name_h2(name: const u8[:]) -> bool {
     guard name.len > 0 else { return false; }
     let is_pseudo = name[0] == ':';
@@ -565,7 +550,7 @@ fn trim_lws(val: const u8[:]) -> const u8[:] {
     return val[start..end_pos];
 }
 
-// RFC 9110 §8.6 & RFC 9112 §6.3: Content-Length validation & anti-smuggling parser
+// RFC 9110 Section 8.6 & RFC 9112 Section 6.3: Content-Length validation & anti-smuggling parser
 fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
     let trimmed = trim_lws(val);
     guard trimmed.len > 0 else { return false; }
@@ -597,6 +582,8 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
         out_val = num;
         return true;
     }
+
+    guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return false; }
 
     var first_parsed = false;
     var target_val: i64 = 0;
@@ -642,6 +629,61 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
     return true;
 }
 
+// RFC 9112 Section 7.3: Standard registered transfer codings
+fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
+    return eq_ascii_fold(coding, "chunked") ||
+           eq_ascii_fold(coding, "gzip") ||
+           eq_ascii_fold(coding, "deflate") ||
+           eq_ascii_fold(coding, "compress");
+}
+
+// Validates a Transfer-Encoding header value (RFC 9112 §6.3, §7.1).
+// Only chunked, gzip, deflate, and compress are recognized; if chunked is
+// present, it must appear last and exactly once.
+fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
+    let trimmed = trim_lws(val);
+    guard trimmed.len > 0 else { return false; }
+    guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return false; }
+
+    var cursor: i64 = 0;
+    var count: i32 = 0;
+    var chunked_count: i32 = 0;
+    var last_is_chunked = false;
+
+    while cursor <= trimmed.len {
+        var comma_idx = cursor;
+        while comma_idx < trimmed.len && trimmed[comma_idx] != ',' {
+            comma_idx++;
+        }
+
+        let piece = trim_lws(trimmed[cursor..comma_idx]);
+        guard piece.len > 0 else { return false; }
+        guard is_valid_transfer_coding(piece) else { return false; }
+
+        let is_chunked = eq_ascii_fold(piece, "chunked");
+        if is_chunked {
+            chunked_count++;
+            last_is_chunked = true;
+        } else {
+            last_is_chunked = false;
+        }
+        count++;
+
+        if comma_idx == trimmed.len {
+            break;
+        }
+        cursor = comma_idx + 1;
+    }
+
+    guard count > 0 else { return false; }
+    // RFC 9112 Section 7.1: Chunked must not be applied more than once
+    guard chunked_count <= 1 else { return false; }
+    // RFC 9112 Section 6.3: If present in a request, chunked must be the final encoding
+    guard last_is_chunked else { return false; }
+
+    return true;
+}
+
 // 64-bit SWAR Little-Endian pack
 fn swar_pack_u64_le(buf: const u8[:], offset: i64) -> u64 {
     var w: u64 = 0;
@@ -682,8 +724,11 @@ fn hash_header_name(name: const u8[:]) -> u32 {
     return h;
 }
 
-// ---- wire parsers (httparse/pico/chromium hybrid) --------------------------
+// ---- wire parser -----------------------------------------------------------
 
+// Parses an HTTP/1.x header block into map (RFC 9112 §5.2).
+// Header names and values are indexed as offsets into the map's buffer.
+// Obsolete line folding (obs-fold) is rejected unless allow_obs_fold is set.
 fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
     if has_embedded_nulls(raw_input) {
@@ -788,6 +833,12 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
                     map.valid = false;
                     return HeaderParseError.InvalidContentLength;
                 }
+            } else if prev_wk == well_known_to_slot(WellKnownHeader.TransferEncoding) as u8 {
+                let full_te = map.raw_buf[new_begin..new_end];
+                guard validate_transfer_encoding_value(full_te) else {
+                    map.valid = false;
+                    return HeaderParseError.InvalidContentLength;
+                }
             }
         } else {
             // Standard Header: Name ":" [OWS] Value [OWS]
@@ -805,7 +856,7 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             }
 
             let raw_name = line[..colon_pos];
-            // RFC 9110 §5.1: No whitespace between field-name and colon
+            // RFC 9110 Section 5.1: No whitespace between field-name and colon
             if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
                 map.valid = false;
                 return HeaderParseError.InvalidHeaderName;
@@ -843,7 +894,7 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
 
             let wk_id = classify_well_known_header(raw_name);
 
-            // RFC 9112 §6.3: TE / CL request smuggling & protocol poisoning defenses
+            // RFC 9112 Section 6.3: TE / CL request smuggling & protocol poisoning defenses
             if wk_id == WellKnownHeader.ContentLength {
                 // Reject TE/CL conflict
                 if has_header(map, "transfer-encoding") {
@@ -869,10 +920,17 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
                         map.valid = false;
                         return HeaderParseError.InvalidContentLength;
                     }
-                    // Duplicate identical Content-Length: RFC 9112 §6.3 single valid value
+                    // Duplicate identical Content-Length: RFC 9112 Section 6.3 single valid value
                     cursor = line_end;
-                    if cursor < buf_len && map.raw_buf[cursor] == '\r' { cursor++; }
-                    if cursor < buf_len && map.raw_buf[cursor] == '\n' { cursor++; }
+                    if cursor < buf_len && map.raw_buf[cursor] == '\r' {
+                        guard cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' else {
+                            map.valid = false;
+                            return HeaderParseError.InvalidHeaderValue;
+                        }
+                        cursor += 2;
+                    } else if cursor < buf_len && map.raw_buf[cursor] == '\n' {
+                        cursor++;
+                    }
                     continue;
                 }
             } else if wk_id == WellKnownHeader.TransferEncoding {
@@ -881,8 +939,13 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
                     map.valid = false;
                     return HeaderParseError.InvalidContentLength;
                 }
-                // Reject duplicate Transfer-Encoding per RFC 9112 §6.3
+                // Reject duplicate Transfer-Encoding per RFC 9112 Section 6.3
                 if has_header(map, "transfer-encoding") {
+                    map.valid = false;
+                    return HeaderParseError.InvalidContentLength;
+                }
+                // RFC 9112 Section 6.3 & Section 7.1: Validate Transfer-Encoding codings (must be recognized, chunked must be final and unique)
+                guard validate_transfer_encoding_value(val_trimmed) else {
                     map.valid = false;
                     return HeaderParseError.InvalidContentLength;
                 }
@@ -952,10 +1015,17 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             is_first_header = false;
         }
 
-        // Advance past CRLF
+        // Advance past CRLF, rejecting bare CR (RFC 9112 §2.2)
         cursor = line_end;
-        if cursor < buf_len && map.raw_buf[cursor] == '\r' { cursor++; }
-        if cursor < buf_len && map.raw_buf[cursor] == '\n' { cursor++; }
+        if cursor < buf_len && map.raw_buf[cursor] == '\r' {
+            guard cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' else {
+                map.valid = false;
+                return HeaderParseError.InvalidHeaderValue;
+            }
+            cursor += 2;
+        } else if cursor < buf_len && map.raw_buf[cursor] == '\n' {
+            cursor++;
+        }
     }
 
     map.valid = true;
@@ -1013,8 +1083,15 @@ fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fol
     let code = (c0 * 100 + c1 * 10 + c2) as i32;
 
     var header_start = line_end;
-    if header_start < raw_input.len && raw_input[header_start] == '\r' { header_start++; }
-    if header_start < raw_input.len && raw_input[header_start] == '\n' { header_start++; }
+    if header_start < raw_input.len && raw_input[header_start] == '\r' {
+        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
+            map.valid = false;
+            return HeaderParseError.MalformedStatusLine;
+        }
+        header_start += 2;
+    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
+        header_start++;
+    }
 
     let err = parse_headers(raw_input[header_start..], map, allow_obs_fold);
     map.status_code = code;
@@ -1037,8 +1114,15 @@ fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold
     }
 
     var header_start = line_end;
-    if header_start < raw_input.len && raw_input[header_start] == '\r' { header_start++; }
-    if header_start < raw_input.len && raw_input[header_start] == '\n' { header_start++; }
+    if header_start < raw_input.len && raw_input[header_start] == '\r' {
+        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
+            map.valid = false;
+            return HeaderParseError.MalformedStatusLine;
+        }
+        header_start += 2;
+    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
+        header_start++;
+    }
 
     return parse_headers(raw_input[header_start..], map, allow_obs_fold);
 }
@@ -1258,12 +1342,12 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     return found;
 }
 
-// RFC 9110 §5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers!
+// RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers!
 fn get_combined(map: const HeaderMap&, name: const u8[:], out: u8[>..]&) -> bool {
     let wk_id = classify_well_known_header(name);
     let flags = well_known_header_flags(wk_id, name);
     guard (flags & HEADER_FLAG_NO_COMMA_FOLD) == 0 else {
-        // Absolute RFC 9110 §5.3 / RFC 6265bis prohibition on folding Set-Cookie
+        // Absolute RFC 9110 Section 5.3 / RFC 6265bis prohibition on folding Set-Cookie
         return false;
     }
 
@@ -1378,7 +1462,7 @@ fn serialize_headers(map: const HeaderMap&, out: u8[>..]&) {
 // ---- chromium 304 not modified merge & cache persistence --------------------
 
 fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
-    // RFC 9110 §15.4.5 & Chromium HttpResponseHeaders::ShouldUpdateHeader
+    // RFC 9110 Section 15.4.5 & Chromium HttpResponseHeaders::ShouldUpdateHeader
     // Never update cookies or security state or hop-by-hop headers
     if (entry_flags & (HEADER_FLAG_COOKIE_STATE | HEADER_FLAG_CHALLENGE | HEADER_FLAG_SECURITY_STATE | HEADER_FLAG_NON_CACHEABLE)) != 0 {
         return false;
@@ -1421,9 +1505,9 @@ fn persist_headers(src: const HeaderMap&, dst: HeaderMap&, flags: u32) {
     }
 }
 
-// ---- hop-by-hop stripping (rfc 9110 §7.6.1 & go issues #46313, #30303, #81319) -
+// ---- hop-by-hop stripping -------------------------------------------------
 
-// RFC 9110 §7.6.1: Standard hop-by-hop headers identification
+// RFC 9110 Section 7.6.1: Standard hop-by-hop headers identification
 fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
     let id = classify_well_known_header(name);
     if id == WellKnownHeader.Connection || id == WellKnownHeader.KeepAlive || id == WellKnownHeader.TransferEncoding ||
@@ -1437,8 +1521,8 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
     return false;
 }
 
-// RFC 9110 §7.6.1 & Go Issues #46313, #30303, #16875, #81319 (CVE-2021-33197):
-// Robust Zero-Heap Hop-by-Hop Header Stripping for Proxies, Gateways, and 1xx Responses.
+// Copies headers from src to dst, omitting standard hop-by-hop headers and
+// any header listed in a Connection header token (RFC 9110 §7.6.1).
 fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
     reset_for_keep_alive(dst);
 
@@ -1497,7 +1581,7 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
 
 // ---- rfc 9112 chunked transfer coding & smuggling defense engine -----------
 
-// RFC 9112 §7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics
+// RFC 9112 Section 7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics
 enum ChunkedDecodeError {
     None,
     EmptyInput,
@@ -1512,10 +1596,9 @@ enum ChunkedDecodeError {
     DisallowedTrailer,
 }
 
-// RFC 9112 §7.1 & CVE-2025-22871 / Go Issues #71988, #77285, #81143:
-// Strict Zero-Heap Chunked Body Parser.
-// Rejects bare LF in chunk-size, chunk-data, and trailers; rejects CR/LF in extensions;
-// rejects disallowed trailers (Content-Length, Transfer-Encoding); protects against 64-bit size overflow.
+// decode_chunked_body parses and decodes an HTTP/1.1 chunked transfer-encoded stream.
+// Decodes a chunked transfer-encoded payload into out_body (RFC 9112 §7.1).
+// Chunk size lines and data chunks must end with CRLF; bare LF returns an error.
 fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput; }
 
@@ -1533,7 +1616,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         }
         guard found_newline else { return ChunkedDecodeError.UnexpectedEof; }
 
-        // CVE-2025-22871 (#71988): RFC 9112 forbids bare LF in chunk-size lines
+        // Bare LF is forbidden in chunk-size lines (RFC 9112 §7.1)
         if line_end == cursor || raw[line_end - 1] != '\r' {
             return ChunkedDecodeError.BareLfInChunkSize;
         }
@@ -1547,7 +1630,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
             if b == ';' && semi_idx < 0 {
                 semi_idx = i;
             }
-            // Go #77285: reject bare CR or non-HTAB control characters in chunk extensions
+            // RFC 9112 Section 7.1.1: Reject bare CR or non-HTAB control characters in chunk extensions
             if b == '\r' || (b < 0x20 && b != 0x09) {
                 return ChunkedDecodeError.InvalidChunkExtension;
             }
@@ -1603,7 +1686,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
                 }
                 guard tr_nl else { return ChunkedDecodeError.UnexpectedEof; }
 
-                // Go #81143: Reject bare LF in trailer line
+                // RFC 9112 Section 7.1.2: Reject bare LF in trailer lines (prevent framing desync)
                 if tr_end == cursor || raw[tr_end - 1] != '\r' {
                     return ChunkedDecodeError.BareLfInTrailer;
                 }
@@ -1637,7 +1720,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
                     return ChunkedDecodeError.DisallowedTrailer;
                 }
                 let hname = tr_line[..col_idx];
-                // RFC 9112 §7.1.2: Disallowed trailer fields that threaten message framing, routing or security
+                // RFC 9112 Section 7.1.2: Disallowed trailer fields that threaten message framing, routing or security
                 if eq_ascii_fold(hname, "content-length") ||
                    eq_ascii_fold(hname, "transfer-encoding") ||
                    eq_ascii_fold(hname, "trailer") ||
@@ -1663,7 +1746,7 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         out_body.append(chunk_data);
         cursor += csize;
 
-        // CVE-2025-22871: Chunk data must be terminated strictly by CRLF, never bare LF
+        // Chunk data must be terminated by CRLF, not bare LF (RFC 9112 §7.1)
         if raw[cursor] == '\n' {
             return ChunkedDecodeError.BareLfInChunkData;
         }

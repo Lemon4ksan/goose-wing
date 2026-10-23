@@ -1,18 +1,4 @@
-// Session state, configuration, and execution pipeline for goose-wing.
-// URL, ClientSession, Redirect State Machine, 3-Tier SSRF Guard, and CanonicalCookieJar.
-//
-// Core Types:
-//   SsrfGuardPolicy         - 3-tier SSRF defense policy (loopback, private ranges, cloud metadata, dangerous ports).
-//   SessionConfig           - Declarative initial configuration for ClientSession.
-//   Session                 - Stateful HTTP client session with cookie jar, redirect state machine, and SSRF guard.
-//   MockExchange            - Deterministic mock routing exchange for unit and end-to-end integration testing.
-//   RequestExecutionContext - Internal pipeline state container tracking hop history, headers, and security contexts.
-//
-// Standards & Specifications:
-//   Chromium net::URLRequest 6-phase pipeline architecture.
-//   RFC 9110 HTTP Redirection, Method mutation, and Request.GetBody body rewinding.
-//   RFC 6265bis Schemeful Same-Site & CHIPS partition key injection.
-//   RFC 1918 / RFC 3927 Cloud metadata & DNS rebinding protection.
+// Client session state, redirect pipeline, and destination address checks.
 namespace wing;
 
 import std;
@@ -86,6 +72,8 @@ fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
     return val, true;
 }
 
+// Parses IPv4 addresses in standard dotted-decimal, octal, hex, dword, or
+// shorthand notation into 4 canonical octets.
 fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
     guard clean_ip.len > 0 else { return false; }
     var parts: u8[..32][..4] = [];
@@ -176,6 +164,7 @@ fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
     return is_private_ipv4_octets(octet0, octet1);
 }
 
+// Whether host is localhost or a subdomain of localhost (RFC 6761 §6.3).
 fn is_localhost_name(host: const u8[:]) -> bool {
     if eq_ascii_fold(host, "localhost") || eq_ascii_fold(host, "localhost.") {
         return true;
@@ -198,7 +187,8 @@ fn parse_hex_u16(s: const u8[:]) -> i32 {
     return val;
 }
 
-// IP Literal Classification for RFC 1918, RFC 3927 (Link-Local / Cloud Metadata), Loopback
+// Whether an IP address is a private, loopback, link-local, or multicast address.
+// Strips IPv6 zone identifiers before testing.
 fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     guard ip_str.len > 0 else { return false; }
 
@@ -216,7 +206,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         ip_str
     };
 
-    // Strip IPv6 Zone ID / Scope ID (%... or %25...) to prevent SSRF / proxy filter bypass (CVE-2025-22870 / Go #71984)
+    // Strip IPv6 Zone ID / Scope ID (%... or %25...)
     var pct_idx = -1;
     for i in clean_ip.len {
         if clean_ip[i] == '%' { pct_idx = i; break; }
@@ -613,6 +603,8 @@ fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
 
 // ---- url resolution helper -------------------------------------------------
 
+// Builds the effective request URL from base_url, req_url, and query_params.
+// Fragments are preserved and appended after query parameters (RFC 3986 §4.1).
 fn build_effective_url(
     base_url: const u8[:],
     req_url: const u8[:],
@@ -1006,7 +998,7 @@ fn execute_mock_or_echo_hop(
     for &route in session.mock_routes {
         if (route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method)) &&
            (route.pattern_url[..] == curr_href || starts_with(curr_href, route.pattern_url[..])) {
-            // Validate DNS IPs for SSRF Rebinding Guard
+            // Validate IP addresses against SSRF policy
             let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
             if dns_err != RedirectError.None {
                 out_dns_err = dns_err;

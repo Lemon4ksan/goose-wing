@@ -1,12 +1,4 @@
-// Global UFCS bridges so callers outside `namespace wing` can invoke
-// `req.header(...)`, `session.post(...) { req => ... }`, and `res.is_success()`
-// using natural method-call syntax (`val.f(arg)` -> `::f(val, arg)`).
-//
-// Core Types:
-//   Global namespace functions (`fn ::...`) providing universal Uniform Function Call Syntax.
-//
-// Standards & Specifications:
-//   Goose v2026.3 UFCS Resolution Model (top-level method dispatch across module namespaces).
+// Global UFCS bridges for method-call syntax across namespaces.
 namespace wing;
 
 // ---- session ufcs bridges --------------------------------------------------

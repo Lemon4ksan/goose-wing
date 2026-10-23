@@ -1,23 +1,4 @@
-// W3C Fetch Metadata Resource Isolation Policy (pi_FM) & CrossOriginGuard (CSRF Defense).
-// Clean-Room Implementation conforming to W3C Fetch Metadata, Go 1.25 CrossOriginProtection, and OWASP.
-//
-// Core Types:
-//   SecFetchSite     - Origin relation enum (SameOrigin, SameSite, CrossSite, None, Missing).
-//   SecFetchMode     - Request mode enum (Navigate, SameOrigin, Cors, NoCors, WebSocket, Other).
-//   SecFetchDest     - Destination DOM/context enum (Document, NestedDocument, Iframe, Script, Image, etc.).
-//   FetchContext     - 5-attribute orthogonal vector projection pi_FM(r) = (sigma, mu, delta, u, m).
-//   CrossOriginGuard - Deterministic single-pass resource isolation state machine with Vary injection.
-//
-// Security Matrix:
-//   1. Direct input / bookmark (sigma == None)                     -> ALLOW
-//   2. Same-origin internal request (sigma == SameOrigin)          -> ALLOW
-//   3. Sibling subdomain (sigma == SameSite)                       -> POLICY_CHECK (default 403 on unsafe)
-//   4. Cross-site mutation (sigma == CrossSite && m in M_unsafe)   -> REJECT (403 Forbidden)
-//   5. Direct user navigation (sigma == CrossSite, GET, navigate)  -> ALLOW (requires u == ?1 on sensitive routes)
-//   6. Cross-site framing / XS-Leaks (dest in iframe, script, etc) -> REJECT (403 Forbidden)
-//   7. Cross-site subresources (no-cors, cors)                     -> REJECT (except allowed static assets)
-//   8. Missing Sec-Fetch-* with Origin/Referer                     -> FALLBACK_ORIGIN check
-//   9. Complete absence of browser headers                         -> CLIENT_TYPE_GATE (fail-closed if cookies present)
+// Fetch Metadata resource isolation and cross-origin request protection.
 namespace wing;
 
 import std;
@@ -196,7 +177,9 @@ fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     return s;
 }
 
-// Deterministic single-pass evaluation of the Resource Isolation FSM.
+// Evaluates Fetch Metadata headers against isolation policy.
+// Allows same-origin, direct browser navigation, and safe top-level GET/HEAD navigations.
+// Rejects cross-site mutative requests (POST, PUT, DELETE, PATCH) unless origin is trusted or exempt.
 fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
     // Check path exemptions (e.g. public webhook endpoints, OAuth authorization start)
     if is_path_exempt(guard_cfg, ctx.path[..]) {
@@ -320,7 +303,7 @@ fn extract_fetch_context(req: const Request&, target_host: const u8[:]) -> Fetch
     return ctx;
 }
 
-// Injects mandatory Vary and Strict-Transport-Security headers on protected responses.
+// Injects Vary and HSTS headers on protected responses to prevent proxy cache desynchronization.
 fn apply_isolation_headers(res: Response&) {
     let vary_key = "Vary";
     let vary_val = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin";

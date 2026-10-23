@@ -1,12 +1,4 @@
-// Verification suite for http::multipart (Multipart parser, CVE-2026-19484, Range Requests & CVE-2011-3192).
-// Tests:
-//   1. Streaming multipart/form-data with Content-Disposition name & filename extraction.
-//   2. CVE-2026-19484 / CVE-2024-13444 Defense: Boundary length cap & 16-bit BMH shift table.
-//   3. RFC 9110 §14 Range Request 3-form Parsing (Explicit, Open Prefix, Suffix).
-//   4. CVE-2011-3192 (Apache Killer) Defense: 16-Range Limit & Range Coalescing (s2 <= e1 + 1).
-//   5. RFC 9110 §14.4 416 Range Not Satisfiable & Content-Range: bytes */size.
-//   6. RFC 9110 §13.1.5 If-Range Evaluation (Weak ETag prohibition, Seconds Truncation).
-//   7. Window Reader serve_range_request & draft-wright Byte-Range PATCH validation.
+// Tests for multipart/form-data parsing and HTTP range requests.
 import std;
 import wing from "..";
 
@@ -60,9 +52,9 @@ fn test_streaming_multipart_parsing(t: wing::T&) {
 }
 
 fn test_cve_2026_19484_boundary_and_bmh_table(t: wing::T&) {
-    t.run("Barrier 1: RFC 2046 §5.1.1 Boundary Length Cap (252-Byte Boundary Rejection)") { sub =>
+    t.run("Barrier 1: RFC 2046 Section 5.1.1 Boundary Length Cap (252-Byte Boundary Rejection)") { sub =>
         // In CVE-2026-19484 (@fastify/busboy), a 252-byte boundary caused 256-byte needle and 8-bit table overflow.
-        // In Goose, any boundary > 70 characters MUST be rejected immediately!
+        // In naive implementations, ose, any boundary > 70 characters MUST be rejected immediately!
         var long_boundary: u8[..256] = [];
         for i in 252 {
             long_boundary.push('a');
@@ -94,7 +86,7 @@ fn test_cve_2026_19484_boundary_and_bmh_table(t: wing::T&) {
 }
 
 fn test_rfc9110_range_requests(t: wing::T&) {
-    t.run("Three RFC 9110 §14.1.2 Range Specifier Forms") { sub =>
+    t.run("Three RFC 9110 Section 14.1.2 Range Specifier Forms") { sub =>
         let file_len: i64 = 10000;
 
         // 1. Explicit: bytes=0-499
@@ -119,7 +111,7 @@ fn test_rfc9110_range_requests(t: wing::T&) {
         sub.assert_eq(rs3.ranges[0].end_pos, 9999, "End 9999");
     };
 
-    t.run("RFC 9110 §14.4 416 Range Not Satisfiable") { sub =>
+    t.run("RFC 9110 Section 14.4 416 Range Not Satisfiable") { sub =>
         let file_len: i64 = 5000;
         let rs, err = wing::parse_range_header("bytes=60000-", file_len);
         sub.assert_eq(err, wing::RangeError.Unsatisfiable, "Unsatisfiable range returns 416 error");
@@ -184,7 +176,7 @@ fn test_if_range_and_seconds_truncation(t: wing::T&) {
         let ok_strong = wing::evaluate_if_range("\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
         sub.assert_true(ok_strong, "Strong ETag match succeeds");
 
-        // Weak ETag MUST NEVER match in If-Range per RFC 9110 §13.1.5
+        // Weak ETag MUST NEVER match in If-Range per RFC 9110 Section 13.1.5
         let bad_weak = wing::evaluate_if_range("W/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
         sub.assert_false(bad_weak, "Weak ETag forbidden in If-Range");
     };

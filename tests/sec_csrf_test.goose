@@ -1,4 +1,4 @@
-// W3C Fetch Metadata Resource Isolation & Protocol-Specific CORS Verification Suite
+// Tests for Fetch Metadata resource isolation and CORS policy validation.
 import std;
 import wing from "..";
 
@@ -403,7 +403,7 @@ fn test_cors_policy_and_matching(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("W3C Fetch Metadata Resource Isolation & CORS Suite", wing::Verbosity.Verbose);
+    var runner = wing::new_runner("Fetch Metadata & CORS Suite", wing::Verbosity.Verbose);
 
     wing::run_case(runner, "1. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
     wing::run_case(runner, "2. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
