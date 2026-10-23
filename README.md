@@ -27,6 +27,11 @@ The library is organized into eight architectural layers:
    - `server/pool.goose`: Tako v2 6-mechanism connection pool (`HeaderMapPool`, sanitized `ExtensionsPool`, bitmask flags, `SyncHeadRelease`, `InlineHandlerFuture`, `ConnectionTimer` Slowloris sweep).
    - `server/pipeline.goose`: Unified ascending-complexity server pipeline ($O(1) \to O(k) \to O(\log N) \to \text{Handler}$).
 8. **`core/test.goose`**: Zero-allocation testing framework featuring compile-time structural diffing, table-driven runners, high-resolution `MockClock`, and a deterministic Xorshift64* property fuzzer.
+9. **`net/`**: Resilient Network Transport, Connection Pooling & Multi-Protocol Proxying:
+   - `net/pool.goose`: 5-dimensional `PoolKey` (`scheme`, `origin_endpoint`, `proxy_chain`, `partition_key` / `NetworkAnonymizationKey`, `tls_and_dns_policy`), two-slice `WantQueue` (Go `wantConnQueue` zero-reallocation dual-slice design), OkHttp `RealConnection.isHealthy` non-blocking FIN detection, HTTP/2 IP connection coalescing with wildcard SAN, soft-cap LRU eviction, and RespectLimits mode.
+   - `net/happy_eyeballs.goose`: RFC 8305 Happy Eyeballs v2 & HEv3, Chromium `AttemptManager` & `JobController`, 50 ms DNS Resolution Delay (RD) with asymmetric IPv6 priority, CAD pacing with $\ge 10\text{ ms}$ absolute floor, RFC 6724 First Address Family Count = 1 interleaving, Last Resort Local Synthesis (2000 ms, RFC 7050 NAT64 `64:ff9b::/96`), and winner caching (TTL 600s).
+   - `net/proxy.goose`: SOCKS5/SOCKS5h (RFC 1928 & RFC 1929 subnegotiation with mandatory version byte 0x01, socks5 vs socks5h ATYP=0x03 DNS leak delegation), HTTP CONNECT tunneling with credential stripping (`Proxy-Authorization` isolation), OkHttp leftover buffer defense (`"TLS tunnel buffered too many bytes"`), and 4-tier Slowloris / Reverse-Slowloris tarpit defenses (10s monotonic cumulative deadline, 1s 100-continue ceiling, 64 KB memory ceiling, 256 B/s Byte-Drip gate).
+   - `net/retry.goose`: Two-tier resilience engine: Tier 1 zero-delay stale socket recovery with 4-condition invariant check (`reused==true`, `!headers_received`, idempotent or `Idempotency-Key`, rewindable body guarding against form-data one-shot-stream bug) + Chromium `ERR_QUIC_PROTOCOL_ERROR` TCP fallback; Tier 2 exponential backoff with Full Jitter, Equal Jitter, and Decorrelated Jitter; RFC 9110 `Retry-After` parser (`1*DIGIT` and `IMF-fixdate` exact UTC round-trip); host circuit breaker; and Google SRE adaptive retry budget.
 
 ## Key Modules
 
@@ -179,6 +184,35 @@ Zero-allocation HTTP request routing and server lifecycle management:
   - `InlineHandlerFuture`: Stack-allocated request completion futures.
   - `ConnectionTimer`: Slowloris attack sweeper terminating idle and hung connections.
 - **Unified Server Pipeline (`server/pipeline.goose`)**: Ascending computational complexity pipeline ($O(1) \to O(k) \to O(\log N) \to \text{Handler}$).
+
+### 11. Resilient Network Transport, Connection Pool & Multi-Protocol Proxying (`net/`)
+
+Clean-room industrial network transport implementing Chromium and Go primitives:
+
+- **Connection Pool & Partitioning (`net/pool.goose`)**:
+  - **5-Dimensional `PoolKey`**: Strict isolation over `scheme`, `origin_endpoint` (`host:port`), `proxy_chain`, `partition_key` (`NetworkAnonymizationKey` covering `top_frame_site`, `is_cross_site`, `nonce`, `network_isolation_partition`, and `worker_session_id`), and `tls_and_dns_policy` (`privacy_mode`, `secure_dns_policy`, cert flags, and `target_network_id`).
+  - **Two-Slice `WantQueue`**: Zero-reallocation dual-slice queue (`head`, `head_pos`, `tail`) matching Go `wantConnQueue` performance.
+  - **OkHttp Liveness Checks (`is_connection_healthy`)**: Tracks monotonic `idle_at_ns`; performs non-blocking `source_exhausted` (`MSG_PEEK | MSG_DONTWAIT`) checks when idle beyond `IDLE_CONNECTION_HEALTHY_NS`, evicting dead sockets prior to request dispatch.
+  - **HTTP/2 IP-Based Coalescing**: Dynamically reuses existing HTTP/2 TLS connections to matching IP addresses when TLS certificate SAN covers the target hostname and partition/proxy policies match.
+  - **Soft-Cap Quotas & Priority Reuse**: Enforces per-group, per-proxy-chain, and global soft caps with LRU eviction of oldest idle connections, adhering to OkHttp #7186 pooled reuse priority.
+
+- **Happy Eyeballs v2/v3 Engine (`net/happy_eyeballs.goose`)**:
+  - **RFC 8305 & HEv3 Racing**: Chromium `AttemptManager` state machine coordinating `main_job`, `alternative_job` (Alt-Svc H3), and `dns_alpn_h3_job`.
+  - **Phase 1 DNS Race & 50 ms Resolution Delay (RD)**: Prioritizes IPv6 (AAAA); arms a 50 ms RD timer if IPv4 (A) arrives first, cancelling immediately if AAAA arrives or unblocking IPv4 on timeout.
+  - **RFC 6724 Interleaving**: First Address Family Count = 1 interleaving ($\text{IPv6}_1 \to \text{IPv4}_1 \to \text{IPv6}_2 \to \text{IPv4}_2$) and HEv3 QUIC/TCP interleaving.
+  - **Connection Attempt Delay (CAD)**: 250 ms default pacing with dynamic RTT bounds and strict absolute floor $\ge 10\text{ ms}$ preventing congestion collapse.
+  - **Last Resort Local Synthesis**: 2000 ms timer triggering RFC 7050 NAT64 synthesis (`64:ff9b::/96`).
+
+- **Multi-Protocol Proxying & Slowloris Defenses (`net/proxy.goose`)**:
+  - **Byte-Exact SOCKS5 / SOCKS5h (RFC 1928 & RFC 1929)**: Phase 1 greeting negotiation; Phase 2 subnegotiation with mandatory version byte `0x01`; Phase 3 command with `ATYP = 0x03` domain routing for `socks5h://` eliminating client DNS leaks; Phase 4 complete BND.ADDR consumption.
+  - **HTTP CONNECT Tunnel Hygiene**: Strips `Proxy-Authorization` from outgoing origin requests; enforces OkHttp leftover buffer defense (`"TLS tunnel buffered too many bytes"`), aborting on prefix injection attacks.
+  - **4-Layer Slowloris Tarpit Defenses**: Monotonic cumulative header deadline (10s non-resetting), 1s `Expect: 100-continue` timeout, 64 KB header memory ceiling, and 256 B/s Byte-Drip gate.
+
+- **Two-Tier Resilience & Retry Engine (`net/retry.goose`)**:
+  - **Tier 1 Zero-Delay Stale Socket Recovery**: Evaluates 4 mandatory conditions (`reused == true`, `!headers_received`, idempotent method or `Idempotency-Key`, rewindable body), preventing the form-data one-shot-stream retry bug; automatic Chromium `ERR_QUIC_PROTOCOL_ERROR` TCP fallback.
+  - **Tier 2 Exponential Backoff & Jitter**: Full Jitter ($s_a = \mathcal{U}(0, \min(c, b \cdot 2^a))$), Equal Jitter ($t/2 + \mathcal{U}(0, t/2)$), and Decorrelated Jitter.
+  - **RFC 9110 `Retry-After` Parser**: Strictly parses `1*DIGIT` (delay-seconds) and `IMF-fixdate` with exact UTC calendar round-trip validation; past dates clamp to 0 ms; ceiling rounding for sub-second deltas.
+  - **Circuit Breaker & Adaptive Retry Budget**: Trips host circuit breaker when `Retry-After` exceeds threshold; enforces Google SRE retry budgets capping retry storms at 20% of traffic.
 
 ## Usage Examples
 

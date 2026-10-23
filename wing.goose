@@ -61,6 +61,13 @@ import server.router;
 import server.pool;
 import server.pipeline;
 
+// ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
+
+import net.pool;
+import net.happy_eyeballs;
+import net.proxy;
+import net.retry;
+
 // ---- ufcs method bridges ---------------------------------------------------
 
 import app.ufcs;

@@ -187,6 +187,54 @@ fn parse_hex_u16(s: const u8[:]) -> i32 {
     return val;
 }
 
+fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
+    if eff_ip == "::1" || eff_ip == "::" {
+        return true;
+    }
+
+    if starts_with(eff_ip, "fc") || starts_with(eff_ip, "fd") || // Unique Local fc00::/7
+       starts_with(eff_ip, "fe8") || starts_with(eff_ip, "fe9") || // Link-local fe80::/10
+       starts_with(eff_ip, "fea") || starts_with(eff_ip, "feb") ||
+       starts_with(eff_ip, "fec") || starts_with(eff_ip, "fed") || // Site-local fec0::/10
+       starts_with(eff_ip, "fee") || starts_with(eff_ip, "fef") ||
+       starts_with(eff_ip, "ff") {                                 // Multicast ff00::/8
+        return true;
+    }
+
+    // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh)
+    if starts_with(eff_ip, "::ffff:") {
+        let suffix = eff_ip[7..];
+        return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+    }
+
+    // IPv4-compatible IPv6 (::x.x.x.x or ::hhhh:hhhh)
+    if starts_with(eff_ip, "::") && !starts_with(eff_ip, "::ffff:") {
+        let suffix = eff_ip[2..];
+        return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+    }
+
+    // NAT64 well-known prefix 64:ff9b::/96
+    if starts_with(eff_ip, "64:ff9b::") {
+        let suffix = eff_ip[9..];
+        if suffix.len == 0 { return true; } // 64:ff9b:: maps to 0.0.0.0
+        return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+    }
+
+    // 6to4 prefix 2002::/16
+    if starts_with(eff_ip, "2002:") {
+        let rem = eff_ip[5..];
+        var colon_idx = -1;
+        for i in rem.len { if rem[i] == ':' { colon_idx = i; break; } }
+        let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
+        let hex_val1 = parse_hex_u16(p1);
+        let o0 = (hex_val1 >> 8) & 0xFF;
+        let o1 = hex_val1 & 0xFF;
+        return is_private_ipv4_octets(o0, o1);
+    }
+
+    return false;
+}
+
 // Whether an IP address is a private, loopback, link-local, or multicast address.
 // Strips IPv6 zone identifiers before testing.
 fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
@@ -196,7 +244,6 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         return true;
     }
 
-    // Check IPv6 loopback and special ranges
     if ip_str == "::1" || ip_str == "[::1]" || ip_str == "::" || ip_str == "[::]" {
         return true;
     }
@@ -206,7 +253,6 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         ip_str
     };
 
-    // Strip IPv6 Zone ID / Scope ID (%... or %25...)
     var pct_idx = -1;
     for i in clean_ip.len {
         if clean_ip[i] == '%' { pct_idx = i; break; }
@@ -226,11 +272,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     }
     let norm_ip = if lower_buf.len > 0 { lower_buf[..] } else { clean_ip };
 
-    if is_localhost_name(norm_ip) {
-        return true;
-    }
-
-    if norm_ip == "::1" || norm_ip == "::" {
+    if is_localhost_name(norm_ip) || norm_ip == "::1" || norm_ip == "::" {
         return true;
     }
 
@@ -241,52 +283,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         var comp_buf: u8[..64] = [];
         let ipv6_ok = parse_and_compress_ipv6(norm_ip, comp_buf);
         let eff_ip = if ipv6_ok { comp_buf[..] } else { norm_ip };
-
-        if eff_ip == "::1" || eff_ip == "::" {
-            return true;
-        }
-
-        if starts_with(eff_ip, "fc") || starts_with(eff_ip, "fd") || // Unique Local fc00::/7
-           starts_with(eff_ip, "fe8") || starts_with(eff_ip, "fe9") || // Link-local fe80::/10
-           starts_with(eff_ip, "fea") || starts_with(eff_ip, "feb") ||
-           starts_with(eff_ip, "fec") || starts_with(eff_ip, "fed") || // Site-local fec0::/10
-           starts_with(eff_ip, "fee") || starts_with(eff_ip, "fef") ||
-           starts_with(eff_ip, "ff") {                                 // Multicast ff00::/8
-            return true;
-        }
-
-        // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh)
-        if starts_with(eff_ip, "::ffff:") {
-            let suffix = eff_ip[7..];
-            return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
-        }
-
-        // IPv4-compatible IPv6 (::x.x.x.x or ::hhhh:hhhh)
-        if starts_with(eff_ip, "::") && !starts_with(eff_ip, "::ffff:") {
-            let suffix = eff_ip[2..];
-            return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
-        }
-
-        // NAT64 well-known prefix 64:ff9b::/96
-        if starts_with(eff_ip, "64:ff9b::") {
-            let suffix = eff_ip[9..];
-            if suffix.len == 0 { return true; } // 64:ff9b:: maps to 0.0.0.0
-            return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
-        }
-
-        // 6to4 prefix 2002::/16
-        if starts_with(eff_ip, "2002:") {
-            let rem = eff_ip[5..];
-            var colon_idx = -1;
-            for i in rem.len { if rem[i] == ':' { colon_idx = i; break; } }
-            let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
-            let hex_val1 = parse_hex_u16(p1);
-            let o0 = (hex_val1 >> 8) & 0xFF;
-            let o1 = hex_val1 & 0xFF;
-            return is_private_ipv4_octets(o0, o1);
-        }
-
-        return false;
+        return is_private_or_reserved_ipv6(eff_ip);
     }
 
     return is_private_ipv4(norm_ip);
@@ -885,6 +882,56 @@ fn init_execution_context(session: const Session&, req: const Request&, parsed_i
     return ctx;
 }
 
+fn process_redirect_hop(
+    session: Session&,
+    ctx: RequestExecutionContext&,
+    resp: Response&,
+    current_url: const Url&,
+    loc_hdr: const u8[:],
+) -> bool, Error {
+    if ctx.redirect_mode == RedirectMode.Manual {
+        resp.redirect_count = ctx.redirect_count;
+        return false, no_error();
+    }
+    if ctx.redirect_mode == RedirectMode.Error {
+        return false, make_error(310, "redirect", "redirects disabled by mode");
+    }
+    if ctx.redirect_count >= ctx.max_redirects {
+        return false, make_error(310, "redirect", "maximum redirect hops exceeded");
+    }
+
+    let ref_policy_hdr = header(resp, "Referrer-Policy");
+    let redirect_info = compute_redirect_info(
+        resp.status_code,
+        ctx.current_method[..],
+        current_url,
+        loc_hdr,
+        ref_policy_hdr,
+        ctx.current_referrer_policy,
+        ctx.current_referrer[..],
+        ctx.site_for_cookies,
+        ctx.first_party_policy,
+        ctx.url_chain[..],
+        ctx.initiator,
+        ctx.has_initiator,
+        ctx.cors_mode,
+        ctx.tainted_origin,
+        ctx.is_main_frame,
+        ctx.had_cross_site_hop
+    );
+
+    guard redirect_info.error == RedirectError.None else {
+        return false, make_error(310, "redirect", redirect_error_to_string(redirect_info.error));
+    }
+
+    let redirect_err = apply_redirect_transition(session, ctx, redirect_info);
+    guard ok(redirect_err) else { return false, redirect_err; }
+
+    ctx.url_chain.push(redirect_info.new_url);
+    ctx.redirect_count += 1;
+    return true, no_error();
+}
+
 fn execute_request(session: Session&, req: const Request&) -> Response, Error {
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
@@ -927,47 +974,11 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
             return resp, no_error();
         }
 
-        if ctx.redirect_mode == RedirectMode.Manual {
-            resp.redirect_count = ctx.redirect_count;
+        let should_continue, red_err = process_redirect_hop(session, ctx, resp, current_url, loc_hdr);
+        guard ok(red_err) else { return resp, red_err; }
+        if !should_continue {
             return resp, no_error();
         }
-        if ctx.redirect_mode == RedirectMode.Error {
-            return resp, make_error(310, "redirect", "redirects disabled by mode");
-        }
-        if ctx.redirect_count >= ctx.max_redirects {
-            return resp, make_error(310, "redirect", "maximum redirect hops exceeded");
-        }
-
-        let ref_policy_hdr = header(resp, "Referrer-Policy");
-        let redirect_info = compute_redirect_info(
-            resp.status_code,
-            ctx.current_method[..],
-            current_url,
-            loc_hdr,
-            ref_policy_hdr,
-            ctx.current_referrer_policy,
-            ctx.current_referrer[..],
-            ctx.site_for_cookies,
-            ctx.first_party_policy,
-            ctx.url_chain[..],
-            ctx.initiator,
-            ctx.has_initiator,
-            ctx.cors_mode,
-            ctx.tainted_origin,
-            ctx.is_main_frame,
-            ctx.had_cross_site_hop
-        );
-
-        guard redirect_info.error == RedirectError.None else {
-            return resp, make_error(310, "redirect", redirect_error_to_string(redirect_info.error));
-        }
-
-        // Phase 6: Sanitization & Body Rewind
-        let redirect_err = apply_redirect_transition(session, ctx, redirect_info);
-        guard ok(redirect_err) else { return resp, redirect_err; }
-
-        ctx.url_chain.push(redirect_info.new_url);
-        ctx.redirect_count += 1;
     }
 
     return Response { .. }, make_error(310, "redirect", "maximum redirect hops exceeded");

@@ -110,19 +110,23 @@ struct BatonMutex<T> {
     is_active: bool = false,
 }
 
+// Creates a new BatonMutex holding initial_val.
 fn new_baton<T>(initial_val: T) -> BatonMutex<T> {
     new_baton_mutex(initial_val);
     return BatonMutex<T> { is_active: true };
 }
 
+// Blocks until ownership of the protected value is acquired.
 fn lock<T>(bm: BatonMutex<T>&) -> T {
     return baton_lock<T>();
 }
 
+// Non-blocking attempt to acquire protected value ownership.
 fn try_lock<T>(bm: BatonMutex<T>&) -> T, bool {
     return baton_try_lock<T>();
 }
 
+// Releases ownership of protected value back to BatonMutex.
 fn unlock<T>(bm: BatonMutex<T>&, val: T) -> bool {
     return baton_unlock<T>(val);
 }
@@ -168,6 +172,7 @@ struct Semaphore {
     capacity: i64 = 0,
 }
 
+// Creates a new semaphore with given capacity.
 fn new_semaphore(capacity: i64) -> Semaphore {
     if capacity > 0 {
         sem_init(capacity as u16);
@@ -175,14 +180,17 @@ fn new_semaphore(capacity: i64) -> Semaphore {
     return Semaphore { capacity: capacity };
 }
 
+// Blocks until a permit is acquired from the semaphore.
 fn acquire(sem: Semaphore&) -> SemPermit {
     return sem_acquire();
 }
 
+// Non-blocking attempt to acquire a permit from the semaphore.
 fn try_acquire(sem: Semaphore&) -> SemPermit, bool {
     return sem_try_acquire();
 }
 
+// Releases an execution permit back to the semaphore.
 fn release(sem: Semaphore&, permit: SemPermit) -> bool {
     return sem_release(permit);
 }
@@ -195,10 +203,12 @@ struct WaitGroup {
     worker_ids: i64[>..] = [],
 }
 
+// Creates an empty WaitGroup.
 fn new_wait_group() -> WaitGroup {
     return WaitGroup { .. };
 }
 
+// Registers a worker thread ID with the WaitGroup.
 fn add_worker(wg: WaitGroup&, worker_id: i64) -> bool {
     wg.worker_ids.push(worker_id);
     return true;
@@ -254,28 +264,34 @@ struct CountDownLatch {
     expected: i64 = 0,
 }
 
+// Creates a new CountDownLatch expecting expected tickets.
 fn new_count_down_latch(expected: i64) -> CountDownLatch {
     return CountDownLatch { expected: expected };
 }
 
+// Emits a tick to decrement the latch.
 fn count_down(latch: CountDownLatch&) -> bool {
     return qput(LatchTick { step: 1 });
 }
 
+// Sends a tick signal to the latch queue.
 fn latch_tick() -> bool {
     return qput(LatchTick { step: 1 });
 }
 
+// Opens the latch by placing marker tokens for waiter_count threads.
 fn latch_open(waiter_count: i64) {
     for i in waiter_count {
         qput(LatchOpen { marker: 1 });
     }
 }
 
+// Blocks until the latch is opened.
 fn latch_wait(latch: CountDownLatch&) {
     let open = qget<LatchOpen>();
 }
 
+// Blocks until a latch open marker is received.
 fn latch_wait() {
     let open = qget<LatchOpen>();
 }

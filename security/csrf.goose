@@ -177,94 +177,93 @@ fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     return s;
 }
 
+fn evaluate_samesite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
+    if ctx.method_is_safe {
+        return CsrfDecision.Allow;
+    }
+    if guard_cfg.allow_same_site || (ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..])) {
+        return CsrfDecision.Allow;
+    }
+    return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.DisallowedSameSiteSubdomain };
+}
+
+fn evaluate_crosssite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
+    // Unsafe state mutations across sites are unconditionally blocked
+    if !ctx.method_is_safe {
+        if ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..]) {
+            return CsrfDecision.Allow;
+        }
+        return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteStateMutation };
+    }
+
+    // Top-level navigation (GET / HEAD)
+    if ctx.mode == SecFetchMode.Navigate && (ctx.dest == SecFetchDest.Document || ctx.dest == SecFetchDest.NestedDocument) {
+        if ctx.is_sensitive_navigation_route && guard_cfg.require_user_activation_on_sensitive_nav && !ctx.user_activated {
+            return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.MissingUserActivationOnSensitiveNav };
+        }
+        return CsrfDecision.Allow;
+    }
+
+    // Cross-site embedding into frame/object/embed/script -> block XS-Leaks / XSSI
+    if ctx.dest == SecFetchDest.Iframe || ctx.dest == SecFetchDest.Frame ||
+       ctx.dest == SecFetchDest.Object || ctx.dest == SecFetchDest.Embed ||
+       ctx.dest == SecFetchDest.Script {
+        return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteFramingOrXssi };
+    }
+
+    // Cross-site subresources
+    if guard_cfg.allow_cross_site_static_assets &&
+       (ctx.dest == SecFetchDest.Image || ctx.dest == SecFetchDest.Style || ctx.dest == SecFetchDest.Font) {
+        return CsrfDecision.Allow;
+    }
+
+    return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteUnauthorizedSubresource };
+}
+
+fn evaluate_fallback_origin_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
+    let candidate = if ctx.has_origin { ctx.origin[..] } else { ctx.referer[..] };
+    let candidate_host = extract_host_from_url(candidate);
+
+    if candidate_host.len > 0 && candidate_host == ctx.target_host[..] {
+        return CsrfDecision.Allow;
+    }
+    if is_origin_trusted(guard_cfg, candidate) {
+        return CsrfDecision.Allow;
+    }
+    if !ctx.method_is_safe {
+        return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.OriginHostMismatch };
+    }
+    return CsrfDecision.Allow;
+}
+
 // Evaluates Fetch Metadata headers against isolation policy.
 // Allows same-origin, direct browser navigation, and safe top-level GET/HEAD navigations.
 // Rejects cross-site mutative requests (POST, PUT, DELETE, PATCH) unless origin is trusted or exempt.
 fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
-    // Check path exemptions (e.g. public webhook endpoints, OAuth authorization start)
     if is_path_exempt(guard_cfg, ctx.path[..]) {
         return CsrfDecision.AllowExempt;
     }
 
-    // Row 1: Direct user navigation from browser UI (address bar, bookmark)
-    if ctx.site == SecFetchSite.None {
+    if ctx.site == SecFetchSite.None || ctx.site == SecFetchSite.SameOrigin {
         return CsrfDecision.Allow;
     }
 
-    // Row 2: Same-origin requests are fully trusted under SOP
-    if ctx.site == SecFetchSite.SameOrigin {
-        return CsrfDecision.Allow;
-    }
-
-    // Row 3: Subdomain request (SameSite)
     if ctx.site == SecFetchSite.SameSite {
-        if ctx.method_is_safe {
-            return CsrfDecision.Allow;
-        }
-        if guard_cfg.allow_same_site || (ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..])) {
-            return CsrfDecision.Allow;
-        }
-        return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.DisallowedSameSiteSubdomain };
+        return evaluate_samesite_fetch(guard_cfg, ctx);
     }
 
-    // Rows 4, 5, 6, 7: Cross-Site requests
     if ctx.site == SecFetchSite.CrossSite {
-        // Row 4: Unsafe state mutations across sites are unconditionally blocked
-        if !ctx.method_is_safe {
-            if ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..]) {
-                return CsrfDecision.Allow;
-            }
-            return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteStateMutation };
-        }
-
-        // Row 5: Top-level navigation (GET / HEAD)
-        if ctx.mode == SecFetchMode.Navigate && (ctx.dest == SecFetchDest.Document || ctx.dest == SecFetchDest.NestedDocument) {
-            if ctx.is_sensitive_navigation_route && guard_cfg.require_user_activation_on_sensitive_nav && !ctx.user_activated {
-                return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.MissingUserActivationOnSensitiveNav };
-            }
-            return CsrfDecision.Allow;
-        }
-
-        // Row 6: Cross-site embedding into frame/object/embed/script -> block XS-Leaks / XSSI
-        if ctx.dest == SecFetchDest.Iframe || ctx.dest == SecFetchDest.Frame ||
-           ctx.dest == SecFetchDest.Object || ctx.dest == SecFetchDest.Embed ||
-           ctx.dest == SecFetchDest.Script {
-            return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteFramingOrXssi };
-        }
-
-        // Row 7: Cross-site subresources
-        if guard_cfg.allow_cross_site_static_assets &&
-           (ctx.dest == SecFetchDest.Image || ctx.dest == SecFetchDest.Style || ctx.dest == SecFetchDest.Font) {
-            return CsrfDecision.Allow;
-        }
-
-        return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteUnauthorizedSubresource };
+        return evaluate_crosssite_fetch(guard_cfg, ctx);
     }
 
-    // Row 8: Missing Sec-Fetch-* headers, but Origin or Referer is present (fallback mode)
     if ctx.has_origin || ctx.has_referer {
-        let candidate = if ctx.has_origin { ctx.origin[..] } else { ctx.referer[..] };
-        let candidate_host = extract_host_from_url(candidate);
-
-        if candidate_host.len > 0 && candidate_host == ctx.target_host[..] {
-            return CsrfDecision.Allow;
-        }
-        if is_origin_trusted(guard_cfg, candidate) {
-            return CsrfDecision.Allow;
-        }
-        if !ctx.method_is_safe {
-            return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.OriginHostMismatch };
-        }
-        return CsrfDecision.Allow;
+        return evaluate_fallback_origin_fetch(guard_cfg, ctx);
     }
 
-    // Row 9: Complete absence of browser security headers
     if ctx.has_session_cookie && !ctx.method_is_safe {
-        // Fail-closed against CSRF bypass via crafted HTTP clients
         return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.MissingBrowserHeadersWithSessionCookie };
     }
 
-    // Allowed for server-to-server or public safe reads
     return CsrfDecision.Allow;
 }
 

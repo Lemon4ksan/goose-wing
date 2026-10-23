@@ -173,3 +173,32 @@ Manual header additions with conflicting names overwrite profile defaults.
 
 ### Slowloris Mitigation
 - Active read deadlines are enforced across header parsing. If the complete request header block is not received within the timeout window, the socket is closed immediately (`PipelineOutcome.SlowlorisClosed`).
+
+## 10. Resilient Networking & Transport Stack (`net/*`)
+
+### Connection Pool Key & Isolation (`net/pool.goose`)
+- **5-Dimensional Key**: Sockets are partitioned by `(scheme, origin_endpoint, proxy_chain, partition_key, tls_and_dns_policy)`.
+- **Anonymization & Privacy**: `NetworkAnonymizationKey` mandates comparison of `top_frame_site`, `is_cross_site`, ephemeral `nonce`, and `network_isolation_partition`. Sockets are never shared across disparate partitions.
+- **HTTP/2 IP Coalescing**: Requests to distinct domains can share an established HTTP/2 TLS socket only if resolved IP, TLS certificate SAN, partition key, privacy mode, and proxy chain match identically.
+- **Liveness Checking (`is_connection_healthy`)**: Sockets idle longer than `IDLE_CONNECTION_HEALTHY_NS` (1s) trigger non-blocking `source_exhausted` / `MSG_PEEK` checks to detect server-sent FIN packets before request dispatch.
+
+### Happy Eyeballs v2 & v3 Racing (`net/happy_eyeballs.goose`)
+- **DNS Resolution Delay (RD)**: 50 ms window when IPv4 (A) arrives before IPv6 (AAAA) to give AAAA an opportunity to complete, maintaining IPv6 preference without stalling connections.
+- **Connection Attempt Delay (CAD)**: Default 250 ms pacing between staggered socket attempts. Dynamic RTT calculations are strictly clamped to $\text{CAD} \ge 10\text{ ms}$ (absolute floor) to protect networks from congestion collapse.
+- **Address Interleaving**: Enforces First Address Family Count = 1 interleaving ($\text{IPv6}_1 \to \text{IPv4}_1 \to \text{IPv6}_2 \to \text{IPv4}_2$).
+- **Last Resort Local Synthesis**: 2000 ms timer triggering RFC 7050 NAT64 synthesis (`64:ff9b::/96`) if all IPv6 attempts fail.
+
+### Proxy Integration & Credential Isolation (`net/proxy.goose`)
+- **`socks5://` vs `socks5h://`**: Callers requiring remote proxy DNS resolution must use `socks5h://` (emits `ATYP = 0x03`).
+- **RFC 1929 Subnegotiation**: Authentication frames strictly start with subnegotiation version byte `0x01`.
+- **CONNECT Credential Stripping**: `Proxy-Authorization` is stripped from origin-bound headers after tunnel establishment.
+- **TLS Tunnel Buffer Hygiene**: If extra bytes follow `\r\n\r\n` on a `200 OK` CONNECT response, the connection aborts with `TunnelBufferedTooManyBytes` to block prefix injection attacks.
+- **4-Layer Slowloris Defenses**: Monotonic cumulative deadline (10s non-resetting), 1s `Expect: 100-continue`, 64 KB header limit, and 256 B/s Byte-Drip rate gate.
+
+### Two-Tier Retry Architecture (`net/retry.goose`)
+- **Tier 1 Stale Socket Recovery**: Immediate zero-delay retry is granted only when all 4 conditions are met: (1) connection was reused from pool, (2) failure occurred before response headers arrived, (3) method is idempotent or carries an `Idempotency-Key`, and (4) body is empty or rewindable.
+- **Form-Data One-Shot Stream Protection**: Consumed unrewindable request streams fail cleanly instead of being retried with an empty body.
+- **Chromium QUIC Fallback**: On `ERR_QUIC_PROTOCOL_ERROR` before headers, automatically retries over TCP/TLS with `disable_alternative_services = true`.
+- **Tier 2 Exponential Backoff & Jitter**: Implements Full Jitter ($s_a = \mathcal{U}(0, \min(c, b \cdot 2^a))$), Equal Jitter, and Decorrelated Jitter.
+- **RFC 9110 Retry-After**: Strictly parses `1*DIGIT` (delay-seconds) and `IMF-fixdate` (with exact UTC calendar round-trip validation). Delays exceeding `max_retry_after_ms` trip the host circuit breaker.
+- **Adaptive Retry Budget**: Enforces Google SRE retry budgeting, capping retry traffic at a maximum 20% ratio.

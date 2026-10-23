@@ -130,9 +130,30 @@ Unlike runtime-managed environments that rely on background garbage collectors a
 | **Leader Worker Panic / Crash** | Leader dying in an exception or abort leaving all waiting goroutines / threads blocked forever. | Supervision pattern: leader failure unblocks all registered waiter channels, propagating a clean abort status to all concurrent callers. |
 | **Bounded Entry Recirculation** | Unbounded key creation causing out-of-memory crashes in high-throughput key spaces. | `SingleflightGroup` allocates a fixed array of entries (`entries: FlightEntry[..64]`). Expired or forgotten entries are reused without heap churn. |
 
-## 13. Summary of Verifications
+## 13. Resilient Network Transport, Connection Pool & Proxying (`net/*`)
 
-Every defense listed in this manual is verified across **20 automated test suites** in the `tests/` directory:
+| Vector / Component | Classical Vulnerability Vectors & Pitfalls | Goose Defense & Guarantees |
+| :--- | :--- | :--- |
+| **Cross-Site Timing Attacks & Pool Contamination** | Shared sockets between cross-site iframes leaking user activity via timing channels; session-sticky vs rotating proxies colliding. | 5-dimensional `PoolKey` strictly enforces `NetworkAnonymizationKey` (comparing `top_frame_site`, `is_cross_site`, ephemeral `nonce`, `network_isolation_partition`, and `worker_session_id`). Sockets are strictly isolated. |
+| **Half-Closed Socket Races (FIN/RST)** | Server closes idle Keep-Alive connection; client issues request into dying socket causing unexpected connection drops. | OkHttp parity: `is_connection_healthy()` tracks `idle_at_ns`. When idle duration exceeds `IDLE_CONNECTION_HEALTHY_NS`, performs non-blocking `source_exhausted` / `MSG_PEEK` check, evicting dead sockets prior to dispatch. |
+| **Happy Eyeballs Congestion Collapse** | High packet-loss environments causing rapid parallel socket attempts that flood router queues and collapse the network. | RFC 8305 / HEv3: Connection Attempt Delay (CAD) enforces a strict absolute floor $\text{CAD} \ge 10\text{ ms}$ (normative standard floor). |
+| **IPv6 DNS Jitter & IPv4 Starvation** | IPv4 DNS responses arriving milliseconds before IPv6 causing clients to bypass IPv6 entirely. | Phase 1 DNS race implements a strict 50 ms Resolution Delay (RD): if A arrives before AAAA, waits up to 50 ms for AAAA; positive AAAA cancels RD immediately, preserving IPv6 priority. |
+| **SOCKS5 DNS Leakage** | Using `socks5://` resolving hostnames locally, leaking visited internal hostnames to local network sniffers. | Strict URL-scheme routing: `socks5h://` unconditionally emits `ATYP = 0x03` (domain name), delegating DNS resolution to the remote proxy exit node. |
+| **RFC 1929 Subnegotiation Version Confusion** | Flawed SOCKS5 clients sending `0x05` as first byte of username/password auth frame instead of RFC 1929 subnegotiation version `0x01`. | `build_socks5_rfc1929_auth()` strictly sets byte 0 to `0x01` (`SOCKS5_RFC1929_VER`) per RFC 1929 §2. |
+| **Proxy Credential Origin Leakage** | `Proxy-Authorization` headers leaking to target origin servers after CONNECT tunnel establishment. | `sanitize_tunnel_headers_for_origin()` unconditionally strips `Proxy-Authorization`, `Proxy-Authenticate`, and `Proxy-Connection` before sending traffic through the tunnel. |
+| **TLS Prefix Injection (Tunnel Buffer Smuggling)** | Malicious or compromised HTTP proxy injecting raw bytes into the TCP stream immediately following `200 Connection Established`. | OkHttp parity: `verify_connect_tunnel_response()` checks buffer cleanliness (`!source.exhausted() || !sink.exhausted()`). Any leftover bytes after `\r\n\r\n` abort the connection with `TunnelBufferedTooManyBytes`. |
+| **Slowloris & Reverse-Slowloris Tarpits** | Malicious servers sending headers 1 byte every few seconds, perpetually resetting idle timers and exhausting client sockets. | 4-layer defense: Layer 1 Monotonic Cumulative Deadline (10s non-resetting), Layer 2 1s `Expect: 100-continue`, Layer 3 64 KB memory ceiling, Layer 4 256 B/s Byte-Drip gate. |
+| **Form-Data One-Shot Stream Retry Bug** | Stale socket error re-sending an already drained one-shot request body stream, sending a truncated or empty body to the server. | Tier 1 stale socket retry requires `req.rewindable && !req.body_consumed` (Go `Request.GetBody` pattern). Consumed one-shot streams fail cleanly without corrupting server state. |
+| **Idempotency Violation on Retry** | Retrying non-idempotent `POST` requests after network glitches, risking duplicate payment charges or duplicate mutations. | Tier 1 stale socket recovery restricts retries to idempotent methods (`GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`, `TRACE`) unless an explicit `Idempotency-Key` header is present. |
+| **Retry Storms & Cascading Failures** | Overloaded servers returning 503 or 429 attacked by synchronized client retry waves ($O(N^2)$ amplified load). | Tier 2 implements Full Jitter ($s_a = \mathcal{U}(0, \min(c, b \cdot 2^a))$), RFC 9110 `Retry-After` parsing (`1*DIGIT` and `IMF-fixdate` exact UTC round-trip), host circuit breaker, and Google SRE adaptive retry budget (capped at 20%). |
+
+## 14. Summary of Verifications
+
+Every defense listed in this manual is verified across **28 automated test suites** in the `tests/` directory:
+- `tests/net_pool_test.goose` (33 checks): 5D PoolKey isolation, two-slice WantQueue, is_connection_healthy, H2 IP coalescing, soft caps.
+- `tests/net_happy_eyeballs_test.goose` (49 checks): RFC 8305 / HEv3 racing, 50 ms RD, CAD $\ge 10\text{ ms}$ floor, interleaving, Last Resort NAT64.
+- `tests/net_proxy_test.goose` (55 checks): SOCKS5/5h, RFC 1929 version 0x01, credential stripping, tunnel buffer hygiene, 4-tier Slowloris.
+- `tests/net_retry_test.goose` (82 checks): Tier 1 stale socket guards, one-shot stream defense, QUIC fallback, Full/Equal/Decorrelated Jitter, RFC 9110 Retry-After, circuit breaker, Google SRE budget.
 - `tests/sec_smuggler_test.goose` (30 checks): Request smuggling, bare CR rejection, chunked LF desync, TE validation.
 - `tests/sec_ct_test.goose` (263 checks): Constant-time math, Dudect Welch's $t$-test, AES-256-GCM, XChaCha20-Poly1305, CryptoJar AAD timestamp binding.
 - `tests/sec_csrf_test.goose` (41 checks): W3C Fetch Metadata 9-row decision matrix, fail-closed cookie gate, Vary & HSTS injection.
@@ -140,7 +161,8 @@ Every defense listed in this manual is verified across **20 automated test suite
 - `tests/server_router_test.goose` (45 checks): ZeroAllocParams, static route precedence, dot-segment canonicalization, 405 Method Not Allowed + Allow.
 - `tests/cookie_engine_test.goose` (78 checks) & `tests/cookie_vectors_test.goose` (1,113 checks): CookieMonster WPT compliance, layered prefixes, 6-round GC.
 - `tests/http_headers_test.goose` (65 checks), `tests/http_mime_test.goose` (87 checks), `tests/http_multipart_test.goose` (60 checks): Zero-heap HTTP engine.
+- `tests/cache_engine_test.goose` (98 checks): RFC 9111 HTTP caching engine, 304 merge, ETag validators, single-flight request collapsing.
 - `tests/core_time_test.goose` (334 checks), `tests/core_url_test.goose` (357 checks), `tests/core_sync_test.goose` (68 checks): Core runtime primitives.
 - `tests/sec_cve_test.goose` (35 checks), `tests/sec_protocol_test.goose` (36 checks), `tests/sec_cookie_test.goose` (38 checks), `tests/sec_concurrency_test.goose` (18 checks), `tests/app_session_test.goose` (80 checks), `tests/sec_bomber_test.goose` (42 checks), `tests/sec_breach_test.goose` (28 checks).
 
-**Total Verified Checks:** **2,854 automated security, cryptographic & protocol assertions (100% PASS across 20 suites).**
+**Total Verified Checks:** **3,171+ automated security, cryptographic & protocol assertions (100% PASS across 28 suites).**

@@ -366,57 +366,32 @@ fn ends_with_dot_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
 }
 
 fn check_known_explicit_suffix<B>(domain: const u8[:], out: B&, is_icann: bool&) -> bool {
-    // Check 3-level suffixes first (e.g. blogspot.co.uk)
     var dot3 = -1;
     var dot2 = -1;
     var dot1 = -1;
     find_trailing_dot_positions(domain, dot1, dot2, dot3);
 
-    if dot3 >= 0 {
-        let tail3 = domain[dot3 + 1..];
-        if is_known_three_level_suffix(tail3, is_icann) {
-            out.append(tail3);
-            return true;
-        }
-    } else if is_known_three_level_suffix(domain, is_icann) {
-        out.append(domain);
+    let tail3 = if dot3 >= 0 { domain[dot3 + 1..] } else { domain };
+    if is_known_three_level_suffix(tail3, is_icann) {
+        out.append(tail3);
         return true;
     }
 
-    if dot2 >= 0 {
-        let tail2 = domain[dot2 + 1..];
-        if is_known_two_level_suffix(tail2) {
-            out.append(tail2);
-            is_icann = true;
-            return true;
-        }
-        if is_known_private_two_level_suffix(tail2) {
-            out.append(tail2);
-            is_icann = false;
-            return true;
-        }
-    } else {
-        if is_known_two_level_suffix(domain) {
-            out.append(domain);
-            is_icann = true;
-            return true;
-        }
-        if is_known_private_two_level_suffix(domain) {
-            out.append(domain);
-            is_icann = false;
-            return true;
-        }
+    let tail2 = if dot2 >= 0 { domain[dot2 + 1..] } else { domain };
+    if is_known_two_level_suffix(tail2) {
+        out.append(tail2);
+        is_icann = true;
+        return true;
+    }
+    if is_known_private_two_level_suffix(tail2) {
+        out.append(tail2);
+        is_icann = false;
+        return true;
     }
 
-    if dot1 >= 0 {
-        let tail1 = domain[dot1 + 1..];
-        if is_known_one_level_suffix(tail1) {
-            out.append(tail1);
-            is_icann = true;
-            return true;
-        }
-    } else if is_known_one_level_suffix(domain) {
-        out.append(domain);
+    let tail1 = if dot1 >= 0 { domain[dot1 + 1..] } else { domain };
+    if is_known_one_level_suffix(tail1) {
+        out.append(tail1);
         is_icann = true;
         return true;
     }

@@ -53,7 +53,72 @@ enum PipelineOutcome {
     ExpectationFailed,
 }
 
+// Validates Expect header compliance per RFC 9110 Section 10.1.1.
+// Returns true if valid or absent; false if unsupported expectation requested.
+fn validate_pipeline_expect_header(req: const Request&) -> bool {
+    for &hdr in req.headers {
+        if eq_ascii_fold(hdr.name[..], "expect") {
+            let exp_val = hdr.value[..];
+            if !eq_ascii_fold(exp_val, "100-continue") {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Evaluates CORS policies and Sec-Fetch-* cross-origin isolation metadata.
+// Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
+fn evaluate_pipeline_cors_and_csrf(
+    cfg: ServerPipelineConfig&,
+    req: const Request&,
+    res: Response&,
+) -> PipelineOutcome, bool {
+    let cors_res = evaluate_cors(cfg.cors_policy, req, res);
+    if cors_res == CorsResult.AllowedPreflight {
+        return PipelineOutcome.CorsPreflight, true;
+    }
+
+    let fetch_ctx = extract_fetch_context(req, cfg.target_host[..]);
+    let csrf_res = evaluate_fetch_metadata(cfg.csrf_guard, fetch_ctx);
+    apply_isolation_headers(res);
+
+    match csrf_res {
+        RejectForbidden _ => {
+            res.status_code = 403; // Forbidden
+            return PipelineOutcome.CsrfRejected, true;
+        },
+        _ => {},
+    };
+
+    return PipelineOutcome.Handled, false;
+}
+
+// Decrypts encrypted session cookie from request headers into private jar if enabled.
+fn decrypt_pipeline_session_cookie(
+    cfg: ServerPipelineConfig&,
+    req: const Request&,
+    now_ns: u64,
+) {
+    for idx in req.headers.len {
+        if eq_ascii_fold(req.headers[idx].name[..], "Cookie") {
+            var plain_cookie: u8[>..] = [];
+            let now_sec = (now_ns / 1000000000) as i64;
+            private_jar_open(cfg.private_jar, "session", req.headers[idx].value[..], now_sec, plain_cookie);
+            break;
+        }
+    }
+}
+
 // Executes an incoming request through the configured pipeline stages.
+//
+// Pipeline stages:
+// 1. Connection liveliness / timeout check (Slowloris defense)
+// 2. Expect header validation (RFC 9110 Section 10.1.1)
+// 3. GCRA rate limiter check & header application
+// 4. CORS preflight and Fetch Metadata CSRF isolation
+// 5. Radix trie route matching & extension acquisition
+// 6. Authenticated session cookie decryption & inline handler dispatch
 fn execute_pipeline(
     cfg: ServerPipelineConfig&,
     conn_timer: ConnectionTimer&,
@@ -63,27 +128,23 @@ fn execute_pipeline(
     res: Response&,
     out_future: InlineHandlerFuture&,
 ) -> PipelineOutcome {
-    // Connection liveliness / timeout check
     notify_request_start(conn_timer);
+
+    // Stage 1: Connection liveliness / timeout check
     guard check_connection_tick(conn_timer, now_ns) else {
         notify_request_end(conn_timer);
         res.status_code = 408; // Request Timeout
         return PipelineOutcome.SlowlorisClosed;
     }
 
-    // Expect header validation (RFC 9110 Section 10.1.1: reject unknown expectations with 417)
-    for &hdr in req.headers {
-        if eq_ascii_fold(hdr.name[..], "expect") {
-            let exp_val = hdr.value[..];
-            if !eq_ascii_fold(exp_val, "100-continue") {
-                notify_request_end(conn_timer);
-                res.status_code = 417; // Expectation Failed
-                return PipelineOutcome.ExpectationFailed;
-            }
-        }
+    // Stage 2: Expect header validation (RFC 9110 Section 10.1.1)
+    guard validate_pipeline_expect_header(req) else {
+        notify_request_end(conn_timer);
+        res.status_code = 417; // Expectation Failed
+        return PipelineOutcome.ExpectationFailed;
     }
 
-    // Rate limiter check
+    // Stage 3: Rate limiter check
     let rl_decision = check_keyed_rate_limit(cfg.limiter, client_ip, 1, now_ns);
     apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
     if !is_allowed(rl_decision) {
@@ -91,27 +152,14 @@ fn execute_pipeline(
         return PipelineOutcome.RateLimited;
     }
 
-    // CORS and Fetch Metadata isolation check
-    let cors_res = evaluate_cors(cfg.cors_policy, req, res);
-    if cors_res == CorsResult.AllowedPreflight {
+    // Stage 4: CORS and Fetch Metadata isolation check
+    let security_outcome, is_terminal = evaluate_pipeline_cors_and_csrf(cfg, req, res);
+    if is_terminal {
         notify_request_end(conn_timer);
-        return PipelineOutcome.CorsPreflight;
+        return security_outcome;
     }
 
-    let fetch_ctx = extract_fetch_context(req, cfg.target_host[..]);
-    let csrf_res = evaluate_fetch_metadata(cfg.csrf_guard, fetch_ctx);
-    apply_isolation_headers(res);
-
-    match csrf_res {
-        RejectForbidden rej => {
-            notify_request_end(conn_timer);
-            res.status_code = 403; // Forbidden
-            return PipelineOutcome.CsrfRejected;
-        },
-        _ => {},
-    };
-
-    // Radix trie route matching
+    // Stage 5: Radix trie route matching
     let ext_slot_idx = acquire_extensions(cfg.ext_pool);
     let e_idx = ext_slot_idx as i64;
     cfg.ext_pool.slots[e_idx].peer_ip.append(client_ip);
@@ -133,21 +181,11 @@ fn execute_pipeline(
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
-            // Cookie decryption
+            // Stage 6: Cookie decryption & handler dispatch
             if (f.entries_mask & ENTRY_COOKIES) != 0 {
-                // Decrypt session cookie if present
-                for idx in req.headers.len {
-                    if eq_ascii_fold(req.headers[idx].name[..], "Cookie") {
-                        // Ingest encrypted cookie via PrivateJar
-                        var plain_cookie: u8[>..] = [];
-                        let now_sec = (now_ns / 1000000000) as i64;
-                        private_jar_open(cfg.private_jar, "session", req.headers[idx].value[..], now_sec, plain_cookie);
-                        break;
-                    }
-                }
+                decrypt_pipeline_session_cookie(cfg, req, now_ns);
             }
 
-            // Handler dispatch
             out_future = new_inline_handler_future(f.handler_id as u16);
             poll_future(out_future);
 

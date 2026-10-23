@@ -142,57 +142,57 @@ fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
     return PrivateJar { store: store, use_hkdf_aes: use_hkdf_aes };
 }
 
-// Encrypts and authenticates cookie payload into binary wire format:
-// For XChaCha20: ver (0x01) | key_id (4B) | timestamp (8B) | nonce (24B) | ciphertext | tag (16B)
-fn private_jar_seal_binary<B>(
-    jar: const PrivateJar&,
+fn seal_binary_hkdf_aes<B>(
+    slot: const KeySlot&,
     cookie_name: const u8[:],
     plaintext: const u8[:],
     now_sec: i64,
     nonce_seed: u64,
     out: B&,
 ) -> bool {
-    let slot, ok_key = active_key(jar.store);
-    guard ok_key else { return false; }
+    out.push(WIRE_VER_HKDF_AES_GCM);
+    out.push(((slot.key_id >> 24) & 0xFF) as u8);
+    out.push(((slot.key_id >> 16) & 0xFF) as u8);
+    out.push(((slot.key_id >> 8) & 0xFF) as u8);
+    out.push((slot.key_id & 0xFF) as u8);
 
-    if jar.use_hkdf_aes {
-        // HKDF + AES-256-GCM
-        out.push(WIRE_VER_HKDF_AES_GCM);
-        out.push(((slot.key_id >> 24) & 0xFF) as u8);
-        out.push(((slot.key_id >> 16) & 0xFF) as u8);
-        out.push(((slot.key_id >> 8) & 0xFF) as u8);
-        out.push((slot.key_id & 0xFF) as u8);
-
-        var salt: u8[32] = [0; 32];
-        var nonce12: u8[12] = [0; 12];
-        for i in 8 {
-            salt[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
-            salt[8 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
-            nonce12[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
-        }
-        for i in 32 { out.push(salt[i]); }
-        for i in 12 { out.push(nonce12[i]); }
-
-        var aad_stack: u8[..256] = [];
-        if (15 + cookie_name.len) <= aad_stack.cap {
-            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
-            var ct: u8[>..] = [];
-            let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], ct);
-            out.append(ct[..]);
-            for i in 16 { out.push(tag[i]); }
-            return true;
-        } else {
-            var aad_dyn: u8[>..] = [];
-            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
-            var ct: u8[>..] = [];
-            let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], ct);
-            out.append(ct[..]);
-            for i in 16 { out.push(tag[i]); }
-            return true;
-        }
+    var salt: u8[32] = [0; 32];
+    var nonce12: u8[12] = [0; 12];
+    for i in 8 {
+        salt[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
+        salt[8 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
+        nonce12[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
     }
+    for i in 32 { out.push(salt[i]); }
+    for i in 12 { out.push(nonce12[i]); }
 
-    // Default: XChaCha20-Poly1305 (24-byte nonce, 100% collision-free)
+    var aad_stack: u8[..256] = [];
+    if (15 + cookie_name.len) <= aad_stack.cap {
+        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
+        var ct: u8[>..] = [];
+        let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], ct);
+        out.append(ct[..]);
+        for i in 16 { out.push(tag[i]); }
+        return true;
+    } else {
+        var aad_dyn: u8[>..] = [];
+        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
+        var ct: u8[>..] = [];
+        let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], ct);
+        out.append(ct[..]);
+        for i in 16 { out.push(tag[i]); }
+        return true;
+    }
+}
+
+fn seal_binary_xchacha20<B>(
+    slot: const KeySlot&,
+    cookie_name: const u8[:],
+    plaintext: const u8[:],
+    now_sec: i64,
+    nonce_seed: u64,
+    out: B&,
+) -> bool {
     out.push(WIRE_VER_XCHACHA20);
     out.push(((slot.key_id >> 24) & 0xFF) as u8);
     out.push(((slot.key_id >> 16) & 0xFF) as u8);
@@ -230,6 +230,106 @@ fn private_jar_seal_binary<B>(
     }
 }
 
+// Encrypts and authenticates cookie payload into binary wire format:
+// For XChaCha20: ver (0x01) | key_id (4B) | timestamp (8B) | nonce (24B) | ciphertext | tag (16B)
+fn private_jar_seal_binary<B>(
+    jar: const PrivateJar&,
+    cookie_name: const u8[:],
+    plaintext: const u8[:],
+    now_sec: i64,
+    nonce_seed: u64,
+    out: B&,
+) -> bool {
+    let slot, ok_key = active_key(jar.store);
+    guard ok_key else { return false; }
+
+    if jar.use_hkdf_aes {
+        return seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
+    }
+    return seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
+}
+
+fn open_binary_xchacha20(
+    jar: const PrivateJar&,
+    slot: const KeySlot&,
+    cookie_name: const u8[:],
+    raw_wire: const u8[:],
+    now_sec: i64,
+    out_plaintext: u8[>..]&,
+) -> bool {
+    guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
+
+    var ts: u64 = 0;
+    for i in 8 { ts = (ts << 8) | raw_wire[5 + i]; }
+    let cookie_sec = ts as i64;
+
+    if now_sec > 0 {
+        if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
+        if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
+    }
+
+    var nonce24: u8[24] = [0; 24];
+    for i in 24 { nonce24[i] = raw_wire[13 + i]; }
+
+    let ct_len = raw_wire.len - K_OVERHEAD_XCHACHA20;
+    let ct = raw_wire[37..37 + ct_len];
+
+    var tag: u8[16] = [0; 16];
+    for i in 16 { tag[i] = raw_wire[37 + ct_len + i]; }
+
+    var aad_stack: u8[..256] = [];
+    if (15 + cookie_name.len) <= aad_stack.cap {
+        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
+        return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext);
+    } else {
+        var aad_dyn: u8[>..] = [];
+        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_dyn);
+        return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_dyn[..], tag, out_plaintext);
+    }
+}
+
+fn open_binary_hkdf_aes(
+    jar: const PrivateJar&,
+    slot: const KeySlot&,
+    cookie_name: const u8[:],
+    raw_wire: const u8[:],
+    now_sec: i64,
+    out_plaintext: u8[>..]&,
+) -> bool {
+    guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
+
+    var salt32: u8[32] = [0; 32];
+    for i in 32 { salt32[i] = raw_wire[5 + i]; }
+
+    var nonce12: u8[12] = [0; 12];
+    for i in 12 { nonce12[i] = raw_wire[37 + i]; }
+
+    var ts: u64 = 0;
+    for i in 8 { ts |= (salt32[8 + i] as u64) << (i * 8); }
+    let cookie_sec = ts as i64;
+
+    if now_sec > 0 && cookie_sec > 0 {
+        if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
+        if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
+    }
+
+    let ct_len = raw_wire.len - K_OVERHEAD_HKDF_AES_GCM;
+    let ct = raw_wire[49..49 + ct_len];
+
+    var tag: u8[16] = [0; 16];
+    for i in 16 { tag[i] = raw_wire[49 + ct_len + i]; }
+
+    var aad_stack: u8[..256] = [];
+    if (15 + cookie_name.len) <= aad_stack.cap {
+        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
+        return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext);
+    } else {
+        var aad_dyn: u8[>..] = [];
+        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_dyn);
+        return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_dyn[..], tag, out_plaintext);
+    }
+}
+
 // Verifies authentication tag, context binding, and decrypts payload into out_plaintext.
 fn private_jar_open_binary(
     jar: const PrivateJar&,
@@ -250,71 +350,11 @@ fn private_jar_open_binary(
     guard ok_key else { return false; }
 
     if ver == WIRE_VER_XCHACHA20 {
-        guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
-
-        var ts: u64 = 0;
-        for i in 8 { ts = (ts << 8) | raw_wire[5 + i]; }
-        let cookie_sec = ts as i64;
-
-        // TTL / Replay validation
-        if now_sec > 0 {
-            if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
-            if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
-        }
-
-        var nonce24: u8[24] = [0; 24];
-        for i in 24 { nonce24[i] = raw_wire[13 + i]; }
-
-        let ct_len = raw_wire.len - K_OVERHEAD_XCHACHA20;
-        let ct = raw_wire[37..37 + ct_len];
-
-        var tag: u8[16] = [0; 16];
-        for i in 16 { tag[i] = raw_wire[37 + ct_len + i]; }
-
-        var aad_stack: u8[..256] = [];
-        if (15 + cookie_name.len) <= aad_stack.cap {
-            build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
-            return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext);
-        } else {
-            var aad_dyn: u8[>..] = [];
-            build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_dyn);
-            return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_dyn[..], tag, out_plaintext);
-        }
-    } else if ver == WIRE_VER_HKDF_AES_GCM {
-        guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
-
-        var salt32: u8[32] = [0; 32];
-        for i in 32 { salt32[i] = raw_wire[5 + i]; }
-
-        var nonce12: u8[12] = [0; 12];
-        for i in 12 { nonce12[i] = raw_wire[37 + i]; }
-
-        var ts: u64 = 0;
-        for i in 8 { ts |= (salt32[8 + i] as u64) << (i * 8); }
-        let cookie_sec = ts as i64;
-
-        if now_sec > 0 && cookie_sec > 0 {
-            if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
-            if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
-        }
-
-        let ct_len = raw_wire.len - K_OVERHEAD_HKDF_AES_GCM;
-        let ct = raw_wire[49..49 + ct_len];
-
-        var tag: u8[16] = [0; 16];
-        for i in 16 { tag[i] = raw_wire[49 + ct_len + i]; }
-
-        var aad_stack: u8[..256] = [];
-        if (15 + cookie_name.len) <= aad_stack.cap {
-            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
-            return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext);
-        } else {
-            var aad_dyn: u8[>..] = [];
-            build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_dyn);
-            return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_dyn[..], tag, out_plaintext);
-        }
+        return open_binary_xchacha20(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
     }
-
+    if ver == WIRE_VER_HKDF_AES_GCM {
+        return open_binary_hkdf_aes(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
+    }
     return false;
 }
 

@@ -468,3 +468,89 @@ fn ::on_response(cache: wing::HttpCache&, req: const wing::Request&, resp: const
 fn ::check_invalidation(cache: wing::HttpCache&, req: const wing::Request&, resp: const wing::Response&) -> i64 {
     return wing::check_invalidation(cache, req, resp);
 }
+
+// ---- resilient networking & transport ufcs bridges -------------------------
+
+fn ::acquire_pooled_connection(pool: wing::StreamPool&, key: const wing::PoolKey&, target_resolved_ip: const u8[:], now_ns: i64, do_extensive_checks: bool = false) -> i32, bool {
+    return wing::acquire_pooled_connection(pool, key, target_resolved_ip, now_ns, do_extensive_checks);
+}
+
+fn ::register_connection(pool: wing::StreamPool&, key: const wing::PoolKey&, proto: wing::NegotiatedProtocol, resolved_ip: const u8[:], max_streams: i32, now_ns: i64, respect_limits: wing::RespectLimits = wing::RespectLimits.Enabled) -> i32 {
+    return wing::register_connection(pool, key, proto, resolved_ip, max_streams, now_ns, respect_limits);
+}
+
+fn ::release_connection(pool: wing::StreamPool&, conn_id: i32, now_ns: i64) -> bool {
+    return wing::release_connection(pool, conn_id, now_ns);
+}
+
+fn ::is_connection_healthy(conn: wing::PooledConnection&, now_ns: i64, do_extensive_checks: bool = false, healthy_threshold_ns: i64 = wing::IDLE_CONNECTION_HEALTHY_NS) -> bool {
+    return wing::is_connection_healthy(conn, now_ns, do_extensive_checks, healthy_threshold_ns);
+}
+
+fn ::push_want(q: wing::WantQueue&, item: wing::WantConn) -> bool {
+    return wing::push_want(q, item);
+}
+
+fn ::pop_want(q: wing::WantQueue&) -> wing::WantConn, bool {
+    return wing::pop_want(q);
+}
+
+fn ::cancel_want(q: wing::WantQueue&, req_id: u64) -> bool {
+    return wing::cancel_want(q, req_id);
+}
+
+fn ::compute_effective_cad_ms(observed_rtt_ms: i64, rtt_known: bool, min_cad_ms: i64 = wing::HE_MIN_CAD_MS, max_cad_ms: i64 = wing::HE_MAX_CAD_MS) -> i64 {
+    return wing::compute_effective_cad_ms(observed_rtt_ms, rtt_known, min_cad_ms, max_cad_ms);
+}
+
+fn ::start_attempt_race(manager: wing::AttemptManager&, candidates: const wing::DnsCandidate[:], now_ms: i64) {
+    wing::start_attempt_race(manager, candidates, now_ms);
+}
+
+fn ::tick_attempt_manager(manager: wing::AttemptManager&, now_ms: i64) -> bool {
+    return wing::tick_attempt_manager(manager, now_ms);
+}
+
+fn ::bind_winner_attempt(manager: wing::AttemptManager&, winner_id: i32, is_alternative_h3: bool = false) -> bool {
+    return wing::bind_winner_attempt(manager, winner_id, is_alternative_h3);
+}
+
+fn ::verify_connect_tunnel_response(raw_response: const u8[:], sink_buffered_bytes: i64 = 0) -> wing::ConnectTunnelError {
+    return wing::verify_connect_tunnel_response(raw_response, sink_buffered_bytes);
+}
+
+fn ::feed_header_bytes(reader: wing::HeaderReader&, chunk: const u8[:], now_mono_ns: i64) -> wing::SlowlorisViolation {
+    return wing::feed_header_bytes(reader, chunk, now_mono_ns);
+}
+
+fn ::should_retry_tier1_stale_socket(reused_connection: bool, headers_received: bool, req: const wing::Request&) -> bool {
+    return wing::should_retry_tier1_stale_socket(reused_connection, headers_received, req);
+}
+
+fn ::evaluate_tier1_retry(err_code: i32, reused_connection: bool, headers_received: bool, req: const wing::Request&) -> wing::Tier1Decision {
+    return wing::evaluate_tier1_retry(err_code, reused_connection, headers_received, req);
+}
+
+fn ::compute_backoff_jitter_ms(cfg: const wing::BackoffConfig&, attempt: i64, prev_sleep_ms: i64&, rng_seed: u64&) -> i64 {
+    return wing::compute_backoff_jitter_ms(cfg, attempt, prev_sleep_ms, rng_seed);
+}
+
+fn ::parse_retry_after_ms(header_raw: const u8[:], now_unix_ms: i64) -> i64, bool {
+    return wing::parse_retry_after_ms(header_raw, now_unix_ms);
+}
+
+fn ::trip_circuit_breaker_if_exceeded(breaker: wing::HostCircuitBreaker&, host_str: const u8[:], retry_after_ms: i64, now_mono_ns: i64) -> bool {
+    return wing::trip_circuit_breaker_if_exceeded(breaker, host_str, retry_after_ms, now_mono_ns);
+}
+
+fn ::is_host_circuit_broken(breaker: wing::HostCircuitBreaker&, host_str: const u8[:], now_mono_ns: i64) -> bool {
+    return wing::is_host_circuit_broken(breaker, host_str, now_mono_ns);
+}
+
+fn ::record_primary_request(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64) {
+    wing::record_primary_request(budget, now_mono_ns);
+}
+
+fn ::allow_retry_budget(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
+    return wing::allow_retry_budget(budget, now_mono_ns);
+}

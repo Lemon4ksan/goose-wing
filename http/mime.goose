@@ -84,6 +84,32 @@ struct MediaType {
     valid: bool = false,
 }
 
+fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> bool {
+    var eq_pos: i64 = -1;
+    for i in p_trim.len {
+        if p_trim[i] == '=' {
+            eq_pos = i;
+            break;
+        }
+    }
+    guard eq_pos > 0 else { return false; }
+
+    let p_name = trim_lws(p_trim[..eq_pos]);
+    let p_val_raw = trim_lws(p_trim[eq_pos + 1..]);
+    guard is_valid_header_name(p_name) else { return false; }
+
+    p_item.name.append(p_name);
+    to_lower(p_item.name[..]);
+
+    if p_val_raw.len > 0 && p_val_raw[0] == '"' {
+        guard strict_unquote_buf(p_val_raw, p_item.value) else { return false; }
+    } else {
+        guard is_valid_header_value(p_val_raw) else { return false; }
+        p_item.value.append(p_val_raw);
+    }
+    return true;
+}
+
 fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
     var rem = rem_in;
     while rem.len > 0 {
@@ -105,29 +131,8 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
         let p_trim = trim_lws(param_token);
         if p_trim.len == 0 { continue; }
 
-        var eq_pos: i64 = -1;
-        for i in p_trim.len {
-            if p_trim[i] == '=' {
-                eq_pos = i;
-                break;
-            }
-        }
-        guard eq_pos > 0 else { return false; }
-
-        let p_name = trim_lws(p_trim[..eq_pos]);
-        let p_val_raw = trim_lws(p_trim[eq_pos + 1..]);
-        guard is_valid_header_name(p_name) else { return false; }
-
         var p_item = MediaTypeParam { .. };
-        p_item.name.append(p_name);
-        to_lower(p_item.name[..]);
-
-        if p_val_raw.len > 0 && p_val_raw[0] == '"' {
-            guard strict_unquote_buf(p_val_raw, p_item.value) else { return false; }
-        } else {
-            guard is_valid_header_value(p_val_raw) else { return false; }
-            p_item.value.append(p_val_raw);
-        }
+        guard parse_single_media_param(p_trim, p_item) else { return false; }
 
         if mt.params.len < 16 {
             mt.params.push(p_item);
@@ -333,12 +338,36 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     return true;
 }
 
-// RFC 8941 Section 3.3.1: sf-integer
-// ["-"] 1*15DIGIT in range [-999_999_999_999_999, 999_999_999_999_999]
+fn parse_sfv_decimal_tail(raw: const u8[:], cursor: i64&, num_val: i64, int_digit_count: i64, is_neg: bool, out_bare: SfvBareItem&) -> bool {
+    // sf-decimal: up to 12 int digits, 1..3 frac digits (RFC 8941 Section 3.3.2)
+    guard int_digit_count >= 1 && int_digit_count <= 12 else { return false; }
+    cursor++; // skip '.'
+    guard cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' else { return false; }
+
+    var frac_digits: i64 = 0;
+    var frac_val: i64 = 0;
+    while cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' {
+        frac_digits++;
+        guard frac_digits <= 3 else { return false; }
+        frac_val = frac_val * 10 + (raw[cursor] - '0');
+        cursor++;
+    }
+
+    if frac_digits == 1 { frac_val *= 100; }
+    else if frac_digits == 2 { frac_val *= 10; }
+
+    var total_scaled = num_val * 1000 + frac_val;
+    if is_neg { total_scaled = -total_scaled; }
+
+    out_bare.kind = SfvType.Decimal;
+    out_bare.int_val = total_scaled;
+    return true;
+}
+
+// RFC 8941 Section 3.3.1: sf-integer & Section 3.3.2: sf-decimal
 fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
     var is_neg = false;
-    var start_pos = cursor;
 
     if raw[cursor] == '-' {
         is_neg = true;
@@ -358,35 +387,10 @@ fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBar
         cursor++;
     }
 
-    // Check for Decimal '.'
     if cursor < raw.len && raw[cursor] == '.' {
-        // sf-decimal: up to 12 int digits, 1..3 frac digits
-        guard int_digit_count >= 1 && int_digit_count <= 12 else { return false; }
-        cursor++; // skip '.'
-        guard cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' else { return false; }
-
-        var frac_digits: i64 = 0;
-        var frac_val: i64 = 0;
-        while cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' {
-            frac_digits++;
-            guard frac_digits <= 3 else { return false; } // Max 3 fractional digits
-            frac_val = frac_val * 10 + (raw[cursor] - '0');
-            cursor++;
-        }
-
-        // Scale to milliths (thousandths)
-        if frac_digits == 1 { frac_val *= 100; }
-        else if frac_digits == 2 { frac_val *= 10; }
-
-        var total_scaled = num_val * 1000 + frac_val;
-        if is_neg { total_scaled = -total_scaled; }
-
-        out_bare.kind = SfvType.Decimal;
-        out_bare.int_val = total_scaled;
-        return true;
+        return parse_sfv_decimal_tail(raw, cursor, num_val, int_digit_count, is_neg, out_bare);
     }
 
-    // sf-integer: 1 to 15 digits
     guard int_digit_count >= 1 && int_digit_count <= 15 else { return false; }
     let max_val: i64 = 999999999999999;
     guard num_val <= max_val else { return false; }
@@ -715,6 +719,46 @@ fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
     return true;
 }
 
+fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
+    member.is_inner_list = true;
+    cursor++; // skip '('
+    while cursor < raw.len {
+        sfv_skip_ows(raw, cursor);
+        if cursor < raw.len && raw[cursor] == ')' {
+            cursor++;
+            break;
+        }
+        var item = SfvItem { .. };
+        guard parse_sfv_bare_item(raw, cursor, item.bare) else { return false; }
+        guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
+        if member.inner_list.len < 32 {
+            member.inner_list.push(item);
+        }
+        guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
+    }
+    return parse_sfv_parameters(raw, cursor, member.inner_params);
+}
+
+fn parse_sfv_member_item(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
+    member.is_inner_list = false;
+    guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
+    return parse_sfv_parameters(raw, cursor, member.item.params);
+}
+
+fn sfv_advance_comma(raw: const u8[:], cursor: i64&, has_more: bool&) -> bool {
+    has_more = false;
+    sfv_skip_ows(raw, cursor);
+    if cursor == raw.len {
+        return true;
+    }
+    guard raw[cursor] == ',' else { return false; }
+    cursor++; // skip ','
+    sfv_skip_ows(raw, cursor);
+    guard cursor < raw.len else { return false; } // Trailing comma without following member
+    has_more = true;
+    return true;
+}
+
 // RFC 8941 Section 3.1: List parser (supports items and inner lists)
 fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
     out.members.clear();
@@ -730,43 +774,18 @@ fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
     while cursor < raw.len {
         var member = SfvMember { .. };
         if raw[cursor] == '(' {
-            // Inner List
-            member.is_inner_list = true;
-            cursor++; // skip '('
-            while cursor < raw.len {
-                sfv_skip_ows(raw, cursor);
-                if cursor < raw.len && raw[cursor] == ')' {
-                    cursor++; // skip ')'
-                    break;
-                }
-                var item = SfvItem { .. };
-                var bare = SfvBareItem { .. };
-                guard parse_sfv_bare_item(raw, cursor, bare) else { return false; }
-                item.bare = bare;
-                guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
-                if member.inner_list.len < 32 {
-                    member.inner_list.push(item);
-                }
-                guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
-            }
-            guard parse_sfv_parameters(raw, cursor, member.inner_params) else { return false; }
+            guard parse_sfv_inner_list(raw, cursor, member) else { return false; }
         } else {
-            // Standalone Item
-            member.is_inner_list = false;
-            guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
-            guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
+            guard parse_sfv_member_item(raw, cursor, member) else { return false; }
         }
 
         if out.members.len < 64 {
             out.members.push(member);
         }
 
-        sfv_skip_ows(raw, cursor);
-        if cursor == raw.len { break; }
-        guard raw[cursor] == ',' else { return false; }
-        cursor++; // skip ','
-        sfv_skip_ows(raw, cursor);
-        guard cursor < raw.len else { return false; } // Trailing comma without item is forbidden
+        var has_more = false;
+        guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
+        if !has_more { break; }
     }
 
     out.valid = true;
@@ -793,32 +812,12 @@ fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
         if cursor < raw.len && raw[cursor] == '=' {
             cursor++; // skip '='
             if cursor < raw.len && raw[cursor] == '(' {
-                // Inner List value
-                member.is_inner_list = true;
-                cursor++; // skip '('
-                while cursor < raw.len {
-                    sfv_skip_ows(raw, cursor);
-                    if cursor < raw.len && raw[cursor] == ')' {
-                        cursor++;
-                        break;
-                    }
-                    var item = SfvItem { .. };
-                    guard parse_sfv_bare_item(raw, cursor, item.bare) else { return false; }
-                    guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
-                    if member.inner_list.len < 32 {
-                        member.inner_list.push(item);
-                    }
-                    guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
-                }
-                guard parse_sfv_parameters(raw, cursor, member.inner_params) else { return false; }
+                guard parse_sfv_inner_list(raw, cursor, member) else { return false; }
             } else {
-                // Item value
-                member.is_inner_list = false;
-                guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
-                guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
+                guard parse_sfv_member_item(raw, cursor, member) else { return false; }
             }
         } else {
-            // Bare key with no '=' defaults to boolean true with optional parameters!
+            // Bare key with no '=' defaults to boolean true with optional parameters
             member.is_inner_list = false;
             member.item.bare = SfvBareItem { kind: SfvType.Boolean, bool_val: true, .. };
             guard parse_sfv_parameters(raw, cursor, member.item.params) else { return false; }
@@ -838,12 +837,9 @@ fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
             out.entries.push(new_entry);
         }
 
-        sfv_skip_ows(raw, cursor);
-        if cursor == raw.len { break; }
-        guard raw[cursor] == ',' else { return false; }
-        cursor++; // skip ','
-        sfv_skip_ows(raw, cursor);
-        guard cursor < raw.len else { return false; }
+        var has_more = false;
+        guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
+        if !has_more { break; }
     }
 
     out.valid = true;

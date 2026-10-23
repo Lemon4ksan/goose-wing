@@ -47,25 +47,19 @@ fn new_response() -> Response {
     return Response { .. };
 }
 
-fn success(res: const Response&) -> bool {
-    return res.status_code >= 200 && res.status_code < 300;
-}
-
+// Returns true if the HTTP response status code is within the 2xx Successful range [200, 299] (RFC 9110 Section 15.3).
 fn is_success(res: const Response&) -> bool {
-    return success(res);
+    return res.status_code >= 200 && res.status_code < 300;
 }
 
 fn status(res: const Response&) -> i32 {
     return res.status_code;
 }
 
-fn redirect(res: const Response&) -> bool {
+// Returns true if the HTTP response status code indicates a redirect (301, 302, 303, 307, or 308) (RFC 9110 Section 15.4).
+fn is_redirect(res: const Response&) -> bool {
     return res.status_code == 301 || res.status_code == 302 || res.status_code == 303 ||
            res.status_code == 307 || res.status_code == 308;
-}
-
-fn is_redirect(res: const Response&) -> bool {
-    return redirect(res);
 }
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {

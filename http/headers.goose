@@ -9,14 +9,14 @@ import app.profile;
 // ---- header bitmask flags & persistence constants --------------------------
 
 const HEADER_FLAG_NONE: u8 = 0;
-const HEADER_FLAG_NO_COMMA_FOLD: u8 = 1;       // 0x01: Set-Cookie, WWW-Authenticate, Proxy-Authenticate (RFC 9110 Section 5.3 / RFC 6265bis)
-const HEADER_FLAG_SENSITIVE: u8 = 2;           // 0x02: Authorization, Cookie, API Keys, etc.
-const HEADER_FLAG_CONTINUATION: u8 = 4;        // 0x04: Virtual continuation node (name_begin == name_end)
-const HEADER_FLAG_CONTAINS_COMMA: u8 = 8;      // 0x08: Value contains comma (absl::InlinedVector<bool, 100> equivalent)
-const HEADER_FLAG_COOKIE_STATE: u8 = 16;       // 0x10: kCookieResponseHeaders (stripped on PERSIST_SANS_COOKIES & 304 merge)
-const HEADER_FLAG_CHALLENGE: u8 = 32;          // 0x20: kChallengeResponseHeaders (stripped on PERSIST_SANS_CHALLENGES)
-const HEADER_FLAG_SECURITY_STATE: u8 = 64;     // 0x40: kSecurityStateHeaders (Strict-Transport-Security, x-content-*, x-webkit-*)
-const HEADER_FLAG_NON_CACHEABLE: u8 = 128;     // 0x80: Hop-by-hop / transient headers (connection, transfer-encoding, etc.)
+const HEADER_FLAG_NO_COMMA_FOLD: u8 = 1;    // 0x01: Set-Cookie, WWW-Authenticate, Proxy-Authenticate (RFC 9110 Section 5.3 / RFC 6265bis)
+const HEADER_FLAG_SENSITIVE: u8 = 2;        // 0x02: Authorization, Cookie, API Keys, etc.
+const HEADER_FLAG_CONTINUATION: u8 = 4;     // 0x04: Virtual continuation node (name_begin == name_end)
+const HEADER_FLAG_CONTAINS_COMMA: u8 = 8;   // 0x08: Value contains comma (absl::InlinedVector<bool, 100> equivalent)
+const HEADER_FLAG_COOKIE_STATE: u8 = 16;    // 0x10: kCookieResponseHeaders (stripped on PERSIST_SANS_COOKIES & 304 merge)
+const HEADER_FLAG_CHALLENGE: u8 = 32;       // 0x20: kChallengeResponseHeaders (stripped on PERSIST_SANS_CHALLENGES)
+const HEADER_FLAG_SECURITY_STATE: u8 = 64;  // 0x40: kSecurityStateHeaders (Strict-Transport-Security, x-content-*, x-webkit-*)
+const HEADER_FLAG_NON_CACHEABLE: u8 = 128;  // 0x80: Hop-by-hop / transient headers (connection, transfer-encoding, etc.)
 
 const HEADER_INVALID_IDX: u8 = 0xFF;
 
@@ -552,6 +552,26 @@ fn trim_lws(val: const u8[:]) -> const u8[:] {
 }
 
 // RFC 9110 Section 8.6 & RFC 9112 Section 6.3: Content-Length validation & anti-smuggling parser
+fn parse_cl_digits(s: const u8[:], out_val: i64&) -> bool {
+    var num: i64 = 0;
+    var digits: i64 = 0;
+    for b in s {
+        guard b >= '0' && b <= '9' else { return false; }
+        digits++;
+        guard digits <= 19 else { return false; }
+        let d = (b - '0') as i64;
+        if digits == 19 {
+            if num > 922337203685477580 || (num == 922337203685477580 && d > 7) {
+                return false;
+            }
+        }
+        num = num * 10 + d;
+    }
+    guard digits > 0 else { return false; }
+    out_val = num;
+    return true;
+}
+
 fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
     let trimmed = trim_lws(val);
     guard trimmed.len > 0 else { return false; }
@@ -565,31 +585,15 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
     }
 
     if !has_comma {
-        var num: i64 = 0;
-        var digits: i64 = 0;
-        for b in trimmed {
-            guard b >= '0' && b <= '9' else { return false; }
-            digits++;
-            guard digits <= 19 else { return false; }
-            let d = (b - '0') as i64;
-            if digits == 19 {
-                if num > 922337203685477580 || (num == 922337203685477580 && d > 7) {
-                    return false;
-                }
-            }
-            num = num * 10 + d;
-        }
-        guard digits > 0 else { return false; }
-        out_val = num;
-        return true;
+        return parse_cl_digits(trimmed, out_val);
     }
 
     guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return false; }
 
     var first_parsed = false;
     var target_val: i64 = 0;
-
     var cursor: i64 = 0;
+
     while cursor < trimmed.len {
         var comma_idx = cursor;
         while comma_idx < trimmed.len && trimmed[comma_idx] != ',' {
@@ -600,20 +604,7 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
         guard piece.len > 0 else { return false; }
 
         var piece_num: i64 = 0;
-        var piece_digits: i64 = 0;
-        for b in piece {
-            guard b >= '0' && b <= '9' else { return false; }
-            piece_digits++;
-            guard piece_digits <= 19 else { return false; }
-            let d = (b - '0') as i64;
-            if piece_digits == 19 {
-                if piece_num > 922337203685477580 || (piece_num == 922337203685477580 && d > 7) {
-                    return false;
-                }
-            }
-            piece_num = piece_num * 10 + d;
-        }
-        guard piece_digits > 0 else { return false; }
+        guard parse_cl_digits(piece, piece_num) else { return false; }
 
         if !first_parsed {
             target_val = piece_num;
@@ -727,6 +718,153 @@ fn hash_header_name(name: const u8[:]) -> u32 {
 
 // ---- wire parser -----------------------------------------------------------
 
+fn is_line_whitespace_only(line: const u8[:]) -> bool {
+    for b in line {
+        if b != ' ' && b != '\t' {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
+    cursor = line_end;
+    let buf_len = buf.len;
+    if cursor < buf_len && buf[cursor] == '\r' {
+        guard cursor + 1 < buf_len && buf[cursor + 1] == '\n' else {
+            return false;
+        }
+        cursor += 2;
+        return true;
+    }
+    if cursor < buf_len && buf[cursor] == '\n' {
+        cursor++;
+        return true;
+    }
+    return true;
+}
+
+fn link_header_entry(map: HeaderMap&, wk_id: WellKnownHeader, raw_name: const u8[:], hname: u32, new_idx: u8) {
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let existing = map.inline_slots[slot];
+        if existing == 0xFF {
+            map.inline_slots[slot] = new_idx;
+            return
+        }
+
+        var cur = existing;
+        while map.entries[cur as i64].next_idx != 0xFF {
+            cur = map.entries[cur as i64].next_idx;
+        }
+
+        map.entries[cur as i64].next_idx = new_idx;
+        return
+    }
+
+    for prev_i in map.entries.len {
+        let pe = map.entries[prev_i];
+        if pe.name_hash == hname {
+            let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
+            if eq_ascii_fold(prev_name, raw_name) {
+                var cur = prev_i as u8;
+                while map.entries[cur as i64].next_idx != 0xFF {
+                    cur = map.entries[cur as i64].next_idx;
+                }
+                map.entries[cur as i64].next_idx = new_idx;
+                break;
+            }
+        }
+    }
+}
+
+fn handle_obs_fold(line: const u8[:], is_first_header: bool, allow_obs_fold: bool, map: HeaderMap&) -> HeaderParseError {
+    if is_first_header || map.entries.len == 0 {
+        map.valid = false;
+        return HeaderParseError.LeadingWhitespaceOnFirstHeader;
+    }
+    guard allow_obs_fold else {
+        map.valid = false;
+        return HeaderParseError.ObsFoldForbidden;
+    }
+
+    let prev_idx = map.entries.len - 1;
+    let trimmed_continuation = trim_lws(line);
+    guard is_valid_header_value(trimmed_continuation) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderValue;
+    }
+
+    let orig_begin = map.entries[prev_idx].values_begin;
+    let orig_end = map.entries[prev_idx].values_end;
+    let orig_val = map.raw_buf[orig_begin..orig_end];
+
+    let new_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(orig_val);
+    map.raw_buf.push(' ');
+    map.raw_buf.append(trimmed_continuation);
+    let new_end = map.raw_buf.len as u16;
+
+    map.entries[prev_idx].values_begin = new_begin;
+    map.entries[prev_idx].values_end = new_end;
+
+    let prev_wk = map.entries[prev_idx].well_known_id;
+    if prev_wk == well_known_to_slot(WellKnownHeader.ContentLength) as u8 {
+        let full_cl = map.raw_buf[new_begin..new_end];
+        var dummy_cl: i64 = 0;
+        guard validate_content_length_value(full_cl, dummy_cl) else {
+            map.valid = false;
+            return HeaderParseError.InvalidContentLength;
+        }
+    } else if prev_wk == well_known_to_slot(WellKnownHeader.TransferEncoding) as u8 {
+        let full_te = map.raw_buf[new_begin..new_end];
+        guard validate_transfer_encoding_value(full_te) else {
+            map.valid = false;
+            return HeaderParseError.InvalidContentLength;
+        }
+    }
+    return HeaderParseError.None;
+}
+
+fn validate_header_framing_conflicts(map: HeaderMap&, wk_id: WellKnownHeader, val_trimmed: const u8[:], is_dup_cl: bool&) -> HeaderParseError {
+    is_dup_cl = false;
+    if wk_id == WellKnownHeader.ContentLength {
+        if has_header(map, "transfer-encoding") {
+            map.valid = false;
+            return HeaderParseError.InvalidContentLength;
+        }
+        var parsed_cl: i64 = 0;
+        guard validate_content_length_value(val_trimmed, parsed_cl) else {
+            map.valid = false;
+            return HeaderParseError.InvalidContentLength;
+        }
+        if has_header(map, "content-length") {
+            let existing_str = get_header(map, "content-length");
+            var existing_cl: i64 = 0;
+            guard validate_content_length_value(existing_str, existing_cl) else {
+                map.valid = false;
+                return HeaderParseError.InvalidContentLength;
+            }
+            if parsed_cl != existing_cl {
+                map.valid = false;
+                return HeaderParseError.InvalidContentLength;
+            }
+            is_dup_cl = true;
+            return HeaderParseError.None;
+        }
+    } else if wk_id == WellKnownHeader.TransferEncoding {
+        if has_header(map, "content-length") || has_header(map, "transfer-encoding") {
+            map.valid = false;
+            return HeaderParseError.InvalidContentLength;
+        }
+        guard validate_transfer_encoding_value(val_trimmed) else {
+            map.valid = false;
+            return HeaderParseError.InvalidContentLength;
+        }
+    }
+    return HeaderParseError.None;
+}
+
 // Parses an HTTP/1.x header block into map (RFC 9112 Section 5.2).
 // Header names and values are indexed as offsets into the map's buffer.
 // Obsolete line folding (obs-fold) is rejected unless allow_obs_fold is set.
@@ -738,8 +876,6 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
     }
 
     reset_for_keep_alive(map);
-
-    // Copy to raw_buf if within capacity
     guard raw_input.len <= 8192 else {
         map.valid = false;
         return HeaderParseError.CapacityExceeded;
@@ -751,10 +887,8 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
     var is_first_header = true;
 
     while cursor < buf_len {
-        // Check for end of headers \r\n or \n
         if map.raw_buf[cursor] == '\r' {
             if cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' {
-                // End of headers block
                 cursor += 2;
                 break;
             }
@@ -762,102 +896,36 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             return HeaderParseError.InvalidHeaderValue;
         }
         if map.raw_buf[cursor] == '\n' {
-            // Bare LF terminator
             cursor += 1;
             break;
         }
 
-        // Scan line to newline
         var line_end = cursor;
         while line_end < buf_len && map.raw_buf[line_end] != '\r' && map.raw_buf[line_end] != '\n' {
             line_end++;
         }
-
         let line = map.raw_buf[cursor..line_end];
 
-        // httparse PR #223 / Issue #222 fix: whitespace-only line MUST be a hard error!
-        var is_whitespace_only = true;
-        for b in line {
-            if b != ' ' && b != '\t' {
-                is_whitespace_only = false;
-                break;
-            }
-        }
-        if is_whitespace_only {
+        if is_line_whitespace_only(line) {
             map.valid = false;
             return HeaderParseError.WhitespaceOnlyLine;
         }
 
-        // obs-fold check: leading SP or HTAB
         let is_lead_ws = map.raw_buf[cursor] == ' ' || map.raw_buf[cursor] == '\t';
         if is_lead_ws {
-            if is_first_header {
-                map.valid = false;
-                return HeaderParseError.LeadingWhitespaceOnFirstHeader;
-            }
-            guard allow_obs_fold else {
-                map.valid = false;
-                return HeaderParseError.ObsFoldForbidden;
-            }
-
-            // Fold into previous header value
-            guard map.entries.len > 0 else {
-                map.valid = false;
-                return HeaderParseError.LeadingWhitespaceOnFirstHeader;
-            }
-            let prev_idx = map.entries.len - 1;
-            let trimmed_continuation = trim_lws(line);
-            guard is_valid_header_value(trimmed_continuation) else {
-                map.valid = false;
-                return HeaderParseError.InvalidHeaderValue;
-            }
-
-            // Copy original value + space + continuation to end of raw_buf
-            let orig_begin = map.entries[prev_idx].values_begin;
-            let orig_end = map.entries[prev_idx].values_end;
-            let orig_val = map.raw_buf[orig_begin..orig_end];
-
-            let new_begin = map.raw_buf.len as u16;
-            map.raw_buf.append(orig_val);
-            map.raw_buf.push(' ');
-            map.raw_buf.append(trimmed_continuation);
-            let new_end = map.raw_buf.len as u16;
-
-            map.entries[prev_idx].values_begin = new_begin;
-            map.entries[prev_idx].values_end = new_end;
-
-            let prev_wk = map.entries[prev_idx].well_known_id;
-            if prev_wk == well_known_to_slot(WellKnownHeader.ContentLength) as u8 {
-                let full_cl = map.raw_buf[new_begin..new_end];
-                var dummy_cl: i64 = 0;
-                guard validate_content_length_value(full_cl, dummy_cl) else {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-            } else if prev_wk == well_known_to_slot(WellKnownHeader.TransferEncoding) as u8 {
-                let full_te = map.raw_buf[new_begin..new_end];
-                guard validate_transfer_encoding_value(full_te) else {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-            }
+            let fold_err = handle_obs_fold(line, is_first_header, allow_obs_fold, map);
+            guard is_ok(fold_err) else { return fold_err; }
         } else {
-            // Standard Header: Name ":" [OWS] Value [OWS]
             var colon_pos: i64 = -1;
             for i in line.len {
-                if line[i] == ':' {
-                    colon_pos = i;
-                    break;
-                }
+                if line[i] == ':' { colon_pos = i; break; }
             }
-
             guard colon_pos > 0 else {
                 map.valid = false;
                 return HeaderParseError.InvalidHeaderName;
             }
 
             let raw_name = line[..colon_pos];
-            // RFC 9110 Section 5.1: No whitespace between field-name and colon
             if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
                 map.valid = false;
                 return HeaderParseError.InvalidHeaderName;
@@ -873,17 +941,27 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
                 map.valid = false;
                 return HeaderParseError.InvalidHeaderValue;
             }
-
-            // Record entry
             guard map.entries.len < 128 else {
                 map.valid = false;
                 return HeaderParseError.CapacityExceeded;
             }
 
-            let name_begin_off = (cursor) as u16;
+            let wk_id = classify_well_known_header(raw_name);
+            var is_dup_cl = false;
+            let conflict_err = validate_header_framing_conflicts(map, wk_id, val_trimmed, is_dup_cl);
+            guard is_ok(conflict_err) else { return conflict_err; }
+
+            if is_dup_cl {
+                guard advance_crlf(map.raw_buf[..], cursor, line_end) else {
+                    map.valid = false;
+                    return HeaderParseError.InvalidHeaderValue;
+                }
+                continue;
+            }
+
+            let name_begin_off = cursor as u16;
             let name_end_off = (cursor + colon_pos) as u16;
 
-            // Find exact trimmed value offsets in raw_buf
             var val_start_off = (cursor + colon_pos + 1) as u16;
             while val_start_off < (cursor + line.len) && (map.raw_buf[val_start_off as i64] == ' ' || map.raw_buf[val_start_off as i64] == '\t') {
                 val_start_off++;
@@ -893,79 +971,16 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
                 val_end_off--;
             }
 
-            let wk_id = classify_well_known_header(raw_name);
-
-            // RFC 9112 Section 6.3: TE / CL request smuggling & protocol poisoning defenses
-            if wk_id == WellKnownHeader.ContentLength {
-                // Reject TE/CL conflict
-                if has_header(map, "transfer-encoding") {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-
-                var parsed_cl: i64 = 0;
-                guard validate_content_length_value(val_trimmed, parsed_cl) else {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-
-                if has_header(map, "content-length") {
-                    let existing_str = get_header(map, "content-length");
-                    var existing_cl: i64 = 0;
-                    guard validate_content_length_value(existing_str, existing_cl) else {
-                        map.valid = false;
-                        return HeaderParseError.InvalidContentLength;
-                    }
-                    if parsed_cl != existing_cl {
-                        // CL.CL request smuggling: duplicate differing Content-Length
-                        map.valid = false;
-                        return HeaderParseError.InvalidContentLength;
-                    }
-                    // Duplicate identical Content-Length: RFC 9112 Section 6.3 single valid value
-                    cursor = line_end;
-                    if cursor < buf_len && map.raw_buf[cursor] == '\r' {
-                        guard cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' else {
-                            map.valid = false;
-                            return HeaderParseError.InvalidHeaderValue;
-                        }
-                        cursor += 2;
-                    } else if cursor < buf_len && map.raw_buf[cursor] == '\n' {
-                        cursor++;
-                    }
-                    continue;
-                }
-            } else if wk_id == WellKnownHeader.TransferEncoding {
-                // Reject CL/TE conflict
-                if has_header(map, "content-length") {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-                // Reject duplicate Transfer-Encoding per RFC 9112 Section 6.3
-                if has_header(map, "transfer-encoding") {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-                // RFC 9112 Section 6.3 & Section 7.1: Validate Transfer-Encoding codings (must be recognized, chunked must be final and unique)
-                guard validate_transfer_encoding_value(val_trimmed) else {
-                    map.valid = false;
-                    return HeaderParseError.InvalidContentLength;
-                }
-            }
-
             let flags = well_known_header_flags(wk_id, raw_name);
             let hname = hash_header_name(raw_name);
 
-            // Check if value contains comma
             var contains_comma = false;
             for b in val_trimmed {
-                if b == ',' {
-                    contains_comma = true;
-                    break;
-                }
+                if b == ',' { contains_comma = true; break; }
             }
             let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
 
-            var new_entry = HeaderEntry {
+            let new_entry = HeaderEntry {
                 name_begin: name_begin_off,
                 name_end: name_end_off,
                 values_begin: val_start_off,
@@ -978,54 +993,15 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             };
 
             let new_idx = map.entries.len as u8;
-
-            // Link into inline_slots or entry chain
-            if wk_id != WellKnownHeader.Unknown {
-                let slot = well_known_to_slot(wk_id);
-                let existing = map.inline_slots[slot];
-                if existing == 0xFF {
-                    map.inline_slots[slot] = new_idx;
-                } else {
-                    // Walk chain to tail
-                    var cur = existing;
-                    while map.entries[cur as i64].next_idx != 0xFF {
-                        cur = map.entries[cur as i64].next_idx;
-                    }
-                    map.entries[cur as i64].next_idx = new_idx;
-                }
-            } else {
-                // Link custom header chain by matching name
-                for prev_i in map.entries.len {
-                    let pe = map.entries[prev_i];
-                    if pe.name_hash == hname {
-                        let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
-                        if eq_ascii_fold(prev_name, raw_name) {
-                            var cur = prev_i as u8;
-                            while map.entries[cur as i64].next_idx != 0xFF {
-                                cur = map.entries[cur as i64].next_idx;
-                            }
-                            map.entries[cur as i64].next_idx = new_idx;
-                            break;
-                        }
-                    }
-                }
-            }
-
+            link_header_entry(map, wk_id, raw_name, hname, new_idx);
             map.entries.push(new_entry);
             map.header_contains_comma.push(contains_comma);
             is_first_header = false;
         }
 
-        // Advance past CRLF, rejecting bare CR (RFC 9112 Section 2.2)
-        cursor = line_end;
-        if cursor < buf_len && map.raw_buf[cursor] == '\r' {
-            guard cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' else {
-                map.valid = false;
-                return HeaderParseError.InvalidHeaderValue;
-            }
-            cursor += 2;
-        } else if cursor < buf_len && map.raw_buf[cursor] == '\n' {
-            cursor++;
+        guard advance_crlf(map.raw_buf[..], cursor, line_end) else {
+            map.valid = false;
+            return HeaderParseError.InvalidHeaderValue;
         }
     }
 
@@ -1222,35 +1198,7 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
         name_hash: hname,
     };
 
-    if wk_id != WellKnownHeader.Unknown {
-        let slot = well_known_to_slot(wk_id);
-        let existing = map.inline_slots[slot];
-        if existing == 0xFF {
-            map.inline_slots[slot] = new_idx;
-        } else {
-            var cur = existing;
-            while map.entries[cur as i64].next_idx != 0xFF {
-                cur = map.entries[cur as i64].next_idx;
-            }
-            map.entries[cur as i64].next_idx = new_idx;
-        }
-    } else {
-        for prev_i in map.entries.len {
-            let pe = map.entries[prev_i];
-            if pe.name_hash == hname {
-                let pe_name = map.raw_buf[pe.name_begin..pe.name_end];
-                if eq_ascii_fold(pe_name, name) {
-                    var cur = prev_i as u8;
-                    while map.entries[cur as i64].next_idx != 0xFF {
-                        cur = map.entries[cur as i64].next_idx;
-                    }
-                    map.entries[cur as i64].next_idx = new_idx;
-                    break;
-                }
-            }
-        }
-    }
-
+    link_header_entry(map, wk_id, name, hname, new_idx);
     map.entries.push(entry);
     map.header_contains_comma.push(contains_comma);
     return true;
@@ -1530,14 +1478,7 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
     return false;
 }
 
-// Copies headers from src to dst, omitting standard hop-by-hop headers and
-// any header listed in a Connection header token (RFC 9110 Section 7.6.1).
-fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
-    reset_for_keep_alive(dst);
-
-    // Pass 1: Collect any custom header tokens mentioned in all "Connection" headers
-    var custom_tokens: u8[..64][..16] = [];
-
+fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..16]&) {
     for entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
         if eq_ascii_fold(name, "connection") {
@@ -1551,28 +1492,34 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
                 let token = trim_lws(val[cursor..comma_idx]);
                 // Empty connection token (e.g. trailing comma or empty header #46313) is skipped without aborting
                 if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
-                    if custom_tokens.len < 16 {
+                    if out_tokens.len < 16 {
                         var tok_buf: u8[..64] = [];
                         tok_buf.append(token);
-                        custom_tokens.push(tok_buf);
+                        out_tokens.push(tok_buf);
                     }
                 }
                 cursor = comma_idx + 1;
             }
         }
     }
+}
 
-    // Pass 2: Transfer only non-hop-by-hop headers
+// Copies headers from src to dst, omitting standard hop-by-hop headers and
+// any header listed in a Connection header token (RFC 9110 Section 7.6.1).
+fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
+    reset_for_keep_alive(dst);
+
+    var custom_tokens: u8[..64][..16] = [];
+    collect_connection_tokens(src, custom_tokens);
+
     for entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
         let val = src.raw_buf[entry.values_begin..entry.values_end];
 
-        // Standard hop-by-hop headers
         if is_hop_by_hop_header_name(name) {
             continue;
         }
 
-        // Custom tokens specified in Connection header
         var is_custom_hop = false;
         for &tok in custom_tokens {
             if eq_ascii_fold(name, tok[..]) {
@@ -1605,7 +1552,122 @@ enum ChunkedDecodeError {
     DisallowedTrailer,
 }
 
-// decode_chunked_body parses and decodes an HTTP/1.1 chunked transfer-encoded stream.
+fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError {
+    var semi_idx: i64 = -1;
+    for i in chunk_size_line.len {
+        let b = chunk_size_line[i];
+        if b == ';' && semi_idx < 0 {
+            semi_idx = i;
+        }
+        // RFC 9112 Section 7.1.1: Reject bare CR or non-HTAB control characters in chunk extensions
+        if b == '\r' || (b < 0x20 && b != 0x09) {
+            return ChunkedDecodeError.InvalidChunkExtension;
+        }
+    }
+
+    let hex_slice = if semi_idx >= 0 {
+        trim_lws(chunk_size_line[..semi_idx])
+    } else {
+        trim_lws(chunk_size_line)
+    };
+
+    guard hex_slice.len > 0 && hex_slice.len <= 16 else {
+        return ChunkedDecodeError.InvalidChunkSizeHex;
+    }
+
+    var chunk_size: u64 = 0;
+    for b in hex_slice {
+        var val: u64 = 0;
+        if b >= '0' && b <= '9' {
+            val = b - '0';
+        } else if b >= 'a' && b <= 'f' {
+            val = b - 'a' + 10;
+        } else if b >= 'A' && b <= 'F' {
+            val = b - 'A' + 10;
+        } else {
+            return ChunkedDecodeError.InvalidChunkSizeHex;
+        }
+        if chunk_size > 0x0FFFFFFFFFFFFFFF {
+            return ChunkedDecodeError.ChunkSizeOverflow;
+        }
+        chunk_size = (chunk_size << 4) | val;
+    }
+
+    out_size = chunk_size;
+    return ChunkedDecodeError.None;
+}
+
+fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
+    // RFC 9112 Section 7.1.2: Disallowed trailer fields threatening message framing or routing
+    return eq_ascii_fold(hname, "content-length") ||
+           eq_ascii_fold(hname, "transfer-encoding") ||
+           eq_ascii_fold(hname, "trailer") ||
+           eq_ascii_fold(hname, "host") ||
+           eq_ascii_fold(hname, "authorization") ||
+           eq_ascii_fold(hname, "set-cookie") ||
+           eq_ascii_fold(hname, "cookie") ||
+           eq_ascii_fold(hname, "content-range") ||
+           eq_ascii_fold(hname, "te");
+}
+
+fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    var trailer_count: i32 = 0;
+    var total_trailer_bytes: i64 = 0;
+    let max_trailers: i32 = 16;
+    let max_trailer_bytes: i64 = 4096;
+
+    while cursor < raw.len {
+        var tr_end = cursor;
+        var tr_nl = false;
+        while tr_end < raw.len {
+            if raw[tr_end] == '\n' {
+                tr_nl = true;
+                break;
+            }
+            tr_end++;
+        }
+        guard tr_nl else { return ChunkedDecodeError.UnexpectedEof; }
+
+        // RFC 9112 Section 7.1.2: Reject bare LF in trailer lines (prevent framing desync)
+        if tr_end == cursor || raw[tr_end - 1] != '\r' {
+            return ChunkedDecodeError.BareLfInTrailer;
+        }
+
+        let tr_line = raw[cursor..tr_end - 1];
+        cursor = tr_end + 1;
+
+        if tr_line.len == 0 {
+            return ChunkedDecodeError.None;
+        }
+
+        trailer_count++;
+        guard trailer_count <= max_trailers else {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
+        total_trailer_bytes += tr_line.len;
+        guard total_trailer_bytes <= max_trailer_bytes else {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
+
+        var col_idx: i64 = -1;
+        for i in tr_line.len {
+            if tr_line[i] == ':' {
+                col_idx = i;
+                break;
+            }
+        }
+        guard col_idx > 0 else {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
+
+        let hname = tr_line[..col_idx];
+        if is_disallowed_trailer_field(hname) {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
+    }
+    return ChunkedDecodeError.UnexpectedEof;
+}
+
 // Decodes a chunked transfer-encoded payload into out_body (RFC 9112 Section 7.1).
 // Chunk size lines and data chunks must end with CRLF; bare LF returns an error.
 fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
@@ -1613,7 +1675,6 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
 
     var cursor: i64 = 0;
     while cursor < raw.len {
-        // Find line ending of chunk-size line
         var line_end = cursor;
         var found_newline = false;
         while line_end < raw.len {
@@ -1625,127 +1686,21 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         }
         guard found_newline else { return ChunkedDecodeError.UnexpectedEof; }
 
-        // Bare LF is forbidden in chunk-size lines (RFC 9112 Section 7.1)
         if line_end == cursor || raw[line_end - 1] != '\r' {
             return ChunkedDecodeError.BareLfInChunkSize;
         }
 
-        let chunk_size_line = raw[cursor..line_end - 1]; // Exclude \r
-
-        // Check for chunk extension (';')
-        var semi_idx: i64 = -1;
-        for i in chunk_size_line.len {
-            let b = chunk_size_line[i];
-            if b == ';' && semi_idx < 0 {
-                semi_idx = i;
-            }
-            // RFC 9112 Section 7.1.1: Reject bare CR or non-HTAB control characters in chunk extensions
-            if b == '\r' || (b < 0x20 && b != 0x09) {
-                return ChunkedDecodeError.InvalidChunkExtension;
-            }
-        }
-
-        let hex_slice = if semi_idx >= 0 {
-            trim_lws(chunk_size_line[..semi_idx])
-        } else {
-            trim_lws(chunk_size_line)
-        };
-
-        guard hex_slice.len > 0 && hex_slice.len <= 16 else {
-            return ChunkedDecodeError.InvalidChunkSizeHex;
-        }
-
+        let chunk_size_line = raw[cursor..line_end - 1];
         var chunk_size: u64 = 0;
-        for b in hex_slice {
-            var val: u64 = 0;
-            if b >= '0' && b <= '9' {
-                val = b - '0';
-            } else if b >= 'a' && b <= 'f' {
-                val = b - 'a' + 10;
-            } else if b >= 'A' && b <= 'F' {
-                val = b - 'A' + 10;
-            } else {
-                return ChunkedDecodeError.InvalidChunkSizeHex;
-            }
-            if chunk_size > 0x0FFFFFFFFFFFFFFF {
-                return ChunkedDecodeError.ChunkSizeOverflow;
-            }
-            chunk_size = (chunk_size << 4) | val;
-        }
+        let size_err = parse_chunk_size_hex(chunk_size_line, chunk_size);
+        guard size_err == ChunkedDecodeError.None else { return size_err; }
 
         cursor = line_end + 1;
 
-        // Last-chunk: size == 0
         if chunk_size == 0 {
-            var trailer_count: i32 = 0;
-            var total_trailer_bytes: i64 = 0;
-            let max_trailers: i32 = 16;
-            let max_trailer_bytes: i64 = 4096;
-
-            // Read trailer lines until empty line CRLF
-            while cursor < raw.len {
-                var tr_end = cursor;
-                var tr_nl = false;
-                while tr_end < raw.len {
-                    if raw[tr_end] == '\n' {
-                        tr_nl = true;
-                        break;
-                    }
-                    tr_end++;
-                }
-                guard tr_nl else { return ChunkedDecodeError.UnexpectedEof; }
-
-                // RFC 9112 Section 7.1.2: Reject bare LF in trailer lines (prevent framing desync)
-                if tr_end == cursor || raw[tr_end - 1] != '\r' {
-                    return ChunkedDecodeError.BareLfInTrailer;
-                }
-
-                let tr_line = raw[cursor..tr_end - 1]; // Exclude \r
-                cursor = tr_end + 1;
-
-                if tr_line.len == 0 {
-                    // Empty CRLF line terminating trailer section -> complete!
-                    return ChunkedDecodeError.None;
-                }
-
-                trailer_count++;
-                guard trailer_count <= max_trailers else {
-                    return ChunkedDecodeError.DisallowedTrailer;
-                }
-                total_trailer_bytes += tr_line.len;
-                guard total_trailer_bytes <= max_trailer_bytes else {
-                    return ChunkedDecodeError.DisallowedTrailer;
-                }
-
-                // Parse trailer line header name
-                var col_idx: i64 = -1;
-                for i in tr_line.len {
-                    if tr_line[i] == ':' {
-                        col_idx = i;
-                        break;
-                    }
-                }
-                guard col_idx > 0 else {
-                    return ChunkedDecodeError.DisallowedTrailer;
-                }
-                let hname = tr_line[..col_idx];
-                // RFC 9112 Section 7.1.2: Disallowed trailer fields that threaten message framing, routing or security
-                if eq_ascii_fold(hname, "content-length") ||
-                   eq_ascii_fold(hname, "transfer-encoding") ||
-                   eq_ascii_fold(hname, "trailer") ||
-                   eq_ascii_fold(hname, "host") ||
-                   eq_ascii_fold(hname, "authorization") ||
-                   eq_ascii_fold(hname, "set-cookie") ||
-                   eq_ascii_fold(hname, "cookie") ||
-                   eq_ascii_fold(hname, "content-range") ||
-                   eq_ascii_fold(hname, "te") {
-                    return ChunkedDecodeError.DisallowedTrailer;
-                }
-            }
-            return ChunkedDecodeError.UnexpectedEof;
+            return parse_chunked_trailers(raw, cursor);
         }
 
-        // Chunk data
         let csize = chunk_size as i64;
         guard cursor + csize + 2 <= raw.len else {
             return ChunkedDecodeError.UnexpectedEof;
@@ -1755,7 +1710,6 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         out_body.append(chunk_data);
         cursor += csize;
 
-        // Chunk data must be terminated by CRLF, not bare LF (RFC 9112 Section 7.1)
         if raw[cursor] == '\n' {
             return ChunkedDecodeError.BareLfInChunkData;
         }

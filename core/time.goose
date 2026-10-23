@@ -6,14 +6,32 @@ import os;
 
 // ---- duration constants & calendar enums -----------------------------------
 
-let NANOSECOND:  i64 = 1;
-let MICROSECOND: i64 = 1000 * NANOSECOND;
-let MILLISECOND: i64 = 1000 * MICROSECOND;
-let SECOND:      i64 = 1000 * MILLISECOND;
-let MINUTE:      i64 = 60 * SECOND;
-let HOUR:        i64 = 60 * MINUTE;
-let DAY:         i64 = 24 * HOUR;
-let WEEK:        i64 = 7 * DAY;
+const NANOSECOND:  i64 = 1;
+const MICROSECOND: i64 = 1000 * NANOSECOND;
+const MILLISECOND: i64 = 1000 * MICROSECOND;
+const SECOND:      i64 = 1000 * MILLISECOND;
+const MINUTE:      i64 = 60 * SECOND;
+const HOUR:        i64 = 60 * MINUTE;
+const DAY:         i64 = 24 * HOUR;
+const WEEK:        i64 = 7 * DAY;
+
+// Exact scalar time conversions
+const SECS_PER_MINUTE: i64 = 60;
+const SECS_PER_HOUR:   i64 = 3600;
+const SECS_PER_DAY:    i64 = 86400;
+
+const NANOS_PER_MICRO:   i64 = 1000;
+const MICROS_PER_MILLI:  i64 = 1000;
+const NANOS_PER_MILLI:   i64 = 1000000;
+const NANOS_PER_SEC:     i64 = 1000000000;
+
+// Extreme 64-bit integer duration boundaries
+const DURATION_MIN_NANOS: i64 = -9223372036854775807 - 1;
+const DURATION_MAX_NANOS: i64 = 9223372036854775807;
+let DURATION_MIN_FORMATTED: const u8[:] = "-2562047h47m16.854775808s";
+
+// Maximum wall clock seconds representable in i64 nanoseconds (~292 years)
+const MAX_WALL_SEC_FOR_NANOS: i64 = 9223372036;
 
 enum Month {
     January,
@@ -181,8 +199,7 @@ fn sub(dur1: Duration, dur2: Duration) -> Duration { return dur1 - dur2; }
 fn mul(dur: Duration, factor: i64) -> Duration { return dur * factor; }
 fn div(dur: Duration, factor: i64) -> Duration { return dur / factor; }
 fn abs(dur: Duration) -> Duration {
-    let min_i64 = -9223372036854775807 - 1;
-    if dur.nanos == min_i64 { return Duration { nanos: 9223372036854775807 }; }
+    if dur.nanos == DURATION_MIN_NANOS { return Duration { nanos: DURATION_MAX_NANOS }; }
     return Duration { nanos: if dur.nanos < 0 { -dur.nanos } else { dur.nanos } };
 }
 
@@ -207,9 +224,8 @@ fn compare(dur1: Duration, dur2: Duration) -> i64 {
 // Truncates duration to a multiple of step_dur (towards zero). Returns dur unchanged if step_dur <= 0.
 fn truncate(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
-    let min_i64 = -9223372036854775807 - 1;
-    if dur.nanos == min_i64 {
-        let q = (min_i64 + 1) / step_dur.nanos;
+    if dur.nanos == DURATION_MIN_NANOS {
+        let q = (DURATION_MIN_NANOS + 1) / step_dur.nanos;
         return Duration { nanos: q * step_dur.nanos };
     }
     let is_neg = dur.nanos < 0;
@@ -221,69 +237,52 @@ fn truncate(dur: Duration, step_dur: Duration) -> Duration {
 // Rounds duration to the nearest multiple of step_dur (half rounds away from zero).
 fn round(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
-    let min_i64 = -9223372036854775807 - 1;
-    let max_i64 = 9223372036854775807;
-    if dur.nanos == min_i64 { return dur; }
+    if dur.nanos == DURATION_MIN_NANOS { return dur; }
     let is_neg = dur.nanos < 0;
     let abs_nanos = if is_neg { -dur.nanos } else { dur.nanos };
     let quotient = abs_nanos / step_dur.nanos;
     let remainder = abs_nanos - quotient * step_dur.nanos;
     var base_nanos = quotient * step_dur.nanos;
     if remainder >= step_dur.nanos - remainder {
-        if base_nanos > max_i64 - step_dur.nanos { base_nanos = max_i64; }
+        if base_nanos > DURATION_MAX_NANOS - step_dur.nanos { base_nanos = DURATION_MAX_NANOS; }
         else { base_nanos += step_dur.nanos; }
     }
     return Duration { nanos: if is_neg { -base_nanos } else { base_nanos } };
 }
 
 // Formats duration into human-readable shorthand (e.g. "0s", "250ms", "1.5s", "2h45m").
-// Hook used automatically by print(dur), str(dur), and array printing.
-fn format<B>(out: B&, dur: Duration) {
-    if dur.nanos == 0 {
-        out.append("0s");
-        return;
-    }
-    let min_i64 = -9223372036854775807 - 1;
-    if dur.nanos == min_i64 {
-        out.append("-2562047h47m16.854775808s");
-        return;
-    }
-    var total_nanos = dur.nanos;
-    if total_nanos < 0 {
-        out.push('-');
-        total_nanos = -total_nanos;
-    }
-
+fn format_subsecond_duration<B>(out: B&, total_nanos: i64) -> bool {
     if total_nanos < MICROSECOND {
         format(out, total_nanos);
         out.append("ns");
-        return;
+        return true;
     }
-
     if total_nanos < MILLISECOND {
         let micros_val = total_nanos / MICROSECOND;
         let fraction_nanos = total_nanos % MICROSECOND;
         format(out, micros_val);
         append_trimmed_fraction(out, fraction_nanos, 3);
         out.append("us");
-        return;
+        return true;
     }
-
     if total_nanos < SECOND {
         let millis_val = total_nanos / MILLISECOND;
-        let fraction_micros = (total_nanos % MILLISECOND) / 1000;
+        let fraction_micros = (total_nanos % MILLISECOND) / MICROS_PER_MILLI;
         format(out, millis_val);
         append_trimmed_fraction(out, fraction_micros, 3);
         out.append("ms");
-        return;
+        return true;
     }
+    return false;
+}
 
+fn format_composite_duration<B>(out: B&, total_nanos: i64) {
     let total_secs = total_nanos / SECOND;
     let remainder_nanos = total_nanos % SECOND;
 
-    let hours_val = total_secs / 3600;
-    let mins_val = (total_secs % 3600) / 60;
-    let secs_val = total_secs % 60;
+    let hours_val = total_secs / SECS_PER_HOUR;
+    let mins_val = (total_secs % SECS_PER_HOUR) / SECS_PER_MINUTE;
+    let secs_val = total_secs % SECS_PER_MINUTE;
 
     if hours_val > 0 {
         format(out, hours_val);
@@ -298,6 +297,29 @@ fn format<B>(out: B&, dur: Duration) {
         append_trimmed_fraction(out, remainder_nanos, 9);
         out.push('s');
     }
+}
+
+// Hook used automatically by print(dur), str(dur), and array printing.
+fn format<B>(out: B&, dur: Duration) {
+    if dur.nanos == 0 {
+        out.append("0s");
+        return;
+    }
+    if dur.nanos == DURATION_MIN_NANOS {
+        out.append(DURATION_MIN_FORMATTED);
+        return;
+    }
+    var total_nanos = dur.nanos;
+    if total_nanos < 0 {
+        out.push('-');
+        total_nanos = -total_nanos;
+    }
+
+    if format_subsecond_duration(out, total_nanos) {
+        return;
+    }
+
+    format_composite_duration(out, total_nanos);
 }
 
 // parse_duration parses a duration string into a Duration value.
@@ -646,18 +668,15 @@ fn add(time_val: Time, dur: Duration) -> Time {
 fn sub(time_val: Time, other_time: Time) -> Duration {
     let sec_diff = time_val.wall_sec - other_time.wall_sec;
     let nsec_diff: i64 = time_val.nsec - other_time.nsec;
-    let max_dur_sec: i64 = 9223372036; // 9223372036854775807 / 1e9 (~292 years)
-    let max_i64: i64 = 9223372036854775807;
-    let min_i64: i64 = -9223372036854775807 - 1;
 
     // Saturated arithmetic preventing integer overflow across large time deltas
-    if sec_diff > max_dur_sec || (sec_diff == max_dur_sec && nsec_diff > 854775807) {
-        return Duration { nanos: max_i64 };
+    if sec_diff > MAX_WALL_SEC_FOR_NANOS || (sec_diff == MAX_WALL_SEC_FOR_NANOS && nsec_diff > 854775807) {
+        return Duration { nanos: DURATION_MAX_NANOS };
     }
-    if sec_diff < -max_dur_sec || (sec_diff == -max_dur_sec && nsec_diff < -854775808) {
-        return Duration { nanos: min_i64 };
+    if sec_diff < -MAX_WALL_SEC_FOR_NANOS || (sec_diff == -MAX_WALL_SEC_FOR_NANOS && nsec_diff < -854775808) {
+        return Duration { nanos: DURATION_MIN_NANOS };
     }
-    return Duration { nanos: sec_diff * 1000000000 + nsec_diff };
+    return Duration { nanos: sec_diff * NANOS_PER_SEC + nsec_diff };
 }
 
 fn sub(time_val: Time, dur: Duration) -> Time {
@@ -809,74 +828,76 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
     return time_val;
 }
 
-// round returns the result of rounding time_val to the nearest multiple of dur since the Unix epoch (half rounds up).
-// If dur <= 0, round returns time_val unchanged.
-//
-// Multiples of whole seconds operate on wall_sec and sub-second steps operate on nsec,
-// protecting against 64-bit integer overflow across geologic time scales.
-fn round(time_val: Time, dur: Duration) -> Time {
-    if dur.nanos <= 0 { return time_val; }
-
-    // Multiple of whole seconds (e.g. 1s, 1m, 1h)
-    if dur.nanos >= 1000000000 && (dur.nanos % 1000000000 == 0) {
-        let step_secs = dur.nanos / 1000000000;
-        var rem = time_val.wall_sec % step_secs;
-        var base_sec = time_val.wall_sec - rem;
-        var rem_nanos = rem * 1000000000 + time_val.nsec;
-        if rem_nanos < 0 {
-            base_sec -= step_secs;
-            rem_nanos += step_secs * 1000000000;
-        }
-        if rem_nanos >= (dur.nanos + 1) / 2 {
-            base_sec += step_secs;
-        }
-        return Time {
-            wall_sec: base_sec,
-            nsec: 0,
-            tz_offset: time_val.tz_offset,
-        };
+fn round_seconds_multiple(time_val: Time, dur_nanos: i64) -> Time {
+    let step_secs = dur_nanos / NANOS_PER_SEC;
+    var rem = time_val.wall_sec % step_secs;
+    var base_sec = time_val.wall_sec - rem;
+    var rem_nanos = rem * NANOS_PER_SEC + time_val.nsec;
+    if rem_nanos < 0 {
+        base_sec -= step_secs;
+        rem_nanos += step_secs * NANOS_PER_SEC;
     }
-
-    // Sub-second step that divides 1 second evenly
-    if dur.nanos < 1000000000 && (1000000000 % dur.nanos == 0) {
-        let nsec_64: i64 = time_val.nsec;
-        let quotient = nsec_64 / dur.nanos;
-        let rem = nsec_64 % dur.nanos;
-        var base_nsec = quotient * dur.nanos;
-        var sec_add: i64 = 0;
-        if rem >= (dur.nanos + 1) / 2 {
-            base_nsec += dur.nanos;
-            if base_nsec >= 1000000000 {
-                base_nsec -= 1000000000;
-                sec_add = 1;
-            }
-        }
-        return Time {
-            wall_sec: time_val.wall_sec + sec_add,
-            nsec: base_nsec as i32,
-            tz_offset: time_val.tz_offset,
-        };
+    if rem_nanos >= (dur_nanos + 1) / 2 {
+        base_sec += step_secs;
     }
+    return Time {
+        wall_sec: base_sec,
+        nsec: 0,
+        tz_offset: time_val.tz_offset,
+    };
+}
 
-    // General case: bounded within ~292 years
-    let max_sec: i64 = 9223372036;
-    if time_val.wall_sec >= -max_sec && time_val.wall_sec <= max_sec {
-        let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
+fn round_subsecond_divisor(time_val: Time, dur_nanos: i64) -> Time {
+    let nsec_64: i64 = time_val.nsec;
+    let quotient = nsec_64 / dur_nanos;
+    let rem = nsec_64 % dur_nanos;
+    var base_nsec = quotient * dur_nanos;
+    var sec_add: i64 = 0;
+    if rem >= (dur_nanos + 1) / 2 {
+        base_nsec += dur_nanos;
+        if base_nsec >= NANOS_PER_SEC {
+            base_nsec -= NANOS_PER_SEC;
+            sec_add = 1;
+        }
+    }
+    return Time {
+        wall_sec: time_val.wall_sec + sec_add,
+        nsec: base_nsec as i32,
+        tz_offset: time_val.tz_offset,
+    };
+}
+
+fn round_general_nanos(time_val: Time, dur_nanos: i64) -> Time {
+    if time_val.wall_sec >= -MAX_WALL_SEC_FOR_NANOS && time_val.wall_sec <= MAX_WALL_SEC_FOR_NANOS {
+        let total_nanos = time_val.wall_sec * NANOS_PER_SEC + time_val.nsec;
         let is_neg = total_nanos < 0;
         let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
-        let quotient = abs_nanos / dur.nanos;
-        let remainder = abs_nanos - quotient * dur.nanos;
-        var base_nanos = quotient * dur.nanos;
-        if remainder >= dur.nanos - remainder {
-            base_nanos += dur.nanos;
+        let quotient = abs_nanos / dur_nanos;
+        let remainder = abs_nanos - quotient * dur_nanos;
+        var base_nanos = quotient * dur_nanos;
+        if remainder >= dur_nanos - remainder {
+            base_nanos += dur_nanos;
         }
         let rounded_nanos = if is_neg { -base_nanos } else { base_nanos };
         var rounded_time = unix(0, rounded_nanos);
         rounded_time.tz_offset = time_val.tz_offset;
         return rounded_time;
     }
-
     return time_val;
+}
+
+// round returns the result of rounding time_val to the nearest multiple of dur since the Unix epoch (half rounds up).
+// If dur <= 0, round returns time_val unchanged.
+fn round(time_val: Time, dur: Duration) -> Time {
+    if dur.nanos <= 0 { return time_val; }
+
+    if dur.nanos >= NANOS_PER_SEC && (dur.nanos % NANOS_PER_SEC == 0) {
+        return round_seconds_multiple(time_val, dur.nanos);
+    }
+    if dur.nanos < NANOS_PER_SEC && (NANOS_PER_SEC % dur.nanos == 0) {
+        return round_subsecond_divisor(time_val, dur.nanos);
+    }
+    return round_general_nanos(time_val, dur.nanos);
 }
 
 // Timezone adjustments

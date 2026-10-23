@@ -487,55 +487,43 @@ fn chacha20_xor(key: const u8[32]&, counter: u32, nonce12: const u8[12]&, input:
 }
 
 // Poly1305 one-time MAC over GF(2^130 - 5) using 26-bit limbs for pure 64-bit arithmetic.
-fn poly1305_mac(key32: const u8[32]&, msg: const u8[:]) -> u8[16] {
-    let r0: u64 = (load_u32_le(key32[..], 0) as u64) & 0x3FFFFFF;
-    let r1: u64 = ((load_u32_le(key32[..], 3) >> 2) as u64) & 0x3FFFF03;
-    let r2: u64 = ((load_u32_le(key32[..], 6) >> 4) as u64) & 0x3FFC0FF;
-    let r3: u64 = ((load_u32_le(key32[..], 9) >> 6) as u64) & 0x3F03FFF;
-    let r4: u64 = ((load_u32_le(key32[..], 12) >> 8) as u64) & 0x00FFFFF;
+fn poly1305_process_block(
+    m: const u8[17]&,
+    r0: u64, r1: u64, r2: u64, r3: u64, r4: u64,
+    s1: u64, s2: u64, s3: u64, s4: u64,
+    h0: u64&, h1: u64&, h2: u64&, h3: u64&, h4: u64&
+) {
+    let m0: u64 = (load_u32_le(m[..], 0) as u64) & 0x3FFFFFF;
+    let m1: u64 = ((load_u32_le(m[..], 3) >> 2) as u64) & 0x3FFFFFF;
+    let m2: u64 = ((load_u32_le(m[..], 6) >> 4) as u64) & 0x3FFFFFF;
+    let m3: u64 = ((load_u32_le(m[..], 9) >> 6) as u64) & 0x3FFFFFF;
+    let m4: u64 = load_u32_le(m[..], 12) >> 8;
 
-    let s1 = r1 * 5;
-    let s2 = r2 * 5;
-    let s3 = r3 * 5;
-    let s4 = r4 * 5;
+    h0 += m0; h1 += m1; h2 += m2; h3 += m3; h4 += m4;
 
-    var h0: u64 = 0;
-    var h1: u64 = 0;
-    var h2: u64 = 0;
-    var h3: u64 = 0;
-    var h4: u64 = 0;
+    let d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1;
+    let d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2;
+    let d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3;
+    let d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4;
+    let d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
 
-    var offset = 0;
-    while offset < msg.len {
-        var m: u8[17] = [0; 17];
-        let rem = msg.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
-        for i in take { m[i] = msg[offset + i]; }
-        m[take] = 1; // Pad byte 0x01
+    var c: u64 = d0 >> 26; h0 = d0 & 0x3FFFFFF;
+    let td1 = d1 + c; c = td1 >> 26; h1 = td1 & 0x3FFFFFF;
+    let td2 = d2 + c; c = td2 >> 26; h2 = td2 & 0x3FFFFFF;
+    let td3 = d3 + c; c = td3 >> 26; h3 = td3 & 0x3FFFFFF;
+    let td4 = d4 + c; c = td4 >> 26; h4 = td4 & 0x3FFFFFF;
+    h0 += c * 5; c = h0 >> 26; h0 &= 0x3FFFFFF; h1 += c;
+}
 
-        let m0: u64 = (load_u32_le(m[..], 0) as u64) & 0x3FFFFFF;
-        let m1: u64 = ((load_u32_le(m[..], 3) >> 2) as u64) & 0x3FFFFFF;
-        let m2: u64 = ((load_u32_le(m[..], 6) >> 4) as u64) & 0x3FFFFFF;
-        let m3: u64 = ((load_u32_le(m[..], 9) >> 6) as u64) & 0x3FFFFFF;
-        let m4: u64 = load_u32_le(m[..], 12) >> 8;
-
-        h0 += m0; h1 += m1; h2 += m2; h3 += m3; h4 += m4;
-
-        let d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1;
-        let d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2;
-        let d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3;
-        let d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4;
-        let d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
-
-        var c: u64 = d0 >> 26; h0 = d0 & 0x3FFFFFF;
-        let td1 = d1 + c; c = td1 >> 26; h1 = td1 & 0x3FFFFFF;
-        let td2 = d2 + c; c = td2 >> 26; h2 = td2 & 0x3FFFFFF;
-        let td3 = d3 + c; c = td3 >> 26; h3 = td3 & 0x3FFFFFF;
-        let td4 = d4 + c; c = td4 >> 26; h4 = td4 & 0x3FFFFFF;
-        h0 += c * 5; c = h0 >> 26; h0 &= 0x3FFFFFF; h1 += c;
-
-        offset += take;
-    }
+fn poly1305_finalize(
+    key32: const u8[32]&,
+    h0_in: u64, h1_in: u64, h2_in: u64, h3_in: u64, h4_in: u64
+) -> u8[16] {
+    var h0 = h0_in;
+    var h1 = h1_in;
+    var h2 = h2_in;
+    var h3 = h3_in;
+    var h4 = h4_in;
 
     var c: u64 = h0 >> 26; h0 &= 0x3FFFFFF;
     h1 += c; c = h1 >> 26; h1 &= 0x3FFFFFF;
@@ -573,6 +561,39 @@ fn poly1305_mac(key32: const u8[32]&, msg: const u8[:]) -> u8[16] {
     store_u32_le(out[..], 8, f2 as u32);
     store_u32_le(out[..], 12, f3 as u32);
     return out;
+}
+
+fn poly1305_mac(key32: const u8[32]&, msg: const u8[:]) -> u8[16] {
+    let r0: u64 = (load_u32_le(key32[..], 0) as u64) & 0x3FFFFFF;
+    let r1: u64 = ((load_u32_le(key32[..], 3) >> 2) as u64) & 0x3FFFF03;
+    let r2: u64 = ((load_u32_le(key32[..], 6) >> 4) as u64) & 0x3FFC0FF;
+    let r3: u64 = ((load_u32_le(key32[..], 9) >> 6) as u64) & 0x3F03FFF;
+    let r4: u64 = ((load_u32_le(key32[..], 12) >> 8) as u64) & 0x00FFFFF;
+
+    let s1 = r1 * 5;
+    let s2 = r2 * 5;
+    let s3 = r3 * 5;
+    let s4 = r4 * 5;
+
+    var h0: u64 = 0;
+    var h1: u64 = 0;
+    var h2: u64 = 0;
+    var h3: u64 = 0;
+    var h4: u64 = 0;
+
+    var offset = 0;
+    while offset < msg.len {
+        var m: u8[17] = [0; 17];
+        let rem = msg.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take { m[i] = msg[offset + i]; }
+        m[take] = 1; // Pad byte 0x01
+
+        poly1305_process_block(m, r0, r1, r2, r3, r4, s1, s2, s3, s4, h0, h1, h2, h3, h4);
+        offset += take;
+    }
+
+    return poly1305_finalize(key32, h0, h1, h2, h3, h4);
 }
 
 // XChaCha20-Poly1305 AEAD (24-byte nonce)

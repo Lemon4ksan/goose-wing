@@ -115,19 +115,66 @@ fn update_param_suffix_flag(existing_type: NodeType, new_suffix: const u8[:]) ->
     return NodeType.Param { suffix: new_has_suffix };
 }
 
+// Searches the static indices array of a node for a child matching first_byte.
+fn find_child_by_byte(tree: const RadixTree&, cur_idx: i32, b: u8) -> i32 {
+    let c_idx = cur_idx as i64;
+    for i in tree.nodes[c_idx].indices.len {
+        if tree.nodes[c_idx].indices[i] == b {
+            return tree.nodes[c_idx].children[i];
+        }
+    }
+    return -1;
+}
+
+// Splits an existing node at common_len, creating a child node with the remaining prefix and edges.
+fn split_radix_node(
+    tree: RadixTree&,
+    cur_idx: i32,
+    common_len: i64,
+    common_prefix: const u8[:],
+) -> bool {
+    let split_child_idx = alloc_node(tree, tree.nodes[cur_idx as i64].node_type);
+    guard split_child_idx >= 0 else { return false; }
+
+    let c_idx = cur_idx as i64;
+    let s_idx = split_child_idx as i64;
+
+    tree.nodes[s_idx].prefix.append(tree.nodes[c_idx].prefix[common_len..]);
+    tree.nodes[s_idx].indices.append(tree.nodes[c_idx].indices[..]);
+    for c in tree.nodes[c_idx].children { tree.nodes[s_idx].children.push(c); }
+    tree.nodes[s_idx].param_child = tree.nodes[c_idx].param_child;
+    tree.nodes[s_idx].catch_all_child = tree.nodes[c_idx].catch_all_child;
+    tree.nodes[s_idx].handler_id = tree.nodes[c_idx].handler_id;
+    tree.nodes[s_idx].entries_mask = tree.nodes[c_idx].entries_mask;
+    tree.nodes[s_idx].priority = tree.nodes[c_idx].priority - 1;
+
+    let first_split_byte = tree.nodes[s_idx].prefix[0];
+    tree.nodes[c_idx].prefix.clear();
+    tree.nodes[c_idx].prefix.append(common_prefix);
+    tree.nodes[c_idx].indices.clear();
+    tree.nodes[c_idx].indices.push(first_split_byte);
+    tree.nodes[c_idx].children.clear();
+    tree.nodes[c_idx].children.push(split_child_idx);
+    tree.nodes[c_idx].param_child = -1;
+    tree.nodes[c_idx].catch_all_child = -1;
+    tree.nodes[c_idx].handler_id = -1;
+    return true;
+}
+
 // Traverses or inserts a static path segment into the trie, updating cur_idx to the endpoint node.
 fn traverse_or_insert_static(tree: RadixTree&, cur_idx: i32&, seg: const u8[:]) -> bool {
     var rem = seg;
     while rem.len > 0 {
-        let cur_prefix = tree.nodes[cur_idx as i64].prefix[..];
+        let c_idx = cur_idx as i64;
+        let cur_prefix = tree.nodes[c_idx].prefix[..];
 
-        if cur_prefix.len == 0 && tree.nodes[cur_idx as i64].node_type == NodeType.Root {
-            if tree.nodes[cur_idx as i64].indices.len == 0 &&
-               tree.nodes[cur_idx as i64].children.len == 0 &&
-               tree.nodes[cur_idx as i64].param_child < 0 &&
-               tree.nodes[cur_idx as i64].catch_all_child < 0 &&
-               tree.nodes[cur_idx as i64].handler_id < 0 {
-                tree.nodes[cur_idx as i64].prefix.append(rem);
+        if cur_prefix.len == 0 && tree.nodes[c_idx].node_type == NodeType.Root {
+            if tree.nodes[c_idx].indices.len == 0 &&
+               tree.nodes[c_idx].children.len == 0 &&
+               tree.nodes[c_idx].param_child < 0 &&
+               tree.nodes[c_idx].catch_all_child < 0 &&
+               tree.nodes[c_idx].handler_id < 0 {
+                tree.nodes[c_idx].prefix.append(rem);
                 return true;
             }
         }
@@ -139,62 +186,98 @@ fn traverse_or_insert_static(tree: RadixTree&, cur_idx: i32&, seg: const u8[:]) 
         }
 
         if common_len < cur_prefix.len {
-            let split_child_idx = alloc_node(tree, tree.nodes[cur_idx as i64].node_type);
-            guard split_child_idx >= 0 else { return false; }
-
-            let c_idx = cur_idx as i64;
-            let s_idx = split_child_idx as i64;
-
-            tree.nodes[s_idx].prefix.append(tree.nodes[c_idx].prefix[common_len..]);
-            tree.nodes[s_idx].indices.append(tree.nodes[c_idx].indices[..]);
-            for c in tree.nodes[c_idx].children { tree.nodes[s_idx].children.push(c); }
-            tree.nodes[s_idx].param_child = tree.nodes[c_idx].param_child;
-            tree.nodes[s_idx].catch_all_child = tree.nodes[c_idx].catch_all_child;
-            tree.nodes[s_idx].handler_id = tree.nodes[c_idx].handler_id;
-            tree.nodes[s_idx].entries_mask = tree.nodes[c_idx].entries_mask;
-            tree.nodes[s_idx].priority = tree.nodes[c_idx].priority - 1;
-
-            let first_split_byte = tree.nodes[s_idx].prefix[0];
-            tree.nodes[c_idx].prefix.clear();
-            tree.nodes[c_idx].prefix.append(rem[..common_len]);
-            tree.nodes[c_idx].indices.clear();
-            tree.nodes[c_idx].indices.push(first_split_byte);
-            tree.nodes[c_idx].children.clear();
-            tree.nodes[c_idx].children.push(split_child_idx);
-            tree.nodes[c_idx].param_child = -1;
-            tree.nodes[c_idx].catch_all_child = -1;
-            tree.nodes[c_idx].handler_id = -1;
+            guard split_radix_node(tree, cur_idx, common_len, rem[..common_len]) else {
+                return false;
+            }
         }
 
-        if common_len < rem.len {
-            let tail = rem[common_len..];
-            let first_byte = tail[0];
+        if common_len >= rem.len {
+            return true;
+        }
 
-            var child_idx: i32 = -1;
-            for i in tree.nodes[cur_idx as i64].indices.len {
-                if tree.nodes[cur_idx as i64].indices[i] == first_byte {
-                    child_idx = tree.nodes[cur_idx as i64].children[i];
-                    break;
-                }
-            }
+        let tail = rem[common_len..];
+        let first_byte = tail[0];
+        let child_idx = find_child_by_byte(tree, cur_idx, first_byte);
 
-            if child_idx >= 0 {
-                cur_idx = child_idx;
-                rem = tail;
-            } else {
-                let new_idx = alloc_node(tree, NodeType.Static);
-                guard new_idx >= 0 else { return false; }
-                tree.nodes[new_idx as i64].prefix.append(tail);
-
-                tree.nodes[cur_idx as i64].indices.push(first_byte);
-                tree.nodes[cur_idx as i64].children.push(new_idx);
-                cur_idx = new_idx;
-                return true;
-            }
+        if child_idx >= 0 {
+            cur_idx = child_idx;
+            rem = tail;
         } else {
+            let new_idx = alloc_node(tree, NodeType.Static);
+            guard new_idx >= 0 else { return false; }
+            tree.nodes[new_idx as i64].prefix.append(tail);
+            tree.nodes[cur_idx as i64].indices.push(first_byte);
+            tree.nodes[cur_idx as i64].children.push(new_idx);
+            cur_idx = new_idx;
             return true;
         }
     }
+    return true;
+}
+
+// Locates a parameter '{param}' or catch-all '{*param}' delimiter in the remaining route pattern.
+fn find_param_delimiter(rem: const u8[:], param_start: i64&, param_end: i64&, is_catchall: bool&) {
+    param_start = -1;
+    param_end = -1;
+    is_catchall = false;
+
+    for i in rem.len {
+        if rem[i] == '{' {
+            param_start = i;
+            if i + 1 < rem.len && rem[i + 1] == '*' {
+                is_catchall = true;
+            }
+        } else if rem[i] == '}' && param_start >= 0 {
+            param_end = i;
+            break;
+        }
+    }
+}
+
+// Inserts a catch-all route node '{*param}', marking it as a wild child.
+fn insert_catch_all_child(
+    tree: RadixTree&,
+    cur_idx: i32,
+    name: const u8[:],
+    handler_id: i32,
+    entries_mask: u32,
+) -> bool {
+    let ca_idx = alloc_node(tree, NodeType.CatchAll);
+    guard ca_idx >= 0 else { return false; }
+    let ca = ca_idx as i64;
+    let cur = cur_idx as i64;
+    tree.nodes[ca].param_name.append(name);
+    tree.nodes[ca].handler_id = handler_id;
+    tree.nodes[ca].entries_mask = entries_mask;
+
+    tree.nodes[cur].catch_all_child = ca_idx;
+    tree.nodes[cur].wild_child = true;
+    return true;
+}
+
+// Inserts or updates a parameterized route node '{param}' with suffix preservation.
+fn insert_or_update_param_child(
+    tree: RadixTree&,
+    cur_idx: i32,
+    name: const u8[:],
+    suffix_after: const u8[:],
+    out_param_idx: i32&,
+) -> bool {
+    let has_suffix = (suffix_after.len > 0 && suffix_after != "/");
+    var param_node_idx = tree.nodes[cur_idx as i64].param_child;
+
+    if param_node_idx < 0 {
+        param_node_idx = alloc_node(tree, NodeType.Param { suffix: has_suffix });
+        guard param_node_idx >= 0 else { return false; }
+        tree.nodes[param_node_idx as i64].param_name.append(name);
+        tree.nodes[cur_idx as i64].param_child = param_node_idx;
+        tree.nodes[cur_idx as i64].wild_child = true;
+    } else {
+        let updated_type = update_param_suffix_flag(tree.nodes[param_node_idx as i64].node_type, suffix_after);
+        tree.nodes[param_node_idx as i64].node_type = updated_type;
+    }
+
+    out_param_idx = param_node_idx;
     return true;
 }
 
@@ -221,81 +304,87 @@ fn insert_route(
     while rem.len > 0 {
         tree.nodes[cur_idx as i64].priority += 1;
 
-        // Check for parameter '{' or catchall '{*'
         var param_start = -1;
         var param_end = -1;
         var is_catchall = false;
-
-        for i in rem.len {
-            if rem[i] == '{' {
-                param_start = i;
-                if i + 1 < rem.len && rem[i + 1] == '*' {
-                    is_catchall = true;
-                }
-            } else if rem[i] == '}' && param_start >= 0 {
-                param_end = i;
-                break;
-            }
-        }
+        find_param_delimiter(rem, param_start, param_end, is_catchall);
 
         if param_start < 0 {
-            // Pure static segment
             guard traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
             tree.nodes[cur_idx as i64].handler_id = handler_id;
             tree.nodes[cur_idx as i64].entries_mask = entries_mask;
             return true;
+        }
+
+        if param_start > 0 {
+            guard traverse_or_insert_static(tree, cur_idx, rem[..param_start]) else { return false; }
+            rem = rem[param_start..];
+            param_end -= param_start;
+            param_start = 0;
+        }
+
+        let name = if is_catchall { rem[2..param_end] } else { rem[1..param_end] };
+        let suffix_after = rem[param_end + 1..];
+
+        if is_catchall {
+            return insert_catch_all_child(tree, cur_idx, name, handler_id, entries_mask);
+        }
+
+        var param_node_idx: i32 = -1;
+        guard insert_or_update_param_child(tree, cur_idx, name, suffix_after, param_node_idx) else {
+            return false;
+        }
+
+        if suffix_after.len > 0 {
+            cur_idx = param_node_idx;
+            rem = suffix_after;
         } else {
-            // Dynamic parameter segment
-            if param_start > 0 {
-                let pre_param = rem[..param_start];
-                guard traverse_or_insert_static(tree, cur_idx, pre_param) else { return false; }
-                rem = rem[param_start..];
-                param_end -= param_start;
-                param_start = 0;
-            }
-
-            let name = if is_catchall { rem[2..param_end] } else { rem[1..param_end] };
-            let suffix_after = rem[param_end + 1..];
-
-            if is_catchall {
-                let ca_idx = alloc_node(tree, NodeType.CatchAll);
-                guard ca_idx >= 0 else { return false; }
-                tree.nodes[ca_idx as i64].param_name.append(name);
-                tree.nodes[ca_idx as i64].handler_id = handler_id;
-                tree.nodes[ca_idx as i64].entries_mask = entries_mask;
-
-                tree.nodes[cur_idx as i64].catch_all_child = ca_idx;
-                tree.nodes[cur_idx as i64].wild_child = true;
-                return true;
-            } else {
-                // Param node with suffix preservation
-                let has_suffix = (suffix_after.len > 0 && suffix_after != "/");
-                var param_node_idx = tree.nodes[cur_idx as i64].param_child;
-
-                if param_node_idx < 0 {
-                    param_node_idx = alloc_node(tree, NodeType.Param { suffix: has_suffix });
-                    guard param_node_idx >= 0 else { return false; }
-                    tree.nodes[param_node_idx as i64].param_name.append(name);
-                    tree.nodes[cur_idx as i64].param_child = param_node_idx;
-                    tree.nodes[cur_idx as i64].wild_child = true;
-                } else {
-                    // Update existing node with monotonic suffix preservation!
-                    let updated_type = update_param_suffix_flag(tree.nodes[param_node_idx as i64].node_type, suffix_after);
-                    tree.nodes[param_node_idx as i64].node_type = updated_type;
-                }
-
-                if suffix_after.len > 0 {
-                    cur_idx = param_node_idx;
-                    rem = suffix_after;
-                } else {
-                    tree.nodes[param_node_idx as i64].handler_id = handler_id;
-                    tree.nodes[param_node_idx as i64].entries_mask = entries_mask;
-                    return true;
-                }
-            }
+            tree.nodes[param_node_idx as i64].handler_id = handler_id;
+            tree.nodes[param_node_idx as i64].entries_mask = entries_mask;
+            return true;
         }
     }
     return true;
+}
+
+// Strips query string '?' and fragment '#' from a path (RFC 3986 Section 3).
+fn strip_query_and_fragment(path: const u8[:]) -> const u8[:] {
+    for i in path.len {
+        let b = path[i];
+        if b == '?' || b == '#' {
+            return path[..i];
+        }
+    }
+    return path;
+}
+
+// Strips absolute-URI scheme and authority if present (RFC 9112 Section 3.2.2).
+fn strip_scheme_and_authority(path: const u8[:]) -> const u8[:] {
+    var colon_slash = -1;
+    for i in path.len {
+        if path[i] == ':' && i + 2 < path.len && path[i + 1] == '/' && path[i + 2] == '/' {
+            colon_slash = i;
+            break;
+        }
+    }
+    if colon_slash <= 0 {
+        return path;
+    }
+    let after_scheme = path[colon_slash + 3..];
+    for j in after_scheme.len {
+        if after_scheme[j] == '/' {
+            return after_scheme[j..];
+        }
+    }
+    return "";
+}
+
+// Tests if a segment is a dot-dot segment (RFC 3986 Section 5.2.4).
+fn is_dot_dot_segment(seg: const u8[:]) -> bool {
+    return seg == ".." ||
+           eq_ascii_fold(seg, ".%2e") ||
+           eq_ascii_fold(seg, "%2e.") ||
+           eq_ascii_fold(seg, "%2e%2e");
 }
 
 // Resolves dot-segments (. and ..), collapses duplicate slashes, and strips query strings and fragments.
@@ -307,40 +396,9 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
         return;
     }
 
-    var s = raw_path;
+    var s = strip_query_and_fragment(raw_path);
+    s = strip_scheme_and_authority(s);
 
-    // 1. Separate query string (?) and fragment (#)
-    var path_end = s.len;
-    for i in s.len {
-        let b = s[i];
-        if b == '?' || b == '#' {
-            path_end = i;
-            break;
-        }
-    }
-    s = s[..path_end];
-
-    // 2. Strip absolute-URI scheme and authority if present (RFC 9112 Section 3.2.2)
-    var colon_slash = -1;
-    for i in s.len {
-        if s[i] == ':' && i + 2 < s.len && s[i + 1] == '/' && s[i + 2] == '/' {
-            colon_slash = i;
-            break;
-        }
-    }
-    if colon_slash > 0 {
-        let after_scheme = s[colon_slash + 3..];
-        var auth_end = after_scheme.len;
-        for j in after_scheme.len {
-            if after_scheme[j] == '/' {
-                auth_end = j;
-                break;
-            }
-        }
-        s = after_scheme[auth_end..];
-    }
-
-    // 3. Remove dot segments and collapse consecutive slashes (RFC 3986 Section 5.2.4)
     var seg_starts: i32[..32] = [];
     var scan_idx = 0;
     while scan_idx < s.len && s[scan_idx] == '/' {
@@ -358,18 +416,11 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
             scan_idx += 1;
         }
 
-        // Single dot segment: . or %2e
         if seg == "." || eq_ascii_fold(seg, "%2e") {
             continue;
         }
 
-        // Double dot segment: .. or %2e%2e
-        let is_dot_dot = seg == ".." ||
-                         eq_ascii_fold(seg, ".%2e") ||
-                         eq_ascii_fold(seg, "%2e.") ||
-                         eq_ascii_fold(seg, "%2e%2e");
-
-        if is_dot_dot {
+        if is_dot_dot_segment(seg) {
             if seg_starts.len > 0 {
                 let pop_to = seg_starts[seg_starts.len - 1] as i64;
                 out.resize(pop_to - 1);
@@ -397,6 +448,69 @@ enum RouteMatchResult {
     Found { handler_id: i32, entries_mask: u32 },
     NotFound,
     MethodNotAllowed { allow_header: u8[..64] },
+}
+
+// Extracts a dynamic parameter segment and records its span into params.
+fn match_param_child(
+    tree: const RadixTree&,
+    p_idx: i32,
+    rem: const u8[:],
+    cursor: u16,
+    params: ZeroAllocParams&,
+    val_len: i64&,
+) -> bool {
+    let is_suffix = match tree.nodes[p_idx as i64].node_type {
+        Param p => p.suffix,
+        _ => false,
+    };
+
+    var val_end = -1;
+    if is_suffix {
+        for i in rem.len {
+            if rem[i] == '.' || rem[i] == '/' {
+                val_end = i;
+                break;
+            }
+        }
+    } else {
+        for i in rem.len {
+            if rem[i] == '/' {
+                val_end = i;
+                break;
+            }
+        }
+    }
+
+    if val_end < 0 { val_end = rem.len; }
+    guard val_end > 0 else { return false; }
+
+    add_param(params, 0, 0, cursor, cursor + (val_end as u16));
+    val_len = val_end;
+    return true;
+}
+
+// Captures remainder path into catch-all parameter and yields handler result.
+fn match_catch_all_child(
+    tree: const RadixTree&,
+    ca_idx: i32,
+    rem: const u8[:],
+    cursor: u16,
+    params: ZeroAllocParams&,
+) -> RouteMatchResult {
+    let catch_val = if rem[0] == '/' { rem[1..] } else { rem };
+    guard catch_val.len > 0 else { return RouteMatchResult.NotFound; }
+
+    let start_off = if rem[0] == '/' { cursor + 1 } else { cursor };
+    add_param(params, 0, 0, start_off, start_off + (catch_val.len as u16));
+
+    let hid = tree.nodes[ca_idx as i64].handler_id;
+    if hid >= 0 {
+        return RouteMatchResult.Found {
+            handler_id: hid,
+            entries_mask: tree.nodes[ca_idx as i64].entries_mask,
+        };
+    }
+    return RouteMatchResult.NotFound;
 }
 
 // Matches path against the RadixTree, recording parameter spans into params.
@@ -439,69 +553,29 @@ fn match_path(
         }
 
         // Try static children first (O(1) index lookup)
-        let first_byte = rem[0];
-        var next_child: i32 = -1;
-        for i in tree.nodes[cur_idx as i64].indices.len {
-            if tree.nodes[cur_idx as i64].indices[i] == first_byte {
-                next_child = tree.nodes[cur_idx as i64].children[i];
-                break;
-            }
-        }
-
+        let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
         if next_child >= 0 {
             cur_idx = next_child;
             continue;
         }
 
         // Fall back to Param child
-        if tree.nodes[cur_idx as i64].param_child >= 0 {
-            let p_idx = tree.nodes[cur_idx as i64].param_child;
-            let is_suffix = match tree.nodes[p_idx as i64].node_type {
-                Param p => p.suffix,
-                _ => false,
-            };
-
-            var val_end = -1;
-            if is_suffix {
-                // Find next '.' or '/'
-                for i in rem.len {
-                    if rem[i] == '.' || rem[i] == '/' { val_end = i; break; }
-                }
-            } else {
-                // Find next '/'
-                for i in rem.len {
-                    if rem[i] == '/' { val_end = i; break; }
-                }
+        let p_idx = tree.nodes[cur_idx as i64].param_child;
+        if p_idx >= 0 {
+            var val_len: i64 = 0;
+            guard match_param_child(tree, p_idx, rem, cursor, params, val_len) else {
+                return RouteMatchResult.NotFound;
             }
-
-            if val_end < 0 { val_end = rem.len; }
-            guard val_end > 0 else { return RouteMatchResult.NotFound; }
-
-            add_param(params, 0, 0, cursor, cursor + (val_end as u16));
-            cursor += val_end as u16;
-            rem = rem[val_end..];
+            cursor += val_len as u16;
+            rem = rem[val_len..];
             cur_idx = p_idx;
             continue;
         }
 
         // Fall back to CatchAll child
-        if tree.nodes[cur_idx as i64].catch_all_child >= 0 {
-            let ca_idx = tree.nodes[cur_idx as i64].catch_all_child;
-            // CatchAll captures remainder without leading slash
-            let catch_val = if rem[0] == '/' { rem[1..] } else { rem };
-            guard catch_val.len > 0 else { return RouteMatchResult.NotFound; }
-
-            let start_off = if rem[0] == '/' { cursor + 1 } else { cursor };
-            add_param(params, 0, 0, start_off, start_off + (catch_val.len as u16));
-
-            let hid = tree.nodes[ca_idx as i64].handler_id;
-            if hid >= 0 {
-                return RouteMatchResult.Found {
-                    handler_id: hid,
-                    entries_mask: tree.nodes[ca_idx as i64].entries_mask,
-                };
-            }
-            return RouteMatchResult.NotFound;
+        let ca_idx = tree.nodes[cur_idx as i64].catch_all_child;
+        if ca_idx >= 0 {
+            return match_catch_all_child(tree, ca_idx, rem, cursor, params);
         }
 
         return RouteMatchResult.NotFound;

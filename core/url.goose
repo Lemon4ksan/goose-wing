@@ -1560,6 +1560,51 @@ fn find_longest_zero_run(pieces: const u16[8]&) -> i64, i64 {
     return best_run_start, best_run_len;
 }
 
+fn parse_ipv6_hex_piece(piece_str: const u8[:], out_val: u16&) -> bool {
+    if piece_str.len > 4 || piece_str.len == 0 { return false; }
+    var piece_val: u32 = 0;
+    for char_byte in piece_str {
+        let hex_digit = if char_byte >= '0' && char_byte <= '9' { char_byte - '0' }
+                        else if char_byte >= 'a' && char_byte <= 'f' { char_byte - 'a' + 10 }
+                        else if char_byte >= 'A' && char_byte <= 'F' { char_byte - 'A' + 10 }
+                        else { return false; };
+        piece_val = (piece_val << 4) | hex_digit;
+    }
+    out_val = piece_val as u16;
+    return true;
+}
+
+fn expand_ipv6_double_colon(pieces: u16[8]&, piece_count: i64&, double_colon_pos: i64) -> bool {
+    let missing = 8 - piece_count;
+    if missing <= 0 { return false; }
+    for rev_idx in piece_count - double_colon_pos {
+        let src = piece_count - 1 - rev_idx;
+        pieces[src + missing] = pieces[src];
+    }
+    for zero_idx in missing {
+        pieces[double_colon_pos + zero_idx] = 0;
+    }
+    piece_count = 8;
+    return true;
+}
+
+fn format_compressed_ipv6<B>(pieces: const u16[8]&, out: B&) {
+    let best_run_start, best_run_len = find_longest_zero_run(pieces);
+    var format_idx: i64 = 0;
+    while format_idx < 8 {
+        if format_idx == best_run_start {
+            out.append("::");
+            format_idx += best_run_len;
+            continue;
+        }
+        if format_idx > 0 && !(format_idx == best_run_start + best_run_len && best_run_start == 0) && out.len > 0 && out[out.len - 1] != ':' {
+            out.push(':');
+        }
+        format_hex_u16(out, pieces[format_idx]);
+        format_idx++;
+    }
+}
+
 // RFC 5952 / WHATWG IPv6 Parser and Zero-Run Canonical Compression
 fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
     out.clear();
@@ -1570,7 +1615,7 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
     var rem_slice = raw_ipv6;
     if rem_slice.len > 0 && rem_slice[0] == ':' {
         guard starts_with(rem_slice, "::") else {
-            return false; // Single leading ':' e.g. [:1:2:3:4:5:6:7] is invalid
+            return false;
         }
         double_colon_pos = 0;
         rem_slice = rem_slice[2..];
@@ -1587,13 +1632,12 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
 
         let piece_str = if colon_idx >= 0 { rem_slice[..colon_idx] } else { rem_slice };
         if piece_str.len == 0 {
-            if double_colon_pos >= 0 { return false; } // Multiple '::'
+            if double_colon_pos >= 0 { return false; }
             double_colon_pos = piece_count;
             rem_slice = rem_slice[1..];
             continue;
         }
 
-        // Check for dotted-quad IPv4 suffix e.g. ::ffff:192.0.2.1
         var has_dot = false;
         for char_byte in piece_str {
             if char_byte == '.' { has_dot = true; break; }
@@ -1606,17 +1650,9 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
             break;
         }
 
-        // Hex piece (1 to 4 hex digits)
-        if piece_str.len > 4 { return false; }
-        var piece_val: u32 = 0;
-        for char_byte in piece_str {
-            let hex_digit = if char_byte >= '0' && char_byte <= '9' { char_byte - '0' }
-                            else if char_byte >= 'a' && char_byte <= 'f' { char_byte - 'a' + 10 }
-                            else if char_byte >= 'A' && char_byte <= 'F' { char_byte - 'A' + 10 }
-                            else { return false; };
-            piece_val = (piece_val << 4) | (hex_digit as u32);
-        }
-        pieces[piece_count] = piece_val as u16;
+        var piece_val: u16 = 0;
+        guard parse_ipv6_hex_piece(piece_str, piece_val) else { return false; }
+        pieces[piece_count] = piece_val;
         piece_count++;
 
         if colon_idx >= 0 {
@@ -1625,9 +1661,7 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
                 double_colon_pos = piece_count;
                 rem_slice = rem_slice[colon_idx + 2..];
             } else {
-                guard colon_idx + 1 < rem_slice.len else {
-                    return false; // Trailing single ':' e.g. [fe80::1:] is invalid
-                }
+                guard colon_idx + 1 < rem_slice.len else { return false; }
                 rem_slice = rem_slice[colon_idx + 1..];
             }
         } else {
@@ -1638,37 +1672,12 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
     if rem_slice.len > 0 { return false; }
 
     if double_colon_pos >= 0 {
-        let missing = 8 - piece_count;
-        if missing <= 0 { return false; }
-        // Shift pieces right
-        for rev_idx in piece_count - double_colon_pos {
-            let src = piece_count - 1 - rev_idx;
-            pieces[src + missing] = pieces[src];
-        }
-        for zero_idx in missing {
-            pieces[double_colon_pos + zero_idx] = 0;
-        }
-        piece_count = 8;
+        guard expand_ipv6_double_colon(pieces, piece_count, double_colon_pos) else { return false; }
     }
 
     guard piece_count == 8 else { return false; }
 
-    let best_run_start, best_run_len = find_longest_zero_run(pieces);
-
-    // Format canonical output string
-    var format_idx: i64 = 0;
-    while format_idx < 8 {
-        if format_idx == best_run_start {
-            out.append("::");
-            format_idx += best_run_len;
-            continue;
-        }
-        if format_idx > 0 && !(format_idx == best_run_start + best_run_len && best_run_start == 0) && out.len > 0 && out[out.len - 1] != ':' {
-            out.push(':');
-        }
-        format_hex_u16(out, pieces[format_idx]);
-        format_idx++;
-    }
+    format_compressed_ipv6(pieces, out);
     return true;
 }
 
@@ -1708,6 +1717,40 @@ fn is_windows_drive_segment(seg: const u8[:]) -> bool {
     return false;
 }
 
+fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..64]&, last_was_dot: bool&) {
+    if is_dot_segment(seg) {
+        last_was_dot = true;
+    } else if is_double_dot_segment(seg) {
+        last_was_dot = true;
+        let can_pop = if is_file && seg_starts.len == 1 {
+            let prev_start = seg_starts[0] as i64;
+            let prev_seg = out_url.href[prev_start..];
+            !is_windows_drive_segment(prev_seg)
+        } else {
+            seg_starts.len > 0
+        };
+
+        if can_pop {
+            let pop_to = (seg_starts[seg_starts.len - 1] - 1) as i64;
+            out_url.href.resize(pop_to);
+            seg_starts.pop();
+        }
+    } else {
+        last_was_dot = false;
+        out_url.href.push('/');
+        let cur_start = out_url.href.len as i32;
+        if is_file && seg_starts.len == 0 && is_windows_drive_segment(seg) && seg[1] == '|' {
+            out_url.href.push(seg[0]);
+            out_url.href.push(':');
+        } else {
+            out_url.href.append(seg);
+        }
+        if seg_starts.len < 64 {
+            seg_starts.push(cur_start);
+        }
+    }
+}
+
 fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
     let path_start_offset: i64 = out_url.href.len;
     guard raw_path.len > 0 else {
@@ -1735,38 +1778,7 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
 
         if is_delim {
             let seg = raw_path[seg_start..scan_idx];
-            if is_dot_segment(seg) {
-                last_was_dot = true;
-            } else if is_double_dot_segment(seg) {
-                last_was_dot = true;
-                // Pop previous segment if allowed (protect Windows drive letter on file: URL)
-                let can_pop = if is_file && seg_starts.len == 1 {
-                    let prev_start = seg_starts[0] as i64;
-                    let prev_seg = out_url.href[prev_start..];
-                    !is_windows_drive_segment(prev_seg)
-                } else {
-                    seg_starts.len > 0
-                };
-
-                if can_pop {
-                    let pop_to = (seg_starts[seg_starts.len - 1] - 1) as i64;
-                    out_url.href.resize(pop_to);
-                    seg_starts.pop();
-                }
-            } else {
-                last_was_dot = false;
-                out_url.href.push('/');
-                let cur_start = out_url.href.len as i32;
-                if is_file && seg_starts.len == 0 && is_windows_drive_segment(seg) && seg[1] == '|' {
-                    out_url.href.push(seg[0]);
-                    out_url.href.push(':');
-                } else {
-                    out_url.href.append(seg);
-                }
-                if seg_starts.len < 64 {
-                    seg_starts.push(cur_start);
-                }
-            }
+            handle_path_segment(seg, is_file, out_url, seg_starts, last_was_dot);
             seg_start = scan_idx + 1;
         }
         scan_idx++;
