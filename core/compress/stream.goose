@@ -6,6 +6,7 @@ import core.compress.checksum;
 import core.compress.deflate;
 import core.compress.gzip;
 import core.compress.zlib;
+import core.compress.zstd;
 
 // ---- flush modes & container formats ---------------------------------------
 
@@ -21,11 +22,18 @@ enum ContainerFormat {
     Raw,
     Zlib,
     Gzip,
+    Zstd,
     Auto,
 }
 
 // Auto-detects the container format of a compressed byte stream.
 fn detect_container_format(src: const u8[:]) -> ContainerFormat {
+    if src.len >= 4 {
+        let magic = (src[0]) | ((src[1] as u32) << 8) | ((src[2] as u32) << 16) | ((src[3] as u32) << 24);
+        if magic == 0xFD2FB528 {
+            return ContainerFormat.Zstd;
+        }
+    }
     if src.len >= 10 && src[0] == 0x1F && src[1] == 0x8B && src[2] == 0x08 {
         return ContainerFormat.Gzip;
     }
@@ -263,9 +271,7 @@ fn drain_in_buf(d: ZStreamDecompressor&, consumed: i64) {
         for i in remaining {
             d.in_buf[i] = d.in_buf[consumed + i];
         }
-        while d.in_buf.len > remaining {
-            d.in_buf.pop();
-        }
+        d.in_buf.resize(remaining);
     }
 }
 
@@ -277,9 +283,7 @@ fn zstream_decompress_write_limit<B>(
     out: B&,
     max_output_bytes: i64 = 0,
 ) -> CompressError {
-    for b in chunk {
-        d.in_buf.push(b);
-    }
+    d.in_buf.append(chunk);
     d.total_in += chunk.len as u64;
 
     if d.is_finished {
@@ -341,9 +345,7 @@ fn zstream_decompress_write_limit<B>(
         guard err == CompressError.None else { return err; }
 
         let new_len = temp_out.len;
-        for b in temp_out {
-            out.push(b);
-        }
+        out.append(temp_out[..]);
         d.total_out += new_len as u64;
 
         if d.format == ContainerFormat.Zlib {
@@ -413,7 +415,9 @@ fn zstream_decompress_write<B>(d: ZStreamDecompressor&, chunk: const u8[:], out:
 // Auto-detects container format (Gzip, Zlib, or raw Deflate) and decompresses src into out.
 fn decompress_auto<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> CompressError {
     let fmt = detect_container_format(src);
-    if fmt == ContainerFormat.Gzip {
+    if fmt == ContainerFormat.Zstd {
+        return zstd_decompress(src, out);
+    } else if fmt == ContainerFormat.Gzip {
         let ok, err = decompress_gzip(src, out);
         return err;
     } else if fmt == ContainerFormat.Zlib {

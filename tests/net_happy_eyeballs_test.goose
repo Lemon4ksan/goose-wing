@@ -1,5 +1,6 @@
 // Verification suite for net/happy_eyeballs: RFC 8305 and HEv3 connection racing,
 // CAD calculations, 50 ms Resolution Delay, candidate interleaving, and AttemptManager coordination.
+// Defenses for Go #59494 / #35122 (Windows leaked dial timers) and RFC 8305 congestion collapse.
 import std;
 import wing from "..";
 
@@ -22,13 +23,28 @@ fn test_cad_calculation_and_absolute_floor(t: wing::T&) {
         sub.assert_eq(cad_clamped_max, 2000, "RTT 4500 ms clamped to max 2000 ms");
 
         // Normative safety barrier: MUST NOT be less than 10 ms even with caller override
-        let cad_floor = wing::compute_effective_cad_ms(2, true, 4, 1000);
-        sub.assert_eq(cad_floor, 10, "CAD strictly clamped to absolute floor >= 10 ms to prevent congestion collapse");
+        let cad_floor1 = wing::compute_effective_cad_ms(2, true, 4, 1000);
+        sub.assert_eq(cad_floor1, 10, "CAD strictly clamped to absolute floor >= 10 ms");
+
+        // 0 ms RTT (e.g. localhost or loopback)
+        let cad_zero = wing::compute_effective_cad_ms(0, true, 0, 1000);
+        sub.assert_eq(cad_zero, 10, "0 ms RTT clamped to 10 ms absolute floor");
+
+        // Negative RTT (clock jump backwards or uncalibrated timer)
+        let cad_neg = wing::compute_effective_cad_ms(-250, true, 0, 1000);
+        sub.assert_eq(cad_neg, 10, "Negative RTT clamped safely to 10 ms absolute floor");
+
+        // Custom bounds [500 ms, 1500 ms]
+        let cad_custom = wing::compute_effective_cad_ms(200, true, 500, 1500);
+        sub.assert_eq(cad_custom, 500, "Custom min 500 ms applied");
+
+        let cad_custom_high = wing::compute_effective_cad_ms(1800, true, 500, 1500);
+        sub.assert_eq(cad_custom_high, 1500, "Custom max 1500 ms applied");
     };
 }
 
 fn test_rfc6724_and_hev3_interleaving(t: wing::T&) {
-    t.run("First Address Family Count = 1 Interleaving") { sub =>
+    t.run("First Address Family Count = 1 Interleaving Matrix") { sub =>
         var ipv6_list: wing::DnsCandidate[..8] = [];
         ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
         ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
@@ -47,16 +63,80 @@ fn test_rfc6724_and_hev3_interleaving(t: wing::T&) {
         sub.assert_true(interleaved[3].family == wing::AddressFamily.IPv4, "Candidate 3 is IPv4_2");
     };
 
+    t.run("Asymmetric Candidate Interleaving (IPv6 Heavily Dominates)") { sub =>
+        var ipv6_list: wing::DnsCandidate[..8] = [];
+        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
+        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
+        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::3", 443));
+        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::4", 443));
+
+        var ipv4_list: wing::DnsCandidate[..8] = [];
+        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
+
+        var interleaved: wing::DnsCandidate[..32] = [];
+        wing::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
+
+        sub.assert_eq(interleaved.len, 5, "5 candidates total");
+        sub.assert_true(interleaved[0].family == wing::AddressFamily.IPv6, "0 is IPv6");
+        sub.assert_true(interleaved[1].family == wing::AddressFamily.IPv4, "1 is IPv4");
+        sub.assert_true(interleaved[2].family == wing::AddressFamily.IPv6, "2 is IPv6");
+        sub.assert_true(interleaved[3].family == wing::AddressFamily.IPv6, "3 is IPv6");
+        sub.assert_true(interleaved[4].family == wing::AddressFamily.IPv6, "4 is IPv6");
+    };
+
+    t.run("Asymmetric Candidate Interleaving (IPv4 Heavily Dominates)") { sub =>
+        var ipv6_list: wing::DnsCandidate[..8] = [];
+        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
+
+        var ipv4_list: wing::DnsCandidate[..8] = [];
+        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
+        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.2", 443));
+        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.3", 443));
+
+        var interleaved: wing::DnsCandidate[..32] = [];
+        wing::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
+
+        sub.assert_eq(interleaved.len, 4, "4 candidates total");
+        sub.assert_true(interleaved[0].family == wing::AddressFamily.IPv6, "0 is IPv6");
+        sub.assert_true(interleaved[1].family == wing::AddressFamily.IPv4, "1 is IPv4");
+        sub.assert_true(interleaved[2].family == wing::AddressFamily.IPv4, "2 is IPv4");
+        sub.assert_true(interleaved[3].family == wing::AddressFamily.IPv4, "3 is IPv4");
+    };
+
+    t.run("Single-Stack Fallbacks (0 IPv6 or 0 IPv4)") { sub =>
+        var ipv6_only: wing::DnsCandidate[..8] = [];
+        ipv6_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
+        ipv6_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
+        var empty_ipv4: wing::DnsCandidate[..8] = [];
+
+        var res_v6: wing::DnsCandidate[..32] = [];
+        wing::interleave_candidates_he(ipv6_only[..], empty_ipv4[..], res_v6, 1);
+        sub.assert_eq(res_v6.len, 2, "IPv6-only preserved 2 candidates");
+        sub.assert_true(res_v6[0].family == wing::AddressFamily.IPv6, "Res 0 is IPv6");
+        sub.assert_true(res_v6[1].family == wing::AddressFamily.IPv6, "Res 1 is IPv6");
+
+        var empty_ipv6: wing::DnsCandidate[..8] = [];
+        var ipv4_only: wing::DnsCandidate[..8] = [];
+        ipv4_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "1.1.1.1", 80));
+        var res_v4: wing::DnsCandidate[..32] = [];
+        wing::interleave_candidates_he(empty_ipv6[..], ipv4_only[..], res_v4, 1);
+        sub.assert_eq(res_v4.len, 1, "IPv4-only preserved 1 candidate");
+        sub.assert_true(res_v4[0].family == wing::AddressFamily.IPv4, "Res 0 is IPv4");
+    };
+
     t.run("HEv3 Protocol Interleaving (QUIC vs TCP)") { sub =>
         var list: wing::DnsCandidate[..8] = [];
         list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
+        list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
 
         var proto_interleaved: wing::DnsCandidate[..32] = [];
         wing::interleave_protocols_hev3(list[..], proto_interleaved);
 
-        sub.assert_eq(proto_interleaved.len, 2, "2 protocol attempts generated");
-        sub.assert_true(proto_interleaved[0].l4_proto == wing::L4Protocol.QuicUdp, "Attempt 0 is QUIC/UDP");
-        sub.assert_true(proto_interleaved[1].l4_proto == wing::L4Protocol.Tcp, "Attempt 1 is TCP fallback");
+        sub.assert_eq(proto_interleaved.len, 4, "4 protocol attempts generated (QUIC + TCP for both)");
+        sub.assert_true(proto_interleaved[0].l4_proto == wing::L4Protocol.QuicUdp, "Attempt 0 is QUIC/UDP IPv6");
+        sub.assert_true(proto_interleaved[1].l4_proto == wing::L4Protocol.Tcp, "Attempt 1 is TCP IPv6");
+        sub.assert_true(proto_interleaved[2].l4_proto == wing::L4Protocol.QuicUdp, "Attempt 2 is QUIC/UDP IPv4");
+        sub.assert_true(proto_interleaved[3].l4_proto == wing::L4Protocol.Tcp, "Attempt 3 is TCP IPv4");
     };
 }
 
@@ -116,12 +196,13 @@ fn test_dns_race_and_resolution_delay(t: wing::T&) {
 }
 
 fn test_attempt_manager_racing_and_winner(t: wing::T&) {
-    t.run("Staggered Connection Racing and Winner Binding") { sub =>
+    t.run("Staggered Connection Racing, Winner Binding & Loser Cancellation (Go #59494)") { sub =>
         var mgr = wing::new_attempt_manager(250); // CAD = 250 ms
 
         var candidates: wing::DnsCandidate[..4] = [];
         candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
         candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
+        candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
 
         wing::start_attempt_race(mgr, candidates[..], 0);
 
@@ -138,12 +219,23 @@ fn test_attempt_manager_racing_and_winner(t: wing::T&) {
         sub.assert_true(launched_cad, "Second attempt launched at t=250");
         sub.assert_eq(mgr.attempts.len, 2, "2 attempts now active");
 
-        // Attempt 2 (IPv4) wins at t=280
+        // Tick at t=500 (= 2*CAD) -> launches third attempt (IPv6_2)
+        let launched_third = wing::tick_attempt_manager(mgr, 500);
+        sub.assert_true(launched_third, "Third attempt launched at t=500");
+        sub.assert_eq(mgr.attempts.len, 3, "3 attempts now active");
+
+        // Attempt 2 (IPv4) wins at t=550
+        // Crucial defense (Go #59494, #35122): All other attempts (1 and 3) must be cancelled immediately to prevent leaked dials on Windows!
         let won = wing::bind_winner_attempt(mgr, 2);
         sub.assert_true(won, "Attempt 2 bound as winner");
         sub.assert_true(mgr.has_winner, "Manager marked has_winner");
         sub.assert_true(mgr.attempts[0].state == wing::AttemptState.Cancelled, "Attempt 1 cancelled");
         sub.assert_true(mgr.attempts[1].state == wing::AttemptState.Connected, "Attempt 2 connected");
+        sub.assert_true(mgr.attempts[2].state == wing::AttemptState.Cancelled, "Attempt 3 cancelled");
+
+        // Attempting to tick after winner does not launch further attempts
+        let tick_post_winner = wing::tick_attempt_manager(mgr, 750);
+        sub.assert_false(tick_post_winner, "No attempts launched after winner is bound");
     };
 
     t.run("Last Resort Local Synthesis Delay (2000 ms)") { sub =>

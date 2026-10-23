@@ -89,7 +89,16 @@ fn text(res: const Response&) -> const u8[:] {
 // Returns true if body was successfully decompressed or if uncompressed; false on corrupted stream.
 fn decode_body(res: Response&) -> bool {
     let enc = header(res, "content-encoding");
-    if eq_ascii_fold(enc, "gzip") {
+    if eq_ascii_fold(enc, "zstd") {
+        var uncompressed: u8[>..] = [];
+        let ok_z, err_z = decompress_zstd(res.body[..], uncompressed);
+        if ok_z {
+            res.body.clear();
+            res.body.append(uncompressed[..]);
+            return true;
+        }
+        return false;
+    } else if eq_ascii_fold(enc, "gzip") {
         var uncompressed: u8[>..] = [];
         let ok_d, err = decompress_gzip(res.body[..], uncompressed);
         if ok_d {

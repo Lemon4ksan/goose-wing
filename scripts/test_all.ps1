@@ -45,7 +45,7 @@ if ($checkProc.ExitCode -ne 0) {
 Write-Host "  OK: wing library typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
 
 # 2. Discover test suites
-$testFiles = Get-ChildItem -Path $testsDir -Filter $Pattern | Sort-Object Name
+$testFiles = Get-ChildItem -Path $testsDir -Filter $Pattern | Where-Object { $_.Extension -eq ".goose" } | Sort-Object Name
 if ($testFiles.Count -eq 0) {
     Write-Host "No test files matching '$Pattern' found in $testsDir." -ForegroundColor Yellow
     exit 0

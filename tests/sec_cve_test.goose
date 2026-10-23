@@ -293,6 +293,174 @@ fn test_cve_netscape_import_security(t: wing::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 7. CVE-2026-94441: Unencrypted H2 vs HTTPS Transport & Pool Isolation
+// ----------------------------------------------------------------------------
+fn test_cve_2026_94441_h2_scheme_isolation(t: wing::T&) {
+    t.run("PoolKey Scheme Isolation: Plaintext H2c Must Never Match HTTPS") { sub =>
+        let nak = wing::new_network_anonymization_key("https://service.com");
+        let direct = wing::new_direct_proxy_chain();
+        let policy = wing::TlsAndDnsPolicy { .. };
+
+        let key_https = wing::new_pool_key(wing::PoolScheme.Https, "service.com", 443, direct, nak, policy);
+        let key_h2c = wing::new_pool_key(wing::PoolScheme.H2c, "service.com", 80, direct, nak, policy);
+        let key_http = wing::new_pool_key(wing::PoolScheme.Http, "service.com", 80, direct, nak, policy);
+
+        sub.assert_false(wing::pool_key_equals(key_https, key_h2c), "HTTPS key must never match unencrypted H2c");
+        sub.assert_false(wing::pool_key_equals(key_https, key_http), "HTTPS key must never match unencrypted HTTP");
+        sub.assert_false(wing::pool_key_equals(key_h2c, key_http), "H2c key must never match HTTP");
+    };
+
+    t.run("H2 IP Coalescing: Plaintext H2c Must Never Coalesce with HTTPS") { sub =>
+        let nak = wing::new_network_anonymization_key("https://secure.com");
+        let key_https = wing::new_pool_key(wing::PoolScheme.Https, "secure.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        let key_h2c = wing::new_pool_key(wing::PoolScheme.H2c, "secure.com", 80, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+
+        var conn_unencrypted = wing::PooledConnection {
+            conn_id: 1,
+            key: key_h2c,
+            protocol: wing::NegotiatedProtocol.Http2,
+            cert_valid: false,
+            ..
+        };
+        conn_unencrypted.resolved_ip.append("93.184.216.34");
+
+        // Attempt to coalesce an unencrypted H2 connection for an HTTPS target
+        let can_coalesce, is_neg = wing::can_coalesce_h2_connection(conn_unencrypted, key_https, "93.184.216.34");
+        sub.assert_false(can_coalesce, "Unencrypted HTTP/2 connection must NEVER coalesce for HTTPS request (CVE-2026-94441)");
+
+        // StreamPool acquire must fail to match unencrypted socket for HTTPS
+        var pool = wing::new_stream_pool(6, 32, 10);
+        pool.conns.push(conn_unencrypted);
+
+        let acq_id, ok_acq = wing::acquire_pooled_connection(pool, key_https, "93.184.216.34", 1000000000);
+        sub.assert_false(ok_acq, "Acquire never returns unencrypted H2 socket for https:// request");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 8. CVE-2026-56866 & CVE-2026-94439: CONNECT Tunnel Desync & Buffer Hygiene
+// ----------------------------------------------------------------------------
+fn test_cve_connect_tunnel_security(t: wing::T&) {
+    t.run("CVE-2026-56866: Prefix Data Injection Detection in CONNECT Response") { sub =>
+        // Clean 200 OK CONNECT response
+        let clean = "HTTP/1.1 200 Connection Established\r\n\r\n";
+        let err_clean = wing::verify_connect_tunnel_response(clean, 0);
+        sub.assert_true(err_clean == wing::ConnectTunnelError.None, "Clean 200 CONNECT approved");
+
+        // Trailing bytes injected after \r\n\r\n
+        let smuggled = "HTTP/1.1 200 Connection Established\r\n\r\nGET /smuggled HTTP/1.1\r\n";
+        let err_smuggled = wing::verify_connect_tunnel_response(smuggled, 0);
+        sub.assert_true(err_smuggled == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "Smuggled prefix caught by leftover buffer check");
+
+        // Leftover bytes in client output sink
+        let err_sink = wing::verify_connect_tunnel_response(clean, 8);
+        sub.assert_true(err_sink == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "Sink buffer leftover bytes caught");
+    };
+
+    t.run("CVE-2026-56866 & CVE-2026-94439: Discard Sockets on Non-200 Rejection") { sub =>
+        // 407 Proxy Authentication Required
+        let resp_407 = "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
+        let err_407 = wing::verify_connect_tunnel_response(resp_407, 0);
+        sub.assert_true(err_407 == wing::ConnectTunnelError.ProxyAuthRequired, "407 mapped to ProxyAuthRequired");
+
+        // 502 Bad Gateway
+        let resp_502 = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
+        let err_502 = wing::verify_connect_tunnel_response(resp_502, 0);
+        sub.assert_true(err_502 == wing::ConnectTunnelError.ConnectFailed, "502 mapped to ConnectFailed");
+
+        // Connection must be marked closed and never returned to pool
+        var conn = wing::PooledConnection {
+            conn_id: 42,
+            no_new_exchanges: true,
+            closed: true,
+            ..
+        };
+        sub.assert_false(wing::is_connection_healthy(conn, 1000000000, false), "Failed CONNECT connection is strictly unhealthy");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 9. CVE-2025-4673 & CVE-2021-33197: Proxy-Authorization & Hop-by-Hop Stripping
+// ----------------------------------------------------------------------------
+fn test_cve_proxy_authorization_leakage(t: wing::T&) {
+    t.run("CVE-2025-4673: Strip Proxy-Authorization Before Origin Request") { sub =>
+        var headers: wing::HeaderItem[..32] = [];
+        headers.push(wing::make_header("Host", "target.com"));
+        headers.push(wing::make_header("Proxy-Authorization", "Basic proxy_secret_cred"));
+        headers.push(wing::make_header("PROXY-AUTHORIZATION", "Basic UPPERCASE_SECRET"));
+        headers.push(wing::make_header("Proxy-Authenticate", "Basic realm=proxy"));
+        headers.push(wing::make_header("Proxy-Connection", "Keep-Alive"));
+        headers.push(wing::make_header("Authorization", "Bearer origin_token"));
+
+        wing::sanitize_tunnel_headers_for_origin(headers);
+
+        sub.assert_eq(headers.len, 2, "All proxy headers stripped");
+        sub.assert_bytes_eq(headers[0].name[..], "Host", "Host header preserved");
+        sub.assert_bytes_eq(headers[1].name[..], "Authorization", "Origin bearer token preserved");
+    };
+
+    t.run("CVE-2025-4673: Cross-Origin Redirect Must Strip Proxy-Authorization") { sub =>
+        var req = wing::new_get("https://proxy.origin.com/resource");
+        wing::header(req, "Proxy-Authorization", "Basic secret_proxy_tok");
+        wing::header(req, "Authorization", "Bearer user_token");
+
+        let redirect_info = wing::compute_redirect_info(
+            "GET", 302, "https://proxy.origin.com/resource", "https://other-domain.com/landing",
+            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://proxy.origin.com/resource",
+            false, false
+        );
+
+        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, false, false);
+
+        var has_proxy_auth = false;
+        var has_user_auth = false;
+        for hdr in req.headers {
+            if wing::eq_ascii_fold(hdr.name[..], "Proxy-Authorization") { has_proxy_auth = true; }
+            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_user_auth = true; }
+        }
+        sub.assert_false(has_proxy_auth, "Proxy-Authorization must be stripped on cross-origin redirect (CVE-2025-4673)");
+        sub.assert_false(has_user_auth, "Authorization must be stripped on cross-origin redirect");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 10. CVE-2025-22870: IPv6 Zone ID Proxy Bypass & SSRF Defense
+// ----------------------------------------------------------------------------
+fn test_cve_ipv6_zone_id_proxy_bypass(t: wing::T&) {
+    t.run("IPv6 Link-Local with Zone ID (fe80::1%eth0) Blocked by SSRF Guard") { sub =>
+        var session = wing::new_session();
+        wing::enable_ssrf_guard(session, true);
+
+        // IPv6 link-local with zone ID
+        var req_ll = wing::new_get("http://[fe80::1%25eth0]/admin");
+        let res_ll, err_ll = wing::execute_request(session, req_ll);
+        sub.assert_false(wing::ok(err_ll), "Link-local IPv6 with zone ID must be blocked by SSRF guard (CVE-2025-22870)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 11. Go #81671 & RFC 9110: QUERY Method Replayability
+// ----------------------------------------------------------------------------
+fn test_go_81671_query_method_replayable(t: wing::T&) {
+    t.run("Go #81671: QUERY Method Replayability on Stale Socket Drop") { sub =>
+        sub.assert_true(wing::is_idempotent_method("QUERY"), "QUERY is semantically idempotent per RFC 9110");
+        sub.assert_true(wing::is_idempotent_method("query"), "QUERY case-insensitive check matches");
+
+        var req = wing::new_request("QUERY", "https://api.io/search");
+        wing::text(req, "{\"filter\": \"status=active\"}");
+
+        // On reused socket before response headers arrived, QUERY is replayable
+        let can_retry = wing::should_retry_tier1_stale_socket(true, false, req);
+        sub.assert_true(can_retry, "QUERY request replayable on stale Keep-Alive connection drop (Go #81671)");
+
+        // If body is unrewindable, must NOT retry (protecting payload integrity)
+        req.rewindable = false;
+        let cant_retry_unrewind = wing::should_retry_tier1_stale_socket(true, false, req);
+        sub.assert_false(cant_retry_unrewind, "Unrewindable QUERY request must not be retried");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -304,6 +472,11 @@ fn main() {
     wing::run_case(runner, "4. CVE-2022-27776 & CVE-2023-43804 (Port Change Credential Leaks & Headers)", test_cve_port_change_and_representation_headers);
     wing::run_case(runner, "5. CVE-2023-27534 & CVE-2022-35252 (Cookie URL Ambiguity & Query Ordering)", test_cve_cookie_url_and_query_ordering);
     wing::run_case(runner, "6. CVE-2016-8616 (PSL Supercookie & CTL Injection in Store Import)", test_cve_netscape_import_security);
+    wing::run_case(runner, "7. CVE-2026-94441 (Unencrypted H2 vs HTTPS Scheme & Pool Isolation)", test_cve_2026_94441_h2_scheme_isolation);
+    wing::run_case(runner, "8. CVE-2026-56866 & CVE-2026-94439 (CONNECT Tunnel Desync & Buffer Hygiene)", test_cve_connect_tunnel_security);
+    wing::run_case(runner, "9. CVE-2025-4673 & CVE-2021-33197 (Proxy-Authorization Leakage & Header Stripping)", test_cve_proxy_authorization_leakage);
+    wing::run_case(runner, "10. CVE-2025-22870 (IPv6 Zone ID Proxy Bypass & SSRF Defense)", test_cve_ipv6_zone_id_proxy_bypass);
+    wing::run_case(runner, "11. Go #81671 & RFC 9110 (QUERY Method Replayability)", test_go_81671_query_method_replayable);
 
     let ok = wing::finish(runner);
     assert(ok);

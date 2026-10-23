@@ -230,3 +230,117 @@ fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
 fn adler32(buf: const u8[:]) -> u32 {
     return adler32_update(1, buf);
 }
+
+// ---- xxhash-64 (rfc 8878 zstandard content checksum) -----------------------
+
+const XXH64_PRIME1: u64 = 0x9E3779B185EBCA87;
+const XXH64_PRIME2: u64 = 0xC2B2AE3D27D4EB4F;
+const XXH64_PRIME3: u64 = 0x165667B19E3779F9;
+const XXH64_PRIME4: u64 = 0x85EBCA77C2B2AE63;
+const XXH64_PRIME5: u64 = 0x27D4EB2F165667C5;
+
+fn xxh64_rotl(x: u64, r: u64) -> u64 {
+    return (x << r) | (x >> (64 - r));
+}
+
+fn xxh64_read_le64(buf: const u8[:], offset: i64) -> u64 {
+    let b0 = buf[offset] as u64;
+    let b1 = buf[offset + 1] as u64;
+    let b2 = buf[offset + 2] as u64;
+    let b3 = buf[offset + 3] as u64;
+    let b4 = buf[offset + 4] as u64;
+    let b5 = buf[offset + 5] as u64;
+    let b6 = buf[offset + 6] as u64;
+    let b7 = buf[offset + 7] as u64;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) |
+           (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+}
+
+fn xxh64_read_le32(buf: const u8[:], offset: i64) -> u32 {
+    let b0 = buf[offset] as u32;
+    let b1 = buf[offset + 1] as u32;
+    let b2 = buf[offset + 2] as u32;
+    let b3 = buf[offset + 3] as u32;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn xxh64_round(acc: u64, input: u64) -> u64 {
+    var a = acc + input * XXH64_PRIME2;
+    a = xxh64_rotl(a, 31);
+    a = a * XXH64_PRIME1;
+    return a;
+}
+
+fn xxh64_merge_round(acc: u64, val: u64) -> u64 {
+    let v = xxh64_round(0, val);
+    var a = acc ^ v;
+    a = a * XXH64_PRIME1 + XXH64_PRIME4;
+    return a;
+}
+
+fn xxh64_avalanche(hash: u64) -> u64 {
+    var h = hash ^ (hash >> 33);
+    h = h * XXH64_PRIME2;
+    h = h ^ (h >> 29);
+    h = h * XXH64_PRIME3;
+    h = h ^ (h >> 32);
+    return h;
+}
+
+// Computes standard 64-bit XXH64 hash with optional seed (default 0).
+fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
+    let len = buf.len;
+    var h64: u64 = 0;
+    var offset: i64 = 0;
+
+    if len >= 32 {
+        var v1 = seed + XXH64_PRIME1 + XXH64_PRIME2;
+        var v2 = seed + XXH64_PRIME2;
+        var v3 = seed;
+        var v4 = seed - XXH64_PRIME1;
+
+        let limit = len - 31;
+        while offset < limit {
+            v1 = xxh64_round(v1, xxh64_read_le64(buf, offset)); offset += 8;
+            v2 = xxh64_round(v2, xxh64_read_le64(buf, offset)); offset += 8;
+            v3 = xxh64_round(v3, xxh64_read_le64(buf, offset)); offset += 8;
+            v4 = xxh64_round(v4, xxh64_read_le64(buf, offset)); offset += 8;
+        }
+
+        h64 = xxh64_rotl(v1, 1) + xxh64_rotl(v2, 7) + xxh64_rotl(v3, 12) + xxh64_rotl(v4, 18);
+        h64 = xxh64_merge_round(h64, v1);
+        h64 = xxh64_merge_round(h64, v2);
+        h64 = xxh64_merge_round(h64, v3);
+        h64 = xxh64_merge_round(h64, v4);
+    } else {
+        h64 = seed + XXH64_PRIME5;
+    }
+
+    h64 += len as u64;
+
+    while offset + 8 <= len {
+        let k1 = xxh64_round(0, xxh64_read_le64(buf, offset));
+        offset += 8;
+        h64 = h64 ^ k1;
+        h64 = xxh64_rotl(h64, 27) * XXH64_PRIME1 + XXH64_PRIME4;
+    }
+
+    if offset + 4 <= len {
+        h64 = h64 ^ (xxh64_read_le32(buf, offset) * XXH64_PRIME1);
+        offset += 4;
+        h64 = xxh64_rotl(h64, 23) * XXH64_PRIME2 + XXH64_PRIME3;
+    }
+
+    while offset < len {
+        h64 = h64 ^ (buf[offset] * XXH64_PRIME5);
+        offset += 1;
+        h64 = xxh64_rotl(h64, 11) * XXH64_PRIME1;
+    }
+
+    return xxh64_avalanche(h64);
+}
+
+// Computes the RFC 8878 Zstandard 32-bit content checksum (lower 32 bits of XXH64 with seed 0).
+fn xxh64_digest_32(buf: const u8[:]) -> u32 {
+    return (xxh64(buf, 0) & 0xFFFFFFFF) as u32;
+}

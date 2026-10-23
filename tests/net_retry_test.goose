@@ -1,6 +1,7 @@
 // Verification suite for net/retry: Tier 1 zero-delay stale socket recovery,
 // one-shot stream bug guards, QUIC protocol fallback, Full/Equal/Decorrelated Jitter,
-// RFC 9110 Retry-After parser, circuit breaker, and Google SRE adaptive retry budget.
+// RFC 9110 Retry-After parser, circuit breaker, Google SRE adaptive retry budget,
+// and Go #81671 (idempotent QUERY method).
 import std;
 import wing from "..";
 
@@ -23,9 +24,43 @@ fn test_tier1_stale_socket_and_quic_fallback(t: wing::T&) {
         // 5. Non-idempotent POST WITH Idempotency-Key: approved for retry
         wing::header(req_post, "Idempotency-Key", "uuid-v4-998811-aabbcc");
         sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_post), "POST with Idempotency-Key approved for Tier 1 retry");
+
+        // 6. Non-idempotent PATCH without Idempotency-Key: rejected
+        var req_patch = wing::new_request("PATCH", "https://api.io/items/1");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_patch), "PATCH without Idempotency-Key rejected");
+
+        // 7. Non-idempotent PATCH WITH Idempotency-Key: approved
+        wing::header(req_patch, "Idempotency-Key", "patch-key-1");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_patch), "PATCH with Idempotency-Key approved");
+
+        // 8. Idempotent RFC methods sweep
+        var req_head = wing::new_request("HEAD", "https://api.io/items");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_head), "HEAD is idempotent");
+
+        var req_put = wing::new_request("PUT", "https://api.io/items/1");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_put), "PUT is idempotent");
+
+        var req_del = wing::new_request("DELETE", "https://api.io/items/1");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_del), "DELETE is idempotent");
+
+        var req_opt = wing::new_request("OPTIONS", "https://api.io/items");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_opt), "OPTIONS is idempotent");
+
+        var req_trace = wing::new_request("TRACE", "https://api.io/items");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_trace), "TRACE is idempotent");
     };
 
-    t.run("Defense against One-Shot Stream Retry Bug") { sub =>
+    t.run("Go #81671 & RFC 9110: QUERY Method Safe & Replayable") { sub =>
+        // RFC 9110 and draft-ietf-httpbis-safe-method-w-body:
+        // QUERY method is safe and idempotent, and carries a request body.
+        // It MUST be replayable on stale socket disconnections.
+        var req_query = wing::new_request("QUERY", "https://api.io/search");
+        wing::text(req_query, "SELECT id, name FROM users WHERE active = true");
+        sub.assert_true(wing::is_idempotent_method("QUERY"), "QUERY recognized as idempotent");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_query), "QUERY with rewindable body replayable on stale socket drop");
+    };
+
+    t.run("Defense against One-Shot Stream Retry Bug (Go #41907 / #41913)") { sub =>
         // Request with non-empty body that is NOT rewindable (already consumed stream)
         var req_stream = wing::new_request("PUT", "https://api.io/upload");
         req_stream.body.append("multipart-stream-chunk-data");
@@ -33,6 +68,19 @@ fn test_tier1_stale_socket_and_quic_fallback(t: wing::T&) {
         req_stream.body_consumed = true;
 
         sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_stream), "Unrewindable consumed body stream rejected (prevents sending empty body)");
+
+        // Non-empty body with rewindable = false but body_consumed = false
+        var req_unrewind = wing::new_request("PUT", "https://api.io/upload");
+        req_unrewind.body.append("data");
+        req_unrewind.rewindable = false;
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_unrewind), "Unrewindable body rejected");
+
+        // Non-empty body with rewindable = true and body_consumed = true
+        var req_consumed = wing::new_request("PUT", "https://api.io/upload");
+        req_consumed.body.append("data");
+        req_consumed.rewindable = true;
+        req_consumed.body_consumed = true;
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_consumed), "Already-consumed rewindable body rejected");
 
         // Request with rewindable body buffer (GetBody pattern)
         var req_rewindable = wing::new_request("PUT", "https://api.io/upload");
@@ -46,6 +94,10 @@ fn test_tier1_stale_socket_and_quic_fallback(t: wing::T&) {
 
         sub.assert_true(dec.retry_immediately, "Immediate retry on ERR_QUIC_PROTOCOL_ERROR");
         sub.assert_true(dec.disable_alternative_services, "disable_alternative_services flagged to force reliable TCP/TLS");
+
+        // If headers were already received, cannot fallback immediately
+        let dec_headers = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, true, req);
+        sub.assert_false(dec_headers.retry_immediately, "QUIC error after headers received does not trigger blind retry");
     };
 }
 
@@ -63,6 +115,10 @@ fn test_tier2_exponential_backoff_and_jitter(t: wing::T&) {
         let t0 = wing::compute_backoff_jitter_ms(cfg_none, 0, prev_sleep, seed);
         sub.assert_eq(t0, 100, "Attempt 0 deterministic delay is 100 ms");
 
+        // Attempt 1: target 200 ms
+        let t1 = wing::compute_backoff_jitter_ms(cfg_none, 1, prev_sleep, seed);
+        sub.assert_eq(t1, 200, "Attempt 1 deterministic delay is 200 ms");
+
         // Attempt 3: target 100 * 2^3 = 800 ms
         let t3 = wing::compute_backoff_jitter_ms(cfg_none, 3, prev_sleep, seed);
         sub.assert_eq(t3, 800, "Attempt 3 deterministic delay is 800 ms");
@@ -71,21 +127,25 @@ fn test_tier2_exponential_backoff_and_jitter(t: wing::T&) {
         let t10 = wing::compute_backoff_jitter_ms(cfg_none, 10, prev_sleep, seed);
         sub.assert_eq(t10, 5000, "Attempt 10 clamped to cap 5000 ms");
 
+        // Attempt 50: large attempt number must NOT overflow 64-bit integer
+        let t50 = wing::compute_backoff_jitter_ms(cfg_none, 50, prev_sleep, seed);
+        sub.assert_eq(t50, 5000, "Attempt 50 clamped safely without integer overflow");
+
         // Full Jitter: in range [0, 800]
-        for i in 10 {
+        for i in 20 {
             let fj = wing::compute_backoff_jitter_ms(cfg_full, 3, prev_sleep, seed);
             sub.assert_true(fj >= 0 && fj <= 800, "Full Jitter within [0, 800]");
         }
 
         // Equal Jitter: in range [half, target] = [400, 800]
-        for i in 10 {
+        for i in 20 {
             let ej = wing::compute_backoff_jitter_ms(cfg_equal, 3, prev_sleep, seed);
             sub.assert_true(ej >= 400 && ej <= 800, "Equal Jitter maintains non-zero floor within [400, 800]");
         }
 
-        // Decorrelated Jitter bounded by cap
+        // Decorrelated Jitter bounded by [base, cap]
         prev_sleep = 100;
-        for i in 10 {
+        for i in 20 {
             let dj = wing::compute_backoff_jitter_ms(cfg_decorr, 3, prev_sleep, seed);
             sub.assert_true(dj >= 100 && dj <= 5000, "Decorrelated Jitter bounded by [base, cap]");
         }
@@ -100,9 +160,17 @@ fn test_rfc9110_retry_after_parser(t: wing::T&) {
         sub.assert_true(ok0, "Parsed delay-seconds '0'");
         sub.assert_eq(ms0, 0, "0 seconds is 0 ms");
 
+        let ms1, ok1 = wing::parse_retry_after_ms("1", now_ms);
+        sub.assert_true(ok1, "Parsed delay-seconds '1'");
+        sub.assert_eq(ms1, 1000, "1 second is 1000 ms");
+
         let ms120, ok120 = wing::parse_retry_after_ms("120", now_ms);
         sub.assert_true(ok120, "Parsed delay-seconds '120'");
         sub.assert_eq(ms120, 120000, "120 seconds is 120,000 ms");
+
+        let ms86400, ok86400 = wing::parse_retry_after_ms("86400", now_ms);
+        sub.assert_true(ok86400, "Parsed delay-seconds '86400'");
+        sub.assert_eq(ms86400, 86400000, "86400 seconds is 86,400,000 ms (24h)");
 
         // Leading/trailing whitespace trimmed
         let ms_ws, ok_ws = wing::parse_retry_after_ms("  45  ", now_ms);
@@ -116,8 +184,20 @@ fn test_rfc9110_retry_after_parser(t: wing::T&) {
         let _, bad2 = wing::parse_retry_after_ms("-10", now_ms);
         sub.assert_false(bad2, "Rejected negative delay-seconds '-10'");
 
-        let _, bad3 = wing::parse_retry_after_ms("12.5", now_ms);
-        sub.assert_false(bad3, "Rejected decimal delay-seconds '12.5'");
+        let _, bad3 = wing::parse_retry_after_ms("+10", now_ms);
+        sub.assert_false(bad3, "Rejected explicit positive sign '+10'");
+
+        let _, bad4 = wing::parse_retry_after_ms("12.5", now_ms);
+        sub.assert_false(bad4, "Rejected decimal delay-seconds '12.5'");
+
+        let _, bad5 = wing::parse_retry_after_ms("abc", now_ms);
+        sub.assert_false(bad5, "Rejected alphanumeric string");
+
+        let _, bad6 = wing::parse_retry_after_ms("", now_ms);
+        sub.assert_false(bad6, "Rejected empty string");
+
+        let _, bad7 = wing::parse_retry_after_ms("   ", now_ms);
+        sub.assert_false(bad7, "Rejected whitespace-only string");
     };
 
     t.run("IMF-fixdate Parsing and Exact UTC Round-Trip Validation") { sub =>
@@ -138,6 +218,11 @@ fn test_rfc9110_retry_after_parser(t: wing::T&) {
         let bad_date = "Wed, 31 Feb 2024 12:00:00 GMT";
         let _, ok_bad = wing::parse_retry_after_ms(bad_date, 1700000000000);
         sub.assert_false(ok_bad, "Invalid calendar day 31 Feb rejected by round-trip validator");
+
+        // Invalid month string
+        let bad_month = "Wed, 21 Foo 2026 07:28:00 GMT";
+        let _, ok_bm = wing::parse_retry_after_ms(bad_month, 1700000000000);
+        sub.assert_false(ok_bm, "Invalid month 'Foo' rejected");
     };
 }
 
@@ -157,6 +242,9 @@ fn test_circuit_breaker_and_adaptive_retry_budget(t: wing::T&) {
 
         // Advance beyond unblock deadline (1s + 300s = 301s)
         sub.assert_false(wing::is_host_circuit_broken(breaker, "api.overloaded.com", 302000000000), "Host unblocked after cool-down");
+
+        // Different host is not blocked
+        sub.assert_false(wing::is_host_circuit_broken(breaker, "other.healthy.com", 2000000000), "Other host is not blocked");
     };
 
     t.run("Google SRE Adaptive Retry Budget") { sub =>
@@ -177,6 +265,12 @@ fn test_circuit_breaker_and_adaptive_retry_budget(t: wing::T&) {
         // 21st retry attempt exceeds budget during flood
         let blocked = wing::allow_retry_budget(budget, 1000000000);
         sub.assert_false(blocked, "Retry exceeding 20% budget rejected to prevent retry storm");
+
+        // After window advances (t = 12s, delta = 11s > 10s window), budget resets
+        wing::record_primary_request(budget, 12000000000);
+        sub.assert_eq(budget.retried_requests, 0, "Retried requests reset in new window");
+        let ok_new = wing::allow_retry_budget(budget, 12000000000);
+        sub.assert_true(ok_new, "Retry permitted after window resets");
     };
 }
 

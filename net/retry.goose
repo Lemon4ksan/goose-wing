@@ -20,7 +20,8 @@ fn is_idempotent_method(method: const u8[:]) -> bool {
            eq_ascii_fold(method, "PUT") ||
            eq_ascii_fold(method, "DELETE") ||
            eq_ascii_fold(method, "OPTIONS") ||
-           eq_ascii_fold(method, "TRACE");
+           eq_ascii_fold(method, "TRACE") ||
+           eq_ascii_fold(method, "QUERY");
 }
 
 // Checks if request carries a valid non-empty Idempotency-Key header.

@@ -42,16 +42,12 @@ fn gzip_compress_with_header<B>(
     out.push(3); // OS = Unix
 
     if filename.len > 0 {
-        for i in filename.len {
-            out.push(filename[i]);
-        }
+        out.append(filename);
         out.push(0); // Null terminator
     }
 
     if comment.len > 0 {
-        for i in comment.len {
-            out.push(comment[i]);
-        }
+        out.append(comment);
         out.push(0); // Null terminator
     }
 

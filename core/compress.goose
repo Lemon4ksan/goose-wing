@@ -18,6 +18,7 @@ import core.compress.deflate;
 import core.compress.gzip;
 import core.compress.zlib;
 import core.compress.stream;
+import core.compress.zstd;
 
 // Compresses input slice using Gzip format into out_buf. Returns true on success.
 fn compress_gzip<B>(src: const u8[:], out_buf: B&, level: i32 = 6) -> bool {
@@ -104,7 +105,24 @@ fn decompress_deflate_dict<B>(in_buf: const u8[:], out_buf: B&, dict: const u8[:
     return err == CompressError.None, err;
 }
 
-// Universal auto-detecting decompressor: automatically determines container format (Gzip, Zlib, Deflate).
+// Compresses input slice using RFC 8878 Zstandard container format.
+fn compress_zstd<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true) -> bool {
+    return zstd_compress(src, out_buf, include_checksum);
+}
+
+// Decompresses RFC 8878 Zstandard stream from in_buf into out_buf. Returns (true, CompressError.None) on success.
+fn decompress_zstd<B>(in_buf: const u8[:], out_buf: B&) -> bool, CompressError {
+    let err = zstd_decompress(in_buf, out_buf);
+    return err == CompressError.None, err;
+}
+
+// Decompresses RFC 8878 Zstandard stream with output quota guard (preventing decompression bombs).
+fn decompress_zstd_with_limit<B>(in_buf: const u8[:], out_buf: B&, max_output_bytes: i64) -> bool, CompressError {
+    let err = zstd_decompress_with_limit(in_buf, out_buf, max_output_bytes);
+    return err == CompressError.None, err;
+}
+
+// Universal auto-detecting decompressor: automatically determines container format (Zstd, Gzip, Zlib, Deflate).
 fn decompress<B>(in_buf: const u8[:], out_buf: B&, dict: const u8[:] = "") -> bool, CompressError {
     let err = decompress_auto(in_buf, out_buf, dict);
     return err == CompressError.None, err;
