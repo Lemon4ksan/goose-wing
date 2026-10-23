@@ -3,6 +3,7 @@ namespace wing;
 
 import std;
 import core.time;
+import core.math;
 
 // ---- constant-time branchless primitives -----------------------------------
 
@@ -13,12 +14,6 @@ inline fn ct_eq_u8(a: u8, b: u8) -> u8 {
     return (1 - non_zero) as u8;
 }
 
-// Returns 1 if a == b, 0 otherwise, using purely branchless 32-bit arithmetic.
-inline fn ct_eq_u32(a: u32, b: u32) -> u8 {
-    let diff = a ^ b;
-    let non_zero = (diff | (0 - diff)) >> 31;
-    return (1 - non_zero) as u8;
-}
 
 // Branchless conditional selection: returns if_true when bit == 1, if_false when bit == 0.
 inline fn ct_select_u8(bit: u8, if_true: u8, if_false: u8) -> u8 {
@@ -208,13 +203,6 @@ let SHA256_K: const u32[64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-inline fn rotr32(x: u32, n: u32) -> u32 {
-    return (x >> n) | (x << (32 - n));
-}
-
-inline fn rotl32(x: u32, n: u32) -> u32 {
-    return (x << n) | (x >> (32 - n));
-}
 
 struct Sha256Ctx {
     h: u32[8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19],

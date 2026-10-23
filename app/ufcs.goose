@@ -548,3 +548,25 @@ fn ::record_primary_request(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64
 fn ::allow_retry_budget(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
     return wing::allow_retry_budget(budget, now_mono_ns);
 }
+
+// ---- math & rtt estimator ufcs bridges -------------------------------------
+
+fn ::next_u64(rng: wing::WyRand&) -> u64 { return wing::next_u64(rng); }
+fn ::next_u32(rng: wing::WyRand&) -> u32 { return wing::next_u32(rng); }
+fn ::next_u32(rng: wing::Xoroshiro64StarStar&) -> u32 { return wing::next_u32(rng); }
+
+fn ::on_rtt_sample(
+    est: wing::JacobsonRttEstimator&,
+    latest_rtt_us: u64,
+    ack_delay_us: u64 = 0,
+    max_ack_delay_us: u64 = 25000,
+    handshake_confirmed: bool = false
+) {
+    wing::on_rtt_sample(est, latest_rtt_us, ack_delay_us, max_ack_delay_us, handshake_confirmed);
+}
+fn ::smoothed_rtt_us(est: const wing::JacobsonRttEstimator&) -> u64 { return wing::smoothed_rtt_us(est); }
+fn ::rttvar_us(est: const wing::JacobsonRttEstimator&) -> u64 { return wing::rttvar_us(est); }
+fn ::probe_timeout_us(est: const wing::JacobsonRttEstimator&, max_ack_delay_us: u64 = 0) -> u64 {
+    return wing::probe_timeout_us(est, max_ack_delay_us);
+}
+fn ::loss_time_threshold_us(est: const wing::JacobsonRttEstimator&) -> u64 { return wing::loss_time_threshold_us(est); }

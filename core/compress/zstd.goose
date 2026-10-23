@@ -85,6 +85,8 @@ struct ZstdBitReader {
     src: const u8[:] = "",
     bit_pos: i64 = 0,
     underflow: bool = false,
+    cache_offset: i64 = -1,
+    cache_chunk: u64 = 0,
 }
 
 fn new_zstd_bit_reader(src: const u8[:]) -> ZstdBitReader {
@@ -107,25 +109,66 @@ fn new_zstd_bit_reader(src: const u8[:]) -> ZstdBitReader {
         src: src,
         bit_pos: total_bits,
         underflow: false,
+        cache_offset: -1,
+        cache_chunk: 0,
     };
 }
 
-fn zstd_peek_bits(r: const ZstdBitReader&, n: i32) -> u32 {
-    if n <= 0 { return 0; }
+fn zstd_peek_bits(r: ZstdBitReader&, n: i32) -> u32 {
+    if n <= 0 || r.bit_pos <= 0 { return 0; }
     if r.bit_pos < n {
-        return 0;
+        let rem_bits = r.bit_pos;
+        var chunk: u64 = 0;
+        let rem = r.src.len;
+        if rem >= 8 {
+            let b0 = r.src[0] as u64;
+            let b1 = r.src[1] as u64;
+            let b2 = r.src[2] as u64;
+            let b3 = r.src[3] as u64;
+            let b4 = r.src[4] as u64;
+            let b5 = r.src[5] as u64;
+            let b6 = r.src[6] as u64;
+            let b7 = r.src[7] as u64;
+            chunk = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+        } else {
+            var i: i64 = 0;
+            while i < rem {
+                chunk |= (r.src[i] as u64) << ((i * 8) as u64);
+                i++;
+            }
+        }
+        let mask = ((1 as u64) << (rem_bits as u64)) - 1;
+        let val = (chunk & mask) << ((n - rem_bits) as u64);
+        return val as u32;
     }
     let start_bit = r.bit_pos - n;
     let byte_offset = start_bit >> 3;
     let bit_offset = (start_bit & 7) as u64;
 
     var chunk: u64 = 0;
-    let rem = r.src.len - byte_offset;
-    let to_read = if rem < 8 { rem } else { 8 };
-    var i: i64 = 0;
-    while i < to_read {
-        chunk |= (r.src[byte_offset + i] as u64) << ((i * 8) as u64);
-        i++;
+    if byte_offset == r.cache_offset {
+        chunk = r.cache_chunk;
+    } else {
+        let rem = r.src.len - byte_offset;
+        if rem >= 8 {
+            let b0 = r.src[byte_offset] as u64;
+            let b1 = r.src[byte_offset + 1] as u64;
+            let b2 = r.src[byte_offset + 2] as u64;
+            let b3 = r.src[byte_offset + 3] as u64;
+            let b4 = r.src[byte_offset + 4] as u64;
+            let b5 = r.src[byte_offset + 5] as u64;
+            let b6 = r.src[byte_offset + 6] as u64;
+            let b7 = r.src[byte_offset + 7] as u64;
+            chunk = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+            r.cache_offset = byte_offset;
+            r.cache_chunk = chunk;
+        } else {
+            var i: i64 = 0;
+            while i < rem {
+                chunk |= (r.src[byte_offset + i] as u64) << ((i * 8) as u64);
+                i++;
+            }
+        }
     }
     let shifted = chunk >> bit_offset;
     let mask = if n == 32 { 0xFFFFFFFF as u64 } else { ((1 as u64) << (n as u64)) - 1 };
@@ -196,8 +239,8 @@ fn fwd_read(r: ForwardBitReader&, n: i32) -> u32 {
 }
 
 fn fwd_bytes_consumed(r: const ForwardBitReader&) -> i64 {
-    let unconsumed_bytes = (r.bit_count + 7) / 8;
-    return r.byte_idx - unconsumed_bytes;
+    let bits_used = (r.byte_idx * 8) - r.bit_count;
+    return (bits_used + 7) / 8;
 }
 
 // ---- fse structures & algorithms (rfc 8878 section 4.1) --------------------
@@ -386,17 +429,20 @@ fn huf_build_dtable(weights: const u8[:], num_symbols: i32, max_table_log: i32, 
     }
     if weight_total == 0 { return false; }
 
-    let table_log = zstd_high_bit(weight_total) + 1;
+    let table_log = zstd_high_bit(weight_total);
+    if ((1 as u32) << (table_log as u32)) != weight_total {
+        return false; // Total weight is not a power of 2
+    }
     if table_log > 11 || table_log > max_table_log {
         return false;
     }
     out_table.table_log = table_log;
     out_table.is_defined = true;
 
-    // Rank starts
+    // Rank starts (skip weight 0 as unused symbols)
     var rank_start: u32[13] = [0; 13];
     var next_rank: u32 = 0;
-    var w: i32 = 0;
+    var w: i32 = 1;
     while w <= table_log {
         rank_start[w] = next_rank;
         next_rank += rank_val[w];
@@ -492,28 +538,28 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
         var state1 = zstd_read_bits(r, weight_fse_table.table_log) as i64;
         var state2 = zstd_read_bits(r, weight_fse_table.table_log) as i64;
 
-        while !r.underflow && num_symbols < 255 {
+        while num_symbols < 255 {
             let e1 = weight_fse_table.entries[state1];
             weights[num_symbols] = e1.symbol;
             num_symbols++;
-            if r.bit_pos == 0 {
+            state1 = (e1.new_state as i64) + zstd_read_bits(r, e1.nb_bits);
+            if r.underflow {
                 let e2 = weight_fse_table.entries[state2];
                 weights[num_symbols] = e2.symbol;
                 num_symbols++;
                 break;
             }
-            state1 = (e1.new_state as i64) + zstd_read_bits(r, e1.nb_bits);
 
             let e2 = weight_fse_table.entries[state2];
             weights[num_symbols] = e2.symbol;
             num_symbols++;
-            if r.bit_pos == 0 {
+            state2 = (e2.new_state as i64) + zstd_read_bits(r, e2.nb_bits);
+            if r.underflow {
                 let e1_final = weight_fse_table.entries[state1];
                 weights[num_symbols] = e1_final.symbol;
                 num_symbols++;
                 break;
             }
-            state2 = (e2.new_state as i64) + zstd_read_bits(r, e2.nb_bits);
         }
     }
 
@@ -540,9 +586,10 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
 fn huf_decode_stream(r: ZstdBitReader&, table: const HufTable&, lit_buf: u8[>..]&, count: i64) -> bool {
     var decoded: i64 = 0;
     let mask = (1 << table.table_log) - 1;
+    let t_log = table.table_log;
 
     while decoded < count && !r.underflow {
-        let bits = (zstd_peek_bits(r, table.table_log) as i32) & mask;
+        let bits = (zstd_peek_bits(r, t_log) as i32) & mask;
         let entry = table.entries[bits];
         lit_buf.push(entry.symbol);
         zstd_consume_bits(r, entry.nb_bits);
@@ -928,14 +975,31 @@ fn decode_sequences<B>(
         }
 
         if match_len > 0 {
-            if offset == 0 || (offset as i64) > (out_buf.len as i64) {
+            let off = offset as i64;
+            let m_len = match_len as i64;
+            if off == 0 || off > (out_buf.len as i64) {
                 return CompressError.DistanceOutOfBounds;
             }
-            let src_idx = (out_buf.len as i64) - (offset as i64);
-            var m: i64 = 0;
-            while m < (match_len as i64) {
-                out_buf.push(out_buf[src_idx + m]);
-                m++;
+            let src_idx = (out_buf.len as i64) - off;
+            if off >= m_len {
+                out_buf.append(out_buf[src_idx .. src_idx + m_len]);
+            } else if off == 1 {
+                let b = out_buf[src_idx];
+                var m: i64 = 0;
+                while m < m_len {
+                    out_buf.push(b);
+                    m++;
+                }
+            } else {
+                var m: i64 = 0;
+                while m + off <= m_len {
+                    out_buf.append(out_buf[src_idx + m .. src_idx + m + off]);
+                    m += off;
+                }
+                while m < m_len {
+                    out_buf.push(out_buf[src_idx + m]);
+                    m++;
+                }
             }
         }
 

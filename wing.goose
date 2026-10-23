@@ -8,6 +8,7 @@ import json;
 
 // ---- core primitives -------------------------------------------------------
 
+import core.math;
 import core.time;
 import core.test;
 import core.url;

@@ -276,11 +276,29 @@ fn construct_huffman_table(lengths: const i32[:], n_symbols: i32, table: Huffman
 // Slow path: Canonical bit-by-bit tree handles codes > 9 bits.
 fn decode_huffman_symbol(r: BitReader&, table: const HuffmanTable&) -> i32, bool {
     // Refill bit buffer up to 56 bits for single-cycle lookup
-    while r.bit_count <= 56 && r.pos < r.src.len {
-        let b = r.src[r.pos] as u64;
-        r.pos++;
-        r.bit_buf |= b << r.bit_count;
-        r.bit_count += 8;
+    if r.bit_count < 15 {
+        if r.pos + 8 <= r.src.len {
+            let b0 = r.src[r.pos] as u64;
+            let b1 = r.src[r.pos + 1] as u64;
+            let b2 = r.src[r.pos + 2] as u64;
+            let b3 = r.src[r.pos + 3] as u64;
+            let b4 = r.src[r.pos + 4] as u64;
+            let b5 = r.src[r.pos + 5] as u64;
+            let b6 = r.src[r.pos + 6] as u64;
+            let b7 = r.src[r.pos + 7] as u64;
+            let chunk = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+            r.bit_buf |= chunk << (r.bit_count as u64);
+            let bytes_added = (63 - r.bit_count) >> 3;
+            r.pos += bytes_added;
+            r.bit_count += bytes_added * 8;
+        } else {
+            while r.bit_count <= 56 && r.pos < r.src.len {
+                let b = r.src[r.pos] as u64;
+                r.pos++;
+                r.bit_buf |= b << (r.bit_count as u64);
+                r.bit_count += 8;
+            }
+        }
     }
 
     // Fast 9-bit lookahead path
@@ -369,19 +387,43 @@ fn decode_block_codes<B>(
             }
 
             let dist_i64 = match_dist as i64;
-            for i in match_len {
-                let curr_decoded = out.len - out_start_pos;
-                if dist_i64 <= curr_decoded {
-                    let back_idx = out.len - dist_i64;
+            let curr_decoded = out.len - out_start_pos;
+            if dist_i64 <= curr_decoded {
+                let back_idx = out.len - dist_i64;
+                let m_len = match_len as i64;
+                if dist_i64 >= m_len {
+                    out.append(out[back_idx .. back_idx + m_len]);
+                } else if dist_i64 == 1 {
                     let b = out[back_idx];
-                    out.push(b);
+                    for i in match_len {
+                        out.push(b);
+                    }
                 } else {
-                    guard dict.len > 0 else { return CompressError.DistanceOutOfBounds; }
-                    let dict_back = dist_i64 - curr_decoded;
-                    guard dict_back <= dict.len else { return CompressError.DistanceOutOfBounds; }
-                    let dict_idx = dict.len - dict_back;
-                    let b = dict[dict_idx];
-                    out.push(b);
+                    var m: i64 = 0;
+                    while m + dist_i64 <= m_len {
+                        out.append(out[out.len - dist_i64 .. out.len]);
+                        m += dist_i64;
+                    }
+                    while m < m_len {
+                        let b = out[out.len - dist_i64];
+                        out.push(b);
+                        m++;
+                    }
+                }
+            } else {
+                for i in match_len {
+                    let curr = out.len - out_start_pos;
+                    if dist_i64 <= curr {
+                        let b = out[out.len - dist_i64];
+                        out.push(b);
+                    } else {
+                        guard dict.len > 0 else { return CompressError.DistanceOutOfBounds; }
+                        let dict_back = dist_i64 - curr;
+                        guard dict_back <= dict.len else { return CompressError.DistanceOutOfBounds; }
+                        let dict_idx = dict.len - dict_back;
+                        let b = dict[dict_idx];
+                        out.push(b);
+                    }
                 }
             }
         }
