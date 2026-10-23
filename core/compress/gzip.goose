@@ -15,24 +15,55 @@ const GZIP_FLG_FEXTRA: u8 = 0x04;
 const GZIP_FLG_FNAME: u8 = 0x08;
 const GZIP_FLG_FCOMMENT: u8 = 0x10;
 
-// Compresses src into out using RFC 1952 Gzip format.
-fn gzip_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
-    // 10-byte standard Gzip header
+// Compresses src into out using RFC 1952 Gzip format with full metadata (filename, comment, FHCRC).
+fn gzip_compress_with_header<B>(
+    src: const u8[:],
+    out: B&,
+    level: i32 = 6,
+    filename: const u8[:] = "",
+    comment: const u8[:] = "",
+    include_fhcrc: bool = false,
+) -> bool {
+    let out_start = out.len;
+    var flg: u8 = 0;
+    if filename.len > 0 { flg |= GZIP_FLG_FNAME; }
+    if comment.len > 0 { flg |= GZIP_FLG_FCOMMENT; }
+    if include_fhcrc { flg |= GZIP_FLG_FHCRC; }
+
     out.push(GZIP_ID1);
     out.push(GZIP_ID2);
     out.push(GZIP_CM_DEFLATE);
-    out.push(0); // FLG = 0 (no extra, no name, no comment, no crc16)
-    out.push(0); // MTIME (4 bytes 0 = no timestamp)
+    out.push(flg);
+    out.push(0); // MTIME (4 bytes 0)
     out.push(0);
     out.push(0);
     out.push(0);
-    out.push(if level >= 6 { 2 } else { 4 }); // XFL (2 = max compression, 4 = fastest)
-    out.push(3); // OS = 3 (Unix)
+    out.push(if level >= 6 { 2 } else { 4 }); // XFL
+    out.push(3); // OS = Unix
 
-    // Deflate compressed payload
+    if filename.len > 0 {
+        for i in filename.len {
+            out.push(filename[i]);
+        }
+        out.push(0); // Null terminator
+    }
+
+    if comment.len > 0 {
+        for i in comment.len {
+            out.push(comment[i]);
+        }
+        out.push(0); // Null terminator
+    }
+
+    if include_fhcrc {
+        let hdr_bytes = out[out_start..];
+        let h_crc = crc32(hdr_bytes) & 0xFFFF;
+        out.push((h_crc & 0xFF) as u8);
+        out.push(((h_crc >> 8) & 0xFF) as u8);
+    }
+
     guard deflate(src, out, level) else { return false; }
 
-    // 8-byte footer: CRC-32 (4 bytes LE) + ISIZE (4 bytes LE)
     let c = crc32(src);
     out.push((c & 0xFF) as u8);
     out.push(((c >> 8) & 0xFF) as u8);
@@ -48,86 +79,105 @@ fn gzip_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
     return true;
 }
 
-// Decompresses RFC 1952 Gzip stream from src into out.
-// Validates headers, flags, deflate stream, CRC-32, and uncompressed size.
-fn gzip_decompress<B>(src: const u8[:], out: B&) -> CompressError {
-    guard src.len >= 18 else { return CompressError.InputBufferTruncated; }
+// Compresses src into out using standard RFC 1952 Gzip format.
+fn gzip_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
+    return gzip_compress_with_header(src, out, level, "", "", false);
+}
 
-    guard src[0] == GZIP_ID1 && src[1] == GZIP_ID2 else {
-        return CompressError.InvalidHeader;
+// Reads a 32-bit little-endian unsigned integer from src at offset.
+fn read_gzip_u32_le(src: const u8[:], offset: i64) -> u32 {
+    let b0 = src[offset] as u32;
+    let b1 = (src[offset + 1] as u32) << 8;
+    let b2 = (src[offset + 2] as u32) << 16;
+    let b3 = (src[offset + 3] as u32) << 24;
+    return b0 | b1 | b2 | b3;
+}
+
+// Advances offset past a null-terminated header string in src.
+fn skip_gzip_cstring(src: const u8[:], offset: i64) -> i64, bool {
+    var pos = offset;
+    while pos < src.len && src[pos] != 0 {
+        pos++;
     }
-    guard src[2] == GZIP_CM_DEFLATE else {
-        return CompressError.InvalidHeader;
+    guard pos < src.len else { return pos, false; }
+    return pos + 1, true;
+}
+
+// Validates the RFC 1952 Gzip header and returns the payload start offset.
+// Supports FEXTRA, FNAME, FCOMMENT, and FHCRC (validating the 16-bit header CRC32).
+fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError {
+    guard start + 10 <= src.len else { return start, CompressError.InputBufferTruncated; }
+    guard src[start] == GZIP_ID1 && src[start + 1] == GZIP_ID2 && src[start + 2] == GZIP_CM_DEFLATE else {
+        return start, CompressError.InvalidHeader;
     }
 
-    let flg = src[3];
-    var offset: i64 = 10;
+    let flg = src[start + 3];
+    var offset: i64 = start + 10;
 
-    // FEXTRA
     if (flg & GZIP_FLG_FEXTRA) != 0 {
-        guard offset + 2 <= src.len else { return CompressError.InputBufferTruncated; }
-        let xlen = (src[offset] as i64) | ((src[offset + 1] as i64) << 8);
+        guard offset + 2 <= src.len else { return start, CompressError.InputBufferTruncated; }
+        let xlen = src[offset] | ((src[offset + 1] as i64) << 8);
         offset += 2 + xlen;
-        guard offset <= src.len else { return CompressError.InputBufferTruncated; }
+        guard offset <= src.len else { return start, CompressError.InputBufferTruncated; }
     }
-
-    // FNAME (null-terminated string)
     if (flg & GZIP_FLG_FNAME) != 0 {
-        while offset < src.len && src[offset] != 0 {
-            offset++;
-        }
-        guard offset < src.len else { return CompressError.InputBufferTruncated; }
-        offset++; // Skip trailing null
+        let next_off, ok = skip_gzip_cstring(src, offset);
+        guard ok else { return start, CompressError.InputBufferTruncated; }
+        offset = next_off;
     }
-
-    // FCOMMENT (null-terminated string)
     if (flg & GZIP_FLG_FCOMMENT) != 0 {
-        while offset < src.len && src[offset] != 0 {
-            offset++;
-        }
-        guard offset < src.len else { return CompressError.InputBufferTruncated; }
-        offset++; // Skip trailing null
+        let next_off, ok = skip_gzip_cstring(src, offset);
+        guard ok else { return start, CompressError.InputBufferTruncated; }
+        offset = next_off;
     }
-
-    // FHCRC (2-byte header CRC16)
     if (flg & GZIP_FLG_FHCRC) != 0 {
-        guard offset + 2 <= src.len else { return CompressError.InputBufferTruncated; }
+        guard offset + 2 <= src.len else { return start, CompressError.InputBufferTruncated; }
+        let expected_crc16 = src[offset] | ((src[offset + 1] as u32) << 8);
+        let actual_crc16 = crc32(src[start..offset]) & 0xFFFF;
+        guard expected_crc16 == actual_crc16 else { return start, CompressError.ChecksumMismatch; }
         offset += 2;
     }
+    return offset, CompressError.None;
+}
 
-    guard offset + 8 <= src.len else { return CompressError.InputBufferTruncated; }
+// Decompresses RFC 1952 Gzip stream from src into out with output quota guard.
+// Fully supports concatenated Gzip members (RFC 1952 multi-member streams) and FHCRC.
+fn gzip_decompress_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64 = 0) -> CompressError {
+    guard src.len > 0 else { return CompressError.InputBufferTruncated; }
+    var offset: i64 = 0;
 
-    let deflate_end = src.len - 8;
-    guard offset <= deflate_end else { return CompressError.InputBufferTruncated; }
+    while offset < src.len {
+        let member_start = offset;
+        let payload_offset, hdr_err = parse_gzip_header_offset(src, member_start);
+        guard hdr_err == CompressError.None else { return hdr_err; }
 
-    let deflate_payload = src[offset..deflate_end];
-    let out_start = out.len;
+        let member_out_start = out.len;
+        let err, consumed = inflate_ex(src[payload_offset..], out, "", max_output_bytes);
+        guard err == CompressError.None else { return err; }
 
-    let err = inflate(deflate_payload, out);
-    guard err == CompressError.None else { return err; }
+        let trailer_offset = payload_offset + consumed;
+        guard trailer_offset + 8 <= src.len else { return CompressError.InputBufferTruncated; }
 
-    let decomp_slice = out[out_start..];
+        let decomp_slice = out[member_out_start..];
+        let expected_crc = read_gzip_u32_le(src, trailer_offset);
+        let expected_isize = read_gzip_u32_le(src, trailer_offset + 4);
 
-    // Validate 8-byte trailer
-    let expected_crc = (src[deflate_end] as u32) |
-                       ((src[deflate_end + 1] as u32) << 8) |
-                       ((src[deflate_end + 2] as u32) << 16) |
-                       ((src[deflate_end + 3] as u32) << 24);
+        guard crc32(decomp_slice) == expected_crc else {
+            return CompressError.ChecksumMismatch;
+        }
+        let actual_isize = ((decomp_slice.len as u64) & 0xFFFFFFFF) as u32;
+        guard actual_isize == expected_isize else {
+            return CompressError.SizeMismatch;
+        }
 
-    let expected_isize = (src[deflate_end + 4] as u32) |
-                         ((src[deflate_end + 5] as u32) << 8) |
-                         ((src[deflate_end + 6] as u32) << 16) |
-                         ((src[deflate_end + 7] as u32) << 24);
-
-    let actual_crc = crc32(decomp_slice);
-    guard actual_crc == expected_crc else {
-        return CompressError.ChecksumMismatch;
-    }
-
-    let actual_isize = (decomp_slice.len as u64) & 0xFFFFFFFF;
-    guard (actual_isize as u32) == expected_isize else {
-        return CompressError.SizeMismatch;
+        offset = trailer_offset + 8;
     }
 
     return CompressError.None;
+}
+
+// Decompresses RFC 1952 Gzip stream from src into out.
+// Validates headers, flags (including FHCRC), concatenated members, CRC-32, and ISIZE.
+fn gzip_decompress<B>(src: const u8[:], out: B&) -> CompressError {
+    return gzip_decompress_with_limit(src, out, 0);
 }

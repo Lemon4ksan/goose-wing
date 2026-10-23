@@ -63,16 +63,19 @@ struct KeyStore {
     clock_skew_tolerance_sec: i64 = 300, // 5 minutes skew tolerance
 }
 
+// Creates an empty KeyStore with default session lifetime and skew tolerance.
 fn new_key_store() -> KeyStore {
     return KeyStore { .. };
 }
 
+// Appends a KeySlot to the store if capacity permits.
 fn add_key(store: KeyStore&, slot: KeySlot) -> bool {
     guard store.keys.len < store.keys.cap else { return false; }
     store.keys.push(slot);
     return true;
 }
 
+// Returns the currently active, non-revoked KeySlot.
 fn active_key(store: const KeyStore&) -> KeySlot, bool {
     guard store.keys.len > 0 else { return KeySlot { .. }, false; }
     let slot = store.keys[store.active_idx];
@@ -80,6 +83,7 @@ fn active_key(store: const KeyStore&) -> KeySlot, bool {
     return slot, true;
 }
 
+// Sets the active primary key by key_id if present and not revoked.
 fn set_active_key_id(store: KeyStore&, key_id: u32) -> bool {
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id && !store.keys[idx].revoked {
@@ -90,6 +94,7 @@ fn set_active_key_id(store: KeyStore&, key_id: u32) -> bool {
     return false;
 }
 
+// Looks up a non-revoked KeySlot by key_id for decryption or verification.
 fn find_key(store: const KeyStore&, key_id: u32) -> KeySlot, bool {
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id && !store.keys[idx].revoked {
@@ -99,6 +104,7 @@ fn find_key(store: const KeyStore&, key_id: u32) -> KeySlot, bool {
     return KeySlot { .. }, false;
 }
 
+// Zeroizes and revokes a key in the store by key_id.
 fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id {
@@ -113,6 +119,14 @@ fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
 fn needs_rotation(slot: const KeySlot&, now_sec: i64) -> bool {
     guard slot.expires_at_sec > 0 && !slot.revoked else { return false; }
     return (slot.expires_at_sec - now_sec) <= 86400;
+}
+
+// Validates cookie creation timestamp against clock skew tolerance and max age TTL.
+fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i64) -> bool {
+    guard now_sec > 0 else { return true; }
+    if cookie_sec > now_sec + store.clock_skew_tolerance_sec { return false; }
+    if now_sec - cookie_sec > store.max_age_sec { return false; }
+    return true;
 }
 
 // ---- privatejar (authenticated encryption with context binding) -------------

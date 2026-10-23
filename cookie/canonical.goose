@@ -69,6 +69,7 @@ fn in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64
     return elapsed_us >= 0 && elapsed_us <= K_LAX_ALLOWING_UNSAFE_WINDOW_US;
 }
 
+// Idiomatic boolean alias for in_lax_allowing_unsafe_window(cookie_val, now_us).
 fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     return in_lax_allowing_unsafe_window(cookie_val, now_us);
 }
@@ -80,12 +81,14 @@ fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
 
 // ---- fluent in-place builder methods (ufcs) --------------------------------
 
+// Replaces the cookie value in-place and returns cookie_ref for chaining.
 fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
     cookie_ref.value.clear();
     cookie_ref.value.append(val);
     return cookie_ref;
 }
 
+// Sets the Domain attribute in-place, stripping any leading dot (RFC 6265bis Section 5.2.3).
 fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> CanonicalCookie& {
     cookie_ref.has_domain_attr = true;
     cookie_ref.domain.clear();
@@ -100,6 +103,7 @@ fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only:
     return cookie_ref;
 }
 
+// Configures the cookie as host-only for host_val (RFC 6265bis Section 5.5).
 fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCookie& {
     cookie_ref.domain.clear();
     if host_val.len > 0 && host_val[0] == '.' {
@@ -111,12 +115,14 @@ fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCo
     return cookie_ref;
 }
 
+// Sets the cookie Path attribute in-place.
 fn with_path(cookie_ref: CanonicalCookie&, path_val: const u8[:]) -> CanonicalCookie& {
     cookie_ref.path.clear();
     cookie_ref.path.append(path_val);
     return cookie_ref;
 }
 
+// Sets the Secure attribute and defaults unset source_scheme to Secure.
 fn with_secure(cookie_ref: CanonicalCookie&, is_secure: bool = true) -> CanonicalCookie& {
     cookie_ref.secure = is_secure;
     if is_secure && cookie_ref.source_scheme == CookieSourceScheme.Unset {
@@ -125,21 +131,25 @@ fn with_secure(cookie_ref: CanonicalCookie&, is_secure: bool = true) -> Canonica
     return cookie_ref;
 }
 
+// Sets the HttpOnly attribute in-place.
 fn with_http_only(cookie_ref: CanonicalCookie&, is_http_only: bool = true) -> CanonicalCookie& {
     cookie_ref.httponly = is_http_only;
     return cookie_ref;
 }
 
+// Sets the SameSite enforcement mode in-place.
 fn with_same_site(cookie_ref: CanonicalCookie&, same_site_mode: CookieSameSite) -> CanonicalCookie& {
     cookie_ref.same_site = same_site_mode;
     return cookie_ref;
 }
 
+// Sets the eviction priority tier in-place.
 fn with_priority(cookie_ref: CanonicalCookie&, priority_level: CookiePriority) -> CanonicalCookie& {
     cookie_ref.priority = priority_level;
     return cookie_ref;
 }
 
+// Sets the CHIPS top-frame partition key and updates the Partitioned flag.
 fn with_partition_key(cookie_ref: CanonicalCookie&, key: const u8[:]) -> CanonicalCookie& {
     cookie_ref.partition_key.clear();
     cookie_ref.partition_key.append(key);
@@ -147,6 +157,7 @@ fn with_partition_key(cookie_ref: CanonicalCookie&, key: const u8[:]) -> Canonic
     return cookie_ref;
 }
 
+// Sets cookie expiration from a relative Max-Age in seconds, capped at 400 days (RFC 6265bis Section 5.5).
 fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64) -> CanonicalCookie& {
     let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
     let capped_sec = if seconds > max_allowed_seconds { max_allowed_seconds } else { seconds };
@@ -155,12 +166,14 @@ fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64)
     return cookie_ref;
 }
 
+// Sets an explicit microsecond UTC expiration timestamp and marks the cookie persistent.
 fn with_expires_utc(cookie_ref: CanonicalCookie&, expires_us: i64) -> CanonicalCookie& {
     cookie_ref.expires_utc = expires_us;
     cookie_ref.persistent = true;
     return cookie_ref;
 }
 
+// Sets the origin-bound source scheme and port in-place.
 fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i32) -> CanonicalCookie& {
     cookie_ref.source_scheme = scheme;
     cookie_ref.source_port = port;
@@ -169,6 +182,7 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
 
 // ---- matching & routing predicates (ufcs) --------------------------------
 
+// Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3).
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
     if cookie_val.host_only {
         return eq_ascii_fold(cookie_val.domain[..], host);
@@ -176,6 +190,7 @@ fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool
     return cookie_domain_match(host, cookie_val.domain[..]);
 }
 
+// Whether req_path matches the cookie's Path attribute (RFC 6265 Section 5.1.4).
 fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bool {
     return cookie_path_match(req_path, cookie_val.path[..]);
 }

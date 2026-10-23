@@ -49,66 +49,67 @@ fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
     return zlib_compress_with_dict(src, out, level, "");
 }
 
-// Decompresses RFC 1950 Zlib stream from src into out with optional preset dictionary.
-// Validates headers, FCHECK, DICTID, Adler-32 checksum.
-fn zlib_decompress_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> CompressError {
+// Reads a 32-bit big-endian unsigned integer from src at offset.
+fn read_zlib_u32_be(src: const u8[:], offset: i64) -> u32 {
+    let b0 = (src[offset] as u32) << 24;
+    let b1 = (src[offset + 1] as u32) << 16;
+    let b2 = (src[offset + 2] as u32) << 8;
+    return b0 | b1 | b2 | src[offset + 3];
+}
+
+// Decompresses RFC 1950 Zlib stream from src into out with optional preset dictionary and quota guard.
+// Validates headers, FCHECK, DICTID, and Adler-32 checksum.
+fn zlib_decompress_with_dict_limit<B>(
+    src: const u8[:],
+    out: B&,
+    dict: const u8[:] = "",
+    max_output_bytes: i64 = 0,
+) -> CompressError {
     guard src.len >= 6 else { return CompressError.InputBufferTruncated; }
 
-    let cmf = src[0] as u32;
-    let flg = src[1] as u32;
-
-    // Check header checksum
-    guard (cmf * 256 + flg) % 31 == 0 else {
+    let cmf: u32 = src[0];
+    let flg: u32 = src[1];
+    guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 else {
         return CompressError.InvalidHeader;
     }
 
-    let cm = cmf & 0x0F;
-    guard cm == 8 else {
-        return CompressError.InvalidHeader;
-    }
-
-    let fdict = (flg >> 5) & 1;
     var deflate_start: i64 = 2;
-
-    if fdict != 0 {
+    if ((flg >> 5) & 1) != 0 {
         guard src.len >= 10 else { return CompressError.InputBufferTruncated; }
-        let expected_dict_id = ((src[2] as u32) << 24) |
-                               ((src[3] as u32) << 16) |
-                               ((src[4] as u32) << 8) |
-                               (src[5] as u32);
         guard dict.len > 0 else { return CompressError.NeedDictionary; }
-        let actual_dict_id = adler32(dict);
-        guard actual_dict_id == expected_dict_id else { return CompressError.DictionaryMismatch; }
+        guard adler32(dict) == read_zlib_u32_be(src, 2) else {
+            return CompressError.DictionaryMismatch;
+        }
         deflate_start = 6;
     }
 
-    let deflate_end = src.len - 4;
-    guard deflate_start <= deflate_end else { return CompressError.InputBufferTruncated; }
+    guard deflate_start + 4 <= src.len else { return CompressError.InputBufferTruncated; }
 
-    let deflate_payload = src[deflate_start..deflate_end];
     let out_start = out.len;
-
-    let err = inflate_with_dict(deflate_payload, out, dict);
+    let err, consumed = inflate_ex(src[deflate_start..], out, dict, max_output_bytes);
     guard err == CompressError.None else { return err; }
 
-    let decomp_slice = out[out_start..];
+    let adler_offset = deflate_start + consumed;
+    guard adler_offset + 4 <= src.len else { return CompressError.InputBufferTruncated; }
 
-    // Read 4-byte Big-Endian Adler-32
-    let expected_adler = ((src[deflate_end] as u32) << 24) |
-                         ((src[deflate_end + 1] as u32) << 16) |
-                         ((src[deflate_end + 2] as u32) << 8) |
-                         (src[deflate_end + 3] as u32);
-
-    let actual_adler = adler32(decomp_slice);
-    guard actual_adler == expected_adler else {
+    guard adler32(out[out_start..]) == read_zlib_u32_be(src, adler_offset) else {
         return CompressError.ChecksumMismatch;
     }
-
     return CompressError.None;
+}
+
+// Decompresses RFC 1950 Zlib stream from src into out with optional preset dictionary.
+fn zlib_decompress_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> CompressError {
+    return zlib_decompress_with_dict_limit(src, out, dict, 0);
 }
 
 // Decompresses RFC 1950 Zlib stream from src into out.
 // Validates headers, FCHECK, Adler-32 checksum.
 fn zlib_decompress<B>(src: const u8[:], out: B&) -> CompressError {
-    return zlib_decompress_with_dict(src, out, "");
+    return zlib_decompress_with_dict_limit(src, out, "", 0);
+}
+
+// Decompresses RFC 1950 Zlib stream with output quota guard (preventing decompression bombs).
+fn zlib_decompress_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64) -> CompressError {
+    return zlib_decompress_with_dict_limit(src, out, "", max_output_bytes);
 }

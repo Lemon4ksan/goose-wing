@@ -17,6 +17,7 @@ fn safe_http_method(method: const u8[:]) -> bool {
            eq_ascii_fold(method, "TRACE");
 }
 
+// Idiomatic boolean alias for safe_http_method(method).
 fn is_safe_http_method(method: const u8[:]) -> bool {
     return safe_http_method(method);
 }
@@ -27,6 +28,7 @@ fn trustworthy_non_crypto_host(host: const u8[:]) -> bool {
     return clean_host == "localhost" || clean_host == "127.0.0.1" || clean_host == "::1";
 }
 
+// Idiomatic boolean alias for trustworthy_non_crypto_host(host).
 fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
     return trustworthy_non_crypto_host(host);
 }
@@ -57,6 +59,7 @@ fn adjust_origin_bound_cookies_on_insert(
 
 // ---- script api & prefix security validation -------------------------------
 
+// Whether str_val begins with prefix using ASCII case-insensitive comparison.
 fn starts_with_case_folded(str_val: const u8[:], prefix: const u8[:]) -> bool {
     guard str_val.len >= prefix.len else { return false; }
     for char_idx in prefix.len {

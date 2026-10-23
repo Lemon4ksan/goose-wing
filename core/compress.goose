@@ -24,9 +24,27 @@ fn compress_gzip<B>(src: const u8[:], out_buf: B&, level: i32 = 6) -> bool {
     return gzip_compress(src, out_buf, level);
 }
 
+// Compresses input slice using Gzip format with metadata (filename, comment, FHCRC).
+fn compress_gzip_with_header<B>(
+    src: const u8[:],
+    out_buf: B&,
+    level: i32 = 6,
+    filename: const u8[:] = "",
+    comment: const u8[:] = "",
+    include_fhcrc: bool = false,
+) -> bool {
+    return gzip_compress_with_header(src, out_buf, level, filename, comment, include_fhcrc);
+}
+
 // Decompresses Gzip stream from in_buf into out_buf. Returns (true, CompressError.None) on success.
 fn decompress_gzip<B>(in_buf: const u8[:], out_buf: B&) -> bool, CompressError {
     let err = gzip_decompress(in_buf, out_buf);
+    return err == CompressError.None, err;
+}
+
+// Decompresses Gzip stream with output quota guard (preventing decompression bombs).
+fn decompress_gzip_with_limit<B>(in_buf: const u8[:], out_buf: B&, max_output_bytes: i64) -> bool, CompressError {
+    let err = gzip_decompress_with_limit(in_buf, out_buf, max_output_bytes);
     return err == CompressError.None, err;
 }
 
@@ -43,6 +61,12 @@ fn compress_zlib_dict<B>(src: const u8[:], out_buf: B&, level: i32 = 6, dict: co
 // Decompresses Zlib stream from in_buf into out_buf. Returns (true, CompressError.None) on success.
 fn decompress_zlib<B>(in_buf: const u8[:], out_buf: B&) -> bool, CompressError {
     let err = zlib_decompress(in_buf, out_buf);
+    return err == CompressError.None, err;
+}
+
+// Decompresses Zlib stream with output quota guard (preventing decompression bombs).
+fn decompress_zlib_with_limit<B>(in_buf: const u8[:], out_buf: B&, max_output_bytes: i64) -> bool, CompressError {
+    let err = zlib_decompress_with_limit(in_buf, out_buf, max_output_bytes);
     return err == CompressError.None, err;
 }
 
@@ -65,6 +89,12 @@ fn compress_deflate_dict<B>(src: const u8[:], out_buf: B&, level: i32 = 6, dict:
 // Decompresses raw RFC 1951 Deflate stream from in_buf into out_buf.
 fn decompress_deflate<B>(in_buf: const u8[:], out_buf: B&) -> bool, CompressError {
     let err = inflate(in_buf, out_buf);
+    return err == CompressError.None, err;
+}
+
+// Decompresses raw Deflate stream with output quota guard.
+fn decompress_deflate_with_limit<B>(in_buf: const u8[:], out_buf: B&, max_output_bytes: i64) -> bool, CompressError {
+    let err = inflate_with_limit(in_buf, out_buf, max_output_bytes);
     return err == CompressError.None, err;
 }
 

@@ -23,10 +23,12 @@ struct CorsPolicy {
     max_age_sec: i64 = 86400, // 24 hours preflight cache
 }
 
+// Creates a default CORS policy.
 fn new_cors_policy() -> CorsPolicy {
     return CorsPolicy { .. };
 }
 
+// Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     guard policy.allowed_origins.len < policy.allowed_origins.cap else { return false; }
     var entry: u8[..128] = [];
@@ -41,12 +43,7 @@ fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool 
 fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bool {
     guard candidate.len > 0 && pattern.len > 0 else { return false; }
 
-    if pattern == "*" {
-        return true;
-    }
-
-    // Exact string match
-    if candidate == pattern {
+    if pattern == "*" || candidate == pattern {
         return true;
     }
 
@@ -66,17 +63,11 @@ fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bo
     let pat_host = pattern[pat_colon + 3..];
 
     // Check if pattern contains wildcard "*.domain"
-    if starts_with(pat_host, "*.") {
-        let domain_suffix = pat_host[2..];
-        if cand_host.len > domain_suffix.len && ends_with(cand_host, domain_suffix) {
-            let prefix_len = cand_host.len - domain_suffix.len;
-            if cand_host[prefix_len - 1] == '.' {
-                return true;
-            }
-        }
-    }
-
-    return false;
+    guard starts_with(pat_host, "*.") else { return false; }
+    let domain_suffix = pat_host[2..];
+    guard cand_host.len > domain_suffix.len && ends_with(cand_host, domain_suffix) else { return false; }
+    let prefix_len = cand_host.len - domain_suffix.len;
+    return cand_host[prefix_len - 1] == '.';
 }
 
 // Validates whether the incoming Origin is permitted under policy.
@@ -101,6 +92,33 @@ fn is_cors_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) ->
     return false;
 }
 
+// Returns true if the policy configures only wildcard '*' origins.
+fn has_only_wildcard_origin(policy: const CorsPolicy&) -> bool {
+    guard policy.allowed_origins.len > 0 else { return false; }
+    for idx in policy.allowed_origins.len {
+        if policy.allowed_origins[idx][..] != "*" {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Populates preflight response headers and sets 204 No Content status.
+fn apply_cors_preflight_headers(policy: const CorsPolicy&, res: Response&) {
+    if policy.allowed_methods.len > 0 {
+        res.headers.push(make_header("Access-Control-Allow-Methods", policy.allowed_methods[..]));
+    }
+    if policy.allowed_headers.len > 0 {
+        res.headers.push(make_header("Access-Control-Allow-Headers", policy.allowed_headers[..]));
+    }
+    if policy.max_age_sec > 0 {
+        var age_str: u8[..32] = [];
+        format(age_str, policy.max_age_sec);
+        res.headers.push(make_header("Access-Control-Max-Age", age_str[..]));
+    }
+    res.status_code = 204; // No Content
+}
+
 // Evaluates CORS rules against request Origin and populates response headers.
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
@@ -113,57 +131,29 @@ fn evaluate_cors(policy: const CorsPolicy&, req: const Request&, res: Response&)
         }
     }
 
-    guard origin_idx >= 0 else {
-        return CorsResult.NoCors;
-    }
+    guard origin_idx >= 0 else { return CorsResult.NoCors; }
     let origin = trim(req.headers[origin_idx].value[..]);
-    guard origin.len > 0 else {
-        return CorsResult.NoCors;
-    }
+    guard origin.len > 0 else { return CorsResult.NoCors; }
 
     // Check configuration validity: allow_credentials == true with only "*" origin is invalid
-    if policy.allow_credentials {
-        var only_wildcard = true;
-        for idx in policy.allowed_origins.len {
-            if policy.allowed_origins[idx][..] != "*" {
-                only_wildcard = false;
-                break;
-            }
-        }
-        if only_wildcard && policy.allowed_origins.len > 0 {
-            return CorsResult.InvalidConfig;
-        }
+    if policy.allow_credentials && has_only_wildcard_origin(policy) {
+        return CorsResult.InvalidConfig;
     }
 
     guard is_cors_origin_allowed(policy, origin) else {
         return CorsResult.RejectedOrigin;
     }
 
-    let is_preflight = (req.method[..] == "OPTIONS");
-
-    // Access-Control-Allow-Origin: echo exact origin if credentials are true, or pattern if wildcard
-    let allow_origin_val = if policy.allow_credentials { origin } else {
-        if policy.allowed_origins.len == 1 && policy.allowed_origins[0][..] == "*" { "*" } else { origin }
-    };
+    let is_single_wildcard = policy.allowed_origins.len == 1 && policy.allowed_origins[0][..] == "*";
+    let allow_origin_val = if !policy.allow_credentials && is_single_wildcard { "*" } else { origin };
     res.headers.push(make_header("Access-Control-Allow-Origin", allow_origin_val));
 
     if policy.allow_credentials {
         res.headers.push(make_header("Access-Control-Allow-Credentials", "true"));
     }
 
-    if is_preflight {
-        if policy.allowed_methods.len > 0 {
-            res.headers.push(make_header("Access-Control-Allow-Methods", policy.allowed_methods[..]));
-        }
-        if policy.allowed_headers.len > 0 {
-            res.headers.push(make_header("Access-Control-Allow-Headers", policy.allowed_headers[..]));
-        }
-        if policy.max_age_sec > 0 {
-            var age_str: u8[..32] = [];
-            format(age_str, policy.max_age_sec);
-            res.headers.push(make_header("Access-Control-Max-Age", age_str[..]));
-        }
-        res.status_code = 204; // No Content
+    if req.method[..] == "OPTIONS" {
+        apply_cors_preflight_headers(policy, res);
         return CorsResult.AllowedPreflight;
     }
 

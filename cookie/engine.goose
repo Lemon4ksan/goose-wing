@@ -92,6 +92,7 @@ fn purge_expired(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
 
 // ---- selective deletion engine (cookie deletion filter) --------------------
 
+// Filter criteria for selective cookie deletion across time ranges, domains, and partitions.
 struct CookieDeletionInfo {
     start_utc: i64 = 0,
     end_utc: i64 = 0,
@@ -103,6 +104,7 @@ struct CookieDeletionInfo {
     purge_non_secure: bool = false,
 }
 
+// Whether cookie_val matches all active predicates in filter.
 fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: const CookieDeletionInfo&) -> bool {
     if filter.start_utc > 0 && cookie_val.creation_utc < filter.start_utc { return false; }
     if filter.end_utc > 0 && cookie_val.creation_utc > filter.end_utc { return false; }
@@ -115,12 +117,14 @@ fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: co
     return true; // Matches filter -> should be deleted
 }
 
+// Removes all cookies matching filter and returns the number of deleted cookies.
 fn delete_matching(jar: CanonicalCookieJar&, filter: const CookieDeletionInfo&) -> i64 {
     let before_count = jar.cookies.len;
     jar.cookies.retain() { !cookie_matches_deletion_filter(it, filter) };
     return before_count - jar.cookies.len;
 }
 
+// Removes cookies with creation_utc in [start_utc, end_utc] (or >= start_utc when end_utc == 0).
 fn delete_all_created_in_time_range(jar: CanonicalCookieJar&, start_utc: i64, end_utc: i64) -> i64 {
     let before_count = jar.cookies.len;
     jar.cookies.retain() {
@@ -129,6 +133,7 @@ fn delete_all_created_in_time_range(jar: CanonicalCookieJar&, start_utc: i64, en
     return before_count - jar.cookies.len;
 }
 
+// Removes non-persistent session cookies (and optionally non-secure cookies) and returns the count removed.
 fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = false) -> i64 {
     let before_count = jar.cookies.len;
     jar.cookies.retain() {
@@ -147,6 +152,7 @@ fn set(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bo
     return set_canonical_cookie(jar, cookie_val, true, is_sec, now_us);
 }
 
+// Alias for set(jar, cookie_val, now_us).
 fn insert(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bool {
     return set(jar, cookie_val, now_us);
 }
@@ -280,6 +286,7 @@ fn set_cookie_header(
     return set_canonical_cookie(jar, parsed_cookie, is_http_api, effective_secure_channel, now_us);
 }
 
+// Ingests a raw Set-Cookie header for req_url with an explicit CHIPS partition key.
 fn set_cookie_header(
     jar: CanonicalCookieJar&,
     req_url: const u8[:],
@@ -778,13 +785,12 @@ fn calculate_domain_priority_excesses(
 
     for cookie_idx in jar.cookies.len {
         let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) {
-            match cookie_val.priority {
-                Low => { low_count += 1; },
-                Medium => { med_count += 1; },
-                High => { high_count += 1; },
-            };
-        }
+        if !cookie_matches_effective_domain(cookie_val, etld_plus_one) { continue; }
+        match cookie_val.priority {
+            Low => { low_count += 1; },
+            Medium => { med_count += 1; },
+            High => { high_count += 1; },
+        };
     }
 
     low_excess = max(0, low_count - jar.quota_low);
@@ -828,10 +834,10 @@ fn purge_domain_priority_round(
     var candidates: CanonicalCookie[>..] = [];
     for cookie_idx in jar.cookies.len {
         let cookie_val = jar.cookies[cookie_idx];
-        if cookie_matches_effective_domain(cookie_val, etld_plus_one) && cookie_val.priority == target_prio {
-            if !protect_sec || !cookie_val.secure {
-                candidates.push(cookie_val);
-            }
+        if cookie_matches_effective_domain(cookie_val, etld_plus_one) &&
+           cookie_val.priority == target_prio &&
+           (!protect_sec || !cookie_val.secure) {
+            candidates.push(cookie_val);
         }
     }
     guard candidates.len > 0 else { return 0; }

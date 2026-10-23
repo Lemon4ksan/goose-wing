@@ -780,7 +780,7 @@ fn registrable_site_from_url(url_val: const Url&) -> RegistrableSite {
     return site;
 }
 
-fn is_same_origin(origin_a: const Origin&, origin_b: const Origin&) -> bool {
+fn is_same_origin(origin_a: Origin, origin_b: Origin) -> bool {
     if origin_a.kind == OriginKind.Opaque || origin_b.kind == OriginKind.Opaque {
         return origin_a.nonce != 0 && origin_a.nonce == origin_b.nonce;
     }

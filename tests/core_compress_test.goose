@@ -370,6 +370,11 @@ fn test_streaming_and_flush_modes(t: wing::T&) {
 
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_deflate(wire[..], restored);
+        sub.assert_true(err == wing::CompressError.None, "err must be None");
+        sub.assert_true(err != wing::CompressError.DistanceOutOfBounds, "err is not DistanceOutOfBounds");
+        sub.assert_true(err != wing::CompressError.InputBufferTruncated, "err is not InputBufferTruncated");
+        sub.assert_true(err != wing::CompressError.InvalidBlockType, "err is not InvalidBlockType");
+        sub.assert_true(err != wing::CompressError.InvalidHuffmanCode, "err is not InvalidHuffmanCode");
         sub.assert_true(ok_d, "Decompressing FullFlushed stream must succeed");
         sub.assert_eq(restored.len, combined.len, "Decompressed length must match combined");
         sub.assert_eq(restored[..], combined[..], "Decompressed payload must match verbatim");
@@ -472,6 +477,197 @@ fn test_universal_autodetect(t: wing::T&) {
     };
 }
 
+fn test_lazy_matching_and_stored_cost_selection(t: wing::T&) {
+    t.run("Lazy Matching Ratio Advantage") { sub =>
+        var src: u8[>..] = [];
+        let pattern = "The quick brown fox jumps over the lazy dog repeatedly in structured sequences. ";
+        for i in 25 {
+            src.append(pattern);
+        }
+
+        var l1_out: u8[>..] = [];
+        wing::compress_deflate(src[..], l1_out, 1);
+
+        var l9_out: u8[>..] = [];
+        wing::compress_deflate(src[..], l9_out, 9);
+
+        sub.assert_true(l9_out.len <= l1_out.len, "Level 9 lazy matching must be equal or smaller than level 1 greedy");
+
+        var restored: u8[>..] = [];
+        let ok, err = wing::decompress_deflate(l9_out[..], restored);
+        sub.assert_true(ok, "Decompressing level 9 must succeed");
+        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(restored[..], src[..], "Restored payload must match original verbatim");
+    };
+
+    t.run("Incompressible Data Stored Block Selection") { sub =>
+        var random_data: u8[1024] = [0; 1024];
+        var seed: u32 = 123456789;
+        for i in 1024 {
+            seed = seed * 1664525 + 1013904223;
+            random_data[i] = ((seed >> 16) & 0xFF) as u8;
+        }
+
+        var comp: u8[>..] = [];
+        wing::compress_deflate(random_data[..], comp, 6);
+
+        // Exact bit-cost selection guarantees stored block envelope overhead is <= 15 bytes
+        sub.assert_true(comp.len <= (random_data.len + 15), "Deflate must never expand incompressible data beyond framing");
+
+        var restored: u8[>..] = [];
+        let ok, err = wing::decompress_deflate(comp[..], restored);
+        sub.assert_true(ok, "Decompressing incompressible stored block must succeed");
+        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(restored[..], random_data[..], "Restored incompressible payload must match bit-for-bit");
+    };
+}
+
+fn test_concatenated_gzip_and_fhcrc(t: wing::T&) {
+    t.run("Concatenated Gzip Members (RFC 1952 multi-member)") { sub =>
+        let part1 = "First concatenated gzip archive member. ";
+        let part2 = "Second concatenated gzip archive member with independent payload.";
+
+        var gz1: u8[>..] = [];
+        wing::compress_gzip(part1, gz1, 6);
+
+        var gz2: u8[>..] = [];
+        wing::compress_gzip(part2, gz2, 6);
+
+        var combined_gz: u8[>..] = [];
+        combined_gz.append(gz1[..]);
+        combined_gz.append(gz2[..]);
+
+        var combined_text: u8[>..] = [];
+        combined_text.append(part1);
+        combined_text.append(part2);
+
+        var restored: u8[>..] = [];
+        let ok, err = wing::decompress_gzip(combined_gz[..], restored);
+        sub.assert_true(ok, "Decompressing concatenated Gzip stream must succeed");
+        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(restored.len, combined_text.len, "Length must match combined length");
+        sub.assert_eq(restored[..], combined_text[..], "Payload must match concatenation verbatim");
+    };
+
+    t.run("Gzip Header Metadata and FHCRC Verification") { sub =>
+        let payload = "Config file with filename, comment, and 16-bit header CRC.";
+        var gz: u8[>..] = [];
+        let ok_c = wing::compress_gzip_with_header(payload, gz, 6, "config.ini", "production settings", true);
+        sub.assert_true(ok_c, "Gzip compress with header and FHCRC must succeed");
+
+        var restored: u8[>..] = [];
+        let ok_d, err_d = wing::decompress_gzip(gz[..], restored);
+        sub.assert_true(ok_d, "Decompressing Gzip with valid FHCRC must succeed");
+        sub.assert_eq(err_d, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(restored[..], payload, "Restored payload must match");
+
+        // Tamper with header byte to invalidate FHCRC
+        var tampered: u8[>..] = [];
+        tampered.append(gz[..]);
+        tampered[10] ^= 0x55; // Tamper character in filename
+
+        var restored_fail: u8[>..] = [];
+        let ok_fail, err_fail = wing::decompress_gzip(tampered[..], restored_fail);
+        sub.assert_true(!ok_fail, "Decompressing tampered header must fail");
+        sub.assert_eq(err_fail, wing::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
+    };
+}
+
+fn test_zipbomb_quota_guards(t: wing::T&) {
+    t.run("Deflate Quota Overflow Cutoff") { sub =>
+        var bomb: u8[>..] = [];
+        for i in 15000 {
+            bomb.push(0x42);
+        }
+
+        var wire: u8[>..] = [];
+        wing::compress_deflate(bomb[..], wire, 6);
+
+        var restored: u8[>..] = [];
+        let ok, err = wing::decompress_deflate_with_limit(wire[..], restored, 500);
+        sub.assert_true(!ok, "Decompression exceeding quota must fail");
+        sub.assert_eq(err, wing::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_true(restored.len <= 500, "Output length must not exceed quota limit");
+    };
+
+    t.run("Gzip Quota Overflow Cutoff") { sub =>
+        var bomb: u8[>..] = [];
+        for i in 15000 {
+            bomb.push(0x5A);
+        }
+
+        var wire: u8[>..] = [];
+        wing::compress_gzip(bomb[..], wire, 6);
+
+        var restored: u8[>..] = [];
+        let ok, err = wing::decompress_gzip_with_limit(wire[..], restored, 400);
+        sub.assert_true(!ok, "Gzip decompression exceeding quota must fail");
+        sub.assert_eq(err, wing::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_true(restored.len <= 400, "Output length must not exceed quota limit");
+    };
+
+    t.run("Zlib Quota Overflow Cutoff") { sub =>
+        var bomb: u8[>..] = [];
+        for i in 15000 {
+            bomb.push(0x7F);
+        }
+
+        var wire: u8[>..] = [];
+        wing::compress_zlib(bomb[..], wire, 6);
+
+        var restored: u8[>..] = [];
+        let ok, err = wing::decompress_zlib_with_limit(wire[..], restored, 350);
+        sub.assert_true(!ok, "Zlib decompression exceeding quota must fail");
+        sub.assert_eq(err, wing::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_true(restored.len <= 350, "Output length must not exceed quota limit");
+    };
+}
+
+fn test_resumable_streaming_chunk_by_chunk(t: wing::T&) {
+    t.run("ZStream 1-Byte Slices Feeding") { sub =>
+        let message = "Resumable streaming decompressor feeding arbitrary tiny byte slices across network boundaries.";
+        var wire: u8[>..] = [];
+        wing::compress_zlib(message, wire, 6);
+
+        var decompressor = wing::new_zstream_decompressor(wing::ContainerFormat.Zlib);
+        var restored: u8[>..] = [];
+
+        // Feed byte by byte
+        for i in wire.len {
+            let single_byte = wire[i..i + 1];
+            let err = decompressor.write(single_byte, restored);
+            sub.assert_eq(err, wing::CompressError.None, "Writing single byte slice must not return error");
+        }
+
+        sub.assert_eq(restored.len, message.len, "Restored length must match message length");
+        sub.assert_eq(restored[..], message, "Restored payload from 1-byte chunks must match verbatim");
+    };
+
+    t.run("ZStream Variable Prime Slices Feeding") { sub =>
+        let message = "Another streaming verification test using prime-sized slices (3, 7, 11 bytes) to simulate jitter.";
+        var wire: u8[>..] = [];
+        wing::compress_gzip(message, wire, 6);
+
+        var decompressor = wing::new_zstream_decompressor(wing::ContainerFormat.Gzip);
+        var restored: u8[>..] = [];
+
+        var offset: i64 = 0;
+        var step: i64 = 3;
+        while offset < wire.len {
+            let rem = wire.len - offset;
+            let take = if rem < step { rem } else { step };
+            let chunk = wire[offset..offset + take];
+            let err = decompressor.write(chunk, restored);
+            sub.assert_eq(err, wing::CompressError.None, "Writing variable chunk must succeed");
+            offset += take;
+            step = if step == 3 { 7 } else if step == 7 { 11 } else { 3 };
+        }
+
+        sub.assert_eq(restored.len, message.len, "Restored length must match message length");
+        sub.assert_eq(restored[..], message, "Restored payload from prime chunks must match verbatim");
+    };
+}
+
 fn main() {
     var runner = wing::new_runner("Goose Native Compression Engine Verification Suite", wing::Verbosity.Verbose);
     wing::run_case(runner, "1. IEEE 802.3 CRC-32 & RFC 1950 Adler-32 Checksums", test_checksums);
@@ -483,6 +679,10 @@ fn main() {
     wing::run_case(runner, "7. Streaming State Machine & Flush Modes (ZStream)", test_streaming_and_flush_modes);
     wing::run_case(runner, "8. Preset Dictionaries & RFC 1950 FDICT Handling", test_preset_dictionary_and_fdict);
     wing::run_case(runner, "9. Universal Container Auto-Detection", test_universal_autodetect);
+    wing::run_case(runner, "10. Lazy Matching & Stored Block Cost Selection", test_lazy_matching_and_stored_cost_selection);
+    wing::run_case(runner, "11. Concatenated Gzip Members & FHCRC", test_concatenated_gzip_and_fhcrc);
+    wing::run_case(runner, "12. Decompression Bomb Quota Guards", test_zipbomb_quota_guards);
+    wing::run_case(runner, "13. Resumable Arbitrary-Chunk Streaming", test_resumable_streaming_chunk_by_chunk);
     let ok = wing::finish(runner);
     assert(ok);
 }

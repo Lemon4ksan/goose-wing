@@ -52,6 +52,7 @@ enum CookieSameSite {
     None,    // Permitted cross-site, strictly requires Secure flag
 }
 
+// Canonical string representation of same_site_mode.
 fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
     return match same_site_mode {
         Default => "Default",
@@ -61,6 +62,7 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
     };
 }
 
+// Parses a SameSite attribute value case-insensitively, defaulting to CookieSameSite.Default (RFC 6265bis Section 5.4.7).
 fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
     if eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
     if eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
@@ -77,6 +79,7 @@ enum CookiePriority {
     High,
 }
 
+// Canonical string representation of priority_level.
 fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
     return match priority_level {
         Low => "Low",
@@ -85,6 +88,7 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
     };
 }
 
+// Parses a Priority attribute value case-insensitively, defaulting to CookiePriority.Medium.
 fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
     if eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
     if eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
@@ -100,6 +104,7 @@ enum CookieSourceScheme {
     Secure,
 }
 
+// Canonical string representation of source_scheme.
 fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
     return match source_scheme {
         Unset => "Unset",
@@ -108,6 +113,7 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
     };
 }
 
+// Parses a serialized source scheme string case-insensitively, defaulting to CookieSourceScheme.Unset.
 fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
     if eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
     if eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
@@ -131,6 +137,7 @@ enum CookieDeleteCause {
     NON_SECURE,
 }
 
+// Numeric telemetry code for delete_cause.
 fn delete_cause_code(delete_cause: CookieDeleteCause) -> i64 {
     return match delete_cause {
         UNKNOWN => 0,
@@ -147,6 +154,7 @@ fn delete_cause_code(delete_cause: CookieDeleteCause) -> i64 {
     };
 }
 
+// Canonical identifier string for delete_cause.
 fn delete_cause_to_string(delete_cause: CookieDeleteCause) -> const u8[:] {
     return match delete_cause {
         UNKNOWN => "UNKNOWN",
