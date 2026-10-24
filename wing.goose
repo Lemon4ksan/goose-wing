@@ -34,6 +34,8 @@ import client.response;
 import client.redirect;
 import client.client;
 import client.policy;
+import client.replay_guard;
+import client.telemetry;
 
 // ---- http primitives -------------------------------------------------------
 
@@ -41,6 +43,9 @@ import http.headers;
 import http.mime;
 import http.multipart;
 import http.trace;
+import http.altsvc;
+import http.early_hints;
+import http.novarysearch;
 import http.h2_framer;
 import http2.framing;
 import http2.hpack;
@@ -92,6 +97,8 @@ import net.retry;
 import net.dns;
 import net.websocket;
 import net.sse;
+import net.masque;
+import net.isolation;
 
 // ---- ufcs method bridges ---------------------------------------------------
 
