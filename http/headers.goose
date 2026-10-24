@@ -1185,7 +1185,8 @@ fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
 }
 
 fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
-    guard is_valid_header_name(name) && is_valid_header_value(value) else { return false; }
+    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
+    guard valid_name && is_valid_header_value(value) else { return false; }
     guard map.entries.len < 128 else { return false; }
 
     let trimmed = trim_lws(value);
@@ -1231,7 +1232,8 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
 
 fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
     // If already exists, overwrite value of first occurrence and prune subsequent occurrences
-    guard is_valid_header_name(name) && is_valid_header_value(value) else { return false; }
+    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
+    guard valid_name && is_valid_header_value(value) else { return false; }
 
     if map.has_header(name) {
         map.remove_header(name);

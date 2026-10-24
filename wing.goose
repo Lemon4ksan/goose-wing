@@ -103,6 +103,13 @@ import net.isolation;
 import realtime.websocket;
 import realtime.sse;
 
+// ---- grpc over http/2 & http/3 & grpc-web ---------------------------------
+
+import grpc.constants;
+import grpc.framing;
+import grpc.status;
+import grpc.client;
+
 // ---- ufcs method bridges ---------------------------------------------------
 
 import client.ufcs;
