@@ -1,0 +1,610 @@
+// QUIC Transport Framing, Packet Headers, Header Protection & Stream Reassembly (RFC 9000, RFC 9001).
+// Implements VarInt codecs, Long/Short header parsers, AES/ChaCha Header Protection,
+// packet number reconstruction, path anti-amplification 3x limits, and zero-heap reassembler.
+namespace wing;
+
+import std;
+
+// ---- 1. constants and error codes (rfc 9000 section 20) ---------------------
+
+const QUIC_VERSION_1: u32 = 0x00000001;
+const QUIC_VERSION_NEGOTIATION: u32 = 0x00000000;
+const QUIC_MIN_INITIAL_DATAGRAM_LEN: u64 = 1200; // RFC 9000 Section 8.1
+const QUIC_MAX_CID_LEN: u8 = 20;
+
+// QUIC Transport Error Codes (RFC 9000 Section 20.1)
+const QUIC_ERR_NO_ERROR:                 u64 = 0x00;
+const QUIC_ERR_INTERNAL:                 u64 = 0x01;
+const QUIC_ERR_CONNECTION_REFUSED:       u64 = 0x02;
+const QUIC_ERR_FLOW_CONTROL:             u64 = 0x03;
+const QUIC_ERR_STREAM_LIMIT:             u64 = 0x04;
+const QUIC_ERR_STREAM_STATE:             u64 = 0x05;
+const QUIC_ERR_FINAL_SIZE:               u64 = 0x06;
+const QUIC_ERR_FRAME_ENCODING:           u64 = 0x07;
+const QUIC_ERR_TRANSPORT_PARAMETER:      u64 = 0x08;
+const QUIC_ERR_CONNECTION_ID_LIMIT:      u64 = 0x09;
+const QUIC_ERR_PROTOCOL_VIOLATION:       u64 = 0x0A;
+const QUIC_ERR_INVALID_TOKEN:            u64 = 0x0B;
+const QUIC_ERR_APPLICATION_ERROR:        u64 = 0x0C;
+const QUIC_ERR_CRYPTO_BUFFER_EXCEEDED:   u64 = 0x0D;
+const QUIC_ERR_KEY_UPDATE_ERROR:         u64 = 0x0E;
+const QUIC_ERR_AEAD_LIMIT_REACHED:       u64 = 0x0F;
+const QUIC_ERR_NO_VIABLE_PATH:           u64 = 0x10;
+
+// Frame Types (RFC 9000 Section 19)
+const QUIC_FRAME_PADDING:              u64 = 0x00;
+const QUIC_FRAME_PING:                 u64 = 0x01;
+const QUIC_FRAME_ACK:                  u64 = 0x02;
+const QUIC_FRAME_ACK_ECN:              u64 = 0x03;
+const QUIC_FRAME_RESET_STREAM:         u64 = 0x04;
+const QUIC_FRAME_STOP_SENDING:         u64 = 0x05;
+const QUIC_FRAME_CRYPTO:               u64 = 0x06;
+const QUIC_FRAME_NEW_TOKEN:            u64 = 0x07;
+const QUIC_FRAME_STREAM_BASE:          u64 = 0x08; // 0x08..0x0F
+const QUIC_FRAME_MAX_DATA:             u64 = 0x10;
+const QUIC_FRAME_MAX_STREAM_DATA:      u64 = 0x11;
+const QUIC_FRAME_MAX_STREAMS_BIDI:     u64 = 0x12;
+const QUIC_FRAME_MAX_STREAMS_UNI:      u64 = 0x13;
+const QUIC_FRAME_DATA_BLOCKED:         u64 = 0x14;
+const QUIC_FRAME_STREAM_DATA_BLOCKED:  u64 = 0x15;
+const QUIC_FRAME_STREAMS_BLOCKED_BIDI: u64 = 0x16;
+const QUIC_FRAME_STREAMS_BLOCKED_UNI:  u64 = 0x17;
+const QUIC_FRAME_NEW_CONNECTION_ID:    u64 = 0x18;
+const QUIC_FRAME_RETIRE_CONNECTION_ID: u64 = 0x19;
+const QUIC_FRAME_PATH_CHALLENGE:       u64 = 0x1A;
+const QUIC_FRAME_PATH_RESPONSE:        u64 = 0x1B;
+const QUIC_FRAME_CONNECTION_CLOSE:     u64 = 0x1C;
+const QUIC_FRAME_CONNECTION_CLOSE_APP: u64 = 0x1D;
+const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
+
+// ---- 2. variable-length integer codec (rfc 9000 section 16) ----------------
+
+// Returns byte length (1, 2, 4, 8) indicated by 2-bit prefix.
+inline fn quic_varint_len(first_byte: u8) -> u8 {
+    return (1 as u8) << ((first_byte >> 6) & 0x03);
+}
+
+// Encodes a 62-bit unsigned integer into big-endian wire format.
+fn quic_encode_varint<B>(out: B&, val: u64) -> bool {
+    guard val <= 0x3FFFFFFFFFFFFFFF else { return false; }
+
+    if val <= 63 {
+        out.push(val as u8);
+        return true;
+    }
+    if val <= 16383 {
+        out.push((0x40 | ((val >> 8) & 0x3F)) as u8);
+        out.push((val & 0xFF) as u8);
+        return true;
+    }
+    if val <= 1073741823 {
+        out.push((0x80 | ((val >> 24) & 0x3F)) as u8);
+        out.push(((val >> 16) & 0xFF) as u8);
+        out.push(((val >> 8) & 0xFF) as u8);
+        out.push((val & 0xFF) as u8);
+        return true;
+    }
+
+    out.push((0xC0 | ((val >> 56) & 0x3F)) as u8);
+    out.push(((val >> 48) & 0xFF) as u8);
+    out.push(((val >> 40) & 0xFF) as u8);
+    out.push(((val >> 32) & 0xFF) as u8);
+    out.push(((val >> 24) & 0xFF) as u8);
+    out.push(((val >> 16) & 0xFF) as u8);
+    out.push(((val >> 8) & 0xFF) as u8);
+    out.push((val & 0xFF) as u8);
+    return true;
+}
+
+// Decodes a variable-length integer from big-endian wire format.
+fn quic_decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
+    guard offset < (src.len as u64) else { return 0, offset, false; }
+    let first = src[offset];
+    let vlen = quic_varint_len(first);
+    guard (offset + vlen) <= (src.len as u64) else { return 0, offset, false; }
+
+    var val: u64 = first & 0x3F;
+    for i in 1..vlen {
+        val = (val << 8) | src[offset + i];
+    }
+    return val, offset + vlen, true;
+}
+
+// Stream identifier classification helpers (RFC 9000 Section 2.1)
+inline fn quic_is_client_stream(id: u64) -> bool { return (id & 0x01) == 0; }
+inline fn quic_is_server_stream(id: u64) -> bool { return (id & 0x01) != 0; }
+inline fn quic_is_bidi_stream(id: u64) -> bool { return (id & 0x02) == 0; }
+inline fn quic_is_uni_stream(id: u64) -> bool { return (id & 0x02) != 0; }
+
+// ---- 3. packet header parsing & formatting (rfc 9000 section 17) ------------
+
+enum QuicHeaderType {
+    Initial,
+    ZeroRtt,
+    Handshake,
+    Retry,
+    OneRtt,
+    VersionNegotiation
+}
+
+struct QuicHeader {
+    header_type:    QuicHeaderType = QuicHeaderType.OneRtt,
+    version:        u32 = QUIC_VERSION_1,
+    dcid:           u8[..20] = [],
+    scid:           u8[..20] = [],
+    token:          u8[..512] = [],
+    payload_length: u64 = 0,
+    packet_number:  u64 = 0,
+    pn_offset:      u32 = 0,
+    pn_length:      u8 = 0,
+    key_phase:      bool = false,
+    spin_bit:       bool = false,
+    header_len:     u32 = 0
+}
+
+// Parses unmasked QUIC Long or Short header up to the payload boundary.
+fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bool {
+    var hdr = QuicHeader {};
+    guard src.len > 0 else { return hdr, false; }
+
+    let first = src[0];
+    let is_long = (first & 0x80) != 0;
+
+    if is_long {
+        guard src.len >= 5 else { return hdr, false; }
+        let ver = ((src[1] as u32) << 24) | ((src[2] as u32) << 16) |
+                  ((src[3] as u32) << 8) | src[4];
+        hdr.version = ver;
+
+        if ver == QUIC_VERSION_NEGOTIATION {
+            hdr.header_type = QuicHeaderType.VersionNegotiation;
+            guard src.len >= 7 else { return hdr, false; }
+            let dlen = src[5];
+            guard dlen <= QUIC_MAX_CID_LEN && (7 + dlen) <= src.len else { return hdr, false; }
+            hdr.dcid.append(src[6 .. 6 + dlen]);
+            let slen = src[6 + dlen];
+            guard slen <= QUIC_MAX_CID_LEN && (7 + dlen + slen) <= src.len else { return hdr, false; }
+            hdr.scid.append(src[7 + dlen .. 7 + dlen + slen]);
+            hdr.header_len = 7 + dlen + slen;
+            return hdr, true;
+        }
+
+        let long_type = (first >> 4) & 0x03;
+        hdr.header_type = if long_type == 0 {
+            QuicHeaderType.Initial
+        } else if long_type == 1 {
+            QuicHeaderType.ZeroRtt
+        } else if long_type == 2 {
+            QuicHeaderType.Handshake
+        } else {
+            QuicHeaderType.Retry
+        };
+
+        var off: u64 = 5;
+        guard off < (src.len as u64) else { return hdr, false; }
+        let dlen = src[off]; off++;
+        guard dlen <= QUIC_MAX_CID_LEN && (off + dlen) <= (src.len as u64) else { return hdr, false; }
+        hdr.dcid.append(src[off .. off + dlen]);
+        off += dlen;
+
+        guard off < (src.len as u64) else { return hdr, false; }
+        let slen = src[off]; off++;
+        guard slen <= QUIC_MAX_CID_LEN && (off + slen) <= (src.len as u64) else { return hdr, false; }
+        hdr.scid.append(src[off .. off + slen]);
+        off += slen;
+
+        if hdr.header_type == QuicHeaderType.Initial {
+            let tok_len, next_tok, ok_tok = quic_decode_varint(src, off);
+            guard ok_tok && (next_tok + tok_len) <= (src.len as u64) else { return hdr, false; }
+            if tok_len > 0 {
+                hdr.token.append(src[next_tok .. next_tok + tok_len]);
+            }
+            off = next_tok + tok_len;
+        }
+
+        if hdr.header_type == QuicHeaderType.Retry {
+            hdr.header_len = off as u32;
+            return hdr, true;
+        }
+
+        let plen, next_plen, ok_plen = quic_decode_varint(src, off);
+        guard ok_plen else { return hdr, false; }
+        hdr.payload_length = plen;
+        hdr.pn_offset = next_plen as u32;
+        hdr.pn_length = (first & 0x03) + 1;
+        hdr.header_len = (next_plen + hdr.pn_length) as u32;
+        return hdr, true;
+    }
+
+    // Short Header (1-RTT)
+    hdr.header_type = QuicHeaderType.OneRtt;
+    hdr.spin_bit = (first & 0x20) != 0;
+    hdr.key_phase = (first & 0x04) != 0;
+
+    var off: u64 = 1;
+    guard (off + dcid_len_short) <= (src.len as u64) else { return hdr, false; }
+    if dcid_len_short > 0 {
+        hdr.dcid.append(src[off .. off + dcid_len_short]);
+        off += dcid_len_short;
+    }
+    hdr.pn_offset = off as u32;
+    hdr.pn_length = (first & 0x03) + 1;
+    hdr.header_len = (off + hdr.pn_length) as u32;
+    return hdr, true;
+}
+
+// Encodes a QUIC Long or Short header in unmasked form into out buffer.
+fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
+    guard pn_len >= 1 && pn_len <= 4 else { return false; }
+    let pn_bits = (pn_len - 1) & 0x03;
+
+    if hdr.header_type != QuicHeaderType.OneRtt {
+        // Long Header
+        var b0: u8 = 0xC0 | pn_bits;
+        match hdr.header_type {
+            Initial => {},
+            ZeroRtt => { b0 |= 0x10; },
+            Handshake => { b0 |= 0x20; },
+            Retry => { b0 |= 0x30; },
+            _ => { return false; }
+        }
+        out.push(b0);
+        out.push(((hdr.version >> 24) & 0xFF) as u8);
+        out.push(((hdr.version >> 16) & 0xFF) as u8);
+        out.push(((hdr.version >> 8) & 0xFF) as u8);
+        out.push((hdr.version & 0xFF) as u8);
+
+        out.push(hdr.dcid.len as u8);
+        out.append(hdr.dcid[..]);
+        out.push(hdr.scid.len as u8);
+        out.append(hdr.scid[..]);
+
+        if hdr.header_type == QuicHeaderType.Initial {
+            guard quic_encode_varint(out, hdr.token.len as u64) else { return false; }
+            if hdr.token.len > 0 {
+                out.append(hdr.token[..]);
+            }
+        }
+
+        if hdr.header_type != QuicHeaderType.Retry {
+            guard quic_encode_varint(out, hdr.payload_length) else { return false; }
+            guard encode_packet_number(out, hdr.packet_number, pn_len) else { return false; }
+        }
+        return true;
+    }
+
+    // Short Header (1-RTT)
+    var b0: u8 = 0x40 | pn_bits;
+    if hdr.spin_bit { b0 |= 0x20; }
+    if hdr.key_phase { b0 |= 0x04; }
+    out.push(b0);
+
+    if hdr.dcid.len > 0 {
+        out.append(hdr.dcid[..]);
+    }
+    guard encode_packet_number(out, hdr.packet_number, pn_len) else { return false; }
+    return true;
+}
+
+// ---- 4. header protection (aes / chacha20) (rfc 9001 section 5.4) -----------
+
+struct Aes128KeySchedule {
+    round_keys: u32[44] = [0; 44]
+}
+
+
+fn aes128_key_schedule(key: const u8[16]&) -> Aes128KeySchedule {
+    var ks = Aes128KeySchedule {};
+    for i in 4 {
+        let off = i * 4;
+        ks.round_keys[i] = ((key[off] as u32) << 24) |
+                           ((key[off + 1] as u32) << 16) |
+                           ((key[off + 2] as u32) << 8) |
+                           key[off + 3];
+    }
+    for i in 4..44 {
+        var temp = ks.round_keys[i - 1];
+        if (i % 4) == 0 {
+            temp = aes_sub_word(aes_rot_word(temp)) ^ AES_RCON[(i / 4) - 1];
+        }
+        ks.round_keys[i] = ks.round_keys[i - 4] ^ temp;
+    }
+    return ks;
+}
+
+fn aes128_encrypt_block(ks: const Aes128KeySchedule&, input: const u8[16]&) -> u8[16] {
+    var state: u8[16] = [0; 16];
+    for i in 16 { state[i] = input[i]; }
+
+    for i in 4 {
+        let rk = ks.round_keys[i];
+        state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+        state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+        state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+        state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+    }
+
+    for round in 1..10 {
+        for i in 16 { state[i] = AES_SBOX[state[i]]; }
+        let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
+        let t2 = state[2]; state[2] = state[10]; state[10] = t2;
+        let t6 = state[6]; state[6] = state[14]; state[14] = t6;
+        let t3 = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = t3;
+
+        for c in 4 {
+            let col = c * 4;
+            let a0 = state[col]; let a1 = state[col + 1];
+            let a2 = state[col + 2]; let a3 = state[col + 3];
+            state[col] = xtime(a0 ^ a1) ^ a1 ^ a2 ^ a3;
+            state[col + 1] = xtime(a1 ^ a2) ^ a2 ^ a3 ^ a0;
+            state[col + 2] = xtime(a2 ^ a3) ^ a3 ^ a0 ^ a1;
+            state[col + 3] = xtime(a3 ^ a0) ^ a0 ^ a1 ^ a2;
+        }
+
+        let rk_base = round * 4;
+        for i in 4 {
+            let rk = ks.round_keys[rk_base + i];
+            state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+            state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+            state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+            state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+        }
+    }
+
+    for i in 16 { state[i] = AES_SBOX[state[i]]; }
+    let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
+    let t2 = state[2]; state[2] = state[10]; state[10] = t2;
+    let t6 = state[6]; state[6] = state[14]; state[14] = t6;
+    let t3 = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = t3;
+
+    for i in 4 {
+        let rk = ks.round_keys[40 + i];
+        state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+        state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+        state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+        state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+    }
+    return state;
+}
+
+// Generates 5-byte header protection mask using AES-128-ECB (RFC 9001 Section 5.4.3).
+fn aes128_header_protect_mask(hp_key: const u8[16]&, sample: const u8[16]&) -> u8[5] {
+    let ks = aes128_key_schedule(hp_key);
+    let enc = aes128_encrypt_block(ks, sample);
+    return [enc[0], enc[1], enc[2], enc[3], enc[4]];
+}
+
+// Generates 5-byte header protection mask using AES-256-ECB.
+fn aes256_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) -> u8[5] {
+    let ks = aes256_key_schedule(hp_key);
+    let enc = aes_encrypt_block(ks, sample);
+    return [enc[0], enc[1], enc[2], enc[3], enc[4]];
+}
+
+// Generates 5-byte header protection mask using ChaCha20 (RFC 9001 Section 5.4.4).
+fn chacha20_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) -> u8[5] {
+    let counter = load_u32_le(sample[..], 0);
+    var nonce12: u8[12] = [0; 12];
+    for i in 12 { nonce12[i] = sample[4 + i]; }
+    let blk = chacha20_block(hp_key, counter, nonce12);
+    return [blk[0], blk[1], blk[2], blk[3], blk[4]];
+}
+
+// Applies header protection mask to packet header and packet number field (RFC 9001 Section 5.4.1).
+fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: const u8[5]&) {
+    let is_long = (pkt[0] & 0x80) != 0;
+    if is_long {
+        pkt[0] ^= (hp_mask[0] & 0x0F);
+    } else {
+        pkt[0] ^= (hp_mask[0] & 0x1F);
+    }
+    for i in (pn_len as i64) {
+        let idx = pn_offset + (i as u32);
+        pkt[idx] ^= hp_mask[1 + (i as u32)];
+    }
+}
+
+// Removes header protection mask in-place, returning true packet number length and truncated PN.
+fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -> u8, u64 {
+    let is_long = (pkt[0] & 0x80) != 0;
+    if is_long {
+        pkt[0] ^= (hp_mask[0] & 0x0F);
+    } else {
+        pkt[0] ^= (hp_mask[0] & 0x1F);
+    }
+    let pn_len: u8 = (pkt[0] & 0x03) + 1;
+    var trunc_pn: u64 = 0;
+
+    for i in (pn_len as i64) {
+        let idx = pn_offset + (i as u32);
+        pkt[idx] ^= hp_mask[1 + (i as u32)];
+        trunc_pn = (trunc_pn << 8) | pkt[idx];
+    }
+    return pn_len, trunc_pn;
+}
+
+// Encodes truncated packet number (1 to 4 bytes) in big-endian order (RFC 9000 Appendix A.2).
+fn encode_packet_number<B>(out: B&, pn: u64, pn_len: u8) -> bool {
+    guard pn_len >= 1 && pn_len <= 4 else { return false; }
+    if pn_len == 1 {
+        out.push((pn & 0xFF) as u8);
+    } else if pn_len == 2 {
+        out.push(((pn >> 8) & 0xFF) as u8);
+        out.push((pn & 0xFF) as u8);
+    } else if pn_len == 3 {
+        out.push(((pn >> 16) & 0xFF) as u8);
+        out.push(((pn >> 8) & 0xFF) as u8);
+        out.push((pn & 0xFF) as u8);
+    } else {
+        out.push(((pn >> 24) & 0xFF) as u8);
+        out.push(((pn >> 16) & 0xFF) as u8);
+        out.push(((pn >> 8) & 0xFF) as u8);
+        out.push((pn & 0xFF) as u8);
+    }
+    return true;
+}
+
+// Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
+fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
+    let pn_nbits: u64 = (pn_len as u64) * 8;
+    let expected_pn: u64 = largest_acked_pn + 1;
+    let pn_win: u64 = (1 as u64) << pn_nbits;
+    let pnhwin: u64 = pn_win / 2;
+    let pn_mask: u64 = pn_win - 1;
+
+    let candidate_pn = (expected_pn & ~pn_mask) | truncated_pn;
+
+    if candidate_pn + pnhwin <= expected_pn && candidate_pn + pn_win < ((1 as u64) << 62) {
+        return candidate_pn + pn_win;
+    }
+    if candidate_pn > expected_pn + pnhwin && candidate_pn >= pn_win {
+        return candidate_pn - pn_win;
+    }
+    return candidate_pn;
+}
+
+// ---- 5. path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---
+
+struct PathState {
+    remote_ip:      u8[16] = [0; 16],
+    remote_port:    u16 = 0,
+    bytes_received: u64 = 0,
+    bytes_sent:     u64 = 0,
+    is_validated:   bool = false
+}
+
+fn new_path_state(ip: const u8[16]&, port: u16, validated: bool = false) -> PathState {
+    var p = PathState { remote_port: port, is_validated: validated, .. };
+    for i in 16 { p.remote_ip[i] = ip[i]; }
+    return p;
+}
+
+// Validates whether server can send additional bytes on path under 3x Anti-Amplification rule.
+fn can_send_on_path(path: const PathState&, packet_bytes: u64) -> bool {
+    if path.is_validated {
+        return true;
+    }
+    return (path.bytes_sent + packet_bytes) <= (3 * path.bytes_received);
+}
+
+fn on_path_bytes_received(path: PathState&, bytes: u64) {
+    path.bytes_received += bytes;
+}
+
+fn on_path_bytes_sent(path: PathState&, bytes: u64) {
+    path.bytes_sent += bytes;
+}
+
+fn validate_path(path: PathState&) {
+    path.is_validated = true;
+}
+
+// ---- 6. stream / crypto interval reassembly buffer --------------------------
+
+struct Interval {
+    start: u64 = 0,
+    end:   u64 = 0 // [start, end)
+}
+
+struct ReassemblyBuffer {
+    intervals:       Interval[..64] = [],
+    consumed_offset: u64 = 0,
+    max_data_limit:  u64 = 1048576,
+    final_size:      u64 = 0xFFFFFFFFFFFFFFFF,
+    fin_received:    bool = false,
+    data_slab:       u8[>..<] = [] // Must be last!
+}
+
+fn new_reassembly_buffer(max_flow_limit: u64 = 1048576) -> ReassemblyBuffer {
+    return ReassemblyBuffer { max_data_limit: max_flow_limit, .. };
+}
+
+// Merges a new interval [new_start, new_end) into sorted non-overlapping intervals array.
+fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end: u64) {
+    guard new_start < new_end else { return; }
+    var cur_s = new_start;
+    var cur_e = new_end;
+    var i = 0;
+
+    while i < intervals.len {
+        let it = intervals[i];
+        if cur_e < it.start {
+            intervals.insert_at(i, Interval { start: cur_s, end: cur_e });
+            return;
+        }
+        if cur_s > it.end {
+            i++;
+            continue;
+        }
+        cur_s = if cur_s < it.start { cur_s } else { it.start };
+        cur_e = if cur_e > it.end { cur_e } else { it.end };
+        intervals.remove_at(i);
+    }
+
+    if intervals.len < intervals.cap {
+        intervals.push(Interval { start: cur_s, end: cur_e });
+    }
+}
+
+// Inserts incoming STREAM or CRYPTO fragment, enforcing flow control and FIN invariants.
+fn insert_fragment(
+    buf: ReassemblyBuffer&,
+    offset: u64,
+    payload: const u8[:],
+    is_fin: bool
+) -> bool {
+    let frag_end = offset + (payload.len as u64);
+    guard frag_end <= buf.max_data_limit else { return false; } // QUIC_ERR_FLOW_CONTROL
+
+    if is_fin {
+        if buf.fin_received && buf.final_size != frag_end {
+            return false; // QUIC_ERR_FINAL_SIZE
+        }
+        if frag_end < buf.consumed_offset {
+            return false; // QUIC_ERR_FINAL_SIZE
+        }
+        buf.fin_received = true;
+        buf.final_size = frag_end;
+    }
+
+    if frag_end <= buf.consumed_offset {
+        return true; // Duplicate of already consumed stream data
+    }
+
+    let eff_start = if offset < buf.consumed_offset { buf.consumed_offset } else { offset };
+    let payload_skip = (eff_start - offset) as i64;
+    let needed_len = frag_end - buf.consumed_offset;
+
+    if (buf.data_slab.len as u64) < needed_len {
+        buf.data_slab.resize(needed_len as i64, 0);
+    }
+
+    for idx in payload.len - payload_skip {
+        let slab_idx = (eff_start - buf.consumed_offset) as i64 + idx;
+        buf.data_slab[slab_idx] = payload[payload_skip + idx];
+    }
+
+    merge_reassembly_interval(buf.intervals, eff_start, frag_end);
+    return true;
+}
+
+// Reads contiguous in-order stream bytes from buffer head into out.
+fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&) -> u64 {
+    guard buf.intervals.len > 0 else { return 0; }
+    guard buf.intervals[0].start == buf.consumed_offset else { return 0; }
+
+    let avail_end = buf.intervals[0].end;
+    let take_bytes = (avail_end - buf.consumed_offset) as i64;
+    guard take_bytes > 0 && take_bytes <= (buf.data_slab.len as i64) else { return 0; }
+
+    out.append(buf.data_slab[0 .. take_bytes]);
+    buf.consumed_offset = avail_end;
+    buf.intervals.remove_at(0);
+
+    let remaining = (buf.data_slab.len as i64) - take_bytes;
+    for i in remaining {
+        buf.data_slab[i] = buf.data_slab[take_bytes + i];
+    }
+    buf.data_slab.resize(remaining, 0);
+    return take_bytes as u64;
+}

@@ -38,6 +38,10 @@ import http.h2_framer;
 import http2.framing;
 import http2.hpack;
 import http2.connection;
+import http3.qpack;
+import quic.packet;
+import quic.AckFrame;
+import quic.bbr;
 
 // ---- http cache engine (rfc 9111) ------------------------------------------
 
