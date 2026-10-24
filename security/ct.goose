@@ -58,6 +58,17 @@ fn ct_eq_tag32(tag_a: const u8[32]&, tag_b: const u8[32]&) -> bool {
     return non_zero == 0;
 }
 
+// Constant-time 48-byte MAC comparison (HMAC-SHA384).
+fn ct_eq_tag48(tag_a: const u8[48]&, tag_b: const u8[48]&) -> bool {
+    var diff: u64 = 0;
+    for i in 6 {
+        let off = i * 8;
+        diff |= core::read_le_u64(tag_a[..], off) ^ core::read_le_u64(tag_b[..], off);
+    }
+    let non_zero = (diff | (0 - diff)) >> 63;
+    return non_zero == 0;
+}
+
 fn ct_copy_bytes(dst: u8[:], src: const u8[:]) {
     let len = if dst.len < src.len { dst.len } else { src.len };
     for i in len { dst[i] = src[i]; }
@@ -75,6 +86,10 @@ fn secure_zeroize_24(buf: u8[24]&) {
 
 fn secure_zeroize_32(buf: u8[32]&) {
     for idx in 32 { buf[idx] = 0; }
+}
+
+fn secure_zeroize_48(buf: u8[48]&) {
+    for idx in 48 { buf[idx] = 0; }
 }
 
 fn secure_zeroize_64(buf: u8[64]&) {
@@ -385,6 +400,248 @@ fn hkdf_expand_32(prk: const u8[32]&, info: const u8[:]) -> u8[32] {
 fn hkdf_sha256_32(ikm: const u8[32]&, salt: const u8[:], info: const u8[:]) -> u8[32] {
     let prk = hkdf_extract(salt, ikm[..]);
     return hkdf_expand_32(prk, info);
+}
+
+// ---- sha-384 (fips 180-4) --------------------------------------------------
+
+let SHA512_K: const u64[80] = [
+    0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
+    0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
+    0xd807aa98a3030242, 0x12835b0145706fbe, 0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
+    0x72be5d74f27b896f, 0x80deb1fe3b1696b1, 0x9bdc06a725c71235, 0xc19bf174cf692694,
+    0xe49b69c19ef14ad2, 0xefbe4786384f25e3, 0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
+    0x2de92c6f592b0275, 0x4a7484aa6ea6e483, 0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
+    0x983e5152ee66dfab, 0xa831c66d2db43210, 0xb00327c898fb213f, 0xbf597fc7beef0ee4,
+    0xc6e00bf33da88fc2, 0xd5a79147930aa725, 0x06ca6351e003826f, 0x142929670a0e6e70,
+    0x27b70a8546d22ffc, 0x2e1b21385c26c926, 0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
+    0x650a73548baf63de, 0x766a0abb3c77b2a8, 0x81c2c92e47867871, 0x92722c851482353b,
+    0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
+    0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
+    0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
+    0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+    0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
+    0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+    0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,
+    0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
+    0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
+    0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
+];
+
+struct Sha384Ctx {
+    h: u64[8] = [
+        0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939,
+        0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4
+    ],
+    buf: u8[128] = [0; 128],
+    buf_len: i64 = 0,
+    total_len: u64 = 0,
+}
+
+fn sha384_init() -> Sha384Ctx {
+    return Sha384Ctx { .. };
+}
+
+fn sha512_transform(h_state: u64[8]&, chunk: const u8[:]) {
+    var w: u64[80] = [0; 80];
+    for i in 16 {
+        let off = i * 8;
+        w[i] = ((chunk[off] as u64) << 56) |
+               ((chunk[off + 1] as u64) << 48) |
+               ((chunk[off + 2] as u64) << 40) |
+               ((chunk[off + 3] as u64) << 32) |
+               ((chunk[off + 4] as u64) << 24) |
+               ((chunk[off + 5] as u64) << 16) |
+               ((chunk[off + 6] as u64) << 8) |
+               chunk[off + 7];
+    }
+    for i in 16..80 {
+        let s0 = core::rotr64(w[i - 15], 1) ^ core::rotr64(w[i - 15], 8) ^ (w[i - 15] >> 7);
+        let s1 = core::rotr64(w[i - 2], 19) ^ core::rotr64(w[i - 2], 61) ^ (w[i - 2] >> 6);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+
+    var a = h_state[0];
+    var b = h_state[1];
+    var c = h_state[2];
+    var d = h_state[3];
+    var e = h_state[4];
+    var f = h_state[5];
+    var g = h_state[6];
+    var h = h_state[7];
+
+    for i in 80 {
+        let s1 = core::rotr64(e, 14) ^ core::rotr64(e, 18) ^ core::rotr64(e, 41);
+        let ch = (e & f) ^ ((~e) & g);
+        let temp1 = h + s1 + ch + SHA512_K[i] + w[i];
+        let s0 = core::rotr64(a, 28) ^ core::rotr64(a, 34) ^ core::rotr64(a, 39);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let temp2 = s0 + maj;
+
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+
+    h_state[0] += a;
+    h_state[1] += b;
+    h_state[2] += c;
+    h_state[3] += d;
+    h_state[4] += e;
+    h_state[5] += f;
+    h_state[6] += g;
+    h_state[7] += h;
+}
+
+fn sha384_update(ctx: Sha384Ctx&, data: const u8[:]) {
+    guard data.len > 0 else { return; }
+    ctx.total_len += (data.len as u64) * 8;
+    var offset = 0;
+    while offset < data.len {
+        let needed = 128 - ctx.buf_len;
+        let available = data.len - offset;
+        let to_copy = if available < needed { available } else { needed };
+        for i in to_copy {
+            ctx.buf[ctx.buf_len + i] = data[offset + i];
+        }
+        ctx.buf_len += to_copy;
+        offset += to_copy;
+
+        if ctx.buf_len == 128 {
+            sha512_transform(ctx.h, ctx.buf[..]);
+            ctx.buf_len = 0;
+        }
+    }
+}
+
+fn sha384_final(ctx: Sha384Ctx&) -> u8[48] {
+    ctx.buf[ctx.buf_len] = 0x80;
+    ctx.buf_len += 1;
+
+    if ctx.buf_len > 112 {
+        for i in (128 - ctx.buf_len) {
+            ctx.buf[ctx.buf_len + i] = 0;
+        }
+        sha512_transform(ctx.h, ctx.buf[..]);
+        ctx.buf_len = 0;
+    }
+
+    for i in (112 - ctx.buf_len) {
+        ctx.buf[ctx.buf_len + i] = 0;
+    }
+
+    for i in 8 {
+        ctx.buf[112 + i] = 0;
+    }
+    for i in 8 {
+        ctx.buf[120 + i] = ((ctx.total_len >> ((7 - i) * 8)) & 0xFF) as u8;
+    }
+    sha512_transform(ctx.h, ctx.buf[..]);
+
+    var out: u8[48] = [0; 48];
+    for i in 6 {
+        for j in 8 {
+            out[i * 8 + j] = ((ctx.h[i] >> ((7 - j) * 8)) & 0xFF) as u8;
+        }
+    }
+    return out;
+}
+
+fn sha384(data: const u8[:]) -> u8[48] {
+    var ctx = sha384_init();
+    sha384_update(ctx, data);
+    return sha384_final(ctx);
+}
+
+// ---- hmac-sha384 (rfc 2104 / rfc 4231) -------------------------------------
+
+fn hmac_sha384(key: const u8[:], message: const u8[:]) -> u8[48] {
+    var key_block: u8[128] = [0; 128];
+    if key.len > 128 {
+        let hashed_key = sha384(key);
+        for i in 48 { key_block[i] = hashed_key[i]; }
+    } else {
+        for i in key.len { key_block[i] = key[i]; }
+    }
+
+    var ipad: u8[128] = [0; 128];
+    var opad: u8[128] = [0; 128];
+    for i in 128 {
+        ipad[i] = key_block[i] ^ 0x36;
+        opad[i] = key_block[i] ^ 0x5c;
+    }
+
+    var inner_ctx = sha384_init();
+    sha384_update(inner_ctx, ipad[..]);
+    sha384_update(inner_ctx, message);
+    let inner_hash = sha384_final(inner_ctx);
+
+    var outer_ctx = sha384_init();
+    sha384_update(outer_ctx, opad[..]);
+    sha384_update(outer_ctx, inner_hash[..]);
+    return sha384_final(outer_ctx);
+}
+
+// ---- hkdf-sha384 (rfc 5869) ------------------------------------------------
+
+fn hkdf_extract_384(salt: const u8[:], ikm: const u8[:]) -> u8[48] {
+    let zero_salt: u8[48] = [0; 48];
+    let actual_salt = if salt.len == 0 {
+        zero_salt[..]
+    } else {
+        salt
+    };
+    return hmac_sha384(actual_salt, ikm);
+}
+
+fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
+    var n: i64 = (length + 31) / 32;
+    guard n <= 255 && out.len >= length else { return false; }
+    var t: u8[32] = [0; 32];
+    var out_off: i64 = 0;
+
+    for i in 1..n + 1 {
+        var msg: u8[>..] = [];
+        if i > 1 {
+            msg.append(t[..]);
+        }
+        msg.append(info);
+        msg.push(i as u8);
+        t = hmac_sha256(prk, msg[..]);
+        let to_copy = if length - out_off < 32 { length - out_off } else { 32 };
+        for j in to_copy {
+            out[out_off + j] = t[j];
+        }
+        out_off += to_copy;
+    }
+    return true;
+}
+
+fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
+    var n: i64 = (length + 47) / 48;
+    guard n <= 255 && out.len >= length else { return false; }
+    var t: u8[48] = [0; 48];
+    var out_off: i64 = 0;
+
+    for i in 1..n + 1 {
+        var msg: u8[>..] = [];
+        if i > 1 {
+            msg.append(t[..]);
+        }
+        msg.append(info);
+        msg.push(i as u8);
+        t = hmac_sha384(prk, msg[..]);
+        let to_copy = if length - out_off < 48 { length - out_off } else { 48 };
+        for j in to_copy {
+            out[out_off + j] = t[j];
+        }
+        out_off += to_copy;
+    }
+    return true;
 }
 
 // ---- chacha20, hchacha20 & poly1305 (rfc 8439 / draft-irtf-cfrg-xchacha) ---

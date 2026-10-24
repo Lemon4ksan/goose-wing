@@ -1,0 +1,517 @@
+// tls/key_schedule.goose
+// Deterministic zero-allocation TLS 1.3 Key Schedule and RFC 9001 QUIC Key Derivation.
+// Conforms to RFC 8446 Section 7.1, RFC 9001 Section 5.1-5.4, and BoringSSL HKDF layout.
+namespace wing;
+
+import std;
+import security.ct;
+
+// ---- 1. Constants and Supported Cipher Suites -------------------------------
+
+const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
+const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
+const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
+
+const HASH_SHA256: u8 = 1;
+const HASH_SHA384: u8 = 2;
+
+const KS_STAGE_UNINIT: u8 = 0;
+const KS_STAGE_EARLY: u8 = 1;
+const KS_STAGE_HANDSHAKE: u8 = 2;
+const KS_STAGE_MASTER: u8 = 3;
+const KS_STAGE_RESUMPTION: u8 = 4;
+
+// ---- 2. HKDF-Expand-Label and Derive-Secret (RFC 8446 Section 7.1) ----------
+
+// Encodes HkdfLabel structure:
+// struct {
+//     uint16 length = Length;
+//     opaque label<7..255> = "tls13 " + Label;
+//     opaque context<0..255> = Context;
+// } HkdfLabel;
+fn hkdf_expand_label(
+    hash_id: u8,
+    secret: const u8[:],
+    label: const u8[:],
+    context: const u8[:],
+    length: u16,
+    out: u8[:]
+) -> bool {
+    let full_label_len = 6 + label.len;
+    guard full_label_len >= 7 && full_label_len <= 255 else { return false; }
+    guard context.len <= 255 else { return false; }
+
+    var info: u8[..128] = [];
+    // uint16 length
+    info.push(((length >> 8) & 0xFF) as u8);
+    info.push((length & 0xFF) as u8);
+    // opaque label<7..255> = "tls13 " + Label
+    info.push(full_label_len as u8);
+    info.append("tls13 ");
+    info.append(label);
+    // opaque context<0..255>
+    info.push(context.len as u8);
+    info.append(context);
+
+    if hash_id == HASH_SHA256 {
+        return hkdf_expand_bytes_256(secret, info[..], length, out);
+    } else if hash_id == HASH_SHA384 {
+        return hkdf_expand_bytes_384(secret, info[..], length, out);
+    }
+    return false;
+}
+
+// Derive-Secret(Secret, Label, Messages) = HKDF-Expand-Label(Secret, Label, Transcript-Hash(Messages), Hash.length)
+// When messages are empty (""), context is Hash("").
+fn derive_secret(
+    hash_id: u8,
+    hash_len: u8,
+    secret: const u8[:],
+    label: const u8[:],
+    transcript_hash: const u8[:],
+    out: u8[:]
+) -> bool {
+    guard out.len >= hash_len else { return false; }
+
+    if transcript_hash.len == 0 {
+        if hash_id == HASH_SHA256 {
+            let empty_h = sha256([]);
+            return hkdf_expand_label(hash_id, secret, label, empty_h[..], hash_len, out);
+        } else if hash_id == HASH_SHA384 {
+            let empty_h = sha384([]);
+            return hkdf_expand_label(hash_id, secret, label, empty_h[..], hash_len, out);
+        }
+        return false;
+    }
+
+    return hkdf_expand_label(hash_id, secret, label, transcript_hash, hash_len, out);
+}
+
+// ---- 3. KeySchedule Struct and Lifecycle Transitions ------------------------
+
+struct KeySchedule {
+    cipher_suite: u16 = 0,
+    hash_id: u8 = 1,
+    hash_len: u8 = 32,
+    stage: u8 = 0,
+    current_secret: u8[48] = [0; 48],
+    client_early_traffic: u8[48] = [0; 48],
+    client_hs_traffic: u8[48] = [0; 48],
+    server_hs_traffic: u8[48] = [0; 48],
+    client_ap_traffic: u8[48] = [0; 48],
+    server_ap_traffic: u8[48] = [0; 48],
+    exporter_secret: u8[48] = [0; 48],
+    resumption_secret: u8[48] = [0; 48],
+    binder_key: u8[48] = [0; 48],
+}
+
+fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
+    var ks = KeySchedule { cipher_suite: cipher_suite };
+    if cipher_suite == TLS_AES_128_GCM_SHA256 || cipher_suite == TLS_CHACHA20_POLY1305_SHA256 {
+        ks.hash_id = HASH_SHA256;
+        ks.hash_len = 32;
+        return ks, true;
+    } else if cipher_suite == TLS_AES_256_GCM_SHA384 {
+        ks.hash_id = HASH_SHA384;
+        ks.hash_len = 48;
+        return ks, true;
+    }
+    return ks, false;
+}
+
+// Early Secret = HKDF-Extract(0, PSK)
+fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
+    let zeros: u8[48] = [0; 48];
+    let zero_salt = zeros[..ks.hash_len];
+    let ikm = if psk.len > 0 { psk } else { zero_salt };
+
+    if ks.hash_id == HASH_SHA256 {
+        let es = hkdf_extract(zero_salt, ikm);
+        for i in 32 { ks.current_secret[i] = es[i]; }
+    } else if ks.hash_id == HASH_SHA384 {
+        let es = hkdf_extract_384(zero_salt, ikm);
+        for i in 48 { ks.current_secret[i] = es[i]; }
+    } else {
+        return false;
+    }
+
+    ks.stage = KS_STAGE_EARLY;
+
+    // binder_key = Derive-Secret(Early Secret, "res binder", "")
+    return derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "res binder",
+        [],
+        ks.binder_key[..ks.hash_len]
+    );
+}
+
+// client_early_traffic_secret = Derive-Secret(Early Secret, "c e traffic", ClientHello)
+fn ks_derive_early_traffic(ks: KeySchedule&, client_hello_hash: const u8[:]) -> bool {
+    guard ks.stage == KS_STAGE_EARLY else { return false; }
+    return derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "c e traffic",
+        client_hello_hash,
+        ks.client_early_traffic[..ks.hash_len]
+    );
+}
+
+// Handshake Secret = HKDF-Extract(Derive-Secret(Early Secret, "derived", ""), (EC)DHE)
+fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -> bool {
+    guard ks.stage == KS_STAGE_EARLY else { return false; }
+
+    var derived: u8[48] = [0; 48];
+    if !derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "derived",
+        [],
+        derived[..ks.hash_len]
+    ) {
+        return false;
+    }
+
+    if ks.hash_id == HASH_SHA256 {
+        let hs = hkdf_extract(derived[..32], ecdhe_shared_secret);
+        for i in 32 { ks.current_secret[i] = hs[i]; }
+    } else if ks.hash_id == HASH_SHA384 {
+        let hs = hkdf_extract_384(derived[..48], ecdhe_shared_secret);
+        for i in 48 { ks.current_secret[i] = hs[i]; }
+    } else {
+        return false;
+    }
+
+    ks.stage = KS_STAGE_HANDSHAKE;
+    return true;
+}
+
+// Derives client and server handshake traffic secrets:
+// c hs traffic = Derive-Secret(Handshake Secret, "c hs traffic", CH...SH)
+// s hs traffic = Derive-Secret(Handshake Secret, "s hs traffic", CH...SH)
+fn ks_derive_handshake_traffic(ks: KeySchedule&, ch_sh_hash: const u8[:]) -> bool {
+    guard ks.stage == KS_STAGE_HANDSHAKE else { return false; }
+
+    let ok_c = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "c hs traffic",
+        ch_sh_hash,
+        ks.client_hs_traffic[..ks.hash_len]
+    );
+    let ok_s = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "s hs traffic",
+        ch_sh_hash,
+        ks.server_hs_traffic[..ks.hash_len]
+    );
+    return ok_c && ok_s;
+}
+
+// Master Secret = HKDF-Extract(Derive-Secret(Handshake Secret, "derived", ""), 0)
+// c ap traffic = Derive-Secret(Master Secret, "c ap traffic", Transcript)
+// s ap traffic = Derive-Secret(Master Secret, "s ap traffic", Transcript)
+// exp master = Derive-Secret(Master Secret, "exp master", Transcript)
+fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool {
+    guard ks.stage == KS_STAGE_HANDSHAKE else { return false; }
+
+    var derived: u8[48] = [0; 48];
+    if !derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "derived",
+        [],
+        derived[..ks.hash_len]
+    ) {
+        return false;
+    }
+
+    let zeros: u8[48] = [0; 48];
+    let zero_ikm = zeros[..ks.hash_len];
+
+    if ks.hash_id == HASH_SHA256 {
+        let ms = hkdf_extract(derived[..32], zero_ikm);
+        for i in 32 { ks.current_secret[i] = ms[i]; }
+    } else if ks.hash_id == HASH_SHA384 {
+        let ms = hkdf_extract_384(derived[..48], zero_ikm);
+        for i in 48 { ks.current_secret[i] = ms[i]; }
+    } else {
+        return false;
+    }
+
+    ks.stage = KS_STAGE_MASTER;
+
+    let ok_c = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "c ap traffic",
+        transcript_hash,
+        ks.client_ap_traffic[..ks.hash_len]
+    );
+    let ok_s = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "s ap traffic",
+        transcript_hash,
+        ks.server_ap_traffic[..ks.hash_len]
+    );
+    let ok_exp = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "exp master",
+        transcript_hash,
+        ks.exporter_secret[..ks.hash_len]
+    );
+    return ok_c && ok_s && ok_exp;
+}
+
+// Resumption Master Secret = Derive-Secret(Master Secret, "res master", ClientHello...server Finished)
+fn ks_advance_to_resumption(ks: KeySchedule&, finished_transcript_hash: const u8[:]) -> bool {
+    guard ks.stage == KS_STAGE_MASTER else { return false; }
+
+    let ok = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "res master",
+        finished_transcript_hash,
+        ks.resumption_secret[..ks.hash_len]
+    );
+    if ok {
+        ks.stage = KS_STAGE_RESUMPTION;
+    }
+    return ok;
+}
+
+// Derives symmetric AEAD key and 12-byte IV from traffic secret (RFC 8446 Section 7.3).
+fn ks_derive_key_iv(
+    hash_id: u8,
+    secret: const u8[:],
+    key_len: u16,
+    out_key: u8[:],
+    out_iv: u8[12]&
+) -> bool {
+    let ok_k = hkdf_expand_label(hash_id, secret, "key", [], key_len, out_key);
+    let ok_iv = hkdf_expand_label(hash_id, secret, "iv", [], 12, out_iv[..]);
+    return ok_k && ok_iv;
+}
+
+// Derives QUIC Header Protection key (RFC 9001 Section 5.4).
+fn ks_derive_quic_hp_key(
+    hash_id: u8,
+    secret: const u8[:],
+    hp_key_len: u16,
+    out_hp_key: u8[:]
+) -> bool {
+    return hkdf_expand_label(hash_id, secret, "quic hp", [], hp_key_len, out_hp_key);
+}
+
+// Computes Finished verify_data = HMAC(finished_key, Transcript-Hash) (RFC 8446 Section 4.4.4).
+fn ks_compute_finished_verify_data(
+    hash_id: u8,
+    hash_len: u8,
+    base_key: const u8[:],
+    transcript_hash: const u8[:],
+    out_verify_data: u8[:]
+) -> bool {
+    guard out_verify_data.len >= hash_len else { return false; }
+
+    var finished_key: u8[48] = [0; 48];
+    if !hkdf_expand_label(hash_id, base_key, "finished", [], hash_len, finished_key[..hash_len]) {
+        return false;
+    }
+
+    if hash_id == HASH_SHA256 {
+        let vd = hmac_sha256(finished_key[..32], transcript_hash);
+        for i in 32 { out_verify_data[i] = vd[i]; }
+        return true;
+    } else if hash_id == HASH_SHA384 {
+        let vd = hmac_sha384(finished_key[..48], transcript_hash);
+        for i in 48 { out_verify_data[i] = vd[i]; }
+        return true;
+    }
+    return false;
+}
+
+// Updates application traffic secret: next_secret = Derive-Secret(current, "traffic upd", "") (RFC 8446 Section 7.2).
+fn ks_update_traffic_secret(hash_id: u8, hash_len: u8, traffic_secret: u8[:]) -> bool {
+    guard traffic_secret.len >= hash_len else { return false; }
+    var next_secret: u8[48] = [0; 48];
+    if !derive_secret(
+        hash_id,
+        hash_len,
+        traffic_secret[..hash_len],
+        "traffic upd",
+        [],
+        next_secret[..hash_len]
+    ) {
+        return false;
+    }
+    for i in hash_len {
+        traffic_secret[i] = next_secret[i];
+    }
+    secure_zeroize_48(next_secret);
+    return true;
+}
+
+// Securely wipes all secrets from the KeySchedule.
+fn ks_zeroize(ks: KeySchedule&) {
+    secure_zeroize_48(ks.current_secret);
+    secure_zeroize_48(ks.client_early_traffic);
+    secure_zeroize_48(ks.client_hs_traffic);
+    secure_zeroize_48(ks.server_hs_traffic);
+    secure_zeroize_48(ks.client_ap_traffic);
+    secure_zeroize_48(ks.server_ap_traffic);
+    secure_zeroize_48(ks.exporter_secret);
+    secure_zeroize_48(ks.resumption_secret);
+    secure_zeroize_48(ks.binder_key);
+    ks.stage = KS_STAGE_UNINIT;
+}
+
+// ---- 4. PSK Binders Verification (RFC 8446 Section 4.2.11.2) ----------------
+
+// Verifies PSK binder tag on truncated ClientHello in constant time.
+fn verify_psk_binder(
+    hash_id: u8,
+    hash_len: u8,
+    binder_key: const u8[:],
+    truncated_ch: const u8[:],
+    expected_binder: const u8[:]
+) -> bool {
+    guard expected_binder.len == hash_len else { return false; }
+
+    var finished_key: u8[48] = [0; 48];
+    if !hkdf_expand_label(hash_id, binder_key, "finished", [], hash_len, finished_key[..hash_len]) {
+        return false;
+    }
+
+    if hash_id == HASH_SHA256 {
+        let ch_hash = sha256(truncated_ch);
+        let calc_binder = hmac_sha256(finished_key[..32], ch_hash[..]);
+        var exp: u8[32] = [0; 32];
+        for i in 32 { exp[i] = expected_binder[i]; }
+        return ct_eq_tag32(calc_binder, exp);
+    } else if hash_id == HASH_SHA384 {
+        let ch_hash = sha384(truncated_ch);
+        let calc_binder = hmac_sha384(finished_key[..48], ch_hash[..]);
+        var exp: u8[48] = [0; 48];
+        for i in 48 { exp[i] = expected_binder[i]; }
+        return ct_eq_tag48(calc_binder, exp);
+    }
+    return false;
+}
+
+// ---- 5. ZeroRttStrikeRegister: Two-Epoch Bloom Filter Anti-Replay -----------
+
+struct ZeroRttStrikeRegister {
+    epoch_window_ms: i64 = 10000,
+    max_age_tolerance_ms: i64 = 2000,
+    current_epoch: i64 = 0,
+    bitmap_current: u64[64] = [0; 64],
+    bitmap_previous: u64[64] = [0; 64],
+}
+
+fn strike_register_init(epoch_window_ms: i64 = 10000, max_age_tolerance_ms: i64 = 2000) -> ZeroRttStrikeRegister {
+    return ZeroRttStrikeRegister {
+        epoch_window_ms: epoch_window_ms,
+        max_age_tolerance_ms: max_age_tolerance_ms,
+        current_epoch: 0,
+        bitmap_current: [0; 64],
+        bitmap_previous: [0; 64],
+    };
+}
+
+// Internal k=4 bit hash computation over ticket identifier / nonce.
+fn strike_reg_hash_bit(data: const u8[:], seed: u32) -> u32 {
+    var h: u32 = 0x811c9dc5 ^ seed;
+    for b in data {
+        h = (h ^ b) * 16777619;
+    }
+    return h % 4096;
+}
+
+// Rotates epoch bitmaps when epoch_window_ms has elapsed.
+fn strike_register_rotate(reg: ZeroRttStrikeRegister&, now_ms: i64) {
+    if reg.epoch_window_ms <= 0 { return; }
+    let epoch = now_ms / reg.epoch_window_ms;
+    if epoch > reg.current_epoch {
+        if epoch == reg.current_epoch + 1 {
+            for i in 64 {
+                reg.bitmap_previous[i] = reg.bitmap_current[i];
+                reg.bitmap_current[i] = 0;
+            }
+        } else {
+            for i in 64 {
+                reg.bitmap_previous[i] = 0;
+                reg.bitmap_current[i] = 0;
+            }
+        }
+        reg.current_epoch = epoch;
+    }
+}
+
+// Checks if ticket_id was already accepted; if not, registers it and returns true.
+// Returns false on replay detection.
+fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: const u8[:], now_ms: i64) -> bool {
+    strike_register_rotate(reg, now_ms);
+
+    let seeds: u32[4] = [0x12345678, 0x87654321, 0xdeadbeef, 0xcafebabe];
+    var in_current = true;
+    var in_previous = true;
+
+    for i in 4 {
+        let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
+        let word_idx = (bit / 64) as i64;
+        let bit_mask: u64 = (1 as u64) << (bit % 64);
+
+        if (reg.bitmap_current[word_idx] & bit_mask) == 0 {
+            in_current = false;
+        }
+        if (reg.bitmap_previous[word_idx] & bit_mask) == 0 {
+            in_previous = false;
+        }
+    }
+
+    // Replay detected if present in either current or previous window
+    if in_current || in_previous {
+        return false;
+    }
+
+    // Insert into current bitmap
+    for i in 4 {
+        let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
+        let word_idx = (bit / 64) as i64;
+        let bit_mask: u64 = (1 as u64) << (bit % 64);
+        reg.bitmap_current[word_idx] |= bit_mask;
+    }
+
+    return true;
+}
+
+// Validates ticket age freshness according to RFC 8446 Section 4.2.10.
+fn validate_ticket_age(
+    obfuscated_ticket_age: u32,
+    ticket_age_add: u32,
+    expected_age_ms: i64,
+    tolerance_ms: i64
+) -> bool {
+    let raw_age = (obfuscated_ticket_age - ticket_age_add) as i64;
+    let diff = if raw_age > expected_age_ms {
+        raw_age - expected_age_ms
+    } else {
+        expected_age_ms - raw_age
+    };
+    return diff <= tolerance_ms;
+}

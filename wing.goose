@@ -64,6 +64,13 @@ import security.csrf;
 import security.cors;
 import security.rate_limiter;
 
+// ---- tls 1.3 & x.509 pki -------------------------------------------------
+
+import tls.record;
+import tls.key_schedule;
+import tls.handshake;
+import tls.x509;
+
 // ---- server primitives -----------------------------------------------------
 
 import server.router;
