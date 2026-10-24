@@ -228,8 +228,12 @@ fn altsvc_cache_update(
             cache.entries[i].endpoints.clear();
             for ep in endpoints { cache.entries[i].endpoints.push(ep); }
             cache.entries[i].inserted_at_sec = now_sec;
-            cache.entries[i].failed_attempts = 0;
-            cache.entries[i].broken_until_sec = 0;
+            // RFC 7838 Section 2.4 & Chromium HttpServerProperties:
+            // Receiving an Alt-Svc header advertisement MUST NOT clear an active broken-backoff state!
+            if now_sec >= cache.entries[i].broken_until_sec {
+                cache.entries[i].failed_attempts = 0;
+                cache.entries[i].broken_until_sec = 0;
+            }
             return;
         }
     }
@@ -303,6 +307,37 @@ fn altsvc_record_failure(cache: AltSvcCache&, origin: const u8[:], now_sec: i64)
             return;
         }
     }
+}
+
+// Records an alternative service connection success, resetting consecutive failures and clearing broken status.
+fn altsvc_record_success(cache: AltSvcCache&, origin: const u8[:]) {
+    for i in cache.entries.len {
+        if cache.entries[i].valid && cache.entries[i].origin[..] == origin {
+            cache.entries[i].failed_attempts = 0;
+            cache.entries[i].broken_until_sec = 0;
+            return;
+        }
+    }
+}
+
+// Checks if an origin's alternative service is currently marked broken (within exponential backoff).
+fn altsvc_is_broken(cache: const AltSvcCache&, origin: const u8[:], now_sec: i64) -> bool {
+    for &entry in cache.entries {
+        if entry.valid && entry.origin[..] == origin {
+            return now_sec < entry.broken_until_sec;
+        }
+    }
+    return false;
+}
+
+// Returns the number of consecutive failure attempts recorded for an origin.
+fn altsvc_failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 {
+    for &entry in cache.entries {
+        if entry.valid && entry.origin[..] == origin {
+            return entry.failed_attempts;
+        }
+    }
+    return 0;
 }
 
 // ---- 4. Server-Side Serializer ---------------------------------------------

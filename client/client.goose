@@ -21,6 +21,8 @@ import realtime.websocket;
 import realtime.sse;
 import net.dns;
 import tls.ech;
+import http.altsvc;
+import net.happy_eyeballs;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -370,6 +372,8 @@ struct MockExchange {
     set_cookies: u8[..256][..8] = [],
     resolved_ips: u8[..64][..4] = [],
     body: u8[..2048] = [],
+    protocol: u8[..16] = [],
+    simulate_quic_blocked: bool = false,
 }
 
 // ---- client configuration and state ----------------------------------------
@@ -383,6 +387,9 @@ struct ClientConfig {
     cookie_jar: bool = true,
     enable_cache: bool = false,
     cache_options: CacheOptions = CacheOptions { .. },
+    enable_altsvc: bool = true,
+    enable_protocol_racing: bool = true,
+    quic_race_delay_ms: i64 = 200,
 }
 
 type SessionConfig = ClientConfig;
@@ -415,6 +422,12 @@ struct Client {
     auto_ech_discovery: bool = false,
     dns_cache: DnsCache = DnsCache { .. },
 
+    // RFC 7838 Alt-Svc & Chromium Protocol Racing
+    altsvc: AltSvcCache = AltSvcCache { .. },
+    enable_altsvc: bool = true,
+    enable_protocol_racing: bool = true,
+    quic_race_delay_ms: i64 = 200,
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -429,6 +442,10 @@ fn new_client() -> Client {
         ssrf_guard: SsrfGuardPolicy { .. },
         cache: new_http_cache(),
         enable_cache: false,
+        altsvc: new_altsvc_cache(),
+        enable_altsvc: true,
+        enable_protocol_racing: true,
+        quic_race_delay_ms: 200,
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -445,6 +462,10 @@ fn new_client(cfg: ClientConfig) -> Client {
         ssrf_guard: SsrfGuardPolicy { .. },
         cache: new_http_cache(cfg.cache_options),
         enable_cache: cfg.enable_cache,
+        altsvc: new_altsvc_cache(),
+        enable_altsvc: cfg.enable_altsvc,
+        enable_protocol_racing: cfg.enable_protocol_racing,
+        quic_race_delay_ms: cfg.quic_race_delay_ms,
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -706,6 +727,40 @@ fn resolve_ech_config(
     return found_ech;
 }
 
+// ---- alt-svc & protocol racing configuration (rfc 7838, rfc 8305) ----------
+
+fn enable_altsvc(session: Session&, enabled: bool = true) {
+    session.enable_altsvc = enabled;
+}
+
+fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms: i64 = 200) {
+    session.enable_protocol_racing = enabled;
+    session.quic_race_delay_ms = quic_delay_ms;
+}
+
+fn clear_altsvc_cache(session: Session&) {
+    session.altsvc = new_altsvc_cache();
+}
+
+fn altsvc_cache(session: const Session&) -> const AltSvcCache& {
+    return session.altsvc;
+}
+
+fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
+    var origin_buf: u8[..128] = [];
+    resolve_target_origin(target, origin_buf);
+    let now_sec = session.virtual_clock_us / 1000000;
+    var ep = AltSvcEndpoint { .. };
+    return altsvc_lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
+}
+
+fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
+    var origin_buf: u8[..128] = [];
+    resolve_target_origin(target, origin_buf);
+    let now_sec = session.virtual_clock_us / 1000000;
+    return altsvc_is_broken(session.altsvc, origin_buf[..], now_sec);
+}
+
 fn allow_port(session: Session&, port_num: i32) {
     if session.ssrf_guard.allowed_ports.len < 16 {
         session.ssrf_guard.allowed_ports.push(port_num);
@@ -789,6 +844,27 @@ fn add_mock_resolved_ip(route: MockExchange&, ip_str: const u8[:]) {
 fn add_mock_resolved_ip(session: Session&, ip_str: const u8[:]) {
     if session.mock_routes.len > 0 {
         add_mock_resolved_ip(session.mock_routes[session.mock_routes.len - 1], ip_str);
+    }
+}
+
+fn set_mock_quic_blocked(route: MockExchange&, blocked: bool = true) {
+    route.simulate_quic_blocked = blocked;
+}
+
+fn set_mock_quic_blocked(session: Session&, blocked: bool = true) {
+    if session.mock_routes.len > 0 {
+        set_mock_quic_blocked(session.mock_routes[session.mock_routes.len - 1], blocked);
+    }
+}
+
+fn set_mock_protocol(route: MockExchange&, proto: const u8[:]) {
+    route.protocol.clear();
+    route.protocol.append(proto);
+}
+
+fn set_mock_protocol(session: Session&, proto: const u8[:]) {
+    if session.mock_routes.len > 0 {
+        set_mock_protocol(session.mock_routes[session.mock_routes.len - 1], proto);
     }
 }
 
@@ -1301,6 +1377,36 @@ fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfG
     return validate_resolved_ips_against_ssrf(ips_slice[..route.resolved_ips.len], guard_config);
 }
 
+// Extracts origin string "host:port" from parsed Url.
+fn format_url_origin<B>(url_val: const core::Url&, out: B&) {
+    let host = core::hostname(url_val);
+    let port = core::effective_port(url_val);
+    out.append(host);
+    out.append(":");
+    format(out, port);
+}
+
+fn target_has_scheme(target: const u8[:]) -> bool {
+    if target.len < 8 { return false; }
+    for i in target.len - 2 {
+        if target[i] == ':' && target[i + 1] == '/' && target[i + 2] == '/' {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn resolve_target_origin<B>(target: const u8[:], out: B&) {
+    if target_has_scheme(target) {
+        let parsed, err = core::parse_url(target);
+        if parsed.valid {
+            format_url_origin(parsed, out);
+            return;
+        }
+    }
+    out.append(target);
+}
+
 // Synthesizes an HTTP Response from a matched MockExchange.
 fn build_mock_response(
     route: const MockExchange&,
@@ -1312,6 +1418,10 @@ fn build_mock_response(
         effective_url: copy(current_url.href),
         ..
     };
+    if route.protocol.len > 0 {
+        resp.protocol.clear();
+        resp.protocol.append(route.protocol[..]);
+    }
     for &h in route.headers {
         resp.headers.push(copy(h));
     }
@@ -1335,6 +1445,14 @@ fn execute_mock_or_echo_hop(
     out_dns_err = RedirectError.None;
     let curr_href = href(current_url);
     let curr_method = ctx.current_method[..];
+
+    var origin_buf: u8[..128] = [];
+    format_url_origin(current_url, origin_buf);
+    let now_sec = session.virtual_clock_us / 1000000;
+    let is_https = current_url.is_secure_scheme();
+
+    var candidate_h3_ep = AltSvcEndpoint { .. };
+    let has_h3 = session.enable_altsvc && is_https && altsvc_lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
 
     // Check mock routes
     for &route in session.mock_routes {
@@ -1364,6 +1482,56 @@ fn execute_mock_or_echo_hop(
                     resp.headers.push(make_header("Sec-WebSocket-Accept", accept_buf[..]));
                 }
             }
+
+            // Chromium-style Protocol Racing & Alt-Svc Promotion
+            if has_h3 {
+                let race_eligible = should_create_dns_alpn_h3_job(
+                    is_https,
+                    session.enable_protocol_racing,
+                    session.proxy_url.len > 0,
+                    false
+                );
+                if race_eligible {
+                    // Protocol race: QUIC Alternative Job vs TCP Main Job (Chromium JobController / RFC 8305)
+                    if route.simulate_quic_blocked {
+                        // QUIC handshake dropped/blocked by firewall -> Main TCP Job wins!
+                        altsvc_record_failure(session.altsvc, origin_buf[..], now_sec);
+                        resp.protocol.clear();
+                        if route.protocol.len > 0 {
+                            resp.protocol.append(route.protocol[..]);
+                        } else {
+                            resp.protocol.append("HTTP/1.1");
+                        }
+                    } else {
+                        // QUIC handshake succeeds -> HTTP/3 wins!
+                        altsvc_record_success(session.altsvc, origin_buf[..]);
+                        resp.protocol.clear();
+                        resp.protocol.append("h3");
+                    }
+                } else if session.enable_altsvc {
+                    if route.simulate_quic_blocked {
+                        altsvc_record_failure(session.altsvc, origin_buf[..], now_sec);
+                        resp.protocol.clear();
+                        resp.protocol.append(if route.protocol.len > 0 { route.protocol[..] } else { "HTTP/1.1" });
+                    } else {
+                        altsvc_record_success(session.altsvc, origin_buf[..]);
+                        resp.protocol.clear();
+                        resp.protocol.append("h3");
+                    }
+                }
+            } else if route.protocol.len > 0 {
+                resp.protocol.clear();
+                resp.protocol.append(route.protocol[..]);
+            }
+
+            // Ingest Alt-Svc header from response (RFC 7838 Section 3)
+            if session.enable_altsvc && is_https {
+                let alt_svc_val = header(resp, "Alt-Svc");
+                if alt_svc_val.len > 0 {
+                    altsvc_cache_update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+                }
+            }
+
             return resp;
         }
     }
@@ -1377,6 +1545,19 @@ fn execute_mock_or_echo_hop(
     resp.headers.push(make_header("Content-Type", "application/json"));
     resp.headers.push(make_header("Server", "goose-wing/1.0"));
     resp.body.append("{\"id\":1042,\"status\":\"confirmed\",\"ok\":true}");
+
+    if has_h3 && session.enable_altsvc {
+        altsvc_record_success(session.altsvc, origin_buf[..]);
+        resp.protocol.clear();
+        resp.protocol.append("h3");
+    }
+
+    if session.enable_altsvc && is_https {
+        let alt_svc_val = header(resp, "Alt-Svc");
+        if alt_svc_val.len > 0 {
+            altsvc_cache_update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+        }
+    }
 
     for &sent_h in ctx.headers {
         resp.sent_headers.push(copy(sent_h));

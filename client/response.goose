@@ -36,6 +36,7 @@ struct Response {
     redirect_count: i64 = 0,
     url_chain: u8[..256][..16] = [],
     final_method: u8[..16] = "GET",
+    protocol: u8[..16] = "HTTP/1.1",
     sent_headers: HeaderItem[..32] = [],
     set_cookies: u8[..256][..16] = [],
     body: u8[>..] = [],
@@ -43,6 +44,22 @@ struct Response {
 
 fn new_response() -> Response {
     return Response { .. };
+}
+
+fn protocol(res: const Response&) -> const u8[:] {
+    return res.protocol[..];
+}
+
+fn is_http3(res: const Response&) -> bool {
+    return res.protocol[..] == "h3" || res.protocol[..] == "HTTP/3";
+}
+
+fn is_http2(res: const Response&) -> bool {
+    return res.protocol[..] == "h2" || res.protocol[..] == "HTTP/2";
+}
+
+fn is_http1(res: const Response&) -> bool {
+    return res.protocol[..] == "HTTP/1.1" || res.protocol[..] == "HTTP/1.0" || res.protocol[..] == "h1";
 }
 
 // Returns true if the HTTP response status code is within the 2xx Successful range [200, 299] (RFC 9110 Section 15.3).
