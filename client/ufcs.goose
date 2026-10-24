@@ -61,6 +61,58 @@ fn ::delete<BuilderFn: fn(wing::Request&)>(session: wing::Session&, url: const u
     return wing::delete(session, url, BuilderFn);
 }
 
+// ---- realtime & streaming bridges (websocket & sse) ------------------------
+
+fn ::ws(session: wing::Session&, url: const u8[:]) -> wing::WebSocketSession, wing::Response, wing::Error {
+    return wing::ws(session, url);
+}
+
+fn ::ws<BuilderFn: fn(wing::Request&)>(session: wing::Session&, url: const u8[:]) -> wing::WebSocketSession, wing::Response, wing::Error {
+    return wing::ws(session, url, BuilderFn);
+}
+
+fn ::sse(session: wing::Session&, url: const u8[:]) -> wing::SseSubscription, wing::Response, wing::Error {
+    return wing::sse(session, url);
+}
+
+fn ::sse<BuilderFn: fn(wing::Request&)>(session: wing::Session&, url: const u8[:]) -> wing::SseSubscription, wing::Response, wing::Error {
+    return wing::sse(session, url, BuilderFn);
+}
+
+fn ::sse_reconnect(session: wing::Session&, sub: wing::SseSubscription&) -> wing::Response, wing::Error {
+    return wing::sse_reconnect(session, sub);
+}
+
+// WebSocket Session Bridges
+fn ::send_text<B>(ws: wing::WebSocketSession&, text: const u8[:], out: B&) {
+    wing::ws_send_text(ws, text, out);
+}
+
+fn ::send_binary<B>(ws: wing::WebSocketSession&, data: const u8[:], out: B&) {
+    wing::ws_send_binary(ws, data, out);
+}
+
+fn ::send_ping<B>(ws: wing::WebSocketSession&, ping_payload: const u8[:], out: B&) {
+    wing::ws_send_ping(ws, ping_payload, out);
+}
+
+fn ::send_pong<B>(ws: wing::WebSocketSession&, pong_payload: const u8[:], out: B&) {
+    wing::ws_send_pong(ws, pong_payload, out);
+}
+
+fn ::close<B>(ws: wing::WebSocketSession&, status_code: u16, reason: const u8[:], out: B&) {
+    wing::ws_close(ws, status_code, reason, out);
+}
+
+fn ::receive<B>(ws: wing::WebSocketSession&, wire: u8[:], out_msg: wing::WsMessage&, out_reply: B&) -> bool {
+    return wing::ws_receive(ws, wire, out_msg, out_reply);
+}
+
+// SSE Subscription Bridges
+fn ::consume<E>(sub: wing::SseSubscription&, chunk: const u8[:], out_events: E&) {
+    wing::sse_consume(sub, chunk, out_events);
+}
+
 // ---- request ufcs bridges --------------------------------------------------
 
 fn ::header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::header(req, name, value); }

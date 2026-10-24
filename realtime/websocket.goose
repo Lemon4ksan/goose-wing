@@ -8,6 +8,8 @@ namespace wing;
 
 import std;
 import security.ct;
+import client.request;
+import client.response;
 
 // ---- 1. Opcodes and Protocol Constants (RFC 6455 Section 5.2) --------------
 
@@ -373,4 +375,128 @@ fn ws_close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out
     encode_ws_frame(out, WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
     ws.is_closed = true;
     ws.close_code = status_code;
+}
+
+// ---- 6. High-Level Message Dispatcher & Server Upgrade ---------------------
+
+struct WsMessage {
+    opcode: u8 = WS_OPCODE_TEXT,
+    data: u8[..4096] = [],
+    close_code: u16 = 0,
+    close_reason: u8[..128] = [],
+    is_valid: bool = false,
+}
+
+// Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,
+// answers Close with Close echo, and populates out_msg for data frames.
+fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply: B&) -> bool {
+    out_msg.is_valid = false;
+    out_msg.data.clear();
+    out_msg.close_reason.clear();
+    out_msg.close_code = 0;
+
+    let hdr, ok = parse_ws_frame_header(wire);
+    guard ok else { return false; }
+
+    let p_start = hdr.header_len as i64;
+    let p_len = hdr.payload_len as i64;
+    guard p_start + p_len <= wire.len else { return false; }
+    let payload = wire[p_start..(p_start + p_len)];
+
+    if hdr.masked {
+        mask_websocket_payload(payload, hdr.mask_key);
+    }
+
+    if hdr.opcode == WS_OPCODE_PING {
+        ws_send_pong(ws, payload, out_reply);
+        out_msg.opcode = WS_OPCODE_PING;
+        out_msg.data.append(payload);
+        out_msg.is_valid = true;
+        return true;
+    } else if hdr.opcode == WS_OPCODE_PONG {
+        out_msg.opcode = WS_OPCODE_PONG;
+        out_msg.data.append(payload);
+        out_msg.is_valid = true;
+        return true;
+    } else if hdr.opcode == WS_OPCODE_CLOSE {
+        let code, reason, _ = parse_ws_close_payload(payload);
+        out_msg.opcode = WS_OPCODE_CLOSE;
+        out_msg.close_code = code;
+        out_msg.close_reason.append(reason);
+        out_msg.is_valid = true;
+        if !ws.is_closed {
+            ws_close(ws, code, reason, out_reply);
+        }
+        ws.is_closed = true;
+        ws.close_code = code;
+        return true;
+    } else if hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY {
+        out_msg.opcode = hdr.opcode;
+        out_msg.data.append(payload);
+        out_msg.is_valid = true;
+        return true;
+    }
+
+    return true;
+}
+
+// Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.
+fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: const u8[:] = "") -> WebSocketSession, bool {
+    let method = req.method[..];
+    if method != "GET" {
+        out_resp.status_code = 405;
+        return WebSocketSession { .. }, false;
+    }
+
+    let upg = header(req, "Upgrade");
+    if !eq_ascii_fold(upg, "websocket") {
+        out_resp.status_code = 400;
+        return WebSocketSession { .. }, false;
+    }
+
+    let conn = header(req, "Connection");
+    var has_upg = false;
+    if eq_ascii_fold(conn, "upgrade") {
+        has_upg = true;
+    } else {
+        for i in 0..conn.len {
+            if i + 7 <= conn.len && eq_ascii_fold(conn[i..i+7], "upgrade") {
+                has_upg = true;
+                break;
+            }
+        }
+    }
+    if !has_upg {
+        out_resp.status_code = 400;
+        return WebSocketSession { .. }, false;
+    }
+
+    let ver = header(req, "Sec-WebSocket-Version");
+    if ver != "13" {
+        out_resp.status_code = 426;
+        header(out_resp, "Sec-WebSocket-Version", "13");
+        return WebSocketSession { .. }, false;
+    }
+
+    let client_key = header(req, "Sec-WebSocket-Key");
+    if client_key.len == 0 {
+        out_resp.status_code = 400;
+        return WebSocketSession { .. }, false;
+    }
+
+    var accept_key: u8[..64] = [];
+    compute_websocket_accept(client_key, accept_key);
+
+    out_resp.status_code = 101;
+    header(out_resp, "Upgrade", "websocket");
+    header(out_resp, "Connection", "Upgrade");
+    header(out_resp, "Sec-WebSocket-Accept", accept_key[..]);
+
+    var session = new_websocket_session(false);
+    if subprotocol.len > 0 {
+        header(out_resp, "Sec-WebSocket-Protocol", subprotocol);
+        session.subprotocol.append(subprotocol);
+    }
+
+    return session, true;
 }

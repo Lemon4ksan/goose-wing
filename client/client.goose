@@ -17,6 +17,8 @@ import http.cache.cache_control;
 import http.cache.freshness;
 import http.cache.validators;
 import http.cache.engine;
+import realtime.websocket;
+import realtime.sse;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -674,6 +676,37 @@ fn add_mock_resolved_ip(session: Session&, ip_str: const u8[:]) {
     }
 }
 
+fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
+    var route = MockExchange {
+        status_code: 101,
+        ..
+    };
+    route.method.append("GET");
+    route.pattern_url.append(url_pattern);
+    route.headers.push(make_header("Upgrade", "websocket"));
+    route.headers.push(make_header("Connection", "Upgrade"));
+    if subprotocol.len > 0 {
+        route.headers.push(make_header("Sec-WebSocket-Protocol", subprotocol));
+    }
+    session.mock_routes.push(route);
+}
+
+fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
+    var route = MockExchange {
+        status_code: 200,
+        ..
+    };
+    route.method.append("GET");
+    route.pattern_url.append(url_pattern);
+    route.headers.push(make_header("Content-Type", "text/event-stream"));
+    route.headers.push(make_header("Cache-Control", "no-cache"));
+    route.headers.push(make_header("Connection", "keep-alive"));
+    if sample_events.len > 0 {
+        route.body.append(sample_events);
+    }
+    session.mock_routes.push(route);
+}
+
 fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
     var raw_hdr: u8[..2048] = [];
     raw_hdr.append(name);
@@ -1198,7 +1231,22 @@ fn execute_mock_or_echo_hop(
                     ..
                 };
             }
-            return build_mock_response(route, current_url, ctx.headers[..]);
+            var resp = build_mock_response(route, current_url, ctx.headers[..]);
+            if route.status_code == 101 {
+                var sent_key: u8[..64] = [];
+                for &hdr in ctx.headers {
+                    if eq_ascii_fold(hdr.name[..], "sec-websocket-key") {
+                        sent_key.append(hdr.value[..]);
+                        break;
+                    }
+                }
+                if sent_key.len > 0 && header(resp, "sec-websocket-accept").len == 0 {
+                    var accept_buf: u8[..64] = [];
+                    compute_websocket_accept(sent_key[..], accept_buf);
+                    resp.headers.push(make_header("Sec-WebSocket-Accept", accept_buf[..]));
+                }
+            }
+            return resp;
         }
     }
 
@@ -1277,4 +1325,216 @@ fn delete<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Err
     var req = new_request("DELETE", url);
     F(&req);
     return do(session, req);
+}
+
+// ---- realtime & streaming (aoni-style ergonomics) -------------------------
+
+// Normalizes ws:// and wss:// into http:// and https:// for HTTP pipeline
+fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
+    out.clear();
+    if starts_with(url, "ws://") {
+        out.append("http://");
+        out.append(url[5..]);
+    } else if starts_with(url, "wss://") {
+        out.append("https://");
+        out.append(url[6..]);
+    } else {
+        out.append(url);
+    }
+}
+
+fn ws_perform_handshake(
+    session: Session&,
+    req: Request&,
+    client_key: const u8[:]
+) -> WebSocketSession, Response, Error {
+    let resp, err = do(session, req);
+    guard ok(err) else {
+        return new_websocket_session(true), resp, err;
+    }
+
+    // Validate 101 Switching Protocols
+    if resp.status_code != 101 {
+        return new_websocket_session(true), resp, make_error(
+            resp.status_code,
+            "websocket_handshake",
+            "server did not return 101 Switching Protocols"
+        );
+    }
+
+    // Validate Upgrade: websocket
+    let upg = header(resp, "Upgrade");
+    if !eq_ascii_fold(upg, "websocket") {
+        return new_websocket_session(true), resp, make_error(
+            400,
+            "websocket_handshake",
+            "missing or invalid Upgrade header in server response"
+        );
+    }
+
+    // Validate Connection header contains Upgrade
+    let conn = header(resp, "Connection");
+    var has_upgrade_token = false;
+    if eq_ascii_fold(conn, "upgrade") {
+        has_upgrade_token = true;
+    } else {
+        for t in 0..conn.len {
+            if t + 7 <= conn.len && eq_ascii_fold(conn[t..t+7], "upgrade") {
+                has_upgrade_token = true;
+                break;
+            }
+        }
+    }
+    if !has_upgrade_token {
+        return new_websocket_session(true), resp, make_error(
+            400,
+            "websocket_handshake",
+            "missing Connection: Upgrade header in server response"
+        );
+    }
+
+    // Validate Sec-WebSocket-Accept
+    let server_accept = header(resp, "Sec-WebSocket-Accept");
+    if !validate_websocket_accept(client_key, server_accept) {
+        return new_websocket_session(true), resp, make_error(
+            400,
+            "websocket_handshake",
+            "invalid Sec-WebSocket-Accept key in server response"
+        );
+    }
+
+    var ws_sess = new_websocket_session(true);
+    let proto = header(resp, "Sec-WebSocket-Protocol");
+    if proto.len > 0 {
+        ws_sess.subprotocol.append(proto);
+    } else {
+        let req_proto = header(req, "Sec-WebSocket-Protocol");
+        if req_proto.len > 0 {
+            ws_sess.subprotocol.append(req_proto);
+        }
+    }
+
+    return ws_sess, resp, no_error();
+}
+
+// Initiates a WebSocket connection with automatic RFC 6455 handshake negotiation
+fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error {
+    var eff_url: u8[..2048] = [];
+    normalize_realtime_url(url, eff_url);
+
+    var req = new_request("GET", eff_url[..]);
+    header(req, "Upgrade", "websocket");
+    header(req, "Connection", "Upgrade");
+    header(req, "Sec-WebSocket-Version", "13");
+
+    var nonce: u8[16] = [0; 16];
+    var seed: u64 = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
+    for i in 16 {
+        seed = seed * 6364136223846793005 + 1442695040888963407;
+        nonce[i] = ((seed >> 33) & 0xFF) as u8;
+    }
+    var client_key: u8[..32] = [];
+    generate_websocket_key(nonce, client_key);
+    header(req, "Sec-WebSocket-Key", client_key[..]);
+
+    return ws_perform_handshake(session, req, client_key[..]);
+}
+
+// Initiates a WebSocket connection with custom request configuration
+fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error {
+    var eff_url: u8[..2048] = [];
+    normalize_realtime_url(url, eff_url);
+
+    var req = new_request("GET", eff_url[..]);
+    header(req, "Upgrade", "websocket");
+    header(req, "Connection", "Upgrade");
+    header(req, "Sec-WebSocket-Version", "13");
+
+    var nonce: u8[16] = [0; 16];
+    var seed: u64 = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
+    for i in 16 {
+        seed = seed * 6364136223846793005 + 1442695040888963407;
+        nonce[i] = ((seed >> 33) & 0xFF) as u8;
+    }
+    var client_key: u8[..32] = [];
+    generate_websocket_key(nonce, client_key);
+    header(req, "Sec-WebSocket-Key", client_key[..]);
+
+    F(&req);
+
+    return ws_perform_handshake(session, req, client_key[..]);
+}
+
+fn sse_perform_connect(
+    session: Session&,
+    sub: SseSubscription,
+    req: Request&
+) -> SseSubscription, Response, Error {
+    var eff_sub = sub;
+    let resp, err = do(session, req);
+    guard ok(err) else {
+        return eff_sub, resp, err;
+    }
+
+    if !is_success(resp) && !is_redirect(resp) {
+        return eff_sub, resp, make_error(
+            resp.status_code,
+            "sse_connect",
+            "server returned non-2xx status for SSE stream"
+        );
+    }
+
+    let ct = header(resp, "Content-Type");
+    if !starts_with(ct, "text/event-stream") {
+        return eff_sub, resp, make_error(
+            415,
+            "sse_connect",
+            "server response is not text/event-stream"
+        );
+    }
+
+    eff_sub.connected = true;
+    return eff_sub, resp, no_error();
+}
+
+// Initiates a Server-Sent Events (SSE) stream subscription per W3C EventSource
+fn sse(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error {
+    var sub = new_sse_subscription(url);
+    var req = new_request("GET", url);
+    sse_prepare_request(sub, req);
+    return sse_perform_connect(session, sub, req);
+}
+
+// Initiates an SSE stream subscription with custom request configuration
+fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error {
+    var sub = new_sse_subscription(url);
+    var req = new_request("GET", url);
+    sse_prepare_request(sub, req);
+    F(&req);
+    return sse_perform_connect(session, sub, req);
+}
+
+// Reconnects an existing SSE subscription with Last-Event-ID
+fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
+    let eff_url = if sub.url.len > 0 { sub.url[..] } else { "" };
+    var req = new_request("GET", eff_url);
+    sse_prepare_request(sub, req);
+
+    let resp, err = do(session, req);
+    guard ok(err) else {
+        sub.connected = false;
+        return resp, err;
+    }
+
+    if !is_success(resp) {
+        sub.connected = false;
+        return resp, make_error(
+            resp.status_code,
+            "sse_reconnect",
+            "server returned non-2xx status during reconnection"
+        );
+    }
+
+    sub.connected = true;
+    return resp, no_error();
 }

@@ -155,6 +155,51 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         sub.assert_true(session.is_closed, "Session marked closed");
         sub.assert_eq(session.close_code, wing::WS_STATUS_NORMAL, "Close code set");
     };
+
+    t.run("7. Aoni-Style Automated Client WebSocket Upgrade & ws_receive Engine") { sub =>
+        var client = wing::new_client();
+        wing::add_mock_websocket(client, "https://stream.example.com/ws", "chat.v1");
+
+        var ws_sess, resp, err = client.ws("wss://stream.example.com/ws") { req =>
+            req.bearer("token123");
+            req.header("Sec-WebSocket-Protocol", "chat.v1");
+        };
+
+        sub.assert_true(err.ok(), "Client ws upgrade succeeded");
+        sub.assert_eq(resp.status_code, 101, "Response status 101 Switching Protocols");
+        sub.assert_bytes_eq(ws_sess.subprotocol[..], "chat.v1", "Subprotocol negotiated");
+
+        // Test automatic ws_receive on incoming Ping
+        var incoming_ping: u8[>..] = [];
+        let no_mask: u8[4] = [0, 0, 0, 0];
+        wing::encode_ws_frame(incoming_ping, wing::WS_OPCODE_PING, "ping-payload", false, no_mask, true);
+
+        var msg = wing::WsMessage { .. };
+        var pong_reply: u8[>..] = [];
+        let handled_ping = ws_sess.receive(incoming_ping[..], msg, pong_reply);
+        sub.assert_true(handled_ping, "ws_receive processed ping frame");
+        sub.assert_eq(msg.opcode, wing::WS_OPCODE_PING, "Message opcode is PING");
+        sub.assert_true(pong_reply.len > 0, "Automatic Pong response generated into reply buffer");
+
+        // Verify that the reply is a valid Pong frame
+        let pong_hdr, ok_pong = wing::parse_ws_frame_header(pong_reply[..]);
+        sub.assert_true(ok_pong, "Parsed auto-pong frame header");
+        sub.assert_eq(pong_hdr.opcode, wing::WS_OPCODE_PONG, "Opcode in auto-reply is PONG");
+
+        // Server-side upgrade test
+        var server_req = wing::new_request("GET", "https://example.com/ws");
+        wing::header(server_req, "Upgrade", "websocket");
+        wing::header(server_req, "Connection", "Upgrade");
+        wing::header(server_req, "Sec-WebSocket-Version", "13");
+        wing::header(server_req, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+
+        var server_resp = wing::new_response();
+        let s_ws, ok_s = wing::ws_upgrade_request(server_req, server_resp, "chat.v1");
+        sub.assert_true(ok_s, "Server upgrade succeeded");
+        sub.assert_eq(server_resp.status_code, 101, "Server status 101");
+        sub.assert_bytes_eq(wing::header(server_resp, "Sec-WebSocket-Accept"), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Server accept matches RFC 6455");
+        sub.assert_false(s_ws.is_client, "Server session is_client is false");
+    };
 }
 
 fn test_http3_priority_update(t: core::T&) {
@@ -265,6 +310,32 @@ fn test_server_sent_events(t: core::T&) {
         wing::sse_consume(subscr, "data: chunked message\n\n", events);
         sub.assert_eq(events.len, 1, "Consumed 1 event via SseSubscription");
         sub.assert_bytes_eq(events[0].data[..], "chunked message", "Event content matches");
+    };
+
+    t.run("6. Aoni-Style Automated Client SSE Subscription") { sub =>
+        var client = wing::new_client();
+        wing::add_mock_sse(client, "https://api.example.com/events", "event: tick\nid: 1\ndata: {\"val\":100}\n\n");
+
+        var sse_sub, resp, err = client.sse("https://api.example.com/events") { req =>
+            req.bearer("token123");
+        };
+
+        sub.assert_true(err.ok(), "Client SSE connect succeeded");
+        sub.assert_eq(resp.status_code, 200, "Response status 200 OK");
+        sub.assert_true(sse_sub.connected, "Subscription marked connected");
+
+        var events: wing::SseEvent[..5] = [];
+        sse_sub.consume(resp.body[..], events);
+        sub.assert_eq(events.len, 1, "Consumed 1 event from mock SSE stream");
+        sub.assert_bytes_eq(events[0].event[..], "tick", "Event name is tick");
+        sub.assert_bytes_eq(events[0].data[..], "{\"val\":100}", "Data payload matches");
+        sub.assert_bytes_eq(events[0].id[..], "1", "Event ID matches");
+
+        // Server-side response initialization
+        var s_resp = wing::new_response();
+        wing::sse_init_response(s_resp);
+        sub.assert_eq(s_resp.status_code, 200, "Server SSE status 200");
+        sub.assert_bytes_eq(wing::header(s_resp, "Content-Type"), "text/event-stream", "Content-Type text/event-stream");
     };
 }
 

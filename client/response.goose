@@ -69,6 +69,19 @@ fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
     return "";
 }
 
+fn header(res: Response&, name: const u8[:], value: const u8[:]) {
+    for &header_entry in res.headers {
+        if eq_ascii_fold(header_entry.name[..], name) {
+            header_entry.value.clear();
+            header_entry.value.append(value);
+            return;
+        }
+    }
+    if res.headers.len < 32 {
+        res.headers.push(make_header(name, value));
+    }
+}
+
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {
     for &header_entry in res.sent_headers {
         if eq_ascii_fold(header_entry.name[..], name) {

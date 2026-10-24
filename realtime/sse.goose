@@ -7,6 +7,8 @@
 namespace wing;
 
 import std;
+import client.request;
+import client.response;
 
 // ---- 1. SSE Event Model ----------------------------------------------------
 
@@ -248,5 +250,23 @@ fn sse_build_request_headers<B>(
 // Feeds incoming network chunk into subscription and dispatches parsed events
 fn sse_consume<E>(sub: SseSubscription&, chunk: const u8[:], out_events: E&) {
     sse_feed(sub.parser, chunk, out_events);
+}
+
+// Configures an HTTP request for SSE streaming per W3C EventSource
+fn sse_prepare_request(sub: const SseSubscription&, req: Request&) {
+    header(req, "Accept", "text/event-stream");
+    header(req, "Cache-Control", "no-cache");
+    header(req, "Connection", "keep-alive");
+    if sub.parser.last_event_id.len > 0 {
+        header(req, "Last-Event-ID", sub.parser.last_event_id[..]);
+    }
+}
+
+// Configures a server HTTP response for SSE streaming (text/event-stream)
+fn sse_init_response(res: Response&) {
+    res.status_code = 200;
+    header(res, "Content-Type", "text/event-stream");
+    header(res, "Cache-Control", "no-cache");
+    header(res, "Connection", "keep-alive");
 }
 

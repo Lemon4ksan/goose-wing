@@ -88,6 +88,16 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
     return new_request("POST", url, F);
 }
 
+// Returns the value of a request header by name (case-insensitive lookup)
+fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
+    for &header_entry in req.headers {
+        if eq_ascii_fold(header_entry.name[..], name) {
+            return header_entry.value[..];
+        }
+    }
+    return "";
+}
+
 // ---- ufcs request mutators -------------------------------------------------
 
 // Sets a header on the request. Matches existing headers case-insensitively,
