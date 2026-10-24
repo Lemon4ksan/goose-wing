@@ -1,11 +1,12 @@
 // Tests for multipart form-data and HTTP range parser bounds and edge cases.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. 64-Bit Integer Overflow in RFC 9110 Range Offsets & parse_i64_slice
 // ----------------------------------------------------------------------------
-fn test_range_offset_i64_overflow(t: wing::T&) {
+fn test_range_offset_i64_overflow(t: core::T&) {
     t.run("parse_i64_slice Rejects Values >= 2^63 and Multi-Digit Overflows") { sub =>
         // Boundary: 2^63 - 1 (9223372036854775807) is maximum signed positive i64
         let val_max, ok_max = wing::parse_i64_slice("9223372036854775807");
@@ -74,7 +75,7 @@ fn test_range_offset_i64_overflow(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. Multipart Delimiter Search & Line Endings (LF vs CRLF Compliance)
 // ----------------------------------------------------------------------------
-fn test_multipart_lf_delimiter_and_line_endings(t: wing::T&) {
+fn test_multipart_lf_delimiter_and_line_endings(t: core::T&) {
     t.run("LF-Only Line Endings in Multipart Form-Data") { sub =>
         // Valid RFC 7578 / RFC 2046 multipart with UNIX LF ('\n') line endings
         let boundary = "GooseLFBoundary42";
@@ -148,7 +149,7 @@ fn test_multipart_lf_delimiter_and_line_endings(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. Algorithmic Limits & Range Coalescing Edge Cases
 // ----------------------------------------------------------------------------
-fn test_range_limits_and_coalescing(t: wing::T&) {
+fn test_range_limits_and_coalescing(t: core::T&) {
     t.run("RFC 9110 Coalescing with Large 64-Bit Boundaries Without Overflow") { sub =>
         let res_len: i64 = 9223372036854775806;
         // Overlapping adjacent intervals at high 64-bit offsets:
@@ -191,7 +192,7 @@ fn test_range_limits_and_coalescing(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. MIME Headers Memory Limit Bypass (#81741 / CVE-2026-94440)
 // ----------------------------------------------------------------------------
-fn test_mime_headers_memory_limit_bypass(t: wing::T&) {
+fn test_mime_headers_memory_limit_bypass(t: core::T&) {
     t.run("MIME Header Memory Limit Enforced with Remaining Quota < 400 Bytes (#81741 / CVE-2026-94440)") { sub =>
         let boundary = "GooseMemBnd";
         var body: u8[>..] = [];
@@ -255,7 +256,7 @@ fn test_mime_headers_memory_limit_bypass(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. Range Header Size and Count Limits (#81858 / CVE-2026-78667)
 // ----------------------------------------------------------------------------
-fn test_range_header_size_and_count_limits(t: wing::T&) {
+fn test_range_header_size_and_count_limits(t: core::T&) {
     t.run("200+ Ranges Requested Rejected in O(1) Time (#81858 / CVE-2026-78667)") { sub =>
         // In , a Range header with > 200 ranges caused CPU exhaustion.
         // In naive implementations, ose, max_ranges is 16 by default. It must reject at range 17 in O(1) time.
@@ -300,7 +301,7 @@ fn test_range_header_size_and_count_limits(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 6. Delimiter Line-Ending Desync and Transport Padding
 // ----------------------------------------------------------------------------
-fn test_delimiter_line_ending_desync(t: wing::T&) {
+fn test_delimiter_line_ending_desync(t: core::T&) {
     t.run("Pure Bare UNIX LF Delimiters Across All Parts") { sub =>
         let boundary = "PureLF";
         var body: u8[>..] = [];
@@ -356,7 +357,7 @@ fn test_delimiter_line_ending_desync(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 7. 10,000+ Parts Boundary Flood & Memory Limits (#59153 / CVE-2023-24536)
 // ----------------------------------------------------------------------------
-fn test_multipart_part_count_fuzzing(t: wing::T&) {
+fn test_multipart_part_count_fuzzing(t: core::T&) {
     t.run("1,000-Part Request Aborted by Default max_parts (#59153 / CVE-2023-24536)") { sub =>
         let boundary = "FloodBnd";
         var body: u8[>..] = [];
@@ -416,7 +417,7 @@ fn test_multipart_part_count_fuzzing(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 8. Malformed Boundary Quoting and RFC 2046 Validation
 // ----------------------------------------------------------------------------
-fn test_malformed_boundary_quoting_and_lexical(t: wing::T&) {
+fn test_malformed_boundary_quoting_and_lexical(t: core::T&) {
     t.run("RFC 2046 Section 5.1.1 Boundary Length Bounds (0, 70, 71 Chars)") { sub =>
         // Empty boundary: length 0
         sub.assert_false(wing::validate_boundary_string(""), "0-length boundary rejected");
@@ -495,7 +496,7 @@ fn test_malformed_boundary_quoting_and_lexical(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 9. ReDoS Resistance and Nested Boundary Isolation (#10616, #14085)
 // ----------------------------------------------------------------------------
-fn test_redos_and_nested_boundaries(t: wing::T&) {
+fn test_redos_and_nested_boundaries(t: core::T&) {
     t.run("Prefix Collision: Inner Boundary Has Outer Boundary as Prefix (#10616)") { sub =>
         // outer boundary is a prefix of inner boundary
         let outer_bnd = "NextPart_12345";
@@ -579,7 +580,7 @@ fn test_redos_and_nested_boundaries(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 10. Content-Disposition Filename Traversal and Edge Cases (#45789, #63629)
 // ----------------------------------------------------------------------------
-fn test_mime_disposition_and_filename_traversal(t: wing::T&) {
+fn test_mime_disposition_and_filename_traversal(t: core::T&) {
     t.run("Directory Path Traversal in Multipart Filename (#45789)") { sub =>
         // filename with directory path (../../etc/shadow or C:\\Windows\\cmd.exe)
         let boundary = "TravBnd";
@@ -636,19 +637,19 @@ fn test_mime_disposition_and_filename_traversal(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Multipart & Range Edge Cases Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Multipart & Range Edge Cases Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. 64-Bit Integer Overflow in Range Offsets (CWE-190)", test_range_offset_i64_overflow);
-    wing::run_case(runner, "2. Multipart Delimiter & Line Endings (LF vs CRLF)", test_multipart_lf_delimiter_and_line_endings);
-    wing::run_case(runner, "3. Range Limits & Boundary Coalescing", test_range_limits_and_coalescing);
-    wing::run_case(runner, "4. MIME Headers Memory Limit Bypass (#81741 / CVE-2026-94440)", test_mime_headers_memory_limit_bypass);
-    wing::run_case(runner, "5. Range Header Size and Count Limits (#81858 / CVE-2026-78667)", test_range_header_size_and_count_limits);
-    wing::run_case(runner, "6. Delimiter Line-Ending Desync and Transport Padding", test_delimiter_line_ending_desync);
-    wing::run_case(runner, "7. 10,000+ Parts Boundary Flood and Memory Limits (#59153 / CVE-2023-24536)", test_multipart_part_count_fuzzing);
-    wing::run_case(runner, "8. Malformed Boundary Quoting and RFC 2046 Validation", test_malformed_boundary_quoting_and_lexical);
-    wing::run_case(runner, "9. ReDoS Resistance and Nested Boundary Isolation (#10616, #14085)", test_redos_and_nested_boundaries);
-    wing::run_case(runner, "10. Content-Disposition Filename Traversal and Edge Cases (#45789, #63629)", test_mime_disposition_and_filename_traversal);
+    core::run_case(runner, "1. 64-Bit Integer Overflow in Range Offsets (CWE-190)", test_range_offset_i64_overflow);
+    core::run_case(runner, "2. Multipart Delimiter & Line Endings (LF vs CRLF)", test_multipart_lf_delimiter_and_line_endings);
+    core::run_case(runner, "3. Range Limits & Boundary Coalescing", test_range_limits_and_coalescing);
+    core::run_case(runner, "4. MIME Headers Memory Limit Bypass (#81741 / CVE-2026-94440)", test_mime_headers_memory_limit_bypass);
+    core::run_case(runner, "5. Range Header Size and Count Limits (#81858 / CVE-2026-78667)", test_range_header_size_and_count_limits);
+    core::run_case(runner, "6. Delimiter Line-Ending Desync and Transport Padding", test_delimiter_line_ending_desync);
+    core::run_case(runner, "7. 10,000+ Parts Boundary Flood and Memory Limits (#59153 / CVE-2023-24536)", test_multipart_part_count_fuzzing);
+    core::run_case(runner, "8. Malformed Boundary Quoting and RFC 2046 Validation", test_malformed_boundary_quoting_and_lexical);
+    core::run_case(runner, "9. ReDoS Resistance and Nested Boundary Isolation (#10616, #14085)", test_redos_and_nested_boundaries);
+    core::run_case(runner, "10. Content-Disposition Filename Traversal and Edge Cases (#45789, #63629)", test_mime_disposition_and_filename_traversal);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

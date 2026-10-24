@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import core.time;
 import app.profile;
 import http.headers;
 import http.cache.cache_control;
@@ -132,7 +131,7 @@ fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> b
 }
 
 // Evaluates an If-Range header as either a strong entity-tag or an exact HTTP-date (RFC 9110 §13.1.5).
-fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityTag&, cached_last_modified: Time) -> bool {
+fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityTag&, cached_last_modified: core::Time) -> bool {
     var s = trim_lws(raw_if_range);
     guard s.len > 0 else { return false; }
 
@@ -140,9 +139,9 @@ fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityT
         return strong_eq(parse_etag(s), cached_etag);
     }
 
-    let parsed_date, ok_date = parse_http_date(s);
+    let parsed_date, ok_date = core::parse_http_date(s);
     if ok_date && !is_zero(cached_last_modified) {
-        return unix(parsed_date) == unix(cached_last_modified);
+        return core::unix(parsed_date) == core::unix(cached_last_modified);
     }
     return false;
 }

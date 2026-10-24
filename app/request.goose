@@ -4,7 +4,6 @@ namespace wing;
 
 import std;
 import json;
-import core.url;
 import cookie.policy;
 import app.profile;
 
@@ -28,7 +27,7 @@ struct Request {
     tainted_origin: bool = false,
     is_main_frame: bool = true,
     is_reload: bool = false,
-    initiator: Origin = Origin { .. },
+    initiator: core::Origin = core::Origin { .. },
     has_initiator: bool = false,
     site_for_cookies: SiteForCookies = SiteForCookies { .. },
     has_site_for_cookies: bool = false,
@@ -225,7 +224,7 @@ fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = 
     req.body_consumed = false;
 }
 
-fn set_initiator(req: Request&, orig: const Origin&) {
+fn set_initiator(req: Request&, orig: const core::Origin&) {
     req.initiator = copy(orig);
     req.has_initiator = true;
 }

@@ -2,9 +2,10 @@
 // HTTP CONNECT tunneling, credential isolation, and 4-tier Slowloris defenses.
 // CVE-2026-94439, CVE-2026-56866, CVE-2025-4673, and CVE-2021-33197 defenses.
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_socks5_greeting_and_rfc1929(t: wing::T&) {
+fn test_socks5_greeting_and_rfc1929(t: core::T&) {
     t.run("SOCKS5 Phase 1 Greeting and Negotiation") { sub =>
         var greeting_buf: u8[..16] = [];
         wing::build_socks5_greeting(true, true, greeting_buf);
@@ -106,7 +107,7 @@ fn test_socks5_greeting_and_rfc1929(t: wing::T&) {
     };
 }
 
-fn test_socks5_command_and_reply_parsing(t: wing::T&) {
+fn test_socks5_command_and_reply_parsing(t: core::T&) {
     t.run("socks5h vs socks5 ATYP and Port Serialization") { sub =>
         // socks5h:// MUST use ATYP = 0x03 to delegate DNS resolution to proxy node
         var req_socks5h: u8[..300] = [];
@@ -228,7 +229,7 @@ fn test_socks5_command_and_reply_parsing(t: wing::T&) {
     };
 }
 
-fn test_http_connect_tunnel_and_buffer_hygiene(t: wing::T&) {
+fn test_http_connect_tunnel_and_buffer_hygiene(t: core::T&) {
     t.run("CONNECT Header Construction & Credential Isolation (CVE-2025-4673)") { sub =>
         var req_buf: u8[..1024] = [];
         wing::build_http_connect_request("secure.bank.com", 443, "Basic dXNlcjpwYXNz", "goose-wing/1.0", req_buf);
@@ -314,7 +315,7 @@ fn test_http_connect_tunnel_and_buffer_hygiene(t: wing::T&) {
     };
 }
 
-fn test_slowloris_tarpit_defenses(t: wing::T&) {
+fn test_slowloris_tarpit_defenses(t: core::T&) {
     t.run("4-Tier Slowloris Defense Enforcement") { sub =>
         let cfg = wing::new_slowloris_defense_config();
         var reader = wing::new_header_reader(cfg, 0);
@@ -359,11 +360,11 @@ fn test_slowloris_tarpit_defenses(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("net/proxy SOCKS5 & Slowloris Defense Suite", wing::Verbosity.Verbose);
-    wing::run_case(runner, "1. SOCKS5 Greeting & RFC 1929", test_socks5_greeting_and_rfc1929);
-    wing::run_case(runner, "2. SOCKS5 Command & Reply", test_socks5_command_and_reply_parsing);
-    wing::run_case(runner, "3. HTTP CONNECT Tunnel & Buffer Hygiene", test_http_connect_tunnel_and_buffer_hygiene);
-    wing::run_case(runner, "4. Slowloris Tarpit Defenses", test_slowloris_tarpit_defenses);
-    let ok = wing::finish(runner);
+    var runner = core::new_runner("net/proxy SOCKS5 & Slowloris Defense Suite", core::Verbosity.Verbose);
+    core::run_case(runner, "1. SOCKS5 Greeting & RFC 1929", test_socks5_greeting_and_rfc1929);
+    core::run_case(runner, "2. SOCKS5 Command & Reply", test_socks5_command_and_reply_parsing);
+    core::run_case(runner, "3. HTTP CONNECT Tunnel & Buffer Hygiene", test_http_connect_tunnel_and_buffer_hygiene);
+    core::run_case(runner, "4. Slowloris Tarpit Defenses", test_slowloris_tarpit_defenses);
+    let ok = core::finish(runner);
     assert(ok);
 }

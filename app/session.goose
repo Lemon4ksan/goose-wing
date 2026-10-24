@@ -2,7 +2,6 @@
 namespace wing;
 
 import std;
-import core.url;
 import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
@@ -281,7 +280,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
 
     if has_colon {
         var comp_buf: u8[..64] = [];
-        let ipv6_ok = parse_and_compress_ipv6(norm_ip, comp_buf);
+        let ipv6_ok = core::parse_and_compress_ipv6(norm_ip, comp_buf);
         let eff_ip = if ipv6_ok { comp_buf[..] } else { norm_ip };
         return is_private_or_reserved_ipv6(eff_ip);
     }
@@ -310,7 +309,7 @@ fn is_dangerous_service_port(port_num: i32) -> bool {
            port_num == 28017;    // MongoDB Web Status
 }
 
-fn validate_url_against_ssrf(url_val: const Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
+fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
 
     if policy.https_only && scheme(url_val) != "https" {
@@ -639,7 +638,7 @@ fn build_effective_url(
     out: u8[..2048]&
 ) {
     out.clear();
-    let parsed_base = new_url(base_url);
+    let parsed_base = core::new_url(base_url);
     if parsed_base.valid {
         let eff_url = resolve_endpoint(parsed_base, req_url);
         out.append(href(eff_url));
@@ -659,15 +658,15 @@ fn build_effective_url(
 // ---- 6-phase execution pipeline (execute_pipeline) -------------------------
 
 struct RequestExecutionContext {
-    url_chain: Url[..16] = [],
+    url_chain: core::Url[..16] = [],
     current_method: u8[..16] = [],
     headers: HeaderItem[..32] = [],
     rewind_buf: u8[..4096] = [],
     rewindable: bool = true,
     body_consumed: bool = false,
-    initiator: Origin = Origin { .. },
+    initiator: core::Origin = core::Origin { .. },
     has_initiator: bool = false,
-    top_frame_origin: Origin = Origin { .. },
+    top_frame_origin: core::Origin = core::Origin { .. },
     site_for_cookies: SiteForCookies = SiteForCookies { .. },
     first_party_policy: FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
     is_main_frame: bool = true,
@@ -683,7 +682,7 @@ struct RequestExecutionContext {
     body: u8[>..] = [],
 }
 
-fn validate_hop_prerequisites(session: const Session&, current_url: const Url&) -> Error {
+fn validate_hop_prerequisites(session: const Session&, current_url: const core::Url&) -> Error {
     if session.https_only && scheme(current_url) != "https" {
         return make_error(400, "ssrf_guard", "https_only policy violated");
     }
@@ -696,7 +695,7 @@ fn validate_hop_prerequisites(session: const Session&, current_url: const Url&) 
 
 fn compute_hop_samesite_context(
     ctx: const RequestExecutionContext&,
-    current_url: const Url&,
+    current_url: const core::Url&,
     safe_method: bool,
 ) -> SameSiteCookieContext {
     var samesite_ctx_type = SameSiteContextType.CrossSite;
@@ -731,7 +730,7 @@ fn compute_hop_samesite_context(
 fn prepare_hop_cookie_header(
     session: Session&,
     ctx: RequestExecutionContext&,
-    current_url: const Url&,
+    current_url: const core::Url&,
     samesite_eval: const SameSiteCookieContext&,
     safe_method: bool,
 ) {
@@ -764,7 +763,7 @@ fn prepare_hop_cookie_header(
 fn ingest_hop_response_cookies(
     session: Session&,
     ctx: const RequestExecutionContext&,
-    current_url: const Url&,
+    current_url: const core::Url&,
     samesite_eval: const SameSiteCookieContext&,
     set_cookies: const u8[..256][..16]&,
 ) {
@@ -837,7 +836,7 @@ fn apply_redirect_transition(
     return no_error();
 }
 
-fn init_execution_context(session: const Session&, req: const Request&, parsed_initial: const Url&) -> RequestExecutionContext {
+fn init_execution_context(session: const Session&, req: const Request&, parsed_initial: const core::Url&) -> RequestExecutionContext {
     var ctx = RequestExecutionContext {
         current_method: copy(req.method),
         rewindable: req.rewindable,
@@ -861,7 +860,7 @@ fn init_execution_context(session: const Session&, req: const Request&, parsed_i
         ctx.initiator = copy(req.initiator);
         ctx.has_initiator = true;
     } else {
-        ctx.initiator = origin_from_url(parsed_initial);
+        ctx.initiator = core::origin_from_url(parsed_initial);
         ctx.has_initiator = true;
     }
 
@@ -886,7 +885,7 @@ fn process_redirect_hop(
     session: Session&,
     ctx: RequestExecutionContext&,
     resp: Response&,
-    current_url: const Url&,
+    current_url: const core::Url&,
     loc_hdr: const u8[:],
 ) -> bool, Error {
     if ctx.redirect_mode == RedirectMode.Manual {
@@ -936,7 +935,7 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
-    let parsed_initial, parse_err = parse_url(raw_eff_url[..]);
+    let parsed_initial, parse_err = core::parse_url(raw_eff_url[..]);
     guard parsed_initial.valid else {
         return Response { .. }, make_error(400, "url_parse", "invalid request url");
     }
@@ -998,7 +997,7 @@ fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfG
 // Synthesizes an HTTP Response from a matched MockExchange.
 fn build_mock_response(
     route: const MockExchange&,
-    current_url: const Url&,
+    current_url: const core::Url&,
     sent_headers: const HeaderItem[:]
 ) -> Response {
     var resp = Response {
@@ -1023,7 +1022,7 @@ fn build_mock_response(
 fn execute_mock_or_echo_hop(
     session: Session&,
     ctx: RequestExecutionContext&,
-    current_url: const Url&,
+    current_url: const core::Url&,
     out_dns_err: RedirectError&
 ) -> Response {
     out_dns_err = RedirectError.None;

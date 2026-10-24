@@ -5,7 +5,6 @@ namespace wing;
 
 import std;
 import app.profile;
-import core.math;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);
@@ -271,7 +270,7 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
 
     match len {
         2 => {
-            let w = (read_le_u16(name, 0) | 0x2020) as u32;
+            let w = (core::read_le_u16(name, 0) | 0x2020) as u32;
             if w == 0x6574 { return WellKnownHeader.TE; }
         },
         3 => {
@@ -280,14 +279,14 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w == 0x616976 { return WellKnownHeader.Via; }
         },
         4 => {
-            let w = read_le_u32(name, 0) | 0x20202020;
+            let w = core::read_le_u32(name, 0) | 0x20202020;
             if w == 0x74736f68 { return WellKnownHeader.Host; }
             if w == 0x65746164 { return WellKnownHeader.Date; }
             if w == 0x67617465 { return WellKnownHeader.ETag; }
             if w == 0x79726176 { return WellKnownHeader.Vary; }
         },
         5 => {
-            if (read_le_u32(name, 0) | 0x20202020) == 0x676e6172 && ((name[4] as u32) | 0x20) == 0x65 {
+            if (core::read_le_u32(name, 0) | 0x20202020) == 0x676e6172 && ((name[4] as u32) | 0x20) == 0x65 {
                 return WellKnownHeader.Range;
             }
         },
@@ -306,7 +305,7 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if eq_ascii_fold(name, "alt-svc") { return WellKnownHeader.AltSvc; }
         },
         8 => {
-            let w = read_le_u64(name, 0) | 0x2020202020202020;
+            let w = core::read_le_u64(name, 0) | 0x2020202020202020;
             if w == 0x6e6f697461636f6c { return WellKnownHeader.Location; }
             if w == 0x686374616d2d6669 { return WellKnownHeader.IfMatch; }
             if w == 0x65676e61722d6669 { return WellKnownHeader.IfRange; }
@@ -721,10 +720,10 @@ fn swar_has_ctl_or_del(w: u64) -> bool {
 
 // Fast header name hash (FNV-1a 32-bit case-folded)
 fn hash_header_name(name: const u8[:]) -> u32 {
-    var h: u32 = FNV1A_32_OFFSET;
+    var h: u32 = core::FNV1A_32_OFFSET;
     for b in name {
         let folded = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
-        h = (h ^ folded) * FNV1A_32_PRIME;
+        h = (h ^ folded) * core::FNV1A_32_PRIME;
     }
     return h;
 }

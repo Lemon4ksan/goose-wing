@@ -150,7 +150,7 @@ fn with_partition_key(cookie_ref: CanonicalCookie&, key: const u8[:]) -> Canonic
 // Sets cookie expiration from a relative Max-Age in seconds, capped at 400 days (RFC 6265bis Section 5.5).
 fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64) -> CanonicalCookie& {
     let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
-    let capped_sec = ct_min_i64(seconds, max_allowed_seconds);
+    let capped_sec = core::ct_min_i64(seconds, max_allowed_seconds);
     cookie_ref.expires_utc = now_us + capped_sec * 1000000;
     cookie_ref.persistent = true;
     return cookie_ref;

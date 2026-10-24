@@ -2,8 +2,6 @@
 namespace wing;
 
 import std;
-import core.time;
-import core.url;
 import cookie.constants;
 import cookie.canonical;
 import cookie.psl;
@@ -89,7 +87,7 @@ fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
     year = normalize_cookie_year(year);
     guard is_valid_cookie_calendar_date(year, month, day, hour, minute, second) else { return 0, false; }
 
-    let total_days = civil_to_days(year, month, day);
+    let total_days = core::civil_to_days(year, month, day);
     let total_sec = total_days * 86400 + hour * 3600 + minute * 60 + second;
     return total_sec * 1000000, true; // Microseconds UTC
 }
@@ -109,7 +107,7 @@ struct CanonicalCookieURL {
 // and defaulting empty paths to '/' (RFC 6265bis).
 fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     var parsed_url = CanonicalCookieURL { .. };
-    let parsed = new_url(raw_url);
+    let parsed = core::new_url(raw_url);
     if parsed.valid {
         parsed_url.scheme.append(scheme(parsed));
         parsed_url.is_secure = is_secure_scheme(parsed);
@@ -431,7 +429,7 @@ fn apply_parsed_max_age_attribute(
     }
 
     let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
-    let capped_sec = ct_min_i64(max_age_val, max_allowed_seconds);
+    let capped_sec = core::ct_min_i64(max_age_val, max_allowed_seconds);
     cookie_ref.expires_utc = now_us + capped_sec * 1000000;
 }
 

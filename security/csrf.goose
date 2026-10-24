@@ -2,7 +2,6 @@
 namespace wing;
 
 import std;
-import core.url;
 import app.profile;
 import app.request;
 import app.response;

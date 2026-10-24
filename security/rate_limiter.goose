@@ -2,7 +2,6 @@
 namespace wing;
 
 import std;
-import core.time;
 import app.profile;
 import app.response;
 
@@ -18,7 +17,7 @@ struct GcraQuota {
 
 // Calculates GCRA quota parameters from sustained limit, period, and burst tolerance.
 // T = period / limit (emission interval), tau = T * burst (delay tolerance).
-fn new_gcra_quota(limit: u64, period_dur: Duration, burst: u64 = 0) -> GcraQuota {
+fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> GcraQuota {
     let p_ns = if period_dur.nanos > 0 { period_dur.nanos as u64 } else { 1000000000 as u64 };
     let l = if limit > 0 { limit } else { 1 as u64 };
     let t_ns = p_ns / l;
@@ -57,14 +56,14 @@ struct GcraCell {
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
     let t = quota.emission_interval_ns;
     let tau = quota.delay_tolerance_ns;
-    let delta = mul_sat_u64(cost_n, t);
+    let delta = core::mul_sat_u64(cost_n, t);
 
     let tat_old = cell.tat_ns;
-    let tat_base = ct_max_u64(now_ns, tat_old);
-    let tat_new = add_sat_u64(tat_base, delta);
+    let tat_base = core::ct_max_u64(now_ns, tat_old);
+    let tat_new = core::add_sat_u64(tat_base, delta);
 
     let limit_window = tau + t;
-    let t_allow = sub_sat_u64(tat_new, limit_window);
+    let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
     if now_ns < t_allow {
         let retry_after = t_allow - now_ns;
@@ -85,7 +84,7 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
         rem = quota.burst;
     }
 
-    let reset_after = sub_sat_u64(tat_new, now_ns);
+    let reset_after = core::sub_sat_u64(tat_new, now_ns);
 
     return RateLimitDecision.Allowed {
         remaining_burst: rem,
@@ -105,18 +104,18 @@ fn gcra_reserve_n(
 ) -> RateLimitDecision {
     let t = quota.emission_interval_ns;
     let tau = quota.delay_tolerance_ns;
-    let delta = mul_sat_u64(cost_n, t);
+    let delta = core::mul_sat_u64(cost_n, t);
 
     let tat_old = cell.tat_ns;
-    let tat_base = ct_max_u64(now_ns, tat_old);
-    let tat_new = add_sat_u64(tat_base, delta);
+    let tat_base = core::ct_max_u64(now_ns, tat_old);
+    let tat_new = core::add_sat_u64(tat_base, delta);
 
     let limit_window = tau + t;
-    let t_allow = sub_sat_u64(tat_new, limit_window);
+    let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
     if now_ns >= t_allow {
         cell.tat_ns = tat_new;
-        let reset_after = sub_sat_u64(tat_new, now_ns);
+        let reset_after = core::sub_sat_u64(tat_new, now_ns);
         return RateLimitDecision.Allowed {
             remaining_burst: quota.burst,
             new_tat_ns: tat_new,
@@ -162,7 +161,7 @@ fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter {
 }
 
 inline fn fnv1a_hash(data: const u8[:]) -> u64 {
-    return fnv1a_64(data);
+    return core::fnv1a_64(data);
 }
 
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).

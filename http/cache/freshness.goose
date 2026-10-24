@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import core.time;
 import http.headers;
 import http.cache.cache_control;
 
@@ -12,12 +11,12 @@ import http.cache.cache_control;
 
 // Wall-clock and monotonic timestamps captured across request/response lifecycle.
 struct CacheTimestamps {
-    request_time: Time = Time { .. },
-    response_time: Time = Time { .. },
-    now: Time = Time { .. },
-    request_mono: MonotonicInstant = MonotonicInstant { .. },
-    response_mono: MonotonicInstant = MonotonicInstant { .. },
-    now_mono: MonotonicInstant = MonotonicInstant { .. },
+    request_time: core::Time = core::Time { .. },
+    response_time: core::Time = core::Time { .. },
+    now: core::Time = core::Time { .. },
+    request_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
+    response_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
+    now_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
     has_monotonic: bool = false,
     clock_available: bool = true,
 }
@@ -28,7 +27,7 @@ fn new_cache_timestamps() -> CacheTimestamps {
 }
 
 // Constructs CacheTimestamps with specified wall-clock times.
-fn new_cache_timestamps(req_time: Time, resp_time: Time, cur_now: Time) -> CacheTimestamps {
+fn new_cache_timestamps(req_time: core::Time, resp_time: core::Time, cur_now: core::Time) -> CacheTimestamps {
     return CacheTimestamps {
         request_time: req_time,
         response_time: resp_time,
@@ -39,7 +38,7 @@ fn new_cache_timestamps(req_time: Time, resp_time: Time, cur_now: Time) -> Cache
 }
 
 // Returns a copy of ts with monotonic clock instants recorded.
-fn with_monotonic(ts: CacheTimestamps, req_mono: MonotonicInstant, resp_mono: MonotonicInstant, cur_mono: MonotonicInstant) -> CacheTimestamps {
+fn with_monotonic(ts: CacheTimestamps, req_mono: core::MonotonicInstant, resp_mono: core::MonotonicInstant, cur_mono: core::MonotonicInstant) -> CacheTimestamps {
     var updated = ts;
     updated.request_mono = req_mono;
     updated.response_mono = resp_mono;
@@ -94,7 +93,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
         guard b >= '0' && b <= '9' else {
             return 0;
         }
-        val = ct_min_i64(val * 10 + (b - '0'), MAX_DELTA_SECONDS);
+        val = core::ct_min_i64(val * 10 + (b - '0'), MAX_DELTA_SECONDS);
     }
     return val;
 }
@@ -102,36 +101,36 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
 // ---- rfc 9111 section 4.2.3: age calculations ------------------------------
 
 // Computes apparent_age = max(0, response_time - date_value).
-fn compute_apparent_age(response_time: Time, date_value: Time) -> i64 {
-    let diff = unix(response_time) - unix(date_value);
-    return ct_max_i64(0, diff);
+fn compute_apparent_age(response_time: core::Time, date_value: core::Time) -> i64 {
+    let diff = core::unix(response_time) - core::unix(date_value);
+    return core::ct_max_i64(0, diff);
 }
 
 // Computes response_delay = max(0, response_time - request_time).
 // Uses monotonic clock when available to avoid NTP step skew.
 fn compute_response_delay(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
-        let dur = duration_since(ts.response_mono, ts.request_mono);
-        return ct_max_i64(0, as_secs(dur));
+        let dur = core::duration_since(ts.response_mono, ts.request_mono);
+        return core::ct_max_i64(0, as_secs(dur));
     }
-    let diff = unix(ts.response_time) - unix(ts.request_time);
-    return ct_max_i64(0, diff);
+    let diff = core::unix(ts.response_time) - core::unix(ts.request_time);
+    return core::ct_max_i64(0, diff);
 }
 
 // Computes corrected_initial_age = max(apparent_age, age_hdr + response_delay).
 fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay: i64) -> i64 {
-    return ct_max_i64(apparent_age, age_hdr + response_delay);
+    return core::ct_max_i64(apparent_age, age_hdr + response_delay);
 }
 
 // Computes resident_time = max(0, now - response_time).
 // Protected by monotonic clock to guarantee non-decreasing values.
 fn compute_resident_time(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
-        let dur = duration_since(ts.now_mono, ts.response_mono);
-        return ct_max_i64(0, as_secs(dur));
+        let dur = core::duration_since(ts.now_mono, ts.response_mono);
+        return core::ct_max_i64(0, as_secs(dur));
     }
-    let diff = unix(ts.now) - unix(ts.response_time);
-    return ct_max_i64(0, diff);
+    let diff = core::unix(ts.now) - core::unix(ts.response_time);
+    return core::ct_max_i64(0, diff);
 }
 
 // Computes current_age = corrected_initial_age + resident_time.
@@ -139,52 +138,52 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
     let delay = compute_response_delay(ts);
     let initial_age = compute_corrected_initial_age(apparent_age, age_hdr, delay);
     let resident = compute_resident_time(ts);
-    return ct_min_i64(initial_age + resident, MAX_DELTA_SECONDS);
+    return core::ct_min_i64(initial_age + resident, MAX_DELTA_SECONDS);
 }
 
 // ---- freshness lifetime helpers --------------------------------------------
 
 // Computes freshness lifetime from Expires header relative to ref_time (RFC 9111 §4.2.1).
-fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: Time) -> i64, bool {
+fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: core::Time) -> i64, bool {
     let expires_raw = get_header(resp_headers, "expires");
     guard expires_raw.len > 0 else { return 0, false; }
 
-    let exp_time, ok_exp = parse_http_date(expires_raw);
+    let exp_time, ok_exp = core::parse_http_date(expires_raw);
     guard ok_exp else { return 0, false; }
 
     let date_raw = get_header(resp_headers, "date");
     var base_time = ref_time;
     if date_raw.len > 0 {
-        let d_time, ok_d = parse_http_date(date_raw);
+        let d_time, ok_d = core::parse_http_date(date_raw);
         if ok_d { base_time = d_time; }
     }
 
-    let diff = unix(exp_time) - unix(base_time);
-    return ct_max_i64(0, diff), true;
+    let diff = core::unix(exp_time) - core::unix(base_time);
+    return core::ct_max_i64(0, diff), true;
 }
 
 // Computes heuristic freshness lifetime (default 10% of Date - Last-Modified) (RFC 9111 §4.2.2).
-fn compute_last_modified_heuristic(resp_headers: const HeaderMap&, ref_time: Time, heuristic_fraction: i64) -> i64 {
+fn compute_last_modified_heuristic(resp_headers: const HeaderMap&, ref_time: core::Time, heuristic_fraction: i64) -> i64 {
     guard is_heuristically_cacheable_status(resp_headers.status_code) else { return 0; }
 
     let lm_raw = get_header(resp_headers, "last-modified");
     guard lm_raw.len > 0 else { return 0; }
 
-    let lm_time, ok_lm = parse_http_date(lm_raw);
+    let lm_time, ok_lm = core::parse_http_date(lm_raw);
     guard ok_lm else { return 0; }
 
     let date_raw = get_header(resp_headers, "date");
     var base_time = ref_time;
     if date_raw.len > 0 {
-        let d_time, ok_d = parse_http_date(date_raw);
+        let d_time, ok_d = core::parse_http_date(date_raw);
         if ok_d { base_time = d_time; }
     }
 
-    let delta = unix(base_time) - unix(lm_time);
+    let delta = core::unix(base_time) - core::unix(lm_time);
     guard delta > 0 else { return 0; }
 
     let heuristic = (delta * heuristic_fraction) / 100;
-    return ct_max_i64(0, heuristic);
+    return core::ct_max_i64(0, heuristic);
 }
 
 // Computes freshness lifetime according to RFC 9111 priority hierarchy.
@@ -262,7 +261,7 @@ fn evaluate_freshness(
     let date_raw = get_header(resp_headers, "date");
     var date_time = ts.response_time;
     if date_raw.len > 0 {
-        let d, ok_d = parse_http_date(date_raw);
+        let d, ok_d = core::parse_http_date(date_raw);
         if ok_d { date_time = d; }
     }
     let apparent_age = compute_apparent_age(ts.response_time, date_time);

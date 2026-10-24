@@ -6,15 +6,9 @@ namespace wing;
 import std;
 import json;
 
-// ---- core primitives -------------------------------------------------------
+// ---- core subsystem --------------------------------------------------------
 
-import core.math;
-import core.time;
-import core.test;
-import core.url;
-import core.sync;
-import core.compress;
-import facade;
+import core from ".";
 
 // ---- cookie engine ---------------------------------------------------------
 

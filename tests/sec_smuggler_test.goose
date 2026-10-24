@@ -1,8 +1,9 @@
 // Tests for request smuggling defenses and chunked transfer decoding (RFC 9112).
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_te_cl_request_smuggling_defense(t: wing::T&) {
+fn test_te_cl_request_smuggling_defense(t: core::T&) {
     t.run("SMUGGLE-01: Conflicting Transfer-Encoding and Content-Length (TE.CL / CL.TE) Rejection") { sub =>
         // TE then CL
         var map1 = wing::new_header_map();
@@ -189,7 +190,7 @@ fn test_te_cl_request_smuggling_defense(t: wing::T&) {
     };
 }
 
-fn test_chunked_encoding_bare_lf_defense(t: wing::T&) {
+fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
     t.run("CHUNK-01: Bare LF in Chunk-Size Line Rejection (CVE-2025-22871)") { sub =>
         var out_body: u8[>..] = [];
 
@@ -367,7 +368,7 @@ fn test_chunked_encoding_bare_lf_defense(t: wing::T&) {
     };
 }
 
-fn test_hop_by_hop_stripping_defense(t: wing::T&) {
+fn test_hop_by_hop_stripping_defense(t: core::T&) {
     t.run("HOP-01: Standard Hop-by-Hop Headers Stripped (RFC 9110 Section 7.6.1)") { sub =>
         var src = wing::new_header_map();
         let raw = "Host: example.com\r\nConnection: close\r\nKeep-Alive: timeout=5, max=100\r\nProxy-Authenticate: Basic\r\nProxy-Authorization: Basic abc\r\nTE: trailers\r\nTrailer: X-Checksum\r\nTransfer-Encoding: chunked\r\nUpgrade: websocket\r\nProxy-Connection: keep-alive\r\nContent-Type: application/json\r\nAuthorization: Bearer token123\r\n\r\n";
@@ -467,7 +468,7 @@ fn test_hop_by_hop_stripping_defense(t: wing::T&) {
     };
 }
 
-fn test_url_quadratic_backtrack_defense(t: wing::T&) {
+fn test_url_quadratic_backtrack_defense(t: core::T&) {
     t.run("BACKTRACK-01: Linear O(N) Execution on 100 Alternating Backtrack Segments (CVE-2026-56860)") { sub =>
         var path_buf: u8[..1024] = [];
         path_buf.append("https://example.com");
@@ -476,13 +477,13 @@ fn test_url_quadratic_backtrack_defense(t: wing::T&) {
         }
         path_buf.append("/target");
 
-        let sw = wing::stopwatch();
-        let u = wing::new_url(path_buf[..]);
-        let dur = wing::elapsed(sw);
+        let sw = core::stopwatch();
+        let u = core::new_url(path_buf[..]);
+        let dur = core::elapsed(sw);
         let elapsed_us = dur.nanos / 1000;
 
         sub.assert_true(u.valid, "URL with 100 backtrack segments must parse successfully");
-        sub.assert_bytes_eq(wing::pathname(u), "/target", "Collapsed path must equal /target");
+        sub.assert_bytes_eq(core::pathname(u), "/target", "Collapsed path must equal /target");
         sub.assert_true(elapsed_us < 1000, "100 backtrack segments must execute in under 1ms (linear O(N))");
     };
 
@@ -497,44 +498,44 @@ fn test_url_quadratic_backtrack_defense(t: wing::T&) {
         }
         path_buf.append("/root_target");
 
-        let sw = wing::stopwatch();
-        let u = wing::new_url(path_buf[..]);
-        let dur = wing::elapsed(sw);
+        let sw = core::stopwatch();
+        let u = core::new_url(path_buf[..]);
+        let dur = core::elapsed(sw);
         let elapsed_us = dur.nanos / 1000;
 
         sub.assert_true(u.valid, "Nested 50 dir / 50 .. must parse successfully");
-        sub.assert_bytes_eq(wing::pathname(u), "/root_target", "50 dirs collapsed back to root_target");
+        sub.assert_bytes_eq(core::pathname(u), "/root_target", "50 dirs collapsed back to root_target");
         sub.assert_true(elapsed_us < 1000, "50 nested + 50 backtrack must execute in under 1ms");
     };
 
     t.run("BACKTRACK-03: Root Directory Traversal Containment (Cannot Escape Root)") { sub =>
-        let u1 = wing::new_url("https://example.com/../../../../../../../../");
+        let u1 = core::new_url("https://example.com/../../../../../../../../");
         sub.assert_true(u1.valid, "Excessive root .. is valid");
-        sub.assert_bytes_eq(wing::pathname(u1), "/", "Excessive .. contained at root /");
+        sub.assert_bytes_eq(core::pathname(u1), "/", "Excessive .. contained at root /");
 
-        let u2 = wing::new_url("https://example.com/../../../../etc/passwd");
+        let u2 = core::new_url("https://example.com/../../../../etc/passwd");
         sub.assert_true(u2.valid, "Traversal path parsed");
-        sub.assert_bytes_eq(wing::pathname(u2), "/etc/passwd", "Path traversal contained at root");
+        sub.assert_bytes_eq(core::pathname(u2), "/etc/passwd", "Path traversal contained at root");
     };
 
     t.run("BACKTRACK-04: Percent-Encoded Dot Segments Normalization (%2e, %2E)") { sub =>
-        let u1 = wing::new_url("https://example.com/a/%2e%2e/b/%2E%2E/c/%2e/d");
+        let u1 = core::new_url("https://example.com/a/%2e%2e/b/%2E%2E/c/%2e/d");
         sub.assert_true(u1.valid, "Percent-encoded dot segments parsed");
-        sub.assert_bytes_eq(wing::pathname(u1), "/c/d", "%2e%2e collapsed identically to ..");
+        sub.assert_bytes_eq(core::pathname(u1), "/c/d", "%2e%2e collapsed identically to ..");
 
-        let u2 = wing::new_url("https://example.com/admin/%2e%2e/%2e%2e/public");
-        sub.assert_bytes_eq(wing::pathname(u2), "/public", "Double percent-encoded dots collapsed to root");
+        let u2 = core::new_url("https://example.com/admin/%2e%2e/%2e%2e/public");
+        sub.assert_bytes_eq(core::pathname(u2), "/public", "Double percent-encoded dots collapsed to root");
     };
 
     t.run("BACKTRACK-05: Path Backtrack via Relative Reference Resolution") { sub =>
-        let base = wing::new_url("https://api.example.com/v1/users/profiles/");
-        let resolved = wing::resolve_endpoint(base, "../../v2/billing");
+        let base = core::new_url("https://api.example.com/v1/users/profiles/");
+        let resolved = core::resolve_endpoint(base, "../../v2/billing");
         sub.assert_true(resolved.valid, "Relative endpoint resolved");
-        sub.assert_bytes_eq(wing::pathname(resolved), "/v1/v2/billing", "Relative backtrack collapsed properly");
+        sub.assert_bytes_eq(core::pathname(resolved), "/v1/v2/billing", "Relative backtrack collapsed properly");
     };
 }
 
-fn test_sfv_integer_overflow_guard(t: wing::T&) {
+fn test_sfv_integer_overflow_guard(t: core::T&) {
     t.run("SFV-01: RFC 8941 Section 3.3.1 19+ Digit Integer Accumulation Overflow Guard") { sub =>
         var item = wing::SfvItem { .. };
 
@@ -569,14 +570,14 @@ fn test_sfv_integer_overflow_guard(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("Request Smuggling Defenses Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Request Smuggling Defenses Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. TE/CL Request Smuggling & Content-Length Poisoning Defense", test_te_cl_request_smuggling_defense);
-    wing::run_case(runner, "2. Chunked Encoding & Bare LF Smuggling Defense (CVE-2025-22871)", test_chunked_encoding_bare_lf_defense);
-    wing::run_case(runner, "3. Hop-by-Hop Header Stripping & Gateway Isolation (RFC 9110 Section 7.6.1)", test_hop_by_hop_stripping_defense);
-    wing::run_case(runner, "4. URL Path Backtrack Quadratic Complexity Defense (CVE-2026-56860)", test_url_quadratic_backtrack_defense);
-    wing::run_case(runner, "5. SFV Integer & Decimal 64-Bit Overflow Protection", test_sfv_integer_overflow_guard);
+    core::run_case(runner, "1. TE/CL Request Smuggling & Content-Length Poisoning Defense", test_te_cl_request_smuggling_defense);
+    core::run_case(runner, "2. Chunked Encoding & Bare LF Smuggling Defense (CVE-2025-22871)", test_chunked_encoding_bare_lf_defense);
+    core::run_case(runner, "3. Hop-by-Hop Header Stripping & Gateway Isolation (RFC 9110 Section 7.6.1)", test_hop_by_hop_stripping_defense);
+    core::run_case(runner, "4. URL Path Backtrack Quadratic Complexity Defense (CVE-2026-56860)", test_url_quadratic_backtrack_defense);
+    core::run_case(runner, "5. SFV Integer & Decimal 64-Bit Overflow Protection", test_sfv_integer_overflow_guard);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

@@ -2,18 +2,17 @@
 namespace wing;
 
 import std;
-import core.time;
 
 // ---- exponential backoff policy --------------------------------------------
 
 // Exponential backoff policy for retrying failed network requests.
 struct Backoff {
-    base_ns: i64 = 100 * MILLISECOND, // Base initial retry delay in nanoseconds.
-    max_ns: i64 = 10 * SECOND,        // Upper bound cap for retry delay in nanoseconds.
+    base_ns: i64 = 100 * core::MILLISECOND, // Base initial retry delay in nanoseconds.
+    max_ns: i64 = 10 * core::SECOND,        // Upper bound cap for retry delay in nanoseconds.
     factor: f64 = 2.0,                // Multiplier applied per failed attempt.
 }
 
-fn new_backoff(base: Duration, max_delay: Duration, factor: f64 = 2.0) -> Backoff {
+fn new_backoff(base: core::Duration, max_delay: core::Duration, factor: f64 = 2.0) -> Backoff {
     return Backoff {
         base_ns: base.nanos,
         max_ns: max_delay.nanos,
@@ -22,17 +21,17 @@ fn new_backoff(base: Duration, max_delay: Duration, factor: f64 = 2.0) -> Backof
 }
 
 // The retry delay for an attempt (0-indexed), capped at max_ns.
-fn delay(backoff: const Backoff&, attempt: i64) -> Duration {
-    if attempt <= 0 { return Duration { nanos: backoff.base_ns }; }
+fn delay(backoff: const Backoff&, attempt: i64) -> core::Duration {
+    if attempt <= 0 { return core::Duration { nanos: backoff.base_ns }; }
     var current: f64 = backoff.base_ns;
     for step_idx in attempt {
         current *= backoff.factor;
         if current >= backoff.max_ns {
-            return Duration { nanos: backoff.max_ns };
+            return core::Duration { nanos: backoff.max_ns };
         }
     }
     let res = current as i64;
-    return Duration { nanos: if res > backoff.max_ns { backoff.max_ns } else { res } };
+    return core::Duration { nanos: if res > backoff.max_ns { backoff.max_ns } else { res } };
 }
 
 // ---- token bucket rate limiter ---------------------------------------------

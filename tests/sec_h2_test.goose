@@ -1,8 +1,9 @@
 // Tests for HTTP/2 framer validation and frame limits (RFC 9113).
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_continuation_flood_and_interleaving(t: wing::T&) {
+fn test_continuation_flood_and_interleaving(t: core::T&) {
     t.run("H2-01: CONTINUATION Flood Exceeding Frame Cap Rejection (CVE-2024-27983)") { sub =>
         var framer = wing::new_h2_security_framer();
 
@@ -142,7 +143,7 @@ fn test_continuation_flood_and_interleaving(t: wing::T&) {
     };
 }
 
-fn test_rapid_reset_and_dos_floods(t: wing::T&) {
+fn test_rapid_reset_and_dos_floods(t: core::T&) {
     t.run("RESET-01: Rapid Reset Flood Defense (CVE-2023-44487)") { sub =>
         var framer = wing::new_h2_security_framer();
 
@@ -203,7 +204,7 @@ fn test_rapid_reset_and_dos_floods(t: wing::T&) {
     };
 }
 
-fn test_settings_and_stream_id_invariants(t: wing::T&) {
+fn test_settings_and_stream_id_invariants(t: core::T&) {
     t.run("SETTING-01: SETTINGS_MAX_FRAME_SIZE=0 Infinite Loop Defense ") { sub =>
         // Setting 0 must trigger ProtocolError
         let err0 = wing::validate_h2_setting(0x5, 0);
@@ -265,12 +266,12 @@ fn test_settings_and_stream_id_invariants(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("HTTP/2 Framer Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("HTTP/2 Framer Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. CONTINUATION Flood & Interleaving Guard (CVE-2024-27983)", test_continuation_flood_and_interleaving);
-    wing::run_case(runner, "2. Rapid Reset & Resource DoS Floods (CVE-2023-44487 & CVE-2019-9512)", test_rapid_reset_and_dos_floods);
-    wing::run_case(runner, "3. SETTINGS & Stream ID Invariants ", test_settings_and_stream_id_invariants);
+    core::run_case(runner, "1. CONTINUATION Flood & Interleaving Guard (CVE-2024-27983)", test_continuation_flood_and_interleaving);
+    core::run_case(runner, "2. Rapid Reset & Resource DoS Floods (CVE-2023-44487 & CVE-2019-9512)", test_rapid_reset_and_dos_floods);
+    core::run_case(runner, "3. SETTINGS & Stream ID Invariants ", test_settings_and_stream_id_invariants);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

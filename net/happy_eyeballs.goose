@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import core.time;
 
 // ---- 1. RFC 8305 and HEv3 normative constants ------------------------------
 
@@ -23,15 +22,15 @@ fn compute_effective_cad_ms(
     min_cad_ms: i64 = HE_MIN_CAD_MS,
     max_cad_ms: i64 = HE_MAX_CAD_MS
 ) -> i64 {
-    let eff_min = ct_max_i64(min_cad_ms, HE_ABSOLUTE_FLOOR_CAD_MS);
-    let eff_max = ct_max_i64(max_cad_ms, eff_min);
+    let eff_min = core::ct_max_i64(min_cad_ms, HE_ABSOLUTE_FLOOR_CAD_MS);
+    let eff_max = core::ct_max_i64(max_cad_ms, eff_min);
 
     if !rtt_known {
         return HE_DEFAULT_CAD_MS;
     }
 
-    let clamped = clamp_i64(observed_rtt_ms, eff_min, eff_max);
-    return ct_max_i64(clamped, HE_ABSOLUTE_FLOOR_CAD_MS);
+    let clamped = core::clamp_i64(observed_rtt_ms, eff_min, eff_max);
+    return core::ct_max_i64(clamped, HE_ABSOLUTE_FLOOR_CAD_MS);
 }
 
 // ---- 2. DNS query models and candidate classification ----------------------

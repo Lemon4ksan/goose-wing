@@ -2,9 +2,10 @@
 // two-slice WantQueue, liveness health checks, HTTP/2 IP coalescing, soft-cap quotas,
 // CVE-2026-94441, CVE-2026-56866, and Go #23427 / #49377 defenses.
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_pool_key_dimensions_and_isolation(t: wing::T&) {
+fn test_pool_key_dimensions_and_isolation(t: core::T&) {
     t.run("5-Dimensional PoolKey Exact Match and Partition Isolation") { sub =>
         let nak1 = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
         let nak2 = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
@@ -94,7 +95,7 @@ fn test_pool_key_dimensions_and_isolation(t: wing::T&) {
     };
 }
 
-fn test_want_queue_dual_slice(t: wing::T&) {
+fn test_want_queue_dual_slice(t: core::T&) {
     t.run("FIFO Operations and Reallocation-Free Promotion") { sub =>
         var q = wing::new_want_queue();
         sub.assert_true(wing::is_queue_empty(q), "Initial queue is empty");
@@ -173,7 +174,7 @@ fn test_want_queue_dual_slice(t: wing::T&) {
     };
 }
 
-fn test_connection_liveness_and_extensive_checks(t: wing::T&) {
+fn test_connection_liveness_and_extensive_checks(t: core::T&) {
     t.run("OkHttp isHealthy and Non-Blocking FIN Detection") { sub =>
         let nak = wing::new_network_anonymization_key("https://example.com");
         let key = wing::new_pool_key(wing::PoolScheme.Https, "example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
@@ -232,7 +233,7 @@ fn test_connection_liveness_and_extensive_checks(t: wing::T&) {
     };
 }
 
-fn test_http2_ip_coalescing_and_san_matching(t: wing::T&) {
+fn test_http2_ip_coalescing_and_san_matching(t: core::T&) {
     t.run("Chromium H2 IP Coalescing with Wildcard SAN & Security Boundaries") { sub =>
         let nak = wing::new_network_anonymization_key("https://example.com");
         let nak_other = wing::new_network_anonymization_key("https://other-site.com");
@@ -302,7 +303,7 @@ fn test_http2_ip_coalescing_and_san_matching(t: wing::T&) {
     };
 }
 
-fn test_stream_pool_quotas_and_eviction(t: wing::T&) {
+fn test_stream_pool_quotas_and_eviction(t: core::T&) {
     t.run("Soft-Cap LRU Eviction and Priority Reuse") { sub =>
         var pool = wing::new_stream_pool(6, 32, 2); // Soft-cap of 2 connections
         let nak = wing::new_network_anonymization_key("https://service.net");
@@ -352,7 +353,7 @@ fn test_stream_pool_quotas_and_eviction(t: wing::T&) {
     };
 }
 
-fn test_cve_2026_56866_connect_rejection_pool_safety(t: wing::T&) {
+fn test_cve_2026_56866_connect_rejection_pool_safety(t: core::T&) {
     t.run("CVE-2026-56866: Rejected CONNECT Sockets Must Never Be Returned to Pool") { sub =>
         let nak = wing::new_network_anonymization_key("https://proxy-target.com");
         let key = wing::new_pool_key(wing::PoolScheme.Https, "proxy-target.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
@@ -381,13 +382,13 @@ fn test_cve_2026_56866_connect_rejection_pool_safety(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("net/pool Connection Pool & Isolation Suite", wing::Verbosity.Verbose);
-    wing::run_case(runner, "1. PoolKey Dimensions & Isolation", test_pool_key_dimensions_and_isolation);
-    wing::run_case(runner, "2. WantQueue Dual-Slice FIFO", test_want_queue_dual_slice);
-    wing::run_case(runner, "3. Connection Liveness & Extensive Checks", test_connection_liveness_and_extensive_checks);
-    wing::run_case(runner, "4. HTTP/2 IP Coalescing & SAN Matching", test_http2_ip_coalescing_and_san_matching);
-    wing::run_case(runner, "5. StreamPool Quotas & Eviction", test_stream_pool_quotas_and_eviction);
-    wing::run_case(runner, "6. CVE-2026-56866 CONNECT Rejection Pool Safety", test_cve_2026_56866_connect_rejection_pool_safety);
-    let ok = wing::finish(runner);
+    var runner = core::new_runner("net/pool Connection Pool & Isolation Suite", core::Verbosity.Verbose);
+    core::run_case(runner, "1. PoolKey Dimensions & Isolation", test_pool_key_dimensions_and_isolation);
+    core::run_case(runner, "2. WantQueue Dual-Slice FIFO", test_want_queue_dual_slice);
+    core::run_case(runner, "3. Connection Liveness & Extensive Checks", test_connection_liveness_and_extensive_checks);
+    core::run_case(runner, "4. HTTP/2 IP Coalescing & SAN Matching", test_http2_ip_coalescing_and_san_matching);
+    core::run_case(runner, "5. StreamPool Quotas & Eviction", test_stream_pool_quotas_and_eviction);
+    core::run_case(runner, "6. CVE-2026-56866 CONNECT Rejection Pool Safety", test_cve_2026_56866_connect_rejection_pool_safety);
+    let ok = core::finish(runner);
     assert(ok);
 }

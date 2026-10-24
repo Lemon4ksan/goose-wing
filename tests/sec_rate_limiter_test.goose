@@ -1,14 +1,15 @@
 // Tests for GCRA rate limiter, burst tolerance, and sharded storage.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. Mathematical GCRA TAT Scheduling & Burst Tolerance
 // ----------------------------------------------------------------------------
-fn test_gcra_tat_and_burst(t: wing::T&) {
+fn test_gcra_tat_and_burst(t: core::T&) {
     t.run("Single-Cell Ingress & Burst Tolerance Exhaustion") { sub =>
         // Limit: 10 req/s (T = 100 ms), Burst: 2 (tau = 200 ms)
-        let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
+        let quota = wing::new_gcra_quota(10, core::secs(1), 2);
         sub.assert_eq(quota.emission_interval_ns, 100000000, "T = 100ms");
         sub.assert_eq(quota.delay_tolerance_ns, 200000000, "tau = 200ms");
 
@@ -51,10 +52,10 @@ fn test_gcra_tat_and_burst(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. Anti-Starvation Multi-Cell Priority Reservation (governor #16 Fix)
 // ----------------------------------------------------------------------------
-fn test_anti_starvation_reservation(t: wing::T&) {
+fn test_anti_starvation_reservation(t: core::T&) {
     t.run("Priority Reservation Preempts Small Subsequent Requests") { sub =>
         // Limit: 1 req/sec (T = 1s), Burst: 0 (tau = 0)
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
+        let quota = wing::new_gcra_quota(1, core::secs(1), 0);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now: u64 = 1000000000;
 
@@ -87,10 +88,10 @@ fn test_anti_starvation_reservation(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. 256-Micro-Shard Table & Per-Key Isolation
 // ----------------------------------------------------------------------------
-fn test_sharded_gcra_limiter(t: wing::T&) {
+fn test_sharded_gcra_limiter(t: core::T&) {
     t.run("Independent Client Quotas Across Shards") { sub =>
         // Limit: 2 req/s, Burst: 1 (allows 2 immediate requests at t0, 3rd rejected)
-        let quota = wing::new_gcra_quota(2, wing::secs(1), 1);
+        let quota = wing::new_gcra_quota(2, core::secs(1), 1);
         var limiter = wing::new_sharded_limiter(quota);
         let now: u64 = 2000000000;
 
@@ -139,9 +140,9 @@ fn test_sharded_gcra_limiter(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. Extreme DDoS Probabilistic Sampling (5%)
 // ----------------------------------------------------------------------------
-fn test_probabilistic_ddos_mitigation(t: wing::T&) {
+fn test_probabilistic_ddos_mitigation(t: core::T&) {
     t.run("5% Statistical Sampling Under Extreme Load") { sub =>
-        let quota = wing::new_gcra_quota(1000, wing::secs(1), 100);
+        let quota = wing::new_gcra_quota(1000, core::secs(1), 100);
         var pgcra = wing::new_probabilistic_gcra(quota, 20); // 1-in-20 = 5%
 
         var sampled_count = 0;
@@ -168,9 +169,9 @@ fn test_probabilistic_ddos_mitigation(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. IETF RateLimit-* Header Synthesis
 // ----------------------------------------------------------------------------
-fn test_ietf_rate_limit_headers(t: wing::T&) {
+fn test_ietf_rate_limit_headers(t: core::T&) {
     t.run("IETF Headers on Allowed Request") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         let dec: wing::RateLimitDecision = wing::RateLimitDecision.Allowed {
             remaining_burst: 8,
             new_tat_ns: 1200000000,
@@ -185,15 +186,15 @@ fn test_ietf_rate_limit_headers(t: wing::T&) {
         var has_reset = false;
 
         for &hdr in res.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "RateLimit-Limit") {
+            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Limit") {
                 has_limit = true;
                 sub.assert_eq(hdr.value[..], "100", "RateLimit-Limit = 100");
             }
-            if wing::eq_ascii_fold(hdr.name[..], "RateLimit-Remaining") {
+            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Remaining") {
                 has_rem = true;
                 sub.assert_eq(hdr.value[..], "8", "RateLimit-Remaining = 8");
             }
-            if wing::eq_ascii_fold(hdr.name[..], "RateLimit-Reset") {
+            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Reset") {
                 has_reset = true;
                 sub.assert_eq(hdr.value[..], "1", "RateLimit-Reset ceiling ceil(0.2s) = 1s");
             }
@@ -205,7 +206,7 @@ fn test_ietf_rate_limit_headers(t: wing::T&) {
     };
 
     t.run("IETF Headers & 429 Status on Rejected Request") { sub =>
-        let quota = wing::new_gcra_quota(50, wing::secs(1), 0);
+        let quota = wing::new_gcra_quota(50, core::secs(1), 0);
         let dec: wing::RateLimitDecision = wing::RateLimitDecision.Rejected {
             retry_after_ns: 2500000000, // 2.5 seconds
             current_tat_ns: 3500000000,
@@ -220,11 +221,11 @@ fn test_ietf_rate_limit_headers(t: wing::T&) {
         var has_zero_rem = false;
 
         for &hdr in res.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Retry-After") {
+            if core::eq_ascii_fold(hdr.name[..], "Retry-After") {
                 has_retry_after = true;
                 sub.assert_eq(hdr.value[..], "3", "Retry-After ceil(2.5s) = 3s");
             }
-            if wing::eq_ascii_fold(hdr.name[..], "RateLimit-Remaining") {
+            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Remaining") {
                 has_zero_rem = true;
                 sub.assert_eq(hdr.value[..], "0", "RateLimit-Remaining = 0 on rejection");
             }
@@ -239,14 +240,14 @@ fn test_ietf_rate_limit_headers(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Rate Limiter Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Rate Limiter Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Mathematical GCRA TAT Scheduling & Burst Tolerance", test_gcra_tat_and_burst);
-    wing::run_case(runner, "2. Anti-Starvation Multi-Cell Priority Reservation", test_anti_starvation_reservation);
-    wing::run_case(runner, "3. 256-Micro-Shard Table & Per-Key Isolation", test_sharded_gcra_limiter);
-    wing::run_case(runner, "4. Extreme DDoS Probabilistic Sampling (5%)", test_probabilistic_ddos_mitigation);
-    wing::run_case(runner, "5. IETF RateLimit-* Header Synthesis", test_ietf_rate_limit_headers);
+    core::run_case(runner, "1. Mathematical GCRA TAT Scheduling & Burst Tolerance", test_gcra_tat_and_burst);
+    core::run_case(runner, "2. Anti-Starvation Multi-Cell Priority Reservation", test_anti_starvation_reservation);
+    core::run_case(runner, "3. 256-Micro-Shard Table & Per-Key Isolation", test_sharded_gcra_limiter);
+    core::run_case(runner, "4. Extreme DDoS Probabilistic Sampling (5%)", test_probabilistic_ddos_mitigation);
+    core::run_case(runner, "5. IETF RateLimit-* Header Synthesis", test_ietf_rate_limit_headers);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

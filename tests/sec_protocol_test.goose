@@ -1,11 +1,12 @@
 // Tests for SSRF guard filtering, scheme downgrade sanitization, and URL resolution.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // Round 1: IPv4-Mapped IPv6 SSRF Defense
 // ----------------------------------------------------------------------------
-fn test_ipv4_mapped_ipv6_ssrf(t: wing::T&) {
+fn test_ipv4_mapped_ipv6_ssrf(t: core::T&) {
     t.run("IPv4-Mapped IPv6 Loopback and Private Address SSRF Blocking") { sub =>
         var session = wing::new_session();
         wing::enable_ssrf_guard(session, true);
@@ -71,7 +72,7 @@ fn test_ipv4_mapped_ipv6_ssrf(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // Round 2: Scheme Downgrade Header Sanitization
 // ----------------------------------------------------------------------------
-fn test_scheme_downgrade_with_trusted_hosts(t: wing::T&) {
+fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
     t.run("sanitize_headers_on_redirect: Scheme Downgrade to Trusted Host Strips Sensitive Headers") { sub =>
         var req = wing::new_get("https://example.com/secure");
         wing::header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
@@ -92,9 +93,9 @@ fn test_scheme_downgrade_with_trusted_hosts(t: wing::T&) {
         var has_api_key = false;
         var has_custom = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_api_key = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "Custom-Key") { has_custom = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_api_key = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Custom-Key") { has_custom = true; }
         }
 
         sub.assert_false(has_auth, "Authorization must be stripped on scheme downgrade even if host is trusted");
@@ -122,7 +123,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: wing::T&) {
 
         var sent_auth = false;
         for sent_hdr in res.sent_headers {
-            if wing::eq_ascii_fold(sent_hdr.name[..], "Authorization") {
+            if core::eq_ascii_fold(sent_hdr.name[..], "Authorization") {
                 sent_auth = true;
             }
         }
@@ -147,7 +148,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: wing::T&) {
 
         var has_auth = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
         }
         sub.assert_true(has_auth, "Authorization is preserved for trusted cross-origin HTTPS -> HTTPS");
     };
@@ -156,53 +157,53 @@ fn test_scheme_downgrade_with_trusted_hosts(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // Round 3: File URL Windows Drive Compliance
 // ----------------------------------------------------------------------------
-fn test_file_url_windows_drive_compliance(t: wing::T&) {
+fn test_file_url_windows_drive_compliance(t: core::T&) {
     t.run("WHATWG URL Section 4.4: Windows Drive Letter Pipe Normalization (| to :)") { sub =>
         // 1. file:///C|/... must normalize to file:///C:/...
-        let u_pipe, err_pipe = wing::parse_url("file:///C|/Users/admin/report.pdf");
+        let u_pipe, err_pipe = core::parse_url("file:///C|/Users/admin/report.pdf");
         sub.assert_true(u_pipe.valid, "file:///C|/... is valid file url");
-        sub.assert_bytes_eq(wing::pathname(u_pipe), "/C:/Users/admin/report.pdf", "pathname normalized pipe to colon /C:/");
-        sub.assert_bytes_eq(wing::href(u_pipe), "file:///C:/Users/admin/report.pdf", "href normalized pipe to colon");
+        sub.assert_bytes_eq(core::pathname(u_pipe), "/C:/Users/admin/report.pdf", "pathname normalized pipe to colon /C:/");
+        sub.assert_bytes_eq(core::href(u_pipe), "file:///C:/Users/admin/report.pdf", "href normalized pipe to colon");
 
         // 2. Native file_path extraction succeeds on normalized drive letter
         var os_path: u8[..256] = [];
-        let ok_path = wing::file_path(u_pipe, os_path);
+        let ok_path = core::file_path(u_pipe, os_path);
         sub.assert_true(ok_path, "file_path succeeded on pipe-normalized drive URL");
         sub.assert_bytes_eq(os_path[..], "C:\\Users\\admin\\report.pdf", "extracted native Windows backslash path");
 
         // 3. new_file_url with pipe notation C|\... normalizes to file:///C:/...
-        let u_pipe_native = wing::new_file_url("C|\\Projects\\app\\main.goose");
+        let u_pipe_native = core::new_file_url("C|\\Projects\\app\\main.goose");
         sub.assert_true(u_pipe_native.valid, "new_file_url accepts C|\\ path");
-        sub.assert_bytes_eq(wing::pathname(u_pipe_native), "/C:/Projects/app/main.goose", "new_file_url normalized C| to /C:/");
+        sub.assert_bytes_eq(core::pathname(u_pipe_native), "/C:/Projects/app/main.goose", "new_file_url normalized C| to /C:/");
     };
 
     t.run("WHATWG URL Section 4.4: Root-Relative Path Preserves Base Windows Drive Letter") { sub =>
-        let base_file = wing::new_url("file:///C:/Users/admin/app/index.html");
+        let base_file = core::new_url("file:///C:/Users/admin/app/index.html");
         sub.assert_true(base_file.valid, "base file URL is valid");
 
         // 1. Root-relative forward slash /assets/logo.png resolves to file:///C:/assets/logo.png
-        let rel_slash = wing::new_url("/assets/logo.png", base_file);
+        let rel_slash = core::new_url("/assets/logo.png", base_file);
         sub.assert_true(rel_slash.valid, "resolved root-relative URL is valid");
-        sub.assert_bytes_eq(wing::href(rel_slash), "file:///C:/assets/logo.png", "drive letter C: preserved on root-relative /assets/logo.png");
+        sub.assert_bytes_eq(core::href(rel_slash), "file:///C:/assets/logo.png", "drive letter C: preserved on root-relative /assets/logo.png");
 
         var path_slash: u8[..256] = [];
-        let ok_slash = wing::file_path(rel_slash, path_slash);
+        let ok_slash = core::file_path(rel_slash, path_slash);
         sub.assert_true(ok_slash, "file_path succeeded on resolved root-relative URL");
         sub.assert_bytes_eq(path_slash[..], "C:\\assets\\logo.png", "extracted Windows path retains drive letter");
 
         // 2. Root-relative backslash \styles\app.css resolves to file:///C:/styles/app.css
-        let rel_bs = wing::new_url("\\styles\\app.css", base_file);
+        let rel_bs = core::new_url("\\styles\\app.css", base_file);
         sub.assert_true(rel_bs.valid, "resolved root-relative backslash URL is valid");
-        sub.assert_bytes_eq(wing::href(rel_bs), "file:///C:/styles/app.css", "drive letter C: preserved on root-relative \\styles\\app.css");
+        sub.assert_bytes_eq(core::href(rel_bs), "file:///C:/styles/app.css", "drive letter C: preserved on root-relative \\styles\\app.css");
 
         var path_bs: u8[..256] = [];
-        let ok_bs = wing::file_path(rel_bs, path_bs);
+        let ok_bs = core::file_path(rel_bs, path_bs);
         sub.assert_true(ok_bs, "file_path succeeded on backslash resolved URL");
         sub.assert_bytes_eq(path_bs[..], "C:\\styles\\app.css", "extracted Windows path from backslash retains drive letter");
 
         // 3. Explicit alternative drive letter in reference overrides base drive letter
-        let rel_other = wing::new_url("/D:/data/store.db", base_file);
-        sub.assert_bytes_eq(wing::href(rel_other), "file:///D:/data/store.db", "explicit drive D: overrides base drive C:");
+        let rel_other = core::new_url("/D:/data/store.db", base_file);
+        sub.assert_bytes_eq(core::href(rel_other), "file:///D:/data/store.db", "explicit drive D: overrides base drive C:");
     };
 }
 
@@ -210,12 +211,12 @@ fn test_file_url_windows_drive_compliance(t: wing::T&) {
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Protocol Security Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Protocol Security Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
-    wing::run_case(runner, "2. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
-    wing::run_case(runner, "3. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
+    core::run_case(runner, "1. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
+    core::run_case(runner, "2. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
+    core::run_case(runner, "3. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

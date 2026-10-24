@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import core.time;
 import app.request;
 import app.response;
 import http.headers;
@@ -120,10 +119,10 @@ fn new_backoff_config(
 // Pseudo-random uniform integer in range [min_val, max_val] using WyRand and Lemire fast-range.
 inline fn uniform_random(seed: u64&, min_val: i64, max_val: i64) -> i64 {
     guard max_val > min_val else { return min_val; }
-    seed += WYP0_V42;
-    let rnd = wymum(seed ^ WYP1_V42, seed);
+    seed += core::WYP0_V42;
+    let rnd = core::wymum(seed ^ core::WYP1_V42, seed);
     let range = (max_val - min_val + 1) as u64;
-    let offset = fast_range_biased_u64(rnd, range) as! i64;
+    let offset = core::fast_range_biased_u64(rnd, range) as! i64;
     return min_val + offset;
 }
 
@@ -135,8 +134,8 @@ fn compute_backoff_jitter_ms(
     rng_seed: u64&
 ) -> i64 {
     // Compute capped deterministic exponential target t = min(c, b * 2^a)
-    let exp_bound = shl_sat_u64(cfg.base_ms as u64, (if attempt > 60 { 60 } else { attempt }) as u32);
-    let target_t = ct_min_u64(cfg.cap_ms as u64, exp_bound) as! i64;
+    let exp_bound = core::shl_sat_u64(cfg.base_ms as u64, (if attempt > 60 { 60 } else { attempt }) as u32);
+    let target_t = core::ct_min_u64(cfg.cap_ms as u64, exp_bound) as! i64;
 
     return match cfg.strategy {
         None => target_t,
@@ -161,7 +160,7 @@ fn compute_backoff_jitter_ms(
             let prev = if prev_sleep_ms > 0 { prev_sleep_ms } else { cfg.base_ms };
             let upper = prev * 3;
             let rnd_sleep = uniform_random(rng_seed, cfg.base_ms, upper);
-            let sleep_ms = ct_min_i64(rnd_sleep, cfg.cap_ms);
+            let sleep_ms = core::ct_min_i64(rnd_sleep, cfg.cap_ms);
             prev_sleep_ms = sleep_ms;
             sleep_ms
         },
@@ -190,13 +189,13 @@ fn parse_retry_after_ms(
     }
 
     if all_digits {
-        let secs, ok_s = parse_digits(clean);
+        let secs, ok_s = core::parse_digits(clean);
         guard ok_s && secs >= 0 else { return 0, false; }
-        return retry_after_sec_to_ms_sat(secs), true;
+        return core::retry_after_sec_to_ms_sat(secs), true;
     }
 
     // 2. Check for HTTP-date (IMF-fixdate, e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
-    let parsed_time, ok_t = parse_http_date(clean);
+    let parsed_time, ok_t = core::parse_http_date(clean);
     guard ok_t else { return 0, false; }
 
     // Strict validation: exact IMF-fixdate round-trip check to catch invalid calendar days
@@ -333,7 +332,7 @@ fn allow_retry_budget(budget: AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
     let window_secs = budget.window_duration_ns / 1000000000;
     let allowed_by_ratio = (budget.total_requests * budget.max_retry_ratio_pct) / 100;
     let allowed_by_floor = budget.min_retries_per_sec * window_secs;
-    let total_allowed = ct_max_i64(allowed_by_ratio, allowed_by_floor);
+    let total_allowed = core::ct_max_i64(allowed_by_ratio, allowed_by_floor);
 
     if budget.retried_requests < total_allowed {
         budget.retried_requests++;

@@ -170,7 +170,7 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
             return 0, false;
         }
         let digit = (b - '0');
-        acc = ct_min_i64(acc * 10 + digit, MAX_DELTA_SECONDS);
+        acc = core::ct_min_i64(acc * 10 + digit, MAX_DELTA_SECONDS);
     }
     return acc as i32, true;
 }

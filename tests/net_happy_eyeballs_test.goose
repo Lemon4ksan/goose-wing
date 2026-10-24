@@ -2,9 +2,10 @@
 // CAD calculations, 50 ms Resolution Delay, candidate interleaving, and AttemptManager coordination.
 // Defenses for Go #59494 / #35122 (Windows leaked dial timers) and RFC 8305 congestion collapse.
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_cad_calculation_and_absolute_floor(t: wing::T&) {
+fn test_cad_calculation_and_absolute_floor(t: core::T&) {
     t.run("CAD Clamping and Strict Absolute Floor >= 10 ms") { sub =>
         // Default when RTT is unknown: 250 ms
         let cad_default = wing::compute_effective_cad_ms(0, false);
@@ -43,7 +44,7 @@ fn test_cad_calculation_and_absolute_floor(t: wing::T&) {
     };
 }
 
-fn test_rfc6724_and_hev3_interleaving(t: wing::T&) {
+fn test_rfc6724_and_hev3_interleaving(t: core::T&) {
     t.run("First Address Family Count = 1 Interleaving Matrix") { sub =>
         var ipv6_list: wing::DnsCandidate[..8] = [];
         ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
@@ -140,7 +141,7 @@ fn test_rfc6724_and_hev3_interleaving(t: wing::T&) {
     };
 }
 
-fn test_dns_race_and_resolution_delay(t: wing::T&) {
+fn test_dns_race_and_resolution_delay(t: core::T&) {
     t.run("Asymmetric Priority: AAAA First Cancels Delay") { sub =>
         var task = wing::new_dns_race_task();
         let ip6: const u8[:][1] = ["2001:db8::1"];
@@ -195,7 +196,7 @@ fn test_dns_race_and_resolution_delay(t: wing::T&) {
     };
 }
 
-fn test_attempt_manager_racing_and_winner(t: wing::T&) {
+fn test_attempt_manager_racing_and_winner(t: core::T&) {
     t.run("Staggered Connection Racing, Winner Binding & Loser Cancellation (Go #59494)") { sub =>
         var mgr = wing::new_attempt_manager(250); // CAD = 250 ms
 
@@ -280,11 +281,11 @@ fn test_attempt_manager_racing_and_winner(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("net/happy_eyeballs RFC 8305 & HEv3 Suite", wing::Verbosity.Verbose);
-    wing::run_case(runner, "1. CAD Calculation & Absolute Floor", test_cad_calculation_and_absolute_floor);
-    wing::run_case(runner, "2. RFC 6724 & HEv3 Interleaving", test_rfc6724_and_hev3_interleaving);
-    wing::run_case(runner, "3. DNS Race & Resolution Delay", test_dns_race_and_resolution_delay);
-    wing::run_case(runner, "4. AttemptManager Racing & Winner", test_attempt_manager_racing_and_winner);
-    let ok = wing::finish(runner);
+    var runner = core::new_runner("net/happy_eyeballs RFC 8305 & HEv3 Suite", core::Verbosity.Verbose);
+    core::run_case(runner, "1. CAD Calculation & Absolute Floor", test_cad_calculation_and_absolute_floor);
+    core::run_case(runner, "2. RFC 6724 & HEv3 Interleaving", test_rfc6724_and_hev3_interleaving);
+    core::run_case(runner, "3. DNS Race & Resolution Delay", test_dns_race_and_resolution_delay);
+    core::run_case(runner, "4. AttemptManager Racing & Winner", test_attempt_manager_racing_and_winner);
+    let ok = core::finish(runner);
     assert(ok);
 }
