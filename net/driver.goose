@@ -9,6 +9,18 @@ namespace wing;
 import std;
 import os;
 
+// ---- Native OS Kernel C Shims (Windows RIO & Linux io_uring) ----------------
+
+extern "wing_rio_probe" fn native_rio_probe() -> i32;
+extern "wing_rio_available" fn native_rio_available() -> i32;
+extern "wing_rio_register_buffer" fn native_rio_register_buffer(ptr: u64, len: u32) -> u64;
+extern "wing_rio_deregister_buffer" fn native_rio_deregister_buffer(buf_id: u64);
+
+extern "wing_uring_probe" fn native_uring_probe() -> i32;
+extern "wing_uring_create" fn native_uring_create(entries: u32, flags: u32) -> i64;
+extern "wing_uring_enter" fn native_uring_enter(ring_fd: i64, to_submit: u32, min_complete: u32, flags: u32) -> i32;
+extern "wing_uring_close" fn native_uring_close(ring_fd: i64);
+
 // ---- 1. Driver Kinds & Capabilities ----------------------------------------
 
 enum TransportDriverKind {
@@ -96,11 +108,24 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
 
     if kind == TransportDriverKind.WindowsRIO {
         if plat == TargetPlatform.Windows {
-            res.available = true;
-            res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_PAGE_LOCKED_BUFFERS | CAP_BATCH_IO;
-            res.error_code = 0;
-            res.reason.clear();
-            res.reason.append("Windows Registered I/O (RIO) via mswsock.dll kernel-bypass");
+            let host = detect_target_platform();
+            if host == TargetPlatform.Windows {
+                let probe_code = native_rio_probe();
+                res.available = (probe_code == 0);
+                res.error_code = probe_code;
+            } else {
+                res.available = true;
+                res.error_code = 0;
+            }
+            if res.available {
+                res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_PAGE_LOCKED_BUFFERS | CAP_BATCH_IO;
+                res.reason.clear();
+                res.reason.append("Windows Registered I/O (RIO) active via mswsock.dll kernel-bypass");
+            } else {
+                res.capabilities = CAP_NONE;
+                res.reason.clear();
+                res.reason.append("Windows RIO probe failed via mswsock.dll");
+            }
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
@@ -113,11 +138,24 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
 
     if kind == TransportDriverKind.IoUring {
         if plat == TargetPlatform.Linux {
-            res.available = true;
-            res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
-            res.error_code = 0;
-            res.reason.clear();
-            res.reason.append("Linux io_uring kernel submission/completion ring queues (kernel 6.1+)");
+            let host = detect_target_platform();
+            if host == TargetPlatform.Linux {
+                let probe_code = native_uring_probe();
+                res.available = (probe_code == 0);
+                res.error_code = probe_code;
+            } else {
+                res.available = true;
+                res.error_code = 0;
+            }
+            if res.available {
+                res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
+                res.reason.clear();
+                res.reason.append("Linux io_uring active via kernel submission/completion ring queues");
+            } else {
+                res.capabilities = CAP_NONE;
+                res.reason.clear();
+                res.reason.append("Linux io_uring probe failed on current kernel");
+            }
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
@@ -240,6 +278,9 @@ fn rio_sub_buffer(parent: const RioBufferDescriptor&, off: u64, len: u32) -> Rio
 
 // Deregisters buffer and releases page-locks
 fn rio_deregister_buffer(desc: RioBufferDescriptor&) {
+    if desc.is_registered && desc.buffer_id != 0 {
+        native_rio_deregister_buffer(desc.buffer_id);
+    }
     desc.is_registered = false;
     desc.page_locked = false;
     desc.length = 0;

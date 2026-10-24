@@ -144,6 +144,15 @@ fn test_rio_buffer_lifecycle(t: core::T&) {
         sub.assert_false(buf.page_locked, "Page lock released");
         sub.assert_false(wing::rio_can_zero_copy(buf, 100), "Cannot zero-copy after deregister");
     };
+
+    t.run("Physical Windows RIO Kernel Registration") { sub =>
+        if wing::detect_target_platform() == wing::TargetPlatform.Windows {
+            let avail = wing::native_rio_available();
+            sub.assert_eq(avail, 1, "Native RIO is available in mswsock.dll");
+            let probe = wing::native_rio_probe();
+            sub.assert_eq(probe, 0, "Native RIO probe succeeds");
+        }
+    };
 }
 
 fn test_uring_sqe_cqe_batch(t: core::T&) {
