@@ -12,6 +12,7 @@ import server.router;
 import server.pool;
 import server.pipeline;
 import http2.framing;
+import net.proxy_protocol;
 
 // ---- 1. Reason Phrases for HTTP/1.1 Status Line -----------------------------
 
@@ -222,6 +223,7 @@ struct HttpServer {
     timer: ConnectionTimer = ConnectionTimer { .. },
     is_running: bool = false,
     requests_processed: u64 = 0,
+    accept_proxy_protocol: bool = false,
 }
 
 fn new_http_server(
@@ -270,8 +272,24 @@ fn handle_connection_wire<B>(
 ) -> PipelineOutcome, bool {
     wire_out.clear();
 
+    var effective_ip: u8[..64] = [];
+    effective_ip.append(client_ip);
+    var raw_stream = wire_in;
+    var proxy_hdr = ProxyHeader { .. };
+
+    if server.accept_proxy_protocol {
+        let stripped, has_proxy = detect_and_strip_proxy_header(wire_in, proxy_hdr);
+        if has_proxy {
+            raw_stream = stripped;
+            if proxy_hdr.src_ip_str.len > 0 {
+                effective_ip.clear();
+                effective_ip.append(proxy_hdr.src_ip_str[..]);
+            }
+        }
+    }
+
     // 1. Check for HTTP/2 Client Connection Preface (RFC 9113 Section 3.4)
-    if wire_in.len >= 24 && wire_in[..24] == H2_CLIENT_PREFACE[..] {
+    if raw_stream.len >= 24 && raw_stream[..24] == H2_CLIENT_PREFACE[..] {
         // Acknowledge HTTP/2 connection by sending initial SETTINGS frame (empty ACK)
         let hdr = FrameHeader {
             length: 0,
@@ -286,7 +304,7 @@ fn handle_connection_wire<B>(
 
     // 2. Parse HTTP/1.1 wire request
     var req = new_request("GET", "");
-    let ok_parse, _ = parse_http1_wire_request(wire_in, req);
+    let ok_parse, _ = parse_http1_wire_request(raw_stream, req);
     guard ok_parse else {
         var err_resp = new_response();
         err_resp.status_code = 400; // Bad Request
@@ -297,7 +315,7 @@ fn handle_connection_wire<B>(
     // 3. Execute request through full server pipeline
     var res = new_response();
     var future = new_inline_handler_future(0);
-    let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+    let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
 
     // 4. Serialize HTTP/1.1 response wire bytes
     serialize_http1_response(res, server.server_name[..], wire_out);

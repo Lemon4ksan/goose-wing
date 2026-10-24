@@ -110,6 +110,7 @@ import server.server;
 import net.pool;
 import net.happy_eyeballs;
 import net.proxy;
+import net.proxy_protocol;
 import net.retry;
 import net.dns;
 import net.masque;
