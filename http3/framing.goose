@@ -6,6 +6,7 @@ namespace wing;
 import std;
 import quic.packet;
 import http3.qpack;
+import http2.framing;
 
 // ---- 1. Frame Headers and Settings Structures -------------------------------
 
@@ -31,12 +32,13 @@ fn is_allowed_on_control_stream(frame_type: u64) -> bool {
     return true;
 }
 
-// Checks if a frame is permitted on an HTTP/3 Request Stream (RFC 9114 Section 7.2).
+// Checks if a frame is permitted on an HTTP/3 Request Stream (RFC 9114 Section 7.2 & RFC 9218 Section 7.2).
 // Permitted: DATA, HEADERS, or GREASE/unknown.
-// Strictly FORBIDDEN: SETTINGS, GOAWAY, CANCEL_PUSH, MAX_PUSH_ID.
+// Strictly FORBIDDEN: SETTINGS, GOAWAY, CANCEL_PUSH, MAX_PUSH_ID, PRIORITY_UPDATE.
 fn is_allowed_on_request_stream(frame_type: u64) -> bool {
     if frame_type == H3_FRAME_SETTINGS || frame_type == H3_FRAME_GOAWAY ||
-       frame_type == H3_FRAME_CANCEL_PUSH || frame_type == H3_FRAME_MAX_PUSH_ID {
+       frame_type == H3_FRAME_CANCEL_PUSH || frame_type == H3_FRAME_MAX_PUSH_ID ||
+       frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST || frame_type == H3_FRAME_PRIORITY_UPDATE_PUSH {
         return false;
     }
     return true;
@@ -220,4 +222,49 @@ fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return push_id, true;
+}
+
+// ---- 4. RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
+
+// Encodes a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2, Type 0xF0700).
+fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const PriorityParam&) -> bool {
+    var payload: u8[>..] = [];
+    guard quic_encode_varint(payload, stream_id) else { return false; }
+    write_priority_param_rfc9218(prio, payload);
+    guard encode_h3_frame_header(out, H3_FRAME_PRIORITY_UPDATE_REQUEST, payload.len as u64) else { return false; }
+    out.append(payload[..]);
+    return true;
+}
+
+// Parses a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2).
+// Returns (prioritized_stream_id, PriorityParam, ok).
+fn parse_h3_priority_update_request(payload: const u8[:], default_incremental: bool = false) -> u64, PriorityParam, bool {
+    var prio = PriorityParam { urgency: 3, incremental: default_incremental };
+    guard payload.len > 0 else { return 0, prio, false; }
+    let stream_id, off, ok = quic_decode_varint(payload, 0);
+    guard ok else { return 0, prio, false; }
+    let field_value = payload[off..];
+    let parsed, _ = parse_priority_param_rfc9218(field_value, default_incremental);
+    return stream_id, parsed, true;
+}
+
+// Encodes a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2, Type 0xF0701).
+fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const PriorityParam&) -> bool {
+    var payload: u8[>..] = [];
+    guard quic_encode_varint(payload, push_id) else { return false; }
+    write_priority_param_rfc9218(prio, payload);
+    guard encode_h3_frame_header(out, H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
+    out.append(payload[..]);
+    return true;
+}
+
+// Parses a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2).
+fn parse_h3_priority_update_push(payload: const u8[:], default_incremental: bool = false) -> u64, PriorityParam, bool {
+    var prio = PriorityParam { urgency: 3, incremental: default_incremental };
+    guard payload.len > 0 else { return 0, prio, false; }
+    let push_id, off, ok = quic_decode_varint(payload, 0);
+    guard ok else { return 0, prio, false; }
+    let field_value = payload[off..];
+    let parsed, _ = parse_priority_param_rfc9218(field_value, default_incremental);
+    return push_id, parsed, true;
 }

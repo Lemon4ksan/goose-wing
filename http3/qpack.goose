@@ -41,6 +41,8 @@ const H3_FRAME_SETTINGS:      u64 = 0x04;
 const H3_FRAME_PUSH_PROMISE:  u64 = 0x05;
 const H3_FRAME_GOAWAY:        u64 = 0x07;
 const H3_FRAME_MAX_PUSH_ID:   u64 = 0x0D;
+const H3_FRAME_PRIORITY_UPDATE_REQUEST: u64 = 0xF0700; // RFC 9218 Section 7.2
+const H3_FRAME_PRIORITY_UPDATE_PUSH:    u64 = 0xF0701; // RFC 9218 Section 7.2
 
 // HTTP/3 Unidirectional Stream Types (RFC 9114 Section 6.2)
 const H3_STREAM_CONTROL:       u64 = 0x00;

@@ -40,6 +40,7 @@ import client.policy;
 import http.headers;
 import http.mime;
 import http.multipart;
+import http.trace;
 import http.h2_framer;
 import http2.framing;
 import http2.hpack;
@@ -89,6 +90,8 @@ import net.happy_eyeballs;
 import net.proxy;
 import net.retry;
 import net.dns;
+import net.websocket;
+import net.sse;
 
 // ---- ufcs method bridges ---------------------------------------------------
 

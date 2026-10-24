@@ -1570,3 +1570,139 @@ fn base64url_decode(encoded: const u8[:], out: u8[>..]&) -> bool {
     }
     return true;
 }
+
+// ---- standard base64 codec (rfc 4648 section 4, padded) ---------------------
+
+let BASE64_STD_CHARS: const u8[64] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'
+];
+
+fn base64_encode<B>(data: const u8[:], out: B&) {
+    var i = 0;
+    while i + 3 <= data.len {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
+        out.push(BASE64_STD_CHARS[(n >> 18) & 63]);
+        out.push(BASE64_STD_CHARS[(n >> 12) & 63]);
+        out.push(BASE64_STD_CHARS[(n >> 6) & 63]);
+        out.push(BASE64_STD_CHARS[n & 63]);
+        i += 3;
+    }
+    let rem = data.len - i;
+    if rem == 1 {
+        let n = (data[i] as u32) << 16;
+        out.push(BASE64_STD_CHARS[(n >> 18) & 63]);
+        out.push(BASE64_STD_CHARS[(n >> 12) & 63]);
+        out.push('=');
+        out.push('=');
+    } else if rem == 2 {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
+        out.push(BASE64_STD_CHARS[(n >> 18) & 63]);
+        out.push(BASE64_STD_CHARS[(n >> 12) & 63]);
+        out.push(BASE64_STD_CHARS[(n >> 6) & 63]);
+        out.push('=');
+    }
+}
+
+// ---- sha-1 (rfc 3174, for rfc 6455 websocket handshakes) --------------------
+
+fn sha1_compress(state: u32[5]&, chunk: const u8[:]) {
+    var w: u32[80] = [0; 80];
+    for t in 16 {
+        let off = t * 4;
+        w[t] = ((chunk[off] as u32) << 24) |
+               ((chunk[off + 1] as u32) << 16) |
+               ((chunk[off + 2] as u32) << 8) |
+               chunk[off + 3];
+    }
+    for t in 16..80 {
+        w[t] = core::rotl32(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);
+    }
+
+    var a = state[0];
+    var b = state[1];
+    var c = state[2];
+    var d = state[3];
+    var e = state[4];
+
+    for t in 80 {
+        var f: u32 = 0;
+        var k: u32 = 0;
+        if t < 20 {
+            f = (b & c) | ((~b) & d);
+            k = 0x5A827999;
+        } else if t < 40 {
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1;
+        } else if t < 60 {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8F1BBCDC;
+        } else {
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6;
+        }
+
+        let temp = core::rotl32(a, 5) + f + e + k + w[t];
+        e = d;
+        d = c;
+        c = core::rotl32(b, 30);
+        b = a;
+        a = temp;
+    }
+
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+}
+
+fn sha1(data: const u8[:]) -> u8[20] {
+    var state: u32[5] = [
+        0x67452301,
+        0xEFCDAB89,
+        0x98BADCFE,
+        0x10325476,
+        0xC3D2E1F0
+    ];
+
+    let total_len = data.len;
+    var offset = 0;
+    while offset + 64 <= total_len {
+        sha1_compress(state, data[offset..offset + 64]);
+        offset += 64;
+    }
+
+    let rem = total_len - offset;
+    var blk: u8[64] = [0; 64];
+    for i in rem { blk[i] = data[offset + i]; }
+    blk[rem] = 0x80;
+
+    let bit_len = (total_len as u64) * 8;
+    if rem >= 56 {
+        sha1_compress(state, blk[..]);
+        blk = [0; 64];
+        for i in 8 {
+            blk[56 + i] = ((bit_len >> ((7 - i) * 8)) & 0xFF) as u8;
+        }
+        sha1_compress(state, blk[..]);
+    } else {
+        for i in 8 {
+            blk[56 + i] = ((bit_len >> ((7 - i) * 8)) & 0xFF) as u8;
+        }
+        sha1_compress(state, blk[..]);
+    }
+
+    var out: u8[20] = [0; 20];
+    for i in 5 {
+        let val = state[i];
+        out[i * 4] = ((val >> 24) & 0xFF) as u8;
+        out[i * 4 + 1] = ((val >> 16) & 0xFF) as u8;
+        out[i * 4 + 2] = ((val >> 8) & 0xFF) as u8;
+        out[i * 4 + 3] = (val & 0xFF) as u8;
+    }
+    return out;
+}
