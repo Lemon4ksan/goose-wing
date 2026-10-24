@@ -317,12 +317,12 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
 // ---- 7. DNS over HTTPS (DoH RFC 8484) Wire Helpers --------------------------
 
 // Formats a DoH POST application/dns-message body for querying `domain` with `qtype`.
-fn build_doh_post_body(domain: const u8[:], qtype: u16, tx_id: u16, out_body: u8[>..]&) -> bool {
+fn build_doh_post_body<B>(domain: const u8[:], qtype: u16, tx_id: u16, out_body: B&) -> bool {
     return build_dns_query(domain, qtype, tx_id, out_body);
 }
 
 // Formats base64url query parameter for DoH GET request (RFC 8484 Section 4.1).
-fn build_doh_get_url(server_url: const u8[:], domain: const u8[:], qtype: u16, out_url: u8[>..]&) -> bool {
+fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16, out_url: B&) -> bool {
     var raw_query: u8[>..] = [];
     guard build_dns_query(domain, qtype, 0, raw_query) else { return false; }
 
@@ -330,6 +330,18 @@ fn build_doh_get_url(server_url: const u8[:], domain: const u8[:], qtype: u16, o
     out_url.append("?dns=");
     base64url_encode(raw_query[..], out_url);
     return true;
+}
+
+// Configurable DNS-over-HTTPS (DoH RFC 8484) Resolver configuration.
+struct DohResolver {
+    endpoint: u8[..256] = "https://cloudflare-dns.com/dns-query",
+    use_post: bool = true,
+}
+
+fn new_doh_resolver(endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) -> DohResolver {
+    var r = DohResolver { use_post: use_post, .. };
+    r.endpoint.append(endpoint);
+    return r;
 }
 
 // ---- 8. DNS Cache with TTL and Stale-While-Revalidate (RFC 1035 & RFC 5861) -

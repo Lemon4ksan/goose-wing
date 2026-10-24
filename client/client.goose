@@ -19,6 +19,8 @@ import http.cache.validators;
 import http.cache.engine;
 import realtime.websocket;
 import realtime.sse;
+import net.dns;
+import tls.ech;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -406,6 +408,13 @@ struct Client {
     cache: HttpCache = HttpCache { .. },
     enable_cache: bool = false,
 
+    // RFC 8484 DNS-over-HTTPS (DoH) & RFC 9460 Automated ECH Discovery
+    doh: DohResolver = DohResolver { .. },
+    enable_doh: bool = false,
+    enable_ech: bool = false,
+    auto_ech_discovery: bool = false,
+    dns_cache: DnsCache = DnsCache { .. },
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -588,6 +597,113 @@ fn set_referrer_policy(session: Session&, policy: ReferrerPolicy) {
 fn enable_ssrf_guard(session: Session&, deny_local_network: bool = true) {
     session.ssrf_guard.enabled = true;
     session.ssrf_guard.deny_local_network = deny_local_network;
+}
+
+// ---- dns-over-https & automated ech discovery (rfc 8484, rfc 9460) ----------
+
+fn enable_doh(session: Session&, endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) {
+    session.enable_doh = true;
+    session.doh.endpoint.clear();
+    session.doh.endpoint.append(endpoint);
+    session.doh.use_post = use_post;
+}
+
+fn enable_ech(session: Session&, auto_discover: bool = true) {
+    session.enable_ech = true;
+    session.auto_ech_discovery = auto_discover;
+    if auto_discover && !session.enable_doh {
+        session.enable_doh = true;
+    }
+}
+
+// Dispatches a DNS-over-HTTPS wire query using the session's HTTP client transport.
+fn doh_query(
+    session: Session&,
+    domain: const u8[:],
+    qtype: u16,
+    tx_id: u16,
+    out_resp: DnsResponse&
+) -> bool {
+    var req = new_request(if session.doh.use_post { "POST" } else { "GET" }, "");
+
+    if session.doh.use_post {
+        req.url.append(session.doh.endpoint[..]);
+        var ct = HeaderItem { .. };
+        ct.name.append("content-type");
+        ct.value.append("application/dns-message");
+        req.headers.push(ct);
+
+        var ac = HeaderItem { .. };
+        ac.name.append("accept");
+        ac.value.append("application/dns-message");
+        req.headers.push(ac);
+
+        guard build_dns_query(domain, qtype, tx_id, req.body) else { return false; }
+    } else {
+        guard build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else { return false; }
+        var ac = HeaderItem { .. };
+        ac.name.append("accept");
+        ac.value.append("application/dns-message");
+        req.headers.push(ac);
+    }
+
+    let res, err = do(session, req);
+    guard ok(err) && res.status_code == 200 else { return false; }
+
+    return parse_dns_response(res.body[..], out_resp);
+}
+
+// Discovers or extracts ECHConfigList for a domain.
+// First checks local DnsCache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
+fn resolve_ech_config(
+    session: Session&,
+    domain: const u8[:],
+    now_sec: i64,
+    out_ech: u8[..512]&
+) -> bool {
+    out_ech.clear();
+
+    // 1. Check local cache
+    var cached = DnsCacheEntry { .. };
+    let cache_status = dns_cache_lookup(session.dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
+    if cache_status == DnsCacheStatus.Fresh || cache_status == DnsCacheStatus.Stale {
+        for &rec in cached.https_records {
+            if rec.has_ech && rec.ech_config_list.len > 0 {
+                out_ech.append(rec.ech_config_list[..]);
+                return true;
+            }
+        }
+    }
+
+    // 2. Automated discovery via DoH
+    guard session.enable_doh && session.auto_ech_discovery else { return false; }
+
+    var dns_resp = DnsResponse { .. };
+    guard doh_query(session, domain, DNS_QTYPE_HTTPS, 0x1234, dns_resp) else { return false; }
+
+    // Cache the response
+    var cache_entry = DnsCacheEntry {
+        qtype: DNS_QTYPE_HTTPS,
+        inserted_at_sec: now_sec,
+        ttl_sec: 300,
+        valid: true,
+        ..
+    };
+    cache_entry.domain.append(domain);
+
+    var found_ech = false;
+    for &rec in dns_resp.https_records {
+        if cache_entry.https_records.len < 4 {
+            cache_entry.https_records.push(rec);
+        }
+        if rec.has_ech && rec.ech_config_list.len > 0 && !found_ech {
+            out_ech.append(rec.ech_config_list[..]);
+            found_ech = true;
+        }
+    }
+
+    dns_cache_insert(session.dns_cache, cache_entry);
+    return found_ech;
 }
 
 fn allow_port(session: Session&, port_num: i32) {

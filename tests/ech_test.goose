@@ -292,12 +292,111 @@ fn test_ech_protocol(t: core::T&) {
 }
 
 // ============================================================================
+// 3. DNS-over-HTTPS (RFC 8484) & Automated ECH Discovery (RFC 9460)
+// ============================================================================
+fn test_doh_and_automated_ech_discovery(t: core::T&) {
+    t.run("DoH-01: Wire Format Query Construction & URL Formatter") { sub =>
+        // POST body
+        var post_body: u8[>..] = [];
+        let ok_post = wing::build_doh_post_body("cloudflare.com", wing::DNS_QTYPE_HTTPS, 0x1122, post_body);
+        sub.assert_true(ok_post, "build_doh_post_body succeeds");
+        sub.assert_gt(post_body.len, 12, "DoH post body contains DNS header + question");
+
+        // GET URL
+        var get_url: u8[..512] = [];
+        let ok_get = wing::build_doh_get_url("https://cloudflare-dns.com/dns-query", "cloudflare.com", wing::DNS_QTYPE_HTTPS, get_url);
+        sub.assert_true(ok_get, "build_doh_get_url succeeds");
+        let prefix = "https://cloudflare-dns.com/dns-query?dns=";
+        sub.assert_true(get_url.len >= prefix.len, "GET URL length sufficient");
+        sub.assert_bytes_eq(get_url[..prefix.len], prefix, "GET URL starts with query param");
+    };
+
+    t.run("DoH-02: Automated ECH Discovery and DNS Cache Integration") { sub =>
+        var client = wing::new_client();
+        wing::enable_doh(client, "https://mock-dns.local/dns-query", true);
+        wing::enable_ech(client, true);
+
+        sub.assert_true(client.enable_doh, "DoH enabled");
+        sub.assert_true(client.enable_ech, "ECH enabled");
+        sub.assert_true(client.auto_ech_discovery, "Auto ECH discovery enabled");
+
+        // Construct synthetic DNS response containing Type 65 HTTPS RR with Key 5 (ECH)
+        var dns_resp_wire: u8[>..] = [];
+        dns_resp_wire.push(0x12); dns_resp_wire.push(0x34); // ID 0x1234
+        dns_resp_wire.push(0x81); dns_resp_wire.push(0x80); // Flags: standard response
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // QDCOUNT=1
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // ANCOUNT=1
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x00);
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x00);
+
+        // Question: crypto.example.com HTTPS IN
+        guard wing::dns_encode_name("crypto.example.com", dns_resp_wire) else { return; }
+        dns_resp_wire.push(0x00); dns_resp_wire.push(65); // QTYPE=HTTPS
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // QCLASS=IN
+
+        // Answer
+        dns_resp_wire.push(0xC0); dns_resp_wire.push(0x0C); // Ptr to question name
+        dns_resp_wire.push(0x00); dns_resp_wire.push(65);   // Type 65
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // Class IN
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); dns_resp_wire.push(0x2C); // TTL 300
+
+        // RDATA
+        var rdata: u8[>..] = [];
+        rdata.push(0x00); rdata.push(0x01); // Priority 1
+        rdata.push(0x00);                   // Target "."
+        // Key 5 (ECH)
+        rdata.push(0x00); rdata.push(wing::SVC_PARAM_ECH as u8);
+        rdata.push(0x00); rdata.push(0x08); // 8 bytes
+        rdata.push(0xFE); rdata.push(0x0D);
+        rdata.push(0x00); rdata.push(0x04);
+        rdata.push(0xCA); rdata.push(0xFE); rdata.push(0xBA); rdata.push(0xBE);
+
+        let rdlen = rdata.len;
+        dns_resp_wire.push(((rdlen >> 8) & 0xFF) as u8);
+        dns_resp_wire.push((rdlen & 0xFF) as u8);
+        dns_resp_wire.append(rdata[..]);
+
+        // Register mock DoH endpoint
+        var mock = wing::MockExchange {
+            pattern_url: "https://mock-dns.local/dns-query",
+            method: "POST",
+            status_code: 200,
+            ..
+        };
+        mock.headers.push(wing::make_header("content-type", "application/dns-message"));
+        mock.body.append(dns_resp_wire[..]);
+        client.mock_routes.push(mock);
+
+        // 1st call: Performs DoH query and populates cache
+        var discovered_ech: u8[..512] = [];
+        let now = 1700000000;
+        let ok_disc = wing::resolve_ech_config(client, "crypto.example.com", now, discovered_ech);
+
+        sub.assert_true(ok_disc, "ECH config discovered via DoH");
+        sub.assert_eq(discovered_ech.len, 8, "Extracted 8 bytes ECHConfigList");
+        sub.assert_eq(discovered_ech[0], 0xFE, "ECH header byte 0 is 0xFE");
+        sub.assert_eq(discovered_ech[1], 0x0D, "ECH header byte 1 is 0x0D");
+        sub.assert_eq(discovered_ech[4], 0xCA, "ECH payload matches 0xCA");
+        sub.assert_eq(discovered_ech[5], 0xFE, "ECH payload matches 0xFE");
+
+        // 2nd call: Resolves from DnsCache directly without DoH request
+        client.mock_routes.clear(); // Clear mock routes so any network hop would fail
+        var cached_ech: u8[..512] = [];
+        let ok_cache = wing::resolve_ech_config(client, "crypto.example.com", now + 60, cached_ech);
+
+        sub.assert_true(ok_cache, "ECH resolved from DNS cache without network hop");
+        sub.assert_bytes_eq(cached_ech[..], discovered_ech[..], "Cached ECH matches discovered ECH");
+    };
+}
+
+// ============================================================================
 // Main ECH & DNS Verification Runner
 // ============================================================================
 fn main() {
     var runner = core::new_runner("DNS Engine (RFC 1035), HTTPS RR (RFC 9460) & ECH Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. DNS Wire Format & RFC 9460 HTTPS Resource Records", test_dns_and_https_rr);
     core::run_case(runner, "2. Encrypted Client Hello (ECH) Wire & HPKE Handshake", test_ech_protocol);
+    core::run_case(runner, "3. DNS-over-HTTPS (DoH RFC 8484) & Automated ECH Discovery", test_doh_and_automated_ech_discovery);
     let ok = core::finish(runner);
     assert(ok);
 }
