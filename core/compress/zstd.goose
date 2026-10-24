@@ -1557,17 +1557,348 @@ fn decode_sequences<B>(
     var ml_entry = ml_table.entries[state_ml & 511];
     var ll_entry = ll_table.entries[state_ll & 511];
 
-    var seq_i: i64 = 0;
-    while seq_i < nb_seq {
-        let of_eb = of_entry.extra_bits as u32;
-        let ml_eb = ml_entry.extra_bits as u32;
-        let ll_eb = ll_entry.extra_bits as u32;
+    if use_fast_dstream {
+        var seq_i: i64 = 0;
+        while seq_i + 1 < nb_seq {
+            // --- Sequence A ---
+            let of_eb_A = of_entry.extra_bits as u32;
+            let ml_eb_A = ml_entry.extra_bits as u32;
+            let ll_eb_A = ll_entry.extra_bits as u32;
 
-        var of_extra: u32 = 0;
-        var ml_extra: u32 = 0;
-        var ll_extra: u32 = 0;
+            var of_extra_A: u32 = 0;
+            var ml_extra_A: u32 = 0;
+            var ll_extra_A: u32 = 0;
 
-        if use_fast_dstream {
+            if bits_consumed > 32 {
+                if ptr >= 8 {
+                    let s = (bits_consumed >> 3) as i64;
+                    ptr -= s;
+                    bits_consumed &= 7;
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                } else if ptr > 0 {
+                    let avail = (bits_consumed >> 3) as i64;
+                    let s = if ptr < avail { ptr } else { avail };
+                    ptr -= s;
+                    bits_consumed -= (s * 8) as u32;
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                }
+            }
+
+            if of_eb_A > 0 {
+                of_extra_A = zstd_extract_bits(bit_container, bits_consumed, of_eb_A);
+                bits_consumed += of_eb_A;
+            }
+            if ml_eb_A > 0 {
+                ml_extra_A = zstd_extract_bits(bit_container, bits_consumed, ml_eb_A);
+                bits_consumed += ml_eb_A;
+            }
+            if ll_eb_A > 0 {
+                ll_extra_A = zstd_extract_bits(bit_container, bits_consumed, ll_eb_A);
+                bits_consumed += ll_eb_A;
+            }
+
+            let lit_len_A = ll_entry.base_val + ll_extra_A;
+            let match_len_A = ml_entry.base_val + ml_extra_A;
+            let offset_val_A = of_entry.base_val + of_extra_A;
+
+            // FSE update for Sequence B
+            if bits_consumed > 32 {
+                if ptr >= 8 {
+                    let s = (bits_consumed >> 3) as i64;
+                    ptr -= s;
+                    bits_consumed &= 7;
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                } else if ptr > 0 {
+                    let avail = (bits_consumed >> 3) as i64;
+                    let s = if ptr < avail { ptr } else { avail };
+                    ptr -= s;
+                    bits_consumed -= (s * 8) as u32;
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                }
+            }
+
+            let ll_nb_A = ll_entry.nb_bits as u32;
+            let ll_bits_A = zstd_extract_bits(bit_container, bits_consumed, ll_nb_A) as i64;
+            bits_consumed += ll_nb_A;
+            state_ll = (ll_entry.new_state as i64) + ll_bits_A;
+
+            let ml_nb_A = ml_entry.nb_bits as u32;
+            let ml_bits_A = zstd_extract_bits(bit_container, bits_consumed, ml_nb_A) as i64;
+            bits_consumed += ml_nb_A;
+            state_ml = (ml_entry.new_state as i64) + ml_bits_A;
+
+            let of_nb_A = of_entry.nb_bits as u32;
+            let of_bits_A = zstd_extract_bits(bit_container, bits_consumed, of_nb_A) as i64;
+            bits_consumed += of_nb_A;
+            state_of = (of_entry.new_state as i64) + of_bits_A;
+
+            of_entry = of_table.entries[state_of & 511];
+            ml_entry = ml_table.entries[state_ml & 511];
+            ll_entry = ll_table.entries[state_ll & 511];
+
+            // Sequence A offset
+            var offset_A: u32 = 0;
+            if offset_val_A == 1 {
+                if lit_len_A > 0 { offset_A = rep0; }
+                else { offset_A = rep1; rep1 = rep0; rep0 = offset_A; }
+            } else if offset_val_A > 3 {
+                offset_A = offset_val_A - 3; rep2 = rep1; rep1 = rep0; rep0 = offset_A;
+            } else if offset_val_A == 2 {
+                if lit_len_A > 0 { offset_A = rep1; rep1 = rep0; rep0 = offset_A; }
+                else { offset_A = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_A; }
+            } else {
+                if lit_len_A > 0 { offset_A = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_A; }
+                else { offset_A = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset_A; }
+            }
+
+            if max_output_bytes >= 0 {
+                if (out_buf.len as i64) + (lit_len_A as i64) + (match_len_A as i64) > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
+            }
+
+            // Sequence A literals
+            if lit_len_A == 1 {
+                if lit_ptr >= 0 && lit_ptr < lit_buf.len {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    lit_ptr++;
+                } else { return CompressError.CorruptedBitstream; }
+            } else if lit_len_A > 1 {
+                let next_lit = lit_ptr + (lit_len_A as i64);
+                if lit_ptr >= 0 && next_lit >= lit_ptr && next_lit <= lit_buf.len {
+                    if lit_len_A == 2 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                    } else if lit_len_A == 3 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                    } else if lit_len_A == 4 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                        out_buf.push(lit_buf[lit_ptr + 3]);
+                    } else {
+                        out_buf.append(lit_buf[lit_ptr .. next_lit]);
+                    }
+                    lit_ptr = next_lit;
+                } else { return CompressError.CorruptedBitstream; }
+            }
+
+            // Sequence A match
+            if match_len_A > 0 {
+                let off = offset_A as i64;
+                let m_len = match_len_A as i64;
+                let out_len = out_buf.len;
+                if off <= 0 || off > out_len { return CompressError.DistanceOutOfBounds; }
+                let src_idx = out_len - off;
+                if off >= m_len {
+                    let src_end = src_idx + m_len;
+                    if src_idx >= 0 && src_end <= out_len {
+                        out_buf.append(out_buf[src_idx .. src_end]);
+                    } else { return CompressError.DistanceOutOfBounds; }
+                } else if off == 1 {
+                    if src_idx >= 0 && src_idx < out_len {
+                        let b = out_buf[src_idx];
+                        out_buf.resize(out_len + m_len, b);
+                    } else { return CompressError.DistanceOutOfBounds; }
+                } else {
+                    var curr: i64 = 0;
+                    while curr < m_len {
+                        let avail = curr + off;
+                        let rem = m_len - curr;
+                        let step = if avail < rem { avail } else { rem };
+                        out_buf.append(out_buf[src_idx .. src_idx + step]);
+                        curr += step;
+                    }
+                }
+            }
+
+            // --- Sequence B ---
+            let of_eb_B = of_entry.extra_bits as u32;
+            let ml_eb_B = ml_entry.extra_bits as u32;
+            let ll_eb_B = ll_entry.extra_bits as u32;
+
+            var of_extra_B: u32 = 0;
+            var ml_extra_B: u32 = 0;
+            var ll_extra_B: u32 = 0;
+
+            if bits_consumed > 32 {
+                if ptr >= 8 {
+                    let s = (bits_consumed >> 3) as i64;
+                    ptr -= s;
+                    bits_consumed &= 7;
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                } else if ptr > 0 {
+                    let avail = (bits_consumed >> 3) as i64;
+                    let s = if ptr < avail { ptr } else { avail };
+                    ptr -= s;
+                    bits_consumed -= (s * 8) as u32;
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                }
+            }
+
+            if of_eb_B > 0 {
+                of_extra_B = zstd_extract_bits(bit_container, bits_consumed, of_eb_B);
+                bits_consumed += of_eb_B;
+            }
+            if ml_eb_B > 0 {
+                ml_extra_B = zstd_extract_bits(bit_container, bits_consumed, ml_eb_B);
+                bits_consumed += ml_eb_B;
+            }
+            if ll_eb_B > 0 {
+                ll_extra_B = zstd_extract_bits(bit_container, bits_consumed, ll_eb_B);
+                bits_consumed += ll_eb_B;
+            }
+
+            let lit_len_B = ll_entry.base_val + ll_extra_B;
+            let match_len_B = ml_entry.base_val + ml_extra_B;
+            let offset_val_B = of_entry.base_val + of_extra_B;
+
+            // FSE update for Sequence A (next iteration)
+            if seq_i + 2 < nb_seq {
+                if bits_consumed > 32 {
+                    if ptr >= 8 {
+                        let s = (bits_consumed >> 3) as i64;
+                        ptr -= s;
+                        bits_consumed &= 7;
+                        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        }
+                    } else if ptr > 0 {
+                        let avail = (bits_consumed >> 3) as i64;
+                        let s = if ptr < avail { ptr } else { avail };
+                        ptr -= s;
+                        bits_consumed -= (s * 8) as u32;
+                        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
+                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        }
+                    }
+                }
+
+                let ll_nb_B = ll_entry.nb_bits as u32;
+                let ll_bits_B = zstd_extract_bits(bit_container, bits_consumed, ll_nb_B) as i64;
+                bits_consumed += ll_nb_B;
+                state_ll = (ll_entry.new_state as i64) + ll_bits_B;
+
+                let ml_nb_B = ml_entry.nb_bits as u32;
+                let ml_bits_B = zstd_extract_bits(bit_container, bits_consumed, ml_nb_B) as i64;
+                bits_consumed += ml_nb_B;
+                state_ml = (ml_entry.new_state as i64) + ml_bits_B;
+
+                let of_nb_B = of_entry.nb_bits as u32;
+                let of_bits_B = zstd_extract_bits(bit_container, bits_consumed, of_nb_B) as i64;
+                bits_consumed += of_nb_B;
+                state_of = (of_entry.new_state as i64) + of_bits_B;
+
+                of_entry = of_table.entries[state_of & 511];
+                ml_entry = ml_table.entries[state_ml & 511];
+                ll_entry = ll_table.entries[state_ll & 511];
+            }
+
+            // Sequence B offset
+            var offset_B: u32 = 0;
+            if offset_val_B == 1 {
+                if lit_len_B > 0 { offset_B = rep0; }
+                else { offset_B = rep1; rep1 = rep0; rep0 = offset_B; }
+            } else if offset_val_B > 3 {
+                offset_B = offset_val_B - 3; rep2 = rep1; rep1 = rep0; rep0 = offset_B;
+            } else if offset_val_B == 2 {
+                if lit_len_B > 0 { offset_B = rep1; rep1 = rep0; rep0 = offset_B; }
+                else { offset_B = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_B; }
+            } else {
+                if lit_len_B > 0 { offset_B = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_B; }
+                else { offset_B = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset_B; }
+            }
+
+            if max_output_bytes >= 0 {
+                if (out_buf.len as i64) + (lit_len_B as i64) + (match_len_B as i64) > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
+            }
+
+            // Sequence B literals
+            if lit_len_B == 1 {
+                if lit_ptr >= 0 && lit_ptr < lit_buf.len {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    lit_ptr++;
+                } else { return CompressError.CorruptedBitstream; }
+            } else if lit_len_B > 1 {
+                let next_lit = lit_ptr + (lit_len_B as i64);
+                if lit_ptr >= 0 && next_lit >= lit_ptr && next_lit <= lit_buf.len {
+                    if lit_len_B == 2 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                    } else if lit_len_B == 3 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                    } else if lit_len_B == 4 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                        out_buf.push(lit_buf[lit_ptr + 3]);
+                    } else {
+                        out_buf.append(lit_buf[lit_ptr .. next_lit]);
+                    }
+                    lit_ptr = next_lit;
+                } else { return CompressError.CorruptedBitstream; }
+            }
+
+            // Sequence B match
+            if match_len_B > 0 {
+                let off = offset_B as i64;
+                let m_len = match_len_B as i64;
+                let out_len = out_buf.len;
+                if off <= 0 || off > out_len { return CompressError.DistanceOutOfBounds; }
+                let src_idx = out_len - off;
+                if off >= m_len {
+                    let src_end = src_idx + m_len;
+                    if src_idx >= 0 && src_end <= out_len {
+                        out_buf.append(out_buf[src_idx .. src_end]);
+                    } else { return CompressError.DistanceOutOfBounds; }
+                } else if off == 1 {
+                    if src_idx >= 0 && src_idx < out_len {
+                        let b = out_buf[src_idx];
+                        out_buf.resize(out_len + m_len, b);
+                    } else { return CompressError.DistanceOutOfBounds; }
+                } else {
+                    var curr: i64 = 0;
+                    while curr < m_len {
+                        let avail = curr + off;
+                        let rem = m_len - curr;
+                        let step = if avail < rem { avail } else { rem };
+                        out_buf.append(out_buf[src_idx .. src_idx + step]);
+                        curr += step;
+                    }
+                }
+            }
+
+            seq_i += 2;
+        }
+
+        // Trailing odd sequence if nb_seq was odd
+        while seq_i < nb_seq {
+            let of_eb = of_entry.extra_bits as u32;
+            let ml_eb = ml_entry.extra_bits as u32;
+            let ll_eb = ll_entry.extra_bits as u32;
+
+            var of_extra: u32 = 0;
+            var ml_extra: u32 = 0;
+            var ll_extra: u32 = 0;
+
             if bits_consumed > 32 {
                 if ptr >= 8 {
                     let s = (bits_consumed >> 3) as i64;
@@ -1591,67 +1922,111 @@ fn decode_sequences<B>(
                 of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
                 bits_consumed += of_eb;
             }
-
             if ml_eb > 0 {
                 ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
                 bits_consumed += ml_eb;
             }
-
             if ll_eb > 0 {
                 ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
                 bits_consumed += ll_eb;
             }
-        } else {
-            of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
-            ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
-            ll_extra = if ll_eb > 0 { zstd_read_bits(r, ll_eb as i32) } else { 0 };
-        }
 
-        let lit_len = ll_entry.base_val + ll_extra;
-        let match_len = ml_entry.base_val + ml_extra;
-        let offset_val = of_entry.base_val + of_extra;
+            let lit_len = ll_entry.base_val + ll_extra;
+            let match_len = ml_entry.base_val + ml_extra;
+            let offset_val = of_entry.base_val + of_extra;
 
-        if use_fast_dstream {
-            if seq_i + 1 < nb_seq {
-                if bits_consumed > 32 {
-                    if ptr >= 8 {
-                        let s = (bits_consumed >> 3) as i64;
-                        ptr -= s;
-                        bits_consumed &= 7;
-                        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
-                        }
-                    } else if ptr > 0 {
-                        let avail = (bits_consumed >> 3) as i64;
-                        let s = if ptr < avail { ptr } else { avail };
-                        ptr -= s;
-                        bits_consumed -= (s * 8) as u32;
-                        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
-                        }
+            var offset: u32 = 0;
+            if offset_val == 1 {
+                if lit_len > 0 { offset = rep0; }
+                else { offset = rep1; rep1 = rep0; rep0 = offset; }
+            } else if offset_val > 3 {
+                offset = offset_val - 3; rep2 = rep1; rep1 = rep0; rep0 = offset;
+            } else if offset_val == 2 {
+                if lit_len > 0 { offset = rep1; rep1 = rep0; rep0 = offset; }
+                else { offset = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset; }
+            } else {
+                if lit_len > 0 { offset = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset; }
+                else { offset = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset; }
+            }
+
+            if max_output_bytes >= 0 {
+                if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
+            }
+
+            if lit_len == 1 {
+                if lit_ptr >= 0 && lit_ptr < lit_buf.len {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    lit_ptr++;
+                } else { return CompressError.CorruptedBitstream; }
+            } else if lit_len > 1 {
+                let next_lit = lit_ptr + (lit_len as i64);
+                if lit_ptr >= 0 && next_lit >= lit_ptr && next_lit <= lit_buf.len {
+                    if lit_len == 2 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                    } else if lit_len == 3 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                    } else if lit_len == 4 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                        out_buf.push(lit_buf[lit_ptr + 3]);
+                    } else {
+                        out_buf.append(lit_buf[lit_ptr .. next_lit]);
+                    }
+                    lit_ptr = next_lit;
+                } else { return CompressError.CorruptedBitstream; }
+            }
+
+            if match_len > 0 {
+                let off = offset as i64;
+                let m_len = match_len as i64;
+                let out_len = out_buf.len;
+                if off <= 0 || off > out_len { return CompressError.DistanceOutOfBounds; }
+                let src_idx = out_len - off;
+                if off >= m_len {
+                    let src_end = src_idx + m_len;
+                    if src_idx >= 0 && src_end <= out_len {
+                        out_buf.append(out_buf[src_idx .. src_end]);
+                    } else { return CompressError.DistanceOutOfBounds; }
+                } else if off == 1 {
+                    if src_idx >= 0 && src_idx < out_len {
+                        let b = out_buf[src_idx];
+                        out_buf.resize(out_len + m_len, b);
+                    } else { return CompressError.DistanceOutOfBounds; }
+                } else {
+                    var curr: i64 = 0;
+                    while curr < m_len {
+                        let avail = curr + off;
+                        let rem = m_len - curr;
+                        let step = if avail < rem { avail } else { rem };
+                        out_buf.append(out_buf[src_idx .. src_idx + step]);
+                        curr += step;
                     }
                 }
-
-                let ll_nb = ll_entry.nb_bits as u32;
-                let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
-                bits_consumed += ll_nb;
-                state_ll = (ll_entry.new_state as i64) + ll_bits;
-
-                let ml_nb = ml_entry.nb_bits as u32;
-                let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
-                bits_consumed += ml_nb;
-                state_ml = (ml_entry.new_state as i64) + ml_bits;
-
-                let of_nb = of_entry.nb_bits as u32;
-                let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
-                bits_consumed += of_nb;
-                state_of = (of_entry.new_state as i64) + of_bits;
-
-                of_entry = of_table.entries[state_of & 511];
-                ml_entry = ml_table.entries[state_ml & 511];
-                ll_entry = ll_table.entries[state_ll & 511];
             }
-        } else {
+
+            seq_i++;
+        }
+    } else {
+        var seq_i: i64 = 0;
+        while seq_i < nb_seq {
+            let of_eb = of_entry.extra_bits as u32;
+            let ml_eb = ml_entry.extra_bits as u32;
+            let ll_eb = ll_entry.extra_bits as u32;
+
+            let of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
+            let ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
+            let ll_extra = if ll_eb > 0 { zstd_read_bits(r, ll_eb as i32) } else { 0 };
+
+            let lit_len = ll_entry.base_val + ll_extra;
+            let match_len = ml_entry.base_val + ml_extra;
+            let offset_val = of_entry.base_val + of_extra;
+
             if seq_i + 1 < nb_seq {
                 let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
                 state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
@@ -1666,120 +2041,119 @@ fn decode_sequences<B>(
                 ml_entry = ml_table.entries[state_ml & 511];
                 ll_entry = ll_table.entries[state_ll & 511];
             }
-        }
 
-        var offset: u32 = 0;
-        if offset_val == 1 {
-            if lit_len > 0 {
-                offset = rep0;
-            } else {
-                offset = rep1;
-                rep1 = rep0;
-                rep0 = offset;
-            }
-        } else if offset_val > 3 {
-            offset = offset_val - 3;
-            rep2 = rep1;
-            rep1 = rep0;
-            rep0 = offset;
-        } else if offset_val == 2 {
-            if lit_len > 0 {
-                offset = rep1;
-                rep1 = rep0;
-                rep0 = offset;
-            } else {
-                offset = rep2;
-                rep2 = rep1;
-                rep1 = rep0;
-                rep0 = offset;
-            }
-        } else {
-            if lit_len > 0 {
-                offset = rep2;
-                rep2 = rep1;
-                rep1 = rep0;
-                rep0 = offset;
-            } else {
-                offset = rep0 - 1;
-                rep2 = rep1;
-                rep1 = rep0;
-                rep0 = offset;
-            }
-        }
-
-        // Execute sequence
-        if max_output_bytes >= 0 {
-            if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
-                return CompressError.OutputBufferOverflow;
-            }
-        }
-
-        if lit_len == 1 {
-            if lit_ptr >= 0 && lit_ptr < lit_buf.len {
-                out_buf.push(lit_buf[lit_ptr]);
-                lit_ptr++;
-            } else {
-                return CompressError.CorruptedBitstream;
-            }
-        } else if lit_len > 1 {
-            let next_lit = lit_ptr + (lit_len as i64);
-            if lit_ptr >= 0 && next_lit <= lit_buf.len {
-                if lit_len == 2 {
-                    out_buf.push(lit_buf[lit_ptr]);
-                    out_buf.push(lit_buf[lit_ptr + 1]);
-                } else if lit_len == 3 {
-                    out_buf.push(lit_buf[lit_ptr]);
-                    out_buf.push(lit_buf[lit_ptr + 1]);
-                    out_buf.push(lit_buf[lit_ptr + 2]);
-                } else if lit_len == 4 {
-                    out_buf.push(lit_buf[lit_ptr]);
-                    out_buf.push(lit_buf[lit_ptr + 1]);
-                    out_buf.push(lit_buf[lit_ptr + 2]);
-                    out_buf.push(lit_buf[lit_ptr + 3]);
+            var offset: u32 = 0;
+            if offset_val == 1 {
+                if lit_len > 0 {
+                    offset = rep0;
                 } else {
-                    out_buf.append(lit_buf[lit_ptr .. next_lit]);
+                    offset = rep1;
+                    rep1 = rep0;
+                    rep0 = offset;
                 }
-                lit_ptr = next_lit;
-            } else {
-                return CompressError.CorruptedBitstream;
-            }
-        }
-
-        if match_len > 0 {
-            let off = offset as i64;
-            let m_len = match_len as i64;
-            let out_len = out_buf.len;
-            if off <= 0 || off > out_len {
-                return CompressError.DistanceOutOfBounds;
-            }
-            let src_idx = out_len - off;
-            if off >= m_len {
-                let src_end = src_idx + m_len;
-                if src_idx >= 0 && src_end <= out_len {
-                    out_buf.append(out_buf[src_idx .. src_end]);
+            } else if offset_val > 3 {
+                offset = offset_val - 3;
+                rep2 = rep1;
+                rep1 = rep0;
+                rep0 = offset;
+            } else if offset_val == 2 {
+                if lit_len > 0 {
+                    offset = rep1;
+                    rep1 = rep0;
+                    rep0 = offset;
                 } else {
+                    offset = rep2;
+                    rep2 = rep1;
+                    rep1 = rep0;
+                    rep0 = offset;
+                }
+            } else {
+                if lit_len > 0 {
+                    offset = rep2;
+                    rep2 = rep1;
+                    rep1 = rep0;
+                    rep0 = offset;
+                } else {
+                    offset = rep0 - 1;
+                    rep2 = rep1;
+                    rep1 = rep0;
+                    rep0 = offset;
+                }
+            }
+
+            if max_output_bytes >= 0 {
+                if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
+            }
+
+            if lit_len == 1 {
+                if lit_ptr >= 0 && lit_ptr < lit_buf.len {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    lit_ptr++;
+                } else {
+                    return CompressError.CorruptedBitstream;
+                }
+            } else if lit_len > 1 {
+                let next_lit = lit_ptr + (lit_len as i64);
+                if lit_ptr >= 0 && next_lit >= lit_ptr && next_lit <= lit_buf.len {
+                    if lit_len == 2 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                    } else if lit_len == 3 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                    } else if lit_len == 4 {
+                        out_buf.push(lit_buf[lit_ptr]);
+                        out_buf.push(lit_buf[lit_ptr + 1]);
+                        out_buf.push(lit_buf[lit_ptr + 2]);
+                        out_buf.push(lit_buf[lit_ptr + 3]);
+                    } else {
+                        out_buf.append(lit_buf[lit_ptr .. next_lit]);
+                    }
+                    lit_ptr = next_lit;
+                } else {
+                    return CompressError.CorruptedBitstream;
+                }
+            }
+
+            if match_len > 0 {
+                let off = offset as i64;
+                let m_len = match_len as i64;
+                let out_len = out_buf.len;
+                if off <= 0 || off > out_len {
                     return CompressError.DistanceOutOfBounds;
                 }
-            } else if off == 1 {
-                if src_idx >= 0 && src_idx < out_len {
-                    let b = out_buf[src_idx];
-                    out_buf.resize(out_len + m_len, b);
+                let src_idx = out_len - off;
+                if off >= m_len {
+                    let src_end = src_idx + m_len;
+                    if src_idx >= 0 && src_end <= out_len {
+                        out_buf.append(out_buf[src_idx .. src_end]);
+                    } else {
+                        return CompressError.DistanceOutOfBounds;
+                    }
+                } else if off == 1 {
+                    if src_idx >= 0 && src_idx < out_len {
+                        let b = out_buf[src_idx];
+                        out_buf.resize(out_len + m_len, b);
+                    } else {
+                        return CompressError.DistanceOutOfBounds;
+                    }
                 } else {
-                    return CompressError.DistanceOutOfBounds;
-                }
-            } else {
-                var curr: i64 = 0;
-                while curr < m_len {
-                    let avail = curr + off;
-                    let rem = m_len - curr;
-                    let step = if avail < rem { avail } else { rem };
-                    out_buf.append(out_buf[src_idx .. src_idx + step]);
-                    curr += step;
+                    var curr: i64 = 0;
+                    while curr < m_len {
+                        let avail = curr + off;
+                        let rem = m_len - curr;
+                        let step = if avail < rem { avail } else { rem };
+                        out_buf.append(out_buf[src_idx .. src_idx + step]);
+                        curr += step;
+                    }
                 }
             }
-        }
 
-        seq_i++;
+            seq_i++;
+        }
     }
 
     rep[0] = rep0;
