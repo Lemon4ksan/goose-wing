@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 import client.profile;
 import client.request;
 import client.response;
@@ -224,7 +224,7 @@ fn sign_http_request(
     }
 
     // Compute HMAC-SHA256 signature
-    let sig_raw = hmac_sha256(secret_key, sig_base[..]);
+    let sig_raw = core::hmac_sha256(secret_key, sig_base[..]);
 
     // Format Signature-Input header: <label>=<signature-params>
     var input_hdr: u8[..1024] = [];
@@ -236,7 +236,7 @@ fn sign_http_request(
     var sig_hdr: u8[..256] = [];
     sig_hdr.append(params.label[..]);
     sig_hdr.append("=:");
-    base64_encode(sig_raw[..], sig_hdr);
+    core::base64_encode(sig_raw[..], sig_hdr);
     sig_hdr.push(':');
 
     header(req, HEADER_SIGNATURE_INPUT, input_hdr[..]);
@@ -265,9 +265,9 @@ fn verify_http_signature(
     }
 
     // 3. Compute expected signature
-    let expected_sig = hmac_sha256(secret_key, sig_base[..]);
+    let expected_sig = core::hmac_sha256(secret_key, sig_base[..]);
     var expected_b64: u8[..128] = [];
-    base64_encode(expected_sig[..], expected_b64);
+    core::base64_encode(expected_sig[..], expected_b64);
 
     // 4. Find Signature header matching label
     let sig_header_val = find_header_val(req, HEADER_SIGNATURE);

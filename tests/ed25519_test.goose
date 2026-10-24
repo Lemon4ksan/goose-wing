@@ -7,7 +7,7 @@ import wing from "..";
 fn test_sha512_fips(t: core::T&) {
     t.run("SHA512-01: Empty string NIST vector") { sub =>
         let empty: u8[0] = [];
-        let hash = wing::sha512(empty[..]);
+        let hash = core::sha512(empty[..]);
         let expected: u8[64] = [
             0xcf, 0x83, 0xe1, 0x35, 0x7e, 0xef, 0xb8, 0xbd,
             0xf1, 0x54, 0x28, 0x50, 0xd6, 0x6d, 0x80, 0x07,
@@ -25,7 +25,7 @@ fn test_sha512_fips(t: core::T&) {
 
     t.run("SHA512-02: String 'abc' NIST vector") { sub =>
         let abc: u8[3] = [0x61, 0x62, 0x63];
-        let hash = wing::sha512(abc[..]);
+        let hash = core::sha512(abc[..]);
         let expected: u8[64] = [
             0xdd, 0xaf, 0x35, 0xa1, 0x93, 0x61, 0x7a, 0xba,
             0xcc, 0x41, 0x73, 0x49, 0xae, 0x20, 0x41, 0x31,
@@ -68,20 +68,20 @@ fn test_ed25519_rfc8032(t: core::T&) {
         ];
 
         // 1. Check public key derivation
-        let pub_key = wing::ed25519_public_key(seed);
+        let pub_key = core::ed25519_public_key(seed);
         for i in 32 {
             sub.assert_eq(pub_key[i], expected_pub[i], "Vector 1 public key matches RFC 8032");
         }
 
         // 2. Check signature generation
         let empty_msg: u8[0] = [];
-        let sig = wing::ed25519_sign(seed, empty_msg[..]);
+        let sig = core::ed25519_sign(seed, empty_msg[..]);
         for i in 64 {
             sub.assert_eq(sig[i], expected_sig[i], "Vector 1 signature matches RFC 8032");
         }
 
         // 3. Check signature verification
-        let ok = wing::ed25519_verify(pub_key, empty_msg[..], sig);
+        let ok = core::ed25519_verify(pub_key, empty_msg[..], sig);
         sub.assert_true(ok, "Vector 1 signature verification succeeds");
     };
 
@@ -111,19 +111,19 @@ fn test_ed25519_rfc8032(t: core::T&) {
         let msg: u8[1] = [0x72];
 
         // 1. Check public key derivation
-        let pub_key = wing::ed25519_public_key(seed);
+        let pub_key = core::ed25519_public_key(seed);
         for i in 32 {
             sub.assert_eq(pub_key[i], expected_pub[i], "Vector 2 public key matches RFC 8032");
         }
 
         // 2. Check signature generation
-        let sig = wing::ed25519_sign(seed, msg[..]);
+        let sig = core::ed25519_sign(seed, msg[..]);
         for i in 64 {
             sub.assert_eq(sig[i], expected_sig[i], "Vector 2 signature matches RFC 8032");
         }
 
         // 3. Check signature verification
-        let ok = wing::ed25519_verify(pub_key, msg[..], sig);
+        let ok = core::ed25519_verify(pub_key, msg[..], sig);
         sub.assert_true(ok, "Vector 2 signature verification succeeds");
     };
 
@@ -153,19 +153,19 @@ fn test_ed25519_rfc8032(t: core::T&) {
         let msg: u8[2] = [0xaf, 0x82];
 
         // 1. Check public key derivation
-        let pub_key = wing::ed25519_public_key(seed);
+        let pub_key = core::ed25519_public_key(seed);
         for i in 32 {
             sub.assert_eq(pub_key[i], expected_pub[i], "Vector 3 public key matches RFC 8032");
         }
 
         // 2. Check signature generation
-        let sig = wing::ed25519_sign(seed, msg[..]);
+        let sig = core::ed25519_sign(seed, msg[..]);
         for i in 64 {
             sub.assert_eq(sig[i], expected_sig[i], "Vector 3 signature matches RFC 8032");
         }
 
         // 3. Check signature verification
-        let ok = wing::ed25519_verify(pub_key, msg[..], sig);
+        let ok = core::ed25519_verify(pub_key, msg[..], sig);
         sub.assert_true(ok, "Vector 3 signature verification succeeds");
     };
 
@@ -176,38 +176,38 @@ fn test_ed25519_rfc8032(t: core::T&) {
             0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19,
             0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60
         ];
-        let pub_key = wing::ed25519_public_key(seed);
+        let pub_key = core::ed25519_public_key(seed);
         let msg: u8[4] = [0x74, 0x65, 0x73, 0x74]; // "test"
-        let sig = wing::ed25519_sign(seed, msg[..]);
+        let sig = core::ed25519_sign(seed, msg[..]);
 
         // Valid signature verifies
-        sub.assert_true(wing::ed25519_verify(pub_key, msg[..], sig), "Original signature verifies");
+        sub.assert_true(core::ed25519_verify(pub_key, msg[..], sig), "Original signature verifies");
 
         // 1. Tampered message
         let tampered_msg: u8[4] = [0x74, 0x65, 0x73, 0x75];
-        sub.assert_false(wing::ed25519_verify(pub_key, tampered_msg[..], sig), "Tampered message rejected");
+        sub.assert_false(core::ed25519_verify(pub_key, tampered_msg[..], sig), "Tampered message rejected");
 
         // 2. Tampered R in signature
         var tampered_sig = sig;
         tampered_sig[0] ^= 0x01;
-        sub.assert_false(wing::ed25519_verify(pub_key, msg[..], tampered_sig), "Tampered R rejected");
+        sub.assert_false(core::ed25519_verify(pub_key, msg[..], tampered_sig), "Tampered R rejected");
 
         // 3. Tampered S in signature
         tampered_sig = sig;
         tampered_sig[32] ^= 0x01;
-        sub.assert_false(wing::ed25519_verify(pub_key, msg[..], tampered_sig), "Tampered S rejected");
+        sub.assert_false(core::ed25519_verify(pub_key, msg[..], tampered_sig), "Tampered S rejected");
 
         // 4. Tampered public key
         var tampered_pub = pub_key;
         tampered_pub[0] ^= 0x01;
-        sub.assert_false(wing::ed25519_verify(tampered_pub, msg[..], sig), "Tampered public key rejected");
+        sub.assert_false(core::ed25519_verify(tampered_pub, msg[..], sig), "Tampered public key rejected");
 
         // 5. Non-canonical S >= L (malleability rejection)
         var non_canonical_sig = sig;
         for i in 32 {
-            non_canonical_sig[32 + i] = wing::ED25519_L_BYTES[i];
+            non_canonical_sig[32 + i] = core::ED25519_L_BYTES[i];
         }
-        sub.assert_false(wing::ed25519_verify(pub_key, msg[..], non_canonical_sig), "S >= L rejected");
+        sub.assert_false(core::ed25519_verify(pub_key, msg[..], non_canonical_sig), "S >= L rejected");
     };
 
     t.run("ED25519-05: Keypair Helper & 1KB Message Signing") { sub =>
@@ -217,8 +217,8 @@ fn test_ed25519_rfc8032(t: core::T&) {
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
             0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00
         ];
-        let kp = wing::ed25519_keypair(seed);
-        let direct_pub = wing::ed25519_public_key(seed);
+        let kp = core::ed25519_keypair(seed);
+        let direct_pub = core::ed25519_public_key(seed);
         for i in 32 {
             sub.assert_eq(kp.public_key[i], direct_pub[i], "Keypair helper matches direct derivation");
             sub.assert_eq(kp.seed[i], seed[i], "Keypair seed preserved");
@@ -230,8 +230,8 @@ fn test_ed25519_rfc8032(t: core::T&) {
             large_msg[i] = ((i * 37 + 13) & 0xFF) as u8;
         }
 
-        let large_sig = wing::ed25519_sign(seed, large_msg[..]);
-        let large_ok = wing::ed25519_verify(kp.public_key, large_msg[..], large_sig);
+        let large_sig = core::ed25519_sign(seed, large_msg[..]);
+        let large_ok = core::ed25519_verify(kp.public_key, large_msg[..], large_sig);
         sub.assert_true(large_ok, "1024-byte payload sign and verify succeeds");
     };
 }

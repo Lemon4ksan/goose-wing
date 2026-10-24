@@ -4,6 +4,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. constants and error codes (rfc 9000 section 20) ---------------------
 
@@ -292,24 +293,24 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
 
 // Generates 5-byte header protection mask using AES-128-ECB (RFC 9001 Section 5.4.3).
 fn aes128_header_protect_mask(hp_key: const u8[16]&, sample: const u8[16]&) -> u8[5] {
-    let ks = aes128_key_schedule(hp_key);
-    let enc = aes128_encrypt_block(ks, sample);
+    let ks = core::aes128_key_schedule(hp_key);
+    let enc = core::aes128_encrypt_block(ks, sample);
     return [enc[0], enc[1], enc[2], enc[3], enc[4]];
 }
 
 // Generates 5-byte header protection mask using AES-256-ECB.
 fn aes256_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) -> u8[5] {
-    let ks = aes256_key_schedule(hp_key);
-    let enc = aes_encrypt_block(ks, sample);
+    let ks = core::aes256_key_schedule(hp_key);
+    let enc = core::aes_encrypt_block(ks, sample);
     return [enc[0], enc[1], enc[2], enc[3], enc[4]];
 }
 
 // Generates 5-byte header protection mask using ChaCha20 (RFC 9001 Section 5.4.4).
 fn chacha20_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) -> u8[5] {
-    let counter = load_u32_le(sample[..], 0);
+    let counter = core::load_u32_le(sample[..], 0);
     var nonce12: u8[12] = [0; 12];
     for i in 12 { nonce12[i] = sample[4 + i]; }
-    let blk = chacha20_block(hp_key, counter, nonce12);
+    let blk = core::chacha20_block(hp_key, counter, nonce12);
     return [blk[0], blk[1], blk[2], blk[3], blk[4]];
 }
 

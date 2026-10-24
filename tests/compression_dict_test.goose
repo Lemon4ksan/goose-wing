@@ -38,7 +38,7 @@ fn test_dictionary_header_parsing_and_matching(t: core::T&) {
 fn test_dcz_frame_codec(t: core::T&) {
     t.run("DCZ Magic, 32-Byte Hash & Payload Codec") { sub =>
         let dict_data = "dictionary_shared_context_v1";
-        let hash = wing::sha256(dict_data);
+        let hash = core::sha256(dict_data);
 
         let uncompressed_target = "Hello World! This is target data to compress with dcz.";
         var dcz_wire: u8[>..] = [];
@@ -73,7 +73,7 @@ fn test_client_dictionary_lifecycle(t: core::T&) {
         wing::set_clock_us(client, 1700000000000000); // t0
 
         let dict_body = "function sharedCommonUtils() { return 42; }";
-        let dict_hash = wing::sha256(dict_body);
+        let dict_hash = core::sha256(dict_body);
 
         // 1. Mock dictionary endpoint returning Use-As-Dictionary header
         wing::mock_route(client, "GET", "https://cdn.site.com/assets/dict.js", 200, dict_body);

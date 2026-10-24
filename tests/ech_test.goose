@@ -130,7 +130,7 @@ fn test_ech_protocol(t: core::T&) {
             0x6f, 0x3b, 0xb1, 0x29, 0x26, 0x18, 0xb6, 0xfd,
             0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb,
         ];
-        let bob_pk = wing::x25519_base_scalarmult(bob_sk);
+        let bob_pk = core::x25519_base_scalarmult(bob_sk);
 
         var contents: u8[>..] = [];
         contents.push(42);                  // config_id
@@ -194,7 +194,7 @@ fn test_ech_protocol(t: core::T&) {
             0x6f, 0x3b, 0xb1, 0x29, 0x26, 0x18, 0xb6, 0xfd,
             0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb,
         ];
-        let server_pk = wing::x25519_base_scalarmult(server_sk);
+        let server_pk = core::x25519_base_scalarmult(server_sk);
 
         var config = wing::EchConfig { .. };
         config.version = wing::ECH_VERSION_DRAFT13;

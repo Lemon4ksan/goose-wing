@@ -5,7 +5,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 
 // ---- 1. RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
@@ -130,5 +130,5 @@ fn derive_hybrid_shared_secret(
         combined[i] = classical_ss[i];
         combined[32 + i] = pq_ss[i];
     }
-    return sha256(combined[..]);
+    return core::sha256(combined[..]);
 }

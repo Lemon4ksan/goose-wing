@@ -7,7 +7,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 import client.request;
 import client.response;
 
@@ -250,8 +250,8 @@ fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
     var combined: u8[>..] = [];
     combined.append(client_key);
     combined.append(WS_HANDSHAKE_GUID);
-    let digest = sha1(combined[..]);
-    base64_encode(digest[..], out);
+    let digest = core::sha1(combined[..]);
+    core::base64_encode(digest[..], out);
 }
 
 // Validates server `Sec-WebSocket-Accept` against client key
@@ -263,7 +263,7 @@ fn validate_websocket_accept(client_key: const u8[:], server_accept: const u8[:]
 
 // Formats a 16-byte random nonce into a 24-character Base64 client key
 fn generate_websocket_key<B>(random_16: const u8[16]&, out: B&) {
-    base64_encode(random_16[..], out);
+    core::base64_encode(random_16[..], out);
 }
 
 // ---- 4. Close Frame Helpers (RFC 6455 Section 5.5.1) -----------------------

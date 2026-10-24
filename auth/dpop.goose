@@ -6,7 +6,7 @@ namespace wing;
 
 import std;
 import json;
-import security.ct;
+import core from "..";
 import client.profile;
 import client.request;
 
@@ -100,15 +100,15 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
 fn compute_dpop_ath<B>(access_token: const u8[:], out: B&) {
     out.clear();
     guard access_token.len > 0 else { return; }
-    let digest = sha256(access_token);
-    base64url_encode(digest[..], out);
+    let digest = core::sha256(access_token);
+    core::base64url_encode(digest[..], out);
 }
 
 // Generates a cryptographically random unique identifier for the "jti" claim.
 fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") {
     out.clear();
     if entropy.len >= 16 {
-        base64url_encode(entropy, out);
+        core::base64url_encode(entropy, out);
         return;
     }
     // Pseudo-random fallback
@@ -162,7 +162,7 @@ fn create_dpop_proof<B>(
     header_json.append("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}");
 
     var header_b64: u8[..192] = [];
-    base64url_encode(header_json[..], header_b64);
+    core::base64url_encode(header_json[..], header_b64);
 
     // 2. Normalize URI and build claims
     var norm_uri: u8[..256] = [];
@@ -210,7 +210,7 @@ fn create_dpop_proof<B>(
     claims_json.push('}' as u8);
 
     var claims_b64: u8[..768] = [];
-    base64url_encode(claims_json[..], claims_b64);
+    core::base64url_encode(claims_json[..], claims_b64);
 
     // 3. Construct signing input: header_b64 . claims_b64
     var signing_input: u8[..1024] = [];
@@ -219,9 +219,9 @@ fn create_dpop_proof<B>(
     signing_input.append(claims_b64[..]);
 
     // 4. Compute signature (HMAC-SHA256 for HS256)
-    let sig = hmac_sha256(key, signing_input[..]);
+    let sig = core::hmac_sha256(key, signing_input[..]);
     var sig_b64: u8[..64] = [];
-    base64url_encode(sig[..], sig_b64);
+    core::base64url_encode(sig[..], sig_b64);
 
     // 5. Output full JWT
     out.append(signing_input[..]);
@@ -284,9 +284,9 @@ fn verify_dpop_proof(
 
     // 2. Verify signature
     let signing_input = jwt[..dot2];
-    let expected_sig = hmac_sha256(key, signing_input);
+    let expected_sig = core::hmac_sha256(key, signing_input);
     var expected_sig_b64: u8[..64] = [];
-    base64url_encode(expected_sig[..], expected_sig_b64);
+    core::base64url_encode(expected_sig[..], expected_sig_b64);
 
     guard expected_sig_b64.len == sig_b64.len else { return false; }
     var diff: u8 = 0;
@@ -297,12 +297,12 @@ fn verify_dpop_proof(
 
     // 3. Decode Header and verify typ == "dpop+jwt"
     var header_json: u8[>..] = [];
-    guard base64url_decode(header_b64, header_json) else { return false; }
+    guard core::base64url_decode(header_b64, header_json) else { return false; }
     guard dpop_contains_str(header_json[..], "dpop+jwt") else { return false; }
 
     // 4. Decode Claims and verify
     var claims_json: u8[>..] = [];
-    guard base64url_decode(claims_b64, claims_json) else { return false; }
+    guard core::base64url_decode(claims_b64, claims_json) else { return false; }
 
     // Verify method (case-insensitive check in claims)
     var method_upper: u8[..16] = [];

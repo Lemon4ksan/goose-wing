@@ -4,8 +4,7 @@
 namespace wing;
 
 import std;
-import security.md5;
-import security.ct;
+import core from "..";
 
 // ---- 1. Digest Models -------------------------------------------------------
 
@@ -138,13 +137,13 @@ fn format_hex_byte<B>(b: u8, out: B&) {
 fn digest_hash_hex<B>(algorithm: const u8[:], data: const u8[:], out_hex: B&) {
     out_hex.clear();
     if eq_ascii_fold(algorithm, "md5") || eq_ascii_fold(algorithm, "md5-sess") {
-        let md = md5(data);
+        let md = core::md5(data);
         for b in md {
             format_hex_byte(b, out_hex);
         }
     } else {
         // Default to SHA-256 (RFC 7616 standard)
-        let sh = sha256(data);
+        let sh = core::sha256(data);
         for b in sh {
             format_hex_byte(b, out_hex);
         }

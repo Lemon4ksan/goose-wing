@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 import client.profile;
 import client.request;
 import client.response;
@@ -137,7 +137,7 @@ fn unmarshal_token_challenge(data: const u8[:], out: TokenChallenge&) -> bool {
 fn compute_challenge_digest(challenge: const TokenChallenge&) -> u8[32] {
     var raw: u8[..512] = [];
     marshal_token_challenge(challenge, raw);
-    return sha256(raw[..]);
+    return core::sha256(raw[..]);
 }
 
 // Marshals Token into RFC 9577 §2.2.1 wire format:
@@ -249,7 +249,7 @@ fn parse_private_token_challenge(
             challenge_b64.append(val);
         } else if eq_ascii_fold(key, "token-key") {
             var raw_key: u8[>..] = [];
-            if base64url_decode(val, raw_key) {
+            if core::base64url_decode(val, raw_key) {
                 for b in raw_key {
                     if out_token_key.len < out_token_key.cap {
                         out_token_key.push(b);
@@ -269,7 +269,7 @@ fn parse_private_token_challenge(
 
     guard challenge_b64.len > 0 else { return false; }
     var raw_challenge: u8[>..] = [];
-    guard base64url_decode(challenge_b64[..], raw_challenge) else { return false; }
+    guard core::base64url_decode(challenge_b64[..], raw_challenge) else { return false; }
 
     return unmarshal_token_challenge(raw_challenge[..], out_challenge);
 }
@@ -278,14 +278,14 @@ fn parse_private_token_challenge(
 fn format_private_token_authorization<B>(token_bytes: const u8[:], out: B&) {
     out.clear();
     out.append("PrivateToken token=\"");
-    base64url_encode(token_bytes, out);
+    core::base64url_encode(token_bytes, out);
     out.push('"' as u8);
 }
 
 // Formats W3C `Sec-Private-State-Token` header.
 fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) {
     out.clear();
-    base64url_encode(token_bytes, out);
+    core::base64url_encode(token_bytes, out);
 }
 
 // ---- 5. Private Token Cache & Redemption Management -------------------------

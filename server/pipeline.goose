@@ -4,7 +4,6 @@ namespace wing;
 import std;
 import client.request;
 import client.response;
-import security.ct;
 import security.crypto_jar;
 import security.csrf;
 import security.cors;

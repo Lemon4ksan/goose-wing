@@ -1569,7 +1569,7 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
                     user_pass.push(':');
                     user_pass.append(session.creds.password[..]);
                     var b64_user_pass: u8[..200] = [];
-                    base64_encode(user_pass[..], b64_user_pass);
+                    core::base64_encode(user_pass[..], b64_user_pass);
                     auth_header_val.append("Basic ");
                     auth_header_val.append(b64_user_pass[..]);
                     should_retry = true;

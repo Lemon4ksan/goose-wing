@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import security.ct;
 import quic.packet;
 
 // ---- 1. TLS 1.3 Alert Codes (RFC 8446 Section 6) ---------------------------

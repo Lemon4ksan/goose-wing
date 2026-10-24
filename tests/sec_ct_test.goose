@@ -33,13 +33,13 @@ fn bytes_to_hex(bytes: const u8[:], out: u8[>..]&) {
 // ----------------------------------------------------------------------------
 fn test_constant_time_primitives(t: core::T&) {
     t.run("Branchless Equality and Select") { sub =>
-        sub.assert_eq(wing::ct_eq_u8(0x42, 0x42), 1, "ct_eq_u8 match");
-        sub.assert_eq(wing::ct_eq_u8(0x42, 0x43), 0, "ct_eq_u8 mismatch");
-        sub.assert_eq(wing::ct_eq_u8(0x00, 0x00), 1, "ct_eq_u8 zero match");
-        sub.assert_eq(wing::ct_eq_u8(0xFF, 0x00), 0, "ct_eq_u8 boundary");
+        sub.assert_eq(core::ct_eq_u8(0x42, 0x42), 1, "ct_eq_u8 match");
+        sub.assert_eq(core::ct_eq_u8(0x42, 0x43), 0, "ct_eq_u8 mismatch");
+        sub.assert_eq(core::ct_eq_u8(0x00, 0x00), 1, "ct_eq_u8 zero match");
+        sub.assert_eq(core::ct_eq_u8(0xFF, 0x00), 0, "ct_eq_u8 boundary");
 
-        sub.assert_eq(wing::ct_select_u8(1, 0xAA, 0xBB), 0xAA, "ct_select_u8 true");
-        sub.assert_eq(wing::ct_select_u8(0, 0xAA, 0xBB), 0xBB, "ct_select_u8 false");
+        sub.assert_eq(core::ct_select_u8(1, 0xAA, 0xBB), 0xAA, "ct_select_u8 true");
+        sub.assert_eq(core::ct_select_u8(0, 0xAA, 0xBB), 0xBB, "ct_select_u8 false");
     };
 
     t.run("Constant-Time Slice Equality and Copy") { sub =>
@@ -48,29 +48,29 @@ fn test_constant_time_primitives(t: core::T&) {
         let c: const u8[4] = [1, 2, 3, 5];
         let d: const u8[3] = [1, 2, 3];
 
-        sub.assert_true(wing::ct_eq_bytes(a[..], b[..]), "identical slices match");
-        sub.assert_false(wing::ct_eq_bytes(a[..], c[..]), "last byte difference fails");
-        sub.assert_false(wing::ct_eq_bytes(a[..], d[..]), "length difference fails");
+        sub.assert_true(core::ct_eq_bytes(a[..], b[..]), "identical slices match");
+        sub.assert_false(core::ct_eq_bytes(a[..], c[..]), "last byte difference fails");
+        sub.assert_false(core::ct_eq_bytes(a[..], d[..]), "length difference fails");
 
         var dst: u8[4] = [0, 0, 0, 0];
-        wing::ct_copy_bytes(dst[..], a[..]);
-        sub.assert_true(wing::ct_eq_bytes(dst[..], a[..]), "ct_copy_bytes copied identical bytes");
+        core::ct_copy_bytes(dst[..], a[..]);
+        sub.assert_true(core::ct_eq_bytes(dst[..], a[..]), "ct_copy_bytes copied identical bytes");
     };
 
     t.run("KeySlot Redaction and Zeroization") { sub =>
         var raw_key: u8[32] = [0x5A; 32];
-        var slot = wing::new_key_slot(1001, raw_key[..], 1700000000);
+        var slot = core::new_key_slot(1001, raw_key[..], 1700000000);
         sub.assert_eq(slot.key_id, 1001, "key id matches");
         sub.assert_false(slot.revoked, "slot starts non-revoked");
 
         // Display redacted string must hide raw key
         var red_buf: u8[..64] = [];
-        wing::display_redacted(slot, red_buf);
+        core::display_redacted(slot, red_buf);
         sub.assert_contains(red_buf[..], "[REDACTED]", "secrecy redaction format");
         sub.assert_contains(red_buf[..], "1001", "key id preserved");
 
         // Revoke and zeroize
-        wing::zeroize_key_slot(slot);
+        core::zeroize_key_slot(slot);
         sub.assert_true(slot.revoked, "slot revoked after zeroize");
         sub.assert_eq(slot.master_key[0], 0, "first key byte zeroized");
         sub.assert_eq(slot.master_key[31], 0, "last key byte zeroized");
@@ -82,22 +82,22 @@ fn test_constant_time_primitives(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_dudect_context_and_filtering(t: core::T&) {
     t.run("Outlier Cropping & Statistical Lockstep") { sub =>
-        var ctx = wing::new_dudect_context();
+        var ctx = core::new_dudect_context();
 
         // Feed normal samples (around 100 ns)
         for i in 100 {
-            sub.assert_true(wing::dudect_push_sample(ctx, 0, 100.0 + (i as f64) * 0.1), "normal sample class 0 accepted");
-            sub.assert_true(wing::dudect_push_sample(ctx, 1, 100.0 + (i as f64) * 0.1), "normal sample class 1 accepted");
+            sub.assert_true(core::dudect_push_sample(ctx, 0, 100.0 + (i as f64) * 0.1), "normal sample class 0 accepted");
+            sub.assert_true(core::dudect_push_sample(ctx, 1, 100.0 + (i as f64) * 0.1), "normal sample class 1 accepted");
         }
 
         // Outlier sample (> 2000 ns) must be discarded
-        sub.assert_false(wing::dudect_push_sample(ctx, 0, 2500.0), "outlier > 2000 ns rejected");
-        sub.assert_false(wing::dudect_push_sample(ctx, 1, 3000.0), "outlier > 2000 ns rejected");
+        sub.assert_false(core::dudect_push_sample(ctx, 0, 2500.0), "outlier > 2000 ns rejected");
+        sub.assert_false(core::dudect_push_sample(ctx, 1, 3000.0), "outlier > 2000 ns rejected");
 
         // Verify t-statistic is near 0 for identical distributions
-        let t_stat = wing::dudect_abs_t(ctx);
+        let t_stat = core::dudect_abs_t(ctx);
         sub.assert_true(t_stat < 1.0, "Welch t-stat < 1.0 for symmetric distributions");
-        sub.assert_true(wing::dudect_is_constant_time(ctx, 4.5), "Passes 99.999% confidence CT threshold");
+        sub.assert_true(core::dudect_is_constant_time(ctx, 4.5), "Passes 99.999% confidence CT threshold");
     };
 }
 
@@ -107,19 +107,19 @@ fn test_dudect_context_and_filtering(t: core::T&) {
 fn test_pure_goose_crypto_primitives(t: core::T&) {
     t.run("SHA-256 NIST Vectors") { sub =>
         // Vector 1: Empty string
-        let h_empty = wing::sha256("");
+        let h_empty = core::sha256("");
         var hex_empty: u8[>..] = [];
         bytes_to_hex(h_empty[..], hex_empty);
         sub.assert_eq(hex_empty[..], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA-256 empty");
 
         // Vector 2: "abc"
-        let h_abc = wing::sha256("abc");
+        let h_abc = core::sha256("abc");
         var hex_abc: u8[>..] = [];
         bytes_to_hex(h_abc[..], hex_abc);
         sub.assert_eq(hex_abc[..], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 'abc'");
 
         // Vector 3: 56-byte multi-block
-        let h_56 = wing::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+        let h_56 = core::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
         var hex_56: u8[>..] = [];
         bytes_to_hex(h_56[..], hex_56);
         sub.assert_eq(hex_56[..], "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "SHA-256 56-byte");
@@ -127,7 +127,7 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
 
     t.run("HMAC-SHA256 RFC 4231 Vector 2") { sub =>
         // Key: "Jefe", Data: "what do ya want for nothing?"
-        let hmac = wing::hmac_sha256("Jefe", "what do ya want for nothing?");
+        let hmac = core::hmac_sha256("Jefe", "what do ya want for nothing?");
         var hex_hmac: u8[>..] = [];
         bytes_to_hex(hmac[..], hex_hmac);
         sub.assert_eq(hex_hmac[..], "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", "HMAC-SHA256 RFC 4231 #2");
@@ -141,12 +141,12 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
         var info: u8[>..] = [];
         hex_to_bytes("f0f1f2f3f4f5f6f7f8f9", info);
 
-        let prk = wing::hkdf_extract(salt[..], ikm[..]);
+        let prk = core::hkdf_extract(salt[..], ikm[..]);
         var hex_prk: u8[>..] = [];
         bytes_to_hex(prk[..], hex_prk);
         sub.assert_eq(hex_prk[..], "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", "HKDF PRK");
 
-        let okm32 = wing::hkdf_expand_32(prk, info[..]);
+        let okm32 = core::hkdf_expand_32(prk, info[..]);
         var hex_okm: u8[>..] = [];
         bytes_to_hex(okm32[..], hex_okm);
         // First 32 bytes of RFC 5869 Test Case 1 OKM
@@ -164,8 +164,8 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
         var pt16: u8[16] = [0; 16];
         for i in 16 { pt16[i] = pt[i]; }
 
-        let ks = wing::aes256_key_schedule(key32);
-        let ct16 = wing::aes_encrypt_block(ks, pt16);
+        let ks = core::aes256_key_schedule(key32);
+        let ct16 = core::aes_encrypt_block(ks, pt16);
 
         var hex_ct: u8[>..] = [];
         bytes_to_hex(ct16[..], hex_ct);
@@ -174,11 +174,11 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
 
     t.run("Base64URL RFC 4648 Codec") { sub =>
         var out_enc: u8[>..] = [];
-        wing::base64url_encode("foobar", out_enc);
+        core::base64url_encode("foobar", out_enc);
         sub.assert_eq(out_enc[..], "Zm9vYmFy", "foobar encoded without padding");
 
         var out_dec: u8[>..] = [];
-        sub.assert_true(wing::base64url_decode(out_enc[..], out_dec), "decode foobar");
+        sub.assert_true(core::base64url_decode(out_enc[..], out_dec), "decode foobar");
         sub.assert_eq(out_dec[..], "foobar", "foobar round-trip match");
 
         // Test with URL-safe characters '-' and '_'
@@ -186,12 +186,12 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
         special_in.push(0xFB); // 11111011 -> '+' in standard, '-' in url
         special_in.push(0xFF); // 11111111 -> '/' in standard, '_' in url
         var enc_spec: u8[>..] = [];
-        wing::base64url_encode(special_in[..], enc_spec);
+        core::base64url_encode(special_in[..], enc_spec);
         sub.assert_true(enc_spec[0] == '-' || enc_spec[1] == '-' || enc_spec[2] == '_', "uses url-safe chars");
 
         var dec_spec: u8[>..] = [];
-        sub.assert_true(wing::base64url_decode(enc_spec[..], dec_spec), "decodes url-safe chars");
-        sub.assert_true(wing::ct_eq_bytes(special_in[..], dec_spec[..]), "binary round trip match");
+        sub.assert_true(core::base64url_decode(enc_spec[..], dec_spec), "decodes url-safe chars");
+        sub.assert_true(core::ct_eq_bytes(special_in[..], dec_spec[..]), "binary round trip match");
     };
 }
 
@@ -206,24 +206,24 @@ fn test_aead_ciphers(t: core::T&) {
         let plaintext = "user_id=12345&role=admin";
 
         var ciphertext: u8[>..] = [];
-        let tag = wing::xchacha20_poly1305_seal(key, nonce, plaintext, aad, ciphertext);
+        let tag = core::xchacha20_poly1305_seal(key, nonce, plaintext, aad, ciphertext);
         sub.assert_eq(ciphertext.len, plaintext.len, "ciphertext length equals plaintext length");
 
         // Authentic decryption
         var decrypted: u8[>..] = [];
-        let ok_auth = wing::xchacha20_poly1305_open(key, nonce, ciphertext[..], aad, tag, decrypted);
+        let ok_auth = core::xchacha20_poly1305_open(key, nonce, ciphertext[..], aad, tag, decrypted);
         sub.assert_true(ok_auth, "authentic ciphertext opens successfully");
         sub.assert_eq(decrypted[..], plaintext, "decrypted plaintext matches original");
 
         // Tampered ciphertext bit must be rejected
         ciphertext[0] ^= 0x01;
         var dec_tampered: u8[>..] = [];
-        let ok_ct_tamper = wing::xchacha20_poly1305_open(key, nonce, ciphertext[..], aad, tag, dec_tampered);
+        let ok_ct_tamper = core::xchacha20_poly1305_open(key, nonce, ciphertext[..], aad, tag, dec_tampered);
         sub.assert_false(ok_ct_tamper, "tampered ciphertext rejected by Poly1305 tag");
         ciphertext[0] ^= 0x01; // restore
 
         // Tampered AAD must be rejected
-        let ok_aad_tamper = wing::xchacha20_poly1305_open(key, nonce, ciphertext[..], "cookie_name=tampered", tag, dec_tampered);
+        let ok_aad_tamper = core::xchacha20_poly1305_open(key, nonce, ciphertext[..], "cookie_name=tampered", tag, dec_tampered);
         sub.assert_false(ok_aad_tamper, "tampered AAD context rejected");
     };
 
@@ -234,12 +234,12 @@ fn test_aead_ciphers(t: core::T&) {
         let plaintext = "secret_session_token_xyz987";
 
         var ciphertext: u8[>..] = [];
-        let tag = wing::aes256_gcm_seal(key, iv, plaintext, aad, ciphertext);
+        let tag = core::aes256_gcm_seal(key, iv, plaintext, aad, ciphertext);
         sub.assert_eq(ciphertext.len, plaintext.len, "ciphertext length matches");
 
         // Authentic decryption
         var decrypted: u8[>..] = [];
-        let ok_auth = wing::aes256_gcm_open(key, iv, ciphertext[..], aad, tag, decrypted);
+        let ok_auth = core::aes256_gcm_open(key, iv, ciphertext[..], aad, tag, decrypted);
         sub.assert_true(ok_auth, "AES-256-GCM authentic decryption succeeds");
         sub.assert_eq(decrypted[..], plaintext, "decrypted plaintext matches original");
 
@@ -247,7 +247,7 @@ fn test_aead_ciphers(t: core::T&) {
         var bad_tag = tag;
         bad_tag[15] ^= 0x80;
         var dec_bad: u8[>..] = [];
-        let ok_tag_tamper = wing::aes256_gcm_open(key, iv, ciphertext[..], aad, bad_tag, dec_bad);
+        let ok_tag_tamper = core::aes256_gcm_open(key, iv, ciphertext[..], aad, bad_tag, dec_bad);
         sub.assert_false(ok_tag_tamper, "tampered GHASH tag rejected");
     };
 }
@@ -259,7 +259,7 @@ fn test_crypto_jar_container(t: core::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
         var store = wing::new_key_store();
         var raw_key: u8[32] = [0x33; 32];
-        let slot = wing::new_key_slot(1, raw_key[..], 1700000000);
+        let slot = core::new_key_slot(1, raw_key[..], 1700000000);
         wing::add_key(store, slot);
 
         var jar = wing::new_private_jar(store, false);
@@ -288,7 +288,7 @@ fn test_crypto_jar_container(t: core::T&) {
     t.run("PrivateJar HKDF-AES-GCM (65B Overhead)") { sub =>
         var store = wing::new_key_store();
         var raw_key: u8[32] = [0x44; 32];
-        let slot = wing::new_key_slot(2, raw_key[..], 1700000000);
+        let slot = core::new_key_slot(2, raw_key[..], 1700000000);
         wing::add_key(store, slot);
 
         var jar = wing::new_private_jar(store, true);
@@ -307,7 +307,7 @@ fn test_crypto_jar_container(t: core::T&) {
     t.run("SignedJar HMAC-SHA256 (45B Overhead) & Forgery Resistance") { sub =>
         var store = wing::new_key_store();
         var raw_key: u8[32] = [0x88; 32];
-        let slot = wing::new_key_slot(7, raw_key[..], 1700000000);
+        let slot = core::new_key_slot(7, raw_key[..], 1700000000);
         wing::add_key(store, slot);
 
         var jar = wing::new_signed_jar(store);
@@ -333,8 +333,8 @@ fn test_crypto_jar_container(t: core::T&) {
         var store = wing::new_key_store();
         var k1: u8[32] = [0x11; 32];
         var k2: u8[32] = [0x22; 32];
-        wing::add_key(store, wing::new_key_slot(10, k1[..], 1700000000));
-        wing::add_key(store, wing::new_key_slot(20, k2[..], 1700086400)); // 24h later
+        wing::add_key(store, core::new_key_slot(10, k1[..], 1700000000));
+        wing::add_key(store, core::new_key_slot(20, k2[..], 1700086400)); // 24h later
 
         // Rotate active key to key 20
         sub.assert_true(wing::set_active_key_id(store, 20), "rotated active key to id 20");

@@ -19,7 +19,7 @@ fn test_x25519_rfc7748(t: core::T&) {
             0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb,
         ];
 
-        let alice_pk = wing::x25519_base_scalarmult(alice_sk);
+        let alice_pk = core::x25519_base_scalarmult(alice_sk);
         let expected_alice_pk: u8[32] = [
             0x85, 0x20, 0xf0, 0x09, 0x89, 0x30, 0xa7, 0x54,
             0x74, 0x8b, 0x7d, 0xdc, 0xb4, 0x3e, 0xf7, 0x5a,
@@ -30,7 +30,7 @@ fn test_x25519_rfc7748(t: core::T&) {
             sub.assert_eq(alice_pk[i], expected_alice_pk[i], "Alice PK matches RFC 7748");
         }
 
-        let bob_pk = wing::x25519_base_scalarmult(bob_sk);
+        let bob_pk = core::x25519_base_scalarmult(bob_sk);
         let expected_bob_pk: u8[32] = [
             0xde, 0x9e, 0xdb, 0x7d, 0x7b, 0x7d, 0xc1, 0xb4,
             0xd3, 0x5b, 0x61, 0xc2, 0xec, 0xe4, 0x35, 0x37,
@@ -41,8 +41,8 @@ fn test_x25519_rfc7748(t: core::T&) {
             sub.assert_eq(bob_pk[i], expected_bob_pk[i], "Bob PK matches RFC 7748");
         }
 
-        let shared_alice = wing::x25519_scalarmult(alice_sk, bob_pk);
-        let shared_bob = wing::x25519_scalarmult(bob_sk, alice_pk);
+        let shared_alice = core::x25519_scalarmult(alice_sk, bob_pk);
+        let shared_bob = core::x25519_scalarmult(bob_sk, alice_pk);
         let expected_shared: u8[32] = [
             0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1,
             0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35, 0x0f, 0x25,
@@ -164,7 +164,7 @@ fn test_hpke_rfc9180(t: core::T&) {
             0x6f, 0x3b, 0xb1, 0x29, 0x26, 0x18, 0xb6, 0xfd,
             0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb,
         ];
-        let bob_pk = wing::x25519_base_scalarmult(bob_sk);
+        let bob_pk = core::x25519_base_scalarmult(bob_sk);
 
         let info: const u8[:] = "Wing Systems Zero-Heap ECH";
         let pt: const u8[:] = "EncryptedClientHelloInner message payload";

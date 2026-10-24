@@ -105,7 +105,7 @@ fn test_privacypass_headers_and_cache(t: core::T&) {
         wing::marshal_token_challenge(ch, ch_wire);
 
         var ch_b64: u8[..512] = [];
-        wing::base64url_encode(ch_wire[..], ch_b64);
+        core::base64url_encode(ch_wire[..], ch_b64);
 
         var header_val: u8[..1024] = [];
         header_val.append("PrivateToken challenge=\"");

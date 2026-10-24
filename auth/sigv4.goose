@@ -6,7 +6,7 @@ namespace wing;
 import std;
 import client.profile;
 import client.request;
-import security.ct;
+import core from "..";
 
 struct AwsCredentials {
     access_key_id: u8[..64] = [],
@@ -43,10 +43,10 @@ fn derive_aws_signing_key(
     k_secret.append("AWS4");
     k_secret.append(secret_key);
 
-    let k_date = hmac_sha256(k_secret[..], date_stamp);
-    let k_region = hmac_sha256(k_date[..], region);
-    let k_service = hmac_sha256(k_region[..], service);
-    let k_signing = hmac_sha256(k_service[..], "aws4_request");
+    let k_date = core::hmac_sha256(k_secret[..], date_stamp);
+    let k_region = core::hmac_sha256(k_date[..], region);
+    let k_service = core::hmac_sha256(k_region[..], service);
+    let k_signing = core::hmac_sha256(k_service[..], "aws4_request");
     return k_signing;
 }
 
@@ -63,7 +63,7 @@ fn sign_aws_sigv4(
 
     // 1. Calculate payload hash
     var payload_sha_hex: u8[..64] = [];
-    let p_hash = sha256(req.body[..]);
+    let p_hash = core::sha256(req.body[..]);
     for b in p_hash {
         format_hex_byte(b, payload_sha_hex);
     }
@@ -149,7 +149,7 @@ fn sign_aws_sigv4(
     canon_req.push('\n');
     canon_req.append(payload_sha_hex[..]);
 
-    let canon_req_hash = sha256(canon_req[..]);
+    let canon_req_hash = core::sha256(canon_req[..]);
     var canon_req_hash_hex: u8[..64] = [];
     for b in canon_req_hash {
         format_hex_byte(b, canon_req_hash_hex);
@@ -175,7 +175,7 @@ fn sign_aws_sigv4(
 
     // 5. Compute Signature = HMAC-SHA256(SigningKey, StringToSign)
     let signing_key = derive_aws_signing_key(creds.secret_access_key[..], date_stamp, creds.region[..], creds.service[..]);
-    let sig_bytes = hmac_sha256(signing_key[..], string_to_sign[..]);
+    let sig_bytes = core::hmac_sha256(signing_key[..], string_to_sign[..]);
     var sig_hex: u8[..64] = [];
     for b in sig_bytes {
         format_hex_byte(b, sig_hex);

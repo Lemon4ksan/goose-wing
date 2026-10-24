@@ -7,7 +7,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 import http.headers;
 
 // ---- 1. Normative Constants & Wire Magics -----------------------------------
@@ -168,7 +168,7 @@ fn format_use_as_dictionary_header<B>(out: B&, match_pattern: const u8[:], id_st
 // Formats `Available-Dictionary` Structured Fields Byte Sequence: `:<base64>:`
 fn format_available_dictionary_header<B>(out: B&, sha256_hash: const u8[32]&) {
     out.push(':');
-    base64_encode(sha256_hash[..], out);
+    core::base64_encode(sha256_hash[..], out);
     out.push(':');
 }
 
@@ -245,7 +245,7 @@ fn dictionary_cache_insert(
 ) -> bool {
     guard body.len > 0 else { return false; }
 
-    let hash = sha256(body);
+    let hash = core::sha256(body);
     var b64_hash: u8[..64] = [];
     format_available_dictionary_header(b64_hash, hash);
 

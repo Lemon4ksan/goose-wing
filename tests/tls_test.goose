@@ -369,8 +369,8 @@ fn test_anti_replay_and_psk(t: core::T&) {
         // Derive true expected binder
         var finished_key: u8[32] = [0; 32];
         wing::hkdf_expand_label(wing::HASH_SHA256, binder_key[..], "finished", [], 32, finished_key[..]);
-        let ch_hash = wing::sha256(truncated_ch[..]);
-        let expected_binder = wing::hmac_sha256(finished_key[..], ch_hash[..]);
+        let ch_hash = core::sha256(truncated_ch[..]);
+        let expected_binder = core::hmac_sha256(finished_key[..], ch_hash[..]);
 
         // Verification of genuine binder succeeds
         let ok_v = wing::verify_psk_binder(wing::HASH_SHA256, 32, binder_key[..], truncated_ch[..], expected_binder[..]);

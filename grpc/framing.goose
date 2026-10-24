@@ -5,7 +5,6 @@ namespace wing;
 
 import std;
 import grpc.constants;
-import security.ct;
 import http.mime;
 
 // ---- 1. Length-Prefixed Message (LPM) Framing ------------------------------
@@ -227,10 +226,10 @@ fn parse_grpc_web_trailers(
 
 // Encodes binary LPM wire stream into standard Base64 for application/grpc-web-text.
 fn encode_grpc_web_text<B>(binary_lpm: const u8[:], out: B&) {
-    base64_encode(binary_lpm, out);
+    core::base64_encode(binary_lpm, out);
 }
 
 // Decodes application/grpc-web-text Base64 stream into raw binary LPM stream.
 fn decode_grpc_web_text<B>(b64_stream: const u8[:], out: B&) -> bool {
-    return decode_base64(b64_stream, out);
+    return core::base64_decode(b64_stream, out);
 }

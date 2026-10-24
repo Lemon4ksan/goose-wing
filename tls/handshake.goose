@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 import tls.record;
 import tls.key_schedule;
 
@@ -156,7 +156,7 @@ const HRR_RANDOM: u8[32] = [
 ];
 
 fn is_hello_retry_request(server_random: const u8[32]&) -> bool {
-    return ct_eq_tag32(server_random, HRR_RANDOM);
+    return core::ct_eq_tag32(server_random, HRR_RANDOM);
 }
 
 // Generates synthetic message_hash handshake message (RFC 8446 Section 4.4.1):

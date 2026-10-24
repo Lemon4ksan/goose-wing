@@ -5,7 +5,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 
 // ---- 1. DNS Wire Constants & Record Types -----------------------------------
 
@@ -328,7 +328,7 @@ fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16
 
     out_url.append(server_url);
     out_url.append("?dns=");
-    base64url_encode(raw_query[..], out_url);
+    core::base64url_encode(raw_query[..], out_url);
     return true;
 }
 

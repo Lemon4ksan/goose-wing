@@ -7,7 +7,7 @@ namespace wing;
 
 import std;
 import client.profile;
-import security.md5;
+import core from "..";
 import http2.framing;
 
 // ---- 1. Data Structures -----------------------------------------------------
@@ -153,7 +153,7 @@ fn akamai_fingerprint_to_string(fp: const AkamaiFingerprint&) -> u8[..256] {
 fn compute_akamai_hash<B>(fp: const AkamaiFingerprint&, out_hex: B&) {
     var raw: u8[..256] = [];
     format_akamai_fingerprint(fp, raw);
-    let digest = md5(raw[..]);
+    let digest = core::md5(raw[..]);
     out_hex.clear();
     let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
     for b in digest {

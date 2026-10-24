@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 import tls.record;
 
 // ---- 1. ASN.1 Universal Tags and OIDs ---------------------------------------
@@ -397,8 +397,8 @@ struct TrustAnchorStore {
 
 fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw: const u8[:]) -> bool {
     guard store.anchors.len < store.anchors.cap else { return false; }
-    let s_hash = sha256(subject_raw);
-    let spki_hash = sha256(spki_raw);
+    let s_hash = core::sha256(subject_raw);
+    let spki_hash = core::sha256(spki_raw);
     store.anchors.push(TrustAnchor {
         subject_dn_sha256: s_hash,
         spki_sha256: spki_hash,
@@ -410,12 +410,12 @@ fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw
 fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
     let s_slice = span_slice(raw_cert, cert.subject_raw);
     let spki_slice = span_slice(raw_cert, cert.spki_raw);
-    let s_hash = sha256(s_slice);
-    let spki_hash = sha256(spki_slice);
+    let s_hash = core::sha256(s_slice);
+    let spki_hash = core::sha256(spki_slice);
 
     for i in store.anchors.len {
         let a = store.anchors[i];
-        if a.is_valid && ct_eq_tag32(a.subject_dn_sha256, s_hash) && ct_eq_tag32(a.spki_sha256, spki_hash) {
+        if a.is_valid && core::ct_eq_tag32(a.subject_dn_sha256, s_hash) && core::ct_eq_tag32(a.spki_sha256, spki_hash) {
             return true;
         }
     }

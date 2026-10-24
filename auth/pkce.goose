@@ -3,7 +3,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 
 // ---- 1. PKCE Constants -------------------------------------------------------
 
@@ -50,7 +50,7 @@ fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
     out.clear();
     if entropy.len >= 32 {
         var b64: u8[..192] = [];
-        base64url_encode(entropy, b64);
+        core::base64url_encode(entropy, b64);
         var take_len = b64.len;
         if take_len > PKCE_MAX_VERIFIER_LEN {
             take_len = PKCE_MAX_VERIFIER_LEN;
@@ -81,8 +81,8 @@ fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&
     }
 
     if eq_ascii_fold(method, PKCE_METHOD_S256) {
-        let digest = sha256(verifier);
-        base64url_encode(digest[..], out);
+        let digest = core::sha256(verifier);
+        core::base64url_encode(digest[..], out);
         return true;
     } else if eq_ascii_fold(method, PKCE_METHOD_PLAIN) {
         out.append(verifier);

@@ -2,7 +2,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 
 // ---- protocol wire constants & overhead definitions ------------------------
 
@@ -41,7 +41,7 @@ fn build_signed_to_sign<B>(key_id: u32, cookie_sec: i64, cookie_name: const u8[:
 
 // Key rotation store supporting an active primary key and retired keys.
 struct KeyStore {
-    keys: KeySlot[..8] = [],
+    keys: core::KeySlot[..8] = [],
     active_idx: i64 = 0,
     max_age_sec: i64 = 2592000,          // 30 days default session lifetime
     clock_skew_tolerance_sec: i64 = 300, // 5 minutes skew tolerance
@@ -53,17 +53,17 @@ fn new_key_store() -> KeyStore {
 }
 
 // Appends a KeySlot to the store if capacity permits.
-fn add_key(store: KeyStore&, slot: KeySlot) -> bool {
+fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
     guard store.keys.len < store.keys.cap else { return false; }
     store.keys.push(slot);
     return true;
 }
 
 // Returns the currently active, non-revoked KeySlot.
-fn active_key(store: const KeyStore&) -> KeySlot, bool {
-    guard store.keys.len > 0 else { return KeySlot { .. }, false; }
+fn active_key(store: const KeyStore&) -> core::KeySlot, bool {
+    guard store.keys.len > 0 else { return core::KeySlot { .. }, false; }
     let slot = store.keys[store.active_idx];
-    guard !slot.revoked else { return KeySlot { .. }, false; }
+    guard !slot.revoked else { return core::KeySlot { .. }, false; }
     return slot, true;
 }
 
@@ -79,20 +79,20 @@ fn set_active_key_id(store: KeyStore&, key_id: u32) -> bool {
 }
 
 // Looks up a non-revoked KeySlot by key_id for decryption or verification.
-fn find_key(store: const KeyStore&, key_id: u32) -> KeySlot, bool {
+fn find_key(store: const KeyStore&, key_id: u32) -> core::KeySlot, bool {
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id && !store.keys[idx].revoked {
             return store.keys[idx], true;
         }
     }
-    return KeySlot { .. }, false;
+    return core::KeySlot { .. }, false;
 }
 
 // Zeroizes and revokes a key in the store by key_id.
 fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id {
-            zeroize_key_slot(store.keys[idx]);
+            core::zeroize_key_slot(store.keys[idx]);
             return true;
         }
     }
@@ -100,7 +100,7 @@ fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
 }
 
 // Checks if a key needs proactive rotation (starts >= 24 hours before expiration).
-fn needs_rotation(slot: const KeySlot&, now_sec: i64) -> bool {
+fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
     guard slot.expires_at_sec > 0 && !slot.revoked else { return false; }
     return (slot.expires_at_sec - now_sec) <= 86400;
 }
@@ -127,7 +127,7 @@ fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
 }
 
 fn seal_binary_hkdf_aes<B>(
-    slot: const KeySlot&,
+    slot: const core::KeySlot&,
     cookie_name: const u8[:],
     plaintext: const u8[:],
     now_sec: i64,
@@ -151,7 +151,7 @@ fn seal_binary_hkdf_aes<B>(
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
         var ct: u8[>..] = [];
-        let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], ct);
+        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], ct);
         out.append(ct[..]);
         for i in 16 { out.push(tag[i]); }
         return true;
@@ -159,7 +159,7 @@ fn seal_binary_hkdf_aes<B>(
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
         var ct: u8[>..] = [];
-        let tag = hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], ct);
+        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], ct);
         out.append(ct[..]);
         for i in 16 { out.push(tag[i]); }
         return true;
@@ -167,7 +167,7 @@ fn seal_binary_hkdf_aes<B>(
 }
 
 fn seal_binary_xchacha20<B>(
-    slot: const KeySlot&,
+    slot: const core::KeySlot&,
     cookie_name: const u8[:],
     plaintext: const u8[:],
     now_sec: i64,
@@ -190,7 +190,7 @@ fn seal_binary_xchacha20<B>(
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_stack);
         var ct: u8[>..] = [];
-        let tag = xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], ct);
+        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], ct);
         out.append(ct[..]);
         for i in 16 { out.push(tag[i]); }
         return true;
@@ -198,7 +198,7 @@ fn seal_binary_xchacha20<B>(
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_dyn);
         var ct: u8[>..] = [];
-        let tag = xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_dyn[..], ct);
+        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_dyn[..], ct);
         out.append(ct[..]);
         for i in 16 { out.push(tag[i]); }
         return true;
@@ -226,7 +226,7 @@ fn private_jar_seal_binary<B>(
 
 fn open_binary_xchacha20(
     jar: const PrivateJar&,
-    slot: const KeySlot&,
+    slot: const core::KeySlot&,
     cookie_name: const u8[:],
     raw_wire: const u8[:],
     now_sec: i64,
@@ -255,17 +255,17 @@ fn open_binary_xchacha20(
     var aad_stack: u8[..256] = [];
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
-        return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext);
+        return core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext);
     } else {
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_dyn);
-        return xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_dyn[..], tag, out_plaintext);
+        return core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_dyn[..], tag, out_plaintext);
     }
 }
 
 fn open_binary_hkdf_aes(
     jar: const PrivateJar&,
-    slot: const KeySlot&,
+    slot: const core::KeySlot&,
     cookie_name: const u8[:],
     raw_wire: const u8[:],
     now_sec: i64,
@@ -297,11 +297,11 @@ fn open_binary_hkdf_aes(
     var aad_stack: u8[..256] = [];
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
-        return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext);
+        return core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext);
     } else {
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_dyn);
-        return hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_dyn[..], tag, out_plaintext);
+        return core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_dyn[..], tag, out_plaintext);
     }
 }
 
@@ -355,7 +355,7 @@ fn private_jar_open(
     out_plaintext: u8[>..]&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
-    guard base64url_decode(encoded_val, raw_wire) else { return false; }
+    guard core::base64url_decode(encoded_val, raw_wire) else { return false; }
     return private_jar_open_binary(jar, cookie_name, raw_wire[..], now_sec, out_plaintext);
 }
 
@@ -391,13 +391,13 @@ fn signed_jar_seal_binary<B>(
     var to_sign_stack: u8[..4200] = [];
     if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_stack);
-        let mac = hmac_sha256(slot.master_key[..], to_sign_stack[..]);
+        let mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
         for i in 32 { out.push(mac[i]); }
         return true;
     } else {
         var to_sign_dyn: u8[>..] = [];
         build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_dyn);
-        let mac = hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
+        let mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
         for i in 32 { out.push(mac[i]); }
         return true;
     }
@@ -435,15 +435,15 @@ fn signed_jar_open_binary(
     var to_sign_stack: u8[..4200] = [];
     if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_stack);
-        let expected_mac = hmac_sha256(slot.master_key[..], to_sign_stack[..]);
-        guard ct_eq_tag32(expected_mac, tag) else { return false; }
+        let expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
+        guard core::ct_eq_tag32(expected_mac, tag) else { return false; }
         out_payload.append(payload);
         return true;
     } else {
         var to_sign_dyn: u8[>..] = [];
         build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_dyn);
-        let expected_mac = hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
-        guard ct_eq_tag32(expected_mac, tag) else { return false; }
+        let expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
+        guard core::ct_eq_tag32(expected_mac, tag) else { return false; }
         out_payload.append(payload);
         return true;
     }
@@ -470,6 +470,6 @@ fn signed_jar_open(
     out_payload: u8[>..]&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
-    guard base64url_decode(encoded_val, raw_wire) else { return false; }
+    guard core::base64url_decode(encoded_val, raw_wire) else { return false; }
     return signed_jar_open_binary(jar, cookie_name, raw_wire[..], now_sec, out_payload);
 }

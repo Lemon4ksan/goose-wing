@@ -74,9 +74,9 @@ fn test_dpop_rfc9449(t: core::T&) {
         wing::compute_dpop_ath(token, ath);
         sub.assert_true(ath.len > 0, "ATH generated");
         // Base64url encoded SHA-256 of token
-        let expected_sha = wing::sha256(token);
+        let expected_sha = core::sha256(token);
         var expected_b64: u8[..64] = [];
-        wing::base64url_encode(expected_sha[..], expected_b64);
+        core::base64url_encode(expected_sha[..], expected_b64);
         sub.assert_bytes_eq(ath[..], expected_b64[..], "ATH matches SHA-256 base64url");
     };
 

@@ -4,8 +4,6 @@
 namespace wing;
 
 import std;
-import security.ct;
-import security.x25519;
 import tls.record;
 import tls.hpke;
 

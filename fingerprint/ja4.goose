@@ -3,7 +3,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 
 // ---- grease detection & filtering (rfc 8701) -------------------------------
 
@@ -58,7 +58,7 @@ fn hash_12_hex<B>(data: const u8[:], out: B&) {
         out.append("000000000000");
         return;
     }
-    let sum = sha256(data);
+    let sum = core::sha256(data);
     let hex_chars = "0123456789abcdef";
     for i in 6 {
         out.push(hex_chars[((sum[i] >> 4) & 0x0F) as i64]);

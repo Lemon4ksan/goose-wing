@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import security.ct;
+import core from "..";
 
 // ---- 1. Constants and Supported Cipher Suites -------------------------------
 
@@ -54,9 +54,9 @@ fn hkdf_expand_label(
     info.append(context);
 
     if hash_id == HASH_SHA256 {
-        return hkdf_expand_bytes_256(secret, info[..], length, out);
+        return core::hkdf_expand_bytes_256(secret, info[..], length, out);
     } else if hash_id == HASH_SHA384 {
-        return hkdf_expand_bytes_384(secret, info[..], length, out);
+        return core::hkdf_expand_bytes_384(secret, info[..], length, out);
     }
     return false;
 }
@@ -75,10 +75,10 @@ fn derive_secret(
 
     if transcript_hash.len == 0 {
         if hash_id == HASH_SHA256 {
-            let empty_h = sha256([]);
+            let empty_h = core::sha256([]);
             return hkdf_expand_label(hash_id, secret, label, empty_h[..], hash_len, out);
         } else if hash_id == HASH_SHA384 {
-            let empty_h = sha384([]);
+            let empty_h = core::sha384([]);
             return hkdf_expand_label(hash_id, secret, label, empty_h[..], hash_len, out);
         }
         return false;
@@ -126,10 +126,10 @@ fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
     let ikm = if psk.len > 0 { psk } else { zero_salt };
 
     if ks.hash_id == HASH_SHA256 {
-        let es = hkdf_extract(zero_salt, ikm);
+        let es = core::hkdf_extract(zero_salt, ikm);
         for i in 32 { ks.current_secret[i] = es[i]; }
     } else if ks.hash_id == HASH_SHA384 {
-        let es = hkdf_extract_384(zero_salt, ikm);
+        let es = core::hkdf_extract_384(zero_salt, ikm);
         for i in 48 { ks.current_secret[i] = es[i]; }
     } else {
         return false;
@@ -178,10 +178,10 @@ fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -
     }
 
     if ks.hash_id == HASH_SHA256 {
-        let hs = hkdf_extract(derived[..32], ecdhe_shared_secret);
+        let hs = core::hkdf_extract(derived[..32], ecdhe_shared_secret);
         for i in 32 { ks.current_secret[i] = hs[i]; }
     } else if ks.hash_id == HASH_SHA384 {
-        let hs = hkdf_extract_384(derived[..48], ecdhe_shared_secret);
+        let hs = core::hkdf_extract_384(derived[..48], ecdhe_shared_secret);
         for i in 48 { ks.current_secret[i] = hs[i]; }
     } else {
         return false;
@@ -239,10 +239,10 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
     let zero_ikm = zeros[..ks.hash_len];
 
     if ks.hash_id == HASH_SHA256 {
-        let ms = hkdf_extract(derived[..32], zero_ikm);
+        let ms = core::hkdf_extract(derived[..32], zero_ikm);
         for i in 32 { ks.current_secret[i] = ms[i]; }
     } else if ks.hash_id == HASH_SHA384 {
-        let ms = hkdf_extract_384(derived[..48], zero_ikm);
+        let ms = core::hkdf_extract_384(derived[..48], zero_ikm);
         for i in 48 { ks.current_secret[i] = ms[i]; }
     } else {
         return false;
@@ -334,11 +334,11 @@ fn ks_compute_finished_verify_data(
     }
 
     if hash_id == HASH_SHA256 {
-        let vd = hmac_sha256(finished_key[..32], transcript_hash);
+        let vd = core::hmac_sha256(finished_key[..32], transcript_hash);
         for i in 32 { out_verify_data[i] = vd[i]; }
         return true;
     } else if hash_id == HASH_SHA384 {
-        let vd = hmac_sha384(finished_key[..48], transcript_hash);
+        let vd = core::hmac_sha384(finished_key[..48], transcript_hash);
         for i in 48 { out_verify_data[i] = vd[i]; }
         return true;
     }
@@ -362,21 +362,21 @@ fn ks_update_traffic_secret(hash_id: u8, hash_len: u8, traffic_secret: u8[:]) ->
     for i in hash_len {
         traffic_secret[i] = next_secret[i];
     }
-    secure_zeroize_48(next_secret);
+    core::secure_zeroize_48(next_secret);
     return true;
 }
 
 // Securely wipes all secrets from the KeySchedule.
 fn ks_zeroize(ks: KeySchedule&) {
-    secure_zeroize_48(ks.current_secret);
-    secure_zeroize_48(ks.client_early_traffic);
-    secure_zeroize_48(ks.client_hs_traffic);
-    secure_zeroize_48(ks.server_hs_traffic);
-    secure_zeroize_48(ks.client_ap_traffic);
-    secure_zeroize_48(ks.server_ap_traffic);
-    secure_zeroize_48(ks.exporter_secret);
-    secure_zeroize_48(ks.resumption_secret);
-    secure_zeroize_48(ks.binder_key);
+    core::secure_zeroize_48(ks.current_secret);
+    core::secure_zeroize_48(ks.client_early_traffic);
+    core::secure_zeroize_48(ks.client_hs_traffic);
+    core::secure_zeroize_48(ks.server_hs_traffic);
+    core::secure_zeroize_48(ks.client_ap_traffic);
+    core::secure_zeroize_48(ks.server_ap_traffic);
+    core::secure_zeroize_48(ks.exporter_secret);
+    core::secure_zeroize_48(ks.resumption_secret);
+    core::secure_zeroize_48(ks.binder_key);
     ks.stage = KS_STAGE_UNINIT;
 }
 
@@ -398,17 +398,17 @@ fn verify_psk_binder(
     }
 
     if hash_id == HASH_SHA256 {
-        let ch_hash = sha256(truncated_ch);
-        let calc_binder = hmac_sha256(finished_key[..32], ch_hash[..]);
+        let ch_hash = core::sha256(truncated_ch);
+        let calc_binder = core::hmac_sha256(finished_key[..32], ch_hash[..]);
         var exp: u8[32] = [0; 32];
         for i in 32 { exp[i] = expected_binder[i]; }
-        return ct_eq_tag32(calc_binder, exp);
+        return core::ct_eq_tag32(calc_binder, exp);
     } else if hash_id == HASH_SHA384 {
-        let ch_hash = sha384(truncated_ch);
-        let calc_binder = hmac_sha384(finished_key[..48], ch_hash[..]);
+        let ch_hash = core::sha384(truncated_ch);
+        let calc_binder = core::hmac_sha384(finished_key[..48], ch_hash[..]);
         var exp: u8[48] = [0; 48];
         for i in 48 { exp[i] = expected_binder[i]; }
-        return ct_eq_tag48(calc_binder, exp);
+        return core::ct_eq_tag48(calc_binder, exp);
     }
     return false;
 }

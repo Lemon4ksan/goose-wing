@@ -292,9 +292,9 @@ fn ::parse_content_disposition(raw: const u8[:]) -> wing::MediaType, bool { retu
 
 // ---- security & server ufcs bridges ----------------------------------------
 
-fn ::add_key(store: wing::KeyStore&, slot: wing::KeySlot) -> bool { return wing::add_key(store, slot); }
-fn ::active_key(store: const wing::KeyStore&) -> wing::KeySlot, bool { return wing::active_key(store); }
-fn ::find_key(store: const wing::KeyStore&, key_id: u32) -> wing::KeySlot, bool { return wing::find_key(store, key_id); }
+fn ::add_key(store: wing::KeyStore&, slot: core::KeySlot) -> bool { return wing::add_key(store, slot); }
+fn ::active_key(store: const wing::KeyStore&) -> core::KeySlot, bool { return wing::active_key(store); }
+fn ::find_key(store: const wing::KeyStore&, key_id: u32) -> core::KeySlot, bool { return wing::find_key(store, key_id); }
 fn ::revoke_key(store: wing::KeyStore&, key_id: u32) -> bool { return wing::revoke_key(store, key_id); }
 
 fn ::add_trusted_origin(guard_cfg: wing::CrossOriginGuard&, origin_str: const u8[:]) -> bool { return wing::add_trusted_origin(guard_cfg, origin_str); }

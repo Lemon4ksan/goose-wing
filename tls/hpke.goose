@@ -4,8 +4,7 @@
 namespace wing;
 
 import std;
-import security.ct;
-import security.x25519;
+import core from "..";
 
 // ---- 1. RFC 9180 Identifiers and Code Points --------------------------------
 
@@ -44,7 +43,7 @@ fn hpke_labeled_extract(
     labeled_ikm.append(label);
     labeled_ikm.append(ikm);
 
-    return hkdf_extract(salt, labeled_ikm[..]);
+    return core::hkdf_extract(salt, labeled_ikm[..]);
 }
 
 // Computes LabeledExpand(prk, label, info, L) = HKDF-Expand(prk, I2OSP(L, 2) || "HPKE-v1" || suite_id || label || info, L)
@@ -64,7 +63,7 @@ fn hpke_labeled_expand(
     labeled_info.append(label);
     labeled_info.append(info);
 
-    return hkdf_expand_bytes_256(prk, labeled_info[..], length, out);
+    return core::hkdf_expand_bytes_256(prk, labeled_info[..], length, out);
 }
 
 // ---- 3. DHKEM(X25519, HKDF-SHA256) (RFC 9180 Section 4.1) ------------------
@@ -77,10 +76,10 @@ fn dhkem_x25519_encap(
     out_shared_secret: u8[32]&
 ) -> bool {
     // 1. Calculate ephemeral public key: enc = X25519(skE, basepoint)
-    out_enc = x25519_base_scalarmult(ephemeral_sk);
+    out_enc = core::x25519_base_scalarmult(ephemeral_sk);
 
     // 2. Diffie-Hellman: dh = X25519(skE, pkR)
-    let dh = x25519_scalarmult(ephemeral_sk, pkR);
+    let dh = core::x25519_scalarmult(ephemeral_sk, pkR);
 
     // 3. KEM suite_id = "KEM" || I2OSP(kem_id, 2)
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20]; // "KEM" || 0x0020
@@ -106,7 +105,7 @@ fn dhkem_x25519_decap(
     pkR: const u8[32]&,
     out_shared_secret: u8[32]&
 ) -> bool {
-    let dh = x25519_scalarmult(skR, enc);
+    let dh = core::x25519_scalarmult(skR, enc);
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];
 
     var kem_context: u8[64] = [0; 64];
@@ -195,7 +194,7 @@ fn hpke_setup_base_r(
     guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
 
-    let pkR = x25519_base_scalarmult(skR);
+    let pkR = core::x25519_base_scalarmult(skR);
     var shared_secret: u8[32] = [0; 32];
     guard dhkem_x25519_decap(enc, skR, pkR, shared_secret) else { return false; }
 
@@ -262,15 +261,15 @@ fn hpke_seal(
     if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = ctx.key[i]; }
-        let tag = aes128_gcm_seal(key16, nonce, pt, aad, out_ct);
+        let tag = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct);
         for i in 16 { out_ct.push(tag[i]); }
         return true;
     } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
-        let tag = aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct);
+        let tag = core::aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct);
         for i in 16 { out_ct.push(tag[i]); }
         return true;
     } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
-        let tag = chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct);
+        let tag = core::chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct);
         for i in 16 { out_ct.push(tag[i]); }
         return true;
     }
@@ -297,11 +296,11 @@ fn hpke_open(
     if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = ctx.key[i]; }
-        return aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
+        return core::aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
     } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
-        return aes256_gcm_open(ctx.key, nonce, ct, aad, tag, out_pt);
+        return core::aes256_gcm_open(ctx.key, nonce, ct, aad, tag, out_pt);
     } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
-        return chacha20_poly1305_open(ctx.key, nonce, ct, aad, tag, out_pt);
+        return core::chacha20_poly1305_open(ctx.key, nonce, ct, aad, tag, out_pt);
     }
     return false;
 }
