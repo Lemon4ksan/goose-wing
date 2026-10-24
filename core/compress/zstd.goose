@@ -947,33 +947,61 @@ fn huf_decode_4streams(
     let cnt4 = dst4.len;
 
     while dec1 < cnt1 && dec2 < cnt2 && dec3 < cnt3 && dec4 < cnt4 {
-        if bits1 > 32 && ptr1 > 0 {
-            let avail = (bits1 >> 3) as i64;
-            let s = if ptr1 < avail { ptr1 } else { avail };
-            ptr1 -= s;
-            bits1 -= (s * 8) as u32;
-            cont1 = xxh64_read_le64(src1, ptr1);
+        if bits1 > 32 {
+            if ptr1 >= 8 {
+                let s = (bits1 >> 3) as i64;
+                ptr1 -= s;
+                bits1 &= 7;
+                cont1 = xxh64_read_le64(src1, ptr1);
+            } else if ptr1 > 0 {
+                let avail = (bits1 >> 3) as i64;
+                let s = if ptr1 < avail { ptr1 } else { avail };
+                ptr1 -= s;
+                bits1 -= (s * 8) as u32;
+                cont1 = xxh64_read_le64(src1, ptr1);
+            }
         }
-        if bits2 > 32 && ptr2 > 0 {
-            let avail = (bits2 >> 3) as i64;
-            let s = if ptr2 < avail { ptr2 } else { avail };
-            ptr2 -= s;
-            bits2 -= (s * 8) as u32;
-            cont2 = xxh64_read_le64(src2, ptr2);
+        if bits2 > 32 {
+            if ptr2 >= 8 {
+                let s = (bits2 >> 3) as i64;
+                ptr2 -= s;
+                bits2 &= 7;
+                cont2 = xxh64_read_le64(src2, ptr2);
+            } else if ptr2 > 0 {
+                let avail = (bits2 >> 3) as i64;
+                let s = if ptr2 < avail { ptr2 } else { avail };
+                ptr2 -= s;
+                bits2 -= (s * 8) as u32;
+                cont2 = xxh64_read_le64(src2, ptr2);
+            }
         }
-        if bits3 > 32 && ptr3 > 0 {
-            let avail = (bits3 >> 3) as i64;
-            let s = if ptr3 < avail { ptr3 } else { avail };
-            ptr3 -= s;
-            bits3 -= (s * 8) as u32;
-            cont3 = xxh64_read_le64(src3, ptr3);
+        if bits3 > 32 {
+            if ptr3 >= 8 {
+                let s = (bits3 >> 3) as i64;
+                ptr3 -= s;
+                bits3 &= 7;
+                cont3 = xxh64_read_le64(src3, ptr3);
+            } else if ptr3 > 0 {
+                let avail = (bits3 >> 3) as i64;
+                let s = if ptr3 < avail { ptr3 } else { avail };
+                ptr3 -= s;
+                bits3 -= (s * 8) as u32;
+                cont3 = xxh64_read_le64(src3, ptr3);
+            }
         }
-        if bits4 > 32 && ptr4 > 0 {
-            let avail = (bits4 >> 3) as i64;
-            let s = if ptr4 < avail { ptr4 } else { avail };
-            ptr4 -= s;
-            bits4 -= (s * 8) as u32;
-            cont4 = xxh64_read_le64(src4, ptr4);
+        if bits4 > 32 {
+            if ptr4 >= 8 {
+                let s = (bits4 >> 3) as i64;
+                ptr4 -= s;
+                bits4 &= 7;
+                cont4 = xxh64_read_le64(src4, ptr4);
+            } else if ptr4 > 0 {
+                let avail = (bits4 >> 3) as i64;
+                let s = if ptr4 < avail { ptr4 } else { avail };
+                ptr4 -= s;
+                bits4 -= (s * 8) as u32;
+                cont4 = xxh64_read_le64(src4, ptr4);
+            }
         }
 
         if bits1 + t_log_u32 > 64 || bits2 + t_log_u32 > 64 || bits3 + t_log_u32 > 64 || bits4 + t_log_u32 > 64 {
@@ -1557,73 +1585,52 @@ fn decode_sequences<B>(
         }
 
         // Execute sequence
-        if lit_ptr + (lit_len as i64) > lit_buf.len {
+        let next_lit = lit_ptr + (lit_len as i64);
+        if lit_ptr < 0 || next_lit > lit_buf.len || next_lit < lit_ptr {
             return CompressError.CorruptedBitstream;
         }
-        if max_output_bytes >= 0 && (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
-            return CompressError.OutputBufferOverflow;
+        if max_output_bytes >= 0 {
+            if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
+                return CompressError.OutputBufferOverflow;
+            }
         }
 
         if lit_len == 1 {
             out_buf.push(lit_buf[lit_ptr]);
-            lit_ptr++;
         } else if lit_len == 2 {
             out_buf.push(lit_buf[lit_ptr]);
             out_buf.push(lit_buf[lit_ptr + 1]);
-            lit_ptr += 2;
         } else if lit_len == 3 {
             out_buf.push(lit_buf[lit_ptr]);
             out_buf.push(lit_buf[lit_ptr + 1]);
             out_buf.push(lit_buf[lit_ptr + 2]);
-            lit_ptr += 3;
         } else if lit_len == 4 {
             out_buf.push(lit_buf[lit_ptr]);
             out_buf.push(lit_buf[lit_ptr + 1]);
             out_buf.push(lit_buf[lit_ptr + 2]);
             out_buf.push(lit_buf[lit_ptr + 3]);
-            lit_ptr += 4;
         } else if lit_len > 4 {
-            let l_len = lit_len as i64;
-            out_buf.append(lit_buf[lit_ptr .. lit_ptr + l_len]);
-            lit_ptr += l_len;
+            out_buf.append(lit_buf[lit_ptr .. next_lit]);
         }
+        lit_ptr = next_lit;
 
         if match_len > 0 {
             let off = offset as i64;
             let m_len = match_len as i64;
-            if off == 0 || off > (out_buf.len as i64) {
+            let out_len = out_buf.len;
+            if off <= 0 || off > out_len {
                 return CompressError.DistanceOutOfBounds;
             }
-            let src_idx = (out_buf.len as i64) - off;
+            let src_idx = out_len - off;
             if off >= m_len {
-                if m_len <= 8 {
-                    out_buf.push(out_buf[src_idx]);
-                    out_buf.push(out_buf[src_idx + 1]);
-                    out_buf.push(out_buf[src_idx + 2]);
-                    if m_len >= 4 { out_buf.push(out_buf[src_idx + 3]); }
-                    if m_len >= 5 { out_buf.push(out_buf[src_idx + 4]); }
-                    if m_len >= 6 { out_buf.push(out_buf[src_idx + 5]); }
-                    if m_len >= 7 { out_buf.push(out_buf[src_idx + 6]); }
-                    if m_len == 8 { out_buf.push(out_buf[src_idx + 7]); }
-                } else if m_len <= 12 {
-                    out_buf.push(out_buf[src_idx]);
-                    out_buf.push(out_buf[src_idx + 1]);
-                    out_buf.push(out_buf[src_idx + 2]);
-                    out_buf.push(out_buf[src_idx + 3]);
-                    out_buf.push(out_buf[src_idx + 4]);
-                    out_buf.push(out_buf[src_idx + 5]);
-                    out_buf.push(out_buf[src_idx + 6]);
-                    out_buf.push(out_buf[src_idx + 7]);
-                    if m_len >= 9 { out_buf.push(out_buf[src_idx + 8]); }
-                    if m_len >= 10 { out_buf.push(out_buf[src_idx + 9]); }
-                    if m_len >= 11 { out_buf.push(out_buf[src_idx + 10]); }
-                    if m_len == 12 { out_buf.push(out_buf[src_idx + 11]); }
-                } else {
-                    out_buf.append(out_buf[src_idx .. src_idx + m_len]);
+                let src_end = src_idx + m_len;
+                if src_idx < 0 || src_end > out_len || src_end < src_idx {
+                    return CompressError.DistanceOutOfBounds;
                 }
+                out_buf.append(out_buf[src_idx .. src_end]);
             } else if off == 1 {
                 let b = out_buf[src_idx];
-                out_buf.resize(out_buf.len + m_len, b);
+                out_buf.resize(out_len + m_len, b);
             } else {
                 var curr: i64 = 0;
                 while curr < m_len {
