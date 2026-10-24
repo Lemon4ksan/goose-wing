@@ -52,6 +52,7 @@ const H3_STREAM_QPACK_DECODER: u64 = 0x03;
 const H3_SETTING_QPACK_MAX_TABLE_CAPACITY: u64 = 0x01; // default 0
 const H3_SETTING_MAX_FIELD_SECTION_SIZE:   u64 = 0x06; // unlimited default
 const H3_SETTING_QPACK_BLOCKED_STREAMS:     u64 = 0x07; // default 0
+const H3_SETTING_ENABLE_CONNECT_PROTOCOL:  u64 = 0x08; // RFC 9220 Extended CONNECT
 
 enum QpackError {
     None,
