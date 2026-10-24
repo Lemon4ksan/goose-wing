@@ -1,0 +1,161 @@
+// Singleflight duplicate call suppression for coalescing identical concurrent requests.
+namespace core;
+
+import std;
+import core.math.hash;
+
+struct FlightEntry {
+    key: u8[..64] = [],
+    key_hash: u64 = 0,
+    is_in_flight: bool = false,
+    is_done: bool = false,
+    has_failed: bool = false,
+    val: i64 = 0,
+    waiter_count: i32 = 0,
+    shared: bool = false,
+}
+
+struct SingleflightGroup {
+    entries: FlightEntry[..32] = [],
+    total_leader_calls: i64 = 0,
+    total_shared_calls: i64 = 0,
+}
+
+fn new_singleflight_group() -> SingleflightGroup {
+    return SingleflightGroup { .. };
+}
+
+// Registers or joins an execution for key_str.
+// Returns (is_leader, val, shared).
+// If is_leader is true, the caller executes the operation and calls finish_call.
+// If is_leader is false and execution is in-flight, returns (false, 0, true).
+// If already completed, returns the cached result.
+fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
+            if g.entries[idx].is_in_flight {
+                g.entries[idx].waiter_count++;
+                g.entries[idx].shared = true;
+                g.total_shared_calls++;
+                return false, 0, true; // Follower
+            }
+            if g.entries[idx].is_done {
+                return false, g.entries[idx].val, g.entries[idx].shared; // Cached completion
+            }
+        }
+    }
+
+    if g.entries.len < g.entries.cap {
+        var new_entry = FlightEntry {
+            key_hash: kh,
+            is_in_flight: true,
+            is_done: false,
+            has_failed: false,
+            val: 0,
+            waiter_count: 0,
+            shared: false,
+            ..
+        };
+        new_entry.key.append(key_str);
+        g.entries.push(new_entry);
+        g.total_leader_calls++;
+        return true, 0, false; // Leader
+    }
+
+    // Capacity overflow fallback: execute unshared
+    g.total_leader_calls++;
+    return true, 0, false;
+}
+
+// Marks the in-flight key execution as finished with val and success status.
+// Returns (true, waiter_count) if the key was found in-flight.
+fn finish_call(g: SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
+            g.entries[idx].is_in_flight = false;
+            g.entries[idx].is_done = true;
+            g.entries[idx].has_failed = !ok;
+            g.entries[idx].val = val;
+            let waiters = g.entries[idx].waiter_count;
+            return true, waiters;
+        }
+    }
+    return false, 0;
+}
+
+// forget evicts key_str from the group immediately, allowing the next caller to execute as leader.
+// Returns true if the key was found and removed, false otherwise.
+fn forget(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
+            g.entries[idx] = g.entries[g.entries.len - 1];
+            g.entries.pop();
+            return true;
+        }
+    }
+    return false;
+}
+
+// Removes key_str only if it was not shared with any concurrent caller (waiter_count == 0).
+// Returns true if removed, false if preserved.
+fn forget_unshared(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
+            if g.entries[idx].waiter_count == 0 {
+                g.entries[idx] = g.entries[g.entries.len - 1];
+                g.entries.pop();
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+// Queries whether key is currently executing in-flight.
+fn is_in_flight(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Returns the count of concurrent waiters for key.
+fn waiter_count(g: const SingleflightGroup&, key_str: const u8[:]) -> i32 {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
+            return g.entries[idx].waiter_count;
+        }
+    }
+    return 0;
+}
+
+// Returns whether the call for key was shared across multiple callers.
+fn is_shared(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
+            return g.entries[idx].shared;
+        }
+    }
+    return false;
+}
+
+// Retrieves the result value and completion status of a finished call.
+fn result_value(g: const SingleflightGroup&, key_str: const u8[:]) -> i64, bool {
+    let kh = wyhash64(key_str);
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str && g.entries[idx].is_done {
+            return g.entries[idx].val, !g.entries[idx].has_failed;
+        }
+    }
+    return 0, false;
+}
