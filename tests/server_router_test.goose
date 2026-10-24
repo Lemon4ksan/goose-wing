@@ -340,6 +340,76 @@ fn test_unified_server_pipeline(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 5. Standalone HTTP Server Wire Handling & Protocol Detection
+// ----------------------------------------------------------------------------
+fn test_standalone_http_server(t: core::T&) {
+    t.run("1. HTTP/1.1 Wire Request Parsing & Response Serializer") { sub =>
+        let wire_req = "POST /api/echo HTTP/1.1\r\nHost: localhost:8080\r\nContent-Length: 11\r\nContent-Type: text/plain\r\n\r\nHello World";
+        var req = wing::new_request("", "");
+        let ok_parse, consumed = wing::parse_http1_wire_request(wire_req, req);
+
+        sub.assert_true(ok_parse, "Parsed raw HTTP/1.1 wire request");
+        sub.assert_eq(consumed, wire_req.len as i64, "Consumed all wire bytes including body");
+        sub.assert_bytes_eq(req.method[..], "POST", "Method is POST");
+        sub.assert_bytes_eq(req.url[..], "/api/echo", "Path is /api/echo");
+        sub.assert_bytes_eq(req.body[..], "Hello World", "Body payload extracted");
+
+        var resp = wing::new_response();
+        resp.status_code = 200;
+        wing::header(resp, "content-type", "application/json");
+        resp.body.append("{\"status\":\"ok\"}");
+
+        var out_wire: u8[>..] = [];
+        wing::serialize_http1_response(resp, "goose-wing-server", out_wire);
+
+        let out_str = out_wire[..];
+        sub.assert_true(out_wire.len > 0, "Response wire serialized");
+        sub.assert_true(out_str.len >= 15 && out_str[..15] == "HTTP/1.1 200 OK", "Status line HTTP/1.1 200 OK");
+        sub.assert_contains(out_str, "Server: goose-wing-server\r\n", "Server header included");
+        sub.assert_contains(out_str, "Content-Length: 15\r\n", "Content-Length matches body");
+        sub.assert_contains(out_str, "Connection: keep-alive\r\n", "Connection: keep-alive included");
+        sub.assert_contains(out_str, "{\"status\":\"ok\"}", "Response body included");
+    };
+
+    t.run("2. End-to-End handle_connection_wire Pipeline Dispatch") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_get_route(server, "/ping", 100);
+
+        let client_req = "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+        var client_resp_wire: u8[>..] = [];
+        let outcome, ok_handled = wing::handle_connection_wire(server, "127.0.0.1", client_req, 1000000000, client_resp_wire);
+
+        sub.assert_true(ok_handled, "Wire connection handled");
+        sub.assert_eq(outcome, wing::PipelineOutcome.Handled, "Pipeline handled route");
+        sub.assert_eq(server.requests_processed, 1, "1 request processed");
+        sub.assert_contains(client_resp_wire[..], "HTTP/1.1 200 OK", "Response is 200 OK");
+
+        // 404 Route Not Found
+        let req_404 = "GET /missing HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+        var resp_404_wire: u8[>..] = [];
+        let outcome_404, _ = wing::handle_connection_wire(server, "127.0.0.1", req_404, 1000000000, resp_404_wire);
+        sub.assert_eq(outcome_404, wing::PipelineOutcome.RouteNotFound, "Route not found");
+        sub.assert_contains(resp_404_wire[..], "HTTP/1.1 404 Not Found", "Response is 404 Not Found");
+    };
+
+    t.run("3. HTTP/2 Connection Preface Detection & Handshake") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8443);
+
+        // Client sends RFC 9113 24-byte preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+        var wire_h2: u8[>..] = [];
+        wire_h2.append(wing::H2_CLIENT_PREFACE[..]);
+
+        var server_h2_resp: u8[>..] = [];
+        let outcome_h2, ok_h2 = wing::handle_connection_wire(server, "127.0.0.1", wire_h2[..], 1000000000, server_h2_resp);
+
+        sub.assert_true(ok_h2, "HTTP/2 preface detected");
+        sub.assert_eq(outcome_h2, wing::PipelineOutcome.Handled, "Handled");
+        sub.assert_eq(server_h2_resp.len, 9, "Server responded with 9-byte HTTP/2 SETTINGS frame");
+        sub.assert_eq(server_h2_resp[3], wing::FRAME_SETTINGS, "Frame type is SETTINGS (0x04)");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
@@ -349,6 +419,7 @@ fn main() {
     core::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
     core::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
     core::run_case(runner, "4. Unified Defense-in-Depth Pipeline Integration", test_unified_server_pipeline);
+    core::run_case(runner, "5. Standalone HTTP Server Wire Handling & Protocol Detection", test_standalone_http_server);
 
     let ok = core::finish(runner);
     assert(ok);
