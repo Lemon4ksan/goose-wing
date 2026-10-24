@@ -15,6 +15,11 @@ fn ::set_header(profile: wing::BrowserProfile&, name: const u8[:], value: const 
 fn ::user_agent(session: const wing::Session&) -> const u8[:] { return wing::user_agent(session); }
 fn ::ja4(session: const wing::Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] { return wing::session_ja4(session, is_quic, sni); }
 fn ::p0f(session: const wing::Session&) -> u8[..128] { return wing::session_p0f(session); }
+fn ::akamai(session: const wing::Session&) -> u8[..256] { return wing::session_akamai(session); }
+fn ::akamai_hash(session: const wing::Session&) -> u8[..32] { return wing::session_akamai_hash(session); }
+fn ::akamai(profile: const wing::BrowserProfile&) -> u8[..256] { return wing::profile_akamai(profile); }
+fn ::akamai_hash(profile: const wing::BrowserProfile&) -> u8[..32] { return wing::profile_akamai_hash(profile); }
+fn ::set_akamai(profile: wing::BrowserProfile&, fp: const wing::AkamaiFingerprint&) { wing::set_akamai(profile, fp); }
 fn ::set_proxy(session: wing::Session&, proxy_url: const u8[:]) { wing::set_proxy(session, proxy_url); }
 fn ::set_timeout_ms(session: wing::Session&, timeout_millis: i64) { wing::set_timeout_ms(session, timeout_millis); }
 fn ::set_cookie(session: wing::Session&, name: const u8[:], value: const u8[:]) { wing::set_cookie(session, name, value); }

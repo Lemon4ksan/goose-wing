@@ -550,6 +550,9 @@ fn apply_profile(client: Client&, profile: const BrowserProfile&) {
         Wing => Profile.Wing,
         Custom => Profile.Custom,
         None => Profile.None,
+        Chrome => Profile.Custom,
+        Firefox => Profile.Custom,
+        Safari => Profile.Custom,
     };
     client.default_headers.clear();
     if profile.user_agent.len > 0 {
@@ -620,6 +623,16 @@ fn session_ja4(session: const Session&, is_quic: bool = false, sni: bool = true)
 fn session_p0f(session: const Session&) -> u8[..128] {
     let p = wing_default_profile();
     return profile_p0f(p);
+}
+
+fn session_akamai(session: const Session&) -> u8[..256] {
+    let p = wing_default_profile();
+    return profile_akamai(p);
+}
+
+fn session_akamai_hash(session: const Session&) -> u8[..32] {
+    let p = wing_default_profile();
+    return profile_akamai_hash(p);
 }
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {

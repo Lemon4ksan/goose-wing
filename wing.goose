@@ -25,6 +25,7 @@ import cookie.store;
 import fingerprint.ja4;
 import fingerprint.profile;
 import fingerprint.p0f;
+import fingerprint.akamai;
 
 // ---- client session and application layer ----------------------------------
 
