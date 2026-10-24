@@ -1,5 +1,5 @@
 // The Goose Streaming Compression engine: ZStream, Flush Modes, and Auto-Detection.
-namespace wing;
+namespace core;
 
 import std;
 import core.compress.checksum;
@@ -455,34 +455,34 @@ fn decompress_auto<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> Comp
 
 // ---- ufcs bridges ----------------------------------------------------------
 
-fn ::write<B>(s: wing::ZStreamCompressor&, chunk: const u8[:], out: B&, flush: wing::FlushMode = wing::FlushMode.NoFlush) -> bool {
-    return wing::zstream_write(s, chunk, out, flush);
+fn ::write<B>(s: core::ZStreamCompressor&, chunk: const u8[:], out: B&, flush: core::FlushMode = core::FlushMode.NoFlush) -> bool {
+    return core::zstream_write(s, chunk, out, flush);
 }
 
-fn ::sync_flush<B>(s: wing::ZStreamCompressor&, out: B&) -> bool {
-    return wing::zstream_sync_flush(s, out);
+fn ::sync_flush<B>(s: core::ZStreamCompressor&, out: B&) -> bool {
+    return core::zstream_sync_flush(s, out);
 }
 
-fn ::full_flush<B>(s: wing::ZStreamCompressor&, out: B&) -> bool {
-    return wing::zstream_full_flush(s, out);
+fn ::full_flush<B>(s: core::ZStreamCompressor&, out: B&) -> bool {
+    return core::zstream_full_flush(s, out);
 }
 
-fn ::finish<B>(s: wing::ZStreamCompressor&, out: B&) -> bool {
-    return wing::zstream_finish(s, out);
+fn ::finish<B>(s: core::ZStreamCompressor&, out: B&) -> bool {
+    return core::zstream_finish(s, out);
 }
 
-fn ::set_dictionary(s: wing::ZStreamCompressor&, dict: const u8[:]) {
-    wing::zstream_set_dictionary(s, dict);
+fn ::set_dictionary(s: core::ZStreamCompressor&, dict: const u8[:]) {
+    core::zstream_set_dictionary(s, dict);
 }
 
-fn ::write<B>(d: wing::ZStreamDecompressor&, chunk: const u8[:], out: B&) -> wing::CompressError {
-    return wing::zstream_decompress_write(d, chunk, out);
+fn ::write<B>(d: core::ZStreamDecompressor&, chunk: const u8[:], out: B&) -> core::CompressError {
+    return core::zstream_decompress_write(d, chunk, out);
 }
 
-fn ::write_with_limit<B>(d: wing::ZStreamDecompressor&, chunk: const u8[:], out: B&, max_output_bytes: i64) -> wing::CompressError {
-    return wing::zstream_decompress_write_limit(d, chunk, out, max_output_bytes);
+fn ::write_with_limit<B>(d: core::ZStreamDecompressor&, chunk: const u8[:], out: B&, max_output_bytes: i64) -> core::CompressError {
+    return core::zstream_decompress_write_limit(d, chunk, out, max_output_bytes);
 }
 
-fn ::set_dictionary(d: wing::ZStreamDecompressor&, dict: const u8[:]) {
-    wing::zstream_decompress_set_dictionary(d, dict);
+fn ::set_dictionary(d: core::ZStreamDecompressor&, dict: const u8[:]) {
+    core::zstream_decompress_set_dictionary(d, dict);
 }

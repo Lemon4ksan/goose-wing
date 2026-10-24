@@ -1,5 +1,5 @@
 // Fast non-cryptographic hash functions (FNV-1a, xxHash32, wyhash64) and hash combinators.
-namespace wing;
+namespace core;
 
 import std;
 import core.math.bits;

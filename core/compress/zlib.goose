@@ -1,5 +1,5 @@
 // The Goose Zlib compression container: RFC 1950 Specification.
-namespace wing;
+namespace core;
 
 import std;
 import core.compress.checksum;

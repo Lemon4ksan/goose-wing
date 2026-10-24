@@ -347,16 +347,16 @@ fn test_supervision_trees(t: wing::T&) {
     t.run("Case 1: RestartType Specification & Restart Evaluation") { sub =>
         var sup = wing::new_supervisor();
 
-        let ok_perm = sup.add_child(wing::ChildSpec { id: 1, restart_type: wing::RestartType.Permanent, .. }, 101);
-        let ok_trans = sup.add_child(wing::ChildSpec { id: 2, restart_type: wing::RestartType.Transient, .. }, 102);
-        let ok_temp = sup.add_child(wing::ChildSpec { id: 3, restart_type: wing::RestartType.Temporary, .. }, 103);
+        let ok_perm = sup.add_child(wing::ChildSpec { id: 1, restart_type: core::RestartType.Permanent, .. }, 101);
+        let ok_trans = sup.add_child(wing::ChildSpec { id: 2, restart_type: core::RestartType.Transient, .. }, 102);
+        let ok_temp = sup.add_child(wing::ChildSpec { id: 3, restart_type: core::RestartType.Temporary, .. }, 103);
         sub.assert_true(ok_perm, "Permanent child added");
         sub.assert_true(ok_trans, "Transient child added");
         sub.assert_true(ok_temp, "Temporary child added");
         sub.assert_eq(sup.child_count(), 3, "Supervisor has 3 children");
 
-        var normal_reason: wing::ExitReason = wing::ExitReason.Normal;
-        var abnormal_reason: wing::ExitReason = wing::ExitReason.Abnormal { error_code: 1, details: [] };
+        var normal_reason: wing::ExitReason = core::ExitReason.Normal;
+        var abnormal_reason: wing::ExitReason = core::ExitReason.Abnormal { error_code: 1, details: [] };
 
         // Permanent: always restarts
         sub.assert_true(sup.should_restart_child(0, normal_reason), "Permanent child restarts on Normal");
@@ -373,10 +373,10 @@ fn test_supervision_trees(t: wing::T&) {
 
     t.run("Case 2: Restart Intensity Throttling (max_restarts / max_seconds)") { sub =>
         var spec = wing::SupervisorSpec {
-            strategy: wing::Strategy.OneForOne,
+            strategy: core::Strategy.OneForOne,
             max_restarts: 3,
             max_seconds: 5,
-            auto_shutdown: wing::AutoShutdown.Never,
+            auto_shutdown: core::AutoShutdown.Never,
         };
         var sup = wing::new_supervisor(spec);
         sup.add_child(wing::ChildSpec { id: 1, .. }, 201);
@@ -400,20 +400,20 @@ fn test_supervision_trees(t: wing::T&) {
 
     t.run("Case 3: AutoShutdown & Specification Validation") { sub =>
         // Invalid config: significant child when auto_shutdown is Never must be rejected
-        var sup_never = wing::new_supervisor(wing::SupervisorSpec { auto_shutdown: wing::AutoShutdown.Never, .. });
+        var sup_never = wing::new_supervisor(wing::SupervisorSpec { auto_shutdown: core::AutoShutdown.Never, .. });
         let rejected_sig = sup_never.add_child(wing::ChildSpec {
             id: 1,
-            restart_type: wing::RestartType.Transient,
+            restart_type: core::RestartType.Transient,
             significant: true,
             ..
         }, 301);
         sub.assert_false(rejected_sig, "Child with significant=true rejected when auto_shutdown is Never");
 
         // Invalid config: permanent child marked significant must be rejected
-        var sup_auto = wing::new_supervisor(wing::SupervisorSpec { auto_shutdown: wing::AutoShutdown.AnySignificant, .. });
+        var sup_auto = wing::new_supervisor(wing::SupervisorSpec { auto_shutdown: core::AutoShutdown.AnySignificant, .. });
         let rejected_perm_sig = sup_auto.add_child(wing::ChildSpec {
             id: 2,
-            restart_type: wing::RestartType.Permanent,
+            restart_type: core::RestartType.Permanent,
             significant: true,
             ..
         }, 302);
@@ -422,7 +422,7 @@ fn test_supervision_trees(t: wing::T&) {
         // Valid config: transient child marked significant
         let accepted = sup_auto.add_child(wing::ChildSpec {
             id: 3,
-            restart_type: wing::RestartType.Transient,
+            restart_type: core::RestartType.Transient,
             significant: true,
             ..
         }, 303);

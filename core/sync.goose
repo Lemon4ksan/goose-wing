@@ -1,5 +1,5 @@
 // Concurrency primitives, actor message passing, CSP channels, supervisor trees, and singleflight call suppression.
-namespace wing;
+namespace core;
 
 import std;
 import os;

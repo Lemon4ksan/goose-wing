@@ -1,7 +1,7 @@
 // Mathematical, bitwise, statistical, and non-cryptographic hashing primitives.
 // Zero-heap, branchless constant-time arithmetic, Jacobson EWMA (RFC 6298 / RFC 9002 Errata 7539),
 // WyRand v4.2, xoroshiro64**, Lemire fast-range, and Happy Eyeballs (RFC 8305) pacing.
-namespace wing;
+namespace core;
 
 import std;
 

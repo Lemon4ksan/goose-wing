@@ -97,7 +97,7 @@ fn test_url_parser_and_origin(t: wing::T&) {
         // Opaque origin
         let opaque_a = wing::new_opaque_origin();
         let opaque_b = wing::new_opaque_origin();
-        sub.assert_true(opaque_a.kind == wing::OriginKind.Opaque, "opaque kind");
+        sub.assert_true(opaque_a.kind == core::OriginKind.Opaque, "opaque kind");
         sub.assert_false(wing::is_same_origin(opaque_a, opaque_b), "two opaque origins never match");
 
         var opaque_str: u8[..32] = [];
@@ -257,7 +257,7 @@ fn test_whatwg_audit_fixes(t: wing::T&) {
         // 1.2: blob: URLs inherit tuple origin from embedded URL in pathname
         let blob_url = wing::new_url("blob:https://example.com/550e8400-e29b-41d4-a716-446655440000");
         let blob_orig = wing::origin_from_url(blob_url);
-        sub.assert_true(blob_orig.kind == wing::OriginKind.Tuple, "blob: inherits tuple origin");
+        sub.assert_true(blob_orig.kind == core::OriginKind.Tuple, "blob: inherits tuple origin");
         var blob_orig_str: u8[..64] = [];
         wing::serialize_origin(blob_orig, blob_orig_str);
         sub.assert_bytes_eq(blob_orig_str[..], "https://example.com", "blob origin matches embedded origin");
@@ -272,13 +272,13 @@ fn test_whatwg_audit_fixes(t: wing::T&) {
     t.run("1.3: C0 Control Code Points & Host Sanitization") { sub =>
         // Control character injection in host
         let bad_host_c0, err_c0 = wing::parse_url("http://exam\x01ple.com/");
-        sub.assert_true(err_c0 == wing::UrlParseError.ForbiddenHostCodePoint, "C0 control byte 0x01 in host rejected");
+        sub.assert_true(err_c0 == core::UrlParseError.ForbiddenHostCodePoint, "C0 control byte 0x01 in host rejected");
 
         let bad_host_pct, err_pct = wing::parse_url("http://example%.com/");
-        sub.assert_true(err_pct == wing::UrlParseError.ForbiddenHostCodePoint, "percent in host rejected");
+        sub.assert_true(err_pct == core::UrlParseError.ForbiddenHostCodePoint, "percent in host rejected");
 
         let bad_host_caret, err_caret = wing::parse_url("http://exam^ple.com/");
-        sub.assert_true(err_caret == wing::UrlParseError.ForbiddenHostCodePoint, "caret in host rejected");
+        sub.assert_true(err_caret == core::UrlParseError.ForbiddenHostCodePoint, "caret in host rejected");
     };
 
     t.run("1.4 & 5.2: Scheme Integrity in Relative Resolution & Non-Special Schemes") { sub =>
@@ -340,7 +340,7 @@ fn test_whatwg_audit_fixes(t: wing::T&) {
         // 3.1: Single leading colon is invalid
         let bad_ipv6_lead, err_lead = wing::parse_url("http://[:1:2:3:4:5:6:7]/");
         sub.assert_false(bad_ipv6_lead.valid, "single leading colon in IPv6 rejected");
-        sub.assert_true(err_lead == wing::UrlParseError.InvalidIpv6, "InvalidIpv6 error on single leading colon");
+        sub.assert_true(err_lead == core::UrlParseError.InvalidIpv6, "InvalidIpv6 error on single leading colon");
 
         // 3.2: Trailing single colon is invalid
         let bad_ipv6_trail, err_trail = wing::parse_url("http://[fe80::1:]/");
@@ -367,7 +367,7 @@ fn test_whatwg_audit_fixes(t: wing::T&) {
         // Empty host with port in HTTP is rejected
         let url_empty_host, err_eh = wing::parse_url("http://:80/path");
         sub.assert_false(url_empty_host.valid, "empty host in http rejected");
-        sub.assert_true(err_eh == wing::UrlParseError.MissingHost, "MissingHost on empty host");
+        sub.assert_true(err_eh == core::UrlParseError.MissingHost, "MissingHost on empty host");
     };
 
     t.run("4.1..4.3: UNC Server Round-Trip, Drive Protection & Trailing Slash Extensions") { sub =>
@@ -410,7 +410,7 @@ fn test_whatwg_audit_fixes(t: wing::T&) {
         // 5.3: InvalidScheme error returned when leading character is non-alpha
         let bad_scheme, err_scheme = wing::parse_url("123://example.com");
         sub.assert_false(bad_scheme.valid, "123:// rejected");
-        sub.assert_true(err_scheme == wing::UrlParseError.InvalidScheme, "InvalidScheme returned on 123://");
+        sub.assert_true(err_scheme == core::UrlParseError.InvalidScheme, "InvalidScheme returned on 123://");
     };
 }
 
@@ -437,22 +437,22 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         // LEX-04: Forbidden C0 byte 0x01 in host rejected
         let url_lex04, err_lex04 = wing::parse_url("http://exam\x01ple.com/");
         sub.assert_false(url_lex04.valid, "LEX-04: C0 in host rejected");
-        sub.assert_true(err_lex04 == wing::UrlParseError.ForbiddenHostCodePoint, "LEX-04: ForbiddenHostCodePoint on 0x01");
+        sub.assert_true(err_lex04 == core::UrlParseError.ForbiddenHostCodePoint, "LEX-04: ForbiddenHostCodePoint on 0x01");
 
         // LEX-05: Forbidden byte 0x7F in host rejected
         let url_lex05, err_lex05 = wing::parse_url("http://exam\x7Fple.com/");
         sub.assert_false(url_lex05.valid, "LEX-05: 0x7F DEL in host rejected");
-        sub.assert_true(err_lex05 == wing::UrlParseError.ForbiddenHostCodePoint, "LEX-05: ForbiddenHostCodePoint on 0x7F");
+        sub.assert_true(err_lex05 == core::UrlParseError.ForbiddenHostCodePoint, "LEX-05: ForbiddenHostCodePoint on 0x7F");
 
         // LEX-06: Raw percent '%' in special scheme host rejected
         let url_lex06, err_lex06 = wing::parse_url("http://example%2ecom/");
         sub.assert_false(url_lex06.valid, "LEX-06: percent in host rejected");
-        sub.assert_true(err_lex06 == wing::UrlParseError.ForbiddenHostCodePoint, "LEX-06: ForbiddenHostCodePoint on %");
+        sub.assert_true(err_lex06 == core::UrlParseError.ForbiddenHostCodePoint, "LEX-06: ForbiddenHostCodePoint on %");
 
         // LEX-07: Scheme starting with digit rejected
         let url_lex07, err_lex07 = wing::parse_url("123://example.com");
         sub.assert_false(url_lex07.valid, "LEX-07: scheme starting with digit rejected");
-        sub.assert_true(err_lex07 == wing::UrlParseError.InvalidScheme, "LEX-07: InvalidScheme on leading digit");
+        sub.assert_true(err_lex07 == core::UrlParseError.InvalidScheme, "LEX-07: InvalidScheme on leading digit");
 
         // LEX-08: Scheme containing +, -, ., and digits from second char accepted
         let url_lex08, err_lex08 = wing::parse_url("a+b-c.1://example.com/test");
@@ -463,11 +463,11 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         // LEX-09: Empty input or whitespace-only input rejected
         let url_lex09_empty, err_lex09_empty = wing::parse_url("");
         sub.assert_false(url_lex09_empty.valid, "LEX-09: empty input rejected");
-        sub.assert_true(err_lex09_empty == wing::UrlParseError.EmptyInput, "LEX-09: EmptyInput error on empty string");
+        sub.assert_true(err_lex09_empty == core::UrlParseError.EmptyInput, "LEX-09: EmptyInput error on empty string");
 
         let url_lex09_ws, err_lex09_ws = wing::parse_url(" \t\r\n ");
         sub.assert_false(url_lex09_ws.valid, "LEX-09: whitespace-only rejected");
-        sub.assert_true(err_lex09_ws == wing::UrlParseError.EmptyInput, "LEX-09: EmptyInput on whitespace");
+        sub.assert_true(err_lex09_ws == core::UrlParseError.EmptyInput, "LEX-09: EmptyInput on whitespace");
     };
 
     t.run("Category 3: Authority, Userinfo & Interop Collisions (AUTH-01..08)") { sub =>
@@ -550,22 +550,22 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         // IPV6-07: Single leading colon rejected
         let url_ip07, err_ip07 = wing::parse_url("http://[:1:2:3:4:5:6:7]/");
         sub.assert_false(url_ip07.valid, "IPV6-07: single leading colon rejected");
-        sub.assert_true(err_ip07 == wing::UrlParseError.InvalidIpv6, "IPV6-07: InvalidIpv6");
+        sub.assert_true(err_ip07 == core::UrlParseError.InvalidIpv6, "IPV6-07: InvalidIpv6");
 
         // IPV6-08: Trailing colon rejected
         let url_ip08, err_ip08 = wing::parse_url("http://[fe80::1:]/");
         sub.assert_false(url_ip08.valid, "IPV6-08: trailing colon rejected");
-        sub.assert_true(err_ip08 == wing::UrlParseError.InvalidIpv6, "IPV6-08: InvalidIpv6");
+        sub.assert_true(err_ip08 == core::UrlParseError.InvalidIpv6, "IPV6-08: InvalidIpv6");
 
         // IPV6-09: Multiple :: compressions rejected
         let url_ip09, err_ip09 = wing::parse_url("http://[2001::db8::1]/");
         sub.assert_false(url_ip09.valid, "IPV6-09: double :: rejected");
-        sub.assert_true(err_ip09 == wing::UrlParseError.InvalidIpv6, "IPV6-09: InvalidIpv6");
+        sub.assert_true(err_ip09 == core::UrlParseError.InvalidIpv6, "IPV6-09: InvalidIpv6");
 
         // IPV6-10: Leading zeros in IPv4 octets within IPv6 rejected
         let url_ip10, err_ip10 = wing::parse_url("http://[::ffff:192.168.001.1]/");
         sub.assert_false(url_ip10.valid, "IPV6-10: leading zero in IPv4 octet rejected");
-        sub.assert_true(err_ip10 == wing::UrlParseError.InvalidIpv6, "IPV6-10: InvalidIpv6");
+        sub.assert_true(err_ip10 == core::UrlParseError.InvalidIpv6, "IPV6-10: InvalidIpv6");
 
         // PORT-01: Default ports stripped in special schemes
         let u_p1_1 = wing::new_url("http://example.com:80/");
@@ -602,20 +602,20 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         // PORT-06: Port out of range (> 65535) or double port rejected
         let url_p6_high, err_p6_high = wing::parse_url("http://example.com:65536/");
         sub.assert_false(url_p6_high.valid, "PORT-06: 65536 rejected");
-        sub.assert_true(err_p6_high == wing::UrlParseError.InvalidPort, "PORT-06: InvalidPort on 65536");
+        sub.assert_true(err_p6_high == core::UrlParseError.InvalidPort, "PORT-06: InvalidPort on 65536");
 
         let url_p6_double, err_p6_double = wing::parse_url("http://127.0.0.1:11211:80/");
         sub.assert_false(url_p6_double.valid, "PORT-06: double port rejected");
-        sub.assert_true(err_p6_double == wing::UrlParseError.InvalidPort, "PORT-06: InvalidPort on double port");
+        sub.assert_true(err_p6_double == core::UrlParseError.InvalidPort, "PORT-06: InvalidPort on double port");
 
         // PORT-07: Missing host in special scheme rejected
         let url_p7_mh1, err_p7_mh1 = wing::parse_url("http://:80/path");
         sub.assert_false(url_p7_mh1.valid, "PORT-07: empty host in http rejected");
-        sub.assert_true(err_p7_mh1 == wing::UrlParseError.MissingHost, "PORT-07: MissingHost on http://:80");
+        sub.assert_true(err_p7_mh1 == core::UrlParseError.MissingHost, "PORT-07: MissingHost on http://:80");
 
         let url_p7_mh2, err_p7_mh2 = wing::parse_url("https:///path");
         sub.assert_false(url_p7_mh2.valid, "PORT-07: empty host in https rejected");
-        sub.assert_true(err_p7_mh2 == wing::UrlParseError.MissingHost, "PORT-07: MissingHost on https:///path");
+        sub.assert_true(err_p7_mh2 == core::UrlParseError.MissingHost, "PORT-07: MissingHost on https:///path");
     };
 
     t.run("Category 5: Path Collapsing, Dot-Segments & Relative Resolution (PATH-01..07, REL-01..07)") { sub =>
@@ -710,7 +710,7 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         let base_ns02 = wing::new_url("mailto:user@example.com");
         let url_ns02, err_ns02 = wing::parse_url_with_base("subpage.html", base_ns02);
         sub.assert_false(url_ns02.valid, "NSPEC-02: relative against opaque base rejected");
-        sub.assert_true(err_ns02 == wing::UrlParseError.OpaqueBaseCannotResolveRelative, "NSPEC-02: OpaqueBaseCannotResolveRelative");
+        sub.assert_true(err_ns02 == core::UrlParseError.OpaqueBaseCannotResolveRelative, "NSPEC-02: OpaqueBaseCannotResolveRelative");
 
         // NSPEC-03: Fragment-only replacement allowed against opaque base
         let base_ns03 = wing::new_url("data:text/html,<h1>Hi</h1>#section1");
@@ -807,7 +807,7 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         // SEC-03: blob: inherits nested origin tuple
         let url_sec03 = wing::new_url("blob:https://example.com:8443/550e8400-e29b");
         let orig_blob = wing::origin_from_url(url_sec03);
-        sub.assert_true(orig_blob.kind == wing::OriginKind.Tuple, "SEC-03: blob origin is Tuple");
+        sub.assert_true(orig_blob.kind == core::OriginKind.Tuple, "SEC-03: blob origin is Tuple");
         sub.assert_bytes_eq(orig_blob.scheme[..], "https", "SEC-03: blob inherited scheme");
         sub.assert_bytes_eq(orig_blob.host[..], "example.com", "SEC-03: blob inherited host");
         sub.assert_eq(orig_blob.port, 8443, "SEC-03: blob inherited port 8443");
@@ -871,99 +871,99 @@ fn test_canonical_wpt_and_edge_vectors(t: wing::T&) {
         // 1. RelativeWithoutBase error when no base is provided
         let u_nobase_1, err_nobase_1 = wing::parse_url("../path");
         sub.assert_false(u_nobase_1.valid, "NEG: ../path rejected without base");
-        sub.assert_true(err_nobase_1 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on ../path");
+        sub.assert_true(err_nobase_1 == core::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on ../path");
 
         let u_nobase_2, err_nobase_2 = wing::parse_url("/absolute/path");
         sub.assert_false(u_nobase_2.valid, "NEG: /path rejected without base");
-        sub.assert_true(err_nobase_2 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on /path");
+        sub.assert_true(err_nobase_2 == core::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on /path");
 
         let u_nobase_3, err_nobase_3 = wing::parse_url("?search");
         sub.assert_false(u_nobase_3.valid, "NEG: ?search rejected without base");
-        sub.assert_true(err_nobase_3 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on ?search");
+        sub.assert_true(err_nobase_3 == core::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on ?search");
 
         let u_nobase_4, err_nobase_4 = wing::parse_url("#fragment");
         sub.assert_false(u_nobase_4.valid, "NEG: #frag rejected without base");
-        sub.assert_true(err_nobase_4 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on #frag");
+        sub.assert_true(err_nobase_4 == core::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on #frag");
 
         let u_nobase_5, err_nobase_5 = wing::parse_url("rel/leaf");
         sub.assert_false(u_nobase_5.valid, "NEG: rel/leaf rejected without base");
-        sub.assert_true(err_nobase_5 == wing::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on rel/leaf");
+        sub.assert_true(err_nobase_5 == core::UrlParseError.RelativeWithoutBase, "NEG: RelativeWithoutBase on rel/leaf");
 
         // 2. Strict IPv6 syntax rejections
         let u_ipv6_too_many, err_ipv6_tm = wing::parse_url("http://[1:2:3:4:5:6:7:8:9]/");
         sub.assert_false(u_ipv6_too_many.valid, "NEG: 9-piece IPv6 rejected");
-        sub.assert_true(err_ipv6_tm == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 9 pieces");
+        sub.assert_true(err_ipv6_tm == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 9 pieces");
 
         let u_ipv6_too_few, err_ipv6_tf = wing::parse_url("http://[1:2:3]/");
         sub.assert_false(u_ipv6_too_few.valid, "NEG: 3-piece IPv6 without :: rejected");
-        sub.assert_true(err_ipv6_tf == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 3 pieces");
+        sub.assert_true(err_ipv6_tf == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 3 pieces");
 
         let u_ipv6_triple, err_ipv6_triple = wing::parse_url("http://[fe80:::1]/");
         sub.assert_false(u_ipv6_triple.valid, "NEG: triple colon IPv6 rejected");
-        sub.assert_true(err_ipv6_triple == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on :::");
+        sub.assert_true(err_ipv6_triple == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on :::");
 
         let u_ipv6_nonhex, err_ipv6_nonhex = wing::parse_url("http://[zz::1]/");
         sub.assert_false(u_ipv6_nonhex.valid, "NEG: non-hex IPv6 rejected");
-        sub.assert_true(err_ipv6_nonhex == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on zz");
+        sub.assert_true(err_ipv6_nonhex == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on zz");
 
         let u_ipv6_v4_high, err_ipv6_v4_high = wing::parse_url("http://[::192.168.1.300]/");
         sub.assert_false(u_ipv6_v4_high.valid, "NEG: IPv4 mapped octet > 255 rejected");
-        sub.assert_true(err_ipv6_v4_high == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on octet 300");
+        sub.assert_true(err_ipv6_v4_high == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on octet 300");
 
         let u_ipv6_v4_short, err_ipv6_v4_short = wing::parse_url("http://[::192.168.1]/");
         sub.assert_false(u_ipv6_v4_short.valid, "NEG: IPv4 mapped incomplete octets rejected");
-        sub.assert_true(err_ipv6_v4_short == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 3 octets");
+        sub.assert_true(err_ipv6_v4_short == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 3 octets");
 
         let u_ipv6_v4_long, err_ipv6_v4_long = wing::parse_url("http://[::192.168.1.1.1]/");
         sub.assert_false(u_ipv6_v4_long.valid, "NEG: IPv4 mapped 5 octets rejected");
-        sub.assert_true(err_ipv6_v4_long == wing::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 5 octets");
+        sub.assert_true(err_ipv6_v4_long == core::UrlParseError.InvalidIpv6, "NEG: InvalidIpv6 on 5 octets");
 
         // 3. Port parsing rejections
         let u_port_huge, err_port_huge = wing::parse_url("http://example.com:999999/");
         sub.assert_false(u_port_huge.valid, "NEG: port 999999 rejected");
-        sub.assert_true(err_port_huge == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on 999999");
+        sub.assert_true(err_port_huge == core::UrlParseError.InvalidPort, "NEG: InvalidPort on 999999");
 
         let u_port_alpha, err_port_alpha = wing::parse_url("http://example.com:abc/");
         sub.assert_false(u_port_alpha.valid, "NEG: port abc rejected");
-        sub.assert_true(err_port_alpha == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on abc");
+        sub.assert_true(err_port_alpha == core::UrlParseError.InvalidPort, "NEG: InvalidPort on abc");
 
         let u_port_neg, err_port_neg = wing::parse_url("http://example.com:-1/");
         sub.assert_false(u_port_neg.valid, "NEG: port -1 rejected");
-        sub.assert_true(err_port_neg == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on -1");
+        sub.assert_true(err_port_neg == core::UrlParseError.InvalidPort, "NEG: InvalidPort on -1");
 
         let u_port_space, err_port_space = wing::parse_url("http://example.com: 80/");
         sub.assert_false(u_port_space.valid, "NEG: space in port rejected");
-        sub.assert_true(err_port_space == wing::UrlParseError.InvalidPort, "NEG: InvalidPort on space in port");
+        sub.assert_true(err_port_space == core::UrlParseError.InvalidPort, "NEG: InvalidPort on space in port");
 
         // 4. Host forbidden character rejections
         let u_host_space, err_host_space = wing::parse_url("http://exam ple.com/");
         sub.assert_false(u_host_space.valid, "NEG: space in host rejected");
-        sub.assert_true(err_host_space == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on space");
+        sub.assert_true(err_host_space == core::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on space");
 
         let u_host_lt, err_host_lt = wing::parse_url("http://exam<ple.com/");
         sub.assert_false(u_host_lt.valid, "NEG: < in host rejected");
-        sub.assert_true(err_host_lt == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on <");
+        sub.assert_true(err_host_lt == core::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on <");
 
         let u_host_gt, err_host_gt = wing::parse_url("http://exam>ple.com/");
         sub.assert_false(u_host_gt.valid, "NEG: > in host rejected");
-        sub.assert_true(err_host_gt == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on >");
+        sub.assert_true(err_host_gt == core::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on >");
 
         let u_host_pipe, err_host_pipe = wing::parse_url("http://exam|ple.com/");
         sub.assert_false(u_host_pipe.valid, "NEG: | in host rejected");
-        sub.assert_true(err_host_pipe == wing::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on |");
+        sub.assert_true(err_host_pipe == core::UrlParseError.ForbiddenHostCodePoint, "NEG: ForbiddenHostCodePoint on |");
 
         // 5. Invalid scheme initial character rejections
         let u_scheme_excl, err_scheme_excl = wing::parse_url("!https://example.com/");
         sub.assert_false(u_scheme_excl.valid, "NEG: !scheme rejected");
-        sub.assert_true(err_scheme_excl == wing::UrlParseError.InvalidScheme, "NEG: InvalidScheme on !");
+        sub.assert_true(err_scheme_excl == core::UrlParseError.InvalidScheme, "NEG: InvalidScheme on !");
 
         let u_scheme_dash, err_scheme_dash = wing::parse_url("-http://example.com/");
         sub.assert_false(u_scheme_dash.valid, "NEG: -scheme rejected");
-        sub.assert_true(err_scheme_dash == wing::UrlParseError.InvalidScheme, "NEG: InvalidScheme on -");
+        sub.assert_true(err_scheme_dash == core::UrlParseError.InvalidScheme, "NEG: InvalidScheme on -");
 
         let u_scheme_plus, err_scheme_plus = wing::parse_url("+ftp://example.com/");
         sub.assert_false(u_scheme_plus.valid, "NEG: +scheme rejected");
-        sub.assert_true(err_scheme_plus == wing::UrlParseError.InvalidScheme, "NEG: InvalidScheme on +");
+        sub.assert_true(err_scheme_plus == core::UrlParseError.InvalidScheme, "NEG: InvalidScheme on +");
     };
 }
 

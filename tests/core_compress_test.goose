@@ -77,7 +77,7 @@ fn test_deflate_stored_and_fixed(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok_d, err = wing::decompress_deflate(comp[..], decomp);
         sub.assert_true(ok_d, "Decompress stored block must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(decomp[..], msg, "Decompressed payload must match original");
     };
 
@@ -90,7 +90,7 @@ fn test_deflate_stored_and_fixed(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok_d, err = wing::decompress_deflate(comp[..], decomp);
         sub.assert_true(ok_d, "Inflate level 6 output must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(decomp[..], msg, "Decompressed payload must match original");
     };
 
@@ -109,7 +109,7 @@ fn test_deflate_stored_and_fixed(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok_d, err = wing::decompress_deflate(comp[..], decomp);
         sub.assert_true(ok_d, "Decompression must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(decomp.len, rep.len, "Length must match");
         sub.assert_eq(decomp[..], rep[..], "Decompressed bytes must match original");
     };
@@ -131,7 +131,7 @@ fn test_gzip_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_gzip(gz[..], restored);
         sub.assert_true(ok_d, "gzip_decompress must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], payload, "Restored content must match original");
     };
 
@@ -147,7 +147,7 @@ fn test_gzip_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_gzip(gz[..], restored);
         sub.assert_false(ok_d, "Tampered CRC-32 must be rejected");
-        sub.assert_eq(err, wing::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
+        sub.assert_eq(err, core::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
     };
 
     t.run("Gzip Size Tampering Rejection") { sub =>
@@ -162,7 +162,7 @@ fn test_gzip_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_gzip(gz[..], restored);
         sub.assert_false(ok_d, "Tampered ISIZE must be rejected");
-        sub.assert_eq(err, wing::CompressError.SizeMismatch, "Error must be SizeMismatch");
+        sub.assert_eq(err, core::CompressError.SizeMismatch, "Error must be SizeMismatch");
     };
 
     t.run("Gzip Truncated Stream Rejection") { sub =>
@@ -177,7 +177,7 @@ fn test_gzip_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_gzip(trunc_slice, restored);
         sub.assert_false(ok_d, "Truncated stream must fail");
-        sub.assert_ne(err, wing::CompressError.None, "Error must not be None on truncated stream");
+        sub.assert_ne(err, core::CompressError.None, "Error must not be None on truncated stream");
     };
 }
 
@@ -197,7 +197,7 @@ fn test_zlib_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_zlib(zb[..], restored);
         sub.assert_true(ok_d, "decompress_zlib must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], payload, "Restored content must match original");
     };
 
@@ -213,7 +213,7 @@ fn test_zlib_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_zlib(zb[..], restored);
         sub.assert_false(ok_d, "Tampered Adler-32 must be rejected");
-        sub.assert_eq(err, wing::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
+        sub.assert_eq(err, core::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
     };
 
     t.run("Zlib Invalid Header Rejection") { sub =>
@@ -227,7 +227,7 @@ fn test_zlib_container(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_zlib(zb[..], restored);
         sub.assert_false(ok_d, "Invalid header must be rejected");
-        sub.assert_eq(err, wing::CompressError.InvalidHeader, "Error must be InvalidHeader");
+        sub.assert_eq(err, core::CompressError.InvalidHeader, "Error must be InvalidHeader");
     };
 }
 
@@ -286,7 +286,7 @@ fn test_boundary_and_large_buffers(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_gzip(comp[..], restored);
         sub.assert_true(ok_d, "Large gzip decompression must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored.len, large.len, "Decompressed size must match 35,840 bytes");
         sub.assert_eq(restored[..], large[..], "Payload must match exactly byte-for-byte");
     };
@@ -341,11 +341,11 @@ fn test_dynamic_huffman_and_btypes(t: wing::T&) {
 
 fn test_streaming_and_flush_modes(t: wing::T&) {
     t.run("ZStream SyncFlush WebSockets Framing") { sub =>
-        var stream = wing::new_zstream_compressor(wing::ContainerFormat.Raw, 6);
+        var stream = wing::new_zstream_compressor(core::ContainerFormat.Raw, 6);
         var wire: u8[>..] = [];
 
         let msg1 = "First streaming message chunk over WebSocket connection. ";
-        let ok1 = stream.write(msg1, wire, wing::FlushMode.SyncFlush);
+        let ok1 = stream.write(msg1, wire, core::FlushMode.SyncFlush);
         sub.assert_true(ok1, "First chunk write with SyncFlush must succeed");
 
         // Verify SyncFlush emitted RFC 1951 sync marker 00 00 FF FF at end of buffer
@@ -358,7 +358,7 @@ fn test_streaming_and_flush_modes(t: wing::T&) {
 
         // Second chunk matches history from first chunk
         let msg2 = "Second streaming message chunk over WebSocket connection with extra tail.";
-        let ok2 = stream.write(msg2, wire, wing::FlushMode.Finish);
+        let ok2 = stream.write(msg2, wire, core::FlushMode.Finish);
         sub.assert_true(ok2, "Second chunk write with Finish must succeed");
 
         var combined: u8[>..] = [];
@@ -373,14 +373,14 @@ fn test_streaming_and_flush_modes(t: wing::T&) {
     };
 
     t.run("ZStream FullFlush Archive Checkpoints") { sub =>
-        var stream = wing::new_zstream_compressor(wing::ContainerFormat.Raw, 6);
+        var stream = wing::new_zstream_compressor(core::ContainerFormat.Raw, 6);
         var wire: u8[>..] = [];
 
         let part1 = "Checkpoint block A: independent data partition. ";
-        stream.write(part1, wire, wing::FlushMode.FullFlush);
+        stream.write(part1, wire, core::FlushMode.FullFlush);
 
         let part2 = "Checkpoint block B: second isolated data partition.";
-        stream.write(part2, wire, wing::FlushMode.Finish);
+        stream.write(part2, wire, core::FlushMode.Finish);
 
         var combined: u8[>..] = [];
         combined.append(part1);
@@ -388,11 +388,11 @@ fn test_streaming_and_flush_modes(t: wing::T&) {
 
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_deflate(wire[..], restored);
-        sub.assert_true(err == wing::CompressError.None, "err must be None");
-        sub.assert_true(err != wing::CompressError.DistanceOutOfBounds, "err is not DistanceOutOfBounds");
-        sub.assert_true(err != wing::CompressError.InputBufferTruncated, "err is not InputBufferTruncated");
-        sub.assert_true(err != wing::CompressError.InvalidBlockType, "err is not InvalidBlockType");
-        sub.assert_true(err != wing::CompressError.InvalidHuffmanCode, "err is not InvalidHuffmanCode");
+        sub.assert_true(err == core::CompressError.None, "err must be None");
+        sub.assert_true(err != core::CompressError.DistanceOutOfBounds, "err is not DistanceOutOfBounds");
+        sub.assert_true(err != core::CompressError.InputBufferTruncated, "err is not InputBufferTruncated");
+        sub.assert_true(err != core::CompressError.InvalidBlockType, "err is not InvalidBlockType");
+        sub.assert_true(err != core::CompressError.InvalidHuffmanCode, "err is not InvalidHuffmanCode");
         sub.assert_true(ok_d, "Decompressing FullFlushed stream must succeed");
         sub.assert_eq(restored.len, combined.len, "Decompressed length must match combined");
         sub.assert_eq(restored[..], combined[..], "Decompressed payload must match verbatim");
@@ -424,19 +424,19 @@ fn test_preset_dictionary_and_fdict(t: wing::T&) {
         var bad1: u8[>..] = [];
         let ok_d1, err1 = wing::decompress_zlib_dict(comp[..], bad1, "");
         sub.assert_false(ok_d1, "Decompress without dictionary must fail");
-        sub.assert_eq(err1, wing::CompressError.NeedDictionary, "Error must be NeedDictionary");
+        sub.assert_eq(err1, core::CompressError.NeedDictionary, "Error must be NeedDictionary");
 
         // Decompress with wrong dictionary must fail with DictionaryMismatch
         var bad2: u8[>..] = [];
         let ok_d2, err2 = wing::decompress_zlib_dict(comp[..], bad2, "Wrong Dictionary Content Here");
         sub.assert_false(ok_d2, "Decompress with wrong dictionary must fail");
-        sub.assert_eq(err2, wing::CompressError.DictionaryMismatch, "Error must be DictionaryMismatch");
+        sub.assert_eq(err2, core::CompressError.DictionaryMismatch, "Error must be DictionaryMismatch");
 
         // Decompress with correct dictionary must succeed
         var restored: u8[>..] = [];
         let ok_d3, err3 = wing::decompress_zlib_dict(comp[..], restored, dict);
         sub.assert_true(ok_d3, "Decompress with correct dictionary must succeed");
-        sub.assert_eq(err3, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err3, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], payload, "Restored payload must match original");
     };
 
@@ -451,7 +451,7 @@ fn test_preset_dictionary_and_fdict(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err = wing::decompress_deflate_dict(comp[..], restored, dict);
         sub.assert_true(ok_d, "Deflate dict decompression must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], payload, "Restored text must match verbatim");
     };
 }
@@ -463,34 +463,34 @@ fn test_universal_autodetect(t: wing::T&) {
         // 1. Gzip
         var gz: u8[>..] = [];
         wing::compress_gzip(original, gz, 6);
-        sub.assert_eq(wing::detect_container_format(gz[..]), wing::ContainerFormat.Gzip, "Format must be Gzip");
+        sub.assert_eq(wing::detect_container_format(gz[..]), core::ContainerFormat.Gzip, "Format must be Gzip");
 
         var out_gz: u8[>..] = [];
         let ok_gz, err_gz = wing::decompress(gz[..], out_gz);
         sub.assert_true(ok_gz, "Auto-decompress Gzip must succeed");
-        sub.assert_eq(err_gz, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err_gz, core::CompressError.None, "Error must be None");
         sub.assert_eq(out_gz[..], original, "Gzip output must match original");
 
         // 2. Zlib
         var zb: u8[>..] = [];
         wing::compress_zlib(original, zb, 6);
-        sub.assert_eq(wing::detect_container_format(zb[..]), wing::ContainerFormat.Zlib, "Format must be Zlib");
+        sub.assert_eq(wing::detect_container_format(zb[..]), core::ContainerFormat.Zlib, "Format must be Zlib");
 
         var out_zb: u8[>..] = [];
         let ok_zb, err_zb = wing::decompress(zb[..], out_zb);
         sub.assert_true(ok_zb, "Auto-decompress Zlib must succeed");
-        sub.assert_eq(err_zb, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err_zb, core::CompressError.None, "Error must be None");
         sub.assert_eq(out_zb[..], original, "Zlib output must match original");
 
         // 3. Raw Deflate
         var df: u8[>..] = [];
         wing::compress_deflate(original, df, 6);
-        sub.assert_eq(wing::detect_container_format(df[..]), wing::ContainerFormat.Raw, "Format must be Raw Deflate");
+        sub.assert_eq(wing::detect_container_format(df[..]), core::ContainerFormat.Raw, "Format must be Raw Deflate");
 
         var out_df: u8[>..] = [];
         let ok_df, err_df = wing::decompress(df[..], out_df);
         sub.assert_true(ok_df, "Auto-decompress Raw Deflate must succeed");
-        sub.assert_eq(err_df, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err_df, core::CompressError.None, "Error must be None");
         sub.assert_eq(out_df[..], original, "Deflate output must match original");
     };
 }
@@ -514,7 +514,7 @@ fn test_lazy_matching_and_stored_cost_selection(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok, err = wing::decompress_deflate(l9_out[..], restored);
         sub.assert_true(ok, "Decompressing level 9 must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], src[..], "Restored payload must match original verbatim");
     };
 
@@ -535,7 +535,7 @@ fn test_lazy_matching_and_stored_cost_selection(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok, err = wing::decompress_deflate(comp[..], restored);
         sub.assert_true(ok, "Decompressing incompressible stored block must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], random_data[..], "Restored incompressible payload must match bit-for-bit");
     };
 }
@@ -562,7 +562,7 @@ fn test_concatenated_gzip_and_fhcrc(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok, err = wing::decompress_gzip(combined_gz[..], restored);
         sub.assert_true(ok, "Decompressing concatenated Gzip stream must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored.len, combined_text.len, "Length must match combined length");
         sub.assert_eq(restored[..], combined_text[..], "Payload must match concatenation verbatim");
     };
@@ -576,7 +576,7 @@ fn test_concatenated_gzip_and_fhcrc(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err_d = wing::decompress_gzip(gz[..], restored);
         sub.assert_true(ok_d, "Decompressing Gzip with valid FHCRC must succeed");
-        sub.assert_eq(err_d, wing::CompressError.None, "Error must be None");
+        sub.assert_eq(err_d, core::CompressError.None, "Error must be None");
         sub.assert_eq(restored[..], payload, "Restored payload must match");
 
         // Tamper with header byte to invalidate FHCRC
@@ -587,7 +587,7 @@ fn test_concatenated_gzip_and_fhcrc(t: wing::T&) {
         var restored_fail: u8[>..] = [];
         let ok_fail, err_fail = wing::decompress_gzip(tampered[..], restored_fail);
         sub.assert_true(!ok_fail, "Decompressing tampered header must fail");
-        sub.assert_eq(err_fail, wing::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
+        sub.assert_eq(err_fail, core::CompressError.ChecksumMismatch, "Error must be ChecksumMismatch");
     };
 }
 
@@ -604,7 +604,7 @@ fn test_zipbomb_quota_guards(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok, err = wing::decompress_deflate_with_limit(wire[..], restored, 500);
         sub.assert_true(!ok, "Decompression exceeding quota must fail");
-        sub.assert_eq(err, wing::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_eq(err, core::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
         sub.assert_true(restored.len <= 500, "Output length must not exceed quota limit");
     };
 
@@ -620,7 +620,7 @@ fn test_zipbomb_quota_guards(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok, err = wing::decompress_gzip_with_limit(wire[..], restored, 400);
         sub.assert_true(!ok, "Gzip decompression exceeding quota must fail");
-        sub.assert_eq(err, wing::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_eq(err, core::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
         sub.assert_true(restored.len <= 400, "Output length must not exceed quota limit");
     };
 
@@ -636,7 +636,7 @@ fn test_zipbomb_quota_guards(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok, err = wing::decompress_zlib_with_limit(wire[..], restored, 350);
         sub.assert_true(!ok, "Zlib decompression exceeding quota must fail");
-        sub.assert_eq(err, wing::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_eq(err, core::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
         sub.assert_true(restored.len <= 350, "Output length must not exceed quota limit");
     };
 }
@@ -647,14 +647,14 @@ fn test_resumable_streaming_chunk_by_chunk(t: wing::T&) {
         var wire: u8[>..] = [];
         wing::compress_zlib(message, wire, 6);
 
-        var decompressor = wing::new_zstream_decompressor(wing::ContainerFormat.Zlib);
+        var decompressor = wing::new_zstream_decompressor(core::ContainerFormat.Zlib);
         var restored: u8[>..] = [];
 
         // Feed byte by byte
         for i in wire.len {
             let single_byte = wire[i..i + 1];
             let err = decompressor.write(single_byte, restored);
-            sub.assert_eq(err, wing::CompressError.None, "Writing single byte slice must not return error");
+            sub.assert_eq(err, core::CompressError.None, "Writing single byte slice must not return error");
         }
 
         sub.assert_eq(restored.len, message.len, "Restored length must match message length");
@@ -666,7 +666,7 @@ fn test_resumable_streaming_chunk_by_chunk(t: wing::T&) {
         var wire: u8[>..] = [];
         wing::compress_gzip(message, wire, 6);
 
-        var decompressor = wing::new_zstream_decompressor(wing::ContainerFormat.Gzip);
+        var decompressor = wing::new_zstream_decompressor(core::ContainerFormat.Gzip);
         var restored: u8[>..] = [];
 
         var offset: i64 = 0;
@@ -676,7 +676,7 @@ fn test_resumable_streaming_chunk_by_chunk(t: wing::T&) {
             let take = if rem < step { rem } else { step };
             let chunk = wire[offset..offset + take];
             let err = decompressor.write(chunk, restored);
-            sub.assert_eq(err, wing::CompressError.None, "Writing variable chunk must succeed");
+            sub.assert_eq(err, core::CompressError.None, "Writing variable chunk must succeed");
             offset += take;
             step = if step == 3 { 7 } else if step == 7 { 11 } else { 3 };
         }
@@ -722,7 +722,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok, err = wing::decompress_zstd(ZSTD_REF_EMPTY[..], decomp);
         sub.assert_true(ok, "Decompressing empty frame must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Empty frame error code must be None");
+        sub.assert_eq(err, core::CompressError.None, "Empty frame error code must be None");
         sub.assert_eq(decomp.len, 0 as i64, "Decompressed length must be 0");
     };
 
@@ -730,7 +730,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok, err = wing::decompress_zstd(ZSTD_REF_SHORT_TEXT[..], decomp);
         sub.assert_true(ok, "Decompressing short text frame must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Short text error code must be None");
+        sub.assert_eq(err, core::CompressError.None, "Short text error code must be None");
         sub.assert_eq(decomp[..], "Hello Zstandard!", "Decoded text must match verbatim");
     };
 
@@ -738,7 +738,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok, err = wing::decompress_zstd(ZSTD_REF_RLE[..], decomp);
         sub.assert_true(ok, "Decompressing RLE frame must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "RLE error code must be None");
+        sub.assert_eq(err, core::CompressError.None, "RLE error code must be None");
         sub.assert_eq(decomp.len, 64 as i64, "Decoded length must be 64");
         var all_a = true;
         for b in decomp {
@@ -751,7 +751,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok, err = wing::decompress_zstd(ZSTD_REF_REPEATED_WORDS[..], decomp);
         sub.assert_true(ok, "Decompressing repeated words frame must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Repeated words error code must be None");
+        sub.assert_eq(err, core::CompressError.None, "Repeated words error code must be None");
         sub.assert_eq(decomp[..], "goose wing goose wing goose wing goose wing goose wing!", "Restored repeated words must match verbatim");
     };
 
@@ -759,7 +759,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var decomp: u8[>..] = [];
         let ok, err = wing::decompress_zstd(ZSTD_REF_FOX_PANGRAM[..], decomp);
         sub.assert_true(ok, "Decompressing fox pangram frame must succeed");
-        sub.assert_eq(err, wing::CompressError.None, "Fox pangram error code must be None");
+        sub.assert_eq(err, core::CompressError.None, "Fox pangram error code must be None");
         let expected = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.\0";
         sub.assert_eq(decomp.len, expected.len, "Pangram length must match");
         sub.assert_eq(decomp[..], expected, "Decoded pangram must match verbatim");
@@ -781,7 +781,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
             var restored: u8[>..] = [];
             let ok_d, err_d = wing::decompress_zstd(wire[..], restored);
             sub.assert_true(ok_d, "Zstd decompression must succeed");
-            sub.assert_eq(err_d, wing::CompressError.None, "Error must be None");
+            sub.assert_eq(err_d, core::CompressError.None, "Error must be None");
             sub.assert_eq(restored[..], sample, "Restored slice must match original");
         }
     };
@@ -800,7 +800,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err_d = wing::decompress_zstd(wire[..], restored);
         sub.assert_true(ok_d, "Multi-block Zstd decompression must succeed");
-        sub.assert_eq(err_d, wing::CompressError.None, "Multi-block error must be None");
+        sub.assert_eq(err_d, core::CompressError.None, "Multi-block error must be None");
         sub.assert_eq(restored.len, large_input.len, "Restored length must match 150,000 bytes");
         sub.assert_eq(restored[..], large_input[..], "Restored payload must match verbatim across block boundaries");
     };
@@ -819,7 +819,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         var restored: u8[>..] = [];
         let ok_d, err_d = wing::decompress_zstd(tampered[..], restored);
         sub.assert_false(ok_d, "Decompressing tampered frame must fail");
-        sub.assert_eq(err_d, wing::CompressError.ChecksumMismatch, "Tampered payload must trigger ChecksumMismatch");
+        sub.assert_eq(err_d, core::CompressError.ChecksumMismatch, "Tampered payload must trigger ChecksumMismatch");
     };
 
     t.run("Decompression Bomb Quota Guards") { sub =>
@@ -831,7 +831,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         let quota: i64 = 20; // smaller than message length
         let ok_d, err_d = wing::decompress_zstd_with_limit(wire[..], restored, quota);
         sub.assert_false(ok_d, "Decompressing beyond quota must fail");
-        sub.assert_eq(err_d, wing::CompressError.OutputBufferOverflow, "Must return OutputBufferOverflow");
+        sub.assert_eq(err_d, core::CompressError.OutputBufferOverflow, "Must return OutputBufferOverflow");
     };
 
     t.run("Universal Auto-Detection for Zstandard") { sub =>
@@ -840,12 +840,12 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         wing::compress_zstd(message, wire, false);
 
         let fmt = wing::detect_container_format(wire[..]);
-        sub.assert_eq(fmt, wing::ContainerFormat.Zstd, "detect_container_format must recognize ContainerFormat.Zstd");
+        sub.assert_eq(fmt, core::ContainerFormat.Zstd, "detect_container_format must recognize ContainerFormat.Zstd");
 
         var restored: u8[>..] = [];
         let ok_d, err_d = wing::decompress(wire[..], restored);
         sub.assert_true(ok_d, "decompress_auto must succeed for Zstd frame");
-        sub.assert_eq(err_d, wing::CompressError.None, "Auto-decompress error must be None");
+        sub.assert_eq(err_d, core::CompressError.None, "Auto-decompress error must be None");
         sub.assert_eq(restored[..], message, "Auto-decompressed text must match verbatim");
     };
 
@@ -873,7 +873,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
         wing::compress_zstd(message, wire, true);
 
         // Feed arbitrary chunks (13 bytes at a time) to ZStreamDecompressor in Auto mode
-        var dec = wing::new_zstream_decompressor(wing::ContainerFormat.Auto);
+        var dec = wing::new_zstream_decompressor(core::ContainerFormat.Auto);
         var restored: u8[>..] = [];
         var offset: i64 = 0;
         let chunk_size: i64 = 13;
@@ -882,7 +882,7 @@ fn test_zstandard_rfc8878(t: wing::T&) {
             let rem = wire.len - offset;
             let take = if rem < chunk_size { rem } else { chunk_size };
             let err = wing::zstream_decompress_write_limit(dec, wire[offset .. offset + take], restored);
-            sub.assert_eq(err, wing::CompressError.None, "zstream_decompress_write_limit must succeed on chunk");
+            sub.assert_eq(err, core::CompressError.None, "zstream_decompress_write_limit must succeed on chunk");
             offset += take;
         }
 

@@ -53,19 +53,18 @@ if ($testFiles.Count -eq 0) {
 
 # 3. Check-only mode
 if ($CheckOnly) {
-    Write-Host "`n[2/2] Running typecheck on $($testFiles.Count) suites in parallel..." -ForegroundColor Yellow
+    Write-Host "`n[2/2] Running typecheck on $($testFiles.Count) suites..." -ForegroundColor Yellow
     $swCheck = [System.Diagnostics.Stopwatch]::StartNew()
-    $checkTasks = @()
+    $failed = 0
     foreach ($file in $testFiles) {
         $proc = Start-GooseProcess "goose" "check `"$($file.FullName)`"" $true
-        $checkTasks += [PSCustomObject]@{ File = $file; Process = $proc }
-    }
-    $failed = 0
-    foreach ($task in $checkTasks) {
-        $task.Process.WaitForExit()
-        if ($task.Process.ExitCode -ne 0) {
-            Write-Host "FATAL: Typechecking $($task.File.Name) failed!" -ForegroundColor Red
-            Write-Host $task.Process.StandardOutput.ReadToEnd() -ForegroundColor Yellow
+        $out = $proc.StandardOutput.ReadToEnd()
+        $err = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        if ($proc.ExitCode -ne 0) {
+            Write-Host "FATAL: Typechecking $($file.Name) failed!" -ForegroundColor Red
+            if ($out) { Write-Host $out -ForegroundColor Yellow }
+            if ($err) { Write-Host $err -ForegroundColor Red }
             $failed++
         }
     }

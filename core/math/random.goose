@@ -1,5 +1,5 @@
 // High-performance pseudorandom number generators and Lemire fast-range reduction.
-namespace wing;
+namespace core;
 
 import std;
 import core.math.ct;

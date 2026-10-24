@@ -1,5 +1,5 @@
 // The Goose Gzip compression container: RFC 1952 Specification.
-namespace wing;
+namespace core;
 
 import std;
 import core.compress.checksum;

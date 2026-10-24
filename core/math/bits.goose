@@ -1,5 +1,5 @@
 // Bitwise rotation, powers of two, byte swapping, and endianness codecs.
-namespace wing;
+namespace core;
 
 import std;
 

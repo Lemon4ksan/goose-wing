@@ -1,5 +1,5 @@
 // Saturating arithmetic, checked arithmetic, 128-bit multiplication, and Euclidean division.
-namespace wing;
+namespace core;
 
 import std;
 import core.math.ct;

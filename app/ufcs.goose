@@ -79,110 +79,112 @@ fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing:
 
 // ---- time & duration ufcs bridges ------------------------------------------
 
-fn ::as_nanos(dur: wing::Duration) -> i64 { return wing::as_nanos(dur); }
-fn ::as_micros(dur: wing::Duration) -> i64 { return wing::as_micros(dur); }
-fn ::as_millis(dur: wing::Duration) -> i64 { return wing::as_millis(dur); }
-fn ::as_secs(dur: wing::Duration) -> i64 { return wing::as_secs(dur); }
-fn ::as_mins(dur: wing::Duration) -> i64 { return wing::as_mins(dur); }
-fn ::as_hours(dur: wing::Duration) -> i64 { return wing::as_hours(dur); }
-fn ::as_days(dur: wing::Duration) -> i64 { return wing::as_days(dur); }
-fn ::as_secs_f64(dur: wing::Duration) -> f64 { return wing::as_secs_f64(dur); }
-fn ::as_mins_f64(dur: wing::Duration) -> f64 { return wing::as_mins_f64(dur); }
-fn ::as_hours_f64(dur: wing::Duration) -> f64 { return wing::as_hours_f64(dur); }
+fn ::as_nanos(dur: core::Duration) -> i64 { return core::as_nanos(dur); }
+fn ::as_micros(dur: core::Duration) -> i64 { return core::as_micros(dur); }
+fn ::as_millis(dur: core::Duration) -> i64 { return core::as_millis(dur); }
+fn ::as_secs(dur: core::Duration) -> i64 { return core::as_secs(dur); }
+fn ::as_mins(dur: core::Duration) -> i64 { return core::as_mins(dur); }
+fn ::as_hours(dur: core::Duration) -> i64 { return core::as_hours(dur); }
+fn ::as_days(dur: core::Duration) -> i64 { return core::as_days(dur); }
+fn ::as_secs_f64(dur: core::Duration) -> f64 { return core::as_secs_f64(dur); }
+fn ::as_mins_f64(dur: core::Duration) -> f64 { return core::as_mins_f64(dur); }
+fn ::as_hours_f64(dur: core::Duration) -> f64 { return core::as_hours_f64(dur); }
 
-fn ::nanoseconds(dur: wing::Duration) -> i64 { return wing::nanoseconds(dur); }
-fn ::microseconds(dur: wing::Duration) -> i64 { return wing::microseconds(dur); }
-fn ::milliseconds(dur: wing::Duration) -> i64 { return wing::milliseconds(dur); }
-fn ::seconds(dur: wing::Duration) -> f64 { return wing::seconds(dur); }
-fn ::minutes(dur: wing::Duration) -> f64 { return wing::minutes(dur); }
-fn ::hours(dur: wing::Duration) -> f64 { return wing::hours(dur); }
+fn ::nanoseconds(dur: core::Duration) -> i64 { return core::nanoseconds(dur); }
+fn ::microseconds(dur: core::Duration) -> i64 { return core::microseconds(dur); }
+fn ::milliseconds(dur: core::Duration) -> i64 { return core::milliseconds(dur); }
+fn ::seconds(dur: core::Duration) -> f64 { return core::seconds(dur); }
+fn ::minutes(dur: core::Duration) -> f64 { return core::minutes(dur); }
+fn ::hours(dur: core::Duration) -> f64 { return core::hours(dur); }
 
-fn ::add(dur1: wing::Duration, dur2: wing::Duration) -> wing::Duration { return wing::add(dur1, dur2); }
-fn ::sub(dur1: wing::Duration, dur2: wing::Duration) -> wing::Duration { return wing::sub(dur1, dur2); }
-fn ::mul(dur: wing::Duration, factor: i64) -> wing::Duration { return wing::mul(dur, factor); }
-fn ::div(dur: wing::Duration, factor: i64) -> wing::Duration { return wing::div(dur, factor); }
-fn ::abs(dur: wing::Duration) -> wing::Duration { return wing::abs(dur); }
+fn ::add(dur1: core::Duration, dur2: core::Duration) -> core::Duration { return core::add(dur1, dur2); }
+fn ::sub(dur1: core::Duration, dur2: core::Duration) -> core::Duration { return core::sub(dur1, dur2); }
+fn ::mul(dur: core::Duration, factor: i64) -> core::Duration { return core::mul(dur, factor); }
+fn ::div(dur: core::Duration, factor: i64) -> core::Duration { return core::div(dur, factor); }
+fn ::abs(dur: core::Duration) -> core::Duration { return core::abs(dur); }
 
 // Duration predicates
 
-fn ::is_zero(dur: wing::Duration) -> bool { return wing::is_zero(dur); }
-fn ::is_negative(dur: wing::Duration) -> bool { return wing::is_negative(dur); }
-fn ::is_positive(dur: wing::Duration) -> bool { return wing::is_positive(dur); }
+fn ::is_zero(dur: core::Duration) -> bool { return core::is_zero(dur); }
+fn ::is_negative(dur: core::Duration) -> bool { return core::is_negative(dur); }
+fn ::is_positive(dur: core::Duration) -> bool { return core::is_positive(dur); }
 
-fn ::truncate(dur: wing::Duration, step_dur: wing::Duration) -> wing::Duration { return wing::truncate(dur, step_dur); }
-fn ::round(dur: wing::Duration, step_dur: wing::Duration) -> wing::Duration { return wing::round(dur, step_dur); }
-fn ::format<B>(out: B&, dur: wing::Duration) { wing::format(out, dur); }
+fn ::truncate(dur: core::Duration, step_dur: core::Duration) -> core::Duration { return core::truncate(dur, step_dur); }
+fn ::round(dur: core::Duration, step_dur: core::Duration) -> core::Duration { return core::round(dur, step_dur); }
+fn ::format<B>(out: B&, dur: core::Duration) { core::format(out, dur); }
 
 // Time inspectors
 
-fn ::year(time_val: wing::Time) -> i64 { return wing::year(time_val); }
-fn ::month(time_val: wing::Time) -> wing::Month { return wing::month(time_val); }
-fn ::month_number(time_val: wing::Time) -> i64 { return wing::month_number(time_val); }
-fn ::day(time_val: wing::Time) -> i64 { return wing::day(time_val); }
-fn ::weekday(time_val: wing::Time) -> wing::Weekday { return wing::weekday(time_val); }
-fn ::clock(time_val: wing::Time) -> i64, i64, i64 { return wing::clock(time_val); }
-fn ::hour(time_val: wing::Time) -> i64 { return wing::hour(time_val); }
-fn ::minute(time_val: wing::Time) -> i64 { return wing::minute(time_val); }
-fn ::second(time_val: wing::Time) -> i64 { return wing::second(time_val); }
-fn ::nanosecond(time_val: wing::Time) -> i64 { return wing::nanosecond(time_val); }
-fn ::unix(time_val: wing::Time) -> i64 { return wing::unix(time_val); }
-fn ::unix_milli(time_val: wing::Time) -> i64 { return wing::unix_milli(time_val); }
-fn ::unix_micro(time_val: wing::Time) -> i64 { return wing::unix_micro(time_val); }
-fn ::unix_nano(time_val: wing::Time) -> i64 { return wing::unix_nano(time_val); }
-fn ::is_zero(time_val: wing::Time) -> bool { return wing::is_zero(time_val); }
+fn ::year(time_val: core::Time) -> i64 { return core::year(time_val); }
+fn ::month(time_val: core::Time) -> core::Month { return core::month(time_val); }
+fn ::month_number(time_val: core::Time) -> i64 { return core::month_number(time_val); }
+fn ::day(time_val: core::Time) -> i64 { return core::day(time_val); }
+fn ::weekday(time_val: core::Time) -> core::Weekday { return core::weekday(time_val); }
+fn ::clock(time_val: core::Time) -> i64, i64, i64 { return core::clock(time_val); }
+fn ::hour(time_val: core::Time) -> i64 { return core::hour(time_val); }
+fn ::minute(time_val: core::Time) -> i64 { return core::minute(time_val); }
+fn ::second(time_val: core::Time) -> i64 { return core::second(time_val); }
+fn ::nanosecond(time_val: core::Time) -> i64 { return core::nanosecond(time_val); }
+fn ::unix(time_val: core::Time) -> i64 { return core::unix(time_val); }
+fn ::unix_milli(time_val: core::Time) -> i64 { return core::unix_milli(time_val); }
+fn ::unix_micro(time_val: core::Time) -> i64 { return core::unix_micro(time_val); }
+fn ::unix_nano(time_val: core::Time) -> i64 { return core::unix_nano(time_val); }
+fn ::is_zero(time_val: core::Time) -> bool { return core::is_zero(time_val); }
 
 // Time arithmetic
 
-fn ::add(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::add(time_val, dur); }
-fn ::sub(time_val: wing::Time, other_time: wing::Time) -> wing::Duration { return wing::sub(time_val, other_time); }
-fn ::sub(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::sub(time_val, dur); }
-fn ::sub_duration(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::sub_duration(time_val, dur); }
-fn ::since(time_val: wing::Time) -> wing::Duration { return wing::since(time_val); }
-fn ::until(time_val: wing::Time) -> wing::Duration { return wing::until(time_val); }
-fn ::equal(time_val: wing::Time, other_time: wing::Time) -> bool { return wing::equal(time_val, other_time); }
-fn ::before(time_val: wing::Time, other_time: wing::Time) -> bool { return wing::before(time_val, other_time); }
-fn ::after(time_val: wing::Time, other_time: wing::Time) -> bool { return wing::after(time_val, other_time); }
-fn ::compare(time_val: wing::Time, other_time: wing::Time) -> i64 { return wing::compare(time_val, other_time); }
-fn ::truncate(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::truncate(time_val, dur); }
-fn ::round(time_val: wing::Time, dur: wing::Duration) -> wing::Time { return wing::round(time_val, dur); }
+fn ::add(time_val: core::Time, dur: core::Duration) -> core::Time { return core::add(time_val, dur); }
+fn ::sub(time_val: core::Time, other_time: core::Time) -> core::Duration { return core::sub(time_val, other_time); }
+fn ::sub(time_val: core::Time, dur: core::Duration) -> core::Time { return core::sub(time_val, dur); }
+fn ::sub_duration(time_val: core::Time, dur: core::Duration) -> core::Time { return core::sub_duration(time_val, dur); }
+fn ::since(time_val: core::Time) -> core::Duration { return core::since(time_val); }
+fn ::until(time_val: core::Time) -> core::Duration { return core::until(time_val); }
+fn ::equal(time_val: core::Time, other_time: core::Time) -> bool { return core::equal(time_val, other_time); }
+fn ::before(time_val: core::Time, other_time: core::Time) -> bool { return core::before(time_val, other_time); }
+fn ::after(time_val: core::Time, other_time: core::Time) -> bool { return core::after(time_val, other_time); }
+fn ::compare(time_val: core::Time, other_time: core::Time) -> i64 { return core::compare(time_val, other_time); }
+fn ::truncate(time_val: core::Time, dur: core::Duration) -> core::Time { return core::truncate(time_val, dur); }
+fn ::round(time_val: core::Time, dur: core::Duration) -> core::Time { return core::round(time_val, dur); }
 
 // Timezones
 
-fn ::utc(time_val: wing::Time) -> wing::Time { return wing::utc(time_val); }
-fn ::in_offset(time_val: wing::Time, tz_offset_seconds: i32) -> wing::Time { return wing::in_offset(time_val, tz_offset_seconds); }
-fn ::in_tz(time_val: wing::Time, hours_offset: i64, minutes_offset: i64 = 0) -> wing::Time { return wing::in_tz(time_val, hours_offset, minutes_offset); }
-fn ::tz_offset(time_val: wing::Time) -> i32 { return wing::tz_offset(time_val); }
+fn ::utc(time_val: core::Time) -> core::Time { return core::utc(time_val); }
+fn ::in_offset(time_val: core::Time, tz_offset_seconds: i32) -> core::Time { return core::in_offset(time_val, tz_offset_seconds); }
+fn ::in_tz(time_val: core::Time, hours_offset: i64, minutes_offset: i64 = 0) -> core::Time { return core::in_tz(time_val, hours_offset, minutes_offset); }
+fn ::tz_offset(time_val: core::Time) -> i32 { return core::tz_offset(time_val); }
 
 // Calendar Math & Navigation
 
-fn ::add_months_clamped(time_val: wing::Time, months_count: i64) -> wing::Time { return wing::add_months_clamped(time_val, months_count); }
-fn ::add_years_clamped(time_val: wing::Time, years_count: i64) -> wing::Time { return wing::add_years_clamped(time_val, years_count); }
-fn ::days_in_month(time_val: wing::Time) -> i64 { return wing::days_in_month(time_val); }
-fn ::days_in_year(time_val: wing::Time) -> i64 { return wing::days_in_year(time_val); }
-fn ::is_leap_year(time_val: wing::Time) -> bool { return wing::is_leap_year(time_val); }
+fn ::add_months_clamped(time_val: core::Time, months_count: i64) -> core::Time { return core::add_months_clamped(time_val, months_count); }
+fn ::add_years_clamped(time_val: core::Time, years_count: i64) -> core::Time { return core::add_years_clamped(time_val, years_count); }
+fn ::days_in_month(time_val: core::Time) -> i64 { return core::days_in_month(time_val); }
+fn ::days_in_month(year_val: i64, month_val: i64) -> i64 { return core::days_in_month(year_val, month_val); }
+fn ::days_in_year(time_val: core::Time) -> i64 { return core::days_in_year(time_val); }
+fn ::is_leap_year(time_val: core::Time) -> bool { return core::is_leap_year(time_val); }
+fn ::is_leap_year(year_val: i64) -> bool { return core::is_leap_year(year_val); }
 
-fn ::start_of_day(time_val: wing::Time) -> wing::Time { return wing::start_of_day(time_val); }
-fn ::end_of_day(time_val: wing::Time) -> wing::Time { return wing::end_of_day(time_val); }
-fn ::start_of_month(time_val: wing::Time) -> wing::Time { return wing::start_of_month(time_val); }
-fn ::end_of_month(time_val: wing::Time) -> wing::Time { return wing::end_of_month(time_val); }
-fn ::start_of_year(time_val: wing::Time) -> wing::Time { return wing::start_of_year(time_val); }
-fn ::end_of_year(time_val: wing::Time) -> wing::Time { return wing::end_of_year(time_val); }
+fn ::start_of_day(time_val: core::Time) -> core::Time { return core::start_of_day(time_val); }
+fn ::end_of_day(time_val: core::Time) -> core::Time { return core::end_of_day(time_val); }
+fn ::start_of_month(time_val: core::Time) -> core::Time { return core::start_of_month(time_val); }
+fn ::end_of_month(time_val: core::Time) -> core::Time { return core::end_of_month(time_val); }
+fn ::start_of_year(time_val: core::Time) -> core::Time { return core::start_of_year(time_val); }
+fn ::end_of_year(time_val: core::Time) -> core::Time { return core::end_of_year(time_val); }
 
 // Formatting
 
-fn ::format_rfc3339<B>(out: B&, time_val: wing::Time) { wing::format_rfc3339(out, time_val); }
-fn ::format_rfc3339_nano<B>(out: B&, time_val: wing::Time) { wing::format_rfc3339_nano(out, time_val); }
-fn ::format_http<B>(out: B&, time_val: wing::Time) { wing::format_http(out, time_val); }
+fn ::format_rfc3339<B>(out: B&, time_val: core::Time) { core::format_rfc3339(out, time_val); }
+fn ::format_rfc3339_nano<B>(out: B&, time_val: core::Time) { core::format_rfc3339_nano(out, time_val); }
+fn ::format_http<B>(out: B&, time_val: core::Time) { core::format_http(out, time_val); }
 
 // Stopwatch
 
-fn ::elapsed(watch: const wing::Stopwatch&) -> wing::Duration { return wing::elapsed(watch); }
-fn ::restart(watch: wing::Stopwatch&) -> wing::Duration { return wing::restart(watch); }
+fn ::elapsed(watch: const core::Stopwatch&) -> core::Duration { return core::elapsed(watch); }
+fn ::restart(watch: core::Stopwatch&) -> core::Duration { return core::restart(watch); }
 
 // Deadline Primitives
 
-fn ::is_expired(deadline_val: const wing::Deadline&) -> bool { return wing::is_expired(deadline_val); }
-fn ::remaining(deadline_val: const wing::Deadline&) -> wing::Duration { return wing::remaining(deadline_val); }
+fn ::is_expired(deadline_val: const core::Deadline&) -> bool { return core::is_expired(deadline_val); }
+fn ::remaining(deadline_val: const core::Deadline&) -> core::Duration { return core::remaining(deadline_val); }
 
 // Policy Bridges (Backoff & RateLimiter)
 
@@ -306,87 +308,91 @@ fn ::import_json(jar: wing::CanonicalCookieJar&, json_text: const u8[:], now_us:
 
 // ---- url & origin ufcs bridges ---------------------------------------------
 
-fn ::scheme(url_val: const wing::Url&) -> const u8[:] { return wing::scheme(url_val); }
-fn ::host(url_val: const wing::Url&) -> const u8[:] { return wing::host(url_val); }
-fn ::port(url_val: const wing::Url&) -> i32 { return wing::effective_port(url_val); }
-fn ::effective_port(url_val: const wing::Url&) -> i32 { return wing::effective_port(url_val); }
-fn ::pathname(url_val: const wing::Url&) -> const u8[:] { return wing::pathname(url_val); }
-fn ::path(url_val: const wing::Url&) -> const u8[:] { return wing::pathname(url_val); }
-fn ::search(url_val: const wing::Url&) -> const u8[:] { return wing::search(url_val); }
-fn ::origin(url_val: const wing::Url&) -> wing::Origin { return wing::origin_from_url(url_val); }
-fn ::is_special(url_val: const wing::Url&) -> bool { return wing::is_special(url_val); }
+fn ::href(url_val: const core::Url&) -> const u8[:] { return core::href(url_val); }
+fn ::scheme(url_val: const core::Url&) -> const u8[:] { return core::scheme(url_val); }
+fn ::host(url_val: const core::Url&) -> const u8[:] { return core::host(url_val); }
+fn ::hostname(url_val: const core::Url&) -> const u8[:] { return core::hostname(url_val); }
+fn ::port(url_val: const core::Url&) -> i32 { return core::effective_port(url_val); }
+fn ::effective_port(url_val: const core::Url&) -> i32 { return core::effective_port(url_val); }
+fn ::pathname(url_val: const core::Url&) -> const u8[:] { return core::pathname(url_val); }
+fn ::path(url_val: const core::Url&) -> const u8[:] { return core::pathname(url_val); }
+fn ::search(url_val: const core::Url&) -> const u8[:] { return core::search(url_val); }
+fn ::hash(url_val: const core::Url&) -> const u8[:] { return core::hash(url_val); }
+fn ::origin(url_val: const core::Url&) -> core::Origin { return core::origin_from_url(url_val); }
+fn ::is_special(url_val: const core::Url&) -> bool { return core::is_special(url_val); }
+fn ::is_secure_scheme(url_val: const core::Url&) -> bool { return core::is_secure_scheme(url_val); }
 
 // ---- file & path ufcs bridges -----------------------------------------------
 
-fn ::is_file_url(url_val: const wing::Url&) -> bool { return wing::is_file_url(url_val); }
-fn ::file_path<B>(url_val: const wing::Url&, out: B&) -> bool { return wing::file_path(url_val, out); }
-fn ::last_path_component(url_val: const wing::Url&) -> const u8[:] { return wing::last_path_component(url_val); }
-fn ::path_extension(url_val: const wing::Url&) -> const u8[:] { return wing::path_extension(url_val); }
-fn ::deleting_path_extension(url_val: wing::Url) -> wing::Url { return wing::deleting_path_extension(url_val); }
-fn ::deleting_last_path_component(url_val: wing::Url) -> wing::Url { return wing::deleting_last_path_component(url_val); }
-fn ::appending_path_component(url_val: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(url_val, component); }
-fn ::appending(url_val: wing::Url, component: const u8[:]) -> wing::Url { return wing::appending_path_component(url_val, component); }
-fn ::appending_path(url_val: wing::Url, subpath: const u8[:]) -> wing::Url { return wing::appending_path(url_val, subpath); }
-fn ::appending_path_extension(url_val: wing::Url, ext: const u8[:]) -> wing::Url { return wing::appending_path_extension(url_val, ext); }
+fn ::is_file_url(url_val: const core::Url&) -> bool { return core::is_file_url(url_val); }
+fn ::file_path<B>(url_val: const core::Url&, out: B&) -> bool { return core::file_path(url_val, out); }
+fn ::last_path_component(url_val: const core::Url&) -> const u8[:] { return core::last_path_component(url_val); }
+fn ::path_extension(url_val: const core::Url&) -> const u8[:] { return core::path_extension(url_val); }
+fn ::deleting_path_extension(url_val: core::Url) -> core::Url { return core::deleting_path_extension(url_val); }
+fn ::deleting_last_path_component(url_val: core::Url) -> core::Url { return core::deleting_last_path_component(url_val); }
+fn ::appending_path_component(url_val: core::Url, component: const u8[:]) -> core::Url { return core::appending_path_component(url_val, component); }
+fn ::appending(url_val: core::Url, component: const u8[:]) -> core::Url { return core::appending_path_component(url_val, component); }
+fn ::appending_path(url_val: core::Url, subpath: const u8[:]) -> core::Url { return core::appending_path(url_val, subpath); }
+fn ::appending_path_extension(url_val: core::Url, ext: const u8[:]) -> core::Url { return core::appending_path_extension(url_val, ext); }
 
 // ---- dual-mode resolution ufcs bridges -------------------------------------
 
-fn ::resolve_reference(base_url: const wing::Url&, relative_ref: const u8[:]) -> wing::Url { return wing::resolve_reference(base_url, relative_ref); }
-fn ::resolve_endpoint(base_url: const wing::Url&, endpoint: const u8[:]) -> wing::Url { return wing::resolve_endpoint(base_url, endpoint); }
-fn ::join_endpoint(base_url: const wing::Url&, endpoint: const u8[:]) -> wing::Url { return wing::join_endpoint(base_url, endpoint); }
+fn ::resolve_reference(base_url: const core::Url&, relative_ref: const u8[:]) -> core::Url { return core::resolve_reference(base_url, relative_ref); }
+fn ::resolve_endpoint(base_url: const core::Url&, endpoint: const u8[:]) -> core::Url { return core::resolve_endpoint(base_url, endpoint); }
+fn ::join_endpoint(base_url: const core::Url&, endpoint: const u8[:]) -> core::Url { return core::join_endpoint(base_url, endpoint); }
 
 // ---- url view ufcs bridges -------------------------------------------------
 
-fn ::parse_url_view(raw_input: const u8[:]) -> wing::UrlView, wing::UrlParseError { return wing::parse_url_view(raw_input); }
-fn ::new_url_view(raw_input: const u8[:]) -> wing::UrlView { return wing::new_url_view(raw_input); }
-fn ::href(view: const wing::UrlView&) -> const u8[:] { return wing::href(view); }
-fn ::scheme(view: const wing::UrlView&) -> const u8[:] { return wing::scheme(view); }
-fn ::host(view: const wing::UrlView&) -> const u8[:] { return wing::host(view); }
-fn ::hostname(view: const wing::UrlView&) -> const u8[:] { return wing::hostname(view); }
-fn ::pathname(view: const wing::UrlView&) -> const u8[:] { return wing::pathname(view); }
-fn ::search(view: const wing::UrlView&) -> const u8[:] { return wing::search(view); }
-fn ::hash(view: const wing::UrlView&) -> const u8[:] { return wing::hash(view); }
-fn ::port(view: const wing::UrlView&) -> i32 { return wing::port(view); }
-fn ::is_valid(view: const wing::UrlView&) -> bool { return wing::is_valid(view); }
+fn ::parse_url_view(raw_input: const u8[:]) -> core::UrlView, core::UrlParseError { return core::parse_url_view(raw_input); }
+fn ::new_url_view(raw_input: const u8[:]) -> core::UrlView { return core::new_url_view(raw_input); }
+fn ::href(view: const core::UrlView&) -> const u8[:] { return core::href(view); }
+fn ::scheme(view: const core::UrlView&) -> const u8[:] { return core::scheme(view); }
+fn ::host(view: const core::UrlView&) -> const u8[:] { return core::host(view); }
+fn ::hostname(view: const core::UrlView&) -> const u8[:] { return core::hostname(view); }
+fn ::pathname(view: const core::UrlView&) -> const u8[:] { return core::pathname(view); }
+fn ::search(view: const core::UrlView&) -> const u8[:] { return core::search(view); }
+fn ::hash(view: const core::UrlView&) -> const u8[:] { return core::hash(view); }
+fn ::port(view: const core::UrlView&) -> i32 { return core::port(view); }
+fn ::is_valid(view: const core::UrlView&) -> bool { return core::is_valid(view); }
 
 // ---- concurrency & sync ufcs bridges ---------------------------------------
 
-fn ::add_worker(wg: wing::WaitGroup&, worker_id: i64) -> bool { return wing::add_worker(wg, worker_id); }
-fn ::worker_count(wg: const wing::WaitGroup&) -> i64 { return wing::worker_count(wg); }
-fn ::wait_all(wg: wing::WaitGroup&) -> bool { return wing::wait_all(wg); }
-fn ::wait_all(wg: wing::WaitGroup&, out_diagnostics: u8[>..]&) -> bool { return wing::wait_all(wg, out_diagnostics); }
-fn ::failed_count(wg: const wing::WaitGroup&) -> i64 { return wing::failed_count(wg); }
+fn ::add_worker(wg: core::WaitGroup&, worker_id: i64) -> bool { return core::add_worker(wg, worker_id); }
+fn ::worker_count(wg: const core::WaitGroup&) -> i64 { return core::worker_count(wg); }
+fn ::wait_all(wg: core::WaitGroup&) -> bool { return core::wait_all(wg); }
+fn ::wait_all(wg: core::WaitGroup&, out_diagnostics: u8[>..]&) -> bool { return core::wait_all(wg, out_diagnostics); }
+fn ::failed_count(wg: const core::WaitGroup&) -> i64 { return core::failed_count(wg); }
 
-fn ::acquire(sem: wing::Semaphore&) -> wing::SemPermit { return wing::acquire(sem); }
-fn ::try_acquire(sem: wing::Semaphore&) -> wing::SemPermit, bool { return wing::try_acquire(sem); }
-fn ::release(sem: wing::Semaphore&, permit: wing::SemPermit) -> bool { return wing::release(sem, permit); }
+fn ::acquire(sem: core::Semaphore&) -> core::SemPermit { return core::acquire(sem); }
+fn ::try_acquire(sem: core::Semaphore&) -> core::SemPermit, bool { return core::try_acquire(sem); }
+fn ::release(sem: core::Semaphore&, permit: core::SemPermit) -> bool { return core::release(sem, permit); }
 
-fn ::count_down(latch: wing::CountDownLatch&) -> bool { return wing::count_down(latch); }
-fn ::latch_wait(latch: wing::CountDownLatch&) { wing::latch_wait(latch); }
+fn ::count_down(latch: core::CountDownLatch&) -> bool { return core::count_down(latch); }
+fn ::latch_wait(latch: core::CountDownLatch&) { core::latch_wait(latch); }
 
-fn ::push_unordered(r: wing::Reassembler&, item: wing::ReassemblerItem) { wing::push_unordered(r, item); }
-fn ::pop_next_in_order(r: wing::Reassembler&) -> wing::ReassemblerItem, bool { return wing::pop_next_in_order(r); }
-fn ::pending_count(r: const wing::Reassembler&) -> i64 { return wing::pending_count(r); }
+fn ::push_unordered(r: core::Reassembler&, item: core::ReassemblerItem) { core::push_unordered(r, item); }
+fn ::pop_next_in_order(r: core::Reassembler&) -> core::ReassemblerItem, bool { return core::pop_next_in_order(r); }
+fn ::pending_count(r: const core::Reassembler&) -> i64 { return core::pending_count(r); }
 
-fn ::stash(sb: wing::StashBuffer&, env: wing::StashedEnvelope) { wing::stash(sb, env); }
-fn ::unstash_all(sb: wing::StashBuffer&, out_pending: wing::StashedEnvelope[>..]&) -> i64 { return wing::unstash_all(sb, out_pending); }
-fn ::stash_count(sb: const wing::StashBuffer&) -> i64 { return wing::stash_count(sb); }
-fn ::is_empty(sb: const wing::StashBuffer&) -> bool { return wing::is_empty(sb); }
+fn ::stash(sb: core::StashBuffer&, env: core::StashedEnvelope) { core::stash(sb, env); }
+fn ::unstash_all(sb: core::StashBuffer&, out_pending: core::StashedEnvelope[>..]&) -> i64 { return core::unstash_all(sb, out_pending); }
+fn ::stash_count(sb: const core::StashBuffer&) -> i64 { return core::stash_count(sb); }
+fn ::is_empty(sb: const core::StashBuffer&) -> bool { return core::is_empty(sb); }
 
-fn ::push(mb: wing::PriorityMailbox&, priority: u32, payload_type: u16, val: i64) { wing::push(mb, priority, payload_type, val); }
-fn ::pop(mb: wing::PriorityMailbox&) -> wing::PriorityItem, bool { return wing::pop(mb); }
-fn ::count(mb: const wing::PriorityMailbox&) -> i64 { return wing::count(mb); }
+fn ::push(mb: core::PriorityMailbox&, priority: u32, payload_type: u16, val: i64) { core::push(mb, priority, payload_type, val); }
+fn ::pop(mb: core::PriorityMailbox&) -> core::PriorityItem, bool { return core::pop(mb); }
+fn ::count(mb: const core::PriorityMailbox&) -> i64 { return core::count(mb); }
 
-fn ::add_worker(sup: wing::Supervisor&, worker_id: i64) -> bool { return wing::add_worker(sup, worker_id); }
-fn ::add_child(sup: wing::Supervisor&, spec: wing::ChildSpec, worker_id: i64) -> bool { return wing::add_child(sup, spec, worker_id); }
-fn ::child_count(sup: const wing::Supervisor&) -> i64 { return wing::child_count(sup); }
-fn ::wait_all(sup: wing::Supervisor&) -> bool { return wing::wait_all(sup); }
-fn ::wait_all(sup: wing::Supervisor&, out_diagnostics: u8[>..]&) -> bool { return wing::wait_all(sup, out_diagnostics); }
-fn ::failed_count(sup: const wing::Supervisor&) -> i64 { return wing::failed_count(sup); }
-fn ::success_count(sup: const wing::Supervisor&) -> i64 { return wing::success_count(sup); }
-fn ::is_auto_shutdown(sup: const wing::Supervisor&) -> bool { return wing::is_auto_shutdown(sup); }
-fn ::should_restart_child(sup: const wing::Supervisor&, child_idx: i64, reason: const wing::ExitReason&) -> bool { return wing::should_restart_child(sup, child_idx, reason); }
-fn ::record_failure(sup: wing::Supervisor&, child_idx: i64, current_time_s: i64) -> bool { return wing::record_failure(sup, child_idx, current_time_s); }
+fn ::add_worker(sup: core::Supervisor&, worker_id: i64) -> bool { return core::add_worker(sup, worker_id); }
+fn ::add_child(sup: core::Supervisor&, spec: core::ChildSpec, worker_id: i64) -> bool { return core::add_child(sup, spec, worker_id); }
+fn ::child_count(sup: const core::Supervisor&) -> i64 { return core::child_count(sup); }
+fn ::wait_all(sup: core::Supervisor&) -> bool { return core::wait_all(sup); }
+fn ::wait_all(sup: core::Supervisor&, out_diagnostics: u8[>..]&) -> bool { return core::wait_all(sup, out_diagnostics); }
+fn ::failed_count(sup: const core::Supervisor&) -> i64 { return core::failed_count(sup); }
+fn ::success_count(sup: const core::Supervisor&) -> i64 { return core::success_count(sup); }
+fn ::is_auto_shutdown(sup: const core::Supervisor&) -> bool { return core::is_auto_shutdown(sup); }
+fn ::should_restart_child(sup: const core::Supervisor&, child_idx: i64, reason: const core::ExitReason&) -> bool { return core::should_restart_child(sup, child_idx, reason); }
+fn ::record_failure(sup: core::Supervisor&, child_idx: i64, current_time_s: i64) -> bool { return core::record_failure(sup, child_idx, current_time_s); }
 
 // ---- http headers, mime, and multipart ufcs bridges -----------------------
 
@@ -551,22 +557,22 @@ fn ::allow_retry_budget(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64) ->
 
 // ---- math & rtt estimator ufcs bridges -------------------------------------
 
-fn ::next_u64(rng: wing::WyRand&) -> u64 { return wing::next_u64(rng); }
-fn ::next_u32(rng: wing::WyRand&) -> u32 { return wing::next_u32(rng); }
-fn ::next_u32(rng: wing::Xoroshiro64StarStar&) -> u32 { return wing::next_u32(rng); }
+fn ::next_u64(rng: core::WyRand&) -> u64 { return core::next_u64(rng); }
+fn ::next_u32(rng: core::WyRand&) -> u32 { return core::next_u32(rng); }
+fn ::next_u32(rng: core::Xoroshiro64StarStar&) -> u32 { return core::next_u32(rng); }
 
 fn ::on_rtt_sample(
-    est: wing::JacobsonRttEstimator&,
+    est: core::JacobsonRttEstimator&,
     latest_rtt_us: u64,
     ack_delay_us: u64 = 0,
     max_ack_delay_us: u64 = 25000,
     handshake_confirmed: bool = false
 ) {
-    wing::on_rtt_sample(est, latest_rtt_us, ack_delay_us, max_ack_delay_us, handshake_confirmed);
+    core::on_rtt_sample(est, latest_rtt_us, ack_delay_us, max_ack_delay_us, handshake_confirmed);
 }
-fn ::smoothed_rtt_us(est: const wing::JacobsonRttEstimator&) -> u64 { return wing::smoothed_rtt_us(est); }
-fn ::rttvar_us(est: const wing::JacobsonRttEstimator&) -> u64 { return wing::rttvar_us(est); }
-fn ::probe_timeout_us(est: const wing::JacobsonRttEstimator&, max_ack_delay_us: u64 = 0) -> u64 {
-    return wing::probe_timeout_us(est, max_ack_delay_us);
+fn ::smoothed_rtt_us(est: const core::JacobsonRttEstimator&) -> u64 { return core::smoothed_rtt_us(est); }
+fn ::rttvar_us(est: const core::JacobsonRttEstimator&) -> u64 { return core::rttvar_us(est); }
+fn ::probe_timeout_us(est: const core::JacobsonRttEstimator&, max_ack_delay_us: u64 = 0) -> u64 {
+    return core::probe_timeout_us(est, max_ack_delay_us);
 }
-fn ::loss_time_threshold_us(est: const wing::JacobsonRttEstimator&) -> u64 { return wing::loss_time_threshold_us(est); }
+fn ::loss_time_threshold_us(est: const core::JacobsonRttEstimator&) -> u64 { return core::loss_time_threshold_us(est); }

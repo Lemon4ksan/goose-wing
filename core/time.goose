@@ -1,5 +1,5 @@
 // Date, time, duration arithmetic, monotonic clocks, and RFC 3339 / RFC 9110 HTTP-Date codecs.
-namespace wing;
+namespace core;
 
 import std;
 import os;

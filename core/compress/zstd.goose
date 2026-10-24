@@ -1,6 +1,6 @@
 // The Goose Zstandard (zstd) decompression engine: RFC 8878 Specification.
 // Clean-Room Native Implementation with zero dynamic heap allocations in inner loop.
-namespace wing;
+namespace core;
 
 import std;
 import core.math.bits;

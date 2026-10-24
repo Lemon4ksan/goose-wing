@@ -1,6 +1,6 @@
 // Constant-time branchless arithmetic, bit masking, and bounds clamping.
 // Protects against timing side-channel attacks and CPU branch mispredictions.
-namespace wing;
+namespace core;
 
 import std;
 

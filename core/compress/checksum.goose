@@ -1,5 +1,5 @@
 // The Goose checksum module: Slicing-by-16 CRC-32 (IEEE 802.3) and Unrolled Adler-32 (RFC 1950).
-namespace wing;
+namespace core;
 
 import std;
 

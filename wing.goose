@@ -14,6 +14,7 @@ import core.test;
 import core.url;
 import core.sync;
 import core.compress;
+import facade;
 
 // ---- cookie engine ---------------------------------------------------------
 

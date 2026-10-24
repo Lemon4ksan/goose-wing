@@ -1,5 +1,5 @@
 // The Goose Deflate / Inflate compression engine: RFC 1951 Specification.
-namespace wing;
+namespace core;
 
 import std;
 

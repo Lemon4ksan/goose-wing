@@ -10,7 +10,7 @@
 // - All allocations operate on Data Stacks via bump-pointers and bounded arrays.
 // - Sliding windows (32 KB), hash chains, and Huffman tables require 0 malloc calls.
 // - Compliant with the Goose for C++ and Rust Programmers architecture.
-namespace wing;
+namespace core;
 
 import std;
 import core.compress.checksum;

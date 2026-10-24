@@ -401,11 +401,11 @@ fn test_hinnant_civil_calendar_and_leap_years(t: wing::T&) {
 // ----------------------------------------------------------------------------
 fn test_time_construction_and_pre1970(t: wing::T&) {
     t.run("Instant Creation & Field Decomposition") { sub =>
-        let tm = wing::date(2026, wing::Month.October, 23, 14, 30, 45, 123456789, 0);
+        let tm = wing::date(2026, core::Month.October, 23, 14, 30, 45, 123456789, 0);
         sub.assert_eq(tm.year(), 2026);
         sub.assert_eq(tm.month_number(), 10);
         sub.assert_eq(tm.day(), 23);
-        sub.assert_eq(tm.weekday(), wing::Weekday.Friday);
+        sub.assert_eq(tm.weekday(), core::Weekday.Friday);
         sub.assert_eq(tm.hour(), 14);
         sub.assert_eq(tm.minute(), 30);
         sub.assert_eq(tm.second(), 45);
@@ -421,7 +421,7 @@ fn test_time_construction_and_pre1970(t: wing::T&) {
         sub.assert_eq(tm_pre.hour(), 23);
         sub.assert_eq(tm_pre.minute(), 59);
         sub.assert_eq(tm_pre.second(), 59);
-        sub.assert_eq(tm_pre.weekday(), wing::Weekday.Wednesday);
+        sub.assert_eq(tm_pre.weekday(), core::Weekday.Wednesday);
 
         // Normalization of negative fractional nanoseconds
         let tm_norm = wing::unix(100, -250000000);
@@ -437,7 +437,7 @@ fn test_time_construction_and_pre1970(t: wing::T&) {
     };
 
     t.run("Calendar Boundary Projections") { sub =>
-        let tm = wing::date(2026, wing::Month.October, 23, 15, 45, 30, 500, 0);
+        let tm = wing::date(2026, core::Month.October, 23, 15, 45, 30, 500, 0);
 
         let sod = tm.start_of_day();
         sub.assert_eq(sod.hour(), 0);
@@ -497,7 +497,7 @@ fn test_time_arithmetic_and_redos_immunity(t: wing::T&) {
         sub.assert_gt(t_min_sub.unix(), t1.unix(), "subtracting negative i64.min duration must advance time forward");
 
         // Saturated subtraction across > 292 years (industry benchmark)
-        let t_future = wing::date(2500, wing::Month.January, 1, 0, 0, 0, 0, 0);
+        let t_future = wing::date(2500, core::Month.January, 1, 0, 0, 0, 0, 0);
         let t_epoch = wing::unix(0, 0);
         let diff_huge = t_future.sub(t_epoch);
         sub.assert_eq(diff_huge.as_nanos(), 9223372036854775807, "difference > 292 years must saturate to max_i64");
@@ -509,28 +509,28 @@ fn test_time_arithmetic_and_redos_immunity(t: wing::T&) {
 
     t.run("Clamped Month & Year Arithmetic") { sub =>
         // Non-leap year: Jan 31 + 1 month -> Feb 28
-        let jan31_25 = wing::date(2025, wing::Month.January, 31, 12, 0, 0, 0, 0);
+        let jan31_25 = wing::date(2025, core::Month.January, 31, 12, 0, 0, 0, 0);
         let feb28_25 = jan31_25.add_months_clamped(1);
         sub.assert_eq(feb28_25.year(), 2025);
         sub.assert_eq(feb28_25.month_number(), 2);
         sub.assert_eq(feb28_25.day(), 28);
 
         // Leap year: Jan 31 + 1 month -> Feb 29
-        let jan31_24 = wing::date(2024, wing::Month.January, 31, 12, 0, 0, 0, 0);
+        let jan31_24 = wing::date(2024, core::Month.January, 31, 12, 0, 0, 0, 0);
         let feb29_24 = jan31_24.add_months_clamped(1);
         sub.assert_eq(feb29_24.year(), 2024);
         sub.assert_eq(feb29_24.month_number(), 2);
         sub.assert_eq(feb29_24.day(), 29);
 
         // Leap day + 1 year -> Feb 28
-        let feb29_leap = wing::date(2024, wing::Month.February, 29, 12, 0, 0, 0, 0);
+        let feb29_leap = wing::date(2024, core::Month.February, 29, 12, 0, 0, 0, 0);
         let next_yr = feb29_leap.add_years_clamped(1);
         sub.assert_eq(next_yr.year(), 2025);
         sub.assert_eq(next_yr.month_number(), 2);
         sub.assert_eq(next_yr.day(), 28);
 
         // Backward subtraction: March 31 - 1 month -> Feb 28
-        let mar31_25 = wing::date(2025, wing::Month.March, 31, 12, 0, 0, 0, 0);
+        let mar31_25 = wing::date(2025, core::Month.March, 31, 12, 0, 0, 0, 0);
         let prev_feb = mar31_25.add_months_clamped(-1);
         sub.assert_eq(prev_feb.year(), 2025);
         sub.assert_eq(prev_feb.month_number(), 2);
@@ -538,7 +538,7 @@ fn test_time_arithmetic_and_redos_immunity(t: wing::T&) {
     };
 
     t.run("CRITICAL: ReDoS & CPU-Hang Immunity in add_months_clamped") { sub =>
-        let base = wing::date(2026, wing::Month.January, 15, 12, 0, 0, 0, 0);
+        let base = wing::date(2026, core::Month.January, 15, 12, 0, 0, 0, 0);
 
         // Massive positive addition: previously a while loop would execute 100 billion iterations!
         let sw = wing::stopwatch();
@@ -563,7 +563,7 @@ fn test_time_arithmetic_and_redos_immunity(t: wing::T&) {
 // ----------------------------------------------------------------------------
 fn test_time_truncation_rounding_and_timezones(t: wing::T&) {
     t.run("Time Truncate & Round Half-Up") { sub =>
-        let tm = wing::date(2026, wing::Month.October, 23, 14, 25, 45, 0, 0);
+        let tm = wing::date(2026, core::Month.October, 23, 14, 25, 45, 0, 0);
 
         let trunc_h = tm.truncate(wing::hours(1));
         sub.assert_eq(trunc_h.hour(), 14);
@@ -573,7 +573,7 @@ fn test_time_truncation_rounding_and_timezones(t: wing::T&) {
         sub.assert_eq(round_down.hour(), 14);
         sub.assert_eq(round_down.minute(), 0);
 
-        let tm_half = wing::date(2026, wing::Month.October, 23, 14, 30, 0, 0, 0);
+        let tm_half = wing::date(2026, core::Month.October, 23, 14, 30, 0, 0, 0);
         let round_half = tm_half.round(wing::hours(1));
         sub.assert_eq(round_half.hour(), 15, "half-hour rounds up to next hour");
 
@@ -583,7 +583,7 @@ fn test_time_truncation_rounding_and_timezones(t: wing::T&) {
         sub.assert_eq(round_pre.unix(), -3600);
 
         // Post-2262 date truncation without nanosecond overflow
-        let t_2500 = wing::date(2500, wing::Month.January, 1, 14, 25, 45, 0, 0);
+        let t_2500 = wing::date(2500, core::Month.January, 1, 14, 25, 45, 0, 0);
         let t_2500_trunc = t_2500.truncate(wing::hours(1));
         sub.assert_eq(t_2500_trunc.year(), 2500, "year must remain 2500");
         sub.assert_eq(t_2500_trunc.hour(), 14);
@@ -591,7 +591,7 @@ fn test_time_truncation_rounding_and_timezones(t: wing::T&) {
     };
 
     t.run("Timezone Offsets & in_tz Minute Handling") { sub =>
-        let utc_instant = wing::date(2026, wing::Month.October, 23, 12, 0, 0, 0, 0);
+        let utc_instant = wing::date(2026, core::Month.October, 23, 12, 0, 0, 0, 0);
 
         // Moscow UTC+3
         let msk = utc_instant.in_tz(3, 0);
@@ -625,7 +625,7 @@ fn test_time_truncation_rounding_and_timezones(t: wing::T&) {
 fn test_rfc3339_codec_and_attack_vectors(t: wing::T&) {
     t.run("RFC 3339 Formatting (UTC, Offset, Nano, Extreme Offset)") { sub =>
         var buf: u8[..64] = [];
-        let tm = wing::date(2026, wing::Month.October, 23, 14, 30, 45, 500000000, 0);
+        let tm = wing::date(2026, core::Month.October, 23, 14, 30, 45, 500000000, 0);
 
         buf.clear(); wing::format_rfc3339(buf, tm);
         sub.assert_bytes_eq(buf[..], "2026-10-23T14:30:45Z");
@@ -727,7 +727,7 @@ fn test_rfc3339_codec_and_attack_vectors(t: wing::T&) {
 // ----------------------------------------------------------------------------
 fn test_http_date_rfc9110_and_attack_vectors(t: wing::T&) {
     t.run("HTTP-Date Format Always in GMT") { sub =>
-        let local_tm = wing::date(2026, wing::Month.October, 22, 23, 18, 18, 0, 10800); // 23:18:18 MSK = 20:18:18 GMT
+        let local_tm = wing::date(2026, core::Month.October, 22, 23, 18, 18, 0, 10800); // 23:18:18 MSK = 20:18:18 GMT
         var buf: u8[..64] = [];
         wing::format_http(buf, local_tm);
         sub.assert_bytes_eq(buf[..], "Thu, 22 Oct 2026 20:18:18 GMT", "format_http must convert local time to GMT");

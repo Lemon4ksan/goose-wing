@@ -285,7 +285,7 @@ fn request_has_authorization(req_headers: const HeaderMap&) -> bool {
 fn is_same_origin_url(url_a: const u8[:], url_b: const u8[:]) -> bool {
     let parsed_a, err_a = parse_url(url_a);
     let parsed_b, err_b = parse_url(url_b);
-    guard err_a == UrlParseError.None && err_b == UrlParseError.None else { return false; }
+    guard err_a == core::UrlParseError.None && err_b == core::UrlParseError.None else { return false; }
     let orig_a = origin_from_url(parsed_a);
     let orig_b = origin_from_url(parsed_b);
     return is_same_origin(orig_a, orig_b);
