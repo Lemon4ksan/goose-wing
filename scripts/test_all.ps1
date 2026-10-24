@@ -4,7 +4,8 @@ param(
     [string]$Pattern = "*_test.goose",
     [switch]$CheckOnly,
     [switch]$Release,
-    [switch]$KeepBinaries
+    [switch]$KeepBinaries,
+    [int]$Jobs = 4
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -91,7 +92,7 @@ if ($CheckOnly) {
 }
 
 # 4. Parallel compilation using bounded worker pool (prevents temp file collisions & I/O thrashing)
-$maxConcurrent = [Math]::Min(8, [Environment]::ProcessorCount)
+$maxConcurrent = if ($Jobs -gt 0) { [Math]::Min($Jobs, [Environment]::ProcessorCount) } else { 4 }
 Write-Host "`n[2/3] Compiling $($testFiles.Count) suites (max $maxConcurrent parallel, $optFlag)..." -ForegroundColor Yellow
 $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
 

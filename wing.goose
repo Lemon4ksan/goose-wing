@@ -45,6 +45,8 @@ import http2.framing;
 import http2.hpack;
 import http2.connection;
 import http3.qpack;
+import http3.framing;
+import http3.connection;
 import quic.packet;
 import quic.AckFrame;
 import quic.bbr;
@@ -59,6 +61,7 @@ import http.cache.engine;
 // ---- security --------------------------------------------------------------
 
 import security.ct;
+import security.x25519;
 import security.crypto_jar;
 import security.csrf;
 import security.cors;
@@ -70,6 +73,8 @@ import tls.record;
 import tls.key_schedule;
 import tls.handshake;
 import tls.x509;
+import tls.hpke;
+import tls.ech;
 
 // ---- server primitives -----------------------------------------------------
 
@@ -83,6 +88,7 @@ import net.pool;
 import net.happy_eyeballs;
 import net.proxy;
 import net.retry;
+import net.dns;
 
 // ---- ufcs method bridges ---------------------------------------------------
 

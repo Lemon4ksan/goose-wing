@@ -1,0 +1,359 @@
+// tls/hpke.goose
+// Hybrid Public Key Encryption (RFC 9180) for ECH (RFC 9460) and Secure Messaging.
+// Supports DHKEM(X25519, HKDF-SHA256) with AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305.
+namespace wing;
+
+import std;
+import security.ct;
+import security.x25519;
+
+// ---- 1. RFC 9180 Identifiers and Code Points --------------------------------
+
+const HPKE_MODE_BASE: u8 = 0;
+
+const HPKE_KEM_DHKEM_X25519_HKDF_SHA256: u16 = 0x0020;
+const HPKE_KDF_HKDF_SHA256: u16 = 0x0001;
+
+const HPKE_AEAD_AES_128_GCM: u16 = 0x0001;
+const HPKE_AEAD_AES_256_GCM: u16 = 0x0002;
+const HPKE_AEAD_CHACHA20_POLY1305: u16 = 0x0003;
+
+// Active encryption/decryption context for HPKE sender or recipient.
+struct HpkeContext {
+    key: u8[32] = [0; 32],
+    base_nonce: u8[12] = [0; 12],
+    seq: u64 = 0,
+    exporter_secret: u8[32] = [0; 32],
+    aead_id: u16 = HPKE_AEAD_AES_128_GCM,
+    key_len: u16 = 16,
+    nonce_len: u16 = 12,
+}
+
+// ---- 2. Labeled KDF Primitives (RFC 9180 Section 4) -------------------------
+
+// Computes LabeledExtract(salt, label, ikm) = HKDF-Extract(salt, "HPKE-v1" || suite_id || label || ikm)
+fn hpke_labeled_extract(
+    suite_id: const u8[:],
+    salt: const u8[:],
+    label: const u8[:],
+    ikm: const u8[:]
+) -> u8[32] {
+    var labeled_ikm: u8[..256] = [];
+    labeled_ikm.append("HPKE-v1");
+    labeled_ikm.append(suite_id);
+    labeled_ikm.append(label);
+    labeled_ikm.append(ikm);
+
+    return hkdf_extract(salt, labeled_ikm[..]);
+}
+
+// Computes LabeledExpand(prk, label, info, L) = HKDF-Expand(prk, I2OSP(L, 2) || "HPKE-v1" || suite_id || label || info, L)
+fn hpke_labeled_expand(
+    suite_id: const u8[:],
+    prk: const u8[:],
+    label: const u8[:],
+    info: const u8[:],
+    length: u16,
+    out: u8[:]
+) -> bool {
+    var labeled_info: u8[..256] = [];
+    labeled_info.push(((length >> 8) & 0xFF) as u8);
+    labeled_info.push((length & 0xFF) as u8);
+    labeled_info.append("HPKE-v1");
+    labeled_info.append(suite_id);
+    labeled_info.append(label);
+    labeled_info.append(info);
+
+    return hkdf_expand_bytes_256(prk, labeled_info[..], length, out);
+}
+
+// ---- 3. DHKEM(X25519, HKDF-SHA256) (RFC 9180 Section 4.1) ------------------
+
+// Performs DHKEM Key Encapsulation: computes shared_secret and encapsulated key (enc).
+fn dhkem_x25519_encap(
+    pkR: const u8[32]&,
+    ephemeral_sk: const u8[32]&,
+    out_enc: u8[32]&,
+    out_shared_secret: u8[32]&
+) -> bool {
+    // 1. Calculate ephemeral public key: enc = X25519(skE, basepoint)
+    out_enc = x25519_base_scalarmult(ephemeral_sk);
+
+    // 2. Diffie-Hellman: dh = X25519(skE, pkR)
+    let dh = x25519_scalarmult(ephemeral_sk, pkR);
+
+    // 3. KEM suite_id = "KEM" || I2OSP(kem_id, 2)
+    let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20]; // "KEM" || 0x0020
+
+    // 4. kem_context = enc || pkR (64 bytes)
+    var kem_context: u8[64] = [0; 64];
+    for i in 32 {
+        kem_context[i] = out_enc[i];
+        kem_context[32 + i] = pkR[i];
+    }
+
+    // 5. eae_prk = LabeledExtract("", "eae_prk", dh)
+    let eae_prk = hpke_labeled_extract(kem_suite_id[..], [], "eae_prk", dh[..]);
+
+    // 6. shared_secret = LabeledExpand(eae_prk, "shared_secret", kem_context, 32)
+    return hpke_labeled_expand(kem_suite_id[..], eae_prk[..], "shared_secret", kem_context[..], 32, out_shared_secret[..]);
+}
+
+// Performs DHKEM Key Decapsulation: reconstructs shared_secret from enc using recipient skR.
+fn dhkem_x25519_decap(
+    enc: const u8[32]&,
+    skR: const u8[32]&,
+    pkR: const u8[32]&,
+    out_shared_secret: u8[32]&
+) -> bool {
+    let dh = x25519_scalarmult(skR, enc);
+    let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];
+
+    var kem_context: u8[64] = [0; 64];
+    for i in 32 {
+        kem_context[i] = enc[i];
+        kem_context[32 + i] = pkR[i];
+    }
+
+    let eae_prk = hpke_labeled_extract(kem_suite_id[..], [], "eae_prk", dh[..]);
+    return hpke_labeled_expand(kem_suite_id[..], eae_prk[..], "shared_secret", kem_context[..], 32, out_shared_secret[..]);
+}
+
+// ---- 4. HPKE Key Schedule (RFC 9180 Section 5.1) ----------------------------
+
+// Sets up a base-mode sender context (SetupBaseS).
+fn hpke_setup_base_s(
+    pkR: const u8[32]&,
+    info: const u8[:],
+    kem_id: u16,
+    kdf_id: u16,
+    aead_id: u16,
+    ephemeral_sk: const u8[32]&,
+    out_enc: u8[32]&,
+    out_ctx: HpkeContext&
+) -> bool {
+    guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
+    guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
+
+    var shared_secret: u8[32] = [0; 32];
+    guard dhkem_x25519_encap(pkR, ephemeral_sk, out_enc, shared_secret) else { return false; }
+
+    // hpke_suite_id = "HPKE" || I2OSP(kem_id, 2) || I2OSP(kdf_id, 2) || I2OSP(aead_id, 2)
+    var hpke_suite_id: u8[10] = [
+        0x48, 0x50, 0x4B, 0x45,
+        ((kem_id >> 8) & 0xFF) as u8, (kem_id & 0xFF) as u8,
+        ((kdf_id >> 8) & 0xFF) as u8, (kdf_id & 0xFF) as u8,
+        ((aead_id >> 8) & 0xFF) as u8, (aead_id & 0xFF) as u8,
+    ];
+
+    // psk_id_hash = LabeledExtract("", "psk_id_hash", "")
+    let psk_id_hash = hpke_labeled_extract(hpke_suite_id[..], [], "psk_id_hash", []);
+
+    // info_hash = LabeledExtract("", "info_hash", info)
+    let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
+
+    // key_schedule_context = mode (1B) || psk_id_hash (32B) || info_hash (32B)
+    var ks_context: u8[65] = [0; 65];
+    ks_context[0] = HPKE_MODE_BASE;
+    for i in 32 {
+        ks_context[1 + i] = psk_id_hash[i];
+        ks_context[33 + i] = info_hash[i];
+    }
+
+    // secret = LabeledExtract(shared_secret, "secret", "")
+    let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+
+    // Key and Nonce lengths based on AEAD
+    var key_len: u16 = 16;
+    if aead_id == HPKE_AEAD_AES_256_GCM || aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+        key_len = 32;
+    }
+    let nonce_len: u16 = 12;
+
+    out_ctx.aead_id = aead_id;
+    out_ctx.key_len = key_len;
+    out_ctx.nonce_len = nonce_len;
+    out_ctx.seq = 0;
+
+    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "key", ks_context[..], key_len, out_ctx.key[..key_len]) else { return false; }
+    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "base_nonce", ks_context[..], nonce_len, out_ctx.base_nonce[..nonce_len]) else { return false; }
+    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "exp", ks_context[..], 32, out_ctx.exporter_secret[..]) else { return false; }
+
+    return true;
+}
+
+// Sets up a base-mode recipient context (SetupBaseR).
+fn hpke_setup_base_r(
+    enc: const u8[32]&,
+    skR: const u8[32]&,
+    info: const u8[:],
+    kem_id: u16,
+    kdf_id: u16,
+    aead_id: u16,
+    out_ctx: HpkeContext&
+) -> bool {
+    guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
+    guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
+
+    let pkR = x25519_base_scalarmult(skR);
+    var shared_secret: u8[32] = [0; 32];
+    guard dhkem_x25519_decap(enc, skR, pkR, shared_secret) else { return false; }
+
+    var hpke_suite_id: u8[10] = [
+        0x48, 0x50, 0x4B, 0x45,
+        ((kem_id >> 8) & 0xFF) as u8, (kem_id & 0xFF) as u8,
+        ((kdf_id >> 8) & 0xFF) as u8, (kdf_id & 0xFF) as u8,
+        ((aead_id >> 8) & 0xFF) as u8, (aead_id & 0xFF) as u8,
+    ];
+
+    let psk_id_hash = hpke_labeled_extract(hpke_suite_id[..], [], "psk_id_hash", []);
+    let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
+
+    var ks_context: u8[65] = [0; 65];
+    ks_context[0] = HPKE_MODE_BASE;
+    for i in 32 {
+        ks_context[1 + i] = psk_id_hash[i];
+        ks_context[33 + i] = info_hash[i];
+    }
+
+    let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+
+    var key_len: u16 = 16;
+    if aead_id == HPKE_AEAD_AES_256_GCM || aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+        key_len = 32;
+    }
+    let nonce_len: u16 = 12;
+
+    out_ctx.aead_id = aead_id;
+    out_ctx.key_len = key_len;
+    out_ctx.nonce_len = nonce_len;
+    out_ctx.seq = 0;
+
+    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "key", ks_context[..], key_len, out_ctx.key[..key_len]) else { return false; }
+    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "base_nonce", ks_context[..], nonce_len, out_ctx.base_nonce[..nonce_len]) else { return false; }
+    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "exp", ks_context[..], 32, out_ctx.exporter_secret[..]) else { return false; }
+
+    return true;
+}
+
+// Computes current AEAD nonce: nonce = base_nonce ^ (0^32 || be64(seq)).
+fn hpke_compute_nonce(ctx: const HpkeContext&) -> u8[12] {
+    var nonce: u8[12] = [0; 12];
+    for i in 12 { nonce[i] = ctx.base_nonce[i]; }
+    for i in 8 {
+        let b = ((ctx.seq >> ((7 - i) * 8)) & 0xFF) as u8;
+        nonce[4 + i] ^= b;
+    }
+    return nonce;
+}
+
+// ---- 5. HPKE Seal and Open (RFC 9180 Section 5.2) ---------------------------
+
+// Encrypts plaintext with current context key/nonce, increments seq, and appends ciphertext + 16B tag.
+fn hpke_seal(
+    ctx: HpkeContext&,
+    aad: const u8[:],
+    pt: const u8[:],
+    out_ct: u8[>..]&
+) -> bool {
+    let nonce = hpke_compute_nonce(ctx);
+    ctx.seq += 1;
+
+    if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
+        var key16: u8[16] = [0; 16];
+        for i in 16 { key16[i] = ctx.key[i]; }
+        let tag = aes128_gcm_seal(key16, nonce, pt, aad, out_ct);
+        for i in 16 { out_ct.push(tag[i]); }
+        return true;
+    } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
+        let tag = aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct);
+        for i in 16 { out_ct.push(tag[i]); }
+        return true;
+    } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+        let tag = chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct);
+        for i in 16 { out_ct.push(tag[i]); }
+        return true;
+    }
+    return false;
+}
+
+// Decrypts ciphertext + 16B tag with current context key/nonce, increments seq.
+fn hpke_open(
+    ctx: HpkeContext&,
+    aad: const u8[:],
+    ct_with_tag: const u8[:],
+    out_pt: u8[>..]&
+) -> bool {
+    guard ct_with_tag.len >= 16 else { return false; }
+    let ct_len = ct_with_tag.len - 16;
+    let ct = ct_with_tag[..ct_len];
+
+    var tag: u8[16] = [0; 16];
+    for i in 16 { tag[i] = ct_with_tag[ct_len + i]; }
+
+    let nonce = hpke_compute_nonce(ctx);
+    ctx.seq += 1;
+
+    if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
+        var key16: u8[16] = [0; 16];
+        for i in 16 { key16[i] = ctx.key[i]; }
+        return aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
+    } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
+        return aes256_gcm_open(ctx.key, nonce, ct, aad, tag, out_pt);
+    } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+        return chacha20_poly1305_open(ctx.key, nonce, ct, aad, tag, out_pt);
+    }
+    return false;
+}
+
+// Single-shot seal for ECH: generates ephemeral keys, encapsulates, and seals in one pass.
+fn hpke_seal_base(
+    pkR: const u8[32]&,
+    info: const u8[:],
+    aad: const u8[:],
+    pt: const u8[:],
+    ephemeral_sk: const u8[32]&,
+    aead_id: u16,
+    out_enc: u8[32]&,
+    out_ct: u8[>..]&
+) -> bool {
+    var ctx = HpkeContext { .. };
+    guard hpke_setup_base_s(
+        pkR,
+        info,
+        HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+        HPKE_KDF_HKDF_SHA256,
+        aead_id,
+        ephemeral_sk,
+        out_enc,
+        ctx
+    ) else {
+        return false;
+    }
+    return hpke_seal(ctx, aad, pt, out_ct);
+}
+
+// Single-shot open for ECH recipient.
+fn hpke_open_base(
+    enc: const u8[32]&,
+    skR: const u8[32]&,
+    info: const u8[:],
+    aad: const u8[:],
+    ct_with_tag: const u8[:],
+    aead_id: u16,
+    out_pt: u8[>..]&
+) -> bool {
+    var ctx = HpkeContext { .. };
+    guard hpke_setup_base_r(
+        enc,
+        skR,
+        info,
+        HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+        HPKE_KDF_HKDF_SHA256,
+        aead_id,
+        ctx
+    ) else {
+        return false;
+    }
+    return hpke_open(ctx, aad, ct_with_tag, out_pt);
+}

@@ -928,6 +928,70 @@ fn xchacha20_poly1305_open(
     return true;
 }
 
+// ChaCha20-Poly1305 AEAD (IETF RFC 8439, 12-byte nonce)
+fn chacha20_poly1305_seal(
+    key: const u8[32]&,
+    nonce12: const u8[12]&,
+    plaintext: const u8[:],
+    aad: const u8[:],
+    out_ciphertext: u8[>..]&,
+) -> u8[16] {
+    let ot_block = chacha20_block(key, 0, nonce12);
+    var otk: u8[32] = [0; 32];
+    for i in 32 { otk[i] = ot_block[i]; }
+
+    let ct_start = out_ciphertext.len;
+    chacha20_xor(key, 1, nonce12, plaintext, out_ciphertext);
+    let ciphertext_slice = out_ciphertext[ct_start..];
+
+    var auth_data: u8[>..] = [];
+    auth_data.append(aad);
+    if (aad.len % 16) != 0 {
+        for p in (16 - (aad.len % 16)) { auth_data.push(0); }
+    }
+    auth_data.append(ciphertext_slice);
+    if (ciphertext_slice.len % 16) != 0 {
+        for p in (16 - (ciphertext_slice.len % 16)) { auth_data.push(0); }
+    }
+    for b in 8 { auth_data.push(((aad.len as u64) >> (b * 8)) as u8); }
+    for b in 8 { auth_data.push(((ciphertext_slice.len as u64) >> (b * 8)) as u8); }
+
+    return poly1305_mac(otk, auth_data[..]);
+}
+
+fn chacha20_poly1305_open(
+    key: const u8[32]&,
+    nonce12: const u8[12]&,
+    ciphertext: const u8[:],
+    aad: const u8[:],
+    tag: const u8[16]&,
+    out_plaintext: u8[>..]&,
+) -> bool {
+    let ot_block = chacha20_block(key, 0, nonce12);
+    var otk: u8[32] = [0; 32];
+    for i in 32 { otk[i] = ot_block[i]; }
+
+    var auth_data: u8[>..] = [];
+    auth_data.append(aad);
+    if (aad.len % 16) != 0 {
+        for p in (16 - (aad.len % 16)) { auth_data.push(0); }
+    }
+    auth_data.append(ciphertext);
+    if (ciphertext.len % 16) != 0 {
+        for p in (16 - (ciphertext.len % 16)) { auth_data.push(0); }
+    }
+    for b in 8 { auth_data.push(((aad.len as u64) >> (b * 8)) as u8); }
+    for b in 8 { auth_data.push(((ciphertext.len as u64) >> (b * 8)) as u8); }
+
+    let computed_tag = poly1305_mac(otk, auth_data[..]);
+    guard ct_eq_tag16(computed_tag, tag) else {
+        return false;
+    }
+
+    chacha20_xor(key, 1, nonce12, ciphertext, out_plaintext);
+    return true;
+}
+
 // ---- aes-256-gcm (nist sp 800-38d) -----------------------------------------
 
 let AES_SBOX: const u8[256] = [
@@ -1046,6 +1110,87 @@ fn aes_encrypt_block(ks: const Aes256KeySchedule&, input: const u8[16]&) -> u8[1
 
     for i in 4 {
         let rk = ks.round_keys[56 + i];
+        state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+        state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+        state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+        state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+    }
+    return state;
+}
+
+struct Aes128KeySchedule {
+    round_keys: u32[44] = [0; 44],
+}
+
+fn aes128_key_schedule(key: const u8[16]&) -> Aes128KeySchedule {
+    var ks = Aes128KeySchedule { .. };
+    for i in 4 {
+        let off = i * 4;
+        ks.round_keys[i] = ((key[off] as u32) << 24) |
+                           ((key[off + 1] as u32) << 16) |
+                           ((key[off + 2] as u32) << 8) |
+                           key[off + 3];
+    }
+    for i in 4..44 {
+        var temp = ks.round_keys[i - 1];
+        if (i % 4) == 0 {
+            temp = aes_sub_word(aes_rot_word(temp)) ^ AES_RCON[(i / 4) - 1];
+        }
+        ks.round_keys[i] = ks.round_keys[i - 4] ^ temp;
+    }
+    return ks;
+}
+
+fn aes128_encrypt_block(ks: const Aes128KeySchedule&, input: const u8[16]&) -> u8[16] {
+    var state: u8[16] = [0; 16];
+    for i in 16 { state[i] = input[i]; }
+
+    // Initial round key addition
+    for i in 4 {
+        let rk = ks.round_keys[i];
+        state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+        state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+        state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+        state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+    }
+
+    // 9 main rounds
+    for round in 1..10 {
+        for i in 16 { state[i] = AES_SBOX[state[i]]; }
+        let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
+        let t2 = state[2]; state[2] = state[10]; state[10] = t2;
+        let t6 = state[6]; state[6] = state[14]; state[14] = t6;
+        let t3 = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = t3;
+
+        for c in 4 {
+            let col = c * 4;
+            let a0 = state[col]; let a1 = state[col + 1];
+            let a2 = state[col + 2]; let a3 = state[col + 3];
+            state[col] = xtime(a0 ^ a1) ^ a1 ^ a2 ^ a3;
+            state[col + 1] = xtime(a1 ^ a2) ^ a2 ^ a3 ^ a0;
+            state[col + 2] = xtime(a2 ^ a3) ^ a3 ^ a0 ^ a1;
+            state[col + 3] = xtime(a3 ^ a0) ^ a0 ^ a1 ^ a2;
+        }
+
+        let rk_base = round * 4;
+        for i in 4 {
+            let rk = ks.round_keys[rk_base + i];
+            state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+            state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+            state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+            state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+        }
+    }
+
+    // Final round (no MixColumns)
+    for i in 16 { state[i] = AES_SBOX[state[i]]; }
+    let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
+    let t2 = state[2]; state[2] = state[10]; state[10] = t2;
+    let t6 = state[6]; state[6] = state[14]; state[14] = t6;
+    let t3 = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = t3;
+
+    for i in 4 {
+        let rk = ks.round_keys[40 + i];
         state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
         state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
         state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
@@ -1212,6 +1357,122 @@ fn aes256_gcm_open(
         ctr[15] = (val & 0xFF) as u8;
 
         let enc_ctr = aes_encrypt_block(ks, ctr);
+        let rem = ciphertext.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            out_plaintext.push(ciphertext[offset + i] ^ enc_ctr[i]);
+        }
+        offset += take;
+    }
+    return true;
+}
+
+// AES-128-GCM (NIST SP 800-38D)
+fn aes128_gcm_seal(
+    key: const u8[16]&,
+    nonce12: const u8[12]&,
+    plaintext: const u8[:],
+    aad: const u8[:],
+    out_ciphertext: u8[>..]&,
+) -> u8[16] {
+    let ks = aes128_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes128_encrypt_block(ks, zero_block);
+
+    var j0: u8[16] = [0; 16];
+    for i in 12 { j0[i] = nonce12[i]; }
+    j0[15] = 1;
+
+    let ct_start = out_ciphertext.len;
+    var ctr = j0;
+    var offset = 0;
+    while offset < plaintext.len {
+        var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
+        val += 1;
+        ctr[12] = ((val >> 24) & 0xFF) as u8;
+        ctr[13] = ((val >> 16) & 0xFF) as u8;
+        ctr[14] = ((val >> 8) & 0xFF) as u8;
+        ctr[15] = (val & 0xFF) as u8;
+
+        let enc_ctr = aes128_encrypt_block(ks, ctr);
+        let rem = plaintext.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            out_ciphertext.push(plaintext[offset + i] ^ enc_ctr[i]);
+        }
+        offset += take;
+    }
+
+    let ct_slice = out_ciphertext[ct_start..];
+    var ghash_acc: u8[16] = [0; 16];
+    ghash_update(h, ghash_acc, aad);
+    ghash_update(h, ghash_acc, ct_slice);
+
+    var len_block: u8[16] = [0; 16];
+    let aad_bits = (aad.len as u64) * 8;
+    let ct_bits = (ct_slice.len as u64) * 8;
+    for i in 8 {
+        len_block[i] = ((aad_bits >> ((7 - i) * 8)) & 0xFF) as u8;
+        len_block[8 + i] = ((ct_bits >> ((7 - i) * 8)) & 0xFF) as u8;
+    }
+    for i in 16 { ghash_acc[i] ^= len_block[i]; }
+    ghash_acc = ghash_mul(ghash_acc, h);
+
+    let enc_j0 = aes128_encrypt_block(ks, j0);
+    var tag: u8[16] = [0; 16];
+    for i in 16 { tag[i] = ghash_acc[i] ^ enc_j0[i]; }
+    return tag;
+}
+
+fn aes128_gcm_open(
+    key: const u8[16]&,
+    nonce12: const u8[12]&,
+    ciphertext: const u8[:],
+    aad: const u8[:],
+    tag: const u8[16]&,
+    out_plaintext: u8[>..]&,
+) -> bool {
+    let ks = aes128_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes128_encrypt_block(ks, zero_block);
+
+    var j0: u8[16] = [0; 16];
+    for i in 12 { j0[i] = nonce12[i]; }
+    j0[15] = 1;
+
+    var ghash_acc: u8[16] = [0; 16];
+    ghash_update(h, ghash_acc, aad);
+    ghash_update(h, ghash_acc, ciphertext);
+
+    var len_block: u8[16] = [0; 16];
+    let aad_bits = (aad.len as u64) * 8;
+    let ct_bits = (ciphertext.len as u64) * 8;
+    for i in 8 {
+        len_block[i] = ((aad_bits >> ((7 - i) * 8)) & 0xFF) as u8;
+        len_block[8 + i] = ((ct_bits >> ((7 - i) * 8)) & 0xFF) as u8;
+    }
+    for i in 16 { ghash_acc[i] ^= len_block[i]; }
+    ghash_acc = ghash_mul(ghash_acc, h);
+
+    let enc_j0 = aes128_encrypt_block(ks, j0);
+    var computed_tag: u8[16] = [0; 16];
+    for i in 16 { computed_tag[i] = ghash_acc[i] ^ enc_j0[i]; }
+
+    guard ct_eq_tag16(computed_tag, tag) else {
+        return false;
+    }
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < ciphertext.len {
+        var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
+        val += 1;
+        ctr[12] = ((val >> 24) & 0xFF) as u8;
+        ctr[13] = ((val >> 16) & 0xFF) as u8;
+        ctr[14] = ((val >> 8) & 0xFF) as u8;
+        ctr[15] = (val & 0xFF) as u8;
+
+        let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
         let take = if rem < 16 { rem } else { 16 };
         for i in take {
