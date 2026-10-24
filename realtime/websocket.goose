@@ -403,6 +403,31 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
     guard p_start + p_len <= wire.len else { return false; }
     let payload = wire[p_start..(p_start + p_len)];
 
+    // Protocol validations (RFC 6455 Section 5.1 & 5.2):
+    // 1. RSV bits must be 0 unless an extension is negotiated.
+    if hdr.rsv1 || hdr.rsv2 || hdr.rsv3 {
+        ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension", out_reply);
+        ws.is_closed = true;
+        ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+        return true;
+    }
+
+    // 2. Client MUST NOT receive masked frames from server.
+    if ws.is_client && hdr.masked {
+        ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "masked frame received by client", out_reply);
+        ws.is_closed = true;
+        ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+        return true;
+    }
+
+    // 3. Server MUST NOT receive unmasked frames from client.
+    if !ws.is_client && !hdr.masked {
+        ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "unmasked frame received by server", out_reply);
+        ws.is_closed = true;
+        ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+        return true;
+    }
+
     if hdr.masked {
         mask_websocket_payload(payload, hdr.mask_key);
     }

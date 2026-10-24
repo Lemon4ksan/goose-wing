@@ -117,7 +117,15 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
         for i in rem.len {
             let b = rem[i];
             if b == '"' {
-                in_quotes = !in_quotes;
+                var slash_count: i64 = 0;
+                var j = i - 1;
+                while j >= 0 && rem[j] == '\\' {
+                    slash_count++;
+                    j--;
+                }
+                if (slash_count % 2) == 0 {
+                    in_quotes = !in_quotes;
+                }
             } else if b == ';' && !in_quotes {
                 next_semi = i;
                 break;

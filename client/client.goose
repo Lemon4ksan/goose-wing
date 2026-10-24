@@ -875,12 +875,13 @@ fn prepare_hop_cookie_header(
     safe_method: bool,
 ) {
     var matched_cookies: CanonicalCookie[>..] = [];
+    let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
     session.jar.get_canonical_cookies_for_request(
         current_url.hostname(),
         current_url.pathname(),
         current_url.scheme(),
         current_url.effective_port(),
-        current_url.is_secure_scheme(),
+        is_sec_channel,
         true,
         "",
         session.virtual_clock_us,
@@ -912,11 +913,12 @@ fn ingest_hop_response_cookies(
         default_cookie_path_calc(current_url.pathname(), def_path);
         var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(set_cookie_str[..], current_url.hostname(), def_path[..], session.virtual_clock_us);
         if cookie_ok {
+            let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
             let can_write, code = can_set_canonical_cookie_for_context(
                 parsed_cookie,
                 samesite_eval,
                 ctx.is_main_frame,
-                current_url.is_secure_scheme()
+                is_sec_channel
             );
             if can_write {
                 session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us);

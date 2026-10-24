@@ -1571,6 +1571,11 @@ enum ChunkedDecodeError {
 }
 
 fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError {
+    // RFC 9112 Section 7.1.1 & Go #64433 / CVE-2023-39326: Chunk line / extension length bound
+    guard chunk_size_line.len <= 1024 else {
+        return ChunkedDecodeError.InvalidChunkExtension;
+    }
+
     var semi_idx: i64 = -1;
     for i in chunk_size_line.len {
         let b = chunk_size_line[i];

@@ -263,9 +263,22 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
         }
 
         let raw_part_headers = body[cursor..header_end];
+        // Go #81741 / CVE-2026-94440 & Go #65383: Account for header memory to prevent limit bypass
+        total_memory_used += raw_part_headers.len;
+        guard total_memory_used <= options.max_memory_bytes else {
+            msg.valid = false;
+            return msg, MultipartError.ExceededMaxMemory;
+        }
+
         var part_headers = HeaderMap { .. };
         let h_err = parse_headers(raw_part_headers, part_headers);
         guard is_ok(h_err) else {
+            msg.valid = false;
+            return msg, MultipartError.InvalidPartHeaders;
+        }
+
+        // RFC 7578 Section 4.7 & Go #66434 / #63855: Content-Transfer-Encoding is deprecated and MUST be rejected
+        if has_header(part_headers, "content-transfer-encoding") {
             msg.valid = false;
             return msg, MultipartError.InvalidPartHeaders;
         }

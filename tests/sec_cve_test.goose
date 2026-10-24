@@ -464,6 +464,182 @@ fn test_go_81671_query_method_replayable(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 12. Go #58547 / CVE-2023-24538: MIME Parameter Escaped Quotes & Semicolons
+// ----------------------------------------------------------------------------
+fn test_cve_2023_24538_mime_param_escaped_quotes(t: core::T&) {
+    t.run("Escaped quote with semicolon inside parameter value (Go #58547)") { sub =>
+        let raw_ct = "text/html; title=\"hello \\\"; foo=bar\"; charset=utf-8";
+        let mt, ok = wing::parse_media_type(raw_ct);
+        sub.assert_true(ok, "MIME parsing must succeed with escaped quote and semicolon");
+        sub.assert_bytes_eq(mt.mime_type[..], "text/html", "Mime type text/html");
+        sub.assert_eq(mt.params.len, 2, "Must have exactly 2 parameters");
+        sub.assert_bytes_eq(mt.params[0].name[..], "title", "Param 0 name is title");
+        sub.assert_bytes_eq(mt.params[0].value[..], "hello \"; foo=bar", "Param 0 value preserves internal semicolon");
+        sub.assert_bytes_eq(mt.params[1].name[..], "charset", "Param 1 name is charset");
+        sub.assert_bytes_eq(mt.params[1].value[..], "utf-8", "Param 1 value is utf-8");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 13. RFC 6455 & Go WebSocket Issue #328: RSV Bit Invariants & Masking Enforcement
+// ----------------------------------------------------------------------------
+fn test_rfc6455_websocket_security_invariants(t: core::T&) {
+    t.run("RSV1/RSV2/RSV3 bit injection MUST trigger 1002 Protocol Error") { sub =>
+        var client_ws = wing::new_websocket_session(true);
+
+        // Frame with RSV1 = 1 (0x40)
+        let rsv1_frame: u8[2] = [0xC1, 0x00]; // FIN=1, RSV1=1, Opcode=1 (Text), Length=0
+        var msg = wing::WsMessage { .. };
+        var reply: u8[>..] = [];
+        let handled = client_ws.receive(rsv1_frame[..], msg, reply);
+        sub.assert_true(client_ws.is_closed, "Connection closed on non-zero RSV bit");
+        sub.assert_eq(client_ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Protocol error 1002 on RSV bit");
+    };
+
+    t.run("Client receiving masked frame MUST trigger 1002 Protocol Error (RFC 6455 Section 5.1)") { sub =>
+        var client_ws = wing::new_websocket_session(true);
+
+        // Masked server frame sent to client
+        let mask: u8[4] = [1, 2, 3, 4];
+        var masked_frame: u8[>..] = [];
+        wing::encode_ws_frame(masked_frame, wing::WS_OPCODE_TEXT, "hello", true, mask, true);
+
+        var msg = wing::WsMessage { .. };
+        var reply: u8[>..] = [];
+        client_ws.receive(masked_frame[..], msg, reply);
+        sub.assert_true(client_ws.is_closed, "Client MUST fail connection on masked frame from server");
+        sub.assert_eq(client_ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "1002 Protocol Error on masked server frame");
+    };
+
+    t.run("Server receiving unmasked frame MUST trigger 1002 Protocol Error (RFC 6455 Section 5.1)") { sub =>
+        var server_ws = wing::new_websocket_session(false); // is_client = false
+
+        // Unmasked client frame sent to server
+        let no_mask: u8[4] = [0, 0, 0, 0];
+        var unmasked_frame: u8[>..] = [];
+        wing::encode_ws_frame(unmasked_frame, wing::WS_OPCODE_TEXT, "hello", false, no_mask, true);
+
+        var msg = wing::WsMessage { .. };
+        var reply: u8[>..] = [];
+        server_ws.receive(unmasked_frame[..], msg, reply);
+        sub.assert_true(server_ws.is_closed, "Server MUST fail connection on unmasked frame from client");
+        sub.assert_eq(server_ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "1002 Protocol Error on unmasked client frame");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 14. Go #40928 & RFC 7301 Section 3.1: ALPN NUL Byte Injection & Empty List
+// ----------------------------------------------------------------------------
+fn test_cve_alpn_nul_byte_and_empty_list(t: core::T&) {
+    t.run("ALPN with embedded NUL byte MUST be rejected (RFC 7301 Section 3.1)") { sub =>
+        // Protocol list: ["h2\0", "h2"] -> 1st entry has embedded NUL byte
+        let alpn_nul: u8[9] = [0x00, 0x07, 0x03, 'h', '2', 0x00, 0x02, 'h', '2'];
+        let res = wing::negotiate_alpn(alpn_nul[..], false);
+        sub.assert_true(res == wing::NegotiatedAlpn.None, "ALPN with embedded NUL byte must negotiate None (RFC 7301)");
+    };
+
+    t.run("ALPN with empty list (0 length) MUST be rejected") { sub =>
+        let alpn_zero_list: u8[2] = [0x00, 0x00];
+        let res = wing::negotiate_alpn(alpn_zero_list[..], false);
+        sub.assert_true(res == wing::NegotiatedAlpn.None, "ALPN with 0-length list must negotiate None");
+    };
+}
+// ----------------------------------------------------------------------------
+// 15. Go #66434 / #63855 & RFC 7578 Section 4.7: Content-Transfer-Encoding Rejection
+// ----------------------------------------------------------------------------
+fn test_cve_rfc7578_reject_content_transfer_encoding(t: core::T&) {
+    t.run("Multipart form-data part containing Content-Transfer-Encoding MUST be rejected") { sub =>
+        let boundary = "boundary123";
+        let body = "--boundary123\r\nContent-Disposition: form-data; name=\"upload\"\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--boundary123--\r\n";
+        
+        let msg, err = wing::parse_multipart(body, boundary);
+        sub.assert_false(wing::is_ok(err), "RFC 7578 Section 4.7: Content-Transfer-Encoding in multipart MUST be rejected");
+        sub.assert_false(msg.valid, "Multipart message marked invalid");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 16. Go #64433 / CVE-2023-39326: Chunk Extension Line Overflow Defense
+// ----------------------------------------------------------------------------
+fn test_cve_2023_39326_chunk_extension_overflow(t: core::T&) {
+    t.run("Chunk size line with excessive extension (> 1024 bytes) MUST be rejected") { sub =>
+        var raw: u8[>..] = [];
+        raw.append("5;ext=");
+        for i in 1050 { raw.push('A'); }
+        raw.append("\r\nhello\r\n0\r\n\r\n");
+
+        var out: u8[>..] = [];
+        let err = wing::decode_chunked_body(raw[..], out);
+        sub.assert_true(err == wing::ChunkedDecodeError.InvalidChunkExtension, "Excessive chunk extension must be rejected with InvalidChunkExtension");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 17. Go #60997 & RFC 6265bis: CookieJar Secure Cookie Exemption on Localhost
+// ----------------------------------------------------------------------------
+fn test_go_60997_localhost_secure_cookies(t: core::T&) {
+    t.run("Secure and SameSite=None cookies must be accepted and forwarded on http://localhost") { sub =>
+        var session = wing::new_session();
+        
+        wing::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
+        wing::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");
+
+        let req1 = wing::new_get("http://localhost:8080/login");
+        let res1, err1 = wing::execute_request(session, req1);
+        sub.assert_true(wing::ok(err1), "Login request to localhost succeeded");
+        sub.assert_bytes_eq(wing::cookie(session, "sid"), "local_secret", "Secure cookie must be accepted on http://localhost");
+
+        wing::mock_route(session, "GET", "http://localhost:8080/api", 200, "data");
+
+        let req2 = wing::new_get("http://localhost:8080/api");
+        let res2, err2 = wing::execute_request(session, req2);
+        sub.assert_true(wing::ok(err2), "API request to localhost succeeded");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 18. Go #81741 / CVE-2026-94440 & Go #65383 / CVE-2023-45290: Multipart Memory Limit
+// ----------------------------------------------------------------------------
+fn test_cve_2026_94440_multipart_memory_header_accounting(t: core::T&) {
+    t.run("Multipart form memory limit must account for header bytes (Go #81741 & CVE-2026-94440)") { sub =>
+        let boundary = "bound999";
+        var body: u8[>..] = [];
+        body.append("--bound999\r\nContent-Disposition: form-data; name=\"field\"\r\nX-Padding: ");
+        for i in 1200 { body.push('X'); }
+        body.append("\r\n\r\nsmall_payload\r\n--bound999--\r\n");
+
+        var options = wing::default_multipart_options();
+        options.max_memory_bytes = 1000; // Small limit: 1000 bytes
+
+        let msg, err = wing::parse_multipart(body[..], boundary, options);
+        sub.assert_true(err == wing::MultipartError.ExceededMaxMemory, "Form with 1200-byte header must exceed 1000-byte max_memory_bytes");
+        sub.assert_false(msg.valid, "Multipart marked invalid on memory limit breach");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 19. Go #16875 & RFC 9110 Section 7.6.1: Proxy Hop-by-Hop Header Sanitization
+// ----------------------------------------------------------------------------
+fn test_rfc9110_proxy_hop_by_hop_sanitization(t: core::T&) {
+    t.run("Proxy header sanitization must strip standard hop-by-hop headers and connection tokens (RFC 9110 & Go #16875)") { sub =>
+        var headers: wing::HeaderItem[..32] = [];
+        headers.push(wing::make_header("Host", "origin.example.com", false));
+        headers.push(wing::make_header("Proxy-Authorization", "Basic c2VjcmV0", false));
+        headers.push(wing::make_header("Connection", "keep-alive, x-forwarded-hop", false));
+        headers.push(wing::make_header("Keep-Alive", "timeout=5", false));
+        headers.push(wing::make_header("Transfer-Encoding", "chunked", false));
+        headers.push(wing::make_header("X-Forwarded-Hop", "strip-me", false));
+        headers.push(wing::make_header("Accept", "application/json", false));
+
+        wing::sanitize_tunnel_headers_for_origin(headers);
+
+        sub.assert_eq(headers.len, 2, "Only non-hop-by-hop headers (Host, Accept) should remain");
+        sub.assert_bytes_eq(headers[0].name[..], "Host", "Header 0 is Host");
+        sub.assert_bytes_eq(headers[1].name[..], "Accept", "Header 1 is Accept");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("CVE Regression Suite", core::Verbosity.Verbose);
 
@@ -478,6 +654,14 @@ fn main() {
     core::run_case(runner, "9. CVE-2025-4673 & CVE-2021-33197 (Proxy-Authorization Leakage & Header Stripping)", test_cve_proxy_authorization_leakage);
     core::run_case(runner, "10. CVE-2025-22870 (IPv6 Zone ID Proxy Bypass & SSRF Defense)", test_cve_ipv6_zone_id_proxy_bypass);
     core::run_case(runner, "11. Go #81671 & RFC 9110 (QUERY Method Replayability)", test_go_81671_query_method_replayable);
+    core::run_case(runner, "12. Go #58547 (MIME Parameter Escaped Quotes & Semicolons)", test_cve_2023_24538_mime_param_escaped_quotes);
+    core::run_case(runner, "13. RFC 6455 & Go WS #328 (RSV Bit Invariants & Masking Rules)", test_rfc6455_websocket_security_invariants);
+    core::run_case(runner, "14. Go #40928 & RFC 7301 (ALPN NUL Injection & Empty List)", test_cve_alpn_nul_byte_and_empty_list);
+    core::run_case(runner, "15. Go #66434 & RFC 7578 (Content-Transfer-Encoding Rejection)", test_cve_rfc7578_reject_content_transfer_encoding);
+    core::run_case(runner, "16. Go #64433 / CVE-2023-39326 (Chunk Extension Line Overflow Defense)", test_cve_2023_39326_chunk_extension_overflow);
+    core::run_case(runner, "17. Go #60997 & RFC 6265bis (Localhost Secure Cookie Exemption)", test_go_60997_localhost_secure_cookies);
+    core::run_case(runner, "18. Go #81741 & CVE-2026-94440 (Multipart Memory Limit Overhead)", test_cve_2026_94440_multipart_memory_header_accounting);
+    core::run_case(runner, "19. Go #16875 & RFC 9110 (Proxy Hop-by-Hop Header Sanitization)", test_rfc9110_proxy_hop_by_hop_sanitization);
 
     let ok = core::finish(runner);
     assert(ok);

@@ -287,6 +287,13 @@ fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn 
         let proto = proto_cursor.buf;
         if proto.len == 0 { return NegotiatedAlpn.None; }
 
+        // RFC 7301 Section 3.1 & Go #40928: Protocol names MUST NOT contain NUL bytes
+        for b in proto {
+            if b == 0 {
+                return NegotiatedAlpn.None;
+            }
+        }
+
         has_any = true;
         if proto.len == 2 && proto[0] == 'h' && proto[1] == '3' {
             has_h3 = true;

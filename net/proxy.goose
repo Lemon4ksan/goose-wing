@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import http.headers;
 
 // ---- 1. SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
 
@@ -264,14 +265,44 @@ fn build_http_connect_request(
     out.append("Proxy-Connection: Keep-Alive\r\n\r\n");
 }
 
-// Strips Proxy-Authorization and Proxy-Connection headers so credentials never leak to origin.
+// Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers, and Connection tokens so credentials never leak to origin (RFC 9110 Section 7.6.1 & Go #16875).
 fn sanitize_tunnel_headers_for_origin(headers: HeaderItem[..32]&) {
+    var custom_tokens: u8[..64][..16] = [];
+    for &h in headers {
+        if eq_ascii_fold(h.name[..], "connection") {
+            let val = h.value[..];
+            var cursor: i64 = 0;
+            while cursor < val.len {
+                var comma_idx = cursor;
+                while comma_idx < val.len && val[comma_idx] != ',' {
+                    comma_idx++;
+                }
+                let token = trim_lws(val[cursor..comma_idx]);
+                if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
+                    if custom_tokens.len < 16 {
+                        var tok_buf: u8[..64] = [];
+                        tok_buf.append(token);
+                        custom_tokens.push(tok_buf);
+                    }
+                }
+                cursor = comma_idx + 1;
+            }
+        }
+    }
+
     var write_idx = 0;
     for read_idx in headers.len {
         let h_name = headers[read_idx].name[..];
-        if !eq_ascii_fold(h_name, "proxy-authorization") &&
-           !eq_ascii_fold(h_name, "proxy-authenticate") &&
-           !eq_ascii_fold(h_name, "proxy-connection") {
+        var drop = is_hop_by_hop_header_name(h_name);
+        if !drop {
+            for &tok in custom_tokens {
+                if eq_ascii_fold(h_name, tok[..]) {
+                    drop = true;
+                    break;
+                }
+            }
+        }
+        if !drop {
             if write_idx != read_idx {
                 headers[write_idx] = copy(headers[read_idx]);
             }
