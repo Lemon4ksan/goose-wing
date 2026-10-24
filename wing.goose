@@ -48,6 +48,9 @@ import http.multipart;
 import http.trace;
 import http.altsvc;
 import http.compression_dict;
+import http.signatures;
+import http.resumable_upload;
+import http.status_diagnostics;
 import http.hsts;
 import http.early_hints;
 import http.novarysearch;
@@ -79,6 +82,7 @@ import security.csrf;
 import security.cors;
 import security.rate_limiter;
 import security.privacypass;
+import security.cross_origin_isolation;
 
 // ---- authentication (rfc 7616 digest, aws sigv4, rfc 7636 pkce, rfc 9449 dpop) -
 
@@ -95,6 +99,7 @@ import tls.handshake;
 import tls.x509;
 import tls.hpke;
 import tls.ech;
+import tls.post_quantum;
 
 // ---- server primitives -----------------------------------------------------
 
@@ -118,6 +123,7 @@ import net.sockopt;
 
 import realtime.websocket;
 import realtime.sse;
+import realtime.webtransport;
 
 // ---- grpc over http/2 & http/3 & grpc-web ---------------------------------
 
