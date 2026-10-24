@@ -112,6 +112,18 @@ fn test_client_dictionary_lifecycle(t: core::T&) {
 
         // Verify transparent dcz decompression!
         sub.assert_bytes_eq(resp2.body[..], original_app_js, "Body was transparently decompressed from dcz!");
+
+        // 3. Mock app endpoint returning DCB (Dictionary-Compressed Brotli) response
+        let original_app_css = "body { margin: 0; padding: 0; background: #fff; }";
+        var dcb_payload: u8[>..] = [];
+        wing::encode_dcb_response(dcb_payload, dict_hash, original_app_css);
+
+        wing::mock_route(client, "GET", "https://cdn.site.com/assets/style.css", 200, dcb_payload[..]);
+        wing::add_mock_header(client, "Content-Encoding", "dcb");
+
+        let resp3, err3 = wing::get(client, "https://cdn.site.com/assets/style.css");
+        sub.assert_true(wing::ok(err3), "fetch style.css ok");
+        sub.assert_bytes_eq(resp3.body[..], original_app_css, "Body was transparently decompressed from dcb!");
     };
 
     t.run("Dictionary TTL Expiration") { sub =>

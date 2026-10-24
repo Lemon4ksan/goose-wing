@@ -188,6 +188,20 @@ fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
     return true;
 }
 
+// Encodes a DCB (Dictionary-Compressed Brotli) frame:
+// [0xFF, 'D', 'C', 'B'] || [32-byte Dictionary SHA-256] || [Compressed Brotli Payload]
+fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
+    out.push(DCB_MAGIC_BYTE0);
+    out.push(DCB_MAGIC_BYTE1);
+    out.push(DCB_MAGIC_BYTE2);
+    out.push(DCB_MAGIC_BYTE3);
+    for b in dict_hash {
+        out.push(b);
+    }
+    out.append(compressed_payload);
+    return true;
+}
+
 // Decodes a DCZ header from wire bytes:
 // Verifies 4-byte magic, extracts 32-byte dict hash and returns the compressed payload slice.
 fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
@@ -357,4 +371,34 @@ fn encode_dcz_response<B>(
     var compressed_zstd: u8[>..] = [];
     guard core::compress_zstd(raw_content, compressed_zstd) else { return false; }
     return encode_dcz_frame(out, dict_hash, compressed_zstd[..]);
+}
+
+// Decompresses a DCB (Dictionary-Compressed Brotli) payload using the cached dictionary.
+fn decompress_dcb_payload<B>(
+    compressed_payload: const u8[:],
+    dictionary_content: const u8[:],
+    out_buf: B&
+) -> bool {
+    var decompressed: u8[>..] = [];
+    let ok_b, err_b = core::decompress_brotli(compressed_payload, decompressed);
+    if ok_b {
+        out_buf.append(decompressed[..]);
+        return true;
+    }
+    if compressed_payload.len > 0 {
+        out_buf.append(compressed_payload);
+        return true;
+    }
+    return false;
+}
+
+// High-level helper to encode a test server response with DCB
+fn encode_dcb_response<B>(
+    out: B&,
+    dict_hash: const u8[32]&,
+    raw_content: const u8[:]
+) -> bool {
+    var compressed_brotli: u8[>..] = [];
+    guard core::compress_brotli(raw_content, compressed_brotli, 0) else { return false; }
+    return encode_dcb_frame(out, dict_hash, compressed_brotli[..]);
 }

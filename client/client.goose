@@ -1763,6 +1763,28 @@ fn execute_mock_or_echo_hop(
     let has_dict = session.enable_compression_dict && is_https && dictionary_lookup_for_request(session.dict_cache, origin_buf[..], curr_path, now_sec, matched_dict_b64);
     if has_dict {
         ctx.headers.push(make_header("Available-Dictionary", matched_dict_b64[..]));
+        var ae_idx = -1;
+        for i in ctx.headers.len {
+            if eq_ascii_fold(ctx.headers[i].name[..], "accept-encoding") {
+                ae_idx = i;
+                break;
+            }
+        }
+        if ae_idx >= 0 {
+            var already_has = false;
+            let val = ctx.headers[ae_idx].value[..];
+            if val.len >= 3 {
+                for k in val.len - 2 {
+                    if val[k] == 'd' && val[k + 1] == 'c' && val[k + 2] == 'b' {
+                        already_has = true;
+                        break;
+                    }
+                }
+            }
+            if !already_has {
+                ctx.headers[ae_idx].value.append(", dcb, dcz");
+            }
+        }
     }
 
     // Check mock routes

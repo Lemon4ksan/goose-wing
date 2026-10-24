@@ -298,6 +298,20 @@ fn safari_profile() -> BrowserProfile {
     return p;
 }
 
+// Constructs a profile according to the specified ProfileKind.
+fn new_browser_profile(kind: ProfileKind) -> BrowserProfile {
+    if kind == ProfileKind.Chrome {
+        return chrome_profile();
+    } else if kind == ProfileKind.Firefox {
+        return firefox_profile();
+    } else if kind == ProfileKind.Safari {
+        return safari_profile();
+    } else if kind == ProfileKind.Custom {
+        return custom_profile();
+    }
+    return wing_default_profile();
+}
+
 // ---- profile manipulation & builder functions -------------------------------
 
 fn push_header_order(profile: BrowserProfile&, header_name: const u8[:]) {

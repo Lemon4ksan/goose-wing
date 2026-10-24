@@ -1,0 +1,195 @@
+// Verification suite for OAuth 2.0 PKCE (RFC 7636) and DPoP (RFC 9449):
+// - PKCE code verifier charset and length invariants (43..128 chars)
+// - PKCE S256 and plain code challenge computation and constant-time validation
+// - DPoP target URI normalization (strips query/fragments, lowercases scheme/host)
+// - DPoP ATH (Access Token Hash) SHA-256 base64url generation
+// - DPoP Proof JWT creation (JOSE header framing, claims payload, HMAC-SHA256 signature)
+// - DPoP Proof verification against expected method, URI, access token, and nonce
+// - Request header attachment and response DPoP-Nonce extraction
+import std;
+import core from "..";
+import wing from "..";
+
+fn test_pkce_rfc7636(t: core::T&) {
+    t.run("PKCE Verifier Generation & Invariants") { sub =>
+        var verifier: u8[..128] = [];
+        let ok = wing::generate_code_verifier(verifier);
+        sub.assert_true(ok, "Verifier generated");
+        sub.assert_ge(verifier.len, 43, "Verifier length >= 43");
+        sub.assert_le(verifier.len, 128, "Verifier length <= 128");
+        sub.assert_true(wing::is_valid_code_verifier(verifier[..]), "Verifier contains only unreserved chars");
+
+        // Edge case: too short / too long verifiers
+        sub.assert_false(wing::is_valid_code_verifier("short_verifier"), "Rejects length < 43");
+        var huge_str: u8[..150] = [];
+        for i in 140 { huge_str.push('a' as u8); }
+        sub.assert_false(wing::is_valid_code_verifier(huge_str[..]), "Rejects length > 128");
+
+        // Edge case: illegal characters (+ and / not allowed in PKCE verifiers)
+        let invalid_chars = "dBjftJeZ4CVP+mB92K27uhbUJU1p1r/wW1gFWFOEjXk123";
+        sub.assert_false(wing::is_valid_code_verifier(invalid_chars), "Rejects + and / in verifier");
+    };
+
+    t.run("PKCE Challenge Computation (S256 & Plain)") { sub =>
+        // RFC 7636 Appendix B test vector
+        let rfc_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        var challenge_s256: u8[..128] = [];
+        let ok_s256 = wing::compute_code_challenge(rfc_verifier, "S256", challenge_s256);
+        sub.assert_true(ok_s256, "S256 challenge computed");
+        sub.assert_bytes_eq(challenge_s256[..], "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "RFC 7636 Appendix B S256 vector matches exactly");
+
+        // Plain method (RFC 7636 §4.2)
+        var challenge_plain: u8[..128] = [];
+        let ok_plain = wing::compute_code_challenge(rfc_verifier, "plain", challenge_plain);
+        sub.assert_true(ok_plain, "Plain challenge computed");
+        sub.assert_bytes_eq(challenge_plain[..], rfc_verifier, "Plain challenge matches verifier verbatim");
+
+        // Validate API
+        sub.assert_true(wing::validate_code_challenge(rfc_verifier, challenge_s256[..], "S256"), "Validation succeeds for valid S256");
+        sub.assert_false(wing::validate_code_challenge(rfc_verifier, "invalid_challenge_hash_123456789012345678901", "S256"), "Validation fails for wrong challenge");
+    };
+
+    t.run("PKCE Create Challenge Pair Helper") { sub =>
+        let pair = wing::create_pkce_pair("", "S256");
+        sub.assert_ge(pair.verifier.len, 43, "Pair verifier length >= 43");
+        sub.assert_true(wing::validate_code_challenge(pair.verifier[..], pair.challenge[..], "S256"), "Pair challenge matches verifier");
+    };
+}
+
+fn test_dpop_rfc9449(t: core::T&) {
+    t.run("DPoP URI Normalization") { sub =>
+        var norm: u8[..256] = [];
+        let ok1 = wing::normalize_dpop_target_uri("https://API.Example.COM/resource/items?page=1&limit=10#section", norm);
+        sub.assert_true(ok1, "URI normalized");
+        sub.assert_bytes_eq(norm[..], "https://api.example.com/resource/items", "Strips query and fragment, lowercases host");
+
+        var norm2: u8[..256] = [];
+        wing::normalize_dpop_target_uri("http://myhost:8080/data", norm2);
+        sub.assert_bytes_eq(norm2[..], "http://myhost:8080/data", "Preserves port in authority");
+    };
+
+    t.run("DPoP ATH Access Token Hash") { sub =>
+        let token = "K50_K72qJ101BgsoCIeQ21cmP5CQ3L80mgW85GLp16U";
+        var ath: u8[..64] = [];
+        wing::compute_dpop_ath(token, ath);
+        sub.assert_true(ath.len > 0, "ATH generated");
+        // Base64url encoded SHA-256 of token
+        let expected_sha = wing::sha256(token);
+        var expected_b64: u8[..64] = [];
+        wing::base64url_encode(expected_sha[..], expected_b64);
+        sub.assert_bytes_eq(ath[..], expected_b64[..], "ATH matches SHA-256 base64url");
+    };
+
+    t.run("DPoP Proof JWT Generation and Verification") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let method = "POST";
+        let uri = "https://resource.example.org/protected/resource?query=1";
+        let token = "access_token_xyz_987";
+        let nonce = "server_nonce_abc123";
+        let now_sec: i64 = 1714000000;
+        let jti = "custom-unique-jti-001";
+
+        var proof_jwt: u8[>..] = [];
+        let ok_gen = wing::create_dpop_proof(key, method, uri, token, nonce, now_sec, jti, proof_jwt);
+        sub.assert_true(ok_gen, "DPoP proof generated");
+        sub.assert_true(proof_jwt.len > 50, "JWT has substantial length");
+
+        // Verify valid proof
+        let ok_ver = wing::verify_dpop_proof(
+            proof_jwt[..],
+            key,
+            "POST",
+            "https://resource.example.org/protected/resource",
+            token,
+            nonce,
+            now_sec
+        );
+        sub.assert_true(ok_ver, "DPoP proof successfully verified");
+
+        // Verify failure on mismatched method
+        let fail_method = wing::verify_dpop_proof(
+            proof_jwt[..],
+            key,
+            "GET", // Expected GET but proof was for POST
+            "https://resource.example.org/protected/resource",
+            token,
+            nonce,
+            now_sec
+        );
+        sub.assert_false(fail_method, "Verification fails on method mismatch");
+
+        // Verify failure on wrong access token
+        let fail_token = wing::verify_dpop_proof(
+            proof_jwt[..],
+            key,
+            "POST",
+            "https://resource.example.org/protected/resource",
+            "different_token",
+            nonce,
+            now_sec
+        );
+        sub.assert_false(fail_token, "Verification fails on ATH mismatch");
+
+        // Verify failure on wrong nonce
+        let fail_nonce = wing::verify_dpop_proof(
+            proof_jwt[..],
+            key,
+            "POST",
+            "https://resource.example.org/protected/resource",
+            token,
+            "stale_nonce",
+            now_sec
+        );
+        sub.assert_false(fail_nonce, "Verification fails on nonce mismatch");
+
+        // Verify failure on tampered signature / wrong key
+        let fail_key = wing::verify_dpop_proof(
+            proof_jwt[..],
+            "wrong_key_that_does_not_match!",
+            "POST",
+            "https://resource.example.org/protected/resource",
+            token,
+            nonce,
+            now_sec
+        );
+        sub.assert_false(fail_key, "Verification fails on bad signature");
+    };
+
+    t.run("DPoP Request Header Attachment & Nonce Extraction") { sub =>
+        var req = wing::Request { .. };
+        wing::attach_dpop(req, "eyJhbGciOi...", "token_xyz");
+
+        var has_dpop = false;
+        var has_auth = false;
+        for &h in req.headers {
+            if wing::eq_ascii_fold(h.name[..], "DPoP") {
+                has_dpop = true;
+                sub.assert_bytes_eq(h.value[..], "eyJhbGciOi...", "DPoP header value matches");
+            }
+            if wing::eq_ascii_fold(h.name[..], "Authorization") {
+                has_auth = true;
+                sub.assert_bytes_eq(h.value[..], "DPoP token_xyz", "Authorization header has DPoP scheme");
+            }
+        }
+        sub.assert_true(has_dpop, "Request contains DPoP header");
+        sub.assert_true(has_auth, "Request contains Authorization header");
+
+        // Nonce extraction from response headers
+        var resp_headers: wing::HeaderItem[..4] = [];
+        resp_headers.push(wing::make_header("Content-Type", "application/json"));
+        resp_headers.push(wing::make_header("DPoP-Nonce", "server_nonce_retry_456"));
+
+        var extracted_nonce: u8[..128] = [];
+        let ok_nonce = wing::extract_dpop_nonce(resp_headers[..], extracted_nonce);
+        sub.assert_true(ok_nonce, "DPoP-Nonce extracted");
+        sub.assert_bytes_eq(extracted_nonce[..], "server_nonce_retry_456", "Extracted nonce matches header");
+    };
+}
+
+fn main() {
+    var runner = core::new_runner("OAuth 2.0 PKCE & DPoP Suite (RFC 7636 / RFC 9449)", core::Verbosity.Verbose);
+    core::run_case(runner, "1. OAuth 2.0 PKCE (RFC 7636)", test_pkce_rfc7636);
+    core::run_case(runner, "2. OAuth 2.0 DPoP (RFC 9449)", test_dpop_rfc9449);
+    let ok = core::finish(runner);
+    assert(ok);
+}

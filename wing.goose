@@ -78,11 +78,14 @@ import security.crypto_jar;
 import security.csrf;
 import security.cors;
 import security.rate_limiter;
+import security.privacypass;
 
-// ---- authentication (rfc 7616 digest & aws sigv4) -------------------------
+// ---- authentication (rfc 7616 digest, aws sigv4, rfc 7636 pkce, rfc 9449 dpop) -
 
 import auth.digest;
 import auth.sigv4;
+import auth.pkce;
+import auth.dpop;
 
 // ---- tls 1.3 & x.509 pki -------------------------------------------------
 
@@ -109,6 +112,7 @@ import net.retry;
 import net.dns;
 import net.masque;
 import net.isolation;
+import net.sockopt;
 
 // ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
 
