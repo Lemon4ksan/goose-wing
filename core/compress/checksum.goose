@@ -568,7 +568,7 @@ const CRC32_TABLE_15: u32[256] = [
 ];
 
 // Computes running CRC-32 value across buf using Slicing-by-16 (unrolled to 64 bytes).
-fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
+simd fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
     var c = initial ^ 0xFFFFFFFF;
     var offset: i64 = 0;
 
@@ -675,49 +675,53 @@ const ADLER_BASE: u32 = 65521;
 const ADLER_NMAX: i64 = 5552;
 
 
-// Computes running Adler-32 checksum across buf with unrolled inner loop.
-fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
+// Computes running Adler-32 checksum across buf with 16-lane parallel prefix-sum reduction.
+simd fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
     var s1 = initial & 0xFFFF;
     var s2 = (initial >> 16) & 0xFFFF;
 
-    var offset: i64 = 0;
-    while offset < buf.len {
-        let remaining = buf.len - offset;
-        let chunk_len = if remaining < ADLER_NMAX { remaining } else { ADLER_NMAX };
-        let chunk = buf[offset .. offset + chunk_len];
-        var i: i64 = 0;
+    var rem = buf;
+    while rem.len > 0 {
+        let chunk_len = if rem.len < ADLER_NMAX { rem.len } else { ADLER_NMAX };
+        var s = rem[..chunk_len];
+        rem = rem[chunk_len..];
 
-        // Unroll 16 bytes per iteration
-        while i + 16 <= chunk.len {
-            let s = chunk[i .. i + 16];
-            s1 += s[0]; s2 += s1;
-            s1 += s[1]; s2 += s1;
-            s1 += s[2]; s2 += s1;
-            s1 += s[3]; s2 += s1;
-            s1 += s[4]; s2 += s1;
-            s1 += s[5]; s2 += s1;
-            s1 += s[6]; s2 += s1;
-            s1 += s[7]; s2 += s1;
-            s1 += s[8]; s2 += s1;
-            s1 += s[9]; s2 += s1;
-            s1 += s[10]; s2 += s1;
-            s1 += s[11]; s2 += s1;
-            s1 += s[12]; s2 += s1;
-            s1 += s[13]; s2 += s1;
-            s1 += s[14]; s2 += s1;
-            s1 += s[15]; s2 += s1;
-            i += 16;
+        let blocks = s.len >> 4;
+        if blocks > 0 {
+            var c: u32[16] = [0; 16];
+            var ps: u32[16] = [0; 16];
+
+            while s.len >= 16 {
+                for j in 16 {
+                    c[j] += s[j];
+                    ps[j] += c[j];
+                }
+                s = s[16..];
+            }
+
+            var sum_c: u64 = 0;
+            var sum_ps: u64 = 0;
+            var weighted_c: u64 = 0;
+            for j in 16 {
+                sum_c += c[j];
+                sum_ps += ps[j];
+                weighted_c += (j as u64) * c[j];
+            }
+
+            let s2_u64 = s2 + (16 * (blocks as u64)) * s1 + 16 * sum_ps - weighted_c;
+            let s1_u64 = s1 + sum_c;
+            s1 = (s1_u64 % ADLER_BASE) as u32;
+            s2 = (s2_u64 % ADLER_BASE) as u32;
         }
 
-        while i < chunk.len {
-            s1 += chunk[i];
+        while s.len > 0 {
+            s1 += s[0];
             s2 += s1;
-            i++;
+            s = s[1..];
         }
 
         s1 %= ADLER_BASE;
         s2 %= ADLER_BASE;
-        offset += chunk_len;
     }
 
     return (s2 << 16) | s1;
