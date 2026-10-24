@@ -132,6 +132,25 @@ fn test_driver_fallback_and_selection(t: core::T&) {
         sub.assert_true(cfg.active_kind == wing::TransportDriverKind.Kqueue, "Auto-selected kqueue on macOS");
         sub.assert_true(wing::driver_has_cap(cfg.capabilities, wing::CAP_EXACT_BUF_METRICS), "Has ExactBufMetrics");
     };
+
+    t.run("Universal Auto Driver Selection (Windows, Linux, macOS)") { sub =>
+        var cfg_win = wing::TransportDriverConfig { preferred_kind: wing::TransportDriverKind.Auto, .. };
+        sub.assert_true(wing::init_transport_driver_with_platform(cfg_win, wing::TargetPlatform.Windows), "Auto on Windows ok");
+        sub.assert_true(cfg_win.active_kind == wing::TransportDriverKind.WindowsRIO, "Auto Windows activates RIO");
+
+        var cfg_linux = wing::TransportDriverConfig { preferred_kind: wing::TransportDriverKind.Auto, .. };
+        sub.assert_true(wing::init_transport_driver_with_platform(cfg_linux, wing::TargetPlatform.Linux), "Auto on Linux ok");
+        sub.assert_true(cfg_linux.active_kind == wing::TransportDriverKind.IoUring, "Auto Linux activates io_uring");
+
+        var cfg_mac = wing::TransportDriverConfig { preferred_kind: wing::TransportDriverKind.Auto, .. };
+        sub.assert_true(wing::init_transport_driver_with_platform(cfg_mac, wing::TargetPlatform.Darwin), "Auto on macOS ok");
+        sub.assert_true(cfg_mac.active_kind == wing::TransportDriverKind.Kqueue, "Auto macOS activates kqueue");
+
+        let auto_cfg = wing::auto_transport_driver_config(2048, 131072);
+        sub.assert_true(auto_cfg.is_probed, "Host auto config is probed");
+        sub.assert_eq(auto_cfg.ring_size, 2048, "Ring size set");
+        sub.assert_eq(auto_cfg.registered_buffer_size, 131072, "Reg buf size set");
+    };
 }
 
 fn test_rio_buffer_lifecycle(t: core::T&) {

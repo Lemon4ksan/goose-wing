@@ -29,6 +29,7 @@ extern "wing_kqueue_close" fn native_kqueue_close(kq: i64);
 // ---- 1. Driver Kinds & Capabilities ----------------------------------------
 
 enum TransportDriverKind {
+    Auto,
     Standard,
     IoUring,
     WindowsRIO,
@@ -38,6 +39,7 @@ enum TransportDriverKind {
 // Returns human-readable driver identifier
 fn driver_kind_name(kind: TransportDriverKind) -> u8[:] {
     return match kind {
+        Auto => "Auto",
         Standard => "Standard",
         IoUring => "io_uring",
         WindowsRIO => "Windows RIO",
@@ -103,9 +105,20 @@ struct DriverProbeResult {
 
 // Probes availability and capabilities of a driver on a specific target platform
 fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPlatform) -> DriverProbeResult {
-    var res = DriverProbeResult { kind: kind, .. };
+    let effective_kind = if kind == TransportDriverKind.Auto {
+        match plat {
+            Windows => TransportDriverKind.WindowsRIO,
+            Linux => TransportDriverKind.IoUring,
+            Darwin => TransportDriverKind.Kqueue,
+            _ => TransportDriverKind.Standard,
+        }
+    } else {
+        kind
+    };
 
-    if kind == TransportDriverKind.Standard {
+    var res = DriverProbeResult { kind: effective_kind, .. };
+
+    if effective_kind == TransportDriverKind.Standard {
         res.available = true;
         res.capabilities = CAP_NONE;
         res.error_code = 0;
@@ -114,7 +127,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         return res;
     }
 
-    if kind == TransportDriverKind.WindowsRIO {
+    if effective_kind == TransportDriverKind.WindowsRIO {
         if plat == TargetPlatform.Windows {
             let host = detect_target_platform();
             if host == TargetPlatform.Windows {
@@ -144,7 +157,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         return res;
     }
 
-    if kind == TransportDriverKind.IoUring {
+    if effective_kind == TransportDriverKind.IoUring {
         if plat == TargetPlatform.Linux {
             let host = detect_target_platform();
             if host == TargetPlatform.Linux {
@@ -174,7 +187,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         return res;
     }
 
-    if kind == TransportDriverKind.Kqueue {
+    if effective_kind == TransportDriverKind.Kqueue {
         if plat == TargetPlatform.Darwin {
             let host = detect_target_platform();
             if host == TargetPlatform.Darwin {
@@ -228,6 +241,29 @@ struct TransportDriverConfig {
 
 // Initializes transport driver with explicit platform target (for testing & determinism)
 fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: TargetPlatform) -> bool {
+    if cfg.preferred_kind == TransportDriverKind.Auto {
+        let auto_probe = match plat {
+            Windows => probe_transport_driver_for_platform(TransportDriverKind.WindowsRIO, plat),
+            Linux => probe_transport_driver_for_platform(TransportDriverKind.IoUring, plat),
+            Darwin => probe_transport_driver_for_platform(TransportDriverKind.Kqueue, plat),
+            _ => probe_transport_driver_for_platform(TransportDriverKind.Standard, plat),
+        };
+        if auto_probe.available {
+            cfg.active_kind = auto_probe.kind;
+            cfg.capabilities = auto_probe.capabilities;
+            cfg.status_message.clear();
+            cfg.status_message.append(auto_probe.reason[..]);
+            cfg.is_probed = true;
+            return true;
+        }
+        cfg.active_kind = TransportDriverKind.Standard;
+        cfg.capabilities = CAP_NONE;
+        cfg.status_message.clear();
+        cfg.status_message.append("Auto fell back to Standard sockets");
+        cfg.is_probed = true;
+        return true;
+    }
+
     let probe = probe_transport_driver_for_platform(cfg.preferred_kind, plat);
     if probe.available {
         cfg.active_kind = cfg.preferred_kind;
@@ -288,6 +324,19 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
 fn init_transport_driver(cfg: TransportDriverConfig&) -> bool {
     let plat = detect_target_platform();
     return init_transport_driver_with_platform(cfg, plat);
+}
+
+// Constructs an optimized automatic transport driver configuration for the current host OS
+fn auto_transport_driver_config(ring_size: u32 = 1024, reg_buf_size: u32 = 65536) -> TransportDriverConfig {
+    var cfg = TransportDriverConfig {
+        preferred_kind: TransportDriverKind.Auto,
+        ring_size: ring_size,
+        enable_kernel_bypass: true,
+        registered_buffer_size: reg_buf_size,
+        ..
+    };
+    init_transport_driver(cfg);
+    return cfg;
 }
 
 // ---- 4. Windows RIO Zero-Copy Buffer Lifecycle -----------------------------
