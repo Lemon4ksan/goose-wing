@@ -1328,23 +1328,32 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             if s4 < 0 { return DecodedLiterals { ok: false }; }
 
             let stream_size_chunk = (regenerated_size + 3) / 4;
-            let rem_last = regenerated_size - stream_size_chunk * 3;
-
             let c1 = stream_size_chunk;
             let c2 = c1 + stream_size_chunk;
             let c3 = c2 + stream_size_chunk;
 
-            let dst1 = lit_buf[0 .. c1];
-            let dst2 = lit_buf[c1 .. c2];
-            let dst3 = lit_buf[c2 .. c3];
-            let dst4 = lit_buf[c3 .. regenerated_size];
+            let o1 = offset;
+            let o2 = o1 + s1;
+            let o3 = o2 + s2;
+            let o4 = o3 + s3;
+            let o5 = o4 + s4;
 
-            let src1 = src[offset .. offset + s1]; offset += s1;
-            let src2 = src[offset .. offset + s2]; offset += s2;
-            let src3 = src[offset .. offset + s3]; offset += s3;
-            let src4 = src[offset .. offset + s4]; offset += s4;
+            if c1 >= 0 && c2 >= c1 && c3 >= c2 && regenerated_size >= c3 && regenerated_size <= lit_buf.len &&
+               o1 >= 0 && o2 >= o1 && o3 >= o2 && o4 >= o3 && o5 <= src.len {
+                let dst1 = lit_buf[0 .. c1];
+                let dst2 = lit_buf[c1 .. c2];
+                let dst3 = lit_buf[c2 .. c3];
+                let dst4 = lit_buf[c3 .. regenerated_size];
 
-            if !huf_decode_4streams(src1, src2, src3, src4, dst1, dst2, dst3, dst4, huf_table) {
+                let src1 = src[o1 .. o2];
+                let src2 = src[o2 .. o3];
+                let src3 = src[o3 .. o4];
+                let src4 = src[o4 .. o5];
+
+                if !huf_decode_4streams(src1, src2, src3, src4, dst1, dst2, dst3, dst4, huf_table) {
+                    return DecodedLiterals { ok: false };
+                }
+            } else {
                 return DecodedLiterals { ok: false };
             }
         }
