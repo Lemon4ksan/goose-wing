@@ -2,8 +2,7 @@
 namespace wing;
 
 import std;
-import app.profile;
-import app.response;
+import client.response;
 
 // ---- quota specification & decisions ---------------------------------------
 

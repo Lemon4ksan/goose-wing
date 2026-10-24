@@ -22,12 +22,12 @@ import cookie.store;
 
 // ---- client session and application layer ----------------------------------
 
-import app.profile;
-import app.request;
-import app.response;
-import app.redirect;
-import app.session;
-import app.policy;
+import client.profile;
+import client.request;
+import client.response;
+import client.redirect;
+import client.client;
+import client.policy;
 
 // ---- http primitives -------------------------------------------------------
 
@@ -35,6 +35,9 @@ import http.headers;
 import http.mime;
 import http.multipart;
 import http.h2_framer;
+import http2.framing;
+import http2.hpack;
+import http2.connection;
 
 // ---- http cache engine (rfc 9111) ------------------------------------------
 
@@ -66,4 +69,4 @@ import net.retry;
 
 // ---- ufcs method bridges ---------------------------------------------------
 
-import app.ufcs;
+import client.ufcs;

@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import app.profile;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);

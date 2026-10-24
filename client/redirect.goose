@@ -5,7 +5,6 @@ namespace wing;
 import std;
 import cookie.constants;
 import cookie.policy;
-import app.profile;
 
 // ---- redirect enumerations and policies ------------------------------------
 

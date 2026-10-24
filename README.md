@@ -6,7 +6,7 @@ An HTTP client stack, zero-allocation time primitives, and Chromium-grade Cookie
 
 ## Overview
 
-The library is organized into eight architectural layers:
+The library is organized into ten architectural layers:
 
 1. **`core/time.goose`**: Nanosecond-precision calendar and monotonic time engine based on Howard Hinnant's civil calendar algorithms. Includes RFC 3339, RFC 9110 HTTP-Date codecs, Go-compatible `parse_duration`, monotonic `Stopwatch`, and anti-overflow `Deadline`.
 2. **`cookie/`**: Clean-room implementation of Chromium's `net::CookieMonster` adhering to RFC 6265, RFC 6265bis, the Layered Cookies draft, CHIPS (partitioned cookies), and Public Suffix List rules.
@@ -14,8 +14,8 @@ The library is organized into eight architectural layers:
    - `http/headers.goose`: Continuous Chromium `\0\0` flat buffer, 64-bit SWAR vectorized tokenization, 16-byte `HeaderEntry`, 64 O(1) inline slots for `WellKnownHeader`, RFC 9110 §5.3 / RFC 6265bis Set-Cookie fold isolation (`HEADER_FLAG_NO_COMMA_FOLD`), Chromium 304 merge, and HTTP cache persistence filtering.
    - `http/mime.goose`: Chromium-grade `HttpUtil::StrictUnquote` parser, RFC 9110 §8.3 Media Type parser, RFC 6266 / RFC 7578 Content-Disposition parser, and Structured Field Values (SFV) engine per RFC 8941 & RFC 9651 (`sf-integer`, `sf-decimal`, `sf-string`, `sf-token`, `sf-binary`, `sf-boolean`, `sf-date`, `sf-displaystring`, lists, and dictionaries).
    - `http/multipart.goose`: Streaming zero-copy `multipart/form-data` parser with 70-character RFC 2046 boundary cap and 16-bit BMH shift table (CVE-2026-19484 defense), RFC 9110 Range request parser with 16-range ceiling and interval coalescing (CVE-2011-3192 Apache Killer defense), 416 Range Not Satisfiable generator, sub-second `If-Range` truncation, and `serve_range_request` window reader.
-4. **`core/url.goose` & `app/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, Swift Foundation-grade File URL and path manipulation API (cross-platform Windows/POSIX path normalization, component inspection, and fluent UFCS chaining), `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
-5. **`app/`**: Client session coordinator (`ClientSession`) orchestrating a 6-phase pipeline over `CanonicalCookieJar`, with `BodyRewind` (Request.GetBody), 3-tier SSRF/DNS Rebinding guards, browser profiles (Chrome 131, Firefox 133, Safari 18), and resilience policies.
+4. **`core/url.goose` & `client/redirect.goose`**: WHATWG URL parser with continuous memory buffer, RFC 5952 IPv6 zero-run compression, Swift Foundation-grade File URL and path manipulation API (cross-platform Windows/POSIX path normalization, component inspection, and fluent UFCS chaining), `Origin` model (`Tuple` vs `Opaque`), and a deterministic HTTP Redirect State Machine (`net::RedirectInfo`) defending against CVE-2023-45143, CVE-2024-1968, CVE-2026-55553, and CVE-2026-64684.
+5. **`client/`**: User-Agent Client coordinator (`Client`) orchestrating a Chromium-grade pipeline over `CanonicalCookieJar` and integrated RFC 9111 HTTP Cache (`HttpCache`), with `BodyRewind` (Request.GetBody), 3-tier SSRF/DNS Rebinding guards, browser profiles (Chrome 131, Firefox 133, Safari 18), and resilience policies.
 6. **`security/`**: High-performance zero-allocation application security:
    - `security/ct.goose`: Branchless constant-time arithmetic (`ct_eq`, `ct_select`), log-redacting `KeySlot` (`secrecy` pattern), Dudect statistical Welch's $t$-test runner with outlier filtering ($>2000\,\text{ns}$), pure-Goose zero-dependency crypto (NIST SHA-256, RFC 4231 HMAC-SHA256, RFC 5869 HKDF-SHA256, RFC 8439 ChaCha20/HChaCha20/Poly1305, XChaCha20-Poly1305 AEAD, AES-256 block cipher, GHASH, AES-256-GCM AEAD, RFC 4648 Base64URL).
    - `security/crypto_jar.goose`: Cryptographic cookie container (`PrivateJar` with 53B/65B overhead and AAD binding + `SignedJar` with 45B overhead + `KeyStore` rotation).
@@ -32,6 +32,10 @@ The library is organized into eight architectural layers:
    - `net/happy_eyeballs.goose`: RFC 8305 Happy Eyeballs v2 & HEv3, Chromium `AttemptManager` & `JobController`, 50 ms DNS Resolution Delay (RD) with asymmetric IPv6 priority, CAD pacing with $\ge 10\text{ ms}$ absolute floor, RFC 6724 First Address Family Count = 1 interleaving, Last Resort Local Synthesis (2000 ms, RFC 7050 NAT64 `64:ff9b::/96`), and winner caching (TTL 600s).
    - `net/proxy.goose`: SOCKS5/SOCKS5h (RFC 1928 & RFC 1929 subnegotiation with mandatory version byte 0x01, socks5 vs socks5h ATYP=0x03 DNS leak delegation), HTTP CONNECT tunneling with credential stripping (`Proxy-Authorization` isolation), OkHttp leftover buffer defense (`"TLS tunnel buffered too many bytes"`), and 4-tier Slowloris / Reverse-Slowloris tarpit defenses (10s monotonic cumulative deadline, 1s 100-continue ceiling, 64 KB memory ceiling, 256 B/s Byte-Drip gate).
    - `net/retry.goose`: Two-tier resilience engine: Tier 1 zero-delay stale socket recovery with 4-condition invariant check (`reused==true`, `!headers_received`, idempotent or `Idempotency-Key`, rewindable body guarding against form-data one-shot-stream bug) + Chromium `ERR_QUIC_PROTOCOL_ERROR` TCP fallback; Tier 2 exponential backoff with Full Jitter, Equal Jitter, and Decorrelated Jitter; RFC 9110 `Retry-After` parser (`1*DIGIT` and `IMF-fixdate` exact UTC round-trip); host circuit breaker; and Google SRE adaptive retry budget.
+10. **`http2/`**: Clean Room Reference HTTP/2 Protocol Stack (RFC 7541, RFC 9113, RFC 9218):
+   - `http2/hpack.goose`: 256-state 16 KiB L1 cache nibble Huffman FSM, zero-heap ring-buffer dynamic table with in-place compaction, Trail of Bits FIND-401 integer shift guard (CVE-2022-41723), RFC 9113 pseudo-header ordering and duplicate/content-length verification (CVE-2026-78660).
+   - `http2/framing.goose`: RFC 9113 9-byte binary frame codec, PADDED extraction, RFC 9218 Structured Field extensible prioritization dictionary codec (`u=0..7, i`), PRIORITY_UPDATE payload codec, and SETTINGS boundary validation.
+   - `http2/connection.goose`: Multiplexed transport connection (`H2Connection`), signed 64-bit two-level flow control (supporting negative stream windows on initial window shrink), RFC 9218 progressive write scheduler (8 urgency levels with alternating starvation prevention), and defense-in-depth Anti-DoS engine (Rapid Reset Token Bucket CVE-2023-44487, CONTINUATION flood/size/slow-drip limiters CVE-2024-28182/CVE-2024-27983, empty frame streak cap CVE-2019-9518, control frame quota CVE-2019-9512/CVE-2019-9515).
 
 ## Key Modules
 
@@ -57,7 +61,7 @@ Zero-heap timekeeping and date calculations:
 - **Formatting**: RFC 3339 (with sub-second fractional precision), IMF-fixdate / RFC 1123, RFC 850, and asctime formats per RFC 9110 §5.6.7.
 - **Resilience**: Monotonic `Stopwatch`, deadline checking with `deadline_after(dur)`, token-bucket `RateLimiter`, and exponential `Backoff` with jitter.
 
-### 3. WHATWG URL, PSL, File URLs & Redirect FSM (`core/url.goose`, `app/redirect.goose`)
+### 3. WHATWG URL, PSL, File URLs & Redirect FSM (`core/url.goose`, `client/redirect.goose`)
 
 Browser-grade URL parsing, Swift-like path manipulation, origin isolation, and redirect state machine:
 
@@ -78,7 +82,7 @@ Browser-grade URL parsing, Swift-like path manipulation, origin isolation, and r
   - Cookie stripping: Outgoing `Cookie` header is unconditionally stripped before every redirect hop to prevent session hijacking across domains (CVE-2023-45143).
   - Monotonic chain tainting: Any cross-site hop permanently marks `had_cross_site_hop` to prevent SameSite bypasses.
 
-### 4. Client Session & Security Orchestration (`app/`)
+### 4. User-Agent Client & Security Orchestration (`client/`)
 
 Unified HTTP client ergonomics and defense-in-depth pipeline:
 
@@ -495,7 +499,7 @@ All verification suites live in `tests/` and adhere to a strict, scalable `<subs
 | **HTTP Headers & Lexical** | `tests/http_headers_test.goose` | Zero-heap HeaderMap, 64-bit SWAR tokenization, O(1) inline slots, Set-Cookie fold isolation, httparse #223, 304 merge | 65 checks |
 | **HTTP MIME & SFV** | `tests/http_mime_test.goose` | Chromium StrictUnquote, RFC 9110 MediaType, RFC 8941/9651 SFV (integers, fixed-point decimals, tokens, dates, UTF-8 display strings) | 87 checks |
 | **HTTP Multipart & Range** | `tests/http_multipart_test.goose` | Streaming multipart BMH shift table (CVE-2026-19484), 70-byte boundary cap, RFC 9110 Range & coalescing (CVE-2011-3192), 416 handler | 60 checks |
-| **App Client Session** | `tests/app_session_test.goose` | PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase ClientSession, BodyRewind, SSRF Guard | 80 checks |
+| **HTTP Client & Cache** | `tests/client_test.goose` | PSL tenant isolation, SiteForCookies, Redirect FSM, 6-Phase Client pipeline, BodyRewind, SSRF Guard, RFC 9111 Cache hit/invalidation | 92 checks |
 | **CVE Security Regression** | `tests/sec_cve_test.goose` | CVE-2021-28918/29922 (octal/hex IP SSRF), CVE-2024-24790 (RFC 6761 localhost), CVE-2023-26159 (CRLF headers), CVE-2022-27776 (port leaks), CVE-2023-27534 (URL/query ambiguity), CVE-2016-8616 (PSL import) | 35 checks |
 | **Protocol Security** | `tests/sec_protocol_test.goose` | IPv4-mapped IPv6 SSRF defense, HTTPS->HTTP scheme downgrade header stripping, file URL drive normalization | 36 checks |
 | **Cookie Chaos Defense** | `tests/sec_cookie_test.goose` | RFC 6265bis §5.6 cookie shadowing, case-insensitive prefixes (`__Host-`, `__Secure-`), Max-Age 400-day capping | 38 checks |
@@ -523,7 +527,7 @@ goose build -o tests/server_router_test.exe tests/server_router_test.goose; .\te
 goose build -o tests/http_headers_test.exe tests/http_headers_test.goose; .\tests\http_headers_test.exe
 goose build -o tests/cookie_vectors_test.exe tests/cookie_vectors_test.goose; .\tests\cookie_vectors_test.exe
 
-# Or run all 17 suites in parallel via automated test runner
+# Or run all 30 suites in parallel via automated test runner
 .\scripts\test_all.ps1
 ```
 

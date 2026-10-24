@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import app.profile;
 import http.headers;
 
 // ---- cache-control bitmask flags -------------------------------------------

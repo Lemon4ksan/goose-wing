@@ -357,3 +357,69 @@ fn ::record_primary_request(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64
 fn ::allow_retry_budget(budget: wing::AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
     return wing::allow_retry_budget(budget, now_mono_ns);
 }
+
+// ---- echelon 6 http/2 ufcs bridges -----------------------------------------
+
+fn ::decode_hpack_header_block(dt: wing::DynamicTable&, src: const u8[:], out: wing::DecodedH2HeaderList&, max_header_list_size: u32 = 8192, validate_http2_rules: bool = true) -> u32 {
+    return wing::decode_hpack_header_block(dt, src, out, max_header_list_size, validate_http2_rules);
+}
+
+fn ::encode_hpack_field<B>(dt: wing::DynamicTable&, out: B&, name: const u8[:], val: const u8[:], indexing: bool = true, use_huffman: bool = true) -> bool {
+    return wing::encode_hpack_field(dt, out, name, val, indexing, use_huffman);
+}
+
+fn ::on_ingress_frame_header(s: wing::SessionState&, hdr: const wing::FrameHeader&, now_ms: u64) -> u32 {
+    return wing::on_ingress_frame_header(s, hdr, now_ms);
+}
+
+fn ::apply_peer_initial_window_size_delta(s: wing::SessionState&, new_init_win: u32) -> u32 {
+    return wing::apply_peer_initial_window_size_delta(s, new_init_win);
+}
+
+fn ::apply_window_update(s: wing::SessionState&, stream_id: u32, increment: u32) -> u32 {
+    return wing::apply_window_update(s, stream_id, increment);
+}
+
+fn ::compute_stream_send_quota(s: const wing::SessionState&, stream_id: u32) -> i64 {
+    return wing::compute_stream_send_quota(s, stream_id);
+}
+
+fn ::on_data_frame_received(s: wing::SessionState&, hdr: const wing::FrameHeader&, payload_len: u32) -> u32 {
+    return wing::on_data_frame_received(s, hdr, payload_len);
+}
+
+fn ::apply_priority_update(s: wing::SessionState&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
+    return wing::apply_priority_update(s, prioritized_stream_id, prio);
+}
+
+fn ::schedule_next_write(s: wing::SessionState&, max_frame_len: u32) -> u32, u32, bool {
+    return wing::schedule_next_write(s, max_frame_len);
+}
+
+fn ::parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = false) -> wing::PriorityParam, bool {
+    return wing::parse_priority_param_rfc9218(raw, default_incremental);
+}
+
+fn ::write_priority_param_rfc9218<B>(prio: const wing::PriorityParam&, out: B&) {
+    wing::write_priority_param_rfc9218(prio, out);
+}
+
+fn ::parse_priority_update_payload(payload: const u8[:], default_incremental: bool = false) -> u32, wing::PriorityParam, u32 {
+    return wing::parse_priority_update_payload(payload, default_incremental);
+}
+
+fn ::encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const wing::PriorityParam&, out: B&) {
+    wing::encode_priority_update_payload(prioritized_stream_id, prio, out);
+}
+
+fn ::extract_padded_frame_payload(hdr: const wing::FrameHeader&, payload: const u8[:]) -> const u8[:], u32 {
+    return wing::extract_padded_frame_payload(hdr, payload);
+}
+
+fn ::extract_headers_frame_payload(hdr: const wing::FrameHeader&, payload: const u8[:], no_rfc7540_priorities: bool = true) -> const u8[:], u32 {
+    return wing::extract_headers_frame_payload(hdr, payload, no_rfc7540_priorities);
+}
+
+fn ::validate_settings_parameter(param_id: u16, val: u32) -> u32 {
+    return wing::validate_settings_parameter(param_id, val);
+}

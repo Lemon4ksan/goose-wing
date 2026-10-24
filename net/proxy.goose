@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import app.profile;
 
 // ---- 1. SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
 

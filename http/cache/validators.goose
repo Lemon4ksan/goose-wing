@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import app.profile;
 import http.headers;
 import http.cache.cache_control;
 

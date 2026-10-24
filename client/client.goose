@@ -6,10 +6,15 @@ import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
 import cookie.engine;
-import app.profile;
-import app.request;
-import app.response;
-import app.redirect;
+import client.profile;
+import client.request;
+import client.response;
+import client.redirect;
+import http.headers;
+import http.cache.cache_control;
+import http.cache.freshness;
+import http.cache.validators;
+import http.cache.engine;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -361,18 +366,22 @@ struct MockExchange {
     body: u8[..2048] = [],
 }
 
-// ---- session configuration and state ---------------------------------------
+// ---- client configuration and state ----------------------------------------
 
-struct SessionConfig {
+struct ClientConfig {
     base_url: const u8[:] = "",
     profile: Profile = Profile.None,
     proxy_url: const u8[:] = "",
     timeout_ms: i64 = 15000,
     follow_redirects: bool = true,
     cookie_jar: bool = true,
+    enable_cache: bool = false,
+    cache_options: CacheOptions = CacheOptions { .. },
 }
 
-struct Session {
+type SessionConfig = ClientConfig;
+
+struct Client {
     base_url: u8[..256] = [],
     profile: Profile = Profile.None,
     proxy_url: u8[..256] = [],
@@ -388,51 +397,68 @@ struct Session {
     virtual_clock_us: i64 = 1700000000000000,
     trusted_location_hosts: u8[..128][..8] = [],
     mock_routes: MockExchange[..16] = [],
+
+    // RFC 9111 HTTP Cache Engine
+    cache: HttpCache = HttpCache { .. },
+    enable_cache: bool = false,
+
+    // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
 
-// ---- session factories -----------------------------------------------------
+type Session = Client;
 
-fn new_session() -> Session {
-    var sess = Session {
-        jar: new_canonical_cookie_jar(),
+// ---- client factories ------------------------------------------------------
+
+fn new_client() -> Client {
+    var c = Client {
         ssrf_guard: SsrfGuardPolicy { .. },
+        cache: new_http_cache(),
+        enable_cache: false,
+        jar: new_canonical_cookie_jar(),
         ..
     };
-    return sess;
+    return c;
 }
 
-fn new_session(cfg: SessionConfig) -> Session {
-    var session = Session {
+fn new_client(cfg: ClientConfig) -> Client {
+    var client = Client {
         profile: cfg.profile,
         timeout_ms: cfg.timeout_ms,
         follow_redirects: cfg.follow_redirects,
-        jar: new_canonical_cookie_jar(),
         ssrf_guard: SsrfGuardPolicy { .. },
+        cache: new_http_cache(cfg.cache_options),
+        enable_cache: cfg.enable_cache,
+        jar: new_canonical_cookie_jar(),
         ..
     };
-    session.base_url.append(cfg.base_url);
-    session.proxy_url.append(cfg.proxy_url);
-    return session;
+    client.base_url.append(cfg.base_url);
+    client.proxy_url.append(cfg.proxy_url);
+    return client;
 }
 
-fn new_session(base_url: const u8[:]) -> Session {
-    var session = new_session();
-    session.base_url.append(base_url);
-    return session;
+fn new_client(base_url: const u8[:]) -> Client {
+    var client = new_client();
+    client.base_url.append(base_url);
+    return client;
 }
 
-fn new_session<F: fn(Session&)>(base_url: const u8[:]) -> Session {
-    var session = new_session(base_url);
-    F(&session);
-    return session;
+fn new_client<F: fn(Client&)>(base_url: const u8[:]) -> Client {
+    var client = new_client(base_url);
+    F(&client);
+    return client;
 }
 
-fn new_session<F: fn(Session&)>() -> Session {
-    var session = new_session();
-    F(&session);
-    return session;
+fn new_client<F: fn(Client&)>() -> Client {
+    var client = new_client();
+    F(&client);
+    return client;
 }
+
+// Backward-compatible session factory aliases
+inline fn new_session() -> Client { return new_client(); }
+inline fn new_session(cfg: ClientConfig) -> Client { return new_client(cfg); }
+inline fn new_session(base_url: const u8[:]) -> Client { return new_client(base_url); }
 
 // ---- ufcs session mutators & configuration ---------------------------------
 
@@ -931,7 +957,7 @@ fn process_redirect_hop(
     return true, no_error();
 }
 
-fn execute_request(session: Session&, req: const Request&) -> Response, Error {
+fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
@@ -940,7 +966,44 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
         return Response { .. }, make_error(400, "url_parse", "invalid request url");
     }
 
+    var cache_ts = CacheTimestamps {
+        request_time: core::unix(session.virtual_clock_us / 1000000, ((session.virtual_clock_us % 1000000) * 1000) as u32),
+        now: core::unix(session.virtual_clock_us / 1000000, ((session.virtual_clock_us % 1000000) * 1000) as u32),
+    };
+
+    var cache_revalidate_idx: i64 = -1;
+
+    // Phase 0: RFC 9111 HTTP Cache Lookup
+    if session.enable_cache {
+        var lookup_req = copy(req);
+        lookup_req.url.clear();
+        lookup_req.url.append(raw_eff_url[..]);
+        let lookup_dec = lookup(session.cache, lookup_req, cache_ts.now);
+        if lookup_dec.kind == LookupResultKind.Hit {
+            return copy(lookup_dec.cached_response), no_error();
+        } else if lookup_dec.kind == LookupResultKind.Fail504 {
+            var fail_resp = Response {
+                status_code: 504,
+                effective_url: copy(raw_eff_url),
+                ..
+            };
+            return fail_resp, make_error(504, "cache", "504 Gateway Timeout (only-if-cached miss)");
+        } else if lookup_dec.kind == LookupResultKind.Revalidate {
+            cache_revalidate_idx = lookup_dec.entry_idx;
+        }
+    }
+
     var ctx = init_execution_context(session, req, parsed_initial);
+
+    // If cache revalidation is needed, inject conditional headers into ctx
+    if cache_revalidate_idx >= 0 && cache_revalidate_idx < session.cache.entries.len {
+        let cond_map = session.cache.entries[cache_revalidate_idx].build_revalidation_headers();
+        for &c_entry in cond_map.entries {
+            let c_name = cond_map.raw_buf[c_entry.name_begin..c_entry.name_end];
+            let c_val = cond_map.raw_buf[c_entry.values_begin..c_entry.values_end];
+            ctx.headers.push(make_header(c_name, c_val));
+        }
+    }
 
     // Main redirect execution loop (Chromium net::URLRequest 6-phase pipeline)
     while ctx.redirect_count <= ctx.max_redirects {
@@ -963,6 +1026,18 @@ fn execute_request(session: Session&, req: const Request&) -> Response, Error {
         }
         ctx.body_consumed = true;
         ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
+
+        // Phase 4.5: RFC 9111 HTTP Cache Update & 304 Freshening
+        if session.enable_cache {
+            cache_ts.response_time = cache_ts.now;
+            var hop_req = copy(req);
+            hop_req.url.clear();
+            hop_req.url.append(current_url.href[..]);
+            let resp_dec = on_response(session.cache, hop_req, resp, cache_ts, cache_revalidate_idx);
+            if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
+                resp = copy(resp_dec.response);
+            }
+        }
 
         // Phase 5: 3xx Detection & ComputeRedirectInfo
         let loc_hdr = header(resp, "Location");

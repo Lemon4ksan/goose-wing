@@ -5,7 +5,6 @@ namespace wing;
 import std;
 import json;
 import cookie.policy;
-import app.profile;
 
 // ---- request & query item models -------------------------------------------
 

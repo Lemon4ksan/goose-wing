@@ -2,9 +2,8 @@
 namespace wing;
 
 import std;
-import app.profile;
-import app.request;
-import app.response;
+import client.request;
+import client.response;
 
 enum CorsResult {
     NoCors,

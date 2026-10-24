@@ -3,7 +3,6 @@ namespace wing;
 
 import std;
 import json;
-import app.profile;
 
 // ---- error model & diagnostics ---------------------------------------------
 

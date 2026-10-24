@@ -4,9 +4,8 @@
 namespace wing;
 
 import std;
-import app.profile;
-import app.request;
-import app.response;
+import client.request;
+import client.response;
 import http.headers;
 import http.cache.cache_control;
 import http.cache.freshness;
@@ -21,7 +20,7 @@ struct CacheOptions {
     heuristic_fraction: i64 = 10,
     immutable_min_ttl_sec: i64 = 31536000,
     ignore_cargo_cult: bool = true,
-    max_entry_size: i64 = 65536,
+    max_entry_size: i64 = 4096,
 }
 
 // Constructs CacheOptions with RFC 9111 baseline defaults.
@@ -43,7 +42,7 @@ struct CachedEntry {
     last_modified: core::Time = core::Time { .. },
     timestamps: CacheTimestamps = CacheTimestamps { .. },
     vary: VarySnapshot = VarySnapshot { .. },
-    body: u8[..65536] = [],
+    body: u8[..4096] = [],
     head_only: bool = false,
     security_zeroed: bool = false,
     is_valid: bool = false,
@@ -206,7 +205,7 @@ fn abort_writer(writers: CacheWriters&, flight_idx: i64) {
 // High-performance HTTP caching coordinator with intrusive O(1) LRU list.
 struct HttpCache {
     options: CacheOptions = CacheOptions { .. },
-    entries: CachedEntry[..64] = [],
+    entries: CachedEntry[..16] = [],
     writers: CacheWriters = CacheWriters { .. },
     lru_head: i32 = -1,
     lru_tail: i32 = -1,
@@ -488,7 +487,7 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
         }
     }
 
-    if cache.entries.len < 64 {
+    if cache.entries.len < cache.entries.cap {
         cache.entries.push(entry);
         let new_idx = (cache.entries.len - 1) as i32;
         cache.lru_push_front(new_idx);

@@ -4,8 +4,8 @@
 namespace wing;
 
 import std;
-import app.request;
-import app.response;
+import client.request;
+import client.response;
 import http.headers;
 
 // ---- 1. Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------

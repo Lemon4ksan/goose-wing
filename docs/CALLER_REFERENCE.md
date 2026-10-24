@@ -149,20 +149,23 @@ When a domain exceeds the 180-cookie limit:
 ### Access Time Throttling
 - `last_access_utc` is throttled by 60 seconds (`access_update_threshold_us = 60_000_000`). Repeated reads within 60 seconds do not generate disk write-back tasks.
 
-## 8. HTTP Client Session & SSRF Defenses (`app/session.goose`)
+## 8. HTTP Client & SSRF Defenses (`client/client.goose`)
 
 ### Private Network Access Protection
-When creating a client session, outbound destinations are validated against private, reserved, and local IP blocks:
+When creating a client instance (`Client`), outbound destinations are validated against private, reserved, and local IP blocks:
 - **IPv4**: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8` (loopback), `169.254.0.0/16` (link-local), `0.0.0.0/8`.
 - **IPv6**: `::1` (loopback), `fe80::/10` (link-local), `fc00::/7` (unique local).
 - Requests targeting these addresses from untrusted client input are blocked unless explicitly configured.
 
 ### Browser Profile Headers
-Setting a profile via `sess.set_profile(wing::Profile.Chrome131)` automatically configures standard browser header ordering:
+Setting a profile via `client.set_profile(wing::Profile.Chrome131)` automatically configures standard browser header ordering:
 - `User-Agent`
 - `Sec-CH-UA`, `Sec-CH-UA-Mobile`, `Sec-CH-UA-Platform`
 - `Accept`, `Accept-Language`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`
 Manual header additions with conflicting names overwrite profile defaults.
+
+### Integrated RFC 9111 HTTP Cache
+When `ClientConfig.enable_cache` is `true`, `Client` automatically consults its embedded `HttpCache` before dispatching network requests (Phase 0) and records cacheable responses or performs 304 revalidation freshening (Phase 4.5). Unsafe requests (`POST`, `PUT`, `DELETE`, `PATCH`) automatically invalidate matching cached representations.
 
 ## 9. HTTP Server Pipeline (`server/pipeline.goose`)
 
@@ -202,3 +205,29 @@ Manual header additions with conflicting names overwrite profile defaults.
 - **Tier 2 Exponential Backoff & Jitter**: Implements Full Jitter ($s_a = \mathcal{U}(0, \min(c, b \cdot 2^a))$), Equal Jitter, and Decorrelated Jitter.
 - **RFC 9110 Retry-After**: Strictly parses `1*DIGIT` (delay-seconds) and `IMF-fixdate` (with exact UTC calendar round-trip validation). Delays exceeding `max_retry_after_ms` trip the host circuit breaker.
 - **Adaptive Retry Budget**: Enforces Google SRE retry budgeting, capping retry traffic at a maximum 20% ratio.
+
+## 11. HTTP/2 Reference Clean Room Stack (`http2/*`)
+
+### HPACK Codec & Dynamic Table (`http2/hpack.goose`)
+- **256-State Nibble Huffman FSM**: Lookups index into a 4,096-entry `u32` packed transition table (`HUFF_DECODE_TABLE_PACKED`), fitting within 16 KiB L1 CPU cache. Emits up to 1 symbol per 4-bit nibble with zero branch mispredictions and zero dynamic memory allocations.
+- **Huffman Padding & EOS Rules**: Padding bits must strictly consist of `1`s (prefix of EOS). State must be in the accepted set at end-of-stream. Any embedded EOS symbol or padding $> 7$ bits fails decoding immediately.
+- **Integer Shift Overflow Guard**: Variable-length HPACK integers (`hpack_decode_int`) halt once `shift >= 28` bits, defending against Trail of Bits FIND-401 / CVE-2022-41723 integer overflows.
+- **Ring Buffer Dynamic Table**: 128-entry descriptor ring with a flat `u8[4096]` byte arena. External indexing maps $idx \ge 62$ via `(head + count - 1 - (idx - 62)) & 127`, eliminating monotonic eviction underflows (Go #69316 / #72940).
+- **In-Place Compaction**: If `arena_write_pos + total_raw > 4096`, live entries are compacted in-place to offset 0, preserving fixed 4 KiB memory without allocations.
+- **Header Block Validation**: Pseudo-headers (`:method`, `:scheme`, `:path`, `:authority`, `:status`) must strictly appear before regular headers and cannot be duplicated. Multiple `Content-Length` headers must match identically or trigger `ERR_PROTOCOL_ERROR` (CVE-2026-78660 / Go #81115). Connection-specific headers (`Connection`, `Keep-Alive`, `Upgrade`, `TE != trailers`) are rejected.
+
+### Binary Framing & RFC 9218 Extensible Prioritization (`http2/framing.goose`)
+- **Frame Codec**: Fixed 9-byte header parser and encoder (`parse_frame_header`, `encode_frame_header`). Reserved stream ID bit is ignored on ingress and masked out on egress.
+- **Payload Extraction**: `extract_padded_frame_payload` and `extract_headers_frame_payload` strip padding length bytes, trailing padding octets, and 5-byte RFC 7540 priority trees in a single slice pass with boundary verification.
+- **RFC 9218 Priority Parsing**: Structured Field dictionary parser (`parse_priority_param_rfc9218`) extracts `urgency` ($u \in [0, 7]$) and boolean `incremental` (`i`, `i=?1`, `i=?0`), safely ignoring unknown dictionary parameters.
+- **PRIORITY_UPDATE Codec**: Encodes and decodes frame type `0x10` payloads carrying 31-bit stream ID and RFC 9218 priority dictionary strings.
+- **SETTINGS Bounds**: Enforces RFC 9113 parameter constraints: `SETTINGS_MAX_FRAME_SIZE` must be in $16384 \le val \le 16777215$, `SETTINGS_INITIAL_WINDOW_SIZE` $\le 2^{31}-1$, and boolean flags $\in \{0, 1\}$.
+
+### Flow Control, Scheduler & Anti-DoS Coordinator (`http2/connection.goose`)
+- **Transport Connection (`H2Connection`)**: Tracks active stream states, signed 64-bit two-level flow control, write scheduler, and quota managers. Window updates checking $win + inc > 2^{31}-1$ trigger `ERR_FLOW_CONTROL_ERROR`.
+- **Negative Window Deltas**: Decreasing `SETTINGS_INITIAL_WINDOW_SIZE` propagates signed deltas to all active streams. Stream windows that become negative halt sending (`compute_stream_send_quota == 0`) without overflowing or panicking until restored by positive `WINDOW_UPDATE` frames.
+- **RFC 9218 Write Scheduler**: `schedule_next_write` iterates urgency buckets $u = 0 \dots 7$, selecting streams with pending data and available window quota. Starvation between incremental and non-incremental streams within the same urgency level is eliminated by toggling `bucket_prefer_incremental[8]` round-robin turns.
+- **Rapid Reset Token Bucket**: Rate limits incoming `RST_STREAM` frames using a token bucket (`burst = 1000`, `rate = 33/sec`). Bursts exceeding capacity return `ERR_ENHANCE_YOUR_CALM` (CVE-2023-44487).
+- **CONTINUATION Defense**: Restricts incoming `CONTINUATION` sequences to $\le 16$ frames (`MAX_CONT_FRAMES_LIMIT`), cumulative wire size $\le \text{max\_header\_list\_size}$ (8192 B), and enforces a 10,000 ms monotonic deadline against Slow-Drip attacks (CVE-2024-28182, CVE-2024-27983).
+- **Empty Frame Streak Cap**: Consecutive empty `DATA` or `HEADERS` frames without termination flags are capped at 8 (`MAX_EMPTY_FRAME_STREAK`), mitigating CVE-2019-9518.
+- **Unacknowledged Control Frame Quota**: Caps unacknowledged `PING` and `SETTINGS` frames at 64 (`MAX_PENDING_CTRL_FRAMES`), mitigating CVE-2019-9512 / CVE-2019-9515.

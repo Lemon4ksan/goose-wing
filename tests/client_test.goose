@@ -441,16 +441,80 @@ fn test_body_rewind_and_ssrf_guard(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 6. Client Integrated RFC 9111 HTTP Cache Pipeline
+// ----------------------------------------------------------------------------
+fn test_client_cache_integration(t: core::T&) {
+    t.run("CLI-01: Client RFC 9111 Cache Hit and Age Header") { sub =>
+        var client = wing::new_client(wing::ClientConfig {
+            enable_cache: true,
+            ..
+        });
+
+        // Setup mock route for GET /api/data returning Cache-Control: max-age=3600
+        wing::mock_route(client, "GET", "https://api.example.com/data", 200, "{\"hello\":\"world\"}");
+        wing::add_mock_header(client, "Cache-Control", "max-age=3600");
+
+        // 1st request: Cache Miss -> network fetch -> stored in cache
+        var req1 = wing::new_get("https://api.example.com/data");
+        let resp1, err1 = wing::execute_request(client, req1);
+        sub.assert_true(wing::ok(err1), "req1 ok");
+        sub.assert_eq(resp1.status_code, 200, "status 200");
+        sub.assert_eq(resp1.body[..], "{\"hello\":\"world\"}", "body matches");
+        sub.assert_eq(client.cache.total_stores, 1, "stored in cache");
+
+        // Advance virtual clock by 60 seconds
+        client.virtual_clock_us += 60000000;
+
+        // 2nd request: Cache Hit -> served directly from cache with Age header!
+        var req2 = wing::new_get("https://api.example.com/data");
+        let resp2, err2 = wing::execute_request(client, req2);
+        sub.assert_true(wing::ok(err2), "req2 ok");
+        sub.assert_eq(resp2.status_code, 200, "status 200 from cache");
+        sub.assert_eq(resp2.body[..], "{\"hello\":\"world\"}", "body matches cached");
+        sub.assert_eq(client.cache.total_hits, 1, "cache hit recorded");
+        sub.assert_true(wing::header(resp2, "Age").len > 0, "Age header present on cache hit");
+    };
+
+    t.run("CLI-02: Client Unsafe Method Invalidation") { sub =>
+        var client = wing::new_client(wing::ClientConfig {
+            enable_cache: true,
+            ..
+        });
+
+        // Seed cache
+        wing::mock_route(client, "GET", "https://api.example.com/item", 200, "v1");
+        wing::add_mock_header(client, "Cache-Control", "max-age=3600");
+
+        var req_get = wing::new_get("https://api.example.com/item");
+        wing::execute_request(client, req_get);
+        sub.assert_eq(client.cache.total_stores, 1, "entry stored");
+
+        // Unsafe POST to same URL invalidates cache
+        var route_post = wing::mock_route(client, "POST", "https://api.example.com/item", 200, "updated");
+        var req_post = wing::new_post("https://api.example.com/item");
+        req_post.body.append("new_data");
+        let resp_post, err_post = wing::execute_request(client, req_post);
+        sub.assert_true(wing::ok(err_post), "post ok");
+
+        // Next GET must be a Cache Miss
+        let hits_before = client.cache.total_hits;
+        let resp_get2, err_get2 = wing::execute_request(client, req_get);
+        sub.assert_eq(client.cache.total_hits, hits_before, "no cache hit after invalidation");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = core::new_runner("Client Session & Redirect Verification Suite", core::Verbosity.Verbose);
+    var runner = core::new_runner("Client & RFC 9111 Cache Verification Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. Mozilla PSL Scoping & Tenant Isolation", test_psl_scoping_and_tenants);
     core::run_case(runner, "2. SiteForCookies & RFC 6265bis Schemeful Same-Site", test_site_for_cookies_and_rfc6265bis);
     core::run_case(runner, "3. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
     core::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_clientsession_pipeline_and_cookies);
     core::run_case(runner, "5. BodyRewind, SSRF Guard & DNS Rebinding Defense", test_body_rewind_and_ssrf_guard);
+    core::run_case(runner, "6. Client Integrated RFC 9111 HTTP Cache Pipeline", test_client_cache_integration);
 
     let ok = core::finish(runner);
     assert(ok);

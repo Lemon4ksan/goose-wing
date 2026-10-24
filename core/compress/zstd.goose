@@ -1452,12 +1452,12 @@ fn decode_sequences<B>(
     var rep1 = rep[1];
     var rep2 = rep[2];
 
+    var of_entry = of_table.entries[state_of & 511];
+    var ml_entry = ml_table.entries[state_ml & 511];
+    var ll_entry = ll_table.entries[state_ll & 511];
+
     var seq_i: i64 = 0;
     while seq_i < nb_seq {
-        let of_entry = of_table.entries[state_of & 511];
-        let ml_entry = ml_table.entries[state_ml & 511];
-        let ll_entry = ll_table.entries[state_ll & 511];
-
         let of_eb = of_entry.extra_bits as u32;
         let ml_eb = ml_entry.extra_bits as u32;
         let ll_eb = ll_entry.extra_bits as u32;
@@ -1490,7 +1490,17 @@ fn decode_sequences<B>(
 
             ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
             bits_consumed += ll_eb;
+        } else {
+            of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
+            ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
+            ll_extra = if ll_eb > 0 { zstd_read_bits(r, ll_eb as i32) } else { 0 };
+        }
 
+        let lit_len = ll_entry.base_val + ll_extra;
+        let match_len = ml_entry.base_val + ml_extra;
+        let offset_val = of_entry.base_val + of_extra;
+
+        if use_fast_dstream {
             if seq_i + 1 < nb_seq {
                 if bits_consumed > 32 {
                     if ptr >= 8 {
@@ -1521,12 +1531,12 @@ fn decode_sequences<B>(
                 let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
                 bits_consumed += of_nb;
                 state_of = (of_entry.new_state as i64) + of_bits;
+
+                of_entry = of_table.entries[state_of & 511];
+                ml_entry = ml_table.entries[state_ml & 511];
+                ll_entry = ll_table.entries[state_ll & 511];
             }
         } else {
-            of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
-            ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
-            ll_extra = if ll_eb > 0 { zstd_read_bits(r, ll_eb as i32) } else { 0 };
-
             if seq_i + 1 < nb_seq {
                 let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
                 state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
@@ -1536,12 +1546,12 @@ fn decode_sequences<B>(
 
                 let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
                 state_of = (of_entry.new_state as i64) + (of_bits as i64);
+
+                of_entry = of_table.entries[state_of & 511];
+                ml_entry = ml_table.entries[state_ml & 511];
+                ll_entry = ll_table.entries[state_ll & 511];
             }
         }
-
-        let lit_len = ll_entry.base_val + ll_extra;
-        let match_len = ml_entry.base_val + ml_extra;
-        let offset_val = of_entry.base_val + of_extra;
 
         var offset: u32 = 0;
         if offset_val > 3 {
