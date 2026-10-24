@@ -1595,24 +1595,26 @@ fn decode_sequences<B>(
             }
         }
 
-        if lit_len == 1 {
-            out_buf.push(lit_buf[lit_ptr]);
-        } else if lit_len == 2 {
-            out_buf.push(lit_buf[lit_ptr]);
-            out_buf.push(lit_buf[lit_ptr + 1]);
-        } else if lit_len == 3 {
-            out_buf.push(lit_buf[lit_ptr]);
-            out_buf.push(lit_buf[lit_ptr + 1]);
-            out_buf.push(lit_buf[lit_ptr + 2]);
-        } else if lit_len == 4 {
-            out_buf.push(lit_buf[lit_ptr]);
-            out_buf.push(lit_buf[lit_ptr + 1]);
-            out_buf.push(lit_buf[lit_ptr + 2]);
-            out_buf.push(lit_buf[lit_ptr + 3]);
-        } else if lit_len > 4 {
-            out_buf.append(lit_buf[lit_ptr .. next_lit]);
+        if lit_len > 0 {
+            if lit_len == 1 {
+                out_buf.push(lit_buf[lit_ptr]);
+            } else if lit_len == 2 {
+                out_buf.push(lit_buf[lit_ptr]);
+                out_buf.push(lit_buf[lit_ptr + 1]);
+            } else if lit_len == 3 {
+                out_buf.push(lit_buf[lit_ptr]);
+                out_buf.push(lit_buf[lit_ptr + 1]);
+                out_buf.push(lit_buf[lit_ptr + 2]);
+            } else if lit_len == 4 {
+                out_buf.push(lit_buf[lit_ptr]);
+                out_buf.push(lit_buf[lit_ptr + 1]);
+                out_buf.push(lit_buf[lit_ptr + 2]);
+                out_buf.push(lit_buf[lit_ptr + 3]);
+            } else {
+                out_buf.append(lit_buf[lit_ptr .. next_lit]);
+            }
+            lit_ptr = next_lit;
         }
-        lit_ptr = next_lit;
 
         if match_len > 0 {
             let off = offset as i64;
