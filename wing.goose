@@ -44,6 +44,7 @@ import http.mime;
 import http.multipart;
 import http.trace;
 import http.altsvc;
+import http.compression_dict;
 import http.early_hints;
 import http.novarysearch;
 import http.h2_framer;

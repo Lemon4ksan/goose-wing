@@ -24,6 +24,7 @@ import tls.ech;
 import http.altsvc;
 import net.happy_eyeballs;
 import net.masque;
+import http.compression_dict;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -391,6 +392,7 @@ struct ClientConfig {
     enable_altsvc: bool = true,
     enable_protocol_racing: bool = true,
     quic_race_delay_ms: i64 = 200,
+    enable_compression_dict: bool = true,
 }
 
 type SessionConfig = ClientConfig;
@@ -429,6 +431,10 @@ struct Client {
     enable_protocol_racing: bool = true,
     quic_race_delay_ms: i64 = 200,
 
+    // Compression Dictionary Transport (Chrome 123+ dcz/dcb)
+    dict_cache: DictionaryCache = DictionaryCache { .. },
+    enable_compression_dict: bool = true,
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -447,6 +453,8 @@ fn new_client() -> Client {
         enable_altsvc: true,
         enable_protocol_racing: true,
         quic_race_delay_ms: 200,
+        dict_cache: new_dictionary_cache(),
+        enable_compression_dict: true,
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -467,6 +475,8 @@ fn new_client(cfg: ClientConfig) -> Client {
         enable_altsvc: cfg.enable_altsvc,
         enable_protocol_racing: cfg.enable_protocol_racing,
         quic_race_delay_ms: cfg.quic_race_delay_ms,
+        dict_cache: new_dictionary_cache(),
+        enable_compression_dict: cfg.enable_compression_dict,
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -760,6 +770,35 @@ fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
     resolve_target_origin(target, origin_buf);
     let now_sec = session.virtual_clock_us / 1000000;
     return altsvc_is_broken(session.altsvc, origin_buf[..], now_sec);
+}
+
+// ---- compression dictionary transport configuration (chrome 123+ dcz/dcb) --
+
+fn enable_compression_dict(session: Session&, enabled: bool = true) {
+    session.enable_compression_dict = enabled;
+}
+
+fn clear_dictionary_cache(session: Session&) {
+    session.dict_cache = new_dictionary_cache();
+}
+
+fn dictionary_cache(session: const Session&) -> const DictionaryCache& {
+    return session.dict_cache;
+}
+
+fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool {
+    var origin_buf: u8[..128] = [];
+    resolve_target_origin(target_url, origin_buf);
+    var path_buf: u8[..256] = [];
+    let parsed, err = core::parse_url(target_url);
+    if parsed.valid {
+        path_buf.append(core::pathname(parsed));
+    } else {
+        path_buf.append("/");
+    }
+    let now_sec = session.virtual_clock_us / 1000000;
+    var dummy_hash: u8[..64] = [];
+    return dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec, dummy_hash);
 }
 
 fn allow_port(session: Session&, port_num: i32) {
@@ -1455,6 +1494,13 @@ fn execute_mock_or_echo_hop(
     var candidate_h3_ep = AltSvcEndpoint { .. };
     let has_h3 = session.enable_altsvc && is_https && altsvc_lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
 
+    let curr_path = core::pathname(current_url);
+    var matched_dict_b64: u8[..64] = [];
+    let has_dict = session.enable_compression_dict && is_https && dictionary_lookup_for_request(session.dict_cache, origin_buf[..], curr_path, now_sec, matched_dict_b64);
+    if has_dict {
+        ctx.headers.push(make_header("Available-Dictionary", matched_dict_b64[..]));
+    }
+
     // Check mock routes
     for &route in session.mock_routes {
         if (route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method)) &&
@@ -1533,6 +1579,22 @@ fn execute_mock_or_echo_hop(
                 }
             }
 
+            // Compression Dictionary Transport (Use-As-Dictionary and dcz decode)
+            if session.enable_compression_dict && is_https {
+                let dict_hdr = header(resp, "Use-As-Dictionary");
+                if dict_hdr.len > 0 {
+                    let d_params, ok_p = parse_use_as_dictionary_header(dict_hdr);
+                    if ok_p {
+                        let pat = if d_params.match_pattern.len > 0 { d_params.match_pattern[..] } else { curr_path };
+                        dictionary_cache_insert(session.dict_cache, origin_buf[..], pat, d_params.id[..], resp.body[..], d_params.ttl_sec, now_sec);
+                    }
+                }
+                let enc = header(resp, "Content-Encoding");
+                if eq_ascii_fold(enc, "dcz") {
+                    decode_body_with_dictionary(resp, session.dict_cache);
+                }
+            }
+
             return resp;
         }
     }
@@ -1557,6 +1619,21 @@ fn execute_mock_or_echo_hop(
         let alt_svc_val = header(resp, "Alt-Svc");
         if alt_svc_val.len > 0 {
             altsvc_cache_update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+        }
+    }
+
+    if session.enable_compression_dict && is_https {
+        let dict_hdr = header(resp, "Use-As-Dictionary");
+        if dict_hdr.len > 0 {
+            let d_params, ok_p = parse_use_as_dictionary_header(dict_hdr);
+            if ok_p {
+                let pat = if d_params.match_pattern.len > 0 { d_params.match_pattern[..] } else { curr_path };
+                dictionary_cache_insert(session.dict_cache, origin_buf[..], pat, d_params.id[..], resp.body[..], d_params.ttl_sec, now_sec);
+            }
+        }
+        let enc = header(resp, "Content-Encoding");
+        if eq_ascii_fold(enc, "dcz") {
+            decode_body_with_dictionary(resp, session.dict_cache);
         }
     }
 

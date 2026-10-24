@@ -3,6 +3,7 @@ namespace wing;
 
 import std;
 import json;
+import http.compression_dict;
 
 // ---- error model & diagnostics ---------------------------------------------
 
@@ -153,6 +154,34 @@ fn decode_body(res: Response&) -> bool {
         return false;
     }
     return true;
+}
+
+// Automatically decompresses response.body, supporting standard encodings (gzip, deflate, zstd)
+// as well as Chrome 123+ shared dictionary compression (dcz) using the client's dictionary cache.
+fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache&) -> bool {
+    let enc = header(res, "content-encoding");
+    if eq_ascii_fold(enc, "dcz") {
+        var dict_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
+        guard ok_hdr else { return false; }
+
+        var found = false;
+        var decompressed: u8[>..] = [];
+        for &entry in dict_cache.entries {
+            if entry.valid && entry.sha256_hash == dict_hash {
+                let ok_dec = decompress_dcz_payload(p_slice, entry.content[..], decompressed);
+                guard ok_dec else { return false; }
+                found = true;
+                break;
+            }
+        }
+        guard found else { return false; }
+
+        res.body.clear();
+        res.body.append(decompressed[..]);
+        return true;
+    }
+    return decode_body(res);
 }
 
 // ---- json reflection readers -----------------------------------------------
