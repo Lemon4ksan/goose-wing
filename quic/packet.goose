@@ -56,6 +56,8 @@ const QUIC_FRAME_PATH_RESPONSE:        u64 = 0x1B;
 const QUIC_FRAME_CONNECTION_CLOSE:     u64 = 0x1C;
 const QUIC_FRAME_CONNECTION_CLOSE_APP: u64 = 0x1D;
 const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
+const QUIC_FRAME_DATAGRAM:            u64 = 0x30; // RFC 9221 Section 3: DATAGRAM without Length
+const QUIC_FRAME_DATAGRAM_LEN:        u64 = 0x31; // RFC 9221 Section 3: DATAGRAM with Length
 
 // ---- 2. variable-length integer codec (rfc 9000 section 16) ----------------
 
@@ -528,4 +530,40 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&) -> u64 {
     }
     buf.data_slab.resize(remaining, 0);
     return take_bytes as u64;
+}
+
+// ---- 6. unreliable datagram extension (rfc 9221) ----------------------------
+
+// Encodes an RFC 9221 QUIC DATAGRAM frame into buffer.
+// If with_length is true (default), encodes frame type 0x31 with VarInt length prefix.
+// If with_length is false, encodes frame type 0x30 consuming remainder of packet.
+fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: bool = true) -> bool {
+    if with_length {
+        guard quic_encode_varint(out, QUIC_FRAME_DATAGRAM_LEN) else { return false; }
+        guard quic_encode_varint(out, payload.len as u64) else { return false; }
+    } else {
+        guard quic_encode_varint(out, QUIC_FRAME_DATAGRAM) else { return false; }
+    }
+    out.append(payload);
+    return true;
+}
+
+// Decodes an RFC 9221 QUIC DATAGRAM frame from wire slice.
+fn decode_quic_datagram_frame(src: const u8[:], offset: u64, packet_end: u64 = 0) -> const u8[:], u64, bool {
+    guard offset < src.len as u64 else { return "", offset, false; }
+    let ftype, off1, ok1 = quic_decode_varint(src, offset);
+    guard ok1 else { return "", offset, false; }
+
+    if ftype == QUIC_FRAME_DATAGRAM {
+        let eff_end = if packet_end > 0 && packet_end <= src.len as u64 { packet_end } else { src.len as u64 };
+        guard off1 <= eff_end else { return "", offset, false; }
+        return src[(off1 as i64)..(eff_end as i64)], eff_end, true;
+    } else if ftype == QUIC_FRAME_DATAGRAM_LEN {
+        let dlen, off2, ok2 = quic_decode_varint(src, off1);
+        guard ok2 else { return "", offset, false; }
+        let eff_end = off2 + dlen;
+        guard eff_end <= src.len as u64 else { return "", offset, false; }
+        return src[(off2 as i64)..(eff_end as i64)], eff_end, true;
+    }
+    return "", offset, false;
 }

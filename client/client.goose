@@ -23,6 +23,7 @@ import net.dns;
 import tls.ech;
 import http.altsvc;
 import net.happy_eyeballs;
+import net.masque;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -1836,4 +1837,90 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
 
     sub.connected = true;
     return resp, no_error();
+}
+
+// ---- masque connect-udp & connect-ip tunnels (rfc 9298, rfc 9484) -----------
+
+fn connect_udp(
+    session: Session&,
+    proxy_url: const u8[:],
+    target_host: const u8[:],
+    target_port: u16,
+    stream_id: u64 = 0,
+    use_datagrams: bool = true
+) -> MasqueTunnelSession, Response, Error {
+    var tunnel = new_connect_udp_tunnel(proxy_url, target_host, target_port, stream_id, use_datagrams);
+    tunnel.state = MasqueTunnelState.Connecting;
+
+    var req_path: u8[..256] = [];
+    var req_headers: HeaderItem[..16] = [];
+    build_masque_connect_request(tunnel, req_headers, req_path);
+
+    var full_url: u8[..512] = [];
+    full_url.append(proxy_url);
+    if full_url.len > 0 && full_url[full_url.len - 1] == '/' {
+        full_url.pop();
+    }
+    full_url.append(req_path[..]);
+
+    var req = new_request("CONNECT", full_url[..]);
+    for &h in req_headers {
+        req.headers.push(copy(h));
+    }
+
+    let resp, err = do(session, req);
+    if !ok(err) || !is_success(resp) {
+        tunnel.state = MasqueTunnelState.Failed;
+        return tunnel, resp, if !ok(err) { err } else { make_error(resp.status_code, "masque", "proxy rejected CONNECT-UDP") };
+    }
+
+    let caps_val = header(resp, "capsule-protocol");
+    if !is_capsule_protocol_negotiated(caps_val) {
+        tunnel.state = MasqueTunnelState.Failed;
+        return tunnel, resp, make_error(502, "masque", "proxy missing required Capsule-Protocol: ?1 header");
+    }
+
+    tunnel.state = MasqueTunnelState.Established;
+    return tunnel, resp, no_error();
+}
+
+fn connect_ip(
+    session: Session&,
+    proxy_url: const u8[:],
+    stream_id: u64 = 0,
+    use_datagrams: bool = true
+) -> MasqueTunnelSession, Response, Error {
+    var tunnel = new_connect_ip_tunnel(proxy_url, stream_id, use_datagrams);
+    tunnel.state = MasqueTunnelState.Connecting;
+
+    var req_path: u8[..256] = [];
+    var req_headers: HeaderItem[..16] = [];
+    build_masque_connect_request(tunnel, req_headers, req_path);
+
+    var full_url: u8[..512] = [];
+    full_url.append(proxy_url);
+    if full_url.len > 0 && full_url[full_url.len - 1] == '/' {
+        full_url.pop();
+    }
+    full_url.append(req_path[..]);
+
+    var req = new_request("CONNECT", full_url[..]);
+    for &h in req_headers {
+        req.headers.push(copy(h));
+    }
+
+    let resp, err = do(session, req);
+    if !ok(err) || !is_success(resp) {
+        tunnel.state = MasqueTunnelState.Failed;
+        return tunnel, resp, if !ok(err) { err } else { make_error(resp.status_code, "masque", "proxy rejected CONNECT-IP") };
+    }
+
+    let caps_val = header(resp, "capsule-protocol");
+    if !is_capsule_protocol_negotiated(caps_val) {
+        tunnel.state = MasqueTunnelState.Failed;
+        return tunnel, resp, make_error(502, "masque", "proxy missing required Capsule-Protocol: ?1 header");
+    }
+
+    tunnel.state = MasqueTunnelState.Established;
+    return tunnel, resp, no_error();
 }
