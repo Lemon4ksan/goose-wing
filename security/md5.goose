@@ -23,7 +23,7 @@ fn md5_transform(state: u32[4]&, blk: const u8[64]&) {
     var x: u32[16] = [0; 16];
     for i in 16 {
         let idx = i * 4;
-        x[i] = (blk[idx] as! u32) |
+        x[i] = blk[idx] |
                ((blk[idx + 1] as! u32) << 8) |
                ((blk[idx + 2] as! u32) << 16) |
                ((blk[idx + 3] as! u32) << 24);

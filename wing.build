@@ -1,0 +1,5 @@
+// goose-wing package build configuration sidecar.
+// Configures platform-specific system libraries, compiler flags, and exclusions.
+c_libs_windows = ["ws2_32", "mswsock"];
+c_flags_msvc = ["/std:c11"];
+exclude = ["scratch", "vendor"];

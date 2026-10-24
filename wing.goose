@@ -118,6 +118,7 @@ import net.dns;
 import net.masque;
 import net.isolation;
 import net.sockopt;
+import net.driver;
 
 // ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
 

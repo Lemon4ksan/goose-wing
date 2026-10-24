@@ -96,10 +96,10 @@ fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
 fn parse_hybrid_key_share(raw: const u8[:], out: PostQuantumKeyShare&) -> bool {
     guard raw.len >= 4 + HYBRID_CLIENT_SHARE_LEN else { return false; }
 
-    out.group = ((raw[0] as u16) << 8) | (raw[1] as u16);
+    out.group = ((raw[0] as u16) << 8) | raw[1];
     guard is_post_quantum_group(out.group) else { return false; }
 
-    let kex_len = (((raw[2] as u16) << 8) | (raw[3] as u16)) as i64;
+    let kex_len = (((raw[2] as u16) << 8) | raw[3]) as i64;
     guard kex_len == HYBRID_CLIENT_SHARE_LEN else { return false; }
 
     for i in 32 {

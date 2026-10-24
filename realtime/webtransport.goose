@@ -63,19 +63,19 @@ fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
     let prefix = first >> 6;
 
     if prefix == 0 {
-        return (first & 0x3F) as u64, true;
+        return (first & 0x3F), true;
     } else if prefix == 1 {
         guard idx < wire.len else { return 0, false; }
         let b1 = wire[idx];
         idx += 1;
-        let v = (((first & 0x3F) as u64) << 8) | (b1 as u64);
+        let v = (((first & 0x3F) as u64) << 8) | b1;
         return v, true;
     } else if prefix == 2 {
         guard idx + 2 < wire.len else { return 0, false; }
         var v = ((first & 0x3F) as u64) << 24;
         v |= (wire[idx] as u64) << 16;
         v |= (wire[idx + 1] as u64) << 8;
-        v |= (wire[idx + 2] as u64);
+        v |= wire[idx + 2];
         idx += 3;
         return v, true;
     } else {
