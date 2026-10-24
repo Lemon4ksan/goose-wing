@@ -25,6 +25,7 @@ import http.altsvc;
 import net.happy_eyeballs;
 import net.masque;
 import http.compression_dict;
+import http.hsts;
 import client.interceptor;
 import auth.digest;
 import auth.sigv4;
@@ -452,6 +453,10 @@ struct Client {
     // RFC 7616 Digest & RFC 7617 Basic Authenticator
     creds: ClientCredentials = ClientCredentials { .. },
 
+    // RFC 6797 HTTP Strict Transport Security (HSTS)
+    hsts: HstsCache = HstsCache { .. },
+    enable_hsts: bool = true,
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -473,6 +478,8 @@ fn new_client() -> Client {
         dict_cache: new_dictionary_cache(),
         enable_compression_dict: true,
         pipeline: new_interceptor_pipeline(),
+        hsts: new_hsts_cache(),
+        enable_hsts: true,
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -894,6 +901,29 @@ fn clear_credentials(session: Session&) {
     session.creds.username.clear();
     session.creds.password.clear();
     session.creds.nonce_counter = 1;
+}
+
+// ---- hsts configuration (rfc 6797 strict transport security) ---------------
+
+fn enable_hsts(session: Session&, enabled: bool = true) {
+    session.enable_hsts = enabled;
+}
+
+fn enable_hsts_preload(session: Session&, enabled: bool = true) {
+    session.hsts.enable_preload_list = enabled;
+}
+
+fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
+    let now_sec = session.virtual_clock_us / 1000000;
+    return is_hsts_host(session.hsts, hostname, now_sec);
+}
+
+fn hsts_cache(session: const Session&) -> const HstsCache& {
+    return session.hsts;
+}
+
+fn clear_hsts_cache(session: Session&) {
+    session.hsts = new_hsts_cache();
 }
 
 fn allow_port(session: Session&, port_num: i32) {
@@ -1410,6 +1440,16 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
+    // Phase -0.5: RFC 6797 HSTS Pre-Flight URL Upgrade (http:// -> https://)
+    if session.enable_hsts {
+        var upgraded_url: u8[..2048] = [];
+        let now_sec = session.virtual_clock_us / 1000000;
+        if hsts_upgrade_url(session.hsts, raw_eff_url[..], now_sec, upgraded_url) {
+            raw_eff_url.clear();
+            raw_eff_url.append(upgraded_url[..]);
+        }
+    }
+
     let parsed_initial, parse_err = core::parse_url(raw_eff_url[..]);
     guard parsed_initial.valid else {
         return Response { .. }, make_error(400, "url_parse", "invalid request url");
@@ -1789,6 +1829,14 @@ fn execute_mock_or_echo_hop(
                 }
             }
 
+            // Ingest Strict-Transport-Security header (RFC 6797 Section 8.1 - HTTPS only)
+            if session.enable_hsts && is_https {
+                let hsts_val = header(resp, "Strict-Transport-Security");
+                if hsts_val.len > 0 {
+                    hsts_cache_update(session.hsts, core::hostname(current_url), hsts_val, now_sec);
+                }
+            }
+
             // Compression Dictionary Transport (Use-As-Dictionary and dcz decode)
             if session.enable_compression_dict && is_https {
                 let dict_hdr = header(resp, "Use-As-Dictionary");
@@ -1829,6 +1877,13 @@ fn execute_mock_or_echo_hop(
         let alt_svc_val = header(resp, "Alt-Svc");
         if alt_svc_val.len > 0 {
             altsvc_cache_update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+        }
+    }
+
+    if session.enable_hsts && is_https {
+        let hsts_val = header(resp, "Strict-Transport-Security");
+        if hsts_val.len > 0 {
+            hsts_cache_update(session.hsts, core::hostname(current_url), hsts_val, now_sec);
         }
     }
 
