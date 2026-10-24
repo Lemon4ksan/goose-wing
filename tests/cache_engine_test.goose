@@ -513,10 +513,89 @@ fn test_request_collapsing(t: core::T&) {
     };
 }
 
+fn test_rfc5861_stale_extensions(t: core::T&) {
+    t.run("1. RFC 5861 Section 3: stale-while-revalidate Cache Decision") { sub =>
+        var cache = wing::new_http_cache();
+        var ts = wing::CacheTimestamps {
+            request_time: core::unix(1700000000, 0),
+            response_time: core::unix(1700000001, 0),
+            ..
+        };
+
+        // Populate cache with max-age=60, stale-while-revalidate=120
+        var req = wing::new_request("GET", "https://api.example.com/feed");
+        var resp = wing::new_response();
+        resp.status_code = 200;
+        wing::header(resp, "cache-control", "max-age=60, stale-while-revalidate=120");
+        wing::header(resp, "etag", "\"feed-v1\"");
+        resp.body.append("Feed Content V1");
+
+        let dec_store = wing::on_response(cache, req, resp, ts);
+        sub.assert_eq(dec_store.kind, wing::ResponseDecisionKind.StoreAndReturn, "Initial response stored");
+
+        // 1. Query at t = +30s (Fresh: within max-age=60)
+        let t_fresh = core::unix(1700000030, 0);
+        let dec_fresh = wing::lookup(cache, req, t_fresh);
+        sub.assert_eq(dec_fresh.kind, wing::LookupResultKind.Hit, "Fresh hit");
+        sub.assert_false(dec_fresh.revalidate_in_background, "Background revalidation not needed yet");
+
+        // 2. Query at t = +100s (Stale, but within stale-while-revalidate=120, total window 180s)
+        let t_stale_swr = core::unix(1700000100, 0);
+        let dec_swr = wing::lookup(cache, req, t_stale_swr);
+        sub.assert_eq(dec_swr.kind, wing::LookupResultKind.Hit, "Stale hit permitted under stale-while-revalidate");
+        sub.assert_true(dec_swr.revalidate_in_background, "Flagged for background revalidation per RFC 5861");
+        sub.assert_bytes_eq(dec_swr.cached_response.body[..], "Feed Content V1", "Served cached payload");
+
+        // 3. Query at t = +200s (Beyond max-age + stale-while-revalidate = 180s)
+        let t_expired = core::unix(1700000200, 0);
+        let dec_exp = wing::lookup(cache, req, t_expired);
+        sub.assert_eq(dec_exp.kind, wing::LookupResultKind.Revalidate, "Expired requires immediate synchronous revalidation");
+    };
+
+    t.run("2. RFC 5861 Section 4: stale-if-error Fallback on 5xx Origin Failure") { sub =>
+        var cache = wing::new_http_cache();
+        var ts = wing::CacheTimestamps {
+            request_time: core::unix(1700000000, 0),
+            response_time: core::unix(1700000001, 0),
+            ..
+        };
+
+        // Populate cache with max-age=60, stale-if-error=300
+        var req = wing::new_request("GET", "https://api.example.com/prices");
+        var resp = wing::new_response();
+        resp.status_code = 200;
+        wing::header(resp, "cache-control", "max-age=60, stale-if-error=300");
+        wing::header(resp, "etag", "\"prices-v1\"");
+        resp.body.append("Price: $42.00");
+
+        let dec_store = wing::on_response(cache, req, resp, ts);
+        sub.assert_eq(dec_store.kind, wing::ResponseDecisionKind.StoreAndReturn, "Initial prices stored");
+
+        // At t = +150s, entry is stale (max-age=60 expired)
+        // Client performs revalidation request to origin
+        let t_reval = core::unix(1700000150, 0);
+        let dec_req = wing::lookup(cache, req, t_reval);
+        sub.assert_eq(dec_req.kind, wing::LookupResultKind.Revalidate, "Entry requires revalidation");
+
+        // Origin fails and returns 503 Service Unavailable
+        var resp_503 = wing::new_response();
+        resp_503.status_code = 503;
+        var ts_503 = wing::CacheTimestamps {
+            request_time: t_reval,
+            response_time: t_reval,
+            ..
+        };
+
+        let dec_err = wing::on_response(cache, req, resp_503, ts_503, dec_req.entry_idx);
+        sub.assert_eq(dec_err.kind, wing::ResponseDecisionKind.FreshenAndReturn, "503 triggers stale-if-error fallback");
+        sub.assert_bytes_eq(dec_err.response.body[..], "Price: $42.00", "Cached prices returned to caller despite 503");
+    };
+}
+
 // ---- Main Test Runner Entrypoint -------------------------------------------
 
 fn main() {
-    var runner = core::new_runner("RFC 9111 HTTP Caching Engine Verification Suite", core::Verbosity.Verbose);
+    var runner = core::new_runner("RFC 9111 & RFC 5861 HTTP Caching Engine Verification Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. Cache-Control Parsing & Delta-Seconds Clamping", test_cache_control_parsing_and_overflow);
     core::run_case(runner, "2. Mathematical Freshness Model & Clock Skew", test_freshness_math_and_clock_skew);
@@ -526,6 +605,7 @@ fn main() {
     core::run_case(runner, "6. Cache Transaction Lifecycle, 304 Merge & Sanitization", test_cache_transaction_and_304_merge);
     core::run_case(runner, "7. RFC 9111 Special Behaviors & Cascade Invalidation", test_rfc9111_special_behaviors_and_invalidation);
     core::run_case(runner, "8. Single-Flight Writers Request Collapsing", test_request_collapsing);
+    core::run_case(runner, "9. RFC 5861 stale-while-revalidate & stale-if-error", test_rfc5861_stale_extensions);
 
     let ok = core::finish(runner);
     assert(ok);

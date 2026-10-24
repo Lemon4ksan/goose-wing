@@ -120,6 +120,7 @@ struct LookupDecision {
     entry_idx: i64 = -1,
     conditional_headers: HeaderMap = HeaderMap { .. },
     status_code: i32 = 0,
+    revalidate_in_background: bool = false,
     cached_response: Response = Response { .. },
 }
 
@@ -402,6 +403,7 @@ fn lookup(
         cache.total_hits++;
         dec.kind = LookupResultKind.Hit;
         dec.entry_idx = matched_idx;
+        dec.revalidate_in_background = metrics.stale_while_revalidate_allowed;
         matched_entry.entry_to_response(cur_now, dec.cached_response);
         return dec;
     }
@@ -527,6 +529,25 @@ fn on_response(
 
     if resp.status_code == 304 {
         return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts);
+    }
+
+    // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error
+    if resp.status_code >= 500 && resp.status_code <= 504 && revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len {
+        let entry = cache.entries[revalidate_entry_idx];
+        if entry.is_valid {
+            let req_headers = req.request_headers_to_map();
+            let req_cc = parse_cache_control_headers(req_headers, true, cache.options.ignore_cargo_cult);
+            let age_hdr = parse_age_header(get_header(entry.headers, "age"));
+            let apparent = compute_apparent_age(ts.response_time, ts.response_time);
+            let cur_age = compute_current_age(apparent, age_hdr, entry.timestamps);
+            let lifetime = compute_freshness_lifetime(entry.cc, entry.headers, entry.timestamps, cache.options.shared, cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec);
+            if evaluate_stale_if_error(entry.cc, req_cc, cur_age, lifetime, cache.options.shared, entry.security_zeroed) {
+                dec.kind = ResponseDecisionKind.FreshenAndReturn;
+                dec.entry_idx = revalidate_entry_idx;
+                entry.entry_to_response(ts.response_time, dec.response);
+                return dec;
+            }
+        }
     }
 
     guard is_get || is_head else {

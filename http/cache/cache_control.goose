@@ -7,23 +7,24 @@ import http.headers;
 
 // ---- cache-control bitmask flags -------------------------------------------
 
-const CC_FLAG_NONE: u16               = 0x0000;
-const CC_NO_STORE: u16                = 0x0001; // no-store
-const CC_NO_CACHE: u16                = 0x0002; // no-cache (unqualified or qualified)
-const CC_MUST_REVALIDATE: u16         = 0x0004; // must-revalidate
-const CC_PROXY_REVALIDATE: u16        = 0x0008; // proxy-revalidate
-const CC_MUST_UNDERSTAND: u16         = 0x0010; // must-understand (RFC 9111 Section 5.2.2.3)
-const CC_PRIVATE: u16                 = 0x0020; // private (unqualified or qualified)
-const CC_PUBLIC: u16                  = 0x0040; // public
-const CC_IMMUTABLE: u16               = 0x0080; // immutable (RFC 8246)
-const CC_ONLY_IF_CACHED: u16          = 0x0100; // only-if-cached (RFC 9111 Section 5.2.1.7)
-const CC_NO_TRANSFORM: u16            = 0x0200; // no-transform
-const CC_INVALID_FRESHNESS: u16       = 0x0400; // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
-const CC_HAS_MAX_AGE: u16             = 0x0800; // max-age=delta-seconds
-const CC_HAS_S_MAXAGE: u16            = 0x1000; // s-maxage=delta-seconds
-const CC_HAS_MAX_STALE: u16           = 0x2000; // max-stale[=delta-seconds]
-const CC_HAS_MIN_FRESH: u16           = 0x4000; // min-fresh=delta-seconds
-const CC_STALE_WHILE_REVALIDATE: u16  = 0x8000; // stale-while-revalidate=delta-seconds (RFC 5861)
+const CC_FLAG_NONE: u32              = 0x0000;
+const CC_NO_STORE: u32               = 0x0001;  // no-store
+const CC_NO_CACHE: u32               = 0x0002;  // no-cache (unqualified or qualified)
+const CC_MUST_REVALIDATE: u32        = 0x0004;  // must-revalidate
+const CC_PROXY_REVALIDATE: u32       = 0x0008;  // proxy-revalidate
+const CC_MUST_UNDERSTAND: u32        = 0x0010;  // must-understand (RFC 9111 Section 5.2.2.3)
+const CC_PRIVATE: u32                = 0x0020;  // private (unqualified or qualified)
+const CC_PUBLIC: u32                 = 0x0040;  // public
+const CC_IMMUTABLE: u32              = 0x0080;  // immutable (RFC 8246)
+const CC_ONLY_IF_CACHED: u32         = 0x0100;  // only-if-cached (RFC 9111 Section 5.2.1.7)
+const CC_NO_TRANSFORM: u32           = 0x0200;  // no-transform
+const CC_INVALID_FRESHNESS: u32      = 0x0400;  // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
+const CC_HAS_MAX_AGE: u32            = 0x0800;  // max-age=delta-seconds
+const CC_HAS_S_MAXAGE: u32           = 0x1000;  // s-maxage=delta-seconds
+const CC_HAS_MAX_STALE: u32          = 0x2000;  // max-stale[=delta-seconds]
+const CC_HAS_MIN_FRESH: u32          = 0x4000;  // min-fresh=delta-seconds
+const CC_STALE_WHILE_REVALIDATE: u32 = 0x8000;  // stale-while-revalidate=delta-seconds (RFC 5861 Section 3)
+const CC_STALE_IF_ERROR: u32         = 0x10000; // stale-if-error=delta-seconds (RFC 5861 Section 4)
 
 const MAX_DELTA_SECONDS: i32 = 2147483647; // i32::MAX overflow clamp per RFC 9111 Section 1.2.2
 
@@ -31,12 +32,13 @@ const MAX_DELTA_SECONDS: i32 = 2147483647; // i32::MAX overflow clamp per RFC 91
 
 // Structured representation of parsed HTTP Cache-Control directives.
 struct CacheControl {
-    flags: u16 = 0,
+    flags: u32 = 0,
     max_age: i32 = -1,
     s_maxage: i32 = -1,
     max_stale: i32 = -1, // -1 with CC_HAS_MAX_STALE means unbounded max-stale
     min_fresh: i32 = -1,
     stale_while_revalidate: i32 = -1,
+    stale_if_error: i32 = -1,
     private_fields: u8[..64][..8] = [],
     no_cache_fields: u8[..64][..8] = [],
 }
@@ -49,7 +51,7 @@ fn new_cache_control() -> CacheControl {
 // ---- flag inspectors -------------------------------------------------------
 
 // Returns whether the specified bitmask flag is set.
-fn has_flag(cc: const CacheControl&, flag: u16) -> bool {
+fn has_flag(cc: const CacheControl&, flag: u32) -> bool {
     return (cc.flags & flag) == flag;
 }
 
@@ -126,6 +128,16 @@ fn has_max_stale(cc: const CacheControl&) -> bool {
 // Returns true if min-fresh directive was present.
 fn has_min_fresh(cc: const CacheControl&) -> bool {
     return (cc.flags & CC_HAS_MIN_FRESH) != 0;
+}
+
+// Returns true if stale-while-revalidate directive was present (RFC 5861 Section 3).
+fn has_stale_while_revalidate(cc: const CacheControl&) -> bool {
+    return (cc.flags & CC_STALE_WHILE_REVALIDATE) != 0;
+}
+
+// Returns true if stale-if-error directive was present (RFC 5861 Section 4).
+fn has_stale_if_error(cc: const CacheControl&) -> bool {
+    return (cc.flags & CC_STALE_IF_ERROR) != 0;
 }
 
 // Checks if a given field name is covered by qualified private="field1, field2".
@@ -280,6 +292,11 @@ fn apply_cache_control_numeric(name: const u8[:], val: const u8[:], cc: CacheCon
     if eq_ascii_fold(name, "stale-while-revalidate") {
         let secs, ok = parse_delta_seconds(val);
         if ok { cc.flags |= CC_STALE_WHILE_REVALIDATE; cc.stale_while_revalidate = secs; }
+        return true;
+    }
+    if eq_ascii_fold(name, "stale-if-error") {
+        let secs, ok = parse_delta_seconds(val);
+        if ok { cc.flags |= CC_STALE_IF_ERROR; cc.stale_if_error = secs; }
         return true;
     }
     return false;

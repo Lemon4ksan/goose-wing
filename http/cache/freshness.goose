@@ -56,6 +56,8 @@ struct FreshnessMetrics {
     is_fresh: bool = false,
     requires_revalidation: bool = false,
     stale_allowed: bool = false,
+    stale_while_revalidate_allowed: bool = false,
+    stale_if_error_allowed: bool = false,
 }
 
 // ---- status code heuristic cacheability ------------------------------------
@@ -226,8 +228,41 @@ fn is_max_stale_blocked(resp_cc: const CacheControl&, shared: bool, security_zer
     return false;
 }
 
-// Evaluates whether serving stale response is permitted under max-stale.
+// Evaluates whether serving stale response is permitted under max-stale or stale-while-revalidate.
 fn evaluate_stale_allowance(
+    resp_cc: const CacheControl&,
+    req_cc: const CacheControl&,
+    current_age: i64,
+    lifetime: i64,
+    shared: bool,
+    security_zeroed: bool,
+    out_swr: bool&
+) -> bool {
+    out_swr = false;
+    guard !is_max_stale_blocked(resp_cc, shared, security_zeroed) else { return false; }
+
+    let stale_sec = current_age - lifetime;
+
+    // 1. Client max-stale (RFC 9111 Section 5.2.1.2)
+    if has_max_stale(req_cc) {
+        if req_cc.max_stale < 0 || stale_sec <= req_cc.max_stale {
+            return true;
+        }
+    }
+
+    // 2. Server stale-while-revalidate (RFC 5861 Section 3)
+    if has_stale_while_revalidate(resp_cc) && resp_cc.stale_while_revalidate >= 0 {
+        if stale_sec <= resp_cc.stale_while_revalidate {
+            out_swr = true;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Evaluates whether a stale cached response can be served during upstream error (RFC 5861 Section 4).
+fn evaluate_stale_if_error(
     resp_cc: const CacheControl&,
     req_cc: const CacheControl&,
     current_age: i64,
@@ -235,12 +270,20 @@ fn evaluate_stale_allowance(
     shared: bool,
     security_zeroed: bool
 ) -> bool {
-    guard has_max_stale(req_cc) else { return false; }
     guard !is_max_stale_blocked(resp_cc, shared, security_zeroed) else { return false; }
-
     let stale_sec = current_age - lifetime;
-    if req_cc.max_stale < 0 { return true; }
-    return stale_sec <= req_cc.max_stale;
+
+    var max_sie: i32 = -1;
+    if has_stale_if_error(req_cc) && req_cc.stale_if_error >= 0 {
+        max_sie = req_cc.stale_if_error;
+    } else if has_stale_if_error(resp_cc) && resp_cc.stale_if_error >= 0 {
+        max_sie = resp_cc.stale_if_error;
+    }
+
+    if max_sie >= 0 {
+        return stale_sec <= max_sie;
+    }
+    return false;
 }
 
 // Evaluates whether cached response satisfies request freshness constraints or requires revalidation.
@@ -286,7 +329,12 @@ fn evaluate_freshness(
     metrics.is_fresh = basic_fresh && req_max_age_ok && req_min_fresh_ok;
 
     if !metrics.is_fresh {
+        var is_swr = false;
         metrics.stale_allowed = evaluate_stale_allowance(
+            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed, is_swr
+        );
+        metrics.stale_while_revalidate_allowed = is_swr;
+        metrics.stale_if_error_allowed = evaluate_stale_if_error(
             resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed
         );
     }
