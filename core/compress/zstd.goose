@@ -1015,10 +1015,14 @@ fn huf_decode_4streams(
     var bits4 = stop4;
     if stop4 == 8 && ptr4 > 0 { ptr4--; bits4 = 0; }
 
-    var cont1 = xxh64_read_le64(src1, ptr1);
-    var cont2 = xxh64_read_le64(src2, ptr2);
-    var cont3 = xxh64_read_le64(src3, ptr3);
-    var cont4 = xxh64_read_le64(src4, ptr4);
+    var cont1: u64 = 0;
+    if ptr1 >= 0 && ptr1 + 8 <= src1.len { cont1 = xxh64_read_le64(src1, ptr1); }
+    var cont2: u64 = 0;
+    if ptr2 >= 0 && ptr2 + 8 <= src2.len { cont2 = xxh64_read_le64(src2, ptr2); }
+    var cont3: u64 = 0;
+    if ptr3 >= 0 && ptr3 + 8 <= src3.len { cont3 = xxh64_read_le64(src3, ptr3); }
+    var cont4: u64 = 0;
+    if ptr4 >= 0 && ptr4 + 8 <= src4.len { cont4 = xxh64_read_le64(src4, ptr4); }
 
     var dec1: i64 = 0;
     var dec2: i64 = 0;
@@ -1036,13 +1040,17 @@ fn huf_decode_4streams(
                 let s = (bits1 >> 3) as i64;
                 ptr1 -= s;
                 bits1 &= 7;
-                cont1 = xxh64_read_le64(src1, ptr1);
+                if ptr1 >= 0 && ptr1 + 8 <= src1.len {
+                    cont1 = xxh64_read_le64(src1, ptr1);
+                }
             } else if ptr1 > 0 {
                 let avail = (bits1 >> 3) as i64;
                 let s = if ptr1 < avail { ptr1 } else { avail };
                 ptr1 -= s;
                 bits1 -= (s * 8) as u32;
-                cont1 = xxh64_read_le64(src1, ptr1);
+                if ptr1 >= 0 && ptr1 + 8 <= src1.len {
+                    cont1 = xxh64_read_le64(src1, ptr1);
+                }
             }
         }
         if bits2 > 32 {
@@ -1050,13 +1058,17 @@ fn huf_decode_4streams(
                 let s = (bits2 >> 3) as i64;
                 ptr2 -= s;
                 bits2 &= 7;
-                cont2 = xxh64_read_le64(src2, ptr2);
+                if ptr2 >= 0 && ptr2 + 8 <= src2.len {
+                    cont2 = xxh64_read_le64(src2, ptr2);
+                }
             } else if ptr2 > 0 {
                 let avail = (bits2 >> 3) as i64;
                 let s = if ptr2 < avail { ptr2 } else { avail };
                 ptr2 -= s;
                 bits2 -= (s * 8) as u32;
-                cont2 = xxh64_read_le64(src2, ptr2);
+                if ptr2 >= 0 && ptr2 + 8 <= src2.len {
+                    cont2 = xxh64_read_le64(src2, ptr2);
+                }
             }
         }
         if bits3 > 32 {
@@ -1064,13 +1076,17 @@ fn huf_decode_4streams(
                 let s = (bits3 >> 3) as i64;
                 ptr3 -= s;
                 bits3 &= 7;
-                cont3 = xxh64_read_le64(src3, ptr3);
+                if ptr3 >= 0 && ptr3 + 8 <= src3.len {
+                    cont3 = xxh64_read_le64(src3, ptr3);
+                }
             } else if ptr3 > 0 {
                 let avail = (bits3 >> 3) as i64;
                 let s = if ptr3 < avail { ptr3 } else { avail };
                 ptr3 -= s;
                 bits3 -= (s * 8) as u32;
-                cont3 = xxh64_read_le64(src3, ptr3);
+                if ptr3 >= 0 && ptr3 + 8 <= src3.len {
+                    cont3 = xxh64_read_le64(src3, ptr3);
+                }
             }
         }
         if bits4 > 32 {
@@ -1078,13 +1094,17 @@ fn huf_decode_4streams(
                 let s = (bits4 >> 3) as i64;
                 ptr4 -= s;
                 bits4 &= 7;
-                cont4 = xxh64_read_le64(src4, ptr4);
+                if ptr4 >= 0 && ptr4 + 8 <= src4.len {
+                    cont4 = xxh64_read_le64(src4, ptr4);
+                }
             } else if ptr4 > 0 {
                 let avail = (bits4 >> 3) as i64;
                 let s = if ptr4 < avail { ptr4 } else { avail };
                 ptr4 -= s;
                 bits4 -= (s * 8) as u32;
-                cont4 = xxh64_read_le64(src4, ptr4);
+                if ptr4 >= 0 && ptr4 + 8 <= src4.len {
+                    cont4 = xxh64_read_le64(src4, ptr4);
+                }
             }
         }
 
@@ -1589,13 +1609,17 @@ fn decode_sequences<B>(
                         let s = (bits_consumed >> 3) as i64;
                         ptr -= s;
                         bits_consumed &= 7;
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        }
                     } else if ptr > 0 {
                         let avail = (bits_consumed >> 3) as i64;
                         let s = if ptr < avail { ptr } else { avail };
                         ptr -= s;
                         bits_consumed -= (s * 8) as u32;
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        }
                     }
                 }
 
@@ -1681,14 +1705,19 @@ fn decode_sequences<B>(
             }
         }
 
-        if lit_len > 0 {
-            let next_lit = lit_ptr + (lit_len as i64);
-            if lit_ptr < 0 || next_lit > lit_buf.len || next_lit < lit_ptr {
+        if lit_len == 1 {
+            if lit_ptr >= 0 && lit_ptr < lit_buf.len {
+                out_buf.push(lit_buf[lit_ptr]);
+                lit_ptr++;
+            } else {
                 return CompressError.CorruptedBitstream;
             }
-            if lit_len == 1 {
-                out_buf.push(lit_buf[lit_ptr]);
-            } else if lit_len == 2 {
+        } else if lit_len > 1 {
+            let next_lit = lit_ptr + (lit_len as i64);
+            if next_lit > lit_buf.len {
+                return CompressError.CorruptedBitstream;
+            }
+            if lit_len == 2 {
                 out_buf.push(lit_buf[lit_ptr]);
                 out_buf.push(lit_buf[lit_ptr + 1]);
             } else if lit_len == 3 {
@@ -1716,13 +1745,18 @@ fn decode_sequences<B>(
             let src_idx = out_len - off;
             if off >= m_len {
                 let src_end = src_idx + m_len;
-                if src_idx < 0 || src_end > out_len || src_end < src_idx {
+                if src_idx >= 0 && src_end <= out_len {
+                    out_buf.append(out_buf[src_idx .. src_end]);
+                } else {
                     return CompressError.DistanceOutOfBounds;
                 }
-                out_buf.append(out_buf[src_idx .. src_end]);
             } else if off == 1 {
-                let b = out_buf[src_idx];
-                out_buf.resize(out_len + m_len, b);
+                if src_idx >= 0 && src_idx < out_len {
+                    let b = out_buf[src_idx];
+                    out_buf.resize(out_len + m_len, b);
+                } else {
+                    return CompressError.DistanceOutOfBounds;
+                }
             } else {
                 var curr: i64 = 0;
                 while curr < m_len {
