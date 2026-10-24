@@ -1,9 +1,10 @@
 // Verification suite for Layer 4 Transport Driver Architecture (net/driver.goose):
 // - Platform probing across Windows, Linux, and macOS
-// - Driver capability bitmasks (KernelBypass, ZeroCopy, RingCompletion, BatchIO)
-// - Graceful auto-selection and fallback handling
+// - Driver capability bitmasks (KernelBypass, ZeroCopy, RingCompletion, BatchIO, ExactBufMetrics)
+// - Graceful auto-selection and fallback handling across the Big Three (RIO, io_uring, kqueue)
 // - Windows RIO page-locked zero-copy buffer lifecycle
 // - Linux io_uring SQE/CQE batch submission and ring state tracking
+// - macOS / Darwin kqueue event multiplexing (struct kevent, byte-accurate accounting, EOF detection)
 // - Diagnostic summary string formatting
 import std;
 import core from "..";
@@ -60,6 +61,24 @@ fn test_driver_probing(t: core::T&) {
         sub.assert_false(p_mac.available, "io_uring unavailable on macOS");
         sub.assert_eq(p_mac.error_code, -38, "io_uring returns -ENOSYS on macOS");
     };
+
+    t.run("macOS kqueue Probing") { sub =>
+        let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Kqueue, wing::TargetPlatform.Darwin);
+        sub.assert_true(p_mac.available, "kqueue available on macOS");
+        sub.assert_eq(p_mac.error_code, 0, "kqueue error code 0 on macOS");
+        sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_BATCH_IO), "kqueue has BatchIO");
+        sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_RING_COMPLETION), "kqueue has RingCompletion");
+        sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_DIRECT_DESCRIPTORS), "kqueue has DirectDescriptors");
+        sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_EXACT_BUF_METRICS), "kqueue has ExactBufMetrics");
+
+        let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Kqueue, wing::TargetPlatform.Windows);
+        sub.assert_false(p_win.available, "kqueue unavailable on Windows");
+        sub.assert_eq(p_win.error_code, -38, "kqueue returns -ENOSYS on Windows");
+
+        let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Kqueue, wing::TargetPlatform.Linux);
+        sub.assert_false(p_linux.available, "kqueue unavailable on Linux");
+        sub.assert_eq(p_linux.error_code, -38, "kqueue returns -ENOSYS on Linux");
+    };
 }
 
 fn test_driver_fallback_and_selection(t: core::T&) {
@@ -104,13 +123,14 @@ fn test_driver_fallback_and_selection(t: core::T&) {
         sub.assert_true(wing::driver_has_cap(cfg.capabilities, wing::CAP_RING_COMPLETION), "Has RingCompletion");
     };
 
-    t.run("macOS Fallback: io_uring or WindowsRIO preferred") { sub =>
+    t.run("macOS Auto-Selection: io_uring or WindowsRIO preferred") { sub =>
         var cfg = wing::TransportDriverConfig {
             preferred_kind: wing::TransportDriverKind.IoUring,
             ..
         };
         sub.assert_true(wing::init_transport_driver_with_platform(cfg, wing::TargetPlatform.Darwin), "Init ok");
-        sub.assert_true(cfg.active_kind == wing::TransportDriverKind.Standard, "Fell back to Standard");
+        sub.assert_true(cfg.active_kind == wing::TransportDriverKind.Kqueue, "Auto-selected kqueue on macOS");
+        sub.assert_true(wing::driver_has_cap(cfg.capabilities, wing::CAP_EXACT_BUF_METRICS), "Has ExactBufMetrics");
     };
 }
 
@@ -207,6 +227,38 @@ fn test_uring_sqe_cqe_batch(t: core::T&) {
     };
 }
 
+fn test_kqueue_event_lifecycle(t: core::T&) {
+    t.run("kqueue Kevent Preparation and Buffer Metrics") { sub =>
+        var ev_read = wing::Kevent { .. };
+        wing::kevent_prep_read(ev_read, 12, 501, true);
+        sub.assert_eq(ev_read.ident, 12, "Read ident is fd 12");
+        sub.assert_eq(ev_read.filter, wing::EVFILT_READ, "Filter is EVFILT_READ");
+        sub.assert_true((ev_read.flags & wing::EV_CLEAR) != 0, "Edge-triggered EV_CLEAR is set");
+        sub.assert_eq(ev_read.udata, 501, "udata matches tag 501");
+
+        var ev_write = wing::Kevent { .. };
+        wing::kevent_prep_write(ev_write, 14, 502, false);
+        sub.assert_eq(ev_write.ident, 14, "Write ident is fd 14");
+        sub.assert_eq(ev_write.filter, wing::EVFILT_WRITE, "Filter is EVFILT_WRITE");
+        sub.assert_false((ev_write.flags & wing::EV_CLEAR) != 0, "Level-triggered EV_CLEAR not set");
+
+        var ev_timer = wing::Kevent { .. };
+        wing::kevent_prep_timer(ev_timer, 99, 250, 503);
+        sub.assert_eq(ev_timer.ident, 99, "Timer ident is 99");
+        sub.assert_eq(ev_timer.filter, wing::EVFILT_TIMER, "Filter is EVFILT_TIMER");
+        sub.assert_eq(ev_timer.data, 250, "Timer period is 250ms");
+
+        // Test exact buffer metrics
+        ev_read.data = 16384;
+        sub.assert_eq(wing::kevent_bytes_available(ev_read), 16384, "Exact 16384 bytes available in kernel buffer");
+
+        // Test EOF flag
+        sub.assert_false(wing::kevent_is_eof(ev_read), "Not EOF yet");
+        ev_read.flags |= wing::EV_EOF;
+        sub.assert_true(wing::kevent_is_eof(ev_read), "EOF flag detected cleanly");
+    };
+}
+
 fn test_driver_summary_formatter(t: core::T&) {
     t.run("Summary String Formatting") { sub =>
         var cfg_rio = wing::TransportDriverConfig {
@@ -227,6 +279,17 @@ fn test_driver_summary_formatter(t: core::T&) {
         sub.assert_contains(summary_buf[..], "2048", "Contains ring size 2048");
         sub.assert_contains(summary_buf[..], "131072B", "Contains buffer size 131072B");
 
+        var cfg_kq = wing::TransportDriverConfig {
+            preferred_kind: wing::TransportDriverKind.Kqueue,
+            ..
+        };
+        wing::init_transport_driver_with_platform(cfg_kq, wing::TargetPlatform.Darwin);
+        summary_buf.clear();
+        wing::format_driver_summary(cfg_kq, summary_buf);
+        sub.assert_contains(summary_buf[..], "kqueue", "Contains kqueue");
+        sub.assert_contains(summary_buf[..], "ExactBufMetrics", "Contains ExactBufMetrics");
+        sub.assert_contains(summary_buf[..], "BatchIO", "Contains BatchIO");
+
         var cfg_std = wing::TransportDriverConfig {
             preferred_kind: wing::TransportDriverKind.Standard,
             ..
@@ -245,7 +308,8 @@ fn main() {
     core::run_case(runner, "2. Driver Fallback and Auto-Selection", test_driver_fallback_and_selection);
     core::run_case(runner, "3. Windows RIO Buffer Lifecycle", test_rio_buffer_lifecycle);
     core::run_case(runner, "4. io_uring SQE/CQE Batch Submissions", test_uring_sqe_cqe_batch);
-    core::run_case(runner, "5. Driver Summary Formatter", test_driver_summary_formatter);
+    core::run_case(runner, "5. macOS kqueue Event Lifecycle", test_kqueue_event_lifecycle);
+    core::run_case(runner, "6. Driver Summary Formatter", test_driver_summary_formatter);
     let ok = core::finish(runner);
     assert(ok);
 }

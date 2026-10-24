@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import os;
 
-// ---- Native OS Kernel C Shims (Windows RIO & Linux io_uring) ----------------
+// ---- Native OS Kernel C Shims (Windows RIO, Linux io_uring, macOS kqueue) -
 
 extern "wing_rio_probe" fn native_rio_probe() -> i32;
 extern "wing_rio_available" fn native_rio_available() -> i32;
@@ -21,12 +21,18 @@ extern "wing_uring_create" fn native_uring_create(entries: u32, flags: u32) -> i
 extern "wing_uring_enter" fn native_uring_enter(ring_fd: i64, to_submit: u32, min_complete: u32, flags: u32) -> i32;
 extern "wing_uring_close" fn native_uring_close(ring_fd: i64);
 
+extern "wing_kqueue_probe" fn native_kqueue_probe() -> i32;
+extern "wing_kqueue_create" fn native_kqueue_create() -> i64;
+extern "wing_kqueue_kevent" fn native_kqueue_kevent(kq: i64, changelist: u64, nchanges: i32, eventlist: u64, nevents: i32, timeout_ns: i64) -> i32;
+extern "wing_kqueue_close" fn native_kqueue_close(kq: i64);
+
 // ---- 1. Driver Kinds & Capabilities ----------------------------------------
 
 enum TransportDriverKind {
     Standard,
     IoUring,
     WindowsRIO,
+    Kqueue,
 }
 
 // Returns human-readable driver identifier
@@ -35,6 +41,7 @@ fn driver_kind_name(kind: TransportDriverKind) -> u8[:] {
         Standard => "Standard",
         IoUring => "io_uring",
         WindowsRIO => "Windows RIO",
+        Kqueue => "kqueue",
     };
 }
 
@@ -47,6 +54,7 @@ const CAP_BATCH_IO: u32            = 1 << 3; // Batched syscall submission / CQ 
 const CAP_PAGE_LOCKED_BUFFERS: u32 = 1 << 4; // Pre-registered pinned virtual memory
 const CAP_DIRECT_DESCRIPTORS: u32  = 1 << 5; // Fixed socket table without fd lookup overhead
 const CAP_MULTISHOT_RECV: u32      = 1 << 6; // Repeated receive events on single submission
+const CAP_EXACT_BUF_METRICS: u32   = 1 << 7; // Kernel reports exact unread bytes in buffer
 
 // Checks if a capability bit is enabled
 fn driver_has_cap(caps: u32, cap: u32) -> bool {
@@ -166,6 +174,36 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         return res;
     }
 
+    if kind == TransportDriverKind.Kqueue {
+        if plat == TargetPlatform.Darwin {
+            let host = detect_target_platform();
+            if host == TargetPlatform.Darwin {
+                let probe_code = native_kqueue_probe();
+                res.available = (probe_code == 0);
+                res.error_code = probe_code;
+            } else {
+                res.available = true;
+                res.error_code = 0;
+            }
+            if res.available {
+                res.capabilities = CAP_BATCH_IO | CAP_RING_COMPLETION | CAP_DIRECT_DESCRIPTORS | CAP_EXACT_BUF_METRICS;
+                res.reason.clear();
+                res.reason.append("macOS / Darwin kqueue event multiplexing active via kevent");
+            } else {
+                res.capabilities = CAP_NONE;
+                res.reason.clear();
+                res.reason.append("macOS kqueue probe failed on current Darwin kernel");
+            }
+        } else {
+            res.available = false;
+            res.capabilities = CAP_NONE;
+            res.error_code = -38; // -ENOSYS
+            res.reason.clear();
+            res.reason.append("kqueue is only supported on macOS / BSD (sys/event.h)");
+        }
+        return res;
+    }
+
     return res;
 }
 
@@ -220,6 +258,18 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
             cfg.capabilities = uring_probe.capabilities;
             cfg.status_message.clear();
             cfg.status_message.append("Windows RIO unavailable on Linux; auto-selected io_uring");
+            cfg.is_probed = true;
+            return true;
+        }
+    }
+
+    if plat == TargetPlatform.Darwin {
+        let kq_probe = probe_transport_driver_for_platform(TransportDriverKind.Kqueue, plat);
+        if kq_probe.available {
+            cfg.active_kind = TransportDriverKind.Kqueue;
+            cfg.capabilities = kq_probe.capabilities;
+            cfg.status_message.clear();
+            cfg.status_message.append("Requested driver unavailable on macOS; auto-selected kqueue");
             cfg.is_probed = true;
             return true;
         }
@@ -435,7 +485,72 @@ fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: Uri
     return submitted;
 }
 
-// ---- 6. Diagnostics & Summary Formatter ------------------------------------
+// ---- 6. macOS kqueue Event Notification Structures & Codecs --------------
+
+// kqueue filter constants
+const EVFILT_READ: i16  = -1;
+const EVFILT_WRITE: i16 = -2;
+const EVFILT_TIMER: i16 = -7;
+
+// kqueue action and event flags
+const EV_ADD: u16      = 0x0001;
+const EV_DELETE: u16   = 0x0002;
+const EV_ENABLE: u16   = 0x0004;
+const EV_DISABLE: u16  = 0x0008;
+const EV_ONESHOT: u16  = 0x0010;
+const EV_CLEAR: u16    = 0x0020; // Edge-triggered notification
+const EV_EOF: u16      = 0x8000; // Connection disconnected / EOF
+
+struct Kevent {
+    ident: u64 = 0,
+    filter: i16 = 0,
+    flags: u16 = 0,
+    fflags: u32 = 0,
+    data: i64 = 0,
+    udata: u64 = 0,
+}
+
+// Prepares a kqueue event for socket read notification
+fn kevent_prep_read(ev: Kevent&, fd: i32, tag: u64, edge_triggered: bool) {
+    ev.ident = fd as u64;
+    ev.filter = EVFILT_READ;
+    ev.flags = EV_ADD | EV_ENABLE | (if edge_triggered { EV_CLEAR } else { 0 });
+    ev.fflags = 0;
+    ev.data = 0;
+    ev.udata = tag;
+}
+
+// Prepares a kqueue event for socket write notification
+fn kevent_prep_write(ev: Kevent&, fd: i32, tag: u64, edge_triggered: bool) {
+    ev.ident = fd as u64;
+    ev.filter = EVFILT_WRITE;
+    ev.flags = EV_ADD | EV_ENABLE | (if edge_triggered { EV_CLEAR } else { 0 });
+    ev.fflags = 0;
+    ev.data = 0;
+    ev.udata = tag;
+}
+
+// Prepares a high-resolution timer event without extra file descriptors
+fn kevent_prep_timer(ev: Kevent&, timer_id: u64, ms: i64, tag: u64) {
+    ev.ident = timer_id;
+    ev.filter = EVFILT_TIMER;
+    ev.flags = EV_ADD | EV_ENABLE | EV_ONESHOT;
+    ev.fflags = 0;
+    ev.data = ms;
+    ev.udata = tag;
+}
+
+// Returns the exact number of bytes waiting in the kernel socket receive buffer
+fn kevent_bytes_available(ev: const Kevent&) -> i64 {
+    return if ev.filter == EVFILT_READ && ev.data > 0 { ev.data } else { 0 };
+}
+
+// Checks if the peer closed or half-closed the connection
+fn kevent_is_eof(ev: const Kevent&) -> bool {
+    return (ev.flags & EV_EOF) != 0;
+}
+
+// ---- 7. Diagnostics & Summary Formatter ------------------------------------
 
 // Formats driver configuration, active backend, capabilities and status into builder
 fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
@@ -462,6 +577,26 @@ fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
     if driver_has_cap(cfg.capabilities, CAP_BATCH_IO) {
         if has_any { out.append(", "); }
         out.append("BatchIO");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_PAGE_LOCKED_BUFFERS) {
+        if has_any { out.append(", "); }
+        out.append("PageLockedBuffers");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_DIRECT_DESCRIPTORS) {
+        if has_any { out.append(", "); }
+        out.append("DirectDescriptors");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_MULTISHOT_RECV) {
+        if has_any { out.append(", "); }
+        out.append("MultishotRecv");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_EXACT_BUF_METRICS) {
+        if has_any { out.append(", "); }
+        out.append("ExactBufMetrics");
         has_any = true;
     }
     if driver_has_cap(cfg.capabilities, CAP_PAGE_LOCKED_BUFFERS) {
