@@ -79,9 +79,10 @@ inline fn zstd_high_bit(v: u32) -> i32 {
     return (63 - clz(v)) as i32;
 }
 
-// Branchless extraction of nb bits (0 <= nb <= 32) from bit_container at bits_consumed.
+// Extraction of nb bits (0 <= nb <= 32) from bit_container at bits_consumed.
 inline fn zstd_extract_bits(bit_container: u64, bits_consumed: u32, nb: u32) -> u32 {
-    return ((bit_container << (bits_consumed & 63)) >> ((64 - nb) & 63)) as u32;
+    if nb == 0 { return 0; }
+    return ((bit_container << (bits_consumed & 63)) >> (64 - nb)) as u32;
 }
 
 // ---- reverse bit reader (rfc 8878 section 4.2.2) -----------
@@ -258,11 +259,10 @@ fn fwd_bytes_consumed(r: const ForwardBitReader&) -> i64 {
 // ---- fse structures & algorithms (rfc 8878 section 4.1) --------------------
 
 struct FseEntry {
-    symbol: u8 = 0,
-    nb_bits: u8 = 0,
-    new_state: u16 = 0,
-    extra_bits: u8 = 0,
     base_val: u32 = 0,
+    new_state: u16 = 0,
+    nb_bits: u8 = 0,
+    extra_bits: u8 = 0,
 }
 
 struct FseTable {
@@ -271,184 +271,87 @@ struct FseTable {
     is_defined: bool = false,
 }
 
-const LL_DEFAULT_ENTRIES: FseEntry[64] = [
-    FseEntry { symbol: 0, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 0, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 1, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 3, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 4, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 6, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 7, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 9, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 10, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 12, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 14, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 16, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 18, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 19, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 21, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 22, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 24, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 25, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 26, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 27, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 29, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 31, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 0, nb_bits: 4, new_state: 32 },
-    FseEntry { symbol: 1, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 2, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 4, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 5, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 7, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 8, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 10, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 11, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 13, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 16, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 17, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 19, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 20, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 22, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 23, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 25, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 25, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 26, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 28, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 30, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 0, nb_bits: 4, new_state: 48 },
-    FseEntry { symbol: 1, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 2, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 3, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 5, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 6, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 8, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 9, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 11, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 12, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 15, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 17, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 18, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 20, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 21, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 23, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 24, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 35, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 34, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 33, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 32, nb_bits: 6, new_state: 0 },
+struct HufWeightEntry {
+    symbol: u8 = 0,
+    nb_bits: u8 = 0,
+    new_state: u16 = 0,
+}
+
+struct HufWeightTable {
+    entries: HufWeightEntry[128] = [HufWeightEntry {}; 128],
+    table_log: i32 = 0,
+    is_defined: bool = false,
+}
+
+const LL_DEFAULT_ENTRIES_SYM: u8[64] = [
+    0, 0, 1, 3, 4, 6, 7, 9, 10, 12, 14, 16, 18, 19, 21, 22,
+    24, 25, 26, 27, 29, 31, 0, 1, 2, 4, 5, 7, 8, 10, 11, 13,
+    16, 17, 19, 20, 22, 23, 25, 25, 26, 28, 30, 0, 1, 2, 3, 5,
+    6, 8, 9, 11, 12, 15, 17, 18, 20, 21, 23, 24, 35, 34, 33, 32
 ];
 
-const OF_DEFAULT_ENTRIES: FseEntry[32] = [
-    FseEntry { symbol: 0, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 6, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 9, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 15, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 21, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 3, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 7, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 12, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 18, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 23, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 5, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 8, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 14, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 20, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 2, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 7, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 11, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 17, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 22, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 4, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 8, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 13, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 19, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 1, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 6, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 10, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 16, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 28, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 27, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 26, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 25, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 24, nb_bits: 5, new_state: 0 },
+const LL_DEFAULT_ENTRIES_BITS: u8[64] = [
+    4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 5, 5, 5, 5, 5,
+    5, 5, 5, 6, 6, 6, 4, 4, 5, 5, 5, 5, 5, 5, 5, 6,
+    5, 5, 5, 5, 5, 5, 4, 4, 5, 6, 6, 4, 4, 5, 5, 5,
+    5, 5, 5, 5, 5, 6, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6
 ];
 
-const ML_DEFAULT_ENTRIES: FseEntry[64] = [
-    FseEntry { symbol: 0, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 1, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 2, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 3, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 5, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 6, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 8, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 10, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 13, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 16, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 19, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 22, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 25, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 28, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 31, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 33, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 35, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 37, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 39, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 41, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 43, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 45, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 1, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 2, nb_bits: 4, new_state: 0 },
-    FseEntry { symbol: 3, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 4, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 6, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 7, nb_bits: 5, new_state: 0 },
-    FseEntry { symbol: 9, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 12, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 15, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 18, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 21, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 24, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 27, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 30, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 32, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 34, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 36, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 38, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 40, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 42, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 44, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 1, nb_bits: 4, new_state: 32 },
-    FseEntry { symbol: 1, nb_bits: 4, new_state: 48 },
-    FseEntry { symbol: 2, nb_bits: 4, new_state: 16 },
-    FseEntry { symbol: 4, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 5, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 7, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 8, nb_bits: 5, new_state: 32 },
-    FseEntry { symbol: 11, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 14, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 17, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 20, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 23, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 26, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 29, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 52, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 51, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 50, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 49, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 48, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 47, nb_bits: 6, new_state: 0 },
-    FseEntry { symbol: 46, nb_bits: 6, new_state: 0 },
+const LL_DEFAULT_ENTRIES_STATE: u16[64] = [
+    0, 16, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 32, 0, 0, 0, 0, 32, 0, 0, 32, 0, 32, 0, 32, 0, 0,
+    32, 0, 32, 0, 32, 0, 0, 16, 32, 0, 0, 48, 16, 32, 32, 32,
+    32, 32, 32, 32, 32, 0, 32, 32, 32, 32, 32, 32, 0, 0, 0, 0
+];
+
+const OF_DEFAULT_ENTRIES_SYM: u8[32] = [
+    0, 6, 9, 15, 21, 3, 7, 12, 18, 23, 5, 8, 14, 20, 2, 7,
+    11, 17, 22, 4, 8, 13, 19, 1, 6, 10, 16, 28, 27, 26, 25, 24
+];
+
+const OF_DEFAULT_ENTRIES_BITS: u8[32] = [
+    5, 4, 5, 5, 5, 5, 4, 5, 5, 5, 5, 4, 5, 5, 5, 4,
+    5, 5, 5, 5, 4, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, 5
+];
+
+const OF_DEFAULT_ENTRIES_STATE: u16[32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16,
+    0, 0, 0, 0, 16, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0
+];
+
+const ML_DEFAULT_ENTRIES_SYM: u8[64] = [
+    0, 1, 2, 3, 5, 6, 8, 10, 13, 16, 19, 22, 25, 28, 31, 33,
+    35, 37, 39, 41, 43, 45, 1, 2, 3, 4, 6, 7, 9, 12, 15, 18,
+    21, 24, 27, 30, 32, 34, 36, 38, 40, 42, 44, 1, 1, 2, 4, 5,
+    7, 8, 11, 14, 17, 20, 23, 26, 29, 52, 51, 50, 49, 48, 47, 46
+];
+
+const ML_DEFAULT_ENTRIES_BITS: u8[64] = [
+    6, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 4, 4, 4, 5, 5,
+    5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6
+];
+
+const ML_DEFAULT_ENTRIES_STATE: u16[64] = [
+    0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 16, 0, 32, 0, 32, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 48, 16, 32, 32,
+    32, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 ];
 
 inline fn fse_init_default_ll(out_table: FseTable&) {
     out_table.table_log = 6;
     out_table.is_defined = true;
     for i in 64 {
-        var e = LL_DEFAULT_ENTRIES[i];
-        let s = (e.symbol & 63) as i64;
-        e.extra_bits = LL_EXTRA_BITS[s];
-        e.base_val = LL_BASE[s];
-        out_table.entries[i] = e;
+        let sym = LL_DEFAULT_ENTRIES_SYM[i];
+        let idx = (sym & 63) as i64;
+        out_table.entries[i] = FseEntry {
+            base_val: LL_BASE[idx],
+            new_state: LL_DEFAULT_ENTRIES_STATE[i],
+            nb_bits: LL_DEFAULT_ENTRIES_BITS[i],
+            extra_bits: LL_EXTRA_BITS[idx],
+        };
     }
 }
 
@@ -456,11 +359,14 @@ inline fn fse_init_default_of(out_table: FseTable&) {
     out_table.table_log = 5;
     out_table.is_defined = true;
     for i in 32 {
-        var e = OF_DEFAULT_ENTRIES[i];
-        let s = (e.symbol & 31) as u32;
-        e.extra_bits = s as u8;
-        e.base_val = (1 as u32) << s;
-        out_table.entries[i] = e;
+        let sym = OF_DEFAULT_ENTRIES_SYM[i];
+        let sc = (sym & 31) as u32;
+        out_table.entries[i] = FseEntry {
+            base_val: (1 as u32) << sc,
+            new_state: OF_DEFAULT_ENTRIES_STATE[i],
+            nb_bits: OF_DEFAULT_ENTRIES_BITS[i],
+            extra_bits: sc as u8,
+        };
     }
 }
 
@@ -468,17 +374,20 @@ inline fn fse_init_default_ml(out_table: FseTable&) {
     out_table.table_log = 6;
     out_table.is_defined = true;
     for i in 64 {
-        var e = ML_DEFAULT_ENTRIES[i];
-        let s = (e.symbol & 63) as i64;
-        e.extra_bits = ML_EXTRA_BITS[s];
-        e.base_val = ML_BASE[s];
-        out_table.entries[i] = e;
+        let sym = ML_DEFAULT_ENTRIES_SYM[i];
+        let idx = (sym & 63) as i64;
+        out_table.entries[i] = FseEntry {
+            base_val: ML_BASE[idx],
+            new_state: ML_DEFAULT_ENTRIES_STATE[i],
+            nb_bits: ML_DEFAULT_ENTRIES_BITS[i],
+            extra_bits: ML_EXTRA_BITS[idx],
+        };
     }
 }
 
-fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: FseTable&, table_kind: i32 = 0) -> bool {
+fn fse_build_weight_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: HufWeightTable&) -> bool {
     let table_size: i32 = (1 as i32) << table_log;
-    if table_size > 512 || table_log < 1 {
+    if table_size > 128 || table_log < 1 {
         return false;
     }
     out_table.table_log = table_log;
@@ -487,7 +396,6 @@ fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_t
     var symbol_next: u16[256] = [0; 256];
     var high_threshold: i32 = table_size - 1;
 
-    // 1. Place low-probability (-1) symbols at the top of the table
     var s: i32 = 0;
     while s <= max_symbol {
         if counts[s] == -1 {
@@ -500,7 +408,6 @@ fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_t
         s++;
     }
 
-    // 2. Spread normal symbols
     let step: i32 = (table_size >> 1) + (table_size >> 3) + 3;
     let mask: i32 = table_size - 1;
     var pos: i32 = 0;
@@ -521,13 +428,76 @@ fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_t
         s++;
     }
     if pos != 0 {
+        return false;
+    }
+
+    var u: i32 = 0;
+    while u < table_size {
+        let sym = out_table.entries[u].symbol as i32;
+        let next_state = symbol_next[sym];
+        symbol_next[sym]++;
+        let nb_bits = table_log - zstd_high_bit(next_state);
+        out_table.entries[u].nb_bits = nb_bits as u8;
+        out_table.entries[u].new_state = (((next_state as u32) << (nb_bits as u32)) - (table_size as u32)) as u16;
+        u++;
+    }
+
+    return true;
+}
+
+fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: FseTable&, table_kind: i32 = 0) -> bool {
+    let table_size: i32 = (1 as i32) << table_log;
+    if table_size > 512 || table_log < 1 {
+        return false;
+    }
+    out_table.table_log = table_log;
+    out_table.is_defined = true;
+
+    var symbol_next: u16[256] = [0; 256];
+    var table_symbols: u8[512] = [0; 512];
+    var high_threshold: i32 = table_size - 1;
+
+    // 1. Place low-probability (-1) symbols at the top of the table
+    var s: i32 = 0;
+    while s <= max_symbol {
+        if counts[s] == -1 {
+            table_symbols[high_threshold] = s as u8;
+            high_threshold--;
+            symbol_next[s] = 1;
+        } else if counts[s] > 0 {
+            symbol_next[s] = counts[s] as u16;
+        }
+        s++;
+    }
+
+    // 2. Spread normal symbols
+    let step: i32 = (table_size >> 1) + (table_size >> 3) + 3;
+    let mask: i32 = table_size - 1;
+    var pos: i32 = 0;
+
+    s = 0;
+    while s <= max_symbol {
+        if counts[s] > 0 {
+            var i: i32 = 0;
+            while i < counts[s] {
+                table_symbols[pos] = s as u8;
+                pos = (pos + step) & mask;
+                while pos > high_threshold {
+                    pos = (pos + step) & mask;
+                }
+                i++;
+            }
+        }
+        s++;
+    }
+    if pos != 0 {
         return false; // Distribution did not fill table cleanly
     }
 
     // 3. Build decoding table
     var u: i32 = 0;
     while u < table_size {
-        let sym = out_table.entries[u].symbol as i32;
+        let sym = table_symbols[u] as i32;
         let next_state = symbol_next[sym];
         symbol_next[sym]++;
         let nb_bits = table_log - zstd_high_bit(next_state);
@@ -758,8 +728,8 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
             return false;
         }
 
-        var weight_fse_table = FseTable {};
-        if !fse_build_dtable(fse_counts[..], fse_max_sym, fse_log, weight_fse_table) {
+        var weight_fse_table = HufWeightTable {};
+        if !fse_build_weight_dtable(fse_counts[..], fse_max_sym, fse_log, weight_fse_table) {
             return false;
         }
 
@@ -1157,11 +1127,10 @@ fn decode_sequences<B>(
         ll_table.table_log = 0;
         ll_table.is_defined = true;
         ll_table.entries[0] = FseEntry {
-            symbol: sym,
-            nb_bits: 0,
-            new_state: 0,
-            extra_bits: LL_EXTRA_BITS[idx],
             base_val: LL_BASE[idx],
+            new_state: 0,
+            nb_bits: 0,
+            extra_bits: LL_EXTRA_BITS[idx],
         };
     } else if ll_mode == 2 {
         var counts: i16[256] = [0; 256];
@@ -1187,11 +1156,10 @@ fn decode_sequences<B>(
         of_table.table_log = 0;
         of_table.is_defined = true;
         of_table.entries[0] = FseEntry {
-            symbol: sym,
-            nb_bits: 0,
-            new_state: 0,
-            extra_bits: sc as u8,
             base_val: (1 as u32) << sc,
+            new_state: 0,
+            nb_bits: 0,
+            extra_bits: sc as u8,
         };
     } else if of_mode == 2 {
         var counts: i16[256] = [0; 256];
@@ -1217,11 +1185,10 @@ fn decode_sequences<B>(
         ml_table.table_log = 0;
         ml_table.is_defined = true;
         ml_table.entries[0] = FseEntry {
-            symbol: sym,
-            nb_bits: 0,
-            new_state: 0,
-            extra_bits: ML_EXTRA_BITS[idx],
             base_val: ML_BASE[idx],
+            new_state: 0,
+            nb_bits: 0,
+            extra_bits: ML_EXTRA_BITS[idx],
         };
     } else if ml_mode == 2 {
         var counts: i16[256] = [0; 256];
@@ -1251,7 +1218,7 @@ fn decode_sequences<B>(
     let use_fast_dstream = seq_bitstream.len >= 8;
     var ptr: i64 = 0;
     var bit_container: u64 = 0;
-    var bits_consumed: i32 = 0;
+    var bits_consumed: u32 = 0;
 
     if use_fast_dstream {
         ptr = seq_bitstream.len - 8;
@@ -1259,16 +1226,16 @@ fn decode_sequences<B>(
         let last_byte = seq_bitstream[seq_bitstream.len - 1];
         if last_byte == 0 { return CompressError.CorruptedBitstream; }
         let high_bit = zstd_high_bit(last_byte as u32);
-        bits_consumed = 8 - high_bit;
+        bits_consumed = (8 - high_bit) as u32;
 
         state_ll = ((bit_container << (bits_consumed & 63)) >> ((64 - ll_table.table_log) & 63)) as i64;
-        bits_consumed += ll_table.table_log;
+        bits_consumed += ll_table.table_log as u32;
 
         state_of = ((bit_container << (bits_consumed & 63)) >> ((64 - of_table.table_log) & 63)) as i64;
-        bits_consumed += of_table.table_log;
+        bits_consumed += of_table.table_log as u32;
 
         state_ml = ((bit_container << (bits_consumed & 63)) >> ((64 - ml_table.table_log) & 63)) as i64;
-        bits_consumed += ml_table.table_log;
+        bits_consumed += ml_table.table_log as u32;
     } else {
         state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
         state_of = zstd_read_bits(r, of_table.table_log) as i64;
@@ -1299,18 +1266,18 @@ fn decode_sequences<B>(
                 let avail = (bits_consumed >> 3) as i64;
                 let shift_bytes = if ptr < avail { ptr } else { avail };
                 ptr -= shift_bytes;
-                bits_consumed -= (shift_bytes * 8) as i32;
+                bits_consumed -= (shift_bytes * 8) as u32;
                 bit_container = xxh64_read_le64(seq_bitstream, ptr);
             }
 
-            of_extra = (((bit_container << (bits_consumed & 63)) >> 1) >> ((63 - of_eb) & 63)) as! u32;
-            bits_consumed += of_eb as i32;
+            of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
+            bits_consumed += of_eb;
 
-            ml_extra = (((bit_container << (bits_consumed & 63)) >> 1) >> ((63 - ml_eb) & 63)) as! u32;
-            bits_consumed += ml_eb as i32;
+            ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
+            bits_consumed += ml_eb;
 
-            ll_extra = (((bit_container << (bits_consumed & 63)) >> 1) >> ((63 - ll_eb) & 63)) as! u32;
-            bits_consumed += ll_eb as i32;
+            ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
+            bits_consumed += ll_eb;
         } else {
             of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
             ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
@@ -1370,7 +1337,14 @@ fn decode_sequences<B>(
             return CompressError.OutputBufferOverflow;
         }
 
-        if lit_len > 0 {
+        if lit_len == 1 {
+            out_buf.push(lit_buf[lit_ptr]);
+            lit_ptr++;
+        } else if lit_len == 2 {
+            out_buf.push(lit_buf[lit_ptr]);
+            out_buf.push(lit_buf[lit_ptr + 1]);
+            lit_ptr += 2;
+        } else if lit_len > 2 {
             let l_len = lit_len as i64;
             out_buf.append(lit_buf[lit_ptr .. lit_ptr + l_len]);
             lit_ptr += l_len;
@@ -1407,23 +1381,23 @@ fn decode_sequences<B>(
                     let avail = (bits_consumed >> 3) as i64;
                     let shift_bytes = if ptr < avail { ptr } else { avail };
                     ptr -= shift_bytes;
-                    bits_consumed -= (shift_bytes * 8) as i32;
+                    bits_consumed -= (shift_bytes * 8) as u32;
                     bit_container = xxh64_read_le64(seq_bitstream, ptr);
                 }
 
                 let ll_nb = ll_entry.nb_bits as u32;
-                let ll_bits = (((bit_container << (bits_consumed & 63)) >> 1) >> ((63 - ll_nb) & 63)) as! i64;
-                bits_consumed += ll_nb as i32;
+                let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
+                bits_consumed += ll_nb;
                 state_ll = (ll_entry.new_state as i64) + ll_bits;
 
                 let ml_nb = ml_entry.nb_bits as u32;
-                let ml_bits = (((bit_container << (bits_consumed & 63)) >> 1) >> ((63 - ml_nb) & 63)) as! i64;
-                bits_consumed += ml_nb as i32;
+                let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
+                bits_consumed += ml_nb;
                 state_ml = (ml_entry.new_state as i64) + ml_bits;
 
                 let of_nb = of_entry.nb_bits as u32;
-                let of_bits = (((bit_container << (bits_consumed & 63)) >> 1) >> ((63 - of_nb) & 63)) as! i64;
-                bits_consumed += of_nb as i32;
+                let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
+                bits_consumed += of_nb;
                 state_of = (of_entry.new_state as i64) + of_bits;
             } else {
                 let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
