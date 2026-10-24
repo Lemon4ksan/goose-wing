@@ -13,6 +13,7 @@ import server.pool;
 import server.pipeline;
 import http2.framing;
 import net.proxy_protocol;
+import server.h2_multiplexer;
 
 // ---- 1. Reason Phrases for HTTP/1.1 Status Line -----------------------------
 
@@ -290,16 +291,14 @@ fn handle_connection_wire<B>(
 
     // 1. Check for HTTP/2 Client Connection Preface (RFC 9113 Section 3.4)
     if raw_stream.len >= 24 && raw_stream[..24] == H2_CLIENT_PREFACE[..] {
-        // Acknowledge HTTP/2 connection by sending initial SETTINGS frame (empty ACK)
-        let hdr = FrameHeader {
-            length: 0,
-            frame_type: FRAME_SETTINGS,
-            flags: 0,
-            stream_id: 0,
-        };
-        encode_frame_header_to(hdr, wire_out);
-        server.requests_processed++;
-        return PipelineOutcome.Handled, true;
+        let now_ms = (now_ns / 1000000) as u64;
+        var sess = new_h2_server_session(server.server_name[..], now_ms);
+        let _, ok_h2 = handle_h2_server_ingress(sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out);
+        if ok_h2 {
+            server.requests_processed++;
+            return PipelineOutcome.Handled, true;
+        }
+        return PipelineOutcome.Handled, false;
     }
 
     // 2. Parse HTTP/1.1 wire request

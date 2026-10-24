@@ -104,6 +104,7 @@ import server.router;
 import server.pool;
 import server.pipeline;
 import server.server;
+import server.h2_multiplexer;
 
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
