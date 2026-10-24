@@ -5,6 +5,16 @@ namespace wing;
 
 import std;
 import app.profile;
+import core.math;
+
+let CRLF_BYTES: const u8[2] = ['\r', '\n'];
+let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);
+
+let COLON_BYTES: const u8[1] = [':'];
+let COLON_SET: ByteSet = byte_set(COLON_BYTES[..]);
+
+let NULL_BYTES: const u8[1] = [0];
+let NULL_SET: ByteSet = byte_set(NULL_BYTES[..]);
 
 // ---- header bitmask flags & persistence constants --------------------------
 
@@ -261,20 +271,25 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
 
     match len {
         2 => {
-            if eq_ascii_fold(name, "te") { return WellKnownHeader.TE; }
+            let w = (read_le_u16(name, 0) | 0x2020) as u32;
+            if w == 0x6574 { return WellKnownHeader.TE; }
         },
         3 => {
-            if eq_ascii_fold(name, "age") { return WellKnownHeader.Age; }
-            if eq_ascii_fold(name, "via") { return WellKnownHeader.Via; }
+            let w = (name[0] as u32 | 0x20) | (((name[1] as u32 | 0x20)) << 8) | (((name[2] as u32 | 0x20)) << 16);
+            if w == 0x656761 { return WellKnownHeader.Age; }
+            if w == 0x616976 { return WellKnownHeader.Via; }
         },
         4 => {
-            if eq_ascii_fold(name, "host") { return WellKnownHeader.Host; }
-            if eq_ascii_fold(name, "date") { return WellKnownHeader.Date; }
-            if eq_ascii_fold(name, "etag") { return WellKnownHeader.ETag; }
-            if eq_ascii_fold(name, "vary") { return WellKnownHeader.Vary; }
+            let w = read_le_u32(name, 0) | 0x20202020;
+            if w == 0x74736f68 { return WellKnownHeader.Host; }
+            if w == 0x65746164 { return WellKnownHeader.Date; }
+            if w == 0x67617465 { return WellKnownHeader.ETag; }
+            if w == 0x79726176 { return WellKnownHeader.Vary; }
         },
         5 => {
-            if eq_ascii_fold(name, "range") { return WellKnownHeader.Range; }
+            if (read_le_u32(name, 0) | 0x20202020) == 0x676e6172 && ((name[4] as u32) | 0x20) == 0x65 {
+                return WellKnownHeader.Range;
+            }
         },
         6 => {
             if eq_ascii_fold(name, "accept") { return WellKnownHeader.Accept; }
@@ -291,10 +306,11 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if eq_ascii_fold(name, "alt-svc") { return WellKnownHeader.AltSvc; }
         },
         8 => {
-            if eq_ascii_fold(name, "location") { return WellKnownHeader.Location; }
-            if eq_ascii_fold(name, "if-match") { return WellKnownHeader.IfMatch; }
-            if eq_ascii_fold(name, "if-range") { return WellKnownHeader.IfRange; }
-            if eq_ascii_fold(name, "priority") { return WellKnownHeader.Priority; }
+            let w = read_le_u64(name, 0) | 0x2020202020202020;
+            if w == 0x6e6f697461636f6c { return WellKnownHeader.Location; }
+            if w == 0x686374616d2d6669 { return WellKnownHeader.IfMatch; }
+            if w == 0x65676e61722d6669 { return WellKnownHeader.IfRange; }
+            if w == 0x797469726f697270 { return WellKnownHeader.Priority; }
         },
         10 => {
             if eq_ascii_fold(name, "connection") { return WellKnownHeader.Connection; }
@@ -521,10 +537,7 @@ fn is_valid_header_name_h2(name: const u8[:]) -> bool {
 }
 
 fn has_embedded_nulls(data: const u8[:]) -> bool {
-    for b in data {
-        if b == 0 { return true; }
-    }
-    return false;
+    return find_any(data, NULL_SET) >= 0;
 }
 
 fn is_valid_header_value(val: const u8[:]) -> bool {
@@ -900,10 +913,8 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             break;
         }
 
-        var line_end = cursor;
-        while line_end < buf_len && map.raw_buf[line_end] != '\r' && map.raw_buf[line_end] != '\n' {
-            line_end++;
-        }
+        let rel_end = find_any(map.raw_buf[cursor..], CRLF_SET);
+        let line_end = if rel_end >= 0 { cursor + rel_end } else { buf_len };
         let line = map.raw_buf[cursor..line_end];
 
         if is_line_whitespace_only(line) {
@@ -916,10 +927,7 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             let fold_err = handle_obs_fold(line, is_first_header, allow_obs_fold, map);
             guard is_ok(fold_err) else { return fold_err; }
         } else {
-            var colon_pos: i64 = -1;
-            for i in line.len {
-                if line[i] == ':' { colon_pos = i; break; }
-            }
+            let colon_pos = find_any(line, COLON_SET);
             guard colon_pos > 0 else {
                 map.valid = false;
                 return HeaderParseError.InvalidHeaderName;

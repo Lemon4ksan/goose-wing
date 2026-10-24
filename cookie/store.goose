@@ -103,7 +103,7 @@ struct PendingStoreOp {
 // with queue coalescing and threshold-based transaction committing.
 struct WriteBackBatcher {
     max_batch_size: i64 = 512,       // K_COMMIT_AFTER_BATCH_SIZE
-    commit_interval_ms: i64 = 30000,  // K_COMMIT_INTERVAL_MS
+    commit_interval_ms: i64 = 30000, // K_COMMIT_INTERVAL_MS
     last_commit_ms: i64 = 0,
     total_committed_ops: i64 = 0,
     total_coalesced_ops: i64 = 0,

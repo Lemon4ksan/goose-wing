@@ -19,23 +19,13 @@ struct CheckedI64 {
     overflow: bool = false,
 }
 
+extern "gs_mulhi_u64" fn mulhi_u64(a: u64, b: u64) -> u64;
+
 // 64x64 -> 128-bit unsigned expanding multiplication returning (lo, hi).
-// Pure 64-bit portable arithmetic without 128-bit compiler intrinsics or heap allocs.
+// Executed in a single hardware instruction (mulq on x86-64, umulh on ARM64).
 inline fn mul_wide_u64(a: u64, b: u64) -> u64, u64 {
-    let a_lo = a & 0xFFFFFFFF;
-    let a_hi = a >> 32;
-    let b_lo = b & 0xFFFFFFFF;
-    let b_hi = b >> 32;
-
-    let p0 = a_lo * b_lo;
-    let p1 = a_lo * b_hi;
-    let p2 = a_hi * b_lo;
-    let p3 = a_hi * b_hi;
-
-    let cy0 = (p0 >> 32) + (p1 & 0xFFFFFFFF) + (p2 & 0xFFFFFFFF);
-    let lo = (p0 & 0xFFFFFFFF) | (cy0 << 32);
-    let hi = p3 + (p1 >> 32) + (p2 >> 32) + (cy0 >> 32);
-
+    let lo = a * b;
+    let hi = mulhi_u64(a, b);
     return lo, hi;
 }
 

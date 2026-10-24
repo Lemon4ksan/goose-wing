@@ -24,29 +24,40 @@ inline fn ct_select_u8(bit: u8, if_true: u8, if_false: u8) -> u8 {
 // Constant-time slice equality check: only branches on public length before reading secret bytes.
 fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
     guard bytes_a.len == bytes_b.len else { return false; }
-    var diff_accum: u8 = 0;
-    for idx in bytes_a.len {
-        diff_accum |= bytes_a[idx] ^ bytes_b[idx];
+    var diff_accum: u64 = 0;
+    var idx = 0;
+    while idx + 8 <= bytes_a.len {
+        diff_accum |= read_le_u64(bytes_a, idx) ^ read_le_u64(bytes_b, idx);
+        idx += 8;
     }
-    return ct_eq_u8(diff_accum, 0) == 1;
+    var tail_accum: u8 = 0;
+    while idx < bytes_a.len {
+        tail_accum |= bytes_a[idx] ^ bytes_b[idx];
+        idx += 1;
+    }
+    let total_diff = diff_accum | tail_accum;
+    let non_zero = (total_diff | (0 - total_diff)) >> 63;
+    return non_zero == 0;
 }
 
 // Constant-time 16-byte authentication tag comparison (Poly1305 / AES-GCM).
 fn ct_eq_tag16(tag_a: const u8[16]&, tag_b: const u8[16]&) -> bool {
-    var diff_accum: u8 = 0;
-    for idx in 16 {
-        diff_accum |= tag_a[idx] ^ tag_b[idx];
-    }
-    return ct_eq_u8(diff_accum, 0) == 1;
+    let diff0 = read_le_u64(tag_a[..], 0) ^ read_le_u64(tag_b[..], 0);
+    let diff1 = read_le_u64(tag_a[..], 8) ^ read_le_u64(tag_b[..], 8);
+    let diff = diff0 | diff1;
+    let non_zero = (diff | (0 - diff)) >> 63;
+    return non_zero == 0;
 }
 
 // Constant-time 32-byte MAC comparison (HMAC-SHA256).
 fn ct_eq_tag32(tag_a: const u8[32]&, tag_b: const u8[32]&) -> bool {
-    var diff_accum: u8 = 0;
-    for idx in 32 {
-        diff_accum |= tag_a[idx] ^ tag_b[idx];
-    }
-    return ct_eq_u8(diff_accum, 0) == 1;
+    let diff0 = read_le_u64(tag_a[..], 0) ^ read_le_u64(tag_b[..], 0);
+    let diff1 = read_le_u64(tag_a[..], 8) ^ read_le_u64(tag_b[..], 8);
+    let diff2 = read_le_u64(tag_a[..], 16) ^ read_le_u64(tag_b[..], 16);
+    let diff3 = read_le_u64(tag_a[..], 24) ^ read_le_u64(tag_b[..], 24);
+    let diff = diff0 | diff1 | diff2 | diff3;
+    let non_zero = (diff | (0 - diff)) >> 63;
+    return non_zero == 0;
 }
 
 fn ct_copy_bytes(dst: u8[:], src: const u8[:]) {

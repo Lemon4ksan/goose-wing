@@ -46,13 +46,8 @@ inline fn next_pow2_u32(x: u32) -> u32 {
     if x > 0x80000000 {
         return 0x80000000;
     }
-    var v = x - 1;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    return v + 1;
+    let lz = clz(x - 1);
+    return (1 as u32) << ((64 - lz) as u32);
 }
 
 // Computes the smallest power of two greater than or equal to x (64-bit).
@@ -64,14 +59,8 @@ inline fn next_pow2_u64(x: u64) -> u64 {
     if x > 0x8000000000000000 {
         return 0x8000000000000000;
     }
-    var v = x - 1;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v |= v >> 32;
-    return v + 1;
+    let lz = clz(x - 1);
+    return (1 as u64) << ((64 - lz) as u64);
 }
 
 // Byte reversal for 16-bit integer (Host <-> Network Big-Endian).
@@ -92,6 +81,12 @@ inline fn bswap64(x: u64) -> u64 {
     let hi = bswap32((x & 0xFFFFFFFF) as! u32) as u64;
     let lo = bswap32((x >> 32) as! u32) as u64;
     return (hi << 32) | lo;
+}
+
+// Reads a 16-bit unsigned integer in Little-Endian byte order from slice.
+inline fn read_le_u16(data: const u8[:], offset: i64) -> u16 {
+    let c = data[offset .. offset + 2];
+    return c[0] | ((c[1] as u16) << 8);
 }
 
 // Reads a 32-bit unsigned integer in Little-Endian byte order from slice.
@@ -154,20 +149,96 @@ inline fn read_be_u64(data: const u8[:], offset: i64) -> u64 {
 
 // Writes a 16-bit unsigned integer in Big-Endian (Network) byte order into an appendable buffer.
 inline fn write_be_u16<B>(out: B&, val: u16) {
-    out.push(((val >> 8) & 0xFF) as u8);
-    out.push((val & 0xFF) as u8);
+    let bytes: u8[2] = [
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    out.append(bytes[..]);
 }
 
 // Writes a 32-bit unsigned integer in Big-Endian (Network) byte order into an appendable buffer.
 inline fn write_be_u32<B>(out: B&, val: u32) {
-    out.push(((val >> 24) & 0xFF) as u8);
-    out.push(((val >> 16) & 0xFF) as u8);
-    out.push(((val >> 8) & 0xFF) as u8);
-    out.push((val & 0xFF) as u8);
+    let bytes: u8[4] = [
+        ((val >> 24) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    out.append(bytes[..]);
 }
 
 // Writes a 64-bit unsigned integer in Big-Endian (Network) byte order into an appendable buffer.
 inline fn write_be_u64<B>(out: B&, val: u64) {
-    write_be_u32(out, (val >> 32) as! u32);
-    write_be_u32(out, (val & 0xFFFFFFFF) as! u32);
+    let bytes: u8[8] = [
+        ((val >> 56) & 0xFF) as u8,
+        ((val >> 48) & 0xFF) as u8,
+        ((val >> 40) & 0xFF) as u8,
+        ((val >> 32) & 0xFF) as u8,
+        ((val >> 24) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    out.append(bytes[..]);
+}
+
+// Writes a 16-bit unsigned integer in Little-Endian byte order at specific offset in indexable buffer.
+inline fn write_le_u16_at<B>(dst: B&, offset: i64, val: u16) {
+    dst[offset]     = (val & 0xFF) as! u8;
+    dst[offset + 1] = ((val >> 8) & 0xFF) as! u8;
+}
+
+// Writes a 32-bit unsigned integer in Little-Endian byte order at specific offset in indexable buffer.
+inline fn write_le_u32_at<B>(dst: B&, offset: i64, val: u32) {
+    dst[offset]     = (val & 0xFF) as! u8;
+    dst[offset + 1] = ((val >> 8) & 0xFF) as! u8;
+    dst[offset + 2] = ((val >> 16) & 0xFF) as! u8;
+    dst[offset + 3] = ((val >> 24) & 0xFF) as! u8;
+}
+
+// Writes a 64-bit unsigned integer in Little-Endian byte order at specific offset in indexable buffer.
+inline fn write_le_u64_at<B>(dst: B&, offset: i64, val: u64) {
+    dst[offset]     = (val & 0xFF) as! u8;
+    dst[offset + 1] = ((val >> 8) & 0xFF) as! u8;
+    dst[offset + 2] = ((val >> 16) & 0xFF) as! u8;
+    dst[offset + 3] = ((val >> 24) & 0xFF) as! u8;
+    dst[offset + 4] = ((val >> 32) & 0xFF) as! u8;
+    dst[offset + 5] = ((val >> 40) & 0xFF) as! u8;
+    dst[offset + 6] = ((val >> 48) & 0xFF) as! u8;
+    dst[offset + 7] = ((val >> 56) & 0xFF) as! u8;
+}
+
+// Writes a 16-bit unsigned integer in Little-Endian byte order into an appendable buffer.
+inline fn write_le_u16<B>(out: B&, val: u16) {
+    let bytes: u8[2] = [
+        (val & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+    ];
+    out.append(bytes[..]);
+}
+
+// Writes a 32-bit unsigned integer in Little-Endian byte order into an appendable buffer.
+inline fn write_le_u32<B>(out: B&, val: u32) {
+    let bytes: u8[4] = [
+        (val & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 24) & 0xFF) as u8,
+    ];
+    out.append(bytes[..]);
+}
+
+// Writes a 64-bit unsigned integer in Little-Endian byte order into an appendable buffer.
+inline fn write_le_u64<B>(out: B&, val: u64) {
+    let bytes: u8[8] = [
+        (val & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 24) & 0xFF) as u8,
+        ((val >> 32) & 0xFF) as u8,
+        ((val >> 40) & 0xFF) as u8,
+        ((val >> 48) & 0xFF) as u8,
+        ((val >> 56) & 0xFF) as u8,
+    ];
+    out.append(bytes[..]);
 }

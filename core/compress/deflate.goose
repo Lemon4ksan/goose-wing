@@ -1042,6 +1042,19 @@ fn deflate_block<B>(
                 let rem = (total_len - pos) as i32;
                 let max_l = if rem < 258 { rem } else { 258 };
 
+                let s_off = pos - dict_len;
+                let c_off = (cand as i64) - dict_len;
+                if c_off >= 0 {
+                    while l + 8 <= max_l {
+                        let diff = read_le_u64(src, s_off + (l as i64)) ^ read_le_u64(src, c_off + (l as i64));
+                        if diff != 0 {
+                            l += (ctz(diff) >> 3) as i32;
+                            break;
+                        }
+                        l += 8;
+                    }
+                }
+
                 while l < max_l {
                     let p_s = pos + (l as i64);
                     let p_c = (cand as i64) + (l as i64);
