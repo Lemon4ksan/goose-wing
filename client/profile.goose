@@ -1,15 +1,14 @@
-// Browser fingerprint presets and header sensitivity classification (RFC 9110).
+// Client profile definitions and header sensitivity classification (RFC 9110).
 namespace wing;
 
 import std;
 
-// ---- browser profiles & header models --------------------------------------
+// ---- client profiles & header models ---------------------------------------
 
 enum Profile {
-    None,
-    Chrome131,
-    Firefox133,
-    Safari18,
+    Wing,      // Authentic Wing Zero-Heap Systems Engine identity (Default)
+    Custom,    // User-controlled custom profile
+    None,      // Minimal raw client without default headers
 }
 
 struct HeaderItem {
@@ -69,18 +68,18 @@ fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
 
 fn profile_user_agent(profile: Profile) -> const u8[:] {
     return match profile {
+        Wing => "Wing/1.0 (Goose Zero-Heap Systems Engine) NetStack/7.0",
+        Custom => "Wing/1.0 (Custom Profile)",
         None => "goose-wing/0.1",
-        Chrome131 => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        Firefox133 => "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-        Safari18 => "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+        _ => "Wing/1.0",
     };
 }
 
 fn profile_name(profile: Profile) -> const u8[:] {
     return match profile {
+        Wing => "Wing",
+        Custom => "Custom",
         None => "None",
-        Chrome131 => "Chrome131",
-        Firefox133 => "Firefox133",
-        Safari18 => "Safari18",
+        _ => "Wing",
     };
 }

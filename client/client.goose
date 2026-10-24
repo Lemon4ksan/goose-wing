@@ -6,6 +6,8 @@ import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
 import cookie.engine;
+import fingerprint.ja4;
+import fingerprint.profile;
 import client.profile;
 import client.request;
 import client.response;
@@ -370,7 +372,7 @@ struct MockExchange {
 
 struct ClientConfig {
     base_url: const u8[:] = "",
-    profile: Profile = Profile.None,
+    profile: Profile = Profile.Wing,
     proxy_url: const u8[:] = "",
     timeout_ms: i64 = 15000,
     follow_redirects: bool = true,
@@ -383,7 +385,7 @@ type SessionConfig = ClientConfig;
 
 struct Client {
     base_url: u8[..256] = [],
-    profile: Profile = Profile.None,
+    profile: Profile = Profile.Wing,
     proxy_url: u8[..256] = [],
     timeout_ms: i64 = 15000,
     follow_redirects: bool = true,
@@ -412,12 +414,15 @@ type Session = Client;
 
 fn new_client() -> Client {
     var c = Client {
+        profile: Profile.Wing,
         ssrf_guard: SsrfGuardPolicy { .. },
         cache: new_http_cache(),
         enable_cache: false,
         jar: new_canonical_cookie_jar(),
         ..
     };
+    let def_p = wing_default_profile();
+    apply_profile(c, def_p);
     return c;
 }
 
@@ -434,6 +439,9 @@ fn new_client(cfg: ClientConfig) -> Client {
     };
     client.base_url.append(cfg.base_url);
     client.proxy_url.append(cfg.proxy_url);
+    if cfg.profile != Profile.None {
+        set_profile(client, cfg.profile);
+    }
     return client;
 }
 
@@ -467,8 +475,76 @@ fn set_base_url(session: Session&, url: const u8[:]) {
     session.base_url.append(url);
 }
 
+fn apply_profile(client: Client&, profile: const BrowserProfile&) {
+    client.profile = match profile.kind {
+        Wing => Profile.Wing,
+        Custom => Profile.Custom,
+        None => Profile.None,
+    };
+    client.default_headers.clear();
+    if profile.user_agent.len > 0 {
+        client.default_headers.push(make_header("User-Agent", profile.user_agent[..]));
+    }
+    if profile.accept.len > 0 {
+        client.default_headers.push(make_header("Accept", profile.accept[..]));
+    }
+    if profile.accept_encoding.len > 0 {
+        client.default_headers.push(make_header("Accept-Encoding", profile.accept_encoding[..]));
+    }
+    if profile.accept_language.len > 0 {
+        client.default_headers.push(make_header("Accept-Language", profile.accept_language[..]));
+    }
+    if profile.upgrade_insecure_requests.len > 0 {
+        client.default_headers.push(make_header("Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]));
+    }
+    for &h in profile.extra_headers {
+        if client.default_headers.len < client.default_headers.cap {
+            client.default_headers.push(copy(h));
+        }
+    }
+}
+
 fn set_profile(session: Session&, profile: Profile) {
     session.profile = profile;
+    if profile == Profile.None {
+        session.default_headers.clear();
+        return;
+    }
+    if profile == Profile.Wing {
+        let p = wing_default_profile();
+        apply_profile(session, p);
+    }
+}
+
+fn set_profile(session: Session&, profile: const BrowserProfile&) {
+    apply_profile(session, profile);
+}
+
+fn set_user_agent(session: Session&, ua: const u8[:]) {
+    for idx in session.default_headers.len {
+        if eq_ascii_fold(session.default_headers[idx].name[..], "user-agent") {
+            session.default_headers[idx].value.clear();
+            session.default_headers[idx].value.append(ua);
+            return;
+        }
+    }
+    if session.default_headers.len < session.default_headers.cap {
+        session.default_headers.push(make_header("User-Agent", ua));
+    }
+}
+
+fn user_agent(session: const Session&) -> const u8[:] {
+    for &h in session.default_headers {
+        if eq_ascii_fold(h.name[..], "user-agent") {
+            return h.value[..];
+        }
+    }
+    return profile_user_agent(session.profile);
+}
+
+fn session_ja4(session: const Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
+    let p = wing_default_profile();
+    return profile_ja4(p, is_quic, sni);
 }
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {

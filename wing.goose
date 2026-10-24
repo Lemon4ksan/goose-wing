@@ -20,6 +20,11 @@ import cookie.policy;
 import cookie.engine;
 import cookie.store;
 
+// ---- fingerprinting, persona & ja4 (inspired by aoni) ----------------------
+
+import fingerprint.ja4;
+import fingerprint.profile;
+
 // ---- client session and application layer ----------------------------------
 
 import client.profile;

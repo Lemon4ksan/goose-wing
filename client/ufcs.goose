@@ -5,6 +5,15 @@ namespace wing;
 
 fn ::set_base_url(session: wing::Session&, url: const u8[:]) { wing::set_base_url(session, url); }
 fn ::set_profile(session: wing::Session&, profile: wing::Profile) { wing::set_profile(session, profile); }
+fn ::set_profile(session: wing::Session&, profile: const wing::BrowserProfile&) { wing::set_profile(session, profile); }
+fn ::set_user_agent(session: wing::Session&, ua: const u8[:]) { wing::set_user_agent(session, ua); }
+fn ::set_user_agent(profile: wing::BrowserProfile&, ua: const u8[:]) { wing::set_user_agent(profile, ua); }
+fn ::set_accept(profile: wing::BrowserProfile&, accept_str: const u8[:]) { wing::set_accept(profile, accept_str); }
+fn ::set_accept_encoding(profile: wing::BrowserProfile&, enc: const u8[:]) { wing::set_accept_encoding(profile, enc); }
+fn ::set_accept_language(profile: wing::BrowserProfile&, lang: const u8[:]) { wing::set_accept_language(profile, lang); }
+fn ::set_header(profile: wing::BrowserProfile&, name: const u8[:], value: const u8[:]) { wing::set_header(profile, name, value); }
+fn ::user_agent(session: const wing::Session&) -> const u8[:] { return wing::user_agent(session); }
+fn ::ja4(session: const wing::Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] { return wing::session_ja4(session, is_quic, sni); }
 fn ::set_proxy(session: wing::Session&, proxy_url: const u8[:]) { wing::set_proxy(session, proxy_url); }
 fn ::set_timeout_ms(session: wing::Session&, timeout_millis: i64) { wing::set_timeout_ms(session, timeout_millis); }
 fn ::set_cookie(session: wing::Session&, name: const u8[:], value: const u8[:]) { wing::set_cookie(session, name, value); }
