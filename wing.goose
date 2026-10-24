@@ -37,6 +37,7 @@ import client.policy;
 import client.replay_guard;
 import client.telemetry;
 import client.interceptor;
+import client.stream;
 
 // ---- http primitives -------------------------------------------------------
 

@@ -27,6 +27,7 @@ import net.masque;
 import http.compression_dict;
 import http.hsts;
 import client.interceptor;
+import client.stream;
 import auth.digest;
 import auth.sigv4;
 
@@ -1999,6 +2000,56 @@ fn delete<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Err
     var req = new_request("DELETE", url);
     F(&req);
     return do(session, req);
+}
+
+// ---- chunked uploads and download streaming --------------------------------
+
+fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Response, Error {
+    var writer = new_chunk_writer();
+    F(&writer);
+    finish_chunk_writer(writer);
+
+    var req = new_request("POST", url);
+    req.headers.push(make_header("Transfer-Encoding", "chunked"));
+    req.body.append(writer.buffer[..]);
+    return do(session, req);
+}
+
+fn put_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Response, Error {
+    var writer = new_chunk_writer();
+    F(&writer);
+    finish_chunk_writer(writer);
+
+    var req = new_request("PUT", url);
+    req.headers.push(make_header("Transfer-Encoding", "chunked"));
+    req.body.append(writer.buffer[..]);
+    return do(session, req);
+}
+
+fn download_stream<F: fn(const StreamProgress&)>(
+    session: Session&,
+    url: const u8[:],
+    chunk_size: i64,
+    out_body: u8[>..]&
+) -> Response, Error {
+    let resp, err = get(session, url);
+    guard ok(err) else { return resp, err; }
+
+    var reader = new_stream_reader(resp);
+    var chunk_buf: u8[>..] = [];
+
+    while true {
+        let has_data, is_eof = read_chunk(reader, chunk_size, chunk_buf);
+        if has_data {
+            out_body.append(chunk_buf[..]);
+            let p = stream_progress(reader);
+            F(&p);
+        }
+        if is_eof {
+            break;
+        }
+    }
+    return resp, no_error();
 }
 
 // ---- realtime & streaming (aoni-style ergonomics) -------------------------
