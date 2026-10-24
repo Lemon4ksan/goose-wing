@@ -25,6 +25,7 @@ import http.altsvc;
 import net.happy_eyeballs;
 import net.masque;
 import http.compression_dict;
+import client.interceptor;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -435,6 +436,9 @@ struct Client {
     dict_cache: DictionaryCache = DictionaryCache { .. },
     enable_compression_dict: bool = true,
 
+    // OkHttp/Tower-style 2-tier Interceptor Pipeline (Application & Network)
+    pipeline: InterceptorPipeline = InterceptorPipeline { .. },
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -455,6 +459,7 @@ fn new_client() -> Client {
         quic_race_delay_ms: 200,
         dict_cache: new_dictionary_cache(),
         enable_compression_dict: true,
+        pipeline: new_interceptor_pipeline(),
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -477,6 +482,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         quic_race_delay_ms: cfg.quic_race_delay_ms,
         dict_cache: new_dictionary_cache(),
         enable_compression_dict: cfg.enable_compression_dict,
+        pipeline: new_interceptor_pipeline(),
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -799,6 +805,56 @@ fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool 
     let now_sec = session.virtual_clock_us / 1000000;
     var dummy_hash: u8[..64] = [];
     return dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec, dummy_hash);
+}
+
+// ---- interceptor pipeline configuration (okhttp/tower-style) ---------------
+
+fn add_app_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
+    return add_pipeline_logging(session.pipeline, InterceptorScope.Application, level);
+}
+
+fn add_network_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
+    return add_pipeline_logging(session.pipeline, InterceptorScope.Network, level);
+}
+
+fn add_app_bearer_auth(session: Session&, token: const u8[:]) -> bool {
+    return add_pipeline_bearer_auth(session.pipeline, token);
+}
+
+fn add_app_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
+    return add_pipeline_header(session.pipeline, InterceptorScope.Application, name, val);
+}
+
+fn add_network_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
+    return add_pipeline_header(session.pipeline, InterceptorScope.Network, name, val);
+}
+
+fn add_app_request_id(session: Session&, prefix: const u8[:] = "req-") -> bool {
+    return add_pipeline_request_id(session.pipeline, prefix);
+}
+
+fn add_app_traceparent(session: Session&, sample_flag: const u8[:] = "01") -> bool {
+    return add_pipeline_traceparent(session.pipeline, sample_flag);
+}
+
+fn add_app_retry(session: Session&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
+    return add_pipeline_retry(session.pipeline, max_retries, retry_on_5xx);
+}
+
+fn add_network_metrics(session: Session&) -> bool {
+    return add_pipeline_metrics(session.pipeline);
+}
+
+fn network_metrics(session: const Session&) -> const NetworkMetrics& {
+    return session.pipeline.metrics;
+}
+
+fn pipeline_logs(session: const Session&) -> const u8[..128][:] {
+    return session.pipeline.log_entries[..];
+}
+
+fn clear_pipeline_logs(session: Session&) {
+    session.pipeline.log_entries.clear();
 }
 
 fn allow_port(session: Session&, port_num: i32) {
@@ -1305,7 +1361,7 @@ fn process_redirect_hop(
     return true, no_error();
 }
 
-fn execute_request(session: Client&, req: const Request&) -> Response, Error {
+fn execute_request_inner(session: Client&, req: const Request&) -> Response, Error {
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
@@ -1366,12 +1422,21 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
         let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
         prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
 
+        // Phase 3.5: Network Interceptors (Request Hook)
+        let hop_start_us = session.virtual_clock_us;
+        apply_network_interceptors_request(session.pipeline, ctx.headers, current_url.href[..], ctx.current_method[..], ctx.body.len, ctx.redirect_count);
+
         // Phase 4: Network Transaction & Ingest Set-Cookie Before 3xx Analysis
         var dns_rebinding_err = RedirectError.None;
         var resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
         guard dns_rebinding_err == RedirectError.None else {
             return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
         }
+
+        // Phase 4.2: Network Interceptors (Response Hook)
+        let hop_dur_us = session.virtual_clock_us - hop_start_us;
+        apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, hop_dur_us);
+
         ctx.body_consumed = true;
         ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
 
@@ -1391,6 +1456,10 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
         let loc_hdr = header(resp, "Location");
         let is_red = is_redirect(resp) && loc_hdr.len > 0;
 
+        if is_red {
+            session.pipeline.metrics.redirect_hops += 1;
+        }
+
         if !is_red {
             finalize_success_response(ctx, resp);
             return resp, no_error();
@@ -1404,6 +1473,36 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     }
 
     return Response { .. }, make_error(310, "redirect", "maximum redirect hops exceeded");
+}
+
+fn execute_request(session: Client&, req: const Request&) -> Response, Error {
+    let start_us = session.virtual_clock_us;
+
+    // Phase -1: Application Interceptors (Request Hook)
+    var active_req = copy(req);
+    apply_app_interceptors_request(session.pipeline, active_req, start_us);
+
+    var max_retries: i32 = 0;
+    var retry_5xx: bool = false;
+    let has_retry = find_retry_policy(session.pipeline, max_retries, retry_5xx);
+
+    var attempts: i32 = 0;
+    while true {
+        let resp, err = execute_request_inner(session, active_req);
+        if has_retry && attempts < max_retries {
+            if !ok(err) || (retry_5xx && resp.status_code >= 500 && resp.status_code <= 599) {
+                attempts += 1;
+                continue;
+            }
+        }
+
+        // Phase 6: Application Interceptors (Response Hook)
+        var final_resp = resp;
+        let total_dur_us = session.virtual_clock_us - start_us;
+        apply_app_interceptors_response(session.pipeline, active_req, final_resp, err, total_dur_us);
+        return copy(final_resp), err;
+    }
+    return Response { .. }, make_error(500, "client", "request execution failed");
 }
 
 fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfGuardPolicy&) -> RedirectError {
@@ -1654,6 +1753,38 @@ fn do<F: fn(Request&)>(session: Session&, req: const Request&) -> Response, Erro
     var modified = copy(req);
     F(&modified);
     return do(session, modified);
+}
+
+// ---- okhttp/tower-style interceptor execution ------------------------------
+
+struct InterceptorChain {
+    request: Request&,
+    response: Response&,
+    err: Error = Error { .. },
+    proceeded: bool = false,
+    short_circuited: bool = false,
+}
+
+fn proceed(chain: InterceptorChain&, session: Session&) {
+    chain.proceeded = true;
+    let resp, err = execute_request(session, chain.request);
+    chain.response = copy(resp);
+    chain.err = err;
+}
+
+fn do_intercepted<F: fn(InterceptorChain&, Session&)>(session: Session&, req: const Request&) -> Response, Error {
+    var req_copy = copy(req);
+    var resp = Response { .. };
+    var chain = InterceptorChain {
+        request: req_copy,
+        response: resp,
+        ..
+    };
+    F(&chain, &session);
+    if !chain.proceeded && !chain.short_circuited {
+        proceed(chain, session);
+    }
+    return copy(chain.response), chain.err;
 }
 
 // ---- express verbs ---------------------------------------------------------
