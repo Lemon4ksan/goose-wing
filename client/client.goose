@@ -1861,10 +1861,11 @@ fn execute_mock_or_echo_hop(
                         dictionary_cache_insert(session.dict_cache, origin_buf[..], pat, d_params.id[..], resp.body[..], d_params.ttl_sec, now_sec);
                     }
                 }
-                let enc = header(resp, "Content-Encoding");
-                if eq_ascii_fold(enc, "dcz") {
-                    decode_body_with_dictionary(resp, session.dict_cache);
-                }
+            }
+
+            let enc = header(resp, "Content-Encoding");
+            if enc.len > 0 {
+                decode_body_with_dictionary(resp, session.dict_cache);
             }
 
             return resp;
@@ -1910,10 +1911,11 @@ fn execute_mock_or_echo_hop(
                 dictionary_cache_insert(session.dict_cache, origin_buf[..], pat, d_params.id[..], resp.body[..], d_params.ttl_sec, now_sec);
             }
         }
-        let enc = header(resp, "Content-Encoding");
-        if eq_ascii_fold(enc, "dcz") {
-            decode_body_with_dictionary(resp, session.dict_cache);
-        }
+    }
+
+    let enc = header(resp, "Content-Encoding");
+    if enc.len > 0 {
+        decode_body_with_dictionary(resp, session.dict_cache);
     }
 
     for &sent_h in ctx.headers {

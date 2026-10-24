@@ -19,6 +19,8 @@ import core.compress.gzip;
 import core.compress.zlib;
 import core.compress.stream;
 import core.compress.zstd;
+import core.compress.brotli_dict;
+import core.compress.brotli;
 
 // Compresses input slice using Gzip format into out_buf. Returns true on success.
 fn compress_gzip<B>(src: const u8[:], out_buf: B&, level: i32 = 6) -> bool {
@@ -130,5 +132,22 @@ fn decompress_zstd_with_limit<B>(in_buf: const u8[:], out_buf: B&, max_output_by
 // Universal auto-detecting decompressor: automatically determines container format (Zstd, Gzip, Zlib, Deflate).
 fn decompress<B>(in_buf: const u8[:], out_buf: B&, dict: const u8[:] = "") -> bool, CompressError {
     let err = decompress_auto(in_buf, out_buf, dict);
+    return err == CompressError.None, err;
+}
+
+// Compresses input slice using RFC 7932 Brotli container format.
+fn compress_brotli<B>(src: const u8[:], out_buf: B&, level: i32 = 0) -> bool {
+    return brotli_compress(src, out_buf, level);
+}
+
+// Decompresses RFC 7932 Brotli stream from in_buf into out_buf. Returns (true, CompressError.None) on success.
+fn decompress_brotli<B>(in_buf: const u8[:], out_buf: B&) -> bool, CompressError {
+    let err = brotli_decompress(in_buf, out_buf);
+    return err == CompressError.None, err;
+}
+
+// Decompresses RFC 7932 Brotli stream with output quota guard (preventing decompression bombs).
+fn decompress_brotli_with_limit<B>(in_buf: const u8[:], out_buf: B&, max_output_bytes: i64) -> bool, CompressError {
+    let err = brotli_decompress_with_limit(in_buf, out_buf, max_output_bytes);
     return err == CompressError.None, err;
 }

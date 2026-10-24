@@ -136,6 +136,15 @@ fn decode_body(res: Response&) -> bool {
             return true;
         }
         return false;
+    } else if eq_ascii_fold(enc, "br") {
+        var uncompressed: u8[>..] = [];
+        let ok_b, err_b = core::decompress_brotli(res.body[..], uncompressed);
+        if ok_b {
+            res.body.clear();
+            res.body.append(uncompressed[..]);
+            return true;
+        }
+        return false;
     } else if eq_ascii_fold(enc, "deflate") {
         var uncompressed: u8[>..] = [];
         let ok_z, err_z = core::decompress_zlib(res.body[..], uncompressed);
