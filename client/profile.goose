@@ -13,7 +13,7 @@ enum Profile {
 
 struct HeaderItem {
     name: u8[..64] = [],
-    value: u8[..256] = [],
+    value: u8[..384] = [],
     is_sensitive: bool = false,
 }
 

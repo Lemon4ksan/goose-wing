@@ -26,6 +26,8 @@ import net.happy_eyeballs;
 import net.masque;
 import http.compression_dict;
 import client.interceptor;
+import auth.digest;
+import auth.sigv4;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
@@ -371,10 +373,10 @@ struct MockExchange {
     pattern_url: u8[..256] = [],
     method: u8[..16] = [],
     status_code: i32 = 200,
-    headers: HeaderItem[..16] = [],
-    set_cookies: u8[..256][..8] = [],
+    headers: HeaderItem[..8] = [],
+    set_cookies: u8[..128][..4] = [],
     resolved_ips: u8[..64][..4] = [],
-    body: u8[..2048] = [],
+    body: u8[..1024] = [],
     protocol: u8[..16] = [],
     simulate_quic_blocked: bool = false,
 }
@@ -398,6 +400,14 @@ struct ClientConfig {
 
 type SessionConfig = ClientConfig;
 
+struct ClientCredentials {
+    username: u8[..64] = [],
+    password: u8[..64] = [],
+    has_credentials: bool = false,
+    nonce_counter: u32 = 1,
+    cnonce: u8[..32] = "f2/IZUnWe0rEzWeA",
+}
+
 struct Client {
     base_url: u8[..256] = [],
     profile: Profile = Profile.Wing,
@@ -413,7 +423,7 @@ struct Client {
     ssrf_guard: SsrfGuardPolicy = SsrfGuardPolicy { .. },
     virtual_clock_us: i64 = 1700000000000000,
     trusted_location_hosts: u8[..128][..8] = [],
-    mock_routes: MockExchange[..16] = [],
+    mock_routes: MockExchange[..8] = [],
 
     // RFC 9111 HTTP Cache Engine
     cache: HttpCache = HttpCache { .. },
@@ -438,6 +448,9 @@ struct Client {
 
     // OkHttp/Tower-style 2-tier Interceptor Pipeline (Application & Network)
     pipeline: InterceptorPipeline = InterceptorPipeline { .. },
+
+    // RFC 7616 Digest & RFC 7617 Basic Authenticator
+    creds: ClientCredentials = ClientCredentials { .. },
 
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
@@ -857,6 +870,32 @@ fn clear_pipeline_logs(session: Session&) {
     session.pipeline.log_entries.clear();
 }
 
+// ---- authentication credentials configuration (rfc 7616 digest & basic) ----
+
+fn set_credentials(session: Session&, username: const u8[:], password: const u8[:]) {
+    session.creds.username.clear();
+    session.creds.username.append(username);
+    session.creds.password.clear();
+    session.creds.password.append(password);
+    session.creds.has_credentials = true;
+    session.creds.nonce_counter = 1;
+}
+
+fn set_digest_credentials(session: Session&, username: const u8[:], password: const u8[:]) {
+    set_credentials(session, username, password);
+}
+
+fn set_basic_credentials(session: Session&, username: const u8[:], password: const u8[:]) {
+    set_credentials(session, username, password);
+}
+
+fn clear_credentials(session: Session&) {
+    session.creds.has_credentials = false;
+    session.creds.username.clear();
+    session.creds.password.clear();
+    session.creds.nonce_counter = 1;
+}
+
 fn allow_port(session: Session&, port_num: i32) {
     if session.ssrf_guard.allowed_ports.len < 16 {
         session.ssrf_guard.allowed_ports.push(port_num);
@@ -1105,6 +1144,7 @@ struct RequestExecutionContext {
     tainted_origin: bool = false,
     had_cross_site_hop: bool = false,
     cors_mode: bool = false,
+    auth_retried: bool = false,
     current_referrer: u8[..2048] = [],
     current_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
     body: u8[>..] = [],
@@ -1361,6 +1401,11 @@ fn process_redirect_hop(
     return true, no_error();
 }
 
+fn starts_with_fold(s: const u8[:], prefix: const u8[:]) -> bool {
+    guard s.len >= prefix.len else { return false; }
+    return eq_ascii_fold(s[..prefix.len], prefix);
+}
+
 fn execute_request_inner(session: Client&, req: const Request&) -> Response, Error {
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
@@ -1431,6 +1476,72 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
         var resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
         guard dns_rebinding_err == RedirectError.None else {
             return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
+        }
+
+        // Phase 4.1: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
+        if resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried {
+            let www_auth = header(resp, "WWW-Authenticate");
+            if www_auth.len > 0 {
+                var auth_header_val: u8[..512] = [];
+                var should_retry = false;
+
+                if starts_with_fold(www_auth, "Digest") {
+                    let chal, ok_c = parse_digest_challenge(www_auth);
+                    if ok_c {
+                        let uri_path = core::pathname(current_url);
+                        let uri_to_send = if uri_path.len > 0 { uri_path } else { "/" };
+                        var c_creds = DigestCredentials { .. };
+                        c_creds.username.append(session.creds.username[..]);
+                        c_creds.password.append(session.creds.password[..]);
+
+                        let ok_d = compute_digest_response(
+                            chal,
+                            c_creds,
+                            ctx.current_method[..],
+                            uri_to_send,
+                            session.creds.nonce_counter,
+                            session.creds.cnonce[..],
+                            ctx.body[..],
+                            auth_header_val
+                        );
+                        if ok_d {
+                            session.creds.nonce_counter += 1;
+                            should_retry = true;
+                        }
+                    }
+                } else if starts_with_fold(www_auth, "Basic") {
+                    var user_pass: u8[..140] = [];
+                    user_pass.append(session.creds.username[..]);
+                    user_pass.push(':');
+                    user_pass.append(session.creds.password[..]);
+                    var b64_user_pass: u8[..200] = [];
+                    base64_encode(user_pass[..], b64_user_pass);
+                    auth_header_val.append("Basic ");
+                    auth_header_val.append(b64_user_pass[..]);
+                    should_retry = true;
+                }
+
+                if should_retry {
+                    ctx.auth_retried = true;
+                    var auth_idx: i64 = -1;
+                    for i in ctx.headers.len {
+                        if eq_ascii_fold(ctx.headers[i].name[..], "Authorization") {
+                            auth_idx = i;
+                            break;
+                        }
+                    }
+                    if auth_idx >= 0 {
+                        ctx.headers[auth_idx].value.clear();
+                        ctx.headers[auth_idx].value.append(auth_header_val[..]);
+                    } else {
+                        ctx.headers.push(make_header("Authorization", auth_header_val[..]));
+                    }
+                    resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
+                    guard dns_rebinding_err == RedirectError.None else {
+                        return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
+                    }
+                }
+            }
         }
 
         // Phase 4.2: Network Interceptors (Response Hook)

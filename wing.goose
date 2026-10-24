@@ -69,11 +69,17 @@ import http.cache.engine;
 // ---- security --------------------------------------------------------------
 
 import security.ct;
+import security.md5;
 import security.x25519;
 import security.crypto_jar;
 import security.csrf;
 import security.cors;
 import security.rate_limiter;
+
+// ---- authentication (rfc 7616 digest & aws sigv4) -------------------------
+
+import auth.digest;
+import auth.sigv4;
 
 // ---- tls 1.3 & x.509 pki -------------------------------------------------
 
