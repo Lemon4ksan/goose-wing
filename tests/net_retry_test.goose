@@ -3,9 +3,10 @@
 // RFC 9110 Retry-After parser, circuit breaker, Google SRE adaptive retry budget,
 // and Go #81671 (idempotent QUERY method).
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_tier1_stale_socket_and_quic_fallback(t: wing::T&) {
+fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
     t.run("Tier 1 4-Condition Invariant Evaluation") { sub =>
         // 1. Standard idempotent GET on reused Keep-Alive connection before headers
         var req_get = wing::new_request("GET", "https://api.io/items");
@@ -101,7 +102,7 @@ fn test_tier1_stale_socket_and_quic_fallback(t: wing::T&) {
     };
 }
 
-fn test_tier2_exponential_backoff_and_jitter(t: wing::T&) {
+fn test_tier2_exponential_backoff_and_jitter(t: core::T&) {
     t.run("Deterministic Backoff and 3 Jitter Strategies") { sub =>
         var seed: u64 = 123456789;
         var prev_sleep: i64 = 0;
@@ -152,7 +153,7 @@ fn test_tier2_exponential_backoff_and_jitter(t: wing::T&) {
     };
 }
 
-fn test_rfc9110_retry_after_parser(t: wing::T&) {
+fn test_rfc9110_retry_after_parser(t: core::T&) {
     t.run("delay-seconds (1*DIGIT) Parsing") { sub =>
         let now_ms: i64 = 1700000000000;
 
@@ -226,7 +227,7 @@ fn test_rfc9110_retry_after_parser(t: wing::T&) {
     };
 }
 
-fn test_circuit_breaker_and_adaptive_retry_budget(t: wing::T&) {
+fn test_circuit_breaker_and_adaptive_retry_budget(t: core::T&) {
     t.run("Host Circuit Breaker on Excessive Retry-After") { sub =>
         var breaker = wing::new_host_circuit_breaker(60000); // 60s max wait
 
@@ -275,11 +276,11 @@ fn test_circuit_breaker_and_adaptive_retry_budget(t: wing::T&) {
 }
 
 fn main() {
-    var runner = wing::new_runner("net/retry Two-Tier Resilience Suite", wing::Verbosity.Verbose);
-    wing::run_case(runner, "1. Tier 1 Stale Socket & QUIC Fallback", test_tier1_stale_socket_and_quic_fallback);
-    wing::run_case(runner, "2. Tier 2 Backoff & Jitter Strategies", test_tier2_exponential_backoff_and_jitter);
-    wing::run_case(runner, "3. RFC 9110 Retry-After Parser", test_rfc9110_retry_after_parser);
-    wing::run_case(runner, "4. Circuit Breaker & Adaptive Retry Budget", test_circuit_breaker_and_adaptive_retry_budget);
-    let ok = wing::finish(runner);
+    var runner = core::new_runner("net/retry Two-Tier Resilience Suite", core::Verbosity.Verbose);
+    core::run_case(runner, "1. Tier 1 Stale Socket & QUIC Fallback", test_tier1_stale_socket_and_quic_fallback);
+    core::run_case(runner, "2. Tier 2 Backoff & Jitter Strategies", test_tier2_exponential_backoff_and_jitter);
+    core::run_case(runner, "3. RFC 9110 Retry-After Parser", test_rfc9110_retry_after_parser);
+    core::run_case(runner, "4. Circuit Breaker & Adaptive Retry Budget", test_circuit_breaker_and_adaptive_retry_budget);
+    let ok = core::finish(runner);
     assert(ok);
 }

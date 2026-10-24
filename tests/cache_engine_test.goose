@@ -3,11 +3,12 @@
 // Vary matching, CVE-2026-93750 & CVE-2026-93748 defenses, 304 header merge,
 // request collapsing, and unsafe method cascade invalidation.
 import std;
+import core from "..";
 import wing from "..";
 
 // ---- 1. Cache-Control Parsing & Delta-Seconds Clamping ----------------------
 
-fn test_cache_control_parsing_and_overflow(t: wing::T&) {
+fn test_cache_control_parsing_and_overflow(t: core::T&) {
     t.run("Standard Boolean Directives & Bitmask Compression") { sub =>
         var cc = wing::new_cache_control();
         let raw = "no-store, no-cache, must-revalidate, proxy-revalidate, must-understand, public, immutable, only-if-cached, no-transform";
@@ -80,13 +81,13 @@ fn test_cache_control_parsing_and_overflow(t: wing::T&) {
 
 // ---- 2. Mathematical Freshness Model & Clock Skew ---------------------------
 
-fn test_freshness_math_and_clock_skew(t: wing::T&) {
+fn test_freshness_math_and_clock_skew(t: core::T&) {
     t.run("RFC 9111 §4.2.3 Age Calculations") { sub =>
         // Time points: request at t=100, response at t=102 (2s delay), date header t=100
-        let req_time = wing::unix(100, 0);
-        let resp_time = wing::unix(102, 0);
-        let cur_now = wing::unix(112, 0); // 10s resident time
-        let date_time = wing::unix(100, 0);
+        let req_time = core::unix(100, 0);
+        let resp_time = core::unix(102, 0);
+        let cur_now = core::unix(112, 0); // 10s resident time
+        let date_time = core::unix(100, 0);
 
         let apparent_age = wing::compute_apparent_age(resp_time, date_time); // 102 - 100 = 2
         sub.assert_eq(apparent_age, 2, "apparent_age == 2");
@@ -123,8 +124,8 @@ fn test_freshness_math_and_clock_skew(t: wing::T&) {
     };
 
     t.run("Freshness Lifetime Priority Hierarchy") { sub =>
-        let req_time = wing::unix(100, 0);
-        let resp_time = wing::unix(100, 0);
+        let req_time = core::unix(100, 0);
+        let resp_time = core::unix(100, 0);
         let ts = wing::new_cache_timestamps(req_time, resp_time, resp_time);
 
         // 1. Corrupted freshness sets lifetime to 0
@@ -165,7 +166,7 @@ fn test_freshness_math_and_clock_skew(t: wing::T&) {
 
 // ---- 3. EntityTag (ETag) Validators -----------------------------------------
 
-fn test_etag_validators(t: wing::T&) {
+fn test_etag_validators(t: core::T&) {
     t.run("ETag Parsing and Weak/Strong Comparisons") { sub =>
         let tag_strong = wing::parse_etag("\"strong-123\"");
         sub.assert_true(tag_strong.valid, "Strong ETag parsed valid");
@@ -211,7 +212,7 @@ fn test_etag_validators(t: wing::T&) {
 
 // ---- 4. Vary Normalization & CVE-2026-93750 Defense -------------------------
 
-fn test_vary_normalization_and_cve_2026_93750(t: wing::T&) {
+fn test_vary_normalization_and_cve_2026_93750(t: core::T&) {
     t.run("CVE-2026-93750: Vary: * Unconditional Hard Rejection") { sub =>
         var req_hdrs = wing::new_header_map();
         wing::append_header(req_hdrs, "Accept-Encoding", "gzip");
@@ -254,11 +255,11 @@ fn test_vary_normalization_and_cve_2026_93750(t: wing::T&) {
 
 // ---- 5. CVE-2026-93748 Defense & Security Zeroing --------------------------
 
-fn test_cve_2026_93748_max_stale_guards(t: wing::T&) {
+fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
     t.run("CVE-2026-93748: Blocking max-stale on must-revalidate / s-maxage / security-zeroed") { sub =>
-        let t_req = wing::unix(100, 0);
-        let t_resp = wing::unix(100, 0);
-        let t_now = wing::unix(500, 0); // Well past expiration (stale)
+        let t_req = core::unix(100, 0);
+        let t_resp = core::unix(100, 0);
+        let t_now = core::unix(500, 0); // Well past expiration (stale)
         let ts = wing::new_cache_timestamps(t_req, t_resp, t_now);
 
         var hdrs = wing::new_header_map();
@@ -306,10 +307,10 @@ fn test_cve_2026_93748_max_stale_guards(t: wing::T&) {
 
 // ---- 6. Cache Transaction Lifecycle, 304 Merge & Sanitization ---------------
 
-fn test_cache_transaction_and_304_merge(t: wing::T&) {
+fn test_cache_transaction_and_304_merge(t: core::T&) {
     t.run("Lookup Miss -> Store -> Hit Lifecycle with Age Header") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = wing::unix(1000, 0);
+        let t0 = core::unix(1000, 0);
 
         // 1. Initial request -> Cache Miss
         let req = wing::new_get("https://example.com/api/data");
@@ -332,7 +333,7 @@ fn test_cache_transaction_and_304_merge(t: wing::T&) {
         sub.assert_eq(cache.entries.len, 1, "Cache entries count is 1");
 
         // 3. Second request 10 seconds later (t=1010) -> Cache Hit!
-        let t1 = wing::unix(1010, 0);
+        let t1 = core::unix(1010, 0);
         let dec_2 = wing::lookup(cache, req, t1);
         sub.assert_true(dec_2.kind == wing::LookupResultKind.Hit, "Subsequent lookup is Hit");
         sub.assert_eq(dec_2.cached_response.status_code, 200, "Cached response status 200");
@@ -345,7 +346,7 @@ fn test_cache_transaction_and_304_merge(t: wing::T&) {
 
     t.run("Stale Entry -> Conditional Revalidation -> 304 Merge") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = wing::unix(1000, 0);
+        let t0 = core::unix(1000, 0);
 
         let req = wing::new_get("https://example.com/resource");
         var resp = wing::new_response();
@@ -361,7 +362,7 @@ fn test_cache_transaction_and_304_merge(t: wing::T&) {
         wing::on_response(cache, req, resp, ts0);
 
         // Advance time to t=1200 (stale by 140s)
-        let t_stale = wing::unix(1200, 0);
+        let t_stale = core::unix(1200, 0);
         let dec_stale = wing::lookup(cache, req, t_stale);
         sub.assert_true(dec_stale.kind == wing::LookupResultKind.Revalidate, "Lookup returns Revalidate");
         sub.assert_bytes_eq(wing::get_header(dec_stale.conditional_headers, "If-None-Match"), "\"tag-abc\"", "If-None-Match built");
@@ -392,10 +393,10 @@ fn test_cache_transaction_and_304_merge(t: wing::T&) {
 
 // ---- 7. RFC 9111 Special Behaviors & Cascade Invalidation -------------------
 
-fn test_rfc9111_special_behaviors_and_invalidation(t: wing::T&) {
+fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
     t.run("only-if-cached Returns 504 on Cache Miss and Stale") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = wing::unix(1000, 0);
+        let t0 = core::unix(1000, 0);
 
         var req = wing::new_get("https://example.com/missing");
         wing::header(req, "Cache-Control", "only-if-cached");
@@ -407,7 +408,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: wing::T&) {
 
     t.run("must-understand Status Whitelist Protection") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = wing::unix(1000, 0);
+        let t0 = core::unix(1000, 0);
         let req = wing::new_get("https://example.com/custom");
 
         // Unknown status code 299 with must-understand -> MUST NOT be stored
@@ -424,7 +425,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: wing::T&) {
 
     t.run("HEAD vs GET Separation (RFC 9111 §4.3.5)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = wing::unix(1000, 0);
+        let t0 = core::unix(1000, 0);
 
         // Store a HEAD response
         var req_head = wing::new_request("HEAD", "https://example.com/asset.png");
@@ -446,7 +447,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: wing::T&) {
 
     t.run("Unsafe Method Cascade Invalidation (RFC 9111 §4.4)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = wing::unix(1000, 0);
+        let t0 = core::unix(1000, 0);
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         // Store two cached entries for same origin
@@ -490,7 +491,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: wing::T&) {
 
 // ---- 8. Single-Flight / Request Collapsing ---------------------------------
 
-fn test_request_collapsing(t: wing::T&) {
+fn test_request_collapsing(t: core::T&) {
     t.run("Single-Flight Writers Collapsing Concurrent Requests") { sub =>
         var writers = wing::new_cache_writers();
         let key = "GET https://example.com/resource";
@@ -515,17 +516,17 @@ fn test_request_collapsing(t: wing::T&) {
 // ---- Main Test Runner Entrypoint -------------------------------------------
 
 fn main() {
-    var runner = wing::new_runner("RFC 9111 HTTP Caching Engine Verification Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("RFC 9111 HTTP Caching Engine Verification Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Cache-Control Parsing & Delta-Seconds Clamping", test_cache_control_parsing_and_overflow);
-    wing::run_case(runner, "2. Mathematical Freshness Model & Clock Skew", test_freshness_math_and_clock_skew);
-    wing::run_case(runner, "3. EntityTag (ETag) Validators", test_etag_validators);
-    wing::run_case(runner, "4. Vary Normalization & CVE-2026-93750 Defense", test_vary_normalization_and_cve_2026_93750);
-    wing::run_case(runner, "5. CVE-2026-93748 Defense & Security Zeroing", test_cve_2026_93748_max_stale_guards);
-    wing::run_case(runner, "6. Cache Transaction Lifecycle, 304 Merge & Sanitization", test_cache_transaction_and_304_merge);
-    wing::run_case(runner, "7. RFC 9111 Special Behaviors & Cascade Invalidation", test_rfc9111_special_behaviors_and_invalidation);
-    wing::run_case(runner, "8. Single-Flight Writers Request Collapsing", test_request_collapsing);
+    core::run_case(runner, "1. Cache-Control Parsing & Delta-Seconds Clamping", test_cache_control_parsing_and_overflow);
+    core::run_case(runner, "2. Mathematical Freshness Model & Clock Skew", test_freshness_math_and_clock_skew);
+    core::run_case(runner, "3. EntityTag (ETag) Validators", test_etag_validators);
+    core::run_case(runner, "4. Vary Normalization & CVE-2026-93750 Defense", test_vary_normalization_and_cve_2026_93750);
+    core::run_case(runner, "5. CVE-2026-93748 Defense & Security Zeroing", test_cve_2026_93748_max_stale_guards);
+    core::run_case(runner, "6. Cache Transaction Lifecycle, 304 Merge & Sanitization", test_cache_transaction_and_304_merge);
+    core::run_case(runner, "7. RFC 9111 Special Behaviors & Cascade Invalidation", test_rfc9111_special_behaviors_and_invalidation);
+    core::run_case(runner, "8. Single-Flight Writers Request Collapsing", test_request_collapsing);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

@@ -5,7 +5,6 @@ namespace wing;
 
 import std;
 import app.profile;
-import core.math;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);
@@ -271,7 +270,7 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
 
     match len {
         2 => {
-            let w = (read_le_u16(name, 0) | 0x2020) as u32;
+            let w = (core::read_le_u16(name, 0) | 0x2020) as u32;
             if w == 0x6574 { return WellKnownHeader.TE; }
         },
         3 => {
@@ -280,20 +279,20 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w == 0x616976 { return WellKnownHeader.Via; }
         },
         4 => {
-            let w = read_le_u32(name, 0) | 0x20202020;
+            let w = core::read_le_u32(name, 0) | 0x20202020;
             if w == 0x74736f68 { return WellKnownHeader.Host; }
             if w == 0x65746164 { return WellKnownHeader.Date; }
             if w == 0x67617465 { return WellKnownHeader.ETag; }
             if w == 0x79726176 { return WellKnownHeader.Vary; }
         },
         5 => {
-            if (read_le_u32(name, 0) | 0x20202020) == 0x676e6172 && ((name[4] as u32) | 0x20) == 0x65 {
+            if (core::read_le_u32(name, 0) | 0x20202020) == 0x676e6172 && ((name[4] as u32) | 0x20) == 0x65 {
                 return WellKnownHeader.Range;
             }
         },
         6 => {
-            let w32 = read_le_u32(name, 0) | 0x20202020;
-            let w16 = (read_le_u16(name, 4) | 0x2020) as u32;
+            let w32 = core::read_le_u32(name, 0) | 0x20202020;
+            let w16 = (core::read_le_u16(name, 4) | 0x2020) as u32;
             if w32 == 0x65636361 && w16 == 0x7470 { return WellKnownHeader.Accept; }
             if w32 == 0x6b6f6f63 && w16 == 0x6569 { return WellKnownHeader.Cookie; }
             if w32 == 0x76726573 && w16 == 0x7265 { return WellKnownHeader.Server; }
@@ -301,8 +300,8 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w32 == 0x65707865 && w16 == 0x7463 { return WellKnownHeader.Expect; }
         },
         7 => {
-            let w32 = read_le_u32(name, 0) | 0x20202020;
-            let w16 = (read_le_u16(name, 4) | 0x2020) as u32;
+            let w32 = core::read_le_u32(name, 0) | 0x20202020;
+            let w16 = (core::read_le_u16(name, 4) | 0x2020) as u32;
             let b6 = ((name[6] as u32) | 0x20);
             if w32 == 0x69707865 && w16 == 0x6572 && b6 == 0x73 { return WellKnownHeader.Expires; }
             if w32 == 0x65666572 && w16 == 0x6572 && b6 == 0x72 { return WellKnownHeader.Referer; }
@@ -311,15 +310,15 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w32 == 0x2d746c61 && w16 == 0x7673 && b6 == 0x63 { return WellKnownHeader.AltSvc; }
         },
         8 => {
-            let w = read_le_u64(name, 0) | 0x2020202020202020;
+            let w = core::read_le_u64(name, 0) | 0x2020202020202020;
             if w == 0x6e6f697461636f6c { return WellKnownHeader.Location; }
             if w == 0x686374616d2d6669 { return WellKnownHeader.IfMatch; }
             if w == 0x65676e61722d6669 { return WellKnownHeader.IfRange; }
             if w == 0x797469726f697270 { return WellKnownHeader.Priority; }
         },
         10 => {
-            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
-            let w16 = (read_le_u16(name, 8) | 0x2020) as u32;
+            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
+            let w16 = (core::read_le_u16(name, 8) | 0x2020) as u32;
             if w64 == 0x697463656e6e6f63 && w16 == 0x6e6f { return WellKnownHeader.Connection; }
             if w64 == 0x696c612d7065656b && w16 == 0x6576 { return WellKnownHeader.KeepAlive; }
             if w64 == 0x6567612d72657375 && w16 == 0x746e { return WellKnownHeader.UserAgent; }
@@ -330,14 +329,14 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if eq_ascii_fold(name, "retry-after") { return WellKnownHeader.RetryAfter; }
         },
         12 => {
-            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
-            let w32 = read_le_u32(name, 8) | 0x20202020;
+            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
+            let w32 = core::read_le_u32(name, 8) | 0x20202020;
             if w64 == 0x2d746e65746e6f63 && w32 == 0x65707974 { return WellKnownHeader.ContentType; }
             if eq_ascii_fold(name, "x-webkit-csp") { return WellKnownHeader.XWebkitCsp; }
         },
         13 => {
-            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
-            let w32 = read_le_u32(name, 8) | 0x20202020;
+            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
+            let w32 = core::read_le_u32(name, 8) | 0x20202020;
             let b12 = ((name[12] as u32) | 0x20);
             if w64 == 0x6f632d6568636163 && w32 == 0x6f72746e && b12 == 0x6c { return WellKnownHeader.CacheControl; }
             if w64 == 0x7a69726f68747561 && w32 == 0x6f697461 && b12 == 0x6e { return WellKnownHeader.Authorization; }
@@ -347,9 +346,9 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w64 == 0x2d746e65746e6f63 && w32 == 0x676e6172 && b12 == 0x65 { return WellKnownHeader.ContentRange; }
         },
         14 => {
-            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
-            let w32 = read_le_u32(name, 8) | 0x20202020;
-            let w16 = (read_le_u16(name, 12) | 0x2020) as u32;
+            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
+            let w32 = core::read_le_u32(name, 8) | 0x20202020;
+            let w16 = (core::read_le_u16(name, 12) | 0x2020) as u32;
             if w64 == 0x2d746e65746e6f63 && w32 == 0x676e656c && w16 == 0x6874 { return WellKnownHeader.ContentLength; }
             if eq_ascii_fold(name, "accept-charset") { return WellKnownHeader.AcceptCharset; }
         },
@@ -360,8 +359,8 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if eq_ascii_fold(name, "x-frame-options") { return WellKnownHeader.XFrameOptions; }
         },
         16 => {
-            let w64_0 = read_le_u64(name, 0) | 0x2020202020202020;
-            let w64_1 = read_le_u64(name, 8) | 0x2020202020202020;
+            let w64_0 = core::read_le_u64(name, 0) | 0x2020202020202020;
+            let w64_1 = core::read_le_u64(name, 8) | 0x2020202020202020;
             if w64_0 == 0x687475612d777777 && w64_1 == 0x6574616369746e65 { return WellKnownHeader.WwwAuthenticate; }
             if w64_0 == 0x2d746e65746e6f63 {
                 if w64_1 == 0x676e69646f636e65 { return WellKnownHeader.ContentEncoding; }
@@ -740,10 +739,10 @@ fn swar_has_ctl_or_del(w: u64) -> bool {
 
 // Fast header name hash (FNV-1a 32-bit case-folded)
 fn hash_header_name(name: const u8[:]) -> u32 {
-    var h: u32 = FNV1A_32_OFFSET;
+    var h: u32 = core::FNV1A_32_OFFSET;
     for b in name {
         let folded = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
-        h = (h ^ folded) * FNV1A_32_PRIME;
+        h = (h ^ folded) * core::FNV1A_32_PRIME;
     }
     return h;
 }

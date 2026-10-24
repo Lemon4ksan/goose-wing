@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import core.time;
 import app.profile;
 import http.headers;
 import http.mime;
@@ -59,7 +58,7 @@ struct MultipartMessage {
 // are u16 so jump offsets up to 65535 bytes do not overflow to zero.
 fn build_bmh_shift_table(needle: const u8[:], table: u16[256]&) {
     let needle_len = needle.len;
-    let default_shift = ct_min_i64(needle_len, 65535) as u16;
+    let default_shift = core::ct_min_i64(needle_len, 65535) as u16;
 
     for i in 256 {
         table[i] = default_shift;
@@ -421,7 +420,7 @@ fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: Normali
         Suffix => {
             let suf = spec.start;
             if suf > 0 {
-                norm.start = ct_max_i64(0, resource_len - suf);
+                norm.start = core::ct_max_i64(0, resource_len - suf);
                 norm.end_pos = resource_len - 1;
                 has_norm = true;
             }
@@ -444,7 +443,7 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
     for i in 1..raw_ranges.len {
         let next_r = raw_ranges[i];
         if next_r.start <= merged.end_pos || (merged.end_pos < 9223372036854775807 && next_r.start <= merged.end_pos + 1) {
-            merged.end_pos = ct_max_i64(merged.end_pos, next_r.end_pos);
+            merged.end_pos = core::ct_max_i64(merged.end_pos, next_r.end_pos);
         } else {
             if out_ranges.len < 16 {
                 out_ranges.push(merged);
@@ -561,7 +560,7 @@ fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&)
 fn evaluate_if_range(
     if_range_header: const u8[:],
     etag: const u8[:],
-    mod_time: Time,
+    mod_time: core::Time,
 ) -> bool {
     let trimmed = trim_lws(if_range_header);
     guard trimmed.len > 0 else { return false; }
@@ -573,12 +572,12 @@ fn evaluate_if_range(
     }
 
     // Otherwise, parse as HTTP-date (IMF-fixdate, RFC 850, or asctime)
-    let parsed_date, date_ok = parse_http_date(trimmed);
+    let parsed_date, date_ok = core::parse_http_date(trimmed);
     guard date_ok else { return false; }
 
     // Compare timestamps truncated to whole seconds (RFC 9110 Section 13.1.5).
-    let mod_sec = unix(mod_time);
-    let parsed_sec = unix(parsed_date);
+    let mod_sec = core::unix(mod_time);
+    let parsed_sec = core::unix(parsed_date);
     return mod_sec == parsed_sec;
 }
 
@@ -631,7 +630,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     req_range_header: const u8[:],
     if_range_header: const u8[:],
     etag: const u8[:],
-    mod_time: Time,
+    mod_time: core::Time,
     resource_len: i64,
     content_type: const u8[:],
     out_status: i32&,

@@ -28,9 +28,20 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect
     return [System.Diagnostics.Process]::Start($psi)
 }
 
-# 1. Typecheck library core
-Write-Host "`n[1/3] Typechecking wing library..." -ForegroundColor Yellow
+# 1. Typecheck library core & wing
+Write-Host "`n[1/3] Typechecking core and wing libraries..." -ForegroundColor Yellow
 $swCore = [System.Diagnostics.Stopwatch]::StartNew()
+$corePath = Join-Path $root "core.goose"
+$checkCoreProc = Start-GooseProcess "goose" "check `"$corePath`"" $true
+$checkCoreOut = $checkCoreProc.StandardOutput.ReadToEnd()
+$checkCoreProc.WaitForExit()
+
+if ($checkCoreProc.ExitCode -ne 0) {
+    Write-Host "FATAL: goose check core.goose failed!" -ForegroundColor Red
+    Write-Host $checkCoreOut -ForegroundColor Yellow
+    exit 1
+}
+
 $wingPath = Join-Path $root "wing.goose"
 $checkProc = Start-GooseProcess "goose" "check `"$wingPath`"" $true
 $checkOut = $checkProc.StandardOutput.ReadToEnd()
@@ -42,7 +53,7 @@ if ($checkProc.ExitCode -ne 0) {
     Write-Host $checkOut -ForegroundColor Yellow
     exit 1
 }
-Write-Host "  OK: wing library typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
+Write-Host "  OK: core & wing libraries typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
 
 # 2. Discover test suites
 $testFiles = Get-ChildItem -Path $testsDir -Filter $Pattern | Where-Object { $_.Extension -eq ".goose" } | Sort-Object Name

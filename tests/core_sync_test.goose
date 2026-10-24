@@ -1,7 +1,7 @@
 // Tests for concurrency primitives, actors, channels, and singleflight.
 import std;
 import os;
-import wing from "..";
+import core from "..";
 
 // ---- suite 1: multithreading, actors & crash containment ------------------
 
@@ -18,9 +18,9 @@ struct ComputeResult {
 
 thread_fn compute_worker() {
     loop {
-        let task = wing::recv_msg<ComputeTask>();
+        let task = core::recv_msg<ComputeTask>();
         guard !task.is_terminal else { break; }
-        wing::send_msg(ComputeResult {
+        core::send_msg(ComputeResult {
             task_id: task.task_id,
             computed_val: task.operand * task.operand,
         });
@@ -41,10 +41,10 @@ struct CounterResponse {
 thread_fn counter_actor() {
     var state: i64 = 0;
     loop {
-        let cmd = wing::recv_msg<CounterCommand>();
+        let cmd = core::recv_msg<CounterCommand>();
         if cmd.quit { break; }
         if cmd.query {
-            wing::send_msg(CounterResponse { current_value: state });
+            core::send_msg(CounterResponse { current_value: state });
         } else {
             state += cmd.delta;
         }
@@ -52,25 +52,25 @@ thread_fn counter_actor() {
 }
 
 thread_fn contained_crashing_worker() {
-    let task = wing::recv_msg<ComputeTask>();
+    let task = core::recv_msg<ComputeTask>();
     if task.operand == 999 {
         abort("intentional contained worker failure for test");
     }
 }
 
-fn test_multithreading_and_actors(t: wing::T&) {
+fn test_multithreading_and_actors(t: core::T&) {
     t.run("Case 1: WaitGroup & Parallel Worker Pool Dispatch") { sub =>
         let num_tasks: i64 = 8;
         let num_workers: i64 = 2;
 
-        var wg = wing::new_wait_group();
+        var wg = core::new_wait_group();
         for worker_idx in num_workers {
             let tid = thread_spawn(compute_worker);
             wg.add_worker(tid);
         }
 
         for task_idx in num_tasks {
-            wing::send_msg(ComputeTask {
+            core::send_msg(ComputeTask {
                 task_id: task_idx,
                 operand: task_idx + 1,
                 is_terminal: false,
@@ -78,12 +78,12 @@ fn test_multithreading_and_actors(t: wing::T&) {
         }
 
         for worker_idx in num_workers {
-            wing::send_msg(ComputeTask { is_terminal: true, .. });
+            core::send_msg(ComputeTask { is_terminal: true, .. });
         }
 
         var total_sum: i64 = 0;
         for task_idx in num_tasks {
-            let res = wing::recv_msg<ComputeResult>();
+            let res = core::recv_msg<ComputeResult>();
             total_sum += res.computed_val;
         }
 
@@ -95,22 +95,22 @@ fn test_multithreading_and_actors(t: wing::T&) {
     t.run("Case 2: Actor-Based State Management (Zero Mutexes)") { sub =>
         let actor_tid = thread_spawn(counter_actor);
 
-        wing::send_msg(CounterCommand { delta: 10, .. });
-        wing::send_msg(CounterCommand { delta: 25, .. });
-        wing::send_msg(CounterCommand { delta: -5, .. });
+        core::send_msg(CounterCommand { delta: 10, .. });
+        core::send_msg(CounterCommand { delta: 25, .. });
+        core::send_msg(CounterCommand { delta: -5, .. });
 
-        wing::send_msg(CounterCommand { query: true, .. });
-        let resp = wing::recv_msg<CounterResponse>();
+        core::send_msg(CounterCommand { query: true, .. });
+        let resp = core::recv_msg<CounterResponse>();
         sub.assert_eq(resp.current_value, 30, "Actor returned accurate state (10 + 25 - 5 = 30)");
 
-        wing::send_msg(CounterCommand { quit: true, .. });
+        core::send_msg(CounterCommand { quit: true, .. });
         let actor_ok = thread_wait(actor_tid);
         sub.assert_true(actor_ok, "Actor terminated cleanly");
     };
 
     t.run("Case 3: Crash Containment via thread_spawn_contained") { sub =>
         let crash_tid = thread_spawn_contained(contained_crashing_worker);
-        wing::send_msg(ComputeTask { operand: 999, .. });
+        core::send_msg(ComputeTask { operand: 999, .. });
 
         var abort_msg: u8[>..] = [];
         let ok = thread_wait(crash_tid, abort_msg);
@@ -123,15 +123,15 @@ fn test_multithreading_and_actors(t: wing::T&) {
 
 thread_fn baton_worker() {
     for i in 10 {
-        var count = wing::baton_lock<i64>();
+        var count = core::baton_lock<i64>();
         count++;
-        wing::baton_unlock(count);
+        core::baton_unlock(count);
     }
 }
 
-fn test_classical_primitives(t: wing::T&) {
+fn test_classical_primitives(t: core::T&) {
     t.run("Case 1: BatonMutex Share-Nothing Mutual Exclusion") { sub =>
-        wing::new_baton_mutex(0 as i64);
+        core::new_baton_mutex(0 as i64);
 
         let w1 = thread_spawn(baton_worker);
         let w2 = thread_spawn(baton_worker);
@@ -144,12 +144,12 @@ fn test_classical_primitives(t: wing::T&) {
         sub.assert_true(ok2, "Worker 2 terminated cleanly");
         sub.assert_true(ok3, "Worker 3 terminated cleanly");
 
-        let final_count = wing::baton_lock<i64>();
+        let final_count = core::baton_lock<i64>();
         sub.assert_eq(final_count, 30, "Atomic baton increments summed correctly (3 * 10 = 30)");
     };
 
     t.run("Case 2: Counting Semaphore & Bulkhead Capacity Limiting") { sub =>
-        var sem = wing::new_semaphore(2);
+        var sem = core::new_semaphore(2);
 
         let p1 = sem.acquire();
         let p2 = sem.acquire();
@@ -173,7 +173,7 @@ fn test_classical_primitives(t: wing::T&) {
     };
 
     t.run("Case 3: CountDownLatch One-Shot Coordination") { sub =>
-        var latch = wing::new_count_down_latch(3);
+        var latch = core::new_count_down_latch(3);
 
         latch.count_down();
         latch.count_down();
@@ -182,7 +182,7 @@ fn test_classical_primitives(t: wing::T&) {
         // Drain the 3 ticks
         var ticks_collected: i64 = 0;
         for i in 3 {
-            let item, ok = wing::try_recv_msg<wing::LatchTick>();
+            let item, ok = core::try_recv_msg<core::LatchTick>();
             if ok { ticks_collected++; }
         }
         sub.assert_eq(ticks_collected, 3, "All 3 countdown ticks were captured");
@@ -194,13 +194,13 @@ fn test_classical_primitives(t: wing::T&) {
 thread_fn barrier_test_worker(worker_id: i32) {
     var epoch: u64 = 0;
     for step in 5 {
-        epoch = wing::barrier_sync(worker_id, epoch);
+        epoch = core::barrier_sync(worker_id, epoch);
     }
 }
 
-fn test_cyclic_barrier(t: wing::T&) {
+fn test_cyclic_barrier(t: core::T&) {
     t.run("Case 1: Two-Phase Turnstile Multi-Worker Synchronization") { sub =>
-        let barrier_tid = wing::barrier_start(3);
+        let barrier_tid = core::barrier_start(3);
         let w1 = thread_spawn(barrier_test_worker, 1 as i32);
         let w2 = thread_spawn(barrier_test_worker, 2 as i32);
         let w3 = thread_spawn(barrier_test_worker, 3 as i32);
@@ -212,7 +212,7 @@ fn test_cyclic_barrier(t: wing::T&) {
         sub.assert_true(ok2, "Barrier participant 2 succeeded");
         sub.assert_true(ok3, "Barrier participant 3 succeeded");
 
-        wing::barrier_stop();
+        core::barrier_stop();
         let coord_ok = thread_wait(barrier_tid);
         sub.assert_true(coord_ok, "Barrier coordinator shutdown cleanly");
     };
@@ -228,19 +228,19 @@ struct RendezvousReq {
 }
 
 thread_fn rendezvous_server() {
-    let req = wing::chan_recv<ChannelTagA, RendezvousReq>();
-    wing::chan_rendezvous_reply<ChannelTagA>(req.command_id == 100);
+    let req = core::chan_recv<ChannelTagA, RendezvousReq>();
+    core::chan_rendezvous_reply<ChannelTagA>(req.command_id == 100);
 }
 
-fn test_csp_patterns(t: wing::T&) {
+fn test_csp_patterns(t: core::T&) {
     t.run("Case 1: Reassembler In-Order Stream Reconstruction") { sub =>
-        var r = wing::new_reassembler(0);
+        var r = core::new_reassembler(0);
 
         // Push packets in out-of-order sequence: 3, 0, 2, 1
-        var item3 = wing::ReassemblerItem { seq_id: 3, .. }; item3.data.append("three");
-        var item0 = wing::ReassemblerItem { seq_id: 0, .. }; item0.data.append("zero");
-        var item2 = wing::ReassemblerItem { seq_id: 2, .. }; item2.data.append("two");
-        var item1 = wing::ReassemblerItem { seq_id: 1, .. }; item1.data.append("one");
+        var item3 = core::ReassemblerItem { seq_id: 3, .. }; item3.data.append("three");
+        var item0 = core::ReassemblerItem { seq_id: 0, .. }; item0.data.append("zero");
+        var item2 = core::ReassemblerItem { seq_id: 2, .. }; item2.data.append("two");
+        var item1 = core::ReassemblerItem { seq_id: 1, .. }; item1.data.append("one");
 
         r.push_unordered(item3);
         r.push_unordered(item0);
@@ -272,7 +272,7 @@ fn test_csp_patterns(t: wing::T&) {
 
     t.run("Case 2: StaticChan Envelope Tagging & Rendezvous") { sub =>
         let srv = thread_spawn(rendezvous_server);
-        let ok = wing::chan_rendezvous<ChannelTagA, RendezvousReq>(RendezvousReq { command_id: 100 });
+        let ok = core::chan_rendezvous<ChannelTagA, RendezvousReq>(RendezvousReq { command_id: 100 });
         sub.assert_true(ok, "Rendezvous server confirmed command 100 with Ack");
         thread_wait(srv);
     };
@@ -280,9 +280,9 @@ fn test_csp_patterns(t: wing::T&) {
 
 // ---- suite 5: actor mailbox, stash buffer & 16-byte actor ref -------------
 
-fn test_actor_subsystem(t: wing::T&) {
+fn test_actor_subsystem(t: core::T&) {
     t.run("Case 1: PriorityMailbox Stable Binary Min-Heap Ordering") { sub =>
-        var mb = wing::new_priority_mailbox();
+        var mb = core::new_priority_mailbox();
 
         // Push entries with different priorities:
         // Priority 10 (Low), Priority 1 (High), Priority 5 (Medium), Priority 1 (High FIFO second)
@@ -314,17 +314,17 @@ fn test_actor_subsystem(t: wing::T&) {
     };
 
     t.run("Case 2: StashBuffer Message Deferral and Replay") { sub =>
-        var stash = wing::new_stash_buffer();
+        var stash = core::new_stash_buffer();
         sub.assert_true(stash.is_empty(), "StashBuffer starts empty");
 
-        stash.stash(wing::StashedEnvelope { priority: 1, seq: 1, payload_type: 10, .. });
-        stash.stash(wing::StashedEnvelope { priority: 1, seq: 2, payload_type: 20, .. });
-        stash.stash(wing::StashedEnvelope { priority: 1, seq: 3, payload_type: 30, .. });
+        stash.stash(core::StashedEnvelope { priority: 1, seq: 1, payload_type: 10, .. });
+        stash.stash(core::StashedEnvelope { priority: 1, seq: 2, payload_type: 20, .. });
+        stash.stash(core::StashedEnvelope { priority: 1, seq: 3, payload_type: 30, .. });
 
         sub.assert_eq(stash.stash_count(), 3, "Stashed 3 messages");
         sub.assert_false(stash.is_empty(), "StashBuffer not empty");
 
-        var pending: wing::StashedEnvelope[>..] = [];
+        var pending: core::StashedEnvelope[>..] = [];
         let unstashed = stash.unstash_all(pending);
         sub.assert_eq(unstashed, 3, "Unstashed exactly 3 messages");
         sub.assert_eq(pending.len, 3, "Pending array received all 3 messages");
@@ -332,31 +332,31 @@ fn test_actor_subsystem(t: wing::T&) {
     };
 
     t.run("Case 3: ActorRef 16-Byte Flat Handle Value Semantics") { sub =>
-        let ref_a = wing::new_actor_ref(101, 1, 0, 42);
-        let ref_b = wing::new_actor_ref(101, 1, 0, 42);
-        let ref_c = wing::new_actor_ref(102, 1, 0, 42);
+        let ref_a = core::new_actor_ref(101, 1, 0, 42);
+        let ref_b = core::new_actor_ref(101, 1, 0, 42);
+        let ref_c = core::new_actor_ref(102, 1, 0, 42);
 
-        sub.assert_true(wing::eq_actor_ref(ref_a, ref_b), "ref_a and ref_b are equal");
-        sub.assert_false(wing::eq_actor_ref(ref_a, ref_c), "ref_a and ref_c differ in actor_id");
+        sub.assert_true(core::eq_actor_ref(ref_a, ref_b), "ref_a and ref_b are equal");
+        sub.assert_false(core::eq_actor_ref(ref_a, ref_c), "ref_a and ref_c differ in actor_id");
     };
 }
 
 // ---- suite 6: otp supervision trees & fault tolerance ---------------------
 
-fn test_supervision_trees(t: wing::T&) {
+fn test_supervision_trees(t: core::T&) {
     t.run("Case 1: RestartType Specification & Restart Evaluation") { sub =>
-        var sup = wing::new_supervisor();
+        var sup = core::new_supervisor();
 
-        let ok_perm = sup.add_child(wing::ChildSpec { id: 1, restart_type: core::RestartType.Permanent, .. }, 101);
-        let ok_trans = sup.add_child(wing::ChildSpec { id: 2, restart_type: core::RestartType.Transient, .. }, 102);
-        let ok_temp = sup.add_child(wing::ChildSpec { id: 3, restart_type: core::RestartType.Temporary, .. }, 103);
+        let ok_perm = sup.add_child(core::ChildSpec { id: 1, restart_type: core::RestartType.Permanent, .. }, 101);
+        let ok_trans = sup.add_child(core::ChildSpec { id: 2, restart_type: core::RestartType.Transient, .. }, 102);
+        let ok_temp = sup.add_child(core::ChildSpec { id: 3, restart_type: core::RestartType.Temporary, .. }, 103);
         sub.assert_true(ok_perm, "Permanent child added");
         sub.assert_true(ok_trans, "Transient child added");
         sub.assert_true(ok_temp, "Temporary child added");
         sub.assert_eq(sup.child_count(), 3, "Supervisor has 3 children");
 
-        var normal_reason: wing::ExitReason = core::ExitReason.Normal;
-        var abnormal_reason: wing::ExitReason = core::ExitReason.Abnormal { error_code: 1, details: [] };
+        var normal_reason: core::ExitReason = core::ExitReason.Normal;
+        var abnormal_reason: core::ExitReason = core::ExitReason.Abnormal { error_code: 1, details: [] };
 
         // Permanent: always restarts
         sub.assert_true(sup.should_restart_child(0, normal_reason), "Permanent child restarts on Normal");
@@ -372,14 +372,14 @@ fn test_supervision_trees(t: wing::T&) {
     };
 
     t.run("Case 2: Restart Intensity Throttling (max_restarts / max_seconds)") { sub =>
-        var spec = wing::SupervisorSpec {
+        var spec = core::SupervisorSpec {
             strategy: core::Strategy.OneForOne,
             max_restarts: 3,
             max_seconds: 5,
             auto_shutdown: core::AutoShutdown.Never,
         };
-        var sup = wing::new_supervisor(spec);
-        sup.add_child(wing::ChildSpec { id: 1, .. }, 201);
+        var sup = core::new_supervisor(spec);
+        sup.add_child(core::ChildSpec { id: 1, .. }, 201);
 
         // Record 3 failures within 5-second window
         let r1 = sup.record_failure(0, 1000);
@@ -400,8 +400,8 @@ fn test_supervision_trees(t: wing::T&) {
 
     t.run("Case 3: AutoShutdown & Specification Validation") { sub =>
         // Invalid config: significant child when auto_shutdown is Never must be rejected
-        var sup_never = wing::new_supervisor(wing::SupervisorSpec { auto_shutdown: core::AutoShutdown.Never, .. });
-        let rejected_sig = sup_never.add_child(wing::ChildSpec {
+        var sup_never = core::new_supervisor(core::SupervisorSpec { auto_shutdown: core::AutoShutdown.Never, .. });
+        let rejected_sig = sup_never.add_child(core::ChildSpec {
             id: 1,
             restart_type: core::RestartType.Transient,
             significant: true,
@@ -410,8 +410,8 @@ fn test_supervision_trees(t: wing::T&) {
         sub.assert_false(rejected_sig, "Child with significant=true rejected when auto_shutdown is Never");
 
         // Invalid config: permanent child marked significant must be rejected
-        var sup_auto = wing::new_supervisor(wing::SupervisorSpec { auto_shutdown: core::AutoShutdown.AnySignificant, .. });
-        let rejected_perm_sig = sup_auto.add_child(wing::ChildSpec {
+        var sup_auto = core::new_supervisor(core::SupervisorSpec { auto_shutdown: core::AutoShutdown.AnySignificant, .. });
+        let rejected_perm_sig = sup_auto.add_child(core::ChildSpec {
             id: 2,
             restart_type: core::RestartType.Permanent,
             significant: true,
@@ -420,7 +420,7 @@ fn test_supervision_trees(t: wing::T&) {
         sub.assert_false(rejected_perm_sig, "Permanent child cannot be marked significant");
 
         // Valid config: transient child marked significant
-        let accepted = sup_auto.add_child(wing::ChildSpec {
+        let accepted = sup_auto.add_child(core::ChildSpec {
             id: 3,
             restart_type: core::RestartType.Transient,
             significant: true,
@@ -434,15 +434,15 @@ fn test_supervision_trees(t: wing::T&) {
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
-    var runner = wing::new_runner("Comprehensive core::sync Verification Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Comprehensive core::sync Verification Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Multithreading, Actors & Crash Containment", test_multithreading_and_actors);
-    wing::run_case(runner, "2. Classical Concurrency Primitives", test_classical_primitives);
-    wing::run_case(runner, "3. Two-Phase CyclicBarrier Synchronization", test_cyclic_barrier);
-    wing::run_case(runner, "4. CSP Patterns & In-Order Reassembly", test_csp_patterns);
-    wing::run_case(runner, "5. Actor Subsystem & Priority Mailboxes", test_actor_subsystem);
-    wing::run_case(runner, "6. OTP Supervision Trees & Fault Tolerance", test_supervision_trees);
+    core::run_case(runner, "1. Multithreading, Actors & Crash Containment", test_multithreading_and_actors);
+    core::run_case(runner, "2. Classical Concurrency Primitives", test_classical_primitives);
+    core::run_case(runner, "3. Two-Phase CyclicBarrier Synchronization", test_cyclic_barrier);
+    core::run_case(runner, "4. CSP Patterns & In-Order Reassembly", test_csp_patterns);
+    core::run_case(runner, "5. Actor Subsystem & Priority Mailboxes", test_actor_subsystem);
+    core::run_case(runner, "6. OTP Supervision Trees & Fault Tolerance", test_supervision_trees);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

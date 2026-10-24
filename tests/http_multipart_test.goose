@@ -1,8 +1,9 @@
 // Tests for multipart/form-data parsing and HTTP range requests.
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_streaming_multipart_parsing(t: wing::T&) {
+fn test_streaming_multipart_parsing(t: core::T&) {
     t.run("Valid Multipart Form-Data with Text and File Parts") { sub =>
         let boundary = "----GooseBoundaryXYZ";
         var body: u8[>..] = [];
@@ -51,7 +52,7 @@ fn test_streaming_multipart_parsing(t: wing::T&) {
     };
 }
 
-fn test_cve_2026_19484_boundary_and_bmh_table(t: wing::T&) {
+fn test_cve_2026_19484_boundary_and_bmh_table(t: core::T&) {
     t.run("Barrier 1: RFC 2046 Section 5.1.1 Boundary Length Cap (252-Byte Boundary Rejection)") { sub =>
         // In CVE-2026-19484 (@fastify/busboy), a 252-byte boundary caused 256-byte needle and 8-bit table overflow.
         // In naive implementations, ose, any boundary > 70 characters MUST be rejected immediately!
@@ -85,7 +86,7 @@ fn test_cve_2026_19484_boundary_and_bmh_table(t: wing::T&) {
     };
 }
 
-fn test_rfc9110_range_requests(t: wing::T&) {
+fn test_rfc9110_range_requests(t: core::T&) {
     t.run("Three RFC 9110 Section 14.1.2 Range Specifier Forms") { sub =>
         let file_len: i64 = 10000;
 
@@ -123,7 +124,7 @@ fn test_rfc9110_range_requests(t: wing::T&) {
     };
 }
 
-fn test_cve_2011_3192_apache_killer_and_coalescing(t: wing::T&) {
+fn test_cve_2011_3192_apache_killer_and_coalescing(t: core::T&) {
     t.run("CVE-2011-3192: 16-Range Ceiling Rejection") { sub =>
         // Attacker sends 20 ranges to amplify CPU and response size
         var attack_hdr: u8[>..] = "bytes=";
@@ -168,9 +169,9 @@ fn test_cve_2011_3192_apache_killer_and_coalescing(t: wing::T&) {
     };
 }
 
-fn test_if_range_and_seconds_truncation(t: wing::T&) {
+fn test_if_range_and_seconds_truncation(t: core::T&) {
     t.run("Strong ETag Matches, Weak ETag FORBIDDEN") { sub =>
-        let file_time = wing::unix(0);
+        let file_time = core::unix(0);
 
         // Strong ETag matches
         let ok_strong = wing::evaluate_if_range("\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
@@ -184,11 +185,11 @@ fn test_if_range_and_seconds_truncation(t: wing::T&) {
     t.run("HTTP-Date Seconds Truncation for Filesystem Timestamps") { sub =>
         // Suppose filesystem mtime has sub-second resolution (e.g. 1700000000 sec + 450,000,000 ns)
         let exact_sec: i64 = 1700000000;
-        let fs_time = wing::unix(exact_sec, 450000000);
+        let fs_time = core::unix(exact_sec, 450000000);
 
         // Client sends HTTP-Date with 1-second resolution
         var http_date_buf: u8[>..] = [];
-        wing::format_http(http_date_buf, wing::unix(exact_sec));
+        core::format_http(http_date_buf, core::unix(exact_sec));
 
         // evaluate_if_range MUST truncate fs_time to seconds before comparison!
         let is_match = wing::evaluate_if_range(http_date_buf[..], "", fs_time);
@@ -196,7 +197,7 @@ fn test_if_range_and_seconds_truncation(t: wing::T&) {
     };
 }
 
-fn test_serve_range_and_patch_validation(t: wing::T&) {
+fn test_serve_range_and_patch_validation(t: core::T&) {
     t.run("Single-Part 206 Serve via Window Reader Callback") { sub =>
         let source_data = "0123456789abcdefghijklmnopqrstuvwxyz";
         let res_len = source_data.len;
@@ -209,7 +210,7 @@ fn test_serve_range_and_patch_validation(t: wing::T&) {
             "bytes=0-9",
             "",
             "\"etag\"",
-            wing::unix(0),
+            core::unix(0),
             res_len,
             "text/plain",
             status,
@@ -245,15 +246,15 @@ fn test_serve_range_and_patch_validation(t: wing::T&) {
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
-    var runner = wing::new_runner("HTTP Multipart & RFC 9110 Range Verification Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("HTTP Multipart & RFC 9110 Range Verification Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Streaming Multipart Parsing & Metadata", test_streaming_multipart_parsing);
-    wing::run_case(runner, "2. CVE-2026-19484 Boundary Cap & 16-Bit BMH", test_cve_2026_19484_boundary_and_bmh_table);
-    wing::run_case(runner, "3. RFC 9110 Range Request Forms & 416", test_rfc9110_range_requests);
-    wing::run_case(runner, "4. CVE-2011-3192 Apache Killer Defense & Coalescing", test_cve_2011_3192_apache_killer_and_coalescing);
-    wing::run_case(runner, "5. If-Range & Seconds Truncation", test_if_range_and_seconds_truncation);
-    wing::run_case(runner, "6. Window Reader serve_range & Byte-Range PATCH", test_serve_range_and_patch_validation);
+    core::run_case(runner, "1. Streaming Multipart Parsing & Metadata", test_streaming_multipart_parsing);
+    core::run_case(runner, "2. CVE-2026-19484 Boundary Cap & 16-Bit BMH", test_cve_2026_19484_boundary_and_bmh_table);
+    core::run_case(runner, "3. RFC 9110 Range Request Forms & 416", test_rfc9110_range_requests);
+    core::run_case(runner, "4. CVE-2011-3192 Apache Killer Defense & Coalescing", test_cve_2011_3192_apache_killer_and_coalescing);
+    core::run_case(runner, "5. If-Range & Seconds Truncation", test_if_range_and_seconds_truncation);
+    core::run_case(runner, "6. Window Reader serve_range & Byte-Range PATCH", test_serve_range_and_patch_validation);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import core.time;
 import app.profile;
 
 // ---- 1. SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
@@ -153,7 +152,7 @@ fn build_socks5_connect_request(
     }
 
     // DST.PORT (2 bytes, big-endian)
-    write_be_u16(out, port);
+    core::write_be_u16(out, port);
 
     return Socks5Error.None;
 }
@@ -174,7 +173,7 @@ fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
         return 0, Socks5Error.BufferTruncated;
     }
     if buf.len >= 5 {
-        let expected_len = socks5_expected_frame_len_ct(buf);
+        let expected_len = core::socks5_expected_frame_len_ct(buf);
         if expected_len > 0 {
             return expected_len, Socks5Error.None;
         }
@@ -209,7 +208,7 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     guard err == Socks5Error.None else { return Socks5Reply { .. }, err; }
     guard buf.len >= needed_len else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
 
-    let bnd_port = read_be_u16(buf, needed_len - 2);
+    let bnd_port = core::read_be_u16(buf, needed_len - 2);
 
     let res = Socks5Reply {
         reply_code: rep,
@@ -374,7 +373,7 @@ fn feed_header_bytes(
 ) -> SlowlorisViolation {
     if reader.headers_complete { return SlowlorisViolation.None; }
 
-    let elapsed_ns = ct_max_i64(0, now_mono_ns - reader.header_read_start_ns);
+    let elapsed_ns = core::ct_max_i64(0, now_mono_ns - reader.header_read_start_ns);
 
     // Barrier 1: Monotonic Cumulative Header Deadline (never reset per-byte!)
     if elapsed_ns >= reader.config.response_header_timeout_ns {

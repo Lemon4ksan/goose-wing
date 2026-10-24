@@ -6,12 +6,13 @@
 //   5. CVE-2023-27534 & CVE-2022-35252: Cookie URL Userinfo/Fragment/Path Discrepancies and Query-Hash Ordering.
 //   6. CVE-2016-8616: PSL Supercookie and CTL Injection via Netscape Cookie Import.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. CVE-2021-28918 & CVE-2021-29922: Octal, Hex, Dword, Shorthand IPv4 SSRF
 // ----------------------------------------------------------------------------
-fn test_cve_ipv4_formats_ssrf(t: wing::T&) {
+fn test_cve_ipv4_formats_ssrf(t: core::T&) {
     t.run("Octal IPv4 (0177.0.0.1) must be blocked as Loopback") { sub =>
         var session = wing::new_session();
         wing::enable_ssrf_guard(session, true);
@@ -60,7 +61,7 @@ fn test_cve_ipv4_formats_ssrf(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. CVE-2024-24790 & RFC 6761: Localhost, Uncompressed IPv6 & Tunnel SSRF
 // ----------------------------------------------------------------------------
-fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: wing::T&) {
+fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: core::T&) {
     t.run("RFC 6761: localhost, localhost. and *.localhost must be blocked") { sub =>
         var session = wing::new_session();
         wing::enable_ssrf_guard(session, true);
@@ -114,7 +115,7 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. CVE-2023-26159 & RFC 9110 Section 5.5: CRLF / Control-Char Header Injection
 // ----------------------------------------------------------------------------
-fn test_cve_crlf_header_injection(t: wing::T&) {
+fn test_cve_crlf_header_injection(t: core::T&) {
     t.run("Header Name with CRLF or Control Characters must be Sanitized/Rejected") { sub =>
         var req = wing::new_get("https://example.com/api");
         wing::header(req, "X-Injected\r\nEvil: true", "valid-value");
@@ -149,7 +150,7 @@ fn test_cve_crlf_header_injection(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. CVE-2022-27776 & CVE-2023-43804: Port-Change Credential Leak & Representation Headers
 // ----------------------------------------------------------------------------
-fn test_cve_port_change_and_representation_headers(t: wing::T&) {
+fn test_cve_port_change_and_representation_headers(t: core::T&) {
     t.run("CVE-2022-27776: Port Change on Trusted Host Must Strip Authorization") { sub =>
         var req = wing::new_get("https://example.com:443/login");
         wing::header(req, "Authorization", "Bearer top_secret");
@@ -170,8 +171,8 @@ fn test_cve_port_change_and_representation_headers(t: wing::T&) {
         var has_auth = false;
         var has_key = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_key = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_key = true; }
         }
         sub.assert_false(has_auth, "Authorization must be stripped across port change even if hostname is trusted");
         sub.assert_false(has_key, "X-API-Key must be stripped across port change even if hostname is trusted");
@@ -193,8 +194,8 @@ fn test_cve_port_change_and_representation_headers(t: wing::T&) {
         var has_sig = false;
         var has_csrf = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "X-Signature-256") { has_sig = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "X-CSRF-Token") { has_csrf = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-Signature-256") { has_sig = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-CSRF-Token") { has_csrf = true; }
         }
         sub.assert_false(has_sig, "X-Signature-256 must be stripped on cross-origin redirect");
         sub.assert_false(has_csrf, "X-CSRF-Token must be stripped on cross-origin redirect");
@@ -219,9 +220,9 @@ fn test_cve_port_change_and_representation_headers(t: wing::T&) {
         var has_if_none_match = false;
         var has_expect = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "If-Match") { has_if_match = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "If-None-Match") { has_if_none_match = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "Expect") { has_expect = true; }
+            if core::eq_ascii_fold(hdr.name[..], "If-Match") { has_if_match = true; }
+            if core::eq_ascii_fold(hdr.name[..], "If-None-Match") { has_if_none_match = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Expect") { has_expect = true; }
         }
         sub.assert_false(has_if_match, "If-Match must be stripped when method mutates to GET");
         sub.assert_false(has_if_none_match, "If-None-Match must be stripped when method mutates to GET");
@@ -232,7 +233,7 @@ fn test_cve_port_change_and_representation_headers(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. CVE-2023-27534 & CVE-2022-35252: Cookie URL Ambiguity & Query Ordering
 // ----------------------------------------------------------------------------
-fn test_cve_cookie_url_and_query_ordering(t: wing::T&) {
+fn test_cve_cookie_url_and_query_ordering(t: core::T&) {
     t.run("parse_canonical_cookie_url: Userinfo and Fragment Isolation") { sub =>
         let u = wing::parse_canonical_cookie_url("https://user:pass@example.com:8443/a/b#section/1");
         sub.assert_bytes_eq(u.host[..], "example.com", "host must not include userinfo");
@@ -242,7 +243,7 @@ fn test_cve_cookie_url_and_query_ordering(t: wing::T&) {
 
     t.run("set_cookie_header: Normalizes Path Dot-Segments") { sub =>
         var jar = wing::new_canonical_cookie_jar();
-        let clock = wing::new_mock_clock();
+        let clock = core::new_mock_clock();
 
         let ok = wing::set_cookie_header(jar, "https://example.com/admin/../public", "sid=xyz", clock.now_us);
         sub.assert_true(ok, "cookie accepted");
@@ -268,10 +269,10 @@ fn test_cve_cookie_url_and_query_ordering(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 6. CVE-2016-8616: PSL Supercookie & CTL Injection via Netscape Store Import
 // ----------------------------------------------------------------------------
-fn test_cve_netscape_import_security(t: wing::T&) {
+fn test_cve_netscape_import_security(t: core::T&) {
     t.run("Netscape Import: Public Suffix Domain Supercookie Must Be Rejected") { sub =>
         var jar = wing::new_canonical_cookie_jar();
-        let clock = wing::new_mock_clock();
+        let clock = core::new_mock_clock();
 
         let netscape_psl = "co.uk\tTRUE\t/\tFALSE\t0\tsupercookie\tevil\n";
         let count = wing::import_canonical_netscape(jar, netscape_psl, clock.now_us);
@@ -282,7 +283,7 @@ fn test_cve_netscape_import_security(t: wing::T&) {
 
     t.run("Netscape Import: CTL Character in Cookie Must Be Rejected") { sub =>
         var jar = wing::new_canonical_cookie_jar();
-        let clock = wing::new_mock_clock();
+        let clock = core::new_mock_clock();
 
         let netscape_ctl = "example.com\tTRUE\t/\tFALSE\t0\tbad\x01name\tval\n";
         let count = wing::import_canonical_netscape(jar, netscape_ctl, clock.now_us);
@@ -295,7 +296,7 @@ fn test_cve_netscape_import_security(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 7. CVE-2026-94441: Unencrypted H2 vs HTTPS Transport & Pool Isolation
 // ----------------------------------------------------------------------------
-fn test_cve_2026_94441_h2_scheme_isolation(t: wing::T&) {
+fn test_cve_2026_94441_h2_scheme_isolation(t: core::T&) {
     t.run("PoolKey Scheme Isolation: Plaintext H2c Must Never Match HTTPS") { sub =>
         let nak = wing::new_network_anonymization_key("https://service.com");
         let direct = wing::new_direct_proxy_chain();
@@ -340,7 +341,7 @@ fn test_cve_2026_94441_h2_scheme_isolation(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 8. CVE-2026-56866 & CVE-2026-94439: CONNECT Tunnel Desync & Buffer Hygiene
 // ----------------------------------------------------------------------------
-fn test_cve_connect_tunnel_security(t: wing::T&) {
+fn test_cve_connect_tunnel_security(t: core::T&) {
     t.run("CVE-2026-56866: Prefix Data Injection Detection in CONNECT Response") { sub =>
         // Clean 200 OK CONNECT response
         let clean = "HTTP/1.1 200 Connection Established\r\n\r\n";
@@ -382,7 +383,7 @@ fn test_cve_connect_tunnel_security(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 9. CVE-2025-4673 & CVE-2021-33197: Proxy-Authorization & Hop-by-Hop Stripping
 // ----------------------------------------------------------------------------
-fn test_cve_proxy_authorization_leakage(t: wing::T&) {
+fn test_cve_proxy_authorization_leakage(t: core::T&) {
     t.run("CVE-2025-4673: Strip Proxy-Authorization Before Origin Request") { sub =>
         var headers: wing::HeaderItem[..32] = [];
         headers.push(wing::make_header("Host", "target.com"));
@@ -415,8 +416,8 @@ fn test_cve_proxy_authorization_leakage(t: wing::T&) {
         var has_proxy_auth = false;
         var has_user_auth = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Proxy-Authorization") { has_proxy_auth = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_user_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Proxy-Authorization") { has_proxy_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_user_auth = true; }
         }
         sub.assert_false(has_proxy_auth, "Proxy-Authorization must be stripped on cross-origin redirect (CVE-2025-4673)");
         sub.assert_false(has_user_auth, "Authorization must be stripped on cross-origin redirect");
@@ -426,7 +427,7 @@ fn test_cve_proxy_authorization_leakage(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 10. CVE-2025-22870: IPv6 Zone ID Proxy Bypass & SSRF Defense
 // ----------------------------------------------------------------------------
-fn test_cve_ipv6_zone_id_proxy_bypass(t: wing::T&) {
+fn test_cve_ipv6_zone_id_proxy_bypass(t: core::T&) {
     t.run("IPv6 Link-Local with Zone ID (fe80::1%eth0) Blocked by SSRF Guard") { sub =>
         var session = wing::new_session();
         wing::enable_ssrf_guard(session, true);
@@ -441,7 +442,7 @@ fn test_cve_ipv6_zone_id_proxy_bypass(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 11. Go #81671 & RFC 9110: QUERY Method Replayability
 // ----------------------------------------------------------------------------
-fn test_go_81671_query_method_replayable(t: wing::T&) {
+fn test_go_81671_query_method_replayable(t: core::T&) {
     t.run("Go #81671: QUERY Method Replayability on Stale Socket Drop") { sub =>
         sub.assert_true(wing::is_idempotent_method("QUERY"), "QUERY is semantically idempotent per RFC 9110");
         sub.assert_true(wing::is_idempotent_method("query"), "QUERY case-insensitive check matches");
@@ -464,20 +465,20 @@ fn test_go_81671_query_method_replayable(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("CVE Regression Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("CVE Regression Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. CVE-2021-28918 & CVE-2021-29922 (Octal/Hex/Dword/Shorthand IPv4 SSRF)", test_cve_ipv4_formats_ssrf);
-    wing::run_case(runner, "2. CVE-2024-24790 & RFC 6761 (Localhost, Uncompressed IPv6 & Tunnel SSRF)", test_cve_localhost_and_ipv6_tunnels_ssrf);
-    wing::run_case(runner, "3. CVE-2023-26159 & RFC 9110 (CRLF / Control-Char Header Injection)", test_cve_crlf_header_injection);
-    wing::run_case(runner, "4. CVE-2022-27776 & CVE-2023-43804 (Port Change Credential Leaks & Headers)", test_cve_port_change_and_representation_headers);
-    wing::run_case(runner, "5. CVE-2023-27534 & CVE-2022-35252 (Cookie URL Ambiguity & Query Ordering)", test_cve_cookie_url_and_query_ordering);
-    wing::run_case(runner, "6. CVE-2016-8616 (PSL Supercookie & CTL Injection in Store Import)", test_cve_netscape_import_security);
-    wing::run_case(runner, "7. CVE-2026-94441 (Unencrypted H2 vs HTTPS Scheme & Pool Isolation)", test_cve_2026_94441_h2_scheme_isolation);
-    wing::run_case(runner, "8. CVE-2026-56866 & CVE-2026-94439 (CONNECT Tunnel Desync & Buffer Hygiene)", test_cve_connect_tunnel_security);
-    wing::run_case(runner, "9. CVE-2025-4673 & CVE-2021-33197 (Proxy-Authorization Leakage & Header Stripping)", test_cve_proxy_authorization_leakage);
-    wing::run_case(runner, "10. CVE-2025-22870 (IPv6 Zone ID Proxy Bypass & SSRF Defense)", test_cve_ipv6_zone_id_proxy_bypass);
-    wing::run_case(runner, "11. Go #81671 & RFC 9110 (QUERY Method Replayability)", test_go_81671_query_method_replayable);
+    core::run_case(runner, "1. CVE-2021-28918 & CVE-2021-29922 (Octal/Hex/Dword/Shorthand IPv4 SSRF)", test_cve_ipv4_formats_ssrf);
+    core::run_case(runner, "2. CVE-2024-24790 & RFC 6761 (Localhost, Uncompressed IPv6 & Tunnel SSRF)", test_cve_localhost_and_ipv6_tunnels_ssrf);
+    core::run_case(runner, "3. CVE-2023-26159 & RFC 9110 (CRLF / Control-Char Header Injection)", test_cve_crlf_header_injection);
+    core::run_case(runner, "4. CVE-2022-27776 & CVE-2023-43804 (Port Change Credential Leaks & Headers)", test_cve_port_change_and_representation_headers);
+    core::run_case(runner, "5. CVE-2023-27534 & CVE-2022-35252 (Cookie URL Ambiguity & Query Ordering)", test_cve_cookie_url_and_query_ordering);
+    core::run_case(runner, "6. CVE-2016-8616 (PSL Supercookie & CTL Injection in Store Import)", test_cve_netscape_import_security);
+    core::run_case(runner, "7. CVE-2026-94441 (Unencrypted H2 vs HTTPS Scheme & Pool Isolation)", test_cve_2026_94441_h2_scheme_isolation);
+    core::run_case(runner, "8. CVE-2026-56866 & CVE-2026-94439 (CONNECT Tunnel Desync & Buffer Hygiene)", test_cve_connect_tunnel_security);
+    core::run_case(runner, "9. CVE-2025-4673 & CVE-2021-33197 (Proxy-Authorization Leakage & Header Stripping)", test_cve_proxy_authorization_leakage);
+    core::run_case(runner, "10. CVE-2025-22870 (IPv6 Zone ID Proxy Bypass & SSRF Defense)", test_cve_ipv6_zone_id_proxy_bypass);
+    core::run_case(runner, "11. Go #81671 & RFC 9110 (QUERY Method Replayability)", test_go_81671_query_method_replayable);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

@@ -1,12 +1,13 @@
 // Security tests for cookie prefixes, SSRF filter bypasses, and port validation.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. RFC 6265bis Section 5.6: __Host- & __Secure- Cookie Prefix Enforcement
 // ----------------------------------------------------------------------------
-fn test_host_and_secure_cookie_prefix_smuggling(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
+    var clock = core::new_mock_clock();
 
     t.run("HOST-01: __Host- cookie with Domain=127.0.0.1 literal must be rejected") { sub =>
         var jar = wing::new_canonical_cookie_jar();
@@ -125,7 +126,7 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. SSRF Filter Bypasses & IPv6 Zone ID / Scope ID Proxy Smuggling
 // ----------------------------------------------------------------------------
-fn test_ssrf_filter_bypasses(t: wing::T&) {
+fn test_ssrf_filter_bypasses(t: core::T&) {
     t.run("SSRF-01: NAT64 prefix to 0.0.0.0 (64:ff9b:: and 64:ff9b::0.0.0.0) must be blocked") { sub =>
         sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b::"), "NAT64 empty suffix (0.0.0.0) must be reserved");
         sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b::0.0.0.0"), "NAT64 0.0.0.0 must be reserved");
@@ -165,10 +166,10 @@ fn test_ssrf_filter_bypasses(t: wing::T&) {
     };
 
     t.run("SSRF-06: WHATWG URL parser invalidates bracketed IPv6 with zone ID, immune by design") { sub =>
-        let u1 = wing::new_url("http://[::1%25.example.com]:80/api");
+        let u1 = core::new_url("http://[::1%25.example.com]:80/api");
         sub.assert_false(u1.valid, "URL parser must invalidate [::1%25.example.com]");
 
-        let u2 = wing::new_url("http://[::1%eth0]:80/api");
+        let u2 = core::new_url("http://[::1%eth0]:80/api");
         sub.assert_false(u2.valid, "URL parser must invalidate [::1%eth0]");
     };
 }
@@ -176,7 +177,7 @@ fn test_ssrf_filter_bypasses(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. Dangerous Service Ports & Port 0 SSRF Bypass
 // ----------------------------------------------------------------------------
-fn test_dangerous_service_ports(t: wing::T&) {
+fn test_dangerous_service_ports(t: core::T&) {
     t.run("PORT-01: Dangerous service ports (Port 0, FTP 21, Telnet 23, MySQL 3306, Postgres 5432, MongoDB 27017)") { sub =>
         sub.assert_true(wing::is_dangerous_service_port(0), "Port 0 must be dangerous");
         sub.assert_true(wing::is_dangerous_service_port(21), "Port 21 (FTP) must be dangerous");
@@ -227,8 +228,8 @@ fn test_dangerous_service_ports(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. Public Suffix Boundary Attacks & FQDN Edge Cases
 // ----------------------------------------------------------------------------
-fn test_public_suffix_boundary_attacks(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_public_suffix_boundary_attacks(t: core::T&) {
+    var clock = core::new_mock_clock();
 
     t.run("PSL-01: Supercookie prevention on ICANN public suffixes") { sub =>
         var jar = wing::new_canonical_cookie_jar();
@@ -269,11 +270,11 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
 
     t.run("PSL-04: FQDN Trailing-dot normalization (industry benchmark)") { sub =>
         var etld1: u8[..128] = [];
-        wing::extract_etld_plus_one("example.com.", etld1);
+        core::extract_etld_plus_one("example.com.", etld1);
         sub.assert_eq(etld1[..], "example.com", "example.com. with trailing dot must derive example.com");
 
         var etld2: u8[..128] = [];
-        wing::extract_etld_plus_one("sub.example.com.", etld2);
+        core::extract_etld_plus_one("sub.example.com.", etld2);
         sub.assert_eq(etld2[..], "example.com", "sub.example.com. must derive example.com");
 
         let matches = wing::cookie_domain_match("sub.example.com.", ".example.com.");
@@ -282,7 +283,7 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
 
     t.run("PSL-05: IP address literal immunity (industry benchmark)") { sub =>
         var etld_ip: u8[..128] = [];
-        wing::extract_etld_plus_one("127.0.0.1", etld_ip);
+        core::extract_etld_plus_one("127.0.0.1", etld_ip);
         sub.assert_eq(etld_ip[..], "127.0.0.1", "IP literal must not be parsed through PSL");
 
         // RFC 6265 Section 5.1.3: domain matching MUST NOT match suffixes on IP addresses
@@ -292,7 +293,7 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
 
     t.run("PSL-06: Case insensitivity in PSL evaluations (industry benchmark)") { sub =>
         var etld_upper: u8[..128] = [];
-        wing::extract_etld_plus_one("FOO.EXAMPLE.COM", etld_upper);
+        core::extract_etld_plus_one("FOO.EXAMPLE.COM", etld_upper);
         sub.assert_eq(etld_upper[..], "example.com", "Uppercase FOO.EXAMPLE.COM must derive lowercase example.com");
 
         sub.assert_true(wing::is_public_suffix_domain("CO.UK"), "CO.UK must be recognized as public suffix");
@@ -303,9 +304,9 @@ fn test_public_suffix_boundary_attacks(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. Token Bucket & GCRA Burst / Concurrency Limits
 // ----------------------------------------------------------------------------
-fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
+fn test_rate_limiter_burst_and_concurrency(t: core::T&) {
     t.run("RATE-01: Burst capacity boundary (1/s emission, burst=5 allows 6 requests)") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::seconds(1), 5); // T=1s, tau=5s
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 5); // T=1s, tau=5s
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000; // t=10s
 
@@ -328,7 +329,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
     };
 
     t.run("RATE-02: Cost > burst pitfall ") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::seconds(1), 5);
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 5);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
 
@@ -339,7 +340,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
     };
 
     t.run("RATE-03: Integer overflow saturation defense") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::seconds(1), 5);
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 5);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
 
@@ -349,7 +350,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
     };
 
     t.run("RATE-04: Zero-cost inspection does not advance TAT") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::seconds(1), 5);
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 5);
         var cell = wing::GcraCell { tat_ns: 10000000000 };
         let now_ns: u64 = 10000000000;
 
@@ -359,7 +360,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
     };
 
     t.run("RATE-05: Priority slot reservation (gcra_reserve_n)") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::seconds(1), 0); // 1 req/sec, no burst
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 0); // 1 req/sec, no burst
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
 
@@ -379,7 +380,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
     };
 
     t.run("RATE-06: 256-shard rate limiter protects distinct client keys") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::seconds(1), 1);
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 1);
         var limiter = wing::new_sharded_limiter(quota);
         let now_ns: u64 = 5000000000;
 
@@ -391,7 +392,7 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
     };
 
     t.run("RATE-07: Probabilistic GCRA DDoS mitigation under flood") { sub =>
-        let quota = wing::new_gcra_quota(1000, wing::seconds(1), 100);
+        let quota = wing::new_gcra_quota(1000, core::seconds(1), 100);
         var pgcra = wing::new_probabilistic_gcra(quota, 20); // 5% sample rate
 
         var allowed_count = 0;
@@ -409,9 +410,9 @@ fn test_rate_limiter_burst_and_concurrency(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 6. Singleflight Thundering Herd & Cache Stampede Defense
 // ----------------------------------------------------------------------------
-fn test_singleflight_thundering_herd(t: wing::T&) {
+fn test_singleflight_thundering_herd(t: core::T&) {
     t.run("FLIGHT-01: Duplicate call suppression (10 concurrent requests, exactly 1 leader)") { sub =>
-        var g = wing::new_singleflight_group();
+        var g = core::new_singleflight_group();
         let key = "cache:user:profile:42";
 
         var leader_count = 0;
@@ -419,7 +420,7 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
 
         // 10 callers concurrently request the same key
         for caller_id in 10 {
-            let is_lead, val, shared = wing::start_or_join(g, key);
+            let is_lead, val, shared = core::start_or_join(g, key);
             if is_lead {
                 leader_count++;
             } else {
@@ -429,105 +430,105 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
 
         sub.assert_eq(leader_count, 1, "Exactly ONE caller must be designated as leader");
         sub.assert_eq(follower_count, 9, "9 callers must join as followers (duplicate suppression)");
-        sub.assert_eq(wing::waiter_count(g, key), 9, "Waiter count must be 9");
-        sub.assert_true(wing::is_in_flight(g, key), "Key must be marked in-flight");
+        sub.assert_eq(core::waiter_count(g, key), 9, "Waiter count must be 9");
+        sub.assert_true(core::is_in_flight(g, key), "Key must be marked in-flight");
     };
 
     t.run("FLIGHT-02: Result broadcast and shared flag accuracy ") { sub =>
-        var g = wing::new_singleflight_group();
+        var g = core::new_singleflight_group();
         let key = "db:query:orders";
 
         // Leader starts
-        let is_lead1, _, _ = wing::start_or_join(g, key);
+        let is_lead1, _, _ = core::start_or_join(g, key);
         sub.assert_true(is_lead1);
 
         // Follower 1 joins
-        let is_lead2, _, _ = wing::start_or_join(g, key);
+        let is_lead2, _, _ = core::start_or_join(g, key);
         sub.assert_false(is_lead2);
 
         // Leader finishes computation with result 8888
-        let finish_ok, waiters = wing::finish_call(g, key, 8888, true);
+        let finish_ok, waiters = core::finish_call(g, key, 8888, true);
         sub.assert_true(finish_ok);
         sub.assert_eq(waiters, 1);
 
         // Verify shared status and result value
-        sub.assert_true(wing::is_shared(g, key), "Result was shared between leader and follower");
-        let cached_val, ok = wing::result_value(g, key);
+        sub.assert_true(core::is_shared(g, key), "Result was shared between leader and follower");
+        let cached_val, ok = core::result_value(g, key);
         sub.assert_true(ok);
         sub.assert_eq(cached_val, 8888);
     };
 
     t.run("FLIGHT-03: Unshared execution (single caller)") { sub =>
-        var g = wing::new_singleflight_group();
+        var g = core::new_singleflight_group();
         let key = "db:query:rare_item";
 
-        let is_lead, _, _ = wing::start_or_join(g, key);
+        let is_lead, _, _ = core::start_or_join(g, key);
         sub.assert_true(is_lead);
 
-        let finish_ok, waiters = wing::finish_call(g, key, 42, true);
+        let finish_ok, waiters = core::finish_call(g, key, 42, true);
         sub.assert_true(finish_ok);
         sub.assert_eq(waiters, 0, "No waiters joined");
-        sub.assert_false(wing::is_shared(g, key), "Single caller execution must not be marked shared");
+        sub.assert_false(core::is_shared(g, key), "Single caller execution must not be marked shared");
     };
 
     t.run("FLIGHT-04: Explicit Forget & re-execution ") { sub =>
-        var g = wing::new_singleflight_group();
+        var g = core::new_singleflight_group();
         let key = "cache:stock:price";
 
         // Initial run
-        wing::start_or_join(g, key);
-        wing::finish_call(g, key, 100, true);
+        core::start_or_join(g, key);
+        core::finish_call(g, key, 100, true);
 
         // Forget key
-        let forgot = wing::forget(g, key);
+        let forgot = core::forget(g, key);
         sub.assert_true(forgot, "forget must successfully remove the key");
 
         // Subsequent call must execute as new leader
-        let is_lead_next, _, _ = wing::start_or_join(g, key);
+        let is_lead_next, _, _ = core::start_or_join(g, key);
         sub.assert_true(is_lead_next, "After forget, next call must be a new leader");
     };
 
     t.run("FLIGHT-05: ForgetUnshared proposal ") { sub =>
-        var g = wing::new_singleflight_group();
+        var g = core::new_singleflight_group();
 
         // 1. Shared key
-        wing::start_or_join(g, "key_shared");
-        wing::start_or_join(g, "key_shared"); // waiter joined
-        wing::finish_call(g, "key_shared", 1, true);
+        core::start_or_join(g, "key_shared");
+        core::start_or_join(g, "key_shared"); // waiter joined
+        core::finish_call(g, "key_shared", 1, true);
 
         // forget_unshared must NOT forget a shared key
-        let forgot_shared = wing::forget_unshared(g, "key_shared");
+        let forgot_shared = core::forget_unshared(g, "key_shared");
         sub.assert_false(forgot_shared, "forget_unshared must not remove shared key");
 
         // 2. Unshared key
-        wing::start_or_join(g, "key_unshared");
-        wing::finish_call(g, "key_unshared", 2, true);
+        core::start_or_join(g, "key_unshared");
+        core::finish_call(g, "key_unshared", 2, true);
 
         // forget_unshared MUST forget unshared key
-        let forgot_unshared = wing::forget_unshared(g, "key_unshared");
+        let forgot_unshared = core::forget_unshared(g, "key_unshared");
         sub.assert_true(forgot_unshared, "forget_unshared must remove unshared key");
     };
 
     t.run("FLIGHT-06: Error / Failure unblocking ") { sub =>
-        var g = wing::new_singleflight_group();
+        var g = core::new_singleflight_group();
         let key = "db:broken_query";
 
         // Leader starts
-        let is_lead, _, _ = wing::start_or_join(g, key);
+        let is_lead, _, _ = core::start_or_join(g, key);
         sub.assert_true(is_lead);
 
         // Follower joins
-        let is_lead2, _, _ = wing::start_or_join(g, key);
+        let is_lead2, _, _ = core::start_or_join(g, key);
         sub.assert_false(is_lead2);
 
         // Leader fails
-        let finish_ok, waiters = wing::finish_call(g, key, 0, false);
+        let finish_ok, waiters = core::finish_call(g, key, 0, false);
         sub.assert_true(finish_ok);
         sub.assert_eq(waiters, 1);
 
-        let res, ok = wing::result_value(g, key);
+        let res, ok = core::result_value(g, key);
         sub.assert_false(ok, "Result value must record failure status without deadlocking");
-        sub.assert_false(wing::is_in_flight(g, key), "Key must not remain in-flight after failure");
+        sub.assert_false(core::is_in_flight(g, key), "Key must not remain in-flight after failure");
     };
 }
 
@@ -535,15 +536,15 @@ fn test_singleflight_thundering_herd(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Perimeter Security Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Perimeter Security Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. RFC 6265bis Section 5.6 (__Host- & __Secure- Prefix Invariants)", test_host_and_secure_cookie_prefix_smuggling);
-    wing::run_case(runner, "2. SSRF Filter Bypasses & IPv6 Zone ID Proxy Smuggling (CVE-2025-22870)", test_ssrf_filter_bypasses);
-    wing::run_case(runner, "3. Dangerous Service Ports & Port 0 SSRF Bypass", test_dangerous_service_ports);
-    wing::run_case(runner, "4. Public Suffix Boundary Attacks & FQDN Edge Cases (Go PSL Bugs)", test_public_suffix_boundary_attacks);
-    wing::run_case(runner, "5. Token Bucket & GCRA Burst / Concurrency Limits (Go Rate Limiter Bugs)", test_rate_limiter_burst_and_concurrency);
-    wing::run_case(runner, "6. Singleflight Thundering Herd & Cache Stampede Defense (Go Singleflight Bugs)", test_singleflight_thundering_herd);
+    core::run_case(runner, "1. RFC 6265bis Section 5.6 (__Host- & __Secure- Prefix Invariants)", test_host_and_secure_cookie_prefix_smuggling);
+    core::run_case(runner, "2. SSRF Filter Bypasses & IPv6 Zone ID Proxy Smuggling (CVE-2025-22870)", test_ssrf_filter_bypasses);
+    core::run_case(runner, "3. Dangerous Service Ports & Port 0 SSRF Bypass", test_dangerous_service_ports);
+    core::run_case(runner, "4. Public Suffix Boundary Attacks & FQDN Edge Cases (Go PSL Bugs)", test_public_suffix_boundary_attacks);
+    core::run_case(runner, "5. Token Bucket & GCRA Burst / Concurrency Limits (Go Rate Limiter Bugs)", test_rate_limiter_burst_and_concurrency);
+    core::run_case(runner, "6. Singleflight Thundering Herd & Cache Stampede Defense (Go Singleflight Bugs)", test_singleflight_thundering_herd);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

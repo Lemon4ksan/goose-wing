@@ -2,8 +2,6 @@
 namespace wing;
 
 import std;
-import core.time;
-import core.math;
 
 // ---- constant-time branchless primitives -----------------------------------
 
@@ -27,7 +25,7 @@ fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
     var diff_accum: u64 = 0;
     var idx = 0;
     while idx + 8 <= bytes_a.len {
-        diff_accum |= read_le_u64(bytes_a, idx) ^ read_le_u64(bytes_b, idx);
+        diff_accum |= core::read_le_u64(bytes_a, idx) ^ core::read_le_u64(bytes_b, idx);
         idx += 8;
     }
     var tail_accum: u8 = 0;
@@ -42,8 +40,8 @@ fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
 
 // Constant-time 16-byte authentication tag comparison (Poly1305 / AES-GCM).
 fn ct_eq_tag16(tag_a: const u8[16]&, tag_b: const u8[16]&) -> bool {
-    let diff0 = read_le_u64(tag_a[..], 0) ^ read_le_u64(tag_b[..], 0);
-    let diff1 = read_le_u64(tag_a[..], 8) ^ read_le_u64(tag_b[..], 8);
+    let diff0 = core::read_le_u64(tag_a[..], 0) ^ core::read_le_u64(tag_b[..], 0);
+    let diff1 = core::read_le_u64(tag_a[..], 8) ^ core::read_le_u64(tag_b[..], 8);
     let diff = diff0 | diff1;
     let non_zero = (diff | (0 - diff)) >> 63;
     return non_zero == 0;
@@ -51,10 +49,10 @@ fn ct_eq_tag16(tag_a: const u8[16]&, tag_b: const u8[16]&) -> bool {
 
 // Constant-time 32-byte MAC comparison (HMAC-SHA256).
 fn ct_eq_tag32(tag_a: const u8[32]&, tag_b: const u8[32]&) -> bool {
-    let diff0 = read_le_u64(tag_a[..], 0) ^ read_le_u64(tag_b[..], 0);
-    let diff1 = read_le_u64(tag_a[..], 8) ^ read_le_u64(tag_b[..], 8);
-    let diff2 = read_le_u64(tag_a[..], 16) ^ read_le_u64(tag_b[..], 16);
-    let diff3 = read_le_u64(tag_a[..], 24) ^ read_le_u64(tag_b[..], 24);
+    let diff0 = core::read_le_u64(tag_a[..], 0) ^ core::read_le_u64(tag_b[..], 0);
+    let diff1 = core::read_le_u64(tag_a[..], 8) ^ core::read_le_u64(tag_b[..], 8);
+    let diff2 = core::read_le_u64(tag_a[..], 16) ^ core::read_le_u64(tag_b[..], 16);
+    let diff3 = core::read_le_u64(tag_a[..], 24) ^ core::read_le_u64(tag_b[..], 24);
     let diff = diff0 | diff1 | diff2 | diff3;
     let non_zero = (diff | (0 - diff)) >> 63;
     return non_zero == 0;
@@ -236,8 +234,8 @@ fn sha256_transform(ctx: Sha256Ctx&, chunk: const u8[:]) {
                chunk[off + 3];
     }
     for i in 16..64 {
-        let s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
-        let s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        let s0 = core::rotr32(w[i - 15], 7) ^ core::rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        let s1 = core::rotr32(w[i - 2], 17) ^ core::rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
         w[i] = w[i - 16] + s0 + w[i - 7] + s1;
     }
 
@@ -251,10 +249,10 @@ fn sha256_transform(ctx: Sha256Ctx&, chunk: const u8[:]) {
     var h = ctx.h[7];
 
     for i in 64 {
-        let s1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        let s1 = core::rotr32(e, 6) ^ core::rotr32(e, 11) ^ core::rotr32(e, 25);
         let ch = (e & f) ^ ((~e) & g);
         let temp1 = h + s1 + ch + SHA256_K[i] + w[i];
-        let s0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        let s0 = core::rotr32(a, 2) ^ core::rotr32(a, 13) ^ core::rotr32(a, 22);
         let maj = (a & b) ^ (a & c) ^ (b & c);
         let temp2 = s0 + maj;
 
@@ -392,10 +390,10 @@ fn hkdf_sha256_32(ikm: const u8[32]&, salt: const u8[:], info: const u8[:]) -> u
 // ---- chacha20, hchacha20 & poly1305 (rfc 8439 / draft-irtf-cfrg-xchacha) ---
 
 inline fn chacha_qr(a: u32&, b: u32&, c: u32&, d: u32&) {
-    a += b; d ^= a; d = rotl32(d, 16);
-    c += d; b ^= c; b = rotl32(b, 12);
-    a += b; d ^= a; d = rotl32(d, 8);
-    c += d; b ^= c; b = rotl32(b, 7);
+    a += b; d ^= a; d = core::rotl32(d, 16);
+    c += d; b ^= c; b = core::rotl32(b, 12);
+    a += b; d ^= a; d = core::rotl32(d, 8);
+    c += d; b ^= c; b = core::rotl32(b, 7);
 }
 
 fn load_u32_le(bytes: const u8[:], offset: i64) -> u32 {

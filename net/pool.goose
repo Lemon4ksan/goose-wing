@@ -3,8 +3,6 @@
 namespace wing;
 
 import std;
-import core.time;
-import core.url;
 
 // ---- 1. pool key dimensions & enums ----------------------------------------
 
@@ -218,16 +216,16 @@ fn pool_scheme_to_u64(s: PoolScheme) -> u64 {
 
 // Computes 64-bit WyHash composite hash for PoolKey partitioning and socket grouping.
 fn pool_key_hash(k: const PoolKey&) -> u64 {
-    var h: u64 = wyhash64(k.origin_endpoint.host[..], k.origin_endpoint.port);
-    h = hash_combine_u64(h, pool_scheme_to_u64(k.scheme));
-    h = hash_combine_u64(h, k.proxy_chain.servers.len as u64);
+    var h: u64 = core::wyhash64(k.origin_endpoint.host[..], k.origin_endpoint.port);
+    h = core::hash_combine_u64(h, pool_scheme_to_u64(k.scheme));
+    h = core::hash_combine_u64(h, k.proxy_chain.servers.len as u64);
     for &srv in k.proxy_chain.servers {
-        let sh = wyhash64(srv.host[..], srv.port);
-        h = hash_combine_u64(h, sh);
+        let sh = core::wyhash64(srv.host[..], srv.port);
+        h = core::hash_combine_u64(h, sh);
     }
-    h = hash_combine_u64(h, k.partition_key.nonce);
-    h = hash_combine_u64(h, wyhash64(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition));
-    h = hash_combine_u64(h, k.tls_and_dns_policy.target_network_id);
+    h = core::hash_combine_u64(h, k.partition_key.nonce);
+    h = core::hash_combine_u64(h, core::wyhash64(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition));
+    h = core::hash_combine_u64(h, k.tls_and_dns_policy.target_network_id);
     return h;
 }
 
@@ -257,7 +255,7 @@ fn new_want_queue() -> WantQueue {
 }
 
 fn queue_len(q: const WantQueue&) -> i64 {
-    let head_remaining = ct_max_i64(0, q.head.len - q.head_pos);
+    let head_remaining = core::ct_max_i64(0, q.head.len - q.head_pos);
     return head_remaining + q.tail.len;
 }
 
@@ -385,7 +383,7 @@ fn is_connection_healthy(
         return true;
     }
 
-    let idle_duration_ns = ct_max_i64(0, now_ns - conn.idle_at_ns);
+    let idle_duration_ns = core::ct_max_i64(0, now_ns - conn.idle_at_ns);
 
     if do_extensive_checks || idle_duration_ns >= healthy_threshold_ns {
         // Non-blocking check for received FIN (stream exhaustion)

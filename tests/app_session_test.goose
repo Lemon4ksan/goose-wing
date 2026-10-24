@@ -1,61 +1,62 @@
 // Tests for ClientSession, redirect policies, and cookie handling.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. Mozilla PSL Scoping & Tenant Isolation
 // ----------------------------------------------------------------------------
-fn test_psl_scoping_and_tenants(t: wing::T&) {
+fn test_psl_scoping_and_tenants(t: core::T&) {
     t.run("PSL Rule Types: Normal, Wildcard, Exception") { sub =>
         // 1. Normal ICANN rule: co.uk
         var s_couk: u8[..64] = [];
-        let icann_couk = wing::public_suffix_with_icann("service.co.uk", s_couk);
+        let icann_couk = core::public_suffix_with_icann("service.co.uk", s_couk);
         sub.assert_true(icann_couk, "co.uk is in ICANN section");
         sub.assert_bytes_eq(s_couk[..], "co.uk", "suffix is co.uk");
 
         // 2. Wildcard rule: *.ck -> any label under ck is a public suffix
         var s_ck: u8[..64] = [];
-        let icann_ck = wing::public_suffix_with_icann("foo.ck", s_ck);
+        let icann_ck = core::public_suffix_with_icann("foo.ck", s_ck);
         sub.assert_true(icann_ck, "*.ck is ICANN wildcard");
         sub.assert_bytes_eq(s_ck[..], "foo.ck", "foo.ck matched wildcard *.ck");
 
         // 3. Exception rule: !www.ck -> suffix is 'ck', so www.ck is registrable domain
         var s_ex: u8[..64] = [];
-        let icann_ex = wing::public_suffix_with_icann("www.ck", s_ex);
+        let icann_ex = core::public_suffix_with_icann("www.ck", s_ex);
         sub.assert_true(icann_ex, "!www.ck exception rule");
         sub.assert_bytes_eq(s_ex[..], "ck", "exception rule stripped leftmost label to ck");
 
         var etld_ex: u8[..64] = [];
-        wing::extract_etld_plus_one("www.ck", etld_ex);
+        core::extract_etld_plus_one("www.ck", etld_ex);
         sub.assert_bytes_eq(etld_ex[..], "www.ck", "www.ck is eTLD+1 due to exception rule");
     };
 
     t.run("Private Suffix Section & Strict Tenant Isolation") { sub =>
         // github.io is a Private section suffix
         var s_gh: u8[..64] = [];
-        let icann_gh = wing::public_suffix_with_icann("alice.github.io", s_gh);
+        let icann_gh = core::public_suffix_with_icann("alice.github.io", s_gh);
         sub.assert_false(icann_gh, "github.io belongs to Private section (not ICANN)");
         sub.assert_bytes_eq(s_gh[..], "github.io", "suffix is github.io");
 
         // Tenant isolation: alice.github.io must have eTLD+1 alice.github.io
         var etld_alice: u8[..64] = [];
-        wing::extract_etld_plus_one("alice.github.io", etld_alice);
+        core::extract_etld_plus_one("alice.github.io", etld_alice);
         sub.assert_bytes_eq(etld_alice[..], "alice.github.io", "alice.github.io is isolated tenant");
 
         // Bob's tenant: bob.github.io must have eTLD+1 bob.github.io
         var etld_bob: u8[..64] = [];
-        wing::extract_etld_plus_one("bob.github.io", etld_bob);
+        core::extract_etld_plus_one("bob.github.io", etld_bob);
         sub.assert_bytes_eq(etld_bob[..], "bob.github.io", "bob.github.io is isolated tenant");
 
         // Deep subdomains inside tenant: project.alice.github.io -> eTLD+1 is alice.github.io
         var etld_proj: u8[..64] = [];
-        wing::extract_etld_plus_one("project.alice.github.io", etld_proj);
+        core::extract_etld_plus_one("project.alice.github.io", etld_proj);
         sub.assert_bytes_eq(etld_proj[..], "alice.github.io", "subdomain bound to tenant eTLD+1");
     };
 
     t.run("RegistrableSite Construction from URL") { sub =>
-        let url_app = wing::new_url("https://sub.portal.example.com/dashboard");
-        let reg_site = wing::registrable_site_from_url(url_app);
+        let url_app = core::new_url("https://sub.portal.example.com/dashboard");
+        let reg_site = core::registrable_site_from_url(url_app);
         sub.assert_bytes_eq(reg_site.scheme[..], "https", "scheme is https");
         sub.assert_bytes_eq(reg_site.registrable_domain[..], "example.com", "registrable domain is example.com");
     };
@@ -64,7 +65,7 @@ fn test_psl_scoping_and_tenants(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. SiteForCookies & RFC 6265bis Schemeful Same-Site Context
 // ----------------------------------------------------------------------------
-fn test_site_for_cookies_and_rfc6265bis(t: wing::T&) {
+fn test_site_for_cookies_and_rfc6265bis(t: core::T&) {
     t.run("SiteForCookies Creation & NetLog Formatting") { sub =>
         let sfc = wing::site_for_cookies_from_url("https://login.example.com/");
         sub.assert_false(sfc.is_null, "not null SFC");
@@ -126,7 +127,7 @@ fn test_site_for_cookies_and_rfc6265bis(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. Redirect State Machine: Methods, Headers & Sensitive Sanitization
 // ----------------------------------------------------------------------------
-fn test_redirect_state_machine(t: wing::T&) {
+fn test_redirect_state_machine(t: core::T&) {
     t.run("HTTP 301, 302, 303 Method Mutation & Payload Stripping") { sub =>
         // 301 Moved Permanently: POST -> GET
         let info_301 = wing::compute_redirect_info(
@@ -202,11 +203,11 @@ fn test_redirect_state_machine(t: wing::T&) {
         var has_accept = false;
 
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_apikey = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "X-Auth-Token") { has_authtok = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "Cookie") { has_cookie = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "Accept") { has_accept = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_apikey = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-Auth-Token") { has_authtok = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Cookie") { has_cookie = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Accept") { has_accept = true; }
         }
 
         sub.assert_false(has_auth, "Authorization stripped on cross-origin redirect");
@@ -233,7 +234,7 @@ fn test_redirect_state_machine(t: wing::T&) {
 
         var has_auth = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
         }
         sub.assert_false(has_auth, "Authorization stripped on HTTPS -> HTTP downgrade (CVE-2024-1968)");
     };
@@ -256,8 +257,8 @@ fn test_redirect_state_machine(t: wing::T&) {
         var has_auth = false;
         var has_key = false;
         for hdr in req.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if wing::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_key = true; }
+            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
+            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_key = true; }
         }
         sub.assert_true(has_auth, "Authorization preserved on same-origin redirect");
         sub.assert_true(has_key, "X-API-Key preserved on same-origin redirect");
@@ -267,7 +268,7 @@ fn test_redirect_state_machine(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration
 // ----------------------------------------------------------------------------
-fn test_clientsession_pipeline_and_cookies(t: wing::T&) {
+fn test_clientsession_pipeline_and_cookies(t: core::T&) {
     t.run("OAuth 2.0 Flow: 302 Set-Cookie Ingestion & Chain Hop Isolation") { sub =>
         var session = wing::new_session();
         wing::set_clock_us(session, 1700000000000000);
@@ -345,7 +346,7 @@ fn test_clientsession_pipeline_and_cookies(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. BodyRewind, SSRF Guard, and DNS Rebinding Defense
 // ----------------------------------------------------------------------------
-fn test_body_rewind_and_ssrf_guard(t: wing::T&) {
+fn test_body_rewind_and_ssrf_guard(t: core::T&) {
     t.run("BodyRewind on 307 Temporary Redirect") { sub =>
         var session = wing::new_session();
 
@@ -443,14 +444,14 @@ fn test_body_rewind_and_ssrf_guard(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Client Session & Redirect Verification Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Client Session & Redirect Verification Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Mozilla PSL Scoping & Tenant Isolation", test_psl_scoping_and_tenants);
-    wing::run_case(runner, "2. SiteForCookies & RFC 6265bis Schemeful Same-Site", test_site_for_cookies_and_rfc6265bis);
-    wing::run_case(runner, "3. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
-    wing::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_clientsession_pipeline_and_cookies);
-    wing::run_case(runner, "5. BodyRewind, SSRF Guard & DNS Rebinding Defense", test_body_rewind_and_ssrf_guard);
+    core::run_case(runner, "1. Mozilla PSL Scoping & Tenant Isolation", test_psl_scoping_and_tenants);
+    core::run_case(runner, "2. SiteForCookies & RFC 6265bis Schemeful Same-Site", test_site_for_cookies_and_rfc6265bis);
+    core::run_case(runner, "3. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
+    core::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_clientsession_pipeline_and_cookies);
+    core::run_case(runner, "5. BodyRewind, SSRF Guard & DNS Rebinding Defense", test_body_rewind_and_ssrf_guard);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

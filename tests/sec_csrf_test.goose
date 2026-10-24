@@ -1,11 +1,12 @@
 // Tests for Fetch Metadata resource isolation and CORS policy validation.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. W3C Fetch Metadata 9-Row Decision Matrix
 // ----------------------------------------------------------------------------
-fn test_fetch_metadata_decision_matrix(t: wing::T&) {
+fn test_fetch_metadata_decision_matrix(t: core::T&) {
     t.run("Row 1: Direct User Navigation (Sec-Fetch-Site: none)") { sub =>
         let guard_cfg = wing::new_cross_origin_guard();
         var ctx = wing::FetchContext {
@@ -299,7 +300,7 @@ fn test_fetch_metadata_decision_matrix(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. Response Isolation Headers (Vary & HSTS)
 // ----------------------------------------------------------------------------
-fn test_isolation_headers_injection(t: wing::T&) {
+fn test_isolation_headers_injection(t: core::T&) {
     t.run("Mandatory Vary and HSTS Headers") { sub =>
         var res = wing::new_response();
         wing::apply_isolation_headers(res);
@@ -308,12 +309,12 @@ fn test_isolation_headers_injection(t: wing::T&) {
         var has_hsts = false;
 
         for &hdr in res.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Vary") {
+            if core::eq_ascii_fold(hdr.name[..], "Vary") {
                 has_vary = true;
                 sub.assert_contains(hdr.value[..], "Sec-Fetch-Site", "Vary contains Sec-Fetch-Site");
                 sub.assert_contains(hdr.value[..], "Origin", "Vary contains Origin");
             }
-            if wing::eq_ascii_fold(hdr.name[..], "Strict-Transport-Security") {
+            if core::eq_ascii_fold(hdr.name[..], "Strict-Transport-Security") {
                 has_hsts = true;
                 sub.assert_contains(hdr.value[..], "max-age=", "HSTS specifies max-age");
                 sub.assert_contains(hdr.value[..], "includeSubDomains", "HSTS includes subdomains");
@@ -328,7 +329,7 @@ fn test_isolation_headers_injection(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. Protocol-Specific CORS Matching & Credentials Security
 // ----------------------------------------------------------------------------
-fn test_cors_policy_and_matching(t: wing::T&) {
+fn test_cors_policy_and_matching(t: core::T&) {
     t.run("Protocol-Specific Subdomain Wildcard Matching") { sub =>
         let pattern = "https://*.example.com";
 
@@ -366,15 +367,15 @@ fn test_cors_policy_and_matching(t: wing::T&) {
         var has_max_age = false;
 
         for &hdr in preflight_res.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Access-Control-Allow-Origin") {
+            if core::eq_ascii_fold(hdr.name[..], "Access-Control-Allow-Origin") {
                 has_allow_origin = true;
                 sub.assert_eq(hdr.value[..], "https://portal.example.com", "origin mirrored");
             }
-            if wing::eq_ascii_fold(hdr.name[..], "Access-Control-Allow-Credentials") {
+            if core::eq_ascii_fold(hdr.name[..], "Access-Control-Allow-Credentials") {
                 has_allow_creds = true;
                 sub.assert_eq(hdr.value[..], "true", "credentials allowed");
             }
-            if wing::eq_ascii_fold(hdr.name[..], "Access-Control-Max-Age") {
+            if core::eq_ascii_fold(hdr.name[..], "Access-Control-Max-Age") {
                 has_max_age = true;
                 sub.assert_eq(hdr.value[..], "7200", "max age matches");
             }
@@ -403,12 +404,12 @@ fn test_cors_policy_and_matching(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Fetch Metadata & CORS Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Fetch Metadata & CORS Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
-    wing::run_case(runner, "2. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
-    wing::run_case(runner, "3. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
+    core::run_case(runner, "1. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
+    core::run_case(runner, "2. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
+    core::run_case(runner, "3. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

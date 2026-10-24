@@ -234,7 +234,7 @@ fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     return site;
 }
 
-fn site_for_cookies_from_parsed_url(url_val: const Url&) -> SiteForCookies {
+fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> SiteForCookies {
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
     site.scheme.append(scheme(url_val));
     extract_etld_plus_one(hostname(url_val), site.registrable_domain);

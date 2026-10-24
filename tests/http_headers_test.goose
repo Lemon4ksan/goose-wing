@@ -1,8 +1,9 @@
 // Tests for HeaderMap, header parsing, validation, and iteration.
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_headermap_zero_heap_and_inline_slots(t: wing::T&) {
+fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
     t.run("Basic HeaderMap Operations and O(1) WellKnown Slots") { sub =>
         var map = wing::new_header_map();
         sub.assert_true(map.valid, "Newly created map is valid");
@@ -62,7 +63,7 @@ fn test_headermap_zero_heap_and_inline_slots(t: wing::T&) {
     };
 }
 
-fn test_rfc9110_and_cookie_fold_isolation(t: wing::T&) {
+fn test_rfc9110_and_cookie_fold_isolation(t: core::T&) {
     t.run("List-Based Header Comma Folding (Vary, Accept)") { sub =>
         var map = wing::new_header_map();
         wing::append_header(map, "Vary", "Accept-Encoding");
@@ -113,7 +114,7 @@ fn test_rfc9110_and_cookie_fold_isolation(t: wing::T&) {
     };
 }
 
-fn test_lexical_validation_and_swar(t: wing::T&) {
+fn test_lexical_validation_and_swar(t: core::T&) {
     t.run("Valid tchar and Invalid Header Name Checks") { sub =>
         sub.assert_true(wing::is_valid_header_name("Content-Type"), "Content-Type is valid");
         sub.assert_true(wing::is_valid_header_name("x-api-key_2.0"), "x-api-key_2.0 is valid");
@@ -153,7 +154,7 @@ fn test_lexical_validation_and_swar(t: wing::T&) {
     };
 }
 
-fn test_httparse_regression_and_obs_fold(t: wing::T&) {
+fn test_httparse_regression_and_obs_fold(t: core::T&) {
     t.run("httparse PR #223 / Issue #222: Whitespace-Only Line Hard Syntax Error") { sub =>
         var map = wing::new_header_map();
         // A line containing only spaces between valid headers MUST NOT silently truncate headers!
@@ -183,7 +184,7 @@ fn test_httparse_regression_and_obs_fold(t: wing::T&) {
     };
 }
 
-fn test_chromium_net_parity(t: wing::T&) {
+fn test_chromium_net_parity(t: core::T&) {
     t.run("Chromium raw_headers_ \\0\\0 Format") { sub =>
         var map = wing::new_header_map();
         wing::append_header(map, "Host", "chromium.org");
@@ -243,14 +244,14 @@ fn test_chromium_net_parity(t: wing::T&) {
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
-    var runner = wing::new_runner("HTTP Headers & Lexical Verification Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("HTTP Headers & Lexical Verification Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Zero-Heap HeaderMap & Inline Slots", test_headermap_zero_heap_and_inline_slots);
-    wing::run_case(runner, "2. RFC 9110 & Set-Cookie Fold Isolation", test_rfc9110_and_cookie_fold_isolation);
-    wing::run_case(runner, "3. Lexical Validation & SWAR", test_lexical_validation_and_swar);
-    wing::run_case(runner, "4. httparse PR #223 Regression & obs-fold", test_httparse_regression_and_obs_fold);
-    wing::run_case(runner, "5. Chromium Net Parity (raw_headers, 304 Merge, Persistence)", test_chromium_net_parity);
+    core::run_case(runner, "1. Zero-Heap HeaderMap & Inline Slots", test_headermap_zero_heap_and_inline_slots);
+    core::run_case(runner, "2. RFC 9110 & Set-Cookie Fold Isolation", test_rfc9110_and_cookie_fold_isolation);
+    core::run_case(runner, "3. Lexical Validation & SWAR", test_lexical_validation_and_swar);
+    core::run_case(runner, "4. httparse PR #223 Regression & obs-fold", test_httparse_regression_and_obs_fold);
+    core::run_case(runner, "5. Chromium Net Parity (raw_headers, 304 Merge, Persistence)", test_chromium_net_parity);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

@@ -4,7 +4,6 @@ namespace wing;
 import std;
 import json;
 import app.profile;
-import core.compress;
 
 // ---- error model & diagnostics ---------------------------------------------
 
@@ -91,7 +90,7 @@ fn decode_body(res: Response&) -> bool {
     let enc = header(res, "content-encoding");
     if eq_ascii_fold(enc, "zstd") {
         var uncompressed: u8[>..] = [];
-        let ok_z, err_z = decompress_zstd(res.body[..], uncompressed);
+        let ok_z, err_z = core::decompress_zstd(res.body[..], uncompressed);
         if ok_z {
             res.body.clear();
             res.body.append(uncompressed[..]);
@@ -100,7 +99,7 @@ fn decode_body(res: Response&) -> bool {
         return false;
     } else if eq_ascii_fold(enc, "gzip") {
         var uncompressed: u8[>..] = [];
-        let ok_d, err = decompress_gzip(res.body[..], uncompressed);
+        let ok_d, err = core::decompress_gzip(res.body[..], uncompressed);
         if ok_d {
             res.body.clear();
             res.body.append(uncompressed[..]);
@@ -109,14 +108,14 @@ fn decode_body(res: Response&) -> bool {
         return false;
     } else if eq_ascii_fold(enc, "deflate") {
         var uncompressed: u8[>..] = [];
-        let ok_z, err_z = decompress_zlib(res.body[..], uncompressed);
+        let ok_z, err_z = core::decompress_zlib(res.body[..], uncompressed);
         if ok_z {
             res.body.clear();
             res.body.append(uncompressed[..]);
             return true;
         }
         uncompressed.clear();
-        let ok_d, err_d = decompress_deflate(res.body[..], uncompressed);
+        let ok_d, err_d = core::decompress_deflate(res.body[..], uncompressed);
         if ok_d {
             res.body.clear();
             res.body.append(uncompressed[..]);

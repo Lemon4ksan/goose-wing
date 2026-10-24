@@ -1,5 +1,6 @@
 // Tests for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 import std;
+import core from "..";
 import wing from "..";
 
 struct PrefixVector {
@@ -12,8 +13,8 @@ struct PrefixVector {
 // ----------------------------------------------------------------------------
 // 1. Lexer, 4096B/1024B Limits, CTL Rejection & WPT Nameless
 // ----------------------------------------------------------------------------
-fn test_lexer_limits_and_ctl(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_lexer_limits_and_ctl(t: core::T&) {
+    var clock = core::new_mock_clock();
 
     t.run("Size Limits: 4096B Name+Value and 1024B Attribute Cap (Issue #1340)") { sub =>
         var jar = wing::new_canonical_cookie_jar();
@@ -86,8 +87,8 @@ fn test_lexer_limits_and_ctl(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. Date Tokenizer, 400-Day Cap & Expired Overwrite
 // ----------------------------------------------------------------------------
-fn test_dates_400d_cap_and_expired_overwrite(t: wing::T&) {
-    var clock = wing::new_mock_clock(1700000000000000);
+fn test_dates_400d_cap_and_expired_overwrite(t: core::T&) {
+    var clock = core::new_mock_clock(1700000000000000);
     var jar = wing::new_canonical_cookie_jar();
 
     // 1. 400-day cap (kMinutesIn400Days = 576000)
@@ -108,8 +109,8 @@ fn test_dates_400d_cap_and_expired_overwrite(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. Domain, Public Suffix List (PSL), IPv4/IPv6 & Path-Match
 // ----------------------------------------------------------------------------
-fn test_domain_psl_ip_and_path_matching(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_domain_psl_ip_and_path_matching(t: core::T&) {
+    var clock = core::new_mock_clock();
     var jar = wing::new_canonical_cookie_jar();
 
     t.run("DOM-01: PSL Rejection for TLD and Effective Public Suffixes") { sub =>
@@ -151,8 +152,8 @@ fn test_domain_psl_ip_and_path_matching(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. Layered Cookie Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)
 // ----------------------------------------------------------------------------
-fn test_layered_prefixes_table(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_layered_prefixes_table(t: core::T&) {
+    var clock = core::new_mock_clock();
     let vectors = [
         PrefixVector { header: "__Secure-a=1; Secure", url: "https://example.com/", from_http: true, expect_ok: true },
         PrefixVector { header: "__Secure-a=1", url: "https://example.com/", from_http: true, expect_ok: false },
@@ -167,7 +168,7 @@ fn test_layered_prefixes_table(t: wing::T&) {
         PrefixVector { header: "__HOST-HTTP-a=1; Secure; HttpOnly; Path=/", url: "https://example.com/", from_http: false, expect_ok: false },
     ];
 
-    wing::run_table(t, "PrefixMatrix", vectors[..]) { sub, row, idx =>
+    core::run_table(t, "PrefixMatrix", vectors[..]) { sub, row, idx =>
         var jar = wing::new_canonical_cookie_jar();
         let u = wing::parse_canonical_cookie_url(row.url);
         var c = wing::parse_canonical_set_cookie(row.header, u.host[..], u.path[..], clock.now_us);
@@ -181,15 +182,15 @@ fn test_layered_prefixes_table(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. SameSite Lax+POST 120s Window & Origin-Bound Cookies (OBC)
 // ----------------------------------------------------------------------------
-fn test_samesite_lax_post_window_and_obc(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_samesite_lax_post_window_and_obc(t: core::T&) {
+    var clock = core::new_mock_clock();
     var jar = wing::new_canonical_cookie_jar();
 
     // Default SameSite -> Lax-allowing-unsafe for 120 seconds
     t.require_true(wing::set_cookie_header(jar, "https://idp.example.com/login", "sso=token123; Secure", clock.now_us));
 
     // At t=119s cross-site top-level POST must include cookie
-    wing::advance_sec(clock, 119);
+    core::advance_sec(clock, 119);
     var out_119: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_119,
@@ -200,7 +201,7 @@ fn test_samesite_lax_post_window_and_obc(t: wing::T&) {
     t.assert_eq(out_119.len, 1, "at t=119s Lax+POST window must allow cross-site top-level POST");
 
     // At t=121s cross-site POST is blocked, but GET is allowed
-    wing::advance_sec(clock, 2);
+    core::advance_sec(clock, 2);
     var out_121_post: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_post,
@@ -223,8 +224,8 @@ fn test_samesite_lax_post_window_and_obc(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 6. 6-Round Domain GC Priority Quotas Asymmetry
 // ----------------------------------------------------------------------------
-fn test_gc_6_rounds_asymmetry_and_global_immunity(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_gc_6_rounds_asymmetry_and_global_immunity(t: core::T&) {
+    var clock = core::new_mock_clock();
     var jar = wing::new_canonical_cookie_jar();
 
     // Populate example.com domain:
@@ -234,17 +235,17 @@ fn test_gc_6_rounds_asymmetry_and_global_immunity(t: wing::T&) {
     for i in 30 {
         var h: u8[..64] = [];
         format(h, "low_sec_", i, "=1; Secure; Priority=Low");
-        wing::set_cookie_header(jar, "https://example.com/", h[..], wing::advance_us(clock, 10));
+        wing::set_cookie_header(jar, "https://example.com/", h[..], core::advance_us(clock, 10));
     }
     for i in 60 {
         var h: u8[..64] = [];
         format(h, "med_sec_", i, "=1; Secure; Priority=Medium");
-        wing::set_cookie_header(jar, "https://example.com/", h[..], wing::advance_us(clock, 10));
+        wing::set_cookie_header(jar, "https://example.com/", h[..], core::advance_us(clock, 10));
     }
     for i in 91 {
         var h: u8[..64] = [];
         format(h, "high_nonsec_", i, "=1; Priority=High");
-        wing::set_cookie_header(jar, "http://example.com/", h[..], wing::advance_us(clock, 10));
+        wing::set_cookie_header(jar, "http://example.com/", h[..], core::advance_us(clock, 10));
     }
 
     // 181 cookies inserted -> Domain GC triggered (181 -> 150 target, 31 evicted)
@@ -270,8 +271,8 @@ fn test_gc_6_rounds_asymmetry_and_global_immunity(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 7. Global Garbage Collection & 30-Day Purge Immunity
 // ----------------------------------------------------------------------------
-fn test_global_gc_and_30_day_immunity(t: wing::T&) {
-    var clock = wing::new_mock_clock(1700000000000000);
+fn test_global_gc_and_30_day_immunity(t: core::T&) {
+    var clock = core::new_mock_clock(1700000000000000);
     var jar = wing::new_canonical_cookie_jar();
     jar.max_cookies_global = 20;
     jar.target_cookies_global = 10;
@@ -291,7 +292,7 @@ fn test_global_gc_and_30_day_immunity(t: wing::T&) {
     t.assert_eq(jar.cookies.len, 21, "all cookies within 30-day window must be immune from global purge");
 
     // Advance clock past 30 days (e.g. 31 days)
-    wing::advance_days(clock, 31);
+    core::advance_days(clock, 31);
 
     // Now inserting 22nd cookie triggers global purge of non-immune cookies down to target (10)
     wing::set_cookie_header(jar, "https://d21.com/", "c=1; Secure", clock.now_us);
@@ -302,8 +303,8 @@ fn test_global_gc_and_30_day_immunity(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement
 // ----------------------------------------------------------------------------
-fn test_chips_and_10kb_quota(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_chips_and_10kb_quota(t: core::T&) {
+    var clock = core::new_mock_clock();
     var jar = wing::new_canonical_cookie_jar();
 
     // 1. Partitioned cookie ingestion with valid top-level site
@@ -321,7 +322,7 @@ fn test_chips_and_10kb_quota(t: wing::T&) {
     for i in 4 {
         var hdr: u8[..3200] = [];
         format(hdr, "chunk_", i, "=", big_val[..], "; Secure; Partitioned; SameSite=None");
-        wing::set_cookie_header(jar, "https://ad.service.com/", hdr[..], wing::advance_sec(clock, 1), "https://publisher.com");
+        wing::set_cookie_header(jar, "https://ad.service.com/", hdr[..], core::advance_sec(clock, 1), "https://publisher.com");
     }
 
     // 4 cookies * ~3010 bytes = 12040 bytes (> 10240 quota). CHIPS quota must have evicted oldest
@@ -332,17 +333,17 @@ fn test_chips_and_10kb_quota(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model
 // ----------------------------------------------------------------------------
-fn test_header_sorting_and_persistence_key(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_header_sorting_and_persistence_key(t: core::T&) {
+    var clock = core::new_mock_clock();
     var jar = wing::new_canonical_cookie_jar();
 
     t.run("RFC 6265 Section 5.4 Cookie Header Sorting (Longest Path First, Earliest Creation First)") { sub =>
         // 1. Shorter path, earlier creation
-        wing::set_cookie_header(jar, "https://example.com/sub/page", "short_path=1; Path=/sub", wing::advance_sec(clock, 1));
+        wing::set_cookie_header(jar, "https://example.com/sub/page", "short_path=1; Path=/sub", core::advance_sec(clock, 1));
         // 2. Longer path, later creation
-        wing::set_cookie_header(jar, "https://example.com/sub/page", "long_path=2; Path=/sub/page", wing::advance_sec(clock, 1));
+        wing::set_cookie_header(jar, "https://example.com/sub/page", "long_path=2; Path=/sub/page", core::advance_sec(clock, 1));
         // 3. Same path as #1, later creation
-        wing::set_cookie_header(jar, "https://example.com/sub/page", "another_short=3; Path=/sub", wing::advance_sec(clock, 1));
+        wing::set_cookie_header(jar, "https://example.com/sub/page", "another_short=3; Path=/sub", core::advance_sec(clock, 1));
 
         var out_hdr: u8[..256] = [];
         wing::build_cookie_header(jar, "https://example.com/sub/page", out_hdr, clock.now_us);
@@ -368,19 +369,19 @@ fn test_header_sorting_and_persistence_key(t: wing::T&) {
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("CanonicalCookieJar Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("CanonicalCookieJar Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Lexer, 4096B/1024B Quotas, CTL & WPT Nameless", test_lexer_limits_and_ctl);
-    wing::run_case(runner, "2. Date Tokenizer, 400-Day Cap & Expired Overwrite", test_dates_400d_cap_and_expired_overwrite);
-    wing::run_case(runner, "3. Domain, PSL, IPv4/IPv6 & Path-Match (RFC 6265 Section 5.1.3, Section 5.1.4)", test_domain_psl_ip_and_path_matching);
-    wing::run_case(runner, "4. Layered Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)", test_layered_prefixes_table);
-    wing::run_case(runner, "5. SameSite Lax+POST 120s Window & OBC IPv6 Port Upgrade", test_samesite_lax_post_window_and_obc);
-    wing::run_case(runner, "6. 6-Round Domain GC Asymmetry (Round 4 vs Round 5)", test_gc_6_rounds_asymmetry_and_global_immunity);
-    wing::run_case(runner, "7. Global Garbage Collection & 30-Day Purge Immunity", test_global_gc_and_30_day_immunity);
-    wing::run_case(runner, "8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement", test_chips_and_10kb_quota);
-    wing::run_case(runner, "9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model", test_header_sorting_and_persistence_key);
+    core::run_case(runner, "1. Lexer, 4096B/1024B Quotas, CTL & WPT Nameless", test_lexer_limits_and_ctl);
+    core::run_case(runner, "2. Date Tokenizer, 400-Day Cap & Expired Overwrite", test_dates_400d_cap_and_expired_overwrite);
+    core::run_case(runner, "3. Domain, PSL, IPv4/IPv6 & Path-Match (RFC 6265 Section 5.1.3, Section 5.1.4)", test_domain_psl_ip_and_path_matching);
+    core::run_case(runner, "4. Layered Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)", test_layered_prefixes_table);
+    core::run_case(runner, "5. SameSite Lax+POST 120s Window & OBC IPv6 Port Upgrade", test_samesite_lax_post_window_and_obc);
+    core::run_case(runner, "6. 6-Round Domain GC Asymmetry (Round 4 vs Round 5)", test_gc_6_rounds_asymmetry_and_global_immunity);
+    core::run_case(runner, "7. Global Garbage Collection & 30-Day Purge Immunity", test_global_gc_and_30_day_immunity);
+    core::run_case(runner, "8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement", test_chips_and_10kb_quota);
+    core::run_case(runner, "9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model", test_header_sorting_and_persistence_key);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }
 

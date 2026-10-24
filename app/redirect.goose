@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import core.url;
 import cookie.constants;
 import cookie.policy;
 import app.profile;
@@ -93,7 +92,7 @@ fn referrer_policy_to_string(policy: ReferrerPolicy) -> const u8[:] {
 struct RedirectInfo {
     status_code: i32 = 0,
     new_method: u8[..16] = [],
-    new_url: Url = Url { .. },
+    new_url: core::Url = core::Url { .. },
     new_site_for_cookies: SiteForCookies = SiteForCookies { .. },
     new_referrer: u8[..2048] = [],
     new_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
@@ -120,10 +119,10 @@ fn compute_redirect_info(
     cors_mode: bool,
     is_main_frame: bool
 ) -> RedirectInfo {
-    let cur_u = new_url(current_url_str);
+    let cur_u = core::new_url(current_url_str);
     let sfc = site_for_cookies_from_url(current_url_str);
-    var dummy_chain: Url[..1] = [];
-    var dummy_orig = new_opaque_origin();
+    var dummy_chain: core::Url[..1] = [];
+    var dummy_orig = core::new_opaque_origin();
     return compute_redirect_info(
         status_code,
         current_method,
@@ -175,8 +174,8 @@ fn mutate_redirect_method<B>(
 }
 
 fn inherit_target_fragment(
-    target_url: Url&,
-    current_url: const Url&,
+    target_url: core::Url&,
+    current_url: const core::Url&,
     clean_loc: const u8[:],
     preserve_fragment_on_redirect_url: const u8[:]
 ) {
@@ -192,21 +191,21 @@ fn inherit_target_fragment(
 }
 
 fn compute_redirect_site_for_cookies(
-    current_url: const Url&,
-    new_url: const Url&,
+    current_url: const core::Url&,
+    new_url: const core::Url&,
     first_party_policy: FirstPartyURLPolicy,
     current_site_for_cookies: const SiteForCookies&,
-    url_chain: const Url[:],
-    initiator: const Origin&,
+    url_chain: const core::Url[:],
+    initiator: const core::Origin&,
     has_initiator: bool,
     had_cross_site_hop: bool,
 ) -> SiteForCookies, bool {
-    let same_site_step = is_schemeful_same_site_urls(current_url, new_url);
+    let same_site_step = core::is_schemeful_same_site_urls(current_url, new_url);
 
     if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
         // Subresources / background requests: once tainted, remains null forever
         let is_first_p = is_first_party(current_site_for_cookies, href(new_url), true);
-        let initiator_ok = !has_initiator || is_same_site_origin_url(initiator, new_url);
+        let initiator_ok = !has_initiator || core::is_same_site_origin_url(initiator, new_url);
 
         if had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
             return null_site_for_cookies(), true;
@@ -217,11 +216,11 @@ fn compute_redirect_site_for_cookies(
     // Main-frame top-level navigation: SiteForCookies updates to target
     let new_site = site_for_cookies_from_parsed_url(new_url);
     var chain_tainted = had_cross_site_hop || !same_site_step;
-    if has_initiator && !is_same_site_origin_url(initiator, new_url) {
+    if has_initiator && !core::is_same_site_origin_url(initiator, new_url) {
         chain_tainted = true;
     }
     for &hop_url in url_chain {
-        if !is_schemeful_same_site_urls(hop_url, new_url) {
+        if !core::is_schemeful_same_site_urls(hop_url, new_url) {
             chain_tainted = true;
         }
     }
@@ -230,28 +229,28 @@ fn compute_redirect_site_for_cookies(
 
 fn validate_redirect_target(
     location_header: const u8[:],
-    current_url: const Url&,
+    current_url: const core::Url&,
     cors_mode: bool,
     tainted_origin: bool
-) -> Url, RedirectError {
+) -> core::Url, RedirectError {
     let clean_loc = trim(location_header);
     guard clean_loc.len > 0 else {
-        return Url { .. }, RedirectError.MissingLocation;
+        return core::Url { .. }, RedirectError.MissingLocation;
     }
 
-    let parsed_target, parse_err = parse_url_with_base(clean_loc, current_url);
+    let parsed_target, parse_err = core::parse_url_with_base(clean_loc, current_url);
     guard parsed_target.valid else {
-        return Url { .. }, RedirectError.InvalidLocationUrl;
+        return core::Url { .. }, RedirectError.InvalidLocationUrl;
     }
 
-    if !is_http_or_https(parsed_target) {
-        return Url { .. }, RedirectError.ForbiddenRedirectScheme;
+    if !core::is_http_or_https(parsed_target) {
+        return core::Url { .. }, RedirectError.ForbiddenRedirectScheme;
     }
 
-    if cors_mode && has_credentials(parsed_target) {
-        let same_orig = is_same_origin_url(current_url, parsed_target);
+    if cors_mode && core::has_credentials(parsed_target) {
+        let same_orig = core::is_same_origin_url(current_url, parsed_target);
         if !same_orig || tainted_origin {
-            return Url { .. }, RedirectError.CorsCredentialsInRedirectUrl;
+            return core::Url { .. }, RedirectError.CorsCredentialsInRedirectUrl;
         }
     }
 
@@ -263,15 +262,15 @@ fn validate_redirect_target(
 fn compute_redirect_info(
     status_code: i32,
     current_method: const u8[:],
-    current_url: const Url&,
+    current_url: const core::Url&,
     location_header: const u8[:],
     response_referrer_policy_header: const u8[:],
     current_referrer_policy: ReferrerPolicy,
     current_referrer: const u8[:],
     current_site_for_cookies: const SiteForCookies&,
     first_party_policy: FirstPartyURLPolicy,
-    url_chain: const Url[:],
-    initiator: const Origin&,
+    url_chain: const core::Url[:],
+    initiator: const core::Origin&,
     has_initiator: bool,
     cors_mode: bool,
     tainted_origin: bool,
@@ -300,7 +299,7 @@ fn compute_redirect_info(
     mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
 
     // 5. Origin and scheme comparison
-    let same_orig = is_same_origin_url(current_url, info.new_url);
+    let same_orig = core::is_same_origin_url(current_url, info.new_url);
     let is_downgrade = (scheme(current_url) == "https" && scheme(info.new_url) == "http");
     let port_changed = effective_port(current_url) != effective_port(info.new_url);
     info.is_scheme_downgrade = is_downgrade;
@@ -341,8 +340,8 @@ fn compute_redirect_info(
 // ---- referrer calculation helper -------------------------------------------
 
 fn compute_new_referrer<B>(
-    source_url: const Url&,
-    target_url: const Url&,
+    source_url: const core::Url&,
+    target_url: const core::Url&,
     policy: ReferrerPolicy,
     is_cross_origin: bool,
     is_downgrade: bool,
@@ -359,7 +358,7 @@ fn compute_new_referrer<B>(
     clean_source.append(search(source_url));
 
     var source_origin: u8[..256] = [];
-    serialize_origin(origin_from_url(source_url), source_origin);
+    core::serialize_origin(core::origin_from_url(source_url), source_origin);
 
     match policy {
         NoReferrer => { return; },

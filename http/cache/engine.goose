@@ -4,9 +4,6 @@
 namespace wing;
 
 import std;
-import core.time;
-import core.url;
-import core.sync;
 import app.profile;
 import app.request;
 import app.response;
@@ -43,7 +40,7 @@ struct CachedEntry {
     headers: HeaderMap = HeaderMap { .. },
     cc: CacheControl = CacheControl { .. },
     etag: EntityTag = EntityTag { .. },
-    last_modified: Time = Time { .. },
+    last_modified: core::Time = core::Time { .. },
     timestamps: CacheTimestamps = CacheTimestamps { .. },
     vary: VarySnapshot = VarySnapshot { .. },
     body: u8[..65536] = [],
@@ -70,7 +67,7 @@ fn hash_fnv1a(s: const u8[:]) -> u32 {
 }
 
 // Converts a CachedEntry to an application Response, attaching calculated Age header (RFC 9111 §5.1).
-fn entry_to_response(entry: const CachedEntry&, cur_now: Time, out_resp: Response&) {
+fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: Response&) {
     out_resp.status_code = entry.status_code;
     out_resp.effective_url.clear();
     out_resp.effective_url.append(entry.url[..]);
@@ -91,7 +88,7 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: Time, out_resp: Respons
     let date_raw = entry.headers.get_header("date");
     var date_time = cur_ts.response_time;
     if date_raw.len > 0 {
-        let d, ok_d = parse_http_date(date_raw);
+        let d, ok_d = core::parse_http_date(date_raw);
         if ok_d { date_time = d; }
     }
     let apparent_age = compute_apparent_age(cur_ts.response_time, date_time);
@@ -155,7 +152,7 @@ struct CacheWriterFlight {
 // Single-flight coordinator for concurrent network transactions (Chromium HttpCache::Writers parity).
 struct CacheWriters {
     flights: CacheWriterFlight[..16] = [],
-    group: SingleflightGroup = SingleflightGroup { .. },
+    group: core::SingleflightGroup = core::SingleflightGroup { .. },
 }
 
 // Constructs a zero-initialized CacheWriters container.
@@ -283,12 +280,12 @@ fn request_has_authorization(req_headers: const HeaderMap&) -> bool {
 
 // Checks whether two URLs share the same origin, preventing cross-origin poisoning (RFC 9111 §4.4).
 fn is_same_origin_url(url_a: const u8[:], url_b: const u8[:]) -> bool {
-    let parsed_a, err_a = parse_url(url_a);
-    let parsed_b, err_b = parse_url(url_b);
+    let parsed_a, err_a = core::parse_url(url_a);
+    let parsed_b, err_b = core::parse_url(url_b);
     guard err_a == core::UrlParseError.None && err_b == core::UrlParseError.None else { return false; }
-    let orig_a = origin_from_url(parsed_a);
-    let orig_b = origin_from_url(parsed_b);
-    return is_same_origin(orig_a, orig_b);
+    let orig_a = core::origin_from_url(parsed_a);
+    let orig_b = core::origin_from_url(parsed_b);
+    return core::is_same_origin(orig_a, orig_b);
 }
 
 // ---- lookup logic (rfc 9111 section 4) -------------------------------------
@@ -315,8 +312,8 @@ fn find_matching_entry(
         let date_raw = entry.headers.get_header("date");
         var d_unix: i64 = 0;
         if date_raw.len > 0 {
-            let d_val, ok_d = parse_http_date(date_raw);
-            if ok_d { d_unix = unix(d_val); }
+            let d_val, ok_d = core::parse_http_date(date_raw);
+            if ok_d { d_unix = core::unix(d_val); }
         }
         if d_unix >= newest_date_unix {
             newest_date_unix = d_unix;
@@ -349,8 +346,8 @@ fn build_revalidation_headers(entry: const CachedEntry&) -> HeaderMap {
 fn lookup(
     cache: HttpCache&,
     req: const Request&,
-    cur_now: Time,
-    cur_mono: MonotonicInstant = MonotonicInstant { .. }
+    cur_now: core::Time,
+    cur_mono: core::MonotonicInstant = core::MonotonicInstant { .. }
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
 
@@ -558,9 +555,9 @@ fn on_response(
     resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
 
     let lm_raw = resp_headers.get_header("last-modified");
-    var lm_time = Time { .. };
+    var lm_time = core::Time { .. };
     if lm_raw.len > 0 {
-        let p_lm, ok_lm = parse_http_date(lm_raw);
+        let p_lm, ok_lm = core::parse_http_date(lm_raw);
         if ok_lm { lm_time = p_lm; }
     }
 

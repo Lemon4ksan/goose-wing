@@ -1,12 +1,13 @@
 // Tests for cookie security prefix enforcement and Max-Age bounds.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // Round 1: RFC 6265bis Section 5.6 Insecure Cookie Protection
 // ----------------------------------------------------------------------------
-fn test_rfc6265bis_sec56_shadowing_protection(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_rfc6265bis_sec56_shadowing_protection(t: core::T&) {
+    var clock = core::new_mock_clock();
 
     t.run("SEC-01: Insecure subpath must not shadow root secure cookie") { sub =>
         var j = wing::new_canonical_cookie_jar();
@@ -38,8 +39,8 @@ fn test_rfc6265bis_sec56_shadowing_protection(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // Round 2: Case-Insensitive Prefix Enforcement
 // ----------------------------------------------------------------------------
-fn test_case_insensitive_prefix_enforcement(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_case_insensitive_prefix_enforcement(t: core::T&) {
+    var clock = core::new_mock_clock();
 
     t.run("PREFIX-01: Lowercase __secure- without Secure flag must be rejected") { sub =>
         var jar = wing::new_canonical_cookie_jar();
@@ -88,8 +89,8 @@ fn test_case_insensitive_prefix_enforcement(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // Round 3: Max-Age Capping and Overflow Protection
 // ----------------------------------------------------------------------------
-fn test_max_age_overflow_and_capping(t: wing::T&) {
-    var clock = wing::new_mock_clock();
+fn test_max_age_overflow_and_capping(t: core::T&) {
+    var clock = core::new_mock_clock();
     let expected_cap_us = clock.now_us + wing::K_MAX_COOKIE_AGE_US;
 
     t.run("MAXAGE-01: Large Max-Age (10000000000000) must clamp to 400 days in jar") { sub =>
@@ -142,12 +143,12 @@ fn test_max_age_overflow_and_capping(t: wing::T&) {
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Cookie Invariants Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Cookie Invariants Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
-    wing::run_case(runner, "2. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
-    wing::run_case(runner, "3. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
+    core::run_case(runner, "1. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
+    core::run_case(runner, "2. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
+    core::run_case(runner, "3. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

@@ -1,11 +1,12 @@
 // Tests for radix tree routing, buffer pools, and server execution pipeline.
 import std;
+import core from "..";
 import wing from "..";
 
 // ----------------------------------------------------------------------------
 // 1. Zero-Allocation Parameter Extraction & Byte Spans
 // ----------------------------------------------------------------------------
-fn test_zero_alloc_params(t: wing::T&) {
+fn test_zero_alloc_params(t: core::T&) {
     t.run("Span Slicing Without Heap Allocations") { sub =>
         var params = wing::ZeroAllocParams { .. };
         let req_path = "/users/alice99/settings";
@@ -30,7 +31,7 @@ fn test_zero_alloc_params(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. Radix Trie: Static Precedence, Catch-All & Method Isolation
 // ----------------------------------------------------------------------------
-fn test_radix_trie_routing(t: wing::T&) {
+fn test_radix_trie_routing(t: core::T&) {
     t.run("Static Route Priority Over Parameter") { sub =>
         var tree = wing::new_radix_tree();
         wing::insert_route(tree, "/users/{id}", 101);
@@ -157,7 +158,7 @@ fn test_radix_trie_routing(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. Tako v2 6-Mechanism Server Pool
 // ----------------------------------------------------------------------------
-fn test_tako_v2_pool_mechanisms(t: wing::T&) {
+fn test_tako_v2_pool_mechanisms(t: core::T&) {
     t.run("HeaderMapPool Acquisition and Clean Release") { sub =>
         var pool = wing::new_header_map_pool();
         let s0 = wing::acquire_header_map(pool);
@@ -216,9 +217,9 @@ fn test_tako_v2_pool_mechanisms(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. Unified Defense-in-Depth Pipeline Integration
 // ----------------------------------------------------------------------------
-fn test_unified_server_pipeline(t: wing::T&) {
+fn test_unified_server_pipeline(t: core::T&) {
     t.run("End-to-End Handled Request Lifecycle") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/v1/users/{id}", 42);
 
@@ -243,7 +244,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
     };
 
     t.run("Pipeline Rate Limiting Defense (Stage 1)") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 0); // strictly 1 req/s
+        let quota = wing::new_gcra_quota(1, core::secs(1), 0); // strictly 1 req/s
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/health", 1);
 
@@ -265,7 +266,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
     };
 
     t.run("Pipeline CSRF Defense (Stage 2)") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/api/transfer", 99);
 
@@ -282,7 +283,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
     };
 
     t.run("Pipeline Routing & 405 Method Not Allowed (Stage 3)") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/data", 10);
 
@@ -300,7 +301,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
 
         var has_allow = false;
         for &hdr in res.headers {
-            if wing::eq_ascii_fold(hdr.name[..], "Allow") {
+            if core::eq_ascii_fold(hdr.name[..], "Allow") {
                 has_allow = true;
                 sub.assert_contains(hdr.value[..], "GET", "Allow header indicates GET");
             }
@@ -309,7 +310,7 @@ fn test_unified_server_pipeline(t: wing::T&) {
     };
 
     t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 Section 10.1.1)") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
@@ -342,13 +343,13 @@ fn test_unified_server_pipeline(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Server Router & Pipeline Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Server Router & Pipeline Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
-    wing::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
-    wing::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
-    wing::run_case(runner, "4. Unified Defense-in-Depth Pipeline Integration", test_unified_server_pipeline);
+    core::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
+    core::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
+    core::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
+    core::run_case(runner, "4. Unified Defense-in-Depth Pipeline Integration", test_unified_server_pipeline);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

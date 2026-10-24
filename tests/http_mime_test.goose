@@ -1,8 +1,9 @@
 // Tests for MIME media types, parameter parsing, unquoting, and structured fields.
 import std;
+import core from "..";
 import wing from "..";
 
-fn test_strict_unquote_invariants(t: wing::T&) {
+fn test_strict_unquote_invariants(t: core::T&) {
     t.run("Chromium HttpUtil::StrictUnquote Valid Cases") { sub =>
         var out: u8[>..] = [];
         let ok1 = wing::strict_unquote("\"simple text\"", out);
@@ -55,7 +56,7 @@ fn test_strict_unquote_invariants(t: wing::T&) {
     };
 }
 
-fn test_media_type_parser(t: wing::T&) {
+fn test_media_type_parser(t: core::T&) {
     t.run("Content-Type Parsing and Parameters") { sub =>
         let mt, ok = wing::parse_media_type("text/html; charset=UTF-8; boundary=\"----WebKit123\"");
         sub.assert_true(ok, "Valid Content-Type parsed");
@@ -90,7 +91,7 @@ fn test_media_type_parser(t: wing::T&) {
     };
 }
 
-fn test_sfv_integers_and_decimals(t: wing::T&) {
+fn test_sfv_integers_and_decimals(t: core::T&) {
     t.run("RFC 8941 Section 3.3.1 sf-integer 15-Digit Bounds") { sub =>
         var item = wing::SfvItem { .. };
 
@@ -150,7 +151,7 @@ fn test_sfv_integers_and_decimals(t: wing::T&) {
     };
 }
 
-fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
+fn test_sfv_strings_tokens_and_keys(t: core::T&) {
     t.run("RFC 8941 Section 3.3.3 sf-string Escape Invariants") { sub =>
         var item = wing::SfvItem { .. };
 
@@ -196,7 +197,7 @@ fn test_sfv_strings_tokens_and_keys(t: wing::T&) {
     };
 }
 
-fn test_sfv_rfc9651_dates_and_display_strings(t: wing::T&) {
+fn test_sfv_rfc9651_dates_and_display_strings(t: core::T&) {
     t.run("RFC 9651 Section 3.3.7 sf-date (@epoch)") { sub =>
         var item = wing::SfvItem { .. };
         let ok = wing::parse_sfv_item("@1659578233", item);
@@ -227,7 +228,7 @@ fn test_sfv_rfc9651_dates_and_display_strings(t: wing::T&) {
     };
 }
 
-fn test_sfv_lists_and_dictionaries(t: wing::T&) {
+fn test_sfv_lists_and_dictionaries(t: core::T&) {
     t.run("RFC 8941 Section 3.1 List with Standalone and Inner Lists") { sub =>
         var list = wing::SfvList { .. };
         // sugar, (milk tea);temp=hot, "cookies"
@@ -267,15 +268,15 @@ fn test_sfv_lists_and_dictionaries(t: wing::T&) {
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
-    var runner = wing::new_runner("HTTP MIME & Structured Field Values (SFV) Verification Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("HTTP MIME & Structured Field Values (SFV) Verification Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Chromium HttpUtil::StrictUnquote Invariants", test_strict_unquote_invariants);
-    wing::run_case(runner, "2. RFC 9110 Section 8.3 MediaType & Content-Type", test_media_type_parser);
-    wing::run_case(runner, "3. RFC 8941 Section 3.3.1 sf-integer & Section 3.3.2 sf-decimal", test_sfv_integers_and_decimals);
-    wing::run_case(runner, "4. RFC 8941 Section 3.3.3 sf-string, Section 3.3.5 sf-binary & keys", test_sfv_strings_tokens_and_keys);
-    wing::run_case(runner, "5. RFC 9651 sf-date & sf-displaystring (UTF-8)", test_sfv_rfc9651_dates_and_display_strings);
-    wing::run_case(runner, "6. RFC 8941 Section 3.1 Lists & Section 3.2 Dictionaries", test_sfv_lists_and_dictionaries);
+    core::run_case(runner, "1. Chromium HttpUtil::StrictUnquote Invariants", test_strict_unquote_invariants);
+    core::run_case(runner, "2. RFC 9110 Section 8.3 MediaType & Content-Type", test_media_type_parser);
+    core::run_case(runner, "3. RFC 8941 Section 3.3.1 sf-integer & Section 3.3.2 sf-decimal", test_sfv_integers_and_decimals);
+    core::run_case(runner, "4. RFC 8941 Section 3.3.3 sf-string, Section 3.3.5 sf-binary & keys", test_sfv_strings_tokens_and_keys);
+    core::run_case(runner, "5. RFC 9651 sf-date & sf-displaystring (UTF-8)", test_sfv_rfc9651_dates_and_display_strings);
+    core::run_case(runner, "6. RFC 8941 Section 3.1 Lists & Section 3.2 Dictionaries", test_sfv_lists_and_dictionaries);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }

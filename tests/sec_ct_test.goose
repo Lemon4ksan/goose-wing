@@ -1,5 +1,6 @@
 // Tests for constant-time primitives, cryptographic functions, and CryptoJar.
 import std;
+import core from "..";
 import wing from "..";
 
 fn hex_to_bytes(hex: const u8[:], out: u8[>..]&) {
@@ -30,7 +31,7 @@ fn bytes_to_hex(bytes: const u8[:], out: u8[>..]&) {
 // ----------------------------------------------------------------------------
 // 1. Constant-Time Primitives & KeySlot Redaction
 // ----------------------------------------------------------------------------
-fn test_constant_time_primitives(t: wing::T&) {
+fn test_constant_time_primitives(t: core::T&) {
     t.run("Branchless Equality and Select") { sub =>
         sub.assert_eq(wing::ct_eq_u8(0x42, 0x42), 1, "ct_eq_u8 match");
         sub.assert_eq(wing::ct_eq_u8(0x42, 0x43), 0, "ct_eq_u8 mismatch");
@@ -79,7 +80,7 @@ fn test_constant_time_primitives(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 2. Dudect Statistical Welch's t-test Simulation
 // ----------------------------------------------------------------------------
-fn test_dudect_context_and_filtering(t: wing::T&) {
+fn test_dudect_context_and_filtering(t: core::T&) {
     t.run("Outlier Cropping & Statistical Lockstep") { sub =>
         var ctx = wing::new_dudect_context();
 
@@ -103,7 +104,7 @@ fn test_dudect_context_and_filtering(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 3. NIST / RFC Cryptographic Primitives
 // ----------------------------------------------------------------------------
-fn test_pure_goose_crypto_primitives(t: wing::T&) {
+fn test_pure_goose_crypto_primitives(t: core::T&) {
     t.run("SHA-256 NIST Vectors") { sub =>
         // Vector 1: Empty string
         let h_empty = wing::sha256("");
@@ -197,7 +198,7 @@ fn test_pure_goose_crypto_primitives(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 4. AEAD Authenticated Encryption: XChaCha20-Poly1305 & AES-256-GCM
 // ----------------------------------------------------------------------------
-fn test_aead_ciphers(t: wing::T&) {
+fn test_aead_ciphers(t: core::T&) {
     t.run("XChaCha20-Poly1305 Round-Trip & Tamper Resistance") { sub =>
         var key: u8[32] = [0x42; 32];
         var nonce: u8[24] = [0x19; 24];
@@ -254,7 +255,7 @@ fn test_aead_ciphers(t: wing::T&) {
 // ----------------------------------------------------------------------------
 // 5. CryptoJar Container: PrivateJar & SignedJar with Key Rotation
 // ----------------------------------------------------------------------------
-fn test_crypto_jar_container(t: wing::T&) {
+fn test_crypto_jar_container(t: core::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
         var store = wing::new_key_store();
         var raw_key: u8[32] = [0x33; 32];
@@ -366,14 +367,14 @@ fn test_crypto_jar_container(t: wing::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = wing::new_runner("Constant-Time & CryptoJar Suite", wing::Verbosity.Verbose);
+    var runner = core::new_runner("Constant-Time & CryptoJar Suite", core::Verbosity.Verbose);
 
-    wing::run_case(runner, "1. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
-    wing::run_case(runner, "2. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
-    wing::run_case(runner, "3. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
-    wing::run_case(runner, "4. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
-    wing::run_case(runner, "5. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
+    core::run_case(runner, "1. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
+    core::run_case(runner, "2. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
+    core::run_case(runner, "3. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
+    core::run_case(runner, "4. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
+    core::run_case(runner, "5. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
 
-    let ok = wing::finish(runner);
+    let ok = core::finish(runner);
     assert(ok);
 }
