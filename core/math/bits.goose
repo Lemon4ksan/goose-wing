@@ -89,6 +89,14 @@ inline fn read_le_u16(data: const u8[:], offset: i64) -> u16 {
     return (s[0]) | ((s[1] as u16) << 8);
 }
 
+// Reads a 24-bit unsigned integer in Little-Endian byte order from slice.
+inline fn read_le_u24(data: const u8[:], offset: i64) -> u32 {
+    let s = data[offset .. offset + 3];
+    return (s[0]) |
+           ((s[1] as u32) << 8) |
+           ((s[2] as u32) << 16);
+}
+
 // Reads a 32-bit unsigned integer in Little-Endian byte order from slice.
 inline fn read_le_u32(data: const u8[:], offset: i64) -> u32 {
     let s = data[offset .. offset + 4];

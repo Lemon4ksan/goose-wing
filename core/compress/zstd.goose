@@ -284,106 +284,190 @@ struct HufWeightTable {
     is_defined: bool = false,
 }
 
-const LL_DEFAULT_ENTRIES_SYM: u8[64] = [
-    0, 0, 1, 3, 4, 6, 7, 9, 10, 12, 14, 16, 18, 19, 21, 22,
-    24, 25, 26, 27, 29, 31, 0, 1, 2, 4, 5, 7, 8, 10, 11, 13,
-    16, 17, 19, 20, 22, 23, 25, 25, 26, 28, 30, 0, 1, 2, 3, 5,
-    6, 8, 9, 11, 12, 15, 17, 18, 20, 21, 23, 24, 35, 34, 33, 32
-];
+const EMPTY_HUF_TABLE: HufTable = HufTable {};
+const EMPTY_FSE_TABLE: FseTable = FseTable {};
+const EMPTY_HUF_WEIGHT_TABLE: HufWeightTable = HufWeightTable {};
 
-const LL_DEFAULT_ENTRIES_BITS: u8[64] = [
-    4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 5, 5, 5, 5, 5,
-    5, 5, 5, 6, 6, 6, 4, 4, 5, 5, 5, 5, 5, 5, 5, 6,
-    5, 5, 5, 5, 5, 5, 4, 4, 5, 6, 6, 4, 4, 5, 5, 5,
-    5, 5, 5, 5, 5, 6, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6
+const DEFAULT_LL_ENTRIES: FseEntry[64] = [
+FseEntry { base_val: 0, new_state: 0, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 0, new_state: 16, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 1, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 3, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 4, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 6, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 7, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 9, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 10, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 12, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 14, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 16, new_state: 0, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 20, new_state: 0, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 22, new_state: 0, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 28, new_state: 0, nb_bits: 5, extra_bits: 2 },
+FseEntry { base_val: 32, new_state: 0, nb_bits: 5, extra_bits: 3 },
+FseEntry { base_val: 48, new_state: 0, nb_bits: 5, extra_bits: 4 },
+FseEntry { base_val: 64, new_state: 32, nb_bits: 5, extra_bits: 6 },
+FseEntry { base_val: 128, new_state: 0, nb_bits: 5, extra_bits: 7 },
+FseEntry { base_val: 256, new_state: 0, nb_bits: 6, extra_bits: 8 },
+FseEntry { base_val: 1024, new_state: 0, nb_bits: 6, extra_bits: 10 },
+FseEntry { base_val: 4096, new_state: 0, nb_bits: 6, extra_bits: 12 },
+FseEntry { base_val: 0, new_state: 32, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 1, new_state: 0, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 2, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 4, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 5, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 7, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 8, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 10, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 11, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 13, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 16, new_state: 32, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 18, new_state: 0, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 22, new_state: 32, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 24, new_state: 0, nb_bits: 5, extra_bits: 2 },
+FseEntry { base_val: 32, new_state: 32, nb_bits: 5, extra_bits: 3 },
+FseEntry { base_val: 40, new_state: 0, nb_bits: 5, extra_bits: 3 },
+FseEntry { base_val: 64, new_state: 0, nb_bits: 4, extra_bits: 6 },
+FseEntry { base_val: 64, new_state: 16, nb_bits: 4, extra_bits: 6 },
+FseEntry { base_val: 128, new_state: 32, nb_bits: 5, extra_bits: 7 },
+FseEntry { base_val: 512, new_state: 0, nb_bits: 6, extra_bits: 9 },
+FseEntry { base_val: 2048, new_state: 0, nb_bits: 6, extra_bits: 11 },
+FseEntry { base_val: 0, new_state: 48, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 1, new_state: 16, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 2, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 3, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 5, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 6, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 8, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 9, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 11, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 12, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 15, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 18, new_state: 32, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 20, new_state: 32, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 24, new_state: 32, nb_bits: 5, extra_bits: 2 },
+FseEntry { base_val: 28, new_state: 32, nb_bits: 5, extra_bits: 2 },
+FseEntry { base_val: 40, new_state: 32, nb_bits: 5, extra_bits: 3 },
+FseEntry { base_val: 48, new_state: 32, nb_bits: 5, extra_bits: 4 },
+FseEntry { base_val: 65536, new_state: 0, nb_bits: 6, extra_bits: 16 },
+FseEntry { base_val: 32768, new_state: 0, nb_bits: 6, extra_bits: 15 },
+FseEntry { base_val: 16384, new_state: 0, nb_bits: 6, extra_bits: 14 },
+FseEntry { base_val: 8192, new_state: 0, nb_bits: 6, extra_bits: 13 },
 ];
-
-const LL_DEFAULT_ENTRIES_STATE: u16[64] = [
-    0, 16, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 32, 0, 0, 0, 0, 32, 0, 0, 32, 0, 32, 0, 32, 0, 0,
-    32, 0, 32, 0, 32, 0, 0, 16, 32, 0, 0, 48, 16, 32, 32, 32,
-    32, 32, 32, 32, 32, 0, 32, 32, 32, 32, 32, 32, 0, 0, 0, 0
+const DEFAULT_OF_ENTRIES: FseEntry[32] = [
+FseEntry { base_val: 1, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 64, new_state: 0, nb_bits: 4, extra_bits: 6 },
+FseEntry { base_val: 512, new_state: 0, nb_bits: 5, extra_bits: 9 },
+FseEntry { base_val: 32768, new_state: 0, nb_bits: 5, extra_bits: 15 },
+FseEntry { base_val: 2097152, new_state: 0, nb_bits: 5, extra_bits: 21 },
+FseEntry { base_val: 8, new_state: 0, nb_bits: 5, extra_bits: 3 },
+FseEntry { base_val: 128, new_state: 0, nb_bits: 4, extra_bits: 7 },
+FseEntry { base_val: 4096, new_state: 0, nb_bits: 5, extra_bits: 12 },
+FseEntry { base_val: 262144, new_state: 0, nb_bits: 5, extra_bits: 18 },
+FseEntry { base_val: 8388608, new_state: 0, nb_bits: 5, extra_bits: 23 },
+FseEntry { base_val: 32, new_state: 0, nb_bits: 5, extra_bits: 5 },
+FseEntry { base_val: 256, new_state: 0, nb_bits: 4, extra_bits: 8 },
+FseEntry { base_val: 16384, new_state: 0, nb_bits: 5, extra_bits: 14 },
+FseEntry { base_val: 1048576, new_state: 0, nb_bits: 5, extra_bits: 20 },
+FseEntry { base_val: 4, new_state: 0, nb_bits: 5, extra_bits: 2 },
+FseEntry { base_val: 128, new_state: 16, nb_bits: 4, extra_bits: 7 },
+FseEntry { base_val: 2048, new_state: 0, nb_bits: 5, extra_bits: 11 },
+FseEntry { base_val: 131072, new_state: 0, nb_bits: 5, extra_bits: 17 },
+FseEntry { base_val: 4194304, new_state: 0, nb_bits: 5, extra_bits: 22 },
+FseEntry { base_val: 16, new_state: 0, nb_bits: 5, extra_bits: 4 },
+FseEntry { base_val: 256, new_state: 16, nb_bits: 4, extra_bits: 8 },
+FseEntry { base_val: 8192, new_state: 0, nb_bits: 5, extra_bits: 13 },
+FseEntry { base_val: 524288, new_state: 0, nb_bits: 5, extra_bits: 19 },
+FseEntry { base_val: 2, new_state: 0, nb_bits: 5, extra_bits: 1 },
+FseEntry { base_val: 64, new_state: 16, nb_bits: 4, extra_bits: 6 },
+FseEntry { base_val: 1024, new_state: 0, nb_bits: 5, extra_bits: 10 },
+FseEntry { base_val: 65536, new_state: 0, nb_bits: 5, extra_bits: 16 },
+FseEntry { base_val: 268435456, new_state: 0, nb_bits: 5, extra_bits: 28 },
+FseEntry { base_val: 134217728, new_state: 0, nb_bits: 5, extra_bits: 27 },
+FseEntry { base_val: 67108864, new_state: 0, nb_bits: 5, extra_bits: 26 },
+FseEntry { base_val: 33554432, new_state: 0, nb_bits: 5, extra_bits: 25 },
+FseEntry { base_val: 16777216, new_state: 0, nb_bits: 5, extra_bits: 24 },
 ];
-
-const OF_DEFAULT_ENTRIES_SYM: u8[32] = [
-    0, 6, 9, 15, 21, 3, 7, 12, 18, 23, 5, 8, 14, 20, 2, 7,
-    11, 17, 22, 4, 8, 13, 19, 1, 6, 10, 16, 28, 27, 26, 25, 24
+const DEFAULT_ML_ENTRIES: FseEntry[64] = [
+FseEntry { base_val: 3, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 4, new_state: 0, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 5, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 6, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 8, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 9, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 11, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 13, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 16, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 19, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 22, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 25, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 28, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 31, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 34, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 37, new_state: 0, nb_bits: 6, extra_bits: 1 },
+FseEntry { base_val: 41, new_state: 0, nb_bits: 6, extra_bits: 1 },
+FseEntry { base_val: 47, new_state: 0, nb_bits: 6, extra_bits: 2 },
+FseEntry { base_val: 59, new_state: 0, nb_bits: 6, extra_bits: 3 },
+FseEntry { base_val: 83, new_state: 0, nb_bits: 6, extra_bits: 4 },
+FseEntry { base_val: 131, new_state: 0, nb_bits: 6, extra_bits: 7 },
+FseEntry { base_val: 515, new_state: 0, nb_bits: 6, extra_bits: 9 },
+FseEntry { base_val: 4, new_state: 16, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 5, new_state: 0, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 6, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 7, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 9, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 10, new_state: 0, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 12, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 15, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 18, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 21, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 24, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 27, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 30, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 33, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 35, new_state: 0, nb_bits: 6, extra_bits: 1 },
+FseEntry { base_val: 39, new_state: 0, nb_bits: 6, extra_bits: 1 },
+FseEntry { base_val: 43, new_state: 0, nb_bits: 6, extra_bits: 2 },
+FseEntry { base_val: 51, new_state: 0, nb_bits: 6, extra_bits: 3 },
+FseEntry { base_val: 67, new_state: 0, nb_bits: 6, extra_bits: 4 },
+FseEntry { base_val: 99, new_state: 0, nb_bits: 6, extra_bits: 5 },
+FseEntry { base_val: 259, new_state: 0, nb_bits: 6, extra_bits: 8 },
+FseEntry { base_val: 4, new_state: 32, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 4, new_state: 48, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 5, new_state: 16, nb_bits: 4, extra_bits: 0 },
+FseEntry { base_val: 7, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 8, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 10, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 11, new_state: 32, nb_bits: 5, extra_bits: 0 },
+FseEntry { base_val: 14, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 17, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 20, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 23, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 26, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 29, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 32, new_state: 0, nb_bits: 6, extra_bits: 0 },
+FseEntry { base_val: 65539, new_state: 0, nb_bits: 6, extra_bits: 16 },
+FseEntry { base_val: 32771, new_state: 0, nb_bits: 6, extra_bits: 15 },
+FseEntry { base_val: 16387, new_state: 0, nb_bits: 6, extra_bits: 14 },
+FseEntry { base_val: 8195, new_state: 0, nb_bits: 6, extra_bits: 13 },
+FseEntry { base_val: 4099, new_state: 0, nb_bits: 6, extra_bits: 12 },
+FseEntry { base_val: 2051, new_state: 0, nb_bits: 6, extra_bits: 11 },
+FseEntry { base_val: 1027, new_state: 0, nb_bits: 6, extra_bits: 10 },
 ];
-
-const OF_DEFAULT_ENTRIES_BITS: u8[32] = [
-    5, 4, 5, 5, 5, 5, 4, 5, 5, 5, 5, 4, 5, 5, 5, 4,
-    5, 5, 5, 5, 4, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, 5
-];
-
-const OF_DEFAULT_ENTRIES_STATE: u16[32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16,
-    0, 0, 0, 0, 16, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0
-];
-
-const ML_DEFAULT_ENTRIES_SYM: u8[64] = [
-    0, 1, 2, 3, 5, 6, 8, 10, 13, 16, 19, 22, 25, 28, 31, 33,
-    35, 37, 39, 41, 43, 45, 1, 2, 3, 4, 6, 7, 9, 12, 15, 18,
-    21, 24, 27, 30, 32, 34, 36, 38, 40, 42, 44, 1, 1, 2, 4, 5,
-    7, 8, 11, 14, 17, 20, 23, 26, 29, 52, 51, 50, 49, 48, 47, 46
-];
-
-const ML_DEFAULT_ENTRIES_BITS: u8[64] = [
-    6, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-    6, 6, 6, 6, 6, 6, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6,
-    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 4, 4, 4, 5, 5,
-    5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6
-];
-
-const ML_DEFAULT_ENTRIES_STATE: u16[64] = [
-    0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 16, 0, 32, 0, 32, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 48, 16, 32, 32,
-    32, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-];
-
 inline fn fse_init_default_ll(out_table: FseTable&) {
-    out_table.table_log = 6;
-    out_table.is_defined = true;
-    for i in 64 {
-        let sym = LL_DEFAULT_ENTRIES_SYM[i];
-        let idx = (sym & 63) as i64;
-        out_table.entries[i] = FseEntry {
-            base_val: LL_BASE[idx],
-            new_state: LL_DEFAULT_ENTRIES_STATE[i],
-            nb_bits: LL_DEFAULT_ENTRIES_BITS[i],
-            extra_bits: LL_EXTRA_BITS[idx],
-        };
-    }
+out_table.table_log = 6;
+out_table.is_defined = true;
+for i in 64 { out_table.entries[i] = DEFAULT_LL_ENTRIES[i]; }
 }
-
 inline fn fse_init_default_of(out_table: FseTable&) {
-    out_table.table_log = 5;
-    out_table.is_defined = true;
-    for i in 32 {
-        let sym = OF_DEFAULT_ENTRIES_SYM[i];
-        let sc = (sym & 31) as u32;
-        out_table.entries[i] = FseEntry {
-            base_val: (1 as u32) << sc,
-            new_state: OF_DEFAULT_ENTRIES_STATE[i],
-            nb_bits: OF_DEFAULT_ENTRIES_BITS[i],
-            extra_bits: sc as u8,
-        };
-    }
+out_table.table_log = 5;
+out_table.is_defined = true;
+for i in 32 { out_table.entries[i] = DEFAULT_OF_ENTRIES[i]; }
 }
-
 inline fn fse_init_default_ml(out_table: FseTable&) {
-    out_table.table_log = 6;
-    out_table.is_defined = true;
-    for i in 64 {
-        let sym = ML_DEFAULT_ENTRIES_SYM[i];
-        let idx = (sym & 63) as i64;
-        out_table.entries[i] = FseEntry {
-            base_val: ML_BASE[idx],
-            new_state: ML_DEFAULT_ENTRIES_STATE[i],
-            nb_bits: ML_DEFAULT_ENTRIES_BITS[i],
-            extra_bits: ML_EXTRA_BITS[idx],
-        };
-    }
+out_table.table_log = 6;
+out_table.is_defined = true;
+for i in 64 { out_table.entries[i] = DEFAULT_ML_ENTRIES[i]; }
 }
 
 fn fse_build_weight_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: HufWeightTable&) -> bool {
@@ -729,7 +813,7 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
             return false;
         }
 
-        var weight_fse_table = HufWeightTable {};
+        var weight_fse_table = EMPTY_HUF_WEIGHT_TABLE;
         if !fse_build_weight_dtable(fse_counts[..], fse_max_sym, fse_log, weight_fse_table) {
             return false;
         }
@@ -1162,43 +1246,29 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             single_stream = true;
             lh_size = 3;
             if offset + 3 > block_end { return DecodedLiterals { ok: false }; }
-            let b0 = src[offset] as u32;
-            let b1 = src[offset + 1] as u32;
-            let b2 = src[offset + 2] as u32;
-            let val = b0 | (b1 << 8) | (b2 << 16);
+            let val = read_le_u24(src, offset);
             regenerated_size = (val >> 4) & 0x3FF;
             compressed_size = (val >> 14) & 0x3FF;
         } else if size_format == 1 {
             single_stream = false;
             lh_size = 3;
             if offset + 3 > block_end { return DecodedLiterals { ok: false }; }
-            let b0 = src[offset] as u32;
-            let b1 = src[offset + 1] as u32;
-            let b2 = src[offset + 2] as u32;
-            let val = b0 | (b1 << 8) | (b2 << 16);
+            let val = read_le_u24(src, offset);
             regenerated_size = (val >> 4) & 0x3FF;
             compressed_size = (val >> 14) & 0x3FF;
         } else if size_format == 2 {
             single_stream = false;
             lh_size = 4;
             if offset + 4 > block_end { return DecodedLiterals { ok: false }; }
-            let b0 = src[offset] as u32;
-            let b1 = src[offset + 1] as u32;
-            let b2 = src[offset + 2] as u32;
-            let b3 = src[offset + 3] as u32;
-            let val = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            let val = read_le_u32(src, offset);
             regenerated_size = (val >> 4) & 0x3FFF;
             compressed_size = (val >> 18) & 0x3FFF;
         } else {
             single_stream = false;
             lh_size = 5;
             if offset + 5 > block_end { return DecodedLiterals { ok: false }; }
-            let b0 = src[offset] as u32;
-            let b1 = src[offset + 1] as u32;
-            let b2 = src[offset + 2] as u32;
-            let b3 = src[offset + 3] as u32;
+            let val = read_le_u32(src, offset);
             let b4 = src[offset + 4] as u32;
-            let val = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
             regenerated_size = (val >> 4) & 0x3FFFF;
             compressed_size = ((val >> 22) & 0x3FF) | (b4 << 10);
         }
@@ -1228,9 +1298,9 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         } else {
             // 4 streams: read 6-byte Jump Table
             if offset + 6 > c_end { return DecodedLiterals { ok: false }; }
-            let s1 = src[offset] | ((src[offset + 1] as i64) << 8);
-            let s2 = src[offset + 2] | ((src[offset + 3] as i64) << 8);
-            let s3 = src[offset + 4] | ((src[offset + 5] as i64) << 8);
+            let s1 = read_le_u16(src, offset) as i64;
+            let s2 = read_le_u16(src, offset + 2) as i64;
+            let s3 = read_le_u16(src, offset + 4) as i64;
             offset += 6;
 
             let total_streams = c_end - offset;
@@ -1427,7 +1497,9 @@ fn decode_sequences<B>(
 
     if use_fast_dstream {
         ptr = seq_bitstream.len - 8;
-        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+        if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+        }
         let last_byte = seq_bitstream[seq_bitstream.len - 1];
         if last_byte == 0 { return CompressError.CorruptedBitstream; }
         let high_bit = zstd_high_bit(last_byte as u32);
@@ -1472,24 +1544,34 @@ fn decode_sequences<B>(
                     let s = (bits_consumed >> 3) as i64;
                     ptr -= s;
                     bits_consumed &= 7;
-                    bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
                 } else if ptr > 0 {
                     let avail = (bits_consumed >> 3) as i64;
                     let s = if ptr < avail { ptr } else { avail };
                     ptr -= s;
                     bits_consumed -= (s * 8) as u32;
-                    bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
                 }
             }
 
-            of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
-            bits_consumed += of_eb;
+            if of_eb > 0 {
+                of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
+                bits_consumed += of_eb;
+            }
 
-            ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
-            bits_consumed += ml_eb;
+            if ml_eb > 0 {
+                ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
+                bits_consumed += ml_eb;
+            }
 
-            ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
-            bits_consumed += ll_eb;
+            if ll_eb > 0 {
+                ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
+                bits_consumed += ll_eb;
+            }
         } else {
             of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
             ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
@@ -1554,51 +1636,45 @@ fn decode_sequences<B>(
         }
 
         var offset: u32 = 0;
-        if offset_val > 3 {
+        if offset_val == 1 {
+            if lit_len > 0 {
+                offset = rep0;
+            } else {
+                offset = rep1;
+                rep1 = rep0;
+                rep0 = offset;
+            }
+        } else if offset_val > 3 {
             offset = offset_val - 3;
             rep2 = rep1;
             rep1 = rep0;
             rep0 = offset;
-        } else {
-            // Repeat offset codes
+        } else if offset_val == 2 {
             if lit_len > 0 {
-                if offset_val == 1 {
-                    offset = rep0;
-                } else if offset_val == 2 {
-                    offset = rep1;
-                    rep1 = rep0;
-                    rep0 = offset;
-                } else {
-                    offset = rep2;
-                    rep2 = rep1;
-                    rep1 = rep0;
-                    rep0 = offset;
-                }
+                offset = rep1;
+                rep1 = rep0;
+                rep0 = offset;
             } else {
-                // When literals_length == 0, repeated offsets are shifted by 1
-                if offset_val == 1 {
-                    offset = rep1;
-                    rep1 = rep0;
-                    rep0 = offset;
-                } else if offset_val == 2 {
-                    offset = rep2;
-                    rep2 = rep1;
-                    rep1 = rep0;
-                    rep0 = offset;
-                } else {
-                    offset = rep0 - 1;
-                    rep2 = rep1;
-                    rep1 = rep0;
-                    rep0 = offset;
-                }
+                offset = rep2;
+                rep2 = rep1;
+                rep1 = rep0;
+                rep0 = offset;
+            }
+        } else {
+            if lit_len > 0 {
+                offset = rep2;
+                rep2 = rep1;
+                rep1 = rep0;
+                rep0 = offset;
+            } else {
+                offset = rep0 - 1;
+                rep2 = rep1;
+                rep1 = rep0;
+                rep0 = offset;
             }
         }
 
         // Execute sequence
-        let next_lit = lit_ptr + (lit_len as i64);
-        if lit_ptr < 0 || next_lit > lit_buf.len || next_lit < lit_ptr {
-            return CompressError.CorruptedBitstream;
-        }
         if max_output_bytes >= 0 {
             if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
                 return CompressError.OutputBufferOverflow;
@@ -1606,6 +1682,10 @@ fn decode_sequences<B>(
         }
 
         if lit_len > 0 {
+            let next_lit = lit_ptr + (lit_len as i64);
+            if lit_ptr < 0 || next_lit > lit_buf.len || next_lit < lit_ptr {
+                return CompressError.CorruptedBitstream;
+            }
             if lit_len == 1 {
                 out_buf.push(lit_buf[lit_ptr]);
             } else if lit_len == 2 {
@@ -1773,10 +1853,10 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
 
         // Initialize block state
         var rep: u32[3] = [1, 4, 8];
-        var huf_table = HufTable {};
-        var ll_table = FseTable {};
-        var ml_table = FseTable {};
-        var of_table = FseTable {};
+        var huf_table = EMPTY_HUF_TABLE;
+        var ll_table = EMPTY_FSE_TABLE;
+        var ml_table = EMPTY_FSE_TABLE;
+        var of_table = EMPTY_FSE_TABLE;
         var lit_buf: u8[>..] = [];
 
         let frame_start_out = out_buf.len;
@@ -1784,12 +1864,8 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
 
         while !last_block {
             if offset + 3 > src.len { return CompressError.InputBufferTruncated; }
-            let b0 = src[offset] as u32;
-            let b1 = src[offset + 1] as u32;
-            let b2 = src[offset + 2] as u32;
+            let header_val = read_le_u24(src, offset);
             offset += 3;
-
-            let header_val = b0 | (b1 << 8) | (b2 << 16);
             last_block = (header_val & 1) != 0;
             let block_type = (header_val >> 1) & 3;
             let block_size = (header_val >> 3) as i64;
