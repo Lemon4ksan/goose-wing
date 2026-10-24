@@ -210,16 +210,20 @@ fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
 
 // Parses an incoming Cookie: header on the server side into distinct name-value pairs.
 // RFC 6265bis Section 5.4: If duplicate names are received, the FIRST appearance is preserved!
-fn parse_server_cookie_header(raw_header: const u8[:], now_us: i64, out: CanonicalCookie[>..]&) {
+// Go #75672 / CVE-2025-58186: Bounds parsed cookies to max_cookies to prevent memory exhaustion DoS.
+fn parse_server_cookie_header(raw_header: const u8[:], now_us: i64, out: CanonicalCookie[>..]&, max_cookies: i64 = 100) {
     guard raw_header.len > 0 else { return; }
 
     each_split(raw_header, ';') { pair_slice =>
+        if out.len >= max_cookies {
+            return;
+        }
         parse_single_server_cookie_pair(pair_slice, now_us, out);
     };
 }
 
-fn parse_server_cookie_header(raw_header: const u8[:], out: CanonicalCookie[>..]&) {
-    parse_server_cookie_header(raw_header, 0, out);
+fn parse_server_cookie_header(raw_header: const u8[:], out: CanonicalCookie[>..]&, max_cookies: i64 = 100) {
+    parse_server_cookie_header(raw_header, 0, out, max_cookies);
 }
 
 // ---- netscape cookies.txt format interop -----------------------------------

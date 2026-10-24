@@ -640,6 +640,67 @@ fn test_rfc9110_proxy_hop_by_hop_sanitization(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. Go #78762 & RFC 9113 Section 8.3.1: HTTP/2 :path Pseudo-Header Validation
+// ----------------------------------------------------------------------------
+fn test_rfc9113_http2_path_pseudo_header_validation(t: core::T&) {
+    t.run("HTTP/2 :path with absolute URL MUST be rejected (RFC 9113 Section 8.3.1 & Go #78762)") { sub =>
+        var dt_enc = wing::new_dynamic_table(4096);
+        var raw_bytes: u8[>..] = [];
+        wing::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", false, false);
+
+        var dt_dec = wing::new_dynamic_table(4096);
+        var out_list = wing::DecodedH2HeaderList { .. };
+        let err = wing::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
+    };
+
+    t.run("HTTP/2 :path empty MUST be rejected") { sub =>
+        var dt_enc = wing::new_dynamic_table(4096);
+        var raw_bytes: u8[>..] = [];
+        wing::encode_hpack_field(dt_enc, raw_bytes, ":path", "", false, false);
+
+        var dt_dec = wing::new_dynamic_table(4096);
+        var out_list = wing::DecodedH2HeaderList { .. };
+        let err = wing::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 21. Go #75672 / CVE-2025-58186: Cookie Parsing Memory Exhaustion / Flood Defense
+// ----------------------------------------------------------------------------
+fn test_cve_2025_58186_cookie_parsing_memory_exhaustion(t: core::T&) {
+    t.run("Cookie header with 250 small pairs must be bounded to max_cookies (Go #75672)") { sub =>
+        var raw_hdr: u8[>..] = [];
+        for i in 250 {
+            raw_hdr.append("c");
+            format(raw_hdr, i);
+            raw_hdr.push('=');
+            format(raw_hdr, i);
+            raw_hdr.append("; ");
+        }
+
+        var out: wing::CanonicalCookie[>..] = [];
+        wing::parse_server_cookie_header(raw_hdr[..], out);
+        sub.assert_eq(out.len, 100, "Server-side cookie parsing MUST be capped at 100 to prevent DoS (CVE-2025-58186)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 22. Go #79944 & RFC 6055: FQDN Trailing Dot Host-Only Cookie Matching
+// ----------------------------------------------------------------------------
+fn test_rfc6055_fqdn_trailing_dot_cookie_matching(t: core::T&) {
+    t.run("Host-only cookie must match FQDN with trailing dot (RFC 6055 & Go #79944)") { sub =>
+        var c = wing::CanonicalCookie { host_only: true, .. };
+        c.domain.append("example.com");
+
+        sub.assert_true(wing::matches_domain(c, "example.com"), "Matches exact host");
+        sub.assert_true(wing::matches_domain(c, "example.com."), "Must match FQDN with trailing dot");
+        sub.assert_false(wing::matches_domain(c, "evil.com"), "Must not match different domain");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("CVE Regression Suite", core::Verbosity.Verbose);
 
@@ -662,6 +723,9 @@ fn main() {
     core::run_case(runner, "17. Go #60997 & RFC 6265bis (Localhost Secure Cookie Exemption)", test_go_60997_localhost_secure_cookies);
     core::run_case(runner, "18. Go #81741 & CVE-2026-94440 (Multipart Memory Limit Overhead)", test_cve_2026_94440_multipart_memory_header_accounting);
     core::run_case(runner, "19. Go #16875 & RFC 9110 (Proxy Hop-by-Hop Header Sanitization)", test_rfc9110_proxy_hop_by_hop_sanitization);
+    core::run_case(runner, "20. Go #78762 & RFC 9113 (HTTP/2 :path Pseudo-Header Validation)", test_rfc9113_http2_path_pseudo_header_validation);
+    core::run_case(runner, "21. Go #75672 & CVE-2025-58186 (Cookie Parsing Memory Exhaustion)", test_cve_2025_58186_cookie_parsing_memory_exhaustion);
+    core::run_case(runner, "22. Go #79944 & RFC 6055 (FQDN Trailing Dot Cookie Matching)", test_rfc6055_fqdn_trailing_dot_cookie_matching);
 
     let ok = core::finish(runner);
     assert(ok);

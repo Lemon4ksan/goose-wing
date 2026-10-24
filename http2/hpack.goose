@@ -1330,6 +1330,13 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
                 return ERR_PROTOCOL_ERROR;
             }
         }
+        // RFC 9113 Section 8.3.1 & Go #78762: :path must start with '/' or be '*' for OPTIONS
+        if name == ":path" {
+            guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
+            guard val[0] == '/' || (val.len == 1 && val[0] == '*') else {
+                return ERR_PROTOCOL_ERROR;
+            }
+        }
     } else {
         out.has_regular_header = true;
     }

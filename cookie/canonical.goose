@@ -172,12 +172,21 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
 
 // ---- matching & routing predicates (ufcs) --------------------------------
 
-// Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3).
+// Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3 & RFC 6055).
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
-    if cookie_val.host_only {
-        return eq_ascii_fold(cookie_val.domain[..], host);
+    var clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
+    if clean_host.len > 0 && clean_host[clean_host.len - 1] == '.' {
+        clean_host = clean_host[..clean_host.len - 1];
     }
-    return cookie_domain_match(host, cookie_val.domain[..]);
+    var clean_domain = if cookie_val.domain.len > 0 && cookie_val.domain[0] == '.' { cookie_val.domain[1..] } else { cookie_val.domain[..] };
+    if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
+        clean_domain = clean_domain[..clean_domain.len - 1];
+    }
+
+    if cookie_val.host_only {
+        return eq_ascii_fold(clean_domain, clean_host);
+    }
+    return cookie_domain_match(clean_host, clean_domain);
 }
 
 // Whether req_path matches the cookie's Path attribute (RFC 6265 Section 5.1.4).
