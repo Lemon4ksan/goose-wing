@@ -331,3 +331,86 @@ fn build_doh_get_url(server_url: const u8[:], domain: const u8[:], qtype: u16, o
     base64url_encode(raw_query[..], out_url);
     return true;
 }
+
+// ---- 8. DNS Cache with TTL and Stale-While-Revalidate (RFC 1035 & RFC 5861) -
+
+enum DnsCacheStatus {
+    Fresh,   // Within TTL
+    Stale,   // Expired past TTL, but within stale-while-revalidate window
+    Expired, // Beyond stale window or not found
+}
+
+struct DnsCacheEntry {
+    domain: u8[..255] = [],
+    qtype: u16 = DNS_QTYPE_A,
+    ipv4_hints: u32[..8] = [],
+    ipv6_hints: u8[16][..8] = [],
+    https_records: HttpsRecord[..4] = [],
+    inserted_at_sec: i64 = 0,
+    ttl_sec: u32 = 300,
+    stale_ttl_sec: u32 = 86400, // 24-hour max stale grace period
+    valid: bool = false,
+}
+
+struct DnsCache {
+    entries: DnsCacheEntry[..64] = [],
+}
+
+fn new_dns_cache() -> DnsCache {
+    return DnsCache { .. };
+}
+
+fn dns_cache_lookup(
+    cache: const DnsCache&,
+    domain: const u8[:],
+    qtype: u16,
+    now_sec: i64,
+    out_entry: DnsCacheEntry&
+) -> DnsCacheStatus {
+    for &e in cache.entries {
+        if e.valid && e.qtype == qtype && e.domain[..] == domain {
+            let elapsed = now_sec - e.inserted_at_sec;
+            if elapsed < e.ttl_sec {
+                out_entry = e;
+                return DnsCacheStatus.Fresh;
+            } else if elapsed < (e.ttl_sec + e.stale_ttl_sec) {
+                out_entry = e;
+                return DnsCacheStatus.Stale;
+            } else {
+                return DnsCacheStatus.Expired;
+            }
+        }
+    }
+    return DnsCacheStatus.Expired;
+}
+
+fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
+    // Check if domain and qtype already exist
+    for i in cache.entries.len {
+        if cache.entries[i].valid && cache.entries[i].qtype == entry.qtype && cache.entries[i].domain[..] == entry.domain[..] {
+            cache.entries[i] = entry;
+            cache.entries[i].valid = true;
+            return;
+        }
+    }
+
+    // Insert new entry or overwrite oldest if full
+    if cache.entries.len < 64 {
+        var copy = entry;
+        copy.valid = true;
+        cache.entries.push(copy);
+    } else {
+        // Evict entry with oldest inserted_at_sec
+        var oldest_idx: i64 = 0;
+        var oldest_time = cache.entries[0].inserted_at_sec;
+        for i in 1..64 {
+            if cache.entries[i].inserted_at_sec < oldest_time {
+                oldest_time = cache.entries[i].inserted_at_sec;
+                oldest_idx = i;
+            }
+        }
+        var copy = entry;
+        copy.valid = true;
+        cache.entries[oldest_idx] = copy;
+    }
+}

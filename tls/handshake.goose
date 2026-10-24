@@ -20,6 +20,7 @@ const HS_MSG_CERTIFICATE_REQUEST: u8 = 13;
 const HS_MSG_CERTIFICATE_VERIFY: u8 = 15;
 const HS_MSG_FINISHED: u8 = 20;
 const HS_MSG_KEY_UPDATE: u8 = 24;
+const HS_MSG_COMPRESSED_CERTIFICATE: u8 = 25; // RFC 8879 Section 4
 const HS_MSG_MESSAGE_HASH: u8 = 254; // 0xFE synthetic HRR message
 
 // ---- 2. Extension Type Identifiers ------------------------------------------
@@ -29,6 +30,7 @@ const EXT_STATUS_REQUEST: u16 = 5;           // OCSP stapling
 const EXT_SUPPORTED_GROUPS: u16 = 10;
 const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
 const EXT_ALPN: u16 = 16;                     // RFC 7301
+const EXT_COMPRESS_CERTIFICATE: u16 = 27;     // RFC 8879 Section 3
 const EXT_PRE_SHARED_KEY: u16 = 41;
 const EXT_EARLY_DATA: u16 = 42;
 const EXT_SUPPORTED_VERSIONS: u16 = 43;
@@ -362,4 +364,99 @@ fn find_extension(entries: const TlsExtensionEntry[..32]&, ext_type: u16, out_da
         }
     }
     return false;
+}
+
+// ---- 9. RFC 8879 Certificate Compression & ClientHello Fragmentation --------
+
+const CERT_COMPRESS_ZLIB: u16   = 1;
+const CERT_COMPRESS_BROTLI: u16 = 2;
+const CERT_COMPRESS_ZSTD: u16   = 3; // RFC 8879 Section 3 (Zstandard)
+
+struct CompressedCertMsg {
+    algorithm: u16 = CERT_COMPRESS_ZSTD,
+    uncompressed_len: u32 = 0,
+    compressed_data: const u8[:],
+}
+
+// Encodes the client's `compress_certificate` extension (RFC 8879 Section 3)
+fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
+    out.push(((EXT_COMPRESS_CERTIFICATE >> 8) & 0xFF) as u8);
+    out.push((EXT_COMPRESS_CERTIFICATE & 0xFF) as u8);
+
+    let ext_len = 1 + algorithms.len * 2;
+    out.push(((ext_len >> 8) & 0xFF) as u8);
+    out.push((ext_len & 0xFF) as u8);
+
+    let list_len = (algorithms.len * 2) as u8;
+    out.push(list_len);
+    for algo in algorithms {
+        out.push(((algo >> 8) & 0xFF) as u8);
+        out.push((algo & 0xFF) as u8);
+    }
+}
+
+// Parses a CompressedCertificate handshake message payload (RFC 8879 Section 4)
+fn parse_compressed_certificate(payload: const u8[:]) -> CompressedCertMsg, bool {
+    var msg = CompressedCertMsg { compressed_data: payload[..0], .. };
+    guard payload.len >= 5 else { return msg, false; }
+
+    let algo = ((payload[0] as u16) << 8) | payload[1];
+    let ulen = ((payload[2] as u32) << 16) | ((payload[3] as u32) << 8) | payload[4];
+    guard ulen > 0 && ulen <= 16777215 else { return msg, false; }
+
+    msg.algorithm = algo;
+    msg.uncompressed_len = ulen;
+    msg.compressed_data = payload[5..];
+    return msg, true;
+}
+
+// Encodes a CompressedCertificate handshake message payload (RFC 8879 Section 4)
+fn encode_compressed_certificate_payload<B>(
+    out: B&,
+    algorithm: u16,
+    uncompressed_len: u32,
+    compressed_data: const u8[:]
+) {
+    out.push(((algorithm >> 8) & 0xFF) as u8);
+    out.push((algorithm & 0xFF) as u8);
+    out.push(((uncompressed_len >> 16) & 0xFF) as u8);
+    out.push(((uncompressed_len >> 8) & 0xFF) as u8);
+    out.push((uncompressed_len & 0xFF) as u8);
+    out.append(compressed_data);
+}
+
+// Decompresses a CompressedCertificate using Wing's pure RFC 8878 Zstandard engine
+fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool {
+    let ok, _ = core::decompress_zstd(compressed_data, out_cert);
+    guard ok else { return false; }
+    guard (out_cert.len as u32) == uncompressed_len else { return false; }
+    return true;
+}
+
+// Splits a TLS ClientHello into multiple TLS records (RFC 8446 Section 5.1).
+// This evades naive Middlebox / DPI SNI filtering by splitting the ClientHello record
+// across two or more records without altering cryptographic validity.
+fn fragment_client_hello<B>(
+    raw_ch: const u8[:],
+    first_record_len: i64,
+    out_records: B&
+) -> bool {
+    guard first_record_len > 0 && first_record_len < raw_ch.len else { return false; }
+
+    // Record 1: type 22 (handshake), legacy version 0x0301 (TLS 1.0)
+    out_records.push(22);
+    out_records.push(0x03); out_records.push(0x01);
+    out_records.push(((first_record_len >> 8) & 0xFF) as u8);
+    out_records.push((first_record_len & 0xFF) as u8);
+    out_records.append(raw_ch[..first_record_len]);
+
+    // Record 2: type 22 (handshake), legacy version 0x0301 (TLS 1.0)
+    let rem_len = raw_ch.len - first_record_len;
+    out_records.push(22);
+    out_records.push(0x03); out_records.push(0x01);
+    out_records.push(((rem_len >> 8) & 0xFF) as u8);
+    out_records.push((rem_len & 0xFF) as u8);
+    out_records.append(raw_ch[first_record_len..]);
+
+    return true;
 }
