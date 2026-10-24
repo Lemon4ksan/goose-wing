@@ -292,18 +292,23 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             }
         },
         6 => {
-            if eq_ascii_fold(name, "accept") { return WellKnownHeader.Accept; }
-            if eq_ascii_fold(name, "cookie") { return WellKnownHeader.Cookie; }
-            if eq_ascii_fold(name, "server") { return WellKnownHeader.Server; }
-            if eq_ascii_fold(name, "origin") { return WellKnownHeader.OriginHeader; }
-            if eq_ascii_fold(name, "expect") { return WellKnownHeader.Expect; }
+            let w32 = read_le_u32(name, 0) | 0x20202020;
+            let w16 = (read_le_u16(name, 4) | 0x2020) as u32;
+            if w32 == 0x65636361 && w16 == 0x7470 { return WellKnownHeader.Accept; }
+            if w32 == 0x6b6f6f63 && w16 == 0x6569 { return WellKnownHeader.Cookie; }
+            if w32 == 0x76726573 && w16 == 0x7265 { return WellKnownHeader.Server; }
+            if w32 == 0x6769726f && w16 == 0x6e69 { return WellKnownHeader.OriginHeader; }
+            if w32 == 0x65707865 && w16 == 0x7463 { return WellKnownHeader.Expect; }
         },
         7 => {
-            if eq_ascii_fold(name, "expires") { return WellKnownHeader.Expires; }
-            if eq_ascii_fold(name, "referer") { return WellKnownHeader.Referer; }
-            if eq_ascii_fold(name, "trailer") { return WellKnownHeader.Trailer; }
-            if eq_ascii_fold(name, "upgrade") { return WellKnownHeader.Upgrade; }
-            if eq_ascii_fold(name, "alt-svc") { return WellKnownHeader.AltSvc; }
+            let w32 = read_le_u32(name, 0) | 0x20202020;
+            let w16 = (read_le_u16(name, 4) | 0x2020) as u32;
+            let b6 = ((name[6] as u32) | 0x20);
+            if w32 == 0x69707865 && w16 == 0x6572 && b6 == 0x73 { return WellKnownHeader.Expires; }
+            if w32 == 0x65666572 && w16 == 0x6572 && b6 == 0x72 { return WellKnownHeader.Referer; }
+            if w32 == 0x69617274 && w16 == 0x656c && b6 == 0x72 { return WellKnownHeader.Trailer; }
+            if w32 == 0x72677075 && w16 == 0x6461 && b6 == 0x65 { return WellKnownHeader.Upgrade; }
+            if w32 == 0x2d746c61 && w16 == 0x7673 && b6 == 0x63 { return WellKnownHeader.AltSvc; }
         },
         8 => {
             let w = read_le_u64(name, 0) | 0x2020202020202020;
@@ -313,29 +318,39 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w == 0x797469726f697270 { return WellKnownHeader.Priority; }
         },
         10 => {
-            if eq_ascii_fold(name, "connection") { return WellKnownHeader.Connection; }
-            if eq_ascii_fold(name, "keep-alive") { return WellKnownHeader.KeepAlive; }
-            if eq_ascii_fold(name, "user-agent") { return WellKnownHeader.UserAgent; }
-            if eq_ascii_fold(name, "set-cookie") { return WellKnownHeader.SetCookie; }
+            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
+            let w16 = (read_le_u16(name, 8) | 0x2020) as u32;
+            if w64 == 0x697463656e6e6f63 && w16 == 0x6e6f { return WellKnownHeader.Connection; }
+            if w64 == 0x696c612d7065656b && w16 == 0x6576 { return WellKnownHeader.KeepAlive; }
+            if w64 == 0x6567612d72657375 && w16 == 0x746e { return WellKnownHeader.UserAgent; }
+            if w64 == 0x6b6f6f632d746573 && w16 == 0x6569 { return WellKnownHeader.SetCookie; }
         },
         11 => {
             if eq_ascii_fold(name, "set-cookie2") { return WellKnownHeader.SetCookie2; }
             if eq_ascii_fold(name, "retry-after") { return WellKnownHeader.RetryAfter; }
         },
         12 => {
-            if eq_ascii_fold(name, "content-type") { return WellKnownHeader.ContentType; }
+            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
+            let w32 = read_le_u32(name, 8) | 0x20202020;
+            if w64 == 0x2d746e65746e6f63 && w32 == 0x65707974 { return WellKnownHeader.ContentType; }
             if eq_ascii_fold(name, "x-webkit-csp") { return WellKnownHeader.XWebkitCsp; }
         },
         13 => {
-            if eq_ascii_fold(name, "cache-control") { return WellKnownHeader.CacheControl; }
-            if eq_ascii_fold(name, "authorization") { return WellKnownHeader.Authorization; }
-            if eq_ascii_fold(name, "last-modified") { return WellKnownHeader.LastModified; }
-            if eq_ascii_fold(name, "if-none-match") { return WellKnownHeader.IfNoneMatch; }
-            if eq_ascii_fold(name, "accept-ranges") { return WellKnownHeader.AcceptRanges; }
-            if eq_ascii_fold(name, "content-range") { return WellKnownHeader.ContentRange; }
+            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
+            let w32 = read_le_u32(name, 8) | 0x20202020;
+            let b12 = ((name[12] as u32) | 0x20);
+            if w64 == 0x6f632d6568636163 && w32 == 0x6f72746e && b12 == 0x6c { return WellKnownHeader.CacheControl; }
+            if w64 == 0x7a69726f68747561 && w32 == 0x6f697461 && b12 == 0x6e { return WellKnownHeader.Authorization; }
+            if w64 == 0x646f6d2d7473616c && w32 == 0x65696669 && b12 == 0x64 { return WellKnownHeader.LastModified; }
+            if w64 == 0x2d656e6f6e2d6669 && w32 == 0x6374616d && b12 == 0x68 { return WellKnownHeader.IfNoneMatch; }
+            if w64 == 0x722d747065636361 && w32 == 0x65676e61 && b12 == 0x73 { return WellKnownHeader.AcceptRanges; }
+            if w64 == 0x2d746e65746e6f63 && w32 == 0x676e6172 && b12 == 0x65 { return WellKnownHeader.ContentRange; }
         },
         14 => {
-            if eq_ascii_fold(name, "content-length") { return WellKnownHeader.ContentLength; }
+            let w64 = read_le_u64(name, 0) | 0x2020202020202020;
+            let w32 = read_le_u32(name, 8) | 0x20202020;
+            let w16 = (read_le_u16(name, 12) | 0x2020) as u32;
+            if w64 == 0x2d746e65746e6f63 && w32 == 0x676e656c && w16 == 0x6874 { return WellKnownHeader.ContentLength; }
             if eq_ascii_fold(name, "accept-charset") { return WellKnownHeader.AcceptCharset; }
         },
         15 => {
@@ -345,10 +360,14 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if eq_ascii_fold(name, "x-frame-options") { return WellKnownHeader.XFrameOptions; }
         },
         16 => {
-            if eq_ascii_fold(name, "www-authenticate") { return WellKnownHeader.WwwAuthenticate; }
-            if eq_ascii_fold(name, "content-encoding") { return WellKnownHeader.ContentEncoding; }
-            if eq_ascii_fold(name, "content-language") { return WellKnownHeader.ContentLanguage; }
-            if eq_ascii_fold(name, "content-location") { return WellKnownHeader.ContentLocation; }
+            let w64_0 = read_le_u64(name, 0) | 0x2020202020202020;
+            let w64_1 = read_le_u64(name, 8) | 0x2020202020202020;
+            if w64_0 == 0x687475612d777777 && w64_1 == 0x6574616369746e65 { return WellKnownHeader.WwwAuthenticate; }
+            if w64_0 == 0x2d746e65746e6f63 {
+                if w64_1 == 0x676e69646f636e65 { return WellKnownHeader.ContentEncoding; }
+                if w64_1 == 0x65676175676e616c { return WellKnownHeader.ContentLanguage; }
+                if w64_1 == 0x6e6f697461636f6c { return WellKnownHeader.ContentLocation; }
+            }
         },
         17 => {
             if eq_ascii_fold(name, "if-modified-since") { return WellKnownHeader.IfModifiedSince; }

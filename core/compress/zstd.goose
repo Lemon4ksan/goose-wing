@@ -1352,37 +1352,13 @@ fn decode_sequences<B>(
                 let b = out_buf[src_idx];
                 out_buf.resize(out_buf.len + m_len, b);
             } else {
-                let dst_start = out_buf.len;
-                out_buf.resize(dst_start + m_len, 0);
-                if off == 2 {
-                    let b0 = out_buf[src_idx] as u64;
-                    let b1 = out_buf[src_idx + 1] as u64;
-                    let pattern = (b0 | (b1 << 8)) * 0x0001000100010001;
-                    var i: i64 = 0;
-                    while i + 8 <= m_len {
-                        write_le_u64_at(out_buf, dst_start + i, pattern);
-                        i += 8;
-                    }
-                    while i < m_len {
-                        out_buf[dst_start + i] = out_buf[src_idx + (i & 1)];
-                        i++;
-                    }
-                } else if off == 4 {
-                    let w32 = read_le_u32(out_buf[..], src_idx) as u64;
-                    let pattern = w32 | (w32 << 32);
-                    var i: i64 = 0;
-                    while i + 8 <= m_len {
-                        write_le_u64_at(out_buf, dst_start + i, pattern);
-                        i += 8;
-                    }
-                    while i < m_len {
-                        out_buf[dst_start + i] = out_buf[src_idx + (i & 3)];
-                        i++;
-                    }
-                } else {
-                    for i in 0 .. m_len {
-                        out_buf[dst_start + i] = out_buf[src_idx + i];
-                    }
+                var curr: i64 = 0;
+                while curr < m_len {
+                    let avail = curr + off;
+                    let rem = m_len - curr;
+                    let step = if avail < rem { avail } else { rem };
+                    out_buf.append(out_buf[src_idx .. src_idx + step]);
+                    curr += step;
                 }
             }
         }

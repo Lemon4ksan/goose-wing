@@ -32,6 +32,27 @@ fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
     return true;
 }
 
+let URL_SCHEME_DELIM_SET = byte_set(":/\\?#");
+let URL_AUTH_SPECIAL_DELIM_SET = byte_set("/\\?#");
+let URL_AUTH_GENERIC_DELIM_SET = byte_set("/?#");
+let URL_QUERY_HASH_SET = byte_set("?#");
+let URL_HASH_SET = byte_set("#");
+let URL_COLON_SET = byte_set(":");
+let URL_AT_SET = byte_set("@");
+let URL_TAB_CRLF_SET = byte_set("\t\r\n");
+
+fn make_forbidden_host_set() -> ByteSet {
+    var members: bool[256] = [false; 256];
+    for b in 33 { members[b] = true; }
+    members[0x7F] = true;
+    let forbidden_chars: const u8[:] = "#%/:<>?@[\\]^|";
+    for c in forbidden_chars {
+        members[c as i64] = true;
+    }
+    return byte_set(members);
+}
+let URL_FORBIDDEN_HOST_SET = make_forbidden_host_set();
+
 // ---- canonical url model with single buffer & index offsets ----------------
 
 // Url represents a canonical WHATWG URL with a single normalized contiguous buffer
@@ -1201,25 +1222,20 @@ fn clean_input_string<B>(raw: const u8[:], out: B&) {
         end_idx--;
     }
 
-    for scan_idx in start_idx..end_idx {
-        let char_byte = raw[scan_idx];
-        if char_byte != 0x09 && char_byte != 0x0A && char_byte != 0x0D {
-            out.push(char_byte);
+    let trimmed = raw[start_idx..end_idx];
+    if find_any(trimmed, URL_TAB_CRLF_SET) < 0 {
+        out.append(trimmed);
+    } else {
+        for char_byte in trimmed {
+            if char_byte != 0x09 && char_byte != 0x0A && char_byte != 0x0D {
+                out.push(char_byte);
+            }
         }
     }
 }
 
 fn has_forbidden_host_code_point(host_str: const u8[:]) -> bool {
-    for char_byte in host_str {
-        if char_byte <= 0x20 || char_byte == 0x7F ||
-           char_byte == '#' || char_byte == '%' || char_byte == '/' || char_byte == ':' ||
-           char_byte == '<' || char_byte == '>' || char_byte == '?' || char_byte == '@' ||
-           char_byte == '[' || char_byte == '\\' || char_byte == ']' || char_byte == '^' ||
-           char_byte == '|' {
-            return true;
-        }
-    }
-    return false;
+    return find_any(host_str, URL_FORBIDDEN_HOST_SET) >= 0;
 }
 
 fn parse_opaque_path_url(
@@ -1233,14 +1249,18 @@ fn parse_opaque_path_url(
     out_url.scheme_end = scheme_str.len as i32;
 
     out_url.pathname_start = out_url.href.len as i32;
-    var query_pos = -1;
-    var hash_pos = -1;
-    for scan_idx in remainder.len {
-        if remainder[scan_idx] == '?' && query_pos < 0 && hash_pos < 0 {
-            query_pos = scan_idx;
-        } else if remainder[scan_idx] == '#' && hash_pos < 0 {
-            hash_pos = scan_idx;
-            break;
+    var query_pos: i64 = -1;
+    var hash_pos: i64 = -1;
+    let first_delim = find_any(remainder, URL_QUERY_HASH_SET);
+    if first_delim >= 0 {
+        if remainder[first_delim] == '?' {
+            query_pos = first_delim;
+            let frag_rel = find_any(remainder[first_delim + 1..], URL_HASH_SET);
+            if frag_rel >= 0 {
+                hash_pos = first_delim + 1 + frag_rel;
+            }
+        } else {
+            hash_pos = first_delim;
         }
     }
 
@@ -1304,26 +1324,23 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
     let input_bytes = cleaned[..];
 
     // 1. Scheme state machine
-    var colon_idx = -1;
-    var invalid_scheme = false;
-    for scan_idx in input_bytes.len {
-        let char_byte = input_bytes[scan_idx];
-        if char_byte == ':' {
-            colon_idx = scan_idx;
-            break;
+    let delim_pos = find_any(input_bytes, URL_SCHEME_DELIM_SET);
+    var colon_idx: i64 = -1;
+    if delim_pos > 0 && input_bytes[delim_pos] == ':' {
+        let scheme_cand = input_bytes[..delim_pos];
+        var valid_scheme = is_alpha_byte(scheme_cand[0]);
+        if valid_scheme {
+            for char_byte in scheme_cand[1..] {
+                if !is_alphanumeric_byte(char_byte) && char_byte != '+' && char_byte != '-' && char_byte != '.' {
+                    valid_scheme = false;
+                    break;
+                }
+            }
         }
-        if char_byte == '/' || char_byte == '\\' || char_byte == '?' || char_byte == '#' {
-            break; // Stop looking for scheme once path/query/fragment starts
+        if !valid_scheme {
+            return out_url, UrlParseError.InvalidScheme;
         }
-        let is_scheme_char = (scan_idx == 0 && ((char_byte >= 'a' && char_byte <= 'z') || (char_byte >= 'A' && char_byte <= 'Z'))) ||
-                             (scan_idx > 0 && ((char_byte >= 'a' && char_byte <= 'z') || (char_byte >= 'A' && char_byte <= 'Z') || (char_byte >= '0' && char_byte <= '9') || char_byte == '+' || char_byte == '-' || char_byte == '.'));
-        if !is_scheme_char {
-            invalid_scheme = true;
-        }
-    }
-
-    if invalid_scheme && colon_idx > 0 {
-        return out_url, UrlParseError.InvalidScheme;
+        colon_idx = delim_pos;
     }
 
     var scheme_str: u8[..64] = [];
@@ -1516,14 +1533,12 @@ fn parse_absolute_authority_url(
     out_url.href.append("://");
     out_url.scheme_end = scheme_str.len as i32;
 
-    var end_of_auth = auth_and_path.len;
-    for scan_idx in auth_and_path.len {
-        let char_byte = auth_and_path[scan_idx];
-        if char_byte == '/' || (is_spec && char_byte == '\\') || char_byte == '?' || char_byte == '#' {
-            end_of_auth = scan_idx;
-            break;
-        }
-    }
+    let rel_delim = if is_spec {
+        find_any(auth_and_path, URL_AUTH_SPECIAL_DELIM_SET)
+    } else {
+        find_any(auth_and_path, URL_AUTH_GENERIC_DELIM_SET)
+    };
+    let end_of_auth = if rel_delim >= 0 { rel_delim } else { auth_and_path.len };
 
     let auth_str = auth_and_path[..end_of_auth];
     let path_and_beyond = auth_and_path[end_of_auth..];
@@ -1595,11 +1610,10 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
     view.raw = raw_input;
 
     // Find scheme separator ':'
-    var colon_idx = -1;
-    for scan_idx in raw_input.len {
-        let char_byte = raw_input[scan_idx];
-        if char_byte == ':' { colon_idx = scan_idx; break; }
-        if char_byte == '/' || char_byte == '\\' || char_byte == '?' || char_byte == '#' { break; }
+    let first_delim = find_any(raw_input, URL_SCHEME_DELIM_SET);
+    var colon_idx: i64 = -1;
+    if first_delim > 0 && raw_input[first_delim] == ':' {
+        colon_idx = first_delim;
     }
 
     guard colon_idx > 0 else {
@@ -1628,14 +1642,13 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
     if has_auth {
         cursor += 2;
         let auth_start = cursor;
-        var auth_end = raw_input.len;
-        for scan_idx in auth_start..raw_input.len {
-            let char_byte = raw_input[scan_idx];
-            if char_byte == '/' || (view.is_special && char_byte == '\\') || char_byte == '?' || char_byte == '#' {
-                auth_end = scan_idx;
-                break;
-            }
-        }
+        let auth_slice = raw_input[auth_start..];
+        let rel_delim = if view.is_special {
+            find_any(auth_slice, URL_AUTH_SPECIAL_DELIM_SET)
+        } else {
+            find_any(auth_slice, URL_AUTH_GENERIC_DELIM_SET)
+        };
+        let auth_end = if rel_delim >= 0 { auth_start + rel_delim } else { raw_input.len };
         cursor = auth_end;
         let authority = raw_input[auth_start..auth_end];
 
@@ -1692,15 +1705,18 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
     }
 
     let rest = raw_input[cursor..];
-    var q_pos = -1;
-    var h_pos = -1;
-    for scan_idx in rest.len {
-        let char_byte = rest[scan_idx];
-        if char_byte == '?' && q_pos < 0 && h_pos < 0 {
-            q_pos = scan_idx;
-        } else if char_byte == '#' && h_pos < 0 {
-            h_pos = scan_idx;
-            break;
+    var q_pos: i64 = -1;
+    var h_pos: i64 = -1;
+    let first_qh = find_any(rest, URL_QUERY_HASH_SET);
+    if first_qh >= 0 {
+        if rest[first_qh] == '?' {
+            q_pos = first_qh;
+            let hash_offset = find_any(rest[first_qh + 1..], URL_HASH_SET);
+            if hash_offset >= 0 {
+                h_pos = first_qh + 1 + hash_offset;
+            }
+        } else {
+            h_pos = first_qh;
         }
     }
 

@@ -121,3 +121,20 @@ fn fast_range_unbiased_u32(rng: WyRand&, range: u32) -> u32 {
     }
     return (m >> 32) as! u32;
 }
+
+// Unbiased Lemire fast-range mapping (64-bit) with rejection sampling.
+fn fast_range_unbiased_u64(rng: WyRand&, range: u64) -> u64 {
+    if range <= 1 {
+        return 0;
+    }
+    var x = next_u64(rng);
+    var lo, hi = mul_wide_u64(x, range);
+    if lo < range {
+        let threshold = (0 - range) % range;
+        while lo < threshold {
+            x = next_u64(rng);
+            lo, hi = mul_wide_u64(x, range);
+        }
+    }
+    return hi;
+}

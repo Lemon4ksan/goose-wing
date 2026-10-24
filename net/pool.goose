@@ -244,9 +244,11 @@ struct WantConn {
 }
 
 // Zero-reallocation dual-slice queue avoiding shifts during frequent push/pop operations.
+// Separates consumer (head, head_pos) and producer (tail) cache lines to prevent false sharing.
 struct WantQueue {
     head: WantConn[..32] = [],
     head_pos: i64 = 0,
+    _pad_consumer: u8[56] = [0; 56],
     tail: WantConn[..32] = [],
 }
 
@@ -469,6 +471,7 @@ enum RespectLimits {
 
 struct ConnectionGroup {
     key: PoolKey = PoolKey { .. },
+    key_hash: u64 = 0,
     active_conns: i32 = 0,
     idle_conns: i32 = 0,
     dials_in_progress: i32 = 0,
@@ -502,14 +505,16 @@ fn new_stream_pool(
 
 // Finds an existing connection group or creates a new one.
 fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
+    let kh = pool_key_hash(key);
     for &grp, idx in pool.groups {
-        if grp.key.pool_key_equals(key) {
+        if grp.key_hash == kh && grp.key.pool_key_equals(key) {
             return idx as i32;
         }
     }
     if pool.groups.len < 32 {
         var grp = ConnectionGroup {
             key: copy(key),
+            key_hash: kh,
             wait_queue: new_want_queue(),
             ..
         };
