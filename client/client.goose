@@ -547,6 +547,11 @@ fn session_ja4(session: const Session&, is_quic: bool = false, sni: bool = true)
     return profile_ja4(p, is_quic, sni);
 }
 
+fn session_p0f(session: const Session&) -> u8[..128] {
+    let p = wing_default_profile();
+    return profile_p0f(p);
+}
+
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {
     session.proxy_url.clear();
     session.proxy_url.append(proxy_url);

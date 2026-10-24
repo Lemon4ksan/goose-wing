@@ -6,6 +6,7 @@ namespace wing;
 import std;
 import client.profile;
 import fingerprint.ja4;
+import fingerprint.p0f;
 
 // Profile kind.
 enum ProfileKind {
@@ -50,10 +51,11 @@ struct BrowserProfile {
     accept_language: u8[..64] = [],
     upgrade_insecure_requests: u8[..8] = [],
     extra_headers: HeaderItem[..16] = [],
-    header_order: u8[..32][..16] = [],
+    header_order: u8[..32][..64] = [],
     h2: H2Settings = H2Settings { .. },
     h3: H3Settings = H3Settings { .. },
     tls: TlsFingerprintSpec = TlsFingerprintSpec { .. },
+    p0f: P0fSignature = P0fSignature { .. },
 }
 
 // ---- authentic wing default profile ----------------------------------------
@@ -77,6 +79,8 @@ fn wing_default_profile() -> BrowserProfile {
             qpack_blocked_streams: 16,
             enable_connect_protocol: 1,
         },
+        tls: TlsFingerprintSpec { .. },
+        p0f: wing_p0f_signature(),
         ..
     };
 
@@ -239,4 +243,14 @@ fn set_accept_encoding(profile: BrowserProfile&, enc: const u8[:]) {
 fn set_accept_language(profile: BrowserProfile&, lang: const u8[:]) {
     profile.accept_language.clear();
     profile.accept_language.append(lang);
+}
+
+// Configures the p0f TCP SYN signature for this profile.
+fn set_p0f(profile: BrowserProfile&, sig: const P0fSignature&) {
+    profile.p0f = sig;
+}
+
+// Computes the p0f v3 format string for this profile.
+fn profile_p0f(profile: const BrowserProfile&) -> u8[..128] {
+    return format_p0f(profile.p0f);
 }

@@ -14,6 +14,7 @@ fn ::set_accept_language(profile: wing::BrowserProfile&, lang: const u8[:]) { wi
 fn ::set_header(profile: wing::BrowserProfile&, name: const u8[:], value: const u8[:]) { wing::set_header(profile, name, value); }
 fn ::user_agent(session: const wing::Session&) -> const u8[:] { return wing::user_agent(session); }
 fn ::ja4(session: const wing::Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] { return wing::session_ja4(session, is_quic, sni); }
+fn ::p0f(session: const wing::Session&) -> u8[..128] { return wing::session_p0f(session); }
 fn ::set_proxy(session: wing::Session&, proxy_url: const u8[:]) { wing::set_proxy(session, proxy_url); }
 fn ::set_timeout_ms(session: wing::Session&, timeout_millis: i64) { wing::set_timeout_ms(session, timeout_millis); }
 fn ::set_cookie(session: wing::Session&, name: const u8[:], value: const u8[:]) { wing::set_cookie(session, name, value); }
