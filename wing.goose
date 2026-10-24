@@ -95,10 +95,13 @@ import net.happy_eyeballs;
 import net.proxy;
 import net.retry;
 import net.dns;
-import net.websocket;
-import net.sse;
 import net.masque;
 import net.isolation;
+
+// ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
+
+import realtime.websocket;
+import realtime.sse;
 
 // ---- ufcs method bridges ---------------------------------------------------
 

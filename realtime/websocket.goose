@@ -293,3 +293,84 @@ fn parse_ws_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
 
     return status_code, reason, true;
 }
+
+// ---- 5. High-Level Ergonomic WebSocket Client Session -----------------------
+
+struct WebSocketSession {
+    is_client: bool = true,
+    subprotocol: u8[..64] = [],
+    is_closed: bool = false,
+    close_code: u16 = 0,
+    mask_rng_state: u32 = 0x9E3779B9, // Fast linear congruential PRNG for 4-byte client masking keys
+}
+
+fn new_websocket_session(is_client: bool = true) -> WebSocketSession {
+    return WebSocketSession { is_client: is_client, .. };
+}
+
+// Generates pseudo-random 4-byte masking key for client frames
+fn ws_next_mask_key(ws: WebSocketSession&) -> u8[4] {
+    ws.mask_rng_state = ws.mask_rng_state * 1664525 + 1013904223;
+    let s = ws.mask_rng_state;
+    return [
+        ((s >> 24) & 0xFF) as u8,
+        ((s >> 16) & 0xFF) as u8,
+        ((s >> 8) & 0xFF) as u8,
+        (s & 0xFF) as u8,
+    ];
+}
+
+// Formats outbound RFC 6455 Handshake HTTP/1.1 Upgrade Request
+fn ws_build_handshake_request<B>(
+    ws: const WebSocketSession&,
+    host: const u8[:],
+    path: const u8[:],
+    client_key: const u8[:],
+    out: B&
+) {
+    out.append("GET ");
+    out.append(path);
+    out.append(" HTTP/1.1\r\nHost: ");
+    out.append(host);
+    out.append("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ");
+    out.append(client_key);
+    if ws.subprotocol.len > 0 {
+        out.append("\r\nSec-WebSocket-Protocol: ");
+        out.append(ws.subprotocol[..]);
+    }
+    out.append("\r\n\r\n");
+}
+
+// High-level method: sends UTF-8 text message
+fn ws_send_text<B>(ws: WebSocketSession&, text: const u8[:], out: B&) {
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_TEXT, text, ws.is_client, mask, true);
+}
+
+// High-level method: sends binary message
+fn ws_send_binary<B>(ws: WebSocketSession&, data: const u8[:], out: B&) {
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_BINARY, data, ws.is_client, mask, true);
+}
+
+// High-level method: sends Ping heartbeat
+fn ws_send_ping<B>(ws: WebSocketSession&, ping_payload: const u8[:], out: B&) {
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_PING, ping_payload, ws.is_client, mask, true);
+}
+
+// High-level method: sends Pong heartbeat response
+fn ws_send_pong<B>(ws: WebSocketSession&, pong_payload: const u8[:], out: B&) {
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_PONG, pong_payload, ws.is_client, mask, true);
+}
+
+// High-level method: sends Close handshake
+fn ws_close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B&) {
+    var payload: u8[..128] = [];
+    encode_ws_close_payload(payload, status_code, reason);
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
+    ws.is_closed = true;
+    ws.close_code = status_code;
+}

@@ -133,6 +133,28 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         wing::mask_websocket_payload(payload_copy[..], hdr.mask_key);
         sub.assert_bytes_eq(payload_copy[..], "Wing Engine WebSocket", "De-masked payload matches original");
     };
+
+    t.run("6. WebSocketSession High-Level Lifecycle") { sub =>
+        var session = wing::new_websocket_session(true);
+        session.subprotocol.append("chat.v1");
+
+        var req: u8[>..] = [];
+        wing::ws_build_handshake_request(session, "example.com", "/chat", "dGhlIHNhbXBsZSBub25jZQ==", req);
+        sub.assert_true(req.len > 0, "Handshake request created");
+
+        var text_frame: u8[>..] = [];
+        wing::ws_send_text(session, "hello server", text_frame);
+        sub.assert_true(text_frame.len > 0, "Text frame generated");
+
+        var ping_frame: u8[>..] = [];
+        wing::ws_send_ping(session, "heartbeat", ping_frame);
+        sub.assert_true(ping_frame.len > 0, "Ping frame generated");
+
+        var close_frame: u8[>..] = [];
+        wing::ws_close(session, wing::WS_STATUS_NORMAL, "goodbye", close_frame);
+        sub.assert_true(session.is_closed, "Session marked closed");
+        sub.assert_eq(session.close_code, wing::WS_STATUS_NORMAL, "Close code set");
+    };
 }
 
 fn test_http3_priority_update(t: core::T&) {
@@ -228,6 +250,21 @@ fn test_server_sent_events(t: core::T&) {
         sub.assert_bytes_eq(events[0].data[..], "line1\nline2", "Multi-line data roundtrip");
         sub.assert_bytes_eq(events[0].id[..], "id-99", "Event ID roundtrip");
         sub.assert_eq(events[0].retry_ms as i64, 2500, "Retry ms roundtrip");
+    };
+
+    t.run("5. SseSubscription Ergonomics and Header Generation") { sub =>
+        var subscr = wing::new_sse_subscription("https://api.example.com/stream");
+        subscr.parser.last_event_id.append("evt-1234");
+
+        var req: u8[>..] = [];
+        wing::sse_build_request_headers(subscr, "api.example.com", "/stream", req);
+
+        sub.assert_true(req.len > 0, "SSE request headers created");
+
+        var events: wing::SseEvent[..5] = [];
+        wing::sse_consume(subscr, "data: chunked message\n\n", events);
+        sub.assert_eq(events.len, 1, "Consumed 1 event via SseSubscription");
+        sub.assert_bytes_eq(events[0].data[..], "chunked message", "Event content matches");
     };
 }
 

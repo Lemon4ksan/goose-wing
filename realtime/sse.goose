@@ -209,3 +209,44 @@ fn sse_format_event<B>(
     // Terminal newline to dispatch event
     out.push('\n');
 }
+
+// ---- 4. High-Level Ergonomic SSE Subscription ------------------------------
+
+struct SseSubscription {
+    parser: SseParser = SseParser { .. },
+    url: u8[..256] = [],
+    connected: bool = false,
+}
+
+fn new_sse_subscription(url: const u8[:] = "") -> SseSubscription {
+    var sub = SseSubscription { .. };
+    if url.len > 0 {
+        sub.url.append(url);
+    }
+    return sub;
+}
+
+// Formats HTTP/1.1 or H2/H3 GET headers for SSE subscription per W3C EventSource
+fn sse_build_request_headers<B>(
+    sub: const SseSubscription&,
+    host: const u8[:],
+    path: const u8[:],
+    out: B&
+) {
+    out.append("GET ");
+    out.append(path);
+    out.append(" HTTP/1.1\r\nHost: ");
+    out.append(host);
+    out.append("\r\nAccept: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive");
+    if sub.parser.last_event_id.len > 0 {
+        out.append("\r\nLast-Event-ID: ");
+        out.append(sub.parser.last_event_id[..]);
+    }
+    out.append("\r\n\r\n");
+}
+
+// Feeds incoming network chunk into subscription and dispatches parsed events
+fn sse_consume<E>(sub: SseSubscription&, chunk: const u8[:], out_events: E&) {
+    sse_feed(sub.parser, chunk, out_events);
+}
+
