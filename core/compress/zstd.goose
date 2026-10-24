@@ -927,7 +927,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
                 let shift_bytes = if ptr < avail { ptr } else { avail };
                 ptr -= shift_bytes;
                 bits_consumed -= (shift_bytes * 8) as u32;
-                if ptr >= 0 && ptr + 8 <= r.src.len {
+                if ptr >= 0 && ptr <= r.src.len - 8 {
                     bit_container = xxh64_read_le64(r.src, ptr);
                 }
             }
@@ -1016,13 +1016,13 @@ fn huf_decode_4streams(
     if stop4 == 8 && ptr4 > 0 { ptr4--; bits4 = 0; }
 
     var cont1: u64 = 0;
-    if ptr1 >= 0 && ptr1 + 8 <= src1.len { cont1 = xxh64_read_le64(src1, ptr1); }
+    if ptr1 >= 0 && ptr1 <= src1.len - 8 { cont1 = xxh64_read_le64(src1, ptr1); }
     var cont2: u64 = 0;
-    if ptr2 >= 0 && ptr2 + 8 <= src2.len { cont2 = xxh64_read_le64(src2, ptr2); }
+    if ptr2 >= 0 && ptr2 <= src2.len - 8 { cont2 = xxh64_read_le64(src2, ptr2); }
     var cont3: u64 = 0;
-    if ptr3 >= 0 && ptr3 + 8 <= src3.len { cont3 = xxh64_read_le64(src3, ptr3); }
+    if ptr3 >= 0 && ptr3 <= src3.len - 8 { cont3 = xxh64_read_le64(src3, ptr3); }
     var cont4: u64 = 0;
-    if ptr4 >= 0 && ptr4 + 8 <= src4.len { cont4 = xxh64_read_le64(src4, ptr4); }
+    if ptr4 >= 0 && ptr4 <= src4.len - 8 { cont4 = xxh64_read_le64(src4, ptr4); }
 
     var dec1: i64 = 0;
     var dec2: i64 = 0;
@@ -1040,7 +1040,7 @@ fn huf_decode_4streams(
                 let s = (bits1 >> 3) as i64;
                 ptr1 -= s;
                 bits1 &= 7;
-                if ptr1 >= 0 && ptr1 + 8 <= src1.len {
+                if ptr1 >= 0 && ptr1 <= src1.len - 8 {
                     cont1 = xxh64_read_le64(src1, ptr1);
                 }
             } else if ptr1 > 0 {
@@ -1048,7 +1048,7 @@ fn huf_decode_4streams(
                 let s = if ptr1 < avail { ptr1 } else { avail };
                 ptr1 -= s;
                 bits1 -= (s * 8) as u32;
-                if ptr1 >= 0 && ptr1 + 8 <= src1.len {
+                if ptr1 >= 0 && ptr1 <= src1.len - 8 {
                     cont1 = xxh64_read_le64(src1, ptr1);
                 }
             }
@@ -1058,7 +1058,7 @@ fn huf_decode_4streams(
                 let s = (bits2 >> 3) as i64;
                 ptr2 -= s;
                 bits2 &= 7;
-                if ptr2 >= 0 && ptr2 + 8 <= src2.len {
+                if ptr2 >= 0 && ptr2 <= src2.len - 8 {
                     cont2 = xxh64_read_le64(src2, ptr2);
                 }
             } else if ptr2 > 0 {
@@ -1066,7 +1066,7 @@ fn huf_decode_4streams(
                 let s = if ptr2 < avail { ptr2 } else { avail };
                 ptr2 -= s;
                 bits2 -= (s * 8) as u32;
-                if ptr2 >= 0 && ptr2 + 8 <= src2.len {
+                if ptr2 >= 0 && ptr2 <= src2.len - 8 {
                     cont2 = xxh64_read_le64(src2, ptr2);
                 }
             }
@@ -1076,7 +1076,7 @@ fn huf_decode_4streams(
                 let s = (bits3 >> 3) as i64;
                 ptr3 -= s;
                 bits3 &= 7;
-                if ptr3 >= 0 && ptr3 + 8 <= src3.len {
+                if ptr3 >= 0 && ptr3 <= src3.len - 8 {
                     cont3 = xxh64_read_le64(src3, ptr3);
                 }
             } else if ptr3 > 0 {
@@ -1084,7 +1084,7 @@ fn huf_decode_4streams(
                 let s = if ptr3 < avail { ptr3 } else { avail };
                 ptr3 -= s;
                 bits3 -= (s * 8) as u32;
-                if ptr3 >= 0 && ptr3 + 8 <= src3.len {
+                if ptr3 >= 0 && ptr3 <= src3.len - 8 {
                     cont3 = xxh64_read_le64(src3, ptr3);
                 }
             }
@@ -1094,7 +1094,7 @@ fn huf_decode_4streams(
                 let s = (bits4 >> 3) as i64;
                 ptr4 -= s;
                 bits4 &= 7;
-                if ptr4 >= 0 && ptr4 + 8 <= src4.len {
+                if ptr4 >= 0 && ptr4 <= src4.len - 8 {
                     cont4 = xxh64_read_le64(src4, ptr4);
                 }
             } else if ptr4 > 0 {
@@ -1102,7 +1102,7 @@ fn huf_decode_4streams(
                 let s = if ptr4 < avail { ptr4 } else { avail };
                 ptr4 -= s;
                 bits4 -= (s * 8) as u32;
-                if ptr4 >= 0 && ptr4 + 8 <= src4.len {
+                if ptr4 >= 0 && ptr4 <= src4.len - 8 {
                     cont4 = xxh64_read_le64(src4, ptr4);
                 }
             }
@@ -1517,7 +1517,7 @@ fn decode_sequences<B>(
 
     if use_fast_dstream {
         ptr = seq_bitstream.len - 8;
-        if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
             bit_container = xxh64_read_le64(seq_bitstream, ptr);
         }
         let last_byte = seq_bitstream[seq_bitstream.len - 1];
@@ -1564,7 +1564,7 @@ fn decode_sequences<B>(
                     let s = (bits_consumed >> 3) as i64;
                     ptr -= s;
                     bits_consumed &= 7;
-                    if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
                         bit_container = xxh64_read_le64(seq_bitstream, ptr);
                     }
                 } else if ptr > 0 {
@@ -1572,7 +1572,7 @@ fn decode_sequences<B>(
                     let s = if ptr < avail { ptr } else { avail };
                     ptr -= s;
                     bits_consumed -= (s * 8) as u32;
-                    if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                    if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
                         bit_container = xxh64_read_le64(seq_bitstream, ptr);
                     }
                 }
@@ -1609,7 +1609,7 @@ fn decode_sequences<B>(
                         let s = (bits_consumed >> 3) as i64;
                         ptr -= s;
                         bits_consumed &= 7;
-                        if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
                             bit_container = xxh64_read_le64(seq_bitstream, ptr);
                         }
                     } else if ptr > 0 {
@@ -1617,7 +1617,7 @@ fn decode_sequences<B>(
                         let s = if ptr < avail { ptr } else { avail };
                         ptr -= s;
                         bits_consumed -= (s * 8) as u32;
-                        if ptr >= 0 && ptr + 8 <= seq_bitstream.len {
+                        if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
                             bit_container = xxh64_read_le64(seq_bitstream, ptr);
                         }
                     }
@@ -1714,25 +1714,26 @@ fn decode_sequences<B>(
             }
         } else if lit_len > 1 {
             let next_lit = lit_ptr + (lit_len as i64);
-            if next_lit > lit_buf.len {
+            if lit_ptr >= 0 && next_lit <= lit_buf.len {
+                if lit_len == 2 {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    out_buf.push(lit_buf[lit_ptr + 1]);
+                } else if lit_len == 3 {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    out_buf.push(lit_buf[lit_ptr + 1]);
+                    out_buf.push(lit_buf[lit_ptr + 2]);
+                } else if lit_len == 4 {
+                    out_buf.push(lit_buf[lit_ptr]);
+                    out_buf.push(lit_buf[lit_ptr + 1]);
+                    out_buf.push(lit_buf[lit_ptr + 2]);
+                    out_buf.push(lit_buf[lit_ptr + 3]);
+                } else {
+                    out_buf.append(lit_buf[lit_ptr .. next_lit]);
+                }
+                lit_ptr = next_lit;
+            } else {
                 return CompressError.CorruptedBitstream;
             }
-            if lit_len == 2 {
-                out_buf.push(lit_buf[lit_ptr]);
-                out_buf.push(lit_buf[lit_ptr + 1]);
-            } else if lit_len == 3 {
-                out_buf.push(lit_buf[lit_ptr]);
-                out_buf.push(lit_buf[lit_ptr + 1]);
-                out_buf.push(lit_buf[lit_ptr + 2]);
-            } else if lit_len == 4 {
-                out_buf.push(lit_buf[lit_ptr]);
-                out_buf.push(lit_buf[lit_ptr + 1]);
-                out_buf.push(lit_buf[lit_ptr + 2]);
-                out_buf.push(lit_buf[lit_ptr + 3]);
-            } else {
-                out_buf.append(lit_buf[lit_ptr .. next_lit]);
-            }
-            lit_ptr = next_lit;
         }
 
         if match_len > 0 {
@@ -1777,12 +1778,14 @@ fn decode_sequences<B>(
     rep[2] = rep2;
 
     // Append remaining literals
-    if lit_ptr < lit_buf.len {
+    if lit_ptr >= 0 && lit_ptr <= lit_buf.len {
         let rem_lit = lit_buf.len - lit_ptr;
-        if max_output_bytes >= 0 && (out_buf.len as i64) + rem_lit > max_output_bytes {
-            return CompressError.OutputBufferOverflow;
+        if rem_lit > 0 {
+            if max_output_bytes >= 0 && (out_buf.len as i64) + rem_lit > max_output_bytes {
+                return CompressError.OutputBufferOverflow;
+            }
+            out_buf.append(lit_buf[lit_ptr .. lit_buf.len]);
         }
-        out_buf.append(lit_buf[lit_ptr..]);
     }
 
     offset = block_end;
