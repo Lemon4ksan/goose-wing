@@ -890,6 +890,31 @@ fn test_zstandard_rfc8878(t: core::T&) {
         sub.assert_true(dec.is_finished, "ZStreamDecompressor must be finished");
         sub.assert_eq(restored[..], message, "ZStream chunk-streamed Zstd must match original payload");
     };
+
+    t.run("Zstandard Native Compressor Levels 0..3 Roundtrip Verification") { sub =>
+        var payload_buf: u8[>..] = [];
+        for i in 6 {
+            payload_buf.append("{\"status\": \"success\", \"code\": 200, \"items\": [\"apple\", \"banana\", \"cherry\", \"date\"], \"extra\": \"high performance compression testing for goose-wing stdlib candidate\"}\n");
+        }
+        let payload = payload_buf[..];
+
+        for lvl in 4 {
+            let level = lvl as i32;
+            var compressed: u8[>..] = [];
+            let ok_c = core::compress_zstd_level(payload, compressed, level, true);
+            sub.assert_true(ok_c, "compress_zstd_level must succeed");
+
+            if level > 0 {
+                sub.assert_true(compressed.len < payload.len, "Levels 1..3 must achieve positive compression ratio");
+            }
+
+            var decompressed: u8[>..] = [];
+            let ok_d, err_d = core::decompress_zstd(compressed[..], decompressed);
+            sub.assert_true(ok_d, "decompress_zstd must decompress native level output");
+            sub.assert_eq(err_d, core::CompressError.None, "Decompress error must be None");
+            sub.assert_eq(decompressed[..], payload, "Decompressed bytes must match original verbatim");
+        }
+    };
 }
 
 fn main() {

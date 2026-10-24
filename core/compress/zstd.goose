@@ -2358,11 +2358,423 @@ fn zstd_decompress<B>(src: const u8[:], out_buf: B&) -> CompressError {
     return zstd_decompress_with_limit(src, out_buf, -1);
 }
 
-// ---- frame compressor (clean-room rfc 8878 raw block generator) ------------
+// ---- native rfc 8878 zstandard compressor (levels 1-3) ---------------------
 
-// Compresses input slice using Zstandard frame container (standard raw blocks with optional XXH64 checksum).
-fn zstd_compress<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true) -> bool {
-    let len = src.len;
+struct FseCTableEntry {
+    next_state: u16 = 0,
+    nb_bits: u8 = 0,
+    bits: u16 = 0,
+}
+
+struct ZstdCTables {
+    ll_table: FseCTableEntry[2304] = [FseCTableEntry {}; 2304],
+    of_table: FseCTableEntry[928] = [FseCTableEntry {}; 928],
+    ml_table: FseCTableEntry[3392] = [FseCTableEntry {}; 3392],
+    ll_init: u16[36] = [0; 36],
+    of_init: u16[29] = [0; 29],
+    ml_init: u16[53] = [0; 53],
+    is_init: bool = false,
+}
+
+var G_CTABLES: ZstdCTables = ZstdCTables {};
+
+fn build_fse_ctable(
+    d_entries: const FseEntry[:],
+    table_size: i32,
+    num_syms: i32,
+    table_kind: i32,
+    c_table: FseCTableEntry[:],
+    init_states: u16[:]
+) {
+    var sym_seen: bool[64] = [false; 64];
+
+    var u: i32 = 0;
+    while u < table_size {
+        let entry = d_entries[u];
+        var sym: i32 = 0;
+        if table_kind == 1 {
+            while sym < 36 && LL_BASE[sym] != entry.base_val {
+                sym++;
+            }
+        } else if table_kind == 2 {
+            sym = entry.extra_bits;
+        } else {
+            while sym < 53 && ML_BASE[sym] != entry.base_val {
+                sym++;
+            }
+        }
+
+        if sym < num_syms && !sym_seen[sym] {
+            sym_seen[sym] = true;
+            init_states[sym] = u as u16;
+        }
+
+        let nb_bits = entry.nb_bits as u32;
+        let new_state = entry.new_state as i32;
+        let num_bits_vals = (1 as i32) << nb_bits;
+
+        var bits: i32 = 0;
+        while bits < num_bits_vals {
+            let s = new_state + bits;
+            let idx = s * num_syms + sym;
+            c_table[idx] = FseCTableEntry {
+                next_state: u as u16,
+                nb_bits: nb_bits as u8,
+                bits: bits as u16,
+            };
+            bits++;
+        }
+        u++;
+    }
+}
+
+fn init_global_ctables() {
+    if G_CTABLES.is_init { return; }
+    build_fse_ctable(DEFAULT_LL_ENTRIES[..], 64, 36, 1, G_CTABLES.ll_table[..], G_CTABLES.ll_init[..]);
+    build_fse_ctable(DEFAULT_OF_ENTRIES[..], 32, 29, 2, G_CTABLES.of_table[..], G_CTABLES.of_init[..]);
+    build_fse_ctable(DEFAULT_ML_ENTRIES[..], 64, 53, 3, G_CTABLES.ml_table[..], G_CTABLES.ml_init[..]);
+    G_CTABLES.is_init = true;
+}
+
+struct ZstdBitWriter {
+    bit_container: u64 = 0,
+    bit_count: u32 = 0,
+    buf: u8[>..] = [],
+}
+
+inline fn bw_write_bits(w: ZstdBitWriter&, val: u32, nb: u32) {
+    if nb == 0 { return; }
+    w.bit_container |= (val as u64) << w.bit_count;
+    w.bit_count += nb;
+    while w.bit_count >= 8 {
+        w.buf.push((w.bit_container & 0xFF) as u8);
+        w.bit_container >>= 8;
+        w.bit_count -= 8;
+    }
+}
+
+fn bw_finish(w: ZstdBitWriter&) {
+    w.bit_container |= (1 as u64) << w.bit_count;
+    w.bit_count += 1;
+    while w.bit_count > 0 {
+        w.buf.push((w.bit_container & 0xFF) as u8);
+        w.bit_container >>= 8;
+        if w.bit_count > 8 {
+            w.bit_count -= 8;
+        } else {
+            w.bit_count = 0;
+        }
+    }
+}
+
+struct ZstdSeq {
+    lit_len: u32 = 0,
+    match_len: u32 = 0,
+    offset: u32 = 0,
+}
+
+inline fn lit_len_to_code(lit_len: u32, code: u32&, extra: u32&, extra_bits: u32&) {
+    var i: u32 = 0;
+    while i < 35 {
+        if lit_len >= LL_BASE[i] && lit_len < LL_BASE[i + 1] {
+            code = i;
+            extra = lit_len - LL_BASE[i];
+            extra_bits = LL_EXTRA_BITS[i];
+            return;
+        }
+        i++;
+    }
+    code = 35;
+    extra = lit_len - LL_BASE[35];
+    extra_bits = LL_EXTRA_BITS[35];
+}
+
+inline fn match_len_to_code(match_len: u32, code: u32&, extra: u32&, extra_bits: u32&) {
+    var i: u32 = 0;
+    while i < 52 {
+        if match_len >= ML_BASE[i] && match_len < ML_BASE[i + 1] {
+            code = i;
+            extra = match_len - ML_BASE[i];
+            extra_bits = ML_EXTRA_BITS[i];
+            return;
+        }
+        i++;
+    }
+    code = 52;
+    extra = match_len - ML_BASE[52];
+    extra_bits = ML_EXTRA_BITS[52];
+}
+
+inline fn offset_to_code(offset: u32, lit_len: u32, rep: u32[3]&, code: u32&, extra: u32&, extra_bits: u32&) {
+    var off_val: u32 = 0;
+    if lit_len > 0 {
+        if offset == rep[0] {
+            off_val = 1;
+        } else if offset == rep[1] {
+            off_val = 2;
+            rep[1] = rep[0];
+            rep[0] = offset;
+        } else if offset == rep[2] {
+            off_val = 3;
+            rep[2] = rep[1];
+            rep[1] = rep[0];
+            rep[0] = offset;
+        } else {
+            off_val = offset + 3;
+            rep[2] = rep[1];
+            rep[1] = rep[0];
+            rep[0] = offset;
+        }
+    } else {
+        if offset == rep[1] {
+            off_val = 1;
+            rep[1] = rep[0];
+            rep[0] = offset;
+        } else if offset == rep[2] {
+            off_val = 2;
+            rep[2] = rep[1];
+            rep[1] = rep[0];
+            rep[0] = offset;
+        } else if offset == rep[0] - 1 {
+            off_val = 3;
+            rep[2] = rep[1];
+            rep[1] = rep[0];
+            rep[0] = offset;
+        } else {
+            off_val = offset + 3;
+            rep[2] = rep[1];
+            rep[1] = rep[0];
+            rep[0] = offset;
+        }
+    }
+    let high = 63 - clz(off_val);
+    code = high as u32;
+    extra = off_val - ((1 as u32) << code);
+    extra_bits = code;
+}
+
+struct CodedSeq {
+    ll_s: u32 = 0, ll_ex: u32 = 0, ll_eb: u32 = 0,
+    ml_s: u32 = 0, ml_ex: u32 = 0, ml_eb: u32 = 0,
+    of_s: u32 = 0, of_ex: u32 = 0, of_eb: u32 = 0,
+}
+
+fn encode_sequences(seqs: const ZstdSeq[:], rep_initial: u32[3], out_buf: u8[>..]&) {
+    let nb_seq = seqs.len;
+    if nb_seq == 0 {
+        out_buf.push(0);
+        return;
+    }
+
+    var rep = rep_initial;
+    var coded: CodedSeq[>..] = [];
+    coded.resize(nb_seq, CodedSeq {});
+
+    var si: i64 = 0;
+    while si < nb_seq {
+        let sq = seqs[si];
+        var c = CodedSeq {};
+        lit_len_to_code(sq.lit_len, c.ll_s, c.ll_ex, c.ll_eb);
+        match_len_to_code(sq.match_len, c.ml_s, c.ml_ex, c.ml_eb);
+        offset_to_code(sq.offset, sq.lit_len, rep, c.of_s, c.of_ex, c.of_eb);
+        coded[si] = c;
+        si++;
+    }
+
+    let last = coded[nb_seq - 1];
+    var st_ll = G_CTABLES.ll_init[last.ll_s];
+    var st_ml = G_CTABLES.ml_init[last.ml_s];
+    var st_of = G_CTABLES.of_init[last.of_s];
+
+    var bw = ZstdBitWriter {};
+    if last.ll_eb > 0 { bw_write_bits(bw, last.ll_ex, last.ll_eb); }
+    if last.ml_eb > 0 { bw_write_bits(bw, last.ml_ex, last.ml_eb); }
+    if last.of_eb > 0 { bw_write_bits(bw, last.of_ex, last.of_eb); }
+
+    var i = nb_seq - 2;
+    while i >= 0 {
+        let prev = coded[i];
+        let tr_of = G_CTABLES.of_table[(st_of as i32) * 29 + (prev.of_s as i32)];
+        let tr_ml = G_CTABLES.ml_table[(st_ml as i32) * 53 + (prev.ml_s as i32)];
+        let tr_ll = G_CTABLES.ll_table[(st_ll as i32) * 36 + (prev.ll_s as i32)];
+
+        st_of = tr_of.next_state;
+        st_ml = tr_ml.next_state;
+        st_ll = tr_ll.next_state;
+
+        if tr_of.nb_bits > 0 { bw_write_bits(bw, tr_of.bits, tr_of.nb_bits); }
+        if tr_ml.nb_bits > 0 { bw_write_bits(bw, tr_ml.bits, tr_ml.nb_bits); }
+        if tr_ll.nb_bits > 0 { bw_write_bits(bw, tr_ll.bits, tr_ll.nb_bits); }
+
+        if prev.ll_eb > 0 { bw_write_bits(bw, prev.ll_ex, prev.ll_eb); }
+        if prev.ml_eb > 0 { bw_write_bits(bw, prev.ml_ex, prev.ml_eb); }
+        if prev.of_eb > 0 { bw_write_bits(bw, prev.of_ex, prev.of_eb); }
+        i--;
+    }
+
+    bw_write_bits(bw, st_ml, 6);
+    bw_write_bits(bw, st_of, 5);
+    bw_write_bits(bw, st_ll, 6);
+    bw_finish(bw);
+
+    // Number_of_Sequences Header (RFC 8878 Section 3.1.1.3.2)
+    if nb_seq < 128 {
+        out_buf.push(nb_seq as u8);
+    } else if nb_seq < 0x7F00 {
+        out_buf.push(((nb_seq >> 8) + 128) as u8);
+        out_buf.push((nb_seq & 0xFF) as u8);
+    } else {
+        out_buf.push(255);
+        let rem = nb_seq - 0x7F00;
+        out_buf.push((rem & 0xFF) as u8);
+        out_buf.push(((rem >> 8) & 0xFF) as u8);
+    }
+    out_buf.push(0); // Symbol_Compression_Modes: predefined FSE distributions
+    out_buf.append(bw.buf[..]);
+}
+
+fn find_matches(src: const u8[:], rep: u32[3]&, seqs: ZstdSeq[>..]&, lits: u8[>..]&, level: i32) {
+    let hash_log = if level <= 1 { 14 } else if level == 2 { 15 } else { 16 };
+    let hash_size = 1 << hash_log;
+    var table: i32[65536] = [-1; 65536];
+
+    let n = src.len;
+    var anchor: i64 = 0;
+    var curr: i64 = 0;
+
+    while curr + 4 <= n {
+        let v4 = xxh64_read_le32(src, curr);
+
+        var match_len: i64 = 0;
+        var offset: u32 = 0;
+
+        // Check rep0 match for level >= 3
+        if level >= 3 {
+            let rep0 = rep[0] as i64;
+            if rep0 > 0 && curr >= rep0 {
+                let p_rep = curr - rep0;
+                if xxh64_read_le32(src, p_rep) == v4 {
+                    var m: i64 = 4;
+                    while curr + m < n && src[p_rep + m] == src[curr + m] {
+                        m++;
+                    }
+                    match_len = m;
+                    offset = rep[0];
+                }
+            }
+        }
+
+        if match_len == 0 {
+            let h = ((v4 * 2654435761) >> (32 - hash_log)) & ((hash_size - 1) as u32);
+            let p = table[h as i64] as i64;
+            table[h as i64] = curr as i32;
+
+            if p >= 0 && (curr - p) <= 131072 {
+                if xxh64_read_le32(src, p) == v4 {
+                    var m: i64 = 4;
+                    while curr + m < n && src[p + m] == src[curr + m] {
+                        m++;
+                    }
+                    match_len = m;
+                    offset = (curr - p) as u32;
+                }
+            }
+        }
+
+        if match_len >= 4 {
+            let lit_len = (curr - anchor) as u32;
+            if lit_len > 0 {
+                lits.append(src[anchor .. curr]);
+            }
+            seqs.push(ZstdSeq { lit_len: lit_len, match_len: match_len as u32, offset: offset });
+
+            // update rep
+            if lit_len > 0 {
+                if offset == rep[0] {
+                } else if offset == rep[1] {
+                    rep[1] = rep[0]; rep[0] = offset;
+                } else if offset == rep[2] {
+                    rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = offset;
+                } else {
+                    rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = offset;
+                }
+            } else {
+                if offset == rep[1] {
+                    rep[1] = rep[0]; rep[0] = offset;
+                } else if offset == rep[2] {
+                    rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = offset;
+                } else if offset == rep[0] - 1 {
+                    rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = offset;
+                } else {
+                    rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = offset;
+                }
+            }
+
+            anchor = curr + match_len;
+            curr = anchor;
+        } else {
+            let step = if level <= 1 { 1 + ((curr - anchor) >> 8) } else { 1 };
+            curr += step;
+        }
+    }
+
+    if anchor < n {
+        lits.append(src[anchor .. n]);
+    }
+}
+
+fn compress_block<B>(chunk: const u8[:], rep: u32[3]&, is_last: bool, level: i32, out_buf: B&) {
+    let saved_rep = rep;
+    var seqs: ZstdSeq[>..] = [];
+    var lits: u8[>..] = [];
+    find_matches(chunk, rep, seqs, lits, level);
+
+    var lit_sec: u8[>..] = [];
+    let n_lit = lits.len;
+    if n_lit < 32 {
+        lit_sec.push(((n_lit << 3) | 0) as u8);
+    } else if n_lit < 4096 {
+        lit_sec.push((0 | (1 << 2) | ((n_lit & 0xF) << 4)) as u8);
+        lit_sec.push(((n_lit >> 4) & 0xFF) as u8);
+    } else {
+        lit_sec.push((0 | (3 << 2) | ((n_lit & 0xF) << 4)) as u8);
+        lit_sec.push(((n_lit >> 4) & 0xFF) as u8);
+        lit_sec.push(((n_lit >> 12) & 0xFF) as u8);
+    }
+    lit_sec.append(lits[..]);
+
+    var seq_sec: u8[>..] = [];
+    encode_sequences(seqs[..], saved_rep, seq_sec);
+
+    let b_size = lit_sec.len + seq_sec.len;
+    if b_size >= chunk.len {
+        // Raw block fallback
+        let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
+        let hdr_val = last_bit | (0 << 1) | ((chunk.len as u32) << 3);
+        out_buf.push((hdr_val & 0xFF) as u8);
+        out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
+        out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
+        out_buf.append(chunk);
+        rep = saved_rep;
+        return;
+    }
+
+    let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
+    let hdr_val = last_bit | (2 << 1) | ((b_size as u32) << 3);
+    out_buf.push((hdr_val & 0xFF) as u8);
+    out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
+    out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
+    out_buf.append(lit_sec[..]);
+    out_buf.append(seq_sec[..]);
+}
+
+// Compresses input slice using Zstandard frame container (RFC 8878).
+// level 0: raw uncompressed blocks
+// level 1: fast compression (hash_log 14, step accelerator)
+// level 2: balanced compression (hash_log 15)
+// level 3: default compression (hash_log 16, rep0 check)
+fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include_checksum: bool = true) -> bool {
+    let total = src.len;
 
     // 1. Magic Number (0xFD2FB528 in little-endian)
     out_buf.push(0x28);
@@ -2370,60 +2782,70 @@ fn zstd_compress<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true
     out_buf.push(0x2F);
     out_buf.push(0xFD);
 
-    // 2. Frame Header Descriptor
-    // Single_Segment = 1 (bit 5: 0x20)
-    var fhd: u8 = 0x20;
-    if include_checksum {
-        fhd |= 0x04; // Content_Checksum_Flag = 1 (bit 2)
-    }
+    // 2. Frame Header Descriptor (FHD)
+    var fhd: u8 = 0x20; // single segment
+    if include_checksum { fhd |= 0x04; }
 
-    if len < 256 {
-        // FCS_Field_Size = 1 byte (fcs_flag = 0)
+    if total < 256 {
         out_buf.push(fhd);
-        out_buf.push(len as u8);
-    } else if len <= 65535 + 256 {
-        // FCS_Field_Size = 2 bytes (fcs_flag = 1, bit 7-6: 01 -> 0x40)
+        out_buf.push(total as u8);
+    } else if total <= 65535 + 256 {
         out_buf.push(fhd | 0x40);
-        let fcs_val = (len - 256) as u16;
-        out_buf.push((fcs_val & 0xFF) as u8);
-        out_buf.push(((fcs_val >> 8) & 0xFF) as u8);
+        let fcs = (total - 256) as u16;
+        out_buf.push((fcs & 0xFF) as u8);
+        out_buf.push(((fcs >> 8) & 0xFF) as u8);
     } else {
-        // FCS_Field_Size = 4 bytes (fcs_flag = 2, bit 7-6: 10 -> 0x80)
         out_buf.push(fhd | 0x80);
-        let fcs_val = len as u32;
-        out_buf.push((fcs_val & 0xFF) as u8);
-        out_buf.push(((fcs_val >> 8) & 0xFF) as u8);
-        out_buf.push(((fcs_val >> 16) & 0xFF) as u8);
-        out_buf.push(((fcs_val >> 24) & 0xFF) as u8);
+        let fcs = total as u32;
+        out_buf.push((fcs & 0xFF) as u8);
+        out_buf.push(((fcs >> 8) & 0xFF) as u8);
+        out_buf.push(((fcs >> 16) & 0xFF) as u8);
+        out_buf.push(((fcs >> 24) & 0xFF) as u8);
     }
 
-    // 3. Blocks: chunk into blocks of at most 128 KB
-    if len == 0 {
-        // Empty frame: 1 empty raw block (last_block = 1, block_type = 0, size = 0)
-        let hdr = 1 as u32; // bit 0 = 1
-        out_buf.push((hdr & 0xFF) as u8);
-        out_buf.push(((hdr >> 8) & 0xFF) as u8);
-        out_buf.push(((hdr >> 16) & 0xFF) as u8);
-    } else {
-        var offset: i64 = 0;
-        while offset < len {
-            let rem = len - offset;
-            let chunk_size = if rem < ZSTD_BLOCKSIZE_MAX { rem } else { ZSTD_BLOCKSIZE_MAX };
-            let is_last = (offset + chunk_size == len);
+    if total == 0 {
+        let hdr_val = 1 | (0 << 1); // 1 empty raw block
+        out_buf.push((hdr_val & 0xFF) as u8);
+        out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
+        out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
+        if include_checksum {
+            let chk = xxh64_digest_32(src);
+            out_buf.push((chk & 0xFF) as u8);
+            out_buf.push(((chk >> 8) & 0xFF) as u8);
+            out_buf.push(((chk >> 16) & 0xFF) as u8);
+            out_buf.push(((chk >> 24) & 0xFF) as u8);
+        }
+        return true;
+    }
 
+    if level <= 0 {
+        // Raw blocks (level 0)
+        var offset: i64 = 0;
+        while offset < total {
+            let rem = total - offset;
+            let chunk_size = if rem < ZSTD_BLOCKSIZE_MAX { rem } else { ZSTD_BLOCKSIZE_MAX };
+            let is_last = (offset + chunk_size == total);
             let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
             let block_hdr = last_bit | (ZSTD_BLOCK_TYPE_RAW << 1) | ((chunk_size as u32) << 3);
-
             out_buf.push((block_hdr & 0xFF) as u8);
             out_buf.push(((block_hdr >> 8) & 0xFF) as u8);
             out_buf.push(((block_hdr >> 16) & 0xFF) as u8);
-
             out_buf.append(src[offset .. offset + chunk_size]);
             offset += chunk_size;
         }
+    } else {
+        init_global_ctables();
+        var rep: u32[3] = [1, 4, 8];
+        var offset: i64 = 0;
+        while offset < total {
+            let rem = total - offset;
+            let chunk_sz = if rem < ZSTD_BLOCKSIZE_MAX { rem } else { ZSTD_BLOCKSIZE_MAX };
+            let is_last = (offset + chunk_sz == total);
+            compress_block(src[offset .. offset + chunk_sz], rep, is_last, level, out_buf);
+            offset += chunk_sz;
+        }
     }
 
-    // 4. Content Checksum (lower 32-bits of XXH64)
     if include_checksum {
         let chk = xxh64_digest_32(src);
         out_buf.push((chk & 0xFF) as u8);
@@ -2431,6 +2853,10 @@ fn zstd_compress<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true
         out_buf.push(((chk >> 16) & 0xFF) as u8);
         out_buf.push(((chk >> 24) & 0xFF) as u8);
     }
-
     return true;
+}
+
+// Compresses input slice using Zstandard frame container (level 3 by default).
+fn zstd_compress<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true) -> bool {
+    return zstd_compress_level(src, out_buf, 3, include_checksum);
 }
