@@ -80,9 +80,10 @@ inline fn zstd_high_bit(v: u32) -> i32 {
 }
 
 // Extraction of nb bits (0 <= nb <= 32) from bit_container at bits_consumed.
+// Completely branchless: eliminates 19,200+ branches per 256KB block.
 inline fn zstd_extract_bits(bit_container: u64, bits_consumed: u32, nb: u32) -> u32 {
-    if nb == 0 { return 0; }
-    return ((bit_container << (bits_consumed & 63)) >> (64 - nb)) as u32;
+    let top32 = (bit_container << (bits_consumed & 63)) >> 32;
+    return (top32 >> ((32 - nb) & 63)) as u32;
 }
 
 // ---- reverse bit reader (rfc 8878 section 4.2.2) -----------
@@ -883,6 +884,189 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
     return decoded == count;
 }
 
+fn huf_decode_4streams(
+    src1: const u8[:], src2: const u8[:], src3: const u8[:], src4: const u8[:],
+    dst1: u8[:], dst2: u8[:], dst3: u8[:], dst4: u8[:],
+    table: const HufTable&
+) -> bool {
+    let t_log = table.table_log;
+    let t_log_u32 = t_log as u32;
+    let rshift = (64 - t_log_u32) as u64;
+
+    if src1.len < 8 || src2.len < 8 || src3.len < 8 || src4.len < 8 || t_log == 0 {
+        var r1 = new_zstd_bit_reader(src1);
+        var r2 = new_zstd_bit_reader(src2);
+        var r3 = new_zstd_bit_reader(src3);
+        var r4 = new_zstd_bit_reader(src4);
+        return huf_decode_stream_slice(r1, table, dst1) &&
+               huf_decode_stream_slice(r2, table, dst2) &&
+               huf_decode_stream_slice(r3, table, dst3) &&
+               huf_decode_stream_slice(r4, table, dst4);
+    }
+
+    let last_b1 = src1[src1.len - 1];
+    let last_b2 = src2[src2.len - 1];
+    let last_b3 = src3[src3.len - 1];
+    let last_b4 = src4[src4.len - 1];
+    if last_b1 == 0 || last_b2 == 0 || last_b3 == 0 || last_b4 == 0 {
+        return false;
+    }
+
+    let stop1 = (8 - zstd_high_bit(last_b1)) as u32;
+    let stop2 = (8 - zstd_high_bit(last_b2)) as u32;
+    let stop3 = (8 - zstd_high_bit(last_b3)) as u32;
+    let stop4 = (8 - zstd_high_bit(last_b4)) as u32;
+
+    var ptr1: i64 = src1.len - 8;
+    var ptr2: i64 = src2.len - 8;
+    var ptr3: i64 = src3.len - 8;
+    var ptr4: i64 = src4.len - 8;
+
+    var bits1 = stop1;
+    if stop1 == 8 && ptr1 > 0 { ptr1--; bits1 = 0; }
+    var bits2 = stop2;
+    if stop2 == 8 && ptr2 > 0 { ptr2--; bits2 = 0; }
+    var bits3 = stop3;
+    if stop3 == 8 && ptr3 > 0 { ptr3--; bits3 = 0; }
+    var bits4 = stop4;
+    if stop4 == 8 && ptr4 > 0 { ptr4--; bits4 = 0; }
+
+    var cont1 = xxh64_read_le64(src1, ptr1);
+    var cont2 = xxh64_read_le64(src2, ptr2);
+    var cont3 = xxh64_read_le64(src3, ptr3);
+    var cont4 = xxh64_read_le64(src4, ptr4);
+
+    var dec1: i64 = 0;
+    var dec2: i64 = 0;
+    var dec3: i64 = 0;
+    var dec4: i64 = 0;
+
+    let cnt1 = dst1.len;
+    let cnt2 = dst2.len;
+    let cnt3 = dst3.len;
+    let cnt4 = dst4.len;
+
+    while dec1 < cnt1 && dec2 < cnt2 && dec3 < cnt3 && dec4 < cnt4 {
+        if bits1 > 32 && ptr1 > 0 {
+            let avail = (bits1 >> 3) as i64;
+            let s = if ptr1 < avail { ptr1 } else { avail };
+            ptr1 -= s;
+            bits1 -= (s * 8) as u32;
+            cont1 = xxh64_read_le64(src1, ptr1);
+        }
+        if bits2 > 32 && ptr2 > 0 {
+            let avail = (bits2 >> 3) as i64;
+            let s = if ptr2 < avail { ptr2 } else { avail };
+            ptr2 -= s;
+            bits2 -= (s * 8) as u32;
+            cont2 = xxh64_read_le64(src2, ptr2);
+        }
+        if bits3 > 32 && ptr3 > 0 {
+            let avail = (bits3 >> 3) as i64;
+            let s = if ptr3 < avail { ptr3 } else { avail };
+            ptr3 -= s;
+            bits3 -= (s * 8) as u32;
+            cont3 = xxh64_read_le64(src3, ptr3);
+        }
+        if bits4 > 32 && ptr4 > 0 {
+            let avail = (bits4 >> 3) as i64;
+            let s = if ptr4 < avail { ptr4 } else { avail };
+            ptr4 -= s;
+            bits4 -= (s * 8) as u32;
+            cont4 = xxh64_read_le64(src4, ptr4);
+        }
+
+        if bits1 + t_log_u32 > 64 || bits2 + t_log_u32 > 64 || bits3 + t_log_u32 > 64 || bits4 + t_log_u32 > 64 {
+            break;
+        }
+
+        let b1 = (((cont1 << bits1) >> rshift) as! i64) & 2047;
+        let b2 = (((cont2 << bits2) >> rshift) as! i64) & 2047;
+        let b3 = (((cont3 << bits3) >> rshift) as! i64) & 2047;
+        let b4 = (((cont4 << bits4) >> rshift) as! i64) & 2047;
+
+        let e1 = table.entries[b1];
+        let e2 = table.entries[b2];
+        let e3 = table.entries[b3];
+        let e4 = table.entries[b4];
+
+        dst1[dec1] = e1.symbol; dec1++; bits1 += e1.nb_bits;
+        dst2[dec2] = e2.symbol; dec2++; bits2 += e2.nb_bits;
+        dst3[dec3] = e3.symbol; dec3++; bits3 += e3.nb_bits;
+        dst4[dec4] = e4.symbol; dec4++; bits4 += e4.nb_bits;
+
+        if dec1 < cnt1 && dec2 < cnt2 && dec3 < cnt3 && dec4 < cnt4 &&
+           bits1 + t_log_u32 <= 64 && bits2 + t_log_u32 <= 64 &&
+           bits3 + t_log_u32 <= 64 && bits4 + t_log_u32 <= 64 {
+            let b1b = (((cont1 << bits1) >> rshift) as! i64) & 2047;
+            let b2b = (((cont2 << bits2) >> rshift) as! i64) & 2047;
+            let b3b = (((cont3 << bits3) >> rshift) as! i64) & 2047;
+            let b4b = (((cont4 << bits4) >> rshift) as! i64) & 2047;
+
+            let e1b = table.entries[b1b];
+            let e2b = table.entries[b2b];
+            let e3b = table.entries[b3b];
+            let e4b = table.entries[b4b];
+
+            dst1[dec1] = e1b.symbol; dec1++; bits1 += e1b.nb_bits;
+            dst2[dec2] = e2b.symbol; dec2++; bits2 += e2b.nb_bits;
+            dst3[dec3] = e3b.symbol; dec3++; bits3 += e3b.nb_bits;
+            dst4[dec4] = e4b.symbol; dec4++; bits4 += e4b.nb_bits;
+        }
+    }
+
+    if dec1 < cnt1 {
+        var r1 = new_zstd_bit_reader(src1);
+        let rem1 = if ptr1 == 0 { if 64 >= bits1 { (64 - bits1) as i64 } else { 0 } } else { ptr1 * 8 + (64 - (bits1 as i64)) };
+        r1.bit_pos = rem1;
+        while dec1 < cnt1 && !r1.underflow {
+            let bits = (zstd_peek_bits(r1, t_log) & ((1 << t_log) - 1)) & 2047;
+            let entry = table.entries[bits];
+            dst1[dec1] = entry.symbol;
+            zstd_consume_bits(r1, entry.nb_bits);
+            dec1++;
+        }
+    }
+    if dec2 < cnt2 {
+        var r2 = new_zstd_bit_reader(src2);
+        let rem2 = if ptr2 == 0 { if 64 >= bits2 { (64 - bits2) as i64 } else { 0 } } else { ptr2 * 8 + (64 - (bits2 as i64)) };
+        r2.bit_pos = rem2;
+        while dec2 < cnt2 && !r2.underflow {
+            let bits = (zstd_peek_bits(r2, t_log) & ((1 << t_log) - 1)) & 2047;
+            let entry = table.entries[bits];
+            dst2[dec2] = entry.symbol;
+            zstd_consume_bits(r2, entry.nb_bits);
+            dec2++;
+        }
+    }
+    if dec3 < cnt3 {
+        var r3 = new_zstd_bit_reader(src3);
+        let rem3 = if ptr3 == 0 { if 64 >= bits3 { (64 - bits3) as i64 } else { 0 } } else { ptr3 * 8 + (64 - (bits3 as i64)) };
+        r3.bit_pos = rem3;
+        while dec3 < cnt3 && !r3.underflow {
+            let bits = (zstd_peek_bits(r3, t_log) & ((1 << t_log) - 1)) & 2047;
+            let entry = table.entries[bits];
+            dst3[dec3] = entry.symbol;
+            zstd_consume_bits(r3, entry.nb_bits);
+            dec3++;
+        }
+    }
+    if dec4 < cnt4 {
+        var r4 = new_zstd_bit_reader(src4);
+        let rem4 = if ptr4 == 0 { if 64 >= bits4 { (64 - bits4) as i64 } else { 0 } } else { ptr4 * 8 + (64 - (bits4 as i64)) };
+        r4.bit_pos = rem4;
+        while dec4 < cnt4 && !r4.underflow {
+            let bits = (zstd_peek_bits(r4, t_log) & ((1 << t_log) - 1)) & 2047;
+            let entry = table.entries[bits];
+            dst4[dec4] = entry.symbol;
+            zstd_consume_bits(r4, entry.nb_bits);
+            dec4++;
+        }
+    }
+
+    return dec1 == cnt1 && dec2 == cnt2 && dec3 == cnt3 && dec4 == cnt4;
+}
+
 // ---- literals section decoder (rfc 8878 section 3.1.1.3.1) ----------------
 
 struct DecodedLiterals {
@@ -1037,21 +1221,14 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let dst3 = lit_buf[c2 .. c3];
             let dst4 = lit_buf[c3 .. regenerated_size];
 
-            // Stream 1
-            var r1 = new_zstd_bit_reader(src[offset .. offset + s1]); offset += s1;
-            if !huf_decode_stream_slice(r1, huf_table, dst1) { return DecodedLiterals { ok: false }; }
+            let src1 = src[offset .. offset + s1]; offset += s1;
+            let src2 = src[offset .. offset + s2]; offset += s2;
+            let src3 = src[offset .. offset + s3]; offset += s3;
+            let src4 = src[offset .. offset + s4]; offset += s4;
 
-            // Stream 2
-            var r2 = new_zstd_bit_reader(src[offset .. offset + s2]); offset += s2;
-            if !huf_decode_stream_slice(r2, huf_table, dst2) { return DecodedLiterals { ok: false }; }
-
-            // Stream 3
-            var r3 = new_zstd_bit_reader(src[offset .. offset + s3]); offset += s3;
-            if !huf_decode_stream_slice(r3, huf_table, dst3) { return DecodedLiterals { ok: false }; }
-
-            // Stream 4
-            var r4 = new_zstd_bit_reader(src[offset .. offset + s4]); offset += s4;
-            if !huf_decode_stream_slice(r4, huf_table, dst4) { return DecodedLiterals { ok: false }; }
+            if !huf_decode_4streams(src1, src2, src3, src4, dst1, dst2, dst3, dst4, huf_table) {
+                return DecodedLiterals { ok: false };
+            }
         }
 
         offset = c_end;
@@ -1262,12 +1439,19 @@ fn decode_sequences<B>(
         var ll_extra: u32 = 0;
 
         if use_fast_dstream {
-            if bits_consumed > 32 && ptr > 0 {
-                let avail = (bits_consumed >> 3) as i64;
-                let shift_bytes = if ptr < avail { ptr } else { avail };
-                ptr -= shift_bytes;
-                bits_consumed -= (shift_bytes * 8) as u32;
-                bit_container = xxh64_read_le64(seq_bitstream, ptr);
+            if bits_consumed > 32 {
+                if ptr >= 8 {
+                    let s = (bits_consumed >> 3) as i64;
+                    ptr -= s;
+                    bits_consumed &= 7;
+                    bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                } else if ptr > 0 {
+                    let avail = (bits_consumed >> 3) as i64;
+                    let s = if ptr < avail { ptr } else { avail };
+                    ptr -= s;
+                    bits_consumed -= (s * 8) as u32;
+                    bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                }
             }
 
             of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
@@ -1278,10 +1462,53 @@ fn decode_sequences<B>(
 
             ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
             bits_consumed += ll_eb;
+
+            if seq_i + 1 < nb_seq {
+                if bits_consumed > 32 {
+                    if ptr >= 8 {
+                        let s = (bits_consumed >> 3) as i64;
+                        ptr -= s;
+                        bits_consumed &= 7;
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    } else if ptr > 0 {
+                        let avail = (bits_consumed >> 3) as i64;
+                        let s = if ptr < avail { ptr } else { avail };
+                        ptr -= s;
+                        bits_consumed -= (s * 8) as u32;
+                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                    }
+                }
+
+                let ll_nb = ll_entry.nb_bits as u32;
+                let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
+                bits_consumed += ll_nb;
+                state_ll = (ll_entry.new_state as i64) + ll_bits;
+
+                let ml_nb = ml_entry.nb_bits as u32;
+                let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
+                bits_consumed += ml_nb;
+                state_ml = (ml_entry.new_state as i64) + ml_bits;
+
+                let of_nb = of_entry.nb_bits as u32;
+                let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
+                bits_consumed += of_nb;
+                state_of = (of_entry.new_state as i64) + of_bits;
+            }
         } else {
             of_extra = if of_eb > 0 { zstd_read_bits(r, of_eb as i32) } else { 0 };
             ml_extra = if ml_eb > 0 { zstd_read_bits(r, ml_eb as i32) } else { 0 };
             ll_extra = if ll_eb > 0 { zstd_read_bits(r, ll_eb as i32) } else { 0 };
+
+            if seq_i + 1 < nb_seq {
+                let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
+                state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
+
+                let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits as i32) } else { 0 };
+                state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
+
+                let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
+                state_of = (of_entry.new_state as i64) + (of_bits as i64);
+            }
         }
 
         let lit_len = ll_entry.base_val + ll_extra;
@@ -1344,7 +1571,18 @@ fn decode_sequences<B>(
             out_buf.push(lit_buf[lit_ptr]);
             out_buf.push(lit_buf[lit_ptr + 1]);
             lit_ptr += 2;
-        } else if lit_len > 2 {
+        } else if lit_len == 3 {
+            out_buf.push(lit_buf[lit_ptr]);
+            out_buf.push(lit_buf[lit_ptr + 1]);
+            out_buf.push(lit_buf[lit_ptr + 2]);
+            lit_ptr += 3;
+        } else if lit_len == 4 {
+            out_buf.push(lit_buf[lit_ptr]);
+            out_buf.push(lit_buf[lit_ptr + 1]);
+            out_buf.push(lit_buf[lit_ptr + 2]);
+            out_buf.push(lit_buf[lit_ptr + 3]);
+            lit_ptr += 4;
+        } else if lit_len > 4 {
             let l_len = lit_len as i64;
             out_buf.append(lit_buf[lit_ptr .. lit_ptr + l_len]);
             lit_ptr += l_len;
@@ -1358,7 +1596,31 @@ fn decode_sequences<B>(
             }
             let src_idx = (out_buf.len as i64) - off;
             if off >= m_len {
-                out_buf.append(out_buf[src_idx .. src_idx + m_len]);
+                if m_len <= 8 {
+                    out_buf.push(out_buf[src_idx]);
+                    out_buf.push(out_buf[src_idx + 1]);
+                    out_buf.push(out_buf[src_idx + 2]);
+                    if m_len >= 4 { out_buf.push(out_buf[src_idx + 3]); }
+                    if m_len >= 5 { out_buf.push(out_buf[src_idx + 4]); }
+                    if m_len >= 6 { out_buf.push(out_buf[src_idx + 5]); }
+                    if m_len >= 7 { out_buf.push(out_buf[src_idx + 6]); }
+                    if m_len == 8 { out_buf.push(out_buf[src_idx + 7]); }
+                } else if m_len <= 12 {
+                    out_buf.push(out_buf[src_idx]);
+                    out_buf.push(out_buf[src_idx + 1]);
+                    out_buf.push(out_buf[src_idx + 2]);
+                    out_buf.push(out_buf[src_idx + 3]);
+                    out_buf.push(out_buf[src_idx + 4]);
+                    out_buf.push(out_buf[src_idx + 5]);
+                    out_buf.push(out_buf[src_idx + 6]);
+                    out_buf.push(out_buf[src_idx + 7]);
+                    if m_len >= 9 { out_buf.push(out_buf[src_idx + 8]); }
+                    if m_len >= 10 { out_buf.push(out_buf[src_idx + 9]); }
+                    if m_len >= 11 { out_buf.push(out_buf[src_idx + 10]); }
+                    if m_len == 12 { out_buf.push(out_buf[src_idx + 11]); }
+                } else {
+                    out_buf.append(out_buf[src_idx .. src_idx + m_len]);
+                }
             } else if off == 1 {
                 let b = out_buf[src_idx];
                 out_buf.resize(out_buf.len + m_len, b);
@@ -1371,43 +1633,6 @@ fn decode_sequences<B>(
                     out_buf.append(out_buf[src_idx .. src_idx + step]);
                     curr += step;
                 }
-            }
-        }
-
-        // Update states for next sequence
-        if seq_i + 1 < nb_seq {
-            if use_fast_dstream {
-                if bits_consumed > 32 && ptr > 0 {
-                    let avail = (bits_consumed >> 3) as i64;
-                    let shift_bytes = if ptr < avail { ptr } else { avail };
-                    ptr -= shift_bytes;
-                    bits_consumed -= (shift_bytes * 8) as u32;
-                    bit_container = xxh64_read_le64(seq_bitstream, ptr);
-                }
-
-                let ll_nb = ll_entry.nb_bits as u32;
-                let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
-                bits_consumed += ll_nb;
-                state_ll = (ll_entry.new_state as i64) + ll_bits;
-
-                let ml_nb = ml_entry.nb_bits as u32;
-                let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
-                bits_consumed += ml_nb;
-                state_ml = (ml_entry.new_state as i64) + ml_bits;
-
-                let of_nb = of_entry.nb_bits as u32;
-                let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
-                bits_consumed += of_nb;
-                state_of = (of_entry.new_state as i64) + of_bits;
-            } else {
-                let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
-                state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
-
-                let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits as i32) } else { 0 };
-                state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
-
-                let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
-                state_of = (of_entry.new_state as i64) + (of_bits as i64);
             }
         }
 
