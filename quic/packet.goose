@@ -184,6 +184,9 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
             return hdr, true;
         }
 
+        // Fixed bit (0x40) MUST be set for non-Version Negotiation Long Headers (RFC 9000 §17.2)
+        guard (first & 0x40) != 0 else { return hdr, false; }
+
         let long_type = (first >> 4) & 0x03;
         hdr.header_type = if long_type == 0 {
             QuicHeaderType.Initial
@@ -210,7 +213,7 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
 
         if hdr.header_type == QuicHeaderType.Initial {
             let tok_len, next_tok, ok_tok = quic_decode_varint(src, off);
-            guard ok_tok && (next_tok + tok_len) <= (src.len as u64) else { return hdr, false; }
+            guard ok_tok && (next_tok + tok_len) <= (src.len as u64) && tok_len <= (hdr.token.cap as u64) else { return hdr, false; }
             if tok_len > 0 {
                 hdr.token.append(src[next_tok .. next_tok + tok_len]);
             }
@@ -227,11 +230,15 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         hdr.payload_length = plen;
         hdr.pn_offset = next_plen as u32;
         hdr.pn_length = (first & 0x03) + 1;
+        guard (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
         hdr.header_len = (next_plen + hdr.pn_length) as u32;
         return hdr, true;
     }
 
     // Short Header (1-RTT)
+    // Fixed bit (0x40) MUST be set (RFC 9000 §17.3)
+    guard (first & 0x40) != 0 else { return hdr, false; }
+    guard dcid_len_short <= QUIC_MAX_CID_LEN else { return hdr, false; }
     hdr.header_type = QuicHeaderType.OneRtt;
     hdr.spin_bit = (first & 0x20) != 0;
     hdr.key_phase = (first & 0x04) != 0;
@@ -244,6 +251,7 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
     }
     hdr.pn_offset = off as u32;
     hdr.pn_length = (first & 0x03) + 1;
+    guard (off + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
     hdr.header_len = (off + hdr.pn_length) as u32;
     return hdr, true;
 }
@@ -465,7 +473,9 @@ fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end
     while i < intervals.len {
         let it = intervals[i];
         if cur_e < it.start {
-            intervals.insert_at(i, Interval { start: cur_s, end: cur_e });
+            if intervals.len < intervals.cap {
+                intervals.insert_at(i, Interval { start: cur_s, end: cur_e });
+            }
             return;
         }
         if cur_s > it.end {
@@ -489,8 +499,13 @@ fn insert_fragment(
     payload: const u8[:],
     is_fin: bool
 ) -> bool {
+    guard (0xFFFFFFFFFFFFFFFF - offset) >= (payload.len as u64) else { return false; }
     let frag_end = offset + (payload.len as u64);
     guard frag_end <= buf.max_data_limit else { return false; } // QUIC_ERR_FLOW_CONTROL
+
+    if buf.fin_received && frag_end > buf.final_size {
+        return false; // QUIC_ERR_FINAL_SIZE: data exceeds already established final size
+    }
 
     if is_fin {
         if buf.fin_received && buf.final_size != frag_end {

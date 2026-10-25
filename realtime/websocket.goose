@@ -222,6 +222,7 @@ fn encode_ws_frame<B>(
 // Computes standard `Sec-WebSocket-Accept` from `Sec-WebSocket-Key`
 fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
     var combined: u8[..128] = [];
+    guard client_key.len + WS_HANDSHAKE_GUID.len <= combined.cap else { return; }
     combined.append(client_key);
     combined.append(WS_HANDSHAKE_GUID);
     let digest = core::sha1(combined[..]);
@@ -259,12 +260,13 @@ fn parse_ws_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     let reason = payload[2..];
 
     // RFC 6455 Section 7.4.2: Reserved / forbidden status codes
+    guard status_code >= 1000 && status_code < 5000 else { return 0, "", false; }
     guard status_code != 1004 && status_code != 1005 &&
           status_code != 1006 && status_code != 1015 else {
         return 0, "", false;
     }
-    // Status codes 0..999 are forbidden
-    guard status_code >= 1000 else { return 0, "", false; }
+    // Status codes 1016..2999 are reserved
+    guard status_code < 1016 || status_code >= 3000 else { return 0, "", false; }
 
     return status_code, reason, true;
 }
@@ -365,9 +367,11 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
     let hdr, ok = parse_ws_frame_header(wire);
     guard ok else { return false; }
 
+    let wire_len = wire.len as u64;
+    let p_start_u = hdr.header_len as u64;
+    guard p_start_u <= wire_len && hdr.payload_len <= (wire_len - p_start_u) else { return false; }
     let p_start = hdr.header_len as i64;
     let p_len = hdr.payload_len as i64;
-    guard p_start + p_len <= wire.len else { return false; }
     let payload = wire[p_start..(p_start + p_len)];
 
     // Protocol validations (RFC 6455 Section 5.1 & 5.2):
@@ -402,27 +406,46 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
     if hdr.opcode == WS_OPCODE_PING {
         ws_send_pong(ws, payload, out_reply);
         out_msg.opcode = WS_OPCODE_PING;
-        out_msg.data.append(payload);
+        if payload.len <= out_msg.data.cap {
+            out_msg.data.append(payload);
+        }
         out_msg.is_valid = true;
         return true;
     } else if hdr.opcode == WS_OPCODE_PONG {
         out_msg.opcode = WS_OPCODE_PONG;
-        out_msg.data.append(payload);
+        if payload.len <= out_msg.data.cap {
+            out_msg.data.append(payload);
+        }
         out_msg.is_valid = true;
         return true;
     } else if hdr.opcode == WS_OPCODE_CLOSE {
-        let code, reason, _ = parse_ws_close_payload(payload);
+        let code, reason, ok_close = parse_ws_close_payload(payload);
+        if !ok_close {
+            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "invalid close frame payload", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
         out_msg.opcode = WS_OPCODE_CLOSE;
         out_msg.close_code = code;
-        out_msg.close_reason.append(reason);
+        if reason.len > 0 && reason.len <= out_msg.close_reason.cap {
+            out_msg.close_reason.append(reason);
+        }
         out_msg.is_valid = true;
         if !ws.is_closed {
-            ws_close(ws, code, reason, out_reply);
+            let reply_code = if code == WS_STATUS_NO_STATUS { WS_STATUS_NORMAL } else { code };
+            ws_close(ws, reply_code, reason, out_reply);
         }
         ws.is_closed = true;
         ws.close_code = code;
         return true;
     } else if hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY {
+        if payload.len > out_msg.data.cap {
+            ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "payload exceeds buffer capacity", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+            return true;
+        }
         out_msg.opcode = hdr.opcode;
         out_msg.data.append(payload);
         out_msg.is_valid = true;
@@ -474,7 +497,7 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
     out_resp.set_header("Sec-WebSocket-Accept", accept_key[..]);
 
     var session = new_websocket_session(false);
-    if subprotocol.len > 0 {
+    if subprotocol.len > 0 && subprotocol.len <= session.subprotocol.cap {
         out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
         session.subprotocol.append(subprotocol);
     }

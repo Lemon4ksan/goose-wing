@@ -64,6 +64,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     let sp1 = core::index_of_byte(req_line, ' ');
     guard sp1 > 0 else { return false, 0; }
     let method_slice = req_line[..sp1];
+    guard is_valid_header_name(method_slice) && method_slice.len <= out_req.method.cap else { return false, 0; }
     out_req.method.clear();
     out_req.method.append(method_slice);
 
@@ -72,8 +73,13 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     let sp2_rel = core::index_of_byte(rest, ' ');
     guard sp2_rel > 0 else { return false, 0; }
     let path_slice = rest[..sp2_rel];
+    guard path_slice.len > 0 && path_slice.len <= out_req.url.cap else { return false, 0; }
     out_req.url.clear();
     out_req.url.append(path_slice);
+
+    // Parse protocol version
+    let proto_slice = rest[(sp2_rel + 1)..];
+    guard proto_slice == "HTTP/1.1" || proto_slice == "HTTP/1.0" else { return false, 0; }
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
@@ -87,17 +93,21 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
         let line = rest_headers[cursor .. (cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
-        if colon > 0 {
-            let hname = line[..colon];
-            let hval = trim_lws(line[(colon + 1)..]);
+        // RFC 9112 Section 5.1 & Go #34540 / CVE-2019-16276:
+        // Reject header field names with leading whitespace, spaces before colon, or non-tchar bytes.
+        guard colon > 0 else { return false, 0; }
+        let hname = line[..colon];
+        guard is_valid_header_name(hname) else { return false, 0; }
 
-            var item = HeaderItem { .. };
-            item.name.append(hname);
-            item.value.append(hval);
-            if out_req.headers.len < out_req.headers.cap {
-                out_req.headers.push(item);
-            }
-        }
+        let hval = trim_lws(line[(colon + 1)..]);
+        guard is_valid_header_value(hval) else { return false, 0; }
+
+        var item = HeaderItem { .. };
+        guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false, 0; }
+        item.name.append(hname);
+        item.value.append(hval);
+        guard out_req.headers.len < out_req.headers.cap else { return false, 0; }
+        out_req.headers.push(item);
         cursor += rel_end + 2;
     }
 
@@ -113,9 +123,17 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     for &hdr in out_req.headers {
         if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-            has_te = true;
-            te_buf.clear();
-            te_buf.append(hdr.value[..]);
+            if has_te {
+                // Multiple Transfer-Encoding headers: combine with comma (RFC 9112 Section 6.3)
+                guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
+                te_buf.append(", ");
+                te_buf.append(hdr.value[..]);
+            } else {
+                has_te = true;
+                te_buf.clear();
+                guard hdr.value.len <= te_buf.cap else { return false, 0; }
+                te_buf.append(hdr.value[..]);
+            }
         } else if eq_ascii_fold(hdr.name[..], "content-length") {
             has_cl = true;
             cl_count++;
@@ -153,8 +171,9 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         return true, total_consumed;
     }
 
+    // Guard against signed integer addition overflow
+    guard cl_len >= 0 && cl_len <= 0x7FFFFFFF && wire.len >= header_end_idx + cl_len else { return false, 0; }
     let total_consumed = header_end_idx + cl_len;
-    guard wire.len >= total_consumed else { return false, 0; }
 
     if cl_len > 0 {
         out_req.body.append(wire[header_end_idx..total_consumed]);
@@ -201,17 +220,18 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
         let line = rest_headers[cursor .. (cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
-        if colon > 0 {
-            let hname = line[..colon];
-            let hval = trim_lws(line[(colon + 1)..]);
+        guard colon > 0 else { return false, 0; }
+        let hname = line[..colon];
+        guard is_valid_header_name(hname) else { return false, 0; }
+        let hval = trim_lws(line[(colon + 1)..]);
+        guard is_valid_header_value(hval) else { return false, 0; }
 
-            var item = HeaderItem { .. };
-            item.name.append(hname);
-            item.value.append(hval);
-            if out_res.headers.len < out_res.headers.cap {
-                out_res.headers.push(item);
-            }
-        }
+        var item = HeaderItem { .. };
+        guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false, 0; }
+        item.name.append(hname);
+        item.value.append(hval);
+        guard out_res.headers.len < out_res.headers.cap else { return false, 0; }
+        out_res.headers.push(item);
         cursor += rel_end + 2;
     }
 
@@ -222,19 +242,33 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     var has_te = false;
     var te_buf: u8[..64] = [];
     var has_cl = false;
+    var cl_count = 0;
     var cl_len: i64 = 0;
 
     for &hdr in out_res.headers {
         if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-            has_te = true;
-            te_buf.clear();
-            te_buf.append(hdr.value[..]);
+            if has_te {
+                guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
+                te_buf.append(", ");
+                te_buf.append(hdr.value[..]);
+            } else {
+                has_te = true;
+                te_buf.clear();
+                guard hdr.value.len <= te_buf.cap else { return false, 0; }
+                te_buf.append(hdr.value[..]);
+            }
         } else if eq_ascii_fold(hdr.name[..], "content-length") {
             has_cl = true;
+            cl_count++;
             let val_trimmed = trim_lws(hdr.value[..]);
+            guard val_trimmed.len > 0 else { return false, 0; }
             let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
-            if ok_cl && parsed_cl >= 0 {
+            guard ok_cl && parsed_cl >= 0 else { return false, 0; }
+            if cl_count == 1 {
                 cl_len = parsed_cl;
+            } else if cl_len != parsed_cl {
+                // Conflicting multiple Content-Length headers -> reject
+                return false, 0;
             }
         }
     }
@@ -256,7 +290,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     }
 
     if has_cl {
-        guard wire.len >= header_end_idx + cl_len else { return false, 0; }
+        guard cl_len >= 0 && cl_len <= 0x7FFFFFFF && wire.len >= header_end_idx + cl_len else { return false, 0; }
         if cl_len > 0 {
             out_res.body.append(wire[header_end_idx..(header_end_idx + cl_len)]);
         }
@@ -465,8 +499,15 @@ fn handle_connection_wire<B>(
     var proxy_hdr = ProxyHeader { .. };
 
     if server.accept_proxy_protocol {
-        let stripped, has_proxy = detect_and_strip_proxy_header(wire_in, proxy_hdr);
-        if has_proxy {
+        let is_proxy = detect_proxy_protocol(wire_in);
+        if is_proxy != ProxyProtocolVersion.None {
+            let stripped, has_proxy = detect_and_strip_proxy_header(wire_in, proxy_hdr);
+            guard has_proxy else {
+                var err_resp = new_response();
+                err_resp.status_code = 400; // Bad Request
+                serialize_http1_response(err_resp, server.server_name[..], wire_out);
+                return PipelineOutcome.Handled, false;
+            }
             raw_stream = stripped;
             if proxy_hdr.src_ip_str.len > 0 {
                 effective_ip.clear();
@@ -501,6 +542,13 @@ fn handle_connection_wire<B>(
     var res = new_response();
     var future = internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
+
+    // RFC 9110 & CVE-2026-94439: HTTP/1 server connection desynchronization defense.
+    // If request method is CONNECT, force Connection: close so the server never treats
+    // an established tunnel or subsequent bytes as pipelined HTTP requests.
+    if req.method[..] == "CONNECT" {
+        header(res, "Connection", "close");
+    }
 
     // 4. Serialize HTTP/1.1 response wire bytes
     serialize_http1_response(res, server.server_name[..], wire_out);

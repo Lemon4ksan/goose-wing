@@ -212,6 +212,7 @@ fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, boo
     req.ip_version = payload[off as i64];
     req.prefix_len = payload[(off + 1) as i64];
     let ip_bytes = payload[((off + 2) as i64)..];
+    guard ip_bytes.len <= req.requested_ip.cap else { return req, false; }
     req.requested_ip.append(ip_bytes);
     return req, true;
 }
@@ -238,6 +239,7 @@ fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool 
     assign.ip_version = payload[off as i64];
     assign.prefix_len = payload[(off + 1) as i64];
     let ip_bytes = payload[((off + 2) as i64)..];
+    guard ip_bytes.len <= assign.assigned_ip.cap else { return assign, false; }
     assign.assigned_ip.append(ip_bytes);
     return assign, true;
 }
@@ -258,6 +260,7 @@ fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisemen
     route.ip_version = payload[0];
     route.prefix_len = payload[1];
     let p_bytes = payload[2..];
+    guard p_bytes.len <= route.ip_prefix.cap else { return route, false; }
     route.ip_prefix.append(p_bytes);
     return route, true;
 }

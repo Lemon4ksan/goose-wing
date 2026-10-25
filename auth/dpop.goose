@@ -314,6 +314,28 @@ fn verify_dpop_proof(
         guard core::contains(claims_json[..], expected_nonce) else { return false; }
     }
 
+    // Verify iat against now_sec with max_age_sec and max_skew_sec
+    if now_sec > 0 {
+        let iat_idx = core::index_of_slice(claims_json[..], "\"iat\":");
+        if iat_idx != -1 {
+            var iat_val: i64 = 0;
+            var pos = iat_idx + 6;
+            while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+                pos += 1;
+            }
+            var has_digits = false;
+            while pos < claims_json.len && claims_json[pos] >= '0' && claims_json[pos] <= '9' {
+                iat_val = iat_val * 10 + (claims_json[pos] - '0');
+                pos += 1;
+                has_digits = true;
+            }
+            if has_digits {
+                guard iat_val <= (now_sec + max_skew_sec) else { return false; }
+                guard (now_sec - iat_val) <= (max_age_sec + max_skew_sec) else { return false; }
+            }
+        }
+    }
+
     return true;
 }
 

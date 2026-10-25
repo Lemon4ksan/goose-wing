@@ -180,22 +180,30 @@ fn new_jwt_claims() -> JwtClaims {
 
 fn set_issuer(claims: JwtClaims&, iss: const u8[:]) {
     claims.iss.clear();
-    claims.iss.append(iss);
+    if iss.len <= claims.iss.cap {
+        claims.iss.append(iss);
+    }
 }
 
 fn set_subject(claims: JwtClaims&, sub: const u8[:]) {
     claims.sub.clear();
-    claims.sub.append(sub);
+    if sub.len <= claims.sub.cap {
+        claims.sub.append(sub);
+    }
 }
 
 fn set_audience(claims: JwtClaims&, aud: const u8[:]) {
     claims.aud.clear();
-    claims.aud.append(aud);
+    if aud.len <= claims.aud.cap {
+        claims.aud.append(aud);
+    }
 }
 
 fn set_jwt_id(claims: JwtClaims&, jti: const u8[:]) {
     claims.jti.clear();
-    claims.jti.append(jti);
+    if jti.len <= claims.jti.cap {
+        claims.jti.append(jti);
+    }
 }
 
 fn set_expiry(claims: JwtClaims&, exp_unix_sec: i64) {
@@ -584,7 +592,12 @@ fn validate_jwt_claims_rules(
 ) -> JwtError {
     // 1. Expiration check (exp)
     if claims.exp >= 0 {
-        if now_unix_sec > (claims.exp + options.leeway_seconds) {
+        let max_exp_cutoff = if claims.exp > 9223372036854775807 - options.leeway_seconds {
+            9223372036854775807
+        } else {
+            claims.exp + options.leeway_seconds
+        };
+        if now_unix_sec > max_exp_cutoff {
             return JwtError.TokenExpired;
         }
     } else if options.require_exp {
@@ -593,7 +606,12 @@ fn validate_jwt_claims_rules(
 
     // 2. Not before check (nbf)
     if claims.nbf >= 0 {
-        if now_unix_sec < (claims.nbf - options.leeway_seconds) {
+        let min_nbf_cutoff = if claims.nbf < options.leeway_seconds {
+            0
+        } else {
+            claims.nbf - options.leeway_seconds
+        };
+        if now_unix_sec < min_nbf_cutoff {
             return JwtError.TokenNotYetValid;
         }
     } else if options.require_nbf {

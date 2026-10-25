@@ -131,6 +131,7 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
         ..
     };
 
+    guard range_cnt <= (ack.ranges.cap as u64) else { return AckFrame {}, offset, false; }
     var r_idx: u64 = 0;
     while r_idx < range_cnt {
         let gap, next_cur_g, okg = quic_decode_varint(src, cur);
@@ -200,13 +201,15 @@ fn parse_and_validate_ack(
     guard ack.largest_acked <= space.largest_sent_pn else { return false; } // OACK forward attack!
     guard ack.largest_acked >= ack.first_ack_range else { return false; }   // Underflow!
 
+    out_intervals.clear();
     let first_smallest = ack.largest_acked - ack.first_ack_range;
+    guard out_intervals.len < out_intervals.cap else { return false; }
     out_intervals.push(AckInterval { smallest: first_smallest, largest: ack.largest_acked });
 
     var cur_smallest = first_smallest;
     for i in ack.ranges.len {
         let r = ack.ranges[i];
-        guard cur_smallest >= r.gap + 2 else { return false; } // Arithmetic underflow
+        guard cur_smallest >= 2 && (cur_smallest - 2) >= r.gap else { return false; } // Arithmetic underflow
         let cur_largest = cur_smallest - r.gap - 2;
         guard cur_largest >= r.ack_range else { return false; }
         cur_smallest = cur_largest - r.ack_range;
@@ -223,7 +226,9 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) {
     while i < ranges.len {
         let r = ranges[i];
         if pn > r.largest + 1 {
-            ranges.insert_at(i, AckInterval { smallest: pn, largest: pn });
+            if ranges.len < ranges.cap {
+                ranges.insert_at(i, AckInterval { smallest: pn, largest: pn });
+            }
             return;
         }
         if pn == r.largest + 1 {

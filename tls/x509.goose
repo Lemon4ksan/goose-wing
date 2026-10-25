@@ -495,6 +495,19 @@ fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
         if b == '*' { return false; }
     }
 
+    // Wildcards MUST NOT be issued for TLDs (e.g. *.com is forbidden per RFC 6125 §6.4.3)
+    guard core::contains_byte(suffix, '.') else { return false; }
+
+    // Wildcards MUST NOT match IPv4 or IPv6 literals (RFC 6125 §6.4.3)
+    var is_ip = true;
+    for b in host {
+        if (b < '0' || b > '9') && b != '.' {
+            is_ip = false;
+            break;
+        }
+    }
+    if is_ip && core::contains_byte(host, '.') { return false; }
+
     // Host must contain at least one dot separating leftmost label
     var dot_idx = -1;
     for i in host.len {

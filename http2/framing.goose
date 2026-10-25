@@ -195,17 +195,25 @@ fn extract_headers_frame_payload(
     payload: const u8[:],
     no_rfc7540_priorities: bool = true
 ) -> const u8[:], u32 {
+    let has_pad = (hdr.flags & FLAG_PADDED) != 0;
+    let has_prio = (hdr.flags & FLAG_PRIORITY) != 0;
+    let min_overhead = (if has_pad { 1 } else { 0 }) + (if has_prio { 5 } else { 0 });
+    guard payload.len >= min_overhead else { return payload, ERR_FRAME_SIZE_ERROR; }
+
     var raw = payload;
-    if (hdr.flags & FLAG_PADDED) != 0 {
-        guard raw.len >= 1 else { return raw, ERR_FRAME_SIZE_ERROR; }
+    if has_pad {
         let pad_len = raw[0] as u32;
-        guard (1 + pad_len) <= hdr.length else { return raw, ERR_PROTOCOL_ERROR; }
+        guard (1 + pad_len + (if has_prio { 5 } else { 0 })) <= hdr.length else {
+            return raw, ERR_PROTOCOL_ERROR;
+        }
         let eff_end = raw.len - pad_len;
-        guard eff_end >= 1 else { return raw, ERR_PROTOCOL_ERROR; }
+        guard eff_end >= (1 + (if has_prio { 5 } else { 0 })) else {
+            return raw, ERR_PROTOCOL_ERROR;
+        }
         raw = raw[1 .. eff_end];
     }
 
-    if (hdr.flags & FLAG_PRIORITY) != 0 {
+    if has_prio {
         // PRIORITY in HEADERS adds 5 bytes: 4 bytes Stream Dep + 1 byte Weight
         guard raw.len >= 5 else {
             return raw, ERR_FRAME_SIZE_ERROR;

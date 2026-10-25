@@ -127,7 +127,9 @@ fn compute_backoff_jitter_ms(
     rng_seed: u64&
 ) -> i64 {
     // Compute capped deterministic exponential target t = min(c, b * 2^a)
-    let exp_bound = core::shl_sat_u64(cfg.base_ms as u64, (if attempt > 60 { 60 } else { attempt }) as u32);
+    let safe_attempt = if attempt < 0 { 0 } else if attempt > 60 { 60 } else { attempt };
+    let safe_base = if cfg.base_ms < 0 { 0 } else { cfg.base_ms };
+    let exp_bound = core::shl_sat_u64(safe_base as u64, safe_attempt as u32);
     let target_t = core::ct_min_u64(cfg.cap_ms as u64, exp_bound) as! i64;
 
     return match cfg.strategy {
@@ -150,9 +152,9 @@ fn compute_backoff_jitter_ms(
 
         // Decorrelated Jitter: min(c, U(b, prev_sleep * 3))
         DecorrelatedJitter => {
-            let prev = if prev_sleep_ms > 0 { prev_sleep_ms } else { cfg.base_ms };
-            let upper = prev * 3;
-            let rnd_sleep = uniform_random(rng_seed, cfg.base_ms, upper);
+            let prev = if prev_sleep_ms > 0 { prev_sleep_ms } else { safe_base };
+            let upper = if prev > 3074457345618258602 { 9223372036854775807 } else { prev * 3 };
+            let rnd_sleep = uniform_random(rng_seed, safe_base, upper);
             let sleep_ms = core::ct_min_i64(rnd_sleep, cfg.cap_ms);
             prev_sleep_ms = sleep_ms;
             sleep_ms
@@ -234,8 +236,16 @@ fn trip_circuit_breaker_if_exceeded(
 ) -> bool {
     guard retry_after_ms > breaker.max_retry_after_ms else { return false; }
 
-    let block_dur_ns = retry_after_ms * 1000000;
-    let unblock_at = now_mono_ns + block_dur_ns;
+    let block_dur_ns = if retry_after_ms > 9223372036854 {
+        9223372036854775807
+    } else {
+        retry_after_ms * 1000000
+    };
+    let unblock_at = if (9223372036854775807 - now_mono_ns) < block_dur_ns {
+        9223372036854775807
+    } else {
+        now_mono_ns + block_dur_ns
+    };
 
     for &h in breaker.hosts {
         if core::eq_ascii_fold(h.host[..], host_str) {

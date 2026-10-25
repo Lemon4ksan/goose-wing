@@ -247,6 +247,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     for i in line.len {
         if line[i] == ' ' {
             if in_tok {
+                guard tokens.len < tokens.cap else { return hdr, 0, false; }
                 tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (i - tok_start) as u16 });
                 in_tok = false;
             }
@@ -258,6 +259,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
         }
     }
     if in_tok {
+        guard tokens.len < tokens.cap else { return hdr, 0, false; }
         tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
     }
 
@@ -282,6 +284,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
         return hdr, 0, false;
     }
 
+    guard src_ip_str.len <= hdr.src_ip_str.cap && dst_ip_str.len <= hdr.dst_ip_str.cap else { return hdr, 0, false; }
     hdr.src_ip_str.append(src_ip_str);
     hdr.dst_ip_str.append(dst_ip_str);
 
@@ -460,17 +463,25 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
         let val = wire[val_start..val_end];
 
         if tlv_type == PP2_TYPE_ALPN {
-            hdr.alpn.clear();
-            hdr.alpn.append(val);
+            if val.len <= hdr.alpn.cap {
+                hdr.alpn.clear();
+                hdr.alpn.append(val);
+            }
         } else if tlv_type == PP2_TYPE_AUTHORITY {
-            hdr.authority.clear();
-            hdr.authority.append(val);
+            if val.len <= hdr.authority.cap {
+                hdr.authority.clear();
+                hdr.authority.append(val);
+            }
         } else if tlv_type == PP2_TYPE_UNIQUE_ID {
-            hdr.unique_id.clear();
-            hdr.unique_id.append(val);
+            if val.len <= hdr.unique_id.cap {
+                hdr.unique_id.clear();
+                hdr.unique_id.append(val);
+            }
         } else if tlv_type == PP2_TYPE_NETNS {
-            hdr.netns.clear();
-            hdr.netns.append(val);
+            if val.len <= hdr.netns.cap {
+                hdr.netns.clear();
+                hdr.netns.append(val);
+            }
         } else if tlv_type == PP2_TYPE_SSL {
             guard val.len >= 5 else { return hdr, 0, false; }
             hdr.ssl.has_ssl = true;
@@ -492,20 +503,30 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
                 let sub_val = val[sub_start..sub_end];
                 if sub_type == PP2_SUBTYPE_SSL_VERSION {
-                    hdr.ssl.version.clear();
-                    hdr.ssl.version.append(sub_val);
+                    if sub_val.len <= hdr.ssl.version.cap {
+                        hdr.ssl.version.clear();
+                        hdr.ssl.version.append(sub_val);
+                    }
                 } else if sub_type == PP2_SUBTYPE_SSL_CN {
-                    hdr.ssl.client_cn.clear();
-                    hdr.ssl.client_cn.append(sub_val);
+                    if sub_val.len <= hdr.ssl.client_cn.cap {
+                        hdr.ssl.client_cn.clear();
+                        hdr.ssl.client_cn.append(sub_val);
+                    }
                 } else if sub_type == PP2_SUBTYPE_SSL_CIPHER {
-                    hdr.ssl.cipher.clear();
-                    hdr.ssl.cipher.append(sub_val);
+                    if sub_val.len <= hdr.ssl.cipher.cap {
+                        hdr.ssl.cipher.clear();
+                        hdr.ssl.cipher.append(sub_val);
+                    }
                 } else if sub_type == PP2_SUBTYPE_SSL_SIG_ALG {
-                    hdr.ssl.sig_alg.clear();
-                    hdr.ssl.sig_alg.append(sub_val);
+                    if sub_val.len <= hdr.ssl.sig_alg.cap {
+                        hdr.ssl.sig_alg.clear();
+                        hdr.ssl.sig_alg.append(sub_val);
+                    }
                 } else if sub_type == PP2_SUBTYPE_SSL_KEY_ALG {
-                    hdr.ssl.key_alg.clear();
-                    hdr.ssl.key_alg.append(sub_val);
+                    if sub_val.len <= hdr.ssl.key_alg.cap {
+                        hdr.ssl.key_alg.clear();
+                        hdr.ssl.key_alg.append(sub_val);
+                    }
                 }
                 sub_offset = sub_end;
             }

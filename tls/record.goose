@@ -296,6 +296,10 @@ struct RecordFilterState {
 }
 
 fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert {
+    if payload_len < 0 || payload_len > MAX_RECORD_PLAINTEXT_LEN {
+        return TlsAlert.RecordOverflow;
+    }
+
     if payload_len == 0 {
         state.empty_records_count++;
         if state.empty_records_count > MAX_EMPTY_RECORDS {

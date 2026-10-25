@@ -42,11 +42,16 @@ fn new_h2_token_bucket(burst: u64 = 1000, rate_per_sec: u64 = 33, now_ms: u64 = 
 fn consume_token(tb: TokenBucket&, now_ms: u64) -> bool {
     if now_ms > tb.last_refill_ms {
         let elapsed_ms = now_ms - tb.last_refill_ms;
-        let added = (elapsed_ms * tb.rate_per_sec) / 1000;
-        if added > 0 {
-            let next_tokens = tb.tokens + added;
-            tb.tokens = if next_tokens > tb.burst { tb.burst } else { next_tokens };
+        if elapsed_ms >= 100000 {
+            tb.tokens = tb.burst;
             tb.last_refill_ms = now_ms;
+        } else {
+            let added = (elapsed_ms * tb.rate_per_sec) / 1000;
+            if added > 0 {
+                let next_tokens = tb.tokens + added;
+                tb.tokens = if next_tokens > tb.burst { tb.burst } else { next_tokens };
+                tb.last_refill_ms = now_ms;
+            }
         }
     }
     if tb.tokens == 0 {

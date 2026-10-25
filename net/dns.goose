@@ -122,9 +122,13 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
         guard current_off + label_len <= raw.len else { return false; }
 
         if out.len > 0 {
+            guard out.len + 1 + (label_len as i64) <= 253 else { return false; }
             out.push('.');
+        } else {
+            guard (label_len as i64) <= 253 else { return false; }
         }
         for i in current_off..current_off + label_len {
+            guard out.len < 253 else { return false; }
             out.push(raw[i]);
         }
         current_off += label_len;
@@ -173,39 +177,52 @@ fn build_dns_query(domain: const u8[:], qtype: u16, tx_id: u16, out: u8[>..]&) -
 
 // ---- 5. RFC 9460 HTTPS/SVCB RDATA Parser -----------------------------------
 
-// Parses SvcParams list from HTTPS/SVCB RDATA according to RFC 9460 Section 2.1.
+// Parses SvcParams list from HTTPS/SVCB RDATA according to RFC 9460 Section 2.1 & 2.2.
+// Keys MUST be in strictly ascending order with valid lengths; truncated records are rejected.
 fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
     var off: i64 = 0;
+    var last_key: i32 = -1;
+
     while off + 4 <= rdata.len {
         let key = ((rdata[off] as u16) << 8) | rdata[off + 1];
         let val_len = (((rdata[off + 2] as u16) << 8) | rdata[off + 3]) as i64;
         off += 4;
         guard off + val_len <= rdata.len else { return false; }
 
+        let k_i32 = key as i32;
+        // RFC 9460 Section 2.2: SvcParamKeys MUST be in strictly increasing order
+        guard k_i32 > last_key else { return false; }
+        last_key = k_i32;
+
         let val = rdata[off..off + val_len];
         off += val_len;
 
         if key == SVC_PARAM_ALPN {
+            guard val.len > 0 else { return false; }
             var alpn_off: i64 = 0;
-            while alpn_off < val.len && rec.alpns.len < rec.alpns.cap {
+            while alpn_off < val.len {
                 let slen = val[alpn_off] as i64;
                 alpn_off += 1;
-                guard alpn_off + slen <= val.len else { return false; }
+                guard slen > 0 && alpn_off + slen <= val.len else { return false; }
                 let s = val[alpn_off..alpn_off + slen];
-                var entry: u8[..16] = [];
-                for i in s.len {
-                    if entry.len < entry.cap { entry.push(s[i]); }
+                if rec.alpns.len < rec.alpns.cap {
+                    var entry: u8[..16] = [];
+                    for i in s.len {
+                        if entry.len < entry.cap { entry.push(s[i]); }
+                    }
+                    rec.alpns.push(entry);
                 }
-                rec.alpns.push(entry);
                 alpn_off += slen;
             }
+            guard alpn_off == val.len else { return false; }
         } else if key == SVC_PARAM_NO_DEFAULT_ALPN {
+            guard val.len == 0 else { return false; }
             rec.no_default_alpn = true;
         } else if key == SVC_PARAM_PORT {
-            if val.len == 2 {
-                rec.port = ((val[0] as u16) << 8) | val[1];
-            }
+            guard val.len == 2 else { return false; }
+            rec.port = ((val[0] as u16) << 8) | val[1];
         } else if key == SVC_PARAM_IPV4HINT {
+            guard val.len > 0 && (val.len % 4) == 0 else { return false; }
             var ip_off: i64 = 0;
             while ip_off + 4 <= val.len && rec.ipv4_hints.len < rec.ipv4_hints.cap {
                 let ip = ((val[ip_off] as u32) << 24) |
@@ -216,6 +233,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
                 ip_off += 4;
             }
         } else if key == SVC_PARAM_IPV6HINT {
+            guard val.len > 0 && (val.len % 16) == 0 else { return false; }
             var ip_off: i64 = 0;
             while ip_off + 16 <= val.len && rec.ipv6_hints.len < rec.ipv6_hints.cap {
                 var ip6: u8[16] = [0; 16];
@@ -225,14 +243,14 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
             }
         } else if key == SVC_PARAM_ECH {
             // Raw wire bytes of ECHConfigList (RFC 9460 Section 5)
+            guard val.len <= rec.ech_config_list.cap else { return false; }
             rec.has_ech = true;
             for i in val.len {
-                if rec.ech_config_list.len < rec.ech_config_list.cap {
-                    rec.ech_config_list.push(val[i]);
-                }
+                rec.ech_config_list.push(val[i]);
             }
         }
     }
+    guard off == rdata.len else { return false; }
     return true;
 }
 
@@ -301,6 +319,7 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
                 guard dns_decode_name(raw, target_off, rec.target_name) else { return false; }
 
                 let rdata_end = rdata_start + rdlength;
+                guard target_off <= rdata_end else { return false; }
                 if target_off < rdata_end {
                     let svc_params = raw[target_off..rdata_end];
                     guard parse_https_svc_params(svc_params, rec) else { return false; }

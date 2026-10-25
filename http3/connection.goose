@@ -410,8 +410,27 @@ fn h3_handle_stream_data(
                 return H3_ERR_QPACK_DECOMPRESSION_FAILED;
             }
 
-            // Extract status code from pseudo-headers
+            // Extract status code and validate fields
             for field in decoded_fields {
+                // Trailers MUST NOT contain pseudo-headers (RFC 9114 Section 4.3)
+                if conn.streams[s_idx].headers_received && field.name.len > 0 && field.name[0] == ':' {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                    return H3_ERR_GENERAL_PROTOCOL;
+                }
+
+                // Forbidden connection-specific headers in HTTP/3 (RFC 9114 Section 4.2)
+                if eq_ascii_fold(field.name[..], "connection") ||
+                   eq_ascii_fold(field.name[..], "keep-alive") ||
+                   eq_ascii_fold(field.name[..], "proxy-connection") ||
+                   eq_ascii_fold(field.name[..], "transfer-encoding") ||
+                   eq_ascii_fold(field.name[..], "upgrade") ||
+                   (eq_ascii_fold(field.name[..], "te") && !eq_ascii_fold(field.value[..], "trailers")) {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                    return H3_ERR_GENERAL_PROTOCOL;
+                }
+
                 if field.name[..] == ":status" {
                     let sc, ok_sc = core::parse_i32_dec(field.value[..]);
                     if ok_sc {
@@ -419,9 +438,12 @@ fn h3_handle_stream_data(
                     }
                 } else if eq_ascii_fold(field.name[..], "content-length") {
                     let cl, ok_cl = core::parse_i64_dec(field.value[..]);
-                    if ok_cl {
-                        conn.streams[s_idx].content_length = cl;
+                    if !ok_cl || cl < 0 || (conn.streams[s_idx].content_length >= 0 && conn.streams[s_idx].content_length != cl) {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
                     }
+                    conn.streams[s_idx].content_length = cl;
                 }
             }
 
@@ -440,13 +462,28 @@ fn h3_handle_stream_data(
                 conn.error_code = H3_ERR_FRAME_UNEXPECTED;
                 return H3_ERR_FRAME_UNEXPECTED;
             }
-            conn.streams[s_idx].received_body.append(payload);
+            let avail = conn.streams[s_idx].received_body.cap - conn.streams[s_idx].received_body.len;
+            if avail > 0 {
+                let to_copy = if payload.len < avail { payload.len } else { avail };
+                conn.streams[s_idx].received_body.append(payload[..to_copy]);
+            }
             conn.streams[s_idx].body_received_len += payload.len as u64;
+
+            if conn.streams[s_idx].content_length >= 0 && conn.streams[s_idx].body_received_len > (conn.streams[s_idx].content_length as u64) {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                return H3_ERR_GENERAL_PROTOCOL;
+            }
         }
     }
 
     if fin {
         conn.streams[s_idx].fin_received = true;
+        if conn.streams[s_idx].content_length >= 0 && conn.streams[s_idx].body_received_len != (conn.streams[s_idx].content_length as u64) {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+            return H3_ERR_GENERAL_PROTOCOL;
+        }
         if conn.streams[s_idx].fin_sent {
             conn.streams[s_idx].state = H3StreamState.Closed;
         } else {
