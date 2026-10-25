@@ -252,6 +252,20 @@ fn test_bit_manipulation_and_endianness(t: core::T&) {
         sub.assert_eq(out[1], 0x34, "write_be_u32 byte 1");
         sub.assert_eq(out[2], 0x56, "write_be_u32 byte 2");
         sub.assert_eq(out[3], 0x78, "write_be_u32 byte 3");
+
+        var at_buf: u8[8] = [0; 8];
+        core::write_be_u16_at(at_buf[..], 0, 0xA1B2);
+        sub.assert_eq(at_buf[0], 0xA1, "write_be_u16_at byte 0");
+        sub.assert_eq(at_buf[1], 0xB2, "write_be_u16_at byte 1");
+
+        core::write_be_u32_at(at_buf[..], 2, 0x01020304);
+        sub.assert_eq(at_buf[2], 0x01, "write_be_u32_at byte 0");
+        sub.assert_eq(at_buf[5], 0x04, "write_be_u32_at byte 3");
+
+        core::write_be_u64_at(at_buf[..], 0, 0x1122334455667788);
+        sub.assert_eq(at_buf[0], 0x11, "write_be_u64_at byte 0");
+        sub.assert_eq(at_buf[7], 0x88, "write_be_u64_at byte 7");
+        sub.assert_eq(core::read_be_u64(at_buf[..], 0), 0x1122334455667788, "read/write be_u64 roundtrip");
     };
 }
 

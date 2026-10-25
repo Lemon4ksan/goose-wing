@@ -89,6 +89,16 @@ fn ::sse_reconnect(session: wing::Session&, sub: wing::SseSubscription&) -> wing
 }
 
 // WebSocket Session Bridges
+fn ::build_handshake_request<B>(
+    ws: const wing::WebSocketSession&,
+    host: const u8[:],
+    path: const u8[:],
+    client_key: const u8[:],
+    out: B&
+) {
+    wing::ws_build_handshake_request(ws, host, path, client_key, out);
+}
+
 fn ::send_text<B>(ws: wing::WebSocketSession&, text: const u8[:], out: B&) {
     wing::ws_send_text(ws, text, out);
 }
@@ -111,6 +121,10 @@ fn ::close<B>(ws: wing::WebSocketSession&, status_code: u16, reason: const u8[:]
 
 fn ::receive<B>(ws: wing::WebSocketSession&, wire: u8[:], out_msg: wing::WsMessage&, out_reply: B&) -> bool {
     return wing::ws_receive(ws, wire, out_msg, out_reply);
+}
+
+fn ::encode<B>(hdr: const wing::WsFrameHeader&, out: B&) {
+    wing::encode_ws_frame_header(out, hdr);
 }
 
 // SSE Subscription Bridges
@@ -151,6 +165,7 @@ fn ::sent_header(res: const wing::Response&, name: const u8[:]) -> const u8[:] {
 fn ::has_sent_header(res: const wing::Response&, name: const u8[:]) -> bool { return wing::has_sent_header(res, name); }
 fn ::text(res: const wing::Response&) -> const u8[:] { return wing::text(res); }
 fn ::decode_body(res: wing::Response&) -> bool { return wing::decode_body(res); }
+fn ::set_header(res: wing::Response&, name: const u8[:], value: const u8[:]) { wing::set_header(res, name, value); }
 fn ::json<T>(res: const wing::Response&, out: T&) -> wing::Error { return wing::json(res, out); }
 fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing::decode_json<T>(res); }
 

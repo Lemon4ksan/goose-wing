@@ -80,23 +80,8 @@ fn mask_websocket_payload(data: u8[:], mask_key: const u8[4]&) {
 
     var i: i64 = 0;
     while i + 8 <= n {
-        let chunk = ((data[i] as u64) << 56) |
-                    ((data[i + 1] as u64) << 48) |
-                    ((data[i + 2] as u64) << 40) |
-                    ((data[i + 3] as u64) << 32) |
-                    ((data[i + 4] as u64) << 24) |
-                    ((data[i + 5] as u64) << 16) |
-                    ((data[i + 6] as u64) << 8)  |
-                    data[i + 7];
-        let masked = chunk ^ mask64;
-        data[i]     = ((masked >> 56) & 0xFF) as u8;
-        data[i + 1] = ((masked >> 48) & 0xFF) as u8;
-        data[i + 2] = ((masked >> 40) & 0xFF) as u8;
-        data[i + 3] = ((masked >> 32) & 0xFF) as u8;
-        data[i + 4] = ((masked >> 24) & 0xFF) as u8;
-        data[i + 5] = ((masked >> 16) & 0xFF) as u8;
-        data[i + 6] = ((masked >> 8)  & 0xFF) as u8;
-        data[i + 7] = (masked & 0xFF) as u8;
+        let chunk = core::read_be_u64(data, i);
+        core::write_be_u64_at(data, i, chunk ^ mask64);
         i += 8;
     }
 
@@ -140,7 +125,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
         payload_len = raw_len;
     } else if raw_len == 126 {
         guard src.len >= offset + 2 else { return hdr, false; }
-        payload_len = ((src[offset] as u64) << 8) | src[offset + 1];
+        payload_len = core::read_be_u16(src, offset);
         // RFC 6455 Section 5.2: minimal encoding check (must be >= 126)
         guard payload_len >= 126 else { return hdr, false; }
         offset += 2;
@@ -149,9 +134,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
         guard src.len >= offset + 8 else { return hdr, false; }
         // High bit must be 0 per RFC 6455 Section 5.2
         guard (src[offset] & 0x80) == 0 else { return hdr, false; }
-        for j in 8 {
-            payload_len = (payload_len << 8) | src[offset + j];
-        }
+        payload_len = core::read_be_u64(src, offset);
         // Minimal encoding check (must be > 65535)
         guard payload_len > 65535 else { return hdr, false; }
         offset += 8;
@@ -165,9 +148,10 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     var mask_key: u8[4] = [0; 4];
     if masked {
         guard src.len >= offset + 4 else { return hdr, false; }
-        for j in 4 {
-            mask_key[j] = src[offset + j];
-        }
+        mask_key[0] = src[offset];
+        mask_key[1] = src[offset + 1];
+        mask_key[2] = src[offset + 2];
+        mask_key[3] = src[offset + 3];
         offset += 4;
     }
 
@@ -199,19 +183,14 @@ fn encode_ws_frame_header<B>(out: B&, hdr: const WsFrameHeader&) {
         out.push(mask_bit | (hdr.payload_len as u8));
     } else if hdr.payload_len <= 65535 {
         out.push(mask_bit | 126);
-        out.push(((hdr.payload_len >> 8) & 0xFF) as u8);
-        out.push((hdr.payload_len & 0xFF) as u8);
+        core::write_be_u16(out, hdr.payload_len as u16);
     } else {
         out.push(mask_bit | 127);
-        for i in 8 {
-            out.push(((hdr.payload_len >> ((7 - i) * 8)) & 0xFF) as u8);
-        }
+        core::write_be_u64(out, hdr.payload_len);
     }
 
     if hdr.masked {
-        for b in hdr.mask_key {
-            out.push(b);
-        }
+        out.append(hdr.mask_key[..]);
     }
 }
 
@@ -270,8 +249,7 @@ fn generate_websocket_key<B>(random_16: const u8[16]&, out: B&) {
 
 // Encodes a Close frame payload (2-byte status code + optional UTF-8 reason)
 fn encode_ws_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
-    out.push(((status_code >> 8) & 0xFF) as u8);
-    out.push((status_code & 0xFF) as u8);
+    core::write_be_u16(out, status_code);
     out.append(reason);
 }
 
@@ -282,7 +260,7 @@ fn parse_ws_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     }
     guard payload.len >= 2 else { return 0, "", false; }
 
-    let status_code = ((payload[0] as u16) << 8) | payload[1];
+    let status_code = core::read_be_u16(payload, 0);
     let reason = payload[2..];
 
     // RFC 6455 Section 7.4.2: Reserved / forbidden status codes
@@ -473,37 +451,26 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
         return WebSocketSession { .. }, false;
     }
 
-    let upg = header(req, "Upgrade");
-    if !eq_ascii_fold(upg, "websocket") {
+    let upg = req.headers.find_header("Upgrade");
+    if !core::eq_ascii_fold(upg, "websocket") {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
 
-    let conn = header(req, "Connection");
-    var has_upg = false;
-    if eq_ascii_fold(conn, "upgrade") {
-        has_upg = true;
-    } else {
-        for i in 0..conn.len {
-            if i + 7 <= conn.len && eq_ascii_fold(conn[i..i+7], "upgrade") {
-                has_upg = true;
-                break;
-            }
-        }
-    }
-    if !has_upg {
+    let conn = req.headers.find_header("Connection");
+    if !core::contains_fold(conn, "upgrade") {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
 
-    let ver = header(req, "Sec-WebSocket-Version");
+    let ver = req.headers.find_header("Sec-WebSocket-Version");
     if ver != "13" {
         out_resp.status_code = 426;
-        header(out_resp, "Sec-WebSocket-Version", "13");
+        out_resp.set_header("Sec-WebSocket-Version", "13");
         return WebSocketSession { .. }, false;
     }
 
-    let client_key = header(req, "Sec-WebSocket-Key");
+    let client_key = req.headers.find_header("Sec-WebSocket-Key");
     if client_key.len == 0 {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
@@ -513,13 +480,13 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
     compute_websocket_accept(client_key, accept_key);
 
     out_resp.status_code = 101;
-    header(out_resp, "Upgrade", "websocket");
-    header(out_resp, "Connection", "Upgrade");
-    header(out_resp, "Sec-WebSocket-Accept", accept_key[..]);
+    out_resp.set_header("Upgrade", "websocket");
+    out_resp.set_header("Connection", "Upgrade");
+    out_resp.set_header("Sec-WebSocket-Accept", accept_key[..]);
 
     var session = new_websocket_session(false);
     if subprotocol.len > 0 {
-        header(out_resp, "Sec-WebSocket-Protocol", subprotocol);
+        out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
         session.subprotocol.append(subprotocol);
     }
 

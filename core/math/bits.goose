@@ -190,14 +190,40 @@ inline fn write_be_u64<B>(out: B&, val: u64) {
     out.append(bytes[..]);
 }
 
+// Writes a 16-bit unsigned integer in Big-Endian (Network) byte order at specific offset in indexable buffer.
+inline fn write_be_u16_at(dst: u8[:], offset: i64, val: u16) {
+    dst[offset]     = ((val >> 8) & 0xFF) as! u8;
+    dst[offset + 1] = (val & 0xFF) as! u8;
+}
+
+// Writes a 32-bit unsigned integer in Big-Endian (Network) byte order at specific offset in indexable buffer.
+inline fn write_be_u32_at(dst: u8[:], offset: i64, val: u32) {
+    dst[offset]     = ((val >> 24) & 0xFF) as! u8;
+    dst[offset + 1] = ((val >> 16) & 0xFF) as! u8;
+    dst[offset + 2] = ((val >> 8)  & 0xFF) as! u8;
+    dst[offset + 3] = (val & 0xFF) as! u8;
+}
+
+// Writes a 64-bit unsigned integer in Big-Endian (Network) byte order at specific offset in indexable buffer.
+inline fn write_be_u64_at(dst: u8[:], offset: i64, val: u64) {
+    dst[offset]     = ((val >> 56) & 0xFF) as! u8;
+    dst[offset + 1] = ((val >> 48) & 0xFF) as! u8;
+    dst[offset + 2] = ((val >> 40) & 0xFF) as! u8;
+    dst[offset + 3] = ((val >> 32) & 0xFF) as! u8;
+    dst[offset + 4] = ((val >> 24) & 0xFF) as! u8;
+    dst[offset + 5] = ((val >> 16) & 0xFF) as! u8;
+    dst[offset + 6] = ((val >> 8)  & 0xFF) as! u8;
+    dst[offset + 7] = (val & 0xFF) as! u8;
+}
+
 // Writes a 16-bit unsigned integer in Little-Endian byte order at specific offset in indexable buffer.
-inline fn write_le_u16_at<B>(dst: B&, offset: i64, val: u16) {
+inline fn write_le_u16_at(dst: u8[:], offset: i64, val: u16) {
     dst[offset]     = (val & 0xFF) as! u8;
     dst[offset + 1] = ((val >> 8) & 0xFF) as! u8;
 }
 
 // Writes a 32-bit unsigned integer in Little-Endian byte order at specific offset in indexable buffer.
-inline fn write_le_u32_at<B>(dst: B&, offset: i64, val: u32) {
+inline fn write_le_u32_at(dst: u8[:], offset: i64, val: u32) {
     dst[offset]     = (val & 0xFF) as! u8;
     dst[offset + 1] = ((val >> 8) & 0xFF) as! u8;
     dst[offset + 2] = ((val >> 16) & 0xFF) as! u8;
@@ -205,7 +231,7 @@ inline fn write_le_u32_at<B>(dst: B&, offset: i64, val: u32) {
 }
 
 // Writes a 64-bit unsigned integer in Little-Endian byte order at specific offset in indexable buffer.
-inline fn write_le_u64_at<B>(dst: B&, offset: i64, val: u64) {
+inline fn write_le_u64_at(dst: u8[:], offset: i64, val: u64) {
     dst[offset]     = (val & 0xFF) as! u8;
     dst[offset + 1] = ((val >> 8) & 0xFF) as! u8;
     dst[offset + 2] = ((val >> 16) & 0xFF) as! u8;

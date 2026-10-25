@@ -53,8 +53,8 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
             ..
         };
         var buf_small: u8[>..] = [];
-        wing::encode_ws_frame_header(buf_small, hdr_small);
-        sub.assert_eq(buf_small.len, 6, "Small frame header length is 2 + 4 = 6 bytes");
+        hdr_small.encode(buf_small);
+        sub.assert_eq(buf_small.len, 6, "Small frame header length is 2 + 4 = 6 bytes (UFCS)");
 
         let parsed_small, ok_s = wing::parse_ws_frame_header(buf_small[..]);
         sub.assert_true(ok_s, "Small frame header parsed");
@@ -139,8 +139,8 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         session.subprotocol.append("chat.v1");
 
         var req: u8[>..] = [];
-        wing::ws_build_handshake_request(session, "example.com", "/chat", "dGhlIHNhbXBsZSBub25jZQ==", req);
-        sub.assert_true(req.len > 0, "Handshake request created");
+        session.build_handshake_request("example.com", "/chat", "dGhlIHNhbXBsZSBub25jZQ==", req);
+        sub.assert_true(req.len > 0, "Handshake request created via UFCS");
 
         var text_frame: u8[>..] = [];
         wing::ws_send_text(session, "hello server", text_frame);
@@ -186,19 +186,38 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         sub.assert_true(ok_pong, "Parsed auto-pong frame header");
         sub.assert_eq(pong_hdr.opcode, wing::WS_OPCODE_PONG, "Opcode in auto-reply is PONG");
 
-        // Server-side upgrade test
+        // Server-side upgrade test with complex Connection header
         var server_req = wing::new_request("GET", "https://example.com/ws");
-        wing::header(server_req, "Upgrade", "websocket");
-        wing::header(server_req, "Connection", "Upgrade");
-        wing::header(server_req, "Sec-WebSocket-Version", "13");
-        wing::header(server_req, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+        server_req.set_header("Upgrade", "websocket");
+        server_req.set_header("Connection", "keep-alive, Upgrade");
+        server_req.set_header("Sec-WebSocket-Version", "13");
+        server_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
         var server_resp = wing::new_response();
         let s_ws, ok_s = wing::ws_upgrade_request(server_req, server_resp, "chat.v1");
         sub.assert_true(ok_s, "Server upgrade succeeded");
         sub.assert_eq(server_resp.status_code, 101, "Server status 101");
-        sub.assert_bytes_eq(wing::header(server_resp, "Sec-WebSocket-Accept"), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Server accept matches RFC 6455");
+        sub.assert_bytes_eq(server_resp.header("Sec-WebSocket-Accept"), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Server accept matches RFC 6455");
         sub.assert_false(s_ws.is_client, "Server session is_client is false");
+
+        // Negative tests: wrong method
+        var bad_meth_req = wing::new_request("POST", "https://example.com/ws");
+        var bad_resp = wing::new_response();
+        let _, ok_bad_m = wing::ws_upgrade_request(bad_meth_req, bad_resp);
+        sub.assert_false(ok_bad_m, "POST upgrade rejected");
+        sub.assert_eq(bad_resp.status_code, 405, "Status 405 Method Not Allowed");
+
+        // Negative tests: wrong version
+        var bad_ver_req = wing::new_request("GET", "https://example.com/ws");
+        bad_ver_req.set_header("Upgrade", "websocket");
+        bad_ver_req.set_header("Connection", "Upgrade");
+        bad_ver_req.set_header("Sec-WebSocket-Version", "12");
+        bad_ver_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+        bad_resp = wing::new_response();
+        let _, ok_bad_v = wing::ws_upgrade_request(bad_ver_req, bad_resp);
+        sub.assert_false(ok_bad_v, "WebSocket Version 12 rejected");
+        sub.assert_eq(bad_resp.status_code, 426, "Status 426 Upgrade Required");
+        sub.assert_bytes_eq(bad_resp.header("Sec-WebSocket-Version"), "13", "Required version 13 returned");
     };
 }
 
