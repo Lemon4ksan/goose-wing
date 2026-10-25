@@ -10,7 +10,7 @@ import http.headers;
 
 // Unquotes a double-quoted string (RFC 9110 Section 5.6.4).
 // Rejects unclosed quotes, escaped trailing delimiters, and control characters.
-fn strict_unquote(input: const u8[:], out: u8[>..]&) -> bool {
+fn strict_unquote<B>(input: const u8[:], out: B&) -> bool {
     guard input.len >= 2 else { return false; }
     guard input[0] == '"' && input[input.len - 1] == '"' else { return false; }
 
@@ -49,18 +49,8 @@ fn strict_unquote(input: const u8[:], out: u8[>..]&) -> bool {
     return true;
 }
 
-fn strict_unquote_buf<B>(input: const u8[:], out: B&) -> bool {
-    var scratch: u8[>..] = [];
-    if !strict_unquote(input, scratch) {
-        return false;
-    }
-    out.clear();
-    out.append(scratch[..]);
-    return true;
-}
-
 // Liberal unquote for legacy or non-critical headers
-fn unquote(input: const u8[:], out: u8[>..]&) -> bool {
+fn unquote<B>(input: const u8[:], out: B&) -> bool {
     guard input.len >= 2 && input[0] == '"' && input[input.len - 1] == '"' else {
         out.append(input);
         return true;
@@ -95,7 +85,7 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
     to_lower(p_item.name[..]);
 
     if p_val_raw.len > 0 && p_val_raw[0] == '"' {
-        guard strict_unquote_buf(p_val_raw, p_item.value) else { return false; }
+        guard strict_unquote(p_val_raw, p_item.value) else { return false; }
     } else {
         guard is_valid_header_value(p_val_raw) else { return false; }
         p_item.value.append(p_val_raw);
@@ -160,9 +150,7 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     mt.subtype.append(raw_sub);
     to_lower(mt.subtype[..]);
 
-    mt.mime_type.append(mt.type_name[..]);
-    mt.mime_type.push('/');
-    mt.mime_type.append(mt.subtype[..]);
+    format(mt.mime_type, mt.type_name[..], "/", mt.subtype[..]);
 
     // Parse parameters
     if has_semi {
@@ -536,6 +524,12 @@ fn parse_sfv_date(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> boo
     return true;
 }
 
+inline fn lower_hex_val(b: u8) -> i32 {
+    if b >= '0' && b <= '9' { return b - '0'; }
+    if b >= 'a' && b <= 'f' { return b - 'a' + 10; }
+    return -1;
+}
+
 // RFC 9651 Section 3.3.8: sf-displaystring (%" DQUOTE *(unescaped / pct-encoded) DQUOTE)
 fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor + 1 < raw.len && raw[cursor] == '%' && raw[cursor + 1] == '"' else { return false; }
@@ -554,10 +548,8 @@ fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareIte
         } else if b == '%' {
             // Percent-encoded byte %xx: MUST use lowercase hex digits per RFC 9651 Section 3.3.8
             guard cursor + 2 < raw.len else { return false; }
-            let h0 = raw[cursor + 1];
-            let h1 = raw[cursor + 2];
-            let v0 = if (h0 >= '0' && h0 <= '9') { h0 - '0' } else if (h0 >= 'a' && h0 <= 'f') { h0 - 'a' + 10 } else { -1 };
-            let v1 = if (h1 >= '0' && h1 <= '9') { h1 - '0' } else if (h1 >= 'a' && h1 <= 'f') { h1 - 'a' + 10 } else { -1 };
+            let v0 = lower_hex_val(raw[cursor + 1]);
+            let v1 = lower_hex_val(raw[cursor + 2]);
             guard v0 >= 0 && v1 >= 0 else { return false; } // Uppercase hex (A-F) is FORBIDDEN
             let decoded_byte = ((v0 << 4) | v1) as u8;
             if out_bare.text.len < 1088 {
@@ -692,7 +684,7 @@ fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
 
     out.bare = bare;
     out.params.clear();
-    for p in params { out.params.push(p); }
+    for &p in params { out.params.push(p); }
     return true;
 }
 

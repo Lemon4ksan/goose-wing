@@ -319,7 +319,14 @@ fn ::has_param(mt: const wing::MediaType&, key: const u8[:]) -> bool { return wi
 fn ::is_multipart(mt: const wing::MediaType&) -> bool { return wing::is_multipart(mt); }
 fn ::boundary(mt: const wing::MediaType&) -> const u8[:] { return wing::boundary(mt); }
 fn ::charset(mt: const wing::MediaType&) -> const u8[:] { return wing::charset(mt); }
+fn ::parse_media_type(raw: const u8[:]) -> wing::MediaType, bool { return wing::parse_media_type(raw); }
 fn ::parse_content_disposition(raw: const u8[:]) -> wing::MediaType, bool { return wing::parse_content_disposition(raw); }
+fn ::strict_unquote<B>(input: const u8[:], out: B&) -> bool { return wing::strict_unquote(input, out); }
+fn ::unquote<B>(input: const u8[:], out: B&) -> bool { return wing::unquote(input, out); }
+fn ::parse_sfv_item(raw: const u8[:], out: wing::SfvItem&) -> bool { return wing::parse_sfv_item(raw, out); }
+fn ::parse_sfv_list(raw: const u8[:], out: wing::SfvList&) -> bool { return wing::parse_sfv_list(raw, out); }
+fn ::parse_sfv_dict(raw: const u8[:], out: wing::SfvDict&) -> bool { return wing::parse_sfv_dict(raw, out); }
+fn ::serialize_sfv_decimal(scaled_milli: i64, out: u8[>..]&) { wing::serialize_sfv_decimal(scaled_milli, out); }
 
 // ---- security & server ufcs bridges ----------------------------------------
 
