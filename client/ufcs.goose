@@ -634,3 +634,45 @@ fn ::flush_writes(ev_loop: wing::EventLoop&, tag: u64) -> i64 {
     return wing::flush_writes(ev_loop, tag);
 }
 
+// ---- security ufcs bridges -------------------------------------------------
+
+fn ::update_isolation_context(ctx: wing::CrossOriginIsolationContext&, coop: const u8[:], coep: const u8[:], origin: const u8[:]) {
+    wing::update_isolation_context(ctx, coop, coep, origin);
+}
+fn ::update_from_headers(ctx: wing::CrossOriginIsolationContext&, headers: const wing::HeaderMap&, origin: const u8[:]) {
+    wing::update_from_headers(ctx, headers, origin);
+}
+fn ::update_from_headers(ctx: wing::CrossOriginIsolationContext&, headers: const wing::HeaderItem[:], origin: const u8[:]) {
+    wing::update_from_headers(ctx, headers, origin);
+}
+fn ::is_subresource_allowed(ctx: const wing::CrossOriginIsolationContext&, origin: const u8[:], corp: const u8[:]) -> bool {
+    return wing::is_subresource_allowed(ctx, origin, corp);
+}
+
+fn ::add_allowed_origin(p: wing::CorsPolicy&, pat: const u8[:]) -> bool {
+    return wing::add_allowed_origin(p, pat);
+}
+fn ::is_origin_allowed(p: const wing::CorsPolicy&, origin: const u8[:]) -> bool {
+    return wing::is_cors_origin_allowed(p, origin);
+}
+fn ::evaluate_cors(p: const wing::CorsPolicy&, req: const wing::Request&, res: wing::Response&) -> wing::CorsResult {
+    return wing::evaluate_cors(p, req, res);
+}
+
+fn ::add_trusted_origin(g: wing::CrossOriginGuard&, origin: const u8[:]) -> bool {
+    return wing::add_trusted_origin(g, origin);
+}
+fn ::add_exempt_path(g: wing::CrossOriginGuard&, path: const u8[:]) -> bool {
+    return wing::add_exempt_path(g, path);
+}
+fn ::evaluate_fetch_metadata(g: const wing::CrossOriginGuard&, ctx: const wing::FetchContext&) -> wing::CsrfDecision {
+    return wing::evaluate_fetch_metadata(g, ctx);
+}
+
+fn ::check_rate_limit(limiter: wing::ShardedGcraLimiter&, key: const u8[:], cost: u64, now_ns: u64) -> wing::RateLimitDecision {
+    return wing::check_keyed_rate_limit(limiter, key, cost, now_ns);
+}
+fn ::check_rate_limit(pgcra: wing::ProbabilisticGcra&, cost: u64, now_ns: u64) -> wing::RateLimitDecision {
+    return wing::check_probabilistic(pgcra, cost, now_ns);
+}
+

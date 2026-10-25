@@ -125,7 +125,7 @@ fn test_sharded_gcra_limiter(t: core::T&) {
             format(ip_buf, i);
             ip_buf.append(".1");
 
-            let shard = (wing::fnv1a_hash(ip_buf[..]) & 0xFF) as i64;
+            let shard = (core::fnv1a_64(ip_buf[..]) & 0xFF) as i64;
             if !seen_shards[shard] {
                 seen_shards[shard] = true;
                 distinct_shards += 1;

@@ -77,7 +77,7 @@ struct FetchContext {
 
 // Parses Sec-Fetch-Site string value.
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
-    let clean = trim(val);
+    let clean = trim_lws(val);
     if clean == "same-origin" { return SecFetchSite.SameOrigin; }
     if clean == "same-site" { return SecFetchSite.SameSite; }
     if clean == "cross-site" { return SecFetchSite.CrossSite; }
@@ -87,7 +87,7 @@ fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
 
 // Parses Sec-Fetch-Mode string value.
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
-    let clean = trim(val);
+    let clean = trim_lws(val);
     if clean == "navigate" { return SecFetchMode.Navigate; }
     if clean == "same-origin" { return SecFetchMode.SameOrigin; }
     if clean == "cors" { return SecFetchMode.Cors; }
@@ -98,7 +98,7 @@ fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
 
 // Parses Sec-Fetch-Dest string value.
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
-    let clean = trim(val);
+    let clean = trim_lws(val);
     if clean == "document" { return SecFetchDest.Document; }
     if clean == "nested-document" { return SecFetchDest.NestedDocument; }
     if clean == "iframe" { return SecFetchDest.Iframe; }
@@ -272,9 +272,9 @@ fn extract_fetch_context(req: const Request&, target_host: const u8[:]) -> Fetch
     ctx.method_is_safe = (req.method[..] == "GET" || req.method[..] == "HEAD" || req.method[..] == "OPTIONS");
     ctx.target_host.append(target_host);
 
-    for idx in req.headers.len {
-        let name = req.headers[idx].name[..];
-        let val = req.headers[idx].value[..];
+    for &h in req.headers {
+        let name = h.name[..];
+        let val = trim_lws(h.value[..]);
 
         if eq_ascii_fold(name, "Sec-Fetch-Site") {
             ctx.site = parse_sec_fetch_site(val);
@@ -283,12 +283,12 @@ fn extract_fetch_context(req: const Request&, target_host: const u8[:]) -> Fetch
         } else if eq_ascii_fold(name, "Sec-Fetch-Dest") {
             ctx.dest = parse_sec_fetch_dest(val);
         } else if eq_ascii_fold(name, "Sec-Fetch-User") {
-            ctx.user_activated = (trim(val) == "?1");
+            ctx.user_activated = (val == "?1");
         } else if eq_ascii_fold(name, "Origin") {
-            ctx.origin.append(trim(val));
+            ctx.origin.append(val);
             ctx.has_origin = true;
         } else if eq_ascii_fold(name, "Referer") {
-            ctx.referer.append(trim(val));
+            ctx.referer.append(val);
             ctx.has_referer = true;
         } else if eq_ascii_fold(name, "Cookie") {
             ctx.has_session_cookie = true;
@@ -311,11 +311,11 @@ fn apply_isolation_headers(res: Response&) {
             res.headers[vary_idx].value.append(", ");
             res.headers[vary_idx].value.append(vary_val);
         }
-    } else if res.headers.len < res.headers.cap {
-        res.headers.push(make_header(vary_key, vary_val));
+    } else {
+        res.headers.set_header(vary_key, vary_val);
     }
 
-    if !res.has_header("Strict-Transport-Security") && res.headers.len < res.headers.cap {
-        res.headers.push(make_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload"));
+    if !res.has_header("Strict-Transport-Security") {
+        res.headers.set_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
     }
 }

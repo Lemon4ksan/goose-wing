@@ -159,10 +159,6 @@ fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter {
     return ShardedGcraLimiter { quota: quota, .. };
 }
 
-inline fn fnv1a_hash(data: const u8[:]) -> u64 {
-    return core::fnv1a_64(data);
-}
-
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
 fn check_keyed_rate_limit(
     limiter: ShardedGcraLimiter&,
@@ -170,7 +166,7 @@ fn check_keyed_rate_limit(
     cost_n: u64,
     now_ns: u64,
 ) -> RateLimitDecision {
-    let shard_idx = (fnv1a_hash(key_str) & 0xFF) as i64;
+    let shard_idx = (core::fnv1a_64(key_str) & 0xFF) as i64;
 
     // Find existing slot
     for idx in limiter.shards[shard_idx].slots.len {
@@ -249,34 +245,34 @@ fn check_probabilistic(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> R
 
 fn apply_rate_limit_headers(res: Response&, quota: const GcraQuota&, decision: const RateLimitDecision&) {
     var limit_str: u8[..32] = [];
-    format(limit_str, quota.limit);
-    res.headers.push(make_header("RateLimit-Limit", limit_str[..]));
+    core::format_u64_dec(quota.limit, limit_str);
+    res.headers.set_header("RateLimit-Limit", limit_str[..]);
 
     match decision {
         Allowed a => {
             var rem_str: u8[..32] = [];
-            format(rem_str, a.remaining_burst);
-            res.headers.push(make_header("RateLimit-Remaining", rem_str[..]));
+            core::format_u64_dec(a.remaining_burst, rem_str);
+            res.headers.set_header("RateLimit-Remaining", rem_str[..]);
 
             var reset_str: u8[..32] = [];
             let reset_sec = (a.reset_after_ns + 999999999) / 1000000000;
-            format(reset_str, reset_sec as i64);
-            res.headers.push(make_header("RateLimit-Reset", reset_str[..]));
+            core::format_i64_dec(reset_sec as i64, reset_str);
+            res.headers.set_header("RateLimit-Reset", reset_str[..]);
         },
         Reserved r => {
-            res.headers.push(make_header("RateLimit-Remaining", "0"));
+            res.headers.set_header("RateLimit-Remaining", "0");
             var reset_str: u8[..32] = [];
             let reset_sec = (r.wait_ns + 999999999) / 1000000000;
-            format(reset_str, reset_sec as i64);
-            res.headers.push(make_header("RateLimit-Reset", reset_str[..]));
+            core::format_i64_dec(reset_sec as i64, reset_str);
+            res.headers.set_header("RateLimit-Reset", reset_str[..]);
         },
         Rejected rej => {
-            res.headers.push(make_header("RateLimit-Remaining", "0"));
+            res.headers.set_header("RateLimit-Remaining", "0");
             let retry_sec = (rej.retry_after_ns + 999999999) / 1000000000;
             var retry_str: u8[..32] = [];
-            format(retry_str, retry_sec as i64);
-            res.headers.push(make_header("RateLimit-Reset", retry_str[..]));
-            res.headers.push(make_header("Retry-After", retry_str[..]));
+            core::format_i64_dec(retry_sec as i64, retry_str);
+            res.headers.set_header("RateLimit-Reset", retry_str[..]);
+            res.headers.set_header("Retry-After", retry_str[..]);
             res.status_code = 429; // Too Many Requests
         },
     };

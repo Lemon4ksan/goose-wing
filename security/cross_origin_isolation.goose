@@ -4,6 +4,7 @@
 namespace wing;
 
 import std;
+import http.headers;
 
 // ---- 1. Policy Enumerations -------------------------------------------------
 
@@ -38,32 +39,48 @@ struct CrossOriginIsolationContext {
 // ---- 3. Policy Parsers ------------------------------------------------------
 
 fn parse_coop(val: const u8[:]) -> CoopPolicy {
-    if eq_ascii_fold(val, "same-origin") {
+    let clean = trim_lws(val);
+    if eq_ascii_fold(clean, "same-origin") {
         return CoopPolicy.SameOrigin;
-    } else if eq_ascii_fold(val, "same-origin-allow-popups") {
+    } else if eq_ascii_fold(clean, "same-origin-allow-popups") {
         return CoopPolicy.SameOriginAllowPopups;
     }
     return CoopPolicy.UnsafeNone;
 }
 
 fn parse_coep(val: const u8[:]) -> CoepPolicy {
-    if eq_ascii_fold(val, "require-corp") {
+    let clean = trim_lws(val);
+    if eq_ascii_fold(clean, "require-corp") {
         return CoepPolicy.RequireCorp;
-    } else if eq_ascii_fold(val, "credentialless") {
+    } else if eq_ascii_fold(clean, "credentialless") {
         return CoepPolicy.Credentialless;
     }
     return CoepPolicy.UnsafeNone;
 }
 
 fn parse_corp(val: const u8[:]) -> CorpPolicy {
-    if eq_ascii_fold(val, "same-origin") {
+    let clean = trim_lws(val);
+    if eq_ascii_fold(clean, "same-origin") {
         return CorpPolicy.SameOrigin;
-    } else if eq_ascii_fold(val, "same-site") {
+    } else if eq_ascii_fold(clean, "same-site") {
         return CorpPolicy.SameSite;
-    } else if eq_ascii_fold(val, "cross-origin") {
+    } else if eq_ascii_fold(clean, "cross-origin") {
         return CorpPolicy.CrossOrigin;
     }
     return CorpPolicy.None;
+}
+
+// Extracts host from an origin or URL string (e.g. "https://example.com:8080" -> "example.com")
+fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
+    var s = trim_lws(origin_or_url);
+    if starts_with(s, "https://") { s = s[8..]; }
+    else if starts_with(s, "http://") { s = s[7..]; }
+    for i in s.len {
+        if s[i] == '/' || s[i] == '?' || s[i] == '#' || s[i] == ':' {
+            return s[..i];
+        }
+    }
+    return s;
 }
 
 // ---- 4. Context Lifecycle & Subresource Verification ------------------------
@@ -86,6 +103,28 @@ fn update_isolation_context(
                                    (ctx.coep == CoepPolicy.RequireCorp || ctx.coep == CoepPolicy.Credentialless);
 }
 
+// Updates isolation context directly from a HeaderMap (RFC 9110 / W3C HTML §7.2)
+fn update_from_headers(
+    ctx: CrossOriginIsolationContext&,
+    headers: const HeaderMap&,
+    document_origin: const u8[:]
+) {
+    let coop = headers.get_header("cross-origin-opener-policy");
+    let coep = headers.get_header("cross-origin-embedder-policy");
+    update_isolation_context(ctx, coop, coep, document_origin);
+}
+
+// Updates isolation context directly from a HeaderItem slice
+fn update_from_headers(
+    ctx: CrossOriginIsolationContext&,
+    headers: const HeaderItem[:],
+    document_origin: const u8[:]
+) {
+    let coop = headers.find_header("cross-origin-opener-policy");
+    let coep = headers.find_header("cross-origin-embedder-policy");
+    update_isolation_context(ctx, coop, coep, document_origin);
+}
+
 // Checks whether a subresource response is permitted to load under the active parent context
 fn is_subresource_allowed(
     ctx: const CrossOriginIsolationContext&,
@@ -102,7 +141,15 @@ fn is_subresource_allowed(
 
     // If parent context requires CORP (COEP: require-corp)
     if ctx.coep == CoepPolicy.RequireCorp {
-        // Subresource MUST explicitly opt in via Cross-Origin-Resource-Policy: cross-origin
+        // Under require-corp: cross-origin MUST explicitly opt-in with Cross-Origin-Resource-Policy: cross-origin.
+        // If it sends same-site, check whether document and subresource actually share the same eTLD+1!
+        if corp == CorpPolicy.SameSite {
+            var doc_etld: u8[..128] = [];
+            var sub_etld: u8[..128] = [];
+            core::extract_etld_plus_one(extract_hostname_from_origin(ctx.document_origin[..]), doc_etld);
+            core::extract_etld_plus_one(extract_hostname_from_origin(subresource_origin), sub_etld);
+            return doc_etld.len > 0 && sub_etld.len > 0 && eq_ascii_fold(doc_etld[..], sub_etld[..]);
+        }
         return corp == CorpPolicy.CrossOrigin;
     }
 
@@ -110,6 +157,15 @@ fn is_subresource_allowed(
     // If subresource declared CORP: same-origin, reject cross-origin embedding
     if corp == CorpPolicy.SameOrigin {
         return false;
+    }
+
+    // If subresource declared CORP: same-site, allow only if same-site with document
+    if corp == CorpPolicy.SameSite {
+        var doc_etld: u8[..128] = [];
+        var sub_etld: u8[..128] = [];
+        core::extract_etld_plus_one(extract_hostname_from_origin(ctx.document_origin[..]), doc_etld);
+        core::extract_etld_plus_one(extract_hostname_from_origin(subresource_origin), sub_etld);
+        return doc_etld.len > 0 && sub_etld.len > 0 && eq_ascii_fold(doc_etld[..], sub_etld[..]);
     }
 
     return true;

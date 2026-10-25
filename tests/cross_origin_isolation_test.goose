@@ -11,13 +11,16 @@ fn test_cross_origin_isolation(t: core::T&) {
         sub.assert_true(wing::parse_coop("same-origin") == wing::CoopPolicy.SameOrigin, "COOP same-origin");
         sub.assert_true(wing::parse_coop("same-origin-allow-popups") == wing::CoopPolicy.SameOriginAllowPopups, "COOP allow-popups");
         sub.assert_true(wing::parse_coop("unsafe-none") == wing::CoopPolicy.UnsafeNone, "COOP unsafe-none");
+        sub.assert_true(wing::parse_coop(" same-origin \t") == wing::CoopPolicy.SameOrigin, "COOP same-origin with LWS");
 
         sub.assert_true(wing::parse_coep("require-corp") == wing::CoepPolicy.RequireCorp, "COEP require-corp");
         sub.assert_true(wing::parse_coep("credentialless") == wing::CoepPolicy.Credentialless, "COEP credentialless");
+        sub.assert_true(wing::parse_coep(" require-corp ") == wing::CoepPolicy.RequireCorp, "COEP require-corp with LWS");
 
         sub.assert_true(wing::parse_corp("cross-origin") == wing::CorpPolicy.CrossOrigin, "CORP cross-origin");
         sub.assert_true(wing::parse_corp("same-origin") == wing::CorpPolicy.SameOrigin, "CORP same-origin");
         sub.assert_true(wing::parse_corp("same-site") == wing::CorpPolicy.SameSite, "CORP same-site");
+        sub.assert_true(wing::parse_corp(" same-site ") == wing::CorpPolicy.SameSite, "CORP same-site with LWS");
     };
 
     t.run("crossOriginIsolated Status Computation (W3C HTML §7.2)") { sub =>
@@ -39,6 +42,14 @@ fn test_cross_origin_isolation(t: core::T&) {
         // 4. COEP missing or unsafe-none -> NOT isolated
         wing::update_isolation_context(ctx, "same-origin", "unsafe-none", "https://app.secure.com");
         sub.assert_false(ctx.is_cross_origin_isolated, "Not isolated without COEP");
+
+        // 5. Update directly from HeaderMap via UFCS
+        var headers = wing::new_header_map();
+        wing::append_header(headers, "cross-origin-opener-policy", "same-origin");
+        wing::append_header(headers, "cross-origin-embedder-policy", "require-corp");
+        ctx.update_from_headers(headers, "https://service.internal");
+        sub.assert_true(ctx.is_cross_origin_isolated, "HeaderMap UFCS update_from_headers isolated");
+        sub.assert_bytes_eq(ctx.document_origin[..], "https://service.internal", "HeaderMap origin stored");
     };
 
     t.run("Subresource Loading Policy Enforcement") { sub =>
@@ -55,6 +66,18 @@ fn test_cross_origin_isolation(t: core::T&) {
         sub.assert_true(
             wing::is_subresource_allowed(isolated_ctx, "https://cdn.other.com", "cross-origin"),
             "Cross-origin subresource with CORP: cross-origin allowed"
+        );
+
+        // Same-site subresource (subdomain) with CORP: same-site: allowed under require-corp
+        sub.assert_true(
+            wing::is_subresource_allowed(isolated_ctx, "https://static.app.com", "same-site"),
+            "Same-site subresource with CORP: same-site allowed"
+        );
+
+        // Cross-site subresource with CORP: same-site: BLOCKED
+        sub.assert_false(
+            wing::is_subresource_allowed(isolated_ctx, "https://cdn.evil.com", "same-site"),
+            "Cross-site subresource with CORP: same-site BLOCKED"
         );
 
         // Cross-origin with missing CORP: BLOCKED by require-corp
