@@ -1,0 +1,126 @@
+// Regression and stress tests for Go issue tracker / CVE vulnerabilities
+import std;
+import core from "..";
+import wing from "..";
+
+fn test_chunked_cve_2019_16276(t: core::T&) {
+    // Space before colon in trailers must be rejected
+    var wire: u8[..64] = [];
+    wire.append("Content-Length : 100\r\n\r\n");
+    var out_trailers: wing::HeaderItem[..16] = [];
+    var cursor: i64 = 0;
+    let err = wing::parse_chunked_trailers_with_out(wire[..], cursor, out_trailers);
+    t.assert_true(err != wing::ChunkedDecodeError.None, "Space before colon in trailer must fail per CVE-2019-16276");
+
+    // Negative / overflow chunk size
+    var bad_chunk: u8[..64] = [];
+    bad_chunk.append("FFFFFFFFFFFFFFFF\r\n");
+    var out_body: u8[>..] = [];
+    var trailers: wing::HeaderItem[..16] = [];
+    let b_err, b_consumed = wing::decode_chunked_body_with_trailers(bad_chunk[..], out_body, trailers);
+    t.assert_true(b_err != wing::ChunkedDecodeError.None, "Overflow chunk size FFFFFFFFFFFFFFFF must be rejected");
+}
+
+fn test_dns_name_length_overflow(t: core::T&) {
+    // Malformed pointer chain pointing beyond end of packet
+    let bad_dns: u8[12] = [
+        0x00, 0x01, 0x81, 0x80,
+        0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00
+    ];
+    var resp = wing::DnsResponse {};
+    let ok = wing::parse_dns_response(bad_dns[..], resp);
+    t.assert_false(ok, "Truncated DNS packet must return false without panic");
+}
+
+fn test_websocket_length_overflow(t: core::T&) {
+    // Header with extended payload length 0x7FFFFFFFFFFFFFFF
+    let bad_ws_hdr: u8[10] = [
+        0x81, 0x7F,
+        0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+    ];
+    var session = wing::new_websocket_session(true);
+    var msg = wing::WsMessage {};
+    var reply: u8[..64] = [];
+    let ok = wing::ws_receive(session, bad_ws_hdr[..], msg, reply);
+    t.assert_false(ok, "Huge 64-bit length frame without wire bytes must return false without overflow");
+
+    // Close frame with illegal 1-byte payload must close with PROTOCOL_ERROR
+    let bad_close: u8[3] = [0x88, 0x01, 0x00];
+    var session2 = wing::new_websocket_session(false);
+    var msg2 = wing::WsMessage {};
+    var reply2: u8[..64] = [];
+    let ok2 = wing::ws_receive(session2, bad_close[..], msg2, reply2);
+    t.assert_true(ok2 && session2.is_closed && session2.close_code == wing::WS_STATUS_PROTOCOL_ERROR, "Close frame with 1-byte payload must trigger WS_STATUS_PROTOCOL_ERROR");
+}
+
+fn test_proxy_protocol_overflow(t: core::T&) {
+    // PROXY v1 with >8 space-separated tokens
+    let bad_line: const u8[:] = "PROXY TCP4 1.1.1.1 2.2.2.2 80 80 EXTRA1 EXTRA2 EXTRA3 EXTRA4\r\n";
+    let hdr, consumed, ok = wing::parse_proxy_v1(bad_line);
+    t.assert_false(ok, "PROXY v1 with >8 tokens must fail safely without buffer overflow");
+}
+
+fn test_masque_address_capsule_bounds(t: core::T&) {
+    // Address capsule with oversized IP bytes (>16 bytes)
+    var payload: u8[..32] = [];
+    payload.push(1); // request_id = 1
+    payload.push(4); // ip_version = 4
+    payload.push(32);// prefix_len = 32
+    for i in 20 { payload.push(0xAA); } // 20 bytes (> 16 cap)
+
+    let req, ok = wing::decode_address_request_capsule(payload[..]);
+    t.assert_false(ok, "Address request capsule with >16 IP bytes must fail without panic");
+}
+
+fn test_jwt_exp_overflow(t: core::T&) {
+    var claims = wing::new_jwt_claims();
+    // Expiry near i64::MAX
+    wing::set_expiry(claims, 9223372036854775800);
+    var opts = wing::JwtValidationOptions {};
+    opts.leeway_seconds = 60;
+    // Current time 1000 should NOT consider this expired despite addition overflow
+    let err = wing::validate_jwt_claims_rules(claims, opts, 1000);
+    t.assert_eq(err, wing::JwtError.None, "Far future exp must not overflow to expired");
+}
+
+fn test_quic_ack_underflow(t: core::T&) {
+    var ack = wing::AckFrame {};
+    ack.largest_acked = 10;
+    ack.first_ack_range = 10;
+    // Malicious huge gap that would wrap around in gap + 2
+    ack.ranges.push(wing::AckRange { gap: 0xFFFFFFFFFFFFFFFF, ack_range: 0 });
+
+    var space = wing::PnSpaceState {};
+    space.has_sent_packets = true;
+    space.largest_sent_pn = 100;
+    var out_intervals: wing::AckInterval[..64] = [];
+
+    let ok = wing::parse_and_validate_ack(space, ack, out_intervals);
+    t.assert_false(ok, "Huge gap wrapping in gap + 2 must be safely rejected");
+}
+
+fn test_x509_san_tld_wildcard(t: core::T&) {
+    // TLD wildcard *.com must NOT match evil.com (RFC 6125 §6.4.3)
+    t.assert_false(wing::match_dns_san("*.com", "evil.com"), "*.com must not match evil.com");
+    // Valid wildcard *.example.com must match sub.example.com
+    t.assert_true(wing::match_dns_san("*.example.com", "sub.example.com"), "*.example.com matches sub.example.com");
+    // Wildcard must not match IPv4
+    t.assert_false(wing::match_dns_san("*.168.1.1", "192.168.1.1"), "Wildcard must not match IPv4 literal");
+}
+
+fn main() {
+    var runner = core::new_runner("Go Bug Tracker Stress Regression Suite", core::Verbosity.Verbose);
+
+    core::run_case(runner, "1. CVE-2019-16276 Space-before-colon & Chunk Size Overflow", test_chunked_cve_2019_16276);
+    core::run_case(runner, "2. DNS Name Decoding Length Overflow", test_dns_name_length_overflow);
+    core::run_case(runner, "3. WebSocket Extended Length & Close Frame Invariants", test_websocket_length_overflow);
+    core::run_case(runner, "4. PROXY Protocol v1 Token Capacity Guard", test_proxy_protocol_overflow);
+    core::run_case(runner, "5. MASQUE Address Request Capsule Bounds", test_masque_address_capsule_bounds);
+    core::run_case(runner, "6. JWT Expiry Integer Overflow Defense", test_jwt_exp_overflow);
+    core::run_case(runner, "7. QUIC ACK Frame Gap Addition Overflow Defense", test_quic_ack_underflow);
+    core::run_case(runner, "8. X.509 DNS SAN TLD Wildcard & IP Literal Defense", test_x509_san_tld_wildcard);
+
+    let ok = core::finish(runner);
+    assert(ok);
+}

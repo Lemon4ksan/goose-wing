@@ -128,6 +128,7 @@ import net.proxy_protocol;
 import net.retry;
 import net.dns;
 import net.masque;
+import net.tcp;
 import net.isolation;
 import net.sockopt;
 import net.driver;

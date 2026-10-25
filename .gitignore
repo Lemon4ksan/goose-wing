@@ -5,6 +5,11 @@
 *.so
 *.dylib
 
+# Byte-compiled Python
+__pycache__/
+*.py[codz]
+*$py.class
+
 # Agentic stuff
 .gemini/
 scratch/
