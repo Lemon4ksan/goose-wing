@@ -224,3 +224,47 @@ fn ::probe_timeout_us(est: const core::JacobsonRttEstimator&, max_ack_delay_us: 
     return core::probe_timeout_us(est, max_ack_delay_us);
 }
 fn ::loss_time_threshold_us(est: const core::JacobsonRttEstimator&) -> u64 { return core::loss_time_threshold_us(est); }
+
+// ---- io stream ufcs bridges ------------------------------------------------
+
+fn ::remaining(r: const core::SliceReader&) -> i64 { return core::remaining(r); }
+fn ::is_eof(r: const core::SliceReader&) -> bool { return core::is_eof(r); }
+fn ::read(r: core::SliceReader&, dst: u8[:]) -> i64, core::IoError { return core::read(r, dst); }
+fn ::read_exact(r: core::SliceReader&, dst: u8[:]) -> core::IoError { return core::read_exact(r, dst); }
+fn ::read_slice(r: core::SliceReader&, count: i64) -> const u8[:], core::IoError { return core::read_slice(r, count); }
+fn ::read_u8(r: core::SliceReader&) -> u8, core::IoError { return core::read_u8(r); }
+fn ::read_u16_be(r: core::SliceReader&) -> u16, core::IoError { return core::read_u16_be(r); }
+fn ::read_u16_le(r: core::SliceReader&) -> u16, core::IoError { return core::read_u16_le(r); }
+fn ::read_u32_be(r: core::SliceReader&) -> u32, core::IoError { return core::read_u32_be(r); }
+fn ::read_u32_le(r: core::SliceReader&) -> u32, core::IoError { return core::read_u32_le(r); }
+fn ::read_u64_be(r: core::SliceReader&) -> u64, core::IoError { return core::read_u64_be(r); }
+fn ::read_u64_le(r: core::SliceReader&) -> u64, core::IoError { return core::read_u64_le(r); }
+fn ::skip(r: core::SliceReader&, count: i64) -> core::IoError { return core::skip(r, count); }
+fn ::peek(r: const core::SliceReader&) -> u8, bool { return core::peek(r); }
+
+fn ::available(w: const core::SliceWriter&) -> i64 { return core::available(w); }
+fn ::written(w: const core::SliceWriter&) -> i64 { return core::written(w); }
+fn ::write(w: core::SliceWriter&, src: const u8[:]) -> i64, core::IoError { return core::write(w, src); }
+fn ::write_exact(w: core::SliceWriter&, src: const u8[:]) -> core::IoError { return core::write_exact(w, src); }
+fn ::write_u8(w: core::SliceWriter&, b: u8) -> core::IoError { return core::write_u8(w, b); }
+fn ::write_u16_be(w: core::SliceWriter&, v: u16) -> core::IoError { return core::write_u16_be(w, v); }
+fn ::write_u32_be(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u32_be(w, v); }
+fn ::write_u64_be(w: core::SliceWriter&, v: u64) -> core::IoError { return core::write_u64_be(w, v); }
+fn ::as_written_slice(w: const core::SliceWriter&) -> const u8[:] { return core::as_written_slice(w); }
+
+fn ::remaining(lr: const core::LimitReader&) -> i64 { return core::remaining(lr); }
+fn ::is_eof(lr: const core::LimitReader&) -> bool { return core::is_eof(lr); }
+fn ::is_exhausted(lr: const core::LimitReader&) -> bool { return core::is_exhausted(lr); }
+fn ::read(lr: core::LimitReader&, dst: u8[:]) -> i64, core::IoError { return core::read(lr, dst); }
+fn ::read_slice(lr: core::LimitReader&, count: i64) -> const u8[:], core::IoError { return core::read_slice(lr, count); }
+
+fn ::len(rb: const core::RingBuffer&) -> i64 { return core::len(rb); }
+fn ::cap(rb: const core::RingBuffer&) -> i64 { return core::cap(rb); }
+fn ::available(rb: const core::RingBuffer&) -> i64 { return core::available(rb); }
+fn ::is_empty(rb: const core::RingBuffer&) -> bool { return core::is_empty(rb); }
+fn ::is_full(rb: const core::RingBuffer&) -> bool { return core::is_full(rb); }
+fn ::write(rb: core::RingBuffer&, src: const u8[:]) -> i64, core::IoError { return core::write(rb, src); }
+fn ::read(rb: core::RingBuffer&, dst: u8[:]) -> i64, core::IoError { return core::read(rb, dst); }
+fn ::peek(rb: const core::RingBuffer&, dst: u8[:]) -> i64 { return core::peek(rb, dst); }
+fn ::discard(rb: core::RingBuffer&, count: i64) -> i64 { return core::discard(rb, count); }
+fn ::clear(rb: core::RingBuffer&) { core::clear(rb); }
