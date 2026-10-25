@@ -2,12 +2,12 @@
 namespace wing;
 
 import std;
-import cookie.constants;
-import cookie.psl;
-import cookie.parser;
-import cookie.policy;
-import cookie.engine;
-import cookie.store;
+import .constants;
+import .psl;
+import .parser;
+import .policy;
+import .engine;
+import .store;
 
 // ---- canonical cookie model ------------------------------------------------
 

@@ -5,7 +5,7 @@ namespace wing;
 
 import std;
 import core from "..";
-import tls.record;
+import .record;
 
 // ---- 1. ASN.1 Universal Tags and OIDs ---------------------------------------
 

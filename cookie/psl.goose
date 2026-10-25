@@ -2,7 +2,7 @@
 namespace wing;
 
 import std;
-import cookie.constants;
+import .constants;
 
 // ---- public suffix data structures and enumerations ------------------------
 

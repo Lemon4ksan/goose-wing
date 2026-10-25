@@ -3,8 +3,8 @@
 namespace wing;
 
 import std;
-import tls.record;
-import tls.hpke;
+import .record;
+import .hpke;
 
 // ---- 1. ECH Constants & Identifiers -----------------------------------------
 

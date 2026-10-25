@@ -11,9 +11,9 @@ import client.response;
 import http2.framing;
 import http2.hpack;
 import http2.connection;
-import server.router;
-import server.pool;
-import server.pipeline;
+import .router;
+import .pool;
+import .pipeline;
 
 // ---- 1. Server Stream Descriptor --------------------------------------------
 

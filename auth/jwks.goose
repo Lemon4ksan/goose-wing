@@ -6,7 +6,7 @@ namespace wing;
 import std;
 import json;
 import core from "..";
-import auth.jwt;
+import .jwt;
 
 // ---- 1. JWK / JWKS Key Models -----------------------------------------------
 

@@ -8,8 +8,8 @@ import security.crypto_jar;
 import security.csrf;
 import security.cors;
 import security.rate_limiter;
-import server.router;
-import server.pool;
+import .router;
+import .pool;
 
 struct ServerPipelineConfig {
     limiter: ShardedGcraLimiter = ShardedGcraLimiter { .. },

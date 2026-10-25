@@ -3,9 +3,9 @@
 namespace wing;
 
 import std;
-import cookie.constants;
-import cookie.canonical;
-import cookie.psl;
+import .constants;
+import .canonical;
+import .psl;
 
 // ---- http method & origin trust --------------------------------------------
 

@@ -3,17 +3,10 @@
 namespace wing;
 
 import std;
-import client.request;
-import client.response;
-import http.headers;
-import security.rate_limiter;
-import server.router;
-import server.pool;
-import server.pipeline;
-import http2.framing;
-import net.proxy_protocol;
-import server.h2_multiplexer;
-import client.stream;
+import .router;
+import .pool;
+import .pipeline;
+import .h2_multiplexer;
 
 // ---- 1. Reason Phrases for HTTP/1.1 Status Line -----------------------------
 

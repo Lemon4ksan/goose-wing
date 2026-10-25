@@ -3,12 +3,12 @@
 namespace wing;
 
 import std;
-import cookie.constants;
-import cookie.canonical;
-import cookie.psl;
-import cookie.policy;
-import cookie.parser;
-import cookie.store;
+import .constants;
+import .canonical;
+import .psl;
+import .policy;
+import .parser;
+import .store;
 
 // ---- canonical cookie jar container ----------------------------------------
 

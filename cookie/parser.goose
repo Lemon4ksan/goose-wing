@@ -2,9 +2,9 @@
 namespace wing;
 
 import std;
-import cookie.constants;
-import cookie.canonical;
-import cookie.psl;
+import .constants;
+import .canonical;
+import .psl;
 
 // ---- ingestion pipeline & set-cookie parser --------------------------------
 

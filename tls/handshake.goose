@@ -4,8 +4,8 @@ namespace wing;
 
 import std;
 import core from "..";
-import tls.record;
-import tls.key_schedule;
+import .record;
+import .key_schedule;
 
 // ---- 1. Handshake Message Types (RFC 8446 Section 4) ------------------------
 

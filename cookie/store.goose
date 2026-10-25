@@ -4,12 +4,12 @@ namespace wing;
 
 import std;
 import json;
-import cookie.constants;
-import cookie.canonical;
-import cookie.psl;
-import cookie.parser;
-import cookie.policy;
-import cookie.engine;
+import .constants;
+import .canonical;
+import .psl;
+import .parser;
+import .policy;
+import .engine;
 
 // ---- chromium sqlite v24 schema & query generator --------------------------
 

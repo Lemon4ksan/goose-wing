@@ -2,7 +2,7 @@
 namespace wing;
 
 import std;
-import server.router;
+import .router;
 
 // ---- extractor bitmasks ----------------------------------------------------
 
