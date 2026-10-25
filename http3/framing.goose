@@ -47,17 +47,17 @@ fn is_allowed_on_request_stream(frame_type: u64) -> bool {
 
 // Parses an HTTP/3 frame header (Type: VarInt, Length: VarInt).
 fn parse_h3_frame_header(src: const u8[:], offset: u64) -> H3FrameHeader, bool {
-    var hdr = H3FrameHeader { frame_type: 0, payload_len: 0, header_len: 0 };
     let ftype, off1, ok1 = quic_decode_varint(src, offset);
-    guard ok1 else { return hdr, false; }
+    guard ok1 else { return H3FrameHeader { .. }, false; }
 
     let plen, off2, ok2 = quic_decode_varint(src, off1);
-    guard ok2 else { return hdr, false; }
+    guard ok2 else { return H3FrameHeader { .. }, false; }
 
-    hdr.frame_type = ftype;
-    hdr.payload_len = plen;
-    hdr.header_len = off2 - offset;
-    return hdr, true;
+    return H3FrameHeader {
+        frame_type: ftype,
+        payload_len: plen,
+        header_len: off2 - offset,
+    }, true;
 }
 
 // Encodes an HTTP/3 frame header (Type: VarInt, Length: VarInt) into buffer.
@@ -223,11 +223,11 @@ fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
     return push_id, true;
 }
 
-// ---- 4. RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
+// ---- 6. RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
 
 // Encodes a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2, Type 0xF0700).
 fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const PriorityParam&) -> bool {
-    var payload: u8[>..] = [];
+    var payload: u8[..64] = [];
     guard quic_encode_varint(payload, stream_id) else { return false; }
     write_priority_param_rfc9218(prio, payload);
     guard encode_h3_frame_header(out, H3_FRAME_PRIORITY_UPDATE_REQUEST, payload.len as u64) else { return false; }
@@ -249,7 +249,7 @@ fn parse_h3_priority_update_request(payload: const u8[:], default_incremental: b
 
 // Encodes a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2, Type 0xF0701).
 fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const PriorityParam&) -> bool {
-    var payload: u8[>..] = [];
+    var payload: u8[..64] = [];
     guard quic_encode_varint(payload, push_id) else { return false; }
     write_priority_param_rfc9218(prio, payload);
     guard encode_h3_frame_header(out, H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }

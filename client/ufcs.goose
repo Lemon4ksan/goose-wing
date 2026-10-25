@@ -837,3 +837,70 @@ fn ::get_response_body(conn: const wing::H3Connection&, stream_id: u64) -> const
 fn ::is_stream_finished(conn: const wing::H3Connection&, stream_id: u64) -> bool {
     return wing::h3_is_stream_finished(conn, stream_id);
 }
+
+// ---- http/3 framing ufcs bridges --------------------------------------------
+
+fn ::parse_h3_frame_header(src: const u8[:], offset: u64 = 0) -> wing::H3FrameHeader, bool {
+    return wing::parse_h3_frame_header(src, offset);
+}
+
+fn ::encode_h3_frame_header<B>(out: B&, frame_type: u64, payload_len: u64) -> bool {
+    return wing::encode_h3_frame_header(out, frame_type, payload_len);
+}
+
+fn ::encode_h3_data_frame<B>(out: B&, data: const u8[:]) -> bool {
+    return wing::encode_h3_data_frame(out, data);
+}
+
+fn ::encode_h3_headers_frame<B>(out: B&, qpack_field_section: const u8[:]) -> bool {
+    return wing::encode_h3_headers_frame(out, qpack_field_section);
+}
+
+fn ::encode_h3_settings_frame<B>(out: B&, settings: const wing::H3Settings&) -> bool {
+    return wing::encode_h3_settings_frame(out, settings);
+}
+
+fn ::parse_h3_settings_frame(payload: const u8[:], out_settings: wing::H3Settings&) -> u64 {
+    return wing::parse_h3_settings_frame(payload, out_settings);
+}
+
+fn ::encode_h3_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
+    return wing::encode_h3_goaway_frame(out, stream_id);
+}
+
+fn ::parse_h3_goaway_frame(payload: const u8[:]) -> u64, bool {
+    return wing::parse_h3_goaway_frame(payload);
+}
+
+fn ::encode_h3_cancel_push<B>(out: B&, push_id: u64) -> bool {
+    return wing::encode_h3_cancel_push(out, push_id);
+}
+
+fn ::parse_h3_cancel_push(payload: const u8[:]) -> u64, bool {
+    return wing::parse_h3_cancel_push(payload);
+}
+
+fn ::encode_h3_max_push_id<B>(out: B&, push_id: u64) -> bool {
+    return wing::encode_h3_max_push_id(out, push_id);
+}
+
+fn ::parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
+    return wing::parse_h3_max_push_id(payload);
+}
+
+fn ::encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
+    return wing::encode_h3_priority_update_request(out, stream_id, prio);
+}
+
+fn ::parse_h3_priority_update_request(payload: const u8[:], default_incremental: bool = false) -> u64, wing::PriorityParam, bool {
+    return wing::parse_h3_priority_update_request(payload, default_incremental);
+}
+
+fn ::encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::PriorityParam&) -> bool {
+    return wing::encode_h3_priority_update_push(out, push_id, prio);
+}
+
+fn ::parse_h3_priority_update_push(payload: const u8[:], default_incremental: bool = false) -> u64, wing::PriorityParam, bool {
+    return wing::parse_h3_priority_update_push(payload, default_incremental);
+}
+
