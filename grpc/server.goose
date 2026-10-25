@@ -39,14 +39,8 @@ fn is_grpc_web_text(ct: const u8[:]) -> bool {
 
 // Inspects an incoming Request to determine if it is a gRPC call
 fn is_grpc_request(req: const Request&) -> bool {
-    for &hdr in req.headers {
-        if eq_ascii_fold(hdr.name[..], "content-type") {
-            if is_grpc_content_type(hdr.value[..]) {
-                return true;
-            }
-        }
-    }
-    return false;
+    let ct = req.header("content-type");
+    return ct.len > 0 && is_grpc_content_type(ct);
 }
 
 // Parses standard gRPC URI path: `/{service}/{method}` or `/{package}.{service}/{method}`.

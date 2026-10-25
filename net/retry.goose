@@ -25,12 +25,7 @@ fn is_idempotent_method(method: const u8[:]) -> bool {
 
 // Checks if request carries a valid non-empty Idempotency-Key header.
 fn has_idempotency_key(req: const Request&) -> bool {
-    for &hdr in req.headers {
-        if eq_ascii_fold(hdr.name[..], "Idempotency-Key") && hdr.value.len > 0 {
-            return true;
-        }
-    }
-    return false;
+    return req.header("Idempotency-Key").len > 0;
 }
 
 // Verifies all 4 mandatory invariants for Tier 1 zero-delay retry (net/http parity):

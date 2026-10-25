@@ -425,17 +425,13 @@ fn sanitize_origin_header_on_redirect(
     cors_mode: bool,
     clear_body: bool,
 ) {
-    for &hdr in headers {
-        if eq_ascii_fold(hdr.name[..], "Origin") {
-            if is_cross_origin || tainted_origin {
-                if cors_mode || tainted_origin {
-                    hdr.value.clear();
-                    hdr.value.append("null");
-                } else if clear_body {
-                    remove_header_by_name(headers, "Origin");
-                    break;
-                }
-            }
+    let origin_idx = find_header_index(headers[..], "Origin");
+    if origin_idx >= 0 && (is_cross_origin || tainted_origin) {
+        if cors_mode || tainted_origin {
+            headers[origin_idx].value.clear();
+            headers[origin_idx].value.append("null");
+        } else if clear_body {
+            remove_header_by_name(headers, "Origin");
         }
     }
 }
@@ -479,36 +475,5 @@ fn sanitize_headers_on_redirect(
         if headers.len < 32 {
             headers.push(make_header("Referer", redirect_info.new_referrer[..]));
         }
-    }
-}
-
-fn remove_header_by_name(headers: HeaderItem[..32]&, target_name: const u8[:]) {
-    var write_idx = 0;
-    for read_idx in headers.len {
-        if !eq_ascii_fold(headers[read_idx].name[..], target_name) {
-            if write_idx != read_idx {
-                headers[write_idx] = headers[read_idx];
-            }
-            write_idx++;
-        }
-    }
-    while headers.len > write_idx {
-        headers.pop();
-    }
-}
-
-fn remove_sensitive_headers(headers: HeaderItem[..32]&) {
-    var write_idx = 0;
-    for read_idx in headers.len {
-        let is_sens = headers[read_idx].is_sensitive || is_heuristic_sensitive_header(headers[read_idx].name[..]);
-        if !is_sens {
-            if write_idx != read_idx {
-                headers[write_idx] = headers[read_idx];
-            }
-            write_idx++;
-        }
-    }
-    while headers.len > write_idx {
-        headers.pop();
     }
 }

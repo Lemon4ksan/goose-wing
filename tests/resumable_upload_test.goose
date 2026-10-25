@@ -21,20 +21,10 @@ fn test_resumable_uploads(t: core::T&) {
         sub.assert_bytes_eq(create_req.method[..], "POST", "Method is POST");
         sub.assert_bytes_eq(create_req.url[..], "https://storage.cdn.com/uploads", "URL is uploads endpoint");
 
-        var has_complete = false;
-        var has_content_type = false;
-        for &h in create_req.headers {
-            if core::eq_ascii_fold(h.name[..], "Upload-Complete") {
-                has_complete = true;
-                sub.assert_bytes_eq(h.value[..], "?0", "Upload-Complete is ?0 for initial incomplete chunk");
-            }
-            if core::eq_ascii_fold(h.name[..], "Content-Type") {
-                has_content_type = true;
-                sub.assert_bytes_eq(h.value[..], "application/partial-upload", "Content-Type is application/partial-upload");
-            }
-        }
-        sub.assert_true(has_complete, "Upload-Complete present");
-        sub.assert_true(has_content_type, "Content-Type present");
+        sub.assert_true(create_req.has_header("Upload-Complete"), "Upload-Complete present");
+        sub.assert_bytes_eq(create_req.header("Upload-Complete"), "?0", "Upload-Complete is ?0 for initial incomplete chunk");
+        sub.assert_true(create_req.has_header("Content-Type"), "Content-Type present");
+        sub.assert_bytes_eq(create_req.header("Content-Type"), "application/partial-upload", "Content-Type is application/partial-upload");
     };
 
     t.run("Creation Response Handling & Chunk Append (PATCH)") { sub =>
@@ -60,20 +50,10 @@ fn test_resumable_uploads(t: core::T&) {
         sub.assert_bytes_eq(patch_req.method[..], "PATCH", "Method is PATCH");
         sub.assert_bytes_eq(patch_req.url[..], "https://storage.cdn.com/uploads/session-abc1234", "PATCH URL is session URL");
 
-        var has_offset = false;
-        var has_complete = false;
-        for &h in patch_req.headers {
-            if core::eq_ascii_fold(h.name[..], "Upload-Offset") {
-                has_offset = true;
-                sub.assert_bytes_eq(h.value[..], "500000", "Upload-Offset matches current client state");
-            }
-            if core::eq_ascii_fold(h.name[..], "Upload-Complete") {
-                has_complete = true;
-                sub.assert_bytes_eq(h.value[..], "?1", "Upload-Complete is ?1 on final chunk");
-            }
-        }
-        sub.assert_true(has_offset, "Upload-Offset present");
-        sub.assert_true(has_complete, "Upload-Complete present");
+        sub.assert_true(patch_req.has_header("Upload-Offset"), "Upload-Offset present");
+        sub.assert_bytes_eq(patch_req.header("Upload-Offset"), "500000", "Upload-Offset matches current client state");
+        sub.assert_true(patch_req.has_header("Upload-Complete"), "Upload-Complete present");
+        sub.assert_bytes_eq(patch_req.header("Upload-Complete"), "?1", "Upload-Complete is ?1 on final chunk");
 
         // Server responds 204 No Content for PATCH
         var patch_resp = wing::Response { status_code: 204, .. };

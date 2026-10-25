@@ -91,45 +91,25 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
 
 // Returns the value of a request header by name (case-insensitive lookup)
 fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
-    for &header_entry in req.headers {
-        if eq_ascii_fold(header_entry.name[..], name) {
-            return header_entry.value[..];
-        }
-    }
-    return "";
+    return find_header(req.headers[..], name);
+}
+
+fn has_header(req: const Request&, name: const u8[:]) -> bool {
+    return has_header(req.headers[..], name);
 }
 
 // Returns the value of a request trailer by name (case-insensitive lookup)
 fn trailer(req: const Request&, name: const u8[:]) -> const u8[:] {
-    for &t in req.trailers {
-        if eq_ascii_fold(t.name[..], name) {
-            return t.value[..];
-        }
-    }
-    return "";
+    return find_header(req.trailers[..], name);
 }
 
 fn has_trailer(req: const Request&, name: const u8[:]) -> bool {
-    for &t in req.trailers {
-        if eq_ascii_fold(t.name[..], name) {
-            return true;
-        }
-    }
-    return false;
+    return has_header(req.trailers[..], name);
 }
 
 fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
     guard !is_disallowed_trailer_field(name) else { return; }
-    for &t in req.trailers {
-        if eq_ascii_fold(t.name[..], name) {
-            t.value.clear();
-            t.value.append(value);
-            return;
-        }
-    }
-    if req.trailers.len < req.trailers.cap {
-        req.trailers.push(make_header(name, value));
-    }
+    set_header(req.trailers, name, value, false);
 }
 
 // ---- ufcs request mutators -------------------------------------------------
@@ -137,56 +117,26 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 // Sets a header on the request. Matches existing headers case-insensitively,
 // drops control characters, and marks credential headers sensitive.
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
-    let hdr = make_header(name, value);
-    for &header_entry in req.headers {
-        if eq_ascii_fold(header_entry.name[..], hdr.name[..]) {
-            header_entry.value.clear();
-            header_entry.value.append(hdr.value[..]);
-            header_entry.is_sensitive = hdr.is_sensitive;
-            return;
-        }
-    }
-    if req.headers.len < 32 {
-        req.headers.push(hdr);
-    }
+    set_header(req.headers, name, value, false);
 }
 
 // Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
-    let hdr = make_header(name, value, true);
-    for &header_entry in req.headers {
-        if eq_ascii_fold(header_entry.name[..], hdr.name[..]) {
-            header_entry.value.clear();
-            header_entry.value.append(hdr.value[..]);
-            header_entry.is_sensitive = true;
-            return;
-        }
-    }
-    if req.headers.len < 32 {
-        req.headers.push(hdr);
-    }
+    set_header(req.headers, name, value, true);
 }
 
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
-    header(req, name, value);
+    set_header(req.headers, name, value, false);
+}
+
+fn remove_header(req: Request&, name: const u8[:]) -> bool {
+    return remove_header_by_name(req.headers, name);
 }
 
 fn bearer(req: Request&, token: const u8[:]) {
-    var auth_header = HeaderItem { is_sensitive: true, .. };
-    auth_header.name.append("Authorization");
-    auth_header.value.append("Bearer ");
-    auth_header.value.append(token);
-    for &existing in req.headers {
-        if eq_ascii_fold(existing.name[..], "Authorization") {
-            existing.value.clear();
-            existing.value.append(auth_header.value[..]);
-            existing.is_sensitive = true;
-            return;
-        }
-    }
-    if req.headers.len < 32 {
-        req.headers.push(auth_header);
-    }
+    var val: u8[..384] = "Bearer ";
+    val.append(token);
+    set_header(req.headers, "Authorization", val[..], true);
 }
 
 fn set_bearer(req: Request&, token: const u8[:]) {

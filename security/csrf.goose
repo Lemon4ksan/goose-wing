@@ -305,29 +305,17 @@ fn apply_isolation_headers(res: Response&) {
     let vary_key = "Vary";
     let vary_val = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin";
 
-    var found_vary = false;
-    for &hdr in res.headers {
-        if eq_ascii_fold(hdr.name[..], vary_key) {
-            found_vary = true;
-            if find(hdr.value[..], "Sec-Fetch-Site") < 0 {
-                hdr.value.append(", ");
-                hdr.value.append(vary_val);
-            }
-            break;
+    let vary_idx = find_header_index(res.headers[..], vary_key);
+    if vary_idx >= 0 {
+        if find(res.headers[vary_idx].value[..], "Sec-Fetch-Site") < 0 {
+            res.headers[vary_idx].value.append(", ");
+            res.headers[vary_idx].value.append(vary_val);
         }
-    }
-    if !found_vary && res.headers.len < res.headers.cap {
+    } else if res.headers.len < res.headers.cap {
         res.headers.push(make_header(vary_key, vary_val));
     }
 
-    var found_hsts = false;
-    for &hdr in res.headers {
-        if eq_ascii_fold(hdr.name[..], "Strict-Transport-Security") {
-            found_hsts = true;
-            break;
-        }
-    }
-    if !found_hsts && res.headers.len < res.headers.cap {
+    if !res.has_header("Strict-Transport-Security") && res.headers.len < res.headers.cap {
         res.headers.push(make_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload"));
     }
 }

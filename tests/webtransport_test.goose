@@ -15,20 +15,10 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
         sub.assert_bytes_eq(req.method[..], "CONNECT", "Method is CONNECT");
         sub.assert_bytes_eq(req.url[..], "https://chat.example.com/wt-feed", "URL matches target");
 
-        var has_proto = false;
-        var has_draft = false;
-        for &h in req.headers {
-            if core::eq_ascii_fold(h.name[..], ":protocol") {
-                has_proto = true;
-                sub.assert_bytes_eq(h.value[..], "webtransport", ":protocol is webtransport");
-            }
-            if core::eq_ascii_fold(h.name[..], "sec-webtransport-http3-draft") {
-                has_draft = true;
-                sub.assert_bytes_eq(h.value[..], "draft16", "Draft is draft16");
-            }
-        }
-        sub.assert_true(has_proto, "Has :protocol header");
-        sub.assert_true(has_draft, "Has draft header");
+        sub.assert_true(req.has_header(":protocol"), "Has :protocol header");
+        sub.assert_bytes_eq(req.header(":protocol"), "webtransport", ":protocol is webtransport");
+        sub.assert_true(req.has_header("sec-webtransport-http3-draft"), "Has draft header");
+        sub.assert_bytes_eq(req.header("sec-webtransport-http3-draft"), "draft16", "Draft is draft16");
 
         var session = wing::WebTransportSession { session_id: 104, .. };
         var resp_200 = wing::Response { status_code: 200, .. };

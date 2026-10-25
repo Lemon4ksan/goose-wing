@@ -30,16 +30,6 @@ struct HttpSignatureParams {
 
 // ---- 3. Component Extraction Helpers ---------------------------------------
 
-// Finds a header value in Request headers (case-folded)
-fn find_header_val(req: const Request&, name: const u8[:]) -> const u8[:] {
-    for idx in req.headers.len {
-        if eq_ascii_fold(req.headers[idx].name[..], name) {
-            return req.headers[idx].value[..];
-        }
-    }
-    return "";
-}
-
 // Extracts component value per RFC 9421 Section 2
 fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -> bool {
     out.clear();
@@ -108,7 +98,7 @@ fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -
         return true;
     } else if comp.len > 0 && comp[0] != '@' {
         // Standard HTTP header field (RFC 9421 Section 2.1)
-        let val = find_header_val(req, comp);
+        let val = req.header(comp);
         guard val.len > 0 else { return false; }
         out.append(val);
         return true;
@@ -269,7 +259,7 @@ fn verify_http_signature(
     core::base64_encode(expected_sig[..], expected_b64);
 
     // 4. Find Signature header matching label
-    let sig_header_val = find_header_val(req, HEADER_SIGNATURE);
+    let sig_header_val = req.header(HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
     // Check if sig_header_val contains expected_b64

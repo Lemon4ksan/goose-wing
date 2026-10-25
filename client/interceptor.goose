@@ -340,14 +340,7 @@ fn apply_network_interceptors_request(
 
         if pipeline.entries[i].kind == InterceptorKind.Header {
             let h_name = pipeline.entries[i].header_name[..];
-            var found = false;
-            for &h in headers {
-                if eq_ascii_fold(h.name[..], h_name) {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
+            if !has_header(headers[..], h_name) && headers.len < headers.cap {
                 headers.push(make_header(h_name, pipeline.entries[i].header_val[..]));
             }
         } else if pipeline.entries[i].kind == InterceptorKind.Logging {

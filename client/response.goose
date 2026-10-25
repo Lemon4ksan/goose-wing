@@ -80,67 +80,41 @@ fn is_redirect(res: const Response&) -> bool {
 }
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
-    for &header_entry in res.headers {
-        if eq_ascii_fold(header_entry.name[..], name) {
-            return header_entry.value[..];
-        }
-    }
-    return "";
+    return find_header(res.headers[..], name);
+}
+
+fn has_header(res: const Response&, name: const u8[:]) -> bool {
+    return has_header(res.headers[..], name);
 }
 
 // Returns the value of a response trailer by name (case-insensitive lookup)
 fn trailer(res: const Response&, name: const u8[:]) -> const u8[:] {
-    for &t in res.trailers {
-        if eq_ascii_fold(t.name[..], name) {
-            return t.value[..];
-        }
-    }
-    return "";
+    return find_header(res.trailers[..], name);
 }
 
 fn has_trailer(res: const Response&, name: const u8[:]) -> bool {
-    for &t in res.trailers {
-        if eq_ascii_fold(t.name[..], name) {
-            return true;
-        }
-    }
-    return false;
+    return has_header(res.trailers[..], name);
 }
 
 fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
     guard !is_disallowed_trailer_field(name) else { return; }
-    for &t in res.trailers {
-        if eq_ascii_fold(t.name[..], name) {
-            t.value.clear();
-            t.value.append(value);
-            return;
-        }
-    }
-    if res.trailers.len < res.trailers.cap {
-        res.trailers.push(make_header(name, value));
-    }
+    set_header(res.trailers, name, value, false);
 }
 
 fn header(res: Response&, name: const u8[:], value: const u8[:]) {
-    for &header_entry in res.headers {
-        if eq_ascii_fold(header_entry.name[..], name) {
-            header_entry.value.clear();
-            header_entry.value.append(value);
-            return;
-        }
-    }
-    if res.headers.len < 32 {
-        res.headers.push(make_header(name, value));
-    }
+    set_header(res.headers, name, value, false);
+}
+
+fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
+    set_header(res.headers, name, value, false);
 }
 
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {
-    for &header_entry in res.sent_headers {
-        if eq_ascii_fold(header_entry.name[..], name) {
-            return header_entry.value[..];
-        }
-    }
-    return "";
+    return find_header(res.sent_headers[..], name);
+}
+
+fn has_sent_header(res: const Response&, name: const u8[:]) -> bool {
+    return has_header(res.sent_headers[..], name);
 }
 
 fn text(res: const Response&) -> const u8[:] {

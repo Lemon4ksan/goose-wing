@@ -69,16 +69,10 @@ fn sign_aws_sigv4(
     }
 
     // 2. Inject x-amz-date & x-amz-content-sha256 if not present
-    var has_date = false;
-    var has_payload_sha = false;
-    for &h in req.headers {
-        if eq_ascii_fold(h.name[..], "x-amz-date") { has_date = true; }
-        if eq_ascii_fold(h.name[..], "x-amz-content-sha256") { has_payload_sha = true; }
-    }
-    if !has_date {
+    if !req.has_header("x-amz-date") {
         req.headers.push(make_header("x-amz-date", datetime_iso));
     }
-    if !has_payload_sha {
+    if !req.has_header("x-amz-content-sha256") {
         req.headers.push(make_header("x-amz-content-sha256", payload_sha_hex[..]));
     }
     if creds.session_token.len > 0 {

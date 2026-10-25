@@ -594,24 +594,12 @@ fn set_profile(session: Session&, profile: const BrowserProfile&) {
 }
 
 fn set_user_agent(session: Session&, ua: const u8[:]) {
-    for idx in session.default_headers.len {
-        if eq_ascii_fold(session.default_headers[idx].name[..], "user-agent") {
-            session.default_headers[idx].value.clear();
-            session.default_headers[idx].value.append(ua);
-            return;
-        }
-    }
-    if session.default_headers.len < session.default_headers.cap {
-        session.default_headers.push(make_header("User-Agent", ua));
-    }
+    set_header(session.default_headers, "User-Agent", ua);
 }
 
 fn user_agent(session: const Session&) -> const u8[:] {
-    for &h in session.default_headers {
-        if eq_ascii_fold(h.name[..], "user-agent") {
-            return h.value[..];
-        }
-    }
+    let ua = find_header(session.default_headers[..], "user-agent");
+    if ua.len > 0 { return ua; }
     return profile_user_agent(session.profile);
 }
 
@@ -1797,16 +1785,10 @@ fn execute_mock_or_echo_hop(
             }
             var resp = build_mock_response(route, current_url, ctx.headers[..]);
             if route.status_code == 101 {
-                var sent_key: u8[..64] = [];
-                for &hdr in ctx.headers {
-                    if eq_ascii_fold(hdr.name[..], "sec-websocket-key") {
-                        sent_key.append(hdr.value[..]);
-                        break;
-                    }
-                }
-                if sent_key.len > 0 && header(resp, "sec-websocket-accept").len == 0 {
+                let sent_key = find_header(ctx.headers[..], "sec-websocket-key");
+                if sent_key.len > 0 && resp.header("sec-websocket-accept").len == 0 {
                     var accept_buf: u8[..64] = [];
-                    compute_websocket_accept(sent_key[..], accept_buf);
+                    compute_websocket_accept(sent_key, accept_buf);
                     resp.headers.push(make_header("Sec-WebSocket-Accept", accept_buf[..]));
                 }
             }

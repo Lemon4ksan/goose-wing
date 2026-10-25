@@ -159,20 +159,10 @@ fn test_dpop_rfc9449(t: core::T&) {
         var req = wing::Request { .. };
         wing::attach_dpop(req, "eyJhbGciOi...", "token_xyz");
 
-        var has_dpop = false;
-        var has_auth = false;
-        for &h in req.headers {
-            if core::eq_ascii_fold(h.name[..], "DPoP") {
-                has_dpop = true;
-                sub.assert_bytes_eq(h.value[..], "eyJhbGciOi...", "DPoP header value matches");
-            }
-            if core::eq_ascii_fold(h.name[..], "Authorization") {
-                has_auth = true;
-                sub.assert_bytes_eq(h.value[..], "DPoP token_xyz", "Authorization header has DPoP scheme");
-            }
-        }
-        sub.assert_true(has_dpop, "Request contains DPoP header");
-        sub.assert_true(has_auth, "Request contains Authorization header");
+        sub.assert_true(req.has_header("DPoP"), "Request contains DPoP header");
+        sub.assert_bytes_eq(req.header("DPoP"), "eyJhbGciOi...", "DPoP header value matches");
+        sub.assert_true(req.has_header("Authorization"), "Request contains Authorization header");
+        sub.assert_bytes_eq(req.header("Authorization"), "DPoP token_xyz", "Authorization header has DPoP scheme");
 
         // Nonce extraction from response headers
         var resp_headers: wing::HeaderItem[..4] = [];

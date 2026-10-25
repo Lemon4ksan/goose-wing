@@ -120,8 +120,13 @@ fn ::consume<E>(sub: wing::SseSubscription&, chunk: const u8[:], out_events: E&)
 
 // ---- request ufcs bridges --------------------------------------------------
 
+fn ::header(req: const wing::Request&, name: const u8[:]) -> const u8[:] { return wing::header(req, name); }
+fn ::has_header(req: const wing::Request&, name: const u8[:]) -> bool { return wing::has_header(req, name); }
+fn ::trailer(req: const wing::Request&, name: const u8[:]) -> const u8[:] { return wing::trailer(req, name); }
+fn ::has_trailer(req: const wing::Request&, name: const u8[:]) -> bool { return wing::has_trailer(req, name); }
 fn ::header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::header(req, name, value); }
 fn ::set_header(req: wing::Request&, name: const u8[:], value: const u8[:]) { wing::set_header(req, name, value); }
+fn ::remove_header(req: wing::Request&, name: const u8[:]) -> bool { return wing::remove_header(req, name); }
 fn ::bearer(req: wing::Request&, token: const u8[:]) { wing::bearer(req, token); }
 fn ::set_bearer(req: wing::Request&, token: const u8[:]) { wing::set_bearer(req, token); }
 fn ::query(req: wing::Request&, key: const u8[:], value: const u8[:]) { wing::query(req, key, value); }
@@ -139,10 +144,21 @@ fn ::ok(err: const wing::Error&) -> bool { return wing::ok(err); }
 fn ::is_success(res: const wing::Response&) -> bool { return wing::is_success(res); }
 fn ::is_redirect(res: const wing::Response&) -> bool { return wing::is_redirect(res); }
 fn ::header(res: const wing::Response&, name: const u8[:]) -> const u8[:] { return wing::header(res, name); }
+fn ::has_header(res: const wing::Response&, name: const u8[:]) -> bool { return wing::has_header(res, name); }
+fn ::trailer(res: const wing::Response&, name: const u8[:]) -> const u8[:] { return wing::trailer(res, name); }
+fn ::has_trailer(res: const wing::Response&, name: const u8[:]) -> bool { return wing::has_trailer(res, name); }
+fn ::sent_header(res: const wing::Response&, name: const u8[:]) -> const u8[:] { return wing::sent_header(res, name); }
+fn ::has_sent_header(res: const wing::Response&, name: const u8[:]) -> bool { return wing::has_sent_header(res, name); }
 fn ::text(res: const wing::Response&) -> const u8[:] { return wing::text(res); }
 fn ::decode_body(res: wing::Response&) -> bool { return wing::decode_body(res); }
 fn ::json<T>(res: const wing::Response&, out: T&) -> wing::Error { return wing::json(res, out); }
 fn ::decode_json<T>(res: const wing::Response&) -> T, wing::Error { return wing::decode_json<T>(res); }
+
+// ---- header item slice ufcs bridges ----------------------------------------
+
+fn ::find_header(headers: const wing::HeaderItem[:], name: const u8[:]) -> const u8[:] { return wing::find_header(headers, name); }
+fn ::has_header(headers: const wing::HeaderItem[:], name: const u8[:]) -> bool { return wing::has_header(headers, name); }
+fn ::find_header_index(headers: const wing::HeaderItem[:], name: const u8[:]) -> i64 { return wing::find_header_index(headers, name); }
 
 // Policy Bridges (Backoff & RateLimiter)
 

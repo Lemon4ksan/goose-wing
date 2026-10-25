@@ -69,20 +69,10 @@ fn test_http_signatures(t: core::T&) {
         sub.assert_true(sign_ok, "Request signed successfully");
 
         // Verify headers attached
-        var has_input = false;
-        var has_sig = false;
-        for &h in req.headers {
-            if core::eq_ascii_fold(h.name[..], "Signature-Input") {
-                has_input = true;
-                sub.assert_contains(h.value[..], "sig-bank=(\"@method\" \"@target-uri\" \"accept\")", "Signature-Input formatted");
-            }
-            if core::eq_ascii_fold(h.name[..], "Signature") {
-                has_sig = true;
-                sub.assert_contains(h.value[..], "sig-bank=:", "Signature has sf-binary framing");
-            }
-        }
-        sub.assert_true(has_input, "Signature-Input present");
-        sub.assert_true(has_sig, "Signature present");
+        sub.assert_true(req.has_header("Signature-Input"), "Signature-Input present");
+        sub.assert_contains(req.header("Signature-Input"), "sig-bank=(\"@method\" \"@target-uri\" \"accept\")", "Signature-Input formatted");
+        sub.assert_true(req.has_header("Signature"), "Signature present");
+        sub.assert_contains(req.header("Signature"), "sig-bank=:", "Signature has sf-binary framing");
 
         // Verify signature valid
         let ver_ok = wing::verify_http_signature(req, "sig-bank", params, key, 1700000100);

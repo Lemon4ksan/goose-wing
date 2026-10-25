@@ -299,14 +299,8 @@ fn test_unified_server_pipeline(t: core::T&) {
         sub.assert_true(out == wing::PipelineOutcome.MethodNotAllowed, "method not allowed triggered");
         sub.assert_eq(res.status_code, 405, "status code 405");
 
-        var has_allow = false;
-        for &hdr in res.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Allow") {
-                has_allow = true;
-                sub.assert_contains(hdr.value[..], "GET", "Allow header indicates GET");
-            }
-        }
-        sub.assert_true(has_allow, "Allow header returned");
+        sub.assert_true(res.has_header("Allow"), "Allow header returned");
+        sub.assert_contains(res.header("Allow"), "GET", "Allow header indicates GET");
     };
 
     t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 Section 10.1.1)") { sub =>

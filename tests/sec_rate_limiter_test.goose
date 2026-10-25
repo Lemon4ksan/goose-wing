@@ -181,28 +181,12 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
         var res = wing::new_response();
         wing::apply_rate_limit_headers(res, quota, dec);
 
-        var has_limit = false;
-        var has_rem = false;
-        var has_reset = false;
-
-        for &hdr in res.headers {
-            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Limit") {
-                has_limit = true;
-                sub.assert_eq(hdr.value[..], "100", "RateLimit-Limit = 100");
-            }
-            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Remaining") {
-                has_rem = true;
-                sub.assert_eq(hdr.value[..], "8", "RateLimit-Remaining = 8");
-            }
-            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Reset") {
-                has_reset = true;
-                sub.assert_eq(hdr.value[..], "1", "RateLimit-Reset ceiling ceil(0.2s) = 1s");
-            }
-        }
-
-        sub.assert_true(has_limit, "RateLimit-Limit emitted");
-        sub.assert_true(has_rem, "RateLimit-Remaining emitted");
-        sub.assert_true(has_reset, "RateLimit-Reset emitted");
+        sub.assert_true(res.has_header("RateLimit-Limit"), "RateLimit-Limit emitted");
+        sub.assert_eq(res.header("RateLimit-Limit"), "100", "RateLimit-Limit = 100");
+        sub.assert_true(res.has_header("RateLimit-Remaining"), "RateLimit-Remaining emitted");
+        sub.assert_eq(res.header("RateLimit-Remaining"), "8", "RateLimit-Remaining = 8");
+        sub.assert_true(res.has_header("RateLimit-Reset"), "RateLimit-Reset emitted");
+        sub.assert_eq(res.header("RateLimit-Reset"), "1", "RateLimit-Reset ceiling ceil(0.2s) = 1s");
     };
 
     t.run("IETF Headers & 429 Status on Rejected Request") { sub =>
@@ -217,22 +201,10 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
 
         sub.assert_eq(res.status_code, 429, "status set to 429 Too Many Requests");
 
-        var has_retry_after = false;
-        var has_zero_rem = false;
-
-        for &hdr in res.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Retry-After") {
-                has_retry_after = true;
-                sub.assert_eq(hdr.value[..], "3", "Retry-After ceil(2.5s) = 3s");
-            }
-            if core::eq_ascii_fold(hdr.name[..], "RateLimit-Remaining") {
-                has_zero_rem = true;
-                sub.assert_eq(hdr.value[..], "0", "RateLimit-Remaining = 0 on rejection");
-            }
-        }
-
-        sub.assert_true(has_retry_after, "Retry-After emitted");
-        sub.assert_true(has_zero_rem, "RateLimit-Remaining is 0");
+        sub.assert_true(res.has_header("Retry-After"), "Retry-After emitted");
+        sub.assert_eq(res.header("Retry-After"), "3", "Retry-After ceil(2.5s) = 3s");
+        sub.assert_true(res.has_header("RateLimit-Remaining"), "RateLimit-Remaining is 0");
+        sub.assert_eq(res.header("RateLimit-Remaining"), "0", "RateLimit-Remaining = 0 on rejection");
     };
 }
 

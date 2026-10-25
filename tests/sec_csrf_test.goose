@@ -305,24 +305,12 @@ fn test_isolation_headers_injection(t: core::T&) {
         var res = wing::new_response();
         wing::apply_isolation_headers(res);
 
-        var has_vary = false;
-        var has_hsts = false;
-
-        for &hdr in res.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Vary") {
-                has_vary = true;
-                sub.assert_contains(hdr.value[..], "Sec-Fetch-Site", "Vary contains Sec-Fetch-Site");
-                sub.assert_contains(hdr.value[..], "Origin", "Vary contains Origin");
-            }
-            if core::eq_ascii_fold(hdr.name[..], "Strict-Transport-Security") {
-                has_hsts = true;
-                sub.assert_contains(hdr.value[..], "max-age=", "HSTS specifies max-age");
-                sub.assert_contains(hdr.value[..], "includeSubDomains", "HSTS includes subdomains");
-            }
-        }
-
-        sub.assert_true(has_vary, "Vary header present on protected response");
-        sub.assert_true(has_hsts, "Strict-Transport-Security header present");
+        sub.assert_true(res.has_header("Vary"), "Vary header present on protected response");
+        sub.assert_contains(res.header("Vary"), "Sec-Fetch-Site", "Vary contains Sec-Fetch-Site");
+        sub.assert_contains(res.header("Vary"), "Origin", "Vary contains Origin");
+        sub.assert_true(res.has_header("Strict-Transport-Security"), "Strict-Transport-Security header present");
+        sub.assert_contains(res.header("Strict-Transport-Security"), "max-age=", "HSTS specifies max-age");
+        sub.assert_contains(res.header("Strict-Transport-Security"), "includeSubDomains", "HSTS includes subdomains");
     };
 }
 
@@ -362,28 +350,12 @@ fn test_cors_policy_and_matching(t: core::T&) {
         sub.assert_true(preflight_res_code == wing::CorsResult.AllowedPreflight, "preflight handled cleanly");
         sub.assert_eq(preflight_res.status_code, 204, "preflight returns 204 No Content");
 
-        var has_allow_origin = false;
-        var has_allow_creds = false;
-        var has_max_age = false;
-
-        for &hdr in preflight_res.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Access-Control-Allow-Origin") {
-                has_allow_origin = true;
-                sub.assert_eq(hdr.value[..], "https://portal.example.com", "origin mirrored");
-            }
-            if core::eq_ascii_fold(hdr.name[..], "Access-Control-Allow-Credentials") {
-                has_allow_creds = true;
-                sub.assert_eq(hdr.value[..], "true", "credentials allowed");
-            }
-            if core::eq_ascii_fold(hdr.name[..], "Access-Control-Max-Age") {
-                has_max_age = true;
-                sub.assert_eq(hdr.value[..], "7200", "max age matches");
-            }
-        }
-
-        sub.assert_true(has_allow_origin, "Access-Control-Allow-Origin present");
-        sub.assert_true(has_allow_creds, "Access-Control-Allow-Credentials present");
-        sub.assert_true(has_max_age, "Access-Control-Max-Age present");
+        sub.assert_true(preflight_res.has_header("Access-Control-Allow-Origin"), "Access-Control-Allow-Origin present");
+        sub.assert_eq(preflight_res.header("Access-Control-Allow-Origin"), "https://portal.example.com", "origin mirrored");
+        sub.assert_true(preflight_res.has_header("Access-Control-Allow-Credentials"), "Access-Control-Allow-Credentials present");
+        sub.assert_eq(preflight_res.header("Access-Control-Allow-Credentials"), "true", "credentials allowed");
+        sub.assert_true(preflight_res.has_header("Access-Control-Max-Age"), "Access-Control-Max-Age present");
+        sub.assert_eq(preflight_res.header("Access-Control-Max-Age"), "7200", "max age matches");
     };
 
     t.run("CORS Wildcard with Credentials Rejection") { sub =>

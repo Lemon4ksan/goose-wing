@@ -63,6 +63,91 @@ fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false
     return header_item;
 }
 
+// Case-insensitive lookup of a header value in a HeaderItem slice (RFC 9110 Section 5.6.3).
+// Returns empty slice if not found.
+fn find_header(headers: const HeaderItem[:], name: const u8[:]) -> const u8[:] {
+    for &h in headers {
+        if eq_ascii_fold(h.name[..], name) {
+            return h.value[..];
+        }
+    }
+    return "";
+}
+
+// Case-insensitive check for presence of a header in a HeaderItem slice.
+fn has_header(headers: const HeaderItem[:], name: const u8[:]) -> bool {
+    for &h in headers {
+        if eq_ascii_fold(h.name[..], name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Case-insensitive search for the index of a header in a HeaderItem slice.
+// Returns 0-based index or -1 if not found.
+fn find_header_index(headers: const HeaderItem[:], name: const u8[:]) -> i64 {
+    for i in 0..headers.len {
+        if eq_ascii_fold(headers[i].name[..], name) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Sets or replaces a header in a bounded HeaderItem collection.
+// Matches existing headers case-insensitively and updates value/sensitivity in-place.
+fn set_header<H>(headers: H&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) {
+    let hdr = make_header(name, value, is_sensitive);
+    for &h in headers {
+        if eq_ascii_fold(h.name[..], hdr.name[..]) {
+            h.value.clear();
+            h.value.append(hdr.value[..]);
+            h.is_sensitive = hdr.is_sensitive;
+            return;
+        }
+    }
+    if headers.len < headers.cap {
+        headers.push(hdr);
+    }
+}
+
+// Removes all occurrences of a header by name (case-insensitively) in-place.
+// Returns true if at least one header was removed.
+fn remove_header_by_name<H>(headers: H&, target_name: const u8[:]) -> bool {
+    var write_idx = 0;
+    for read_idx in headers.len {
+        if !eq_ascii_fold(headers[read_idx].name[..], target_name) {
+            if write_idx != read_idx {
+                headers[write_idx] = copy(headers[read_idx]);
+            }
+            write_idx++;
+        }
+    }
+    let removed = headers.len > write_idx;
+    while headers.len > write_idx {
+        headers.pop();
+    }
+    return removed;
+}
+
+// Purges credential and sensitive headers in-place (RFC 9110 Section 15.4).
+fn remove_sensitive_headers<H>(headers: H&) {
+    var write_idx = 0;
+    for read_idx in headers.len {
+        let is_sens = headers[read_idx].is_sensitive || is_heuristic_sensitive_header(headers[read_idx].name[..]);
+        if !is_sens {
+            if write_idx != read_idx {
+                headers[write_idx] = copy(headers[read_idx]);
+            }
+            write_idx++;
+        }
+    }
+    while headers.len > write_idx {
+        headers.pop();
+    }
+}
+
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);
 

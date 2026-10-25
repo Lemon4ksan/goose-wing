@@ -375,9 +375,8 @@ fn serialize_http1_chunked_response<B>(
     }
 
     // 5. Custom headers (excluding Content-Length & Transfer-Encoding)
-    var has_conn = false;
+    let has_conn = res.has_header("connection");
     for &hdr in res.headers {
-        if eq_ascii_fold(hdr.name[..], "connection") { has_conn = true; }
         if eq_ascii_fold(hdr.name[..], "content-length") { continue; }
         if eq_ascii_fold(hdr.name[..], "transfer-encoding") { continue; }
         if eq_ascii_fold(hdr.name[..], "trailer") && res.trailers.len > 0 { continue; }
@@ -430,9 +429,8 @@ fn serialize_http1_response<B>(res: const Response&, server_name: const u8[:], o
     }
 
     // 4. Custom headers
-    var has_conn = false;
+    let has_conn = res.has_header("connection");
     for &hdr in res.headers {
-        if eq_ascii_fold(hdr.name[..], "connection") { has_conn = true; }
         out_wire.append(hdr.name[..]);
         out_wire.append(": ");
         out_wire.append(hdr.value[..]);
