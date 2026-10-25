@@ -12,8 +12,8 @@ struct ServerPipelineConfig {
     cors_policy: CorsPolicy = CorsPolicy { .. },
     router: RadixRouter = RadixRouter { .. },
     private_jar: PrivateJar = PrivateJar { .. },
-    header_pool: HeaderMapPool = HeaderMapPool { .. },
-    ext_pool: ExtensionsPool = ExtensionsPool { .. },
+    header_pool: internal::HeaderMapPool = internal::HeaderMapPool { .. },
+    ext_pool: internal::ExtensionsPool = internal::ExtensionsPool { .. },
     target_host: u8[..128] = "example.com",
     deadline_ns: u64 = 30000000000, // 30s
 }
@@ -25,8 +25,8 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         cors_policy: new_cors_policy(),
         router: new_radix_router(),
         private_jar: new_private_jar(new_key_store()),
-        header_pool: new_header_map_pool(),
-        ext_pool: new_extensions_pool(),
+        header_pool: internal::new_header_map_pool(),
+        ext_pool: internal::new_extensions_pool(),
         target_host: [],
         deadline_ns: 30000000000,
     };
@@ -117,25 +117,25 @@ fn decrypt_pipeline_session_cookie(
 // 6. Authenticated session cookie decryption & inline handler dispatch
 fn execute_pipeline(
     cfg: ServerPipelineConfig&,
-    conn_timer: ConnectionTimer&,
+    conn_timer: internal::ConnectionTimer&,
     client_ip: const u8[:],
     req: const Request&,
     now_ns: u64,
     res: Response&,
-    out_future: InlineHandlerFuture&,
+    out_future: internal::InlineHandlerFuture&,
 ) -> PipelineOutcome {
-    notify_request_start(conn_timer);
+    internal::notify_request_start(conn_timer);
 
     // Stage 1: Connection liveliness / timeout check
-    guard check_connection_tick(conn_timer, now_ns) else {
-        notify_request_end(conn_timer);
+    guard internal::check_connection_tick(conn_timer, now_ns) else {
+        internal::notify_request_end(conn_timer);
         res.status_code = 408; // Request Timeout
         return PipelineOutcome.SlowlorisClosed;
     }
 
     // Stage 2: Expect header validation (RFC 9110 Section 10.1.1)
     guard validate_pipeline_expect_header(req) else {
-        notify_request_end(conn_timer);
+        internal::notify_request_end(conn_timer);
         res.status_code = 417; // Expectation Failed
         return PipelineOutcome.ExpectationFailed;
     }
@@ -144,19 +144,19 @@ fn execute_pipeline(
     let rl_decision = check_keyed_rate_limit(cfg.limiter, client_ip, 1, now_ns);
     apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
     if !is_allowed(rl_decision) {
-        notify_request_end(conn_timer);
+        internal::notify_request_end(conn_timer);
         return PipelineOutcome.RateLimited;
     }
 
     // Stage 4: CORS and Fetch Metadata isolation check
     let security_outcome, is_terminal = evaluate_pipeline_cors_and_csrf(cfg, req, res);
     if is_terminal {
-        notify_request_end(conn_timer);
+        internal::notify_request_end(conn_timer);
         return security_outcome;
     }
 
     // Stage 5: Radix trie route matching
-    let ext_slot_idx = acquire_extensions(cfg.ext_pool);
+    let ext_slot_idx = internal::acquire_extensions(cfg.ext_pool);
     let e_idx = ext_slot_idx as i64;
     cfg.ext_pool.slots[e_idx].peer_ip.append(client_ip);
 
@@ -164,30 +164,30 @@ fn execute_pipeline(
 
     match match_res {
         NotFound => {
-            release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_request_end(conn_timer);
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            internal::notify_request_end(conn_timer);
             res.status_code = 404; // Not Found
             return PipelineOutcome.RouteNotFound;
         },
         MethodNotAllowed mna => {
             res.status_code = 405; // Method Not Allowed
             res.headers.push(make_header("Allow", mna.allow_header[..]));
-            release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_request_end(conn_timer);
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            internal::notify_request_end(conn_timer);
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
             // Stage 6: Cookie decryption & handler dispatch
-            if (f.entries_mask & ENTRY_COOKIES) != 0 {
+            if (f.entries_mask & internal::ENTRY_COOKIES) != 0 {
                 decrypt_pipeline_session_cookie(cfg, req, now_ns);
             }
 
-            out_future = new_inline_handler_future(f.handler_id as u16);
-            poll_future(out_future);
+            out_future = internal::new_inline_handler_future(f.handler_id as u16);
+            internal::poll_future(out_future);
 
             res.status_code = 200;
-            release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_request_end(conn_timer);
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            internal::notify_request_end(conn_timer);
             return PipelineOutcome.Handled;
         },
     };

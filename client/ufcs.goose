@@ -343,12 +343,15 @@ fn ::add_route(router: wing::RadixRouter&, method: const u8[:], path: const u8[:
 fn ::match_route(router: const wing::RadixRouter&, method: const u8[:], path: const u8[:], params: wing::ZeroAllocParams&) -> wing::RouteMatchResult {
     return wing::match_route(router, method, path, params);
 }
+fn ::clear(params: wing::ZeroAllocParams&) {
+    wing::clear(params);
+}
 
-fn ::acquire_header_map(pool: wing::HeaderMapPool&) -> i32 { return wing::acquire_header_map(pool); }
-fn ::release_header_map(pool: wing::HeaderMapPool&, idx: i32) { wing::release_header_map(pool, idx); }
-fn ::acquire_extensions(pool: wing::ExtensionsPool&) -> i32 { return wing::acquire_extensions(pool); }
-fn ::release_extensions(pool: wing::ExtensionsPool&, idx: i32) { wing::release_extensions(pool, idx); }
-fn ::check_connection_tick(timer: wing::ConnectionTimer&, now_ns: u64) -> bool { return wing::check_connection_tick(timer, now_ns); }
+fn ::acquire_header_map(pool: internal::HeaderMapPool&) -> i32 { return internal::acquire_header_map(pool); }
+fn ::release_header_map(pool: internal::HeaderMapPool&, idx: i32) { internal::release_header_map(pool, idx); }
+fn ::acquire_extensions(pool: internal::ExtensionsPool&) -> i32 { return internal::acquire_extensions(pool); }
+fn ::release_extensions(pool: internal::ExtensionsPool&, idx: i32) { internal::release_extensions(pool, idx); }
+fn ::check_connection_tick(timer: internal::ConnectionTimer&, now_ns: u64) -> bool { return internal::check_connection_tick(timer, now_ns); }
 
 // ---- http cache ufcs bridges -----------------------------------------------
 

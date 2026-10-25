@@ -160,24 +160,24 @@ fn test_radix_trie_routing(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_tako_v2_pool_mechanisms(t: core::T&) {
     t.run("HeaderMapPool Acquisition and Clean Release") { sub =>
-        var pool = wing::new_header_map_pool();
-        let s0 = wing::acquire_header_map(pool);
-        let s1 = wing::acquire_header_map(pool);
+        var pool = internal::new_header_map_pool();
+        let s0 = internal::acquire_header_map(pool);
+        let s1 = internal::acquire_header_map(pool);
 
         sub.assert_true(s0 >= 0 && s1 >= 0 && s0 != s1, "acquired distinct header map slots");
         sub.assert_true(pool.pool[s0].in_use, "slot marked in_use");
 
-        wing::release_header_map(pool, s0);
+        internal::release_header_map(pool, s0);
         sub.assert_false(pool.pool[s0].in_use, "slot released and in_use cleared");
 
         // Reacquire should reuse slot s0
-        let s2 = wing::acquire_header_map(pool);
+        let s2 = internal::acquire_header_map(pool);
         sub.assert_eq(s2, s0, "reacquired released slot");
     };
 
     t.run("ExtensionsPool Sanitization (Zero State Leakage)") { sub =>
-        var pool = wing::new_extensions_pool();
-        let idx = wing::acquire_extensions(pool);
+        var pool = internal::new_extensions_pool();
+        let idx = internal::acquire_extensions(pool);
         sub.assert_true(idx >= 0, "acquired extensions slot");
 
         // Populate slot with sensitive request state
@@ -187,7 +187,7 @@ fn test_tako_v2_pool_mechanisms(t: core::T&) {
         pool.slots[idx].populated_entries = 0xFF;
 
         // Release slot: must wipe all fields
-        wing::release_extensions(pool, idx);
+        internal::release_extensions(pool, idx);
         sub.assert_false(pool.slots[idx].in_use, "slot released");
         sub.assert_eq(pool.slots[idx].peer_ip.len, 0, "peer_ip sanitized");
         sub.assert_eq(pool.slots[idx].matched_route.len, 0, "matched_route sanitized");
@@ -196,21 +196,21 @@ fn test_tako_v2_pool_mechanisms(t: core::T&) {
     };
 
     t.run("SyncHeadRelease & ConnectionTimer Slowloris Sweep") { sub =>
-        var shr = wing::new_sync_head_release();
+        var shr = internal::new_sync_head_release();
         sub.assert_false(shr.head_buffer_released, "starts unreleased");
-        wing::mark_head_released(shr, 4096);
+        internal::mark_head_released(shr, 4096);
         sub.assert_true(shr.head_buffer_released, "marked released");
         sub.assert_eq(shr.bytes_consumed, 4096, "consumed 4096 bytes");
 
         // ConnectionTimer: 10s deadline
         let start_ns: u64 = 1000000000;
-        var timer = wing::new_connection_timer(10000000000, start_ns);
+        var timer = internal::new_connection_timer(10000000000, start_ns);
 
         // Within deadline
-        sub.assert_true(wing::check_connection_tick(timer, start_ns + 5000000000), "tick ok at 5s");
+        sub.assert_true(internal::check_connection_tick(timer, start_ns + 5000000000), "tick ok at 5s");
 
         // Beyond deadline: Slowloris sweep terminates connection
-        sub.assert_false(wing::check_connection_tick(timer, start_ns + 11000000000), "tick fails after deadline exceeded");
+        sub.assert_false(internal::check_connection_tick(timer, start_ns + 11000000000), "tick fails after deadline exceeded");
     };
 }
 
@@ -223,7 +223,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/v1/users/{id}", 42);
 
-        var conn_timer = wing::new_connection_timer(30000000000, 1000000000);
+        var conn_timer = internal::new_connection_timer(30000000000, 1000000000);
         var req = wing::new_request("GET", "/api/v1/users/777");
         req.headers.push(wing::make_header("Host", "example.com"));
         req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
@@ -231,7 +231,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         req.headers.push(wing::make_header("Sec-Fetch-Dest", "empty"));
 
         var res = wing::new_response();
-        var fut = wing::new_inline_handler_future(0);
+        var fut = internal::new_inline_handler_future(0);
 
         let outcome = wing::execute_pipeline(cfg, conn_timer, "127.0.0.1", req, 1000000000, res, fut);
         let ok_handled = match outcome {
@@ -248,18 +248,18 @@ fn test_unified_server_pipeline(t: core::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/health", 1);
 
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
         var req = wing::new_request("GET", "/health");
         req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
 
         var res1 = wing::new_response();
-        var fut1 = wing::new_inline_handler_future(0);
+        var fut1 = internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "first request handled");
 
         // Second request at same nanosecond -> Rate Limited
         var res2 = wing::new_response();
-        var fut2 = wing::new_inline_handler_future(0);
+        var fut2 = internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.RateLimited, "second request rate limited");
         sub.assert_eq(res2.status_code, 429, "status code 429 Too Many Requests");
@@ -270,13 +270,13 @@ fn test_unified_server_pipeline(t: core::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/api/transfer", 99);
 
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
         var evil_req = wing::new_request("POST", "/api/transfer");
         evil_req.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
         evil_req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
 
         var res = wing::new_response();
-        var fut = wing::new_inline_handler_future(0);
+        var fut = internal::new_inline_handler_future(0);
         let out = wing::execute_pipeline(cfg, timer, "192.168.1.1", evil_req, 1000000000, res, fut);
         sub.assert_true(out == wing::PipelineOutcome.CsrfRejected, "cross-site mutation rejected by CSRF guard");
         sub.assert_eq(res.status_code, 403, "status code 403 Forbidden");
@@ -287,14 +287,14 @@ fn test_unified_server_pipeline(t: core::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/data", 10);
 
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // POST to GET-only route -> 405 Method Not Allowed
         var req_post = wing::new_request("POST", "/api/data");
         req_post.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
 
         var res = wing::new_response();
-        var fut = wing::new_inline_handler_future(0);
+        var fut = internal::new_inline_handler_future(0);
         let out = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_post, 1000000000, res, fut);
         sub.assert_true(out == wing::PipelineOutcome.MethodNotAllowed, "method not allowed triggered");
         sub.assert_eq(res.status_code, 405, "status code 405");
@@ -308,7 +308,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // 1. Valid Expect: 100-continue proceeds to pipeline routing
         var req_100 = wing::new_request("POST", "/upload");
@@ -316,7 +316,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         req_100.headers.push(wing::make_header("Expect", "100-continue"));
 
         var res1 = wing::new_response();
-        var fut1 = wing::new_inline_handler_future(0);
+        var fut1 = internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_100, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "Expect: 100-continue on valid route handled");
 
@@ -326,7 +326,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         req_unknown.headers.push(wing::make_header("Expect", "unknown-feature-flag"));
 
         var res2 = wing::new_response();
-        var fut2 = wing::new_inline_handler_future(0);
+        var fut2 = internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_unknown, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.ExpectationFailed, "unknown Expect rejected with ExpectationFailed");
         sub.assert_eq(res2.status_code, 417, "RFC 9110 status code 417 Expectation Failed");

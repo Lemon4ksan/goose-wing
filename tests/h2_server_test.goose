@@ -55,7 +55,7 @@ fn test_h2_handshake_and_settings(t: core::T&) {
     t.run("H2-01: Preface & Initial Server SETTINGS emission") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var out_wire: u8[..512] = [];
         let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wing::H2_CLIENT_PREFACE[..], 1000, out_wire);
@@ -77,7 +77,7 @@ fn test_h2_handshake_and_settings(t: core::T&) {
     t.run("H2-02: Client SETTINGS ACK & PING ACK") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // Prepend preface
         var wire: u8[..512] = [];
@@ -137,7 +137,7 @@ fn test_h2_request_dispatch(t: core::T&) {
     t.run("H2-03: Single GET Request through Server Pipeline") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/api/greet", 101);
 
         var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
@@ -186,7 +186,7 @@ fn test_h2_request_dispatch(t: core::T&) {
     t.run("H2-04: POST Request with DATA Frame Payload") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/api/data", 202);
 
         var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
@@ -209,7 +209,7 @@ fn test_h2_request_dispatch(t: core::T&) {
     t.run("H2-05: Concurrent Multiplexed Streams (Streams 1 and 3)") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
-        var timer = wing::new_connection_timer(30000000000, 1000000000);
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/first", 1);
         wing::add_route(pipeline.router, "GET", "/second", 2);
 

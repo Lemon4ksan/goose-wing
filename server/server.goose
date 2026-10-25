@@ -390,7 +390,7 @@ struct HttpServer {
     host: u8[..128] = "127.0.0.1",
     port: u16 = 8080,
     server_name: u8[..64] = "goose-wing/1.0",
-    timer: ConnectionTimer = ConnectionTimer { .. },
+    timer: internal::ConnectionTimer = internal::ConnectionTimer { .. },
     is_running: bool = false,
     requests_processed: u64 = 0,
     accept_proxy_protocol: bool = false,
@@ -403,7 +403,7 @@ fn new_http_server(
     var server = HttpServer {
         pipeline: new_default_server_pipeline_config(host_str),
         port: port_num,
-        timer: new_connection_timer(30000000000, 1000000000), // 30s timeout
+        timer: internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
         is_running: true,
         requests_processed: 0,
         ..
@@ -421,7 +421,7 @@ fn new_http_server_with_quota<Q>(
     var server = HttpServer {
         pipeline: new_server_pipeline_config(host_str, quota),
         port: port_num,
-        timer: new_connection_timer(30000000000, 1000000000), // 30s timeout
+        timer: internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
         is_running: true,
         requests_processed: 0,
         ..
@@ -499,7 +499,7 @@ fn handle_connection_wire<B>(
 
     // 3. Execute request through full server pipeline
     var res = new_response();
-    var future = new_inline_handler_future(0);
+    var future = internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
 
     // 4. Serialize HTTP/1.1 response wire bytes

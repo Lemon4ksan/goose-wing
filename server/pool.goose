@@ -1,5 +1,5 @@
 // Server state, connection timers, and pooled buffers for request processing.
-namespace wing;
+namespace internal;
 
 import std;
 import .router;
@@ -16,7 +16,7 @@ let ENTRY_ALL:      u32 = 0x0F;
 // ---- header map pool -------------------------------------------------------
 
 struct PooledHeaderMap {
-    headers: HeaderItem[..32] = [],
+    headers: wing::HeaderItem[..32] = [],
     in_use: bool = false,
 }
 
@@ -52,7 +52,7 @@ struct RequestExtensions {
     matched_route: u8[..64] = [],
     conn_id: u64 = 0,
     request_seq: u64 = 0,
-    params: ZeroAllocParams = ZeroAllocParams { .. },
+    params: wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
     populated_entries: u32 = 0,
     in_use: bool = false,
 }

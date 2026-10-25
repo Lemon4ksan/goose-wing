@@ -327,7 +327,7 @@ fn emit_response_trailers<B>(
 fn handle_h2_server_ingress<B>(
     sess: H2ServerSession&,
     pipeline: ServerPipelineConfig&,
-    timer: ConnectionTimer&,
+    timer: internal::ConnectionTimer&,
     client_ip: const u8[:],
     wire: const u8[:],
     now_ms: u64,
@@ -516,7 +516,7 @@ fn handle_h2_server_ingress<B>(
 
             // Execute pipeline
             var res = new_response();
-            var future = new_inline_handler_future(0);
+            var future = internal::new_inline_handler_future(0);
             let now_ns = (now_ms as u64) * 1000000;
             execute_pipeline(pipeline, timer, client_ip, req, now_ns, res, future);
 
