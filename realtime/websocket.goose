@@ -8,8 +8,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.request;
-import client.response;
 
 // ---- 1. Opcodes and Protocol Constants (RFC 6455 Section 5.2) --------------
 

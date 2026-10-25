@@ -3,9 +3,18 @@
 namespace wing;
 
 import std;
-import http.headers;
 
 // ---- 1. SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
+
+enum ProxyScheme {
+    Direct,
+    Http,
+    Https,
+    Socks4,
+    Socks4a,
+    Socks5,
+    Socks5h,
+}
 
 let SOCKS5_VER: u8 = 0x05;
 let SOCKS5_RFC1929_VER: u8 = 0x01; // First byte of RFC 1929 subnegotiation MUST be 0x01

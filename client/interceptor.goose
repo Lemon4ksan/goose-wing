@@ -5,9 +5,6 @@
 namespace wing;
 
 import std;
-import http.headers;
-import client.request;
-import client.response;
 
 // ---- 1. Interceptor Scope & Kinds -------------------------------------------
 

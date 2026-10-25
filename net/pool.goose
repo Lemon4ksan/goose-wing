@@ -46,17 +46,6 @@ fn origin_endpoint_equals(a: const OriginEndpoint&, b: const OriginEndpoint&) ->
     return a.port == b.port && eq_ascii_fold(a.host[..], b.host[..]);
 }
 
-// Proxy server protocols supported by the transport stack.
-enum ProxyScheme {
-    Direct,
-    Http,
-    Https,
-    Socks4,
-    Socks4a,
-    Socks5,
-    Socks5h,
-}
-
 // Specification of a single proxy node.
 struct ProxyServer {
     scheme: ProxyScheme = ProxyScheme.Direct,

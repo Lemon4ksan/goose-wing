@@ -3,8 +3,6 @@
 namespace wing;
 
 import std;
-import quic.packet;
-import http.headers;
 
 // ---- 1. Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
