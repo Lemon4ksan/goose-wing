@@ -985,6 +985,32 @@ fn ::normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const wing::NoVar
     wing::normalize_query_for_cache(raw_query, nvs, out);
 }
 
+// ---- redirect and referrer policy ufcs bridges ------------------------------
+
+fn ::parse_referrer_policy(val: const u8[:]) -> wing::ReferrerPolicy {
+    return wing::parse_referrer_policy(val);
+}
+
+fn ::to_string(policy: wing::ReferrerPolicy) -> const u8[:] {
+    return wing::referrer_policy_to_string(policy);
+}
+
+fn ::to_string(err: wing::RedirectError) -> const u8[:] {
+    return wing::redirect_error_to_string(err);
+}
+
+fn ::sanitize_headers_on_redirect(
+    headers: wing::HeaderItem[..32]&,
+    redirect_info: const wing::RedirectInfo&,
+    cors_mode: bool,
+    tainted_origin: bool,
+    enable_referer: bool,
+    trusted_location_forwarding: bool = false
+) {
+    wing::sanitize_headers_on_redirect(headers, redirect_info, cors_mode, tainted_origin, enable_referer, trusted_location_forwarding);
+}
+
+
 
 
 

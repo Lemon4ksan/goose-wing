@@ -150,25 +150,21 @@ fn mutate_redirect_method<B>(
     clear_body: bool&
 ) {
     out_method.clear();
-    if status_code == 301 || status_code == 302 {
-        if eq_ascii_fold(current_method, "POST") {
-            out_method.append("GET");
-            clear_body = true;
-        } else {
-            out_method.append(current_method);
-            clear_body = false;
-        }
+    clear_body = false;
+
+    let should_rewrite = if status_code == 301 || status_code == 302 {
+        eq_ascii_fold(current_method, "POST")
     } else if status_code == 303 {
-        if !eq_ascii_fold(current_method, "GET") && !eq_ascii_fold(current_method, "HEAD") {
-            out_method.append("GET");
-            clear_body = true;
-        } else {
-            out_method.append(current_method);
-            clear_body = false;
-        }
-    } else { // 307 Temporary Redirect and 308 Permanent Redirect preserve method and body
+        !eq_ascii_fold(current_method, "GET") && !eq_ascii_fold(current_method, "HEAD")
+    } else {
+        false
+    };
+
+    if should_rewrite {
+        out_method.append("GET");
+        clear_body = true;
+    } else {
         out_method.append(current_method);
-        clear_body = false;
     }
 }
 
@@ -348,73 +344,71 @@ fn compute_new_referrer<B>(
 ) {
     out.clear();
 
-    // Strips username, password, and hash for referrer baseline
-    var clean_source: u8[..2048] = [];
-    clean_source.append(scheme(source_url));
-    clean_source.append("://");
-    clean_source.append(host(source_url));
-    clean_source.append(pathname(source_url));
-    clean_source.append(search(source_url));
+    // 1. Fast early-exit conditions for dropped referrers
+    if policy == ReferrerPolicy.NoReferrer {
+        return;
+    }
+    if is_downgrade && (policy == ReferrerPolicy.NoReferrerWhenDowngrade ||
+                        policy == ReferrerPolicy.StrictOrigin ||
+                        policy == ReferrerPolicy.StrictOriginWhenCrossOrigin) {
+        return;
+    }
+    if is_cross_origin && policy == ReferrerPolicy.SameOrigin {
+        return;
+    }
 
-    var source_origin: u8[..256] = [];
-    core::serialize_origin(core::origin_from_url(source_url), source_origin);
+    // 2. Origin-only referrer policies
+    let needs_origin_only = policy == ReferrerPolicy.Origin ||
+                            policy == ReferrerPolicy.StrictOrigin ||
+                            (is_cross_origin && (policy == ReferrerPolicy.OriginWhenCrossOrigin ||
+                                                 policy == ReferrerPolicy.StrictOriginWhenCrossOrigin));
 
-    match policy {
-        NoReferrer => { return; },
-        NoReferrerWhenDowngrade => {
-            if is_downgrade { return; }
-            out.append(clean_source[..]);
-        },
-        Origin => {
-            out.append(source_origin[..]);
-        },
-        OriginWhenCrossOrigin => {
-            if is_cross_origin {
-                out.append(source_origin[..]);
-            } else {
-                out.append(clean_source[..]);
-            }
-        },
-        SameOrigin => {
-            if is_cross_origin { return; }
-            out.append(clean_source[..]);
-        },
-        StrictOrigin => {
-            if is_downgrade { return; }
-            out.append(source_origin[..]);
-        },
-        StrictOriginWhenCrossOrigin => {
-            if is_downgrade { return; }
-            if is_cross_origin {
-                out.append(source_origin[..]);
-            } else {
-                out.append(clean_source[..]);
-            }
-        },
-        UnsafeUrl => {
-            out.append(clean_source[..]);
-        },
-    };
+    if needs_origin_only {
+        core::serialize_origin(core::origin_from_url(source_url), out);
+        return;
+    }
+
+    // 3. Full URL referrer (without userinfo or fragment per W3C Referrer Policy)
+    out.append(scheme(source_url));
+    out.append("://");
+    out.append(host(source_url));
+    out.append(pathname(source_url));
+    out.append(search(source_url));
 }
 
 // ---- header sanitization on redirect ---------------------------------------
 
-// Strips payload and conditional validator headers when a redirect mutates request to GET (RFC 9110 Section 15.4).
+fn is_payload_or_conditional_header(hname: const u8[:]) -> bool {
+    return eq_ascii_fold(hname, "content-type") ||
+           eq_ascii_fold(hname, "content-length") ||
+           eq_ascii_fold(hname, "content-encoding") ||
+           eq_ascii_fold(hname, "content-language") ||
+           eq_ascii_fold(hname, "content-location") ||
+           eq_ascii_fold(hname, "transfer-encoding") ||
+           eq_ascii_fold(hname, "digest") ||
+           eq_ascii_fold(hname, "if-match") ||
+           eq_ascii_fold(hname, "if-none-match") ||
+           eq_ascii_fold(hname, "if-modified-since") ||
+           eq_ascii_fold(hname, "if-unmodified-since") ||
+           eq_ascii_fold(hname, "if-range") ||
+           eq_ascii_fold(hname, "expect") ||
+           eq_ascii_fold(hname, "te");
+}
+
+// Strips payload and conditional validator headers in a single O(N) pass when a redirect mutates request to GET (RFC 9110 Section 15.4).
 fn remove_payload_and_conditional_headers(headers: HeaderItem[..32]&) {
-    remove_header_by_name(headers, "Content-Type");
-    remove_header_by_name(headers, "Content-Length");
-    remove_header_by_name(headers, "Content-Encoding");
-    remove_header_by_name(headers, "Content-Language");
-    remove_header_by_name(headers, "Content-Location");
-    remove_header_by_name(headers, "Transfer-Encoding");
-    remove_header_by_name(headers, "Digest");
-    remove_header_by_name(headers, "If-Match");
-    remove_header_by_name(headers, "If-None-Match");
-    remove_header_by_name(headers, "If-Modified-Since");
-    remove_header_by_name(headers, "If-Unmodified-Since");
-    remove_header_by_name(headers, "If-Range");
-    remove_header_by_name(headers, "Expect");
-    remove_header_by_name(headers, "TE");
+    var write_idx = 0;
+    for read_idx in headers.len {
+        if !is_payload_or_conditional_header(headers[read_idx].name[..]) {
+            if write_idx != read_idx {
+                headers[write_idx] = copy(headers[read_idx]);
+            }
+            write_idx++;
+        }
+    }
+    while headers.len > write_idx {
+        headers.pop();
+    }
 }
 
 // Sanitizes or drops Origin header on cross-origin redirect hops (WHATWG Fetch Section 4.4).
@@ -472,7 +466,7 @@ fn sanitize_headers_on_redirect(
     // Referer Header Application
     remove_header_by_name(headers, "Referer");
     if enable_referer && redirect_info.new_referrer.len > 0 {
-        if headers.len < 32 {
+        if headers.len < headers.cap {
             headers.push(make_header("Referer", redirect_info.new_referrer[..]));
         }
     }

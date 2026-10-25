@@ -268,7 +268,7 @@ fn test_redirect_state_machine(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration
 // ----------------------------------------------------------------------------
-fn test_clientsession_pipeline_and_cookies(t: core::T&) {
+fn test_oauth_flow(t: core::T&) {
     t.run("OAuth 2.0 Flow: 302 Set-Cookie Ingestion & Chain Hop Isolation") { sub =>
         var session = wing::new_session();
         wing::set_clock_us(session, 1700000000000000);
@@ -307,7 +307,9 @@ fn test_clientsession_pipeline_and_cookies(t: core::T&) {
         let leaked = wing::get(session.jar, "https://app.client.com/", "auth_session", 1700000000000000);
         sub.assert_bytes_eq(leaked, "", "client.com did NOT receive idp.com auth_session cookie");
     };
+}
 
+fn test_redirect_loop_and_manual(t: core::T&) {
     t.run("Redirect Loop Detection (TooManyRedirects)") { sub =>
         var session = wing::new_session();
         wing::set_max_redirects(session, 2);
@@ -346,7 +348,7 @@ fn test_clientsession_pipeline_and_cookies(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. BodyRewind, SSRF Guard, and DNS Rebinding Defense
 // ----------------------------------------------------------------------------
-fn test_body_rewind_and_ssrf_guard(t: core::T&) {
+fn test_body_rewind(t: core::T&) {
     t.run("BodyRewind on 307 Temporary Redirect") { sub =>
         var session = wing::new_session();
 
@@ -378,41 +380,34 @@ fn test_body_rewind_and_ssrf_guard(t: core::T&) {
         sub.assert_false(wing::ok(err), "unrewindable stream must fail redirect");
         sub.assert_bytes_eq(err.stage[..], "body_rewind", "stream error flagged");
     };
+}
+
+fn test_ssrf_subnets(t: core::T&) {
+    var session = wing::new_session();
+    wing::enable_ssrf_guard(session, true);
 
     t.run("3-Tier SSRF Guard: Loopback, RFC 1918 Private, Cloud Metadata") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+        let blocked_urls: const u8[..64][..5] = [
+            "http://127.0.0.1/admin",
+            "http://[::1]/internal",
+            "http://10.20.30.40/metrics",
+            "http://192.168.1.1/router",
+            "http://169.254.169.254/latest/meta-data/"
+        ];
 
-        // 1. Loopback IPv4 (127.0.0.1)
-        var req_loop = wing::new_get("http://127.0.0.1/admin");
-        let res_loop, err_loop = wing::execute_request(session, req_loop);
-        sub.assert_false(wing::ok(err_loop), "127.0.0.1 blocked by SSRF guard");
-
-        // 2. Loopback IPv6 ([::1])
-        var req_loop6 = wing::new_get("http://[::1]/internal");
-        let res_loop6, err_loop6 = wing::execute_request(session, req_loop6);
-        sub.assert_false(wing::ok(err_loop6), "[::1] blocked by SSRF guard");
-
-        // 3. RFC 1918 10.0.0.0/8
-        var req_priv10 = wing::new_get("http://10.20.30.40/metrics");
-        let res_priv10, err_priv10 = wing::execute_request(session, req_priv10);
-        sub.assert_false(wing::ok(err_priv10), "10.x.x.x blocked by SSRF guard");
-
-        // 4. RFC 1918 192.168.0.0/16
-        var req_priv192 = wing::new_get("http://192.168.1.1/router");
-        let res_priv192, err_priv192 = wing::execute_request(session, req_priv192);
-        sub.assert_false(wing::ok(err_priv192), "192.168.x.x blocked by SSRF guard");
-
-        // 5. Cloud Metadata service (169.254.169.254)
-        var req_meta = wing::new_get("http://169.254.169.254/latest/meta-data/");
-        let res_meta, err_meta = wing::execute_request(session, req_meta);
-        sub.assert_false(wing::ok(err_meta), "169.254.169.254 cloud metadata blocked by SSRF guard");
+        for &target_url in blocked_urls {
+            var req = wing::new_get(target_url[..]);
+            let _, err = wing::execute_request(session, req);
+            sub.assert_false(wing::ok(err), "target URL blocked by SSRF guard");
+        }
     };
+}
+
+fn test_dns_rebinding(t: core::T&) {
+    var session = wing::new_session();
+    wing::enable_ssrf_guard(session, true);
 
     t.run("DNS Rebinding Defense via Resolved IP Sweep") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
         // Host has harmless public name 'rebound.attacker.com', but DNS resolution
         // returns private internal IP 192.168.0.100 (DNS Rebinding attack)
         wing::mock_route(session, "GET", "http://rebound.attacker.com/steal", 200, "pwned");
@@ -423,11 +418,13 @@ fn test_body_rewind_and_ssrf_guard(t: core::T&) {
 
         sub.assert_false(wing::ok(err), "DNS Rebinding blocked when resolved IP is in private subnet");
     };
+}
+
+fn test_dangerous_ports(t: core::T&) {
+    var session = wing::new_session();
+    wing::enable_ssrf_guard(session, true);
 
     t.run("Dangerous Service Port Blocking (SSH, Redis, etc.)") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
         // Port 22 (SSH)
         var req_ssh = wing::new_get("http://example.com:22/");
         let res_ssh, err_ssh = wing::execute_request(session, req_ssh);
@@ -512,9 +509,13 @@ fn main() {
     core::run_case(runner, "1. Mozilla PSL Scoping & Tenant Isolation", test_psl_scoping_and_tenants);
     core::run_case(runner, "2. SiteForCookies & RFC 6265bis Schemeful Same-Site", test_site_for_cookies_and_rfc6265bis);
     core::run_case(runner, "3. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
-    core::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_clientsession_pipeline_and_cookies);
-    core::run_case(runner, "5. BodyRewind, SSRF Guard & DNS Rebinding Defense", test_body_rewind_and_ssrf_guard);
-    core::run_case(runner, "6. Client Integrated RFC 9111 HTTP Cache Pipeline", test_client_cache_integration);
+    core::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_oauth_flow);
+    core::run_case(runner, "5. ClientSession Redirect Loops & Manual Mode", test_redirect_loop_and_manual);
+    core::run_case(runner, "6. BodyRewind on 307/308 Redirects", test_body_rewind);
+    core::run_case(runner, "7. SSRF Guard 3-Tier Protection", test_ssrf_subnets);
+    core::run_case(runner, "8. DNS Rebinding Defense via Resolved IP Sweep", test_dns_rebinding);
+    core::run_case(runner, "9. Dangerous Service Port Blocking", test_dangerous_ports);
+    core::run_case(runner, "10. Client Integrated RFC 9111 HTTP Cache Pipeline", test_client_cache_integration);
 
     let ok = core::finish(runner);
     assert(ok);
