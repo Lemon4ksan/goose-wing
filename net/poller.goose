@@ -39,35 +39,40 @@ enum PollTrigger {
 }
 
 struct PollReadyEvent {
-    tag: u64 = 0,
-    fd: i32 = -1,
+    tag: EventTag = 0,
+    fd: SocketFd = -1,
     events: u32 = POLL_NONE,
     bytes_available: i64 = 0, // Exact unread bytes (from kqueue data / io_uring CQE)
     is_eof: bool = false,
     is_timer: bool = false,
 }
 
-// ---- 2. Socket Registration Table ------------------------------------------
+// ---- 2. Socket Registration & Simulated State ------------------------------
+
+// Simulated readiness state for in-memory and testing multiplexing
+struct SimulatedReadyState {
+    ready: u32 = POLL_NONE,
+    bytes: i64 = 0,
+    eof: bool = false,
+}
 
 struct SocketRegistration {
-    fd: i32 = -1,
-    tag: u64 = 0,
+    fd: SocketFd = -1,
+    tag: EventTag = 0,
     interest: PollInterest = PollInterest.None,
     trigger: PollTrigger = PollTrigger.Level,
     in_use: bool = false,
     active_events: u32 = POLL_NONE,
-    simulated_ready: u32 = POLL_NONE,
-    simulated_bytes: i64 = 0,
-    simulated_eof: bool = false,
+    sim: SimulatedReadyState = SimulatedReadyState { .. },
 }
 
 // ---- 3. High-Resolution Timer Wheel ----------------------------------------
 
 struct PollerTimer {
-    timer_id: u64 = 0,
-    tag: u64 = 0,
-    deadline_ns: u64 = 0,
-    interval_ns: u64 = 0, // 0 = one-shot, >0 = periodic
+    timer_id: TimerId = 0,
+    tag: EventTag = 0,
+    deadline_ns: Nanoseconds = 0,
+    interval_ns: Nanoseconds = 0, // 0 = one-shot, >0 = periodic
     active: bool = false,
 }
 
@@ -146,7 +151,7 @@ fn close_poller(p: Poller&) {
 
 // ---- 5. Registration Management --------------------------------------------
 
-fn find_registration(p: const Poller&, fd: i32) -> i64 {
+fn find_registration(p: const Poller&, fd: SocketFd) -> i64 {
     for i in p.registrations.len {
         if p.registrations[i].in_use && p.registrations[i].fd == fd {
             return i;
@@ -155,7 +160,7 @@ fn find_registration(p: const Poller&, fd: i32) -> i64 {
     return -1;
 }
 
-fn find_by_tag(p: const Poller&, tag: u64) -> i64 {
+fn find_by_tag(p: const Poller&, tag: EventTag) -> i64 {
     for i in p.registrations.len {
         if p.registrations[i].in_use && p.registrations[i].tag == tag {
             return i;
@@ -166,8 +171,8 @@ fn find_by_tag(p: const Poller&, tag: u64) -> i64 {
 
 fn register_socket(
     p: Poller&,
-    fd: i32,
-    tag: u64,
+    fd: SocketFd,
+    tag: EventTag,
     interest: PollInterest,
     trigger: PollTrigger = PollTrigger.Level
 ) -> bool {
@@ -182,9 +187,9 @@ fn register_socket(
             p.registrations[i].trigger = trigger;
             p.registrations[i].in_use = true;
             p.registrations[i].active_events = POLL_NONE;
-            p.registrations[i].simulated_ready = POLL_NONE;
-            p.registrations[i].simulated_bytes = 0;
-            p.registrations[i].simulated_eof = false;
+            p.registrations[i].sim.ready = POLL_NONE;
+            p.registrations[i].sim.bytes = 0;
+            p.registrations[i].sim.eof = false;
             p.active_fd_count += 1;
             return true;
         }
@@ -194,8 +199,8 @@ fn register_socket(
 
 fn modify_socket(
     p: Poller&,
-    fd: i32,
-    tag: u64,
+    fd: SocketFd,
+    tag: EventTag,
     interest: PollInterest,
     trigger: PollTrigger = PollTrigger.Level
 ) -> bool {
@@ -208,7 +213,7 @@ fn modify_socket(
     return true;
 }
 
-fn deregister_socket(p: Poller&, fd: i32) -> bool {
+fn deregister_socket(p: Poller&, fd: SocketFd) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
 
@@ -216,7 +221,7 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     p.registrations[idx].fd = -1;
     p.registrations[idx].tag = 0;
     p.registrations[idx].interest = PollInterest.None;
-    p.registrations[idx].simulated_ready = POLL_NONE;
+    p.registrations[idx].sim.ready = POLL_NONE;
     if p.active_fd_count > 0 {
         p.active_fd_count -= 1;
     }
@@ -227,11 +232,11 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
 
 fn add_timer(
     p: Poller&,
-    timer_id: u64,
-    delay_ms: u64,
-    tag: u64,
+    timer_id: TimerId,
+    delay_ms: Milliseconds,
+    tag: EventTag,
     periodic: bool = false,
-    now_ns: u64 = 0
+    now_ns: Nanoseconds = 0
 ) -> bool {
     guard timer_id != 0 else { return false; }
 
@@ -260,7 +265,7 @@ fn add_timer(
     return false;
 }
 
-fn cancel_timer(p: Poller&, timer_id: u64) -> bool {
+fn cancel_timer(p: Poller&, timer_id: TimerId) -> bool {
     for i in p.timers.len {
         if p.timers[i].active && p.timers[i].timer_id == timer_id {
             p.timers[i].active = false;
@@ -274,7 +279,7 @@ fn cancel_timer(p: Poller&, timer_id: u64) -> bool {
     return false;
 }
 
-fn check_expired_timers(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..64]&) -> i32 {
+fn check_expired_timers(p: Poller&, now_ns: Nanoseconds, out_events: PollReadyEvent[..64]&) -> i32 {
     var fired_count: i32 = 0;
     for i in p.timers.len {
         if p.timers[i].active && now_ns >= p.timers[i].deadline_ns {
@@ -308,33 +313,33 @@ fn check_expired_timers(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..64
 
 // ---- 7. Simulated Events (for Testing & High-Performance In-Memory Multiplexing) -
 
-fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
+fn simulate_read_ready(p: Poller&, fd: SocketFd, bytes_avail: i64 = 0) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].simulated_ready |= POLL_READ;
-    p.registrations[idx].simulated_bytes = bytes_avail;
+    p.registrations[idx].sim.ready |= POLL_READ;
+    p.registrations[idx].sim.bytes = bytes_avail;
     return true;
 }
 
-fn simulate_write_ready(p: Poller&, fd: i32) -> bool {
+fn simulate_write_ready(p: Poller&, fd: SocketFd) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].simulated_ready |= POLL_WRITE;
+    p.registrations[idx].sim.ready |= POLL_WRITE;
     return true;
 }
 
-fn simulate_error(p: Poller&, fd: i32) -> bool {
+fn simulate_error(p: Poller&, fd: SocketFd) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].simulated_ready |= POLL_ERROR;
+    p.registrations[idx].sim.ready |= POLL_ERROR;
     return true;
 }
 
-fn simulate_hangup(p: Poller&, fd: i32) -> bool {
+fn simulate_hangup(p: Poller&, fd: SocketFd) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].simulated_ready |= POLL_HANGUP;
-    p.registrations[idx].simulated_eof = true;
+    p.registrations[idx].sim.ready |= POLL_HANGUP;
+    p.registrations[idx].sim.eof = true;
     return true;
 }
 
@@ -345,7 +350,7 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
 fn poll_events(
     p: Poller&,
     timeout_ms: i64,
-    now_ns: u64,
+    now_ns: Nanoseconds,
     out_events: PollReadyEvent[..64]&
 ) -> i32 {
     out_events.clear();
@@ -360,7 +365,7 @@ fn poll_events(
         guard out_events.len < out_events.cap else { break; }
 
         let interest = p.registrations[i].interest;
-        var ready = p.registrations[i].simulated_ready;
+        var ready = p.registrations[i].sim.ready;
         var triggered: u32 = POLL_NONE;
 
         // Match against registered interest
@@ -382,8 +387,8 @@ fn poll_events(
                 tag: p.registrations[i].tag,
                 fd: p.registrations[i].fd,
                 events: triggered,
-                bytes_available: p.registrations[i].simulated_bytes,
-                is_eof: p.registrations[i].simulated_eof,
+                bytes_available: p.registrations[i].sim.bytes,
+                is_eof: p.registrations[i].sim.eof,
                 is_timer: false,
             };
             out_events.push(ev);
@@ -391,11 +396,11 @@ fn poll_events(
 
             // Edge-triggered reset: clear simulated ready bits once reported
             if p.registrations[i].trigger == PollTrigger.Edge {
-                p.registrations[i].simulated_ready = POLL_NONE;
-                p.registrations[i].simulated_bytes = 0;
+                p.registrations[i].sim.ready = POLL_NONE;
+                p.registrations[i].sim.bytes = 0;
             } else {
                 // Level-triggered: write readiness is transient, read readiness remains until drained
-                p.registrations[i].simulated_ready &= ~POLL_WRITE;
+                p.registrations[i].sim.ready &= ~POLL_WRITE;
             }
         }
     }
@@ -412,8 +417,8 @@ enum LoopState {
 }
 
 struct ConnectionBuffer {
-    fd: i32 = -1,
-    tag: u64 = 0,
+    fd: SocketFd = -1,
+    tag: EventTag = 0,
     read_buf: u8[..4096] = [],
     write_buf: u8[..4096] = [],
     write_offset: i64 = 0,
@@ -450,7 +455,7 @@ fn close_event_loop(ev_loop: EventLoop&) {
     ev_loop.state = LoopState.Stopped;
 }
 
-fn find_connection_buffer(ev_loop: const EventLoop&, tag: u64) -> i64 {
+fn find_connection_buffer(ev_loop: const EventLoop&, tag: EventTag) -> i64 {
     for i in ev_loop.buffers.len {
         if ev_loop.buffers[i].in_use && ev_loop.buffers[i].tag == tag {
             return i;
@@ -462,8 +467,8 @@ fn find_connection_buffer(ev_loop: const EventLoop&, tag: u64) -> i64 {
 // Binds a socket to the event loop, allocating zero-heap connection buffers
 fn bind_connection(
     ev_loop: EventLoop&,
-    fd: i32,
-    tag: u64,
+    fd: SocketFd,
+    tag: EventTag,
     interest: PollInterest,
     trigger: PollTrigger = PollTrigger.Level
 ) -> bool {
@@ -486,7 +491,7 @@ fn bind_connection(
     return false;
 }
 
-fn unbind_connection(ev_loop: EventLoop&, tag: u64) -> bool {
+fn unbind_connection(ev_loop: EventLoop&, tag: EventTag) -> bool {
     let b_idx = find_connection_buffer(ev_loop, tag);
     if b_idx >= 0 {
         let fd = ev_loop.buffers[b_idx].fd;
@@ -500,7 +505,7 @@ fn unbind_connection(ev_loop: EventLoop&, tag: u64) -> bool {
 }
 
 // Queues data to be sent on socket when writable
-fn queue_write(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
+fn queue_write(ev_loop: EventLoop&, tag: EventTag, data: const u8[:]) -> bool {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return false; }
     guard ev_loop.buffers[b_idx].write_buf.len + data.len <= ev_loop.buffers[b_idx].write_buf.cap else {
@@ -512,7 +517,7 @@ fn queue_write(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
 }
 
 // Feeds incoming data into the connection read buffer (e.g. from NIC, socket, or mock)
-fn feed_read(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
+fn feed_read(ev_loop: EventLoop&, tag: EventTag, data: const u8[:]) -> bool {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return false; }
     guard ev_loop.buffers[b_idx].read_buf.len + data.len <= ev_loop.buffers[b_idx].read_buf.cap else {
@@ -524,7 +529,7 @@ fn feed_read(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
 }
 
 // Reads available data from the connection buffer
-fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
+fn consume_read<B>(ev_loop: EventLoop&, tag: EventTag, out: B&) -> i64 {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return 0; }
     let count = ev_loop.buffers[b_idx].read_buf.len;
@@ -535,15 +540,15 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     let fd = ev_loop.buffers[b_idx].fd;
     let r_idx = find_registration(ev_loop.poller, fd);
     if r_idx >= 0 {
-        ev_loop.poller.registrations[r_idx].simulated_ready &= ~POLL_READ;
-        ev_loop.poller.registrations[r_idx].simulated_bytes = 0;
+        ev_loop.poller.registrations[r_idx].sim.ready &= ~POLL_READ;
+        ev_loop.poller.registrations[r_idx].sim.bytes = 0;
     }
 
     return count;
 }
 
 // Flushes outgoing queued write buffer
-fn flush_writes(ev_loop: EventLoop&, tag: u64) -> i64 {
+fn flush_writes(ev_loop: EventLoop&, tag: EventTag) -> i64 {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return 0; }
     let count = ev_loop.buffers[b_idx].write_buf.len;
@@ -553,10 +558,10 @@ fn flush_writes(ev_loop: EventLoop&, tag: u64) -> i64 {
 }
 
 // Runs a single non-blocking event loop iteration, dispatching harvested events to handler
-fn run_loop_once<HandlerFn: fn(u64, const PollReadyEvent&, EventLoop&)>(
+fn run_loop_once<HandlerFn: fn(EventTag, const PollReadyEvent&, EventLoop&)>(
     ev_loop: EventLoop&,
     timeout_ms: i64,
-    now_ns: u64
+    now_ns: Nanoseconds
 ) -> i32 {
     ev_loop.state = LoopState.Running;
     ev_loop.iteration_count += 1;

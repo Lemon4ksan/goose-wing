@@ -110,6 +110,7 @@ import server.h2_multiplexer;
 
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
+import net.types;
 import net.pool;
 import net.happy_eyeballs;
 import net.proxy;
