@@ -718,3 +718,43 @@ fn ::receive_capsule<B>(tunnel: wing::MasqueTunnelSession&, capsule_wire: const 
 fn ::receive_quic_datagram<B>(tunnel: wing::MasqueTunnelSession&, datagram_frame_payload: const u8[:], out_packet: B&) -> bool {
     return wing::tunnel_receive_quic_datagram(tunnel, datagram_frame_payload, out_packet);
 }
+
+// ---- server & wire codecs ufcs bridges -------------------------------------
+
+fn ::add_get_route(server: wing::HttpServer&, path: const u8[:], handler_id: i32) {
+    wing::add_get_route(server, path, handler_id);
+}
+
+fn ::add_post_route(server: wing::HttpServer&, path: const u8[:], handler_id: i32) {
+    wing::add_post_route(server, path, handler_id);
+}
+
+fn ::add_put_route(server: wing::HttpServer&, path: const u8[:], handler_id: i32) {
+    wing::add_put_route(server, path, handler_id);
+}
+
+fn ::add_delete_route(server: wing::HttpServer&, path: const u8[:], handler_id: i32) {
+    wing::add_delete_route(server, path, handler_id);
+}
+
+fn ::handle_connection_wire<B>(
+    server: wing::HttpServer&,
+    client_ip: const u8[:],
+    wire_in: const u8[:],
+    now_ns: u64,
+    wire_out: B&
+) -> wing::PipelineOutcome, bool {
+    return wing::handle_connection_wire(server, client_ip, wire_in, now_ns, wire_out);
+}
+
+fn ::parse_http1_wire_request(wire: const u8[:], out_req: wing::Request&) -> bool, i64 {
+    return wing::parse_http1_wire_request(wire, out_req);
+}
+
+fn ::parse_http1_wire_response(wire: const u8[:], out_res: wing::Response&) -> bool, i64 {
+    return wing::parse_http1_wire_response(wire, out_res);
+}
+
+fn ::serialize_http1_response<B>(res: const wing::Response&, server_name: const u8[:], out_wire: B&) {
+    wing::serialize_http1_response(res, server_name, out_wire);
+}

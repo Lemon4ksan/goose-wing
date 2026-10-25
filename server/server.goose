@@ -56,53 +56,28 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
     // Find end of headers (\r\n\r\n)
-    var header_end_idx: i64 = -1;
-    var scan = 0;
-    while scan + 3 < wire.len {
-        if wire[scan] == '\r' && wire[scan + 1] == '\n' && wire[scan + 2] == '\r' && wire[scan + 3] == '\n' {
-            header_end_idx = scan + 4;
-            break;
-        }
-        scan++;
-    }
-    guard header_end_idx > 0 else { return false, 0; }
-
+    let hdr_end = core::index_of_slice(wire, "\r\n\r\n");
+    guard hdr_end >= 0 else { return false, 0; }
+    let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
 
     // Find end of request line
-    var line_end: i64 = 0;
-    while line_end + 1 < header_bytes.len && !(header_bytes[line_end] == '\r' && header_bytes[line_end + 1] == '\n') {
-        line_end++;
-    }
+    let line_end = core::index_of_slice(header_bytes, "\r\n");
     guard line_end > 0 else { return false, 0; }
-
     let req_line = header_bytes[..line_end];
 
     // Parse method (first space)
-    var sp1: i64 = -1;
-    for i in req_line.len {
-        if req_line[i] == ' ' {
-            sp1 = i;
-            break;
-        }
-    }
+    let sp1 = core::index_of_byte(req_line, ' ');
     guard sp1 > 0 else { return false, 0; }
-
     let method_slice = req_line[..sp1];
     out_req.method.clear();
     out_req.method.append(method_slice);
 
     // Parse path (second space)
-    var sp2: i64 = -1;
-    for i in (sp1 + 1)..req_line.len {
-        if req_line[i] == ' ' {
-            sp2 = i;
-            break;
-        }
-    }
-    guard sp2 > sp1 else { return false, 0; }
-
-    let path_slice = req_line[(sp1 + 1)..sp2];
+    let rest = req_line[(sp1 + 1)..];
+    let sp2_rel = core::index_of_byte(rest, ' ');
+    guard sp2_rel > 0 else { return false, 0; }
+    let path_slice = rest[..sp2_rel];
     out_req.url.clear();
     out_req.url.append(path_slice);
 
@@ -112,25 +87,15 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
 
     out_req.headers.clear();
     while cursor < rest_headers.len {
-        var hline_end = cursor;
-        while hline_end + 1 < rest_headers.len && !(rest_headers[hline_end] == '\r' && rest_headers[hline_end + 1] == '\n') {
-            hline_end++;
-        }
-        if hline_end == cursor { break; } // Empty line reached
+        let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
+        if rel_end < 0 { break; }
+        if rel_end == 0 { break; } // Empty line reached
 
-        let line = rest_headers[cursor..hline_end];
-        var colon: i64 = -1;
-        for i in line.len {
-            if line[i] == ':' { colon = i; break; }
-        }
-
+        let line = rest_headers[cursor .. (cursor + rel_end)];
+        let colon = core::index_of_byte(line, ':');
         if colon > 0 {
             let hname = line[..colon];
-            var vstart = colon + 1;
-            while vstart < line.len && (line[vstart] == ' ' || line[vstart] == '\t') {
-                vstart++;
-            }
-            let hval = line[vstart..];
+            let hval = trim_lws(line[(colon + 1)..]);
 
             var item = HeaderItem { .. };
             item.name.append(hname);
@@ -139,7 +104,7 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
                 out_req.headers.push(item);
             }
         }
-        cursor = hline_end + 2;
+        cursor += rel_end + 2;
     }
 
     out_req.trailers.clear();
@@ -160,13 +125,10 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
         } else if eq_ascii_fold(hdr.name[..], "content-length") {
             has_cl = true;
             cl_count++;
-            var parsed_cl: i64 = 0;
             let val_trimmed = trim_lws(hdr.value[..]);
             guard val_trimmed.len > 0 else { return false, 0; }
-            for b in val_trimmed {
-                guard b >= '0' && b <= '9' else { return false, 0; }
-                parsed_cl = parsed_cl * 10 + (b - '0');
-            }
+            let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
+            guard ok_cl && parsed_cl >= 0 else { return false, 0; }
             if cl_count == 1 {
                 cl_len = parsed_cl;
             } else if cl_len != parsed_cl {
@@ -213,24 +175,13 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
 fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
-    var header_end_idx: i64 = -1;
-    var scan = 0;
-    while scan + 3 < wire.len {
-        if wire[scan] == '\r' && wire[scan + 1] == '\n' && wire[scan + 2] == '\r' && wire[scan + 3] == '\n' {
-            header_end_idx = scan + 4;
-            break;
-        }
-        scan++;
-    }
-    guard header_end_idx > 0 else { return false, 0; }
-
+    let hdr_end = core::index_of_slice(wire, "\r\n\r\n");
+    guard hdr_end >= 0 else { return false, 0; }
+    let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
 
     // Find end of status line
-    var line_end: i64 = 0;
-    while line_end + 1 < header_bytes.len && !(header_bytes[line_end] == '\r' && header_bytes[line_end + 1] == '\n') {
-        line_end++;
-    }
+    let line_end = core::index_of_slice(header_bytes, "\r\n");
     guard line_end > 0 else { return false, 0; }
 
     let status_line = header_bytes[..line_end];
@@ -250,25 +201,15 @@ fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64
     var cursor: i64 = 0;
     out_res.headers.clear();
     while cursor < rest_headers.len {
-        var hline_end = cursor;
-        while hline_end + 1 < rest_headers.len && !(rest_headers[hline_end] == '\r' && rest_headers[hline_end + 1] == '\n') {
-            hline_end++;
-        }
-        if hline_end == cursor { break; }
+        let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
+        if rel_end < 0 { break; }
+        if rel_end == 0 { break; }
 
-        let line = rest_headers[cursor..hline_end];
-        var colon: i64 = -1;
-        for i in line.len {
-            if line[i] == ':' { colon = i; break; }
-        }
-
+        let line = rest_headers[cursor .. (cursor + rel_end)];
+        let colon = core::index_of_byte(line, ':');
         if colon > 0 {
             let hname = line[..colon];
-            var vstart = colon + 1;
-            while vstart < line.len && (line[vstart] == ' ' || line[vstart] == '\t') {
-                vstart++;
-            }
-            let hval = line[vstart..];
+            let hval = trim_lws(line[(colon + 1)..]);
 
             var item = HeaderItem { .. };
             item.name.append(hname);
@@ -277,7 +218,7 @@ fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64
                 out_res.headers.push(item);
             }
         }
-        cursor = hline_end + 2;
+        cursor += rel_end + 2;
     }
 
     out_res.trailers.clear();
@@ -296,14 +237,11 @@ fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64
             te_buf.append(hdr.value[..]);
         } else if eq_ascii_fold(hdr.name[..], "content-length") {
             has_cl = true;
-            var parsed_cl: i64 = 0;
             let val_trimmed = trim_lws(hdr.value[..]);
-            for b in val_trimmed {
-                if b >= '0' && b <= '9' {
-                    parsed_cl = parsed_cl * 10 + (b - '0');
-                }
+            let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
+            if ok_cl && parsed_cl >= 0 {
+                cl_len = parsed_cl;
             }
-            cl_len = parsed_cl;
         }
     }
 
@@ -349,7 +287,7 @@ fn serialize_http1_chunked_response<B>(
 ) {
     // 1. Status line: HTTP/1.1 <status> <reason>\r\n
     out_wire.append("HTTP/1.1 ");
-    format(out_wire, res.status_code as i64);
+    core::format_i64_dec(res.status_code as i64, out_wire);
     out_wire.push(' ');
     out_wire.append(http_status_reason_phrase(res.status_code));
     out_wire.append("\r\n");
@@ -409,7 +347,7 @@ fn serialize_http1_response<B>(res: const Response&, server_name: const u8[:], o
 
     // 1. Status line: HTTP/1.1 <status> <reason>\r\n
     out_wire.append("HTTP/1.1 ");
-    format(out_wire, res.status_code as i64);
+    core::format_i64_dec(res.status_code as i64, out_wire);
     out_wire.push(' ');
     out_wire.append(http_status_reason_phrase(res.status_code));
     out_wire.append("\r\n");
@@ -424,7 +362,7 @@ fn serialize_http1_response<B>(res: const Response&, server_name: const u8[:], o
     // 3. Content-Length header (if not 204 or 304)
     if res.status_code != 204 && res.status_code != 304 {
         out_wire.append("Content-Length: ");
-        format(out_wire, res.body.len);
+        core::format_i64_dec(res.body.len, out_wire);
         out_wire.append("\r\n");
     }
 
