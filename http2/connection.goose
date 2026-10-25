@@ -14,6 +14,7 @@ const DEFAULT_WINDOW_SIZE:     i64  = 65535;
 const DEFAULT_RESET_BURST:     u64  = 1000;       // nghttp2 v1.57.0 reference (CVE-2023-44487)
 const DEFAULT_RESET_RATE:      u64  = 33;         // Tokens per second
 const MAX_CONT_FRAMES_LIMIT:   u32  = 16;         // CONTINUATION Flood defense (CVE-2024-28182 / CVE-2024-30255)
+const MAX_HEADER_BLOCK_SIZE_LIMIT: u32 = 65536;   // Hard 64 KB ceiling for any CONTINUATION / HEADERS block
 const MAX_EMPTY_FRAME_STREAK:  u32  = 8;          // Empty Frame Flooding defense (CVE-2019-9518)
 const MAX_PENDING_CTRL_FRAMES: u32  = 64;         // PING / SETTINGS Flood defense (CVE-2019-9512 / CVE-2019-9515)
 const MAX_CONCURRENCY_VIOLATIONS: u32 = 5;        // Rapid Reset non-cancelling variant defense
@@ -177,150 +178,6 @@ inline fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32
 
 // ---- 5. frame ingress coordinator & anti-dos barriers -----------------------
 
-// Validates protocol and Anti-DoS invariants upon receiving a 9-byte frame header
-// strictly before buffering or parsing the frame payload.
-fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
-    // 1. Strict CONTINUATION state lock (RFC 9113 Section 6.10 & CVE-2024-28182)
-    if s.continuation_stream_id != 0 {
-        if hdr.frame_type != FRAME_CONTINUATION || hdr.stream_id != s.continuation_stream_id {
-            return ERR_PROTOCOL_ERROR;
-        }
-
-        // Slow-Drip CONTINUATION memory retention defense
-        if now_ms > s.continuation_start_ms {
-            let duration_ms = now_ms - s.continuation_start_ms;
-            if duration_ms > s.max_header_block_duration_ms {
-                return ERR_ENHANCE_YOUR_CALM;
-            }
-        }
-
-        s.continuation_frames_cnt++;
-        if s.continuation_frames_cnt > MAX_CONT_FRAMES_LIMIT {
-            return ERR_ENHANCE_YOUR_CALM;
-        }
-
-        // Pre-allocation cumulative size check
-        s.accumulated_header_size += hdr.length;
-        if s.accumulated_header_size > s.max_header_list_size {
-            return ERR_ENHANCE_YOUR_CALM;
-        }
-
-        if (hdr.flags & FLAG_END_HEADERS) != 0 {
-            s.continuation_stream_id = 0;
-            s.continuation_frames_cnt = 0;
-            s.accumulated_header_size = 0;
-        }
-        return ERR_NO_ERROR;
-    }
-
-    // CONTINUATION outside ExpectContinuation state is a fatal protocol error
-    if hdr.frame_type == FRAME_CONTINUATION {
-        return ERR_PROTOCOL_ERROR;
-    }
-
-    // 2. Empty Frame Flooding defense (CVE-2019-9518)
-    if (hdr.frame_type == FRAME_DATA || hdr.frame_type == FRAME_HEADERS) &&
-       hdr.length == 0 &&
-       (hdr.flags & FLAG_END_STREAM) == 0 &&
-       (hdr.flags & FLAG_END_HEADERS) == 0 {
-        s.empty_frame_streak++;
-        if s.empty_frame_streak > MAX_EMPTY_FRAME_STREAK {
-            return ERR_ENHANCE_YOUR_CALM;
-        }
-    } else {
-        s.empty_frame_streak = 0;
-    }
-
-    // 3. Rapid Reset defense (CVE-2023-44487) via Token Bucket
-    if hdr.frame_type == FRAME_RST_STREAM {
-        if hdr.stream_id == 0 {
-            return ERR_PROTOCOL_ERROR;
-        }
-        if hdr.length != 4 {
-            return ERR_FRAME_SIZE_ERROR;
-        }
-
-        // RST_STREAM on idle stream is invalid (RFC 9113 Section 6.4)
-        let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
-        if !found && hdr.stream_id > s.last_peer_stream_id {
-            return ERR_PROTOCOL_ERROR;
-        }
-
-        if !consume_token(s.reset_limiter, now_ms) {
-            return ERR_ENHANCE_YOUR_CALM;
-        }
-
-        if found {
-            s.streams[s_idx].state = H2StreamState.Closed;
-            s.streams[s_idx].active = false;
-            if s.active_stream_count > 0 {
-                s.active_stream_count--;
-            }
-        }
-        return ERR_NO_ERROR;
-    }
-
-    // 4. Client stream opening & CONTINUATION transition
-    if hdr.frame_type == FRAME_HEADERS {
-        if hdr.stream_id == 0 {
-            return ERR_PROTOCOL_ERROR;
-        }
-
-        // Client-initiated streams must be odd (RFC 9113 Section 5.1.1)
-        if (hdr.stream_id % 2) == 0 {
-            return ERR_PROTOCOL_ERROR;
-        }
-
-        let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
-        if !found {
-            // Monotonic stream ID increase check
-            if hdr.stream_id <= s.last_peer_stream_id {
-                return ERR_PROTOCOL_ERROR;
-            }
-
-            // Rapid Reset non-cancelling variant defense: enforce max_concurrent_streams
-            if s.active_stream_count >= s.max_concurrent_streams {
-                s.concurrency_violations++;
-                if s.concurrency_violations > MAX_CONCURRENCY_VIOLATIONS {
-                    return ERR_ENHANCE_YOUR_CALM;
-                }
-                return ERR_REFUSED_STREAM;
-            }
-
-            // Open new stream
-            s.last_peer_stream_id = hdr.stream_id;
-            s.concurrency_violations = 0;
-            open_new_session_stream(s, hdr.stream_id, (hdr.flags & FLAG_END_STREAM) != 0);
-        } else {
-            // Existing stream headers (trailers)
-            if (hdr.flags & FLAG_END_STREAM) != 0 {
-                s.streams[s_idx].trailers_received = true;
-                s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
-            }
-        }
-
-        if (hdr.flags & FLAG_END_HEADERS) == 0 {
-            s.continuation_stream_id = hdr.stream_id;
-            s.continuation_frames_cnt = 0;
-            s.accumulated_header_size = hdr.length;
-            s.continuation_start_ms = now_ms;
-        }
-        return ERR_NO_ERROR;
-    }
-
-    // 5. PING / SETTINGS Flood defense (CVE-2019-9512 / CVE-2019-9515)
-    if (hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS) &&
-       (hdr.flags & FLAG_ACK) == 0 {
-        s.pending_control_frames++;
-        if s.pending_control_frames > MAX_PENDING_CTRL_FRAMES {
-            return ERR_ENHANCE_YOUR_CALM;
-        }
-    }
-
-    // 6. General stream association and fixed-length validation
-    return validate_frame_header_rules(hdr, s.local_max_frame_size);
-}
-
 // Opens a new stream descriptor with default RFC 9218 priority.
 fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
     var def_prio = PriorityParam {
@@ -339,7 +196,6 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         ..
     };
 
-    // Find free slot or append
     var placed = false;
     for &slot in s.streams {
         if !slot.active {
@@ -352,6 +208,176 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         s.streams.push(new_stream);
     }
     s.active_stream_count++;
+}
+
+fn validate_h2_continuation_state(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32, bool {
+    if s.continuation_stream_id != 0 {
+        if hdr.frame_type != FRAME_CONTINUATION || hdr.stream_id != s.continuation_stream_id {
+            return ERR_PROTOCOL_ERROR, true;
+        }
+
+        if hdr.length == 0 && (hdr.flags & FLAG_END_HEADERS) == 0 {
+            return ERR_PROTOCOL_ERROR, true;
+        }
+
+        if now_ms > s.continuation_start_ms {
+            let duration_ms = now_ms - s.continuation_start_ms;
+            if duration_ms > s.max_header_block_duration_ms {
+                return ERR_ENHANCE_YOUR_CALM, true;
+            }
+        }
+
+        s.continuation_frames_cnt++;
+        if s.continuation_frames_cnt > MAX_CONT_FRAMES_LIMIT {
+            return ERR_ENHANCE_YOUR_CALM, true;
+        }
+
+        s.accumulated_header_size += hdr.length;
+        if s.accumulated_header_size > s.max_header_list_size || s.accumulated_header_size > MAX_HEADER_BLOCK_SIZE_LIMIT {
+            return ERR_ENHANCE_YOUR_CALM, true;
+        }
+
+        if (hdr.flags & FLAG_END_HEADERS) != 0 {
+            s.continuation_stream_id = 0;
+            s.continuation_frames_cnt = 0;
+            s.accumulated_header_size = 0;
+        }
+        return ERR_NO_ERROR, true;
+    }
+
+    if hdr.frame_type == FRAME_CONTINUATION {
+        return ERR_PROTOCOL_ERROR, true;
+    }
+
+    return ERR_NO_ERROR, false;
+}
+
+fn validate_h2_empty_frame_streak(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
+    if (hdr.frame_type == FRAME_DATA || hdr.frame_type == FRAME_HEADERS) &&
+       hdr.length == 0 &&
+       (hdr.flags & FLAG_END_STREAM) == 0 &&
+       (hdr.flags & FLAG_END_HEADERS) == 0 {
+        s.empty_frame_streak++;
+        if s.empty_frame_streak > MAX_EMPTY_FRAME_STREAK {
+            return ERR_ENHANCE_YOUR_CALM;
+        }
+    } else {
+        s.empty_frame_streak = 0;
+    }
+    return ERR_NO_ERROR;
+}
+
+fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
+    if hdr.stream_id == 0 {
+        return ERR_PROTOCOL_ERROR;
+    }
+    if hdr.length != 4 {
+        return ERR_FRAME_SIZE_ERROR;
+    }
+
+    let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
+    if !found && hdr.stream_id > s.last_peer_stream_id {
+        return ERR_PROTOCOL_ERROR;
+    }
+
+    if !consume_token(s.reset_limiter, now_ms) {
+        return ERR_ENHANCE_YOUR_CALM;
+    }
+
+    if found {
+        s.streams[s_idx].state = H2StreamState.Closed;
+        s.streams[s_idx].active = false;
+        if s.active_stream_count > 0 {
+            s.active_stream_count--;
+        }
+    }
+    return ERR_NO_ERROR;
+}
+
+fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
+    if hdr.stream_id == 0 {
+        return ERR_PROTOCOL_ERROR;
+    }
+
+    if hdr.length == 0 && (hdr.flags & FLAG_END_HEADERS) == 0 {
+        return ERR_PROTOCOL_ERROR;
+    }
+
+    if hdr.length > s.max_header_list_size || hdr.length > MAX_HEADER_BLOCK_SIZE_LIMIT {
+        return ERR_ENHANCE_YOUR_CALM;
+    }
+
+    if (hdr.stream_id % 2) == 0 {
+        return ERR_PROTOCOL_ERROR;
+    }
+
+    let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
+    if !found {
+        if hdr.stream_id <= s.last_peer_stream_id {
+            return ERR_PROTOCOL_ERROR;
+        }
+
+        if s.active_stream_count >= s.max_concurrent_streams {
+            s.concurrency_violations++;
+            if s.concurrency_violations > MAX_CONCURRENCY_VIOLATIONS {
+                return ERR_ENHANCE_YOUR_CALM;
+            }
+            return ERR_REFUSED_STREAM;
+        }
+
+        s.last_peer_stream_id = hdr.stream_id;
+        s.concurrency_violations = 0;
+        open_new_session_stream(s, hdr.stream_id, (hdr.flags & FLAG_END_STREAM) != 0);
+    } else {
+        if (hdr.flags & FLAG_END_STREAM) != 0 {
+            s.streams[s_idx].trailers_received = true;
+            s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+        }
+    }
+
+    if (hdr.flags & FLAG_END_HEADERS) == 0 {
+        s.continuation_stream_id = hdr.stream_id;
+        s.continuation_frames_cnt = 0;
+        s.accumulated_header_size = hdr.length;
+        s.continuation_start_ms = now_ms;
+    }
+    return ERR_NO_ERROR;
+}
+
+fn check_h2_control_frame_flood(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
+    if (hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS) &&
+       (hdr.flags & FLAG_ACK) == 0 {
+        s.pending_control_frames++;
+        if s.pending_control_frames > MAX_PENDING_CTRL_FRAMES {
+            return ERR_ENHANCE_YOUR_CALM;
+        }
+    }
+    return ERR_NO_ERROR;
+}
+
+// Validates protocol and Anti-DoS invariants upon receiving a 9-byte frame header
+// strictly before buffering or parsing the frame payload.
+fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
+    let cont_err, is_cont = validate_h2_continuation_state(s, hdr, now_ms);
+    if is_cont {
+        return cont_err;
+    }
+
+    let streak_err = validate_h2_empty_frame_streak(s, hdr);
+    guard streak_err == ERR_NO_ERROR else { return streak_err; }
+
+    if hdr.frame_type == FRAME_RST_STREAM {
+        return handle_h2_rst_stream_header(s, hdr, now_ms);
+    }
+
+    if hdr.frame_type == FRAME_HEADERS {
+        return handle_h2_headers_frame_header(s, hdr, now_ms);
+    }
+
+    let ctrl_err = check_h2_control_frame_flood(s, hdr);
+    guard ctrl_err == ERR_NO_ERROR else { return ctrl_err; }
+
+    return validate_frame_header_rules(hdr, s.local_max_frame_size);
 }
 
 // ---- 6. two-level flow control & signed window deltas (inv-flow-01) ----------

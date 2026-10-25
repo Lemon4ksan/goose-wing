@@ -389,6 +389,25 @@ fn test_cork_buffer(t: core::T&) {
     };
 }
 
+fn test_simd_accelerators(t: core::T&) {
+    t.run("SIMD Fast ASCII & CRLF Scan") { sub =>
+        let ascii_str = "GET /v1/models HTTP/1.1\r\nHost: api.example.com\r\n\r\n";
+        sub.assert_true(core::is_pure_ascii(ascii_str), "Pure ASCII string detected by SIMD");
+        sub.assert_true(core::validate_utf8(ascii_str), "ASCII string is valid UTF-8");
+
+        let crlf_pos = core::find_crlf(ascii_str);
+        sub.assert_eq(crlf_pos, 23, "CRLF position found at index 23");
+
+        let non_ascii = "Hello, 世界!\r\n";
+        sub.assert_false(core::is_pure_ascii(non_ascii), "Non-ASCII detected");
+        sub.assert_true(core::validate_utf8(non_ascii), "Valid multi-byte UTF-8 recognized");
+
+        let bad_bytes: u8[3] = [0xFF, 0xFE, 0xFD];
+        sub.assert_false(core::is_pure_ascii(bad_bytes[..]), "Bad bytes not ASCII");
+        sub.assert_false(core::validate_utf8(bad_bytes[..]), "Bad bytes not UTF-8");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Goose Core I/O Stream Module Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. SliceReader Stream Cursor & Integer Decoding", test_slice_reader);
@@ -399,6 +418,7 @@ fn main() {
     core::run_case(runner, "6. Stream Pipeline Copy Helpers", test_pipeline_helpers);
     core::run_case(runner, "7. PipeBuffer Two-Cursor Pipelines & Monotonicity", test_pipe_buffer);
     core::run_case(runner, "8. CorkBuffer 16KB Outbound Aggregation", test_cork_buffer);
+    core::run_case(runner, "9. SIMD Fast ASCII, UTF-8 & CRLF Scan", test_simd_accelerators);
     let ok = core::finish(runner);
     assert(ok);
 }

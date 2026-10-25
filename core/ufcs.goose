@@ -380,3 +380,9 @@ fn ::format_u64_hex<B>(val: u64, out: B&, uppercase: bool = false) { core::forma
 fn ::format_u32_hex<B>(val: u32, out: B&, uppercase: bool = false) { core::format_u32_hex(val, out, uppercase); }
 fn ::format_u8_hex<B>(val: u8, out: B&, uppercase: bool = false) { core::format_u8_hex(val, out, uppercase); }
 
+// ---- utf-8 validation bridge -----------------------------------------------
+
+fn ::is_valid_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data); }
+fn ::validate_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data); }
+
+

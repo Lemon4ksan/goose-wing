@@ -88,122 +88,128 @@ fn zstream_set_dictionary(s: ZStreamCompressor&, dict: const u8[:]) {
     s.dict = dict;
 }
 
+fn write_container_header<B>(s: ZStreamCompressor&, out: B&) {
+    if s.header_written { return; }
+    if s.format == ContainerFormat.Zlib {
+        let cmf: u8 = 0x78;
+        var flg: u32 = if s.level >= 6 { 0x80 } else { 0x00 };
+        if s.dict.len > 0 {
+            flg |= 0x20; // FDICT
+        }
+        let rem = ((cmf as u32) * 256 + flg) % 31;
+        if rem != 0 { flg += 31 - rem; }
+        out.push(cmf);
+        out.push((flg & 0xFF) as u8);
+
+        if s.dict.len > 0 {
+            let dict_adler = adler32(s.dict);
+            out.push(((dict_adler >> 24) & 0xFF) as u8);
+            out.push(((dict_adler >> 16) & 0xFF) as u8);
+            out.push(((dict_adler >> 8) & 0xFF) as u8);
+            out.push((dict_adler & 0xFF) as u8);
+        }
+    } else if s.format == ContainerFormat.Gzip {
+        out.push(0x1F);
+        out.push(0x8B);
+        out.push(0x08);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0xFF);
+    }
+    s.header_written = true;
+}
+
+fn update_stream_checksums(s: ZStreamCompressor&, chunk: const u8[:]) {
+    if chunk.len == 0 { return; }
+    if s.format == ContainerFormat.Zlib {
+        s.adler = adler32_update(s.adler, chunk);
+    } else if s.format == ContainerFormat.Gzip {
+        s.crc = crc32_update(s.crc, chunk);
+    }
+    s.total_in += chunk.len as u64;
+}
+
+fn update_stream_sliding_window(s: ZStreamCompressor&, chunk: const u8[:]) {
+    if chunk.len >= 32768 {
+        let start = chunk.len - 32768;
+        for i in 32768 {
+            s.window[i] = chunk[start + (i as i64)];
+        }
+        s.window_len = 32768;
+    } else if chunk.len > 0 {
+        let clen = chunk.len as i32;
+        let to_keep = if s.window_len + clen > 32768 { 32768 - clen } else { s.window_len };
+        let shift = s.window_len - to_keep;
+        if shift > 0 {
+            for i in to_keep {
+                s.window[i] = s.window[shift + i];
+            }
+        }
+        for i in chunk.len {
+            s.window[(to_keep as i64) + i] = chunk[i];
+        }
+        s.window_len = to_keep + clen;
+    }
+}
+
+fn emit_sync_flush_marker<B>(s: ZStreamCompressor&, out: B&) {
+    write_bits(s.w, 0, 3, out);
+    flush_bits(s.w, out);
+    out.push(0x00);
+    out.push(0x00);
+    out.push(0xFF);
+    out.push(0xFF);
+}
+
+fn emit_stream_trailer<B>(s: ZStreamCompressor&, out: B&) {
+    flush_bits(s.w, out);
+    if s.format == ContainerFormat.Zlib {
+        out.push(((s.adler >> 24) & 0xFF) as u8);
+        out.push(((s.adler >> 16) & 0xFF) as u8);
+        out.push(((s.adler >> 8) & 0xFF) as u8);
+        out.push((s.adler & 0xFF) as u8);
+    } else if s.format == ContainerFormat.Gzip {
+        out.push((s.crc & 0xFF) as u8);
+        out.push(((s.crc >> 8) & 0xFF) as u8);
+        out.push(((s.crc >> 16) & 0xFF) as u8);
+        out.push(((s.crc >> 24) & 0xFF) as u8);
+
+        let sz = (s.total_in & 0xFFFFFFFF) as u32;
+        out.push((sz & 0xFF) as u8);
+        out.push(((sz >> 8) & 0xFF) as u8);
+        out.push(((sz >> 16) & 0xFF) as u8);
+        out.push(((sz >> 24) & 0xFF) as u8);
+    }
+    s.is_finished = true;
+}
+
 fn zstream_write<B>(s: ZStreamCompressor&, chunk: const u8[:], out: B&, flush: FlushMode = FlushMode.NoFlush) -> bool {
     guard !s.is_finished else { return false; }
 
     let out_before = out.len;
+    write_container_header(s, out);
+    update_stream_checksums(s, chunk);
 
-    // 1. Write container header if not yet written
-    if !s.header_written {
-        if s.format == ContainerFormat.Zlib {
-            let cmf: u8 = 0x78;
-            var flg: u32 = if s.level >= 6 { 0x80 } else { 0x00 };
-            if s.dict.len > 0 {
-                flg |= 0x20; // FDICT
-            }
-            let rem = ((cmf as u32) * 256 + flg) % 31;
-            if rem != 0 { flg += 31 - rem; }
-            out.push(cmf);
-            out.push((flg & 0xFF) as u8);
-
-            if s.dict.len > 0 {
-                let dict_adler = adler32(s.dict);
-                out.push(((dict_adler >> 24) & 0xFF) as u8);
-                out.push(((dict_adler >> 16) & 0xFF) as u8);
-                out.push(((dict_adler >> 8) & 0xFF) as u8);
-                out.push((dict_adler & 0xFF) as u8);
-            }
-        } else if s.format == ContainerFormat.Gzip {
-            out.push(0x1F);
-            out.push(0x8B);
-            out.push(0x08);
-            out.push(0x00);
-            out.push(0x00);
-            out.push(0x00);
-            out.push(0x00);
-            out.push(0x00);
-            out.push(0x00);
-            out.push(0xFF);
-        }
-        s.header_written = true;
-    }
-
-    // 2. Update rolling checksums
-    if chunk.len > 0 {
-        if s.format == ContainerFormat.Zlib {
-            s.adler = adler32_update(s.adler, chunk);
-        } else if s.format == ContainerFormat.Gzip {
-            s.crc = crc32_update(s.crc, chunk);
-        }
-        s.total_in += chunk.len as u64;
-    }
-
-    // 3. Compress chunk block
     let is_final = (flush == FlushMode.Finish);
     if chunk.len > 0 || (is_final && !s.is_finished) {
         let hist = if s.window_len > 0 { s.window[..s.window_len] } else { s.dict };
         let ok = deflate_block(chunk, out, s.w, s.level, is_final, hist);
         guard ok else { return false; }
-
-        if chunk.len >= 32768 {
-            let start = chunk.len - 32768;
-            for i in 32768 {
-                s.window[i] = chunk[start + (i as i64)];
-            }
-            s.window_len = 32768;
-        } else if chunk.len > 0 {
-            let clen = chunk.len as i32;
-            let to_keep = if s.window_len + clen > 32768 { 32768 - clen } else { s.window_len };
-            let shift = s.window_len - to_keep;
-            if shift > 0 {
-                for i in to_keep {
-                    s.window[i] = s.window[shift + i];
-                }
-            }
-            for i in chunk.len {
-                s.window[(to_keep as i64) + i] = chunk[i];
-            }
-            s.window_len = to_keep + clen;
-        }
+        update_stream_sliding_window(s, chunk);
     }
 
-    // 4. Handle flush modes
     if flush == FlushMode.SyncFlush {
-        write_bits(s.w, 0, 3, out);
-        flush_bits(s.w, out);
-        out.push(0x00);
-        out.push(0x00);
-        out.push(0xFF);
-        out.push(0xFF);
+        emit_sync_flush_marker(s, out);
     } else if flush == FlushMode.FullFlush {
-        write_bits(s.w, 0, 3, out);
-        flush_bits(s.w, out);
-        out.push(0x00);
-        out.push(0x00);
-        out.push(0xFF);
-        out.push(0xFF);
+        emit_sync_flush_marker(s, out);
         s.window_len = 0;
         s.dict = "";
     } else if flush == FlushMode.Finish {
-        flush_bits(s.w, out);
-        if s.format == ContainerFormat.Zlib {
-            out.push(((s.adler >> 24) & 0xFF) as u8);
-            out.push(((s.adler >> 16) & 0xFF) as u8);
-            out.push(((s.adler >> 8) & 0xFF) as u8);
-            out.push((s.adler & 0xFF) as u8);
-        } else if s.format == ContainerFormat.Gzip {
-            out.push((s.crc & 0xFF) as u8);
-            out.push(((s.crc >> 8) & 0xFF) as u8);
-            out.push(((s.crc >> 16) & 0xFF) as u8);
-            out.push(((s.crc >> 24) & 0xFF) as u8);
-
-            let sz = (s.total_in & 0xFFFFFFFF) as u32;
-            out.push((sz & 0xFF) as u8);
-            out.push(((sz >> 8) & 0xFF) as u8);
-            out.push(((sz >> 16) & 0xFF) as u8);
-            out.push(((sz >> 24) & 0xFF) as u8);
-        }
-        s.is_finished = true;
+        emit_stream_trailer(s, out);
     }
 
     s.total_out += (out.len - out_before) as u64;

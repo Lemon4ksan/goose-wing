@@ -502,6 +502,27 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     return sig;
 }
 
+fn compute_ed25519_challenge(r_bytes: const u8[32], public_key: const u8[32], message: const u8[:]) -> u8[32] {
+    var k_ctx = sha512_init();
+    sha512_update(k_ctx, r_bytes[..]);
+    sha512_update(k_ctx, public_key[..]);
+    sha512_update(k_ctx, message);
+    let k_hash = sha512_final(k_ctx);
+    return sc_reduce(k_hash);
+}
+
+fn ed25519_points_equal_projective(p1: const EdPoint&, p2: const EdPoint&) -> bool {
+    // Affine comparison without field inversions:
+    // X1 * Z2 == X2 * Z1 and Y1 * Z2 == Y2 * Z1
+    let x1z2 = fe_mul(p1.X, p2.Z);
+    let x2z1 = fe_mul(p2.X, p1.Z);
+    guard fe_eq(x1z2, x2z1) else { return false; }
+
+    let y1z2 = fe_mul(p1.Y, p2.Z);
+    let y2z1 = fe_mul(p2.Y, p1.Z);
+    return fe_eq(y1z2, y2z1);
+}
+
 // Verifies a 64-byte Ed25519 signature against a 32-byte public key (RFC 8032 Section 5.1.7).
 // Returns true if valid, false if signature or public key is malformed or invalid.
 fn ed25519_verify(public_key: const u8[32]&, message: const u8[:], signature: const u8[64]&) -> bool {
@@ -512,49 +533,18 @@ fn ed25519_verify(public_key: const u8[32]&, message: const u8[:], signature: co
         s_bytes[i] = signature[32 + i];
     }
 
-    // 1. S must be strictly less than L
-    if sc_is_ge_l(s_bytes) {
-        return false;
-    }
+    guard !sc_is_ge_l(s_bytes) else { return false; }
 
-    // 2. Decode public key point A
     var a_pt = EdPoint { .. };
-    if !ed25519_point_decompress(public_key, a_pt) {
-        return false;
-    }
+    guard ed25519_point_decompress(public_key, a_pt) else { return false; }
 
-    // 3. Decode signature commitment point R
     var r_pt = EdPoint { .. };
-    if !ed25519_point_decompress(r_bytes, r_pt) {
-        return false;
-    }
+    guard ed25519_point_decompress(r_bytes, r_pt) else { return false; }
 
-    // 4. Compute challenge k = SHA-512(R || A || message) mod L
-    var k_ctx = sha512_init();
-    sha512_update(k_ctx, r_bytes[..]);
-    sha512_update(k_ctx, public_key[..]);
-    sha512_update(k_ctx, message);
-    let k_hash = sha512_final(k_ctx);
-    let k = sc_reduce(k_hash);
-
-    // 5. Verification: [S] * B == R + [k] * A
+    let k = compute_ed25519_challenge(r_bytes, public_key, message);
     let sb = ed25519_scalarmult_base(s_bytes);
     let ka = ed25519_scalarmult_vartime(a_pt, k);
     let r_plus_ka = ed25519_point_add(r_pt, ka);
 
-    // Affine comparison without field inversions:
-    // X1 * Z2 == X2 * Z1 and Y1 * Z2 == Y2 * Z1
-    let x1z2 = fe_mul(sb.X, r_plus_ka.Z);
-    let x2z1 = fe_mul(r_plus_ka.X, sb.Z);
-    if !fe_eq(x1z2, x2z1) {
-        return false;
-    }
-
-    let y1z2 = fe_mul(sb.Y, r_plus_ka.Z);
-    let y2z1 = fe_mul(r_plus_ka.Y, sb.Z);
-    if !fe_eq(y1z2, y2z1) {
-        return false;
-    }
-
-    return true;
+    return ed25519_points_equal_projective(sb, r_plus_ka);
 }

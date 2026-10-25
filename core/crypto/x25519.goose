@@ -263,15 +263,18 @@ inline fn fe_cswap(swap: u8, a: Fe10&, b: Fe10&) {
 
 // ---- 2. Montgomery Ladder Scalar Multiplication (RFC 7748 Section 5) ---------
 
-// Performs X25519 scalar multiplication: out = scalar * point on Curve25519.
-fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
-    // 1. Scalar clamping according to RFC 7748
+fn clamp_scalar_rfc7748(scalar: const u8[32]&) -> u8[32] {
     var clamped: u8[32] = scalar;
     clamped[0] &= 248;
     clamped[31] &= 127;
     clamped[31] |= 64;
+    return clamped;
+}
 
-    // 2. Initial state
+// Performs X25519 scalar multiplication: out = scalar * point on Curve25519.
+fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
+    let clamped = clamp_scalar_rfc7748(scalar);
+
     let x_1 = fe_from_bytes(point);
     var x_2 = Fe10 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
     var z_2 = Fe10 { .. };
@@ -279,7 +282,6 @@ fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
     var z_3 = Fe10 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
     var swap: u8 = 0;
 
-    // 3. Montgomery ladder from bit 254 down to 0
     for i in 255 {
         let bit_pos = 254 - i;
         let byte_idx = bit_pos / 8;
@@ -314,7 +316,6 @@ fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
         let tmp_z = z_2; z_2 = z_3; z_3 = tmp_z;
     }
 
-    // 4. Return x_2 * (z_2^(p - 2))
     let res = fe_mul(x_2, fe_inv(z_2));
     return fe_to_bytes(res);
 }

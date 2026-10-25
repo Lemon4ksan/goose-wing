@@ -51,6 +51,9 @@ struct H2ServerSession {
     server_settings_sent: bool = false,
     client_settings_acked: bool = false,
     server_name: u8[..64] = "goose-wing/1.0",
+    header_accumulator: u8[..16384] = [],
+    header_accum_stream_id: u32 = 0,
+    header_accum_end_stream: bool = false,
 }
 
 fn new_h2_server_session(
@@ -309,6 +312,40 @@ fn emit_response_trailers<B>(
     out.append(hpack_block[..]);
 }
 
+fn apply_decoded_headers_to_stream(st: H2ServerStream&, dec_list: const DecodedH2HeaderList&) {
+    for &entry in dec_list.fields {
+        let n = entry.name[..];
+        let v = entry.value[..];
+        if n == ":method" {
+            st.method.clear();
+            st.method.append(v);
+        } else if n == ":path" {
+            st.path.clear();
+            st.path.append(v);
+        } else if n == ":scheme" {
+            st.scheme.clear();
+            st.scheme.append(v);
+        } else if n == ":authority" {
+            st.authority.clear();
+            st.authority.append(v);
+        } else {
+            if st.headers.len < 32 {
+                st.headers.push(make_header(n, v));
+            }
+        }
+    }
+    st.headers_received = true;
+}
+
+inline fn is_stream_cancelled_in_batch(cancelled: const u32[..16]&, stream_id: u32) -> bool {
+    for id in cancelled {
+        if id == stream_id {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---- 4. Complete Ingress Frame Processing & Pipeline Dispatch ---------------
 
 // Processes incoming HTTP/2 wire data, executing complete streams through the server pipeline.
@@ -334,6 +371,25 @@ fn handle_h2_server_ingress<B>(
         } else {
             return 0, false; // Missing or invalid preface
         }
+    }
+
+    // Pre-scan ingress batch for Rapid Reset cancellations (CVE-2023-44487).
+    // If a stream in this batch is cancelled via RST_STREAM, we skip full H2ServerStream allocation
+    // and route dispatch while still passing the header block through HPACK to keep table state in sync.
+    var cancelled_streams: u32[..16] = [];
+    var p_scan = offset;
+    while p_scan + 9 <= wire.len {
+        let sc_hdr, sc_err = parse_frame_header(wire[p_scan .. p_scan + 9], sess.conn.local_max_frame_size);
+        if sc_err != ERR_NO_ERROR {
+            break;
+        }
+        let sc_tot = 9 + (sc_hdr.length as i64);
+        if sc_hdr.frame_type == FRAME_RST_STREAM && sc_hdr.stream_id != 0 {
+            if cancelled_streams.len < cancelled_streams.cap {
+                cancelled_streams.push(sc_hdr.stream_id);
+            }
+        }
+        p_scan += sc_tot;
     }
 
     while offset + 9 <= wire.len {
@@ -394,61 +450,80 @@ fn handle_h2_server_ingress<B>(
                 apply_window_update(sess.conn, hdr.stream_id, inc);
             }
         } else if hdr.frame_type == FRAME_RST_STREAM {
-            let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
-            if found {
-                sess.streams[s_idx].active = false;
+            for i in sess.streams.len {
+                if sess.streams[i].active && sess.streams[i].stream_id == hdr.stream_id {
+                    sess.streams[i].active = false;
+                }
             }
         } else if hdr.frame_type == FRAME_HEADERS {
-            let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
-            if found {
-                var block_start: i64 = 0;
-                var block_end: i64 = frame_payload.len;
+            let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
+            var block_start: i64 = 0;
+            var block_end: i64 = frame_payload.len;
 
-                // Handle PADDED flag
-                if (hdr.flags & FLAG_PADDED) != 0 && frame_payload.len >= 1 {
-                    let pad_len = frame_payload[0] as i64;
-                    block_start += 1;
-                    block_end -= pad_len;
-                }
+            // Handle PADDED flag
+            if (hdr.flags & FLAG_PADDED) != 0 && frame_payload.len >= 1 {
+                let pad_len = frame_payload[0] as i64;
+                block_start += 1;
+                block_end -= pad_len;
+            }
 
-                // Handle PRIORITY flag
-                if (hdr.flags & FLAG_PRIORITY) != 0 && (block_end - block_start) >= 5 {
-                    block_start += 5;
-                }
+            // Handle PRIORITY flag
+            if (hdr.flags & FLAG_PRIORITY) != 0 && (block_end - block_start) >= 5 {
+                block_start += 5;
+            }
 
-                if block_start <= block_end && block_end <= frame_payload.len {
-                    let fragment = frame_payload[block_start..block_end];
+            if block_start <= block_end && block_end <= frame_payload.len {
+                let fragment = frame_payload[block_start..block_end];
+                if (hdr.flags & FLAG_END_HEADERS) != 0 {
                     var dec_list = DecodedH2HeaderList { .. };
                     let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, fragment, dec_list);
-
-                    if dec_err == ERR_NO_ERROR {
-                        for &entry in dec_list.fields {
-                            let n = entry.name[..];
-                            let v = entry.value[..];
-                            if n == ":method" {
-                                sess.streams[s_idx].method.clear();
-                                sess.streams[s_idx].method.append(v);
-                            } else if n == ":path" {
-                                sess.streams[s_idx].path.clear();
-                                sess.streams[s_idx].path.append(v);
-                            } else if n == ":scheme" {
-                                sess.streams[s_idx].scheme.clear();
-                                sess.streams[s_idx].scheme.append(v);
-                            } else if n == ":authority" {
-                                sess.streams[s_idx].authority.clear();
-                                sess.streams[s_idx].authority.append(v);
-                            } else {
-                                if sess.streams[s_idx].headers.len < 32 {
-                                    sess.streams[s_idx].headers.push(make_header(n, v));
-                                }
+                    if dec_err != ERR_NO_ERROR {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
+                    if !is_cancelled {
+                        let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
+                        if found {
+                            apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+                            if (hdr.flags & FLAG_END_STREAM) != 0 {
+                                sess.streams[s_idx].body_received = true;
                             }
                         }
-                        sess.streams[s_idx].headers_received = true;
+                    }
+                } else {
+                    // Multi-frame header block: CONTINUATION follows
+                    sess.header_accumulator.clear();
+                    sess.header_accum_stream_id = hdr.stream_id;
+                    sess.header_accum_end_stream = (hdr.flags & FLAG_END_STREAM) != 0;
+                    if fragment.len <= sess.header_accumulator.cap {
+                        sess.header_accumulator.append(fragment);
                     }
                 }
-
-                if (hdr.flags & FLAG_END_STREAM) != 0 {
-                    sess.streams[s_idx].body_received = true;
+            }
+        } else if hdr.frame_type == FRAME_CONTINUATION {
+            if hdr.stream_id == sess.header_accum_stream_id {
+                let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
+                if sess.header_accumulator.len + frame_payload.len <= sess.header_accumulator.cap {
+                    sess.header_accumulator.append(frame_payload);
+                }
+                if (hdr.flags & FLAG_END_HEADERS) != 0 {
+                    var dec_list = DecodedH2HeaderList { .. };
+                    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, sess.header_accumulator[..], dec_list);
+                    if dec_err != ERR_NO_ERROR {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
+                    if !is_cancelled {
+                        let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
+                        if found {
+                            apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+                            if sess.header_accum_end_stream {
+                                sess.streams[s_idx].body_received = true;
+                            }
+                        }
+                    }
+                    sess.header_accum_stream_id = 0;
+                    sess.header_accumulator.clear();
                 }
             }
         } else if hdr.frame_type == FRAME_DATA {

@@ -93,10 +93,69 @@ fn test_socket_invariant_validation(t: core::T&) {
     };
 }
 
+fn test_live_socket_options(t: core::T&) {
+    t.run("OS Socket Option Tuning & Telemetry") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        sub.assert_gt(listener, 0, "Listener socket created");
+
+        let port = wing::tcp_getsockname_port(listener);
+        sub.assert_gt(port as i64, 0, "Bound to valid ephemeral port");
+
+        // TCP_DEFER_ACCEPT (Linux / FreeBSD)
+        let ok_defer = wing::tcp_set_defer_accept(listener, 1);
+        sub.assert_true(ok_defer, "tcp_set_defer_accept returns success");
+
+        // TCP_USER_TIMEOUT
+        let ok_ut = wing::tcp_set_user_timeout(listener, 5000);
+        sub.assert_true(ok_ut, "tcp_set_user_timeout returns success");
+
+        // Aggressive SO_KEEPALIVE
+        let ok_keep = wing::tcp_set_keepalive(listener, 1, 11, 3);
+        sub.assert_true(ok_keep, "tcp_set_keepalive returns success");
+
+        // TCP_SYNCNT
+        let ok_syn = wing::tcp_set_syn_retries(listener, 3);
+        sub.assert_true(ok_syn, "tcp_set_syn_retries returns success");
+
+        // Queue telemetry
+        let notsent = wing::tcp_get_notsent_bytes(listener);
+        sub.assert_ge(notsent, 0, "notsent_bytes >= 0");
+
+        let readable = wing::tcp_get_readable_bytes(listener);
+        sub.assert_ge(readable, 0, "readable_bytes >= 0");
+
+        // End-to-end CorkBuffer -> tcp_flush_cork -> tcp_recv_pipe into PipeBuffer
+        let client_sock = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client_sock, 0, "Client connected to listener");
+
+        let accepted_sock = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(accepted_sock, 0, "Accepted incoming connection");
+
+        var cork = core::new_cork_buffer();
+        cork.cork_write("WING_PIPE_STREAM_PAYLOAD");
+        sub.assert_eq(cork.cork_pending(), 24, "Cork has 24 bytes pending");
+
+        let flushed = wing::tcp_flush_cork(client_sock, cork);
+        sub.assert_eq(flushed, 24, "Flushed all 24 bytes via tcp_flush_cork");
+        sub.assert_eq(cork.cork_pending(), 0, "Cork drained to 0");
+
+        var pipe = core::new_pipe_buffer();
+        let recvd = wing::tcp_recv_pipe(accepted_sock, pipe, 1024, 2000);
+        sub.assert_eq(recvd, 24, "tcp_recv_pipe read directly into pipe storage");
+        sub.assert_eq(pipe.readable_len(), 24, "PipeBuffer has 24 readable bytes");
+        sub.assert_eq(pipe.readable_slice(), "WING_PIPE_STREAM_PAYLOAD", "Direct pipe slice matches wire payload");
+
+        wing::tcp_close(client_sock);
+        wing::tcp_close(accepted_sock);
+        wing::tcp_close(listener);
+    };
+}
+
 fn main() {
     var runner = core::new_runner("L4 Socket Parameter Tuning Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. Socket p0f Profiles", test_socket_p0f_profiles);
     core::run_case(runner, "2. Socket Invariant Validation", test_socket_invariant_validation);
+    core::run_case(runner, "3. Live OS Socket Tuning & Telemetry", test_live_socket_options);
     let ok = core::finish(runner);
     assert(ok);
 }

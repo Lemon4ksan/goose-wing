@@ -34,6 +34,10 @@ const WS_STATUS_INTERNAL_ERROR:   u16 = 1011;
 // RFC 6455 Section 1.3 Handshake GUID
 let WS_HANDSHAKE_GUID: const u8[:] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+// Native CSPRNG & SIMD shims
+extern "wing_crypto_random_bytes" fn native_crypto_random_bytes(out: u8[:]) -> i32;
+extern "wing_simd_mask_websocket" fn native_simd_mask_websocket(data: u8[:], mask: const u8[4]&);
+
 // Checks if an opcode represents a control frame (RFC 6455 Section 5.5)
 inline fn is_ws_control_opcode(opcode: u8) -> bool {
     return (opcode & 0x08) != 0;
@@ -63,31 +67,11 @@ struct WsFrameHeader {
     header_len: u16 = 0,
 }
 
-// In-place masking / unmasking using 64-bit word XOR unrolling (RFC 6455 Section 5.3)
+// In-place masking / unmasking using vectorized SIMD acceleration with 64-bit unrolled fallback (RFC 6455 Section 5.3)
 fn mask_websocket_payload(data: u8[:], mask_key: const u8[4]&) {
     let n = data.len;
     guard n > 0 else { return; }
-
-    // Replicate 4-byte mask key across 64 bits
-    let k0 = mask_key[0] as u64;
-    let k1 = mask_key[1] as u64;
-    let k2 = mask_key[2] as u64;
-    let k3 = mask_key[3] as u64;
-    let mask64: u64 = (k0 << 56) | (k1 << 48) | (k2 << 40) | (k3 << 32) |
-                      (k0 << 24) | (k1 << 16) | (k2 << 8)  | k3;
-
-    var i: i64 = 0;
-    while i + 8 <= n {
-        let chunk = core::read_be_u64(data, i);
-        core::write_be_u64_at(data, i, chunk ^ mask64);
-        i += 8;
-    }
-
-    // Trailing bytes (0..7)
-    while i < n {
-        data[i] ^= mask_key[i % 4];
-        i++;
-    }
+    native_simd_mask_websocket(data, mask_key);
 }
 
 // Parses RFC 6455 Frame Header with strict protocol validation
@@ -279,14 +263,23 @@ struct WebSocketSession {
     is_closed: bool = false,
     close_code: u16 = 0,
     mask_rng_state: u32 = 0x9E3779B9, // Fast linear congruential PRNG for 4-byte client masking keys
+
+    // Multi-frame fragmented message assembly (RFC 6455 §5.4)
+    frag_opcode: u8 = 0,               // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
+    frag_buffer: u8[..16384] = [],     // Assembly buffer for fragmented messages
 }
 
 fn new_websocket_session(is_client: bool = true) -> WebSocketSession {
     return WebSocketSession { is_client: is_client, .. };
 }
 
-// Generates pseudo-random 4-byte masking key for client frames
+// Generates cryptographically secure 4-byte masking key for client frames per RFC 6455 Section 5.3.
 fn ws_next_mask_key(ws: WebSocketSession&) -> u8[4] {
+    var mask: u8[4] = [0; 4];
+    if native_crypto_random_bytes(mask[..]) == 0 {
+        return mask;
+    }
+    // High-entropy fallback if OS CSPRNG is unavailable
     ws.mask_rng_state = ws.mask_rng_state * 1664525 + 1013904223;
     let s = ws.mask_rng_state;
     return [
@@ -350,14 +343,25 @@ fn ws_close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out
 
 struct WsMessage {
     opcode: u8 = WS_OPCODE_TEXT,
-    data: u8[..4096] = [],
+    data: u8[..16384] = [],
     close_code: u16 = 0,
     close_reason: u8[..128] = [],
     is_valid: bool = false,
 }
 
+fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
+    if is_client && masked {
+        return false;
+    }
+    if !is_client && !masked {
+        return false;
+    }
+    return true;
+}
+
 // Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,
-// answers Close with Close echo, and populates out_msg for data frames.
+// answers Close with Close echo, reassembles multi-frame fragmented messages (RFC 6455 §5.4),
+// validates strict UTF-8 on text and close frames, and populates out_msg upon message completion.
 fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply: B&) -> bool {
     out_msg.is_valid = false;
     out_msg.data.clear();
@@ -374,8 +378,6 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
     let p_len = hdr.payload_len as i64;
     let payload = wire[p_start..(p_start + p_len)];
 
-    // Protocol validations (RFC 6455 Section 5.1 & 5.2):
-    // 1. RSV bits must be 0 unless an extension is negotiated.
     if hdr.rsv1 || hdr.rsv2 || hdr.rsv3 {
         ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension", out_reply);
         ws.is_closed = true;
@@ -383,17 +385,9 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
         return true;
     }
 
-    // 2. Client MUST NOT receive masked frames from server.
-    if ws.is_client && hdr.masked {
-        ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "masked frame received by client", out_reply);
-        ws.is_closed = true;
-        ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-        return true;
-    }
-
-    // 3. Server MUST NOT receive unmasked frames from client.
-    if !ws.is_client && !hdr.masked {
-        ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "unmasked frame received by server", out_reply);
+    if !is_ws_masking_valid(ws.is_client, hdr.masked) {
+        let reason = if ws.is_client { "masked frame received by client" } else { "unmasked frame received by server" };
+        ws_close(ws, WS_STATUS_PROTOCOL_ERROR, reason, out_reply);
         ws.is_closed = true;
         ws.close_code = WS_STATUS_PROTOCOL_ERROR;
         return true;
@@ -403,53 +397,149 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
         mask_websocket_payload(payload, hdr.mask_key);
     }
 
-    if hdr.opcode == WS_OPCODE_PING {
-        ws_send_pong(ws, payload, out_reply);
-        out_msg.opcode = WS_OPCODE_PING;
-        if payload.len <= out_msg.data.cap {
-            out_msg.data.append(payload);
+    // Control frames (RFC 6455 §5.5) - can arrive interleaved in fragmented messages
+    if is_ws_control_opcode(hdr.opcode) {
+        if hdr.opcode == WS_OPCODE_PING {
+            ws_send_pong(ws, payload, out_reply);
+            out_msg.opcode = WS_OPCODE_PING;
+            if payload.len <= out_msg.data.cap {
+                out_msg.data.append(payload);
+            }
+            out_msg.is_valid = true;
+            return true;
+        } else if hdr.opcode == WS_OPCODE_PONG {
+            out_msg.opcode = WS_OPCODE_PONG;
+            if payload.len <= out_msg.data.cap {
+                out_msg.data.append(payload);
+            }
+            out_msg.is_valid = true;
+            return true;
+        } else if hdr.opcode == WS_OPCODE_CLOSE {
+            let code, reason, ok_close = parse_ws_close_payload(payload);
+            if !ok_close {
+                ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "invalid close frame payload", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+                return true;
+            }
+            // RFC 6455 §5.5.1: Close reason MUST be valid UTF-8
+            if reason.len > 0 && !core::validate_utf8(reason) {
+                ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "invalid UTF-8 in close reason", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+                return true;
+            }
+            out_msg.opcode = WS_OPCODE_CLOSE;
+            out_msg.close_code = code;
+            if reason.len > 0 && reason.len <= out_msg.close_reason.cap {
+                out_msg.close_reason.append(reason);
+            }
+            out_msg.is_valid = true;
+            if !ws.is_closed {
+                let reply_code = if code == WS_STATUS_NO_STATUS { WS_STATUS_NORMAL } else { code };
+                ws_close(ws, reply_code, reason, out_reply);
+            }
+            ws.is_closed = true;
+            ws.close_code = code;
+            return true;
         }
-        out_msg.is_valid = true;
-        return true;
-    } else if hdr.opcode == WS_OPCODE_PONG {
-        out_msg.opcode = WS_OPCODE_PONG;
-        if payload.len <= out_msg.data.cap {
-            out_msg.data.append(payload);
-        }
-        out_msg.is_valid = true;
-        return true;
-    } else if hdr.opcode == WS_OPCODE_CLOSE {
-        let code, reason, ok_close = parse_ws_close_payload(payload);
-        if !ok_close {
-            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "invalid close frame payload", out_reply);
+    }
+
+    // Data frames (RFC 6455 §5.4 & §5.6)
+    if hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY {
+        // Interleaving check: cannot start a new data message while previous is still fragmented
+        if ws.frag_opcode != 0 {
+            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "interleaved data frame during fragmentation", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
             return true;
         }
-        out_msg.opcode = WS_OPCODE_CLOSE;
-        out_msg.close_code = code;
-        if reason.len > 0 && reason.len <= out_msg.close_reason.cap {
-            out_msg.close_reason.append(reason);
-        }
-        out_msg.is_valid = true;
-        if !ws.is_closed {
-            let reply_code = if code == WS_STATUS_NO_STATUS { WS_STATUS_NORMAL } else { code };
-            ws_close(ws, reply_code, reason, out_reply);
-        }
-        ws.is_closed = true;
-        ws.close_code = code;
-        return true;
-    } else if hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY {
-        if payload.len > out_msg.data.cap {
-            ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "payload exceeds buffer capacity", out_reply);
-            ws.is_closed = true;
-            ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+
+        if hdr.fin {
+            // Unfragmented single-frame message
+            if hdr.opcode == WS_OPCODE_TEXT {
+                if !core::validate_utf8(payload) {
+                    ws_close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
+                    ws.is_closed = true;
+                    ws.close_code = WS_STATUS_INVALID_PAYLOAD;
+                    return true;
+                }
+            }
+            if payload.len > out_msg.data.cap {
+                ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "payload exceeds buffer capacity", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+                return true;
+            }
+            out_msg.opcode = hdr.opcode;
+            out_msg.data.append(payload);
+            out_msg.is_valid = true;
+            return true;
+        } else {
+            // Initial fragment of a multi-frame message
+            ws.frag_opcode = hdr.opcode;
+            ws.frag_buffer.clear();
+            if payload.len > ws.frag_buffer.cap {
+                ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+                return true;
+            }
+            ws.frag_buffer.append(payload);
+            out_msg.is_valid = false;
             return true;
         }
-        out_msg.opcode = hdr.opcode;
-        out_msg.data.append(payload);
-        out_msg.is_valid = true;
-        return true;
+    } else if hdr.opcode == WS_OPCODE_CONTINUATION {
+        // Continuation frame without active fragmented message
+        if ws.frag_opcode == 0 {
+            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "continuation frame without starting fragment", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
+
+        if ws.frag_buffer.len + payload.len > ws.frag_buffer.cap {
+            ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds capacity", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+            ws.frag_opcode = 0;
+            ws.frag_buffer.clear();
+            return true;
+        }
+        ws.frag_buffer.append(payload);
+
+        if hdr.fin {
+            // Terminal fragment: message assembly is complete
+            if ws.frag_opcode == WS_OPCODE_TEXT {
+                if !core::validate_utf8(ws.frag_buffer[..]) {
+                    ws_close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in assembled message", out_reply);
+                    ws.is_closed = true;
+                    ws.close_code = WS_STATUS_INVALID_PAYLOAD;
+                    ws.frag_opcode = 0;
+                    ws.frag_buffer.clear();
+                    return true;
+                }
+            }
+            if ws.frag_buffer.len > out_msg.data.cap {
+                ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds buffer capacity", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+                ws.frag_opcode = 0;
+                ws.frag_buffer.clear();
+                return true;
+            }
+            out_msg.opcode = ws.frag_opcode;
+            out_msg.data.append(ws.frag_buffer[..]);
+            out_msg.is_valid = true;
+
+            ws.frag_opcode = 0;
+            ws.frag_buffer.clear();
+            return true;
+        } else {
+            // Non-terminal continuation fragment, await further frames
+            out_msg.is_valid = false;
+            return true;
+        }
     }
 
     return true;

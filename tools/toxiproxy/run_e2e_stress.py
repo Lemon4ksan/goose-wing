@@ -9,19 +9,25 @@ Executes live TCP tests through the chaos proxy with various network anomalies:
   5. Peer connection reset (RST) injection
 """
 
-import sys
-import os
 import asyncio
-import socket
+import sys
 import time
 
 # Ensure UTF-8 output on Windows
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from toxiproxy import ChaosProxy, SlicerToxic, LatencyToxic, BandwidthToxic, ResetPeerToxic
+from toxiproxy import (
+    BandwidthToxic,
+    ChaosProxy,
+    LatencyToxic,
+    ResetPeerToxic,
+    SlicerToxic,
+)
+
 
 class GooseEchoServer:
     """Simple asynchronous HTTP/1.1 echo backend simulating Goose server."""
+
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
         self.host = host
         self.port = port
@@ -29,7 +35,9 @@ class GooseEchoServer:
         self.bound_port = 0
 
     async def start(self) -> int:
-        self.server = await asyncio.start_server(self._handle_client, self.host, self.port)
+        self.server = await asyncio.start_server(
+            self._handle_client, self.host, self.port
+        )
         self.bound_port = self.server.sockets[0].getsockname()[1]
         return self.bound_port
 
@@ -38,7 +46,9 @@ class GooseEchoServer:
             self.server.close()
             await self.server.wait_closed()
 
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ):
         try:
             buf = bytearray()
             while True:
@@ -81,11 +91,12 @@ class GooseEchoServer:
             writer.close()
 
 
-async def run_client_request(proxy_port: int, request_bytes: bytes, timeout: float = 5.0) -> bytes:
+async def run_client_request(
+    proxy_port: int, request_bytes: bytes, timeout: float = 5.0
+) -> bytes:
     """Connects to proxy, sends request, and returns response."""
     reader, writer = await asyncio.wait_for(
-        asyncio.open_connection("127.0.0.1", proxy_port),
-        timeout=timeout
+        asyncio.open_connection("127.0.0.1", proxy_port), timeout=timeout
     )
     writer.write(request_bytes)
     await writer.drain()
@@ -123,7 +134,9 @@ async def main():
     # 2. Start Chaos Proxy
     proxy = ChaosProxy(upstream_host="127.0.0.1", upstream_port=server_port)
     proxy_port = await proxy.start()
-    print(f"[*] Started Chaos Proxy on 127.0.0.1:{proxy_port} -> 127.0.0.1:{server_port}\n")
+    print(
+        f"[*] Started Chaos Proxy on 127.0.0.1:{proxy_port} -> 127.0.0.1:{server_port}\n"
+    )
 
     passed = 0
     failed = 0
@@ -143,7 +156,11 @@ async def main():
     # Test 2: Slicer Toxic (1..3 byte slices with micro-delays)
     print("\n--- [Test 2] Slicer Toxic (1..3 byte chunks, 2ms delay) ---")
     proxy.clear_toxics()
-    proxy.add_toxic(SlicerToxic("stream_slicer", min_bytes=1, max_bytes=3, delay_ms=2, stream="both"))
+    proxy.add_toxic(
+        SlicerToxic(
+            "stream_slicer", min_bytes=1, max_bytes=3, delay_ms=2, stream="both"
+        )
+    )
     post_body = b"ChaosSlicerPayload1234567890"
     post_req = (
         b"POST /echo HTTP/1.1\r\n"
@@ -155,7 +172,9 @@ async def main():
     res = await run_client_request(proxy_port, post_req, timeout=10.0)
     dur = time.time() - t0
     if b"200 OK" in res and b"ECHO:" + post_body in res:
-        print(f"  [PASS] Sliced stream correctly reassembled and processed in {dur*1000:.1f}ms.")
+        print(
+            f"  [PASS] Sliced stream correctly reassembled and processed in {dur * 1000:.1f}ms."
+        )
         passed += 1
     else:
         print(f"  [FAIL] Slicer reassembly failed, got: {res}")
@@ -164,7 +183,9 @@ async def main():
     # Test 3: Latency & Jitter Toxic (50ms latency, 15ms jitter)
     print("\n--- [Test 3] Latency & Jitter Toxic (50ms +/- 15ms) ---")
     proxy.clear_toxics()
-    proxy.add_toxic(LatencyToxic("latency_jitter", latency_ms=50, jitter_ms=15, stream="both"))
+    proxy.add_toxic(
+        LatencyToxic("latency_jitter", latency_ms=50, jitter_ms=15, stream="both")
+    )
     t0 = time.time()
     res = await run_client_request(proxy_port, req, timeout=5.0)
     elapsed_ms = (time.time() - t0) * 1000
@@ -208,6 +229,7 @@ async def main():
     print("============================================================")
     if failed > 0:
         sys.exit(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

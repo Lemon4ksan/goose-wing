@@ -352,68 +352,69 @@ fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
 
 // Parses an incoming PROXY v2 binary header:
 // 12-byte preamble + ver_cmd(1B) + fam_trans(1B) + len(2B) + addr_block + TLVs
-// Returns (ProxyHeader, bytes_consumed, success)
-fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
-    var hdr = ProxyHeader { version: ProxyProtocolVersion.V2, .. };
-    guard wire.len >= 16 else { return hdr, 0, false; }
-
-    // 1. Verify 12-byte constant preamble
+fn validate_proxy_v2_preamble(wire: const u8[:]) -> bool {
+    guard wire.len >= 16 else { return false; }
     for i in 12 {
-        guard wire[i] == PROXY_V2_PREAMBLE[i] else { return hdr, 0, false; }
+        guard wire[i] == PROXY_V2_PREAMBLE[i] else { return false; }
     }
+    return true;
+}
 
-    // 2. Version and Command byte (index 12)
-    let ver_cmd = wire[12];
+fn parse_proxy_v2_command(ver_cmd: u8, out_cmd: ProxyCommand&) -> bool {
     let ver = (ver_cmd >> 4) & 0x0F;
-    guard ver == 0x2 else { return hdr, 0, false; } // MUST be version 2
-
+    guard ver == 0x2 else { return false; }
     let cmd = ver_cmd & 0x0F;
     if cmd == PP2_CMD_LOCAL {
-        hdr.command = ProxyCommand.Local;
+        out_cmd = ProxyCommand.Local;
+        return true;
     } else if cmd == PP2_CMD_PROXY {
-        hdr.command = ProxyCommand.Proxy;
-    } else {
-        return hdr, 0, false; // Unknown command
+        out_cmd = ProxyCommand.Proxy;
+        return true;
     }
+    return false;
+}
 
-    // 3. Address Family and Transport Protocol byte (index 13)
-    let fam_trans = wire[13];
+fn parse_proxy_v2_family_transport(
+    fam_trans: u8,
+    out_fam: ProxyAddressFamily&,
+    out_trans: ProxyTransportProtocol&
+) -> bool {
     let fam = (fam_trans >> 4) & 0x0F;
     let trans = fam_trans & 0x0F;
 
     if fam == PP2_FAM_UNSPEC {
-        hdr.family = ProxyAddressFamily.Unspec;
+        out_fam = ProxyAddressFamily.Unspec;
     } else if fam == PP2_FAM_INET4 {
-        hdr.family = ProxyAddressFamily.Inet4;
+        out_fam = ProxyAddressFamily.Inet4;
     } else if fam == PP2_FAM_INET6 {
-        hdr.family = ProxyAddressFamily.Inet6;
+        out_fam = ProxyAddressFamily.Inet6;
     } else if fam == PP2_FAM_UNIX {
-        hdr.family = ProxyAddressFamily.Unix;
+        out_fam = ProxyAddressFamily.Unix;
     } else {
-        return hdr, 0, false; // Unsupported family
+        return false;
     }
 
     if trans == PP2_TRANS_UNSPEC {
-        hdr.transport = ProxyTransportProtocol.Unspec;
+        out_trans = ProxyTransportProtocol.Unspec;
     } else if trans == PP2_TRANS_STREAM {
-        hdr.transport = ProxyTransportProtocol.Stream;
+        out_trans = ProxyTransportProtocol.Stream;
     } else if trans == PP2_TRANS_DGRAM {
-        hdr.transport = ProxyTransportProtocol.Datagram;
+        out_trans = ProxyTransportProtocol.Datagram;
     } else {
-        return hdr, 0, false; // Unsupported transport
+        return false;
     }
+    return true;
+}
 
-    // 4. Payload Length (indices 14-15)
-    var len_r = core::new_slice_reader(wire[14..]);
-    let payload_len_u16, _ = len_r.read_u16_be();
-    let payload_len = payload_len_u16 as i64;
-    let total_required = 16 + payload_len;
-    guard wire.len >= total_required else { return hdr, 0, false; }
-
-    // 5. Parse Address Block based on family
-    var addr_len: i64 = 0;
-    if hdr.family == ProxyAddressFamily.Inet4 {
-        guard payload_len >= 12 else { return hdr, 0, false; }
+fn parse_proxy_v2_addresses(
+    wire: const u8[:],
+    payload_len: i64,
+    fam: ProxyAddressFamily,
+    hdr: ProxyHeader&,
+    out_addr_len: i64&
+) -> bool {
+    if fam == ProxyAddressFamily.Inet4 {
+        guard payload_len >= 12 else { return false; }
         for i in 4 {
             hdr.src_ipv4[i] = wire[16 + i];
             hdr.dst_ipv4[i] = wire[20 + i];
@@ -425,9 +426,10 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
         hdr.dst_port = dp;
         format_ipv4(hdr.src_ipv4, hdr.src_ip_str);
         format_ipv4(hdr.dst_ipv4, hdr.dst_ip_str);
-        addr_len = 12;
-    } else if hdr.family == ProxyAddressFamily.Inet6 {
-        guard payload_len >= 36 else { return hdr, 0, false; }
+        out_addr_len = 12;
+        return true;
+    } else if fam == ProxyAddressFamily.Inet6 {
+        guard payload_len >= 36 else { return false; }
         for i in 16 {
             hdr.src_ipv6[i] = wire[16 + i];
             hdr.dst_ipv6[i] = wire[32 + i];
@@ -439,15 +441,35 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
         hdr.dst_port = dp;
         format_ipv6(hdr.src_ipv6, hdr.src_ip_str);
         format_ipv6(hdr.dst_ipv6, hdr.dst_ip_str);
-        addr_len = 36;
-    } else if hdr.family == ProxyAddressFamily.Unix {
-        guard payload_len >= 216 else { return hdr, 0, false; }
-        addr_len = 216;
-    } else {
-        addr_len = 0;
+        out_addr_len = 36;
+        return true;
+    } else if fam == ProxyAddressFamily.Unix {
+        guard payload_len >= 216 else { return false; }
+        out_addr_len = 216;
+        return true;
+    }
+    out_addr_len = 0;
+    return true;
+}
+
+// Returns (ProxyHeader, bytes_consumed, success)
+fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
+    var hdr = ProxyHeader { version: ProxyProtocolVersion.V2, .. };
+    guard validate_proxy_v2_preamble(wire) else { return hdr, 0, false; }
+    guard parse_proxy_v2_command(wire[12], hdr.command) else { return hdr, 0, false; }
+    guard parse_proxy_v2_family_transport(wire[13], hdr.family, hdr.transport) else { return hdr, 0, false; }
+
+    var len_r = core::new_slice_reader(wire[14..]);
+    let payload_len_u16, _ = len_r.read_u16_be();
+    let payload_len = payload_len_u16 as i64;
+    let total_required = 16 + payload_len;
+    guard wire.len >= total_required else { return hdr, 0, false; }
+
+    var addr_len: i64 = 0;
+    guard parse_proxy_v2_addresses(wire, payload_len, hdr.family, hdr, addr_len) else {
+        return hdr, 0, false;
     }
 
-    // 6. Parse Type-Length-Value (TLV) Vectors
     var tlv_offset = 16 + addr_len;
     let tlv_limit = 16 + payload_len;
 
@@ -538,42 +560,7 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
     return hdr, total_required, true;
 }
 
-// Formats a PROXY protocol v2 binary header
-fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
-    // 1. Preamble (12 bytes)
-    for b in PROXY_V2_PREAMBLE { out.push(b); }
-
-    // 2. Version (0x2) and Command
-    let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local { PP2_CMD_LOCAL } else { PP2_CMD_PROXY };
-    out.push(0x20 | cmd_nibble);
-
-    // 3. Address Family and Transport Protocol
-    var fam_nibble: u8 = PP2_FAM_UNSPEC;
-    if hdr.family == ProxyAddressFamily.Inet4 {
-        fam_nibble = PP2_FAM_INET4;
-    } else if hdr.family == ProxyAddressFamily.Inet6 {
-        fam_nibble = PP2_FAM_INET6;
-    } else if hdr.family == ProxyAddressFamily.Unix {
-        fam_nibble = PP2_FAM_UNIX;
-    }
-
-    var trans_nibble: u8 = PP2_TRANS_UNSPEC;
-    if hdr.transport == ProxyTransportProtocol.Stream {
-        trans_nibble = PP2_TRANS_STREAM;
-    } else if hdr.transport == ProxyTransportProtocol.Datagram {
-        trans_nibble = PP2_TRANS_DGRAM;
-    }
-
-    out.push((fam_nibble << 4) | trans_nibble);
-
-    // 4. Reserve 2 bytes for payload length
-    let len_offset = out.len;
-    out.push(0);
-    out.push(0);
-
-    let payload_start = out.len;
-
-    // 5. Write Address Block
+fn format_proxy_v2_addresses<B>(hdr: const ProxyHeader&, out: B&) {
     if hdr.family == ProxyAddressFamily.Inet4 {
         for b in hdr.src_ipv4 { out.push(b); }
         for b in hdr.dst_ipv4 { out.push(b); }
@@ -585,8 +572,38 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
         append_u16_be(out, hdr.src_port);
         append_u16_be(out, hdr.dst_port);
     }
+}
 
-    // 6. Write TLVs
+fn format_proxy_v2_ssl_tlv<B>(ssl: const ProxySslInfo&, out: B&) {
+    out.push(PP2_TYPE_SSL);
+
+    var sub_len = 5;
+    if ssl.version.len > 0 { sub_len += 3 + ssl.version.len; }
+    if ssl.cipher.len > 0 { sub_len += 3 + ssl.cipher.len; }
+    if ssl.client_cn.len > 0 { sub_len += 3 + ssl.client_cn.len; }
+
+    append_u16_be(out, sub_len as u16);
+    out.push(ssl.client_flags);
+    append_u32_be(out, ssl.verify_result);
+
+    if ssl.version.len > 0 {
+        out.push(PP2_SUBTYPE_SSL_VERSION);
+        append_u16_be(out, ssl.version.len as u16);
+        out.append(ssl.version[..]);
+    }
+    if ssl.cipher.len > 0 {
+        out.push(PP2_SUBTYPE_SSL_CIPHER);
+        append_u16_be(out, ssl.cipher.len as u16);
+        out.append(ssl.cipher[..]);
+    }
+    if ssl.client_cn.len > 0 {
+        out.push(PP2_SUBTYPE_SSL_CN);
+        append_u16_be(out, ssl.client_cn.len as u16);
+        out.append(ssl.client_cn[..]);
+    }
+}
+
+fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
     if hdr.alpn.len > 0 {
         out.push(PP2_TYPE_ALPN);
         append_u16_be(out, hdr.alpn.len as u16);
@@ -606,36 +623,43 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     }
 
     if hdr.ssl.has_ssl {
-        out.push(PP2_TYPE_SSL);
+        format_proxy_v2_ssl_tlv(hdr.ssl, out);
+    }
+}
 
-        // Compute SSL sub-payload length
-        var sub_len = 5; // client_flags(1B) + verify_result(4B)
-        if hdr.ssl.version.len > 0 { sub_len += 3 + hdr.ssl.version.len; }
-        if hdr.ssl.cipher.len > 0 { sub_len += 3 + hdr.ssl.cipher.len; }
-        if hdr.ssl.client_cn.len > 0 { sub_len += 3 + hdr.ssl.client_cn.len; }
+// Formats a PROXY protocol v2 binary header
+fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
+    for b in PROXY_V2_PREAMBLE { out.push(b); }
 
-        append_u16_be(out, sub_len as u16);
-        out.push(hdr.ssl.client_flags);
-        append_u32_be(out, hdr.ssl.verify_result);
+    let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local { PP2_CMD_LOCAL } else { PP2_CMD_PROXY };
+    out.push(0x20 | cmd_nibble);
 
-        if hdr.ssl.version.len > 0 {
-            out.push(PP2_SUBTYPE_SSL_VERSION);
-            append_u16_be(out, hdr.ssl.version.len as u16);
-            out.append(hdr.ssl.version[..]);
-        }
-        if hdr.ssl.cipher.len > 0 {
-            out.push(PP2_SUBTYPE_SSL_CIPHER);
-            append_u16_be(out, hdr.ssl.cipher.len as u16);
-            out.append(hdr.ssl.cipher[..]);
-        }
-        if hdr.ssl.client_cn.len > 0 {
-            out.push(PP2_SUBTYPE_SSL_CN);
-            append_u16_be(out, hdr.ssl.client_cn.len as u16);
-            out.append(hdr.ssl.client_cn[..]);
-        }
+    var fam_nibble: u8 = PP2_FAM_UNSPEC;
+    if hdr.family == ProxyAddressFamily.Inet4 {
+        fam_nibble = PP2_FAM_INET4;
+    } else if hdr.family == ProxyAddressFamily.Inet6 {
+        fam_nibble = PP2_FAM_INET6;
+    } else if hdr.family == ProxyAddressFamily.Unix {
+        fam_nibble = PP2_FAM_UNIX;
     }
 
-    // 7. Patch payload length
+    var trans_nibble: u8 = PP2_TRANS_UNSPEC;
+    if hdr.transport == ProxyTransportProtocol.Stream {
+        trans_nibble = PP2_TRANS_STREAM;
+    } else if hdr.transport == ProxyTransportProtocol.Datagram {
+        trans_nibble = PP2_TRANS_DGRAM;
+    }
+
+    out.push((fam_nibble << 4) | trans_nibble);
+
+    let len_offset = out.len;
+    out.push(0);
+    out.push(0);
+
+    let payload_start = out.len;
+    format_proxy_v2_addresses(hdr, out);
+    format_proxy_v2_tlvs(hdr, out);
+
     let total_payload = (out.len - payload_start) as u16;
     out[len_offset] = ((total_payload >> 8) & 0xFF) as u8;
     out[len_offset + 1] = (total_payload & 0xFF) as u8;

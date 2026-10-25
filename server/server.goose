@@ -307,30 +307,32 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 // ---- 3. HTTP/1.1 Wire Response Serializer -----------------------------------
 
 // Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
+fn serialize_status_line<B>(status_code: i32, out: B&) {
+    out.append("HTTP/1.1 ");
+    core::format_i64_dec(status_code as i64, out);
+    out.push(' ');
+    out.append(http_status_reason_phrase(status_code));
+    out.append("\r\n");
+}
+
+fn serialize_server_header<B>(server_name: const u8[:], out: B&) {
+    if server_name.len > 0 {
+        out.append("Server: ");
+        out.append(server_name);
+        out.append("\r\n");
+    }
+}
+
 fn serialize_http1_chunked_response<Res, B>(
     res: const Res&,
     server_name: const u8[:],
     chunk_size: i64,
     out_wire: B&
 ) {
-    // 1. Status line: HTTP/1.1 <status> <reason>\r\n
-    out_wire.append("HTTP/1.1 ");
-    core::format_i64_dec(res.status_code as i64, out_wire);
-    out_wire.push(' ');
-    out_wire.append(http_status_reason_phrase(res.status_code));
-    out_wire.append("\r\n");
-
-    // 2. Server header
-    if server_name.len > 0 {
-        out_wire.append("Server: ");
-        out_wire.append(server_name);
-        out_wire.append("\r\n");
-    }
-
-    // 3. Transfer-Encoding: chunked (RFC 9112 Section 7.1)
+    serialize_status_line(res.status_code, out_wire);
+    serialize_server_header(server_name, out_wire);
     out_wire.append("Transfer-Encoding: chunked\r\n");
 
-    // 4. Trailer announcement header (RFC 9110 Section 6.5.1)
     if res.trailers.len > 0 {
         out_wire.append("Trailer: ");
         for i in res.trailers.len {
@@ -340,7 +342,6 @@ fn serialize_http1_chunked_response<Res, B>(
         out_wire.append("\r\n");
     }
 
-    // 5. Custom headers (excluding Content-Length & Transfer-Encoding)
     let has_conn = res.has_header("connection");
     for &hdr in res.headers {
         if eq_ascii_fold(hdr.name[..], "content-length") { continue; }
@@ -356,11 +357,8 @@ fn serialize_http1_chunked_response<Res, B>(
     if !has_conn {
         out_wire.append("Connection: keep-alive\r\n");
     }
-
-    // Header terminator
     out_wire.append("\r\n");
 
-    // 6. Body chunked framing and trailers
     encode_chunked_payload(res.body[..], res.trailers, chunk_size, out_wire);
 }
 
@@ -373,28 +371,15 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
         return;
     }
 
-    // 1. Status line: HTTP/1.1 <status> <reason>\r\n
-    out_wire.append("HTTP/1.1 ");
-    core::format_i64_dec(res.status_code as i64, out_wire);
-    out_wire.push(' ');
-    out_wire.append(http_status_reason_phrase(res.status_code));
-    out_wire.append("\r\n");
+    serialize_status_line(res.status_code, out_wire);
+    serialize_server_header(server_name, out_wire);
 
-    // 2. Server header
-    if server_name.len > 0 {
-        out_wire.append("Server: ");
-        out_wire.append(server_name);
-        out_wire.append("\r\n");
-    }
-
-    // 3. Content-Length header (if not 204 or 304)
     if res.status_code != 204 && res.status_code != 304 {
         out_wire.append("Content-Length: ");
         core::format_i64_dec(res.body.len, out_wire);
         out_wire.append("\r\n");
     }
 
-    // 4. Custom headers
     let has_conn = res.has_header("connection");
     for &hdr in res.headers {
         out_wire.append(hdr.name[..]);
@@ -403,15 +388,12 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
         out_wire.append("\r\n");
     }
 
-    // Default Connection: keep-alive
     if !has_conn {
         out_wire.append("Connection: keep-alive\r\n");
     }
 
-    // 5. Header terminator
     out_wire.append("\r\n");
 
-    // 6. Body payload
     if res.body.len > 0 {
         out_wire.append(res.body[..]);
     }
@@ -482,6 +464,16 @@ fn add_delete_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
     add_route(server.pipeline.router, "DELETE", path, handler_id);
 }
 
+fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
+    return raw_stream.len >= 24 && raw_stream[..24] == H2_CLIENT_PREFACE[..];
+}
+
+fn serialize_bad_request_error<B>(server_name: const u8[:], wire_out: B&) {
+    var err_resp = new_response();
+    err_resp.status_code = 400; // Bad Request
+    serialize_http1_response(err_resp, server_name, wire_out);
+}
+
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline, and serializing the wire response.
 fn handle_connection_wire<B>(
@@ -503,9 +495,7 @@ fn handle_connection_wire<B>(
         if is_proxy != ProxyProtocolVersion.None {
             let stripped, has_proxy = detect_and_strip_proxy_header(wire_in, proxy_hdr);
             guard has_proxy else {
-                var err_resp = new_response();
-                err_resp.status_code = 400; // Bad Request
-                serialize_http1_response(err_resp, server.server_name[..], wire_out);
+                serialize_bad_request_error(server.server_name[..], wire_out);
                 return PipelineOutcome.Handled, false;
             }
             raw_stream = stripped;
@@ -516,8 +506,7 @@ fn handle_connection_wire<B>(
         }
     }
 
-    // 1. Check for HTTP/2 Client Connection Preface (RFC 9113 Section 3.4)
-    if raw_stream.len >= 24 && raw_stream[..24] == H2_CLIENT_PREFACE[..] {
+    if is_h2_client_preface(raw_stream) {
         let now_ms = (now_ns / 1000000) as u64;
         var sess = new_h2_server_session(server.server_name[..], now_ms);
         let _, ok_h2 = handle_h2_server_ingress(sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out);
@@ -528,17 +517,13 @@ fn handle_connection_wire<B>(
         return PipelineOutcome.Handled, false;
     }
 
-    // 2. Parse HTTP/1.1 wire request
     var req = new_request("GET", "");
     let ok_parse, _ = parse_http1_wire_request(raw_stream, req);
     guard ok_parse else {
-        var err_resp = new_response();
-        err_resp.status_code = 400; // Bad Request
-        serialize_http1_response(err_resp, server.server_name[..], wire_out);
+        serialize_bad_request_error(server.server_name[..], wire_out);
         return PipelineOutcome.Handled, false;
     }
 
-    // 3. Execute request through full server pipeline
     var res = new_response();
     var future = internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
@@ -550,7 +535,6 @@ fn handle_connection_wire<B>(
         header(res, "Connection", "close");
     }
 
-    // 4. Serialize HTTP/1.1 response wire bytes
     serialize_http1_response(res, server.server_name[..], wire_out);
     server.requests_processed++;
 

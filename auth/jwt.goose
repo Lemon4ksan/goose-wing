@@ -483,6 +483,43 @@ fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtVal
 
 // ---- 5. JWS Signing Pipeline (HMAC & Ed25519) -------------------------------
 
+// Serializes Header and Claims into Base64URL-encoded signing input: `<hdr_b64>.<clm_b64>`
+fn build_jwt_signing_input<B>(
+    header: const JwtHeader&,
+    claims: const JwtClaims&,
+    out_token: B&
+) {
+    var hdr_json: u8[>..] = [];
+    serialize_jwt_header(header, hdr_json);
+    core::base64url_encode(hdr_json[..], out_token);
+    out_token.push('.');
+
+    var clm_json: u8[>..] = [];
+    serialize_jwt_claims(claims, clm_json);
+    var clm_b64: u8[>..] = [];
+    core::base64url_encode(clm_json[..], clm_b64);
+    out_token.append(clm_b64[..]);
+}
+
+fn append_jwt_hmac_signature<B>(
+    alg: JwtAlg,
+    secret_key: const u8[:],
+    signing_input: const u8[:],
+    out_token: B&
+) {
+    out_token.push('.');
+    if alg == JwtAlg.HS256 {
+        let mac256 = core::hmac_sha256(secret_key, signing_input);
+        core::base64url_encode(mac256[..], out_token);
+    } else if alg == JwtAlg.HS384 {
+        let mac384 = core::hmac_sha384(secret_key, signing_input);
+        core::base64url_encode(mac384[..], out_token);
+    } else if alg == JwtAlg.HS512 {
+        let mac512 = core::hmac_sha512(secret_key, signing_input);
+        core::base64url_encode(mac512[..], out_token);
+    }
+}
+
 // Signs a JWT using symmetric HMAC (HS256, HS384, HS512 per RFC 7518)
 fn sign_jwt_hmac<B>(
     header: const JwtHeader&,
@@ -496,35 +533,20 @@ fn sign_jwt_hmac<B>(
     guard secret_key.len > 0 else { return false; }
     out_token.clear();
 
-    // 1. Serialize Header -> Base64URL
-    var hdr_json: u8[>..] = [];
-    serialize_jwt_header(header, hdr_json);
-    core::base64url_encode(hdr_json[..], out_token);
-    out_token.push('.');
-
-    // 2. Serialize Claims -> Base64URL
-    var clm_json: u8[>..] = [];
-    serialize_jwt_claims(claims, clm_json);
-    var clm_b64: u8[>..] = [];
-    core::base64url_encode(clm_json[..], clm_b64);
-    out_token.append(clm_b64[..]);
-
-    // 3. Compute MAC over signing input `<hdr_b64>.<clm_b64>`
+    build_jwt_signing_input(header, claims, out_token);
     let signing_input = out_token[..];
-    out_token.push('.');
-
-    if header.alg == JwtAlg.HS256 {
-        let mac256 = core::hmac_sha256(secret_key, signing_input);
-        core::base64url_encode(mac256[..], out_token);
-    } else if header.alg == JwtAlg.HS384 {
-        let mac384 = core::hmac_sha384(secret_key, signing_input);
-        core::base64url_encode(mac384[..], out_token);
-    } else if header.alg == JwtAlg.HS512 {
-        let mac512 = core::hmac_sha512(secret_key, signing_input);
-        core::base64url_encode(mac512[..], out_token);
-    }
-
+    append_jwt_hmac_signature(header.alg, secret_key, signing_input, out_token);
     return true;
+}
+
+fn append_jwt_eddsa_signature<B>(
+    seed_key: const u8[32],
+    signing_input: const u8[:],
+    out_token: B&
+) {
+    let sig64 = core::ed25519_sign(seed_key, signing_input);
+    out_token.push('.');
+    core::base64url_encode(sig64[..], out_token);
 }
 
 // Signs a JWT using asymmetric Ed25519 (EdDSA per RFC 8037)
@@ -537,27 +559,9 @@ fn sign_jwt_eddsa<B>(
     guard header.alg == JwtAlg.EdDSA else { return false; }
     out_token.clear();
 
-    // 1. Serialize Header -> Base64URL
-    var hdr_json: u8[>..] = [];
-    serialize_jwt_header(header, hdr_json);
-    core::base64url_encode(hdr_json[..], out_token);
-    out_token.push('.');
-
-    // 2. Serialize Claims -> Base64URL
-    var clm_json: u8[>..] = [];
-    serialize_jwt_claims(claims, clm_json);
-    var clm_b64: u8[>..] = [];
-    core::base64url_encode(clm_json[..], clm_b64);
-    out_token.append(clm_b64[..]);
-
-    // 3. Sign `<hdr_b64>.<clm_b64>` using Ed25519
+    build_jwt_signing_input(header, claims, out_token);
     let signing_input = out_token[..];
-    let sig64 = core::ed25519_sign(seed_key, signing_input);
-
-    // 4. Append signature Base64URL
-    out_token.push('.');
-    core::base64url_encode(sig64[..], out_token);
-
+    append_jwt_eddsa_signature(seed_key, signing_input, out_token);
     return true;
 }
 
@@ -584,61 +588,77 @@ fn split_jwt_parts(
     return dot1 > 0 && dot2 > (dot1 + 1);
 }
 
+fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_sec: i64) -> bool {
+    if exp >= 0 {
+        let max_exp_cutoff = if exp > 9223372036854775807 - leeway {
+            9223372036854775807
+        } else {
+            exp + leeway
+        };
+        return now_unix_sec <= max_exp_cutoff;
+    }
+    return !require_exp;
+}
+
+fn validate_jwt_not_before(nbf: i64, require_nbf: bool, leeway: i64, now_unix_sec: i64) -> bool {
+    if nbf >= 0 {
+        let min_nbf_cutoff = if nbf < leeway {
+            0
+        } else {
+            nbf - leeway
+        };
+        return now_unix_sec >= min_nbf_cutoff;
+    }
+    return !require_nbf;
+}
+
+fn validate_jwt_identity_claims(claims: const JwtClaims&, options: const JwtValidationOptions&) -> JwtError {
+    if options.expected_issuer.len > 0 && claims.iss[..] != options.expected_issuer[..] {
+        return JwtError.IssuerMismatch;
+    }
+    if options.expected_audience.len > 0 && claims.aud[..] != options.expected_audience[..] {
+        return JwtError.AudienceMismatch;
+    }
+    if options.expected_subject.len > 0 && claims.sub[..] != options.expected_subject[..] {
+        return JwtError.SubjectMismatch;
+    }
+    return JwtError.None;
+}
+
 // Validates time and identity claims against options
 fn validate_jwt_claims_rules(
     claims: const JwtClaims&,
     options: const JwtValidationOptions&,
     now_unix_sec: i64
 ) -> JwtError {
-    // 1. Expiration check (exp)
-    if claims.exp >= 0 {
-        let max_exp_cutoff = if claims.exp > 9223372036854775807 - options.leeway_seconds {
-            9223372036854775807
-        } else {
-            claims.exp + options.leeway_seconds
-        };
-        if now_unix_sec > max_exp_cutoff {
-            return JwtError.TokenExpired;
-        }
-    } else if options.require_exp {
+    if !validate_jwt_expiration(claims.exp, options.require_exp, options.leeway_seconds, now_unix_sec) {
         return JwtError.TokenExpired;
     }
-
-    // 2. Not before check (nbf)
-    if claims.nbf >= 0 {
-        let min_nbf_cutoff = if claims.nbf < options.leeway_seconds {
-            0
-        } else {
-            claims.nbf - options.leeway_seconds
-        };
-        if now_unix_sec < min_nbf_cutoff {
-            return JwtError.TokenNotYetValid;
-        }
-    } else if options.require_nbf {
+    if !validate_jwt_not_before(claims.nbf, options.require_nbf, options.leeway_seconds, now_unix_sec) {
         return JwtError.TokenNotYetValid;
     }
+    return validate_jwt_identity_claims(claims, options);
+}
 
-    // 3. Issuer check (iss)
-    if options.expected_issuer.len > 0 {
-        if claims.iss[..] != options.expected_issuer[..] {
-            return JwtError.IssuerMismatch;
-        }
+fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
+    var hdr_json: u8[>..] = [];
+    guard core::base64url_decode(hdr_b64, hdr_json) else {
+        return JwtError.InvalidBase64;
     }
-
-    // 4. Audience check (aud)
-    if options.expected_audience.len > 0 {
-        if claims.aud[..] != options.expected_audience[..] {
-            return JwtError.AudienceMismatch;
-        }
+    guard parse_jwt_header_json(hdr_json[..], out_header) else {
+        return JwtError.InvalidHeaderJson;
     }
+    return JwtError.None;
+}
 
-    // 5. Subject check (sub)
-    if options.expected_subject.len > 0 {
-        if claims.sub[..] != options.expected_subject[..] {
-            return JwtError.SubjectMismatch;
-        }
+fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
+    var clm_json: u8[>..] = [];
+    guard core::base64url_decode(clm_b64, clm_json) else {
+        return JwtError.InvalidBase64;
     }
-
+    guard parse_jwt_claims_json(clm_json[..], out_claims) else {
+        return JwtError.InvalidClaimsJson;
+    }
     return JwtError.None;
 }
 
@@ -654,26 +674,42 @@ fn parse_jwt_unverified(
         return JwtError.MalformedToken;
     }
 
-    let hdr_b64 = token[..dot1];
-    let clm_b64 = token[(dot1 + 1)..dot2];
+    let hdr_err = decode_jwt_header(token[..dot1], out_header);
+    guard hdr_err == JwtError.None else { return hdr_err; }
 
-    var hdr_json: u8[>..] = [];
-    guard core::base64url_decode(hdr_b64, hdr_json) else {
-        return JwtError.InvalidBase64;
-    }
-    guard parse_jwt_header_json(hdr_json[..], out_header) else {
-        return JwtError.InvalidHeaderJson;
-    }
+    return decode_jwt_claims(token[(dot1 + 1)..dot2], out_claims);
+}
 
-    var clm_json: u8[>..] = [];
-    guard core::base64url_decode(clm_b64, clm_json) else {
-        return JwtError.InvalidBase64;
+fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bool) -> JwtError {
+    if header_alg == JwtAlg.None && !allow_none {
+        return JwtError.UnsupportedAlgorithm;
     }
-    guard parse_jwt_claims_json(clm_json[..], out_claims) else {
-        return JwtError.InvalidClaimsJson;
+    if header_alg != expected_alg {
+        return JwtError.AlgorithmMismatch;
     }
-
     return JwtError.None;
+}
+
+fn verify_jwt_hmac_signature(
+    alg: JwtAlg,
+    secret_key: const u8[:],
+    signing_input: const u8[:],
+    sig_bytes: const u8[:]
+) -> bool {
+    if alg == JwtAlg.HS256 {
+        guard sig_bytes.len == HMAC_SHA256_MAC_LEN else { return false; }
+        let expected = core::hmac_sha256(secret_key, signing_input);
+        return core::ct_eq_bytes(expected[..], sig_bytes);
+    } else if alg == JwtAlg.HS384 {
+        guard sig_bytes.len == HMAC_SHA384_MAC_LEN else { return false; }
+        let expected = core::hmac_sha384(secret_key, signing_input);
+        return core::ct_eq_bytes(expected[..], sig_bytes);
+    } else if alg == JwtAlg.HS512 {
+        guard sig_bytes.len == HMAC_SHA512_MAC_LEN else { return false; }
+        let expected = core::hmac_sha512(secret_key, signing_input);
+        return core::ct_eq_bytes(expected[..], sig_bytes);
+    }
+    return false;
 }
 
 // Verifies a JWT signed with HMAC (HS256, HS384, HS512)
@@ -691,68 +727,39 @@ fn verify_jwt_hmac(
         return JwtError.MalformedToken;
     }
 
-    let hdr_b64 = token[..dot1];
-    let clm_b64 = token[(dot1 + 1)..dot2];
-    let sig_b64 = token[(dot2 + 1)..];
+    let hdr_err = decode_jwt_header(token[..dot1], out_header);
+    guard hdr_err == JwtError.None else { return hdr_err; }
 
-    // Decode Header
-    var hdr_json: u8[>..] = [];
-    guard core::base64url_decode(hdr_b64, hdr_json) else {
-        return JwtError.InvalidBase64;
-    }
-    guard parse_jwt_header_json(hdr_json[..], out_header) else {
-        return JwtError.InvalidHeaderJson;
-    }
+    let alg_err = verify_jwt_algorithm(out_header.alg, options.expected_alg, options.allow_none_alg);
+    guard alg_err == JwtError.None else { return alg_err; }
 
-    // RFC 8725 Section 3.1: Strict algorithm verification (prevents alg confusion)
-    if out_header.alg == JwtAlg.None && !options.allow_none_alg {
-        return JwtError.UnsupportedAlgorithm;
-    }
-    if out_header.alg != options.expected_alg {
-        return JwtError.AlgorithmMismatch;
-    }
-
-    // Decode Signature bytes
     var sig_bytes: u8[>..] = [];
-    guard core::base64url_decode(sig_b64, sig_bytes) else {
+    guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
 
-    // Verify MAC with constant-time comparison
     let signing_input = token[..dot2];
-    if out_header.alg == JwtAlg.HS256 {
-        guard sig_bytes.len == HMAC_SHA256_MAC_LEN else { return JwtError.SignatureInvalid; }
-        let expected = core::hmac_sha256(secret_key, signing_input);
-        guard core::ct_eq_bytes(expected[..], sig_bytes[..]) else {
-            return JwtError.SignatureInvalid;
-        }
-    } else if out_header.alg == JwtAlg.HS384 {
-        guard sig_bytes.len == HMAC_SHA384_MAC_LEN else { return JwtError.SignatureInvalid; }
-        let expected = core::hmac_sha384(secret_key, signing_input);
-        guard core::ct_eq_bytes(expected[..], sig_bytes[..]) else {
-            return JwtError.SignatureInvalid;
-        }
-    } else if out_header.alg == JwtAlg.HS512 {
-        guard sig_bytes.len == HMAC_SHA512_MAC_LEN else { return JwtError.SignatureInvalid; }
-        let expected = core::hmac_sha512(secret_key, signing_input);
-        guard core::ct_eq_bytes(expected[..], sig_bytes[..]) else {
-            return JwtError.SignatureInvalid;
-        }
-    } else {
-        return JwtError.UnsupportedAlgorithm;
+    guard verify_jwt_hmac_signature(out_header.alg, secret_key, signing_input, sig_bytes[..]) else {
+        return JwtError.SignatureInvalid;
     }
 
-    // Decode Claims
-    var clm_json: u8[>..] = [];
-    guard core::base64url_decode(clm_b64, clm_json) else {
-        return JwtError.InvalidBase64;
-    }
-    guard parse_jwt_claims_json(clm_json[..], out_claims) else {
-        return JwtError.InvalidClaimsJson;
-    }
+    let clm_err = decode_jwt_claims(token[(dot1 + 1)..dot2], out_claims);
+    guard clm_err == JwtError.None else { return clm_err; }
 
-    // Validate claims rules (exp, nbf, iss, aud, sub)
     return validate_jwt_claims_rules(out_claims, options, now_unix_sec);
+}
+
+fn verify_jwt_eddsa_signature(
+    public_key: const u8[32],
+    signing_input: const u8[:],
+    sig_bytes: const u8[:]
+) -> bool {
+    guard sig_bytes.len == ED25519_SIG_LEN else { return false; }
+    var sig64: u8[64] = [0; 64];
+    for i in ED25519_SIG_LEN {
+        sig64[i] = sig_bytes[i];
+    }
+    return core::ed25519_verify(public_key, signing_input, sig64);
 }
 
 // Verifies a JWT signed with Ed25519 (EdDSA)
@@ -770,51 +777,25 @@ fn verify_jwt_eddsa(
         return JwtError.MalformedToken;
     }
 
-    let hdr_b64 = token[..dot1];
-    let clm_b64 = token[(dot1 + 1)..dot2];
-    let sig_b64 = token[(dot2 + 1)..];
+    let hdr_err = decode_jwt_header(token[..dot1], out_header);
+    guard hdr_err == JwtError.None else { return hdr_err; }
 
-    // Decode Header
-    var hdr_json: u8[>..] = [];
-    guard core::base64url_decode(hdr_b64, hdr_json) else {
-        return JwtError.InvalidBase64;
-    }
-    guard parse_jwt_header_json(hdr_json[..], out_header) else {
-        return JwtError.InvalidHeaderJson;
-    }
-
-    // Check algorithm
     if out_header.alg != JwtAlg.EdDSA {
         return JwtError.AlgorithmMismatch;
     }
 
-    // Decode Signature (Ed25519 signature is strictly 64 bytes)
     var sig_bytes: u8[>..] = [];
-    guard core::base64url_decode(sig_b64, sig_bytes) else {
+    guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
-    guard sig_bytes.len == ED25519_SIG_LEN else { return JwtError.SignatureInvalid; }
 
-    var sig64: u8[64] = [0; 64];
-    for i in ED25519_SIG_LEN {
-        sig64[i] = sig_bytes[i];
-    }
-
-    // Verify Ed25519 signature
     let signing_input = token[..dot2];
-    guard core::ed25519_verify(public_key, signing_input, sig64) else {
+    guard verify_jwt_eddsa_signature(public_key, signing_input, sig_bytes[..]) else {
         return JwtError.SignatureInvalid;
     }
 
-    // Decode Claims
-    var clm_json: u8[>..] = [];
-    guard core::base64url_decode(clm_b64, clm_json) else {
-        return JwtError.InvalidBase64;
-    }
-    guard parse_jwt_claims_json(clm_json[..], out_claims) else {
-        return JwtError.InvalidClaimsJson;
-    }
+    let clm_err = decode_jwt_claims(token[(dot1 + 1)..dot2], out_claims);
+    guard clm_err == JwtError.None else { return clm_err; }
 
-    // Validate claims rules
     return validate_jwt_claims_rules(out_claims, options, now_unix_sec);
 }

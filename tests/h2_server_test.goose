@@ -270,11 +270,148 @@ fn test_h2_server_wire_integration(t: core::T&) {
     };
 }
 
+// ============================================================================
+// 4. CONTINUATION Assembly, Anti-DoS & Rapid Reset Defense
+// ============================================================================
+fn test_h2_continuation_and_anti_dos(t: core::T&) {
+    t.run("H2-06: Multi-Frame CONTINUATION Header Assembly") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/split/headers", 200);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+
+        // Prepend preface
+        var wire: u8[..1024] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Encode full header block
+        var hdr_block: u8[..512] = [];
+        wing::encode_hpack_field(client_hpack, hdr_block, ":method", "GET", true, false);
+        wing::encode_hpack_field(client_hpack, hdr_block, ":path", "/split/headers", true, false);
+        wing::encode_hpack_field(client_hpack, hdr_block, ":scheme", "https", true, false);
+        wing::encode_hpack_field(client_hpack, hdr_block, ":authority", "localhost", true, false);
+
+        sub.assert_gt(hdr_block.len, 10, "Header block non-empty");
+
+        // Split header block into two frames:
+        // Frame 1: HEADERS (first 10 bytes, flags: END_STREAM, NO END_HEADERS)
+        let part1 = hdr_block[..10];
+        let part2 = hdr_block[10..];
+
+        let h_hdr = wing::FrameHeader {
+            length: part1.len as u32,
+            frame_type: wing::FRAME_HEADERS,
+            flags: wing::FLAG_END_STREAM, // No FLAG_END_HEADERS!
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(h_hdr, wire);
+        wire.append(part1);
+
+        // Frame 2: CONTINUATION (remaining bytes, flags: END_HEADERS)
+        let c_hdr = wing::FrameHeader {
+            length: part2.len as u32,
+            frame_type: wing::FRAME_CONTINUATION,
+            flags: wing::FLAG_END_HEADERS, // Terminal CONTINUATION frame
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(c_hdr, wire);
+        wire.append(part2);
+
+        var out_wire: u8[..1024] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress succeeded on multi-frame CONTINUATION");
+        sub.assert_eq(consumed, wire.len, "Consumed entire multi-frame payload");
+
+        // Verify response was emitted for stream 1
+        sub.assert_gt(out_wire.len, 33, "Emitted response frame");
+        let resp_hdr, _ = wing::parse_frame_header(out_wire[33 .. 42]);
+        sub.assert_eq(resp_hdr.frame_type, wing::FRAME_HEADERS, "Response is HEADERS");
+        sub.assert_eq(resp_hdr.stream_id, 1, "Response on stream 1");
+    };
+
+    t.run("H2-07: Ban Zero-Length Non-Terminal CONTINUATION (CVE-2024-2758 / CVE-2024-31309)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[..512] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Frame 1: HEADERS without END_HEADERS
+        let h_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_HEADERS,
+            flags: 0,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(h_hdr, wire);
+        let dummy: u8[4] = [0x82, 0x84, 0x86, 0x87];
+        for b in dummy { wire.push(b); }
+
+        // Frame 2: Zero-length non-terminal CONTINUATION frame (CVE-2024-2758 exploit attempt)
+        let c_hdr = wing::FrameHeader {
+            length: 0,
+            frame_type: wing::FRAME_CONTINUATION,
+            flags: 0, // No END_HEADERS!
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(c_hdr, wire);
+
+        var out_wire: u8[..512] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        // Must reject with GOAWAY PROTOCOL_ERROR
+        sub.assert_false(ok, "Ingress rejected zero-length non-terminal CONTINUATION");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33 .. 42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+    };
+
+    t.run("H2-08: Rapid Reset Batch Bypass (CVE-2023-44487)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+
+        var wire: u8[..512] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Frame 1: HEADERS stream 1
+        encode_client_headers(client_hpack, 1, "GET", "/fast/reset", "localhost", true, wire);
+
+        // Frame 2: Immediate RST_STREAM stream 1 (Rapid Reset attack pattern)
+        let rst_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_RST_STREAM,
+            flags: 0,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(rst_hdr, wire);
+        let err_code: u8[4] = [0x00, 0x00, 0x00, 0x08]; // CANCEL (0x8)
+        for b in err_code { wire.push(b); }
+
+        var out_wire: u8[..512] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress safely handled rapid reset batch");
+        sub.assert_eq(consumed, wire.len, "Consumed entire batch");
+
+        // Server SETTINGS was emitted (33 bytes), but NO stream response was dispatched for stream 1!
+        sub.assert_eq(out_wire.len, 33, "No response pipeline dispatch occurred for cancelled stream");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("HTTP/2 Server Frame Multiplexer Conformance Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. Preface, Handshake & Settings Negotiation", test_h2_handshake_and_settings);
     core::run_case(runner, "2. Stream Multiplexing & Pipeline Dispatch", test_h2_request_dispatch);
     core::run_case(runner, "3. HttpServer End-to-End HTTP/2 Integration", test_h2_server_wire_integration);
+    core::run_case(runner, "4. CONTINUATION Assembly, Anti-DoS & Rapid Reset", test_h2_continuation_and_anti_dos);
     let ok = core::finish(runner);
     assert(ok);
 }

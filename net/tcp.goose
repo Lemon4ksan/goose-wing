@@ -16,6 +16,12 @@ extern "wing_tcp_connect" fn native_tcp_connect(host: const u8[:], port: u16, ti
 extern "wing_tcp_send" fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32;
 extern "wing_tcp_recv" fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32;
 extern "wing_tcp_close" fn native_tcp_close(sock_fd: i64);
+extern "wing_tcp_set_defer_accept" fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32;
+extern "wing_tcp_set_user_timeout" fn native_tcp_set_user_timeout(sock_fd: i64, timeout_ms: u32) -> i32;
+extern "wing_tcp_set_keepalive_params" fn native_tcp_set_keepalive_params(sock_fd: i64, idle_sec: i32, intvl_sec: i32, cnt: i32) -> i32;
+extern "wing_tcp_set_syn_retries" fn native_tcp_set_syn_retries(sock_fd: i64, count: i32) -> i32;
+extern "wing_tcp_get_notsent_bytes" fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64;
+extern "wing_tcp_get_readable_bytes" fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64;
 
 // Global initialization flag
 var g_tcp_initialized: bool = false;
@@ -95,4 +101,67 @@ fn tcp_close(fd: i64) {
     if fd > 0 {
         native_tcp_close(fd);
     }
+}
+
+// Configures TCP_DEFER_ACCEPT to eliminate context switches on empty connections.
+fn tcp_set_defer_accept(fd: i64, timeout_sec: i32 = 1) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_defer_accept(fd, timeout_sec) == 0;
+}
+
+// Configures TCP_USER_TIMEOUT (e.g. 5000ms) to abort dead peers in 5s instead of 15m.
+fn tcp_set_user_timeout(fd: i64, timeout_ms: u32 = 5000) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_user_timeout(fd, timeout_ms) == 0;
+}
+
+// Configures aggressive SO_KEEPALIVE profile.
+fn tcp_set_keepalive(fd: i64, idle_sec: i32 = 1, intvl_sec: i32 = 11, cnt: i32 = 3) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_keepalive_params(fd, idle_sec, intvl_sec, cnt) == 0;
+}
+
+// Limits SYN retransmissions on connect to abort unreachable hosts quickly.
+fn tcp_set_syn_retries(fd: i64, count: i32 = 3) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_syn_retries(fd, count) == 0;
+}
+
+// Retrieves number of unsent / unacknowledged bytes in socket write queue (tcpi_notsent_bytes).
+fn tcp_get_notsent_bytes(fd: i64) -> i64 {
+    guard fd > 0 else { return 0; }
+    return native_tcp_get_notsent_bytes(fd);
+}
+
+// Retrieves number of immediately readable bytes in socket receive queue.
+fn tcp_get_readable_bytes(fd: i64) -> i64 {
+    guard fd > 0 else { return 0; }
+    return native_tcp_get_readable_bytes(fd);
+}
+
+// Flushes buffered data from CorkBuffer directly to TCP socket.
+// Returns bytes sent, or -1 on socket error.
+fn tcp_flush_cork(fd: i64, cb: core::CorkBuffer&) -> i32 {
+    let pending = cb.cork_pending();
+    guard fd > 0 && pending > 0 else { return 0; }
+    let sent = tcp_send(fd, cb.cork_as_slice());
+    if sent > 0 {
+        cb.cork_consume(sent);
+    }
+    return sent;
+}
+
+// Receives data directly into a PipeBuffer without intermediate scratch copies.
+// Returns bytes read (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
+fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout_ms: u32 = 5000) -> i32 {
+    guard fd > 0 else { return -1; }
+    let span, err = core::get_write_span(pipe, min_span);
+    if err != core::IoError.None {
+        return -1;
+    }
+    let recvd = native_tcp_recv(fd, span, timeout_ms);
+    if recvd > 0 {
+        core::commit_write(pipe, recvd);
+    }
+    return recvd;
 }

@@ -120,6 +120,23 @@ fn resolve_fragment_on_opaque_base(
     return out_url, UrlParseError.None;
 }
 
+fn parse_url_scheme_delimiter(input_bytes: const u8[:]) -> i64, bool {
+    let delim_pos = find_any(input_bytes, URL_SCHEME_DELIM_SET);
+    guard delim_pos > 0 && input_bytes[delim_pos] == ':' else {
+        return -1, true;
+    }
+    let scheme_cand = input_bytes[..delim_pos];
+    guard is_alpha_byte(scheme_cand[0]) else {
+        return -1, false;
+    }
+    for char_byte in scheme_cand[1..] {
+        if !is_alphanumeric_byte(char_byte) && char_byte != '+' && char_byte != '-' && char_byte != '.' {
+            return -1, false;
+        }
+    }
+    return delim_pos, true;
+}
+
 fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
     var out_url = Url { valid: false, .. };
 
@@ -134,24 +151,9 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
 
     let input_bytes = cleaned[..];
 
-    // 1. Scheme state machine
-    let delim_pos = find_any(input_bytes, URL_SCHEME_DELIM_SET);
-    var colon_idx: i64 = -1;
-    if delim_pos > 0 && input_bytes[delim_pos] == ':' {
-        let scheme_cand = input_bytes[..delim_pos];
-        var valid_scheme = is_alpha_byte(scheme_cand[0]);
-        if valid_scheme {
-            for char_byte in scheme_cand[1..] {
-                if !is_alphanumeric_byte(char_byte) && char_byte != '+' && char_byte != '-' && char_byte != '.' {
-                    valid_scheme = false;
-                    break;
-                }
-            }
-        }
-        if !valid_scheme {
-            return out_url, UrlParseError.InvalidScheme;
-        }
-        colon_idx = delim_pos;
+    let colon_idx, ok_scheme = parse_url_scheme_delimiter(input_bytes);
+    guard ok_scheme else {
+        return out_url, UrlParseError.InvalidScheme;
     }
 
     var scheme_str: u8[..64] = [];

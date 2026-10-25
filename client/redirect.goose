@@ -252,6 +252,21 @@ fn validate_redirect_target(
     return parsed_target, RedirectError.None;
 }
 
+fn classify_redirect_origin_relation(
+    current_url: const core::Url&,
+    target_url: const core::Url&,
+    out_is_downgrade: bool&,
+    out_is_cross_origin: bool&,
+    out_is_port_changed: bool&
+) {
+    let same_orig = core::is_same_origin_url(current_url, target_url);
+    let is_downgrade = (scheme(current_url) == "https" && scheme(target_url) == "http");
+    let port_changed = effective_port(current_url) != effective_port(target_url);
+    out_is_downgrade = is_downgrade;
+    out_is_cross_origin = !same_orig || is_downgrade;
+    out_is_port_changed = port_changed;
+}
+
 // Computes redirect metadata for an HTTP redirect response (RFC 9110, WHATWG Fetch).
 // Mutates method and body flags, sets cross-origin status, and calculates referrer.
 fn compute_redirect_info(
@@ -279,29 +294,24 @@ fn compute_redirect_info(
         ..
     };
 
-    // 1 & 2. Location & CORS Validation
     let parsed_target, val_err = validate_redirect_target(location_header, current_url, cors_mode, tainted_origin);
     guard val_err == RedirectError.None else {
         info.error = val_err;
         return info;
     }
 
-    // 3. Fragment Inheritance (WHATWG Fetch / Chromium NetworkDelegate)
     info.new_url = parsed_target;
     inherit_target_fragment(info.new_url, current_url, trim(location_header), preserve_fragment_on_redirect_url);
-
-    // 4. HTTP Method Mutation & Body Clearing (RFC 9110 / WHATWG Fetch)
     mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
 
-    // 5. Origin and scheme comparison
-    let same_orig = core::is_same_origin_url(current_url, info.new_url);
-    let is_downgrade = (scheme(current_url) == "https" && scheme(info.new_url) == "http");
-    let port_changed = effective_port(current_url) != effective_port(info.new_url);
-    info.is_scheme_downgrade = is_downgrade;
-    info.is_cross_origin = !same_orig || is_downgrade;
-    info.is_port_changed = port_changed;
+    classify_redirect_origin_relation(
+        current_url,
+        info.new_url,
+        info.is_scheme_downgrade,
+        info.is_cross_origin,
+        info.is_port_changed
+    );
 
-    // 6. Referrer-Policy and Referrer Computation
     if response_referrer_policy_header.len > 0 {
         info.new_referrer_policy = parse_referrer_policy(response_referrer_policy_header);
     }
@@ -315,7 +325,6 @@ fn compute_redirect_info(
         info.new_referrer
     );
 
-    // 7. SiteForCookies & Monotonic Redirect Chain Tainting (RFC 6265bis #1348)
     let sfc, tainted = compute_redirect_site_for_cookies(
         current_url,
         info.new_url,
@@ -334,6 +343,36 @@ fn compute_redirect_info(
 
 // ---- referrer calculation helper -------------------------------------------
 
+fn should_drop_referrer(policy: ReferrerPolicy, is_cross_origin: bool, is_downgrade: bool) -> bool {
+    if policy == ReferrerPolicy.NoReferrer {
+        return true;
+    }
+    if is_downgrade && (policy == ReferrerPolicy.NoReferrerWhenDowngrade ||
+                        policy == ReferrerPolicy.StrictOrigin ||
+                        policy == ReferrerPolicy.StrictOriginWhenCrossOrigin) {
+        return true;
+    }
+    if is_cross_origin && policy == ReferrerPolicy.SameOrigin {
+        return true;
+    }
+    return false;
+}
+
+fn is_origin_only_referrer(policy: ReferrerPolicy, is_cross_origin: bool) -> bool {
+    return policy == ReferrerPolicy.Origin ||
+           policy == ReferrerPolicy.StrictOrigin ||
+           (is_cross_origin && (policy == ReferrerPolicy.OriginWhenCrossOrigin ||
+                                policy == ReferrerPolicy.StrictOriginWhenCrossOrigin));
+}
+
+fn serialize_stripped_full_referrer<B>(source_url: const core::Url&, out: B&) {
+    out.append(scheme(source_url));
+    out.append("://");
+    out.append(host(source_url));
+    out.append(pathname(source_url));
+    out.append(search(source_url));
+}
+
 fn compute_new_referrer<B>(
     source_url: const core::Url&,
     target_url: const core::Url&,
@@ -344,36 +383,16 @@ fn compute_new_referrer<B>(
 ) {
     out.clear();
 
-    // 1. Fast early-exit conditions for dropped referrers
-    if policy == ReferrerPolicy.NoReferrer {
-        return;
-    }
-    if is_downgrade && (policy == ReferrerPolicy.NoReferrerWhenDowngrade ||
-                        policy == ReferrerPolicy.StrictOrigin ||
-                        policy == ReferrerPolicy.StrictOriginWhenCrossOrigin) {
-        return;
-    }
-    if is_cross_origin && policy == ReferrerPolicy.SameOrigin {
+    if should_drop_referrer(policy, is_cross_origin, is_downgrade) {
         return;
     }
 
-    // 2. Origin-only referrer policies
-    let needs_origin_only = policy == ReferrerPolicy.Origin ||
-                            policy == ReferrerPolicy.StrictOrigin ||
-                            (is_cross_origin && (policy == ReferrerPolicy.OriginWhenCrossOrigin ||
-                                                 policy == ReferrerPolicy.StrictOriginWhenCrossOrigin));
-
-    if needs_origin_only {
+    if is_origin_only_referrer(policy, is_cross_origin) {
         core::serialize_origin(core::origin_from_url(source_url), out);
         return;
     }
 
-    // 3. Full URL referrer (without userinfo or fragment per W3C Referrer Policy)
-    out.append(scheme(source_url));
-    out.append("://");
-    out.append(host(source_url));
-    out.append(pathname(source_url));
-    out.append(search(source_url));
+    serialize_stripped_full_referrer(source_url, out);
 }
 
 // ---- header sanitization on redirect ---------------------------------------

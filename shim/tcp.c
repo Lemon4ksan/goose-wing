@@ -10,11 +10,14 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <sys/uio.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -272,4 +275,163 @@ void wing_tcp_close(int64_t sock_fd) {
     if (sock_fd > 0) {
         closesocket((SOCKET)sock_fd);
     }
+}
+
+// Cryptographically secure pseudorandom byte generator (RtlGenRandom on Windows, getrandom on Linux).
+int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
+    if (out.data == NULL || out.len <= 0) return 0;
+#ifdef _WIN32
+    typedef BOOLEAN (NTAPI *RtlGenRandomFn)(PVOID, ULONG);
+    static RtlGenRandomFn pfnRtlGenRandom = NULL;
+    if (pfnRtlGenRandom == NULL) {
+        HMODULE hAdvApi = GetModuleHandleA("advapi32.dll");
+        if (hAdvApi != NULL) {
+            pfnRtlGenRandom = (RtlGenRandomFn)GetProcAddress(hAdvApi, "SystemFunction036");
+        }
+    }
+    if (pfnRtlGenRandom != NULL) {
+        if (pfnRtlGenRandom(out.data, (ULONG)out.len)) return 0;
+    }
+    return -1;
+#elif defined(__linux__) && defined(SYS_getrandom)
+    long res = syscall(SYS_getrandom, out.data, (size_t)out.len, 0);
+    return res == (long)out.len ? 0 : -1;
+#else
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t res = read(fd, out.data, (size_t)out.len);
+        close(fd);
+        return res == (ssize_t)out.len ? 0 : -1;
+    }
+    return -1;
+#endif
+}
+
+// Configures TCP_DEFER_ACCEPT (Linux) or SO_ACCEPTFILTER (FreeBSD) to defer accept until first data packet arrives.
+int32_t wing_tcp_set_defer_accept(int64_t sock_fd, int32_t timeout_sec) {
+    if (sock_fd <= 0) return -1;
+#if defined(__linux__) && defined(TCP_DEFER_ACCEPT)
+    int val = timeout_sec > 0 ? timeout_sec : 1;
+    return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, (const void *)&val, sizeof(val));
+#elif defined(__FreeBSD__) && defined(SO_ACCEPTFILTER)
+    struct accept_filter_arg afa;
+    memset(&afa, 0, sizeof(afa));
+    strncpy(afa.af_name, "dataready", sizeof(afa.af_name) - 1);
+    return setsockopt((int)sock_fd, SOL_SOCKET, SO_ACCEPTFILTER, &afa, sizeof(afa));
+#else
+    (void)timeout_sec;
+    return 0; // Graceful no-op on platforms without kernel defer-accept
+#endif
+}
+
+// Configures TCP_USER_TIMEOUT (Linux RFC 5482) to aggressively abort connection on dead peer.
+int32_t wing_tcp_set_user_timeout(int64_t sock_fd, uint32_t timeout_ms) {
+    if (sock_fd <= 0) return -1;
+#if defined(__linux__) && defined(TCP_USER_TIMEOUT)
+    unsigned int val = timeout_ms;
+    return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_USER_TIMEOUT, (const void *)&val, sizeof(val));
+#else
+    (void)timeout_ms;
+    return 0;
+#endif
+}
+
+// Configures aggressive SO_KEEPALIVE profile (idle seconds, interval seconds, count).
+int32_t wing_tcp_set_keepalive_params(int64_t sock_fd, int32_t idle_sec, int32_t intvl_sec, int32_t cnt) {
+    if (sock_fd <= 0) return -1;
+    int opt = 1;
+    setsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&opt, sizeof(opt));
+#ifdef _WIN32
+    struct tcp_keepalive settings;
+    settings.onoff = 1;
+    settings.keepalivetime = (u_long)(idle_sec > 0 ? idle_sec * 1000 : 1000);
+    settings.keepaliveinterval = (u_long)(intvl_sec > 0 ? intvl_sec * 1000 : 1000);
+    DWORD bytes_ret = 0;
+    return (WSAIoctl((SOCKET)sock_fd, SIO_KEEPALIVE_VALS, &settings, sizeof(settings), NULL, 0, &bytes_ret, NULL, NULL) == 0) ? 0 : -1;
+#elif defined(__linux__)
+    if (idle_sec > 0) setsockopt((int)sock_fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle_sec, sizeof(idle_sec));
+    if (intvl_sec > 0) setsockopt((int)sock_fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl_sec, sizeof(intvl_sec));
+    if (cnt > 0) setsockopt((int)sock_fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+    return 0;
+#elif defined(__APPLE__)
+    if (idle_sec > 0) setsockopt((int)sock_fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle_sec, sizeof(idle_sec));
+    if (intvl_sec > 0) setsockopt((int)sock_fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl_sec, sizeof(intvl_sec));
+    if (cnt > 0) setsockopt((int)sock_fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+    return 0;
+#else
+    (void)idle_sec; (void)intvl_sec; (void)cnt;
+    return 0;
+#endif
+}
+
+// Limits SYN retransmissions on connect (TCP_SYNCNT on Linux).
+int32_t wing_tcp_set_syn_retries(int64_t sock_fd, int32_t count) {
+    if (sock_fd <= 0) return -1;
+#if defined(__linux__) && defined(TCP_SYNCNT)
+    return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_SYNCNT, (const void *)&count, sizeof(count));
+#else
+    (void)count;
+    return 0;
+#endif
+}
+
+// Queries kernel backlog of unacknowledged / unsent bytes (tcpi_notsent_bytes via TCP_INFO).
+int64_t wing_tcp_get_notsent_bytes(int64_t sock_fd) {
+    if (sock_fd <= 0) return -1;
+#if defined(__linux__) && defined(TCP_INFO)
+    struct tcp_info info;
+    socklen_t len = sizeof(info);
+    if (getsockopt((int)sock_fd, IPPROTO_TCP, TCP_INFO, &info, &len) == 0) {
+        return (int64_t)info.tcpi_notsent_bytes;
+    }
+#elif defined(TIOCOUTQ)
+    int outq = 0;
+    if (ioctl((int)sock_fd, TIOCOUTQ, &outq) == 0) {
+        return (int64_t)outq;
+    }
+#endif
+    return 0;
+}
+
+// Queries number of readable bytes currently available in socket receive buffer (FIONREAD).
+int64_t wing_tcp_get_readable_bytes(int64_t sock_fd) {
+    if (sock_fd <= 0) return -1;
+#ifdef _WIN32
+    u_long bytes = 0;
+    if (ioctlsocket((SOCKET)sock_fd, FIONREAD, &bytes) == 0) {
+        return (int64_t)bytes;
+    }
+#else
+    int bytes = 0;
+    if (ioctl((int)sock_fd, FIONREAD, &bytes) == 0) {
+        return (int64_t)bytes;
+    }
+#endif
+    return -1;
+}
+
+// Sends multiple slices via vectored I/O (WSASend on Windows, writev on POSIX).
+int32_t wing_tcp_sendv(int64_t sock_fd, const wing_bytes_ro *iov, int32_t iovcnt) {
+    if (sock_fd <= 0 || iov == NULL || iovcnt <= 0) return 0;
+#ifdef _WIN32
+    WSABUF bufs[16];
+    int count = iovcnt > 16 ? 16 : iovcnt;
+    for (int i = 0; i < count; i++) {
+        bufs[i].buf = (char *)iov[i].data;
+        bufs[i].len = (ULONG)iov[i].len;
+    }
+    DWORD sent = 0;
+    int res = WSASend((SOCKET)sock_fd, bufs, (DWORD)count, &sent, 0, NULL, NULL);
+    if (res == 0) return (int32_t)sent;
+    return -1;
+#else
+    struct iovec bufs[16];
+    int count = iovcnt > 16 ? 16 : iovcnt;
+    for (int i = 0; i < count; i++) {
+        bufs[i].iov_base = (void *)iov[i].data;
+        bufs[i].iov_len = (size_t)iov[i].len;
+    }
+    ssize_t sent = writev((int)sock_fd, bufs, count);
+    return (int32_t)sent;
+#endif
 }

@@ -530,19 +530,13 @@ fn fse_build_weight_dtable(counts: const i16[:], max_symbol: i32, table_log: i32
     return true;
 }
 
-fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: FseTable&, table_kind: i32 = 0) -> bool {
-    let table_size: i32 = (1 as i32) << table_log;
-    if table_size > 512 || table_log < 1 {
-        return false;
-    }
-    out_table.table_log = table_log;
-    out_table.is_defined = true;
-
-    var symbol_next: u16[256] = [0; 256];
-    var table_symbols: u8[512] = [0; 512];
-    var high_threshold: i32 = table_size - 1;
-
-    // 1. Place low-probability (-1) symbols at the top of the table
+fn fse_place_low_probability_symbols(
+    counts: const i16[:],
+    max_symbol: i32,
+    table_symbols: u8[512]&,
+    symbol_next: u16[256]&,
+    high_threshold: i32&
+) {
     var s: i32 = 0;
     while s <= max_symbol {
         if counts[s] == -1 {
@@ -554,13 +548,20 @@ fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_t
         }
         s++;
     }
+}
 
-    // 2. Spread normal symbols
+fn fse_spread_symbols(
+    counts: const i16[:],
+    max_symbol: i32,
+    table_size: i32,
+    high_threshold: i32,
+    table_symbols: u8[512]&
+) -> bool {
     let step: i32 = (table_size >> 1) + (table_size >> 3) + 3;
     let mask: i32 = table_size - 1;
     var pos: i32 = 0;
 
-    s = 0;
+    var s: i32 = 0;
     while s <= max_symbol {
         if counts[s] > 0 {
             var i: i32 = 0;
@@ -575,11 +576,26 @@ fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_t
         }
         s++;
     }
-    if pos != 0 {
-        return false; // Distribution did not fill table cleanly
+    return pos == 0;
+}
+
+fn fse_build_dtable(counts: const i16[:], max_symbol: i32, table_log: i32, out_table: FseTable&, table_kind: i32 = 0) -> bool {
+    let table_size: i32 = (1 as i32) << table_log;
+    if table_size > 512 || table_log < 1 {
+        return false;
+    }
+    out_table.table_log = table_log;
+    out_table.is_defined = true;
+
+    var symbol_next: u16[256] = [0; 256];
+    var table_symbols: u8[512] = [0; 512];
+    var high_threshold: i32 = table_size - 1;
+
+    fse_place_low_probability_symbols(counts, max_symbol, table_symbols, symbol_next, high_threshold);
+    guard fse_spread_symbols(counts, max_symbol, table_size, high_threshold, table_symbols) else {
+        return false;
     }
 
-    // 3. Build decoding table
     var u: i32 = 0;
     while u < table_size {
         let sym = table_symbols[u] as i32;
@@ -2776,19 +2792,14 @@ fn compress_block<B>(chunk: const u8[:], rep: u32[3]&, is_last: bool, level: i32
 
 // Compresses input slice using Zstandard frame container (RFC 8878).
 // level 0: raw uncompressed blocks
-// level 1: fast compression (hash_log 14, step accelerator)
-// level 2: balanced compression (hash_log 15)
-// level 3: default compression (hash_log 16, rep0 check)
-fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include_checksum: bool = true) -> bool {
-    let total = src.len;
-
-    // 1. Magic Number (0xFD2FB528 in little-endian)
+fn emit_zstd_magic_number<B>(out_buf: B&) {
     out_buf.push(0x28);
     out_buf.push(0xB5);
     out_buf.push(0x2F);
     out_buf.push(0xFD);
+}
 
-    // 2. Frame Header Descriptor (FHD)
+fn emit_zstd_frame_header<B>(total: i64, include_checksum: bool, out_buf: B&) {
     var fhd: u8 = 0x20; // single segment
     if include_checksum { fhd |= 0x04; }
 
@@ -2802,6 +2813,16 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
         out_buf.push(fhd | 0x80);
         write_le_u32(out_buf, total as u32);
     }
+}
+
+// level 1: fast compression (hash_log 14, step accelerator)
+// level 2: balanced compression (hash_log 15)
+// level 3: default compression (hash_log 16, rep0 check)
+fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include_checksum: bool = true) -> bool {
+    let total = src.len;
+
+    emit_zstd_magic_number(out_buf);
+    emit_zstd_frame_header(total, include_checksum, out_buf);
 
     if total == 0 {
         let hdr_val = 1 | (0 << 1); // 1 empty raw block

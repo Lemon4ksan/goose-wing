@@ -358,19 +358,14 @@ fn doh_query(
     return parse_dns_response(res.body[..], out_resp);
 }
 
-// Discovers or extracts ECHConfigList for a domain.
-// First checks local DnsCache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
-fn resolve_ech_config(
-    session: Session&,
+fn lookup_cached_ech_config(
+    dns_cache: const DnsCache&,
     domain: const u8[:],
     now_sec: i64,
     out_ech: u8[..512]&
 ) -> bool {
-    out_ech.clear();
-
-    // 1. Check local cache
     var cached = DnsCacheEntry { .. };
-    let cache_status = dns_cache_lookup(session.dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
+    let cache_status = dns_cache_lookup(dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
     if cache_status == DnsCacheStatus.Fresh || cache_status == DnsCacheStatus.Stale {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
@@ -379,14 +374,20 @@ fn resolve_ech_config(
             }
         }
     }
+    return false;
+}
 
-    // 2. Automated discovery via DoH
+fn discover_and_cache_ech_config(
+    session: Session&,
+    domain: const u8[:],
+    now_sec: i64,
+    out_ech: u8[..512]&
+) -> bool {
     guard session.enable_doh && session.auto_ech_discovery else { return false; }
 
     var dns_resp = DnsResponse { .. };
     guard doh_query(session, domain, DNS_QTYPE_HTTPS, 0x1234, dns_resp) else { return false; }
 
-    // Cache the response
     var cache_entry = DnsCacheEntry {
         qtype: DNS_QTYPE_HTTPS,
         inserted_at_sec: now_sec,
@@ -409,6 +410,21 @@ fn resolve_ech_config(
 
     dns_cache_insert(session.dns_cache, cache_entry);
     return found_ech;
+}
+
+// Discovers or extracts ECHConfigList for a domain.
+// First checks local DnsCache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
+fn resolve_ech_config(
+    session: Session&,
+    domain: const u8[:],
+    now_sec: i64,
+    out_ech: u8[..512]&
+) -> bool {
+    out_ech.clear();
+    if lookup_cached_ech_config(session.dns_cache, domain, now_sec, out_ech) {
+        return true;
+    }
+    return discover_and_cache_ech_config(session, domain, now_sec, out_ech);
 }
 
 // ---- alt-svc & protocol racing configuration (rfc 7838, rfc 8305) ----------

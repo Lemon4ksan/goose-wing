@@ -50,6 +50,43 @@ int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_compl
     return (int32_t)ret;
 }
 
+int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
+    long ret = syscall(__NR_io_uring_register, (int)ring_fd, opcode, arg, nr_args);
+    if (ret < 0) {
+        return -errno;
+    }
+    return (int32_t)ret;
+}
+
+#ifndef IORING_REGISTER_PBUF_RING
+#define IORING_REGISTER_PBUF_RING 22
+#endif
+
+#ifndef IORING_REGISTER_FILES
+#define IORING_REGISTER_FILES 2
+#endif
+
+struct wing_uring_buf_reg {
+    uint64_t ring_addr;
+    uint32_t ring_entries;
+    uint16_t bgid;
+    uint16_t pad;
+    uint64_t resv[3];
+};
+
+int32_t wing_uring_register_pbuf_ring(int64_t ring_fd, uint64_t ring_addr, uint32_t ring_entries, uint16_t bgid) {
+    struct wing_uring_buf_reg reg;
+    __builtin_memset(&reg, 0, sizeof(reg));
+    reg.ring_addr = ring_addr;
+    reg.ring_entries = ring_entries;
+    reg.bgid = bgid;
+    return wing_uring_register(ring_fd, IORING_REGISTER_PBUF_RING, &reg, 1);
+}
+
+int32_t wing_uring_register_files(int64_t ring_fd, const int32_t *fds, uint32_t nr_files) {
+    return wing_uring_register(ring_fd, IORING_REGISTER_FILES, fds, nr_files);
+}
+
 void wing_uring_close(int64_t ring_fd) {
     if (ring_fd >= 0) {
         close((int)ring_fd);
@@ -67,6 +104,15 @@ int32_t wing_uring_probe(void) { return -ENOSYS; }
 int64_t wing_uring_create(uint32_t entries, uint32_t flags) { (void)entries; (void)flags; return -ENOSYS; }
 int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_complete, uint32_t flags) {
     (void)ring_fd; (void)to_submit; (void)min_complete; (void)flags; return -ENOSYS;
+}
+int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
+    (void)ring_fd; (void)opcode; (void)arg; (void)nr_args; return -ENOSYS;
+}
+int32_t wing_uring_register_pbuf_ring(int64_t ring_fd, uint64_t ring_addr, uint32_t ring_entries, uint16_t bgid) {
+    (void)ring_fd; (void)ring_addr; (void)ring_entries; (void)bgid; return -ENOSYS;
+}
+int32_t wing_uring_register_files(int64_t ring_fd, const int32_t *fds, uint32_t nr_files) {
+    (void)ring_fd; (void)fds; (void)nr_files; return -ENOSYS;
 }
 void wing_uring_close(int64_t ring_fd) { (void)ring_fd; }
 

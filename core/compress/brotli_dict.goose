@@ -173,22 +173,9 @@ const BROTLI_TRANSFORMS: BrotliTransform[121] = [
     BrotliTransform { prefix: " ", transform_type: 10, suffix: "='" },
 ];
 
-// Applies word transformation and appends to output buffer.
-fn brotli_transform_word<B>(
-    word: const u8[:],
-    transform_idx: u32,
-    out: B&
-) -> bool {
-    guard (transform_idx as i64) < 121 else { return false; }
-    let t = BROTLI_TRANSFORMS[transform_idx as i64];
-
-    // 1. Output prefix
-    out.append(t.prefix);
-
-    // 2. Output transformed word
+fn emit_transformed_word_body<B>(word: const u8[:], tt: u8, out: B&) {
     var start: i64 = 0;
     var len = word.len;
-    let tt = t.transform_type;
 
     if tt <= TRANSFORM_OMIT_LAST_9 {
         let omit = tt as i64;
@@ -226,8 +213,19 @@ fn brotli_transform_word<B>(
             out.append(sub);
         }
     }
+}
 
-    // 3. Output suffix
+// Applies word transformation and appends to output buffer.
+fn brotli_transform_word<B>(
+    word: const u8[:],
+    transform_idx: u32,
+    out: B&
+) -> bool {
+    guard (transform_idx as i64) < 121 else { return false; }
+    let t = BROTLI_TRANSFORMS[transform_idx as i64];
+
+    out.append(t.prefix);
+    emit_transformed_word_body(word, t.transform_type, out);
     out.append(t.suffix);
     return true;
 }

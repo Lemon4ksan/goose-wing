@@ -150,6 +150,90 @@ fn digest_hash_hex<B>(algorithm: const u8[:], data: const u8[:], out_hex: B&) {
     }
 }
 
+fn calculate_digest_ha1(
+    algo: const u8[:],
+    username: const u8[:],
+    realm: const u8[:],
+    password: const u8[:],
+    nonce: const u8[:],
+    cnonce: const u8[:],
+    out_ha1_hex: u8[..64]&
+) {
+    var a1: u8[>..] = [];
+    a1.append(username);
+    a1.push(':');
+    a1.append(realm);
+    a1.push(':');
+    a1.append(password);
+
+    digest_hash_hex(algo, a1[..], out_ha1_hex);
+
+    if eq_ascii_fold(algo, "sha-256-sess") || eq_ascii_fold(algo, "md5-sess") {
+        var a1_sess: u8[>..] = [];
+        a1_sess.append(out_ha1_hex[..]);
+        a1_sess.push(':');
+        a1_sess.append(nonce);
+        a1_sess.push(':');
+        a1_sess.append(cnonce);
+        digest_hash_hex(algo, a1_sess[..], out_ha1_hex);
+    }
+}
+
+fn calculate_digest_ha2(
+    algo: const u8[:],
+    method: const u8[:],
+    uri: const u8[:],
+    is_auth_int: bool,
+    body: const u8[:],
+    out_ha2_hex: u8[..64]&
+) {
+    var a2: u8[>..] = [];
+    a2.append(method);
+    a2.push(':');
+    a2.append(uri);
+
+    if is_auth_int {
+        var h_body_hex: u8[..64] = [];
+        digest_hash_hex(algo, body, h_body_hex);
+        a2.push(':');
+        a2.append(h_body_hex[..]);
+    }
+
+    digest_hash_hex(algo, a2[..], out_ha2_hex);
+}
+
+fn calculate_digest_response(
+    algo: const u8[:],
+    ha1_hex: const u8[:],
+    nonce: const u8[:],
+    nc_str: const u8[:],
+    cnonce: const u8[:],
+    has_qop: bool,
+    is_auth_int: bool,
+    ha2_hex: const u8[:],
+    out_response_hex: u8[..64]&
+) {
+    var a3: u8[>..] = [];
+    a3.append(ha1_hex);
+    a3.push(':');
+    a3.append(nonce);
+
+    if has_qop {
+        let active_qop = if is_auth_int { "auth-int" } else { "auth" };
+        a3.push(':');
+        a3.append(nc_str);
+        a3.push(':');
+        a3.append(cnonce);
+        a3.push(':');
+        a3.append(active_qop);
+    }
+
+    a3.push(':');
+    a3.append(ha2_hex);
+
+    digest_hash_hex(algo, a3[..], out_response_hex);
+}
+
 // Computes RFC 7616 Digest response and outputs the full Authorization header
 fn compute_digest_response(
     challenge: const DigestChallenge&,
@@ -164,74 +248,21 @@ fn compute_digest_response(
     guard challenge.valid else { return false; }
 
     let algo = challenge.algorithm[..];
-
-    // 1. Calculate HA1 = H(username:realm:password)
-    var a1: u8[>..] = [];
-    a1.append(creds.username[..]);
-    a1.push(':');
-    a1.append(challenge.realm[..]);
-    a1.push(':');
-    a1.append(creds.password[..]);
+    let is_auth_int = eq_ascii_fold(challenge.qop[..], "auth-int");
+    let has_qop = (challenge.qop.len > 0);
 
     var ha1_hex: u8[..64] = [];
-    digest_hash_hex(algo, a1[..], ha1_hex);
-
-    // If algorithm is *-sess: HA1 = H(H(username:realm:password):nonce:cnonce)
-    if eq_ascii_fold(algo, "sha-256-sess") || eq_ascii_fold(algo, "md5-sess") {
-        var a1_sess: u8[>..] = [];
-        a1_sess.append(ha1_hex[..]);
-        a1_sess.push(':');
-        a1_sess.append(challenge.nonce[..]);
-        a1_sess.push(':');
-        a1_sess.append(cnonce);
-        digest_hash_hex(algo, a1_sess[..], ha1_hex);
-    }
-
-    // 2. Calculate HA2 = H(method:uri) [or H(method:uri:H(entity-body)) if qop=auth-int]
-    var a2: u8[>..] = [];
-    a2.append(method);
-    a2.push(':');
-    a2.append(uri);
-
-    let is_auth_int = eq_ascii_fold(challenge.qop[..], "auth-int");
-    if is_auth_int {
-        var h_body_hex: u8[..64] = [];
-        digest_hash_hex(algo, body, h_body_hex);
-        a2.push(':');
-        a2.append(h_body_hex[..]);
-    }
+    calculate_digest_ha1(algo, creds.username[..], challenge.realm[..], creds.password[..], challenge.nonce[..], cnonce, ha1_hex);
 
     var ha2_hex: u8[..64] = [];
-    digest_hash_hex(algo, a2[..], ha2_hex);
+    calculate_digest_ha2(algo, method, uri, is_auth_int, body, ha2_hex);
 
-    // 3. Format nc (8-digit hex)
     var nc_str: u8[..16] = [];
     core::format_u64_hex_fixed(nc, 8, nc_str, false);
 
-    // 4. Calculate response = H(HA1:nonce:nc:cnonce:qop:HA2)
-    var a3: u8[>..] = [];
-    a3.append(ha1_hex[..]);
-    a3.push(':');
-    a3.append(challenge.nonce[..]);
-
-    let has_qop = (challenge.qop.len > 0);
-    if has_qop {
-        let active_qop = if is_auth_int { "auth-int" } else { "auth" };
-        a3.push(':');
-        a3.append(nc_str[..]);
-        a3.push(':');
-        a3.append(cnonce);
-        a3.push(':');
-        a3.append(active_qop);
-    }
-
-    a3.push(':');
-    a3.append(ha2_hex[..]);
-
     var response_hex: u8[..64] = [];
-    digest_hash_hex(algo, a3[..], response_hex);
+    calculate_digest_response(algo, ha1_hex[..], challenge.nonce[..], nc_str[..], cnonce, has_qop, is_auth_int, ha2_hex[..], response_hex);
 
-    // 5. Assemble formatted `Authorization: Digest ...` header
     out_header.clear();
     out_header.append("Digest username=\"");
     out_header.append(creds.username[..]);

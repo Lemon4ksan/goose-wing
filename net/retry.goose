@@ -164,6 +164,36 @@ fn compute_backoff_jitter_ms(
 
 // ---- 3. RFC 9110 Retry-After parser & Circuit Breaker ----------------------
 
+fn try_parse_retry_after_seconds(clean: const u8[:]) -> i64, bool {
+    var all_digits = true;
+    for i in clean.len {
+        let ch = clean[i];
+        if ch < '0' || ch > '9' {
+            all_digits = false;
+            break;
+        }
+    }
+    guard all_digits else { return 0, false; }
+    let secs, ok_s = core::parse_digits(clean);
+    guard ok_s && secs >= 0 else { return 0, false; }
+    return core::retry_after_sec_to_ms_sat(secs), true;
+}
+
+fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64, bool {
+    let parsed_time, ok_t = core::parse_http_date(clean);
+    guard ok_t else { return 0, false; }
+
+    var formatted_back: u8[..64] = [];
+    format_http(formatted_back, parsed_time);
+    guard eq_ascii_fold(formatted_back[..], clean) else { return 0, false; }
+
+    let target_unix_ms = unix_milli(parsed_time);
+    if target_unix_ms <= now_unix_ms {
+        return 0, true;
+    }
+    return target_unix_ms - now_unix_ms, true;
+}
+
 // Strict parser for RFC 9110 Retry-After header:
 // Supports delay-seconds (1*DIGIT without signs/decimals/units) and IMF-fixdate with exact UTC round-trip check.
 fn parse_retry_after_ms(
@@ -173,39 +203,12 @@ fn parse_retry_after_ms(
     let clean = trim(header_raw);
     guard clean.len > 0 else { return 0, false; }
 
-    // 1. Check for integer delay-seconds (1*DIGIT)
-    var all_digits = true;
-    for i in clean.len {
-        let ch = clean[i];
-        if ch < '0' || ch > '9' {
-            all_digits = false;
-            break;
-        }
+    let sec_ms, ok_sec = try_parse_retry_after_seconds(clean);
+    if ok_sec {
+        return sec_ms, true;
     }
 
-    if all_digits {
-        let secs, ok_s = core::parse_digits(clean);
-        guard ok_s && secs >= 0 else { return 0, false; }
-        return core::retry_after_sec_to_ms_sat(secs), true;
-    }
-
-    // 2. Check for HTTP-date (IMF-fixdate, e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
-    let parsed_time, ok_t = core::parse_http_date(clean);
-    guard ok_t else { return 0, false; }
-
-    // Strict validation: exact IMF-fixdate round-trip check to catch invalid calendar days
-    var formatted_back: u8[..64] = [];
-    format_http(formatted_back, parsed_time);
-    guard eq_ascii_fold(formatted_back[..], clean) else { return 0, false; }
-
-    let target_unix_ms = unix_milli(parsed_time);
-    if target_unix_ms <= now_unix_ms {
-        // Date is in the past: clamp to 0 ms (immediate retry allowed)
-        return 0, true;
-    }
-
-    let delta_ms = target_unix_ms - now_unix_ms;
-    return delta_ms, true;
+    return try_parse_retry_after_http_date(clean, now_unix_ms);
 }
 
 // Local Host Circuit Breaker registry entry for excessive Retry-After windows

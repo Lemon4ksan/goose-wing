@@ -98,6 +98,23 @@ inline fn rttvar_us(est: const JacobsonRttEstimator&) -> u64 {
     return est.rttvar_scaled >> 2;
 }
 
+inline fn bound_effective_ack_delay(ack_delay_us: u64, max_ack_delay_us: u64, handshake_confirmed: bool) -> u64 {
+    if handshake_confirmed {
+        return ct_min_u64(ack_delay_us, max_ack_delay_us);
+    }
+    return ack_delay_us;
+}
+
+inline fn calculate_defensive_adjusted_rtt(latest_rtt_us: u64, min_rtt_us: u64, effective_ack_delay: u64) -> u64 {
+    let min_plus_delay = add_sat_u64(min_rtt_us, effective_ack_delay);
+    let can_subtract_mask = ct_mask_u64(1 ^ ct_lt_u64(latest_rtt_us, min_plus_delay));
+    return ct_select_u64(
+        can_subtract_mask,
+        latest_rtt_us - effective_ack_delay,
+        latest_rtt_us
+    );
+}
+
 // Ingestion of RTT sample strictly conforming to RFC 9002 Errata ID 7539.
 fn on_rtt_sample(
     est: JacobsonRttEstimator&,
@@ -119,26 +136,10 @@ fn on_rtt_sample(
         return;
     }
 
-    // 1. Update min_rtt
     est.min_rtt_us = ct_min_u64(est.min_rtt_us, latest_rtt_us);
+    let effective_ack_delay = bound_effective_ack_delay(ack_delay_us, max_ack_delay_us, handshake_confirmed);
+    let adjusted_rtt = calculate_defensive_adjusted_rtt(latest_rtt_us, est.min_rtt_us, effective_ack_delay);
 
-    // 2. Bound ack_delay after handshake confirmation
-    let effective_ack_delay = if handshake_confirmed {
-        ct_min_u64(ack_delay_us, max_ack_delay_us)
-    } else {
-        ack_delay_us
-    };
-
-    // 3. Defensive ack_delay subtraction (never allow adjusted_rtt < min_rtt)
-    let min_plus_delay = add_sat_u64(est.min_rtt_us, effective_ack_delay);
-    let can_subtract_mask = ct_mask_u64(1 ^ ct_lt_u64(latest_rtt_us, min_plus_delay));
-    let adjusted_rtt = ct_select_u64(
-        can_subtract_mask,
-        latest_rtt_us - effective_ack_delay,
-        latest_rtt_us
-    );
-
-    // 4. Calculate deviation against prior smoothed_rtt (RFC 6298 / Errata ID 7539)
     let prior_srtt = est.srtt_scaled >> 3;
     let abs_diff = ct_select_u64(
         ct_mask_u64(ct_lt_u64(prior_srtt, adjusted_rtt)),
@@ -146,10 +147,7 @@ fn on_rtt_sample(
         prior_srtt - adjusted_rtt
     );
 
-    // 5. Update rttvar accumulator: V4 = V4 - (V4 >> 2) + |diff|
     est.rttvar_scaled = (est.rttvar_scaled - (est.rttvar_scaled >> 2)) + abs_diff;
-
-    // 6. Update srtt accumulator: S8 = S8 - prior_srtt + adjusted_rtt
     est.srtt_scaled = (est.srtt_scaled - prior_srtt) + adjusted_rtt;
 }
 

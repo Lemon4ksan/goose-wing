@@ -219,6 +219,93 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         sub.assert_eq(bad_resp.status_code, 426, "Status 426 Upgrade Required");
         sub.assert_bytes_eq(bad_resp.header("Sec-WebSocket-Version"), "13", "Required version 13 returned");
     };
+
+    t.run("8. Multi-Frame Fragmented Message Assembly & Interleaved Control Frames") { sub =>
+        var ws = wing::new_websocket_session(true); // client session
+        let no_mask: u8[4] = [0, 0, 0, 0];
+
+        // Fragment 1: TEXT with FIN=0
+        var f1_wire: u8[..128] = [];
+        wing::encode_ws_frame(f1_wire, wing::WS_OPCODE_TEXT, "Hello, ", false, no_mask, false);
+
+        var msg1 = wing::WsMessage { .. };
+        var reply1: u8[..128] = [];
+        let ok1 = wing::ws_receive(ws, f1_wire[..], msg1, reply1);
+        sub.assert_true(ok1, "ws_receive accepted initial fragment");
+        sub.assert_false(msg1.is_valid, "Message not complete on initial fragment");
+
+        // Interleaved Control Frame: PING with FIN=1 during fragmentation (RFC 6455 §5.4)
+        var ping_wire: u8[..128] = [];
+        wing::encode_ws_frame(ping_wire, wing::WS_OPCODE_PING, "mid-stream", false, no_mask, true);
+
+        var ping_msg = wing::WsMessage { .. };
+        var ping_reply: u8[..128] = [];
+        let ok_p = wing::ws_receive(ws, ping_wire[..], ping_msg, ping_reply);
+        sub.assert_true(ok_p, "ws_receive accepted interleaved PING");
+        sub.assert_true(ping_msg.is_valid, "Ping message was delivered");
+        sub.assert_eq(ping_msg.opcode, wing::WS_OPCODE_PING, "Ping opcode delivered");
+        sub.assert_gt(ping_reply.len, 0, "Pong response generated for interleaved ping");
+
+        // Fragment 2: CONTINUATION with FIN=1
+        var f2_wire: u8[..128] = [];
+        wing::encode_ws_frame(f2_wire, wing::WS_OPCODE_CONTINUATION, "World!", false, no_mask, true);
+
+        var msg2 = wing::WsMessage { .. };
+        var reply2: u8[..128] = [];
+        let ok2 = wing::ws_receive(ws, f2_wire[..], msg2, reply2);
+        sub.assert_true(ok2, "ws_receive accepted terminal CONTINUATION fragment");
+        sub.assert_true(msg2.is_valid, "Message is valid upon terminal fragment");
+        sub.assert_eq(msg2.opcode, wing::WS_OPCODE_TEXT, "Assembled message preserved original opcode (TEXT)");
+        sub.assert_bytes_eq(msg2.data[..], "Hello, World!", "Assembled payload matches combined fragments");
+    };
+
+    t.run("9. Autobahn UTF-8 Strict Validation & Anomaly Rejection") { sub =>
+        // 9.1 Invalid UTF-8 sequence in text frame (RFC 6455 §5.6, Autobahn Case 6.x)
+        var ws1 = wing::new_websocket_session(true);
+        let no_mask: u8[4] = [0, 0, 0, 0];
+
+        var bad_text_wire: u8[..128] = [];
+        let invalid_utf8: u8[4] = [0xCE, 0xBA, 0xE1, 0x00]; // 0xE1 followed by 0x00 is invalid UTF-8
+        wing::encode_ws_frame(bad_text_wire, wing::WS_OPCODE_TEXT, invalid_utf8[..], false, no_mask, true);
+
+        var msg1 = wing::WsMessage { .. };
+        var reply1: u8[..128] = [];
+        wing::ws_receive(ws1, bad_text_wire[..], msg1, reply1);
+
+        sub.assert_false(msg1.is_valid, "Invalid UTF-8 text rejected");
+        sub.assert_true(ws1.is_closed, "Connection closed on invalid UTF-8");
+        sub.assert_eq(ws1.close_code, wing::WS_STATUS_INVALID_PAYLOAD, "Close code 1007 Invalid Payload");
+
+        // 9.2 Unexpected CONTINUATION without initial fragment
+        var ws2 = wing::new_websocket_session(true);
+        var unexpected_cont: u8[..128] = [];
+        wing::encode_ws_frame(unexpected_cont, wing::WS_OPCODE_CONTINUATION, "orphan", false, no_mask, true);
+
+        var msg2 = wing::WsMessage { .. };
+        var reply2: u8[..128] = [];
+        wing::ws_receive(ws2, unexpected_cont[..], msg2, reply2);
+
+        sub.assert_false(msg2.is_valid, "Orphan continuation rejected");
+        sub.assert_true(ws2.is_closed, "Connection closed on protocol error");
+        sub.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
+
+        // 9.3 Interleaved data frame during fragmentation
+        var ws3 = wing::new_websocket_session(true);
+        var frag_start: u8[..128] = [];
+        wing::encode_ws_frame(frag_start, wing::WS_OPCODE_TEXT, "part1", false, no_mask, false);
+        var msg3 = wing::WsMessage { .. };
+        var reply3: u8[..128] = [];
+        wing::ws_receive(ws3, frag_start[..], msg3, reply3);
+
+        // Next frame is another TEXT frame instead of CONTINUATION
+        var bad_interleave: u8[..128] = [];
+        wing::encode_ws_frame(bad_interleave, wing::WS_OPCODE_BINARY, "binary-data", false, no_mask, true);
+        wing::ws_receive(ws3, bad_interleave[..], msg3, reply3);
+
+        sub.assert_false(msg3.is_valid, "Interleaved data frame rejected");
+        sub.assert_true(ws3.is_closed, "Connection closed on interleaving error");
+        sub.assert_eq(ws3.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
+    };
 }
 
 fn test_http3_priority_update(t: core::T&) {

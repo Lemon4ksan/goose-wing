@@ -227,6 +227,58 @@ fn create_dpop_proof<B>(
 // ---- 5. DPoP Proof Verification ---------------------------------------------
 
 
+fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: const u8[:]) -> bool {
+    let expected_sig = core::hmac_sha256(key, signing_input);
+    var expected_sig_b64: u8[..64] = [];
+    core::base64url_encode(expected_sig[..], expected_sig_b64);
+
+    guard expected_sig_b64.len == sig_b64.len else { return false; }
+    var diff: u8 = 0;
+    for i in sig_b64.len {
+        diff |= sig_b64[i] ^ expected_sig_b64[i];
+    }
+    return diff == 0;
+}
+
+fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) -> bool {
+    var method_upper: u8[..16] = [];
+    for b in expected_method {
+        if b >= 'a' && b <= 'z' {
+            method_upper.push(b - 32);
+        } else {
+            method_upper.push(b);
+        }
+    }
+    return core::contains(claims_json, method_upper[..]);
+}
+
+fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool {
+    var norm_expected_uri: u8[..256] = [];
+    guard normalize_dpop_target_uri(expected_uri, norm_expected_uri) else { return false; }
+    return core::contains(claims_json, norm_expected_uri[..]);
+}
+
+fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
+    guard now_sec > 0 else { return true; }
+    let iat_idx = core::index_of_slice(claims_json, "\"iat\":");
+    guard iat_idx != -1 else { return true; }
+
+    var iat_val: i64 = 0;
+    var pos = iat_idx + 6;
+    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+        pos += 1;
+    }
+    var has_digits = false;
+    while pos < claims_json.len && claims_json[pos] >= '0' && claims_json[pos] <= '9' {
+        iat_val = iat_val * 10 + (claims_json[pos] - '0');
+        pos += 1;
+        has_digits = true;
+    }
+    guard has_digits else { return true; }
+    guard iat_val <= (now_sec + max_skew_sec) else { return false; }
+    return (now_sec - iat_val) <= (max_age_sec + max_skew_sec);
+}
+
 // Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, and time window.
 fn verify_dpop_proof(
     jwt: const u8[:],
@@ -239,99 +291,37 @@ fn verify_dpop_proof(
     max_age_sec: i64 = 300,
     max_skew_sec: i64 = 60,
 ) -> bool {
-    // 1. Split into 3 parts: header.claims.signature
-    var dot1 = -1;
-    var dot2 = -1;
-    for i in jwt.len {
-        if jwt[i] == '.' {
-            if dot1 == -1 {
-                dot1 = i;
-            } else if dot2 == -1 {
-                dot2 = i;
-            } else {
-                return false; // Too many parts
-            }
-        }
-    }
-    guard dot1 != -1 && dot2 != -1 else { return false; }
+    var dot1: i64 = 0;
+    var dot2: i64 = 0;
+    guard split_jwt_parts(jwt, dot1, dot2) else { return false; }
 
     let header_b64 = jwt[..dot1];
     let claims_b64 = jwt[(dot1 + 1)..dot2];
     let sig_b64 = jwt[(dot2 + 1)..];
-
-    // 2. Verify signature
     let signing_input = jwt[..dot2];
-    let expected_sig = core::hmac_sha256(key, signing_input);
-    var expected_sig_b64: u8[..64] = [];
-    core::base64url_encode(expected_sig[..], expected_sig_b64);
 
-    guard expected_sig_b64.len == sig_b64.len else { return false; }
-    var diff: u8 = 0;
-    for i in sig_b64.len {
-        diff |= sig_b64[i] ^ expected_sig_b64[i];
-    }
-    guard diff == 0 else { return false; }
+    guard verify_dpop_signature(signing_input, sig_b64, key) else { return false; }
 
-    // 3. Decode Header and verify typ == "dpop+jwt"
     var header_json: u8[>..] = [];
     guard core::base64url_decode(header_b64, header_json) else { return false; }
     guard core::contains(header_json[..], "dpop+jwt") else { return false; }
 
-    // 4. Decode Claims and verify
     var claims_json: u8[>..] = [];
     guard core::base64url_decode(claims_b64, claims_json) else { return false; }
+    guard verify_dpop_method(claims_json[..], expected_method) else { return false; }
+    guard verify_dpop_uri(claims_json[..], expected_uri) else { return false; }
 
-    // Verify method (case-insensitive check in claims)
-    var method_upper: u8[..16] = [];
-    for b in expected_method {
-        if b >= 'a' && b <= 'z' {
-            method_upper.push(b - 32);
-        } else {
-            method_upper.push(b);
-        }
-    }
-    guard core::contains(claims_json[..], method_upper[..]) else { return false; }
-
-    // Verify normalized target URI
-    var norm_expected_uri: u8[..256] = [];
-    guard normalize_dpop_target_uri(expected_uri, norm_expected_uri) else { return false; }
-    guard core::contains(claims_json[..], norm_expected_uri[..]) else { return false; }
-
-    // Verify access token hash if token provided
     if access_token.len > 0 {
         var expected_ath: u8[..64] = [];
         compute_dpop_ath(access_token, expected_ath);
         guard expected_ath.len > 0 && core::contains(claims_json[..], expected_ath[..]) else { return false; }
     }
 
-    // Verify nonce if expected
     if expected_nonce.len > 0 {
         guard core::contains(claims_json[..], expected_nonce) else { return false; }
     }
 
-    // Verify iat against now_sec with max_age_sec and max_skew_sec
-    if now_sec > 0 {
-        let iat_idx = core::index_of_slice(claims_json[..], "\"iat\":");
-        if iat_idx != -1 {
-            var iat_val: i64 = 0;
-            var pos = iat_idx + 6;
-            while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-                pos += 1;
-            }
-            var has_digits = false;
-            while pos < claims_json.len && claims_json[pos] >= '0' && claims_json[pos] <= '9' {
-                iat_val = iat_val * 10 + (claims_json[pos] - '0');
-                pos += 1;
-                has_digits = true;
-            }
-            if has_digits {
-                guard iat_val <= (now_sec + max_skew_sec) else { return false; }
-                guard (now_sec - iat_val) <= (max_age_sec + max_skew_sec) else { return false; }
-            }
-        }
-    }
-
-    return true;
+    return verify_dpop_iat(claims_json[..], now_sec, max_age_sec, max_skew_sec);
 }
 
 // ---- 6. Client Header Integration ------------------------------------------

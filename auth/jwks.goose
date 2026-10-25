@@ -226,6 +226,32 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
 
 // ---- 3. Integrated JWKS JWT Verification -------------------------------------
 
+fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
+    if kid.len > 0 {
+        return find_jwks_key(jwks, kid);
+    }
+    if jwks.keys.len == 1 && jwks.keys[0].valid {
+        return 0;
+    }
+    return -1;
+}
+
+fn dispatch_jwks_verification(
+    token: const u8[:],
+    key: const JwkKey&,
+    options: const JwtValidationOptions&,
+    now_unix_sec: i64,
+    out_header: JwtHeader&,
+    out_claims: JwtClaims&
+) -> JwtError {
+    if key.kty == JwkKeyType.OKP {
+        return verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims);
+    } else if key.kty == JwkKeyType.Oct {
+        return verify_jwt_hmac(token, key.symmetric_key[..], options, now_unix_sec, out_header, out_claims);
+    }
+    return JwtError.UnsupportedAlgorithm;
+}
+
 // Verifies a JWT against a JWKS key set.
 // Uses the `kid` in the JWT header to locate the active key and performs signature & claims validation.
 fn verify_jwt_with_jwks(
@@ -236,18 +262,10 @@ fn verify_jwt_with_jwks(
     out_header: JwtHeader&,
     out_claims: JwtClaims&
 ) -> JwtError {
-    // 1. Inspect unverified header to obtain kid & alg
     let parse_err = parse_jwt_unverified(token, out_header, out_claims);
     guard parse_err == JwtError.None else { return parse_err; }
 
-    // 2. Locate key by kid or fallback to single key if only 1 key in set
-    var key_idx = -1;
-    if out_header.kid.len > 0 {
-        key_idx = find_jwks_key(jwks, out_header.kid[..]);
-    } else if jwks.keys.len == 1 && jwks.keys[0].valid {
-        key_idx = 0;
-    }
-
+    let key_idx = resolve_jwks_key_index(jwks, out_header.kid[..]);
     guard key_idx >= 0 && key_idx < jwks.keys.len else {
         return JwtError.KeyNotFound;
     }
@@ -255,12 +273,5 @@ fn verify_jwt_with_jwks(
     let matched_key = jwks.keys[key_idx];
     guard matched_key.valid else { return JwtError.KeyNotFound; }
 
-    // 3. Dispatch verification according to key type
-    if matched_key.kty == JwkKeyType.OKP {
-        return verify_jwt_eddsa(token, matched_key.public_key, options, now_unix_sec, out_header, out_claims);
-    } else if matched_key.kty == JwkKeyType.Oct {
-        return verify_jwt_hmac(token, matched_key.symmetric_key[..], options, now_unix_sec, out_header, out_claims);
-    }
-
-    return JwtError.UnsupportedAlgorithm;
+    return dispatch_jwks_verification(token, matched_key, options, now_unix_sec, out_header, out_claims);
 }

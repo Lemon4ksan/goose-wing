@@ -195,37 +195,31 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
 
 // ---- 4. Query Builder ------------------------------------------------------
 
-// Builds a standard 12-byte header + question DNS query.
-fn build_dns_query(domain: const u8[:], qtype: u16, tx_id: u16, out: u8[>..]&) -> bool {
-    // 1. Transaction ID
+fn serialize_dns_header(tx_id: u16, qd_count: u16, flags: u16, out: u8[>..]&) {
     out.push(((tx_id >> 8) & 0xFF) as u8);
     out.push((tx_id & 0xFF) as u8);
+    out.push(((flags >> 8) & 0xFF) as u8);
+    out.push((flags & 0xFF) as u8);
+    out.push(((qd_count >> 8) & 0xFF) as u8);
+    out.push((qd_count & 0xFF) as u8);
+    out.push(0x00); out.push(0x00); // ANCOUNT = 0
+    out.push(0x00); out.push(0x00); // NSCOUNT = 0
+    out.push(0x00); out.push(0x00); // ARCOUNT = 0
+}
 
-    // 2. Flags: Standard query, Recursion Desired (RD = 1) -> 0x0100
-    out.push(0x01);
-    out.push(0x00);
-
-    // 3. QDCOUNT = 1
-    out.push(0x00);
-    out.push(0x01);
-
-    // 4. ANCOUNT = 0, NSCOUNT = 0, ARCOUNT = 0
-    out.push(0x00); out.push(0x00);
-    out.push(0x00); out.push(0x00);
-    out.push(0x00); out.push(0x00);
-
-    // 5. Question Section
+fn serialize_dns_question(domain: const u8[:], qtype: u16, qclass: u16, out: u8[>..]&) -> bool {
     guard dns_encode_name(domain, out) else { return false; }
-
-    // QTYPE
     out.push(((qtype >> 8) & 0xFF) as u8);
     out.push((qtype & 0xFF) as u8);
-
-    // QCLASS (IN = 1)
-    out.push(0x00);
-    out.push(0x01);
-
+    out.push(((qclass >> 8) & 0xFF) as u8);
+    out.push((qclass & 0xFF) as u8);
     return true;
+}
+
+// Builds a standard 12-byte header + question DNS query.
+fn build_dns_query(domain: const u8[:], qtype: u16, tx_id: u16, out: u8[>..]&) -> bool {
+    serialize_dns_header(tx_id, 1, 0x0100, out);
+    return serialize_dns_question(domain, qtype, 1, out);
 }
 
 // ---- 5. RFC 9460 HTTPS/SVCB RDATA Parser -----------------------------------

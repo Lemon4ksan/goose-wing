@@ -232,6 +232,74 @@ struct ParsedCert {
     has_key_usage: bool = false,
 }
 
+fn parse_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+    var serial = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(tbs_seq, ASN1_TAG_INTEGER, serial) { return false; }
+    if !validate_asn1_integer(serial.buf, true) { return false; }
+    out.serial_number = make_span(raw_cert, serial.buf);
+    return true;
+}
+
+fn parse_tbs_sig_alg(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+    var sig_alg = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, sig_alg) { return false; }
+    var sig_oid = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(sig_alg, ASN1_TAG_OID, sig_oid) { return false; }
+    out.sig_alg_oid = make_span(raw_cert, sig_oid.buf);
+    return true;
+}
+
+fn parse_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+    var validity = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, validity) { return false; }
+    var nb_val = cursor_from(raw_cert[..0]);
+    var nb_tag: u8 = 0;
+    if !get_any_asn1_element(validity, nb_tag, nb_val) { return false; }
+    let nb_time, ok_nb = parse_asn1_time(nb_tag, nb_val.buf);
+    guard ok_nb else { return false; }
+    out.validity_not_before = nb_time;
+
+    var na_val = cursor_from(raw_cert[..0]);
+    var na_tag: u8 = 0;
+    if !get_any_asn1_element(validity, na_tag, na_val) { return false; }
+    let na_time, ok_na = parse_asn1_time(na_tag, na_val.buf);
+    guard ok_na else { return false; }
+    out.validity_not_after = na_time;
+    return true;
+}
+
+fn parse_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+    var spki = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, spki) { return false; }
+    out.spki_raw = make_span(raw_cert, spki.buf);
+
+    var spki_alg = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(spki, ASN1_TAG_SEQUENCE, spki_alg) { return false; }
+    var spki_oid = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(spki_alg, ASN1_TAG_OID, spki_oid) { return false; }
+    out.spki_alg_oid = make_span(raw_cert, spki_oid.buf);
+
+    var spki_pubkey = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(spki, ASN1_TAG_BIT_STRING, spki_pubkey) { return false; }
+    out.spki_pubkey = make_span(raw_cert, spki_pubkey.buf);
+    return true;
+}
+
+fn parse_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) {
+    while cursor_len(tbs_seq) > 0 {
+        var ext_container = cursor_from(raw_cert[..0]);
+        var ext_tag: u8 = 0;
+        if !get_any_asn1_element(tbs_seq, ext_tag, ext_container) { break; }
+        if ext_tag == 0xA3 { // [3] EXPLICIT
+            var ext_seq = cursor_from(raw_cert[..0]);
+            if get_asn1_element(ext_container, ASN1_TAG_SEQUENCE, ext_seq) {
+                out.extensions_raw = make_span(raw_cert, ext_seq.buf);
+                parse_cert_extensions(ext_seq, out);
+            }
+        }
+    }
+}
+
 // Parses raw X.509 certificate DER into zero-allocation ParsedCert descriptor.
 fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     out.raw_len = raw_cert.len as u32;
@@ -249,81 +317,27 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     if !get_asn1_element(cert_seq, ASN1_TAG_SEQUENCE, tbs_seq) { return false; }
     out.tbs_cert = make_span(raw_cert, tbs_seq.buf);
 
-    // 1. Version [0] EXPLICIT INTEGER OPTIONAL
     var maybe_version = cursor_from(raw_cert[..0]);
     var tag: u8 = 0;
     if cert_seq.buf.len > 0 && cert_seq.buf[0] == 0xA0 {
         if !get_any_asn1_element(tbs_seq, tag, maybe_version) { return false; }
     }
 
-    // 2. SerialNumber INTEGER
-    var serial = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(tbs_seq, ASN1_TAG_INTEGER, serial) { return false; }
-    if !validate_asn1_integer(serial.buf, true) { return false; }
-    out.serial_number = make_span(raw_cert, serial.buf);
+    if !parse_tbs_serial(raw_cert, tbs_seq, out) { return false; }
+    if !parse_tbs_sig_alg(raw_cert, tbs_seq, out) { return false; }
 
-    // 3. Signature AlgorithmIdentifier SEQUENCE
-    var sig_alg = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, sig_alg) { return false; }
-    var sig_oid = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(sig_alg, ASN1_TAG_OID, sig_oid) { return false; }
-    out.sig_alg_oid = make_span(raw_cert, sig_oid.buf);
-
-    // 4. Issuer Name (SEQUENCE of SETs)
     var issuer = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, issuer) { return false; }
     out.issuer_raw = make_span(raw_cert, issuer.buf);
 
-    // 5. Validity SEQUENCE { notBefore, notAfter }
-    var validity = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, validity) { return false; }
-    var nb_val = cursor_from(raw_cert[..0]);
-    var nb_tag: u8 = 0;
-    if !get_any_asn1_element(validity, nb_tag, nb_val) { return false; }
-    let nb_time, ok_nb = parse_asn1_time(nb_tag, nb_val.buf);
-    guard ok_nb else { return false; }
-    out.validity_not_before = nb_time;
+    if !parse_tbs_validity(raw_cert, tbs_seq, out) { return false; }
 
-    var na_val = cursor_from(raw_cert[..0]);
-    var na_tag: u8 = 0;
-    if !get_any_asn1_element(validity, na_tag, na_val) { return false; }
-    let na_time, ok_na = parse_asn1_time(na_tag, na_val.buf);
-    guard ok_na else { return false; }
-    out.validity_not_after = na_time;
-
-    // 6. Subject Name (SEQUENCE of SETs)
     var subject = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, subject) { return false; }
     out.subject_raw = make_span(raw_cert, subject.buf);
 
-    // 7. SubjectPublicKeyInfo SEQUENCE
-    var spki = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, spki) { return false; }
-    out.spki_raw = make_span(raw_cert, spki.buf);
-
-    var spki_alg = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(spki, ASN1_TAG_SEQUENCE, spki_alg) { return false; }
-    var spki_oid = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(spki_alg, ASN1_TAG_OID, spki_oid) { return false; }
-    out.spki_alg_oid = make_span(raw_cert, spki_oid.buf);
-
-    var spki_pubkey = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(spki, ASN1_TAG_BIT_STRING, spki_pubkey) { return false; }
-    out.spki_pubkey = make_span(raw_cert, spki_pubkey.buf);
-
-    // 8. Optional Extensions [3] EXPLICIT SEQUENCE OF Extension
-    while cursor_len(tbs_seq) > 0 {
-        var ext_container = cursor_from(raw_cert[..0]);
-        var ext_tag: u8 = 0;
-        if !get_any_asn1_element(tbs_seq, ext_tag, ext_container) { break; }
-        if ext_tag == 0xA3 { // [3] EXPLICIT
-            var ext_seq = cursor_from(raw_cert[..0]);
-            if get_asn1_element(ext_container, ASN1_TAG_SEQUENCE, ext_seq) {
-                out.extensions_raw = make_span(raw_cert, ext_seq.buf);
-                parse_cert_extensions(ext_seq, out);
-            }
-        }
-    }
+    if !parse_tbs_spki(raw_cert, tbs_seq, out) { return false; }
+    parse_tbs_extensions(raw_cert, tbs_seq, out);
 
     return true;
 }
@@ -422,6 +436,26 @@ fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&,
     return false;
 }
 
+fn validate_chain_cert_validity(cert: const ParsedCert&, now_unix: i64) -> TlsAlert {
+    if now_unix < cert.validity_not_before || now_unix > cert.validity_not_after {
+        return TlsAlert.CertificateExpired;
+    }
+    return TlsAlert.CloseNotify;
+}
+
+fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> TlsAlert {
+    if !cert.is_ca {
+        return TlsAlert.BadCertificate;
+    }
+    if cert.has_key_usage && (cert.key_usage & KEY_USAGE_KEY_CERT_SIGN) == 0 {
+        return TlsAlert.UnsupportedCertificate;
+    }
+    if cert.path_len_constraint >= 0 && (depth - 1) > cert.path_len_constraint {
+        return TlsAlert.BadCertificate;
+    }
+    return TlsAlert.CloseNotify;
+}
+
 // RFC 5280 Certificate Chain Validation.
 // Returns TlsAlert.CloseNotify (0) on success, or appropriate fatal alert.
 fn verify_certificate_chain(
@@ -434,25 +468,14 @@ fn verify_certificate_chain(
 
     for i in chain_certs.len {
         let cert = chain_certs[i];
-        // 1. Validity period check
-        if now_unix < cert.validity_not_before || now_unix > cert.validity_not_after {
-            return TlsAlert.CertificateExpired;
-        }
+        let val_alert = validate_chain_cert_validity(cert, now_unix);
+        guard val_alert == TlsAlert.CloseNotify else { return val_alert; }
 
-        // 2. Intermediate CA constraints
         if i > 0 {
-            if !cert.is_ca {
-                return TlsAlert.BadCertificate;
-            }
-            if cert.has_key_usage && (cert.key_usage & KEY_USAGE_KEY_CERT_SIGN) == 0 {
-                return TlsAlert.UnsupportedCertificate;
-            }
-            if cert.path_len_constraint >= 0 && (i - 1) > cert.path_len_constraint {
-                return TlsAlert.BadCertificate;
-            }
+            let ca_alert = validate_intermediate_ca_constraints(cert, i);
+            guard ca_alert == TlsAlert.CloseNotify else { return ca_alert; }
         }
 
-        // 3. Chaining check: cert[i].issuer must match cert[i+1].subject
         if i + 1 < chain_certs.len {
             let issuer_slice = span_slice(raw_certs[i], cert.issuer_raw);
             let next_subject_slice = span_slice(raw_certs[i + 1], chain_certs[i + 1].subject_raw);
@@ -462,7 +485,6 @@ fn verify_certificate_chain(
         }
     }
 
-    // 4. Root anchor check: top of chain must match trusted anchor
     let top_idx = chain_certs.len - 1;
     if !matches_trust_anchor(trust_store, chain_certs[top_idx], raw_certs[top_idx]) {
         return TlsAlert.UnknownCa;

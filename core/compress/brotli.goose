@@ -537,52 +537,46 @@ fn decode_brotli_distance(
 // ---- 5. Level 0 and Level 1 Brotli Encoders ----------------------------------
 
 // Emits an authentic RFC 7932 uncompressed stream.
+fn emit_brotli_stream_header<B>(w: BrotliBitWriter&, out: B&) {
+    brotli_write_bits(w, 1, 0, out);
+}
+
+fn emit_brotli_uncompressed_chunk<B>(w: BrotliBitWriter&, chunk: const u8[:], out: B&) {
+    brotli_write_bits(w, 1, 0, out);
+    brotli_write_bits(w, 2, 0, out);
+    brotli_write_bits(w, 16, (chunk.len - 1) as u64, out);
+    brotli_write_bits(w, 1, 1, out);
+    brotli_write_byte_align(w, out);
+    out.append(chunk);
+}
+
+fn emit_brotli_final_empty_metablock<B>(w: BrotliBitWriter&, out: B&) {
+    brotli_write_bits(w, 1, 1, out);
+    brotli_write_bits(w, 1, 1, out);
+    brotli_write_byte_align(w, out);
+}
+
 fn brotli_compress_level0<B>(src: const u8[:], out: B&) {
     if src.len == 0 {
-        // Stream Header (WBITS=16 -> 0) + ISLAST=1 (1) + ISLASTEMPTY=1 (1)
-        // Bits: 0, 1, 1 -> 0b00000110 = 6
         out.push(6);
         return;
     }
 
     var w = new_brotli_bit_writer();
+    emit_brotli_stream_header(w, out);
 
-    // 1. Stream Header: WBITS = 16 (1 bit: 0)
-    brotli_write_bits(w, 1, 0, out);
-
-    // 2. Chunks of uncompressed meta-blocks (up to 65536 bytes per chunk)
     var offset: i64 = 0;
     while offset < src.len {
         var chunk_len = src.len - offset;
         if chunk_len > 65536 {
             chunk_len = 65536;
         }
-
-        // Meta-block: ISLAST = 0
-        brotli_write_bits(w, 1, 0, out);
-
-        // MLEN: chunk_len
-        // MNIBBLES: 00 -> 4 nibbles (16 bits)
-        brotli_write_bits(w, 2, 0, out);
-        brotli_write_bits(w, 16, (chunk_len - 1) as u64, out);
-
-        // ISUNCOMPRESSED = 1
-        brotli_write_bits(w, 1, 1, out);
-
-        // Byte align before raw bytes
-        brotli_write_byte_align(w, out);
-
-        // Append raw uncompressed payload
         let chunk = src[offset .. (offset + chunk_len)];
-        out.append(chunk);
-
+        emit_brotli_uncompressed_chunk(w, chunk, out);
         offset += chunk_len;
     }
 
-    // 3. Final empty meta-block: ISLAST = 1, ISLASTEMPTY = 1
-    brotli_write_bits(w, 1, 1, out);
-    brotli_write_bits(w, 1, 1, out);
-    brotli_write_byte_align(w, out);
+    emit_brotli_final_empty_metablock(w, out);
 }
 
 // Fast Level 1 compressor: uses fast LZ77 run-length or uncompressed meta-block.
@@ -616,19 +610,7 @@ fn decode_varlen_uint8(r: BrotliBitReader&) -> u32 {
     return ((1 as u32) << b3) + bits;
 }
 
-// Internal Brotli decompressor (RFC 7932) with max output limit protection.
-fn brotli_decompress_with_limit_impl<B>(
-    src: const u8[:],
-    out: B&,
-    max_output_bytes: i64 = -1
-) -> CompressError {
-    guard src.len > 0 else {
-        return CompressError.InputBufferTruncated;
-    }
-
-    var r = new_brotli_bit_reader(src);
-
-    // 1. Decode Stream Header (RFC 7932 Section 9.1: WBITS)
+fn decode_brotli_window_bits(r: BrotliBitReader&, out_wbits: u32&) -> CompressError {
     var wbits: u32 = 16;
     let wbit0 = brotli_read_bits(r, 1);
     if wbit0 == 0 {
@@ -654,6 +636,43 @@ fn brotli_decompress_with_limit_impl<B>(
     guard wbits >= BROTLI_MIN_WINDOW_BITS && wbits <= BROTLI_MAX_WINDOW_BITS else {
         return CompressError.InvalidHeader;
     }
+    out_wbits = wbits;
+    return CompressError.None;
+}
+
+fn read_brotli_block_prefix_tables(
+    r: BrotliBitReader&,
+    ndirect: u32,
+    npostfix: u32,
+    out_lit: BrotliHuffmanTable&,
+    out_cmd: BrotliHuffmanTable&,
+    out_dist: BrotliHuffmanTable&
+) -> bool {
+    let ok_lit = read_brotli_prefix_code(r, 256, out_lit);
+    guard ok_lit else { return false; }
+
+    let ok_cmd = read_brotli_prefix_code(r, 704, out_cmd);
+    guard ok_cmd else { return false; }
+
+    let dist_alphabet_size = (16 + ndirect + (48 << npostfix)) as i32;
+    return read_brotli_prefix_code(r, dist_alphabet_size, out_dist);
+}
+
+// Internal Brotli decompressor (RFC 7932) with max output limit protection.
+fn brotli_decompress_with_limit_impl<B>(
+    src: const u8[:],
+    out: B&,
+    max_output_bytes: i64 = -1
+) -> CompressError {
+    guard src.len > 0 else {
+        return CompressError.InputBufferTruncated;
+    }
+
+    var r = new_brotli_bit_reader(src);
+
+    var wbits: u32 = 16;
+    let header_err = decode_brotli_window_bits(r, wbits);
+    guard header_err == CompressError.None else { return header_err; }
 
     let max_window_distance = (1 as u32) << wbits;
     var dist_ring: u32[4] = [4, 11, 15, 16];
@@ -753,24 +772,13 @@ fn brotli_decompress_with_limit_impl<B>(
             // Distance context map read
         }
 
-        // Read Prefix Codes
-        // A. Literal Tree (alphabet size 256)
         var lit_table = BrotliHuffmanTable { .. };
-        let ok_lit = read_brotli_prefix_code(r, 256, lit_table);
-        guard ok_lit else { return CompressError.InvalidHuffmanCode; }
-
-        // B. Command Tree (alphabet size 704)
         var cmd_table = BrotliHuffmanTable { .. };
-        let ok_cmd = read_brotli_prefix_code(r, 704, cmd_table);
-        guard ok_cmd else { return CompressError.InvalidHuffmanCode; }
-
-        // C. Distance Tree (alphabet size 16 + ndirect + (48 << npostfix))
-        let dist_alphabet_size = (16 + ndirect + (48 << npostfix)) as i32;
         var dist_table = BrotliHuffmanTable { .. };
-        let ok_dist = read_brotli_prefix_code(r, dist_alphabet_size, dist_table);
-        guard ok_dist else { return CompressError.InvalidHuffmanCode; }
+        guard read_brotli_block_prefix_tables(r, ndirect, npostfix, lit_table, cmd_table, dist_table) else {
+            return CompressError.InvalidHuffmanCode;
+        }
 
-        // 4. Command Execution Loop
         var meta_block_remaining = mlen;
         while meta_block_remaining > 0 {
             let cmd_code, ok_c = decode_brotli_symbol(r, cmd_table);

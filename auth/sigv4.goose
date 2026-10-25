@@ -48,25 +48,56 @@ fn derive_aws_signing_key(
     return k_signing;
 }
 
+fn build_aws_string_to_sign<B>(
+    datetime_iso: const u8[:],
+    credential_scope: const u8[:],
+    canon_req_hash_hex: const u8[:],
+    out: B&
+) {
+    out.clear();
+    out.append("AWS4-HMAC-SHA256\n");
+    out.append(datetime_iso);
+    out.push('\n');
+    out.append(credential_scope);
+    out.push('\n');
+    out.append(canon_req_hash_hex);
+}
+
+fn format_aws_authorization<B>(
+    access_key_id: const u8[:],
+    credential_scope: const u8[:],
+    signed_headers: const u8[:],
+    sig_hex: const u8[:],
+    out: B&
+) {
+    out.clear();
+    out.append("AWS4-HMAC-SHA256 Credential=");
+    out.append(access_key_id);
+    out.push('/');
+    out.append(credential_scope);
+    out.append(", SignedHeaders=");
+    out.append(signed_headers);
+    out.append(", Signature=");
+    out.append(sig_hex);
+}
+
 // Signs a Request with AWS SigV4 headers
 fn sign_aws_sigv4<R>(
     req: R&,
     creds: const AwsCredentials&,
-    datetime_iso: const u8[:] // e.g. "20130524T000000Z"
+    datetime_iso: const u8[:]
 ) -> bool {
     guard creds.access_key_id.len > 0 && creds.secret_access_key.len > 0 else { return false; }
     guard datetime_iso.len >= 16 else { return false; }
 
-    let date_stamp = datetime_iso[..8]; // "YYYYMMDD"
+    let date_stamp = datetime_iso[..8];
 
-    // 1. Calculate payload hash
     var payload_sha_hex: u8[..64] = [];
     let p_hash = core::sha256(req.body[..]);
     for b in p_hash {
         core::format_u8_hex(b, payload_sha_hex);
     }
 
-    // 2. Inject x-amz-date & x-amz-content-sha256 if not present
     if !req.has_header("x-amz-date") {
         req.headers.push(make_header("x-amz-date", datetime_iso));
     }
@@ -77,8 +108,6 @@ fn sign_aws_sigv4<R>(
         req.headers.push(make_header("x-amz-security-token", creds.session_token[..]));
     }
 
-    // 3. Build Canonical Request
-    // URI path
     var canon_uri: u8[..256] = [];
     let parsed, err = core::parse_url(req.url[..]);
     if parsed.valid {
@@ -92,21 +121,17 @@ fn sign_aws_sigv4<R>(
         canon_uri.append("/");
     }
 
-    // Canonical Query String
     var canon_query: u8[..256] = [];
     if parsed.valid {
         let q = core::search(parsed);
         if q.len > 1 {
-            canon_query.append(q[1..]); // omit '?'
+            canon_query.append(q[1..]);
         }
     }
 
-    // Canonical Headers & Signed Headers
-    // AWS requires lowercase header names in sorted order
     var canon_headers: u8[>..] = [];
     var signed_headers: u8[..128] = [];
 
-    // Include host
     if parsed.valid {
         let h = core::hostname(parsed);
         canon_headers.append("host:");
@@ -127,7 +152,6 @@ fn sign_aws_sigv4<R>(
     if signed_headers.len > 0 { signed_headers.push(';'); }
     signed_headers.append("x-amz-date");
 
-    // Canonical Request string
     var canon_req: u8[>..] = [];
     canon_req.append(req.method[..]);
     canon_req.push('\n');
@@ -147,8 +171,6 @@ fn sign_aws_sigv4<R>(
         core::format_u8_hex(b, canon_req_hash_hex);
     }
 
-    // 4. Build StringToSign
-    // "AWS4-HMAC-SHA256\n<RequestDateTime>\n<CredentialScope>\n<HashedCanonicalRequest>"
     var credential_scope: u8[..128] = [];
     credential_scope.append(date_stamp);
     credential_scope.push('/');
@@ -158,14 +180,8 @@ fn sign_aws_sigv4<R>(
     credential_scope.append("/aws4_request");
 
     var string_to_sign: u8[>..] = [];
-    string_to_sign.append("AWS4-HMAC-SHA256\n");
-    string_to_sign.append(datetime_iso);
-    string_to_sign.push('\n');
-    string_to_sign.append(credential_scope[..]);
-    string_to_sign.push('\n');
-    string_to_sign.append(canon_req_hash_hex[..]);
+    build_aws_string_to_sign(datetime_iso, credential_scope[..], canon_req_hash_hex[..], string_to_sign);
 
-    // 5. Compute Signature = HMAC-SHA256(SigningKey, StringToSign)
     let signing_key = derive_aws_signing_key(creds.secret_access_key[..], date_stamp, creds.region[..], creds.service[..]);
     let sig_bytes = core::hmac_sha256(signing_key[..], string_to_sign[..]);
     var sig_hex: u8[..64] = [];
@@ -173,17 +189,8 @@ fn sign_aws_sigv4<R>(
         core::format_u8_hex(b, sig_hex);
     }
 
-    // 6. Build Authorization Header
-    // "AWS4-HMAC-SHA256 Credential=<AccessKey>/<CredentialScope>, SignedHeaders=<SignedHeaders>, Signature=<Signature>"
     var auth_val: u8[..512] = [];
-    auth_val.append("AWS4-HMAC-SHA256 Credential=");
-    auth_val.append(creds.access_key_id[..]);
-    auth_val.push('/');
-    auth_val.append(credential_scope[..]);
-    auth_val.append(", SignedHeaders=");
-    auth_val.append(signed_headers[..]);
-    auth_val.append(", Signature=");
-    auth_val.append(sig_hex[..]);
+    format_aws_authorization(creds.access_key_id[..], credential_scope[..], signed_headers[..], sig_hex[..], auth_val);
 
     req.headers.push(make_header("Authorization", auth_val[..]));
     return true;

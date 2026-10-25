@@ -67,6 +67,22 @@ fn hpke_labeled_expand(
 
 // ---- 3. DHKEM(X25519, HKDF-SHA256) (RFC 9180 Section 4.1) ------------------
 
+fn derive_kem_shared_secret(
+    kem_suite_id: const u8[:],
+    dh: const u8[32]&,
+    enc: const u8[32]&,
+    pkR: const u8[32]&,
+    out_shared_secret: u8[32]&
+) -> bool {
+    var kem_context: u8[64] = [0; 64];
+    for i in 32 {
+        kem_context[i] = enc[i];
+        kem_context[32 + i] = pkR[i];
+    }
+    let eae_prk = hpke_labeled_extract(kem_suite_id, [], "eae_prk", dh[..]);
+    return hpke_labeled_expand(kem_suite_id, eae_prk[..], "shared_secret", kem_context[..], 32, out_shared_secret[..]);
+}
+
 // Performs DHKEM Key Encapsulation: computes shared_secret and encapsulated key (enc).
 fn dhkem_x25519_encap(
     pkR: const u8[32]&,
@@ -74,27 +90,10 @@ fn dhkem_x25519_encap(
     out_enc: u8[32]&,
     out_shared_secret: u8[32]&
 ) -> bool {
-    // 1. Calculate ephemeral public key: enc = X25519(skE, basepoint)
     out_enc = core::x25519_base_scalarmult(ephemeral_sk);
-
-    // 2. Diffie-Hellman: dh = X25519(skE, pkR)
     let dh = core::x25519_scalarmult(ephemeral_sk, pkR);
-
-    // 3. KEM suite_id = "KEM" || I2OSP(kem_id, 2)
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20]; // "KEM" || 0x0020
-
-    // 4. kem_context = enc || pkR (64 bytes)
-    var kem_context: u8[64] = [0; 64];
-    for i in 32 {
-        kem_context[i] = out_enc[i];
-        kem_context[32 + i] = pkR[i];
-    }
-
-    // 5. eae_prk = LabeledExtract("", "eae_prk", dh)
-    let eae_prk = hpke_labeled_extract(kem_suite_id[..], [], "eae_prk", dh[..]);
-
-    // 6. shared_secret = LabeledExpand(eae_prk, "shared_secret", kem_context, 32)
-    return hpke_labeled_expand(kem_suite_id[..], eae_prk[..], "shared_secret", kem_context[..], 32, out_shared_secret[..]);
+    return derive_kem_shared_secret(kem_suite_id[..], dh, out_enc, pkR, out_shared_secret);
 }
 
 // Performs DHKEM Key Decapsulation: reconstructs shared_secret from enc using recipient skR.
@@ -106,15 +105,7 @@ fn dhkem_x25519_decap(
 ) -> bool {
     let dh = core::x25519_scalarmult(skR, enc);
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];
-
-    var kem_context: u8[64] = [0; 64];
-    for i in 32 {
-        kem_context[i] = enc[i];
-        kem_context[32 + i] = pkR[i];
-    }
-
-    let eae_prk = hpke_labeled_extract(kem_suite_id[..], [], "eae_prk", dh[..]);
-    return hpke_labeled_expand(kem_suite_id[..], eae_prk[..], "shared_secret", kem_context[..], 32, out_shared_secret[..]);
+    return derive_kem_shared_secret(kem_suite_id[..], dh, enc, pkR, out_shared_secret);
 }
 
 // ---- 4. HPKE Key Schedule (RFC 9180 Section 5.1) ----------------------------

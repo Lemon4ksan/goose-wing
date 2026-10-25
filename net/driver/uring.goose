@@ -8,6 +8,7 @@ extern "wing_uring_probe" fn native_uring_probe() -> i32;
 extern "wing_uring_create" fn native_uring_create(entries: u32, flags: u32) -> i64;
 extern "wing_uring_enter" fn native_uring_enter(ring_fd: i64, to_submit: u32, min_complete: u32, flags: u32) -> i32;
 extern "wing_uring_close" fn native_uring_close(ring_fd: i64);
+extern "wing_uring_register_pbuf_ring" fn native_uring_register_pbuf_ring(ring_fd: i64, ring_addr: u64, ring_entries: u32, bgid: u16) -> i32;
 
 // io_uring opcodes
 const URING_OP_NOP: u8          = 0;

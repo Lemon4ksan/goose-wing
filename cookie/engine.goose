@@ -176,6 +176,25 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 
 // ---- ingestion & insertion pipeline ----------------------------------------
 
+fn is_cookie_security_valid(cookie: const CanonicalCookie&, is_http_api: bool, url_is_secure: bool) -> bool {
+    if !cookie.validate_canonical_cookie_security(url_is_secure, is_http_api) {
+        return false;
+    }
+    if !is_http_api && !validate_script_cookie_name(cookie.name[..]) {
+        return false;
+    }
+    return true;
+}
+
+fn insert_fresh_cookie(jar: CanonicalCookieJar&, new_cookie: CanonicalCookie&, now_us: i64) {
+    new_cookie.creation_utc = now_us;
+    new_cookie.last_update_utc = now_us;
+    new_cookie.last_access_utc = now_us;
+    new_cookie.creation_seq = jar.seq_counter;
+    jar.seq_counter += 1;
+    jar.cookies.push(new_cookie);
+}
+
 // Inserts new_cookie into jar, enforcing prefix rules (__Host-, __Secure-),
 // origin security, overwrite precedence, and memory quotas (RFC 6265bis Section 5.6).
 // Returns false if the cookie violates security policies.
@@ -186,14 +205,11 @@ fn set_canonical_cookie(
     url_is_secure: bool,
     now_us: i64,
 ) -> bool {
-    // 1. Security invariants validation
-    if !new_cookie.validate_canonical_cookie_security(url_is_secure, is_http_api) ||
-       (!is_http_api && !validate_script_cookie_name(new_cookie.name[..])) {
+    if !is_cookie_security_valid(new_cookie, is_http_api, url_is_secure) {
         jar.rejected_security_count += 1;
         return false;
     }
 
-    // 2. Collision resolution & Expired Overwrite Handling
     let collision_idx = jar.find_canonical_cookie_collision_index(new_cookie);
     if collision_idx >= 0 {
         return jar.handle_cookie_collision(new_cookie, collision_idx, url_is_secure, now_us);
@@ -204,24 +220,15 @@ fn set_canonical_cookie(
         return true;
     }
 
-    // 3. RFC 6265bis Section 5.6: Secure Shadowing Protection
     if jar.has_secure_shadowing_collision(new_cookie, url_is_secure) {
         jar.rejected_security_count += 1;
         return false;
     }
 
-    // 4. Calculate effective domain & insert
     var etld_plus_one: u8[..256] = [];
     new_cookie.get_canonical_cookie_effective_domain(etld_plus_one);
 
-    new_cookie.creation_utc = now_us;
-    new_cookie.last_update_utc = now_us;
-    new_cookie.last_access_utc = now_us;
-    new_cookie.creation_seq = jar.seq_counter;
-    jar.seq_counter += 1;
-    jar.cookies.push(new_cookie);
-
-    // 5. Enforce quotas & background GC
+    insert_fresh_cookie(jar, new_cookie, now_us);
     jar.enforce_post_insertion_quotas(new_cookie, etld_plus_one[..], now_us);
     return true;
 }
