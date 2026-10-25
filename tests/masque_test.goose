@@ -23,6 +23,15 @@ fn test_rfc9297_capsules_and_datagrams(t: core::T&) {
         let short_wire = wire[..wire.len - 3];
         let _, trunc_ok = wing::parse_http_capsule(short_wire);
         sub.assert_false(trunc_ok, "Truncated capsule detected and rejected");
+
+        // Capsule-Protocol RFC 9297 Section 3.4 / RFC 8941 validation
+        sub.assert_true(wing::is_capsule_protocol_negotiated("?1"), "Standard ?1");
+        sub.assert_true(wing::is_capsule_protocol_negotiated(" ?1; param=value "), "Structured ?1 with params");
+        sub.assert_false(wing::is_capsule_protocol_negotiated("?0"), "?0 rejected");
+
+        var mock_hdrs = wing::new_header_map();
+        wing::append_header(mock_hdrs, "capsule-protocol", "?1");
+        sub.assert_true(mock_hdrs.has_capsule_protocol(), "has_capsule_protocol on HeaderMap");
     };
 
     t.run("HTTP Datagrams over QUIC (Quarter Stream ID + Context ID)") { sub =>
@@ -183,19 +192,19 @@ fn test_masque_client_sessions_and_tunneling(t: core::T&) {
         sub.assert_eq(wing::status(resp), 200, "200 OK");
         sub.assert_true(tunnel.state == wing::MasqueTunnelState.Established, "Tunnel state is Established");
 
-        // 2. Client sends UDP packet through tunnel (in-stream capsule mode)
+        // 2. Client sends UDP packet through tunnel (in-stream capsule mode via UFCS)
         var tunnel_mut = copy(tunnel);
         var wire_out: u8[>..] = [];
         let dns_query = "fake_dns_wire_query";
-        let send_ok = wing::tunnel_send_packet(tunnel_mut, dns_query, wire_out);
-        sub.assert_true(send_ok, "tunnel_send_packet succeeded");
+        let send_ok = tunnel_mut.send_packet(dns_query, wire_out);
+        sub.assert_true(send_ok, "tunnel.send_packet UFCS succeeded");
         sub.assert_eq(tunnel_mut.packets_sent, 1, "1 packet sent recorded");
         sub.assert_eq(tunnel_mut.bytes_sent, dns_query.len as u64, "Bytes sent matches");
 
-        // 3. Client receives UDP response packet from wire
+        // 3. Client receives UDP response packet from wire via UFCS
         var packet_in: u8[>..] = [];
-        let recv_ok = wing::tunnel_receive_capsule(tunnel_mut, wire_out[..], packet_in);
-        sub.assert_true(recv_ok, "tunnel_receive_capsule succeeded");
+        let recv_ok = tunnel_mut.receive_capsule(wire_out[..], packet_in);
+        sub.assert_true(recv_ok, "tunnel.receive_capsule UFCS succeeded");
         sub.assert_bytes_eq(packet_in[..], dns_query, "Received packet content matches sent query");
         sub.assert_eq(tunnel_mut.packets_received, 1, "1 packet received recorded");
     };

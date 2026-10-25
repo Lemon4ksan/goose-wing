@@ -67,10 +67,28 @@ fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> b
     return true;
 }
 
-// Checks if Capsule-Protocol header value matches boolean `?1`
+// Checks if Capsule-Protocol header value matches boolean `?1` (RFC 9297 Section 3.4 / RFC 8941)
 fn is_capsule_protocol_negotiated(header_val: const u8[:]) -> bool {
     let trimmed = trim_lws(header_val);
-    return trimmed == "?1" || starts_with(trimmed, "?1");
+    if trimmed == "?1" {
+        return true;
+    }
+    if starts_with(trimmed, "?1;") || starts_with(trimmed, "?1,") {
+        return true;
+    }
+    return false;
+}
+
+// Checks if Capsule-Protocol header is negotiated in a HeaderMap
+fn has_capsule_protocol(headers: const HeaderMap&) -> bool {
+    let val = headers.get_header("capsule-protocol");
+    return is_capsule_protocol_negotiated(val);
+}
+
+// Checks if Capsule-Protocol header is negotiated in a HeaderItem slice
+fn has_capsule_protocol(headers: const HeaderItem[:]) -> bool {
+    let val = headers.find_header("capsule-protocol");
+    return is_capsule_protocol_negotiated(val);
 }
 
 // ---- 3. HTTP Datagrams (RFC 9297 Section 2) --------------------------------
@@ -104,7 +122,7 @@ fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u1
     out.append("/.well-known/masque/udp/");
     out.append(target_host);
     out.push('/');
-    format(out, target_port);
+    core::format_u64_dec(target_port as u64, out);
     out.push('/');
 }
 
@@ -116,30 +134,19 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
     guard starts_with(path, prefix) else { return out_host, 0, false; }
 
     let rem = path[prefix.len..];
-    var slash_idx: i64 = -1;
-    for i in rem.len {
-        if rem[i] == '/' {
-            slash_idx = i;
-            break;
-        }
-    }
-    guard slash_idx > 0 else { return out_host, 0, false; }
-
-    let host_part = rem[..slash_idx];
+    let host_part, rem_after_host, host_ok = core::split_once_byte(rem, '/');
+    guard host_ok && host_part.len > 0 else { return out_host, 0, false; }
+    guard host_part.len <= out_host.cap else { return out_host, 0, false; }
     out_host.append(host_part);
 
-    var port_part = rem[slash_idx + 1..];
+    var port_part = rem_after_host;
     if port_part.len > 0 && port_part[port_part.len - 1] == '/' {
         port_part = port_part[..port_part.len - 1];
     }
     guard port_part.len > 0 else { return out_host, 0, false; }
 
-    var p_val: u32 = 0;
-    for b in port_part {
-        guard b >= '0' && b <= '9' else { return out_host, 0, false; }
-        p_val = p_val * 10 + (b - '0');
-        guard p_val <= 65535 else { return out_host, 0, false; }
-    }
+    let p_val, parse_ok = core::parse_u32_dec(port_part);
+    guard parse_ok && p_val <= 65535 else { return out_host, 0, false; }
     out_port = p_val as u16;
     return out_host, out_port, true;
 }
@@ -348,15 +355,15 @@ fn build_masque_connect_request(
     out_path: u8[..256]&
 ) {
     out_headers.clear();
-    out_headers.push(make_header(":method", "CONNECT"));
+    out_headers.set_header(":method", "CONNECT");
     if tunnel.config.mode == MasqueProtocolMode.ConnectUdp {
-        out_headers.push(make_header(":protocol", MASQUE_PROTOCOL_CONNECT_UDP));
+        out_headers.set_header(":protocol", MASQUE_PROTOCOL_CONNECT_UDP);
         format_connect_udp_path(out_path, tunnel.config.target_host[..], tunnel.config.target_port);
     } else {
-        out_headers.push(make_header(":protocol", MASQUE_PROTOCOL_CONNECT_IP));
+        out_headers.set_header(":protocol", MASQUE_PROTOCOL_CONNECT_IP);
         out_path.append("/.well-known/masque/ip/");
     }
-    out_headers.push(make_header("capsule-protocol", MASQUE_CAPSULE_VALUE));
+    out_headers.set_header("capsule-protocol", MASQUE_CAPSULE_VALUE);
 }
 
 // Sends a packet through the tunnel: either as a QUIC DATAGRAM frame or as an in-stream DATAGRAM capsule.

@@ -676,3 +676,21 @@ fn ::check_rate_limit(pgcra: wing::ProbabilisticGcra&, cost: u64, now_ns: u64) -
     return wing::check_probabilistic(pgcra, cost, now_ns);
 }
 
+// ---- masque ufcs bridges ---------------------------------------------------
+
+fn ::has_capsule_protocol(headers: const wing::HeaderMap&) -> bool {
+    return wing::has_capsule_protocol(headers);
+}
+fn ::has_capsule_protocol(headers: const wing::HeaderItem[:]) -> bool {
+    return wing::has_capsule_protocol(headers);
+}
+fn ::send_packet<B>(tunnel: wing::MasqueTunnelSession&, packet: const u8[:], out_wire: B&) -> bool {
+    return wing::tunnel_send_packet(tunnel, packet, out_wire);
+}
+fn ::receive_capsule<B>(tunnel: wing::MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
+    return wing::tunnel_receive_capsule(tunnel, capsule_wire, out_packet);
+}
+fn ::receive_quic_datagram<B>(tunnel: wing::MasqueTunnelSession&, datagram_frame_payload: const u8[:], out_packet: B&) -> bool {
+    return wing::tunnel_receive_quic_datagram(tunnel, datagram_frame_payload, out_packet);
+}
+
