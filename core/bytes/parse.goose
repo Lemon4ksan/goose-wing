@@ -16,12 +16,20 @@ fn hex_digit_to_val(b: u8) -> i32 {
 // Rejects empty input, non-digit characters, and values exceeding u64::MAX (18446744073709551615).
 fn parse_u64_dec(s: const u8[:]) -> u64, bool {
     guard s.len > 0 else { return 0, false; }
-    var num: u64 = 0;
-    var digits: i64 = 0;
     for b in s {
         guard b >= '0' && b <= '9' else { return 0, false; }
+    }
+    var sig = s;
+    while sig.len > 0 && sig[0] == '0' {
+        sig = sig[1..];
+    }
+    guard sig.len > 0 else { return 0, true; }
+    guard sig.len <= 20 else { return 0, false; }
+
+    var num: u64 = 0;
+    var digits: i64 = 0;
+    for b in sig {
         digits++;
-        guard digits <= 20 else { return 0, false; }
         let d = (b - '0') as! u64;
         if digits == 20 {
             // u64::MAX is 18446744073709551615
@@ -50,12 +58,21 @@ fn parse_i64_dec(s: const u8[:]) -> i64, bool {
     }
     guard digits_slice.len > 0 else { return 0, false; }
 
-    var num: u64 = 0;
-    var digits: i64 = 0;
     for b in digits_slice {
         guard b >= '0' && b <= '9' else { return 0, false; }
+    }
+
+    var sig = digits_slice;
+    while sig.len > 0 && sig[0] == '0' {
+        sig = sig[1..];
+    }
+    guard sig.len > 0 else { return 0, true; }
+    guard sig.len <= 19 else { return 0, false; }
+
+    var num: u64 = 0;
+    var digits: i64 = 0;
+    for b in sig {
         digits++;
-        guard digits <= 19 else { return 0, false; }
         let d = (b - '0') as! u64;
         if digits == 19 {
             // i64::MAX is 9223372036854775807

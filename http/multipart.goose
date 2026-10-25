@@ -358,31 +358,20 @@ struct RangeSet {
 
 fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     guard s.len > 0 else { return 0, false; }
-    let max_cutoff: i64 = 922337203685477580; // i64::MAX / 10 = 9223372036854775807 / 10
-    var n: i64 = 0;
     for b in s {
         guard b >= '0' && b <= '9' else { return 0, false; }
-        let digit = (b - '0') as i64;
-        guard n < max_cutoff || (n == max_cutoff && digit <= 7) else {
-            return 0, false;
-        }
-        n = n * 10 + digit;
     }
-    return n, true;
+    let val, ok = core::parse_u64_dec(s);
+    guard ok && val <= 9223372036854775807 else { return 0, false; }
+    return val as! i64, true;
 }
 
 fn parse_single_range_spec(item: const u8[:], spec: RangeSpec&) -> RangeError {
-    var dash_pos: i64 = -1;
-    for i in item.len {
-        if item[i] == '-' {
-            dash_pos = i;
-            break;
-        }
-    }
-    guard dash_pos >= 0 else { return RangeError.MalformedRange; }
+    let pre_raw, post_raw, has_dash = item.split_once_byte('-');
+    guard has_dash else { return RangeError.MalformedRange; }
 
-    let pre = trim_lws(item[..dash_pos]);
-    let post = trim_lws(item[dash_pos + 1..]);
+    let pre = pre_raw.trim_lws();
+    let post = post_raw.trim_lws();
 
     if pre.len == 0 {
         guard post.len > 0 else { return RangeError.MalformedRange; }
@@ -614,17 +603,11 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
     guard slash_pos > 0 else { return 0, 0, false; }
 
     let range_part = rem[..slash_pos];
-    var dash_pos: i64 = -1;
-    for i in range_part.len {
-        if range_part[i] == '-' {
-            dash_pos = i;
-            break;
-        }
-    }
-    guard dash_pos > 0 && dash_pos + 1 < range_part.len else { return 0, 0, false; }
+    let start_raw, end_raw, has_dash = range_part.split_once_byte('-');
+    guard has_dash && start_raw.len > 0 && end_raw.len > 0 else { return 0, 0, false; }
 
-    let start_val, s_ok = parse_i64_slice(range_part[..dash_pos]);
-    let end_val, e_ok = parse_i64_slice(range_part[dash_pos + 1..]);
+    let start_val, s_ok = parse_i64_slice(start_raw);
+    let end_val, e_ok = parse_i64_slice(end_raw);
     guard s_ok && e_ok && start_val >= 0 && end_val >= start_val else {
         return 0, 0, false;
     }

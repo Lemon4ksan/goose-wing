@@ -28,29 +28,17 @@ struct EarlyHintsResponse {
 
 // Parses single Link parameter: e.g. `rel=preload` or `as=style`
 fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
-    var eq_pos: i64 = -1;
-    for i in param_str.len {
-        if param_str[i] == '=' {
-            eq_pos = i;
-            break;
-        }
-    }
-
-    if eq_pos < 0 {
-        // Parameter without value: e.g. `crossorigin`
-        let p_name = trim_lws(param_str);
+    let p_name_raw, p_val_raw, has_eq = param_str.split_once_byte('=');
+    if !has_eq {
+        let p_name = param_str.trim_lws();
         if p_name == "crossorigin" {
             link.crossorigin = true;
         }
         return;
     }
 
-    let p_name = trim_lws(param_str[..eq_pos]);
-    var p_val = trim_lws(param_str[eq_pos + 1..]);
-
-    if p_val.len >= 2 && p_val[0] == '"' && p_val[p_val.len - 1] == '"' {
-        p_val = p_val[1..p_val.len - 1];
-    }
+    let p_name = p_name_raw.trim_lws();
+    var p_val = p_val_raw.trim_lws().trim_byte('"');
 
     if p_name == "rel" {
         link.rel.clear();
@@ -108,24 +96,14 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
         let params_part = raw[cursor..end_entry];
         cursor = if end_entry < raw.len { end_entry + 1 } else { raw.len };
 
-        var p_cursor: i64 = 0;
-        while p_cursor < params_part.len {
-            while p_cursor < params_part.len && (params_part[p_cursor] == ' ' || params_part[p_cursor] == '\t' || params_part[p_cursor] == ';') {
-                p_cursor++;
+        var p_tok = make_byte_tokenizer(params_part, ';');
+        while true {
+            let param_token, tok_ok = p_tok.token_next();
+            guard tok_ok else { break; }
+            let p_trim = param_token.trim_lws();
+            if p_trim.len > 0 {
+                parse_link_param(p_trim, link);
             }
-            if p_cursor == params_part.len { break; }
-
-            var next_semi = params_part.len;
-            for p_idx in p_cursor..params_part.len {
-                if params_part[p_idx] == ';' {
-                    next_semi = p_idx;
-                    break;
-                }
-            }
-
-            let param_token = trim_lws(params_part[p_cursor..next_semi]);
-            parse_link_param(param_token, link);
-            p_cursor = if next_semi < params_part.len { next_semi + 1 } else { params_part.len };
         }
 
         out_links.push(link);

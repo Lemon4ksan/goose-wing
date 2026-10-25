@@ -310,6 +310,7 @@ fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], boo
 fn ::rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool { return core::rsplit_once_byte(s, delim); }
 fn ::split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool { return core::split_once(s, delim); }
 fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool { return core::split_once_fold(s, delim); }
+fn ::make_byte_tokenizer(src: const u8[:], delim: u8) -> core::ByteTokenizer { return core::make_byte_tokenizer(src, delim); }
 fn ::token_next(tok: core::ByteTokenizer&) -> const u8[:], bool { return core::token_next(tok); }
 
 fn ::parse_u64_dec(s: const u8[:]) -> u64, bool { return core::parse_u64_dec(s); }

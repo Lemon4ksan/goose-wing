@@ -84,17 +84,11 @@ struct MediaType {
 }
 
 fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> bool {
-    var eq_pos: i64 = -1;
-    for i in p_trim.len {
-        if p_trim[i] == '=' {
-            eq_pos = i;
-            break;
-        }
-    }
-    guard eq_pos > 0 else { return false; }
+    let p_name_raw, p_val_raw, ok = p_trim.split_once_byte('=');
+    guard ok && p_name_raw.len > 0 else { return false; }
 
-    let p_name = trim_lws(p_trim[..eq_pos]);
-    let p_val_raw = trim_lws(p_trim[eq_pos + 1..]);
+    let p_name = p_name_raw.trim_lws();
+    let p_val_raw = p_val_raw.trim_lws();
     guard is_valid_header_name(p_name) else { return false; }
 
     p_item.name.append(p_name);
@@ -154,28 +148,11 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     guard trimmed.len > 0 else { return mt, false; }
     if has_embedded_nulls(trimmed) { return mt, false; }
 
-    // Find end of type/subtype (first ';' or end of string)
-    var semi_pos: i64 = -1;
-    for i in trimmed.len {
-        if trimmed[i] == ';' {
-            semi_pos = i;
-            break;
-        }
-    }
+    let mime_part_raw, params_part, has_semi = trimmed.split_once_byte(';');
+    let mime_part = mime_part_raw.trim_lws();
 
-    let mime_part = if semi_pos >= 0 { trim_lws(trimmed[..semi_pos]) } else { trim_lws(trimmed) };
-    var slash_pos: i64 = -1;
-    for i in mime_part.len {
-        if mime_part[i] == '/' {
-            slash_pos = i;
-            break;
-        }
-    }
-
-    guard slash_pos > 0 && slash_pos + 1 < mime_part.len else { return mt, false; }
-    let raw_type = mime_part[..slash_pos];
-    let raw_sub = mime_part[slash_pos + 1..];
-
+    let raw_type, raw_sub, has_slash = mime_part.split_once_byte('/');
+    guard has_slash && raw_type.len > 0 && raw_sub.len > 0 else { return mt, false; }
     guard is_valid_header_name(raw_type) && is_valid_header_name(raw_sub) else { return mt, false; }
 
     mt.type_name.append(raw_type);
@@ -188,8 +165,8 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     mt.mime_type.append(mt.subtype[..]);
 
     // Parse parameters
-    if semi_pos >= 0 {
-        guard parse_media_parameters(trimmed[semi_pos + 1..], mt) else { return mt, false; }
+    if has_semi {
+        guard parse_media_parameters(params_part, mt) else { return mt, false; }
     }
 
     mt.valid = true;
@@ -204,23 +181,16 @@ fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
     guard trimmed.len > 0 else { return mt, false; }
     if has_embedded_nulls(trimmed) { return mt, false; }
 
-    var semi_pos: i64 = -1;
-    for i in trimmed.len {
-        if trimmed[i] == ';' {
-            semi_pos = i;
-            break;
-        }
-    }
-
-    let disp_part = if semi_pos >= 0 { trim_lws(trimmed[..semi_pos]) } else { trim_lws(trimmed) };
+    let disp_part_raw, params_part, has_semi = trimmed.split_once_byte(';');
+    let disp_part = disp_part_raw.trim_lws();
     guard is_valid_header_name(disp_part) else { return mt, false; }
 
     mt.type_name.append(disp_part);
     to_lower(mt.type_name[..]);
     mt.mime_type.append(mt.type_name[..]);
 
-    if semi_pos >= 0 {
-        guard parse_media_parameters(trimmed[semi_pos + 1..], mt) else { return mt, false; }
+    if has_semi {
+        guard parse_media_parameters(params_part, mt) else { return mt, false; }
     }
 
     mt.valid = true;

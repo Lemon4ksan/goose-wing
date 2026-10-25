@@ -105,20 +105,10 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
         let item = trim_lws(trimmed[cursor..item_end]);
         cursor = item_end;
 
-        var eq_pos: i64 = -1;
-        for idx in item.len {
-            if item[idx] == '=' {
-                eq_pos = idx;
-                break;
-            }
-        }
-
-        if eq_pos > 0 {
-            let k = trim_lws(item[..eq_pos]);
-            var v = trim_lws(item[eq_pos + 1..]);
-            if v.len >= 2 && v[0] == '"' && v[v.len - 1] == '"' {
-                v = v[1..v.len - 1];
-            }
+        let k_raw, v_raw, has_eq = item.split_once_byte('=');
+        if has_eq {
+            let k = k_raw.trim_lws();
+            let v = v_raw.trim_lws().trim_byte('"');
 
             if k == "match" {
                 p.match_pattern.clear();
@@ -128,17 +118,8 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
                 p.id.clear();
                 p.id.append(v);
             } else if k == "ttl" {
-                var ttl_val: u32 = 0;
-                var ok = v.len > 0;
-                for b in v {
-                    if b >= '0' && b <= '9' {
-                        ttl_val = ttl_val * 10 + (b - '0');
-                    } else {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok { p.ttl_sec = ttl_val; }
+                let ttl_val, ttl_ok = v.parse_u32_dec();
+                if ttl_ok { p.ttl_sec = ttl_val; }
             } else if k == "type" {
                 p.dict_type.clear();
                 p.dict_type.append(v);

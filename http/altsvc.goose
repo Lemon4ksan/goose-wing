@@ -39,34 +39,15 @@ fn new_altsvc_cache() -> AltSvcCache {
 
 // Parses single parameter token: e.g. `ma=86400` or `persist=1`
 fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
-    var eq_pos: i64 = -1;
-    for i in param_str.len {
-        if param_str[i] == '=' {
-            eq_pos = i;
-            break;
-        }
-    }
-    guard eq_pos > 0 else { return; }
+    let p_name_raw, p_val_raw, ok = param_str.split_once_byte('=');
+    guard ok else { return; }
 
-    let p_name = trim_lws(param_str[..eq_pos]);
-    var p_val = trim_lws(param_str[eq_pos + 1..]);
-
-    if p_val.len >= 2 && p_val[0] == '"' && p_val[p_val.len - 1] == '"' {
-        p_val = p_val[1..p_val.len - 1];
-    }
+    let p_name = p_name_raw.trim_lws();
+    var p_val = p_val_raw.trim_lws().trim_byte('"');
 
     if p_name == "ma" {
-        var num: u32 = 0;
-        var ok = p_val.len > 0;
-        for b in p_val {
-            if b >= '0' && b <= '9' {
-                num = num * 10 + (b - '0');
-            } else {
-                ok = false;
-                break;
-            }
-        }
-        if ok { ep.max_age_sec = num; }
+        let num, num_ok = p_val.parse_u32_dec();
+        if num_ok { ep.max_age_sec = num; }
     } else if p_name == "persist" {
         if p_val == "1" {
             ep.persist = true;
@@ -109,85 +90,44 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         cursor = if entry_end < trimmed.len { entry_end + 1 } else { trimmed.len };
         if entry_str.len == 0 { continue; }
 
-        // Format of entry: proto="host:port" *( ";" param )
-        var eq_pos: i64 = -1;
-        for idx in entry_str.len {
-            if entry_str[idx] == '=' {
-                eq_pos = idx;
-                break;
-            }
-        }
-        guard eq_pos > 0 else { continue; }
+        let proto_token_raw, rem_entry_raw, has_eq = entry_str.split_once_byte('=');
+        guard has_eq && proto_token_raw.len > 0 else { continue; }
 
-        let proto_token = trim_lws(entry_str[..eq_pos]);
-        let rem_entry = trim_lws(entry_str[eq_pos + 1..]);
+        let proto_token = proto_token_raw.trim_lws();
+        let rem_entry = rem_entry_raw.trim_lws();
 
         var ep = AltSvcEndpoint { .. };
         ep.proto.append(proto_token);
 
         // Find authority inside quotes: "host:port"
         guard rem_entry.len >= 2 && rem_entry[0] == '"' else { continue; }
-        var quote_end: i64 = -1;
-        for idx in 1..rem_entry.len {
-            if rem_entry[idx] == '"' {
-                quote_end = idx;
-                break;
-            }
-        }
-        guard quote_end > 0 else { continue; }
+        let quote_end = rem_entry[1..].index_of_byte('"');
+        guard quote_end >= 0 else { continue; }
 
-        let authority = rem_entry[1..quote_end];
-        let params_part = rem_entry[quote_end + 1..];
+        let authority = rem_entry[1..quote_end + 1];
+        let params_part = rem_entry[quote_end + 2..];
 
         // Parse host:port in authority
-        var colon_pos: i64 = -1;
-        for idx in authority.len {
-            if authority[idx] == ':' {
-                colon_pos = idx;
-                break;
-            }
-        }
-        guard colon_pos >= 0 else { continue; }
-
-        let host_part = authority[..colon_pos];
-        let port_part = authority[colon_pos + 1..];
+        let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
+        guard has_colon else { continue; }
 
         if host_part.len > 0 {
             ep.host.append(host_part);
         }
 
-        var port_num: u16 = 0;
-        var port_ok = port_part.len > 0;
-        for b in port_part {
-            if b >= '0' && b <= '9' {
-                port_num = port_num * 10 + ((b - '0') as u16);
-            } else {
-                port_ok = false;
-                break;
-            }
-        }
-        guard port_ok && port_num > 0 else { continue; }
-        ep.port = port_num;
+        let port_num, port_ok = port_part.parse_u32_dec();
+        guard port_ok && port_num > 0 && port_num <= 65535 else { continue; }
+        ep.port = port_num as! u16;
 
         // Parse parameters: ; ma=...; persist=...
-        var p_cursor: i64 = 0;
-        while p_cursor < params_part.len {
-            while p_cursor < params_part.len && (params_part[p_cursor] == ' ' || params_part[p_cursor] == '\t' || params_part[p_cursor] == ';') {
-                p_cursor++;
+        var p_tok = make_byte_tokenizer(params_part, ';');
+        while true {
+            let param_token, tok_ok = p_tok.token_next();
+            guard tok_ok else { break; }
+            let p_trim = param_token.trim_lws();
+            if p_trim.len > 0 {
+                parse_altsvc_param(p_trim, ep);
             }
-            if p_cursor == params_part.len { break; }
-
-            var next_semi = params_part.len;
-            for p_idx in p_cursor..params_part.len {
-                if params_part[p_idx] == ';' {
-                    next_semi = p_idx;
-                    break;
-                }
-            }
-
-            let param_token = trim_lws(params_part[p_cursor..next_semi]);
-            parse_altsvc_param(param_token, ep);
-            p_cursor = if next_semi < params_part.len { next_semi + 1 } else { params_part.len };
         }
 
         out_endpoints.push(ep);

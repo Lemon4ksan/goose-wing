@@ -169,10 +169,7 @@ fn is_no_cache_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
 // Parses a non-negative decimal delta-seconds token, clamping overflow to i32::MAX.
 // Strips optional surrounding double quotes.
 fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
-    var s = trim_lws(raw_val);
-    if s.len >= 2 && s[0] == '"' && s[s.len - 1] == '"' {
-        s = trim_lws(s[1..s.len - 1]);
-    }
+    let s = raw_val.trim_lws().trim_byte('"').trim_lws();
     guard s.len > 0 else { return 0, false; }
 
     var acc: i64 = 0;
@@ -188,23 +185,17 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
 
 // Extracts comma-separated or quoted field names into an inline fixed-capacity array.
 fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..8]&) {
-    var s = trim_lws(raw_val);
-    if s.len >= 2 && s[0] == '"' && s[s.len - 1] == '"' {
-        s = trim_lws(s[1..s.len - 1]);
-    }
+    let s = raw_val.trim_lws().trim_byte('"').trim_lws();
     guard s.len > 0 else { return; }
 
-    var cursor: i64 = 0;
-    while cursor < s.len {
-        var end_idx = cursor;
-        while end_idx < s.len && s[end_idx] != ',' {
-            end_idx++;
-        }
-        let name_tok = trim_lws(s[cursor..end_idx]);
-        cursor = end_idx + 1;
-        if name_tok.len > 0 && out_fields.len < 8 {
+    var tok = make_byte_tokenizer(s, ',');
+    while true {
+        let name_tok, ok = tok.token_next();
+        guard ok else { break; }
+        let trimmed_name = name_tok.trim_lws();
+        if trimmed_name.len > 0 && out_fields.len < 8 {
             var buf: u8[..64] = [];
-            buf.append(name_tok);
+            buf.append(trimmed_name);
             out_fields.push(buf);
         }
     }
@@ -337,13 +328,9 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
         cursor = token_end + 1;
         guard directive_slice.len > 0 else { continue; }
 
-        var equal_idx: i64 = -1;
-        for i in directive_slice.len {
-            if directive_slice[i] == '=' { equal_idx = i; break; }
-        }
-
-        let name = if equal_idx >= 0 { trim_lws(directive_slice[..equal_idx]) } else { directive_slice };
-        let val = if equal_idx >= 0 { trim_lws(directive_slice[equal_idx + 1..]) } else { "" };
+        let name_raw, val_raw, has_eq = directive_slice.split_once_byte('=');
+        let name = name_raw.trim_lws();
+        let val = if has_eq { val_raw.trim_lws() } else { "" };
 
         apply_directive(name, val, cc, ignore_cargo_cult);
     }
@@ -351,17 +338,13 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
 
 // Checks if a Pragma header contains the no-cache directive.
 fn contains_pragma_no_cache(pragma_val: const u8[:]) -> bool {
-    var cursor: i64 = 0;
-    while cursor < pragma_val.len {
-        var end_idx = cursor;
-        while end_idx < pragma_val.len && pragma_val[end_idx] != ',' {
-            end_idx++;
-        }
-        let tok = trim_lws(pragma_val[cursor..end_idx]);
-        if eq_ascii_fold(tok, "no-cache") {
+    var tok = make_byte_tokenizer(pragma_val, ',');
+    while true {
+        let item, ok = tok.token_next();
+        guard ok else { break; }
+        if item.trim_lws().eq_ascii_fold("no-cache") {
             return true;
         }
-        cursor = end_idx + 1;
     }
     return false;
 }
