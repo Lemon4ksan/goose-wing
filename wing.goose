@@ -30,6 +30,8 @@ import fingerprint.akamai;
 // ---- http primitives & headers ---------------------------------------------
 
 import http.headers;
+import http.headers.lexical;
+import http.headers.chunked;
 
 // ---- client session and application layer ----------------------------------
 
