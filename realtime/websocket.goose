@@ -148,10 +148,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     var mask_key: u8[4] = [0; 4];
     if masked {
         guard src.len >= offset + 4 else { return hdr, false; }
-        mask_key[0] = src[offset];
-        mask_key[1] = src[offset + 1];
-        mask_key[2] = src[offset + 2];
-        mask_key[3] = src[offset + 3];
+        mask_key = [src[offset], src[offset + 1], src[offset + 2], src[offset + 3]];
         offset += 4;
     }
 
@@ -226,7 +223,7 @@ fn encode_ws_frame<B>(
 
 // Computes standard `Sec-WebSocket-Accept` from `Sec-WebSocket-Key`
 fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
-    var combined: u8[>..] = [];
+    var combined: u8[..128] = [];
     combined.append(client_key);
     combined.append(WS_HANDSHAKE_GUID);
     let digest = core::sha1(combined[..]);
@@ -308,15 +305,9 @@ fn ws_build_handshake_request<B>(
     client_key: const u8[:],
     out: B&
 ) {
-    out.append("GET ");
-    out.append(path);
-    out.append(" HTTP/1.1\r\nHost: ");
-    out.append(host);
-    out.append("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ");
-    out.append(client_key);
+    format(out, "GET ", path, " HTTP/1.1\r\nHost: ", host, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ", client_key);
     if ws.subprotocol.len > 0 {
-        out.append("\r\nSec-WebSocket-Protocol: ");
-        out.append(ws.subprotocol[..]);
+        format(out, "\r\nSec-WebSocket-Protocol: ", ws.subprotocol[..]);
     }
     out.append("\r\n\r\n");
 }

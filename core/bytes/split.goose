@@ -86,19 +86,10 @@ fn token_next(tok: ByteTokenizer&) -> const u8[:], bool {
     }
 
     let start = tok.cursor;
-    var next_delim: i64 = -1;
-    var i = start;
-    while i < tok.src.len {
-        if tok.src[i] == tok.delim {
-            next_delim = i;
-            break;
-        }
-        i++;
-    }
-
-    if next_delim >= 0 {
-        tok.cursor = next_delim + 1;
-        return tok.src[start..next_delim], true;
+    let rel_idx = index_of_byte(tok.src[start..], tok.delim);
+    if rel_idx >= 0 {
+        tok.cursor = start + rel_idx + 1;
+        return tok.src[start..start + rel_idx], true;
     }
 
     tok.cursor = tok.src.len;
