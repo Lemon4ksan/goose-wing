@@ -1070,6 +1070,97 @@ fn ::is_dangerous_service_port(port_num: i32) -> bool {
     return wing::is_dangerous_service_port(port_num);
 }
 
+// ---- interceptor pipeline ufcs bridges ------------------------------------
+
+fn ::add_interceptor(pipeline: wing::InterceptorPipeline&, entry: wing::InterceptorEntry) -> bool {
+    return wing::add_interceptor(pipeline, entry);
+}
+
+fn ::add_logging(pipeline: wing::InterceptorPipeline&, scope: wing::InterceptorScope, level: wing::LogLevel = wing::LogLevel.Basic) -> bool {
+    return wing::add_pipeline_logging(pipeline, scope, level);
+}
+
+fn ::add_bearer_auth(pipeline: wing::InterceptorPipeline&, token: const u8[:]) -> bool {
+    return wing::add_pipeline_bearer_auth(pipeline, token);
+}
+
+fn ::add_header(pipeline: wing::InterceptorPipeline&, scope: wing::InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
+    return wing::add_pipeline_header(pipeline, scope, name, val);
+}
+
+fn ::add_request_id(pipeline: wing::InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool {
+    return wing::add_pipeline_request_id(pipeline, prefix);
+}
+
+fn ::add_traceparent(pipeline: wing::InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
+    return wing::add_pipeline_traceparent(pipeline, sample_flag);
+}
+
+fn ::add_retry(pipeline: wing::InterceptorPipeline&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
+    return wing::add_pipeline_retry(pipeline, max_retries, retry_on_5xx);
+}
+
+fn ::add_metrics(pipeline: wing::InterceptorPipeline&) -> bool {
+    return wing::add_pipeline_metrics(pipeline);
+}
+
+fn ::find_retry_policy(pipeline: const wing::InterceptorPipeline&, out_retries: i32&, out_retry_5xx: bool&) -> bool {
+    return wing::find_retry_policy(pipeline, out_retries, out_retry_5xx);
+}
+
+fn ::push_log(pipeline: wing::InterceptorPipeline&, msg: const u8[:]) {
+    wing::push_pipeline_log(pipeline, msg);
+}
+
+// Session-level pipeline bridges
+fn ::add_app_logging(session: wing::Session&, level: wing::LogLevel = wing::LogLevel.Basic) -> bool {
+    return wing::add_app_logging(session, level);
+}
+
+fn ::add_network_logging(session: wing::Session&, level: wing::LogLevel = wing::LogLevel.Basic) -> bool {
+    return wing::add_network_logging(session, level);
+}
+
+fn ::add_app_bearer_auth(session: wing::Session&, token: const u8[:]) -> bool {
+    return wing::add_app_bearer_auth(session, token);
+}
+
+fn ::add_app_header(session: wing::Session&, name: const u8[:], val: const u8[:]) -> bool {
+    return wing::add_app_header(session, name, val);
+}
+
+fn ::add_network_header(session: wing::Session&, name: const u8[:], val: const u8[:]) -> bool {
+    return wing::add_network_header(session, name, val);
+}
+
+fn ::add_app_request_id(session: wing::Session&, prefix: const u8[:] = "req-") -> bool {
+    return wing::add_app_request_id(session, prefix);
+}
+
+fn ::add_app_traceparent(session: wing::Session&, sample_flag: const u8[:] = "01") -> bool {
+    return wing::add_app_traceparent(session, sample_flag);
+}
+
+fn ::add_app_retry(session: wing::Session&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
+    return wing::add_app_retry(session, max_retries, retry_on_5xx);
+}
+
+fn ::add_network_metrics(session: wing::Session&) -> bool {
+    return wing::add_network_metrics(session);
+}
+
+fn ::network_metrics(session: const wing::Session&) -> const wing::NetworkMetrics& {
+    return wing::network_metrics(session);
+}
+
+fn ::pipeline_logs(session: const wing::Session&) -> const u8[..128][:] {
+    return wing::pipeline_logs(session);
+}
+
+fn ::clear_pipeline_logs(session: wing::Session&) {
+    wing::clear_pipeline_logs(session);
+}
+
 
 
 

@@ -5,7 +5,7 @@
 namespace wing;
 
 import std;
-import client.profile;
+import http.headers;
 import client.request;
 import client.response;
 
@@ -208,59 +208,50 @@ fn apply_app_interceptors_request(
     req: Request&,
     clock_us: i64
 ) {
-    for i in pipeline.entries.len {
-        guard pipeline.entries[i].enabled && pipeline.entries[i].scope == InterceptorScope.Application else { continue; }
+    for &entry in pipeline.entries {
+        guard entry.enabled && entry.scope == InterceptorScope.Application else { continue; }
 
-        if pipeline.entries[i].kind == InterceptorKind.AuthBearer {
+        if entry.kind == InterceptorKind.AuthBearer {
             // Only add if not already present
             if header(req, "Authorization").len == 0 {
-                req.headers.push(make_header("Authorization", pipeline.entries[i].header_val[..]));
+                req.headers.push(make_header("Authorization", entry.header_val[..]));
             }
-        } else if pipeline.entries[i].kind == InterceptorKind.Header {
-            let h_name = pipeline.entries[i].header_name[..];
+        } else if entry.kind == InterceptorKind.Header {
+            let h_name = entry.header_name[..];
             if header(req, h_name).len == 0 {
-                req.headers.push(make_header(h_name, pipeline.entries[i].header_val[..]));
+                req.headers.push(make_header(h_name, entry.header_val[..]));
             }
-        } else if pipeline.entries[i].kind == InterceptorKind.RequestId {
+        } else if entry.kind == InterceptorKind.RequestId {
             if header(req, "X-Request-ID").len == 0 {
                 var val_buf: u8[..64] = [];
-                val_buf.append(pipeline.entries[i].prefix[..]);
-                format(val_buf, pipeline.entries[i].counter);
-                pipeline.entries[i].counter += 1;
+                format(val_buf, entry.prefix[..], entry.counter);
+                entry.counter += 1;
                 req.headers.push(make_header("X-Request-ID", val_buf[..]));
             }
-        } else if pipeline.entries[i].kind == InterceptorKind.Traceparent {
+        } else if entry.kind == InterceptorKind.Traceparent {
             if header(req, "traceparent").len == 0 {
                 var tp_buf: u8[..64] = [];
-                generate_traceparent(pipeline.entries[i].counter, clock_us, pipeline.entries[i].prefix[..], tp_buf);
-                pipeline.entries[i].counter += 1;
+                generate_traceparent(entry.counter, clock_us, entry.prefix[..], tp_buf);
+                entry.counter += 1;
                 req.headers.push(make_header("traceparent", tp_buf[..]));
             }
-        } else if pipeline.entries[i].kind == InterceptorKind.Logging {
-            let lvl = pipeline.entries[i].log_level;
+        } else if entry.kind == InterceptorKind.Logging {
+            let lvl = entry.log_level;
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
-                line.append("--> ");
-                line.append(req.method[..]);
-                line.append(" ");
-                line.append(req.url[..]);
+                format(line, "--> ", req.method[..], " ", req.url[..]);
                 push_pipeline_log(pipeline, line[..]);
 
                 if lvl == LogLevel.Headers || lvl == LogLevel.Body {
                     for &h in req.headers {
                         var h_line: u8[..256] = [];
-                        h_line.append("--> ");
-                        h_line.append(h.name[..]);
-                        h_line.append(": ");
-                        h_line.append(h.value[..]);
+                        format(h_line, "--> ", h.name[..], ": ", h.value[..]);
                         push_pipeline_log(pipeline, h_line[..]);
                     }
                 }
                 if lvl == LogLevel.Body && req.body.len > 0 {
                     var b_line: u8[..256] = [];
-                    b_line.append("--> (body ");
-                    format(b_line, req.body.len);
-                    b_line.append(" bytes)");
+                    format(b_line, "--> (body ", req.body.len, " bytes)");
                     push_pipeline_log(pipeline, b_line[..]);
                 }
             }
@@ -278,41 +269,30 @@ fn apply_app_interceptors_response(
     pipeline.metrics.total_requests += 1;
     pipeline.metrics.last_request_duration_us = duration_us;
 
-    for i in pipeline.entries.len {
-        guard pipeline.entries[i].enabled && pipeline.entries[i].scope == InterceptorScope.Application else { continue; }
+    for &entry in pipeline.entries {
+        guard entry.enabled && entry.scope == InterceptorScope.Application else { continue; }
 
-        if pipeline.entries[i].kind == InterceptorKind.Logging {
-            let lvl = pipeline.entries[i].log_level;
+        if entry.kind == InterceptorKind.Logging {
+            let lvl = entry.log_level;
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
-                line.append("<-- ");
                 if ok(err) {
-                    format(line, resp.status_code);
-                    line.append(" (");
-                    format(line, duration_us);
-                    line.append(" us)");
+                    format(line, "<-- ", resp.status_code, " (", duration_us, " us)");
                 } else {
-                    line.append("FAILED (");
-                    line.append(err.message[..]);
-                    line.append(")");
+                    format(line, "<-- FAILED (", err.message[..], ")");
                 }
                 push_pipeline_log(pipeline, line[..]);
 
                 if ok(err) && (lvl == LogLevel.Headers || lvl == LogLevel.Body) {
                     for &h in resp.headers {
                         var h_line: u8[..256] = [];
-                        h_line.append("<-- ");
-                        h_line.append(h.name[..]);
-                        h_line.append(": ");
-                        h_line.append(h.value[..]);
+                        format(h_line, "<-- ", h.name[..], ": ", h.value[..]);
                         push_pipeline_log(pipeline, h_line[..]);
                     }
                 }
                 if ok(err) && lvl == LogLevel.Body && resp.body.len > 0 {
                     var b_line: u8[..256] = [];
-                    b_line.append("<-- (body ");
-                    format(b_line, resp.body.len);
-                    b_line.append(" bytes)");
+                    format(b_line, "<-- (body ", resp.body.len, " bytes)");
                     push_pipeline_log(pipeline, b_line[..]);
                 }
             }
@@ -335,33 +315,25 @@ fn apply_network_interceptors_request(
         pipeline.metrics.total_bytes_sent += body_len as! u64;
     }
 
-    for i in pipeline.entries.len {
-        guard pipeline.entries[i].enabled && pipeline.entries[i].scope == InterceptorScope.Network else { continue; }
+    for &entry in pipeline.entries {
+        guard entry.enabled && entry.scope == InterceptorScope.Network else { continue; }
 
-        if pipeline.entries[i].kind == InterceptorKind.Header {
-            let h_name = pipeline.entries[i].header_name[..];
+        if entry.kind == InterceptorKind.Header {
+            let h_name = entry.header_name[..];
             if !has_header(headers[..], h_name) && headers.len < headers.cap {
-                headers.push(make_header(h_name, pipeline.entries[i].header_val[..]));
+                headers.push(make_header(h_name, entry.header_val[..]));
             }
-        } else if pipeline.entries[i].kind == InterceptorKind.Logging {
-            let lvl = pipeline.entries[i].log_level;
+        } else if entry.kind == InterceptorKind.Logging {
+            let lvl = entry.log_level;
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
-                line.append("--> (net hop ");
-                format(line, hop_index);
-                line.append(") ");
-                line.append(method);
-                line.append(" ");
-                line.append(target_url);
+                format(line, "--> (net hop ", hop_index, ") ", method, " ", target_url);
                 push_pipeline_log(pipeline, line[..]);
 
                 if lvl == LogLevel.Headers || lvl == LogLevel.Body {
                     for &h in headers {
                         var h_line: u8[..256] = [];
-                        h_line.append("--> (net) ");
-                        h_line.append(h.name[..]);
-                        h_line.append(": ");
-                        h_line.append(h.value[..]);
+                        format(h_line, "--> (net) ", h.name[..], ": ", h.value[..]);
                         push_pipeline_log(pipeline, h_line[..]);
                     }
                 }
@@ -379,20 +351,14 @@ fn apply_network_interceptors_response(
     pipeline.metrics.last_hop_duration_us = hop_duration_us;
     pipeline.metrics.total_bytes_received += resp.body.len as! u64;
 
-    for i in pipeline.entries.len {
-        guard pipeline.entries[i].enabled && pipeline.entries[i].scope == InterceptorScope.Network else { continue; }
+    for &entry in pipeline.entries {
+        guard entry.enabled && entry.scope == InterceptorScope.Network else { continue; }
 
-        if pipeline.entries[i].kind == InterceptorKind.Logging {
-            let lvl = pipeline.entries[i].log_level;
+        if entry.kind == InterceptorKind.Logging {
+            let lvl = entry.log_level;
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
-                line.append("<-- (net hop ");
-                format(line, hop_index);
-                line.append(") ");
-                format(line, resp.status_code);
-                line.append(" (");
-                format(line, hop_duration_us);
-                line.append(" us)");
+                format(line, "<-- (net hop ", hop_index, ") ", resp.status_code, " (", hop_duration_us, " us)");
                 push_pipeline_log(pipeline, line[..]);
             }
         }
