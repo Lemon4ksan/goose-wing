@@ -490,3 +490,131 @@ fn ::extract_headers_frame_payload(hdr: const wing::FrameHeader&, payload: const
 fn ::validate_settings_parameter(param_id: u16, val: u32) -> u32 {
     return wing::validate_settings_parameter(param_id, val);
 }
+
+// ---- jwt & jwks ufcs bridges -----------------------------------------------
+
+fn ::set_issuer(claims: wing::JwtClaims&, iss: const u8[:]) { wing::set_issuer(claims, iss); }
+fn ::set_subject(claims: wing::JwtClaims&, sub: const u8[:]) { wing::set_subject(claims, sub); }
+fn ::set_audience(claims: wing::JwtClaims&, aud: const u8[:]) { wing::set_audience(claims, aud); }
+fn ::set_jwt_id(claims: wing::JwtClaims&, jti: const u8[:]) { wing::set_jwt_id(claims, jti); }
+fn ::set_expiry(claims: wing::JwtClaims&, exp_unix_sec: i64) { wing::set_expiry(claims, exp_unix_sec); }
+fn ::set_not_before(claims: wing::JwtClaims&, nbf_unix_sec: i64) { wing::set_not_before(claims, nbf_unix_sec); }
+fn ::set_issued_at(claims: wing::JwtClaims&, iat_unix_sec: i64) { wing::set_issued_at(claims, iat_unix_sec); }
+fn ::set_claim(claims: wing::JwtClaims&, key: const u8[:], val: const u8[:]) { wing::set_claim(claims, key, val); }
+fn ::set_claim_int(claims: wing::JwtClaims&, key: const u8[:], val: i64) { wing::set_claim_int(claims, key, val); }
+fn ::set_claim_bool(claims: wing::JwtClaims&, key: const u8[:], val: bool) { wing::set_claim_bool(claims, key, val); }
+fn ::claim_str(claims: const wing::JwtClaims&, key: const u8[:]) -> const u8[:] { return wing::claim_str(claims, key); }
+fn ::claim_int(claims: const wing::JwtClaims&, key: const u8[:]) -> i64, bool { return wing::claim_int(claims, key); }
+fn ::claim_bool(claims: const wing::JwtClaims&, key: const u8[:]) -> bool, bool { return wing::claim_bool(claims, key); }
+fn ::has_claim(claims: const wing::JwtClaims&, key: const u8[:]) -> bool { return wing::has_claim(claims, key); }
+
+fn ::add_ed25519_key(jwks: wing::Jwks&, kid: const u8[:], pub_key: const u8[32]) -> bool {
+    return wing::add_ed25519_key(jwks, kid, pub_key);
+}
+fn ::add_symmetric_key(jwks: wing::Jwks&, kid: const u8[:], alg: wing::JwtAlg, secret_key: const u8[:]) -> bool {
+    return wing::add_symmetric_key(jwks, kid, alg, secret_key);
+}
+fn ::find_key(jwks: const wing::Jwks&, kid: const u8[:]) -> i32 {
+    return wing::find_jwks_key(jwks, kid);
+}
+fn ::verify(
+    jwks: const wing::Jwks&,
+    token: const u8[:],
+    options: const wing::JwtValidationOptions&,
+    now_unix_sec: i64,
+    out_header: wing::JwtHeader&,
+    out_claims: wing::JwtClaims&
+) -> wing::JwtError {
+    return wing::verify_jwt_with_jwks(token, jwks, options, now_unix_sec, out_header, out_claims);
+}
+
+// ---- grpc dispatcher & context ufcs bridges --------------------------------
+
+fn ::register_unary(d: wing::GrpcServerDispatcher&, service: const u8[:], method: const u8[:], handler_id: u16) -> bool {
+    return wing::register_unary(d, service, method, handler_id);
+}
+fn ::register_server_streaming(d: wing::GrpcServerDispatcher&, service: const u8[:], method: const u8[:], handler_id: u16) -> bool {
+    return wing::register_server_streaming(d, service, method, handler_id);
+}
+fn ::register_client_streaming(d: wing::GrpcServerDispatcher&, service: const u8[:], method: const u8[:], handler_id: u16) -> bool {
+    return wing::register_client_streaming(d, service, method, handler_id);
+}
+fn ::register_bidi_streaming(d: wing::GrpcServerDispatcher&, service: const u8[:], method: const u8[:], handler_id: u16) -> bool {
+    return wing::register_bidi_streaming(d, service, method, handler_id);
+}
+fn ::find_method(d: const wing::GrpcServerDispatcher&, full_path: const u8[:]) -> i64 {
+    return wing::find_method(d, full_path);
+}
+
+fn ::get_metadata(ctx: const wing::GrpcServerContext&, key: const u8[:]) -> const u8[:] {
+    return wing::get_metadata(ctx, key);
+}
+fn ::add_response_metadata(ctx: wing::GrpcServerContext&, key: const u8[:], value: const u8[:]) -> bool {
+    return wing::add_response_metadata(ctx, key, value);
+}
+fn ::add_response_trailer(ctx: wing::GrpcServerContext&, key: const u8[:], value: const u8[:]) -> bool {
+    return wing::add_response_trailer(ctx, key, value);
+}
+fn ::is_deadline_exceeded(ctx: const wing::GrpcServerContext&, now_mono_ns: u64) -> bool {
+    return wing::is_deadline_exceeded(ctx, now_mono_ns);
+}
+
+// ---- poller & event loop ufcs bridges --------------------------------------
+
+fn ::register_socket(
+    p: wing::Poller&,
+    fd: i32,
+    tag: u64,
+    interest: wing::PollInterest,
+    trigger: wing::PollTrigger = wing::PollTrigger.Level
+) -> bool {
+    return wing::register_socket(p, fd, tag, interest, trigger);
+}
+fn ::modify_socket(
+    p: wing::Poller&,
+    fd: i32,
+    tag: u64,
+    interest: wing::PollInterest,
+    trigger: wing::PollTrigger = wing::PollTrigger.Level
+) -> bool {
+    return wing::modify_socket(p, fd, tag, interest, trigger);
+}
+fn ::deregister_socket(p: wing::Poller&, fd: i32) -> bool {
+    return wing::deregister_socket(p, fd);
+}
+fn ::add_timer(
+    p: wing::Poller&,
+    timer_id: u64,
+    delay_ms: u64,
+    tag: u64,
+    periodic: bool = false,
+    now_ns: u64 = 0
+) -> bool {
+    return wing::add_timer(p, timer_id, delay_ms, tag, periodic, now_ns);
+}
+fn ::cancel_timer(p: wing::Poller&, timer_id: u64) -> bool {
+    return wing::cancel_timer(p, timer_id);
+}
+
+fn ::bind_connection(
+    ev_loop: wing::EventLoop&,
+    fd: i32,
+    tag: u64,
+    interest: wing::PollInterest,
+    trigger: wing::PollTrigger = wing::PollTrigger.Level
+) -> bool {
+    return wing::bind_connection(ev_loop, fd, tag, interest, trigger);
+}
+fn ::unbind_connection(ev_loop: wing::EventLoop&, tag: u64) -> bool {
+    return wing::unbind_connection(ev_loop, tag);
+}
+fn ::queue_write(ev_loop: wing::EventLoop&, tag: u64, data: const u8[:]) -> bool {
+    return wing::queue_write(ev_loop, tag, data);
+}
+fn ::feed_read(ev_loop: wing::EventLoop&, tag: u64, data: const u8[:]) -> bool {
+    return wing::feed_read(ev_loop, tag, data);
+}
+fn ::flush_writes(ev_loop: wing::EventLoop&, tag: u64) -> i64 {
+    return wing::flush_writes(ev_loop, tag);
+}
+
