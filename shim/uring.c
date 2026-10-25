@@ -58,11 +58,15 @@ void wing_uring_close(int64_t ring_fd) {
 
 #else
 
+#ifndef ENOSYS
+#define ENOSYS 38
+#endif
+
 // Non-Linux platform stubs
-int32_t wing_uring_probe(void) { return -38; }
-int64_t wing_uring_create(uint32_t entries, uint32_t flags) { (void)entries; (void)flags; return -38; }
+int32_t wing_uring_probe(void) { return -ENOSYS; }
+int64_t wing_uring_create(uint32_t entries, uint32_t flags) { (void)entries; (void)flags; return -ENOSYS; }
 int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_complete, uint32_t flags) {
-    (void)ring_fd; (void)to_submit; (void)min_complete; (void)flags; return -38;
+    (void)ring_fd; (void)to_submit; (void)min_complete; (void)flags; return -ENOSYS;
 }
 void wing_uring_close(int64_t ring_fd) { (void)ring_fd; }
 

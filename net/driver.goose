@@ -61,6 +61,14 @@ const CAP_DIRECT_DESCRIPTORS: u32  = 1 << 5; // Fixed socket table without fd lo
 const CAP_MULTISHOT_RECV: u32      = 1 << 6; // Repeated receive events on single submission
 const CAP_EXACT_BUF_METRICS: u32   = 1 << 7; // Kernel reports exact unread bytes in buffer
 
+// Transport driver error status codes
+const ERR_SUCCESS: i32             = 0;
+const ERR_ENOSYS: i32              = -38; // POSIX ENOSYS: function not implemented
+
+// Default buffer and queue sizing
+const DEFAULT_RING_SIZE: u32              = 1024;
+const DEFAULT_REGISTERED_BUFFER_SIZE: u32 = 65536;
+
 // Checks if a capability bit is enabled
 fn driver_has_cap(caps: u32, cap: u32) -> bool {
     return (caps & cap) != 0;
@@ -124,7 +132,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
     if effective_kind == TransportDriverKind.Standard {
         res.available = true;
         res.capabilities = CAP_NONE;
-        res.error_code = 0;
+        res.error_code = ERR_SUCCESS;
         res.reason.clear();
         res.reason.append("Standard OS socket driver (cross-platform zero-dependency)");
         return res;
@@ -135,11 +143,11 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             let host = detect_target_platform();
             if host == TargetPlatform.Windows {
                 let probe_code = native_rio_probe();
-                res.available = (probe_code == 0);
+                res.available = (probe_code == ERR_SUCCESS);
                 res.error_code = probe_code;
             } else {
                 res.available = true;
-                res.error_code = 0;
+                res.error_code = ERR_SUCCESS;
             }
             if res.available {
                 res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_PAGE_LOCKED_BUFFERS | CAP_BATCH_IO;
@@ -153,7 +161,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
-            res.error_code = -38; // -ENOSYS
+            res.error_code = ERR_ENOSYS;
             res.reason.clear();
             res.reason.append("Windows RIO is only supported on Windows 8+ / Server 2012+ (mswsock.dll)");
         }
@@ -165,11 +173,11 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             let host = detect_target_platform();
             if host == TargetPlatform.Linux {
                 let probe_code = native_uring_probe();
-                res.available = (probe_code == 0);
+                res.available = (probe_code == ERR_SUCCESS);
                 res.error_code = probe_code;
             } else {
                 res.available = true;
-                res.error_code = 0;
+                res.error_code = ERR_SUCCESS;
             }
             if res.available {
                 res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
@@ -183,7 +191,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
-            res.error_code = -38; // -ENOSYS
+            res.error_code = ERR_ENOSYS;
             res.reason.clear();
             res.reason.append("io_uring requires Linux 6.1+ kernel (io_uring_queue_init)");
         }
@@ -195,11 +203,11 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             let host = detect_target_platform();
             if host == TargetPlatform.Darwin {
                 let probe_code = native_kqueue_probe();
-                res.available = (probe_code == 0);
+                res.available = (probe_code == ERR_SUCCESS);
                 res.error_code = probe_code;
             } else {
                 res.available = true;
-                res.error_code = 0;
+                res.error_code = ERR_SUCCESS;
             }
             if res.available {
                 res.capabilities = CAP_BATCH_IO | CAP_RING_COMPLETION | CAP_DIRECT_DESCRIPTORS | CAP_EXACT_BUF_METRICS;
@@ -213,7 +221,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
-            res.error_code = -38; // -ENOSYS
+            res.error_code = ERR_ENOSYS;
             res.reason.clear();
             res.reason.append("kqueue is only supported on macOS / BSD (sys/event.h)");
         }
@@ -233,9 +241,9 @@ fn probe_transport_driver(kind: TransportDriverKind) -> DriverProbeResult {
 
 struct TransportDriverConfig {
     preferred_kind: TransportDriverKind = TransportDriverKind.Standard,
-    ring_size: u32 = 1024,
+    ring_size: u32 = DEFAULT_RING_SIZE,
     enable_kernel_bypass: bool = false,
-    registered_buffer_size: u32 = 65536,
+    registered_buffer_size: u32 = DEFAULT_REGISTERED_BUFFER_SIZE,
     active_kind: TransportDriverKind = TransportDriverKind.Standard,
     capabilities: u32 = CAP_NONE,
     is_probed: bool = false,
@@ -330,7 +338,7 @@ fn init_transport_driver(cfg: TransportDriverConfig&) -> bool {
 }
 
 // Constructs an optimized automatic transport driver configuration for the current host OS
-fn auto_transport_driver_config(ring_size: u32 = 1024, reg_buf_size: u32 = 65536) -> TransportDriverConfig {
+fn auto_transport_driver_config(ring_size: u32 = DEFAULT_RING_SIZE, reg_buf_size: u32 = DEFAULT_REGISTERED_BUFFER_SIZE) -> TransportDriverConfig {
     var cfg = TransportDriverConfig {
         preferred_kind: TransportDriverKind.Auto,
         ring_size: ring_size,
@@ -489,7 +497,7 @@ fn uring_prep_cancel(sqe: UringSqe&, tag_to_cancel: u64) {
 
 // Ring submission and completion tracking state
 struct RingQueueState {
-    ring_size: u32 = 1024,
+    ring_size: u32 = DEFAULT_RING_SIZE,
     submissions_total: u64 = 0,
     completions_total: u64 = 0,
     active_pending: u32 = 0,
@@ -497,7 +505,7 @@ struct RingQueueState {
 
 fn new_ring_queue_state(size: u32) -> RingQueueState {
     return RingQueueState {
-        ring_size: if size > 0 { size } else { 1024 },
+        ring_size: if size > 0 { size } else { DEFAULT_RING_SIZE },
         submissions_total: 0,
         completions_total: 0,
         active_pending: 0,
@@ -649,21 +657,6 @@ fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
     if driver_has_cap(cfg.capabilities, CAP_EXACT_BUF_METRICS) {
         if has_any { out.append(", "); }
         out.append("ExactBufMetrics");
-        has_any = true;
-    }
-    if driver_has_cap(cfg.capabilities, CAP_PAGE_LOCKED_BUFFERS) {
-        if has_any { out.append(", "); }
-        out.append("PageLockedBuffers");
-        has_any = true;
-    }
-    if driver_has_cap(cfg.capabilities, CAP_DIRECT_DESCRIPTORS) {
-        if has_any { out.append(", "); }
-        out.append("DirectDescriptors");
-        has_any = true;
-    }
-    if driver_has_cap(cfg.capabilities, CAP_MULTISHOT_RECV) {
-        if has_any { out.append(", "); }
-        out.append("MultishotRecv");
         has_any = true;
     }
     if !has_any {

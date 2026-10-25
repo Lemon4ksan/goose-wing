@@ -102,11 +102,15 @@ static int init_rio_table(void) {
     return -1;
 }
 
+#ifndef ENOSYS
+#define ENOSYS 38
+#endif
+
 int32_t wing_rio_probe(void) {
     if (init_rio_table() == 0) {
         return 0;
     }
-    return -38; // -ENOSYS
+    return -ENOSYS;
 }
 
 int32_t wing_rio_available(void) {
@@ -165,8 +169,12 @@ uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t cou
 
 #else
 
+#ifndef ENOSYS
+#define ENOSYS 38
+#endif
+
 // Non-Windows platform stubs
-int32_t wing_rio_probe(void) { return -38; }
+int32_t wing_rio_probe(void) { return -ENOSYS; }
 int32_t wing_rio_available(void) { return 0; }
 uint64_t wing_rio_register_buffer(void *buf, uint32_t len) { (void)buf; (void)len; return 0; }
 void wing_rio_deregister_buffer(uint64_t buf_id) { (void)buf_id; }

@@ -14,21 +14,21 @@ fn test_driver_probing(t: core::T&) {
     t.run("Standard Driver Probing (Universal)") { sub =>
         let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Standard, wing::TargetPlatform.Windows);
         sub.assert_true(p_win.available, "Standard available on Windows");
-        sub.assert_eq(p_win.error_code, 0, "Standard error code 0 on Windows");
+        sub.assert_eq(p_win.error_code, wing::ERR_SUCCESS, "Standard error code 0 on Windows");
 
         let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Standard, wing::TargetPlatform.Linux);
         sub.assert_true(p_linux.available, "Standard available on Linux");
-        sub.assert_eq(p_linux.error_code, 0, "Standard error code 0 on Linux");
+        sub.assert_eq(p_linux.error_code, wing::ERR_SUCCESS, "Standard error code 0 on Linux");
 
         let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Standard, wing::TargetPlatform.Darwin);
         sub.assert_true(p_mac.available, "Standard available on macOS");
-        sub.assert_eq(p_mac.error_code, 0, "Standard error code 0 on macOS");
+        sub.assert_eq(p_mac.error_code, wing::ERR_SUCCESS, "Standard error code 0 on macOS");
     };
 
     t.run("Windows RIO Probing") { sub =>
         let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.WindowsRIO, wing::TargetPlatform.Windows);
         sub.assert_true(p_win.available, "RIO available on Windows");
-        sub.assert_eq(p_win.error_code, 0, "RIO error code 0 on Windows");
+        sub.assert_eq(p_win.error_code, wing::ERR_SUCCESS, "RIO error code 0 on Windows");
         sub.assert_true(wing::driver_has_cap(p_win.capabilities, wing::CAP_KERNEL_BYPASS), "RIO has KernelBypass");
         sub.assert_true(wing::driver_has_cap(p_win.capabilities, wing::CAP_ZERO_COPY), "RIO has ZeroCopy");
         sub.assert_true(wing::driver_has_cap(p_win.capabilities, wing::CAP_PAGE_LOCKED_BUFFERS), "RIO has PageLockedBuffers");
@@ -36,17 +36,17 @@ fn test_driver_probing(t: core::T&) {
 
         let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.WindowsRIO, wing::TargetPlatform.Linux);
         sub.assert_false(p_linux.available, "RIO unavailable on Linux");
-        sub.assert_eq(p_linux.error_code, -38, "RIO returns -ENOSYS on Linux");
+        sub.assert_eq(p_linux.error_code, wing::ERR_ENOSYS, "RIO returns -ENOSYS on Linux");
 
         let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.WindowsRIO, wing::TargetPlatform.Darwin);
         sub.assert_false(p_mac.available, "RIO unavailable on macOS");
-        sub.assert_eq(p_mac.error_code, -38, "RIO returns -ENOSYS on macOS");
+        sub.assert_eq(p_mac.error_code, wing::ERR_ENOSYS, "RIO returns -ENOSYS on macOS");
     };
 
     t.run("Linux io_uring Probing") { sub =>
         let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.IoUring, wing::TargetPlatform.Linux);
         sub.assert_true(p_linux.available, "io_uring available on Linux");
-        sub.assert_eq(p_linux.error_code, 0, "io_uring error code 0 on Linux");
+        sub.assert_eq(p_linux.error_code, wing::ERR_SUCCESS, "io_uring error code 0 on Linux");
         sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_RING_COMPLETION), "io_uring has RingCompletion");
         sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_ZERO_COPY), "io_uring has ZeroCopy");
         sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_BATCH_IO), "io_uring has BatchIO");
@@ -55,17 +55,17 @@ fn test_driver_probing(t: core::T&) {
 
         let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.IoUring, wing::TargetPlatform.Windows);
         sub.assert_false(p_win.available, "io_uring unavailable on Windows");
-        sub.assert_eq(p_win.error_code, -38, "io_uring returns -ENOSYS on Windows");
+        sub.assert_eq(p_win.error_code, wing::ERR_ENOSYS, "io_uring returns -ENOSYS on Windows");
 
         let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.IoUring, wing::TargetPlatform.Darwin);
         sub.assert_false(p_mac.available, "io_uring unavailable on macOS");
-        sub.assert_eq(p_mac.error_code, -38, "io_uring returns -ENOSYS on macOS");
+        sub.assert_eq(p_mac.error_code, wing::ERR_ENOSYS, "io_uring returns -ENOSYS on macOS");
     };
 
     t.run("macOS kqueue Probing") { sub =>
         let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Kqueue, wing::TargetPlatform.Darwin);
         sub.assert_true(p_mac.available, "kqueue available on macOS");
-        sub.assert_eq(p_mac.error_code, 0, "kqueue error code 0 on macOS");
+        sub.assert_eq(p_mac.error_code, wing::ERR_SUCCESS, "kqueue error code 0 on macOS");
         sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_BATCH_IO), "kqueue has BatchIO");
         sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_RING_COMPLETION), "kqueue has RingCompletion");
         sub.assert_true(wing::driver_has_cap(p_mac.capabilities, wing::CAP_DIRECT_DESCRIPTORS), "kqueue has DirectDescriptors");
@@ -73,11 +73,11 @@ fn test_driver_probing(t: core::T&) {
 
         let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Kqueue, wing::TargetPlatform.Windows);
         sub.assert_false(p_win.available, "kqueue unavailable on Windows");
-        sub.assert_eq(p_win.error_code, -38, "kqueue returns -ENOSYS on Windows");
+        sub.assert_eq(p_win.error_code, wing::ERR_ENOSYS, "kqueue returns -ENOSYS on Windows");
 
         let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Kqueue, wing::TargetPlatform.Linux);
         sub.assert_false(p_linux.available, "kqueue unavailable on Linux");
-        sub.assert_eq(p_linux.error_code, -38, "kqueue returns -ENOSYS on Linux");
+        sub.assert_eq(p_linux.error_code, wing::ERR_ENOSYS, "kqueue returns -ENOSYS on Linux");
     };
 }
 

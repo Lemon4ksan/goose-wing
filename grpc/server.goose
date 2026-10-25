@@ -11,6 +11,9 @@ import client.request;
 import client.response;
 import core from "..";
 
+// Wire protocol constants
+const HTTP_STATUS_OK: i32 = 200;
+
 // ---- 1. Protocol Detection and Content-Type Helpers -------------------------
 
 // Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text
@@ -249,7 +252,7 @@ fn build_grpc_trailers_only_response(
     ctx: const GrpcServerContext&,
     out_res: Response&
 ) {
-    out_res.status_code = 200;
+    out_res.status_code = HTTP_STATUS_OK;
     out_res.headers.clear();
     out_res.trailers.clear();
     out_res.body.clear();
@@ -316,7 +319,7 @@ fn build_grpc_wire_response(
     ctx: const GrpcServerContext&,
     out_res: Response&
 ) {
-    out_res.status_code = 200;
+    out_res.status_code = HTTP_STATUS_OK;
     out_res.headers.clear();
     out_res.trailers.clear();
     out_res.body.clear();
@@ -427,7 +430,7 @@ fn extract_grpc_server_context(
                 out_ctx.timeout_ms = ms;
                 let base_ns = if req_start_mono_ns > 0 { req_start_mono_ns } else { now_mono_ns };
                 if base_ns > 0 && ms > 0 {
-                    out_ctx.deadline_mono_ns = base_ns + (ms * 1000000);
+                    out_ctx.deadline_mono_ns = base_ns + (ms * NANOS_PER_MILLI);
                 }
             }
         } else if !starts_with_ignore_case(n, ":") &&
@@ -481,7 +484,7 @@ fn parse_client_stream(
     var offset: u32 = 0;
     while offset < (out_reader.wire.len as u32) {
         let off = offset as i64;
-        guard (out_reader.wire.len - off) >= 5 else { return false; }
+        guard (out_reader.wire.len - off) >= GRPC_LPM_HEADER_LEN else { return false; }
 
         let flag = out_reader.wire[off];
         let is_comp = (flag & GRPC_FLAG_COMPRESSED) != 0;
@@ -490,12 +493,12 @@ fn parse_client_stream(
                       ((out_reader.wire[off + 3] as u32) << 8) |
                       out_reader.wire[off + 4];
 
-        let total_len = 5 + len_val;
+        let total_len = GRPC_LPM_HEADER_LEN + len_val;
         guard (out_reader.wire.len - off) >= total_len else { return false; }
         guard out_reader.spans.len < out_reader.spans.cap else { break; }
 
         let span = GrpcMessageSpan {
-            offset: offset + 5,
+            offset: offset + GRPC_LPM_HEADER_LEN,
             len: len_val,
             compressed: is_comp,
         };
@@ -603,7 +606,7 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
 
     var req_payload: u8[>..] = [];
     var is_compressed = false;
-    if wire_bytes.len >= 5 {
+    if wire_bytes.len >= GRPC_LPM_HEADER_LEN {
         let ok_lpm, _ = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
         if !ok_lpm {
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);
@@ -698,7 +701,7 @@ fn dispatch_grpc_server_streaming<HandlerFn: fn(u16, GrpcServerContext&, const u
 
     var req_payload: u8[>..] = [];
     var is_compressed = false;
-    if wire_bytes.len >= 5 {
+    if wire_bytes.len >= GRPC_LPM_HEADER_LEN {
         let ok_lpm, _ = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
         if !ok_lpm {
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);

@@ -1,11 +1,21 @@
-// High-performance, zero-heap non-blocking poller and event loop over Layer 4 drivers.
-// Multiplexes I/O readiness (read, write, error, hangup) and high-resolution timers
-// across the Big Three drivers (Windows RIO, Linux io_uring, macOS kqueue, and Standard sockets).
+// Non-blocking I/O multiplexer and event loop engine over Layer 4 drivers.
+// Manages I/O readiness notifications and high-resolution timer queues
+// across Windows RIO, Linux io_uring, macOS kqueue, and Standard POSIX sockets.
 namespace wing;
 
 import std;
 import net.driver;
 import core from "..";
+
+// Time conversion constants
+const NANOS_PER_MILLI: u64 = 1000000;
+const NANOS_PER_SEC: u64   = 1000000000;
+
+// Poller and event loop capacity limits
+const POLLER_MAX_REGISTRATIONS: i64 = 64;
+const POLLER_MAX_TIMERS: i64        = 32;
+const EVENT_LOOP_MAX_BUFFERS: i64   = 64;
+const CONNECTION_BUFFER_CAP: i64    = 4096;
 
 // ---- 1. Readiness Event Flags & Types --------------------------------------
 
@@ -228,10 +238,10 @@ fn add_timer(
     // Check existing timer
     for i in p.timers.len {
         if p.timers[i].active && p.timers[i].timer_id == timer_id {
-            // Update existing
+            // Update existing timer deadline and interval
             p.timers[i].tag = tag;
-            p.timers[i].deadline_ns = now_ns + (delay_ms * 1000000);
-            p.timers[i].interval_ns = if periodic { delay_ms * 1000000 } else { 0 };
+            p.timers[i].deadline_ns = now_ns + (delay_ms * NANOS_PER_MILLI);
+            p.timers[i].interval_ns = if periodic { delay_ms * NANOS_PER_MILLI } else { 0 };
             return true;
         }
     }
@@ -240,8 +250,8 @@ fn add_timer(
         if !p.timers[i].active {
             p.timers[i].timer_id = timer_id;
             p.timers[i].tag = tag;
-            p.timers[i].deadline_ns = now_ns + (delay_ms * 1000000);
-            p.timers[i].interval_ns = if periodic { delay_ms * 1000000 } else { 0 };
+            p.timers[i].deadline_ns = now_ns + (delay_ms * NANOS_PER_MILLI);
+            p.timers[i].interval_ns = if periodic { delay_ms * NANOS_PER_MILLI } else { 0 };
             p.timers[i].active = true;
             p.active_timer_count += 1;
             return true;

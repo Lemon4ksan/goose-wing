@@ -1,11 +1,21 @@
-// Universal Zero-Allocation JSON Web Token (JWT / RFC 7519) and JSON Web Signature (JWS / RFC 7515) Engine.
-// Supports symmetric HMAC (HS256, HS384, HS512) and asymmetric Ed25519 (EdDSA / RFC 8037).
-// Enforces RFC 8725 BCP Security Defenses (algorithm pinning, none-alg rejection, clock leeway, replay guards).
+// RFC 7519 JSON Web Token (JWT) and RFC 7515 JSON Web Signature (JWS) engine.
+// Symmetric HMAC (HS256, HS384, HS512) and asymmetric Ed25519 (EdDSA / RFC 8037).
+// RFC 8725 BCP security defenses: algorithm pinning, none-alg rejection, clock leeway.
 namespace wing;
 
 import std;
 import json;
 import core from "..";
+
+// Cryptographic key and signature sizes
+const ED25519_KEY_LEN: i64        = 32;
+const ED25519_SIG_LEN: i64        = 64;
+const HMAC_SHA256_MAC_LEN: i64    = 32;
+const HMAC_SHA384_MAC_LEN: i64    = 48;
+const HMAC_SHA512_MAC_LEN: i64    = 64;
+
+// Default claim validation clock skew leeway (seconds)
+const DEFAULT_JWT_LEEWAY_SECONDS: i64 = 60;
 
 // ---- 1. JWT / JWS Algorithm & Error Models ----------------------------------
 
@@ -446,7 +456,7 @@ struct JwtValidationOptions {
     expected_issuer: u8[..128] = [],
     expected_audience: u8[..128] = [],
     expected_subject: u8[..128] = [],
-    leeway_seconds: i64 = 60,
+    leeway_seconds: i64 = DEFAULT_JWT_LEEWAY_SECONDS,
     require_exp: bool = true,
     require_nbf: bool = false,
     allow_none_alg: bool = false, // RFC 8725 §3.1: Strictly false by default
@@ -455,7 +465,7 @@ struct JwtValidationOptions {
 fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtValidationOptions {
     return JwtValidationOptions {
         expected_alg: expected_alg,
-        leeway_seconds: 60,
+        leeway_seconds: DEFAULT_JWT_LEEWAY_SECONDS,
         require_exp: true,
         require_nbf: false,
         allow_none_alg: false,
@@ -693,19 +703,19 @@ fn verify_jwt_hmac(
     // Verify MAC with constant-time comparison
     let signing_input = token[..dot2];
     if out_header.alg == JwtAlg.HS256 {
-        guard sig_bytes.len == 32 else { return JwtError.SignatureInvalid; }
+        guard sig_bytes.len == HMAC_SHA256_MAC_LEN else { return JwtError.SignatureInvalid; }
         let expected = core::hmac_sha256(secret_key, signing_input);
         guard core::ct_eq_bytes(expected[..], sig_bytes[..]) else {
             return JwtError.SignatureInvalid;
         }
     } else if out_header.alg == JwtAlg.HS384 {
-        guard sig_bytes.len == 48 else { return JwtError.SignatureInvalid; }
+        guard sig_bytes.len == HMAC_SHA384_MAC_LEN else { return JwtError.SignatureInvalid; }
         let expected = core::hmac_sha384(secret_key, signing_input);
         guard core::ct_eq_bytes(expected[..], sig_bytes[..]) else {
             return JwtError.SignatureInvalid;
         }
     } else if out_header.alg == JwtAlg.HS512 {
-        guard sig_bytes.len == 64 else { return JwtError.SignatureInvalid; }
+        guard sig_bytes.len == HMAC_SHA512_MAC_LEN else { return JwtError.SignatureInvalid; }
         let expected = core::hmac_sha512(secret_key, signing_input);
         guard core::ct_eq_bytes(expected[..], sig_bytes[..]) else {
             return JwtError.SignatureInvalid;
@@ -765,10 +775,10 @@ fn verify_jwt_eddsa(
     guard core::base64url_decode(sig_b64, sig_bytes) else {
         return JwtError.InvalidBase64;
     }
-    guard sig_bytes.len == 64 else { return JwtError.SignatureInvalid; }
+    guard sig_bytes.len == ED25519_SIG_LEN else { return JwtError.SignatureInvalid; }
 
     var sig64: u8[64] = [0; 64];
-    for i in 64 {
+    for i in ED25519_SIG_LEN {
         sig64[i] = sig_bytes[i];
     }
 

@@ -53,13 +53,17 @@ void wing_kqueue_close(int64_t kq_fd) {
 
 #else
 
+#ifndef ENOSYS
+#define ENOSYS 38
+#endif
+
 // Non-Darwin platform stubs
-int32_t wing_kqueue_probe(void) { return -38; }
-int64_t wing_kqueue_create(void) { return -38; }
+int32_t wing_kqueue_probe(void) { return -ENOSYS; }
+int64_t wing_kqueue_create(void) { return -ENOSYS; }
 int32_t wing_kqueue_kevent(int64_t kq_fd, const void *changelist, int32_t nchanges,
                            void *eventlist, int32_t nevents, int64_t timeout_ns) {
     (void)kq_fd; (void)changelist; (void)nchanges; (void)eventlist; (void)nevents; (void)timeout_ns;
-    return -38;
+    return -ENOSYS;
 }
 void wing_kqueue_close(int64_t kq_fd) { (void)kq_fd; }
 

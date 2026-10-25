@@ -196,8 +196,8 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
 
                     if key_item.kty == JwkKeyType.OKP && raw_x.len > 0 {
                         var decoded_x: u8[>..] = [];
-                        if core::base64url_decode(raw_x[..], decoded_x) && decoded_x.len == 32 {
-                            for i in 32 {
+                        if core::base64url_decode(raw_x[..], decoded_x) && decoded_x.len == ED25519_KEY_LEN {
+                            for i in ED25519_KEY_LEN {
                                 key_item.public_key[i] = decoded_x[i];
                             }
                             key_item.valid = true;
@@ -205,7 +205,7 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
                         }
                     } else if key_item.kty == JwkKeyType.Oct && raw_k.len > 0 {
                         var decoded_k: u8[>..] = [];
-                        if core::base64url_decode(raw_k[..], decoded_k) && decoded_k.len <= 64 {
+                        if core::base64url_decode(raw_k[..], decoded_k) && decoded_k.len <= HMAC_SHA512_MAC_LEN {
                             key_item.symmetric_key.clear();
                             key_item.symmetric_key.append(decoded_k[..]);
                             key_item.valid = true;
