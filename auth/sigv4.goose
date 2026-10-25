@@ -65,7 +65,7 @@ fn sign_aws_sigv4(
     var payload_sha_hex: u8[..64] = [];
     let p_hash = core::sha256(req.body[..]);
     for b in p_hash {
-        format_hex_byte(b, payload_sha_hex);
+        core::format_u8_hex(b, payload_sha_hex);
     }
 
     // 2. Inject x-amz-date & x-amz-content-sha256 if not present
@@ -152,7 +152,7 @@ fn sign_aws_sigv4(
     let canon_req_hash = core::sha256(canon_req[..]);
     var canon_req_hash_hex: u8[..64] = [];
     for b in canon_req_hash {
-        format_hex_byte(b, canon_req_hash_hex);
+        core::format_u8_hex(b, canon_req_hash_hex);
     }
 
     // 4. Build StringToSign
@@ -178,7 +178,7 @@ fn sign_aws_sigv4(
     let sig_bytes = core::hmac_sha256(signing_key[..], string_to_sign[..]);
     var sig_hex: u8[..64] = [];
     for b in sig_bytes {
-        format_hex_byte(b, sig_hex);
+        core::format_u8_hex(b, sig_hex);
     }
 
     // 6. Build Authorization Header

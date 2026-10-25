@@ -223,7 +223,7 @@ fn emit_response_headers<B>(
     // 3. content-length header (RFC gRPC: responses that contain data MUST NOT include Content-Length)
     var is_grpc = false;
     for &hdr in res.headers {
-        if eq_ascii_fold(hdr.name[..], "content-type") && starts_with_ignore_case(hdr.value[..], "application/grpc") {
+        if eq_ascii_fold(hdr.name[..], "content-type") && starts_with_fold(hdr.value[..], "application/grpc") {
             is_grpc = true;
             break;
         }

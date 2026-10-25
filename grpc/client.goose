@@ -184,7 +184,7 @@ fn parse_grpc_unary_response(
     if is_web {
         var wire_bytes: u8[..65536] = [];
         let content_type = get_header(res_headers, "content-type");
-        if starts_with_ignore_case(content_type, GRPC_WEB_TEXT_CONTENT_TYPE) {
+        if starts_with_fold(content_type, GRPC_WEB_TEXT_CONTENT_TYPE) {
             guard decode_grpc_web_text(body, wire_bytes) else { return false; }
         } else {
             wire_bytes.append(body);
@@ -276,7 +276,7 @@ fn grpc_unary_call(
     if cfg.is_web {
         var wire_bytes: u8[..65536] = [];
         let ct = header(res, "content-type");
-        if starts_with_ignore_case(ct, GRPC_WEB_TEXT_CONTENT_TYPE) {
+        if starts_with_fold(ct, GRPC_WEB_TEXT_CONTENT_TYPE) {
             decode_grpc_web_text(res.body[..], wire_bytes);
         } else {
             wire_bytes.append(res.body[..]);

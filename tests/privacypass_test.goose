@@ -126,7 +126,7 @@ fn test_privacypass_headers_and_cache(t: core::T&) {
         let raw_token = "mock_privacy_token_bytes_xyz_12345";
         var auth_hdr: u8[..512] = [];
         wing::format_private_token_authorization(raw_token, auth_hdr);
-        sub.assert_true(wing::eq_ascii_fold(auth_hdr[..19], "PrivateToken token="), "Starts with PrivateToken token=");
+        sub.assert_true(core::eq_ascii_fold(auth_hdr[..19], "PrivateToken token="), "Starts with PrivateToken token=");
 
         var sec_hdr: u8[..512] = [];
         wing::format_sec_private_state_token(raw_token, sec_hdr);

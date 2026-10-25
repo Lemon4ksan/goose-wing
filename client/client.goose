@@ -1445,11 +1445,6 @@ fn process_redirect_hop(
     return true, no_error();
 }
 
-fn starts_with_fold(s: const u8[:], prefix: const u8[:]) -> bool {
-    guard s.len >= prefix.len else { return false; }
-    return eq_ascii_fold(s[..prefix.len], prefix);
-}
-
 fn execute_request_inner(session: Client&, req: const Request&) -> Response, Error {
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);

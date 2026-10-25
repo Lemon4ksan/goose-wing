@@ -1,8 +1,9 @@
-// Goose Core Systems Library (math, time, compress, sync, url, test, crypto, io, ufcs).
+// Goose Core Systems Library (bytes, math, time, compress, sync, url, test, crypto, io, ufcs).
 namespace core;
 
 import std;
 
+import core.bytes;
 import core.math;
 import core.time;
 import core.test;

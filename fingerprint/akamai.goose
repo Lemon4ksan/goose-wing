@@ -487,26 +487,6 @@ fn identify_akamai_family(fp: const AkamaiFingerprint&) -> AkamaiBrowserFamily {
     return AkamaiBrowserFamily.Unknown;
 }
 
-// Checks whether an ASCII haystack contains a needle (case-insensitive).
-fn contains_case_insensitive(haystack: const u8[:], needle: const u8[:]) -> bool {
-    guard haystack.len >= needle.len else { return false; }
-    let max_idx = haystack.len - needle.len;
-    for i in (max_idx + 1) {
-        var matches = true;
-        for j in needle.len {
-            var b1 = haystack[i + j];
-            var b2 = needle[j];
-            if b1 >= 'A' && b1 <= 'Z' { b1 += 32; }
-            if b2 >= 'A' && b2 <= 'Z' { b2 += 32; }
-            if b1 != b2 {
-                matches = false;
-                break;
-            }
-        }
-        if matches { return true; }
-    }
-    return false;
-}
 
 // Detects passive fingerprint anomalies between User-Agent declarations and HTTP/2 wire profile.
 fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) -> AkamaiAnomaly, const u8[:] {
@@ -514,12 +494,12 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
         return AkamaiAnomaly.MissingPseudoHeaders, "Missing or incomplete HTTP/2 pseudo-headers";
     }
 
-    let is_chrome = contains_case_insensitive(user_agent, "chrome") ||
-                    contains_case_insensitive(user_agent, "chromium") ||
-                    contains_case_insensitive(user_agent, "edg");
-    let is_firefox = contains_case_insensitive(user_agent, "firefox");
-    let is_safari = contains_case_insensitive(user_agent, "safari") && !is_chrome;
-    let is_curl = contains_case_insensitive(user_agent, "curl");
+    let is_chrome = core::contains_fold(user_agent, "chrome") ||
+                    core::contains_fold(user_agent, "chromium") ||
+                    core::contains_fold(user_agent, "edg");
+    let is_firefox = core::contains_fold(user_agent, "firefox");
+    let is_safari = core::contains_fold(user_agent, "safari") && !is_chrome;
+    let is_curl = core::contains_fold(user_agent, "curl");
 
     // Chrome validation rules:
     if is_chrome {

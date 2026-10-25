@@ -14,17 +14,6 @@ struct HeaderItem {
     is_sensitive: bool = false,
 }
 
-// Case-insensitive ASCII string comparison (RFC 9110 Section 5.6.3).
-fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
-    guard str_a.len == str_b.len else { return false; }
-    for char_idx in str_a.len {
-        let char_a = if str_a[char_idx] >= 'A' && str_a[char_idx] <= 'Z' { str_a[char_idx] + 32 } else { str_a[char_idx] };
-        let char_b = if str_b[char_idx] >= 'A' && str_b[char_idx] <= 'Z' { str_b[char_idx] + 32 } else { str_b[char_idx] };
-        if char_a != char_b { return false; }
-    }
-    return true;
-}
-
 // Whether name is a credential or session header that should be stripped on
 // cross-origin redirects or scheme downgrades.
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
@@ -496,7 +485,7 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
     // Security state & prefix matching (Strict-Transport-Security, x-content-*, x-webkit-*)
     if id == WellKnownHeader.StrictTransportSecurity || id == WellKnownHeader.XContentTypeOptions || id == WellKnownHeader.XWebkitCsp {
         flags |= HEADER_FLAG_SECURITY_STATE;
-    } else if name.len >= 10 && (starts_with_ignore_case(name, "x-content-") || starts_with_ignore_case(name, "x-webkit-")) {
+    } else if name.len >= 10 && (starts_with_fold(name, "x-content-") || starts_with_fold(name, "x-webkit-")) {
         flags |= HEADER_FLAG_SECURITY_STATE;
     }
 
@@ -510,11 +499,6 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
     }
 
     return flags;
-}
-
-fn starts_with_ignore_case(s: const u8[:], prefix: const u8[:]) -> bool {
-    guard s.len >= prefix.len else { return false; }
-    return eq_ascii_fold(s[..prefix.len], prefix);
 }
 
 // ---- header entry (16 bytes aligned) ---------------------------------------
@@ -638,36 +622,14 @@ fn is_valid_header_value(val: const u8[:]) -> bool {
     return true;
 }
 
-fn trim_lws(val: const u8[:]) -> const u8[:] {
-    var start: i64 = 0;
-    while start < val.len && (val[start] == ' ' || val[start] == '\t') {
-        start++;
-    }
-    var end_pos: i64 = val.len;
-    while end_pos > start && (val[end_pos - 1] == ' ' || val[end_pos - 1] == '\t') {
-        end_pos--;
-    }
-    return val[start..end_pos];
-}
-
 // RFC 9110 Section 8.6 & RFC 9112 Section 6.3: Content-Length validation & anti-smuggling parser
 fn parse_cl_digits(s: const u8[:], out_val: i64&) -> bool {
-    var num: i64 = 0;
-    var digits: i64 = 0;
     for b in s {
         guard b >= '0' && b <= '9' else { return false; }
-        digits++;
-        guard digits <= 19 else { return false; }
-        let d = (b - '0') as i64;
-        if digits == 19 {
-            if num > 922337203685477580 || (num == 922337203685477580 && d > 7) {
-                return false;
-            }
-        }
-        num = num * 10 + d;
     }
-    guard digits > 0 else { return false; }
-    out_val = num;
+    let num, ok = core::parse_u64_dec(s);
+    guard ok && num <= 9223372036854775807 else { return false; }
+    out_val = num as! i64;
     return true;
 }
 

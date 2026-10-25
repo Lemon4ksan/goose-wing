@@ -376,7 +376,7 @@ fn has_private_token_challenge(res: const Response&) -> bool {
     guard res.status_code == 401 else { return false; }
     for idx in res.headers.len {
         if eq_ascii_fold(res.headers[idx].name[..], "WWW-Authenticate") {
-            if dpop_contains_str(res.headers[idx].value[..], SCHEME_PRIVATE_TOKEN) {
+            if core::contains(res.headers[idx].value[..], SCHEME_PRIVATE_TOKEN) {
                 return true;
             }
         }

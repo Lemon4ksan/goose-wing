@@ -19,22 +19,22 @@ const HTTP_STATUS_OK: i32 = 200;
 // Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text
 fn is_grpc_content_type(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return starts_with_ignore_case(trimmed, GRPC_CONTENT_TYPE) ||
-           starts_with_ignore_case(trimmed, GRPC_WEB_CONTENT_TYPE) ||
-           starts_with_ignore_case(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return starts_with_fold(trimmed, GRPC_CONTENT_TYPE) ||
+           starts_with_fold(trimmed, GRPC_WEB_CONTENT_TYPE) ||
+           starts_with_fold(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Returns true if Content-Type indicates gRPC-Web (binary or text)
 fn is_grpc_web(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return starts_with_ignore_case(trimmed, GRPC_WEB_CONTENT_TYPE) ||
-           starts_with_ignore_case(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return starts_with_fold(trimmed, GRPC_WEB_CONTENT_TYPE) ||
+           starts_with_fold(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Returns true if Content-Type is specifically gRPC-Web-Text (Base64 encoded)
 fn is_grpc_web_text(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return starts_with_ignore_case(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return starts_with_fold(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Inspects an incoming Request to determine if it is a gRPC call
@@ -433,7 +433,7 @@ fn extract_grpc_server_context(
                     out_ctx.deadline_mono_ns = base_ns + (ms * NANOS_PER_MILLI);
                 }
             }
-        } else if !starts_with_ignore_case(n, ":") &&
+        } else if !starts_with_fold(n, ":") &&
                    !eq_ascii_fold(n, "te") &&
                    !eq_ascii_fold(n, "host") &&
                    !eq_ascii_fold(n, "connection") {

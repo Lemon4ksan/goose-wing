@@ -260,8 +260,8 @@ fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc:
        eq_ascii_fold(name, "strict-transport-security") ||
        eq_ascii_fold(name, "x-content-type-options") ||
        eq_ascii_fold(name, "x-webkit-csp") ||
-       starts_with_ignore_case(name, "x-content-") ||
-       starts_with_ignore_case(name, "x-webkit-") {
+       starts_with_fold(name, "x-content-") ||
+       starts_with_fold(name, "x-webkit-") {
         return true;
     }
     if (entry_flags & HEADER_FLAG_CHALLENGE) != 0 ||

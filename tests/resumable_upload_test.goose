@@ -24,11 +24,11 @@ fn test_resumable_uploads(t: core::T&) {
         var has_complete = false;
         var has_content_type = false;
         for &h in create_req.headers {
-            if wing::eq_ascii_fold(h.name[..], "Upload-Complete") {
+            if core::eq_ascii_fold(h.name[..], "Upload-Complete") {
                 has_complete = true;
                 sub.assert_bytes_eq(h.value[..], "?0", "Upload-Complete is ?0 for initial incomplete chunk");
             }
-            if wing::eq_ascii_fold(h.name[..], "Content-Type") {
+            if core::eq_ascii_fold(h.name[..], "Content-Type") {
                 has_content_type = true;
                 sub.assert_bytes_eq(h.value[..], "application/partial-upload", "Content-Type is application/partial-upload");
             }
@@ -63,11 +63,11 @@ fn test_resumable_uploads(t: core::T&) {
         var has_offset = false;
         var has_complete = false;
         for &h in patch_req.headers {
-            if wing::eq_ascii_fold(h.name[..], "Upload-Offset") {
+            if core::eq_ascii_fold(h.name[..], "Upload-Offset") {
                 has_offset = true;
                 sub.assert_bytes_eq(h.value[..], "500000", "Upload-Offset matches current client state");
             }
-            if wing::eq_ascii_fold(h.name[..], "Upload-Complete") {
+            if core::eq_ascii_fold(h.name[..], "Upload-Complete") {
                 has_complete = true;
                 sub.assert_bytes_eq(h.value[..], "?1", "Upload-Complete is ?1 on final chunk");
             }

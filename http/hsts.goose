@@ -109,11 +109,6 @@ fn is_static_preloaded_host(hostname: const u8[:]) -> bool, bool {
     return false, false;
 }
 
-fn ends_with_fold(s: const u8[:], suffix: const u8[:]) -> bool {
-    guard s.len >= suffix.len else { return false; }
-    return eq_ascii_fold(s[s.len - suffix.len..], suffix);
-}
-
 // Checks if host is a subdomain of parent (e.g. "api.example.com" of "example.com")
 fn is_subdomain_of(sub: const u8[:], parent: const u8[:]) -> bool {
     guard sub.len > parent.len + 1 else { return false; }

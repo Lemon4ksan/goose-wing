@@ -128,35 +128,19 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
 
 // ---- 3. Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
 
-fn format_hex_byte<B>(b: u8, out: B&) {
-    let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    out.push(hex_chars[(b >> 4) & 0x0F]);
-    out.push(hex_chars[b & 0x0F]);
-}
-
 fn digest_hash_hex<B>(algorithm: const u8[:], data: const u8[:], out_hex: B&) {
     out_hex.clear();
     if eq_ascii_fold(algorithm, "md5") || eq_ascii_fold(algorithm, "md5-sess") {
         let md = core::md5(data);
         for b in md {
-            format_hex_byte(b, out_hex);
+            core::format_u8_hex(b, out_hex);
         }
     } else {
         // Default to SHA-256 (RFC 7616 standard)
         let sh = core::sha256(data);
         for b in sh {
-            format_hex_byte(b, out_hex);
+            core::format_u8_hex(b, out_hex);
         }
-    }
-}
-
-// Formats an 8-digit hexadecimal nonce counter (e.g. 1 -> "00000001")
-fn format_nc_counter<B>(nc: u32, out: B&) {
-    let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    for i in 8 {
-        let shift = ((7 - i) * 4) as u32;
-        let nibble = ((nc >> shift) & 0x0F) as! i64;
-        out.push(hex_chars[nibble]);
     }
 }
 
@@ -216,7 +200,7 @@ fn compute_digest_response(
 
     // 3. Format nc (8-digit hex)
     var nc_str: u8[..16] = [];
-    format_nc_counter(nc, nc_str);
+    core::format_u64_hex_fixed(nc, 8, nc_str, false);
 
     // 4. Calculate response = H(HA1:nonce:nc:cnonce:qop:HA2)
     var a3: u8[>..] = [];

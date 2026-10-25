@@ -18,11 +18,11 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
         var has_proto = false;
         var has_draft = false;
         for &h in req.headers {
-            if wing::eq_ascii_fold(h.name[..], ":protocol") {
+            if core::eq_ascii_fold(h.name[..], ":protocol") {
                 has_proto = true;
                 sub.assert_bytes_eq(h.value[..], "webtransport", ":protocol is webtransport");
             }
-            if wing::eq_ascii_fold(h.name[..], "sec-webtransport-http3-draft") {
+            if core::eq_ascii_fold(h.name[..], "sec-webtransport-http3-draft") {
                 has_draft = true;
                 sub.assert_bytes_eq(h.value[..], "draft16", "Draft is draft16");
             }

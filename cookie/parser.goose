@@ -50,7 +50,7 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    if (starts_with_case_folded(parsed_cookie.name[..], "__host-") || starts_with_case_folded(parsed_cookie.name[..], "__host-http-")) && parsed_cookie.has_domain_attr {
+    if (starts_with_fold(parsed_cookie.name[..], "__host-") || starts_with_fold(parsed_cookie.name[..], "__host-http-")) && parsed_cookie.has_domain_attr {
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 

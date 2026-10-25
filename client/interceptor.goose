@@ -176,26 +176,14 @@ fn find_retry_policy(pipeline: const InterceptorPipeline&, out_retries: i32&, ou
 
 // ---- 4. Formatting Utilities ------------------------------------------------
 
-fn hex_char(nibble: u8) -> u8 {
-    return if nibble < 10 { '0' + nibble } else { 'a' + (nibble - 10) };
-}
-
-fn format_hex_u64<B>(val: u64, out: B&) {
-    for i in 16 {
-        let shift = ((15 - i) * 4) as u64;
-        let nibble = ((val >> shift) & 0xF) as u8;
-        out.push(hex_char(nibble));
-    }
-}
-
 // W3C TraceContext traceparent generator:
 // Format: 00-{32 hex trace_id}-{16 hex parent_id}-{2 hex flags}
 fn generate_traceparent<B>(counter: u64, clock_us: i64, flag: const u8[:], out: B&) {
     out.append("00-");
-    format_hex_u64(clock_us as! u64, out);
-    format_hex_u64(counter ^ 0xa5a5a5a5a5a5a5a5, out);
+    core::format_u64_hex_fixed(clock_us as! u64, 16, out, false);
+    core::format_u64_hex_fixed(counter ^ 0xa5a5a5a5a5a5a5a5, 16, out, false);
     out.append("-");
-    format_hex_u64(counter, out);
+    core::format_u64_hex_fixed(counter, 16, out, false);
     out.append("-");
     if flag.len == 2 {
         out.append(flag);

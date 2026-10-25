@@ -162,11 +162,11 @@ fn test_dpop_rfc9449(t: core::T&) {
         var has_dpop = false;
         var has_auth = false;
         for &h in req.headers {
-            if wing::eq_ascii_fold(h.name[..], "DPoP") {
+            if core::eq_ascii_fold(h.name[..], "DPoP") {
                 has_dpop = true;
                 sub.assert_bytes_eq(h.value[..], "eyJhbGciOi...", "DPoP header value matches");
             }
-            if wing::eq_ascii_fold(h.name[..], "Authorization") {
+            if core::eq_ascii_fold(h.name[..], "Authorization") {
                 has_auth = true;
                 sub.assert_bytes_eq(h.value[..], "DPoP token_xyz", "Authorization header has DPoP scheme");
             }

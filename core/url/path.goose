@@ -5,13 +5,6 @@ import std;
 
 // ---- file urls and swift-like path manipulation ----------------------------
 
-fn hex_digit_to_val(char_byte: u8) -> i32 {
-    if char_byte >= '0' && char_byte <= '9' { return char_byte - '0'; }
-    if char_byte >= 'a' && char_byte <= 'f' { return char_byte - 'a' + 10; }
-    if char_byte >= 'A' && char_byte <= 'F' { return char_byte - 'A' + 10; }
-    return -1;
-}
-
 fn percent_decode<B>(input_bytes: const u8[:], out: B&) {
     out.clear();
     var scan_idx = 0;

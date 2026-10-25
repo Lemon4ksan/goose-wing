@@ -6,6 +6,7 @@ import core.math;
 import core.time;
 import core.url;
 import core.sync;
+import core.bytes;
 
 // ---- time & duration ufcs bridges ------------------------------------------
 
@@ -277,3 +278,53 @@ fn ::read(rb: core::RingBuffer&, dst: u8[:]) -> i64, core::IoError { return core
 fn ::peek(rb: const core::RingBuffer&, dst: u8[:]) -> i64 { return core::peek(rb, dst); }
 fn ::discard(rb: core::RingBuffer&, count: i64) -> i64 { return core::discard(rb, count); }
 fn ::clear(rb: core::RingBuffer&) { core::clear(rb); }
+
+// ---- bytes & stringview ufcs bridges ----------------------------------------
+
+fn ::eq_ascii_fold(a: const u8[:], b: const u8[:]) -> bool { return core::eq_ascii_fold(a, b); }
+fn ::starts_with_fold(s: const u8[:], prefix: const u8[:]) -> bool { return core::starts_with_fold(s, prefix); }
+fn ::ends_with_fold(s: const u8[:], suffix: const u8[:]) -> bool { return core::ends_with_fold(s, suffix); }
+fn ::contains_fold(haystack: const u8[:], needle: const u8[:]) -> bool { return core::contains_fold(haystack, needle); }
+fn ::index_of_fold(haystack: const u8[:], needle: const u8[:]) -> i64 { return core::index_of_fold(haystack, needle); }
+
+fn ::trim_lws(s: const u8[:]) -> const u8[:] { return core::trim_lws(s); }
+fn ::trim_lws_start(s: const u8[:]) -> const u8[:] { return core::trim_lws_start(s); }
+fn ::trim_lws_end(s: const u8[:]) -> const u8[:] { return core::trim_lws_end(s); }
+fn ::trim_ascii_space(s: const u8[:]) -> const u8[:] { return core::trim_ascii_space(s); }
+fn ::trim_ascii_space_start(s: const u8[:]) -> const u8[:] { return core::trim_ascii_space_start(s); }
+fn ::trim_ascii_space_end(s: const u8[:]) -> const u8[:] { return core::trim_ascii_space_end(s); }
+fn ::trim_byte(s: const u8[:], b: u8) -> const u8[:] { return core::trim_byte(s, b); }
+fn ::trim_start_byte(s: const u8[:], b: u8) -> const u8[:] { return core::trim_start_byte(s, b); }
+fn ::trim_end_byte(s: const u8[:], b: u8) -> const u8[:] { return core::trim_end_byte(s, b); }
+fn ::trim_bytes(s: const u8[:], set: const u8[:]) -> const u8[:] { return core::trim_bytes(s, set); }
+fn ::trim_start_bytes(s: const u8[:], set: const u8[:]) -> const u8[:] { return core::trim_start_bytes(s, set); }
+fn ::trim_end_bytes(s: const u8[:], set: const u8[:]) -> const u8[:] { return core::trim_end_bytes(s, set); }
+
+fn ::contains_byte(s: const u8[:], b: u8) -> bool { return core::contains_byte(s, b); }
+fn ::index_of_byte(s: const u8[:], b: u8) -> i64 { return core::index_of_byte(s, b); }
+fn ::last_index_of_byte(s: const u8[:], b: u8) -> i64 { return core::last_index_of_byte(s, b); }
+fn ::index_of_slice(haystack: const u8[:], needle: const u8[:]) -> i64 { return core::index_of_slice(haystack, needle); }
+fn ::count_byte(s: const u8[:], b: u8) -> i64 { return core::count_byte(s, b); }
+
+fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool { return core::split_once_byte(s, delim); }
+fn ::rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool { return core::rsplit_once_byte(s, delim); }
+fn ::split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool { return core::split_once(s, delim); }
+fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool { return core::split_once_fold(s, delim); }
+fn ::token_next(tok: core::ByteTokenizer&) -> const u8[:], bool { return core::token_next(tok); }
+
+fn ::parse_u64_dec(s: const u8[:]) -> u64, bool { return core::parse_u64_dec(s); }
+fn ::parse_i64_dec(s: const u8[:]) -> i64, bool { return core::parse_i64_dec(s); }
+fn ::parse_u32_dec(s: const u8[:]) -> u32, bool { return core::parse_u32_dec(s); }
+fn ::parse_i32_dec(s: const u8[:]) -> i32, bool { return core::parse_i32_dec(s); }
+fn ::parse_u64_hex(s: const u8[:]) -> u64, bool { return core::parse_u64_hex(s); }
+fn ::parse_u32_hex(s: const u8[:]) -> u32, bool { return core::parse_u32_hex(s); }
+fn ::parse_u8_hex(s: const u8[:]) -> u8, bool { return core::parse_u8_hex(s); }
+
+fn ::to_lower_ascii<B>(src: const u8[:], out: B&) { core::to_lower_ascii(src, out); }
+fn ::to_upper_ascii<B>(src: const u8[:], out: B&) { core::to_upper_ascii(src, out); }
+fn ::format_u64_dec<B>(val: u64, out: B&) { core::format_u64_dec(val, out); }
+fn ::format_i64_dec<B>(val: i64, out: B&) { core::format_i64_dec(val, out); }
+fn ::format_u64_hex<B>(val: u64, out: B&, uppercase: bool = false) { core::format_u64_hex(val, out, uppercase); }
+fn ::format_u32_hex<B>(val: u32, out: B&, uppercase: bool = false) { core::format_u32_hex(val, out, uppercase); }
+fn ::format_u8_hex<B>(val: u8, out: B&, uppercase: bool = false) { core::format_u8_hex(val, out, uppercase); }
+

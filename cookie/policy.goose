@@ -49,23 +49,10 @@ fn adjust_origin_bound_cookies_on_insert(
 
 // ---- script api & prefix security validation -------------------------------
 
-// Whether str_val begins with prefix using ASCII case-insensitive comparison.
-fn starts_with_case_folded(str_val: const u8[:], prefix: const u8[:]) -> bool {
-    guard str_val.len >= prefix.len else { return false; }
-    for char_idx in prefix.len {
-        let b1 = str_val[char_idx];
-        let b2 = prefix[char_idx];
-        let c1 = if b1 >= 'A' && b1 <= 'Z' { b1 + 32 } else { b1 };
-        let c2 = if b2 >= 'A' && b2 <= 'Z' { b2 + 32 } else { b2 };
-        if c1 != c2 { return false; }
-    }
-    return true;
-}
-
 // Validates cookie names accessed from non-HTTP script APIs to prevent
 // shadowing protected prefixes.
 fn validate_script_cookie_name(name: const u8[:]) -> bool {
-    if starts_with_case_folded(name, "__http-") || starts_with_case_folded(name, "__host-http-") {
+    if starts_with_fold(name, "__http-") || starts_with_fold(name, "__host-http-") {
         return false;
     }
     return true;
@@ -188,28 +175,28 @@ fn validate_security_cookie_prefixes(
     // Nameless cookies cannot have values starting with security prefixes
     if cookie_name.len == 0 {
         let cookie_value = cookie_val.value[..];
-        if starts_with_case_folded(cookie_value, "__host-http-") ||
-           starts_with_case_folded(cookie_value, "__host-") ||
-           starts_with_case_folded(cookie_value, "__http-") ||
-           starts_with_case_folded(cookie_value, "__secure-") {
+        if starts_with_fold(cookie_value, "__host-http-") ||
+           starts_with_fold(cookie_value, "__host-") ||
+           starts_with_fold(cookie_value, "__http-") ||
+           starts_with_fold(cookie_value, "__secure-") {
             return false;
         }
     }
 
     // Prefix: __Host-Http- (draft-ietf-httpbis-layered-cookies, check before __Host- / __Http-)
-    if starts_with_case_folded(cookie_name, "__host-http-") {
+    if starts_with_fold(cookie_name, "__host-http-") {
         if !is_http_api { return false; }
         if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
         if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
-    } else if starts_with_case_folded(cookie_name, "__host-") {
+    } else if starts_with_fold(cookie_name, "__host-") {
         // Prefix: __Host-
         if !cookie_val.secure || !is_secure_channel { return false; }
         if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
-    } else if starts_with_case_folded(cookie_name, "__http-") {
+    } else if starts_with_fold(cookie_name, "__http-") {
         // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
         if !is_http_api { return false; }
         if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
-    } else if starts_with_case_folded(cookie_name, "__secure-") {
+    } else if starts_with_fold(cookie_name, "__secure-") {
         // Prefix: __Secure-
         if !cookie_val.secure || !is_secure_channel { return false; }
     }

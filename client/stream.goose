@@ -10,28 +10,9 @@ import http.headers;
 
 // ---- 1. RFC 9112 Chunked Transfer Framing -----------------------------------
 
-fn format_hex_i64<B>(val: i64, out: B&) {
-    let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    guard val > 0 else {
-        out.push('0');
-        return;
-    }
-    var digits: u8[16] = [0; 16];
-    var count = 0;
-    var v = val;
-    while v > 0 {
-        digits[count] = hex_chars[v & 0x0F];
-        v = v >> 4;
-        count += 1;
-    }
-    for i in count {
-        out.push(digits[count - 1 - i]);
-    }
-}
-
 // Encodes a single chunk frame: `<hex-size>\r\n<data>\r\n`
 fn encode_chunk<B>(data: const u8[:], out: B&) {
-    format_hex_i64(data.len, out);
+    core::format_u64_hex(data.len as! u64, out);
     out.push('\r');
     out.push('\n');
     out.append(data);

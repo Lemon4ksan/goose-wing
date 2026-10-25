@@ -72,11 +72,11 @@ fn test_http_signatures(t: core::T&) {
         var has_input = false;
         var has_sig = false;
         for &h in req.headers {
-            if wing::eq_ascii_fold(h.name[..], "Signature-Input") {
+            if core::eq_ascii_fold(h.name[..], "Signature-Input") {
                 has_input = true;
                 sub.assert_contains(h.value[..], "sig-bank=(\"@method\" \"@target-uri\" \"accept\")", "Signature-Input formatted");
             }
-            if wing::eq_ascii_fold(h.name[..], "Signature") {
+            if core::eq_ascii_fold(h.name[..], "Signature") {
                 has_sig = true;
                 sub.assert_contains(h.value[..], "sig-bank=:", "Signature has sf-binary framing");
             }

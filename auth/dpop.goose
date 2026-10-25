@@ -233,22 +233,6 @@ fn create_dpop_proof<B>(
 
 // ---- 5. DPoP Proof Verification ---------------------------------------------
 
-// Checks whether haystack contains needle as a substring
-fn dpop_contains_str(haystack: const u8[:], needle: const u8[:]) -> bool {
-    guard needle.len <= haystack.len else { return false; }
-    guard needle.len > 0 else { return true; }
-    for i in (haystack.len - needle.len + 1) {
-        var is_match = true;
-        for j in needle.len {
-            if haystack[i + j] != needle[j] {
-                is_match = false;
-                break;
-            }
-        }
-        if is_match { return true; }
-    }
-    return false;
-}
 
 // Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, and time window.
 fn verify_dpop_proof(
@@ -298,7 +282,7 @@ fn verify_dpop_proof(
     // 3. Decode Header and verify typ == "dpop+jwt"
     var header_json: u8[>..] = [];
     guard core::base64url_decode(header_b64, header_json) else { return false; }
-    guard dpop_contains_str(header_json[..], "dpop+jwt") else { return false; }
+    guard core::contains(header_json[..], "dpop+jwt") else { return false; }
 
     // 4. Decode Claims and verify
     var claims_json: u8[>..] = [];
@@ -313,23 +297,23 @@ fn verify_dpop_proof(
             method_upper.push(b);
         }
     }
-    guard dpop_contains_str(claims_json[..], method_upper[..]) else { return false; }
+    guard core::contains(claims_json[..], method_upper[..]) else { return false; }
 
     // Verify normalized target URI
     var norm_expected_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(expected_uri, norm_expected_uri) else { return false; }
-    guard dpop_contains_str(claims_json[..], norm_expected_uri[..]) else { return false; }
+    guard core::contains(claims_json[..], norm_expected_uri[..]) else { return false; }
 
     // Verify access token hash if token provided
     if access_token.len > 0 {
         var expected_ath: u8[..64] = [];
         compute_dpop_ath(access_token, expected_ath);
-        guard expected_ath.len > 0 && dpop_contains_str(claims_json[..], expected_ath[..]) else { return false; }
+        guard expected_ath.len > 0 && core::contains(claims_json[..], expected_ath[..]) else { return false; }
     }
 
     // Verify nonce if expected
     if expected_nonce.len > 0 {
-        guard dpop_contains_str(claims_json[..], expected_nonce) else { return false; }
+        guard core::contains(claims_json[..], expected_nonce) else { return false; }
     }
 
     return true;

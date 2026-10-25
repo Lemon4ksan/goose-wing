@@ -22,16 +22,6 @@ fn is_ok(err: UrlParseError) -> bool {
     return err == UrlParseError.None;
 }
 
-fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
-    guard str_a.len == str_b.len else { return false; }
-    for char_idx in str_a.len {
-        let char_a = if str_a[char_idx] >= 'A' && str_a[char_idx] <= 'Z' { str_a[char_idx] + 32 } else { str_a[char_idx] };
-        let char_b = if str_b[char_idx] >= 'A' && str_b[char_idx] <= 'Z' { str_b[char_idx] + 32 } else { str_b[char_idx] };
-        if char_a != char_b { return false; }
-    }
-    return true;
-}
-
 let URL_SCHEME_DELIM_SET = byte_set(":/\\?#");
 let URL_AUTH_SPECIAL_DELIM_SET = byte_set("/\\?#");
 let URL_AUTH_GENERIC_DELIM_SET = byte_set("/?#");

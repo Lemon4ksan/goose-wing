@@ -273,7 +273,7 @@ fn verify_http_signature(
     guard sig_header_val.len > 0 else { return false; }
 
     // Check if sig_header_val contains expected_b64
-    guard dpop_contains_str(sig_header_val, expected_b64[..]) else {
+    guard core::contains(sig_header_val, expected_b64[..]) else {
         return false;
     }
 

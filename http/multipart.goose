@@ -579,7 +579,7 @@ fn evaluate_if_range(
 
     // If strong ETag (starts with '"' and ends with '"', not weak W/"...")
     if trimmed[0] == '"' && trimmed[trimmed.len - 1] == '"' {
-        guard !starts_with_ignore_case(trimmed, "w/") else { return false; } // Weak ETags forbidden
+        guard !starts_with_fold(trimmed, "w/") else { return false; } // Weak ETags forbidden
         return trimmed == etag;
     }
 
