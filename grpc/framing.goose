@@ -14,12 +14,7 @@ import http.mime;
 fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
     let flag: u8 = if compressed { GRPC_FLAG_COMPRESSED } else { 0x00 };
     out.push(flag);
-
-    var len_hdr: u8[4] = [0; 4];
-    var writer = core::new_slice_writer(len_hdr[..]);
-    writer.write_u32_be(payload.len as u32);
-    out.append(writer.as_written_slice());
-
+    core::write_be_u32(out, payload.len as u32);
     out.append(payload);
 }
 
@@ -29,22 +24,17 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
     out_payload.clear();
     let off = offset as i64;
     guard off >= 0 && off <= wire.len else { return false, 0; }
+    guard wire.len - off >= (GRPC_LPM_HEADER_LEN as i64) else { return false, 0; }
 
-    var reader = core::new_slice_reader(wire[off..]);
-    guard reader.remaining() >= GRPC_LPM_HEADER_LEN else { return false, 0; }
-
-    let flag, err_flag = reader.read_u8();
-    guard err_flag == core::IoError.None else { return false, 0; }
+    let flag = wire[off];
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val, err_len = reader.read_u32_be();
-    guard err_len == core::IoError.None else { return false, 0; }
+    let len_val = core::read_be_u32(wire, off + 1);
+    guard wire.len - off - (GRPC_LPM_HEADER_LEN as i64) >= (len_val as i64) else { return false, 0; }
 
-    guard reader.remaining() >= len_val else { return false, 0; }
-    let payload_slice, err_slice = reader.read_slice(len_val);
-    guard err_slice == core::IoError.None else { return false, 0; }
-
-    out_payload.append(payload_slice);
+    let p_start = off + (GRPC_LPM_HEADER_LEN as i64);
+    let p_end = p_start + (len_val as i64);
+    out_payload.append(wire[p_start..p_end]);
 
     return true, (GRPC_LPM_HEADER_LEN + len_val);
 }
@@ -74,23 +64,21 @@ fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
 fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&) -> bool {
     guard p.buf.len >= (GRPC_LPM_HEADER_LEN as i64) else { return false; }
 
-    var reader = core::new_slice_reader(p.buf[..]);
-    let flag, _ = reader.read_u8();
+    let flag = p.buf[0];
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val, _ = reader.read_u32_be();
+    let len_val = core::read_be_u32(p.buf[..], 1);
     let total_len = (GRPC_LPM_HEADER_LEN + len_val) as i64;
     guard p.buf.len >= total_len else { return false; }
 
     out_payload.clear();
-    let payload_slice, _ = reader.read_slice(len_val as i64);
-    out_payload.append(payload_slice);
+    out_payload.append(p.buf[(GRPC_LPM_HEADER_LEN as i64)..total_len]);
 
     let remaining_bytes = p.buf.len - total_len;
     if remaining_bytes == 0 {
         p.buf.clear();
     } else {
-        var temp: u8[..65536] = [];
+        var temp: u8[>..] = [];
         temp.append(p.buf[total_len..]);
         p.buf.clear();
         p.buf.append(temp[..]);
@@ -106,7 +94,7 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
 fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out: B&) {
     var trailer_body: u8[..1024] = [];
     trailer_body.append("grpc-status: ");
-    format(trailer_body, grpc_status_to_code(status) as i64);
+    core::format_i64_dec(grpc_status_to_code(status) as i64, trailer_body);
     trailer_body.append("\r\n");
 
     if message.len > 0 {
@@ -115,15 +103,8 @@ fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out
         trailer_body.append("\r\n");
     }
 
-    let flag: u8 = GRPC_WEB_FLAG_TRAILERS;
-    out.push(flag);
-
-    let len_val = trailer_body.len as u32;
-    out.push(((len_val >> 24) & 0xFF) as u8);
-    out.push(((len_val >> 16) & 0xFF) as u8);
-    out.push(((len_val >> 8) & 0xFF) as u8);
-    out.push((len_val & 0xFF) as u8);
-
+    out.push(GRPC_WEB_FLAG_TRAILERS);
+    core::write_be_u32(out, trailer_body.len as u32);
     out.append(trailer_body[..]);
 }
 
@@ -136,17 +117,13 @@ fn decode_grpc_web_frame<B>(
     out_compressed: bool&
 ) -> bool, u32 {
     let off = offset as i64;
-    guard (wire.len - off) >= 5 else { return false, 0; }
+    guard off >= 0 && (wire.len - off) >= 5 else { return false, 0; }
 
     let flag = wire[off];
     out_is_trailers = (flag & GRPC_WEB_FLAG_TRAILERS) != 0;
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val = ((wire[off + 1] as u32) << 24) |
-                  ((wire[off + 2] as u32) << 16) |
-                  ((wire[off + 3] as u32) << 8) |
-                  (wire[off + 4] as u32);
-
+    let len_val = core::read_be_u32(wire, off + 1);
     let total_len = 5 + len_val;
     guard (wire.len - off) >= (total_len as i64) else { return false, 0; }
 
@@ -182,32 +159,16 @@ fn parse_grpc_web_trailers(
         }
 
         if line.len > 0 {
-            var colon_idx: i64 = -1;
-            for i in line.len {
-                if line[i] == ':' {
-                    colon_idx = i;
-                    break;
-                }
-            }
-
-            if colon_idx > 0 {
-                let name = line[..colon_idx];
-                var val_start = colon_idx + 1;
-                while val_start < line.len && (line[val_start] == ' ' || line[val_start] == '\t') {
-                    val_start++;
-                }
-                let val = line[val_start..];
-
-                if eq_ascii_fold(name, "grpc-status") {
-                    var status_int: u32 = 0;
-                    for b in val {
-                        if b >= '0' && b <= '9' {
-                            status_int = status_int * 10 + (b - '0');
-                        }
+            let name, raw_val, ok_split = core::split_once_byte(line, ':');
+            if ok_split && name.len > 0 {
+                let val = core::trim_lws(raw_val);
+                if core::eq_ascii_fold(name, "grpc-status") {
+                    let status_int, ok_code = core::parse_u32_dec(val);
+                    if ok_code {
+                        out_status = grpc_status_from_code(status_int);
+                        found_status = true;
                     }
-                    out_status = grpc_status_from_code(status_int);
-                    found_status = true;
-                } else if eq_ascii_fold(name, "grpc-message") {
+                } else if core::eq_ascii_fold(name, "grpc-message") {
                     out_message.clear();
                     out_message.append(val);
                 }

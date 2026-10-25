@@ -59,16 +59,16 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
     guard timeout_ms > 0 else { return; }
 
     if timeout_ms % 3600000 == 0 {
-        format(out, (timeout_ms / 3600000) as i64);
+        core::format_u64_dec(timeout_ms / 3600000, out);
         out.push('H');
     } else if timeout_ms % 60000 == 0 {
-        format(out, (timeout_ms / 60000) as i64);
+        core::format_u64_dec(timeout_ms / 60000, out);
         out.push('M');
     } else if timeout_ms % 1000 == 0 {
-        format(out, (timeout_ms / 1000) as i64);
+        core::format_u64_dec(timeout_ms / 1000, out);
         out.push('S');
     } else {
-        format(out, timeout_ms as i64);
+        core::format_u64_dec(timeout_ms, out);
         out.push('m');
     }
 }
@@ -82,13 +82,9 @@ fn parse_grpc_timeout(val: const u8[:]) -> u64, bool {
     let unit = trimmed[trimmed.len - 1];
     let num_slice = trimmed[..(trimmed.len - 1)];
 
-    var num: u64 = 0;
     guard num_slice.len <= 8 else { return 0, false; } // gRPC spec max 8 digits
-
-    for b in num_slice {
-        guard b >= '0' && b <= '9' else { return 0, false; }
-        num = num * 10 + (b - '0');
-    }
+    let num, ok_num = core::parse_u64_dec(num_slice);
+    guard ok_num else { return 0, false; }
 
     var multiplier: u64 = 0;
     if unit == 'H' {
@@ -128,13 +124,10 @@ fn extract_grpc_status(
     // 1. Check trailers first
     let trailer_status = get_header(trailers, HEADER_GRPC_STATUS);
     if trailer_status.len > 0 {
-        var code_int: u32 = 0;
-        for b in trim_lws(trailer_status) {
-            if b >= '0' && b <= '9' {
-                code_int = code_int * 10 + (b - '0');
-            }
+        let code_int, ok_code = core::parse_u32_dec(trim_lws(trailer_status));
+        if ok_code {
+            out_status = grpc_status_from_code(code_int);
         }
-        out_status = grpc_status_from_code(code_int);
 
         let trailer_msg = get_header(trailers, HEADER_GRPC_MESSAGE);
         if trailer_msg.len > 0 {
@@ -146,13 +139,10 @@ fn extract_grpc_status(
     // 2. Check headers (Trailers-Only response)
     let header_status = get_header(headers, HEADER_GRPC_STATUS);
     if header_status.len > 0 {
-        var code_int: u32 = 0;
-        for b in trim_lws(header_status) {
-            if b >= '0' && b <= '9' {
-                code_int = code_int * 10 + (b - '0');
-            }
+        let code_int, ok_code = core::parse_u32_dec(trim_lws(header_status));
+        if ok_code {
+            out_status = grpc_status_from_code(code_int);
         }
-        out_status = grpc_status_from_code(code_int);
 
         let header_msg = get_header(headers, HEADER_GRPC_MESSAGE);
         if header_msg.len > 0 {

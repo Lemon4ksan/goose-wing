@@ -125,23 +125,26 @@ fn test_grpc_streaming_parser(t: core::T&) {
         wing::encode_grpc_lpm(full_msg, wire, false);
 
         // Feed chunk 1: 3 bytes of header
-        sub.assert_true(wing::feed(parser, wire[..3]), "Feed chunk 1");
+        sub.assert_true(parser.feed(wire[..3]), "Feed chunk 1 via UFCS");
         var out_msg: u8[>..] = [];
         var is_comp = false;
-        sub.assert_false(wing::next_message(parser, out_msg, is_comp), "Incomplete header yields no message");
+        sub.assert_false(parser.next_message(out_msg, is_comp), "Incomplete header yields no message");
 
         // Feed chunk 2: remaining 2 bytes of header + 10 bytes of payload
-        sub.assert_true(wing::feed(parser, wire[3..15]), "Feed chunk 2");
-        sub.assert_false(wing::next_message(parser, out_msg, is_comp), "Partial payload yields no message");
+        sub.assert_true(parser.feed(wire[3..15]), "Feed chunk 2 via UFCS");
+        sub.assert_false(parser.next_message(out_msg, is_comp), "Partial payload yields no message");
 
         // Feed chunk 3: remainder of payload
-        sub.assert_true(wing::feed(parser, wire[15..]), "Feed chunk 3");
-        sub.assert_true(wing::next_message(parser, out_msg, is_comp), "Complete message assembled and extracted");
+        sub.assert_true(parser.feed(wire[15..]), "Feed chunk 3 via UFCS");
+        sub.assert_true(parser.next_message(out_msg, is_comp), "Complete message assembled and extracted");
         sub.assert_bytes_eq(out_msg[..], full_msg, "Assembled message matches");
         sub.assert_false(is_comp, "Is uncompressed");
 
         // Stream parser should now be empty
-        sub.assert_false(wing::next_message(parser, out_msg, is_comp), "Buffer empty after extraction");
+        sub.assert_false(parser.next_message(out_msg, is_comp), "Buffer empty after extraction");
+
+        parser.reset();
+        sub.assert_eq(parser.buf.len, 0, "Parser reset clears buffer");
     };
 
     t.run("2. Multiple Stream Messages in Single Chunk") { sub =>
@@ -152,26 +155,26 @@ fn test_grpc_streaming_parser(t: core::T&) {
         wing::encode_grpc_lpm("Beta", multi, false);
         wing::encode_grpc_lpm("Gamma", multi, false);
 
-        sub.assert_true(wing::feed(parser, multi[..]), "Feed all 3 messages together");
+        sub.assert_true(parser.feed(multi[..]), "Feed all 3 messages together via UFCS");
 
         var m1: u8[..32] = [];
         var c1 = false;
-        sub.assert_true(wing::next_message(parser, m1, c1), "First message popped");
+        sub.assert_true(parser.next_message(m1, c1), "First message popped");
         sub.assert_bytes_eq(m1[..], "Alpha", "Message 1 is Alpha");
 
         var m2: u8[..32] = [];
         var c2 = false;
-        sub.assert_true(wing::next_message(parser, m2, c2), "Second message popped");
+        sub.assert_true(parser.next_message(m2, c2), "Second message popped");
         sub.assert_bytes_eq(m2[..], "Beta", "Message 2 is Beta");
 
         var m3: u8[..32] = [];
         var c3 = false;
-        sub.assert_true(wing::next_message(parser, m3, c3), "Third message popped");
+        sub.assert_true(parser.next_message(m3, c3), "Third message popped");
         sub.assert_bytes_eq(m3[..], "Gamma", "Message 3 is Gamma");
 
         var m4: u8[..32] = [];
         var c4 = false;
-        sub.assert_false(wing::next_message(parser, m4, c4), "No more messages left");
+        sub.assert_false(parser.next_message(m4, c4), "No more messages left");
     };
 }
 

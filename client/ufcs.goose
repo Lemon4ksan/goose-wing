@@ -559,7 +559,17 @@ fn ::verify(
     return wing::verify_jwt_with_jwks(token, jwks, options, now_unix_sec, out_header, out_claims);
 }
 
-// ---- grpc dispatcher & context ufcs bridges --------------------------------
+// ---- grpc dispatcher, context & stream parser ufcs bridges -----------------
+
+fn ::reset(p: wing::GrpcStreamParser&) {
+    wing::reset(p);
+}
+fn ::feed(p: wing::GrpcStreamParser&, chunk: const u8[:]) -> bool {
+    return wing::feed(p, chunk);
+}
+fn ::next_message<B>(p: wing::GrpcStreamParser&, out_payload: B&, out_compressed: bool&) -> bool {
+    return wing::next_message(p, out_payload, out_compressed);
+}
 
 fn ::register_unary(d: wing::GrpcServerDispatcher&, service: const u8[:], method: const u8[:], handler_id: u16) -> bool {
     return wing::register_unary(d, service, method, handler_id);
@@ -708,4 +718,3 @@ fn ::receive_capsule<B>(tunnel: wing::MasqueTunnelSession&, capsule_wire: const 
 fn ::receive_quic_datagram<B>(tunnel: wing::MasqueTunnelSession&, datagram_frame_payload: const u8[:], out_packet: B&) -> bool {
     return wing::tunnel_receive_quic_datagram(tunnel, datagram_frame_payload, out_packet);
 }
-
