@@ -1,9 +1,10 @@
-// Standalone Live Goose-Wing HTTP Server for Toxiproxy Chaos Testing.
+// Standalone Live Goose-Wing Server for Toxiproxy Chaos & Security Attacks Testing.
+// Handles HTTP/1.1, WebSocket (RFC 6455), and HTTP/2 (RFC 9113) natively in Goose!
 import std;
 import core from "../..";
 import wing from "../..";
 
-fn extract_content_length(headers_block: const u8[:]) -> i64, bool {
+fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) -> const u8[:], bool {
     var cursor: i64 = 0;
     while cursor < headers_block.len {
         let rel_end = core::index_of_slice(headers_block[cursor..], "\r\n");
@@ -12,17 +13,188 @@ fn extract_content_length(headers_block: const u8[:]) -> i64, bool {
         let colon = core::index_of_byte(line, ':');
         if colon > 0 {
             let hname = line[..colon];
-            if core::eq_ascii_fold(hname, "content-length") {
+            if core::eq_ascii_fold(hname, target_header) {
                 let hval = core::trim_lws(line[(colon + 1)..]);
-                let cl, ok = core::parse_i64_dec(hval);
-                if ok && cl >= 0 {
-                    return cl, true;
-                }
+                return hval, true;
             }
         }
         cursor += rel_end + 2;
     }
+    return "", false;
+}
+
+fn extract_content_length(headers_block: const u8[:]) -> i64, bool {
+    let val, found = extract_header_val(headers_block, "content-length");
+    if found {
+        let cl, ok = core::parse_i64_dec(val);
+        if ok && cl >= 0 {
+            return cl, true;
+        }
+    }
     return 0, false;
+}
+
+fn send_ws_close(conn: i64, status_code: u16, reason: const u8[:]) {
+    var close_payload: u8[..128] = [];
+    wing::encode_ws_close_payload(close_payload, status_code, reason);
+    var frame_wire: u8[..256] = [];
+    wing::encode_ws_frame(frame_wire, wing::WS_OPCODE_CLOSE, close_payload[..], false);
+    wing::tcp_send(conn, frame_wire[..]);
+}
+
+fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
+    var accept_key: u8[..64] = [];
+    wing::compute_websocket_accept(client_key, accept_key);
+
+    var handshake_resp: u8[..512] = [];
+    format(
+        handshake_resp,
+        "HTTP/1.1 101 Switching Protocols\r\n",
+        "Upgrade: websocket\r\n",
+        "Connection: Upgrade\r\n",
+        "Sec-WebSocket-Accept: ",
+        accept_key[..],
+        "\r\n\r\n"
+    );
+    wing::tcp_send(conn, handshake_resp[..]);
+
+    var ws_buf: u8[..65536] = [];
+    while true {
+        var chunk: u8[..4096] = [];
+        let recvd = wing::tcp_recv(conn, chunk, 4096, 3000);
+        if recvd <= 0 {
+            break;
+        }
+        ws_buf.append(chunk[..]);
+
+        while ws_buf.len >= 2 {
+            let b0 = ws_buf[0];
+            let b1 = ws_buf[1];
+            let opcode = b0 & 0x0F;
+            let fin = (b0 & 0x80) != 0;
+            let is_control = opcode >= 8;
+
+            // RFC 6455 Section 5.1: Client to Server MUST be masked
+            if (b1 & 0x80) == 0 {
+                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unmasked client frame");
+                return;
+            }
+
+            // RFC 6455 Section 5.4 & 5.5: Control frame fragmentation
+            if is_control && !fin {
+                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "fragmented control frame");
+                return;
+            }
+
+            // RFC 6455 Section 5.5: Control frame payload length <= 125
+            if is_control && (b1 & 0x7F) > 125 {
+                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125");
+                return;
+            }
+
+            // RFC 6455 Section 5.2: Reserved bits must be 0
+            if (b0 & 0x70) != 0 {
+                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "rsv bits set");
+                return;
+            }
+
+            // Wait until the full variable-length header (len ext + mask key) has arrived
+            let raw_len = (b1 & 0x7F) as i64;
+            var need_hdr: i64 = 2 + 4;
+            if raw_len == 126 { need_hdr += 2; }
+            if raw_len == 127 { need_hdr += 8; }
+            if ws_buf.len < need_hdr {
+                break;
+            }
+
+            let hdr, ok_hdr = wing::parse_ws_frame_header(ws_buf[..]);
+            if !ok_hdr {
+                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "malformed frame");
+                return;
+            }
+
+            let total_len = (hdr.header_len as i64) + (hdr.payload_len as i64);
+            if ws_buf.len < total_len {
+                // Wait for remainder of payload
+                break;
+            }
+
+            var payload: u8[..65536] = [];
+            payload.append(ws_buf[(hdr.header_len as i64) .. total_len]);
+            wing::mask_websocket_payload(payload[..], hdr.mask_key);
+
+            if hdr.opcode == wing::WS_OPCODE_TEXT {
+                // RFC 6455 Section 8.1: UTF-8 validation
+                if !core::validate_utf8(payload[..]) {
+                    send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf8");
+                    return;
+                }
+                var out_frame: u8[..65536] = [];
+                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_TEXT, payload[..], false);
+                wing::tcp_send(conn, out_frame[..]);
+            } else if hdr.opcode == wing::WS_OPCODE_BINARY {
+                var out_frame: u8[..65536] = [];
+                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_BINARY, payload[..], false);
+                wing::tcp_send(conn, out_frame[..]);
+            } else if hdr.opcode == wing::WS_OPCODE_PING {
+                var out_frame: u8[..256] = [];
+                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_PONG, payload[..], false);
+                wing::tcp_send(conn, out_frame[..]);
+            } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
+                var out_frame: u8[..256] = [];
+                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_CLOSE, payload[..], false);
+                wing::tcp_send(conn, out_frame[..]);
+                return;
+            }
+
+            // Remove processed frame from buffer
+            var remaining: u8[..65536] = [];
+            remaining.append(ws_buf[total_len..]);
+            ws_buf.clear();
+            ws_buf.append(remaining[..]);
+        }
+    }
+}
+
+fn handle_h2_session(conn: i64, initial_buf: const u8[:]) {
+    var sess = wing::new_h2_server_session("goose-chaos/1.0", 1000);
+    var pipeline = wing::new_default_server_pipeline_config("127.0.0.1");
+    var timer = internal::new_connection_timer(30000000000, 1000000000);
+    wing::add_route(pipeline.router, "GET", "/ping", 101);
+    wing::add_route(pipeline.router, "POST", "/echo", 202);
+
+    var h2_in: u8[..65536] = [];
+    h2_in.append(initial_buf);
+
+    var now_ms: u64 = 1000;
+    while true {
+        var out_wire: u8[..65536] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h2_in[..], now_ms, out_wire);
+
+        if out_wire.len > 0 {
+            wing::tcp_send(conn, out_wire[..]);
+        }
+
+        if !ok {
+            // Anti-DoS triggered (EnhanceYourCalm / ProtocolError / Goaway)
+            break;
+        }
+
+        if consumed > 0 {
+            var rem: u8[..65536] = [];
+            rem.append(h2_in[consumed..]);
+            h2_in.clear();
+            h2_in.append(rem[..]);
+        }
+
+        var chunk: u8[..4096] = [];
+        let recvd = wing::tcp_recv(conn, chunk, 4096, 2000);
+        if recvd <= 0 {
+            break;
+        }
+        h2_in.append(chunk[..]);
+        now_ms += 10;
+    }
 }
 
 fn main() {
@@ -42,9 +214,7 @@ fn main() {
         }
 
         var in_buf: u8[..65536] = [];
-        var got_response = false;
 
-        // Streaming accumulator: handles sliced TCP segments
         while in_buf.len < 65000 {
             var chunk: u8[..4096] = [];
             let recvd = wing::tcp_recv(conn, chunk, 4096, 3000);
@@ -53,23 +223,40 @@ fn main() {
             }
             in_buf.append(chunk[..]);
 
+            // 1. Check for HTTP/2 Connection Preface (wait if a sliced prefix arrived)
+            if wing::is_partial_h2_client_preface(in_buf[..]) {
+                continue;
+            }
+            if wing::is_h2_client_preface(in_buf[..]) {
+                handle_h2_session(conn, in_buf[..]);
+                break;
+            }
+
+            // 2. Check for HTTP/1.1 or WebSocket
             let hdr_end = core::index_of_slice(in_buf[..], "\r\n\r\n");
             if hdr_end >= 0 {
                 let body_start = hdr_end + 4;
+
+                // Check for WebSocket Upgrade
+                let upgrade_val, has_upgrade = extract_header_val(in_buf[..body_start], "upgrade");
+                if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
+                    let sec_key, has_key = extract_header_val(in_buf[..body_start], "sec-websocket-key");
+                    if has_key {
+                        handle_websocket_session(conn, sec_key);
+                        break;
+                    }
+                }
+
                 let cl, has_cl = extract_content_length(in_buf[..body_start]);
-                
-                // If Content-Length body is not fully arrived yet, keep accumulating!
                 if has_cl && in_buf.len < body_start + cl {
                     continue;
                 }
 
-                // If chunked transfer, keep reading until terminal chunk (0\r\n\r\n)
                 let is_chunked = core::index_of_slice(in_buf[..body_start], "chunked") >= 0;
                 if is_chunked && core::index_of_slice(in_buf[body_start..], "0\r\n\r\n") < 0 {
                     continue;
                 }
 
-                // Request is complete or has malformed headers
                 var req = wing::Request {};
                 let ok_req, consumed = wing::parse_http1_wire_request(in_buf[..], req);
                 if ok_req {
@@ -77,7 +264,6 @@ fn main() {
                         let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
                         wing::tcp_send(conn, resp);
                         is_running = false;
-                        got_response = true;
                         break;
                     }
 
@@ -98,13 +284,10 @@ fn main() {
                         resp_body[..]
                     );
                     wing::tcp_send(conn, resp_wire[..]);
-                    got_response = true;
                     break;
                 } else {
-                    // Header syntax / smuggling error detected by Goose wire parser
                     let err_resp: const u8[:] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBAD_REQUEST";
                     wing::tcp_send(conn, err_resp);
-                    got_response = true;
                     break;
                 }
             }

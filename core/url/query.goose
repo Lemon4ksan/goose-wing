@@ -119,3 +119,82 @@ fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUE
     return true;
 }
 
+// ---- Fast Zero-Allocation Query Parameter Lookup (uWebSockets QueryParser) ---
+
+// Fast zero-allocation query parameter lookup directly from raw query slice.
+// Scans raw_query for key without allocating a QueryParamsList or parsing unrelated parameters.
+// Returns (found, is_valueless). If found and has a value, the decoded value is written into out.
+fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> bool, bool {
+    out.clear();
+    guard key.len > 0 && raw_query.len > 0 else { return false, false; }
+
+    var q = raw_query;
+    if q[0] == '?' {
+        q = q[1..];
+    }
+
+    var cursor: i64 = 0;
+    while cursor < q.len {
+        var end = q.len;
+        let amp_pos = core::index_of_byte(q[cursor..], '&');
+        if amp_pos >= 0 {
+            end = cursor + amp_pos;
+        }
+
+        let statement = q[cursor..end];
+        cursor = if amp_pos >= 0 { end + 1 } else { end };
+        guard statement.len > 0 else { continue; }
+
+        // Fast first-character filter (uWebSockets early exit)
+        if statement[0] == key[0] {
+            let eq_pos = core::index_of_byte(statement, '=');
+            if eq_pos < 0 {
+                // Valueless parameter, e.g. "?debug"
+                if statement == key {
+                    return true, true;
+                }
+            } else {
+                let stmt_key = statement[..eq_pos];
+                if stmt_key == key {
+                    let stmt_val = statement[eq_pos + 1..];
+                    percent_decode_query(stmt_val, out);
+                    return true, false;
+                }
+            }
+        }
+    }
+    return false, false;
+}
+
+// Fast zero-allocation query parameter existence check.
+fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
+    guard key.len > 0 && raw_query.len > 0 else { return false; }
+
+    var q = raw_query;
+    if q[0] == '?' {
+        q = q[1..];
+    }
+
+    var cursor: i64 = 0;
+    while cursor < q.len {
+        var end = q.len;
+        let amp_pos = core::index_of_byte(q[cursor..], '&');
+        if amp_pos >= 0 {
+            end = cursor + amp_pos;
+        }
+
+        let statement = q[cursor..end];
+        cursor = if amp_pos >= 0 { end + 1 } else { end };
+        guard statement.len > 0 else { continue; }
+
+        if statement[0] == key[0] {
+            let eq_pos = core::index_of_byte(statement, '=');
+            let stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
+            if stmt_key == key {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+

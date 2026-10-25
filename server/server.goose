@@ -8,6 +8,7 @@ import .router;
 import .pool;
 import .pipeline;
 import .h2_multiplexer;
+import realtime.topic_tree;
 
 // ---- 1. Reason Phrases for HTTP/1.1 Status Line -----------------------------
 
@@ -108,6 +109,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     var cursor: i64 = 0;
 
     out_req.headers.clear();
+    clear(out_req.bloom_filter);
     while cursor < rest_headers.len {
         let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
         if rel_end < 0 { break; }
@@ -130,50 +132,56 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         item.value.append(hval);
         guard out_req.headers.len < out_req.headers.cap else { return false, 0; }
         out_req.headers.push(item);
+        add_header(out_req.bloom_filter, hname);
         cursor += rel_end + 2;
     }
 
     out_req.trailers.clear();
     out_req.body.clear();
 
-    // Check for Transfer-Encoding and Content-Length
+    // Check for Transfer-Encoding and Content-Length using fast Bloom rejection
     var has_te = false;
     var te_buf: u8[..64] = [];
     var has_cl = false;
     var cl_count = 0;
     var cl_len: i64 = 0;
 
-    for &hdr in out_req.headers {
-        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-            if has_te {
-                // Multiple Transfer-Encoding headers: combine with comma (RFC 9112 Section 6.3)
-                guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
-                te_buf.append(", ");
-                te_buf.append(hdr.value[..]);
-            } else {
-                has_te = true;
-                te_buf.clear();
-                guard hdr.value.len <= te_buf.cap else { return false, 0; }
-                te_buf.append(hdr.value[..]);
-            }
-        } else if eq_ascii_fold(hdr.name[..], "content-length") {
-            has_cl = true;
-            cl_count++;
-            let val_trimmed = trim_lws(hdr.value[..]);
-            guard val_trimmed.len > 0 else { return false, 0; }
+    let might_te = might_have_header(out_req.bloom_filter, "transfer-encoding");
+    let might_cl = might_have_header(out_req.bloom_filter, "content-length");
 
-            // RFC 9110 Section 8.6 & Go #53188: Content-Length must contain only decimal digits
-            for b in val_trimmed {
-                guard b >= '0' && b <= '9' else { return false, 0; }
-            }
+    if might_te || might_cl {
+        for &hdr in out_req.headers {
+            if might_te && eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+                if has_te {
+                    // Multiple Transfer-Encoding headers: combine with comma (RFC 9112 Section 6.3)
+                    guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
+                    te_buf.append(", ");
+                    te_buf.append(hdr.value[..]);
+                } else {
+                    has_te = true;
+                    te_buf.clear();
+                    guard hdr.value.len <= te_buf.cap else { return false, 0; }
+                    te_buf.append(hdr.value[..]);
+                }
+            } else if might_cl && eq_ascii_fold(hdr.name[..], "content-length") {
+                has_cl = true;
+                cl_count++;
+                let val_trimmed = trim_lws(hdr.value[..]);
+                guard val_trimmed.len > 0 else { return false, 0; }
 
-            let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
-            guard ok_cl && parsed_cl >= 0 else { return false, 0; }
-            if cl_count == 1 {
-                cl_len = parsed_cl;
-            } else if cl_len != parsed_cl {
-                // Conflicting multiple Content-Length headers -> reject smuggling attempt
-                return false, 0;
+                // RFC 9110 Section 8.6 & Go #53188: Content-Length must contain only decimal digits
+                for b in val_trimmed {
+                    guard b >= '0' && b <= '9' else { return false, 0; }
+                }
+
+                let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
+                guard ok_cl && parsed_cl >= 0 else { return false, 0; }
+                if cl_count == 1 {
+                    cl_len = parsed_cl;
+                } else if cl_len != parsed_cl {
+                    // Conflicting multiple Content-Length headers -> reject smuggling attempt
+                    return false, 0;
+                }
             }
         }
     }
@@ -338,6 +346,22 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
 // Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
 fn serialize_status_line<B>(status_code: i32, out: B&) {
+    if status_code == 200 {
+        out.append("HTTP/1.1 200 OK\r\n");
+        return;
+    }
+    if status_code == 404 {
+        out.append("HTTP/1.1 404 Not Found\r\n");
+        return;
+    }
+    if status_code == 400 {
+        out.append("HTTP/1.1 400 Bad Request\r\n");
+        return;
+    }
+    if status_code == 500 {
+        out.append("HTTP/1.1 500 Internal Server Error\r\n");
+        return;
+    }
     out.append("HTTP/1.1 ");
     core::format_i64_dec(status_code as i64, out);
     out.push(' ');
@@ -392,22 +416,48 @@ fn serialize_http1_chunked_response<Res, B>(
     encode_chunked_payload(res.body[..], res.trailers, chunk_size, out_wire);
 }
 
-// Serializes a complete HTTP/1.1 response into raw wire bytes.
-// Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
-fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
-    let te = header(res, "transfer-encoding");
-    if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
-        serialize_http1_chunked_response(res, server_name, 4096, out_wire);
-        return;
-    }
+// ---- Cached RFC 7231 Date Header (uWebSockets LoopData::date pattern) ------
 
+// Formats the Date header at most once per second into a reusable pre-baked string.
+// Eliminates repetitive wall-clock system calls and calendar math for every HTTP response.
+struct CachedHttpDate {
+    header_str: u8[..64] = [],
+    last_sec: i64 = 0,
+}
+
+var g_cached_http_date: CachedHttpDate = CachedHttpDate { .. };
+
+fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
+    let eff_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
+    if g_cached_http_date.last_sec != eff_sec || g_cached_http_date.header_str.len == 0 {
+        g_cached_http_date.last_sec = eff_sec;
+        g_cached_http_date.header_str.clear();
+        g_cached_http_date.header_str.append("Date: ");
+        core::format_http(g_cached_http_date.header_str, core::unix(eff_sec, 0));
+        g_cached_http_date.header_str.append("\r\n");
+    }
+    return g_cached_http_date.header_str[..];
+}
+
+// Serializes only the HTTP/1.1 response status line and headers into out_wire,
+// omitting the body. Used for zero-copy vectored transmission via tcp_send2.
+fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
     serialize_status_line(res.status_code, out_wire);
     serialize_server_header(server_name, out_wire);
 
+    // Emit cached RFC 7231 Date header if not explicitly overridden by response
+    if !res.has_header("date") {
+        out_wire.append(get_cached_http_date_header());
+    }
+
     if res.status_code != 204 && res.status_code != 304 {
-        out_wire.append("Content-Length: ");
-        core::format_i64_dec(res.body.len, out_wire);
-        out_wire.append("\r\n");
+        if res.body.len == 0 {
+            out_wire.append("Content-Length: 0\r\n");
+        } else {
+            out_wire.append("Content-Length: ");
+            core::format_i64_dec(res.body.len, out_wire);
+            out_wire.append("\r\n");
+        }
     }
 
     let has_conn = res.has_header("connection");
@@ -423,10 +473,82 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
     }
 
     out_wire.append("\r\n");
+}
+
+// Serializes a complete HTTP/1.1 response into raw wire bytes.
+// Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
+fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
+    let te = header(res, "transfer-encoding");
+    if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+        serialize_http1_chunked_response(res, server_name, 4096, out_wire);
+        return;
+    }
+
+    serialize_http1_headers(res, server_name, out_wire);
 
     if res.body.len > 0 {
         out_wire.append(res.body[..]);
     }
+}
+
+// Sends an HTTP/1.1 response over a TCP socket using zero-copy Vectored I/O (tcp_send2 / WSASend / writev).
+// Headers are serialized into wire_headers, and res.body is transmitted directly without being copied into wire_headers.
+fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], wire_headers: B&) -> i32 {
+    wire_headers.clear();
+    let te = header(res, "transfer-encoding");
+    if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+        serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
+        return tcp_send(fd, wire_headers[..]);
+    }
+
+    serialize_http1_headers(res, server_name, wire_headers);
+    if res.body.len == 0 {
+        return tcp_send(fd, wire_headers[..]);
+    }
+    return tcp_send2(fd, wire_headers[..], res.body[..]);
+}
+
+// Outbound Cork Buffer Manager for TCP connections (uWebSockets 16 KB Cork Buffer pattern).
+// Aggregates headers, frames, and small payload chunks into a single 16384-byte buffer
+// before flushing via 1 system call.
+struct ServerCork {
+    buffer: core::CorkBuffer = core::new_cork_buffer(),
+    sock_fd: i64 = -1,
+}
+
+fn new_server_cork(fd: i64) -> ServerCork {
+    return ServerCork {
+        buffer: core::new_cork_buffer(),
+        sock_fd: fd,
+    };
+}
+
+// Writes data into the cork buffer. If it fits, data is buffered without any syscall.
+// If the buffer would overflow, pending data is flushed first, then data is buffered or sent directly.
+fn server_cork_write(sc: ServerCork&, data: const u8[:]) -> i32 {
+    guard sc.sock_fd > 0 && data.len > 0 else { return 0; }
+    let avail = core::cork_available(sc.buffer);
+    if data.len <= avail {
+        core::append(sc.buffer, data);
+        return data.len as i32;
+    }
+
+    // Buffer would overflow: flush current pending bytes first
+    server_cork_flush(sc);
+
+    if data.len >= core::CORK_BUFFER_CAP {
+        // Larger than cork buffer: send directly via TCP
+        return tcp_send(sc.sock_fd, data);
+    }
+
+    core::append(sc.buffer, data);
+    return data.len as i32;
+}
+
+// Flushes all pending data in the cork buffer to the socket in a single syscall.
+fn server_cork_flush(sc: ServerCork&) -> i32 {
+    guard sc.sock_fd > 0 && !core::cork_is_empty(sc.buffer) else { return 0; }
+    return tcp_flush_cork(sc.sock_fd, sc.buffer);
 }
 
 // ---- 4. HttpServer Container and Session Coordinator -----------------------
@@ -441,6 +563,7 @@ struct HttpServer {
     requests_processed: u64 = 0,
     accept_proxy_protocol: bool = false,
     fast_path: bool = false,
+    topic_tree: TopicTree = TopicTree { .. },
 }
 
 fn new_http_server(
@@ -495,8 +618,45 @@ fn add_delete_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
     add_route(server.pipeline.router, "DELETE", path, handler_id);
 }
 
+// ---- Server Pub/Sub Broadcast Engine (uWebSockets TopicTree pattern) --------
+
+fn publish(server: HttpServer&, topic: const u8[:], message: const u8[:], opcode: u8 = WS_OPCODE_TEXT) -> i64 {
+    return topic_publish(server.topic_tree, topic, message, opcode);
+}
+
+fn publish_text(server: HttpServer&, topic: const u8[:], text: const u8[:]) -> i64 {
+    return topic_publish_text(server.topic_tree, topic, text);
+}
+
+fn publish_binary(server: HttpServer&, topic: const u8[:], data: const u8[:]) -> i64 {
+    return topic_publish_binary(server.topic_tree, topic, data);
+}
+
+fn subscribe(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
+    return topic_subscribe(server.topic_tree, sock_fd, topic_pattern);
+}
+
+fn unsubscribe(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
+    return topic_unsubscribe(server.topic_tree, sock_fd, topic_pattern);
+}
+
+fn unsubscribe_all(server: HttpServer&, sock_fd: i64) -> i32 {
+    return topic_unsubscribe_all(server.topic_tree, sock_fd);
+}
+
+fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
+    return topic_find_subscribers(server.topic_tree, topic, out_fds);
+}
+
 fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
     return raw_stream.len >= 24 && raw_stream[..24] == H2_CLIENT_PREFACE[..];
+}
+
+// True while a short read is still a strict prefix of the 24-byte H2 preface.
+// The preface contains "\r\n\r\n" at offset 14, so a sliced first TCP segment
+// must not fall through to the HTTP/1.1 parser (found by Toxiproxy SlicerToxic).
+fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
+    return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == H2_CLIENT_PREFACE[..raw_stream.len];
 }
 
 fn serialize_bad_request_error<B>(server_name: const u8[:], wire_out: B&) {
@@ -671,6 +831,11 @@ fn handle_connection_pipe<B>(
 
     var total_handled: i64 = 0;
 
+    // Sliced H2 preface: wait for the remaining bytes instead of parsing as HTTP/1.1
+    if pipe.consumed == 0 && is_partial_h2_client_preface(core::readable_slice(pipe)) {
+        return 0, true;
+    }
+
     // Check for HTTP/2 connection preface if at the very start of the stream
     if pipe.consumed == 0 && unread_len >= 24 {
         let stream = core::readable_slice(pipe);
@@ -738,4 +903,50 @@ fn handle_connection_pipe<B>(
     }
 
     return total_handled, true;
+}
+
+// Executes a high-performance live TCP accept & dispatch loop.
+// Utilizes zero-copy pipelined ingestion and automatic CorkBuffer batching.
+fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    guard listener_fd > 0 else { return 0; }
+    var pipe = core::new_pipe_buffer();
+    var cork = core::new_cork_buffer();
+    var total_served: i64 = 0;
+
+    while max_connections == 0 || total_served < max_connections {
+        let conn = tcp_accept(listener_fd, 0);
+        if conn <= 0 {
+            continue;
+        }
+
+        pipe.pipe_reset();
+        cork.cork_reset();
+
+        while true {
+            let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);
+            if recvd <= 0 {
+                break;
+            }
+
+            let now_ns = core::as_nanos(core::monotonic_now());
+            let count, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork);
+            if !ok {
+                if cork.cork_pending() > 0 {
+                    tcp_flush_cork(conn, cork);
+                }
+                break;
+            }
+
+            if cork.cork_pending() > 0 {
+                let sent = tcp_flush_cork(conn, cork);
+                if sent <= 0 {
+                    break;
+                }
+            }
+        }
+        tcp_close(conn);
+        total_served++;
+    }
+
+    return total_served;
 }

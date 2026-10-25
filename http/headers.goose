@@ -52,6 +52,72 @@ fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false
     return header_item;
 }
 
+// ---- 256-bit Header Bloom Filter (uWebSockets Fast-Path) -------------------
+
+// 256-bit fast-rejection Bloom filter for HTTP headers (Alex Hultman / uWebSockets algorithm).
+// Uses 4 distinct feature bytes from the header name and perfect hash multiplier 1843993368.
+// Intrinsic case-insensitivity allows 3-cycle non-existence verification without string comparisons.
+struct HeaderBloomFilter {
+    bits: u64[4] = [0; 4],
+}
+
+fn clear(bf: HeaderBloomFilter&) {
+    bf.bits[0] = 0;
+    bf.bits[1] = 0;
+    bf.bits[2] = 0;
+    bf.bits[3] = 0;
+}
+
+fn to_lower_ascii_byte(b: u8) -> u32 {
+    if b >= 'A' && b <= 'Z' {
+        return (b + 32);
+    }
+    return b;
+}
+
+fn bloom_hash(key: const u8[:]) -> u32 {
+    let len = key.len;
+    guard len >= 2 else { return 0; }
+    let b0 = to_lower_ascii_byte(key[0]);
+    let b1 = to_lower_ascii_byte(key[len - 1]);
+    let b2 = to_lower_ascii_byte(key[len - 2]);
+    let b3 = to_lower_ascii_byte(key[len >> 1]);
+    let features: u32 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    return features * 1843993368;
+}
+
+fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
+    guard key.len >= 2 else { return; }
+    let h = bloom_hash(key);
+    let p0 = (h & 0xFF) as i64;
+    let p1 = ((h >> 8) & 0xFF) as i64;
+    let p2 = ((h >> 16) & 0xFF) as i64;
+    let p3 = ((h >> 24) & 0xFF) as i64;
+
+    bf.bits[p0 >> 6] |= (1 as u64) << (p0 & 63);
+    bf.bits[p1 >> 6] |= (1 as u64) << (p1 & 63);
+    bf.bits[p2 >> 6] |= (1 as u64) << (p2 & 63);
+    bf.bits[p3 >> 6] |= (1 as u64) << (p3 & 63);
+}
+
+fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
+    guard key.len >= 2 else { return true; }
+    let h = bloom_hash(key);
+    let p0 = (h & 0xFF) as i64;
+    let p1 = ((h >> 8) & 0xFF) as i64;
+    let p2 = ((h >> 16) & 0xFF) as i64;
+    let p3 = ((h >> 24) & 0xFF) as i64;
+
+    let b0 = (bf.bits[p0 >> 6] & ((1 as u64) << (p0 & 63))) != 0;
+    guard b0 else { return false; }
+    let b1 = (bf.bits[p1 >> 6] & ((1 as u64) << (p1 & 63))) != 0;
+    guard b1 else { return false; }
+    let b2 = (bf.bits[p2 >> 6] & ((1 as u64) << (p2 & 63))) != 0;
+    guard b2 else { return false; }
+    let b3 = (bf.bits[p3 >> 6] & ((1 as u64) << (p3 & 63))) != 0;
+    return b3;
+}
+
 // Case-insensitive lookup of a header value in a HeaderItem slice (RFC 9110 Section 5.6.3).
 // Returns empty slice if not found.
 fn find_header(headers: const HeaderItem[:], name: const u8[:]) -> const u8[:] {

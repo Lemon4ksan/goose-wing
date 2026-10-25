@@ -170,9 +170,13 @@ fn complete_pipe(p: PipeBuffer&) {
 }
 
 // Resets pipe state, recycling the buffer for subsequent connections without reallocating.
-fn reset(p: PipeBuffer&) {
+fn pipe_reset(p: PipeBuffer&) {
     p.consumed = 0;
     p.examined = 0;
     p.written = 0;
     p.is_completed = false;
+}
+
+fn reset(p: PipeBuffer&) {
+    pipe_reset(p);
 }

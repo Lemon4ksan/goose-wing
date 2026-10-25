@@ -314,6 +314,7 @@ fn ::commit_write(p: core::PipeBuffer&, bytes_written: i64) -> core::IoError { r
 fn ::write(p: core::PipeBuffer&, src: const u8[:]) -> i64, core::IoError { return core::write(p, src); }
 fn ::complete_pipe(p: core::PipeBuffer&) { core::complete_pipe(p); }
 fn ::reset(p: core::PipeBuffer&) { core::reset(p); }
+fn ::pipe_reset(p: core::PipeBuffer&) { core::pipe_reset(p); }
 
 fn ::cork_pending(cb: const core::CorkBuffer&) -> i64 { return core::cork_pending(cb); }
 fn ::cork_available(cb: const core::CorkBuffer&) -> i64 { return core::cork_available(cb); }
@@ -387,5 +388,15 @@ fn ::format_u8_hex<B>(val: u8, out: B&, uppercase: bool = false) { core::format_
 
 fn ::is_valid_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data); }
 fn ::validate_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data); }
+
+// ---- fast query lookup bridges ---------------------------------------------
+
+fn ::get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> bool, bool {
+    return core::get_query_param_fast(raw_query, key, out);
+}
+
+fn ::has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
+    return core::has_query_param_fast(raw_query, key);
+}
 
 

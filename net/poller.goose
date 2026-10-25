@@ -11,11 +11,15 @@ import core from "..";
 const NANOS_PER_MILLI: u64 = 1000000;
 const NANOS_PER_SEC: u64   = 1000000000;
 
-// Poller and event loop capacity limits
-const POLLER_MAX_REGISTRATIONS: i64 = 64;
-const POLLER_MAX_TIMERS: i64        = 32;
+// Poller and event loop capacity limits (Scaled for High-Density Concurrency)
+const POLLER_MAX_REGISTRATIONS: i64 = 512;
+const POLLER_MAX_TIMERS: i64        = 64;
 const EVENT_LOOP_MAX_BUFFERS: i64   = 64;
 const CONNECTION_BUFFER_CAP: i64    = 4096;
+
+// Coarse 4-second timer constants (uSockets / uWebSockets pattern)
+const COARSE_TIMEOUT_GRANULARITY_NS: u64 = 4000000000; // 4 seconds per tick
+const COARSE_TIMEOUT_DISABLED: u8 = 255;
 
 // ---- 1. Readiness Event Flags & Types --------------------------------------
 
@@ -24,7 +28,7 @@ const POLL_READ: u32    = 1 << 0; // Ready to read / incoming connection ready t
 const POLL_WRITE: u32   = 1 << 1; // Socket buffer space available for write
 const POLL_ERROR: u32   = 1 << 2; // Error condition on descriptor
 const POLL_HANGUP: u32  = 1 << 3; // Connection terminated / remote EOF
-const POLL_TIMER: u32   = 1 << 4; // High-resolution timer fired
+const POLL_TIMER: u32   = 1 << 4; // High-resolution timer or coarse socket timeout fired
 
 enum PollInterest {
     None,
@@ -63,6 +67,7 @@ struct SocketRegistration {
     trigger: PollTrigger = PollTrigger.Level,
     in_use: bool = false,
     active_events: u32 = POLL_NONE,
+    timeout: u8 = COARSE_TIMEOUT_DISABLED, // 1-byte coarse timeout tick (0..239, 255 = none)
     sim: SimulatedReadyState = SimulatedReadyState { .. },
 }
 
@@ -80,12 +85,14 @@ struct PollerTimer {
 
 struct Poller {
     driver_cfg: TransportDriverConfig = TransportDriverConfig { .. },
-    registrations: SocketRegistration[..64] = [SocketRegistration { .. }; 64],
-    timers: PollerTimer[..32] = [PollerTimer { .. }; 32],
+    registrations: SocketRegistration[..512] = [SocketRegistration { .. }; 512],
+    timers: PollerTimer[..64] = [PollerTimer { .. }; 64],
     active_fd_count: u32 = 0,
     active_timer_count: u32 = 0,
     total_polls: u64 = 0,
     total_events_dispatched: u64 = 0,
+    global_coarse_tick: u8 = 0,
+    last_coarse_tick_ns: Nanoseconds = 0,
     kqueue_fd: i64 = -1,
     uring_ring_fd: i64 = -1,
     rio_cq_id: u64 = 0,
@@ -146,6 +153,8 @@ fn close_poller(p: Poller&) {
 
     p.active_fd_count = 0;
     p.active_timer_count = 0;
+    p.global_coarse_tick = 0;
+    p.last_coarse_tick_ns = 0;
     p.is_open = false;
 }
 
@@ -187,6 +196,7 @@ fn register_socket(
             p.registrations[i].trigger = trigger;
             p.registrations[i].in_use = true;
             p.registrations[i].active_events = POLL_NONE;
+            p.registrations[i].timeout = COARSE_TIMEOUT_DISABLED;
             p.registrations[i].sim.ready = POLL_NONE;
             p.registrations[i].sim.bytes = 0;
             p.registrations[i].sim.eof = false;
@@ -221,6 +231,7 @@ fn deregister_socket(p: Poller&, fd: SocketFd) -> bool {
     p.registrations[idx].fd = -1;
     p.registrations[idx].tag = 0;
     p.registrations[idx].interest = PollInterest.None;
+    p.registrations[idx].timeout = COARSE_TIMEOUT_DISABLED;
     p.registrations[idx].sim.ready = POLL_NONE;
     if p.active_fd_count > 0 {
         p.active_fd_count -= 1;
@@ -311,6 +322,67 @@ fn check_expired_timers(p: Poller&, now_ns: Nanoseconds, out_events: PollReadyEv
     return fired_count;
 }
 
+// ---- 6b. Coarse Socket Timeout Management (uWebSockets 15-bit / 4s pattern) -
+
+// Sets or clears a coarse timeout (in seconds, 4-second granularity) on a registered socket.
+// If seconds == 0, the timeout is disabled.
+fn set_socket_timeout(p: Poller&, fd: SocketFd, seconds: u32) -> bool {
+    let idx = find_registration(p, fd);
+    guard idx >= 0 else { return false; }
+    if seconds == 0 {
+        p.registrations[idx].timeout = COARSE_TIMEOUT_DISABLED;
+    } else {
+        let delta_ticks: u32 = (seconds + 3) >> 2;
+        p.registrations[idx].timeout = ((p.global_coarse_tick + delta_ticks) % 240) as u8;
+    }
+    return true;
+}
+
+// Retrieves the remaining timeout tick value or 255 if disabled
+fn get_socket_timeout(p: const Poller&, fd: SocketFd) -> u8 {
+    let idx = find_registration(p, fd);
+    guard idx >= 0 else { return COARSE_TIMEOUT_DISABLED; }
+    return p.registrations[idx].timeout;
+}
+
+// Advances the coarse clock and dispatches expired coarse socket timeouts.
+fn check_coarse_timeouts(p: Poller&, now_ns: Nanoseconds, out_events: PollReadyEvent[..64]&) -> i32 {
+    guard p.last_coarse_tick_ns > 0 else {
+        p.last_coarse_tick_ns = now_ns;
+        return 0;
+    }
+
+    if now_ns < p.last_coarse_tick_ns + COARSE_TIMEOUT_GRANULARITY_NS {
+        return 0;
+    }
+
+    let elapsed_ticks = (now_ns - p.last_coarse_tick_ns) / COARSE_TIMEOUT_GRANULARITY_NS;
+    p.last_coarse_tick_ns = now_ns;
+    p.global_coarse_tick = ((p.global_coarse_tick + elapsed_ticks) % 240) as u8;
+    let current_tick = p.global_coarse_tick;
+
+    var fired: i32 = 0;
+    for i in p.registrations.len {
+        guard p.registrations[i].in_use else { continue; }
+        if p.registrations[i].timeout != COARSE_TIMEOUT_DISABLED && p.registrations[i].timeout == current_tick {
+            p.registrations[i].timeout = COARSE_TIMEOUT_DISABLED;
+            if out_events.len < out_events.cap {
+                var ev = PollReadyEvent {
+                    tag: p.registrations[i].tag,
+                    fd: p.registrations[i].fd,
+                    events: POLL_TIMER,
+                    bytes_available: 0,
+                    is_eof: false,
+                    is_timer: true,
+                };
+                out_events.push(ev);
+                fired += 1;
+            }
+        }
+    }
+    return fired;
+}
+
 // ---- 7. Simulated Events (for Testing & High-Performance In-Memory Multiplexing) -
 
 fn simulate_read_ready(p: Poller&, fd: SocketFd, bytes_avail: i64 = 0) -> bool {
@@ -359,7 +431,10 @@ fn poll_events(
     // 1. Process Expired High-Resolution Timers First
     let timers_fired = check_expired_timers(p, now_ns, out_events);
 
-    // 2. Reap Socket Readiness Events
+    // 2. Process Coarse Socket Timeouts (uSockets 4-second pattern)
+    let coarse_fired = check_coarse_timeouts(p, now_ns, out_events);
+
+    // 3. Reap Socket Readiness Events
     for i in p.registrations.len {
         guard p.registrations[i].in_use else { continue; }
         guard out_events.len < out_events.cap else { break; }
@@ -502,6 +577,13 @@ fn unbind_connection(ev_loop: EventLoop&, tag: EventTag) -> bool {
         return true;
     }
     return false;
+}
+
+// Sets or clears a coarse timeout for an active connection in the event loop.
+fn set_connection_timeout(ev_loop: EventLoop&, tag: EventTag, seconds: u32) -> bool {
+    let b_idx = find_connection_buffer(ev_loop, tag);
+    guard b_idx >= 0 else { return false; }
+    return set_socket_timeout(ev_loop.poller, ev_loop.buffers[b_idx].fd, seconds);
 }
 
 // Queues data to be sent on socket when writable

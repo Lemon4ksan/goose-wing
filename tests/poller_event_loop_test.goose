@@ -312,6 +312,56 @@ fn test_bidi_client_server_cycle(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 6. 15-bit / 4-second Coarse Socket Timeouts (uWebSockets Pattern)
+// ----------------------------------------------------------------------------
+fn test_coarse_socket_timeouts(t: core::T&) {
+    var cfg = wing::auto_transport_driver_config();
+    var poller = wing::new_poller(cfg);
+
+    t.run("Coarse 4-second Socket Timeout Expiry & Cancellation") { sub =>
+        let now_ns: u64 = 1000000000; // 1.0s
+        wing::register_socket(poller, 50, 7001, wing::PollInterest.Read, wing::PollTrigger.Level);
+
+        // Initial timeout is disabled (255)
+        sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Timeout disabled initially");
+
+        // Set 4-second timeout (1 tick ahead)
+        let ok_set = wing::set_socket_timeout(poller, 50, 4);
+        sub.assert_true(ok_set, "Set 4s coarse timeout");
+        sub.assert_true(wing::get_socket_timeout(poller, 50) != wing::COARSE_TIMEOUT_DISABLED, "Timeout tick armed");
+
+        // First poll: initial anchor (delta 0s)
+        var evs1: wing::PollReadyEvent[..64] = [];
+        let c1 = wing::poll_events(poller, 0, now_ns, evs1);
+        sub.assert_eq(c1, 0, "No events at initial poll");
+
+        // Second poll: +2.0s (less than 4s threshold)
+        var evs2: wing::PollReadyEvent[..64] = [];
+        let c2 = wing::poll_events(poller, 0, now_ns + 2000000000, evs2);
+        sub.assert_eq(c2, 0, "No timeout event before 4 seconds");
+
+        // Third poll: +4.1s (4-second boundary crossed, tick matches)
+        var evs3: wing::PollReadyEvent[..64] = [];
+        let c3 = wing::poll_events(poller, 0, now_ns + 4100000000, evs3);
+        sub.assert_eq(c3, 1, "Coarse timeout event fired at 4s boundary");
+        sub.assert_true(evs3[0].is_timer, "Event is marked as timer");
+        sub.assert_eq(evs3[0].tag, 7001, "Event tag matches socket 50 tag");
+        sub.assert_eq(evs3[0].fd, 50, "Event fd matches socket 50");
+        sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Timeout reset to disabled after firing");
+
+        // Arm and cancel with seconds = 0
+        wing::set_socket_timeout(poller, 50, 16);
+        sub.assert_true(wing::get_socket_timeout(poller, 50) != wing::COARSE_TIMEOUT_DISABLED, "Armed 16s timeout");
+        wing::set_socket_timeout(poller, 50, 0); // Disable
+        sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Disabled via seconds=0");
+
+        wing::deregister_socket(poller, 50);
+    };
+
+    wing::close_poller(poller);
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
@@ -322,6 +372,7 @@ fn main() {
     core::run_case(runner, "3. High-Resolution Timer Wheel", test_poller_timer_wheel);
     core::run_case(runner, "4. Non-blocking EventLoop I/O", test_event_loop_io);
     core::run_case(runner, "5. Bidirectional Client-Server Mock Cycle", test_bidi_client_server_cycle);
+    core::run_case(runner, "6. 15-bit Coarse Socket Timeouts", test_coarse_socket_timeouts);
 
     let ok = core::finish(runner);
     assert(ok);

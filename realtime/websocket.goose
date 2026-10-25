@@ -179,7 +179,7 @@ fn encode_ws_frame<B>(
     opcode: u8,
     payload: const u8[:],
     is_client: bool = true,
-    mask_key: const u8[4]& = [0; 4],
+    mask_key: const u8[4] = [0 as u8; 4],
     fin: bool = true
 ) {
     let hdr = WsFrameHeader {
@@ -203,8 +203,56 @@ fn encode_ws_frame<B>(
 
 // ---- 3. Handshake Engine (RFC 6455 Section 4.2.2 & RFC 8441) ---------------
 
-// Computes standard `Sec-WebSocket-Accept` from `Sec-WebSocket-Key`
+// Fast-path template blocks for 24-byte RFC 6455 client key hashing (uWebSockets WebSocketHandshake pattern).
+// Block 1: 24 bytes client key + 36 bytes GUID + 0x80 padding + 3 zero bytes = 64 bytes.
+let WS_SHA1_BLOCK1_GUID: const u8[40] = [
+    '2','5','8','E','A','F','A','5','-','E','9','1','4','-','4','7','D','A','-','9','5','C','A','-','C','5','A','B','0','D','C','8','5','B','1','1',
+    0x80, 0, 0, 0
+];
+
+// Block 2: 56 zero bytes + big-endian 480 bit length (0x01E0) = 64 bytes.
+let WS_SHA1_BLOCK2_TEMPLATE: const u8[64] = [
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0, 0,0,0,0,0,0, 0x01, 0xE0
+];
+
+// Computes standard `Sec-WebSocket-Accept` from `Sec-WebSocket-Key`.
+// Uses zero-allocation unrolled 2-block SHA-1 compression for 24-byte keys (Alex Hultman / uWebSockets pattern).
 fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
+    if client_key.len == 24 {
+        var blk1: u8[64] = [0; 64];
+        for i in 24 {
+            blk1[i] = client_key[i];
+        }
+        for i in 40 {
+            blk1[24 + i] = WS_SHA1_BLOCK1_GUID[i];
+        }
+
+        var state: u32[5] = [
+            0x67452301,
+            0xEFCDAB89,
+            0x98BADCFE,
+            0x10325476,
+            0xC3D2E1F0
+        ];
+        core::sha1_compress(state, blk1[..]);
+        core::sha1_compress(state, WS_SHA1_BLOCK2_TEMPLATE[..]);
+
+        var digest: u8[20] = [0; 20];
+        for i in 5 {
+            let val = state[i];
+            digest[i * 4] = ((val >> 24) & 0xFF) as u8;
+            digest[i * 4 + 1] = ((val >> 16) & 0xFF) as u8;
+            digest[i * 4 + 2] = ((val >> 8) & 0xFF) as u8;
+            digest[i * 4 + 3] = (val & 0xFF) as u8;
+        }
+        core::base64_encode(digest[..], out);
+        return;
+    }
+
+    // Generic fallback for non-standard key lengths
     var combined: u8[..128] = [];
     guard client_key.len + WS_HANDSHAKE_GUID.len <= combined.cap else { return; }
     combined.append(client_key);
@@ -349,6 +397,16 @@ struct WsMessage {
     is_valid: bool = false,
 }
 
+// Zero-copy non-owning view of a WebSocket message pointing directly into the ingress buffer.
+// Matches uWebSockets std::string_view on_message callback pattern with 0 heap allocs and 0 memcpy.
+struct WsMessageView {
+    opcode: u8 = WS_OPCODE_TEXT,
+    payload: const u8[:] = "",
+    close_code: u16 = 0,
+    close_reason: const u8[:] = "",
+    is_valid: bool = false,
+}
+
 fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
     if is_client && masked {
         return false;
@@ -359,14 +417,14 @@ fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
     return true;
 }
 
-// Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,
-// answers Close with Close echo, reassembles multi-frame fragmented messages (RFC 6455 §5.4),
-// validates strict UTF-8 on text and close frames, and populates out_msg upon message completion.
-fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply: B&) -> bool {
-    out_msg.is_valid = false;
-    out_msg.data.clear();
-    out_msg.close_reason.clear();
-    out_msg.close_code = 0;
+// Dispatches incoming raw frame wire bytes using zero-copy non-owning payload views:
+// unmasks payload in-place, handles Ping/Pong and Close echoes, validates strict UTF-8,
+// and yields a direct slice of the wire ingress buffer into out_view without copying.
+fn ws_receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> bool {
+    out_view.is_valid = false;
+    out_view.payload = "";
+    out_view.close_reason = "";
+    out_view.close_code = 0;
 
     let hdr, ok = parse_ws_frame_header(wire);
     guard ok else { return false; }
@@ -401,18 +459,14 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
     if is_ws_control_opcode(hdr.opcode) {
         if hdr.opcode == WS_OPCODE_PING {
             ws_send_pong(ws, payload, out_reply);
-            out_msg.opcode = WS_OPCODE_PING;
-            if payload.len <= out_msg.data.cap {
-                out_msg.data.append(payload);
-            }
-            out_msg.is_valid = true;
+            out_view.opcode = WS_OPCODE_PING;
+            out_view.payload = payload;
+            out_view.is_valid = true;
             return true;
         } else if hdr.opcode == WS_OPCODE_PONG {
-            out_msg.opcode = WS_OPCODE_PONG;
-            if payload.len <= out_msg.data.cap {
-                out_msg.data.append(payload);
-            }
-            out_msg.is_valid = true;
+            out_view.opcode = WS_OPCODE_PONG;
+            out_view.payload = payload;
+            out_view.is_valid = true;
             return true;
         } else if hdr.opcode == WS_OPCODE_CLOSE {
             let code, reason, ok_close = parse_ws_close_payload(payload);
@@ -429,12 +483,10 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
                 ws.close_code = WS_STATUS_PROTOCOL_ERROR;
                 return true;
             }
-            out_msg.opcode = WS_OPCODE_CLOSE;
-            out_msg.close_code = code;
-            if reason.len > 0 && reason.len <= out_msg.close_reason.cap {
-                out_msg.close_reason.append(reason);
-            }
-            out_msg.is_valid = true;
+            out_view.opcode = WS_OPCODE_CLOSE;
+            out_view.close_code = code;
+            out_view.close_reason = reason;
+            out_view.is_valid = true;
             if !ws.is_closed {
                 let reply_code = if code == WS_STATUS_NO_STATUS { WS_STATUS_NORMAL } else { code };
                 ws_close(ws, reply_code, reason, out_reply);
@@ -447,7 +499,6 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
 
     // Data frames (RFC 6455 §5.4 & §5.6)
     if hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY {
-        // Interleaving check: cannot start a new data message while previous is still fragmented
         if ws.frag_opcode != 0 {
             ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "interleaved data frame during fragmentation", out_reply);
             ws.is_closed = true;
@@ -456,7 +507,7 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
         }
 
         if hdr.fin {
-            // Unfragmented single-frame message
+            // Unfragmented single-frame message: Zero-copy direct slice!
             if hdr.opcode == WS_OPCODE_TEXT {
                 if !core::validate_utf8(payload) {
                     ws_close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
@@ -465,15 +516,9 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
                     return true;
                 }
             }
-            if payload.len > out_msg.data.cap {
-                ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "payload exceeds buffer capacity", out_reply);
-                ws.is_closed = true;
-                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
-                return true;
-            }
-            out_msg.opcode = hdr.opcode;
-            out_msg.data.append(payload);
-            out_msg.is_valid = true;
+            out_view.opcode = hdr.opcode;
+            out_view.payload = payload;
+            out_view.is_valid = true;
             return true;
         } else {
             // Initial fragment of a multi-frame message
@@ -486,11 +531,10 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
                 return true;
             }
             ws.frag_buffer.append(payload);
-            out_msg.is_valid = false;
+            out_view.is_valid = false;
             return true;
         }
     } else if hdr.opcode == WS_OPCODE_CONTINUATION {
-        // Continuation frame without active fragmented message
         if ws.frag_opcode == 0 {
             ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "continuation frame without starting fragment", out_reply);
             ws.is_closed = true;
@@ -509,7 +553,6 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
         ws.frag_buffer.append(payload);
 
         if hdr.fin {
-            // Terminal fragment: message assembly is complete
             if ws.frag_opcode == WS_OPCODE_TEXT {
                 if !core::validate_utf8(ws.frag_buffer[..]) {
                     ws_close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in assembled message", out_reply);
@@ -520,29 +563,45 @@ fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_re
                     return true;
                 }
             }
-            if ws.frag_buffer.len > out_msg.data.cap {
-                ws_close(ws, WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds buffer capacity", out_reply);
-                ws.is_closed = true;
-                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
-                ws.frag_opcode = 0;
-                ws.frag_buffer.clear();
-                return true;
-            }
-            out_msg.opcode = ws.frag_opcode;
-            out_msg.data.append(ws.frag_buffer[..]);
-            out_msg.is_valid = true;
+            out_view.opcode = ws.frag_opcode;
+            out_view.payload = ws.frag_buffer[..];
+            out_view.is_valid = true;
 
             ws.frag_opcode = 0;
-            ws.frag_buffer.clear();
             return true;
         } else {
-            // Non-terminal continuation fragment, await further frames
-            out_msg.is_valid = false;
+            out_view.is_valid = false;
             return true;
         }
     }
 
     return true;
+}
+
+// Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,
+// answers Close with Close echo, reassembles multi-frame fragmented messages (RFC 6455 §5.4),
+// validates strict UTF-8 on text and close frames, and populates out_msg upon message completion.
+fn ws_receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply: B&) -> bool {
+    var view = WsMessageView { .. };
+    let ok = ws_receive_view(ws, wire, view, out_reply);
+    guard ok else { return false; }
+
+    out_msg.is_valid = view.is_valid;
+    out_msg.opcode = view.opcode;
+    out_msg.close_code = view.close_code;
+    out_msg.close_reason.clear();
+    if view.close_reason.len > 0 && view.close_reason.len <= out_msg.close_reason.cap {
+        out_msg.close_reason.append(view.close_reason);
+    }
+    out_msg.data.clear();
+    if view.payload.len > 0 && view.payload.len <= out_msg.data.cap {
+        out_msg.data.append(view.payload);
+    }
+    return true;
+}
+
+fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> bool {
+    return ws_receive_view(ws, wire, out_view, out_reply);
 }
 
 // Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.

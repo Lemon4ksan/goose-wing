@@ -123,8 +123,53 @@ fn ::receive<B>(ws: wing::WebSocketSession&, wire: u8[:], out_msg: wing::WsMessa
     return wing::ws_receive(ws, wire, out_msg, out_reply);
 }
 
+fn ::receive_view<B>(ws: wing::WebSocketSession&, wire: u8[:], out_view: wing::WsMessageView&, out_reply: B&) -> bool {
+    return wing::ws_receive_view(ws, wire, out_view, out_reply);
+}
+
 fn ::encode<B>(hdr: const wing::WsFrameHeader&, out: B&) {
     wing::encode_ws_frame_header(out, hdr);
+}
+
+// TopicTree Pub/Sub Bridges
+fn ::subscribe(tree: wing::TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+    return wing::topic_subscribe(tree, sock_fd, pattern);
+}
+
+fn ::unsubscribe(tree: wing::TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+    return wing::topic_unsubscribe(tree, sock_fd, pattern);
+}
+
+fn ::unsubscribe_all(tree: wing::TopicTree&, sock_fd: i64) -> i32 {
+    return wing::topic_unsubscribe_all(tree, sock_fd);
+}
+
+fn ::is_subscribed(tree: const wing::TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+    return wing::is_topic_subscribed(tree, sock_fd, pattern);
+}
+
+fn ::subscriber_count(tree: const wing::TopicTree&, pattern: const u8[:]) -> i32 {
+    return wing::topic_subscriber_count(tree, pattern);
+}
+
+fn ::publish(tree: wing::TopicTree&, topic: const u8[:], message: const u8[:], opcode: u8 = wing::WS_OPCODE_TEXT) -> i64 {
+    return wing::topic_publish(tree, topic, message, opcode);
+}
+
+fn ::publish_text(tree: wing::TopicTree&, topic: const u8[:], text: const u8[:]) -> i64 {
+    return wing::topic_publish_text(tree, topic, text);
+}
+
+fn ::publish_binary(tree: wing::TopicTree&, topic: const u8[:], data: const u8[:]) -> i64 {
+    return wing::topic_publish_binary(tree, topic, data);
+}
+
+fn ::publish_frame(tree: wing::TopicTree&, topic: const u8[:], frame_wire: const u8[:]) -> i64 {
+    return wing::topic_publish_frame(tree, topic, frame_wire);
+}
+
+fn ::find_subscribers(tree: const wing::TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
+    return wing::topic_find_subscribers(tree, topic, out_fds);
 }
 
 // SSE Subscription Bridges
@@ -648,6 +693,9 @@ fn ::add_timer(
 fn ::cancel_timer(p: wing::Poller&, timer_id: u64) -> bool {
     return wing::cancel_timer(p, timer_id);
 }
+fn ::set_socket_timeout(p: wing::Poller&, fd: i32, seconds: u32) -> bool {
+    return wing::set_socket_timeout(p, fd, seconds);
+}
 
 fn ::bind_connection(
     ev_loop: wing::EventLoop&,
@@ -660,6 +708,9 @@ fn ::bind_connection(
 }
 fn ::unbind_connection(ev_loop: wing::EventLoop&, tag: u64) -> bool {
     return wing::unbind_connection(ev_loop, tag);
+}
+fn ::set_connection_timeout(ev_loop: wing::EventLoop&, tag: u64, seconds: u32) -> bool {
+    return wing::set_connection_timeout(ev_loop, tag, seconds);
 }
 fn ::queue_write(ev_loop: wing::EventLoop&, tag: u64, data: const u8[:]) -> bool {
     return wing::queue_write(ev_loop, tag, data);
@@ -794,6 +845,10 @@ fn ::handle_connection_pipe<B>(
     wire_out: B&
 ) -> i64, bool {
     return wing::handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out);
+}
+
+fn ::serve(server: wing::HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    return wing::serve(server, listener_fd, max_connections);
 }
 
 fn ::parse_http1_wire_request(wire: const u8[:], out_req: wing::Request&) -> bool, i64 {

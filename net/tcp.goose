@@ -14,6 +14,7 @@ extern "wing_tcp_getsockname_port" fn native_tcp_getsockname_port(sock_fd: i64) 
 extern "wing_tcp_accept" fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64;
 extern "wing_tcp_connect" fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64;
 extern "wing_tcp_send" fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32;
+extern "wing_tcp_send2" fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32;
 extern "wing_tcp_recv" fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32;
 extern "wing_tcp_close" fn native_tcp_close(sock_fd: i64);
 extern "wing_tcp_set_defer_accept" fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32;
@@ -80,7 +81,45 @@ fn tcp_send(fd: i64, data: const u8[:]) -> i32 {
     return native_tcp_send(fd, data);
 }
 
-// Receives bytes from TCP socket into a scratch buffer and appends to out.
+// Sends two slices (e.g. HTTP headers and body) in a single syscall via vectored I/O (WSASend / writev).
+// Eliminates buffer concatenation in user space, matching uWebSockets bsd_write2.
+// Returns bytes sent (> 0), or -1 on error.
+fn tcp_send2(fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 {
+    guard fd > 0 else { return 0; }
+    if payload.len == 0 {
+        return tcp_send(fd, hdr);
+    }
+    if hdr.len == 0 {
+        return tcp_send(fd, payload);
+    }
+    return native_tcp_send2(fd, hdr, payload);
+}
+
+// Global shared 512 KB receive loop buffer (LIBUS_RECV_BUFFER_LENGTH = 524288) in .bss
+// Eliminates the 4 KB stack memset [0; 4096] on every single recv call.
+const RECV_BUFFER_CAP: i64 = 524288;
+var g_shared_recv_buf: u8[524288] = [0; 524288];
+
+// Receives bytes from TCP socket directly into the provided destination slice (zero-copy, zero-heap).
+// Returns bytes received (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
+fn tcp_recv_slice(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    guard fd > 0 && dst.len > 0 else { return -1; }
+    return native_tcp_recv(fd, dst, timeout_ms);
+}
+
+// Receives bytes directly into the shared 512 KB receive loop buffer without allocating or zeroing stack memory.
+// Returns (bytes_received, readable_slice).
+fn tcp_recv_shared(fd: i64, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32, const u8[:] {
+    guard fd > 0 else { return -1, ""; }
+    let eff_max = if max_len > RECV_BUFFER_CAP as i32 { RECV_BUFFER_CAP as i32 } else if max_len < 1 { 1 } else { max_len };
+    let recvd = native_tcp_recv(fd, g_shared_recv_buf[..eff_max], timeout_ms);
+    if recvd > 0 {
+        return recvd, g_shared_recv_buf[..recvd];
+    }
+    return recvd, "";
+}
+
+// Receives bytes from TCP socket into the shared loop buffer and appends to out.
 // Returns:
 //   > 0 : bytes received
 //     0 : peer closed connection cleanly (EOF / FIN)
@@ -88,11 +127,10 @@ fn tcp_send(fd: i64, data: const u8[:]) -> i32 {
 //    -1 : socket error (e.g. connection reset)
 fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 else { return -1; }
-    var scratch: u8[4096] = [0; 4096];
-    let eff_max = if max_len > 4096 { 4096 } else if max_len < 1 { 1 } else { max_len };
-    let recvd = native_tcp_recv(fd, scratch[..eff_max], timeout_ms);
+    let eff_max = if max_len > RECV_BUFFER_CAP as i32 { RECV_BUFFER_CAP as i32 } else if max_len < 1 { 1 } else { max_len };
+    let recvd = native_tcp_recv(fd, g_shared_recv_buf[..eff_max], timeout_ms);
     if recvd > 0 {
-        out.append(scratch[..recvd]);
+        out.append(g_shared_recv_buf[..recvd]);
     }
     return recvd;
 }

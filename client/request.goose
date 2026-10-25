@@ -18,6 +18,7 @@ struct Request {
     url: u8[..2048] = [],
     timeout: i64 = 0,
     headers: HeaderItem[..32] = [],
+    bloom_filter: HeaderBloomFilter = HeaderBloomFilter { .. },
     trailers: HeaderItem[..16] = [],
     query_params: QueryItem[..16] = [],
     rewind_buf: u8[..4096] = [],
@@ -89,12 +90,18 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
     return new_request("POST", url, F);
 }
 
-// Returns the value of a request header by name (case-insensitive lookup)
+// Returns the value of a request header by name (case-insensitive lookup with 256-bit Bloom filter)
 fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
+    if !might_have_header(req.bloom_filter, name) {
+        return "";
+    }
     return find_header(req.headers[..], name);
 }
 
 fn has_header(req: const Request&, name: const u8[:]) -> bool {
+    if !might_have_header(req.bloom_filter, name) {
+        return false;
+    }
     return has_header(req.headers[..], name);
 }
 
@@ -117,15 +124,18 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 // Sets a header on the request. Matches existing headers case-insensitively,
 // drops control characters, and marks credential headers sensitive.
 fn header(req: Request&, name: const u8[:], value: const u8[:]) {
+    add_header(req.bloom_filter, name);
     set_header(req.headers, name, value, false);
 }
 
 // Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
+    add_header(req.bloom_filter, name);
     set_header(req.headers, name, value, true);
 }
 
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
+    add_header(req.bloom_filter, name);
     set_header(req.headers, name, value, false);
 }
 

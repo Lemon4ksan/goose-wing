@@ -131,6 +131,87 @@ def ws_frame(opcode: int, payload: bytes, fin: bool = True, masked: bool = True,
     return bytes(out)
 
 
+def hpack_lit(name_idx: int, value: bytes) -> bytes:
+    # Literal Header Field without Indexing, indexed name (RFC 7541 6.2.2)
+    return bytes([name_idx & 0x0F, len(value)]) + value
+
+
+def h2_req_block(method: str, path: bytes) -> bytes:
+    m = b"\x82" if method == "GET" else b"\x83"  # :method GET / POST
+    return m + b"\x86" + hpack_lit(4, path) + hpack_lit(1, b"127.0.0.1")  # :scheme http, :path, :authority
+
+
+async def h2_open(port: int, timeout: float = 5.0):
+    r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=timeout)
+    w.write(H2_PREFACE + h2_frame(0x4, 0x0, 0))
+    await w.drain()
+    got_settings = got_ack = False
+    while not (got_settings and got_ack):
+        ft, fl, sid, _ = await asyncio.wait_for(read_h2(r), timeout=timeout)
+        if ft == 0x4 and not (fl & 0x1):
+            got_settings = True
+            w.write(h2_frame(0x4, 0x1, 0))
+            await w.drain()
+        elif ft == 0x4 and (fl & 0x1):
+            got_ack = True
+    return r, w
+
+
+async def h2_wait_goaway(r: asyncio.StreamReader, timeout: float = 5.0) -> int:
+    # Returns GOAWAY error code, -1 on clean EOF without GOAWAY, -2 on timeout
+    try:
+        while True:
+            ft, _, _, p = await asyncio.wait_for(read_h2(r), timeout=timeout)
+            if ft == 0x7 and len(p) >= 8:
+                return struct.unpack("!I", p[4:8])[0]
+    except asyncio.IncompleteReadError:
+        return -1
+    except (asyncio.TimeoutError, ConnectionError):
+        return -2
+
+
+async def close_w(w: asyncio.StreamWriter):
+    try:
+        w.close()
+        await w.wait_closed()
+    except Exception:
+        pass
+
+
+async def ws_open(port: int, timeout: float = 5.0):
+    r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=timeout)
+    key = base64.b64encode(os.urandom(16))
+    w.write(
+        b"GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        b"Sec-WebSocket-Key: " + key + b"\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    await w.drain()
+    head = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), timeout=timeout)
+    expect = base64.b64encode(hashlib.sha1(key + WS_GUID).digest())
+    ok = b"101" in head.split(b"\r\n")[0] and expect in head
+    return r, w, ok
+
+
+async def ws_read(r: asyncio.StreamReader, timeout: float = 5.0) -> tuple[int, bytes]:
+    h = await asyncio.wait_for(r.readexactly(2), timeout=timeout)
+    op, ln = h[0] & 0x0F, h[1] & 0x7F
+    if ln == 126:
+        ln = struct.unpack("!H", await r.readexactly(2))[0]
+    elif ln == 127:
+        ln = struct.unpack("!Q", await r.readexactly(8))[0]
+    return op, (await r.readexactly(ln) if ln else b"")
+
+
+async def ws_close_code(r: asyncio.StreamReader, timeout: float = 5.0) -> int:
+    try:
+        while True:
+            op, p = await ws_read(r, timeout)
+            if op == 0x8:
+                return struct.unpack("!H", p[:2])[0] if len(p) >= 2 else 1005
+    except Exception:
+        return -1
+
+
 async def main():
     print("Starting Goose-Wing Unified Toxiproxy Chaos & Stress Suite\n")
     t_start = time.time()
@@ -185,73 +266,162 @@ async def main():
         res = await run_req(proxy_port, req, timeout=3.0)
         record(len(res) == 0, "Abrupt TCP RST survival without deadlock or leak")
 
-        # SECTION 2: HTTP/2 Protocol & CVE Shields
-        print("\n2. HTTP/2 Framing, Multiplexing & CVE Defense")
-        from test_h2_chaos import EchoH2Server, h2_handshake
-        h2_back = EchoH2Server()
-        h2_port = await h2_back.start()
-
-        proxy_h2 = ChaosProxy(upstream_host="127.0.0.1", upstream_port=h2_port)
-        p_h2 = await proxy_h2.start()
-
-        proxy_h2.clear_toxics()
-        proxy_h2.add_toxic(SlicerToxic("h2s", min_bytes=1, max_bytes=3, delay_ms=1, stream="both"))
-        r, w = await asyncio.open_connection("127.0.0.1", p_h2)
-        hs_ok = await h2_handshake(r, w)
-        record(hs_ok, "24-byte Preface & SETTINGS exchange under Slicer")
-
-        w.write(h2_frame(0x0, 0x1, 1, b"PayloadMux1"))
-        w.write(h2_frame(0x0, 0x1, 3, b"PayloadMux3"))
-        await w.drain()
-        recv_streams = {}
-        for _ in range(2):
-            ft, fl, sid, p = await asyncio.wait_for(read_h2(r), timeout=5.0)
-            if ft == 0x0:
-                recv_streams[sid] = p
-        record(
-            recv_streams.get(1) == b"H2_ECHO:PayloadMux1" and recv_streams.get(3) == b"H2_ECHO:PayloadMux3",
-            "Stream multiplexing (Streams 1 & 3) under Slicer",
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("s4", min_bytes=1, max_bytes=4, delay_ms=1, stream="upstream"))
+        chunked = (
+            b"POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            b"5\r\nGoose\r\n6\r\n-Wing!\r\n0\r\n\r\n"
         )
-        w.close()
-        await w.wait_closed()
-        await proxy_h2.stop()
-        await h2_back.stop()
+        res = await run_req(proxy_port, chunked, timeout=8.0)
+        record(b"200 OK" in res and b"ECHO:Goose-Wing!" in res, "Chunked transfer decoding under Slicer", res[:60])
 
-        # SECTION 3: WebSocket RFC 6455
+        proxy.clear_toxics()
+        dup_cl = b"POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\nContent-Length: 9\r\n\r\nABCDEFGHI"
+        res = await run_req(proxy_port, dup_cl, timeout=3.0)
+        record(b"400" in res.split(b"\r\n")[0], "Conflicting duplicate Content-Length rejected (request smuggling)", res[:60])
+
+        huge = b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Big: " + b"A" * 70000 + b"\r\n\r\n"
+        res = await run_req(proxy_port, huge, timeout=5.0)
+        record(b"200 OK" not in res, "70 KB header block refused (64 KB header limit)", res[:60])
+
+        t0 = time.time()
+        r, w = await asyncio.open_connection("127.0.0.1", proxy_port)
+        w.write(b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: a")
+        await w.drain()
+        try:
+            got = await asyncio.wait_for(r.read(1024), timeout=10.0)
+            closed = got == b"" or b"200 OK" not in got
+        except asyncio.TimeoutError:
+            closed = False
+        await close_w(w)
+        record(closed, f"Slowloris stalled headers dropped by server ({time.time() - t0:.1f}s)")
+
+        # SECTION 2: HTTP/2 Protocol & CVE Shields (native Goose h2_multiplexer)
+        print("\n2. HTTP/2 Framing, Multiplexing & CVE Defense")
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("h2s", min_bytes=1, max_bytes=3, delay_ms=1, stream="both"))
+        try:
+            r, w = await h2_open(proxy_port, timeout=8.0)
+            record(True, "24-byte Preface & SETTINGS exchange under Slicer")
+            w.write(h2_frame(0x1, 0x5, 1, h2_req_block("GET", b"/ping")))
+            w.write(h2_frame(0x1, 0x5, 3, h2_req_block("GET", b"/ping")))
+            await w.drain()
+            seen = set()
+            while seen != {1, 3}:
+                ft, _, sid, _ = await asyncio.wait_for(read_h2(r), timeout=8.0)
+                if ft == 0x1:
+                    seen.add(sid)
+            record(True, "Stream multiplexing (Streams 1 & 3) under Slicer")
+            await close_w(w)
+        except Exception as e:
+            record(False, "HTTP/2 handshake + multiplexing under Slicer", repr(e))
+
+        proxy.clear_toxics()
+        try:
+            r, w = await h2_open(proxy_port)
+            w.write(h2_frame(0x6, 0x0, 0, b"GOOSEPNG"))
+            await w.drain()
+            ack = None
+            while ack is None:
+                ft, fl, _, p = await asyncio.wait_for(read_h2(r), timeout=5.0)
+                if ft == 0x6 and (fl & 0x1):
+                    ack = p
+            record(ack == b"GOOSEPNG", "PING -> PING ACK with identical opaque data")
+            await close_w(w)
+        except Exception as e:
+            record(False, "PING -> PING ACK with identical opaque data", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            burst = bytearray()
+            for i in range(1100):
+                sid = 1 + 2 * i
+                burst += h2_frame(0x1, 0x4, sid, h2_req_block("GET", b"/ping"))
+                burst += h2_frame(0x3, 0x0, sid, struct.pack("!I", 0x8))
+            w.write(bytes(burst))
+            await w.drain()
+            code = await h2_wait_goaway(r, timeout=8.0)
+            record(code == 0xB, "Rapid Reset flood -> GOAWAY ENHANCE_YOUR_CALM (CVE-2023-44487)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Rapid Reset flood (CVE-2023-44487)", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            flood = h2_frame(0x1, 0x0, 1, h2_req_block("GET", b"/ping"))
+            flood += b"".join(h2_frame(0x9, 0x0, 1) for _ in range(64))
+            w.write(flood)
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0x1, "Zero-length CONTINUATION -> instant GOAWAY PROTOCOL_ERROR (CVE-2024-2758)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Zero-length CONTINUATION (CVE-2024-2758)", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            flood = h2_frame(0x1, 0x0, 1, h2_req_block("GET", b"/ping"))
+            flood += b"".join(h2_frame(0x9, 0x0, 1, b"\x00") for _ in range(64))
+            w.write(flood)
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0xB, "CONTINUATION flood > 16 frames -> GOAWAY ENHANCE_YOUR_CALM (CVE-2024-27983)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "CONTINUATION flood (CVE-2024-27983)", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            w.write(b"".join(h2_frame(0x6, 0x0, 0, struct.pack("!Q", i)) for i in range(200)))
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0xB, "PING control-frame flood -> GOAWAY (CVE-2019-9512)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "PING control-frame flood (CVE-2019-9512)", repr(e))
+
+        # SECTION 3: WebSocket RFC 6455 (native Goose realtime/websocket)
         print("\n3. WebSocket RFC 6455 Framing & Invariants")
-        from test_attack_ws_fuzz import SecureWsBackend, do_handshake, read_close_frame
-        ws_back = SecureWsBackend()
-        ws_port = await ws_back.start()
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("wss", min_bytes=1, max_bytes=3, delay_ms=1, stream="both"))
+        try:
+            r, w, hs_ok = await ws_open(proxy_port, timeout=8.0)
+            record(hs_ok, "101 Switching Protocols + valid Sec-WebSocket-Accept under Slicer")
+            w.write(ws_frame(0x1, "Привет, Goose!".encode()))
+            await w.drain()
+            op, p = await ws_read(r, timeout=8.0)
+            record(op == 0x1 and p == "Привет, Goose!".encode(), "Masked UTF-8 text echo under Slicer")
+            blob = os.urandom(3000)
+            w.write(ws_frame(0x2, blob))
+            await w.drain()
+            op, p = await ws_read(r, timeout=8.0)
+            record(op == 0x2 and p == blob, "3000-byte binary echo (16-bit length) under Slicer")
+            w.write(ws_frame(0x9, b"hb"))
+            await w.drain()
+            op, p = await ws_read(r, timeout=8.0)
+            record(op == 0xA and p == b"hb", "Ping -> Pong with identical payload")
+            await close_w(w)
+        except Exception as e:
+            record(False, "WebSocket echo/ping under Slicer", repr(e))
+        proxy.clear_toxics()
 
-        proxy_ws = ChaosProxy(upstream_host="127.0.0.1", upstream_port=ws_port)
-        p_ws = await proxy_ws.start()
-
-        r, w = await asyncio.open_connection("127.0.0.1", p_ws)
-        await do_handshake(r, w)
-        w.write(ws_frame(0x1, b"UnmaskedData", fin=True, masked=False))
-        await w.drain()
-        code, _ = await read_close_frame(r)
-        record(code == 1002, "Unmasked frame rejected (Close 1002 Protocol Error)")
-        w.close()
-
-        r, w = await asyncio.open_connection("127.0.0.1", p_ws)
-        await do_handshake(r, w)
-        w.write(ws_frame(0x9, b"FragPing", fin=False, masked=True))
-        await w.drain()
-        code, _ = await read_close_frame(r)
-        record(code == 1002, "Fragmented control frame rejected (Close 1002)")
-        w.close()
-
-        r, w = await asyncio.open_connection("127.0.0.1", p_ws)
-        await do_handshake(r, w)
-        w.write(ws_frame(0x1, b"\xCE\xBA\xE1\x00\xFF", fin=True, masked=True))
-        await w.drain()
-        code, _ = await read_close_frame(r)
-        record(code == 1007, "Invalid UTF-8 rejected (Close 1007 Invalid Payload)")
-        w.close()
-
-        await proxy_ws.stop()
-        await ws_back.stop()
+        ws_attacks = [
+            (ws_frame(0x1, b"UnmaskedData", masked=False), 1002, "Unmasked client frame rejected (Close 1002)"),
+            (ws_frame(0x9, b"FragPing", fin=False), 1002, "Fragmented control frame rejected (Close 1002)"),
+            (ws_frame(0x9, b"P" * 126), 1002, "Control frame payload > 125 rejected (Close 1002)"),
+            (ws_frame(0x1, b"rsv", rsv=0x4), 1002, "RSV1 bit without extension rejected (Close 1002)"),
+            (ws_frame(0x1, b"\xCE\xBA\xE1\x00\xFF"), 1007, "Invalid UTF-8 text rejected (Close 1007)"),
+        ]
+        for frame, want, desc in ws_attacks:
+            try:
+                r, w, _ = await ws_open(proxy_port)
+                w.write(frame)
+                await w.drain()
+                code = await ws_close_code(r)
+                record(code == want, desc, f"code={code}")
+                await close_w(w)
+            except Exception as e:
+                record(False, desc, repr(e))
 
         # SECTION 4: Heavy Rapid Chaos Iterations
         print("\n4. Heavy Rapid Chaos on Native Goose (50 iterations)")

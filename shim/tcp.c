@@ -86,6 +86,9 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
 
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#if defined(SO_REUSEPORT)
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+#endif
 
     char host_str[128];
     slice_to_cstr(host, host_str, sizeof(host_str));
@@ -441,6 +444,47 @@ int32_t wing_tcp_sendv(int64_t sock_fd, const wing_bytes_ro *iov, int32_t iovcnt
         bufs[i].iov_base = (void *)iov[i].data;
         bufs[i].iov_len = (size_t)iov[i].len;
     }
+    ssize_t sent = writev((int)sock_fd, bufs, count);
+    return (int32_t)sent;
+#endif
+}
+
+// Sends two slices (e.g. HTTP header and body) via vectored I/O in 1 syscall.
+// Eliminates buffer concatenation in user space, matching uWebSockets bsd_write2.
+int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload) {
+    if (sock_fd <= 0) return 0;
+#ifdef _WIN32
+    WSABUF bufs[2];
+    DWORD count = 0;
+    if (hdr.data != NULL && hdr.len > 0) {
+        bufs[count].buf = (char *)hdr.data;
+        bufs[count].len = (ULONG)hdr.len;
+        count++;
+    }
+    if (payload.data != NULL && payload.len > 0) {
+        bufs[count].buf = (char *)payload.data;
+        bufs[count].len = (ULONG)payload.len;
+        count++;
+    }
+    if (count == 0) return 0;
+    DWORD sent = 0;
+    int res = WSASend((SOCKET)sock_fd, bufs, count, &sent, 0, NULL, NULL);
+    if (res == 0) return (int32_t)sent;
+    return -1;
+#else
+    struct iovec bufs[2];
+    int count = 0;
+    if (hdr.data != NULL && hdr.len > 0) {
+        bufs[count].iov_base = (void *)hdr.data;
+        bufs[count].iov_len = (size_t)hdr.len;
+        count++;
+    }
+    if (payload.data != NULL && payload.len > 0) {
+        bufs[count].iov_base = (void *)payload.data;
+        bufs[count].iov_len = (size_t)payload.len;
+        count++;
+    }
+    if (count == 0) return 0;
     ssize_t sent = writev((int)sock_fd, bufs, count);
     return (int32_t)sent;
 #endif

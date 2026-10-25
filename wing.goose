@@ -137,6 +137,7 @@ import net.poller;
 // ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
 
 import realtime.websocket;
+import realtime.topic_tree;
 import realtime.sse;
 import realtime.webtransport;
 
