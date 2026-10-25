@@ -155,14 +155,12 @@ fn create_dpop_proof<B>(
 ) -> bool {
     out.clear();
 
-    // 1. Build JOSE Header: {"typ":"dpop+jwt","alg":"HS256"}
     var header_json: u8[..128] = [];
     header_json.append("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}");
 
     var header_b64: u8[..192] = [];
     core::base64url_encode(header_json[..], header_b64);
 
-    // 2. Normalize URI and build claims
     var norm_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(target_uri, norm_uri) else {
         return false;
@@ -210,18 +208,15 @@ fn create_dpop_proof<B>(
     var claims_b64: u8[..768] = [];
     core::base64url_encode(claims_json[..], claims_b64);
 
-    // 3. Construct signing input: header_b64 . claims_b64
     var signing_input: u8[..1024] = [];
     signing_input.append(header_b64[..]);
     signing_input.push('.' as u8);
     signing_input.append(claims_b64[..]);
 
-    // 4. Compute signature (HMAC-SHA256 for HS256)
     let sig = core::hmac_sha256(key, signing_input[..]);
     var sig_b64: u8[..64] = [];
     core::base64url_encode(sig[..], sig_b64);
 
-    // 5. Output full JWT
     out.append(signing_input[..]);
     out.push('.' as u8);
     out.append(sig_b64[..]);

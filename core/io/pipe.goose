@@ -125,13 +125,13 @@ fn advance_to(p: PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> IoErr
 // Automatically compacts if needed to ensure at least min_size bytes are available.
 fn get_write_span(p: PipeBuffer&, min_size: i64 = 1) -> u8[:], IoError {
     guard min_size > 0 && min_size <= PIPE_BUFFER_CAP else {
-        return "", IoError.InvalidArgument;
+        return p.storage[..0], IoError.InvalidArgument;
     }
     if write_space(p) < min_size && p.consumed > 0 {
         compact_pipe(p);
     }
     if write_space(p) < min_size {
-        return "", IoError.BufferFull;
+        return p.storage[..0], IoError.BufferFull;
     }
     return p.storage[p.written..], IoError.None;
 }
@@ -151,23 +151,16 @@ fn commit_write(p: PipeBuffer&, bytes_written: i64) -> IoError {
 // High-level write helper copying src into the pipe.
 fn write(p: PipeBuffer&, src: const u8[:]) -> i64, IoError {
     guard src.len > 0 else { return 0, IoError.None; }
-    let span, err = get_write_span(p, src.len);
-    if err != IoError.None {
-        // Try partial fit if available
-        let avail = total_available(p);
-        guard avail > 0 else { return 0, IoError.BufferFull; }
+    if write_space(p) < src.len && p.consumed > 0 {
         compact_pipe(p);
-        let to_copy = if src.len < write_space(p) { src.len } else { write_space(p) };
-        for i in to_copy {
-            p.storage[p.written + i] = src[i];
-        }
-        p.written += to_copy;
-        return to_copy, if to_copy < src.len { IoError.ShortWrite } else { IoError.None };
+    }
+    guard write_space(p) >= src.len else {
+        return 0, IoError.BufferFull;
     }
     for i in src.len {
-        span[i] = src[i];
+        p.storage[p.written + i] = src[i];
     }
-    commit_write(p, src.len);
+    p.written += src.len;
     return src.len, IoError.None;
 }
 

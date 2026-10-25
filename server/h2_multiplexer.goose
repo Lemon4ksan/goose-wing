@@ -72,14 +72,12 @@ fn new_h2_server_session(
 
 // Finds an active server stream slot or an empty slot for a new stream
 fn find_or_alloc_stream(sess: H2ServerSession&, stream_id: u32) -> i32, bool {
-    // 1. Search existing active stream
     for i in sess.streams.len {
         if sess.streams[i].active && sess.streams[i].stream_id == stream_id {
             return i as i32, true;
         }
     }
 
-    // 2. Find empty inactive slot
     for i in sess.streams.len {
         if !sess.streams[i].active {
             reset_server_stream(sess.streams[i]);
@@ -89,7 +87,6 @@ fn find_or_alloc_stream(sess: H2ServerSession&, stream_id: u32) -> i32, bool {
         }
     }
 
-    // 3. Append if capacity allows
     if sess.streams.len < sess.streams.cap {
         var new_st = H2ServerStream {
             stream_id: stream_id,
@@ -115,19 +112,15 @@ fn emit_server_settings<B>(out: B&) {
     };
     encode_frame_header_to(hdr, out);
 
-    // 1. SETTING_MAX_CONCURRENT_STREAMS (0x03) = 128
     core::append_u16_be(out, SETTING_MAX_CONCURRENT_STREAMS);
     core::append_u32_be(out, 128);
 
-    // 2. SETTING_INITIAL_WINDOW_SIZE (0x04) = 65535
     core::append_u16_be(out, SETTING_INITIAL_WINDOW_SIZE);
     core::append_u32_be(out, 65535);
 
-    // 3. SETTING_MAX_FRAME_SIZE (0x05) = 16384
     core::append_u16_be(out, SETTING_MAX_FRAME_SIZE);
     core::append_u32_be(out, 16384);
 
-    // 4. SETTING_ENABLE_CONNECT_PROTO (0x08) = 1 (Extended CONNECT for WebSocket)
     core::append_u16_be(out, SETTING_ENABLE_CONNECT_PROTO);
     core::append_u32_be(out, 1);
 }
@@ -202,19 +195,16 @@ fn emit_response_headers<B>(
     end_stream: bool,
     out: B&
 ) {
-    var hpack_block: u8[>..] = [];
+    var hpack_block: u8[..16384] = [];
 
-    // 1. :status pseudo-header
     var status_buf: u8[..16] = [];
     format(status_buf, res.status_code as i64);
     encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], true, false);
 
-    // 2. server header
     if sess.server_name.len > 0 {
         encode_hpack_field(sess.hpack_enc, hpack_block, "server", sess.server_name[..], true, false);
     }
 
-    // 3. content-length header (RFC gRPC: responses that contain data MUST NOT include Content-Length)
     let is_grpc = starts_with_fold(res.header("content-type"), "application/grpc");
     if !is_grpc && res.status_code != 204 && res.status_code != 304 {
         var cl_buf: u8[..32] = [];
@@ -222,7 +212,6 @@ fn emit_response_headers<B>(
         encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], true, false);
     }
 
-    // 4. Custom response headers
     for &hdr in res.headers {
         let name_slice = hdr.name[..];
         let val_slice = hdr.value[..];
@@ -296,7 +285,7 @@ fn emit_response_trailers<B>(
     out: B&
 ) {
     guard trailers.len > 0 else { return; }
-    var hpack_block: u8[>..] = [];
+    var hpack_block: u8[..4096] = [];
 
     for &hdr in trailers {
         let name_slice = hdr.name[..];
@@ -335,13 +324,11 @@ fn handle_h2_server_ingress<B>(
 ) -> i64, bool {
     var offset: i64 = 0;
 
-    // 1. Process 24-byte Client Connection Preface if not already handled
     if !sess.preface_handled {
         if wire.len >= 24 && wire[..24] == H2_CLIENT_PREFACE[..] {
             sess.preface_handled = true;
             offset += 24;
 
-            // Emit initial Server SETTINGS
             emit_server_settings(out_wire);
             sess.server_settings_sent = true;
         } else {
@@ -349,7 +336,6 @@ fn handle_h2_server_ingress<B>(
         }
     }
 
-    // 2. Frame processing loop
     while offset + 9 <= wire.len {
         let hdr, err_hdr = parse_frame_header(wire[offset .. offset + 9], sess.conn.local_max_frame_size);
         guard err_hdr == ERR_NO_ERROR else {
@@ -496,7 +482,6 @@ fn handle_h2_server_ingress<B>(
         offset += total_frame_len;
     }
 
-    // 3. Dispatch ready requests through the Server Pipeline
     for i in sess.streams.len {
         if sess.streams[i].active &&
            sess.streams[i].headers_received &&

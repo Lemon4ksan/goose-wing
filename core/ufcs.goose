@@ -300,6 +300,36 @@ fn ::peek(rb: const core::RingBuffer&, dst: u8[:]) -> i64 { return core::peek(rb
 fn ::discard(rb: core::RingBuffer&, count: i64) -> i64 { return core::discard(rb, count); }
 fn ::clear(rb: core::RingBuffer&) { core::clear(rb); }
 
+// ---- pipe & cork buffer ufcs bridges ---------------------------------------
+
+fn ::readable_slice(p: const core::PipeBuffer&) -> const u8[:] { return core::readable_slice(p); }
+fn ::unexamined_slice(p: const core::PipeBuffer&) -> const u8[:] { return core::unexamined_slice(p); }
+fn ::readable_len(p: const core::PipeBuffer&) -> i64 { return core::readable_len(p); }
+fn ::unexamined_len(p: const core::PipeBuffer&) -> i64 { return core::unexamined_len(p); }
+fn ::write_space(p: const core::PipeBuffer&) -> i64 { return core::write_space(p); }
+fn ::total_available(p: const core::PipeBuffer&) -> i64 { return core::total_available(p); }
+fn ::advance_to(p: core::PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> core::IoError { return core::advance_to(p, consumed_delta, examined_delta); }
+fn ::get_write_span(p: core::PipeBuffer&, min_size: i64 = 1) -> u8[:], core::IoError { return core::get_write_span(p, min_size); }
+fn ::commit_write(p: core::PipeBuffer&, bytes_written: i64) -> core::IoError { return core::commit_write(p, bytes_written); }
+fn ::write(p: core::PipeBuffer&, src: const u8[:]) -> i64, core::IoError { return core::write(p, src); }
+fn ::complete_pipe(p: core::PipeBuffer&) { core::complete_pipe(p); }
+fn ::reset(p: core::PipeBuffer&) { core::reset(p); }
+
+fn ::cork_pending(cb: const core::CorkBuffer&) -> i64 { return core::cork_pending(cb); }
+fn ::cork_available(cb: const core::CorkBuffer&) -> i64 { return core::cork_available(cb); }
+fn ::cork_is_empty(cb: const core::CorkBuffer&) -> bool { return core::cork_is_empty(cb); }
+fn ::cork_is_full(cb: const core::CorkBuffer&) -> bool { return core::cork_is_full(cb); }
+fn ::cork_as_slice(cb: const core::CorkBuffer&) -> const u8[:] { return core::cork_as_slice(cb); }
+fn ::cork_write(cb: core::CorkBuffer&, src: const u8[:]) -> i64, core::IoError { return core::cork_write(cb, src); }
+fn ::cork_write_exact(cb: core::CorkBuffer&, src: const u8[:]) -> core::IoError { return core::cork_write_exact(cb, src); }
+fn ::cork_write_u8(cb: core::CorkBuffer&, b: u8) -> core::IoError { return core::cork_write_u8(cb, b); }
+fn ::cork_write_u16_be(cb: core::CorkBuffer&, v: u16) -> core::IoError { return core::cork_write_u16_be(cb, v); }
+fn ::cork_write_u24_be(cb: core::CorkBuffer&, v: u32) -> core::IoError { return core::cork_write_u24_be(cb, v); }
+fn ::cork_write_u32_be(cb: core::CorkBuffer&, v: u32) -> core::IoError { return core::cork_write_u32_be(cb, v); }
+fn ::cork_write_u64_be(cb: core::CorkBuffer&, v: u64) -> core::IoError { return core::cork_write_u64_be(cb, v); }
+fn ::cork_consume(cb: core::CorkBuffer&, n: i64) { core::cork_consume(cb, n); }
+fn ::cork_reset(cb: core::CorkBuffer&) { core::cork_reset(cb); }
+
 // ---- bytes & stringview ufcs bridges ----------------------------------------
 
 fn ::eq_ascii_fold(a: const u8[:], b: const u8[:]) -> bool { return core::eq_ascii_fold(a, b); }
