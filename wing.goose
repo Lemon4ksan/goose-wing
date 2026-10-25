@@ -87,6 +87,8 @@ import auth.digest;
 import auth.sigv4;
 import auth.pkce;
 import auth.dpop;
+import auth.jwt;
+import auth.jwks;
 
 // ---- tls 1.3 & x.509 pki -------------------------------------------------
 
