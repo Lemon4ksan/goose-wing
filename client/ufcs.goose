@@ -758,3 +758,21 @@ fn ::parse_http1_wire_response(wire: const u8[:], out_res: wing::Response&) -> b
 fn ::serialize_http1_response<B>(res: const wing::Response&, server_name: const u8[:], out_wire: B&) {
     wing::serialize_http1_response(res, server_name, out_wire);
 }
+
+// ---- post-quantum hybrid key exchange ufcs bridges -------------------------
+
+fn ::format_hybrid_key_share<B>(share: const wing::PostQuantumKeyShare&, out: B&) {
+    wing::format_hybrid_key_share(share, out);
+}
+
+fn ::parse_hybrid_key_share(raw: const u8[:], out: wing::PostQuantumKeyShare&) -> bool {
+    return wing::parse_hybrid_key_share(raw, out);
+}
+
+fn ::format_hybrid_server_key_share<B>(share: const wing::PostQuantumServerShare&, out: B&) {
+    wing::format_hybrid_server_key_share(share, out);
+}
+
+fn ::parse_hybrid_server_key_share(raw: const u8[:], out: wing::PostQuantumServerShare&) -> bool {
+    return wing::parse_hybrid_server_key_share(raw, out);
+}

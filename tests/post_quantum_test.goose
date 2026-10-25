@@ -1,6 +1,7 @@
 // Verification suite for RFC 10024 & FIPS 203 Hybrid Post-Quantum Key Agreement:
 // - NamedGroup validation (0x11EC X25519MLKEM768, 0x6399 X25519Kyber768)
 // - 1184-byte hybrid ClientHello key share wire serialization and deserialization
+// - 1120-byte hybrid ServerHello key share wire serialization and deserialization
 // - Hybrid shared secret derivation combiner (RFC 10024 §4)
 import std;
 import core from "..";
@@ -14,7 +15,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
         sub.assert_false(wing::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
     };
 
-    t.run("Hybrid 1184-Byte Key Share Wire Codec") { sub =>
+    t.run("Hybrid 1184-Byte Client Key Share Wire Codec") { sub =>
         var share = wing::PostQuantumKeyShare {
             group: wing::GROUP_X25519_MLKEM768,
             ..
@@ -23,13 +24,13 @@ fn test_post_quantum_hybrid(t: core::T&) {
         for i in 1152 { share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
 
         var wire: u8[>..] = [];
-        wing::format_hybrid_key_share(share, wire);
+        share.format_hybrid_key_share(wire);
         // group (2) + len (2) + 1184 = 1188 bytes total
         sub.assert_eq(wire.len, 1188, "Wire length is exactly 1188 bytes");
 
         var parsed = wing::PostQuantumKeyShare { .. };
-        let ok_parse = wing::parse_hybrid_key_share(wire[..], parsed);
-        sub.assert_true(ok_parse, "Hybrid key share parsed");
+        let ok_parse = wire[..].parse_hybrid_key_share(parsed);
+        sub.assert_true(ok_parse, "Hybrid key share parsed via UFCS");
         sub.assert_eq(parsed.group, wing::GROUP_X25519_MLKEM768, "Group is 0x11EC");
         sub.assert_bytes_eq(parsed.x25519_public[..], share.x25519_public[..], "X25519 component matches");
 
@@ -41,6 +42,49 @@ fn test_post_quantum_hybrid(t: core::T&) {
             }
         }
         sub.assert_true(mlkem_match, "ML-KEM-768 1152-byte component matches verbatim");
+
+        // Edge cases
+        var bad_parsed = wing::PostQuantumKeyShare { .. };
+        sub.assert_false(wire[..10].parse_hybrid_key_share(bad_parsed), "Truncated wire fails");
+
+        var corrupt_wire: u8[>..] = [];
+        corrupt_wire.append(wire[..]);
+        corrupt_wire[0] = 0x00;
+        corrupt_wire[1] = 0x1D; // classical X25519, not PQ
+        sub.assert_false(corrupt_wire[..].parse_hybrid_key_share(bad_parsed), "Non-PQ group fails");
+    };
+
+    t.run("Hybrid 1120-Byte Server Key Share Wire Codec") { sub =>
+        var server_share = wing::PostQuantumServerShare {
+            group: wing::GROUP_X25519_MLKEM768,
+            ..
+        };
+        for i in 32 { server_share.x25519_public[i] = (i + 5) as u8; }
+        for i in 1088 { server_share.mlkem768_ciphertext[i] = ((i * 11 + 7) & 0xFF) as u8; }
+
+        var wire: u8[>..] = [];
+        server_share.format_hybrid_server_key_share(wire);
+        // group (2) + len (2) + 1120 = 1124 bytes total
+        sub.assert_eq(wire.len, 1124, "Server wire length is exactly 1124 bytes");
+
+        var parsed_server = wing::PostQuantumServerShare { .. };
+        let ok_parse = wire[..].parse_hybrid_server_key_share(parsed_server);
+        sub.assert_true(ok_parse, "Server hybrid key share parsed via UFCS");
+        sub.assert_eq(parsed_server.group, wing::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
+        sub.assert_bytes_eq(parsed_server.x25519_public[..], server_share.x25519_public[..], "Server X25519 component matches");
+
+        var ct_match = true;
+        for i in 1088 {
+            if parsed_server.mlkem768_ciphertext[i] != server_share.mlkem768_ciphertext[i] {
+                ct_match = false;
+                break;
+            }
+        }
+        sub.assert_true(ct_match, "ML-KEM-768 1088-byte ciphertext matches verbatim");
+
+        // Edge case
+        var bad_parsed = wing::PostQuantumServerShare { .. };
+        sub.assert_false(wire[..500].parse_hybrid_server_key_share(bad_parsed), "Truncated server wire fails");
     };
 
     t.run("Hybrid Shared Secret Combiner (RFC 10024 §4)") { sub =>
