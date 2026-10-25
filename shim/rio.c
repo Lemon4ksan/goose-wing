@@ -136,6 +136,33 @@ void wing_rio_deregister_buffer(uint64_t buf_id) {
     }
 }
 
+uint64_t wing_rio_create_cq(uint32_t queue_size) {
+    if (!g_rio_available && init_rio_table() != 0) {
+        return 0;
+    }
+    if (!g_rio.RIOCreateCompletionQueue) {
+        return 0;
+    }
+    RIO_CQ cq = g_rio.RIOCreateCompletionQueue(queue_size, NULL);
+    return (uint64_t)(uintptr_t)cq;
+}
+
+void wing_rio_close_cq(uint64_t cq_id) {
+    if (g_rio_available && cq_id != 0 && g_rio.RIOCloseCompletionQueue) {
+        g_rio.RIOCloseCompletionQueue((RIO_CQ)(uintptr_t)cq_id);
+    }
+}
+
+uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t count) {
+    if (!g_rio_available && init_rio_table() != 0) {
+        return 0;
+    }
+    if (!cq_id || !results || !g_rio.RIODequeueCompletion) {
+        return 0;
+    }
+    return g_rio.RIODequeueCompletion((RIO_CQ)(uintptr_t)cq_id, (WING_RIO_RESULT*)results, count);
+}
+
 #else
 
 // Non-Windows platform stubs
@@ -143,5 +170,10 @@ int32_t wing_rio_probe(void) { return -38; }
 int32_t wing_rio_available(void) { return 0; }
 uint64_t wing_rio_register_buffer(void *buf, uint32_t len) { (void)buf; (void)len; return 0; }
 void wing_rio_deregister_buffer(uint64_t buf_id) { (void)buf_id; }
+uint64_t wing_rio_create_cq(uint32_t queue_size) { (void)queue_size; return 0; }
+void wing_rio_close_cq(uint64_t cq_id) { (void)cq_id; }
+uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t count) {
+    (void)cq_id; (void)results; (void)count; return 0;
+}
 
 #endif

@@ -15,6 +15,9 @@ extern "wing_rio_probe" fn native_rio_probe() -> i32;
 extern "wing_rio_available" fn native_rio_available() -> i32;
 extern "wing_rio_register_buffer" fn native_rio_register_buffer(ptr: u64, len: u32) -> u64;
 extern "wing_rio_deregister_buffer" fn native_rio_deregister_buffer(buf_id: u64);
+extern "wing_rio_create_cq" fn native_rio_create_cq(queue_size: u32) -> u64;
+extern "wing_rio_close_cq" fn native_rio_close_cq(cq_id: u64);
+extern "wing_rio_dequeue_completion" fn native_rio_dequeue_completion(cq_id: u64, results_ptr: u64, count: u32) -> u32;
 
 extern "wing_uring_probe" fn native_uring_probe() -> i32;
 extern "wing_uring_create" fn native_uring_create(entries: u32, flags: u32) -> i64;
