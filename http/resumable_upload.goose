@@ -4,7 +4,6 @@
 namespace wing;
 
 import std;
-import client.profile;
 import client.request;
 import client.response;
 

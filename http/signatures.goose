@@ -5,7 +5,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.profile;
 import client.request;
 import client.response;
 

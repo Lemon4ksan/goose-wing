@@ -27,6 +27,10 @@ import fingerprint.profile;
 import fingerprint.p0f;
 import fingerprint.akamai;
 
+// ---- http primitives & headers ---------------------------------------------
+
+import http.headers;
+
 // ---- client session and application layer ----------------------------------
 
 import client.profile;
@@ -40,9 +44,8 @@ import client.telemetry;
 import client.interceptor;
 import client.stream;
 
-// ---- http primitives -------------------------------------------------------
+// ---- http protocols & extensions -------------------------------------------
 
-import http.headers;
 import http.mime;
 import http.multipart;
 import http.trace;
