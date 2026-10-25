@@ -971,5 +971,20 @@ fn ::format_altsvc_header<B>(
     wing::format_altsvc_header(out, proto, port, max_age_sec, persist);
 }
 
+// ---- no-vary-search cache normalization ufcs bridges ------------------------
+
+fn ::parse_no_vary_search(raw: const u8[:]) -> wing::NoVarySearch, bool {
+    return wing::parse_no_vary_search(raw);
+}
+
+fn ::is_param_ignored(nvs: const wing::NoVarySearch&, key: const u8[:]) -> bool {
+    return wing::is_param_ignored(nvs, key);
+}
+
+fn ::normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const wing::NoVarySearch&, out: B&) {
+    wing::normalize_query_for_cache(raw_query, nvs, out);
+}
+
+
 
 

@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import http.headers;
 
 // ---- 1. No-Vary-Search Model -----------------------------------------------
@@ -33,7 +34,7 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
         while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t' || raw[cursor] == ',') {
             cursor++;
         }
-        if cursor == raw.len { break; }
+        guard cursor < raw.len else { break; }
 
         let token_start = cursor;
         while cursor < raw.len && raw[cursor] != '=' && raw[cursor] != ',' && raw[cursor] != ' ' && raw[cursor] != '\t' {
@@ -51,10 +52,10 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
 
             if cursor < raw.len && raw[cursor] == '(' {
                 // Inner list: e.g. ("id" "page")
-                let list_start = cursor;
-                while cursor < raw.len && raw[cursor] != ')' { cursor++; }
-                if cursor < raw.len && raw[cursor] == ')' { cursor++; }
-                val_slice = raw[list_start..cursor];
+                let rel_close = core::index_of_byte(raw[cursor..], ')');
+                let list_end = if rel_close >= 0 { cursor + rel_close + 1 } else { raw.len };
+                val_slice = raw[cursor..list_end];
+                cursor = list_end;
                 has_val = true;
             } else if cursor < raw.len && raw[cursor] == '?' {
                 // Boolean: ?0 or ?1
@@ -90,20 +91,22 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
 }
 
 fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) {
-    var i: i64 = 0;
-    while i < inner_list.len {
-        while i < inner_list.len && inner_list[i] != '"' { i++; }
-        if i >= inner_list.len { break; }
-        i++; // skip open quote
+    var cursor: i64 = 0;
+    while cursor < inner_list.len {
+        let rel_q1 = core::index_of_byte(inner_list[cursor..], '"');
+        guard rel_q1 >= 0 else { break; }
+        let start = cursor + rel_q1 + 1;
 
-        let str_start = i;
-        while i < inner_list.len && inner_list[i] != '"' { i++; }
-        if i > str_start && out.len < 16 {
+        let rel_q2 = core::index_of_byte(inner_list[start..], '"');
+        guard rel_q2 >= 0 else { break; }
+        let end = start + rel_q2;
+
+        if end > start && out.len < out.cap {
             var item: u8[..64] = [];
-            item.append(inner_list[str_start..i]);
+            item.append(inner_list[start..end]);
             out.push(item);
         }
-        if i < inner_list.len { i++; } // skip closing quote
+        cursor = end + 1;
     }
 }
 
@@ -153,36 +156,24 @@ fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&
     }
 
     while cursor < raw_query.len {
-        var amp_pos = raw_query.len;
-        for i in cursor..raw_query.len {
-            if raw_query[i] == '&' {
-                amp_pos = i;
-                break;
-            }
-        }
+        let rel_amp = core::index_of_byte(raw_query[cursor..], '&');
+        let amp_pos = if rel_amp >= 0 { cursor + rel_amp } else { raw_query.len };
 
         let pair = raw_query[cursor..amp_pos];
         cursor = if amp_pos < raw_query.len { amp_pos + 1 } else { raw_query.len };
         if pair.len == 0 { continue; }
 
-        var eq_pos: i64 = -1;
-        for i in pair.len {
-            if pair[i] == '=' {
-                eq_pos = i;
-                break;
-            }
-        }
-
+        let k, v, has_eq = pair.split_once_byte('=');
         var p = QueryParam { .. };
-        if eq_pos >= 0 {
-            p.key.append(pair[..eq_pos]);
-            p.val.append(pair[eq_pos + 1..]);
+        if has_eq {
+            p.key.append(k);
+            p.val.append(v);
         } else {
             p.key.append(pair);
         }
 
         // Only keep if not ignored by No-Vary-Search rules
-        if !is_param_ignored(nvs, p.key[..]) && params.len < 32 {
+        if !is_param_ignored(nvs, p.key[..]) && params.len < params.cap {
             params.push(p);
         }
     }
@@ -201,14 +192,14 @@ fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&
     }
 
     // Serialize normalized query
-    for i in params.len {
+    for &p, i in params {
         if i > 0 {
             out.push('&');
         }
-        out.append(params[i].key[..]);
-        if params[i].val.len > 0 {
+        out.append(p.key[..]);
+        if p.val.len > 0 {
             out.push('=');
-            out.append(params[i].val[..]);
+            out.append(p.val[..]);
         }
     }
 }
