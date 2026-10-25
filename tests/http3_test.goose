@@ -206,11 +206,32 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         wing::quic_encode_varint(good_ctrl, wing::H3_STREAM_CONTROL);
         wing::encode_h3_settings_frame(good_ctrl, settings);
 
-        // Process valid control stream
-        wing::h3_handle_stream_data(conn, 3, false, good_ctrl[..], false);
+        // Process valid control stream on sid 3
+        conn.handle_stream_data(3, false, good_ctrl[..], false);
 
-        // Peer closes control stream with FIN
-        let err_crit = wing::h3_handle_stream_data(conn, 3, false, [], true);
+        // Register QPACK encoder stream on sid 7
+        var qpack_enc: u8[..64] = [];
+        wing::quic_encode_varint(qpack_enc, wing::H3_STREAM_QPACK_ENCODER);
+        conn.handle_stream_data(7, false, qpack_enc[..], false);
+
+        // Unknown unidirectional stream on sid 11: closing with FIN must NOT trigger critical error
+        var unknown_uni: u8[..64] = [];
+        wing::quic_encode_varint(unknown_uni, 0x21); // GREASE stream type
+        let err_unknown = conn.handle_stream_data(11, false, unknown_uni[..], true);
+        sub.assert_eq(err_unknown, wing::H3_ERR_NO_ERROR, "closing non-critical uni stream is permitted");
+
+        // Peer closes QPACK encoder stream with FIN -> critical error
+        let err_qpack = conn.handle_stream_data(7, false, [], true);
+        sub.assert_eq(
+            err_qpack,
+            wing::H3_ERR_CLOSED_CRITICAL_STREAM,
+            "closing QPACK encoder stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)"
+        );
+
+        // Reset conn to test control stream closure
+        var conn_ctrl = wing::new_h3_client_connection(settings);
+        conn_ctrl.handle_stream_data(3, false, good_ctrl[..], false);
+        let err_crit = conn_ctrl.handle_stream_data(3, false, [], true);
         sub.assert_eq(
             err_crit,
             wing::H3_ERR_CLOSED_CRITICAL_STREAM,
@@ -228,7 +249,7 @@ fn test_h3_request_streams(t: core::T&) {
         var conn = wing::new_h3_client_connection(settings);
 
         // Open request stream 0
-        let sid, ok_sid = wing::h3_open_request_stream(conn);
+        let sid, ok_sid = conn.open_request_stream();
         sub.assert_true(ok_sid, "open request stream succeeds");
         sub.assert_eq(sid, 0, "first client stream id is 0");
 
@@ -236,8 +257,7 @@ fn test_h3_request_streams(t: core::T&) {
         wing::append_header(extra_hdrs, "user-agent", "GooseWing/1.0");
 
         var req_buf: u8[..512] = [];
-        let ok_send = wing::h3_send_request_headers(
-            conn,
+        let ok_send = conn.send_request_headers(
             sid,
             "POST",
             "https",
@@ -257,7 +277,7 @@ fn test_h3_request_streams(t: core::T&) {
         // Send request body
         var data_buf: u8[..64] = [];
         let body = "{\"status\":\"ready\"}";
-        let ok_data = wing::h3_send_request_data(conn, sid, body, true, data_buf);
+        let ok_data = conn.send_request_data(sid, body, true, data_buf);
         sub.assert_true(ok_data, "send request body succeeds");
 
         let d_hdr, ok_d_hdr = wing::parse_h3_frame_header(data_buf[..], 0);
@@ -270,7 +290,7 @@ fn test_h3_request_streams(t: core::T&) {
         let settings = wing::H3Settings { .. };
         var conn = wing::new_h3_client_connection(settings);
 
-        let sid, _ = wing::h3_open_request_stream(conn);
+        let sid, _ = conn.open_request_stream();
 
         // Construct server response HEADERS frame (:status = 200)
         var qpack_resp: u8[..128] = [];
@@ -288,32 +308,32 @@ fn test_h3_request_streams(t: core::T&) {
         wing::encode_h3_data_frame(srv_wire, resp_body);
 
         // Ingest response on bidi stream 0 with FIN
-        let err = wing::h3_handle_stream_data(conn, sid, true, srv_wire[..], true);
+        let err = conn.handle_stream_data(sid, true, srv_wire[..], true);
         sub.assert_eq(err, wing::H3_ERR_NO_ERROR, "response ingested without error");
 
-        // Inspect response state
-        let sc, ok_sc = wing::h3_get_status_code(conn, sid);
+        // Inspect response state via UFCS
+        let sc, ok_sc = conn.get_status_code(sid);
         sub.assert_true(ok_sc, "status code extracted");
         sub.assert_eq(sc, 200, "status code is 200");
 
-        let rec_body, ok_body = wing::h3_get_response_body(conn, sid);
+        let rec_body, ok_body = conn.get_response_body(sid);
         sub.assert_true(ok_body, "response body extracted");
         sub.assert_eq(rec_body, resp_body, "response body matches exactly");
 
-        sub.assert_true(wing::h3_is_stream_finished(conn, sid), "stream is finished with FIN");
+        sub.assert_true(conn.is_stream_finished(sid), "stream is finished with FIN");
     };
 
     t.run("H3-11: Protocol Error: DATA Before HEADERS on Request Stream") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = wing::new_h3_client_connection(settings);
 
-        let sid, _ = wing::h3_open_request_stream(conn);
+        let sid, _ = conn.open_request_stream();
 
         // Server sends DATA frame before HEADERS frame
         var bad_resp: u8[..64] = [];
         wing::encode_h3_data_frame(bad_resp, "illegal early body");
 
-        let err = wing::h3_handle_stream_data(conn, sid, true, bad_resp[..], false);
+        let err = conn.handle_stream_data(sid, true, bad_resp[..], false);
         sub.assert_eq(
             err,
             wing::H3_ERR_FRAME_UNEXPECTED,
@@ -326,8 +346,8 @@ fn test_h3_request_streams(t: core::T&) {
         var conn = wing::new_h3_client_connection(settings);
 
         // Open streams 0 and 4
-        let s0, _ = wing::h3_open_request_stream(conn);
-        let s4, _ = wing::h3_open_request_stream(conn);
+        let s0, _ = conn.open_request_stream();
+        let s4, _ = conn.open_request_stream();
         sub.assert_eq(s0, 0, "s0 is 0");
         sub.assert_eq(s4, 4, "s4 is 4");
 
@@ -337,12 +357,12 @@ fn test_h3_request_streams(t: core::T&) {
         wing::encode_h3_settings_frame(ctrl_goaway, settings);
         wing::encode_h3_goaway_frame(ctrl_goaway, 4);
 
-        wing::h3_handle_stream_data(conn, 3, false, ctrl_goaway[..], false);
+        conn.handle_stream_data(3, false, ctrl_goaway[..], false);
         sub.assert_true(conn.goaway_received, "goaway received");
         sub.assert_eq(conn.goaway_max_stream_id, 4, "goaway max stream id is 4");
 
         // Attempting to open next stream (id 8 >= 4) must fail
-        let s8, ok_s8 = wing::h3_open_request_stream(conn);
+        let s8, ok_s8 = conn.open_request_stream();
         sub.assert_false(ok_s8, "cannot open stream beyond GOAWAY limit");
     };
 }

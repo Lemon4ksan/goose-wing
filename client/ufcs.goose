@@ -776,3 +776,64 @@ fn ::format_hybrid_server_key_share<B>(share: const wing::PostQuantumServerShare
 fn ::parse_hybrid_server_key_share(raw: const u8[:], out: wing::PostQuantumServerShare&) -> bool {
     return wing::parse_hybrid_server_key_share(raw, out);
 }
+
+// ---- http/3 connection coordinator ufcs bridges -----------------------------
+
+fn ::encode_client_preambles<B1, B2, B3>(
+    conn: wing::H3Connection&,
+    out_ctrl: B1&,
+    out_qpack_enc: B2&,
+    out_qpack_dec: B3&
+) -> bool {
+    return wing::h3_encode_client_preambles(conn, out_ctrl, out_qpack_enc, out_qpack_dec);
+}
+
+fn ::open_request_stream(conn: wing::H3Connection&) -> u64, bool {
+    return wing::h3_open_request_stream(conn);
+}
+
+fn ::send_request_headers<B>(
+    conn: wing::H3Connection&,
+    stream_id: u64,
+    method: const u8[:],
+    scheme: const u8[:],
+    authority: const u8[:],
+    path: const u8[:],
+    extra_headers: const wing::HeaderMap&,
+    end_stream: bool,
+    out: B&
+) -> bool {
+    return wing::h3_send_request_headers(conn, stream_id, method, scheme, authority, path, extra_headers, end_stream, out);
+}
+
+fn ::send_request_data<B>(
+    conn: wing::H3Connection&,
+    stream_id: u64,
+    data: const u8[:],
+    end_stream: bool,
+    out: B&
+) -> bool {
+    return wing::h3_send_request_data(conn, stream_id, data, end_stream, out);
+}
+
+fn ::handle_stream_data(
+    conn: wing::H3Connection&,
+    stream_id: u64,
+    is_bidi: bool,
+    data: const u8[:],
+    fin: bool
+) -> u64 {
+    return wing::h3_handle_stream_data(conn, stream_id, is_bidi, data, fin);
+}
+
+fn ::get_status_code(conn: const wing::H3Connection&, stream_id: u64) -> i32, bool {
+    return wing::h3_get_status_code(conn, stream_id);
+}
+
+fn ::get_response_body(conn: const wing::H3Connection&, stream_id: u64) -> const u8[:], bool {
+    return wing::h3_get_response_body(conn, stream_id);
+}
+
+fn ::is_stream_finished(conn: const wing::H3Connection&, stream_id: u64) -> bool {
+    return wing::h3_is_stream_finished(conn, stream_id);
+}

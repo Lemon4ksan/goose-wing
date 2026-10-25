@@ -7,7 +7,6 @@ import http.headers;
 import quic.packet;
 import http3.qpack;
 import http3.framing;
-import fingerprint.profile;
 
 // ---- 1. Stream Kinds, States and Structures --------------------------------
 
@@ -65,13 +64,15 @@ struct H3Connection {
     local_qpack_enc_stream_id: u64 = 6,
     local_qpack_dec_stream_id: u64 = 10,
     local_settings_sent: bool = false,
-    peer_control_stream_id: u64 = 0,
+    peer_control_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
     peer_control_opened: bool = false,
     peer_settings_received: bool = false,
+    peer_qpack_enc_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
     peer_qpack_enc_opened: bool = false,
+    peer_qpack_dec_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
     peer_qpack_dec_opened: bool = false,
     goaway_received: bool = false,
-    goaway_max_stream_id: u64 = 0,
+    goaway_max_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
     error_code: u64 = H3_ERR_NO_ERROR,
     local_settings: H3Settings = H3Settings { .. },
     peer_settings: H3Settings = H3Settings { .. },
@@ -81,25 +82,9 @@ struct H3Connection {
 
 fn new_h3_client_connection(settings: const H3Settings&) -> H3Connection {
     return H3Connection {
-        role: H3ConnRole.Client,
-        state: H3ConnState.Connecting,
-        next_bidi_stream_id: 0,
-        local_control_stream_id: 2,
-        local_qpack_enc_stream_id: 6,
-        local_qpack_dec_stream_id: 10,
-        local_settings_sent: false,
-        peer_control_stream_id: 0,
-        peer_control_opened: false,
-        peer_settings_received: false,
-        peer_qpack_enc_opened: false,
-        peer_qpack_dec_opened: false,
-        goaway_received: false,
-        goaway_max_stream_id: 0xFFFFFFFFFFFFFFFF,
-        error_code: H3_ERR_NO_ERROR,
         local_settings: settings,
-        peer_settings: H3Settings { .. },
-        streams: [],
         qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32),
+        ..
     };
 }
 
@@ -258,19 +243,39 @@ fn h3_handle_stream_data(
 
         var offset: u64 = 0;
 
-        // If peer control stream is not yet identified, check if this is it
-        if !conn.peer_control_opened {
+        let is_known = (conn.peer_control_opened && stream_id == conn.peer_control_stream_id) ||
+                       (conn.peer_qpack_enc_opened && stream_id == conn.peer_qpack_enc_stream_id) ||
+                       (conn.peer_qpack_dec_opened && stream_id == conn.peer_qpack_dec_stream_id);
+
+        if !is_known && data.len > 0 {
             let stype, off1, ok_type = quic_decode_varint(data, offset);
             guard ok_type else { return H3_ERR_GENERAL_PROTOCOL; }
             offset = off1;
 
             if stype == H3_STREAM_CONTROL {
+                if conn.peer_control_opened {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_STREAM_CREATION;
+                    return H3_ERR_STREAM_CREATION;
+                }
                 conn.peer_control_opened = true;
                 conn.peer_control_stream_id = stream_id;
             } else if stype == H3_STREAM_QPACK_ENCODER {
+                if conn.peer_qpack_enc_opened {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_STREAM_CREATION;
+                    return H3_ERR_STREAM_CREATION;
+                }
                 conn.peer_qpack_enc_opened = true;
+                conn.peer_qpack_enc_stream_id = stream_id;
             } else if stype == H3_STREAM_QPACK_DECODER {
+                if conn.peer_qpack_dec_opened {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_STREAM_CREATION;
+                    return H3_ERR_STREAM_CREATION;
+                }
                 conn.peer_qpack_dec_opened = true;
+                conn.peer_qpack_dec_stream_id = stream_id;
             } else {
                 // Unknown unidirectional stream: ignore payload (RFC 9114 Section 6.2)
                 return H3_ERR_NO_ERROR;
@@ -279,7 +284,10 @@ fn h3_handle_stream_data(
 
         // Critical stream closure defense (RFC 9114 Section 6.2.1)
         if fin {
-            if stream_id == conn.peer_control_stream_id || conn.peer_qpack_enc_opened || conn.peer_qpack_dec_opened {
+            let is_critical = (conn.peer_control_opened && stream_id == conn.peer_control_stream_id) ||
+                              (conn.peer_qpack_enc_opened && stream_id == conn.peer_qpack_enc_stream_id) ||
+                              (conn.peer_qpack_dec_opened && stream_id == conn.peer_qpack_dec_stream_id);
+            if is_critical {
                 conn.state = H3ConnState.Closed;
                 conn.error_code = H3_ERR_CLOSED_CRITICAL_STREAM;
                 return H3_ERR_CLOSED_CRITICAL_STREAM;
@@ -405,12 +413,12 @@ fn h3_handle_stream_data(
             // Extract status code from pseudo-headers
             for field in decoded_fields {
                 if field.name[..] == ":status" {
-                    let sc, ok_sc = core::parse_digits(field.value[..]);
+                    let sc, ok_sc = core::parse_i32_dec(field.value[..]);
                     if ok_sc {
-                        conn.streams[s_idx].status_code = sc as i32;
+                        conn.streams[s_idx].status_code = sc;
                     }
-                } else if field.name[..] == "content-length" {
-                    let cl, ok_cl = core::parse_digits(field.value[..]);
+                } else if eq_ascii_fold(field.name[..], "content-length") {
+                    let cl, ok_cl = core::parse_i64_dec(field.value[..]);
                     if ok_cl {
                         conn.streams[s_idx].content_length = cl;
                     }
