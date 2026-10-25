@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import http.headers;
 
 // ---- 1. Alt-Svc Models & Constants -----------------------------------------
@@ -33,6 +34,16 @@ struct AltSvcCache {
 
 fn new_altsvc_cache() -> AltSvcCache {
     return AltSvcCache { .. };
+}
+
+// Finds index of valid origin entry in cache, or -1 if not found.
+fn find_origin_entry_idx(cache: const AltSvcCache&, origin: const u8[:]) -> i64 {
+    for &entry, idx in cache.entries {
+        if entry.valid && entry.origin[..] == origin {
+            return idx;
+        }
+    }
+    return -1;
 }
 
 // ---- 2. RFC 7838 Header Parser ---------------------------------------------
@@ -69,13 +80,12 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         while cursor < trimmed.len && (trimmed[cursor] == ' ' || trimmed[cursor] == '\t' || trimmed[cursor] == ',') {
             cursor++;
         }
-        if cursor == trimmed.len { break; }
+        guard cursor < trimmed.len else { break; }
 
         // Find end of current alternative service (next unquoted comma or end of string)
         var entry_end = trimmed.len;
         var in_quotes = false;
-        var i = cursor;
-        while i < trimmed.len {
+        for i in cursor..trimmed.len {
             let b = trimmed[i];
             if b == '"' {
                 in_quotes = !in_quotes;
@@ -83,7 +93,6 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
                 entry_end = i;
                 break;
             }
-            i++;
         }
 
         let entry_str = trim_lws(trimmed[cursor..entry_end]);
@@ -151,11 +160,9 @@ fn altsvc_cache_update(
 
     // If "clear", invalidate origin entry
     if is_clear {
-        for i in cache.entries.len {
-            if cache.entries[i].valid && cache.entries[i].origin[..] == origin {
-                cache.entries[i].valid = false;
-                return;
-            }
+        let idx = find_origin_entry_idx(cache, origin);
+        if idx >= 0 {
+            cache.entries[idx].valid = false;
         }
         return;
     }
@@ -163,19 +170,18 @@ fn altsvc_cache_update(
     guard endpoints.len > 0 else { return; }
 
     // Update existing origin
-    for i in cache.entries.len {
-        if cache.entries[i].valid && cache.entries[i].origin[..] == origin {
-            cache.entries[i].endpoints.clear();
-            for ep in endpoints { cache.entries[i].endpoints.push(ep); }
-            cache.entries[i].inserted_at_sec = now_sec;
-            // RFC 7838 Section 2.4 & Chromium HttpServerProperties:
-            // Receiving an Alt-Svc header advertisement MUST NOT clear an active broken-backoff state!
-            if now_sec >= cache.entries[i].broken_until_sec {
-                cache.entries[i].failed_attempts = 0;
-                cache.entries[i].broken_until_sec = 0;
-            }
-            return;
+    let existing_idx = find_origin_entry_idx(cache, origin);
+    if existing_idx >= 0 {
+        cache.entries[existing_idx].endpoints.clear();
+        for &ep in endpoints { cache.entries[existing_idx].endpoints.push(ep); }
+        cache.entries[existing_idx].inserted_at_sec = now_sec;
+        // RFC 7838 Section 2.4 & Chromium HttpServerProperties:
+        // Receiving an Alt-Svc header advertisement MUST NOT clear an active broken-backoff state!
+        if now_sec >= cache.entries[existing_idx].broken_until_sec {
+            cache.entries[existing_idx].failed_attempts = 0;
+            cache.entries[existing_idx].broken_until_sec = 0;
         }
+        return;
     }
 
     // Insert new origin
@@ -185,21 +191,21 @@ fn altsvc_cache_update(
         ..
     };
     entry.origin.append(origin);
-    for ep in endpoints { entry.endpoints.push(ep); }
+    for &ep in endpoints { entry.endpoints.push(ep); }
 
-    if cache.entries.len < 64 {
+    if cache.entries.len < cache.entries.cap {
         cache.entries.push(entry);
     } else {
         // Evict oldest or invalid entry
         var oldest_idx: i64 = 0;
         var oldest_time = cache.entries[0].inserted_at_sec;
-        for i in cache.entries.len {
-            if !cache.entries[i].valid {
+        for &e, i in cache.entries {
+            if !e.valid {
                 oldest_idx = i;
                 break;
             }
-            if cache.entries[i].inserted_at_sec < oldest_time {
-                oldest_time = cache.entries[i].inserted_at_sec;
+            if e.inserted_at_sec < oldest_time {
+                oldest_time = e.inserted_at_sec;
                 oldest_idx = i;
             }
         }
@@ -214,21 +220,20 @@ fn altsvc_lookup_h3(
     now_sec: i64,
     out_ep: AltSvcEndpoint&
 ) -> bool {
-    for &entry in cache.entries {
-        if entry.valid && entry.origin[..] == origin {
-            // Check if marked broken (failure backoff)
-            if now_sec < entry.broken_until_sec {
-                return false;
-            }
+    let idx = find_origin_entry_idx(cache, origin);
+    guard idx >= 0 else { return false; }
 
-            for &ep in entry.endpoints {
-                if ep.proto[..] == "h3" {
-                    let elapsed = now_sec - entry.inserted_at_sec;
-                    if elapsed < ep.max_age_sec {
-                        out_ep = ep;
-                        return true;
-                    }
-                }
+    // Check if marked broken (failure backoff)
+    if now_sec < cache.entries[idx].broken_until_sec {
+        return false;
+    }
+
+    for &ep in cache.entries[idx].endpoints {
+        if ep.proto[..] == "h3" {
+            let elapsed = now_sec - cache.entries[idx].inserted_at_sec;
+            if elapsed < ep.max_age_sec {
+                out_ep = ep;
+                return true;
             }
         }
     }
@@ -237,47 +242,37 @@ fn altsvc_lookup_h3(
 
 // Records an alternative service connection failure with exponential backoff (Chromium/Mach model)
 fn altsvc_record_failure(cache: AltSvcCache&, origin: const u8[:], now_sec: i64) {
-    for i in cache.entries.len {
-        if cache.entries[i].valid && cache.entries[i].origin[..] == origin {
-            cache.entries[i].failed_attempts++;
-            let shift = if cache.entries[i].failed_attempts > 6 { 6 } else { cache.entries[i].failed_attempts };
-            // Backoff: 5s, 10s, 20s, 40s, 80s, 160s, max 320s
-            let backoff_sec: i64 = 5 * (1 << (shift - 1));
-            cache.entries[i].broken_until_sec = now_sec + backoff_sec;
-            return;
-        }
-    }
+    let idx = find_origin_entry_idx(cache, origin);
+    guard idx >= 0 else { return; }
+
+    cache.entries[idx].failed_attempts++;
+    let shift = if cache.entries[idx].failed_attempts > 6 { 6 } else { cache.entries[idx].failed_attempts };
+    // Backoff: 5s, 10s, 20s, 40s, 80s, 160s, max 320s
+    let backoff_sec: i64 = 5 * (1 << (shift - 1));
+    cache.entries[idx].broken_until_sec = now_sec + backoff_sec;
 }
 
 // Records an alternative service connection success, resetting consecutive failures and clearing broken status.
 fn altsvc_record_success(cache: AltSvcCache&, origin: const u8[:]) {
-    for i in cache.entries.len {
-        if cache.entries[i].valid && cache.entries[i].origin[..] == origin {
-            cache.entries[i].failed_attempts = 0;
-            cache.entries[i].broken_until_sec = 0;
-            return;
-        }
-    }
+    let idx = find_origin_entry_idx(cache, origin);
+    guard idx >= 0 else { return; }
+
+    cache.entries[idx].failed_attempts = 0;
+    cache.entries[idx].broken_until_sec = 0;
 }
 
 // Checks if an origin's alternative service is currently marked broken (within exponential backoff).
 fn altsvc_is_broken(cache: const AltSvcCache&, origin: const u8[:], now_sec: i64) -> bool {
-    for &entry in cache.entries {
-        if entry.valid && entry.origin[..] == origin {
-            return now_sec < entry.broken_until_sec;
-        }
-    }
-    return false;
+    let idx = find_origin_entry_idx(cache, origin);
+    guard idx >= 0 else { return false; }
+    return now_sec < cache.entries[idx].broken_until_sec;
 }
 
 // Returns the number of consecutive failure attempts recorded for an origin.
 fn altsvc_failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 {
-    for &entry in cache.entries {
-        if entry.valid && entry.origin[..] == origin {
-            return entry.failed_attempts;
-        }
-    }
-    return 0;
+    let idx = find_origin_entry_idx(cache, origin);
+    guard idx >= 0 else { return 0; }
+    return cache.entries[idx].failed_attempts;
 }
 
 // ---- 4. Server-Side Serializer ---------------------------------------------
@@ -286,9 +281,9 @@ fn altsvc_failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 
 fn format_altsvc_header<B>(out: B&, proto: const u8[:], port: u16, max_age_sec: u32 = 86400, persist: bool = true) {
     out.append(proto);
     out.append("=\":");
-    format(out, port);
+    core::format_u64_dec(port as u64, out);
     out.append("\"; ma=");
-    format(out, max_age_sec);
+    core::format_u64_dec(max_age_sec as u64, out);
     if persist {
         out.append("; persist=1");
     }

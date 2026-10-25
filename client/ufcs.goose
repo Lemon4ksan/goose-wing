@@ -930,4 +930,46 @@ fn ::parse_chunked_trailers(
     return wing::parse_chunked_trailers_with_out(raw, cursor, out_trailers);
 }
 
+// ---- alt-svc cache ufcs bridges ---------------------------------------------
+
+fn ::update(cache: wing::AltSvcCache&, origin: const u8[:], raw_altsvc: const u8[:], now_sec: i64) {
+    wing::altsvc_cache_update(cache, origin, raw_altsvc, now_sec);
+}
+
+fn ::lookup_h3(
+    cache: const wing::AltSvcCache&,
+    origin: const u8[:],
+    now_sec: i64,
+    out_ep: wing::AltSvcEndpoint&
+) -> bool {
+    return wing::altsvc_lookup_h3(cache, origin, now_sec, out_ep);
+}
+
+fn ::record_failure(cache: wing::AltSvcCache&, origin: const u8[:], now_sec: i64) {
+    wing::altsvc_record_failure(cache, origin, now_sec);
+}
+
+fn ::record_success(cache: wing::AltSvcCache&, origin: const u8[:]) {
+    wing::altsvc_record_success(cache, origin);
+}
+
+fn ::is_broken(cache: const wing::AltSvcCache&, origin: const u8[:], now_sec: i64) -> bool {
+    return wing::altsvc_is_broken(cache, origin, now_sec);
+}
+
+fn ::failed_attempts(cache: const wing::AltSvcCache&, origin: const u8[:]) -> u8 {
+    return wing::altsvc_failed_attempts(cache, origin);
+}
+
+fn ::format_altsvc_header<B>(
+    out: B&,
+    proto: const u8[:],
+    port: u16,
+    max_age_sec: u32 = 86400,
+    persist: bool = true
+) {
+    wing::format_altsvc_header(out, proto, port, max_age_sec, persist);
+}
+
+
 
