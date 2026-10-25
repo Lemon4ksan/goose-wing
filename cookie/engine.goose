@@ -585,11 +585,7 @@ fn priority_rank(priority_level: CookiePriority) -> i32 {
 }
 
 fn get_canonical_cookie_effective_domain<B>(cookie_val: const CanonicalCookie&, out: B&) {
-    if is_ip_address_literal(cookie_val.domain[..]) || count_dots(cookie_val.domain[..]) == 0 {
-        out.append(cookie_val.domain[..]);
-    } else {
-        extract_etld_plus_one(cookie_val.domain[..], out);
-    }
+    core::extract_etld_plus_one(cookie_val.domain[..], out);
 }
 
 fn matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus_one: const u8[:]) -> bool {

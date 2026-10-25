@@ -97,8 +97,8 @@ fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: con
 
     var etld1: u8[..128] = [];
     var etld2: u8[..128] = [];
-    extract_etld_plus_one(host1, etld1);
-    extract_etld_plus_one(host2, etld2);
+    core::extract_etld_plus_one(host1, etld1);
+    core::extract_etld_plus_one(host2, etld2);
 
     return eq_ascii_fold(etld1[..], etld2[..]);
 }
@@ -217,14 +217,14 @@ fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
     site.scheme.append(parsed.scheme[..]);
-    extract_etld_plus_one(parsed.host[..], site.registrable_domain);
+    core::extract_etld_plus_one(parsed.host[..], site.registrable_domain);
     return site;
 }
 
 fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> SiteForCookies {
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
     site.scheme.append(scheme(url_val));
-    extract_etld_plus_one(hostname(url_val), site.registrable_domain);
+    core::extract_etld_plus_one(hostname(url_val), site.registrable_domain);
     return site;
 }
 

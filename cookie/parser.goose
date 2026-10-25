@@ -455,7 +455,7 @@ fn apply_parsed_expires_attribute(
 fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
     guard !cookie_ref.host_only else { return true; }
 
-    if is_ip_address_literal(cookie_ref.domain[..]) || (default_domain.len > 0 && is_ip_address_literal(default_domain)) {
+    if core::is_ip_address_literal(cookie_ref.domain[..]) || (default_domain.len > 0 && core::is_ip_address_literal(default_domain)) {
         if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
             cookie_ref.host_only = true;
             return true;
@@ -472,7 +472,7 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
     }
 
     // Single-label hosts without dots cannot set domain cookies
-    if count_dots(cookie_ref.domain[..]) == 0 {
+    if core::count_byte(cookie_ref.domain[..], '.') == 0 {
         cookie_ref.host_only = true;
         return true;
     }

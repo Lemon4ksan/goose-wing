@@ -1010,6 +1010,25 @@ fn ::sanitize_headers_on_redirect(
     wing::sanitize_headers_on_redirect(headers, redirect_info, cors_mode, tainted_origin, enable_referer, trusted_location_forwarding);
 }
 
+// ---- cookie psl and path matching ufcs bridges ------------------------------
+
+fn ::is_public_suffix_domain(domain: const u8[:]) -> bool {
+    return wing::is_public_suffix_domain(domain);
+}
+
+fn ::cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
+    return wing::cookie_domain_match(host, cookie_domain);
+}
+
+fn ::cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
+    return wing::cookie_path_match(req_path, cookie_path);
+}
+
+fn ::compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
+    wing::compute_default_cookie_path(uri_path, out);
+}
+
+
 
 
 
