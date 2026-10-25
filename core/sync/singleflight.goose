@@ -25,6 +25,16 @@ fn new_singleflight_group() -> SingleflightGroup {
     return SingleflightGroup { .. };
 }
 
+// Finds the index of an entry by key and precomputed hash, or returns -1.
+fn find_flight_entry_idx(g: const SingleflightGroup&, key_str: const u8[:], kh: u64) -> i64 {
+    for idx in g.entries.len {
+        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
+            return idx;
+        }
+    }
+    return -1;
+}
+
 // Registers or joins an execution for key_str.
 // Returns (is_leader, val, shared).
 // If is_leader is true, the caller executes the operation and calls finish_call.
@@ -32,17 +42,16 @@ fn new_singleflight_group() -> SingleflightGroup {
 // If already completed, returns the cached result.
 fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
-            if g.entries[idx].is_in_flight {
-                g.entries[idx].waiter_count++;
-                g.entries[idx].shared = true;
-                g.total_shared_calls++;
-                return false, 0, true; // Follower
-            }
-            if g.entries[idx].is_done {
-                return false, g.entries[idx].val, g.entries[idx].shared; // Cached completion
-            }
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    if idx >= 0 {
+        if g.entries[idx].is_in_flight {
+            g.entries[idx].waiter_count++;
+            g.entries[idx].shared = true;
+            g.total_shared_calls++;
+            return false, 0, true; // Follower
+        }
+        if g.entries[idx].is_done {
+            return false, g.entries[idx].val, g.entries[idx].shared; // Cached completion
         }
     }
 
@@ -50,11 +59,6 @@ fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool
         var new_entry = FlightEntry {
             key_hash: kh,
             is_in_flight: true,
-            is_done: false,
-            has_failed: false,
-            val: 0,
-            waiter_count: 0,
-            shared: false,
             ..
         };
         new_entry.key.append(key_str);
@@ -72,15 +76,14 @@ fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool
 // Returns (true, waiter_count) if the key was found in-flight.
 fn finish_call(g: SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
-            g.entries[idx].is_in_flight = false;
-            g.entries[idx].is_done = true;
-            g.entries[idx].has_failed = !ok;
-            g.entries[idx].val = val;
-            let waiters = g.entries[idx].waiter_count;
-            return true, waiters;
-        }
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    if idx >= 0 && g.entries[idx].is_in_flight {
+        g.entries[idx].is_in_flight = false;
+        g.entries[idx].is_done = true;
+        g.entries[idx].has_failed = !ok;
+        g.entries[idx].val = val;
+        let waiters = g.entries[idx].waiter_count;
+        return true, waiters;
     }
     return false, 0;
 }
@@ -89,12 +92,11 @@ fn finish_call(g: SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool =
 // Returns true if the key was found and removed, false otherwise.
 fn forget(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
-            g.entries[idx] = g.entries[g.entries.len - 1];
-            g.entries.pop();
-            return true;
-        }
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    if idx >= 0 {
+        g.entries[idx] = g.entries[g.entries.len - 1];
+        g.entries.pop();
+        return true;
     }
     return false;
 }
@@ -103,15 +105,14 @@ fn forget(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
 // Returns true if removed, false if preserved.
 fn forget_unshared(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
-            if g.entries[idx].waiter_count == 0 {
-                g.entries[idx] = g.entries[g.entries.len - 1];
-                g.entries.pop();
-                return true;
-            }
-            return false;
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    if idx >= 0 {
+        if g.entries[idx].waiter_count == 0 {
+            g.entries[idx] = g.entries[g.entries.len - 1];
+            g.entries.pop();
+            return true;
         }
+        return false;
     }
     return false;
 }
@@ -119,43 +120,30 @@ fn forget_unshared(g: SingleflightGroup&, key_str: const u8[:]) -> bool {
 // Queries whether key is currently executing in-flight.
 fn is_in_flight(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str && g.entries[idx].is_in_flight {
-            return true;
-        }
-    }
-    return false;
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    return idx >= 0 && g.entries[idx].is_in_flight;
 }
 
 // Returns the count of concurrent waiters for key.
 fn waiter_count(g: const SingleflightGroup&, key_str: const u8[:]) -> i32 {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
-            return g.entries[idx].waiter_count;
-        }
-    }
-    return 0;
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    return if idx >= 0 { g.entries[idx].waiter_count } else { 0 };
 }
 
 // Returns whether the call for key was shared across multiple callers.
 fn is_shared(g: const SingleflightGroup&, key_str: const u8[:]) -> bool {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str {
-            return g.entries[idx].shared;
-        }
-    }
-    return false;
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    return idx >= 0 && g.entries[idx].shared;
 }
 
 // Retrieves the result value and completion status of a finished call.
 fn result_value(g: const SingleflightGroup&, key_str: const u8[:]) -> i64, bool {
     let kh = wyhash64(key_str);
-    for idx in g.entries.len {
-        if g.entries[idx].key_hash == kh && g.entries[idx].key[..] == key_str && g.entries[idx].is_done {
-            return g.entries[idx].val, !g.entries[idx].has_failed;
-        }
+    let idx = find_flight_entry_idx(g, key_str, kh);
+    if idx >= 0 && g.entries[idx].is_done {
+        return g.entries[idx].val, !g.entries[idx].has_failed;
     }
     return 0, false;
 }

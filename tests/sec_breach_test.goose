@@ -188,40 +188,38 @@ fn test_dangerous_service_ports(t: core::T&) {
     };
 
     t.run("PORT-02: validate_url_against_ssrf blocks Port 0 and Dangerous Ports") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+        var policy = wing::SsrfGuardPolicy { enabled: true, .. };
 
         // Port 0 request
-        var req_p0 = wing::new_get("http://example.com:0/api");
-        let res_p0, err_p0 = wing::execute_request(session, req_p0);
-        sub.assert_false(wing::ok(err_p0), "Port 0 URL must be blocked by SSRF guard");
+        let u_p0 = core::new_url("http://example.com:0/api");
+        let err_p0 = wing::validate_url_against_ssrf(u_p0, policy);
+        sub.assert_ne(err_p0, wing::RedirectError.None, "Port 0 URL must be blocked by SSRF guard");
 
         // Port 3306 request
-        var req_mysql = wing::new_get("http://example.com:3306/db");
-        let res_mysql, err_mysql = wing::execute_request(session, req_mysql);
-        sub.assert_false(wing::ok(err_mysql), "Port 3306 URL must be blocked by SSRF guard");
+        let u_mysql = core::new_url("http://example.com:3306/db");
+        let err_mysql = wing::validate_url_against_ssrf(u_mysql, policy);
+        sub.assert_ne(err_mysql, wing::RedirectError.None, "Port 3306 URL must be blocked by SSRF guard");
 
         // Trailing-dot loopback URL request
-        var req_dot = wing::new_get("http://127.0.0.1./admin");
-        let res_dot, err_dot = wing::execute_request(session, req_dot);
-        sub.assert_false(wing::ok(err_dot), "http://127.0.0.1./ with trailing dot must be blocked by SSRF guard");
+        let u_dot = core::new_url("http://127.0.0.1./admin");
+        let err_dot = wing::validate_url_against_ssrf(u_dot, policy);
+        sub.assert_ne(err_dot, wing::RedirectError.None, "http://127.0.0.1./ with trailing dot must be blocked by SSRF guard");
     };
 
     t.run("PORT-03: validate_url_against_ssrf blocks Redis (6379), Memcached (11211), and Docker (2375)") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+        var policy = wing::SsrfGuardPolicy { enabled: true, .. };
 
-        var req_redis = wing::new_get("http://example.com:6379/");
-        let res_redis, err_redis = wing::execute_request(session, req_redis);
-        sub.assert_false(wing::ok(err_redis), "Redis 6379 must be blocked");
+        let u_redis = core::new_url("http://example.com:6379/");
+        let err_redis = wing::validate_url_against_ssrf(u_redis, policy);
+        sub.assert_ne(err_redis, wing::RedirectError.None, "Redis 6379 must be blocked");
 
-        var req_memcached = wing::new_get("http://example.com:11211/");
-        let res_mem, err_mem = wing::execute_request(session, req_memcached);
-        sub.assert_false(wing::ok(err_mem), "Memcached 11211 must be blocked");
+        let u_mem = core::new_url("http://example.com:11211/");
+        let err_mem = wing::validate_url_against_ssrf(u_mem, policy);
+        sub.assert_ne(err_mem, wing::RedirectError.None, "Memcached 11211 must be blocked");
 
-        var req_docker = wing::new_get("http://example.com:2375/");
-        let res_doc, err_doc = wing::execute_request(session, req_docker);
-        sub.assert_false(wing::ok(err_doc), "Docker daemon 2375 must be blocked");
+        let u_doc = core::new_url("http://example.com:2375/");
+        let err_doc = wing::validate_url_against_ssrf(u_doc, policy);
+        sub.assert_ne(err_doc, wing::RedirectError.None, "Docker daemon 2375 must be blocked");
     };
 }
 

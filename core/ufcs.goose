@@ -204,6 +204,17 @@ fn ::is_auto_shutdown(sup: const core::Supervisor&) -> bool { return core::is_au
 fn ::should_restart_child(sup: const core::Supervisor&, child_idx: i64, reason: const core::ExitReason&) -> bool { return core::should_restart_child(sup, child_idx, reason); }
 fn ::record_failure(sup: core::Supervisor&, child_idx: i64, current_time_s: i64) -> bool { return core::record_failure(sup, child_idx, current_time_s); }
 
+// ---- singleflight group ufcs bridges ---------------------------------------
+
+fn ::start_or_join(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool { return core::start_or_join(g, key_str); }
+fn ::finish_call(g: core::SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 { return core::finish_call(g, key_str, val, ok); }
+fn ::forget(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::forget(g, key_str); }
+fn ::forget_unshared(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::forget_unshared(g, key_str); }
+fn ::is_in_flight(g: const core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::is_in_flight(g, key_str); }
+fn ::waiter_count(g: const core::SingleflightGroup&, key_str: const u8[:]) -> i32 { return core::waiter_count(g, key_str); }
+fn ::is_shared(g: const core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::is_shared(g, key_str); }
+fn ::result_value(g: const core::SingleflightGroup&, key_str: const u8[:]) -> i64, bool { return core::result_value(g, key_str); }
+
 // ---- math & rtt estimator ufcs bridges -------------------------------------
 
 fn ::next_u64(rng: core::WyRand&) -> u64 { return core::next_u64(rng); }
