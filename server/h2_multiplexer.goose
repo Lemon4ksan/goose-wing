@@ -220,8 +220,15 @@ fn emit_response_headers<B>(
         encode_hpack_field(sess.hpack_enc, hpack_block, "server", sess.server_name[..], true, false);
     }
 
-    // 3. content-length header
-    if res.status_code != 204 && res.status_code != 304 {
+    // 3. content-length header (RFC gRPC: responses that contain data MUST NOT include Content-Length)
+    var is_grpc = false;
+    for &hdr in res.headers {
+        if eq_ascii_fold(hdr.name[..], "content-type") && starts_with_ignore_case(hdr.value[..], "application/grpc") {
+            is_grpc = true;
+            break;
+        }
+    }
+    if !is_grpc && res.status_code != 204 && res.status_code != 304 {
         var cl_buf: u8[..32] = [];
         format(cl_buf, res.body.len);
         encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], true, false);
@@ -267,7 +274,8 @@ fn emit_response_data<B>(
     stream_id: u32,
     body: const u8[:],
     max_frame_size: u32,
-    out: B&
+    out: B&,
+    end_stream: bool = true
 ) {
     guard body.len > 0 else { return; }
 
@@ -279,7 +287,7 @@ fn emit_response_data<B>(
         let chunk_size = if rem < limit { rem } else { limit };
         let is_last = (offset + chunk_size >= body.len);
 
-        let flags: u8 = if is_last { FLAG_END_STREAM } else { 0 };
+        let flags: u8 = if is_last && end_stream { FLAG_END_STREAM } else { 0 };
         let hdr = FrameHeader {
             length: chunk_size as u32,
             frame_type: FRAME_DATA,
@@ -290,6 +298,38 @@ fn emit_response_data<B>(
         out.append(body[offset .. offset + chunk_size]);
         offset += chunk_size;
     }
+}
+
+// Encodes HTTP/2 Response Trailing HEADERS using HPACK
+fn emit_response_trailers<B>(
+    sess: H2ServerSession&,
+    stream_id: u32,
+    trailers: const HeaderItem[..16]&,
+    out: B&
+) {
+    guard trailers.len > 0 else { return; }
+    var hpack_block: u8[>..] = [];
+
+    for &hdr in trailers {
+        let name_slice = hdr.name[..];
+        let val_slice = hdr.value[..];
+        var lower_name: u8[..64] = [];
+        for c in name_slice {
+            let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
+            lower_name.push(lc);
+        }
+        encode_hpack_field(sess.hpack_enc, hpack_block, lower_name[..], val_slice, true, false);
+    }
+
+    let flags: u8 = FLAG_END_HEADERS | FLAG_END_STREAM;
+    let frame_hdr = FrameHeader {
+        length: hpack_block.len as u32,
+        frame_type: FRAME_HEADERS,
+        flags: flags,
+        stream_id: stream_id,
+    };
+    encode_frame_header_to(frame_hdr, out);
+    out.append(hpack_block[..]);
 }
 
 // ---- 4. Complete Ingress Frame Processing & Pipeline Dispatch ---------------
@@ -493,9 +533,15 @@ fn handle_h2_server_ingress<B>(
 
             // Emit Response
             let has_body = res.body.len > 0;
-            emit_response_headers(sess, target_stream_id, res, !has_body, out_wire);
+            let has_trailers = res.trailers.len > 0;
+            let end_headers = !has_body && !has_trailers;
+            emit_response_headers(sess, target_stream_id, res, end_headers, out_wire);
             if has_body {
-                emit_response_data(target_stream_id, res.body[..], sess.conn.local_max_frame_size, out_wire);
+                let end_data = !has_trailers;
+                emit_response_data(target_stream_id, res.body[..], sess.conn.local_max_frame_size, out_wire, end_data);
+            }
+            if has_trailers {
+                emit_response_trailers(sess, target_stream_id, res.trailers, out_wire);
             }
 
             sess.streams[i].response_sent = true;
