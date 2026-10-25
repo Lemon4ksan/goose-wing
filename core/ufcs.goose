@@ -131,6 +131,15 @@ fn ::hash(url_val: const core::Url&) -> const u8[:] { return core::hash(url_val)
 fn ::origin(url_val: const core::Url&) -> core::Origin { return core::origin_from_url(url_val); }
 fn ::is_special(url_val: const core::Url&) -> bool { return core::is_special(url_val); }
 fn ::is_secure_scheme(url_val: const core::Url&) -> bool { return core::is_secure_scheme(url_val); }
+fn ::registrable_site(url_val: const core::Url&) -> core::RegistrableSite { return core::registrable_site_from_url(url_val); }
+fn ::is_same_origin(origin_a: core::Origin, origin_b: core::Origin) -> bool { return core::is_same_origin(origin_a, origin_b); }
+fn ::is_same_origin_url(url_a: const core::Url&, url_b: const core::Url&) -> bool { return core::is_same_origin_url(url_a, url_b); }
+fn ::serialize_origin<B>(origin_val: core::Origin, out: B&) { core::serialize_origin(origin_val, out); }
+fn ::extract_etld_plus_one<B>(host: const u8[:], out: B&) { core::extract_etld_plus_one(host, out); }
+fn ::compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool { return core::compute_public_suffix(clean_domain, out); }
+fn ::public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool { return core::public_suffix_with_icann(domain, out_suffix); }
+fn ::is_schemeful_same_site_urls(url_a: const core::Url&, url_b: const core::Url&) -> bool { return core::is_schemeful_same_site_urls(url_a, url_b); }
+fn ::is_same_site_origin_url(origin_val: const core::Origin&, url_val: const core::Url&) -> bool { return core::is_same_site_origin_url(origin_val, url_val); }
 
 // ---- file & path ufcs bridges -----------------------------------------------
 

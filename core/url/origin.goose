@@ -60,18 +60,12 @@ fn is_valid_ipv4_format(host: const u8[:]) -> bool {
 
 fn is_ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
-    for char_byte in host {
-        if char_byte == ':' { return true; }
-    }
+    if index_of_byte(host, ':') >= 0 { return true; }
     return is_valid_ipv4_format(host);
 }
 
 fn count_dots(str_val: const u8[:]) -> i64 {
-    var dot_count = 0;
-    for char_byte in str_val {
-        if char_byte == '.' { dot_count++; }
-    }
-    return dot_count;
+    return count_byte(str_val, '.');
 }
 
 fn ends_with_dot_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
@@ -85,12 +79,7 @@ fn extract_wildcard_suffix<B>(domain: const u8[:], base_rule: const u8[:], out: 
     let base_len = base_rule.len;
     if domain.len > base_len && domain[domain.len - base_len - 1] == '.' {
         let prefix = domain[..domain.len - base_len - 1];
-        var dot_before = -1;
-        for scan_idx in prefix.len {
-            if prefix[scan_idx] == '.' {
-                dot_before = scan_idx;
-            }
-        }
+        let dot_before = last_index_of_byte(prefix, '.');
         let start = if dot_before >= 0 { dot_before + 1 } else { 0 };
         out.append(domain[start..]);
     } else {
@@ -287,12 +276,7 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
         return is_icann;
     }
 
-    var last_dot_idx = -1;
-    for scan_idx in norm_domain.len {
-        if norm_domain[scan_idx] == '.' {
-            last_dot_idx = scan_idx;
-        }
-    }
+    let last_dot_idx = last_index_of_byte(norm_domain, '.');
     if last_dot_idx >= 0 {
         out.append(norm_domain[last_dot_idx + 1..]);
     } else {
@@ -325,12 +309,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     let suffix_len = suffix.len;
     if clean_host.len > suffix_len && clean_host[clean_host.len - suffix_len - 1] == '.' {
         let prefix = clean_host[..clean_host.len - suffix_len - 1];
-        var last_dot_in_prefix = -1;
-        for scan_idx in prefix.len {
-            if prefix[scan_idx] == '.' {
-                last_dot_in_prefix = scan_idx;
-            }
-        }
+        let last_dot_in_prefix = last_index_of_byte(prefix, '.');
         let start_pos = if last_dot_in_prefix >= 0 { last_dot_in_prefix + 1 } else { 0 };
         out.append(clean_host[start_pos..]);
         to_lower(out[..]);
@@ -398,7 +377,7 @@ fn serialize_origin<B>(origin_val: Origin, out: B&) {
                       (origin_val.port <= 0);
     if !is_def_port {
         out.push(':');
-        format(out, origin_val.port as i64);
+        format_i64_dec(origin_val.port as i64, out);
     }
 }
 
