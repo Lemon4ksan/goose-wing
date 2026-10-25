@@ -90,7 +90,7 @@ fn ingest_hop_response_cookies(
 ) {
     for &set_cookie_str in set_cookies {
         var def_path: u8[..256] = [];
-        default_cookie_path_calc(current_url.pathname(), def_path);
+        compute_default_cookie_path(current_url.pathname(), def_path);
         var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(set_cookie_str[..], current_url.hostname(), def_path[..], session.virtual_clock_us);
         if cookie_ok {
             let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());

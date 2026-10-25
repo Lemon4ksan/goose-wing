@@ -100,12 +100,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     let suffix_len = suffix.len;
     if clean_host.len > suffix_len && clean_host[clean_host.len - suffix_len - 1] == '.' {
         let prefix = clean_host[..clean_host.len - suffix_len - 1];
-        var last_dot_in_prefix = -1;
-        for scan_idx in prefix.len {
-            if prefix[scan_idx] == '.' {
-                last_dot_in_prefix = scan_idx;
-            }
-        }
+        let last_dot_in_prefix = core::last_index_of_byte(prefix, '.');
         let start_pos = if last_dot_in_prefix >= 0 { last_dot_in_prefix + 1 } else { 0 };
         out.append(clean_host[start_pos..]);
         to_lower(out[..]);
@@ -146,28 +141,18 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
 }
 
 // Computes the default cookie path from request URI path (RFC 6265 Section 5.1.4).
-fn default_cookie_path_calc<B>(uri_path: const u8[:], out: B&) {
+fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
     out.clear();
     if uri_path.len == 0 || uri_path[0] != '/' {
         out.push('/');
         return;
     }
-    var last_slash_idx = -1;
-    for char_idx in uri_path.len {
-        if uri_path[char_idx] == '/' {
-            last_slash_idx = char_idx;
-        }
-    }
+    let last_slash_idx = core::last_index_of_byte(uri_path, '/');
     if last_slash_idx <= 0 {
         out.push('/');
         return;
     }
     out.append(uri_path[..last_slash_idx]);
-}
-
-// Compute default cookie path alias
-fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
-    default_cookie_path_calc(uri_path, out);
 }
 
 // Whether request path matches cookie path prefix (RFC 6265 Section 5.1.4).
@@ -188,9 +173,7 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
 // Whether host is an IPv4 or IPv6 literal. IP literals do not domain-match.
 fn is_ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
-    for char_byte in host {
-        if char_byte == ':' { return true; }
-    }
+    if core::contains_byte(host, ':') { return true; }
     return is_valid_ipv4_format(host);
 }
 
@@ -252,12 +235,7 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
     }
 
     // 4. Fallback rule: single top-level label
-    var last_dot_idx = -1;
-    for scan_idx in norm_domain.len {
-        if norm_domain[scan_idx] == '.' {
-            last_dot_idx = scan_idx;
-        }
-    }
+    let last_dot_idx = core::last_index_of_byte(norm_domain, '.');
     if last_dot_idx >= 0 {
         out.append(norm_domain[last_dot_idx + 1..]);
     } else {
@@ -436,11 +414,7 @@ fn find_trailing_dot_positions(
 }
 
 fn count_dots(str_val: const u8[:]) -> i64 {
-    var dot_count = 0;
-    for char_byte in str_val {
-        if char_byte == '.' { dot_count++; }
-    }
-    return dot_count;
+    return core::count_byte(str_val, '.');
 }
 
 fn is_valid_ipv4_format(host: const u8[:]) -> bool {

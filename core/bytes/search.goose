@@ -15,16 +15,6 @@ fn ends_with(s: const u8[:], suffix: const u8[:]) -> bool {
     return s[s.len - suffix.len..] == suffix;
 }
 
-// Checks whether s begins with prefix (alias for starts_with).
-fn has_prefix(s: const u8[:], prefix: const u8[:]) -> bool {
-    return starts_with(s, prefix);
-}
-
-// Checks whether s ends with suffix (alias for ends_with).
-fn has_suffix(s: const u8[:], suffix: const u8[:]) -> bool {
-    return ends_with(s, suffix);
-}
-
 // Checks whether haystack contains needle as a contiguous subslice.
 fn contains(haystack: const u8[:], needle: const u8[:]) -> bool {
     return find(haystack, needle) >= 0;
