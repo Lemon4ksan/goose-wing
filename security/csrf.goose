@@ -78,39 +78,69 @@ struct FetchContext {
 // Parses Sec-Fetch-Site string value.
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
     let clean = trim_lws(val);
-    if clean == "same-origin" { return SecFetchSite.SameOrigin; }
-    if clean == "same-site" { return SecFetchSite.SameSite; }
-    if clean == "cross-site" { return SecFetchSite.CrossSite; }
-    if clean == "none" { return SecFetchSite.None; }
+    if eq_ascii_fold(clean, "same-origin") { return SecFetchSite.SameOrigin; }
+    if eq_ascii_fold(clean, "same-site") { return SecFetchSite.SameSite; }
+    if eq_ascii_fold(clean, "cross-site") { return SecFetchSite.CrossSite; }
+    if eq_ascii_fold(clean, "none") { return SecFetchSite.None; }
     return SecFetchSite.Missing;
 }
 
 // Parses Sec-Fetch-Mode string value.
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
     let clean = trim_lws(val);
-    if clean == "navigate" { return SecFetchMode.Navigate; }
-    if clean == "same-origin" { return SecFetchMode.SameOrigin; }
-    if clean == "cors" { return SecFetchMode.Cors; }
-    if clean == "no-cors" { return SecFetchMode.NoCors; }
-    if clean == "websocket" { return SecFetchMode.WebSocket; }
+    if eq_ascii_fold(clean, "navigate") { return SecFetchMode.Navigate; }
+    if eq_ascii_fold(clean, "same-origin") { return SecFetchMode.SameOrigin; }
+    if eq_ascii_fold(clean, "cors") { return SecFetchMode.Cors; }
+    if eq_ascii_fold(clean, "no-cors") { return SecFetchMode.NoCors; }
+    if eq_ascii_fold(clean, "websocket") { return SecFetchMode.WebSocket; }
     return SecFetchMode.Other;
 }
 
 // Parses Sec-Fetch-Dest string value.
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
     let clean = trim_lws(val);
-    if clean == "document" { return SecFetchDest.Document; }
-    if clean == "nested-document" { return SecFetchDest.NestedDocument; }
-    if clean == "iframe" { return SecFetchDest.Iframe; }
-    if clean == "frame" { return SecFetchDest.Frame; }
-    if clean == "embed" { return SecFetchDest.Embed; }
-    if clean == "object" { return SecFetchDest.Object; }
-    if clean == "script" { return SecFetchDest.Script; }
-    if clean == "image" { return SecFetchDest.Image; }
-    if clean == "style" { return SecFetchDest.Style; }
-    if clean == "font" { return SecFetchDest.Font; }
-    if clean == "empty" { return SecFetchDest.Empty; }
+    if eq_ascii_fold(clean, "document") { return SecFetchDest.Document; }
+    if eq_ascii_fold(clean, "nested-document") { return SecFetchDest.NestedDocument; }
+    if eq_ascii_fold(clean, "iframe") { return SecFetchDest.Iframe; }
+    if eq_ascii_fold(clean, "frame") { return SecFetchDest.Frame; }
+    if eq_ascii_fold(clean, "embed") { return SecFetchDest.Embed; }
+    if eq_ascii_fold(clean, "object") { return SecFetchDest.Object; }
+    if eq_ascii_fold(clean, "script") { return SecFetchDest.Script; }
+    if eq_ascii_fold(clean, "image") { return SecFetchDest.Image; }
+    if eq_ascii_fold(clean, "style") { return SecFetchDest.Style; }
+    if eq_ascii_fold(clean, "font") { return SecFetchDest.Font; }
+    if eq_ascii_fold(clean, "empty") { return SecFetchDest.Empty; }
     return SecFetchDest.Other;
+}
+
+fn is_embedding_dest(dest: SecFetchDest) -> bool {
+    return dest == SecFetchDest.Iframe || dest == SecFetchDest.Frame ||
+           dest == SecFetchDest.Object || dest == SecFetchDest.Embed ||
+           dest == SecFetchDest.Script;
+}
+
+fn is_static_asset_dest(dest: SecFetchDest) -> bool {
+    return dest == SecFetchDest.Image || dest == SecFetchDest.Style || dest == SecFetchDest.Font;
+}
+
+fn csrf_reject_reason_to_string(reason: CsrfRejectReason) -> const u8[:] {
+    return match reason {
+        CrossSiteStateMutation => "CrossSiteStateMutation",
+        DisallowedSameSiteSubdomain => "DisallowedSameSiteSubdomain",
+        CrossSiteFramingOrXssi => "CrossSiteFramingOrXssi",
+        CrossSiteUnauthorizedSubresource => "CrossSiteUnauthorizedSubresource",
+        OriginHostMismatch => "OriginHostMismatch",
+        MissingBrowserHeadersWithSessionCookie => "MissingBrowserHeadersWithSessionCookie",
+        MissingUserActivationOnSensitiveNav => "MissingUserActivationOnSensitiveNav",
+    };
+}
+
+fn is_allowed(decision: const CsrfDecision&) -> bool {
+    return match decision {
+        Allow => true,
+        AllowExempt => true,
+        RejectForbidden _ => false,
+    };
 }
 
 // ---- crossoriginguard policy & state machine -------------------------------
@@ -144,8 +174,8 @@ fn add_exempt_path(guard_cfg: CrossOriginGuard&, path_str: const u8[:]) -> bool 
 }
 
 fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> bool {
-    for idx in guard_cfg.exempt_paths.len {
-        if guard_cfg.exempt_paths[idx][..] == path_str {
+    for &p in guard_cfg.exempt_paths {
+        if p[..] == path_str {
             return true;
         }
     }
@@ -154,24 +184,26 @@ fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> 
 
 fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]) -> bool {
     guard origin_str.len > 0 else { return false; }
-    for idx in guard_cfg.trusted_origins.len {
-        if guard_cfg.trusted_origins[idx][..] == origin_str {
+    for &orig in guard_cfg.trusted_origins {
+        if eq_ascii_fold(orig[..], origin_str) {
             return true;
         }
     }
     return false;
 }
 
-// Extracts host from URL or Origin string (e.g. "https://example.com:8080" -> "example.com:8080")
+// Extracts host from URL or Origin string (e.g. "https://example.com:8080/path" -> "example.com:8080")
 fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     var s = url_or_origin;
-    if starts_with(s, "https://") { s = s[8..]; }
-    else if starts_with(s, "http://") { s = s[7..]; }
-    for i in s.len {
-        if s[i] == '/' || s[i] == '?' || s[i] == '#' {
-            return s[..i];
-        }
-    }
+    if starts_with_fold(s, "https://") { s = s[8..]; }
+    else if starts_with_fold(s, "http://") { s = s[7..]; }
+
+    let slash_idx = core::index_of_byte(s, '/');
+    if slash_idx >= 0 { s = s[..slash_idx]; }
+    let query_idx = core::index_of_byte(s, '?');
+    if query_idx >= 0 { s = s[..query_idx]; }
+    let hash_idx = core::index_of_byte(s, '#');
+    if hash_idx >= 0 { s = s[..hash_idx]; }
     return s;
 }
 
@@ -203,15 +235,12 @@ fn evaluate_crosssite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const Fetch
     }
 
     // Cross-site embedding into frame/object/embed/script -> block XS-Leaks / XSSI
-    if ctx.dest == SecFetchDest.Iframe || ctx.dest == SecFetchDest.Frame ||
-       ctx.dest == SecFetchDest.Object || ctx.dest == SecFetchDest.Embed ||
-       ctx.dest == SecFetchDest.Script {
+    if is_embedding_dest(ctx.dest) {
         return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteFramingOrXssi };
     }
 
     // Cross-site subresources
-    if guard_cfg.allow_cross_site_static_assets &&
-       (ctx.dest == SecFetchDest.Image || ctx.dest == SecFetchDest.Style || ctx.dest == SecFetchDest.Font) {
+    if guard_cfg.allow_cross_site_static_assets && is_static_asset_dest(ctx.dest) {
         return CsrfDecision.Allow;
     }
 
@@ -312,10 +341,10 @@ fn apply_isolation_headers(res: Response&) {
             res.headers[vary_idx].value.append(vary_val);
         }
     } else {
-        res.headers.set_header(vary_key, vary_val);
+        set_header(res, vary_key, vary_val);
     }
 
-    if !res.has_header("Strict-Transport-Security") {
-        res.headers.set_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    if !has_header(res, "Strict-Transport-Security") {
+        set_header(res, "Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
     }
 }

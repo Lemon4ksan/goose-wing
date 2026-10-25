@@ -328,9 +328,6 @@ fn ::active_key(store: const wing::KeyStore&) -> core::KeySlot, bool { return wi
 fn ::find_key(store: const wing::KeyStore&, key_id: u32) -> core::KeySlot, bool { return wing::find_key(store, key_id); }
 fn ::revoke_key(store: wing::KeyStore&, key_id: u32) -> bool { return wing::revoke_key(store, key_id); }
 
-fn ::add_trusted_origin(guard_cfg: wing::CrossOriginGuard&, origin_str: const u8[:]) -> bool { return wing::add_trusted_origin(guard_cfg, origin_str); }
-fn ::add_exempt_path(guard_cfg: wing::CrossOriginGuard&, path_str: const u8[:]) -> bool { return wing::add_exempt_path(guard_cfg, path_str); }
-
 fn ::add_allowed_origin(policy: wing::CorsPolicy&, origin_pattern: const u8[:]) -> bool { return wing::add_allowed_origin(policy, origin_pattern); }
 
 fn ::add_route(router: wing::RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, entries_mask: u32 = 0) -> bool {
@@ -690,8 +687,35 @@ fn ::add_trusted_origin(g: wing::CrossOriginGuard&, origin: const u8[:]) -> bool
 fn ::add_exempt_path(g: wing::CrossOriginGuard&, path: const u8[:]) -> bool {
     return wing::add_exempt_path(g, path);
 }
+fn ::is_path_exempt(g: const wing::CrossOriginGuard&, path_str: const u8[:]) -> bool {
+    return wing::is_path_exempt(g, path_str);
+}
+fn ::is_origin_trusted(g: const wing::CrossOriginGuard&, origin_str: const u8[:]) -> bool {
+    return wing::is_origin_trusted(g, origin_str);
+}
 fn ::evaluate_fetch_metadata(g: const wing::CrossOriginGuard&, ctx: const wing::FetchContext&) -> wing::CsrfDecision {
     return wing::evaluate_fetch_metadata(g, ctx);
+}
+fn ::extract_fetch_context(req: const wing::Request&, target_host: const u8[:]) -> wing::FetchContext {
+    return wing::extract_fetch_context(req, target_host);
+}
+fn ::apply_isolation_headers(res: wing::Response&) {
+    wing::apply_isolation_headers(res);
+}
+fn ::parse_sec_fetch_site(val: const u8[:]) -> wing::SecFetchSite {
+    return wing::parse_sec_fetch_site(val);
+}
+fn ::parse_sec_fetch_mode(val: const u8[:]) -> wing::SecFetchMode {
+    return wing::parse_sec_fetch_mode(val);
+}
+fn ::parse_sec_fetch_dest(val: const u8[:]) -> wing::SecFetchDest {
+    return wing::parse_sec_fetch_dest(val);
+}
+fn ::to_string(reason: wing::CsrfRejectReason) -> const u8[:] {
+    return wing::csrf_reject_reason_to_string(reason);
+}
+fn ::is_allowed(decision: const wing::CsrfDecision&) -> bool {
+    return wing::is_allowed(decision);
 }
 
 fn ::check_rate_limit(limiter: wing::ShardedGcraLimiter&, key: const u8[:], cost: u64, now_ns: u64) -> wing::RateLimitDecision {
