@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import grpc.constants;
 import http.mime;
 
@@ -14,11 +15,10 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
     let flag: u8 = if compressed { GRPC_FLAG_COMPRESSED } else { 0x00 };
     out.push(flag);
 
-    let len_val = payload.len as u32;
-    out.push(((len_val >> 24) & 0xFF) as u8);
-    out.push(((len_val >> 16) & 0xFF) as u8);
-    out.push(((len_val >> 8) & 0xFF) as u8);
-    out.push((len_val & 0xFF) as u8);
+    var len_hdr: u8[4] = [0; 4];
+    var writer = core::new_slice_writer(len_hdr[..]);
+    writer.write_u32_be(payload.len as u32);
+    out.append(writer.as_written_slice());
 
     out.append(payload);
 }
@@ -26,26 +26,27 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
 // Decodes a single LPM frame starting at offset in wire bytes.
 // Returns (ok, bytes_consumed). When true, out_payload contains the message bytes.
 fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compressed: bool&) -> bool, u32 {
+    out_payload.clear();
     let off = offset as i64;
-    guard (wire.len - off) >= 5 else { return false, 0; }
+    guard off >= 0 && off <= wire.len else { return false, 0; }
 
-    let flag = wire[off];
+    var reader = core::new_slice_reader(wire[off..]);
+    guard reader.remaining() >= GRPC_LPM_HEADER_LEN else { return false, 0; }
+
+    let flag, err_flag = reader.read_u8();
+    guard err_flag == core::IoError.None else { return false, 0; }
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val = ((wire[off + 1] as u32) << 24) |
-                  ((wire[off + 2] as u32) << 16) |
-                  ((wire[off + 3] as u32) << 8) |
-                  (wire[off + 4] as u32);
+    let len_val, err_len = reader.read_u32_be();
+    guard err_len == core::IoError.None else { return false, 0; }
 
-    let total_frame_len = 5 + len_val;
-    guard (wire.len - off) >= (total_frame_len as i64) else { return false, 0; }
+    guard reader.remaining() >= len_val else { return false, 0; }
+    let payload_slice, err_slice = reader.read_slice(len_val);
+    guard err_slice == core::IoError.None else { return false, 0; }
 
-    out_payload.clear();
-    let start_idx = off + 5;
-    let end_idx = off + (total_frame_len as i64);
-    out_payload.append(wire[start_idx..end_idx]);
+    out_payload.append(payload_slice);
 
-    return true, total_frame_len;
+    return true, (GRPC_LPM_HEADER_LEN + len_val);
 }
 
 // ---- 2. Incremental Streaming LPM Parser -----------------------------------
@@ -71,24 +72,22 @@ fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
 
 // Extracts the next available message. Returns true if a full message was consumed.
 fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&) -> bool {
-    guard p.buf.len >= 5 else { return false; }
+    guard p.buf.len >= (GRPC_LPM_HEADER_LEN as i64) else { return false; }
 
-    let flag = p.buf[0];
+    var reader = core::new_slice_reader(p.buf[..]);
+    let flag, _ = reader.read_u8();
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val = ((p.buf[1] as u32) << 24) |
-                  ((p.buf[2] as u32) << 16) |
-                  ((p.buf[3] as u32) << 8) |
-                  (p.buf[4] as u32);
-
-    let total_len = (5 + len_val) as i64;
+    let len_val, _ = reader.read_u32_be();
+    let total_len = (GRPC_LPM_HEADER_LEN + len_val) as i64;
     guard p.buf.len >= total_len else { return false; }
 
     out_payload.clear();
-    out_payload.append(p.buf[5..total_len]);
+    let payload_slice, _ = reader.read_slice(len_val as i64);
+    out_payload.append(payload_slice);
 
-    let remaining = p.buf.len - total_len;
-    if remaining == 0 {
+    let remaining_bytes = p.buf.len - total_len;
+    if remaining_bytes == 0 {
         p.buf.clear();
     } else {
         var temp: u8[..65536] = [];

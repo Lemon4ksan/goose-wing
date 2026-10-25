@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. frame types (rfc 9113 section 6 & rfc 9218 section 7.1) -------------
 
@@ -77,13 +78,12 @@ fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHea
         return hdr, ERR_FRAME_SIZE_ERROR;
     }
 
-    let length_val = ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | buf[2];
-    let f_type = buf[3];
-    let flags_val = buf[4];
-    let stream_id_val = (((buf[5] & 0x7F) as u32) << 24) |
-                        ((buf[6] as u32) << 16) |
-                        ((buf[7] as u32) << 8) |
-                        buf[8];
+    var r = core::new_slice_reader(buf);
+    let length_val, _ = r.read_u24_be();
+    let f_type, _ = r.read_u8();
+    let flags_val, _ = r.read_u8();
+    let raw_stream, _ = r.read_u32_be();
+    let stream_id_val = raw_stream & 0x7FFFFFFF;
 
     hdr.length = length_val;
     hdr.frame_type = f_type;
@@ -98,24 +98,19 @@ fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHea
 
 // Serializes a 9-byte HTTP/2 binary frame header in big-endian wire format.
 fn encode_frame_header(hdr: const FrameHeader&, out: u8[9]&) {
-    let len_val = hdr.length & 0x00FFFFFF;
-    out[0] = ((len_val >> 16) & 0xFF) as u8;
-    out[1] = ((len_val >> 8) & 0xFF) as u8;
-    out[2] = (len_val & 0xFF) as u8;
-    out[3] = hdr.frame_type;
-    out[4] = hdr.flags;
-    let s_id = hdr.stream_id & 0x7FFFFFFF;
-    out[5] = ((s_id >> 24) & 0x7F) as u8;
-    out[6] = ((s_id >> 16) & 0xFF) as u8;
-    out[7] = ((s_id >> 8) & 0xFF) as u8;
-    out[8] = (s_id & 0xFF) as u8;
+    var w = core::new_slice_writer(out[..]);
+    w.write_u24_be(hdr.length & 0x00FFFFFF);
+    w.write_u8(hdr.frame_type);
+    w.write_u8(hdr.flags);
+    w.write_u32_be(hdr.stream_id & 0x7FFFFFFF);
 }
 
 // Appends 9 serialized header bytes to any buffer.
 fn encode_frame_header_to<B>(hdr: const FrameHeader&, out: B&) {
-    var raw: u8[9] = [0; 9];
-    encode_frame_header(hdr, raw);
-    out.append(raw[..]);
+    core::append_u24_be(out, hdr.length & 0x00FFFFFF);
+    out.push(hdr.frame_type);
+    out.push(hdr.flags);
+    core::append_u32_be(out, hdr.stream_id & 0x7FFFFFFF);
 }
 
 // Validates frame header invariants against stream 0 / non-zero stream rules and lengths.

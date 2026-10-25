@@ -67,7 +67,7 @@ inline fn quic_varint_len(first_byte: u8) -> u8 {
     return (1 as u8) << ((first_byte >> 6) & 0x03);
 }
 
-// Encodes a 62-bit unsigned integer into big-endian wire format.
+// Encodes a 62-bit unsigned integer into big-endian wire format using core/io.
 fn quic_encode_varint<B>(out: B&, val: u64) -> bool {
     guard val <= 0x3FFFFFFFFFFFFFFF else { return false; }
 
@@ -76,41 +76,53 @@ fn quic_encode_varint<B>(out: B&, val: u64) -> bool {
         return true;
     }
     if val <= 16383 {
-        out.push((0x40 | ((val >> 8) & 0x3F)) as u8);
-        out.push((val & 0xFF) as u8);
+        core::append_u16_be(out, (0x4000 | (val & 0x3FFF)) as u16);
         return true;
     }
     if val <= 1073741823 {
-        out.push((0x80 | ((val >> 24) & 0x3F)) as u8);
-        out.push(((val >> 16) & 0xFF) as u8);
-        out.push(((val >> 8) & 0xFF) as u8);
-        out.push((val & 0xFF) as u8);
+        core::append_u32_be(out, (0x80000000 | (val & 0x3FFFFFFF)) as u32);
         return true;
     }
 
-    out.push((0xC0 | ((val >> 56) & 0x3F)) as u8);
-    out.push(((val >> 48) & 0xFF) as u8);
-    out.push(((val >> 40) & 0xFF) as u8);
-    out.push(((val >> 32) & 0xFF) as u8);
-    out.push(((val >> 24) & 0xFF) as u8);
-    out.push(((val >> 16) & 0xFF) as u8);
-    out.push(((val >> 8) & 0xFF) as u8);
-    out.push((val & 0xFF) as u8);
+    core::append_u64_be(out, 0xC000000000000000 | (val & 0x3FFFFFFFFFFFFFFF));
     return true;
+}
+
+// Decodes a QUIC variable-length integer directly from a SliceReader.
+fn quic_decode_varint_reader(r: core::SliceReader&) -> u64, bool {
+    guard !r.is_eof() else { return 0, false; }
+    let first, ok = r.peek();
+    guard ok else { return 0, false; }
+
+    let vlen = quic_varint_len(first);
+    guard r.remaining() >= vlen else { return 0, false; }
+
+    if vlen == 1 {
+        let b, _ = r.read_u8();
+        return (b & 0x3F), true;
+    }
+    if vlen == 2 {
+        let v16, _ = r.read_u16_be();
+        return (v16 & 0x3FFF), true;
+    }
+    if vlen == 4 {
+        let v32, _ = r.read_u32_be();
+        return (v32 & 0x3FFFFFFF), true;
+    }
+    if vlen == 8 {
+        let v64, _ = r.read_u64_be();
+        return (v64 & 0x3FFFFFFFFFFFFFFF), true;
+    }
+    return 0, false;
 }
 
 // Decodes a variable-length integer from big-endian wire format.
 fn quic_decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
-    guard offset < (src.len as u64) else { return 0, offset, false; }
-    let first = src[offset];
-    let vlen = quic_varint_len(first);
-    guard (offset + vlen) <= (src.len as u64) else { return 0, offset, false; }
-
-    var val: u64 = first & 0x3F;
-    for i in 1..vlen {
-        val = (val << 8) | src[offset + i];
-    }
-    return val, offset + vlen, true;
+    guard offset <= (src.len as u64) else { return 0, offset, false; }
+    var r = core::new_slice_reader(src[(offset as i64)..]);
+    let val, ok = quic_decode_varint_reader(r);
+    guard ok else { return 0, offset, false; }
+    return val, offset + (r.cursor as u64), true;
 }
 
 // Stream identifier classification helpers (RFC 9000 Section 2.1)

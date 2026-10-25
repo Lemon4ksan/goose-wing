@@ -95,6 +95,30 @@ fn write_u16_le(w: SliceWriter&, v: u16) -> IoError {
     return IoError.None;
 }
 
+// Writes 24-bit integer in Big-Endian wire order (RFC 8446 TLS, RFC 9113 HTTP/2 framing).
+fn write_u24_be(w: SliceWriter&, v: u32) -> IoError {
+    guard available(w) >= 3 else {
+        return IoError.BufferFull;
+    }
+    w.buf[w.cursor]     = ((v >> 16) & 0xFF) as u8;
+    w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
+    w.buf[w.cursor + 2] = (v & 0xFF) as u8;
+    w.cursor += 3;
+    return IoError.None;
+}
+
+// Writes 24-bit integer in Little-Endian order.
+fn write_u24_le(w: SliceWriter&, v: u32) -> IoError {
+    guard available(w) >= 3 else {
+        return IoError.BufferFull;
+    }
+    w.buf[w.cursor]     = (v & 0xFF) as u8;
+    w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
+    w.buf[w.cursor + 2] = ((v >> 16) & 0xFF) as u8;
+    w.cursor += 3;
+    return IoError.None;
+}
+
 // Writes 32-bit integer in Big-Endian wire order.
 fn write_u32_be(w: SliceWriter&, v: u32) -> IoError {
     guard available(w) >= 4 else {

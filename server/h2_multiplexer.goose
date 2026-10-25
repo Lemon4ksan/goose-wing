@@ -122,20 +122,20 @@ fn emit_server_settings<B>(out: B&) {
     encode_frame_header_to(hdr, out);
 
     // 1. SETTING_MAX_CONCURRENT_STREAMS (0x03) = 128
-    write_u16_be(out, SETTING_MAX_CONCURRENT_STREAMS);
-    write_u32_be(out, 128);
+    core::append_u16_be(out, SETTING_MAX_CONCURRENT_STREAMS);
+    core::append_u32_be(out, 128);
 
     // 2. SETTING_INITIAL_WINDOW_SIZE (0x04) = 65535
-    write_u16_be(out, SETTING_INITIAL_WINDOW_SIZE);
-    write_u32_be(out, 65535);
+    core::append_u16_be(out, SETTING_INITIAL_WINDOW_SIZE);
+    core::append_u32_be(out, 65535);
 
     // 3. SETTING_MAX_FRAME_SIZE (0x05) = 16384
-    write_u16_be(out, SETTING_MAX_FRAME_SIZE);
-    write_u32_be(out, 16384);
+    core::append_u16_be(out, SETTING_MAX_FRAME_SIZE);
+    core::append_u32_be(out, 16384);
 
     // 4. SETTING_ENABLE_CONNECT_PROTO (0x08) = 1 (Extended CONNECT for WebSocket)
-    write_u16_be(out, SETTING_ENABLE_CONNECT_PROTO);
-    write_u32_be(out, 1);
+    core::append_u16_be(out, SETTING_ENABLE_CONNECT_PROTO);
+    core::append_u32_be(out, 1);
 }
 
 // Emits a SETTINGS ACK frame
@@ -172,7 +172,7 @@ fn emit_window_update<B>(stream_id: u32, increment: u32, out: B&) {
         stream_id: stream_id,
     };
     encode_frame_header_to(hdr, out);
-    write_u32_be(out, increment & 0x7FFFFFFF);
+    core::append_u32_be(out, increment & 0x7FFFFFFF);
 }
 
 // Emits a RST_STREAM frame
@@ -184,7 +184,7 @@ fn emit_rst_stream<B>(stream_id: u32, error_code: u32, out: B&) {
         stream_id: stream_id,
     };
     encode_frame_header_to(hdr, out);
-    write_u32_be(out, error_code);
+    core::append_u32_be(out, error_code);
 }
 
 // Emits a GOAWAY frame
@@ -196,8 +196,8 @@ fn emit_goaway<B>(last_stream_id: u32, error_code: u32, out: B&) {
         stream_id: 0,
     };
     encode_frame_header_to(hdr, out);
-    write_u32_be(out, last_stream_id & 0x7FFFFFFF);
-    write_u32_be(out, error_code);
+    core::append_u32_be(out, last_stream_id & 0x7FFFFFFF);
+    core::append_u32_be(out, error_code);
 }
 
 // Encodes HTTP/2 Response HEADERS using HPACK
@@ -392,17 +392,16 @@ fn handle_h2_server_ingress<B>(
                 sess.client_settings_acked = true;
             } else {
                 // Parse client settings (pairs of u16 identifier + u32 value)
-                var p_off: i64 = 0;
-                while p_off + 6 <= frame_payload.len {
-                    let param_id = read_u16_be(frame_payload, p_off);
-                    let param_val = read_u32_be(frame_payload, p_off + 2);
+                var settings_r = core::new_slice_reader(frame_payload);
+                while settings_r.remaining() >= 6 {
+                    let param_id, _ = settings_r.read_u16_be();
+                    let param_val, _ = settings_r.read_u32_be();
 
                     if param_id == SETTING_INITIAL_WINDOW_SIZE {
                         apply_peer_initial_window_size_delta(sess.conn, param_val);
                     } else if param_id == SETTING_MAX_FRAME_SIZE {
                         sess.conn.local_max_frame_size = param_val;
                     }
-                    p_off += 6;
                 }
                 // Send SETTINGS ACK back to client
                 emit_settings_ack(out_wire);
@@ -415,7 +414,9 @@ fn handle_h2_server_ingress<B>(
             }
         } else if hdr.frame_type == FRAME_WINDOW_UPDATE {
             if frame_payload.len == 4 {
-                let inc = read_u32_be(frame_payload, 0) & 0x7FFFFFFF;
+                var wu_r = core::new_slice_reader(frame_payload);
+                let raw_inc, _ = wu_r.read_u32_be();
+                let inc = raw_inc & 0x7FFFFFFF;
                 apply_window_update(sess.conn, hdr.stream_id, inc);
             }
         } else if hdr.frame_type == FRAME_RST_STREAM {

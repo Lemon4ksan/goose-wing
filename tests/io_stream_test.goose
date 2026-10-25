@@ -51,11 +51,13 @@ fn test_slice_reader(t: core::T&) {
         // Wire packet:
         // [0] = 0xFE (u8)
         // [1..2] = 0x12, 0x34 (u16 BE = 0x1234, LE = 0x3412)
-        // [3..6] = 0x01, 0x02, 0x03, 0x04 (u32 BE = 0x01020304)
-        // [7..14] = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 (u64 BE)
-        let wire_bytes: u8[15] = [
+        // [3..5] = 0x01, 0x02, 0x03 (u24 BE = 0x010203)
+        // [6..9] = 0x01, 0x02, 0x03, 0x04 (u32 BE = 0x01020304)
+        // [10..17] = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 (u64 BE)
+        let wire_bytes: u8[18] = [
             0xFE,
             0x12, 0x34,
+            0x01, 0x02, 0x03,
             0x01, 0x02, 0x03, 0x04,
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
         ];
@@ -68,6 +70,10 @@ fn test_slice_reader(t: core::T&) {
         let u16_val, err16 = r.read_u16_be();
         sub.assert_eq(err16, core::IoError.None, "read_u16_be ok");
         sub.assert_eq(u16_val, 0x1234 as u16, "u16 BE matches 0x1234");
+
+        let u24_val, err24 = r.read_u24_be();
+        sub.assert_eq(err24, core::IoError.None, "read_u24_be ok");
+        sub.assert_eq(u24_val, 0x010203 as u32, "u24 BE matches 0x010203");
 
         let u32_val, err32 = r.read_u32_be();
         sub.assert_eq(err32, core::IoError.None, "read_u32_be ok");
@@ -98,15 +104,18 @@ fn test_slice_writer(t: core::T&) {
         let err2 = w.write_u16_be(0xBEEF as u16);
         sub.assert_eq(err2, core::IoError.None, "write_u16_be ok");
 
+        let err2b = w.write_u24_be(0xABCDEF as u32);
+        sub.assert_eq(err2b, core::IoError.None, "write_u24_be ok");
+
         let err3 = w.write_u32_be(0xCAFEBABE as u32);
         sub.assert_eq(err3, core::IoError.None, "write_u32_be ok");
 
         let err4 = w.write_exact("WING");
         sub.assert_eq(err4, core::IoError.None, "write_exact string ok");
 
-        sub.assert_eq(w.written(), 1 + 2 + 4 + 4, "Total written 11 bytes");
+        sub.assert_eq(w.written(), 1 + 2 + 3 + 4 + 4, "Total written 14 bytes");
         let written_bytes = w.as_written_slice();
-        sub.assert_eq(written_bytes.len, 11, "Written slice len 11");
+        sub.assert_eq(written_bytes.len, 14, "Written slice len 14");
 
         // Verify with SliceReader
         var r = core::new_slice_reader(written_bytes);
@@ -114,6 +123,8 @@ fn test_slice_writer(t: core::T&) {
         sub.assert_eq(b, 0xAA, "Decoded u8 matches");
         let v16, _ = r.read_u16_be();
         sub.assert_eq(v16, 0xBEEF as u16, "Decoded u16 matches");
+        let v24, _ = r.read_u24_be();
+        sub.assert_eq(v24, 0xABCDEF as u32, "Decoded u24 matches");
         let v32, _ = r.read_u32_be();
         sub.assert_eq(v32, 0xCAFEBABE as u32, "Decoded u32 matches");
         let str_tag, _ = r.read_slice(4);

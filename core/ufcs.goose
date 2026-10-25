@@ -235,6 +235,8 @@ fn ::read_slice(r: core::SliceReader&, count: i64) -> const u8[:], core::IoError
 fn ::read_u8(r: core::SliceReader&) -> u8, core::IoError { return core::read_u8(r); }
 fn ::read_u16_be(r: core::SliceReader&) -> u16, core::IoError { return core::read_u16_be(r); }
 fn ::read_u16_le(r: core::SliceReader&) -> u16, core::IoError { return core::read_u16_le(r); }
+fn ::read_u24_be(r: core::SliceReader&) -> u32, core::IoError { return core::read_u24_be(r); }
+fn ::read_u24_le(r: core::SliceReader&) -> u32, core::IoError { return core::read_u24_le(r); }
 fn ::read_u32_be(r: core::SliceReader&) -> u32, core::IoError { return core::read_u32_be(r); }
 fn ::read_u32_le(r: core::SliceReader&) -> u32, core::IoError { return core::read_u32_le(r); }
 fn ::read_u64_be(r: core::SliceReader&) -> u64, core::IoError { return core::read_u64_be(r); }
@@ -248,9 +250,16 @@ fn ::write(w: core::SliceWriter&, src: const u8[:]) -> i64, core::IoError { retu
 fn ::write_exact(w: core::SliceWriter&, src: const u8[:]) -> core::IoError { return core::write_exact(w, src); }
 fn ::write_u8(w: core::SliceWriter&, b: u8) -> core::IoError { return core::write_u8(w, b); }
 fn ::write_u16_be(w: core::SliceWriter&, v: u16) -> core::IoError { return core::write_u16_be(w, v); }
+fn ::write_u24_be(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u24_be(w, v); }
+fn ::write_u24_le(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u24_le(w, v); }
 fn ::write_u32_be(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u32_be(w, v); }
 fn ::write_u64_be(w: core::SliceWriter&, v: u64) -> core::IoError { return core::write_u64_be(w, v); }
 fn ::as_written_slice(w: const core::SliceWriter&) -> const u8[:] { return core::as_written_slice(w); }
+
+fn ::append_u16_be<B>(out: B&, v: u16) { core::append_u16_be(out, v); }
+fn ::append_u24_be<B>(out: B&, v: u32) { core::append_u24_be(out, v); }
+fn ::append_u32_be<B>(out: B&, v: u32) { core::append_u32_be(out, v); }
+fn ::append_u64_be<B>(out: B&, v: u64) { core::append_u64_be(out, v); }
 
 fn ::remaining(lr: const core::LimitReader&) -> i64 { return core::remaining(lr); }
 fn ::is_eof(lr: const core::LimitReader&) -> bool { return core::is_eof(lr); }

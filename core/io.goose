@@ -57,3 +57,35 @@ fn copy_reader_n<B>(r: SliceReader&, out: B&, count: i64) -> i64, IoError {
     }
     return 0, err;
 }
+
+// Appends a 16-bit integer in Big-Endian wire order into any appendable buffer.
+fn append_u16_be<B>(out: B&, v: u16) {
+    var raw: u8[2] = [0; 2];
+    var w = new_slice_writer(raw[..]);
+    write_u16_be(w, v);
+    out.append(as_written_slice(w));
+}
+
+// Appends a 24-bit integer in Big-Endian wire order into any appendable buffer.
+fn append_u24_be<B>(out: B&, v: u32) {
+    var raw: u8[3] = [0; 3];
+    var w = new_slice_writer(raw[..]);
+    write_u24_be(w, v);
+    out.append(as_written_slice(w));
+}
+
+// Appends a 32-bit integer in Big-Endian wire order into any appendable buffer.
+fn append_u32_be<B>(out: B&, v: u32) {
+    var raw: u8[4] = [0; 4];
+    var w = new_slice_writer(raw[..]);
+    write_u32_be(w, v);
+    out.append(as_written_slice(w));
+}
+
+// Appends a 64-bit integer in Big-Endian wire order into any appendable buffer.
+fn append_u64_be<B>(out: B&, v: u64) {
+    var raw: u8[8] = [0; 8];
+    var w = new_slice_writer(raw[..]);
+    write_u64_be(w, v);
+    out.append(as_written_slice(w));
+}

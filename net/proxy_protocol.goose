@@ -113,28 +113,7 @@ struct ProxyHeader {
 
 // ---- 3. Helper Codecs -------------------------------------------------------
 
-inline fn read_u16_be(bytes: const u8[:], offset: i64) -> u16 {
-    return ((bytes[offset] as u16) << 8) | bytes[offset + 1];
-}
 
-inline fn read_u32_be(bytes: const u8[:], offset: i64) -> u32 {
-    return ((bytes[offset] as u32) << 24) |
-           ((bytes[offset + 1] as u32) << 16) |
-           ((bytes[offset + 2] as u32) << 8) |
-           bytes[offset + 3];
-}
-
-fn write_u16_be<B>(out: B&, val: u16) {
-    out.push(((val >> 8) & 0xFF) as u8);
-    out.push((val & 0xFF) as u8);
-}
-
-fn write_u32_be<B>(out: B&, val: u32) {
-    out.push(((val >> 24) & 0xFF) as u8);
-    out.push(((val >> 16) & 0xFF) as u8);
-    out.push(((val >> 8) & 0xFF) as u8);
-    out.push((val & 0xFF) as u8);
-}
 
 // Formats an IPv4 address into dotted decimal string notation (e.g. "192.168.0.1")
 fn format_ipv4<B>(ip: const u8[4]&, out: B&) {
@@ -410,7 +389,9 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
     }
 
     // 4. Payload Length (indices 14-15)
-    let payload_len = read_u16_be(wire, 14) as i64;
+    var len_r = core::new_slice_reader(wire[14..]);
+    let payload_len_u16, _ = len_r.read_u16_be();
+    let payload_len = payload_len_u16 as i64;
     let total_required = 16 + payload_len;
     guard wire.len >= total_required else { return hdr, 0, false; }
 
@@ -422,8 +403,11 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
             hdr.src_ipv4[i] = wire[16 + i];
             hdr.dst_ipv4[i] = wire[20 + i];
         }
-        hdr.src_port = read_u16_be(wire, 24);
-        hdr.dst_port = read_u16_be(wire, 26);
+        var port_r = core::new_slice_reader(wire[24..]);
+        let sp, _ = port_r.read_u16_be();
+        let dp, _ = port_r.read_u16_be();
+        hdr.src_port = sp;
+        hdr.dst_port = dp;
         format_ipv4(hdr.src_ipv4, hdr.src_ip_str);
         format_ipv4(hdr.dst_ipv4, hdr.dst_ip_str);
         addr_len = 12;
@@ -433,8 +417,11 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
             hdr.src_ipv6[i] = wire[16 + i];
             hdr.dst_ipv6[i] = wire[32 + i];
         }
-        hdr.src_port = read_u16_be(wire, 48);
-        hdr.dst_port = read_u16_be(wire, 50);
+        var port_r = core::new_slice_reader(wire[48..]);
+        let sp, _ = port_r.read_u16_be();
+        let dp, _ = port_r.read_u16_be();
+        hdr.src_port = sp;
+        hdr.dst_port = dp;
         format_ipv6(hdr.src_ipv6, hdr.src_ip_str);
         format_ipv6(hdr.dst_ipv6, hdr.dst_ip_str);
         addr_len = 36;
@@ -451,7 +438,9 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
     while tlv_offset + 3 <= tlv_limit {
         let tlv_type = wire[tlv_offset];
-        let tlv_len = read_u16_be(wire, tlv_offset + 1) as i64;
+        var tlv_r = core::new_slice_reader(wire[(tlv_offset + 1)..]);
+        let tlv_len_u16, _ = tlv_r.read_u16_be();
+        let tlv_len = tlv_len_u16 as i64;
         let val_start = tlv_offset + 3;
         let val_end = val_start + tlv_len;
         guard val_end <= tlv_limit else { return hdr, 0, false; }
@@ -474,13 +463,17 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
             guard val.len >= 5 else { return hdr, 0, false; }
             hdr.ssl.has_ssl = true;
             hdr.ssl.client_flags = val[0];
-            hdr.ssl.verify_result = read_u32_be(val, 1);
+            var ssl_r = core::new_slice_reader(val[1..]);
+            let v_res, _ = ssl_r.read_u32_be();
+            hdr.ssl.verify_result = v_res;
 
             // Parse SSL Sub-TLVs
             var sub_offset: i64 = 5;
             while sub_offset + 3 <= val.len {
                 let sub_type = val[sub_offset];
-                let sub_len = read_u16_be(val, sub_offset + 1) as i64;
+                var sub_r = core::new_slice_reader(val[(sub_offset + 1)..]);
+                let sub_len_u16, _ = sub_r.read_u16_be();
+                let sub_len = sub_len_u16 as i64;
                 let sub_start = sub_offset + 3;
                 let sub_end = sub_start + sub_len;
                 guard sub_end <= val.len else { break; }
@@ -551,31 +544,31 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     if hdr.family == ProxyAddressFamily.Inet4 {
         for b in hdr.src_ipv4 { out.push(b); }
         for b in hdr.dst_ipv4 { out.push(b); }
-        write_u16_be(out, hdr.src_port);
-        write_u16_be(out, hdr.dst_port);
+        append_u16_be(out, hdr.src_port);
+        append_u16_be(out, hdr.dst_port);
     } else if hdr.family == ProxyAddressFamily.Inet6 {
         for b in hdr.src_ipv6 { out.push(b); }
         for b in hdr.dst_ipv6 { out.push(b); }
-        write_u16_be(out, hdr.src_port);
-        write_u16_be(out, hdr.dst_port);
+        append_u16_be(out, hdr.src_port);
+        append_u16_be(out, hdr.dst_port);
     }
 
     // 6. Write TLVs
     if hdr.alpn.len > 0 {
         out.push(PP2_TYPE_ALPN);
-        write_u16_be(out, hdr.alpn.len as u16);
+        append_u16_be(out, hdr.alpn.len as u16);
         out.append(hdr.alpn[..]);
     }
 
     if hdr.authority.len > 0 {
         out.push(PP2_TYPE_AUTHORITY);
-        write_u16_be(out, hdr.authority.len as u16);
+        append_u16_be(out, hdr.authority.len as u16);
         out.append(hdr.authority[..]);
     }
 
     if hdr.unique_id.len > 0 {
         out.push(PP2_TYPE_UNIQUE_ID);
-        write_u16_be(out, hdr.unique_id.len as u16);
+        append_u16_be(out, hdr.unique_id.len as u16);
         out.append(hdr.unique_id[..]);
     }
 
@@ -588,23 +581,23 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
         if hdr.ssl.cipher.len > 0 { sub_len += 3 + hdr.ssl.cipher.len; }
         if hdr.ssl.client_cn.len > 0 { sub_len += 3 + hdr.ssl.client_cn.len; }
 
-        write_u16_be(out, sub_len as u16);
+        append_u16_be(out, sub_len as u16);
         out.push(hdr.ssl.client_flags);
-        write_u32_be(out, hdr.ssl.verify_result);
+        append_u32_be(out, hdr.ssl.verify_result);
 
         if hdr.ssl.version.len > 0 {
             out.push(PP2_SUBTYPE_SSL_VERSION);
-            write_u16_be(out, hdr.ssl.version.len as u16);
+            append_u16_be(out, hdr.ssl.version.len as u16);
             out.append(hdr.ssl.version[..]);
         }
         if hdr.ssl.cipher.len > 0 {
             out.push(PP2_SUBTYPE_SSL_CIPHER);
-            write_u16_be(out, hdr.ssl.cipher.len as u16);
+            append_u16_be(out, hdr.ssl.cipher.len as u16);
             out.append(hdr.ssl.cipher[..]);
         }
         if hdr.ssl.client_cn.len > 0 {
             out.push(PP2_SUBTYPE_SSL_CN);
-            write_u16_be(out, hdr.ssl.client_cn.len as u16);
+            append_u16_be(out, hdr.ssl.client_cn.len as u16);
             out.append(hdr.ssl.client_cn[..]);
         }
     }

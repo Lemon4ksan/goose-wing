@@ -104,6 +104,30 @@ fn read_u16_le(r: SliceReader&) -> u16, IoError {
     return (b1 << 8) | b0, IoError.None;
 }
 
+// Reads 24-bit unsigned integer in Big-Endian wire order (RFC 8446 TLS, RFC 9113 HTTP/2 framing).
+fn read_u24_be(r: SliceReader&) -> u32, IoError {
+    guard remaining(r) >= 3 else {
+        return 0, IoError.UnexpectedEof;
+    }
+    let b0 = r.data[r.cursor] as u32;
+    let b1 = r.data[r.cursor + 1] as u32;
+    let b2 = r.data[r.cursor + 2] as u32;
+    r.cursor += 3;
+    return (b0 << 16) | (b1 << 8) | b2, IoError.None;
+}
+
+// Reads 24-bit unsigned integer in Little-Endian order.
+fn read_u24_le(r: SliceReader&) -> u32, IoError {
+    guard remaining(r) >= 3 else {
+        return 0, IoError.UnexpectedEof;
+    }
+    let b0 = r.data[r.cursor] as u32;
+    let b1 = r.data[r.cursor + 1] as u32;
+    let b2 = r.data[r.cursor + 2] as u32;
+    r.cursor += 3;
+    return (b2 << 16) | (b1 << 8) | b0, IoError.None;
+}
+
 // Reads 32-bit unsigned integer in Big-Endian wire order.
 fn read_u32_be(r: SliceReader&) -> u32, IoError {
     guard remaining(r) >= 4 else {
