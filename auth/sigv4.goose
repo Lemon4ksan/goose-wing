@@ -4,8 +4,6 @@
 namespace wing;
 
 import std;
-import client.profile;
-import client.request;
 import core from "..";
 
 struct AwsCredentials {
@@ -51,8 +49,8 @@ fn derive_aws_signing_key(
 }
 
 // Signs a Request with AWS SigV4 headers
-fn sign_aws_sigv4(
-    req: Request&,
+fn sign_aws_sigv4<R>(
+    req: R&,
     creds: const AwsCredentials&,
     datetime_iso: const u8[:] // e.g. "20130524T000000Z"
 ) -> bool {

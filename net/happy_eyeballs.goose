@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. RFC 8305 and HEv3 normative constants ------------------------------
 

@@ -3,6 +3,8 @@
 namespace wing;
 
 import std;
+import core from "..";
+import .proxy;
 
 // ---- 1. pool key dimensions & enums ----------------------------------------
 

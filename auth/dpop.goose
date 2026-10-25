@@ -7,8 +7,6 @@ namespace wing;
 import std;
 import json;
 import core from "..";
-import client.profile;
-import client.request;
 
 // ---- 1. RFC 9449 Constants & Identifiers ------------------------------------
 
@@ -322,7 +320,7 @@ fn verify_dpop_proof(
 // ---- 6. Client Header Integration ------------------------------------------
 
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
-fn attach_dpop(req: Request&, proof: const u8[:], access_token: const u8[:] = "") {
+fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
     header(req, DPOP_HEADER, proof);
     if access_token.len > 0 {
         var auth_val: u8[..384] = [];
@@ -333,10 +331,10 @@ fn attach_dpop(req: Request&, proof: const u8[:], access_token: const u8[:] = ""
 }
 
 // Extracts DPoP-Nonce from response headers.
-fn extract_dpop_nonce(headers: const HeaderItem[:], out_nonce: u8[..128]&) -> bool {
+fn extract_dpop_nonce<H>(headers: const H[:], out_nonce: u8[..128]&) -> bool {
     out_nonce.clear();
     for idx in headers.len {
-        if eq_ascii_fold(headers[idx].name[..], DPOP_NONCE_HEADER) {
+        if core::eq_ascii_fold(headers[idx].name[..], DPOP_NONCE_HEADER) {
             out_nonce.append(headers[idx].value[..]);
             return true;
         }

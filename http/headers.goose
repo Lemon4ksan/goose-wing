@@ -33,10 +33,11 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
            eq_ascii_fold(name, "x-amz-security-token");
 }
 
-// Appends src to out with CR, LF, and NUL bytes omitted (RFC 9110 Section 5.5).
+// Appends src to out with CR, LF, and NUL bytes omitted, clamped to out.cap (RFC 9110 Section 5.5).
 fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     for b in src {
         if b != '\r' && b != '\n' && b != 0 {
+            guard out.len < out.cap else { return; }
             out.push(b);
         }
     }

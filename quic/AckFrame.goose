@@ -4,6 +4,8 @@
 namespace wing;
 
 import std;
+import core from "..";
+import .packet;
 
 // ---- 1. packet number spaces and data types (rfc 9002 section 6.2.1) -------
 

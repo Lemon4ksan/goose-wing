@@ -2,6 +2,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import .constants;
 import .canonical;
 import .psl;

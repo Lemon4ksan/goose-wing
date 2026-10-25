@@ -3,9 +3,6 @@
 namespace wing;
 
 import std;
-import quic.packet;
-import http3.qpack;
-import http2.framing;
 
 // ---- 1. Frame Headers and Settings Structures -------------------------------
 

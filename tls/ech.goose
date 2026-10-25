@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import .record;
 import .hpke;
 

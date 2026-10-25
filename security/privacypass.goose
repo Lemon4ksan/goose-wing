@@ -5,9 +5,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.profile;
-import client.request;
-import client.response;
 
 // ---- 1. Privacy Pass Constants & Token Types --------------------------------
 
@@ -365,17 +362,17 @@ fn get_private_token(
 }
 
 // Attaches an Authorization: PrivateToken header to an outbound request.
-fn attach_private_token(req: Request&, token_bytes: const u8[:]) {
+fn attach_private_token<R>(req: R&, token_bytes: const u8[:]) {
     var auth_header: u8[..1024] = [];
     format_private_token_authorization(token_bytes, auth_header);
     header(req, "Authorization", auth_header[..]);
 }
 
 // Checks whether an HTTP response has a PrivateToken challenge.
-fn has_private_token_challenge(res: const Response&) -> bool {
+fn has_private_token_challenge<Res>(res: const Res&) -> bool {
     guard res.status_code == 401 else { return false; }
     for idx in res.headers.len {
-        if eq_ascii_fold(res.headers[idx].name[..], "WWW-Authenticate") {
+        if core::eq_ascii_fold(res.headers[idx].name[..], "WWW-Authenticate") {
             if core::contains(res.headers[idx].value[..], SCHEME_PRIVATE_TOKEN) {
                 return true;
             }

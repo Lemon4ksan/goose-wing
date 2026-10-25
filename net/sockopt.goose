@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import fingerprint.profile;
+import core from "..";
 
 // ---- 1. OS-Level Socket Constants ------------------------------------------
 

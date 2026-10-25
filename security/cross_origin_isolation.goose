@@ -4,7 +4,7 @@
 namespace wing;
 
 import std;
-import http.headers;
+import core from "..";
 
 // ---- 1. Policy Enumerations -------------------------------------------------
 

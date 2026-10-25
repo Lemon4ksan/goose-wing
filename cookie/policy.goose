@@ -3,18 +3,20 @@
 namespace wing;
 
 import std;
+import core from "..";
 import .constants;
 import .canonical;
 import .psl;
+import .parser;
 
 // ---- http method & origin trust --------------------------------------------
 
 // Checks whether an HTTP method is considered safe per RFC 9110 (GET, HEAD, OPTIONS, TRACE).
 fn is_safe_http_method(method: const u8[:]) -> bool {
-    return eq_ascii_fold(method, "GET") ||
-           eq_ascii_fold(method, "HEAD") ||
-           eq_ascii_fold(method, "OPTIONS") ||
-           eq_ascii_fold(method, "TRACE");
+    return core::eq_ascii_fold(method, "GET") ||
+           core::eq_ascii_fold(method, "HEAD") ||
+           core::eq_ascii_fold(method, "OPTIONS") ||
+           core::eq_ascii_fold(method, "TRACE");
 }
 
 // Whether host is a local loopback origin (localhost, 127.0.0.1, ::1).
@@ -93,14 +95,14 @@ fn validate_canonical_cookie_security(
 // Schemeful Same-Site: compares two origins by (scheme, eTLD+1).
 // Transition between http://example.com and https://example.com is cross-site!
 fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const u8[:], host2: const u8[:]) -> bool {
-    guard eq_ascii_fold(scheme1, scheme2) else { return false; }
+    guard core::eq_ascii_fold(scheme1, scheme2) else { return false; }
 
     var etld1: u8[..128] = [];
     var etld2: u8[..128] = [];
     core::extract_etld_plus_one(host1, etld1);
     core::extract_etld_plus_one(host2, etld2);
 
-    return eq_ascii_fold(etld1[..], etld2[..]);
+    return core::eq_ascii_fold(etld1[..], etld2[..]);
 }
 
 // ---- request sendability evaluation ----------------------------------------
@@ -147,7 +149,7 @@ fn is_cookie_sendable_for_obc(
     let is_trustworthy = host.len > 0 && is_trustworthy_non_crypto_host(host);
 
     // Scheme check: Secure cookies require secure request scheme (or trustworthy non-crypto origin)
-    if cookie_val.source_scheme == CookieSourceScheme.Secure && !eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
+    if cookie_val.source_scheme == CookieSourceScheme.Secure && !core::eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
         return false;
     }
 
@@ -250,7 +252,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
     guard !site.is_null else { return; }
     let frame_site = site_for_cookies_from_url(frame_url);
 
-    if !eq_ascii_fold(site.registrable_domain[..], frame_site.registrable_domain[..]) {
+    if !core::eq_ascii_fold(site.registrable_domain[..], frame_site.registrable_domain[..]) {
         site.is_null = true;
         site.schemefully_same = false;
         site.scheme.clear();
@@ -258,7 +260,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
         return;
     }
 
-    if !eq_ascii_fold(site.scheme[..], frame_site.scheme[..]) {
+    if !core::eq_ascii_fold(site.scheme[..], frame_site.scheme[..]) {
         site.schemefully_same = false;
     }
 }
@@ -288,10 +290,10 @@ fn is_first_party(site: const SiteForCookies&, req_url: const u8[:], compute_sch
     if compute_schemefully && !site.schemefully_same { return false; }
 
     let req_site = site_for_cookies_from_url(req_url);
-    if !eq_ascii_fold(site.registrable_domain[..], req_site.registrable_domain[..]) {
+    if !core::eq_ascii_fold(site.registrable_domain[..], req_site.registrable_domain[..]) {
         return false;
     }
-    if compute_schemefully && !eq_ascii_fold(site.scheme[..], req_site.scheme[..]) {
+    if compute_schemefully && !core::eq_ascii_fold(site.scheme[..], req_site.scheme[..]) {
         return false;
     }
     return true;

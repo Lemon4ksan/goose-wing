@@ -2,12 +2,9 @@
 namespace wing;
 
 import std;
+import core from "..";
 import .constants;
-import .psl;
-import .parser;
 import .policy;
-import .engine;
-import .store;
 
 // ---- canonical cookie model ------------------------------------------------
 

@@ -194,6 +194,18 @@ fn parse_ipv4_decimal(str: const u8[:], out_ip: u8[4]&) -> bool {
 
 // ---- 4. PROXY Protocol v1 Parser & Serializer (Text) ------------------------
 
+struct ProxyTokenSpan {
+    offset: u16 = 0,
+    length: u16 = 0,
+}
+
+fn proxy_span_slice(raw: const u8[:], span: ProxyTokenSpan) -> const u8[:] {
+    let start: i64 = span.offset;
+    let end: i64 = start + span.length;
+    guard start <= raw.len && end <= raw.len else { return raw[..0]; }
+    return raw[start..end];
+}
+
 // Parses an incoming PROXY v1 line:
 // PROXY <INET_PROTOCOL> <SRC_IP> <DST_IP> <SRC_PORT> <DST_PORT>\r\n
 // Returns (ProxyHeader, bytes_consumed, success)
@@ -228,14 +240,14 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     }
 
     // Tokenize space-separated tokens: PROTO SRC_IP DST_IP SRC_PORT DST_PORT
-    var tokens: Span16[..8] = [];
+    var tokens: ProxyTokenSpan[..8] = [];
     var tok_start: i64 = 0;
     var in_tok = false;
 
     for i in line.len {
         if line[i] == ' ' {
             if in_tok {
-                tokens.push(Span16 { offset: tok_start as u16, length: (i - tok_start) as u16 });
+                tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (i - tok_start) as u16 });
                 in_tok = false;
             }
         } else {
@@ -246,17 +258,17 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
         }
     }
     if in_tok {
-        tokens.push(Span16 { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
+        tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
     }
 
     // Must have exactly 5 tokens for TCP4 / TCP6
     guard tokens.len == 5 else { return hdr, 0, false; }
 
-    let proto_str = span_slice(line, tokens[0]);
-    let src_ip_str = span_slice(line, tokens[1]);
-    let dst_ip_str = span_slice(line, tokens[2]);
-    let src_port_str = span_slice(line, tokens[3]);
-    let dst_port_str = span_slice(line, tokens[4]);
+    let proto_str = proxy_span_slice(line, tokens[0]);
+    let src_ip_str = proxy_span_slice(line, tokens[1]);
+    let dst_ip_str = proxy_span_slice(line, tokens[2]);
+    let src_port_str = proxy_span_slice(line, tokens[3]);
+    let dst_port_str = proxy_span_slice(line, tokens[4]);
 
     if proto_str == "TCP4" {
         hdr.family = ProxyAddressFamily.Inet4;

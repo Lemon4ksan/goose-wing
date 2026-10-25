@@ -4,6 +4,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
 
@@ -11,17 +12,17 @@ let ERR_QUIC_PROTOCOL_ERROR: i32 = -356; // Chromium net error code parity
 
 // Checks whether an HTTP method is semantically idempotent per RFC 9110.
 fn is_idempotent_method(method: const u8[:]) -> bool {
-    return eq_ascii_fold(method, "GET") ||
-           eq_ascii_fold(method, "HEAD") ||
-           eq_ascii_fold(method, "PUT") ||
-           eq_ascii_fold(method, "DELETE") ||
-           eq_ascii_fold(method, "OPTIONS") ||
-           eq_ascii_fold(method, "TRACE") ||
-           eq_ascii_fold(method, "QUERY");
+    return core::eq_ascii_fold(method, "GET") ||
+           core::eq_ascii_fold(method, "HEAD") ||
+           core::eq_ascii_fold(method, "PUT") ||
+           core::eq_ascii_fold(method, "DELETE") ||
+           core::eq_ascii_fold(method, "OPTIONS") ||
+           core::eq_ascii_fold(method, "TRACE") ||
+           core::eq_ascii_fold(method, "QUERY");
 }
 
 // Checks if request carries a valid non-empty Idempotency-Key header.
-fn has_idempotency_key(req: const Request&) -> bool {
+fn has_idempotency_key<Req>(req: const Req&) -> bool {
     return req.header("Idempotency-Key").len > 0;
 }
 
@@ -30,10 +31,10 @@ fn has_idempotency_key(req: const Request&) -> bool {
 // 2. Failure occurred before response headers arrived (!headers_received).
 // 3. Method is idempotent OR request has an Idempotency-Key.
 // 4. Request has no body OR body is rewindable with GetBody (prevents one-shot stream bug).
-fn should_retry_tier1_stale_socket(
+fn should_retry_tier1_stale_socket<Req>(
     reused_connection: bool,
     headers_received: bool,
-    req: const Request&
+    req: const Req&
 ) -> bool {
     // Invariant 1: Only reused connections are retried at Tier 1; fresh dials fail fast
     guard reused_connection else { return false; }
@@ -60,11 +61,11 @@ struct Tier1Decision {
 }
 
 // Evaluates Tier 1 network errors, including Chromium ERR_QUIC_PROTOCOL_ERROR fallback.
-fn evaluate_tier1_retry(
+fn evaluate_tier1_retry<Req>(
     err_code: i32,
     reused_connection: bool,
     headers_received: bool,
-    req: const Request&
+    req: const Req&
 ) -> Tier1Decision {
     // Chromium QUIC protocol fallback: automatically retry over TCP/TLS before headers
     if err_code == ERR_QUIC_PROTOCOL_ERROR && !headers_received {
@@ -237,7 +238,7 @@ fn trip_circuit_breaker_if_exceeded(
     let unblock_at = now_mono_ns + block_dur_ns;
 
     for &h in breaker.hosts {
-        if eq_ascii_fold(h.host[..], host_str) {
+        if core::eq_ascii_fold(h.host[..], host_str) {
             h.blocked_until_mono_ns = unblock_at;
             h.is_blocked = true;
             return true;
@@ -265,7 +266,7 @@ fn is_host_circuit_broken(
     now_mono_ns: i64
 ) -> bool {
     for &h in breaker.hosts {
-        if eq_ascii_fold(h.host[..], host_str) {
+        if core::eq_ascii_fold(h.host[..], host_str) {
             if h.is_blocked {
                 if now_mono_ns >= h.blocked_until_mono_ns {
                     h.is_blocked = false;

@@ -2,6 +2,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- limits and constants --------------------------------------------------
 
@@ -64,9 +65,9 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
 
 // Parses a SameSite attribute value case-insensitively, defaulting to CookieSameSite.Default (RFC 6265bis Section 5.4.7).
 fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
-    if eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
-    if eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
-    if eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
+    if core::eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
+    if core::eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
+    if core::eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
     return CookieSameSite.Default;
 }
 
@@ -90,8 +91,8 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
 
 // Parses a Priority attribute value case-insensitively, defaulting to CookiePriority.Medium.
 fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
-    if eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
-    if eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
+    if core::eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
+    if core::eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
     return CookiePriority.Medium;
 }
 
@@ -115,8 +116,8 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
 
 // Parses a serialized source scheme string case-insensitively, defaulting to CookieSourceScheme.Unset.
 fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
-    if eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
-    if eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
+    if core::eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
+    if core::eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
     return CookieSourceScheme.Unset;
 }
 

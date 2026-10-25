@@ -2,8 +2,7 @@
 namespace wing;
 
 import std;
-import client.request;
-import client.response;
+import core from "..";
 
 enum CorsResult {
     NoCors,
@@ -97,7 +96,7 @@ fn has_only_wildcard_origin(policy: const CorsPolicy&) -> bool {
 }
 
 // Populates preflight response headers and sets 204 No Content status.
-fn apply_cors_preflight_headers(policy: const CorsPolicy&, res: Response&) {
+fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
     if policy.allowed_methods.len > 0 {
         res.headers.set_header("Access-Control-Allow-Methods", policy.allowed_methods[..]);
     }
@@ -115,7 +114,7 @@ fn apply_cors_preflight_headers(policy: const CorsPolicy&, res: Response&) {
 // Evaluates CORS rules against request Origin and populates response headers.
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
-fn evaluate_cors(policy: const CorsPolicy&, req: const Request&, res: Response&) -> CorsResult {
+fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&) -> CorsResult {
     let origin_raw = req.headers.find_header("Origin");
     guard origin_raw.len > 0 else { return CorsResult.NoCors; }
     let origin = trim_lws(origin_raw);

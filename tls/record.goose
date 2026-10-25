@@ -3,7 +3,6 @@
 namespace wing;
 
 import std;
-import quic.packet;
 
 // ---- 1. TLS 1.3 Alert Codes (RFC 8446 Section 6) ---------------------------
 
@@ -374,16 +373,6 @@ fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool
         return pkt[..0], false;
     }
     return pkt[sample_offset .. sample_offset + 16], true;
-}
-
-// Applies QUIC 5-byte header protection mask to packet header (RFC 9001 Section 5.4.1).
-fn quic_apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: const u8[5]&) {
-    apply_header_protection(pkt, pn_offset, pn_len, hp_mask);
-}
-
-// Removes QUIC header protection mask in-place, returning true packet number length and truncated PN.
-fn quic_remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -> u8, u64 {
-    return remove_header_protection(pkt, pn_offset, hp_mask);
 }
 
 // Connection container for QUIC Crypto state machine isolation.

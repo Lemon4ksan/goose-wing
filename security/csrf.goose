@@ -2,8 +2,7 @@
 namespace wing;
 
 import std;
-import client.request;
-import client.response;
+import core from "..";
 
 // ---- fetch metadata attribute taxonomy -------------------------------------
 
@@ -78,38 +77,38 @@ struct FetchContext {
 // Parses Sec-Fetch-Site string value.
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
     let clean = trim_lws(val);
-    if eq_ascii_fold(clean, "same-origin") { return SecFetchSite.SameOrigin; }
-    if eq_ascii_fold(clean, "same-site") { return SecFetchSite.SameSite; }
-    if eq_ascii_fold(clean, "cross-site") { return SecFetchSite.CrossSite; }
-    if eq_ascii_fold(clean, "none") { return SecFetchSite.None; }
+    if core::eq_ascii_fold(clean, "same-origin") { return SecFetchSite.SameOrigin; }
+    if core::eq_ascii_fold(clean, "same-site") { return SecFetchSite.SameSite; }
+    if core::eq_ascii_fold(clean, "cross-site") { return SecFetchSite.CrossSite; }
+    if core::eq_ascii_fold(clean, "none") { return SecFetchSite.None; }
     return SecFetchSite.Missing;
 }
 
 // Parses Sec-Fetch-Mode string value.
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
     let clean = trim_lws(val);
-    if eq_ascii_fold(clean, "navigate") { return SecFetchMode.Navigate; }
-    if eq_ascii_fold(clean, "same-origin") { return SecFetchMode.SameOrigin; }
-    if eq_ascii_fold(clean, "cors") { return SecFetchMode.Cors; }
-    if eq_ascii_fold(clean, "no-cors") { return SecFetchMode.NoCors; }
-    if eq_ascii_fold(clean, "websocket") { return SecFetchMode.WebSocket; }
+    if core::eq_ascii_fold(clean, "navigate") { return SecFetchMode.Navigate; }
+    if core::eq_ascii_fold(clean, "same-origin") { return SecFetchMode.SameOrigin; }
+    if core::eq_ascii_fold(clean, "cors") { return SecFetchMode.Cors; }
+    if core::eq_ascii_fold(clean, "no-cors") { return SecFetchMode.NoCors; }
+    if core::eq_ascii_fold(clean, "websocket") { return SecFetchMode.WebSocket; }
     return SecFetchMode.Other;
 }
 
 // Parses Sec-Fetch-Dest string value.
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
     let clean = trim_lws(val);
-    if eq_ascii_fold(clean, "document") { return SecFetchDest.Document; }
-    if eq_ascii_fold(clean, "nested-document") { return SecFetchDest.NestedDocument; }
-    if eq_ascii_fold(clean, "iframe") { return SecFetchDest.Iframe; }
-    if eq_ascii_fold(clean, "frame") { return SecFetchDest.Frame; }
-    if eq_ascii_fold(clean, "embed") { return SecFetchDest.Embed; }
-    if eq_ascii_fold(clean, "object") { return SecFetchDest.Object; }
-    if eq_ascii_fold(clean, "script") { return SecFetchDest.Script; }
-    if eq_ascii_fold(clean, "image") { return SecFetchDest.Image; }
-    if eq_ascii_fold(clean, "style") { return SecFetchDest.Style; }
-    if eq_ascii_fold(clean, "font") { return SecFetchDest.Font; }
-    if eq_ascii_fold(clean, "empty") { return SecFetchDest.Empty; }
+    if core::eq_ascii_fold(clean, "document") { return SecFetchDest.Document; }
+    if core::eq_ascii_fold(clean, "nested-document") { return SecFetchDest.NestedDocument; }
+    if core::eq_ascii_fold(clean, "iframe") { return SecFetchDest.Iframe; }
+    if core::eq_ascii_fold(clean, "frame") { return SecFetchDest.Frame; }
+    if core::eq_ascii_fold(clean, "embed") { return SecFetchDest.Embed; }
+    if core::eq_ascii_fold(clean, "object") { return SecFetchDest.Object; }
+    if core::eq_ascii_fold(clean, "script") { return SecFetchDest.Script; }
+    if core::eq_ascii_fold(clean, "image") { return SecFetchDest.Image; }
+    if core::eq_ascii_fold(clean, "style") { return SecFetchDest.Style; }
+    if core::eq_ascii_fold(clean, "font") { return SecFetchDest.Font; }
+    if core::eq_ascii_fold(clean, "empty") { return SecFetchDest.Empty; }
     return SecFetchDest.Other;
 }
 
@@ -185,7 +184,7 @@ fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> 
 fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]) -> bool {
     guard origin_str.len > 0 else { return false; }
     for &orig in guard_cfg.trusted_origins {
-        if eq_ascii_fold(orig[..], origin_str) {
+        if core::eq_ascii_fold(orig[..], origin_str) {
             return true;
         }
     }
@@ -295,7 +294,7 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
 }
 
 // Extracts FetchContext from an incoming Request.
-fn extract_fetch_context(req: const Request&, target_host: const u8[:]) -> FetchContext {
+fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> FetchContext {
     var ctx = FetchContext { .. };
     ctx.method.append(req.method[..]);
     ctx.method_is_safe = (req.method[..] == "GET" || req.method[..] == "HEAD" || req.method[..] == "OPTIONS");
@@ -305,23 +304,23 @@ fn extract_fetch_context(req: const Request&, target_host: const u8[:]) -> Fetch
         let name = h.name[..];
         let val = trim_lws(h.value[..]);
 
-        if eq_ascii_fold(name, "Sec-Fetch-Site") {
+        if core::eq_ascii_fold(name, "Sec-Fetch-Site") {
             ctx.site = parse_sec_fetch_site(val);
-        } else if eq_ascii_fold(name, "Sec-Fetch-Mode") {
+        } else if core::eq_ascii_fold(name, "Sec-Fetch-Mode") {
             ctx.mode = parse_sec_fetch_mode(val);
-        } else if eq_ascii_fold(name, "Sec-Fetch-Dest") {
+        } else if core::eq_ascii_fold(name, "Sec-Fetch-Dest") {
             ctx.dest = parse_sec_fetch_dest(val);
-        } else if eq_ascii_fold(name, "Sec-Fetch-User") {
+        } else if core::eq_ascii_fold(name, "Sec-Fetch-User") {
             ctx.user_activated = (val == "?1");
-        } else if eq_ascii_fold(name, "Origin") {
+        } else if core::eq_ascii_fold(name, "Origin") {
             ctx.origin.append(val);
             ctx.has_origin = true;
-        } else if eq_ascii_fold(name, "Referer") {
+        } else if core::eq_ascii_fold(name, "Referer") {
             ctx.referer.append(val);
             ctx.has_referer = true;
-        } else if eq_ascii_fold(name, "Cookie") {
+        } else if core::eq_ascii_fold(name, "Cookie") {
             ctx.has_session_cookie = true;
-        } else if eq_ascii_fold(name, "Authorization") || eq_ascii_fold(name, "X-API-Key") {
+        } else if core::eq_ascii_fold(name, "Authorization") || core::eq_ascii_fold(name, "X-API-Key") {
             ctx.has_explicit_auth = true;
         }
     }
@@ -330,7 +329,7 @@ fn extract_fetch_context(req: const Request&, target_host: const u8[:]) -> Fetch
 }
 
 // Injects Vary and HSTS headers on protected responses to prevent proxy cache desynchronization.
-fn apply_isolation_headers(res: Response&) {
+fn apply_isolation_headers<Res>(res: Res&) {
     let vary_key = "Vary";
     let vary_val = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin";
 

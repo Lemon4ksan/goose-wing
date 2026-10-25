@@ -112,21 +112,32 @@ fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers:
             return ChunkedDecodeError.DisallowedTrailer;
         }
 
+        // RFC 9112 Section 5.1 & Go #81143 / CVE-2019-16276:
+        // Reject whitespace before colon or non-tchar bytes in trailer field-name (no normalization).
         let hname = tr_line[..col_idx];
+        guard is_valid_header_name(hname) else {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
         if is_disallowed_trailer_field(hname) {
             return ChunkedDecodeError.DisallowedTrailer;
         }
 
         let val_slice = tr_line[(col_idx + 1)..];
         let trimmed_val = trim_lws(val_slice);
-        let trimmed_name = trim_lws(hname);
-
-        if out_trailers.len < out_trailers.cap {
-            var item = HeaderItem { .. };
-            item.name.append(trimmed_name);
-            item.value.append(trimmed_val);
-            out_trailers.push(item);
+        guard is_valid_header_value(trimmed_val) else {
+            return ChunkedDecodeError.DisallowedTrailer;
         }
+        guard out_trailers.len < out_trailers.cap else {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
+
+        var item = HeaderItem { .. };
+        guard hname.len <= item.name.cap && trimmed_val.len <= item.value.cap else {
+            return ChunkedDecodeError.DisallowedTrailer;
+        }
+        item.name.append(hname);
+        item.value.append(trimmed_val);
+        out_trailers.push(item);
     }
     return ChunkedDecodeError.UnexpectedEof;
 }
@@ -170,8 +181,15 @@ fn decode_chunked_body_with_trailers(
             return tr_err, 0;
         }
 
-        let csize = chunk_size as i64;
-        guard cursor + csize + 2 <= raw.len else {
+        // Guard 64-bit signed cast & addition overflow (e.g. FFFFFFFFFFFFFFFF\r\n)
+        guard chunk_size <= (raw.len as u64) else {
+            if chunk_size > 0x7FFFFFFFFFFFFFF0 {
+                return ChunkedDecodeError.ChunkSizeOverflow, 0;
+            }
+            return ChunkedDecodeError.UnexpectedEof, 0;
+        }
+        let csize = chunk_size as! i64;
+        guard csize <= raw.len - cursor - 2 else {
             return ChunkedDecodeError.UnexpectedEof, 0;
         }
 

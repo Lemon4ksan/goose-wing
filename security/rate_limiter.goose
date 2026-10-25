@@ -2,7 +2,7 @@
 namespace wing;
 
 import std;
-import client.response;
+import core from "..";
 
 // ---- quota specification & decisions ---------------------------------------
 
@@ -243,7 +243,7 @@ fn check_probabilistic(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> R
 
 // ---- ietf ratelimit header formatting --------------------------------------
 
-fn apply_rate_limit_headers(res: Response&, quota: const GcraQuota&, decision: const RateLimitDecision&) {
+fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: const RateLimitDecision&) {
     var limit_str: u8[..32] = [];
     core::format_u64_dec(quota.limit, limit_str);
     res.headers.set_header("RateLimit-Limit", limit_str[..]);
