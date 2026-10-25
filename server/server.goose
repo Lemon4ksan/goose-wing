@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import .router;
 import .pool;
 import .pipeline;
@@ -45,7 +46,7 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Enforces RFC 9112 Section 6.1 Smuggling Defense (TE/CL conflict detection).
 // Returns (ok, total_bytes_consumed).
-fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
+fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
     // Find end of headers (\r\n\r\n)
@@ -165,7 +166,7 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
 // Parses an incoming raw HTTP/1.1 response wire stream into a Response model.
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Returns (ok, total_bytes_consumed).
-fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64 {
+fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
     let hdr_end = core::index_of_slice(wire, "\r\n\r\n");
@@ -272,8 +273,8 @@ fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64
 // ---- 3. HTTP/1.1 Wire Response Serializer -----------------------------------
 
 // Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
-fn serialize_http1_chunked_response<B>(
-    res: const Response&,
+fn serialize_http1_chunked_response<Res, B>(
+    res: const Res&,
     server_name: const u8[:],
     chunk_size: i64,
     out_wire: B&
@@ -331,7 +332,7 @@ fn serialize_http1_chunked_response<B>(
 
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
 // Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
-fn serialize_http1_response<B>(res: const Response&, server_name: const u8[:], out_wire: B&) {
+fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
     let te = header(res, "transfer-encoding");
     if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
         serialize_http1_chunked_response(res, server_name, 4096, out_wire);
@@ -398,7 +399,24 @@ struct HttpServer {
 fn new_http_server(
     host_str: const u8[:] = "127.0.0.1",
     port_num: u16 = 8080,
-    quota: GcraQuota = new_gcra_quota(1000, core::secs(1), 100)
+) -> HttpServer {
+    var server = HttpServer {
+        pipeline: new_default_server_pipeline_config(host_str),
+        port: port_num,
+        timer: new_connection_timer(30000000000, 1000000000), // 30s timeout
+        is_running: true,
+        requests_processed: 0,
+        ..
+    };
+    server.host.clear();
+    server.host.append(host_str);
+    return server;
+}
+
+fn new_http_server_with_quota<Q>(
+    host_str: const u8[:],
+    port_num: u16,
+    quota: Q
 ) -> HttpServer {
     var server = HttpServer {
         pipeline: new_server_pipeline_config(host_str, quota),

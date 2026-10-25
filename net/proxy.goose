@@ -3,6 +3,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
 
@@ -265,7 +266,7 @@ fn build_http_connect_request(
 }
 
 // Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers, and Connection tokens so credentials never leak to origin (RFC 9110 Section 7.6.1 & Go #16875).
-fn sanitize_tunnel_headers_for_origin(headers: HeaderItem[..32]&) {
+fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
     var custom_tokens: u8[..64][..16] = [];
     for &h in headers {
         if eq_ascii_fold(h.name[..], "connection") {

@@ -4,7 +4,8 @@
 namespace wing;
 
 import std;
-import http.headers.lexical;
+import core from "..";
+import .headers.lexical;
 
 // ---- header items & ascii helpers (RFC 9110 Section 5.6.3) ------------------
 

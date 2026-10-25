@@ -3,8 +3,9 @@
 namespace wing;
 
 import std;
-import http2.framing;
-import http2.hpack;
+import core from "..";
+import .framing;
+import .hpack;
 
 // ---- 1. session constants & limits ------------------------------------------
 

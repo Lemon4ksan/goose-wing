@@ -4,7 +4,8 @@
 namespace wing;
 
 import std;
-import http2.framing;
+import core from "..";
+import .framing;
 
 // ---- 1. hpack constants & limits --------------------------------------------
 

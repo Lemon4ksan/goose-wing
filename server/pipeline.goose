@@ -2,12 +2,7 @@
 namespace wing;
 
 import std;
-import client.request;
-import client.response;
-import security.crypto_jar;
-import security.csrf;
-import security.cors;
-import security.rate_limiter;
+import core from "..";
 import .router;
 import .pool;
 
@@ -37,6 +32,10 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
     };
     cfg.target_host.append(target_host);
     return cfg;
+}
+
+fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig {
+    return new_server_pipeline_config(target_host, new_gcra_quota(1000, core::secs(1), 100));
 }
 
 enum PipelineOutcome {

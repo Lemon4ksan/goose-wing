@@ -5,12 +5,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import http.headers;
-import client.request;
-import client.response;
-import http2.framing;
-import http2.hpack;
-import http2.connection;
 import .router;
 import .pool;
 import .pipeline;
