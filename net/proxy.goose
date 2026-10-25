@@ -140,9 +140,7 @@ fn build_socks5_connect_request(
     } else if has_ipv4 {
         // Local DNS resolution: ATYP = 0x01 (IPv4)
         out.push(SOCKS5_ATYP_IPV4);
-        for octet in resolved_ipv4 {
-            out.push(octet);
-        }
+        out.append(resolved_ipv4[..]);
     } else {
         // Fallback to domain if IPv4 is absent
         guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
@@ -240,15 +238,7 @@ fn build_http_connect_request(
     out: u8[..1024]&
 ) {
     out.clear();
-    out.append("CONNECT ");
-    out.append(target_host);
-    out.push(':');
-    format(out, target_port);
-    out.append(" HTTP/1.1\r\nHost: ");
-    out.append(target_host);
-    out.push(':');
-    format(out, target_port);
-    out.append("\r\n");
+    format(out, "CONNECT ", target_host, ":", target_port, " HTTP/1.1\r\nHost: ", target_host, ":", target_port, "\r\n");
 
     if proxy_auth.len > 0 {
         out.append("Proxy-Authorization: ");
@@ -270,14 +260,10 @@ fn sanitize_tunnel_headers_for_origin(headers: HeaderItem[..32]&) {
     var custom_tokens: u8[..64][..16] = [];
     for &h in headers {
         if eq_ascii_fold(h.name[..], "connection") {
-            let val = h.value[..];
-            var cursor: i64 = 0;
-            while cursor < val.len {
-                var comma_idx = cursor;
-                while comma_idx < val.len && val[comma_idx] != ',' {
-                    comma_idx++;
-                }
-                let token = trim_lws(val[cursor..comma_idx]);
+            var rest: const u8[:] = h.value[..];
+            while rest.len > 0 {
+                let token_raw, remaining, has_comma = core::split_once_byte(rest, ',');
+                let token = trim_lws(token_raw);
                 if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
                     if custom_tokens.len < 16 {
                         var tok_buf: u8[..64] = [];
@@ -285,7 +271,8 @@ fn sanitize_tunnel_headers_for_origin(headers: HeaderItem[..32]&) {
                         custom_tokens.push(tok_buf);
                     }
                 }
-                cursor = comma_idx + 1;
+                if !has_comma { break; }
+                rest = remaining;
             }
         }
     }
@@ -321,21 +308,12 @@ fn verify_connect_tunnel_response(
     guard raw_response.len >= 12 else { return ConnectTunnelError.InvalidStatusLine; }
 
     // Find \r\n\r\n boundary separating headers from potential smuggled body bytes
-    var header_end_pos = -1;
-    for i in 3..raw_response.len {
-        if raw_response[i - 3] == '\r' && raw_response[i - 2] == '\n' &&
-           raw_response[i - 1] == '\r' && raw_response[i] == '\n' {
-            header_end_pos = i + 1;
-            break;
-        }
-    }
-    guard header_end_pos > 0 else { return ConnectTunnelError.MalformedHeaders; }
+    let delim_idx = core::index_of_slice(raw_response, "\r\n\r\n");
+    guard delim_idx >= 0 else { return ConnectTunnelError.MalformedHeaders; }
+    let header_end_pos = delim_idx + 4;
 
     // Parse status code from "HTTP/1.x 200 ..."
-    var space_idx = -1;
-    for i in raw_response.len {
-        if raw_response[i] == ' ' { space_idx = i; break; }
-    }
+    let space_idx = core::index_of_byte(raw_response, ' ');
     guard space_idx > 0 && space_idx + 4 <= raw_response.len else { return ConnectTunnelError.InvalidStatusLine; }
 
     let status_code_str = raw_response[space_idx + 1..space_idx + 4];
@@ -430,14 +408,13 @@ fn feed_header_bytes(
         }
     }
 
-    // Count header lines and scan for \r\n\r\n
-    for i in chunk.len {
-        if chunk[i] == '\n' {
-            reader.header_lines_count++;
-            if reader.header_lines_count > reader.config.max_header_count {
-                reader.poison_connection = true;
-                return SlowlorisViolation.MaxHeaderCountExceeded;
-            }
+    // Count header lines and enforce ceiling
+    let newlines = core::count_byte(chunk, '\n') as i32;
+    if newlines > 0 {
+        reader.header_lines_count += newlines;
+        if reader.header_lines_count > reader.config.max_header_count {
+            reader.poison_connection = true;
+            return SlowlorisViolation.MaxHeaderCountExceeded;
         }
     }
 

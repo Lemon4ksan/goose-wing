@@ -420,6 +420,7 @@ fn ::bind_winner_attempt(manager: wing::AttemptManager&, winner_id: i32, is_alte
     return wing::bind_winner_attempt(manager, winner_id, is_alternative_h3);
 }
 
+fn ::sanitize_tunnel_headers_for_origin(headers: wing::HeaderItem[..32]&) { wing::sanitize_tunnel_headers_for_origin(headers); }
 fn ::verify_connect_tunnel_response(raw_response: const u8[:], sink_buffered_bytes: i64 = 0) -> wing::ConnectTunnelError {
     return wing::verify_connect_tunnel_response(raw_response, sink_buffered_bytes);
 }
@@ -427,6 +428,10 @@ fn ::verify_connect_tunnel_response(raw_response: const u8[:], sink_buffered_byt
 fn ::feed_header_bytes(reader: wing::HeaderReader&, chunk: const u8[:], now_mono_ns: i64) -> wing::SlowlorisViolation {
     return wing::feed_header_bytes(reader, chunk, now_mono_ns);
 }
+
+fn ::parse_socks5_greeting_reply(buf: const u8[:]) -> u8, wing::Socks5Error { return wing::parse_socks5_greeting_reply(buf); }
+fn ::parse_socks5_rfc1929_reply(buf: const u8[:]) -> wing::Socks5Error { return wing::parse_socks5_rfc1929_reply(buf); }
+fn ::parse_socks5_connect_reply(buf: const u8[:]) -> wing::Socks5Reply, wing::Socks5Error { return wing::parse_socks5_connect_reply(buf); }
 
 fn ::should_retry_tier1_stale_socket(reused_connection: bool, headers_received: bool, req: const wing::Request&) -> bool {
     return wing::should_retry_tier1_stale_socket(reused_connection, headers_received, req);
