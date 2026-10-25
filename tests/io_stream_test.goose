@@ -287,6 +287,108 @@ fn test_pipeline_helpers(t: core::T&) {
     };
 }
 
+fn test_pipe_buffer(t: core::T&) {
+    t.run("Two-Cursor advance_to and Monotonic Examined Invariant") { sub =>
+        var pipe = core::new_pipe_buffer();
+        sub.assert_eq(pipe.readable_len(), 0, "Initial readable len 0");
+        sub.assert_eq(pipe.write_space(), core::PIPE_BUFFER_CAP, "Initial write space 64KB");
+
+        // Write first chunk from transport: "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n"
+        let msg = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let w_n, w_err = core::write(pipe, msg);
+        sub.assert_eq(w_n, msg.len, "Wrote full request to pipe");
+        sub.assert_eq(w_err, core::IoError.None, "Write ok");
+        sub.assert_eq(pipe.readable_len(), msg.len, "Readable matches msg len");
+
+        // Parser inspects line 1 (consumed 0, examined 26 = "GET /index.html HTTP/1.1\r\n")
+        let err_adv1 = core::advance_to(pipe, 0, 26);
+        sub.assert_eq(err_adv1, core::IoError.None, "First advance_to ok");
+        sub.assert_eq(pipe.consumed, 0, "Consumed is 0");
+        sub.assert_eq(pipe.examined, 26, "Examined is 26");
+
+        // Mitigation of .NET issue #107213: adapter reads only 4 bytes ("GET ") and specifies examined = 4
+        // The pipe must enforce monotonicity: examined cannot drop from 26 to 4!
+        let err_adv2 = core::advance_to(pipe, 4, 4);
+        sub.assert_eq(err_adv2, core::IoError.None, "Second advance_to ok");
+        sub.assert_eq(pipe.consumed, 4, "Consumed advanced to 4");
+        sub.assert_eq(pipe.examined, 26, "Examined held at 26 (monotonic)");
+
+        // Parser now finishes consuming remainder of request
+        let rem_to_consume = pipe.readable_len();
+        let err_adv3 = core::advance_to(pipe, rem_to_consume, rem_to_consume);
+        sub.assert_eq(err_adv3, core::IoError.None, "Final advance_to ok");
+        sub.assert_eq(pipe.readable_len(), 0, "Pipe drained to 0 unconsumed bytes");
+
+        // Auto-compaction & recycle test
+        core::reset(pipe);
+        sub.assert_eq(pipe.consumed, 0, "Reset consumed to 0");
+        sub.assert_eq(pipe.examined, 0, "Reset examined to 0");
+        sub.assert_eq(pipe.written, 0, "Reset written to 0");
+    };
+
+    t.run("Writable Span and Buffer Compaction") { sub =>
+        var pipe = core::new_pipe_buffer();
+
+        // Fill 40000 bytes
+        var chunk: u8[1000] = ['A' as u8; 1000];
+        for i in 40 {
+            core::write(pipe, chunk[..]);
+        }
+        sub.assert_eq(pipe.readable_len(), 40000, "Readable is 40000");
+
+        // Consume 35000 bytes
+        core::advance_to(pipe, 35000, 35000);
+        sub.assert_eq(pipe.readable_len(), 5000, "Remaining readable is 5000");
+
+        // Requesting 30000 bytes write span should trigger auto-compaction
+        let span, err_span = core::get_write_span(pipe, 30000);
+        sub.assert_eq(err_span, core::IoError.None, "get_write_span ok after compaction");
+        sub.assert_eq(pipe.consumed, 0, "Compacted: consumed back to 0");
+        sub.assert_eq(pipe.written, 5000, "Compacted: written adjusted to 5000");
+        sub.assert_true(span.len >= 30000, "Available span >= 30000");
+    };
+}
+
+fn test_cork_buffer(t: core::T&) {
+    t.run("Aggregation, Binary Encoding and Partial Flush") { sub =>
+        var cb = core::new_cork_buffer();
+        sub.assert_true(cb.cork_is_empty(), "Cork initially empty");
+        sub.assert_eq(cb.cork_available(), 16384, "Initial capacity 16KB");
+
+        // Append 9-byte HTTP/2 Frame Header
+        cb.cork_write_u24_be(5);             // Length = 5
+        cb.cork_write_u8(0x00);              // Type = DATA
+        cb.cork_write_u8(0x01);              // Flags = END_STREAM
+        cb.cork_write_u32_be(1);             // Stream ID = 1
+        cb.cork_write("HELLO");              // Payload
+
+        sub.assert_eq(cb.cork_pending(), 9 + 5, "Pending is 14 bytes");
+        sub.assert_eq(cb.cork_as_slice().len, 14, "As slice len is 14");
+
+        // Verify content
+        var r = core::new_slice_reader(cb.cork_as_slice());
+        let l, _ = r.read_u24_be();
+        sub.assert_eq(l, 5 as u32, "Decoded length matches 5");
+        let ty, _ = r.read_u8();
+        sub.assert_eq(ty, 0x00, "Decoded type matches DATA");
+        let fl, _ = r.read_u8();
+        sub.assert_eq(fl, 0x01, "Decoded flags matches END_STREAM");
+        let sid, _ = r.read_u32_be();
+        sub.assert_eq(sid, 1 as u32, "Decoded stream ID matches 1");
+        let pay, _ = r.read_slice(5);
+        sub.assert_eq(pay, "HELLO", "Decoded payload matches HELLO");
+
+        // Partial consume (e.g. simulated socket sent 9 header bytes)
+        cb.cork_consume(9);
+        sub.assert_eq(cb.cork_pending(), 5, "Pending reduced to 5 payload bytes");
+        sub.assert_eq(cb.cork_as_slice(), "HELLO", "Remaining slice is payload HELLO");
+
+        // Reset
+        cb.cork_reset();
+        sub.assert_true(cb.cork_is_empty(), "Empty after reset");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Goose Core I/O Stream Module Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. SliceReader Stream Cursor & Integer Decoding", test_slice_reader);
@@ -295,6 +397,8 @@ fn main() {
     core::run_case(runner, "4. TeeReader Stream Interception & Tapping", test_tee_reader);
     core::run_case(runner, "5. RingBuffer Circular FIFO & Wraparound", test_ring_buffer);
     core::run_case(runner, "6. Stream Pipeline Copy Helpers", test_pipeline_helpers);
+    core::run_case(runner, "7. PipeBuffer Two-Cursor Pipelines & Monotonicity", test_pipe_buffer);
+    core::run_case(runner, "8. CorkBuffer 16KB Outbound Aggregation", test_cork_buffer);
     let ok = core::finish(runner);
     assert(ok);
 }
