@@ -904,3 +904,30 @@ fn ::parse_h3_priority_update_push(payload: const u8[:], default_incremental: bo
     return wing::parse_h3_priority_update_push(payload, default_incremental);
 }
 
+// ---- chunked transfer coding ufcs bridges -----------------------------------
+
+fn ::decode_chunked(raw: const u8[:], out_body: u8[>..]&) -> wing::ChunkedDecodeError {
+    return wing::decode_chunked_body(raw, out_body);
+}
+
+fn ::decode_chunked_with_trailers(
+    raw: const u8[:],
+    out_body: u8[>..]&,
+    out_trailers: wing::HeaderItem[..16]&
+) -> wing::ChunkedDecodeError, i64 {
+    return wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+}
+
+fn ::parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> wing::ChunkedDecodeError {
+    return wing::parse_chunked_trailers(raw, cursor);
+}
+
+fn ::parse_chunked_trailers(
+    raw: const u8[:],
+    cursor: i64&,
+    out_trailers: wing::HeaderItem[..16]&
+) -> wing::ChunkedDecodeError {
+    return wing::parse_chunked_trailers_with_out(raw, cursor, out_trailers);
+}
+
+

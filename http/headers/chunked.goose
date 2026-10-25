@@ -2,6 +2,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import http.headers;
 
 // RFC 9112 Section 7.1.2: Disallowed trailer fields threatening message framing or routing
@@ -39,18 +40,14 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
         return ChunkedDecodeError.InvalidChunkExtension;
     }
 
-    var semi_idx: i64 = -1;
-    for i in chunk_size_line.len {
-        let b = chunk_size_line[i];
-        if b == ';' && semi_idx < 0 {
-            semi_idx = i;
-        }
-        // RFC 9112 Section 7.1.1: Reject bare CR or non-HTAB control characters in chunk extensions
+    // RFC 9112 Section 7.1.1: Reject bare CR or non-HTAB control characters in chunk extensions
+    for b in chunk_size_line {
         if b == '\r' || (b < 0x20 && b != 0x09) {
             return ChunkedDecodeError.InvalidChunkExtension;
         }
     }
 
+    let semi_idx = core::index_of_byte(chunk_size_line, ';');
     let hex_slice = if semi_idx >= 0 {
         trim_lws(chunk_size_line[..semi_idx])
     } else {
@@ -63,20 +60,14 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
 
     var chunk_size: u64 = 0;
     for b in hex_slice {
-        var val: u64 = 0;
-        if b >= '0' && b <= '9' {
-            val = b - '0';
-        } else if b >= 'a' && b <= 'f' {
-            val = b - 'a' + 10;
-        } else if b >= 'A' && b <= 'F' {
-            val = b - 'A' + 10;
-        } else {
+        let val = core::hex_digit_to_val(b);
+        guard val >= 0 else {
             return ChunkedDecodeError.InvalidChunkSizeHex;
         }
         if chunk_size > 0x0FFFFFFFFFFFFFFF {
             return ChunkedDecodeError.ChunkSizeOverflow;
         }
-        chunk_size = (chunk_size << 4) | val;
+        chunk_size = (chunk_size << 4) | (val as! u64);
     }
 
     out_size = chunk_size;
@@ -91,16 +82,9 @@ fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers:
     let max_trailer_bytes: i64 = 4096;
 
     while cursor < raw.len {
-        var tr_end = cursor;
-        var tr_nl = false;
-        while tr_end < raw.len {
-            if raw[tr_end] == '\n' {
-                tr_nl = true;
-                break;
-            }
-            tr_end++;
-        }
-        guard tr_nl else { return ChunkedDecodeError.UnexpectedEof; }
+        let rel_nl = core::index_of_byte(raw[cursor..], '\n');
+        guard rel_nl >= 0 else { return ChunkedDecodeError.UnexpectedEof; }
+        let tr_end = cursor + rel_nl;
 
         // RFC 9112 Section 7.1.2: Reject bare LF in trailer lines (prevent framing desync)
         if tr_end == cursor || raw[tr_end - 1] != '\r' {
@@ -123,13 +107,7 @@ fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers:
             return ChunkedDecodeError.DisallowedTrailer;
         }
 
-        var col_idx: i64 = -1;
-        for i in tr_line.len {
-            if tr_line[i] == ':' {
-                col_idx = i;
-                break;
-            }
-        }
+        let col_idx = core::index_of_byte(tr_line, ':');
         guard col_idx > 0 else {
             return ChunkedDecodeError.DisallowedTrailer;
         }
@@ -169,16 +147,9 @@ fn decode_chunked_body_with_trailers(
 
     var cursor: i64 = 0;
     while cursor < raw.len {
-        var line_end = cursor;
-        var found_newline = false;
-        while line_end < raw.len {
-            if raw[line_end] == '\n' {
-                found_newline = true;
-                break;
-            }
-            line_end++;
-        }
-        guard found_newline else { return ChunkedDecodeError.UnexpectedEof, 0; }
+        let rel_nl = core::index_of_byte(raw[cursor..], '\n');
+        guard rel_nl >= 0 else { return ChunkedDecodeError.UnexpectedEof, 0; }
+        let line_end = cursor + rel_nl;
 
         if line_end == cursor || raw[line_end - 1] != '\r' {
             return ChunkedDecodeError.BareLfInChunkSize, 0;
