@@ -138,6 +138,7 @@ fn ::serialize_origin<B>(origin_val: core::Origin, out: B&) { core::serialize_or
 fn ::extract_etld_plus_one<B>(host: const u8[:], out: B&) { core::extract_etld_plus_one(host, out); }
 fn ::compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool { return core::compute_public_suffix(clean_domain, out); }
 fn ::public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool { return core::public_suffix_with_icann(domain, out_suffix); }
+fn ::is_ip_address_literal(host: const u8[:]) -> bool { return core::is_ip_address_literal(host); }
 fn ::is_schemeful_same_site_urls(url_a: const core::Url&, url_b: const core::Url&) -> bool { return core::is_schemeful_same_site_urls(url_a, url_b); }
 fn ::is_same_site_origin_url(origin_val: const core::Origin&, url_val: const core::Url&) -> bool { return core::is_same_site_origin_url(origin_val, url_val); }
 

@@ -60,12 +60,8 @@ fn is_valid_ipv4_format(host: const u8[:]) -> bool {
 
 fn is_ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
-    if index_of_byte(host, ':') >= 0 { return true; }
+    if contains_byte(host, ':') { return true; }
     return is_valid_ipv4_format(host);
-}
-
-fn count_dots(str_val: const u8[:]) -> i64 {
-    return count_byte(str_val, '.');
 }
 
 fn ends_with_dot_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
@@ -73,6 +69,10 @@ fn ends_with_dot_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
         return eq_ascii_fold(domain[domain.len - suffix.len..], suffix);
     }
     return false;
+}
+
+inline fn has_domain_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
+    return domain == suffix || ends_with_dot_suffix(domain, suffix);
 }
 
 fn extract_wildcard_suffix<B>(domain: const u8[:], base_rule: const u8[:], out: B&) {
@@ -87,62 +87,44 @@ fn extract_wildcard_suffix<B>(domain: const u8[:], base_rule: const u8[:], out: 
     }
 }
 
+struct PslException {
+    pattern: const u8[:],
+    suffix: const u8[:],
+}
+
 fn is_known_exception_rule<B>(domain: const u8[:], out: B&) -> bool {
-    if domain == "www.ck" || ends_with_dot_suffix(domain, "www.ck") {
-        out.append("ck");
-        return true;
-    }
-    if domain == "city.kawasaki.jp" || ends_with_dot_suffix(domain, "city.kawasaki.jp") {
-        out.append("kawasaki.jp");
-        return true;
-    }
-    if domain == "city.kitakyushu.jp" || ends_with_dot_suffix(domain, "city.kitakyushu.jp") {
-        out.append("kitakyushu.jp");
-        return true;
-    }
-    if domain == "city.kobe.jp" || ends_with_dot_suffix(domain, "city.kobe.jp") {
-        out.append("kobe.jp");
-        return true;
-    }
-    if domain == "city.nagoya.jp" || ends_with_dot_suffix(domain, "city.nagoya.jp") {
-        out.append("nagoya.jp");
-        return true;
-    }
-    if domain == "city.sapporo.jp" || ends_with_dot_suffix(domain, "city.sapporo.jp") {
-        out.append("sapporo.jp");
-        return true;
-    }
-    if domain == "city.sendai.jp" || ends_with_dot_suffix(domain, "city.sendai.jp") {
-        out.append("sendai.jp");
-        return true;
-    }
-    if domain == "city.yokohama.jp" || ends_with_dot_suffix(domain, "city.yokohama.jp") {
-        out.append("yokohama.jp");
-        return true;
+    let exceptions: PslException[8] = [
+        PslException { pattern: "www.ck", suffix: "ck" },
+        PslException { pattern: "city.kawasaki.jp", suffix: "kawasaki.jp" },
+        PslException { pattern: "city.kitakyushu.jp", suffix: "kitakyushu.jp" },
+        PslException { pattern: "city.kobe.jp", suffix: "kobe.jp" },
+        PslException { pattern: "city.nagoya.jp", suffix: "nagoya.jp" },
+        PslException { pattern: "city.sapporo.jp", suffix: "sapporo.jp" },
+        PslException { pattern: "city.sendai.jp", suffix: "sendai.jp" },
+        PslException { pattern: "city.yokohama.jp", suffix: "yokohama.jp" },
+    ];
+    for &rule in exceptions {
+        if has_domain_suffix(domain, rule.pattern) {
+            out.append(rule.suffix);
+            return true;
+        }
     }
     return false;
 }
 
 fn is_known_wildcard_rule<B>(domain: const u8[:], out: B&) -> bool {
-    if ends_with_dot_suffix(domain, "ck") {
-        extract_wildcard_suffix(domain, "ck", out);
-        return true;
-    }
-    if ends_with_dot_suffix(domain, "kawasaki.jp") {
-        extract_wildcard_suffix(domain, "kawasaki.jp", out);
-        return true;
-    }
-    if ends_with_dot_suffix(domain, "kobe.jp") {
-        extract_wildcard_suffix(domain, "kobe.jp", out);
-        return true;
-    }
-    if ends_with_dot_suffix(domain, "bd") {
-        extract_wildcard_suffix(domain, "bd", out);
-        return true;
-    }
-    if ends_with_dot_suffix(domain, "compute.amazonaws.com") {
-        extract_wildcard_suffix(domain, "compute.amazonaws.com", out);
-        return true;
+    let wildcards: const u8[:][5] = [
+        "ck",
+        "kawasaki.jp",
+        "kobe.jp",
+        "bd",
+        "compute.amazonaws.com",
+    ];
+    for base in wildcards {
+        if ends_with_dot_suffix(domain, base) {
+            extract_wildcard_suffix(domain, base, out);
+            return true;
+        }
     }
     return false;
 }
@@ -176,15 +158,15 @@ fn find_trailing_dot_positions(
     second_last_dot: i64&,
     third_last_dot: i64&,
 ) {
-    for step_idx in str_val.len {
-        let scan_idx = str_val.len - 1 - step_idx;
-        if str_val[scan_idx] == '.' {
+    for i in str_val.len {
+        let idx = str_val.len - 1 - i;
+        if str_val[idx] == '.' {
             if last_dot < 0 {
-                last_dot = scan_idx;
+                last_dot = idx;
             } else if second_last_dot < 0 {
-                second_last_dot = scan_idx;
-            } else if third_last_dot < 0 {
-                third_last_dot = scan_idx;
+                second_last_dot = idx;
+            } else {
+                third_last_dot = idx;
                 break;
             }
         }
@@ -287,13 +269,10 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
 
 fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.clear();
-    var clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
-    if clean_host.len > 0 && clean_host[clean_host.len - 1] == '.' {
-        clean_host = clean_host[..clean_host.len - 1];
-    }
+    let clean_host = trim_byte(host, '.');
     guard clean_host.len > 0 else { return; }
 
-    if is_ip_address_literal(clean_host) || count_dots(clean_host) == 0 {
+    if is_ip_address_literal(clean_host) || count_byte(clean_host, '.') == 0 {
         out.append(clean_host);
         return;
     }
@@ -322,10 +301,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
 
 fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
     out_suffix.clear();
-    var clean_domain = if domain.len > 0 && domain[0] == '.' { domain[1..] } else { domain };
-    if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
-        clean_domain = clean_domain[..clean_domain.len - 1];
-    }
+    let clean_domain = trim_byte(domain, '.');
     guard clean_domain.len > 0 else { return false; }
     if is_ip_address_literal(clean_domain) { return false; }
 
