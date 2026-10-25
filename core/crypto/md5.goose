@@ -1,4 +1,3 @@
-// core/crypto/md5.goose
 // RFC 1321 MD5 Message-Digest Algorithm.
 // Used for HTTP Digest Access Authentication (RFC 2617 / RFC 7616 fallback) and Content-MD5 verification.
 namespace core;

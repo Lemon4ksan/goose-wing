@@ -1,4 +1,3 @@
-// grpc/status.goose
 // gRPC status code management, percent-encoded grpc-message, and grpc-timeout codecs.
 // Conforms to gRPC Over HTTP/2 Specification and RFC 3986.
 namespace wing;

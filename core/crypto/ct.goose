@@ -1,4 +1,3 @@
-// core/crypto/ct.goose
 // Constant-time primitives, key zeroization, KeySlot secrecy pattern, and Dudect Welch t-test verifier.
 namespace core;
 

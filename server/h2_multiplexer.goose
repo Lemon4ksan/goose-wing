@@ -1,4 +1,3 @@
-// server/h2_multiplexer.goose
 // Deterministic zero-allocation HTTP/2 Server Frame Multiplexer (RFC 9113 & RFC 7541).
 // Manages server connection sessions, stream demultiplexing, HPACK decoding/encoding,
 // flow control updates, anti-DoS barriers, and dispatching to the Wing Server Pipeline.

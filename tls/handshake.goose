@@ -1,4 +1,3 @@
-// tls/handshake.goose
 // Deterministic zero-allocation TLS 1.3 Handshake State Machine and Extensions.
 // Conforms to RFC 8446 Sections 4 and 4.4, RFC 9001 (QUIC), RFC 6066 (SNI), and RFC 7301 (ALPN).
 namespace wing;

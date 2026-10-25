@@ -1,4 +1,3 @@
-// tls/hpke.goose
 // Hybrid Public Key Encryption (RFC 9180) for ECH (RFC 9460) and Secure Messaging.
 // Supports DHKEM(X25519, HKDF-SHA256) with AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305.
 namespace wing;

@@ -1,4 +1,3 @@
-// server/server.goose
 // Standalone zero-allocation HTTP server engine, wire protocol serializer, and connection coordinator.
 // Conforms to RFC 9110 (HTTP Semantics), RFC 9112 (HTTP/1.1 Framing), and RFC 9113 (HTTP/2 Preface Detection).
 namespace wing;
@@ -14,6 +13,7 @@ import server.pipeline;
 import http2.framing;
 import net.proxy_protocol;
 import server.h2_multiplexer;
+import client.stream;
 
 // ---- 1. Reason Phrases for HTTP/1.1 Status Line -----------------------------
 
@@ -49,6 +49,8 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
 // ---- 2. HTTP/1.1 Wire Request Parser ---------------------------------------
 
 // Parses an incoming raw HTTP/1.1 request wire stream.
+// Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
+// Enforces RFC 9112 Section 6.1 Smuggling Defense (TE/CL conflict detection).
 // Returns (ok, total_bytes_consumed).
 fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
@@ -104,8 +106,7 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
     out_req.url.clear();
     out_req.url.append(path_slice);
 
-    // Parse headers using HeaderMap
-    var hmap = new_header_map();
+    // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
     var cursor: i64 = 0;
 
@@ -141,23 +142,64 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
         cursor = hline_end + 2;
     }
 
-    // Check Content-Length for body payload
+    out_req.trailers.clear();
+    out_req.body.clear();
+
+    // Check for Transfer-Encoding and Content-Length
+    var has_te = false;
+    var te_buf: u8[..64] = [];
+    var has_cl = false;
+    var cl_count = 0;
     var cl_len: i64 = 0;
+
     for &hdr in out_req.headers {
-        if eq_ascii_fold(hdr.name[..], "content-length") {
-            for b in hdr.value {
-                if b >= '0' && b <= '9' {
-                    cl_len = cl_len * 10 + (b - '0');
-                }
+        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+            has_te = true;
+            te_buf.clear();
+            te_buf.append(hdr.value[..]);
+        } else if eq_ascii_fold(hdr.name[..], "content-length") {
+            has_cl = true;
+            cl_count++;
+            var parsed_cl: i64 = 0;
+            let val_trimmed = trim_lws(hdr.value[..]);
+            guard val_trimmed.len > 0 else { return false, 0; }
+            for b in val_trimmed {
+                guard b >= '0' && b <= '9' else { return false, 0; }
+                parsed_cl = parsed_cl * 10 + (b - '0');
             }
-            break;
+            if cl_count == 1 {
+                cl_len = parsed_cl;
+            } else if cl_len != parsed_cl {
+                // Conflicting multiple Content-Length headers -> reject smuggling attempt
+                return false, 0;
+            }
         }
+    }
+
+    // RFC 9112 Section 6.1 Smuggling Protection:
+    // If both Transfer-Encoding and Content-Length are present, reject as smuggling attempt.
+    if has_te && has_cl {
+        return false, 0;
+    }
+
+    if has_te {
+        // Must validate transfer encoding value per RFC 9112 Section 6.3 & 7.1
+        guard validate_transfer_encoding_value(te_buf[..]) else { return false, 0; }
+
+        let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
+            wire[header_end_idx..],
+            out_req.body,
+            out_req.trailers
+        );
+        guard dec_err == ChunkedDecodeError.None else { return false, 0; }
+
+        let total_consumed = header_end_idx + chunked_consumed;
+        return true, total_consumed;
     }
 
     let total_consumed = header_end_idx + cl_len;
     guard wire.len >= total_consumed else { return false, 0; }
 
-    out_req.body.clear();
     if cl_len > 0 {
         out_req.body.append(wire[header_end_idx..total_consumed]);
     }
@@ -165,10 +207,207 @@ fn parse_http1_wire_request(wire: const u8[:], out_req: Request&) -> bool, i64 {
     return true, total_consumed;
 }
 
+// Parses an incoming raw HTTP/1.1 response wire stream into a Response model.
+// Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
+// Returns (ok, total_bytes_consumed).
+fn parse_http1_wire_response(wire: const u8[:], out_res: Response&) -> bool, i64 {
+    guard wire.len >= 4 else { return false, 0; }
+
+    var header_end_idx: i64 = -1;
+    var scan = 0;
+    while scan + 3 < wire.len {
+        if wire[scan] == '\r' && wire[scan + 1] == '\n' && wire[scan + 2] == '\r' && wire[scan + 3] == '\n' {
+            header_end_idx = scan + 4;
+            break;
+        }
+        scan++;
+    }
+    guard header_end_idx > 0 else { return false, 0; }
+
+    let header_bytes = wire[..header_end_idx];
+
+    // Find end of status line
+    var line_end: i64 = 0;
+    while line_end + 1 < header_bytes.len && !(header_bytes[line_end] == '\r' && header_bytes[line_end + 1] == '\n') {
+        line_end++;
+    }
+    guard line_end > 0 else { return false, 0; }
+
+    let status_line = header_bytes[..line_end];
+    guard status_line.len >= 12 && status_line[..7] == "HTTP/1." else { return false, 0; }
+
+    // Parse 3-digit status code
+    let c0 = status_line[9] - '0';
+    let c1 = status_line[10] - '0';
+    let c2 = status_line[11] - '0';
+    guard c0 >= 0 && c0 <= 9 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else { return false, 0; }
+    out_res.status_code = c0 as i32 * 100 + c1 as i32 * 10 + c2;
+    out_res.protocol.clear();
+    out_res.protocol.append(status_line[..8]);
+
+    // Parse headers
+    let rest_headers = header_bytes[(line_end + 2)..];
+    var cursor: i64 = 0;
+    out_res.headers.clear();
+    while cursor < rest_headers.len {
+        var hline_end = cursor;
+        while hline_end + 1 < rest_headers.len && !(rest_headers[hline_end] == '\r' && rest_headers[hline_end + 1] == '\n') {
+            hline_end++;
+        }
+        if hline_end == cursor { break; }
+
+        let line = rest_headers[cursor..hline_end];
+        var colon: i64 = -1;
+        for i in line.len {
+            if line[i] == ':' { colon = i; break; }
+        }
+
+        if colon > 0 {
+            let hname = line[..colon];
+            var vstart = colon + 1;
+            while vstart < line.len && (line[vstart] == ' ' || line[vstart] == '\t') {
+                vstart++;
+            }
+            let hval = line[vstart..];
+
+            var item = HeaderItem { .. };
+            item.name.append(hname);
+            item.value.append(hval);
+            if out_res.headers.len < out_res.headers.cap {
+                out_res.headers.push(item);
+            }
+        }
+        cursor = hline_end + 2;
+    }
+
+    out_res.trailers.clear();
+    out_res.body.clear();
+
+    // Check Transfer-Encoding
+    var has_te = false;
+    var te_buf: u8[..64] = [];
+    var has_cl = false;
+    var cl_len: i64 = 0;
+
+    for &hdr in out_res.headers {
+        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+            has_te = true;
+            te_buf.clear();
+            te_buf.append(hdr.value[..]);
+        } else if eq_ascii_fold(hdr.name[..], "content-length") {
+            has_cl = true;
+            var parsed_cl: i64 = 0;
+            let val_trimmed = trim_lws(hdr.value[..]);
+            for b in val_trimmed {
+                if b >= '0' && b <= '9' {
+                    parsed_cl = parsed_cl * 10 + (b - '0');
+                }
+            }
+            cl_len = parsed_cl;
+        }
+    }
+
+    // RFC 9112 Section 6.1: In responses, Transfer-Encoding overrides Content-Length
+    if has_te && validate_transfer_encoding_value(te_buf[..]) {
+        let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
+            wire[header_end_idx..],
+            out_res.body,
+            out_res.trailers
+        );
+        guard dec_err == ChunkedDecodeError.None else { return false, 0; }
+        return true, header_end_idx + chunked_consumed;
+    }
+
+    // Status 204 No Content, 304 Not Modified, or 1xx: MUST NOT include message body
+    if out_res.status_code == 204 || out_res.status_code == 304 || (out_res.status_code >= 100 && out_res.status_code < 200) {
+        return true, header_end_idx;
+    }
+
+    if has_cl {
+        guard wire.len >= header_end_idx + cl_len else { return false, 0; }
+        if cl_len > 0 {
+            out_res.body.append(wire[header_end_idx..(header_end_idx + cl_len)]);
+        }
+        return true, header_end_idx + cl_len;
+    }
+
+    // Otherwise, consume remainder of stream until connection close
+    if wire.len > header_end_idx {
+        out_res.body.append(wire[header_end_idx..]);
+    }
+    return true, wire.len;
+}
+
 // ---- 3. HTTP/1.1 Wire Response Serializer -----------------------------------
 
+// Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
+fn serialize_http1_chunked_response<B>(
+    res: const Response&,
+    server_name: const u8[:],
+    chunk_size: i64,
+    out_wire: B&
+) {
+    // 1. Status line: HTTP/1.1 <status> <reason>\r\n
+    out_wire.append("HTTP/1.1 ");
+    format(out_wire, res.status_code as i64);
+    out_wire.push(' ');
+    out_wire.append(http_status_reason_phrase(res.status_code));
+    out_wire.append("\r\n");
+
+    // 2. Server header
+    if server_name.len > 0 {
+        out_wire.append("Server: ");
+        out_wire.append(server_name);
+        out_wire.append("\r\n");
+    }
+
+    // 3. Transfer-Encoding: chunked (RFC 9112 Section 7.1)
+    out_wire.append("Transfer-Encoding: chunked\r\n");
+
+    // 4. Trailer announcement header (RFC 9110 Section 6.5.1)
+    if res.trailers.len > 0 {
+        out_wire.append("Trailer: ");
+        for i in res.trailers.len {
+            if i > 0 { out_wire.append(", "); }
+            out_wire.append(res.trailers[i].name[..]);
+        }
+        out_wire.append("\r\n");
+    }
+
+    // 5. Custom headers (excluding Content-Length & Transfer-Encoding)
+    var has_conn = false;
+    for &hdr in res.headers {
+        if eq_ascii_fold(hdr.name[..], "connection") { has_conn = true; }
+        if eq_ascii_fold(hdr.name[..], "content-length") { continue; }
+        if eq_ascii_fold(hdr.name[..], "transfer-encoding") { continue; }
+        if eq_ascii_fold(hdr.name[..], "trailer") && res.trailers.len > 0 { continue; }
+
+        out_wire.append(hdr.name[..]);
+        out_wire.append(": ");
+        out_wire.append(hdr.value[..]);
+        out_wire.append("\r\n");
+    }
+
+    if !has_conn {
+        out_wire.append("Connection: keep-alive\r\n");
+    }
+
+    // Header terminator
+    out_wire.append("\r\n");
+
+    // 6. Body chunked framing and trailers
+    encode_chunked_payload(res.body[..], res.trailers, chunk_size, out_wire);
+}
+
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
+// Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
 fn serialize_http1_response<B>(res: const Response&, server_name: const u8[:], out_wire: B&) {
+    let te = header(res, "transfer-encoding");
+    if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+        serialize_http1_chunked_response(res, server_name, 4096, out_wire);
+        return;
+    }
+
     // 1. Status line: HTTP/1.1 <status> <reason>\r\n
     out_wire.append("HTTP/1.1 ");
     format(out_wire, res.status_code as i64);

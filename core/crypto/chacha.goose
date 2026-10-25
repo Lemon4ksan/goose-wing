@@ -1,4 +1,3 @@
-// core/crypto/chacha.goose
 // ChaCha20, HChaCha20, Poly1305, and ChaCha20-Poly1305 / XChaCha20-Poly1305 AEAD (RFC 8439).
 // Zero dynamic heap allocations on key derivation, keystream generation, and MAC computation.
 namespace core;

@@ -1,0 +1,335 @@
+// Verification suite for RFC 9112 Section 7 (Chunked Transfer Coding & Trailers)
+// 1. One-Shot Chunked Decoding with Trailer Extraction
+// 2. RFC 9112 Smuggling & Desynchronization Defenses (Bare LF, Bounds, Disallowed Trailers)
+// 3. Incremental Chunked Stream Decoder (Fragmented & Torture Stream Feeding)
+// 4. HttpServer Ingress with Chunked Framing & Smuggling Guards (TE/CL Conflict)
+// 5. Server Chunked Response Serialization & Symmetrical Response Wire Parser
+import std;
+import core from "..";
+import wing from "..";
+
+// ----------------------------------------------------------------------------
+// 1. One-Shot Chunked Decoding with Trailer Extraction
+// ----------------------------------------------------------------------------
+fn test_oneshot_chunked_trailers(t: core::T&) {
+    t.run("Single and multi-chunk decoding with byte count accuracy") { sub =>
+        let raw = "4\r\nWiki\r\n6\r\n pedia\r\n0\r\n\r\n";
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded successfully");
+        sub.assert_bytes_eq(out_body[..], "Wiki pedia", "Body reassembled");
+        sub.assert_eq(consumed, raw.len, "All raw bytes consumed");
+        sub.assert_eq(out_trailers.len, 0, "No trailers in simple message");
+    };
+
+    t.run("Chunk extension ignored and parsed cleanly") { sub =>
+        let raw = "5;ext_name=ext_value;flag\r\nHello\r\n0;last=1\r\n\r\n";
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded successfully with extensions");
+        sub.assert_bytes_eq(out_body[..], "Hello", "Body matches");
+        sub.assert_eq(consumed, raw.len, "Exact length consumed");
+    };
+
+    t.run("Extraction of multiple custom trailers") { sub =>
+        let raw = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123xyz\r\nX-Timing: dur=15.4\r\n\r\n";
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded cleanly with trailers");
+        sub.assert_bytes_eq(out_body[..], "Hello", "Payload correct");
+        sub.assert_eq(consumed, raw.len, "Consumed exact stream length");
+        sub.assert_eq(out_trailers.len, 3, "3 trailers extracted");
+
+        var req = wing::new_request("POST", "/data");
+        req.trailers = copy(out_trailers);
+        sub.assert_true(wing::has_trailer(req, "x-checksum"), "Has x-checksum");
+        sub.assert_bytes_eq(wing::trailer(req, "x-checksum"), "sha256-abc123xyz", "Trailer x-checksum value");
+        sub.assert_bytes_eq(wing::trailer(req, "expires"), "Wed, 21 Oct 2026 07:28:00 GMT", "Trailer expires value");
+        sub.assert_bytes_eq(wing::trailer(req, "x-timing"), "dur=15.4", "Trailer x-timing value");
+        sub.assert_bytes_eq(wing::trailer(req, "missing"), "", "Empty string for missing trailer");
+    };
+
+    t.run("Pipelined keep-alive requests separation") { sub =>
+        let raw = "4\r\nBody\r\n0\r\n\r\nGET /next HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded chunked segment");
+        sub.assert_bytes_eq(out_body[..], "Body", "Payload extracted");
+        sub.assert_eq(consumed, 14, "Exact 14 bytes consumed for chunked stream");
+        sub.assert_bytes_eq(raw[consumed..(consumed + 18)], "GET /next HTTP/1.1", "Remaining stream untouched");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 2. RFC 9112 Smuggling & Desynchronization Defenses
+// ----------------------------------------------------------------------------
+fn test_chunked_smuggling_defenses(t: core::T&) {
+    t.run("Bare LF in chunk size rejection (CVE-2025-22871)") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let raw = "4\nWiki\r\n0\r\n\r\n";
+        let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInChunkSize, "Bare LF in chunk size rejected");
+    };
+
+    t.run("Bare LF in chunk data terminator rejection") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let raw = "4\r\nWiki\n0\r\n\r\n";
+        let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInChunkData, "Bare LF after chunk data rejected");
+    };
+
+    t.run("Bare LF in trailer line rejection") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let raw = "4\r\nWiki\r\n0\r\nX-Check: val\n\r\n";
+        let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInTrailer, "Bare LF in trailer header rejected");
+    };
+
+    t.run("Bare LF terminating trailer section rejection") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let raw = "0\r\n\n";
+        let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInTrailer, "Bare LF ending trailers rejected");
+    };
+
+    t.run("Disallowed framing headers in trailers (RFC 9112 Section 7.1.2)") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let disallowed_cases: const u8[:][8] = [
+            "Transfer-Encoding: chunked",
+            "Content-Length: 42",
+            "Trailer: X-Foo",
+            "Host: evil.com",
+            "Authorization: Bearer secret",
+            "Set-Cookie: session=hijack",
+            "Cookie: secret=leak",
+            "Content-Range: bytes 0-10/100",
+        ];
+
+        for dc in disallowed_cases {
+            var raw: u8[..256] = "0\r\n";
+            raw.append(dc);
+            raw.append("\r\n\r\n");
+            out_body.clear();
+            out_trailers.clear();
+            let err, _ = wing::decode_chunked_body_with_trailers(raw[..], out_body, out_trailers);
+            sub.assert_eq(err, wing::ChunkedDecodeError.DisallowedTrailer, "Disallowed header in trailer rejected");
+        }
+    };
+
+    t.run("Trailer flood protection (> 16 fields or > 4096 bytes)") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        // 17 trailer headers
+        var flood: u8[..2048] = "0\r\n";
+        for i in 17 {
+            flood.append("X-Field-");
+            format(flood, i as i64);
+            flood.append(": val\r\n");
+        }
+        flood.append("\r\n");
+
+        let err_flood, _ = wing::decode_chunked_body_with_trailers(flood[..], out_body, out_trailers);
+        sub.assert_eq(err_flood, wing::ChunkedDecodeError.DisallowedTrailer, "17 trailers rejected (exceeds cap of 16)");
+
+        // Massive trailer line > 4096 bytes
+        var huge: u8[>..] = [];
+        huge.append("0\r\nX-Big: ");
+        for i in 4096 {
+            huge.push('A');
+        }
+        huge.append("\r\n\r\n");
+        let err_huge, _ = wing::decode_chunked_body_with_trailers(huge[..], out_body, out_trailers);
+        sub.assert_eq(err_huge, wing::ChunkedDecodeError.DisallowedTrailer, "Trailer > 4096 bytes rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 3. Incremental Chunked Stream Decoder (Fragmented & Torture Stream Feeding)
+// ----------------------------------------------------------------------------
+fn test_incremental_chunked_stream_decoder(t: core::T&) {
+    t.run("Torture 1-byte incremental feeding") { sub =>
+        let wire = "5\r\nHello\r\n6\r\n World\r\n0\r\nX-Checksum: c89a\r\n\r\n";
+        var dec = wing::new_chunked_stream_decoder();
+        var stream_out: u8[>..] = [];
+
+        for i in wire.len {
+            let one_byte = wire[i..(i + 1)];
+            let ok_step, consumed = wing::feed_chunked_stream(dec, one_byte, stream_out);
+            sub.assert_true(ok_step, "Step ok");
+            sub.assert_eq(consumed, 1, "Consumed 1 byte");
+        }
+
+        sub.assert_true(wing::is_complete(dec), "Decoder reached Complete state");
+        sub.assert_false(wing::has_error(dec), "No error in decoder");
+        sub.assert_bytes_eq(stream_out[..], "Hello World", "Reassembled stream payload");
+        sub.assert_eq(dec.trailers.len, 1, "1 trailer extracted");
+        sub.assert_bytes_eq(dec.trailers[0].name[..], "X-Checksum", "Trailer name");
+        sub.assert_bytes_eq(dec.trailers[0].value[..], "c89a", "Trailer value");
+    };
+
+    t.run("Arbitrary 7-byte chunk slice feeding") { sub =>
+        let wire = "A\r\n0123456789\r\n5\r\nABCDE\r\n0\r\n\r\n";
+        var dec = wing::new_chunked_stream_decoder();
+        var stream_out: u8[>..] = [];
+
+        var offset: i64 = 0;
+        while offset < wire.len {
+            let slice_end = if offset + 7 < wire.len { offset + 7 } else { wire.len };
+            let chunk_slice = wire[offset..slice_end];
+            let ok_step, consumed = wing::feed_chunked_stream(dec, chunk_slice, stream_out);
+            sub.assert_true(ok_step, "Feeding slice succeeded");
+            sub.assert_eq(consumed, chunk_slice.len, "Full slice consumed");
+            offset = slice_end;
+        }
+
+        sub.assert_true(wing::is_complete(dec), "Decoding completed");
+        sub.assert_bytes_eq(stream_out[..], "0123456789ABCDE", "Accurate multi-chunk assembly");
+    };
+
+    t.run("Incremental decoder stops on bare LF error") { sub =>
+        let wire = "4\nWiki\r\n0\r\n\r\n";
+        var dec = wing::new_chunked_stream_decoder();
+        var stream_out: u8[>..] = [];
+
+        let ok, consumed = wing::feed_chunked_stream(dec, wire, stream_out);
+        sub.assert_false(ok, "Decoder detected error");
+        sub.assert_true(wing::has_error(dec), "Has error state");
+        sub.assert_eq(dec.error_code, wing::ChunkedDecodeError.BareLfInChunkSize, "Bare LF caught incrementally");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 4. HttpServer Ingress with Chunked Framing & Smuggling Guards
+// ----------------------------------------------------------------------------
+fn test_httpserver_chunked_ingress(t: core::T&) {
+    t.run("HttpServer handles incoming chunked POST with trailers") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_post_route(server, "/upload/chunked", 101);
+
+        let wire_req = "POST /upload/chunked HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nTrailer: X-Audit-Id\r\n\r\n5\r\nchunk\r\n0\r\nX-Audit-Id: audit-9988\r\n\r\n";
+
+        var wire_resp: u8[>..] = [];
+        let outcome, ok_handled = wing::handle_connection_wire(server, "127.0.0.1", wire_req, 1000000000, wire_resp);
+        sub.assert_true(ok_handled, "Chunked request handled cleanly");
+        sub.assert_eq(outcome, wing::PipelineOutcome.Handled, "Pipeline outcome Handled");
+        sub.assert_contains(wire_resp[..], "HTTP/1.1 200 OK", "Server returned 200 OK");
+    };
+
+    t.run("Smuggling Guard: Dual Transfer-Encoding AND Content-Length rejected") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_post_route(server, "/api", 102);
+
+        // Smuggling vector: both TE and CL specified
+        let smuggled_req = "POST /api HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+
+        var wire_resp: u8[>..] = [];
+        let outcome, ok_handled = wing::handle_connection_wire(server, "127.0.0.1", smuggled_req, 1000000000, wire_resp);
+        sub.assert_false(ok_handled, "Dual TE+CL rejected by server");
+        sub.assert_contains(wire_resp[..], "HTTP/1.1 400 Bad Request", "400 Bad Request returned");
+    };
+
+    t.run("Smuggling Guard: Conflicting duplicate Content-Length rejected") { sub =>
+        var req = wing::new_request("POST", "/data");
+        let wire = "POST /data HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\nContent-Length: 20\r\n\r\n0123456789";
+        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        sub.assert_false(ok, "Conflicting Content-Length rejected");
+    };
+
+    t.run("Smuggling Guard: Invalid Transfer-Encoding coding rejected") { sub =>
+        var req = wing::new_request("POST", "/data");
+        // Unknown transfer coding "compress" as final encoding without chunked
+        let wire = "POST /data HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: compress\r\n\r\n";
+        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        sub.assert_false(ok, "Non-chunked transfer encoding rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 5. Server Chunked Response Serialization & Symmetrical Response Wire Parser
+// ----------------------------------------------------------------------------
+fn test_chunked_response_and_wire_parser(t: core::T&) {
+    t.run("Server response serialization automatically chunks when trailers present") { sub =>
+        var res = wing::new_response();
+        res.status_code = 200;
+        res.body.append("Streaming payload message");
+        wing::add_trailer(res, "X-Checksum", "sha256-res-hash");
+        wing::add_trailer(res, "X-Duration", "12ms");
+
+        var wire_out: u8[>..] = [];
+        wing::serialize_http1_response(res, "goose-wing/1.0", wire_out);
+
+        sub.assert_contains(wire_out[..], "HTTP/1.1 200 OK\r\n", "Status line");
+        sub.assert_contains(wire_out[..], "Transfer-Encoding: chunked\r\n", "Transfer-Encoding: chunked present");
+        sub.assert_contains(wire_out[..], "Trailer: X-Checksum, X-Duration\r\n", "Trailer advertisement present");
+        sub.assert_contains(wire_out[..], "X-Checksum: sha256-res-hash\r\n", "Trailer emitted in trailer section");
+        sub.assert_contains(wire_out[..], "X-Duration: 12ms\r\n", "Second trailer emitted");
+
+        // Parse serialized response with symmetrical parse_http1_wire_response
+        var parsed_res = wing::new_response();
+        let ok_parse, consumed = wing::parse_http1_wire_response(wire_out[..], parsed_res);
+        sub.assert_true(ok_parse, "Wire response parsed cleanly");
+        sub.assert_eq(consumed, wire_out.len, "Entire wire stream consumed");
+        sub.assert_eq(parsed_res.status_code, 200, "Status is 200");
+        sub.assert_bytes_eq(parsed_res.body[..], "Streaming payload message", "Decoded response body");
+        sub.assert_true(wing::has_trailer(parsed_res, "x-checksum"), "Has x-checksum trailer");
+        sub.assert_bytes_eq(wing::trailer(parsed_res, "x-checksum"), "sha256-res-hash", "Trailer matches");
+        sub.assert_bytes_eq(wing::trailer(parsed_res, "x-duration"), "12ms", "Second trailer matches");
+    };
+
+    t.run("Fixed-size chunk serialization with encode_chunked_payload") { sub =>
+        var body_data: u8[..64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        var trs: wing::HeaderItem[..16] = [];
+        var item = wing::HeaderItem { .. };
+        item.name.append("X-Complete");
+        item.value.append("true");
+        trs.push(item);
+
+        var encoded_wire: u8[>..] = [];
+        wing::encode_chunked_payload(body_data[..], trs, 10, encoded_wire);
+
+        var parsed_body: u8[>..] = [];
+        var parsed_trs: wing::HeaderItem[..16] = [];
+        let err, consumed = wing::decode_chunked_body_with_trailers(encoded_wire[..], parsed_body, parsed_trs);
+        sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded segmented chunks");
+        sub.assert_eq(consumed, encoded_wire.len, "Exact bytes consumed");
+        sub.assert_bytes_eq(parsed_body[..], "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "Payload fully reconstructed");
+        sub.assert_eq(parsed_trs.len, 1, "1 trailer reconstructed");
+        sub.assert_bytes_eq(parsed_trs[0].name[..], "X-Complete", "Trailer name correct");
+        sub.assert_bytes_eq(parsed_trs[0].value[..], "true", "Trailer value correct");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// Suite Runner
+// ----------------------------------------------------------------------------
+fn main() {
+    var runner = core::new_runner("RFC 9112 Chunked Transfer & Trailers Suite", core::Verbosity.Verbose);
+
+    core::run_case(runner, "1. One-Shot Chunked Decoding with Trailer Extraction", test_oneshot_chunked_trailers);
+    core::run_case(runner, "2. RFC 9112 Smuggling & Desynchronization Defenses", test_chunked_smuggling_defenses);
+    core::run_case(runner, "3. Incremental Chunked Stream Decoder", test_incremental_chunked_stream_decoder);
+    core::run_case(runner, "4. HttpServer Ingress with Chunked Framing & Smuggling Guards", test_httpserver_chunked_ingress);
+    core::run_case(runner, "5. Server Chunked Response Serialization & Symmetrical Response Wire Parser", test_chunked_response_and_wire_parser);
+
+    let ok = core::finish(runner);
+    assert(ok);
+}

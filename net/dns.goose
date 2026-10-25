@@ -1,4 +1,3 @@
-// net/dns.goose
 // Deterministic zero-allocation DNS engine with RFC 9460 HTTPS/SVCB Resource Records (Type 65).
 // Supports wire message decoding, name compression pointer resolution, ALPN extraction,
 // IPv4/IPv6 hints, and raw ECHConfigList extraction for Encrypted Client Hello (RFC 9460 Key 5).

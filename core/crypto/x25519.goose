@@ -1,4 +1,3 @@
-// core/crypto/x25519.goose
 // Deterministic zero-allocation Curve25519 Diffie-Hellman Key Exchange (RFC 7748).
 // Implements constant-time Montgomery ladder using 10-limb 2^25.5 field representation.
 namespace core;

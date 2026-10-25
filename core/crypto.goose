@@ -1,4 +1,3 @@
-// core/crypto.goose
 // Cryptographic subsystem for the Goose Core Systems Library.
 // Provides zero-allocation, branchless constant-time cryptographic primitives:
 // - ct: Constant-time byte comparisons, KeySlot secrecy pattern, Dudect Welch t-test verifier.

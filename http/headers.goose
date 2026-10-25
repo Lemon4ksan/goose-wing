@@ -4,6 +4,7 @@
 namespace wing;
 
 import std;
+import client.profile;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);
@@ -1622,20 +1623,8 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
     return ChunkedDecodeError.None;
 }
 
-fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
-    // RFC 9112 Section 7.1.2: Disallowed trailer fields threatening message framing or routing
-    return eq_ascii_fold(hname, "content-length") ||
-           eq_ascii_fold(hname, "transfer-encoding") ||
-           eq_ascii_fold(hname, "trailer") ||
-           eq_ascii_fold(hname, "host") ||
-           eq_ascii_fold(hname, "authorization") ||
-           eq_ascii_fold(hname, "set-cookie") ||
-           eq_ascii_fold(hname, "cookie") ||
-           eq_ascii_fold(hname, "content-range") ||
-           eq_ascii_fold(hname, "te");
-}
-
-fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+// RFC 9112 Section 7.1.2: Parse chunked trailers and populate out_trailers list
+fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers: HeaderItem[..16]&) -> ChunkedDecodeError {
     var trailer_count: i32 = 0;
     var total_trailer_bytes: i64 = 0;
     let max_trailers: i32 = 16;
@@ -1689,14 +1678,34 @@ fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError 
         if is_disallowed_trailer_field(hname) {
             return ChunkedDecodeError.DisallowedTrailer;
         }
+
+        let val_slice = tr_line[(col_idx + 1)..];
+        let trimmed_val = trim_lws(val_slice);
+        let trimmed_name = trim_lws(hname);
+
+        if out_trailers.len < out_trailers.cap {
+            var item = HeaderItem { .. };
+            item.name.append(trimmed_name);
+            item.value.append(trimmed_val);
+            out_trailers.push(item);
+        }
     }
     return ChunkedDecodeError.UnexpectedEof;
 }
 
-// Decodes a chunked transfer-encoded payload into out_body (RFC 9112 Section 7.1).
-// Chunk size lines and data chunks must end with CRLF; bare LF returns an error.
-fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
-    guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput; }
+fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    var dummy: HeaderItem[..16] = [];
+    return parse_chunked_trailers_with_out(raw, cursor, dummy);
+}
+
+// Decodes a chunked transfer-encoded payload into out_body and extracts trailers (RFC 9112 Section 7.1).
+// Returns (status_error, total_bytes_consumed_from_raw).
+fn decode_chunked_body_with_trailers(
+    raw: const u8[:],
+    out_body: u8[>..]&,
+    out_trailers: HeaderItem[..16]&
+) -> ChunkedDecodeError, i64 {
+    guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput, 0; }
 
     var cursor: i64 = 0;
     while cursor < raw.len {
@@ -1709,26 +1718,30 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
             }
             line_end++;
         }
-        guard found_newline else { return ChunkedDecodeError.UnexpectedEof; }
+        guard found_newline else { return ChunkedDecodeError.UnexpectedEof, 0; }
 
         if line_end == cursor || raw[line_end - 1] != '\r' {
-            return ChunkedDecodeError.BareLfInChunkSize;
+            return ChunkedDecodeError.BareLfInChunkSize, 0;
         }
 
         let chunk_size_line = raw[cursor..line_end - 1];
         var chunk_size: u64 = 0;
         let size_err = parse_chunk_size_hex(chunk_size_line, chunk_size);
-        guard size_err == ChunkedDecodeError.None else { return size_err; }
+        guard size_err == ChunkedDecodeError.None else { return size_err, 0; }
 
         cursor = line_end + 1;
 
         if chunk_size == 0 {
-            return parse_chunked_trailers(raw, cursor);
+            let tr_err = parse_chunked_trailers_with_out(raw, cursor, out_trailers);
+            if tr_err == ChunkedDecodeError.None {
+                return ChunkedDecodeError.None, cursor;
+            }
+            return tr_err, 0;
         }
 
         let csize = chunk_size as i64;
         guard cursor + csize + 2 <= raw.len else {
-            return ChunkedDecodeError.UnexpectedEof;
+            return ChunkedDecodeError.UnexpectedEof, 0;
         }
 
         let chunk_data = raw[cursor..cursor + csize];
@@ -1736,13 +1749,21 @@ fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeErr
         cursor += csize;
 
         if raw[cursor] == '\n' {
-            return ChunkedDecodeError.BareLfInChunkData;
+            return ChunkedDecodeError.BareLfInChunkData, 0;
         }
         guard raw[cursor] == '\r' && raw[cursor + 1] == '\n' else {
-            return ChunkedDecodeError.MalformedChunkEnding;
+            return ChunkedDecodeError.MalformedChunkEnding, 0;
         }
         cursor += 2;
     }
 
-    return ChunkedDecodeError.UnexpectedEof;
+    return ChunkedDecodeError.UnexpectedEof, 0;
+}
+
+// Decodes a chunked transfer-encoded payload into out_body (RFC 9112 Section 7.1).
+// Chunk size lines and data chunks must end with CRLF; bare LF returns an error.
+fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
+    var dummy: HeaderItem[..16] = [];
+    let err, _ = decode_chunked_body_with_trailers(raw, out_body, dummy);
+    return err;
 }

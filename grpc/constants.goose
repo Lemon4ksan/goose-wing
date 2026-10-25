@@ -1,4 +1,3 @@
-// grpc/constants.goose
 // gRPC wire framing constants, canonical status codes, and HTTP/2 / HTTP/3 content types.
 // Conforms to gRPC Over HTTP/2 Specification and gRPC-Web Specification.
 namespace wing;

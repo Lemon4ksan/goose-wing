@@ -1,4 +1,3 @@
-// examples/standalone_server.goose
 // Demonstration of goose-wing Standalone Zero-Allocation Async Socket & HTTP Server.
 import std;
 import core from "..";

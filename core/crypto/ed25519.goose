@@ -1,4 +1,3 @@
-// core/crypto/ed25519.goose
 // Clean-room, high-performance Ed25519 digital signature creation & verification (RFC 8032).
 // Implements twisted Edwards curve -x^2 + y^2 = 1 + d x^2 y^2 over GF(2^255 - 19)
 // using extended projective coordinates (X : Y : Z : T) and constant-time scalar arithmetic.

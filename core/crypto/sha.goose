@@ -1,4 +1,3 @@
-// core/crypto/sha.goose
 // Secure Hash Algorithms: SHA-256, SHA-384, SHA-512 (FIPS 180-4), SHA-1 (RFC 3174),
 // HMAC (RFC 2104 / RFC 4231), and HKDF extract/expand (RFC 5869).
 namespace core;

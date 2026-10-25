@@ -18,6 +18,7 @@ struct Request {
     url: u8[..2048] = [],
     timeout: i64 = 0,
     headers: HeaderItem[..32] = [],
+    trailers: HeaderItem[..16] = [],
     query_params: QueryItem[..16] = [],
     rewind_buf: u8[..4096] = [],
     rewindable: bool = true,
@@ -96,6 +97,39 @@ fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
         }
     }
     return "";
+}
+
+// Returns the value of a request trailer by name (case-insensitive lookup)
+fn trailer(req: const Request&, name: const u8[:]) -> const u8[:] {
+    for &t in req.trailers {
+        if eq_ascii_fold(t.name[..], name) {
+            return t.value[..];
+        }
+    }
+    return "";
+}
+
+fn has_trailer(req: const Request&, name: const u8[:]) -> bool {
+    for &t in req.trailers {
+        if eq_ascii_fold(t.name[..], name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
+    guard !is_disallowed_trailer_field(name) else { return; }
+    for &t in req.trailers {
+        if eq_ascii_fold(t.name[..], name) {
+            t.value.clear();
+            t.value.append(value);
+            return;
+        }
+    }
+    if req.trailers.len < req.trailers.cap {
+        req.trailers.push(make_header(name, value));
+    }
 }
 
 // ---- ufcs request mutators -------------------------------------------------

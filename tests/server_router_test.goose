@@ -404,7 +404,7 @@ fn test_standalone_http_server(t: core::T&) {
 
         sub.assert_true(ok_h2, "HTTP/2 preface detected");
         sub.assert_eq(outcome_h2, wing::PipelineOutcome.Handled, "Handled");
-        sub.assert_eq(server_h2_resp.len, 9, "Server responded with 9-byte HTTP/2 SETTINGS frame");
+        sub.assert_eq(server_h2_resp.len, 33, "Server responded with 33-byte HTTP/2 SETTINGS frame");
         sub.assert_eq(server_h2_resp[3], wing::FRAME_SETTINGS, "Frame type is SETTINGS (0x04)");
     };
 }

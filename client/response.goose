@@ -34,6 +34,7 @@ struct Response {
     status_code: i32 = 0,
     effective_url: u8[..2048] = [],
     headers: HeaderItem[..32] = [],
+    trailers: HeaderItem[..16] = [],
     redirect_count: i64 = 0,
     url_chain: u8[..256][..16] = [],
     final_method: u8[..16] = "GET",
@@ -85,6 +86,39 @@ fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
         }
     }
     return "";
+}
+
+// Returns the value of a response trailer by name (case-insensitive lookup)
+fn trailer(res: const Response&, name: const u8[:]) -> const u8[:] {
+    for &t in res.trailers {
+        if eq_ascii_fold(t.name[..], name) {
+            return t.value[..];
+        }
+    }
+    return "";
+}
+
+fn has_trailer(res: const Response&, name: const u8[:]) -> bool {
+    for &t in res.trailers {
+        if eq_ascii_fold(t.name[..], name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
+    guard !is_disallowed_trailer_field(name) else { return; }
+    for &t in res.trailers {
+        if eq_ascii_fold(t.name[..], name) {
+            t.value.clear();
+            t.value.append(value);
+            return;
+        }
+    }
+    if res.trailers.len < res.trailers.cap {
+        res.trailers.push(make_header(name, value));
+    }
 }
 
 fn header(res: Response&, name: const u8[:], value: const u8[:]) {

@@ -6,6 +6,7 @@ import std;
 import client.profile;
 import client.request;
 import client.response;
+import http.headers;
 
 // ---- 1. RFC 9112 Chunked Transfer Framing -----------------------------------
 
@@ -57,10 +58,41 @@ fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) {
     out.push('\n');
 }
 
+// Encodes an entire body buffer as RFC 9112 chunked transfer frames with optional trailers.
+fn encode_chunked_payload<B>(
+    body: const u8[:],
+    trailers: const HeaderItem[..16]&,
+    chunk_size: i64,
+    out: B&
+) {
+    let step = if chunk_size > 0 { chunk_size } else { 4096 };
+    if body.len > 0 {
+        var offset: i64 = 0;
+        while offset < body.len {
+            let end_off = if offset + step < body.len { offset + step } else { body.len };
+            encode_chunk(body[offset..end_off], out);
+            offset = end_off;
+        }
+    }
+
+    if trailers.len == 0 {
+        encode_chunk_end(out);
+    } else {
+        out.push('0');
+        out.push('\r');
+        out.push('\n');
+        for &t in trailers {
+            encode_chunk_trailer(t.name[..], t.value[..], out);
+        }
+        out.push('\r');
+        out.push('\n');
+    }
+}
+
 // ---- 2. Chunk Stream Writer (for Chunked Uploads) ---------------------------
 
 struct ChunkWriter {
-    trailers: HeaderItem[..8] = [],
+    trailers: HeaderItem[..16] = [],
     finished: bool = false,
     buffer: u8[>..] = [],
 }
@@ -75,7 +107,7 @@ fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
 }
 
 fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) {
-    guard !writer.finished && writer.trailers.len < writer.trailers.cap else { return; }
+    guard !writer.finished && !is_disallowed_trailer_field(name) && writer.trailers.len < writer.trailers.cap else { return; }
     writer.trailers.push(make_header(name, val));
 }
 
@@ -94,6 +126,208 @@ fn finish_chunk_writer(writer: ChunkWriter&) {
         writer.buffer.push('\r');
         writer.buffer.push('\n');
     }
+}
+
+// ---- 2b. Incremental Chunked Stream Decoder (RFC 9112) -----------------------
+
+enum ChunkedStreamState {
+    ChunkSizeLine,
+    ChunkData,
+    ChunkDataCrlf,
+    Trailers,
+    Complete,
+    Error,
+}
+
+struct ChunkedStreamDecoder {
+    state: ChunkedStreamState = ChunkedStreamState.ChunkSizeLine,
+    expected_chunk_size: u64 = 0,
+    chunk_bytes_remaining: u64 = 0,
+    crlf_step: i32 = 0,
+    line_buf: u8[..1024] = [],
+    trailers: HeaderItem[..16] = [],
+    trailer_count: i32 = 0,
+    total_trailer_bytes: i64 = 0,
+    bytes_consumed_total: u64 = 0,
+    error_code: ChunkedDecodeError = ChunkedDecodeError.None,
+}
+
+fn new_chunked_stream_decoder() -> ChunkedStreamDecoder {
+    return ChunkedStreamDecoder { .. };
+}
+
+fn is_complete(dec: const ChunkedStreamDecoder&) -> bool {
+    return dec.state == ChunkedStreamState.Complete;
+}
+
+fn has_error(dec: const ChunkedStreamDecoder&) -> bool {
+    return dec.state == ChunkedStreamState.Error;
+}
+
+// Feeds incoming wire slice into incremental decoder.
+// Emits decoded chunk body payload bytes directly into out_body.
+// Returns (ok, bytes_consumed_from_input).
+fn feed_chunked_stream<B>(
+    dec: ChunkedStreamDecoder&,
+    input: const u8[:],
+    out_body: B&
+) -> bool, i64 {
+    guard dec.state != ChunkedStreamState.Error && dec.state != ChunkedStreamState.Complete else {
+        return dec.state == ChunkedStreamState.Complete, 0;
+    }
+
+    var cursor: i64 = 0;
+    while cursor < input.len && dec.state != ChunkedStreamState.Complete && dec.state != ChunkedStreamState.Error {
+        if dec.state == ChunkedStreamState.ChunkSizeLine {
+            let b = input[cursor];
+            cursor++;
+            dec.bytes_consumed_total++;
+
+            if b == '\n' {
+                if dec.line_buf.len == 0 || dec.line_buf[dec.line_buf.len - 1] != '\r' {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.BareLfInChunkSize;
+                    return false, cursor;
+                }
+                let size_line = dec.line_buf[..(dec.line_buf.len - 1)];
+                var csize: u64 = 0;
+                let parse_err = parse_chunk_size_hex(size_line, csize);
+                if parse_err != ChunkedDecodeError.None {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = parse_err;
+                    return false, cursor;
+                }
+                dec.line_buf.clear();
+                dec.expected_chunk_size = csize;
+
+                if csize == 0 {
+                    dec.state = ChunkedStreamState.Trailers;
+                } else {
+                    dec.chunk_bytes_remaining = csize;
+                    dec.state = ChunkedStreamState.ChunkData;
+                }
+            } else {
+                guard dec.line_buf.len < dec.line_buf.cap else {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.InvalidChunkExtension;
+                    return false, cursor;
+                }
+                dec.line_buf.push(b);
+            }
+        } else if dec.state == ChunkedStreamState.ChunkData {
+            let avail = input.len - cursor;
+            let needed = dec.chunk_bytes_remaining as i64;
+            let to_take = if avail < needed { avail } else { needed };
+
+            out_body.append(input[cursor..(cursor + to_take)]);
+            cursor += to_take;
+            dec.bytes_consumed_total += to_take as! u64;
+            dec.chunk_bytes_remaining -= to_take as! u64;
+
+            if dec.chunk_bytes_remaining == 0 {
+                dec.state = ChunkedStreamState.ChunkDataCrlf;
+                dec.crlf_step = 0;
+            }
+        } else if dec.state == ChunkedStreamState.ChunkDataCrlf {
+            let b = input[cursor];
+            cursor++;
+            dec.bytes_consumed_total++;
+
+            if dec.crlf_step == 0 {
+                if b == '\r' {
+                    dec.crlf_step = 1;
+                } else if b == '\n' {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.BareLfInChunkData;
+                    return false, cursor;
+                } else {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.MalformedChunkEnding;
+                    return false, cursor;
+                }
+            } else {
+                if b == '\n' {
+                    dec.state = ChunkedStreamState.ChunkSizeLine;
+                    dec.crlf_step = 0;
+                } else {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.MalformedChunkEnding;
+                    return false, cursor;
+                }
+            }
+        } else if dec.state == ChunkedStreamState.Trailers {
+            let b = input[cursor];
+            cursor++;
+            dec.bytes_consumed_total++;
+
+            if b == '\n' {
+                if dec.line_buf.len == 0 || dec.line_buf[dec.line_buf.len - 1] != '\r' {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.BareLfInTrailer;
+                    return false, cursor;
+                }
+                let tr_line = dec.line_buf[..(dec.line_buf.len - 1)];
+
+                if tr_line.len == 0 {
+                    dec.state = ChunkedStreamState.Complete;
+                    dec.line_buf.clear();
+                    return true, cursor;
+                }
+
+                dec.trailer_count++;
+                if dec.trailer_count > 16 {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.DisallowedTrailer;
+                    return false, cursor;
+                }
+
+                dec.total_trailer_bytes += tr_line.len;
+                if dec.total_trailer_bytes > 4096 {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.DisallowedTrailer;
+                    return false, cursor;
+                }
+
+                var col_idx: i64 = -1;
+                for i in tr_line.len {
+                    if tr_line[i] == ':' {
+                        col_idx = i;
+                        break;
+                    }
+                }
+                if col_idx <= 0 {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.DisallowedTrailer;
+                    return false, cursor;
+                }
+
+                let hname = tr_line[..col_idx];
+                if is_disallowed_trailer_field(hname) {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.DisallowedTrailer;
+                    return false, cursor;
+                }
+
+                let hval = trim_lws(tr_line[(col_idx + 1)..]);
+                if dec.trailers.len < dec.trailers.cap {
+                    var item = HeaderItem { .. };
+                    item.name.append(trim_lws(hname));
+                    item.value.append(hval);
+                    dec.trailers.push(item);
+                }
+                dec.line_buf.clear();
+            } else {
+                guard dec.line_buf.len < dec.line_buf.cap else {
+                    dec.state = ChunkedStreamState.Error;
+                    dec.error_code = ChunkedDecodeError.DisallowedTrailer;
+                    return false, cursor;
+                }
+                dec.line_buf.push(b);
+            }
+        }
+    }
+
+    return true, cursor;
 }
 
 // ---- 3. Incremental Stream Reader & Progress Tracking -----------------------

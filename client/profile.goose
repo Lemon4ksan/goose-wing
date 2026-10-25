@@ -36,6 +36,20 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
            eq_ascii_fold(name, "x-amz-security-token");
 }
 
+// RFC 9112 Section 7.1.2: Disallowed trailer fields threatening message framing or routing
+fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
+    return eq_ascii_fold(hname, "content-length") ||
+           eq_ascii_fold(hname, "transfer-encoding") ||
+           eq_ascii_fold(hname, "trailer") ||
+           eq_ascii_fold(hname, "host") ||
+           eq_ascii_fold(hname, "authorization") ||
+           eq_ascii_fold(hname, "proxy-authorization") ||
+           eq_ascii_fold(hname, "set-cookie") ||
+           eq_ascii_fold(hname, "cookie") ||
+           eq_ascii_fold(hname, "content-range") ||
+           eq_ascii_fold(hname, "te");
+}
+
 // Appends src to out with CR, LF, and NUL bytes omitted (RFC 9110 Section 5.5).
 fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     for b in src {

@@ -1,4 +1,3 @@
-// http3/connection.goose
 // Deterministic zero-allocation HTTP/3 Connection Coordinator and Stream Multiplexer.
 // Conforms to RFC 9114 (HTTP/3), RFC 9204 (QPACK), and RFC 9000 (QUIC Streams).
 namespace wing;

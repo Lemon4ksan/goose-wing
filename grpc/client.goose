@@ -1,4 +1,3 @@
-// grpc/client.goose
 // High-level ergonomic gRPC client abstractions for Unary and Streaming RPCs.
 // Supports native gRPC over HTTP/2 & HTTP/3 and gRPC-Web (binary and text).
 namespace wing;
