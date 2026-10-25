@@ -13,103 +13,61 @@ import wing from "..";
 // 1. CVE-2021-28918 & CVE-2021-29922: Octal, Hex, Dword, Shorthand IPv4 SSRF
 // ----------------------------------------------------------------------------
 fn test_cve_ipv4_formats_ssrf(t: core::T&) {
-    t.run("Octal IPv4 (0177.0.0.1) must be blocked as Loopback") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+    var session = wing::new_session();
+    wing::enable_ssrf_guard(session, true);
 
-        var req_oct = wing::new_get("http://0177.0.0.1/admin");
-        let res_oct, err_oct = wing::execute_request(session, req_oct);
-        sub.assert_false(wing::ok(err_oct), "0177.0.0.1 octal loopback must be blocked by SSRF guard");
-    };
+    let targets: const u8[..64][..6] = [
+        "http://0177.0.0.1/admin",
+        "http://2130706433/admin",
+        "http://0x7f000001/admin",
+        "http://0x7f.0.0.1/admin",
+        "http://127.1/admin",
+        "http://10.1/internal"
+    ];
 
-    t.run("Dword/Integer IPv4 (2130706433) must be blocked as Loopback") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
-        var req_int = wing::new_get("http://2130706433/admin");
-        let res_int, err_int = wing::execute_request(session, req_int);
-        sub.assert_false(wing::ok(err_int), "2130706433 integer loopback must be blocked by SSRF guard");
-    };
-
-    t.run("Hex IPv4 (0x7f000001 and 0x7f.0.0.1) must be blocked as Loopback") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
-        var req_hex1 = wing::new_get("http://0x7f000001/admin");
-        let res_hex1, err_hex1 = wing::execute_request(session, req_hex1);
-        sub.assert_false(wing::ok(err_hex1), "0x7f000001 hex loopback must be blocked");
-
-        var req_hex2 = wing::new_get("http://0x7f.0.0.1/admin");
-        let res_hex2, err_hex2 = wing::execute_request(session, req_hex2);
-        sub.assert_false(wing::ok(err_hex2), "0x7f.0.0.1 dotted-hex loopback must be blocked");
-    };
-
-    t.run("Shorthand IPv4 (127.1 and 10.1) must be blocked") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
-        var req_s1 = wing::new_get("http://127.1/admin");
-        let res_s1, err_s1 = wing::execute_request(session, req_s1);
-        sub.assert_false(wing::ok(err_s1), "127.1 shorthand loopback must be blocked");
-
-        var req_s2 = wing::new_get("http://10.1/internal");
-        let res_s2, err_s2 = wing::execute_request(session, req_s2);
-        sub.assert_false(wing::ok(err_s2), "10.1 shorthand private 10.0.0.1 must be blocked");
-    };
+    for &url in targets {
+        var req = wing::new_get(url[..]);
+        let _, err = wing::execute_request(session, req);
+        t.assert_false(wing::ok(err), "IPv4 format bypass must be blocked");
+    }
 }
 
 // ----------------------------------------------------------------------------
 // 2. CVE-2024-24790 & RFC 6761: Localhost, Uncompressed IPv6 & Tunnel SSRF
 // ----------------------------------------------------------------------------
 fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: core::T&) {
-    t.run("RFC 6761: localhost, localhost. and *.localhost must be blocked") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+    var session = wing::new_session();
+    wing::enable_ssrf_guard(session, true);
 
-        var req_lh1 = wing::new_get("http://localhost/admin");
-        let res_lh1, err_lh1 = wing::execute_request(session, req_lh1);
-        sub.assert_false(wing::ok(err_lh1), "http://localhost must be blocked by SSRF guard");
+    let lh_targets: const u8[..64][..3] = [
+        "http://localhost/admin",
+        "http://localhost./admin",
+        "http://service.localhost/admin"
+    ];
+    for &url in lh_targets {
+        var req_lh = wing::new_get(url[..]);
+        let _, err_lh = wing::execute_request(session, req_lh);
+        t.assert_false(wing::ok(err_lh), "RFC 6761 localhost target must be blocked");
+    }
 
-        var req_lh2 = wing::new_get("http://localhost./admin");
-        let res_lh2, err_lh2 = wing::execute_request(session, req_lh2);
-        sub.assert_false(wing::ok(err_lh2), "http://localhost. (FQDN) must be blocked by SSRF guard");
+    // DNS Rebinding with Uncompressed IPv6 Loopback
+    wing::mock_route(session, "GET", "http://rebind-uncompressed.com/api", 200, "ok");
+    wing::add_mock_resolved_ip(session, "0:0:0:0:0:0:0:1");
 
-        var req_lh3 = wing::new_get("http://service.localhost/admin");
-        let res_lh3, err_lh3 = wing::execute_request(session, req_lh3);
-        sub.assert_false(wing::ok(err_lh3), "http://service.localhost must be blocked by SSRF guard");
-    };
+    var req = wing::new_get("http://rebind-uncompressed.com/api");
+    let _, err = wing::execute_request(session, req);
+    t.assert_false(wing::ok(err), "DNS rebinding with 0:0:0:0:0:0:0:1 must be blocked");
 
-    t.run("DNS Rebinding with Uncompressed IPv6 Loopback") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
-        wing::mock_route(session, "GET", "http://rebind-uncompressed.com/api", 200, "ok");
-        wing::add_mock_resolved_ip(session, "0:0:0:0:0:0:0:1");
-
-        var req = wing::new_get("http://rebind-uncompressed.com/api");
-        let res, err = wing::execute_request(session, req);
-        sub.assert_false(wing::ok(err), "DNS rebinding with 0:0:0:0:0:0:0:1 must be blocked");
-    };
-
-    t.run("IPv4-Compatible IPv6 and NAT64 Tunnels") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
-
-        // IPv4-compatible loopback [::127.0.0.1]
-        var req_compat = wing::new_get("http://[::127.0.0.1]/status");
-        let res_c, err_c = wing::execute_request(session, req_compat);
-        sub.assert_false(wing::ok(err_c), "[::127.0.0.1] IPv4-compatible loopback must be blocked");
-
-        // NAT64 well-known prefix [64:ff9b::127.0.0.1]
-        var req_nat64 = wing::new_get("http://[64:ff9b::127.0.0.1]/status");
-        let res_nat, err_nat = wing::execute_request(session, req_nat64);
-        sub.assert_false(wing::ok(err_nat), "[64:ff9b::127.0.0.1] NAT64 loopback must be blocked");
-
-        // 6to4 tunnel [2002:7f00:1::]
-        var req_6to4 = wing::new_get("http://[2002:7f00:1::]/status");
-        let res_6to4, err_6to4 = wing::execute_request(session, req_6to4);
-        sub.assert_false(wing::ok(err_6to4), "[2002:7f00:1::] 6to4 loopback must be blocked");
-    };
+    let tunnel_targets: const u8[..64][..3] = [
+        "http://[::127.0.0.1]/status",
+        "http://[64:ff9b::127.0.0.1]/status",
+        "http://[2002:7f00:1::]/status"
+    ];
+    for &url in tunnel_targets {
+        var req_t = wing::new_get(url[..]);
+        let _, err_t = wing::execute_request(session, req_t);
+        t.assert_false(wing::ok(err_t), "IPv6 tunnel/compatible loopback must be blocked");
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -428,15 +386,13 @@ fn test_cve_proxy_authorization_leakage(t: core::T&) {
 // 10. CVE-2025-22870: IPv6 Zone ID Proxy Bypass & SSRF Defense
 // ----------------------------------------------------------------------------
 fn test_cve_ipv6_zone_id_proxy_bypass(t: core::T&) {
-    t.run("IPv6 Link-Local with Zone ID (fe80::1%eth0) Blocked by SSRF Guard") { sub =>
-        var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+    var session = wing::new_session();
+    wing::enable_ssrf_guard(session, true);
 
-        // IPv6 link-local with zone ID
-        var req_ll = wing::new_get("http://[fe80::1%25eth0]/admin");
-        let res_ll, err_ll = wing::execute_request(session, req_ll);
-        sub.assert_false(wing::ok(err_ll), "Link-local IPv6 with zone ID must be blocked by SSRF guard (CVE-2025-22870)");
-    };
+    // IPv6 link-local with zone ID
+    var req_ll = wing::new_get("http://[fe80::1%25eth0]/admin");
+    let res_ll, err_ll = wing::execute_request(session, req_ll);
+    t.assert_false(wing::ok(err_ll), "Link-local IPv6 with zone ID must be blocked by SSRF guard (CVE-2025-22870)");
 }
 
 // ----------------------------------------------------------------------------
@@ -579,23 +535,21 @@ fn test_cve_2023_39326_chunk_extension_overflow(t: core::T&) {
 // 17. Go #60997 & RFC 6265bis: CookieJar Secure Cookie Exemption on Localhost
 // ----------------------------------------------------------------------------
 fn test_go_60997_localhost_secure_cookies(t: core::T&) {
-    t.run("Secure and SameSite=None cookies must be accepted and forwarded on http://localhost") { sub =>
-        var session = wing::new_session();
-        
-        wing::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
-        wing::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");
+    var session = wing::new_session();
+    
+    wing::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
+    wing::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");
 
-        let req1 = wing::new_get("http://localhost:8080/login");
-        let res1, err1 = wing::execute_request(session, req1);
-        sub.assert_true(wing::ok(err1), "Login request to localhost succeeded");
-        sub.assert_bytes_eq(wing::cookie(session, "sid"), "local_secret", "Secure cookie must be accepted on http://localhost");
+    let req1 = wing::new_get("http://localhost:8080/login");
+    let res1, err1 = wing::execute_request(session, req1);
+    t.assert_true(wing::ok(err1), "Login request to localhost succeeded");
+    t.assert_bytes_eq(wing::cookie(session, "sid"), "local_secret", "Secure cookie must be accepted on http://localhost");
 
-        wing::mock_route(session, "GET", "http://localhost:8080/api", 200, "data");
+    wing::mock_route(session, "GET", "http://localhost:8080/api", 200, "data");
 
-        let req2 = wing::new_get("http://localhost:8080/api");
-        let res2, err2 = wing::execute_request(session, req2);
-        sub.assert_true(wing::ok(err2), "API request to localhost succeeded");
-    };
+    let req2 = wing::new_get("http://localhost:8080/api");
+    let res2, err2 = wing::execute_request(session, req2);
+    t.assert_true(wing::ok(err2), "API request to localhost succeeded");
 }
 
 // ----------------------------------------------------------------------------

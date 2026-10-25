@@ -53,10 +53,9 @@ fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
     var val: u64 = 0;
     for i in start_idx..part.len {
         let b = part[i];
-        let digit: u64 = if b >= '0' && b <= '9' { b - '0' }
-                         else if base == 16 && b >= 'a' && b <= 'f' { b - 'a' + 10 }
-                         else if base == 16 && b >= 'A' && b <= 'F' { b - 'A' + 10 }
-                         else { return 0, false; };
+        let hex = core::hex_digit_to_val(b);
+        guard hex >= 0 else { return 0, false; }
+        let digit = hex as u64;
         if digit >= base { return 0, false; }
         val = val * base + digit;
         if val > 0xFFFFFFFF { return 0, false; }
@@ -121,35 +120,16 @@ fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
 }
 
 fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
-    var colon_idx = -1;
-    for scan_idx in suffix.len {
-        if suffix[scan_idx] == ':' {
-            if colon_idx >= 0 { return false; }
-            colon_idx = scan_idx;
-        }
-    }
+    let colon_idx = core::index_of_byte(suffix, ':');
     guard colon_idx > 0 && colon_idx + 1 < suffix.len else { return false; }
+    if core::last_index_of_byte(suffix, ':') != colon_idx { return false; }
+
     let part1 = suffix[..colon_idx];
     let part2 = suffix[colon_idx + 1..];
     guard part1.len >= 1 && part1.len <= 4 && part2.len >= 1 && part2.len <= 4 else { return false; }
 
-    var val1: i32 = 0;
-    for char_byte in part1 {
-        let hex_val = if char_byte >= '0' && char_byte <= '9' { (char_byte - '0') as i32 }
-                      else if char_byte >= 'a' && char_byte <= 'f' { (char_byte - 'a' + 10) as i32 }
-                      else if char_byte >= 'A' && char_byte <= 'F' { (char_byte - 'A' + 10) as i32 }
-                      else { return false; };
-        val1 = (val1 << 4) | hex_val;
-    }
-
-    var val2: i32 = 0;
-    for char_byte in part2 {
-        let hex_val = if char_byte >= '0' && char_byte <= '9' { (char_byte - '0') as i32 }
-                      else if char_byte >= 'a' && char_byte <= 'f' { (char_byte - 'a' + 10) as i32 }
-                      else if char_byte >= 'A' && char_byte <= 'F' { (char_byte - 'A' + 10) as i32 }
-                      else { return false; };
-        val2 = (val2 << 4) | hex_val;
-    }
+    let val1 = parse_hex_u16(part1);
+    let val2 = parse_hex_u16(part2);
 
     let octet0 = (val1 >> 8) & 0xFF;
     let octet1 = val1 & 0xFF;
@@ -215,8 +195,7 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
     // 6to4 prefix 2002::/16
     if starts_with(eff_ip, "2002:") {
         let rem = eff_ip[5..];
-        var colon_idx = -1;
-        for i in rem.len { if rem[i] == ':' { colon_idx = i; break; } }
+        let colon_idx = core::index_of_byte(rem, ':');
         let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
         let hex_val1 = parse_hex_u16(p1);
         let o0 = (hex_val1 >> 8) & 0xFF;
@@ -245,17 +224,12 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         ip_str
     };
 
-    var pct_idx = -1;
-    for i in clean_ip.len {
-        if clean_ip[i] == '%' { pct_idx = i; break; }
-    }
+    let pct_idx = core::index_of_byte(clean_ip, '%');
     if pct_idx >= 0 {
         clean_ip = clean_ip[..pct_idx];
     }
 
-    if clean_ip.len > 0 && clean_ip[clean_ip.len - 1] == '.' {
-        clean_ip = clean_ip[..clean_ip.len - 1];
-    }
+    clean_ip = core::trim_end_byte(clean_ip, '.');
 
     var lower_buf: u8[..64] = [];
     if clean_ip.len <= 64 {
@@ -268,10 +242,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         return true;
     }
 
-    var has_colon = false;
-    for b in norm_ip { if b == ':' { has_colon = true; break; } }
-
-    if has_colon {
+    if core::contains_byte(norm_ip, ':') {
         var comp_buf: u8[..64] = [];
         let ipv6_ok = core::parse_and_compress_ipv6(norm_ip, comp_buf);
         let eff_ip = if ipv6_ok { comp_buf[..] } else { norm_ip };

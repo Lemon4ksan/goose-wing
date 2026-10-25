@@ -1052,6 +1052,25 @@ fn ::compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
     wing::compute_default_cookie_path(uri_path, out);
 }
 
+// ---- ssrf guard policy and ip validation ufcs bridges -----------------------
+
+fn ::validate_url_against_ssrf(url_val: const core::Url&, policy: const wing::SsrfGuardPolicy&) -> wing::RedirectError {
+    return wing::validate_url_against_ssrf(url_val, policy);
+}
+
+fn ::validate_resolved_ips_against_ssrf(ips: const u8[:][:], policy: const wing::SsrfGuardPolicy&) -> wing::RedirectError {
+    return wing::validate_resolved_ips_against_ssrf(ips, policy);
+}
+
+fn ::is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
+    return wing::is_private_or_reserved_ip(ip_str);
+}
+
+fn ::is_dangerous_service_port(port_num: i32) -> bool {
+    return wing::is_dangerous_service_port(port_num);
+}
+
+
 
 
 
