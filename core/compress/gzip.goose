@@ -53,24 +53,14 @@ fn gzip_compress_with_header<B>(
 
     if include_fhcrc {
         let hdr_bytes = out[out_start..];
-        let h_crc = crc32(hdr_bytes) & 0xFFFF;
-        out.push((h_crc & 0xFF) as u8);
-        out.push(((h_crc >> 8) & 0xFF) as u8);
+        let h_crc = (crc32(hdr_bytes) & 0xFFFF) as u16;
+        write_le_u16(out, h_crc);
     }
 
     guard deflate(src, out, level) else { return false; }
 
-    let c = crc32(src);
-    out.push((c & 0xFF) as u8);
-    out.push(((c >> 8) & 0xFF) as u8);
-    out.push(((c >> 16) & 0xFF) as u8);
-    out.push(((c >> 24) & 0xFF) as u8);
-
-    let isize = (src.len as u64) & 0xFFFFFFFF;
-    out.push((isize & 0xFF) as u8);
-    out.push(((isize >> 8) & 0xFF) as u8);
-    out.push(((isize >> 16) & 0xFF) as u8);
-    out.push(((isize >> 24) & 0xFF) as u8);
+    write_le_u32(out, crc32(src));
+    write_le_u32(out, ((src.len as u64) & 0xFFFFFFFF) as u32);
 
     return true;
 }
@@ -78,11 +68,6 @@ fn gzip_compress_with_header<B>(
 // Compresses src into out using standard RFC 1952 Gzip format.
 fn gzip_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
     return gzip_compress_with_header(src, out, level, "", "", false);
-}
-
-// Reads a 32-bit little-endian unsigned integer from src at offset.
-fn read_gzip_u32_le(src: const u8[:], offset: i64) -> u32 {
-    return read_le_u32(src, offset);
 }
 
 // Advances offset past a null-terminated header string in src.
@@ -132,9 +117,8 @@ fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError 
     return offset, CompressError.None;
 }
 
-// Decompresses RFC 1952 Gzip stream from src into out with output quota guard.
-// Fully supports concatenated Gzip members (RFC 1952 multi-member streams) and FHCRC.
-fn gzip_decompress_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64 = 0) -> CompressError {
+// Internal implementation of Gzip decompression with output quota guard.
+fn gzip_decompress_with_limit_impl<B>(src: const u8[:], out: B&, max_output_bytes: i64 = 0) -> CompressError {
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var offset: i64 = 0;
 
@@ -151,8 +135,8 @@ fn gzip_decompress_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i6
         guard trailer_offset + 8 <= src.len else { return CompressError.InputBufferTruncated; }
 
         let decomp_slice = out[member_out_start..];
-        let expected_crc = read_gzip_u32_le(src, trailer_offset);
-        let expected_isize = read_gzip_u32_le(src, trailer_offset + 4);
+        let expected_crc = read_le_u32(src, trailer_offset);
+        let expected_isize = read_le_u32(src, trailer_offset + 4);
 
         guard crc32(decomp_slice) == expected_crc else {
             return CompressError.ChecksumMismatch;
@@ -168,8 +152,15 @@ fn gzip_decompress_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i6
     return CompressError.None;
 }
 
+// Decompresses RFC 1952 Gzip stream from src into out with output quota guard.
+// Fully supports concatenated Gzip members (RFC 1952 multi-member streams) and FHCRC.
+fn gzip_decompress_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64 = 0) -> bool, CompressError {
+    let err = gzip_decompress_with_limit_impl(src, out, max_output_bytes);
+    return err == CompressError.None, err;
+}
+
 // Decompresses RFC 1952 Gzip stream from src into out.
 // Validates headers, flags (including FHCRC), concatenated members, CRC-32, and ISIZE.
-fn gzip_decompress<B>(src: const u8[:], out: B&) -> CompressError {
+fn gzip_decompress<B>(src: const u8[:], out: B&) -> bool, CompressError {
     return gzip_decompress_with_limit(src, out, 0);
 }

@@ -744,14 +744,6 @@ inline fn xxh64_rotl(x: u64, r: u64) -> u64 {
     return rotl64(x, r as u32);
 }
 
-inline fn xxh64_read_le64(buf: const u8[:], offset: i64) -> u64 {
-    return read_le_u64(buf, offset);
-}
-
-inline fn xxh64_read_le32(buf: const u8[:], offset: i64) -> u32 {
-    return read_le_u32(buf, offset);
-}
-
 inline fn xxh64_round(acc: u64, input: u64) -> u64 {
     var a = acc + input * XXH64_PRIME2;
     a = xxh64_rotl(a, 31);
@@ -789,10 +781,10 @@ fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
 
         while offset + 32 <= buf.len {
             let s = buf[offset .. offset + 32];
-            v1 = xxh64_round(v1, xxh64_read_le64(s, 0));
-            v2 = xxh64_round(v2, xxh64_read_le64(s, 8));
-            v3 = xxh64_round(v3, xxh64_read_le64(s, 16));
-            v4 = xxh64_round(v4, xxh64_read_le64(s, 24));
+            v1 = xxh64_round(v1, read_le_u64(s, 0));
+            v2 = xxh64_round(v2, read_le_u64(s, 8));
+            v3 = xxh64_round(v3, read_le_u64(s, 16));
+            v4 = xxh64_round(v4, read_le_u64(s, 24));
             offset += 32;
         }
 
@@ -808,14 +800,14 @@ fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
     h64 += len as u64;
 
     while offset + 8 <= buf.len {
-        let k1 = xxh64_round(0, xxh64_read_le64(buf, offset));
+        let k1 = xxh64_round(0, read_le_u64(buf, offset));
         offset += 8;
         h64 = h64 ^ k1;
         h64 = xxh64_rotl(h64, 27) * XXH64_PRIME1 + XXH64_PRIME4;
     }
 
     if offset + 4 <= buf.len {
-        h64 = h64 ^ (xxh64_read_le32(buf, offset) * XXH64_PRIME1);
+        h64 = h64 ^ (read_le_u32(buf, offset) * XXH64_PRIME1);
         offset += 4;
         h64 = xxh64_rotl(h64, 23) * XXH64_PRIME2 + XXH64_PRIME3;
     }

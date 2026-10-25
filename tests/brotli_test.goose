@@ -44,14 +44,14 @@ fn test_brotli_empty_and_uncompressed(t: core::T&) {
     t.run("Empty stream and Google Brotli uncompressed vectors") { sub =>
         // 1. Empty stream: Google Brotli vector [59]
         var dec_empty: u8[>..] = [];
-        let ok_e, err_e = core::decompress_brotli(VEC_EMPTY_COMP[..], dec_empty);
+        let ok_e, err_e = core::brotli_decompress(VEC_EMPTY_COMP[..], dec_empty);
         sub.assert_true(ok_e, "Decompress empty vector succeeds");
         sub.assert_true(err_e == core::CompressError.None, "No error on empty vector");
         sub.assert_eq(dec_empty.len, 0, "Decoded empty length is 0");
 
         // 2. Hello World vector
         var dec_hello: u8[>..] = [];
-        let ok_h, err_h = core::decompress_brotli(VEC_HELLO_COMP[..], dec_hello);
+        let ok_h, err_h = core::brotli_decompress(VEC_HELLO_COMP[..], dec_hello);
         sub.assert_true(ok_h, "Decompress hello vector succeeds");
         sub.assert_true(err_h == core::CompressError.None, "No error on hello vector");
         sub.assert_eq(dec_hello.len, VEC_HELLO_RAW.len, "Hello length matches");
@@ -59,7 +59,7 @@ fn test_brotli_empty_and_uncompressed(t: core::T&) {
 
         // 3. JSON vector
         var dec_json: u8[>..] = [];
-        let ok_j, err_j = core::decompress_brotli(VEC_JSON_COMP[..], dec_json);
+        let ok_j, err_j = core::brotli_decompress(VEC_JSON_COMP[..], dec_json);
         sub.assert_true(ok_j, "Decompress JSON vector succeeds");
         sub.assert_true(err_j == core::CompressError.None, "No error on JSON vector");
         sub.assert_eq(dec_json.len, VEC_JSON_RAW.len, "JSON length matches");
@@ -72,12 +72,12 @@ fn test_brotli_level0_roundtrip(t: core::T&) {
         // 1. Short text roundtrip
         let text = "Brotli zero-heap compression running natively inside Goose-Wing!";
         var comp: u8[>..] = [];
-        let ok_c = core::compress_brotli(text, comp, 0);
+        let ok_c = core::brotli_compress(text, comp, 0);
         sub.assert_true(ok_c, "Level 0 compression succeeds");
         sub.assert_true(comp.len > 0, "Compressed output not empty");
 
         var decomp: u8[>..] = [];
-        let ok_d, err_d = core::decompress_brotli(comp[..], decomp);
+        let ok_d, err_d = core::brotli_decompress(comp[..], decomp);
         sub.assert_true(ok_d, "Decompression succeeds");
         sub.assert_true(err_d == core::CompressError.None, "No decompression error");
         sub.assert_eq(decomp.len, text.len, "Decompressed length matches original");
@@ -85,11 +85,11 @@ fn test_brotli_level0_roundtrip(t: core::T&) {
 
         // 2. Empty string roundtrip
         var comp_empty: u8[>..] = [];
-        let ok_ce = core::compress_brotli("", comp_empty, 0);
+        let ok_ce = core::brotli_compress("", comp_empty, 0);
         sub.assert_true(ok_ce, "Empty string compression succeeds");
 
         var decomp_empty: u8[>..] = [];
-        let ok_de, err_de = core::decompress_brotli(comp_empty[..], decomp_empty);
+        let ok_de, err_de = core::brotli_decompress(comp_empty[..], decomp_empty);
         sub.assert_true(ok_de, "Empty string decompression succeeds");
         sub.assert_eq(decomp_empty.len, 0, "Empty string roundtrips to 0 bytes");
     };
@@ -99,7 +99,7 @@ fn test_brotli_compressed_meta_blocks(t: core::T&) {
     t.run("Google Brotli LZ77 compressed meta-block decoding") { sub =>
         // VEC_REPEAT_COMP compresses 100 'A's into 20 bytes
         var decomp: u8[>..] = [];
-        let ok, err = core::decompress_brotli(VEC_REPEAT_COMP[..], decomp);
+        let ok, err = core::brotli_decompress(VEC_REPEAT_COMP[..], decomp);
         sub.assert_true(ok, "Decompress LZ77 vector succeeds");
         sub.assert_true(err == core::CompressError.None, "No error on repeat vector");
         sub.assert_eq(decomp.len, 100, "Decompressed length is 100");
@@ -166,20 +166,20 @@ fn test_brotli_quota_and_error_handling(t: core::T&) {
         // 1. Quota limit exceeded guard
         var out_limited: u8[>..] = [];
         // VEC_HELLO_COMP has 23 bytes uncompressed. Limit to 10 bytes:
-        let ok_q, err_q = core::decompress_brotli_with_limit(VEC_HELLO_COMP[..], out_limited, 10);
+        let ok_q, err_q = core::brotli_decompress_with_limit(VEC_HELLO_COMP[..], out_limited, 10);
         sub.assert_false(ok_q, "Decompression quota limit triggers failure");
         sub.assert_true(err_q == core::CompressError.OutputBufferOverflow, "Returns OutputBufferOverflow");
 
         // 2. Empty input buffer
         var out_empty: u8[>..] = [];
-        let ok_trunc, err_trunc = core::decompress_brotli(VEC_EMPTY_RAW[..], out_empty);
+        let ok_trunc, err_trunc = core::brotli_decompress(VEC_EMPTY_RAW[..], out_empty);
         sub.assert_false(ok_trunc, "Empty buffer rejected");
         sub.assert_true(err_trunc == core::CompressError.InputBufferTruncated, "Returns InputBufferTruncated");
 
         // 3. Corrupted header
         var bad_bytes: u8[4] = [0xFF, 0xFF, 0xFF, 0xFF];
         var out_bad: u8[>..] = [];
-        let ok_bad, _ = core::decompress_brotli(bad_bytes[..], out_bad);
+        let ok_bad, _ = core::brotli_decompress(bad_bytes[..], out_bad);
         sub.assert_false(ok_bad, "Corrupted header is rejected");
     };
 }
@@ -189,7 +189,7 @@ fn test_brotli_http_client_integration(t: core::T&) {
         // 1. Compress payload with Level 0 Brotli
         let original_body = "{\"user\":\"admin\",\"authenticated\":true,\"stack\":\"wing-brotli\"}";
         var comp_body: u8[>..] = [];
-        let ok_c = core::compress_brotli(original_body, comp_body, 0);
+        let ok_c = core::brotli_compress(original_body, comp_body, 0);
         sub.assert_true(ok_c, "Compressed test payload");
 
         // 2. Response with Content-Encoding: br

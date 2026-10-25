@@ -26,6 +26,11 @@ enum CompressError {
     DictionaryMismatch,
 }
 
+// Returns true if the compression error is CompressError.None.
+inline fn ok(err: CompressError) -> bool {
+    return err == CompressError.None;
+}
+
 // ---- rfc 1951 constants & lookup tables -----------------------------------
 
 const MAX_BITS: i32 = 15;
@@ -581,21 +586,21 @@ fn inflate_ex<B>(
 }
 
 // Inflates RFC 1951 raw deflate stream from src into out.
-fn inflate<B>(src: const u8[:], out: B&) -> CompressError {
-    let err, consumed = inflate_ex(src, out, "", 0);
-    return err;
+fn inflate<B>(src: const u8[:], out: B&) -> bool, CompressError {
+    let err, _ = inflate_ex(src, out, "", 0);
+    return err == CompressError.None, err;
 }
 
 // Inflates RFC 1951 raw deflate stream from src into out with a preset dictionary.
-fn inflate_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:]) -> CompressError {
-    let err, consumed = inflate_ex(src, out, dict, 0);
-    return err;
+fn inflate_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:]) -> bool, CompressError {
+    let err, _ = inflate_ex(src, out, dict, 0);
+    return err == CompressError.None, err;
 }
 
 // Inflates RFC 1951 raw deflate stream with an output quota limit.
-fn inflate_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64) -> CompressError {
-    let err, consumed = inflate_ex(src, out, "", max_output_bytes);
-    return err;
+fn inflate_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64) -> bool, CompressError {
+    let err, _ = inflate_ex(src, out, "", max_output_bytes);
+    return err == CompressError.None, err;
 }
 
 // ---- dynamic huffman builder (moffat-katajainen in-place algorithm) --------

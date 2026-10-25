@@ -616,13 +616,8 @@ fn decode_varlen_uint8(r: BrotliBitReader&) -> u32 {
     return ((1 as u32) << b3) + bits;
 }
 
-// Decompresses an RFC 7932 Brotli stream from src into out.
-fn brotli_decompress<B>(src: const u8[:], out: B&) -> CompressError {
-    return brotli_decompress_with_limit(src, out, -1);
-}
-
-// Decompresses an RFC 7932 Brotli stream with max output limit protection.
-fn brotli_decompress_with_limit<B>(
+// Internal Brotli decompressor (RFC 7932) with max output limit protection.
+fn brotli_decompress_with_limit_impl<B>(
     src: const u8[:],
     out: B&,
     max_output_bytes: i64 = -1
@@ -867,4 +862,19 @@ fn brotli_decompress_with_limit<B>(
     }
 
     return CompressError.None;
+}
+
+// Decompresses an RFC 7932 Brotli stream with max output limit protection.
+fn brotli_decompress_with_limit<B>(
+    src: const u8[:],
+    out: B&,
+    max_output_bytes: i64 = -1
+) -> bool, CompressError {
+    let err = brotli_decompress_with_limit_impl(src, out, max_output_bytes);
+    return err == CompressError.None, err;
+}
+
+// Decompresses an RFC 7932 Brotli stream from src into out.
+fn brotli_decompress<B>(src: const u8[:], out: B&) -> bool, CompressError {
+    return brotli_decompress_with_limit(src, out, -1);
 }

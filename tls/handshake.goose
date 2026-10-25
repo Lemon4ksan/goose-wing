@@ -433,7 +433,7 @@ fn encode_compressed_certificate_payload<B>(
 
 // Decompresses a CompressedCertificate using Wing's pure RFC 8878 Zstandard engine
 fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool {
-    let ok, _ = core::decompress_zstd(compressed_data, out_cert);
+    let ok, _ = core::zstd_decompress(compressed_data, out_cert);
     guard ok else { return false; }
     guard (out_cert.len as u32) == uncompressed_len else { return false; }
     return true;

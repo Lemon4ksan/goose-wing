@@ -17,7 +17,7 @@ fn test_rfc8879_certificate_compression(t: core::T&) {
         // Handshake payload roundtrip
         let fake_cert = "MIIB...Simulated X.509 Certificate Chain Data with Repetitive Certificate Metadata Blocks...";
         var compressed: u8[>..] = [];
-        sub.assert_true(core::compress_zstd(fake_cert, compressed), "Zstandard compression of certificate succeeds");
+        sub.assert_true(core::zstd_compress(fake_cert, compressed), "Zstandard compression of certificate succeeds");
 
         var hs_payload: u8[>..] = [];
         wing::encode_compressed_certificate_payload(

@@ -888,7 +888,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
             ptr--;
             bit_consumed_init = 0;
         }
-        var bit_container = xxh64_read_le64(r.src, ptr);
+        var bit_container = read_le_u64(r.src, ptr);
         var bits_consumed: u32 = bit_consumed_init;
 
         // Fast 4x unrolled loop: 4 symbols * 11 max bits = 44 bits <= 57 available bits
@@ -918,7 +918,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
 
             ptr -= bits_consumed >> 3;
             bits_consumed &= 7;
-            bit_container = xxh64_read_le64(r.src, ptr);
+            bit_container = read_le_u64(r.src, ptr);
         }
 
         while decoded < count {
@@ -928,7 +928,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
                 ptr -= shift_bytes;
                 bits_consumed -= (shift_bytes * 8) as u32;
                 if ptr >= 0 && ptr <= r.src.len - 8 {
-                    bit_container = xxh64_read_le64(r.src, ptr);
+                    bit_container = read_le_u64(r.src, ptr);
                 }
             }
 
@@ -1016,13 +1016,13 @@ fn huf_decode_4streams(
     if stop4 == 8 && ptr4 > 0 { ptr4--; bits4 = 0; }
 
     var cont1: u64 = 0;
-    if ptr1 >= 0 && ptr1 <= src1.len - 8 { cont1 = xxh64_read_le64(src1, ptr1); }
+    if ptr1 >= 0 && ptr1 <= src1.len - 8 { cont1 = read_le_u64(src1, ptr1); }
     var cont2: u64 = 0;
-    if ptr2 >= 0 && ptr2 <= src2.len - 8 { cont2 = xxh64_read_le64(src2, ptr2); }
+    if ptr2 >= 0 && ptr2 <= src2.len - 8 { cont2 = read_le_u64(src2, ptr2); }
     var cont3: u64 = 0;
-    if ptr3 >= 0 && ptr3 <= src3.len - 8 { cont3 = xxh64_read_le64(src3, ptr3); }
+    if ptr3 >= 0 && ptr3 <= src3.len - 8 { cont3 = read_le_u64(src3, ptr3); }
     var cont4: u64 = 0;
-    if ptr4 >= 0 && ptr4 <= src4.len - 8 { cont4 = xxh64_read_le64(src4, ptr4); }
+    if ptr4 >= 0 && ptr4 <= src4.len - 8 { cont4 = read_le_u64(src4, ptr4); }
 
     var dec1: i64 = 0;
     var dec2: i64 = 0;
@@ -1041,7 +1041,7 @@ fn huf_decode_4streams(
                 ptr1 -= s;
                 bits1 &= 7;
                 if ptr1 >= 0 && ptr1 <= src1.len - 8 {
-                    cont1 = xxh64_read_le64(src1, ptr1);
+                    cont1 = read_le_u64(src1, ptr1);
                 }
             } else if ptr1 > 0 {
                 let avail = (bits1 >> 3) as i64;
@@ -1049,7 +1049,7 @@ fn huf_decode_4streams(
                 ptr1 -= s;
                 bits1 -= (s * 8) as u32;
                 if ptr1 >= 0 && ptr1 <= src1.len - 8 {
-                    cont1 = xxh64_read_le64(src1, ptr1);
+                    cont1 = read_le_u64(src1, ptr1);
                 }
             }
         }
@@ -1059,7 +1059,7 @@ fn huf_decode_4streams(
                 ptr2 -= s;
                 bits2 &= 7;
                 if ptr2 >= 0 && ptr2 <= src2.len - 8 {
-                    cont2 = xxh64_read_le64(src2, ptr2);
+                    cont2 = read_le_u64(src2, ptr2);
                 }
             } else if ptr2 > 0 {
                 let avail = (bits2 >> 3) as i64;
@@ -1067,7 +1067,7 @@ fn huf_decode_4streams(
                 ptr2 -= s;
                 bits2 -= (s * 8) as u32;
                 if ptr2 >= 0 && ptr2 <= src2.len - 8 {
-                    cont2 = xxh64_read_le64(src2, ptr2);
+                    cont2 = read_le_u64(src2, ptr2);
                 }
             }
         }
@@ -1077,7 +1077,7 @@ fn huf_decode_4streams(
                 ptr3 -= s;
                 bits3 &= 7;
                 if ptr3 >= 0 && ptr3 <= src3.len - 8 {
-                    cont3 = xxh64_read_le64(src3, ptr3);
+                    cont3 = read_le_u64(src3, ptr3);
                 }
             } else if ptr3 > 0 {
                 let avail = (bits3 >> 3) as i64;
@@ -1085,7 +1085,7 @@ fn huf_decode_4streams(
                 ptr3 -= s;
                 bits3 -= (s * 8) as u32;
                 if ptr3 >= 0 && ptr3 <= src3.len - 8 {
-                    cont3 = xxh64_read_le64(src3, ptr3);
+                    cont3 = read_le_u64(src3, ptr3);
                 }
             }
         }
@@ -1095,7 +1095,7 @@ fn huf_decode_4streams(
                 ptr4 -= s;
                 bits4 &= 7;
                 if ptr4 >= 0 && ptr4 <= src4.len - 8 {
-                    cont4 = xxh64_read_le64(src4, ptr4);
+                    cont4 = read_le_u64(src4, ptr4);
                 }
             } else if ptr4 > 0 {
                 let avail = (bits4 >> 3) as i64;
@@ -1103,7 +1103,7 @@ fn huf_decode_4streams(
                 ptr4 -= s;
                 bits4 -= (s * 8) as u32;
                 if ptr4 >= 0 && ptr4 <= src4.len - 8 {
-                    cont4 = xxh64_read_le64(src4, ptr4);
+                    cont4 = read_le_u64(src4, ptr4);
                 }
             }
         }
@@ -1527,7 +1527,7 @@ fn decode_sequences<B>(
     if use_fast_dstream {
         ptr = seq_bitstream.len - 8;
         if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+            bit_container = read_le_u64(seq_bitstream, ptr);
         }
         let last_byte = seq_bitstream[seq_bitstream.len - 1];
         if last_byte == 0 { return CompressError.CorruptedBitstream; }
@@ -1575,7 +1575,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed &= 7;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 } else if ptr > 0 {
                     let avail = (bits_consumed >> 3) as i64;
@@ -1583,7 +1583,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed -= (s * 8) as u32;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 }
             }
@@ -1612,7 +1612,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed &= 7;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 } else if ptr > 0 {
                     let avail = (bits_consumed >> 3) as i64;
@@ -1620,7 +1620,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed -= (s * 8) as u32;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 }
             }
@@ -1737,7 +1737,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed &= 7;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 } else if ptr > 0 {
                     let avail = (bits_consumed >> 3) as i64;
@@ -1745,7 +1745,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed -= (s * 8) as u32;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 }
             }
@@ -1775,7 +1775,7 @@ fn decode_sequences<B>(
                         ptr -= s;
                         bits_consumed &= 7;
                         if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                            bit_container = read_le_u64(seq_bitstream, ptr);
                         }
                     } else if ptr > 0 {
                         let avail = (bits_consumed >> 3) as i64;
@@ -1783,7 +1783,7 @@ fn decode_sequences<B>(
                         ptr -= s;
                         bits_consumed -= (s * 8) as u32;
                         if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                            bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                            bit_container = read_le_u64(seq_bitstream, ptr);
                         }
                     }
                 }
@@ -1905,7 +1905,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed &= 7;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 } else if ptr > 0 {
                     let avail = (bits_consumed >> 3) as i64;
@@ -1913,7 +1913,7 @@ fn decode_sequences<B>(
                     ptr -= s;
                     bits_consumed -= (s * 8) as u32;
                     if ptr >= 0 && ptr <= seq_bitstream.len - 8 {
-                        bit_container = xxh64_read_le64(seq_bitstream, ptr);
+                        bit_container = read_le_u64(seq_bitstream, ptr);
                     }
                 }
             }
@@ -2177,19 +2177,19 @@ fn decode_sequences<B>(
 
 // ---- frame decompressor (rfc 8878 section 3.1.1) ---------------------------
 
-// Decompresses Zstandard frame from src into out_buf with output limit guard.
-fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes: i64 = -1) -> CompressError {
+// Internal frame decompressor (RFC 8878 section 3.1.1) with output limit guard.
+fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_bytes: i64 = -1) -> CompressError {
     var offset: i64 = 0;
     let initial_out_len = out_buf.len;
 
     while offset < src.len {
         if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-        let magic = xxh64_read_le32(src, offset);
+        let magic = read_le_u32(src, offset);
         offset += 4;
 
         if magic >= ZSTD_MAGIC_SKIPPABLE_START && magic <= ZSTD_MAGIC_SKIPPABLE_END {
             if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-            let skip_len = xxh64_read_le32(src, offset) as i64;
+            let skip_len = read_le_u32(src, offset) as i64;
             offset += 4 + skip_len;
             continue;
         }
@@ -2243,11 +2243,11 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
                 offset += 2;
             } else if fcs_flag == 2 {
                 if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-                frame_content_size = xxh64_read_le32(src, offset) as i64;
+                frame_content_size = read_le_u32(src, offset) as i64;
                 offset += 4;
             } else {
                 if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
-                frame_content_size = xxh64_read_le64(src, offset) as i64;
+                frame_content_size = read_le_u64(src, offset) as i64;
                 offset += 8;
             }
             window_size = frame_content_size;
@@ -2258,11 +2258,11 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
                 offset += 2;
             } else if fcs_flag == 2 {
                 if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-                frame_content_size = xxh64_read_le32(src, offset) as i64;
+                frame_content_size = read_le_u32(src, offset) as i64;
                 offset += 4;
             } else if fcs_flag == 3 {
                 if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
-                frame_content_size = xxh64_read_le64(src, offset) as i64;
+                frame_content_size = read_le_u64(src, offset) as i64;
                 offset += 8;
             }
         }
@@ -2339,7 +2339,7 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
         // Validate Content Checksum if present
         if content_checksum_flag != 0 {
             if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-            let expected_chk = xxh64_read_le32(src, offset);
+            let expected_chk = read_le_u32(src, offset);
             offset += 4;
 
             let decoded_slice = out_buf[frame_start_out .. out_buf.len];
@@ -2353,8 +2353,14 @@ fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes
     return CompressError.None;
 }
 
-// Decompresses standard Zstandard frame from src into out_buf.
-fn zstd_decompress<B>(src: const u8[:], out_buf: B&) -> CompressError {
+// Decompresses RFC 8878 Zstandard frame from src into out_buf with output limit guard.
+fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes: i64 = -1) -> bool, CompressError {
+    let err = zstd_decompress_with_limit_impl(src, out_buf, max_output_bytes);
+    return err == CompressError.None, err;
+}
+
+// Decompresses RFC 8878 Zstandard frame from src into out_buf.
+fn zstd_decompress<B>(src: const u8[:], out_buf: B&) -> bool, CompressError {
     return zstd_decompress_with_limit(src, out_buf, -1);
 }
 
@@ -2643,7 +2649,7 @@ fn find_matches(src: const u8[:], rep: u32[3]&, seqs: ZstdSeq[>..]&, lits: u8[>.
     var curr: i64 = 0;
 
     while curr + 4 <= n {
-        let v4 = xxh64_read_le32(src, curr);
+        let v4 = read_le_u32(src, curr);
 
         var match_len: i64 = 0;
         var offset: u32 = 0;
@@ -2653,7 +2659,7 @@ fn find_matches(src: const u8[:], rep: u32[3]&, seqs: ZstdSeq[>..]&, lits: u8[>.
             let rep0 = rep[0] as i64;
             if rep0 > 0 && curr >= rep0 {
                 let p_rep = curr - rep0;
-                if xxh64_read_le32(src, p_rep) == v4 {
+                if read_le_u32(src, p_rep) == v4 {
                     var m: i64 = 4;
                     while curr + m < n && src[p_rep + m] == src[curr + m] {
                         m++;
@@ -2670,7 +2676,7 @@ fn find_matches(src: const u8[:], rep: u32[3]&, seqs: ZstdSeq[>..]&, lits: u8[>.
             table[h as i64] = curr as i32;
 
             if p >= 0 && (curr - p) <= 131072 {
-                if xxh64_read_le32(src, p) == v4 {
+                if read_le_u32(src, p) == v4 {
                     var m: i64 = 4;
                     while curr + m < n && src[p + m] == src[curr + m] {
                         m++;
@@ -2791,16 +2797,10 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
         out_buf.push(total as u8);
     } else if total <= 65535 + 256 {
         out_buf.push(fhd | 0x40);
-        let fcs = (total - 256) as u16;
-        out_buf.push((fcs & 0xFF) as u8);
-        out_buf.push(((fcs >> 8) & 0xFF) as u8);
+        write_le_u16(out_buf, (total - 256) as u16);
     } else {
         out_buf.push(fhd | 0x80);
-        let fcs = total as u32;
-        out_buf.push((fcs & 0xFF) as u8);
-        out_buf.push(((fcs >> 8) & 0xFF) as u8);
-        out_buf.push(((fcs >> 16) & 0xFF) as u8);
-        out_buf.push(((fcs >> 24) & 0xFF) as u8);
+        write_le_u32(out_buf, total as u32);
     }
 
     if total == 0 {
@@ -2809,11 +2809,7 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
         out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
         out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
         if include_checksum {
-            let chk = xxh64_digest_32(src);
-            out_buf.push((chk & 0xFF) as u8);
-            out_buf.push(((chk >> 8) & 0xFF) as u8);
-            out_buf.push(((chk >> 16) & 0xFF) as u8);
-            out_buf.push(((chk >> 24) & 0xFF) as u8);
+            write_le_u32(out_buf, xxh64_digest_32(src));
         }
         return true;
     }
@@ -2847,11 +2843,7 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
     }
 
     if include_checksum {
-        let chk = xxh64_digest_32(src);
-        out_buf.push((chk & 0xFF) as u8);
-        out_buf.push(((chk >> 8) & 0xFF) as u8);
-        out_buf.push(((chk >> 16) & 0xFF) as u8);
-        out_buf.push(((chk >> 24) & 0xFF) as u8);
+        write_le_u32(out_buf, xxh64_digest_32(src));
     }
     return true;
 }

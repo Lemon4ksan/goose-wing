@@ -329,7 +329,7 @@ fn decompress_dcz_payload<B>(
 ) -> bool {
     // 1. Attempt standard Zstandard decompression on payload
     var decompressed: u8[>..] = [];
-    let ok_z, err_z = core::decompress_zstd(compressed_payload, decompressed);
+    let ok_z, err_z = core::zstd_decompress(compressed_payload, decompressed);
     if ok_z {
         out_buf.append(decompressed[..]);
         return true;
@@ -350,7 +350,7 @@ fn encode_dcz_response<B>(
     raw_content: const u8[:]
 ) -> bool {
     var compressed_zstd: u8[>..] = [];
-    guard core::compress_zstd(raw_content, compressed_zstd) else { return false; }
+    guard core::zstd_compress(raw_content, compressed_zstd) else { return false; }
     return encode_dcz_frame(out, dict_hash, compressed_zstd[..]);
 }
 
@@ -361,7 +361,7 @@ fn decompress_dcb_payload<B>(
     out_buf: B&
 ) -> bool {
     var decompressed: u8[>..] = [];
-    let ok_b, err_b = core::decompress_brotli(compressed_payload, decompressed);
+    let ok_b, err_b = core::brotli_decompress(compressed_payload, decompressed);
     if ok_b {
         out_buf.append(decompressed[..]);
         return true;
@@ -380,6 +380,6 @@ fn encode_dcb_response<B>(
     raw_content: const u8[:]
 ) -> bool {
     var compressed_brotli: u8[>..] = [];
-    guard core::compress_brotli(raw_content, compressed_brotli, 0) else { return false; }
+    guard core::brotli_compress(raw_content, compressed_brotli, 0) else { return false; }
     return encode_dcb_frame(out, dict_hash, compressed_brotli[..]);
 }

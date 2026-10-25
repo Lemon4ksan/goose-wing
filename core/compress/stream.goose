@@ -2,6 +2,7 @@
 namespace core;
 
 import std;
+import core.math.bits;
 import core.compress.checksum;
 import core.compress.deflate;
 import core.compress.gzip;
@@ -327,7 +328,7 @@ fn zstream_decompress_write_limit<B>(
                     return CompressError.None;
                 }
                 guard d.dict.len > 0 else { return CompressError.NeedDictionary; }
-                guard adler32(d.dict) == read_zlib_u32_be(d.in_buf[..], 2) else {
+                guard adler32(d.dict) == read_be_u32(d.in_buf[..], 2) else {
                     return CompressError.DictionaryMismatch;
                 }
                 hdr_len = 6;
@@ -344,11 +345,11 @@ fn zstream_decompress_write_limit<B>(
         if !d.is_finished {
             var temp_out: u8[>..] = [];
             let z_limit = if max_output_bytes > 0 { max_output_bytes } else { -1 };
-            let err = zstd_decompress_with_limit(d.in_buf[..], temp_out, z_limit);
+            let ok_z, err = zstd_decompress_with_limit(d.in_buf[..], temp_out, z_limit);
             if err == CompressError.InputBufferTruncated {
                 return CompressError.None; // Partial frame: wait for more bytes
             }
-            guard err == CompressError.None else { return err; }
+            guard ok_z else { return err; }
 
             out.append(temp_out[..]);
             d.total_out += temp_out.len as u64;
@@ -411,7 +412,7 @@ fn zstream_decompress_write_limit<B>(
             if d.in_buf.len < 4 {
                 return CompressError.None; // Wait for Adler-32
             }
-            let expected_adler = read_zlib_u32_be(d.in_buf[..], 0);
+            let expected_adler = read_be_u32(d.in_buf[..], 0);
             guard d.adler == expected_adler else { return CompressError.ChecksumMismatch; }
             drain_in_buf(d, 4);
             d.is_finished = true;
@@ -419,8 +420,8 @@ fn zstream_decompress_write_limit<B>(
             if d.in_buf.len < 8 {
                 return CompressError.None; // Wait for CRC + ISIZE
             }
-            let expected_crc = read_gzip_u32_le(d.in_buf[..], 0);
-            let expected_isize = read_gzip_u32_le(d.in_buf[..], 4);
+            let expected_crc = read_le_u32(d.in_buf[..], 0);
+            let expected_isize = read_le_u32(d.in_buf[..], 4);
             guard d.crc == expected_crc else { return CompressError.ChecksumMismatch; }
             let actual_isize = (d.total_out & 0xFFFFFFFF) as u32;
             guard actual_isize == expected_isize else { return CompressError.SizeMismatch; }
@@ -439,13 +440,12 @@ fn zstream_decompress_write<B>(d: ZStreamDecompressor&, chunk: const u8[:], out:
 }
 
 // Auto-detects container format (Gzip, Zlib, or raw Deflate) and decompresses src into out.
-fn decompress_auto<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> CompressError {
+fn decompress_auto<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> bool, CompressError {
     let fmt = detect_container_format(src);
     if fmt == ContainerFormat.Zstd {
         return zstd_decompress(src, out);
     } else if fmt == ContainerFormat.Gzip {
-        let ok, err = decompress_gzip(src, out);
-        return err;
+        return gzip_decompress(src, out);
     } else if fmt == ContainerFormat.Zlib {
         return zlib_decompress_with_dict(src, out, dict);
     } else {
