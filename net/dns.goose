@@ -56,9 +56,62 @@ struct DnsResponse {
 
 // ---- 3. DNS Name Encoding and Compression Decoding (RFC 1035) --------------
 
+// CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--".
+// Per RFC 3492 / RFC 5891 §4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
+// If it encodes pure ASCII characters, it is invalid and must be rejected.
+fn validate_punycode_label(label: const u8[:]) -> bool {
+    guard label.len >= 4 else { return true; }
+    // Check if label begins with "xn--" or "XN--"
+    if (label[0] == 'x' || label[0] == 'X') &&
+       (label[1] == 'n' || label[1] == 'N') &&
+       label[2] == '-' && label[3] == '-' {
+        // Label after "xn--" cannot be empty or exceed 63 bytes total
+        guard label.len > 4 && label.len <= 63 else { return false; }
+        let payload = label[4..];
+
+        // In Punycode, if there is a delimiter '-', the portion before '-' is literal ASCII,
+        // and the portion after '-' contains the base-36 delta encodings.
+        // If there is NO delimiter '-', the entire payload is base-36 delta encodings.
+        // If the payload ends with '-' (e.g. "xn--test-"), there are NO non-ASCII deltas!
+        // That means it encodes pure ASCII, which is an invalid ACE label (CVE-2026-39821).
+        if payload[payload.len - 1] == '-' {
+            return false;
+        }
+
+        // Verify all characters are valid LDH (letters, digits, hyphen)
+        for b in payload {
+            let is_ldh = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-';
+            guard is_ldh else { return false; }
+        }
+    }
+    return true;
+}
+
+// CVE-2026-97044 defense: Validates FQDN wire bounds for internationalized domain names.
+// Enforces that every label is <= 63 bytes, all Punycode labels are valid non-ASCII encodings,
+// and total encoded domain length does not exceed 253 bytes.
+fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
+    guard domain.len > 0 && domain.len <= 253 else { return false; }
+    var start = 0;
+    while start < domain.len {
+        var dot_pos = domain.len;
+        for i in start..domain.len {
+            if domain[i] == '.' {
+                dot_pos = i;
+                break;
+            }
+        }
+        let label = domain[start..dot_pos];
+        guard label.len > 0 && label.len <= 63 else { return false; }
+        guard validate_punycode_label(label) else { return false; }
+        start = dot_pos + 1;
+    }
+    return true;
+}
+
 // Encodes a human-readable domain name (e.g. "example.com") into DNS label wire format.
 fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool {
-    guard domain.len > 0 && domain.len <= 253 else { return false; }
+    guard validate_idna_domain_bounds(domain) else { return false; }
 
     var start = 0;
     while start < domain.len {

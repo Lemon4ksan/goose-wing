@@ -116,6 +116,7 @@ struct H2Connection {
     empty_frame_streak: u32 = 0,
     pending_control_frames: u32 = 0,
     concurrency_violations: u32 = 0,
+    initial_window_update_count: u32 = 0,
 
     // RFC 9218 prioritization flags
     client_sent_priority: bool = false,
@@ -359,6 +360,12 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
 // Computes signed delta = int64(new_init_win) - int64(old_init_win).
 // Enforces MAX_INITIAL_WINDOW_SIZE ceiling and allows negative stream windows.
 fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> u32 {
+    s.initial_window_update_count++;
+    // CVE-2026-78669 defense: prevent excessive CPU consumption from repeated initial window changes
+    if s.initial_window_update_count > 16 {
+        return ERR_ENHANCE_YOUR_CALM;
+    }
+
     let new_win_i64 = new_init_win as i64;
     guard new_win_i64 <= MAX_INITIAL_WINDOW_SIZE else {
         return ERR_FLOW_CONTROL_ERROR;

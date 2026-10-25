@@ -530,6 +530,16 @@ fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
     return eq_ascii_fold(host_remainder, suffix);
 }
 
+// Matches URI SAN and enforces RFC 5280 / CVE-2024-45341 defense:
+// IPv6 zone IDs (%zone) inside URIs MUST NOT bypass URI name constraints and must be rejected.
+fn match_uri_san(san_uri_host: const u8[:], request_host: const u8[:]) -> bool {
+    // If either contains '%', reject per CVE-2024-45341
+    if core::contains_byte(san_uri_host, '%') || core::contains_byte(request_host, '%') {
+        return false;
+    }
+    return eq_ascii_fold(san_uri_host, request_host);
+}
+
 // ---- 7. RFC 8446 Section 4.4.3 CertificateVerify Format & Curve Binding -----
 
 // Verifies that signature scheme is strictly bound to the public key curve/algorithm.

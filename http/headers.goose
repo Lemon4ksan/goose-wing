@@ -179,6 +179,19 @@ fn is_ok(err: HeaderParseError) -> bool {
     return err == HeaderParseError.None;
 }
 
+// CVE-2026-42507 defense: Sanitize untrusted user input before formatting into error strings or logs.
+// Replaces control characters (< 0x20, CR, LF, DEL) and non-printable bytes with safe visual representation '?'.
+fn sanitize_untrusted_for_error<B>(input: const u8[:], out: B&) {
+    out.clear();
+    for b in input {
+        if b >= 0x20 && b <= 0x7E && b != '\\' && b != '"' {
+            out.push(b);
+        } else {
+            out.push('?');
+        }
+    }
+}
+
 // ---- well-known headers (64 static slots for O(1) envoy/qt dispatch) --------
 
 enum WellKnownHeader {

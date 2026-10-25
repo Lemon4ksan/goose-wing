@@ -1,0 +1,185 @@
+// Zero-heap two-cursor streaming byte pipeline (inspired by System.IO.Pipelines).
+// Eliminates buffer shifting, unnecessary copying, and premature allocations.
+// Provides strict monotonicity invariants for cursor tracking (preventing .NET #107213 regressions).
+namespace core;
+
+import std;
+import core.io.types;
+
+const PIPE_BUFFER_CAP: i64 = 65536; // 64 KB bounded inline storage
+
+struct PipeBuffer {
+    storage: u8[65536] = [0; 65536],
+    consumed: i64 = 0, // Absolute offset of fully consumed bytes
+    examined: i64 = 0, // Absolute offset of inspected bytes (monotonically non-decreasing)
+    written: i64 = 0,  // Absolute offset of bytes written into the buffer
+    is_completed: bool = false,
+}
+
+fn new_pipe_buffer() -> PipeBuffer {
+    return PipeBuffer {
+        storage: [0; 65536],
+        consumed: 0,
+        examined: 0,
+        written: 0,
+        is_completed: false,
+    };
+}
+
+// Yields the contiguous slice of readable bytes that have not yet been consumed.
+fn readable_slice(p: const PipeBuffer&) -> const u8[:] {
+    if p.consumed >= p.written {
+        return "";
+    }
+    return p.storage[p.consumed..p.written];
+}
+
+// Yields the contiguous slice of unexamined bytes (from examined to written).
+fn unexamined_slice(p: const PipeBuffer&) -> const u8[:] {
+    let start = if p.examined > p.consumed { p.examined } else { p.consumed };
+    if start >= p.written {
+        return "";
+    }
+    return p.storage[start..p.written];
+}
+
+// Returns the number of readable unconsumed bytes currently available.
+fn readable_len(p: const PipeBuffer&) -> i64 {
+    let rem = p.written - p.consumed;
+    return if rem > 0 { rem } else { 0 };
+}
+
+// Returns the number of unexamined bytes awaiting protocol inspection.
+fn unexamined_len(p: const PipeBuffer&) -> i64 {
+    let start = if p.examined > p.consumed { p.examined } else { p.consumed };
+    let rem = p.written - start;
+    return if rem > 0 { rem } else { 0 };
+}
+
+// Returns remaining tail capacity without compacting.
+fn write_space(p: const PipeBuffer&) -> i64 {
+    let rem = PIPE_BUFFER_CAP - p.written;
+    return if rem > 0 { rem } else { 0 };
+}
+
+// Returns total capacity available if unconsumed bytes are compacted.
+fn total_available(p: const PipeBuffer&) -> i64 {
+    let used = p.written - p.consumed;
+    let avail = PIPE_BUFFER_CAP - used;
+    return if avail > 0 { avail } else { 0 };
+}
+
+// Compacts the buffer by sliding unconsumed bytes to the front of storage.
+fn compact_pipe(p: PipeBuffer&) {
+    guard p.consumed > 0 else { return; }
+    let unconsumed = p.written - p.consumed;
+    if unconsumed > 0 {
+        for i in unconsumed {
+            p.storage[i] = p.storage[p.consumed + i];
+        }
+    }
+    p.examined = max(0, p.examined - p.consumed);
+    p.written = unconsumed;
+    p.consumed = 0;
+}
+
+// Advances the read cursors after protocol parsing.
+// consumed_delta: number of bytes fully consumed (must be <= readable_len).
+// examined_delta: number of bytes examined during parsing (must be >= consumed_delta).
+//
+// Invariant guard (.NET issue #107213 mitigation):
+// examined position is guaranteed monotonic: examined = max(new_examined, prev_examined).
+fn advance_to(p: PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> IoError {
+    guard consumed_delta >= 0 && examined_delta >= 0 else {
+        return IoError.InvalidArgument;
+    }
+    let cur_readable = readable_len(p);
+    guard consumed_delta <= cur_readable && examined_delta <= cur_readable else {
+        return IoError.InvalidArgument;
+    }
+    guard examined_delta >= consumed_delta else {
+        return IoError.InvalidArgument;
+    }
+
+    let target_consumed = p.consumed + consumed_delta;
+    let target_examined = p.consumed + examined_delta;
+
+    // Enforce monotonicity of examined cursor
+    p.examined = if target_examined > p.examined { target_examined } else { p.examined };
+    p.consumed = target_consumed;
+
+    // Ensure examined is at least consumed
+    if p.consumed > p.examined {
+        p.examined = p.consumed;
+    }
+
+    // Auto-compact if consumed space is significant or tail space is low
+    if p.consumed > 0 && (p.consumed >= 32768 || write_space(p) < 4096) {
+        compact_pipe(p);
+    }
+
+    return IoError.None;
+}
+
+// Provides a writable span for transport drivers to receive into.
+// Automatically compacts if needed to ensure at least min_size bytes are available.
+fn get_write_span(p: PipeBuffer&, min_size: i64 = 1) -> u8[:], IoError {
+    guard min_size > 0 && min_size <= PIPE_BUFFER_CAP else {
+        return "", IoError.InvalidArgument;
+    }
+    if write_space(p) < min_size && p.consumed > 0 {
+        compact_pipe(p);
+    }
+    if write_space(p) < min_size {
+        return "", IoError.BufferFull;
+    }
+    return p.storage[p.written..], IoError.None;
+}
+
+// Commits bytes written by transport driver into the pipe.
+fn commit_write(p: PipeBuffer&, bytes_written: i64) -> IoError {
+    guard bytes_written >= 0 else {
+        return IoError.InvalidArgument;
+    }
+    guard p.written + bytes_written <= PIPE_BUFFER_CAP else {
+        return IoError.BufferFull;
+    }
+    p.written += bytes_written;
+    return IoError.None;
+}
+
+// High-level write helper copying src into the pipe.
+fn write(p: PipeBuffer&, src: const u8[:]) -> i64, IoError {
+    guard src.len > 0 else { return 0, IoError.None; }
+    let span, err = get_write_span(p, src.len);
+    if err != IoError.None {
+        // Try partial fit if available
+        let avail = total_available(p);
+        guard avail > 0 else { return 0, IoError.BufferFull; }
+        compact_pipe(p);
+        let to_copy = if src.len < write_space(p) { src.len } else { write_space(p) };
+        for i in to_copy {
+            p.storage[p.written + i] = src[i];
+        }
+        p.written += to_copy;
+        return to_copy, if to_copy < src.len { IoError.ShortWrite } else { IoError.None };
+    }
+    for i in src.len {
+        span[i] = src[i];
+    }
+    commit_write(p, src.len);
+    return src.len, IoError.None;
+}
+
+// Marks the pipe as completed by transport (no more writes will occur).
+fn complete_pipe(p: PipeBuffer&) {
+    p.is_completed = true;
+}
+
+// Resets pipe state, recycling the buffer for subsequent connections without reallocating.
+fn reset(p: PipeBuffer&) {
+    p.consumed = 0;
+    p.examined = 0;
+    p.written = 0;
+    p.is_completed = false;
+}

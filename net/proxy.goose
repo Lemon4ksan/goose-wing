@@ -343,6 +343,12 @@ fn verify_connect_tunnel_response(
     return ConnectTunnelError.None;
 }
 
+// CVE-2026-56866 defense: Whether a failed or rejected CONNECT response requires
+// the underlying transport connection to be closed immediately rather than returned to pool.
+fn should_close_connection_on_connect_error(err: ConnectTunnelError) -> bool {
+    return err != ConnectTunnelError.None;
+}
+
 // ---- 4. 4-tier Slowloris and Reverse-Slowloris tarpit defenses --------------
 
 enum SlowlorisViolation {

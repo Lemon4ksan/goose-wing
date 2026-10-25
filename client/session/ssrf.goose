@@ -173,10 +173,21 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
         return true;
     }
 
-    // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh)
-    if starts_with(eff_ip, "::ffff:") {
-        let suffix = eff_ip[7..];
+    // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh, CVE-2024-24790)
+    if starts_with(eff_ip, "::ffff:") || starts_with(eff_ip, "0:0:0:0:0:ffff:") {
+        let suffix = if starts_with(eff_ip, "::ffff:") { eff_ip[7..] } else { eff_ip[15..] };
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+    }
+
+    // Trailing dotted-quad IPv4 in any IPv6 scope (RFC 4291 / CVE-2024-24790)
+    if core::contains_byte(eff_ip, '.') {
+        let last_colon = core::last_index_of_byte(eff_ip, ':');
+        if last_colon >= 0 && last_colon + 1 < eff_ip.len {
+            let last_part = eff_ip[last_colon + 1..];
+            if is_private_ipv4(last_part) {
+                return true;
+            }
+        }
     }
 
     // IPv4-compatible IPv6 (::x.x.x.x or ::hhhh:hhhh)

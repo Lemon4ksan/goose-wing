@@ -102,3 +102,20 @@ fn has_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> bool {
     return false;
 }
 
+// CVE-2026-39825 defense: Count query parameters separated by '&' and verify it does not exceed maximum limit.
+const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 1024;
+
+fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUERY_PARAMS_LIMIT) -> bool {
+    guard query.len > 0 else { return true; }
+    var count: i64 = 1;
+    for b in query {
+        if b == '&' {
+            count++;
+            if count > max_allowed {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
