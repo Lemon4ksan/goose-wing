@@ -65,6 +65,16 @@ void wing_tcp_cleanup(void) {
 #endif
 }
 
+// Reads port from WING_PORT environment variable, or returns default_port
+uint16_t wing_get_env_port(uint16_t default_port) {
+    const char *p = getenv("WING_PORT");
+    if (p && *p) {
+        int val = atoi(p);
+        if (val > 0 && val < 65536) return (uint16_t)val;
+    }
+    return default_port;
+}
+
 // Creates, binds, and listens on host:port.
 int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
     wing_tcp_init();

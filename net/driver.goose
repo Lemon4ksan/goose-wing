@@ -12,4 +12,7 @@ import net.driver.types;
 import net.driver.rio;
 import net.driver.uring;
 import net.driver.kqueue;
+import net.driver.af_xdp;
+import net.driver.dpdk;
+import net.driver.smartnic;
 import net.driver.manager;

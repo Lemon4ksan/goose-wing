@@ -450,6 +450,62 @@ fn test_rfc9218_write_scheduler(t: core::T&) {
         sub.assert_true(id1 != id2, "scheduler alternates turns between incremental and non-incremental streams");
         sub.assert_true((id1 == 1 && id2 == 3) || (id1 == 3 && id2 == 1), "both streams get scheduled in turn");
     };
+
+    t.run("SCHED-03: Round-Robin Multiplexing Among Concurrent Incremental Streams (RFC 9218 §2.2)") { sub =>
+        var sess = wing::new_session_state();
+
+        // Stream 1: urgency 2, incremental, 1000 bytes
+        let h1 = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
+        wing::on_ingress_frame_header(sess, h1, 0);
+        wing::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 2, incremental: true });
+        sess.streams[0].pending_send_bytes = 1000;
+
+        // Stream 3: urgency 2, incremental, 1000 bytes
+        let h3 = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 3 };
+        wing::on_ingress_frame_header(sess, h3, 0);
+        wing::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 2, incremental: true });
+        sess.streams[1].pending_send_bytes = 1000;
+
+        // Schedule round 1 & 2: each stream should get scheduled in round-robin order
+        let id1, _, ok1 = wing::schedule_next_write(sess, 200);
+        let id2, _, ok2 = wing::schedule_next_write(sess, 200);
+        let id3, _, ok3 = wing::schedule_next_write(sess, 200);
+        let id4, _, ok4 = wing::schedule_next_write(sess, 200);
+
+        sub.assert_true(ok1 && ok2 && ok3 && ok4, "all 4 scheduling rounds succeeded");
+        sub.assert_eq(id1, 1, "first round-robin choice is stream 1");
+        sub.assert_eq(id2, 3, "second round-robin choice is stream 3");
+        sub.assert_eq(id3, 1, "third round-robin choice rotates back to stream 1");
+        sub.assert_eq(id4, 3, "fourth round-robin choice rotates back to stream 3");
+    };
+
+    t.run("SCHED-04: Anti-Starvation Credit Yield Across Urgency Levels") { sub =>
+        var sess = wing::new_session_state();
+
+        // Stream 1: high urgency 0, non-incremental, large payload (20000 bytes)
+        let h1 = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
+        wing::on_ingress_frame_header(sess, h1, 0);
+        wing::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 0, incremental: false });
+        sess.streams[0].pending_send_bytes = 20000;
+
+        // Stream 3: lower urgency 3, non-incremental, small payload (500 bytes)
+        let h3 = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 3 };
+        wing::on_ingress_frame_header(sess, h3, 0);
+        wing::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 3, incremental: false });
+        sess.streams[1].pending_send_bytes = 500;
+
+        // Run 16 consecutive frames for stream 1
+        for i in 16 {
+            let id, _, ok = wing::schedule_next_write(sess, 100);
+            sub.assert_true(ok, "scheduled high urgency frame");
+            sub.assert_eq(id, 1, "stream 1 scheduled");
+        }
+
+        // Frame 17 MUST trigger anti-starvation yield to lower urgency stream 3!
+        let id17, _, ok17 = wing::schedule_next_write(sess, 100);
+        sub.assert_true(ok17, "frame 17 scheduled");
+        sub.assert_eq(id17, 3, "frame 17 yielded to lower-urgency stream 3 to prevent starvation");
+    };
 }
 
 // ============================================================================

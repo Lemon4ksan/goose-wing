@@ -137,7 +137,7 @@ fn update_stream_sliding_window(s: ZStreamCompressor&, chunk: const u8[:]) {
     if chunk.len >= 32768 {
         let start = chunk.len - 32768;
         for i in 32768 {
-            s.window[i] = chunk[start + (i as i64)];
+            s.window[i] = chunk[start + i];
         }
         s.window_len = 32768;
     } else if chunk.len > 0 {
@@ -150,7 +150,7 @@ fn update_stream_sliding_window(s: ZStreamCompressor&, chunk: const u8[:]) {
             }
         }
         for i in chunk.len {
-            s.window[(to_keep as i64) + i] = chunk[i];
+            s.window[to_keep + i] = chunk[i];
         }
         s.window_len = to_keep + clen;
     }

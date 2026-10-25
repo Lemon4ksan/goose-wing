@@ -6,6 +6,9 @@ import net.driver.types;
 import net.driver.rio;
 import net.driver.uring;
 import net.driver.kqueue;
+import net.driver.af_xdp;
+import net.driver.dpdk;
+import net.driver.smartnic;
 
 // Probes availability and capabilities of a driver on a specific target platform
 fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPlatform) -> DriverProbeResult {
@@ -117,6 +120,75 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             res.error_code = ERR_ENOSYS;
             res.reason.clear();
             res.reason.append("kqueue is only supported on macOS / BSD (sys/event.h)");
+        }
+        return res;
+    }
+
+    if effective_kind == TransportDriverKind.AfXdp {
+        if plat == TargetPlatform.Linux {
+            let host = detect_target_platform();
+            if host == TargetPlatform.Linux {
+                let probe_code = native_af_xdp_probe();
+                res.available = (probe_code == ERR_SUCCESS);
+                res.error_code = probe_code;
+            } else {
+                res.available = true;
+                res.error_code = ERR_SUCCESS;
+            }
+            if res.available {
+                res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_PAGE_LOCKED_BUFFERS | CAP_AF_XDP_UMEM;
+                res.reason.clear();
+                res.reason.append("Linux AF_XDP (XSK) active via zero-copy UMEM ring buffer");
+            } else {
+                res.capabilities = CAP_NONE;
+                res.reason.clear();
+                res.reason.append("Linux AF_XDP probe failed on current kernel");
+            }
+        } else {
+            res.available = false;
+            res.capabilities = CAP_NONE;
+            res.error_code = ERR_ENOSYS;
+            res.reason.clear();
+            res.reason.append("AF_XDP is only supported on Linux 5.4+ (linux/if_xdp.h)");
+        }
+        return res;
+    }
+
+    if effective_kind == TransportDriverKind.Dpdk {
+        res.available = true;
+        res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DPDK_PMD;
+        res.error_code = ERR_SUCCESS;
+        res.reason.clear();
+        res.reason.append("DPDK Poll Mode Driver active via direct PCIe BAR mapping");
+        return res;
+    }
+
+    if effective_kind == TransportDriverKind.SmartNicOffload {
+        if plat == TargetPlatform.Linux || plat == TargetPlatform.Windows {
+            let host = detect_target_platform();
+            if host == TargetPlatform.Linux || host == TargetPlatform.Windows {
+                let probe_code = native_smartnic_probe();
+                res.available = (probe_code == ERR_SUCCESS);
+                res.error_code = probe_code;
+            } else {
+                res.available = true;
+                res.error_code = ERR_SUCCESS;
+            }
+            if res.available {
+                res.capabilities = CAP_ZERO_COPY | CAP_NIC_TLS_OFFLOAD;
+                res.reason.clear();
+                res.reason.append("SmartNIC hardware kTLS offload active (Mellanox ConnectX / BlueField / Windows Chimney)");
+            } else {
+                res.capabilities = CAP_NONE;
+                res.reason.clear();
+                res.reason.append("SmartNIC probe failed or no compatible hardware offload found");
+            }
+        } else {
+            res.available = false;
+            res.capabilities = CAP_NONE;
+            res.error_code = ERR_ENOSYS;
+            res.reason.clear();
+            res.reason.append("SmartNIC kTLS offload is only supported on Linux 4.17+ / Windows Server");
         }
         return res;
     }
@@ -275,6 +347,21 @@ fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
     if driver_has_cap(cfg.capabilities, CAP_EXACT_BUF_METRICS) {
         if has_any { out.append(", "); }
         out.append("ExactBufMetrics");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_NIC_TLS_OFFLOAD) {
+        if has_any { out.append(", "); }
+        out.append("SmartNicTlsOffload");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_AF_XDP_UMEM) {
+        if has_any { out.append(", "); }
+        out.append("AfXdpUmem");
+        has_any = true;
+    }
+    if driver_has_cap(cfg.capabilities, CAP_DPDK_PMD) {
+        if has_any { out.append(", "); }
+        out.append("DpdkPmd");
         has_any = true;
     }
     if !has_any {

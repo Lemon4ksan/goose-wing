@@ -15,7 +15,11 @@ if _cur_dir not in sys.path:
 try:
     from .client import ToxiproxyClient, ToxiproxyError
     from .proxy import ChaosProxy
-    from .server import ToxiproxyServer, ensure_server_running, find_toxiproxy_server_binary
+    from .server import (
+        ToxiproxyServer,
+        ensure_server_running,
+        find_toxiproxy_server_binary,
+    )
     from .toxics import (
         BandwidthToxic,
         LatencyToxic,
@@ -27,9 +31,7 @@ try:
         Toxic,
     )
 except ImportError:
-    from client import ToxiproxyClient, ToxiproxyError
     from proxy import ChaosProxy
-    from server import ToxiproxyServer, ensure_server_running, find_toxiproxy_server_binary
     from toxics import (
         BandwidthToxic,
         LatencyToxic,
@@ -41,19 +43,26 @@ except ImportError:
         Toxic,
     )
 
+    from client import ToxiproxyClient, ToxiproxyError
+    from server import (
+        ToxiproxyServer,
+        ensure_server_running,
+        find_toxiproxy_server_binary,
+    )
+
 __all__ = [
+    "BandwidthToxic",
     "ChaosProxy",
+    "LatencyToxic",
+    "LimitDataToxic",
+    "ResetPeerToxic",
+    "SlicerToxic",
+    "SlowCloseToxic",
+    "TimeoutToxic",
+    "Toxic",
     "ToxiproxyClient",
-    "ToxiproxyServer",
     "ToxiproxyError",
+    "ToxiproxyServer",
     "ensure_server_running",
     "find_toxiproxy_server_binary",
-    "Toxic",
-    "LatencyToxic",
-    "BandwidthToxic",
-    "SlicerToxic",
-    "ResetPeerToxic",
-    "TimeoutToxic",
-    "SlowCloseToxic",
-    "LimitDataToxic",
 ]

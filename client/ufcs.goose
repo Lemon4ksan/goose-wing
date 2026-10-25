@@ -786,6 +786,16 @@ fn ::handle_connection_wire<B>(
     return wing::handle_connection_wire(server, client_ip, wire_in, now_ns, wire_out);
 }
 
+fn ::handle_connection_pipe<B>(
+    server: wing::HttpServer&,
+    client_ip: const u8[:],
+    pipe: core::PipeBuffer&,
+    now_ns: u64,
+    wire_out: B&
+) -> i64, bool {
+    return wing::handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out);
+}
+
 fn ::parse_http1_wire_request(wire: const u8[:], out_req: wing::Request&) -> bool, i64 {
     return wing::parse_http1_wire_request(wire, out_req);
 }
@@ -1174,6 +1184,14 @@ fn ::pipeline_logs(session: const wing::Session&) -> const u8[..128][:] {
 
 fn ::clear_pipeline_logs(session: wing::Session&) {
     wing::clear_pipeline_logs(session);
+}
+
+fn ::tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout_ms: u32 = 5000) -> i32 {
+    return wing::tcp_recv_pipe(fd, pipe, min_span, timeout_ms);
+}
+
+fn ::tcp_flush_cork(fd: i64, cb: core::CorkBuffer&) -> i32 {
+    return wing::tcp_flush_cork(fd, cb);
 }
 
 

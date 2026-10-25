@@ -22,6 +22,7 @@ extern "wing_tcp_set_keepalive_params" fn native_tcp_set_keepalive_params(sock_f
 extern "wing_tcp_set_syn_retries" fn native_tcp_set_syn_retries(sock_fd: i64, count: i32) -> i32;
 extern "wing_tcp_get_notsent_bytes" fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64;
 extern "wing_tcp_get_readable_bytes" fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64;
+extern "wing_get_env_port" fn get_env_port(default_port: u16) -> u16;
 
 // Global initialization flag
 var g_tcp_initialized: bool = false;

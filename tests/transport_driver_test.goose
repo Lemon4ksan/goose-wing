@@ -79,6 +79,49 @@ fn test_driver_probing(t: core::T&) {
         sub.assert_false(p_linux.available, "kqueue unavailable on Linux");
         sub.assert_eq(p_linux.error_code, wing::ERR_ENOSYS, "kqueue returns -ENOSYS on Linux");
     };
+
+    t.run("Linux AF_XDP (XSK Kernel-Bypass) Probing") { sub =>
+        let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.AfXdp, wing::TargetPlatform.Linux);
+        sub.assert_true(p_linux.available, "AF_XDP available on Linux target");
+        sub.assert_eq(p_linux.error_code, wing::ERR_SUCCESS, "AF_XDP error code 0 on Linux");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_KERNEL_BYPASS), "AF_XDP has KernelBypass");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_ZERO_COPY), "AF_XDP has ZeroCopy");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_PAGE_LOCKED_BUFFERS), "AF_XDP has PageLockedBuffers");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_AF_XDP_UMEM), "AF_XDP has AfXdpUmem");
+
+        let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.AfXdp, wing::TargetPlatform.Windows);
+        sub.assert_false(p_win.available, "AF_XDP unavailable on Windows");
+        sub.assert_eq(p_win.error_code, wing::ERR_ENOSYS, "AF_XDP returns -ENOSYS on Windows");
+
+        let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.AfXdp, wing::TargetPlatform.Darwin);
+        sub.assert_false(p_mac.available, "AF_XDP unavailable on macOS");
+        sub.assert_eq(p_mac.error_code, wing::ERR_ENOSYS, "AF_XDP returns -ENOSYS on macOS");
+    };
+
+    t.run("DPDK Poll Mode Driver Probing") { sub =>
+        let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.Dpdk, wing::TargetPlatform.Linux);
+        sub.assert_true(p_linux.available, "DPDK PMD available");
+        sub.assert_eq(p_linux.error_code, wing::ERR_SUCCESS, "DPDK error code 0");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_KERNEL_BYPASS), "DPDK has KernelBypass");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_ZERO_COPY), "DPDK has ZeroCopy");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_BATCH_IO), "DPDK has BatchIO");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_DPDK_PMD), "DPDK has DpdkPmd");
+    };
+
+    t.run("SmartNIC Hardware TLS Offload Probing") { sub =>
+        let p_linux = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.SmartNicOffload, wing::TargetPlatform.Linux);
+        sub.assert_true(p_linux.available, "SmartNIC available on Linux");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_ZERO_COPY), "SmartNIC has ZeroCopy");
+        sub.assert_true(wing::driver_has_cap(p_linux.capabilities, wing::CAP_NIC_TLS_OFFLOAD), "SmartNIC has NicTlsOffload");
+
+        let p_win = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.SmartNicOffload, wing::TargetPlatform.Windows);
+        sub.assert_true(p_win.available, "SmartNIC available on Windows");
+        sub.assert_true(wing::driver_has_cap(p_win.capabilities, wing::CAP_NIC_TLS_OFFLOAD), "SmartNIC has NicTlsOffload on Windows");
+
+        let p_mac = wing::probe_transport_driver_for_platform(wing::TransportDriverKind.SmartNicOffload, wing::TargetPlatform.Darwin);
+        sub.assert_false(p_mac.available, "SmartNIC unavailable on macOS");
+        sub.assert_eq(p_mac.error_code, wing::ERR_ENOSYS, "SmartNIC returns -ENOSYS on macOS");
+    };
 }
 
 fn test_driver_fallback_and_selection(t: core::T&) {
@@ -321,6 +364,85 @@ fn test_driver_summary_formatter(t: core::T&) {
     };
 }
 
+fn test_af_xdp_and_dpdk_kernel_bypass(t: core::T&) {
+    t.run("AF_XDP UMEM Descriptor Lifecycle") { sub =>
+        var umem = wing::AfXdpUmem {
+            addr: 0x10000000,
+            len: 8388608, // 8 MB UMEM
+            chunk_size: 2048,
+            headroom: 0,
+            is_registered: true,
+        };
+        sub.assert_true(umem.is_registered, "UMEM registered");
+        sub.assert_eq(umem.chunk_size, 2048, "Chunk size is 2048 bytes");
+
+        // Verify XdpDesc packet descriptor
+        var desc = wing::XdpDesc {
+            addr: 0x10000800,
+            len: 1460, // MSS payload
+            options: 0,
+        };
+        sub.assert_eq(desc.addr, 0x10000800, "Packet buffer offset mapped");
+        sub.assert_eq(desc.len, 1460, "Packet length 1460 bytes");
+    };
+
+    t.run("DPDK Port and Mempool Interface") { sub =>
+        var dev = wing::new_dpdk_device(0);
+        sub.assert_false(dev.is_initialized, "starts uninitialized");
+
+        var pcfg = wing::DpdkPortConfig {
+            port_id: 0,
+            rx_queues: 4,
+            tx_queues: 4,
+            rx_ring_size: 1024,
+            tx_ring_size: 1024,
+            promiscuous: true,
+        };
+        let init_res = wing::dpdk_init_port(dev, pcfg);
+        sub.assert_eq(init_res, 0, "dpdk_init_port succeeded");
+        sub.assert_true(dev.is_initialized, "dev is initialized");
+
+        let start_res = wing::dpdk_start_port(dev);
+        sub.assert_eq(start_res, 0, "dpdk_start_port succeeded");
+        sub.assert_true(dev.is_started, "dev is started and polling NIC BAR");
+
+        let pool = wing::dpdk_create_mempool(4096, 2048);
+        sub.assert_true(pool.is_created, "mempool created");
+        sub.assert_eq(pool.n_elements, 4096, "4096 packet mbufs");
+
+        wing::dpdk_stop_port(dev);
+        sub.assert_false(dev.is_started, "dev stopped cleanly");
+    };
+}
+
+fn test_smartnic_ktls_offload(t: core::T&) {
+    t.run("SmartNIC Hardware Model Identification") { sub =>
+        sub.assert_contains(wing::smartnic_model_name(wing::SmartNicModel.MellanoxConnectX6Dx), "Mellanox ConnectX-6", "Identified CX-6 Dx");
+        sub.assert_contains(wing::smartnic_model_name(wing::SmartNicModel.NvidiaBlueField3), "NVIDIA BlueField-3", "Identified BlueField-3 DPU");
+        sub.assert_contains(wing::smartnic_model_name(wing::SmartNicModel.IntelMountEvans), "Intel Mount Evans", "Identified Mount Evans IPU");
+    };
+
+    t.run("SmartNIC AES-GCM-128 / 256 Key Offload Configuration") { sub =>
+        let key128: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let iv: u8[4] = [0xA1, 0xB2, 0xC3, 0xD4];
+        let salt: u8[4] = [0xE5, 0xF6, 0x07, 0x18];
+        let seq: u8[8] = [0, 0, 0, 0, 0, 0, 0, 1];
+
+        // Attach to socket (dummy fd = 100 for test)
+        let sess, err = wing::smartnic_attach_hardware_tls(
+            100,
+            wing::SmartNicCipherSuite.AesGcm128,
+            key128[..],
+            iv[..],
+            salt[..],
+            seq[..]
+        );
+        sub.assert_eq(err, 0, "smartnic_attach_hardware_tls succeeded");
+        sub.assert_true(sess.ktls_active, "kTLS active");
+        sub.assert_eq(sess.fd, 100, "Target fd retained");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Layer 4 Transport Driver Architecture Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. Transport Driver Probing", test_driver_probing);
@@ -329,6 +451,8 @@ fn main() {
     core::run_case(runner, "4. io_uring SQE/CQE Batch Submissions", test_uring_sqe_cqe_batch);
     core::run_case(runner, "5. macOS kqueue Event Lifecycle", test_kqueue_event_lifecycle);
     core::run_case(runner, "6. Driver Summary Formatter", test_driver_summary_formatter);
+    core::run_case(runner, "7. AF_XDP & DPDK Kernel-Bypass Architecture", test_af_xdp_and_dpdk_kernel_bypass);
+    core::run_case(runner, "8. SmartNIC & Hardware kTLS Crypto Offload", test_smartnic_ktls_offload);
     let ok = core::finish(runner);
     assert(ok);
 }

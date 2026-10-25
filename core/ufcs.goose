@@ -329,6 +329,9 @@ fn ::cork_write_u32_be(cb: core::CorkBuffer&, v: u32) -> core::IoError { return 
 fn ::cork_write_u64_be(cb: core::CorkBuffer&, v: u64) -> core::IoError { return core::cork_write_u64_be(cb, v); }
 fn ::cork_consume(cb: core::CorkBuffer&, n: i64) { core::cork_consume(cb, n); }
 fn ::cork_reset(cb: core::CorkBuffer&) { core::cork_reset(cb); }
+fn ::append(cb: core::CorkBuffer&, src: const u8[:]) { core::append(cb, src); }
+fn ::push(cb: core::CorkBuffer&, b: u8) { core::push(cb, b); }
+fn ::clear(cb: core::CorkBuffer&) { core::clear(cb); }
 
 // ---- bytes & stringview ufcs bridges ----------------------------------------
 

@@ -16,6 +16,10 @@ struct ServerPipelineConfig {
     ext_pool: internal::ExtensionsPool = internal::ExtensionsPool { .. },
     target_host: u8[..128] = "example.com",
     deadline_ns: u64 = 30000000000, // 30s
+    enable_rate_limiter: bool = true,
+    enable_csrf_guard: bool = true,
+    enable_cors: bool = true,
+    enable_slowloris_timer: bool = true,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
@@ -124,35 +128,41 @@ fn execute_pipeline(
     res: Response&,
     out_future: internal::InlineHandlerFuture&,
 ) -> PipelineOutcome {
-    internal::notify_request_start(conn_timer);
+    if cfg.enable_slowloris_timer {
+        internal::notify_request_start(conn_timer);
 
-    // Stage 1: Connection liveliness / timeout check
-    guard internal::check_connection_tick(conn_timer, now_ns) else {
-        internal::notify_request_end(conn_timer);
-        res.status_code = 408; // Request Timeout
-        return PipelineOutcome.SlowlorisClosed;
+        // Stage 1: Connection liveliness / timeout check
+        guard internal::check_connection_tick(conn_timer, now_ns) else {
+            internal::notify_request_end(conn_timer);
+            res.status_code = 408; // Request Timeout
+            return PipelineOutcome.SlowlorisClosed;
+        }
     }
 
     // Stage 2: Expect header validation (RFC 9110 Section 10.1.1)
     guard validate_pipeline_expect_header(req) else {
-        internal::notify_request_end(conn_timer);
+        if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
         res.status_code = 417; // Expectation Failed
         return PipelineOutcome.ExpectationFailed;
     }
 
     // Stage 3: Rate limiter check
-    let rl_decision = check_keyed_rate_limit(cfg.limiter, client_ip, 1, now_ns);
-    apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
-    if !is_allowed(rl_decision) {
-        internal::notify_request_end(conn_timer);
-        return PipelineOutcome.RateLimited;
+    if cfg.enable_rate_limiter {
+        let rl_decision = check_keyed_rate_limit(cfg.limiter, client_ip, 1, now_ns);
+        apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
+        if !is_allowed(rl_decision) {
+            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+            return PipelineOutcome.RateLimited;
+        }
     }
 
     // Stage 4: CORS and Fetch Metadata isolation check
-    let security_outcome, is_terminal = evaluate_pipeline_cors_and_csrf(cfg, req, res);
-    if is_terminal {
-        internal::notify_request_end(conn_timer);
-        return security_outcome;
+    if cfg.enable_cors || cfg.enable_csrf_guard {
+        let security_outcome, is_terminal = evaluate_pipeline_cors_and_csrf(cfg, req, res);
+        if is_terminal {
+            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+            return security_outcome;
+        }
     }
 
     // Stage 5: Radix trie route matching
@@ -165,7 +175,7 @@ fn execute_pipeline(
     match match_res {
         NotFound => {
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            internal::notify_request_end(conn_timer);
+            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
             res.status_code = 404; // Not Found
             return PipelineOutcome.RouteNotFound;
         },
@@ -173,7 +183,7 @@ fn execute_pipeline(
             res.status_code = 405; // Method Not Allowed
             res.headers.push(make_header("Allow", mna.allow_header[..]));
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            internal::notify_request_end(conn_timer);
+            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
@@ -187,7 +197,7 @@ fn execute_pipeline(
 
             res.status_code = 200;
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            internal::notify_request_end(conn_timer);
+            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
             return PipelineOutcome.Handled;
         },
     };

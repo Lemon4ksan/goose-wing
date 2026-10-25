@@ -156,3 +156,16 @@ fn cork_reset(cb: CorkBuffer&) {
     cb.len = 0;
     cb.is_corked = true;
 }
+
+// Generic appendable buffer interface implementations (matching u8[..N] & u8[>..])
+fn append(cb: CorkBuffer&, src: const u8[:]) {
+    cork_write(cb, src);
+}
+
+fn push(cb: CorkBuffer&, b: u8) {
+    cork_write_u8(cb, b);
+}
+
+fn clear(cb: CorkBuffer&) {
+    cork_reset(cb);
+}

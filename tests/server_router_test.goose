@@ -401,6 +401,117 @@ fn test_standalone_http_server(t: core::T&) {
         sub.assert_eq(server_h2_resp.len, 33, "Server responded with 33-byte HTTP/2 SETTINGS frame");
         sub.assert_eq(server_h2_resp[3], wing::FRAME_SETTINGS, "Frame type is SETTINGS (0x04)");
     };
+
+    t.run("4. Incremental PipeBuffer Sans-IO Stream Parsing & Monotonicity") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_get_route(server, "/greet", 1);
+
+        var pipe = core::new_pipe_buffer();
+
+        // Packet 1: Incomplete request (headers truncated before final CRLF)
+        let part1 = "GET /greet HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+        core::write(pipe, part1);
+
+        var out_wire1: u8[>..] = [];
+        let n1, ok1 = wing::handle_connection_pipe(server, "127.0.0.1", pipe, 1000000000, out_wire1);
+
+        sub.assert_true(ok1, "handle_connection_pipe succeeded on incomplete chunk");
+        sub.assert_eq(n1, 0, "No complete request processed yet");
+        sub.assert_eq(pipe.consumed, 0, "Pipe consumed is 0");
+        sub.assert_eq(pipe.examined, part1.len, "Pipe examined advanced to end of chunk");
+        sub.assert_eq(out_wire1.len, 0, "No output generated yet");
+
+        // Packet 2: Remainder of request headers arriving
+        let part2 = "Sec-Fetch-Site: same-origin\r\n\r\n";
+        core::write(pipe, part2);
+
+        var out_wire2: u8[>..] = [];
+        let n2, ok2 = wing::handle_connection_pipe(server, "127.0.0.1", pipe, 1000000000, out_wire2);
+
+        sub.assert_true(ok2, "handle_connection_pipe succeeded when complete");
+        sub.assert_eq(n2, 1, "1 complete request processed");
+        sub.assert_eq(pipe.readable_len(), 0, "Pipe drained completely");
+        sub.assert_gt(out_wire2.len, 0, "Response generated");
+        sub.assert_contains(out_wire2[..], "HTTP/1.1 200 OK", "Status 200 OK");
+
+        // Packet 3: Multiple pipelined requests in one buffer
+        let req_a = "GET /greet HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+        let req_b = "GET /greet HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+        core::write(pipe, req_a);
+        core::write(pipe, req_b);
+
+        var out_wire3: u8[>..] = [];
+        let n3, ok3 = wing::handle_connection_pipe(server, "127.0.0.1", pipe, 1000000000, out_wire3);
+
+        sub.assert_true(ok3, "handle_connection_pipe handled pipelined requests");
+        sub.assert_eq(n3, 2, "2 pipelined requests processed");
+        sub.assert_eq(pipe.readable_len(), 0, "Pipe drained completely");
+
+        // Packet 4: Zero-Heap PipeBuffer + CorkBuffer Aggregation
+        let req_c = "GET /greet HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+        core::write(pipe, req_c);
+        var cork = core::new_cork_buffer();
+        let n4, ok4 = wing::handle_connection_pipe(server, "127.0.0.1", pipe, 1000000000, cork);
+        sub.assert_true(ok4, "handle_connection_pipe works with CorkBuffer");
+        sub.assert_eq(n4, 1, "1 request processed into cork");
+        sub.assert_gt(cork.cork_pending(), 0, "Cork buffer contains bytes");
+        sub.assert_contains(cork.cork_as_slice(), "HTTP/1.1 200 OK", "Cork contains 200 OK");
+        core::cork_consume(cork, cork.cork_pending());
+        sub.assert_eq(cork.cork_pending(), 0, "Cork fully consumed");
+    };
+
+    t.run("5. HTTP Request Smuggling Defenses (RFC 9112 Section 6.1 & 6.3)") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_get_route(server, "/safe", 1);
+        wing::add_post_route(server, "/safe", 2);
+
+        // 5.1 Leading whitespace before method (RFC 9112 §3.1)
+        var out1: u8[>..] = [];
+        let _, ok1 = wing::handle_connection_wire(server, "127.0.0.1", " GET /safe HTTP/1.1\r\n\r\n", 1000000000, out1);
+        sub.assert_false(ok1, "Leading space before method rejected");
+        sub.assert_contains(out1[..], "400 Bad Request", "Returns 400 Bad Request");
+
+        // 5.2 Single leading empty line (RFC 9112 §2.2) is allowed for robustness
+        var out2: u8[>..] = [];
+        let _, ok2 = wing::handle_connection_wire(server, "127.0.0.1", "\r\nGET /safe HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\n\r\n", 1000000000, out2);
+        sub.assert_true(ok2, "Single leading CRLF allowed per RFC 9112 §2.2");
+
+        // 5.3 Multiple leading empty lines (RFC 9112 §2.2) MUST be rejected
+        var out3: u8[>..] = [];
+        let _, ok3 = wing::handle_connection_wire(server, "127.0.0.1", "\r\n\r\nGET /safe HTTP/1.1\r\nHost: localhost\r\n\r\n", 1000000000, out3);
+        sub.assert_false(ok3, "Multiple leading CRLF rejected");
+
+        // 5.4 Whitespace before colon in header (RFC 9112 §5.1, CVE-2019-16276)
+        var out4: u8[>..] = [];
+        let _, ok4 = wing::handle_connection_wire(server, "127.0.0.1", "GET /safe HTTP/1.1\r\nHost : localhost\r\n\r\n", 1000000000, out4);
+        sub.assert_false(ok4, "Space before colon rejected");
+
+        // 5.5 Control character in URL path (RFC 9110 §4.1, CVE-2022-22970)
+        var out5: u8[>..] = [];
+        let bad_url: u8[28] = [
+            'G' as u8, 'E' as u8, 'T' as u8, ' ' as u8,
+            '/' as u8, 's' as u8, 'a' as u8, 'f' as u8, 'e' as u8, 0x00, // Embedded NUL CTL!
+            ' ' as u8, 'H' as u8, 'T' as u8, 'T' as u8, 'P' as u8, '/' as u8, '1' as u8, '.' as u8, '1' as u8,
+            '\r' as u8, '\n' as u8, '\r' as u8, '\n' as u8, 0, 0, 0, 0, 0
+        ];
+        let _, ok5 = wing::handle_connection_wire(server, "127.0.0.1", bad_url[..23], 1000000000, out5);
+        sub.assert_false(ok5, "CTL in URL path rejected");
+
+        // 5.6 Non-digit in Content-Length (RFC 9110 §8.6, Go #53188)
+        var out6: u8[>..] = [];
+        let _, ok6 = wing::handle_connection_wire(server, "127.0.0.1", "POST /safe HTTP/1.1\r\nContent-Length: +10\r\n\r\n0123456789", 1000000000, out6);
+        sub.assert_false(ok6, "Signed +10 Content-Length rejected");
+
+        // 5.7 Conflict: both Transfer-Encoding and Content-Length present (RFC 9112 §6.1)
+        var out7: u8[>..] = [];
+        let _, ok7 = wing::handle_connection_wire(server, "127.0.0.1", "POST /safe HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", 1000000000, out7);
+        sub.assert_false(ok7, "TE and CL conflict rejected");
+
+        // 5.8 Conflicting duplicate Content-Length headers (RFC 9112 §6.3)
+        var out8: u8[>..] = [];
+        let _, ok8 = wing::handle_connection_wire(server, "127.0.0.1", "POST /safe HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello", 1000000000, out8);
+        sub.assert_false(ok8, "Conflicting duplicate Content-Length rejected");
+    };
 }
 
 // ----------------------------------------------------------------------------

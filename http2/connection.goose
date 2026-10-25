@@ -127,6 +127,8 @@ struct H2Connection {
 
     // Starvation toggle per urgency bucket (0..7) between incremental and non-incremental
     bucket_prefer_incremental: bool[8] = [false; 8],
+    bucket_last_inc_idx: i32[8] = [-1; 8],
+    urgency_streak_count: u32 = 0,
 
     // Shutdown / GOAWAY tracking
     goaway_sent: bool = false,
@@ -527,75 +529,142 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: Pri
     return ERR_NO_ERROR;
 }
 
+const MAX_HIGH_URGENCY_STREAK: u32 = 16; // Max consecutive frames before lower-urgency credit yield
+
 // Schedules next stream for DATA frame transmission according to RFC 9218 urgency 0..7.
 // Alternates between incremental and non-incremental streams to prevent starvation.
+// Implements Round-Robin fair interleaving among concurrent incremental streams within a bucket.
+// Implements anti-starvation credit yield when higher-urgency streams dominate for > 16 frames.
 // Returns (stream_id, allowed_send_bytes, found).
 fn schedule_next_write(s: H2Connection&, max_frame_len: u32) -> u32, u32, bool {
     guard s.conn_send_window > 0 else { return 0, 0, false; }
 
-    var u: u8 = 0;
-    while u <= 7 {
-        // Collect candidate streams in bucket u
-        var non_inc_idx: i32 = -1;
-        var inc_idx: i32 = -1;
+    // Check if anti-starvation yield is triggered for lower-urgency streams
+    var force_yield = false;
+    if s.urgency_streak_count >= MAX_HIGH_URGENCY_STREAK {
+        // Check if there is any ready stream in lower urgency (u >= 3)
+        var has_lower_ready = false;
+        var chk: i32 = 0;
+        while chk < (s.streams.len as i32) {
+            if s.streams[chk].active &&
+               s.streams[chk].pending_send_bytes > 0 &&
+               s.streams[chk].send_window > 0 &&
+               s.streams[chk].priority.urgency >= 3 {
+                has_lower_ready = true;
+                break;
+            }
+            chk++;
+        }
+        if has_lower_ready {
+            force_yield = true;
+        } else {
+            s.urgency_streak_count = 0; // No lower streams waiting, reset streak
+        }
+    }
 
-        var idx: i32 = 0;
-        while idx < (s.streams.len as i32) {
-            if s.streams[idx].active &&
-               s.streams[idx].pending_send_bytes > 0 &&
-               s.streams[idx].send_window > 0 &&
-               s.streams[idx].priority.urgency == u {
+    var start_u: u8 = if force_yield { 3 } else { 0 };
+    var pass: i32 = 0;
 
-                if s.streams[idx].priority.incremental {
-                    if inc_idx < 0 { inc_idx = idx; }
+    while pass < 2 {
+        var u = start_u;
+        while u <= 7 {
+            let u_idx = u as i64;
+            let stream_count = s.streams.len as i32;
+
+            // Collect non-incremental candidate (sequential)
+            var non_inc_idx: i32 = -1;
+            var idx: i32 = 0;
+            while idx < stream_count {
+                if s.streams[idx].active &&
+                   s.streams[idx].pending_send_bytes > 0 &&
+                   s.streams[idx].send_window > 0 &&
+                   s.streams[idx].priority.urgency == u &&
+                   !s.streams[idx].priority.incremental {
+                    non_inc_idx = idx;
+                    break;
+                }
+                idx++;
+            }
+
+            // Collect incremental candidate using Round-Robin starting after bucket_last_inc_idx[u]
+            var inc_idx: i32 = -1;
+            let last_inc = s.bucket_last_inc_idx[u_idx];
+            var step: i32 = 1;
+            while step <= stream_count {
+                let candidate = if last_inc < 0 { step - 1 } else { (last_inc + step) % stream_count };
+                if candidate >= 0 && candidate < stream_count {
+                    if s.streams[candidate].active &&
+                       s.streams[candidate].pending_send_bytes > 0 &&
+                       s.streams[candidate].send_window > 0 &&
+                       s.streams[candidate].priority.urgency == u &&
+                       s.streams[candidate].priority.incremental {
+                        inc_idx = candidate;
+                        break;
+                    }
+                }
+                step++;
+            }
+
+            var chosen_idx: i32 = -1;
+            if non_inc_idx >= 0 && inc_idx >= 0 {
+                // Both stream types present in bucket: alternate turn
+                if s.bucket_prefer_incremental[u_idx] {
+                    chosen_idx = inc_idx;
+                    s.bucket_last_inc_idx[u_idx] = inc_idx;
+                    s.bucket_prefer_incremental[u_idx] = false;
                 } else {
-                    if non_inc_idx < 0 { non_inc_idx = idx; }
+                    chosen_idx = non_inc_idx;
+                    s.bucket_prefer_incremental[u_idx] = true;
                 }
-            }
-            idx++;
-        }
-
-        var chosen_idx: i32 = -1;
-        if non_inc_idx >= 0 && inc_idx >= 0 {
-            // Both stream types present: alternate turn
-            if s.bucket_prefer_incremental[u as i64] {
-                chosen_idx = inc_idx;
-                s.bucket_prefer_incremental[u as i64] = false;
-            } else {
+            } else if non_inc_idx >= 0 {
                 chosen_idx = non_inc_idx;
-                s.bucket_prefer_incremental[u as i64] = true;
+            } else if inc_idx >= 0 {
+                chosen_idx = inc_idx;
+                s.bucket_last_inc_idx[u_idx] = inc_idx;
             }
-        } else if non_inc_idx >= 0 {
-            chosen_idx = non_inc_idx;
-        } else if inc_idx >= 0 {
-            chosen_idx = inc_idx;
+
+            if chosen_idx >= 0 {
+                let target_stream_id = s.streams[chosen_idx].stream_id;
+                let quota = compute_stream_send_quota(s, target_stream_id);
+                if quota > 0 {
+                    var send_len = s.streams[chosen_idx].pending_send_bytes;
+                    if send_len > quota {
+                        send_len = quota as u32;
+                    }
+                    if send_len > max_frame_len {
+                        send_len = max_frame_len;
+                    }
+                    if send_len > s.local_max_frame_size {
+                        send_len = s.local_max_frame_size;
+                    }
+
+                    // Deduct from pending and windows
+                    s.streams[chosen_idx].pending_send_bytes -= send_len;
+                    s.streams[chosen_idx].send_window -= send_len;
+                    s.conn_send_window -= send_len;
+
+                    // Update anti-starvation streak tracking
+                    if s.streams[chosen_idx].priority.urgency < 3 {
+                        s.urgency_streak_count++;
+                    } else {
+                        s.urgency_streak_count = 0;
+                    }
+
+                    return target_stream_id, send_len, true;
+                }
+            }
+
+            u++;
         }
 
-        if chosen_idx >= 0 {
-            let target_stream_id = s.streams[chosen_idx].stream_id;
-            let quota = compute_stream_send_quota(s, target_stream_id);
-            if quota > 0 {
-                var send_len = s.streams[chosen_idx].pending_send_bytes;
-                if send_len > quota {
-                    send_len = quota as u32;
-                }
-                if send_len > max_frame_len {
-                    send_len = max_frame_len;
-                }
-                if send_len > s.local_max_frame_size {
-                    send_len = s.local_max_frame_size;
-                }
-
-                // Deduct from pending and windows
-                s.streams[chosen_idx].pending_send_bytes -= send_len;
-                s.streams[chosen_idx].send_window -= send_len;
-                s.conn_send_window -= send_len;
-
-                return target_stream_id, send_len, true;
-            }
+        // If force_yield pass completed without finding a lower-urgency candidate, fall back to pass 2 from u=0
+        if force_yield && pass == 0 {
+            start_u = 0;
+            s.urgency_streak_count = 0;
+            pass++;
+        } else {
+            break;
         }
-
-        u++;
     }
 
     return 0, 0, false;

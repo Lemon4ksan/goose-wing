@@ -167,6 +167,41 @@ uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t cou
     return g_rio.RIODequeueCompletion((RIO_CQ)(uintptr_t)cq_id, (WING_RIO_RESULT*)results, count);
 }
 
+uint64_t wing_rio_create_rq(int64_t sock_fd, uint64_t cq_id, uint32_t max_recv, uint32_t max_send) {
+    if (!g_rio_available && init_rio_table() != 0) {
+        return 0;
+    }
+    if (sock_fd <= 0 || cq_id == 0 || !g_rio.RIOCreateRequestQueue) {
+        return 0;
+    }
+    RIO_RQ rq = g_rio.RIOCreateRequestQueue((SOCKET)sock_fd, max_recv, 1, max_send, 1, (RIO_CQ)(uintptr_t)cq_id, (RIO_CQ)(uintptr_t)cq_id, (PVOID)(uintptr_t)sock_fd);
+    return (uint64_t)(uintptr_t)rq;
+}
+
+int32_t wing_rio_receive(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uint32_t length, uint64_t req_context) {
+    if (!g_rio_available || rq_id == 0 || buf_id == 0 || !g_rio.RIOReceive) {
+        return -1;
+    }
+    WING_RIO_BUF buf;
+    buf.BufferId = (RIO_BUFFERID)(uintptr_t)buf_id;
+    buf.Offset = offset;
+    buf.Length = length;
+    BOOL ok = g_rio.RIOReceive((RIO_RQ)(uintptr_t)rq_id, &buf, 1, 0, (PVOID)(uintptr_t)req_context);
+    return ok ? 0 : (int32_t)WSAGetLastError();
+}
+
+int32_t wing_rio_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uint32_t length, uint64_t req_context) {
+    if (!g_rio_available || rq_id == 0 || buf_id == 0 || !g_rio.RIOSend) {
+        return -1;
+    }
+    WING_RIO_BUF buf;
+    buf.BufferId = (RIO_BUFFERID)(uintptr_t)buf_id;
+    buf.Offset = offset;
+    buf.Length = length;
+    BOOL ok = g_rio.RIOSend((RIO_RQ)(uintptr_t)rq_id, &buf, 1, 0, (PVOID)(uintptr_t)req_context);
+    return ok ? 0 : (int32_t)WSAGetLastError();
+}
+
 #else
 
 #ifndef ENOSYS
@@ -182,6 +217,15 @@ uint64_t wing_rio_create_cq(uint32_t queue_size) { (void)queue_size; return 0; }
 void wing_rio_close_cq(uint64_t cq_id) { (void)cq_id; }
 uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t count) {
     (void)cq_id; (void)results; (void)count; return 0;
+}
+uint64_t wing_rio_create_rq(int64_t sock_fd, uint64_t cq_id, uint32_t max_recv, uint32_t max_send) {
+    (void)sock_fd; (void)cq_id; (void)max_recv; (void)max_send; return 0;
+}
+int32_t wing_rio_receive(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uint32_t length, uint64_t req_context) {
+    (void)rq_id; (void)buf_id; (void)offset; (void)length; (void)req_context; return -ENOSYS;
+}
+int32_t wing_rio_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uint32_t length, uint64_t req_context) {
+    (void)rq_id; (void)buf_id; (void)offset; (void)length; (void)req_context; return -ENOSYS;
 }
 
 #endif

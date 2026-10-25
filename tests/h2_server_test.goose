@@ -128,6 +128,43 @@ fn test_h2_handshake_and_settings(t: core::T&) {
         sub.assert_eq(ping_echo[0], 0x11, "PING opaque byte 0 matched");
         sub.assert_eq(ping_echo[7], 0x88, "PING opaque byte 7 matched");
     };
+
+    t.run("H2-02b: Outbound Frame Aggregation with Zero-Heap CorkBuffer") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[..256] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        let p_hdr = wing::FrameHeader {
+            length: 8,
+            frame_type: wing::FRAME_PING,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(p_hdr, wire);
+        let ping_data: u8[8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
+        for b in ping_data { wire.push(b); }
+
+        var cork = core::new_cork_buffer();
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, cork);
+
+        sub.assert_true(ok, "Ingress succeeded with CorkBuffer");
+        sub.assert_eq(consumed, wire.len, "Consumed entire client payload");
+        sub.assert_gt(cork.cork_pending(), 0, "CorkBuffer contains emitted frames");
+
+        let emitted = cork.cork_as_slice();
+        // Frame 1: Server SETTINGS (33 bytes)
+        // Frame 2: Server PING ACK (17 bytes)
+        sub.assert_eq(cork.cork_pending(), 33 + 17, "Emitted SETTINGS (33) + PING ACK (17)");
+        let f2_hdr, _ = wing::parse_frame_header(emitted[33 .. 42]);
+        sub.assert_eq(f2_hdr.frame_type, wing::FRAME_PING, "Frame 2 is PING ACK in cork");
+        sub.assert_true((f2_hdr.flags & wing::FLAG_ACK) != 0, "FLAG_ACK set on PING response");
+
+        core::cork_consume(cork, 33);
+        sub.assert_eq(cork.cork_pending(), 17, "Remaining 17 bytes after partial cork consume");
+    };
 }
 
 // ============================================================================

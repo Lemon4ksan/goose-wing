@@ -49,11 +49,27 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
 fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
+    // RFC 9112 Section 3.1: No whitespace is allowed before the method name
+    guard wire[0] != ' ' && wire[0] != '\t' else { return false, 0; }
+
+    // RFC 9112 Section 2.2: A server that is expecting to receive a request-line
+    // SHOULD ignore at least one empty line (CRLF) received prior to any request-line.
+    // A server MUST NOT ignore more than one empty line.
+    var req_offset: i64 = 0;
+    if wire.len >= 2 && wire[0] == '\r' && wire[1] == '\n' {
+        req_offset = 2;
+        guard req_offset < wire.len else { return false, 0; }
+        guard wire[req_offset] != '\r' && wire[req_offset] != '\n' &&
+              wire[req_offset] != ' ' && wire[req_offset] != '\t' else { return false, 0; }
+    }
+
+    let active_wire = wire[req_offset..];
+
     // Find end of headers (\r\n\r\n)
-    let hdr_end = core::index_of_slice(wire, "\r\n\r\n");
+    let hdr_end = core::index_of_slice(active_wire, "\r\n\r\n");
     guard hdr_end >= 0 else { return false, 0; }
     let header_end_idx = hdr_end + 4;
-    let header_bytes = wire[..header_end_idx];
+    let header_bytes = active_wire[..header_end_idx];
 
     // Find end of request line
     let line_end = core::index_of_slice(header_bytes, "\r\n");
@@ -74,6 +90,12 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     guard sp2_rel > 0 else { return false, 0; }
     let path_slice = rest[..sp2_rel];
     guard path_slice.len > 0 && path_slice.len <= out_req.url.cap else { return false, 0; }
+
+    // RFC 9110 Section 4.1 & CVE-2022-22970: Reject CTLs (0x00..0x1F, 0x7F) in request target path
+    for b in path_slice {
+        guard b > 0x1F && b != 0x7F else { return false, 0; }
+    }
+
     out_req.url.clear();
     out_req.url.append(path_slice);
 
@@ -139,6 +161,12 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
             cl_count++;
             let val_trimmed = trim_lws(hdr.value[..]);
             guard val_trimmed.len > 0 else { return false, 0; }
+
+            // RFC 9110 Section 8.6 & Go #53188: Content-Length must contain only decimal digits
+            for b in val_trimmed {
+                guard b >= '0' && b <= '9' else { return false, 0; }
+            }
+
             let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
             guard ok_cl && parsed_cl >= 0 else { return false, 0; }
             if cl_count == 1 {
@@ -156,27 +184,29 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         return false, 0;
     }
 
+    let body_start_idx = req_offset + header_end_idx;
+
     if has_te {
         // Must validate transfer encoding value per RFC 9112 Section 6.3 & 7.1
         guard validate_transfer_encoding_value(te_buf[..]) else { return false, 0; }
 
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
-            wire[header_end_idx..],
+            wire[body_start_idx..],
             out_req.body,
             out_req.trailers
         );
         guard dec_err == ChunkedDecodeError.None else { return false, 0; }
 
-        let total_consumed = header_end_idx + chunked_consumed;
+        let total_consumed = body_start_idx + chunked_consumed;
         return true, total_consumed;
     }
 
     // Guard against signed integer addition overflow
-    guard cl_len >= 0 && cl_len <= 0x7FFFFFFF && wire.len >= header_end_idx + cl_len else { return false, 0; }
-    let total_consumed = header_end_idx + cl_len;
+    guard cl_len >= 0 && cl_len <= 0x7FFFFFFF && wire.len >= body_start_idx + cl_len else { return false, 0; }
+    let total_consumed = body_start_idx + cl_len;
 
     if cl_len > 0 {
-        out_req.body.append(wire[header_end_idx..total_consumed]);
+        out_req.body.append(wire[body_start_idx..total_consumed]);
     }
 
     return true, total_consumed;
@@ -410,6 +440,7 @@ struct HttpServer {
     is_running: bool = false,
     requests_processed: u64 = 0,
     accept_proxy_protocol: bool = false,
+    fast_path: bool = false,
 }
 
 fn new_http_server(
@@ -485,12 +516,41 @@ fn handle_connection_wire<B>(
 ) -> PipelineOutcome, bool {
     wire_out.clear();
 
+    if server.fast_path {
+        var req = new_request("GET", "");
+        let ok_parse, _ = parse_http1_wire_request(wire_in, req);
+        guard ok_parse else {
+            serialize_bad_request_error(server.server_name[..], wire_out);
+            return PipelineOutcome.Handled, false;
+        }
+
+        var res = new_response();
+        var params = ZeroAllocParams { .. };
+        let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
+        match match_res {
+            Found f => {
+                res.status_code = 200;
+            },
+            MethodNotAllowed mna => {
+                res.status_code = 405;
+                res.headers.push(make_header("Allow", mna.allow_header[..]));
+            },
+            NotFound => {
+                res.status_code = 404;
+            },
+        };
+
+        serialize_http1_response(res, server.server_name[..], wire_out);
+        server.requests_processed++;
+        return PipelineOutcome.Handled, true;
+    }
+
     var effective_ip: u8[..64] = [];
     effective_ip.append(client_ip);
     var raw_stream = wire_in;
-    var proxy_hdr = ProxyHeader { .. };
 
     if server.accept_proxy_protocol {
+        var proxy_hdr = ProxyHeader { .. };
         let is_proxy = detect_proxy_protocol(wire_in);
         if is_proxy != ProxyProtocolVersion.None {
             let stripped, has_proxy = detect_and_strip_proxy_header(wire_in, proxy_hdr);
@@ -539,4 +599,143 @@ fn handle_connection_wire<B>(
     server.requests_processed++;
 
     return outcome, true;
+}
+
+// Processes an incoming connection stream that may contain multiple pipelined HTTP requests (RFC 9112 Section 9.3).
+// Concatenates all serialized responses into wire_out and returns (total_requests_processed, ok).
+fn handle_connection_wire_pipelined<B>(
+    server: HttpServer&,
+    client_ip: const u8[:],
+    wire_in: const u8[:],
+    now_ns: u64,
+    wire_out: B&
+) -> i64, bool {
+    wire_out.clear();
+    var stream = wire_in;
+    var total_handled: i64 = 0;
+
+    while stream.len > 0 {
+        var req = new_request("GET", "");
+        let ok_parse, consumed = parse_http1_wire_request(stream, req);
+        guard ok_parse && consumed > 0 else {
+            if total_handled == 0 {
+                serialize_bad_request_error(server.server_name[..], wire_out);
+                return 0, false;
+            }
+            break;
+        }
+
+        var res = new_response();
+        if server.fast_path {
+            var params = ZeroAllocParams { .. };
+            let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
+            match match_res {
+                Found f => { res.status_code = 200; },
+                MethodNotAllowed mna => {
+                    res.status_code = 405;
+                    res.headers.push(make_header("Allow", mna.allow_header[..]));
+                },
+                NotFound => { res.status_code = 404; },
+            };
+        } else {
+            var future = internal::new_inline_handler_future(0);
+            let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+            if req.method[..] == "CONNECT" {
+                header(res, "Connection", "close");
+            }
+        }
+
+        serialize_http1_response(res, server.server_name[..], wire_out);
+        server.requests_processed++;
+        total_handled++;
+
+        stream = stream[consumed..];
+    }
+
+    return total_handled, true;
+}
+
+// Incremental Sans-IO pipeline handler using PipeBuffer (RFC 9112 & System.IO.Pipelines model).
+// Reads from the pipe buffer, processes all complete pipelined requests, and updates
+// pipe cursors (consumed, examined) with strict monotonicity.
+// Returns (total_requests_processed, ok).
+fn handle_connection_pipe<B>(
+    server: HttpServer&,
+    client_ip: const u8[:],
+    pipe: core::PipeBuffer&,
+    now_ns: u64,
+    wire_out: B&
+) -> i64, bool {
+    let unread_len = pipe.readable_len();
+    guard unread_len > 0 else { return 0, true; }
+
+    var total_handled: i64 = 0;
+
+    // Check for HTTP/2 connection preface if at the very start of the stream
+    if pipe.consumed == 0 && unread_len >= 24 {
+        let stream = core::readable_slice(pipe);
+        if is_h2_client_preface(stream) {
+            let now_ms = (now_ns / 1000000) as u64;
+            var sess = new_h2_server_session(server.server_name[..], now_ms);
+            let consumed_h2, ok_h2 = handle_h2_server_ingress(sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out);
+            if ok_h2 {
+                core::advance_to(pipe, consumed_h2, consumed_h2);
+                server.requests_processed++;
+                return 1, true;
+            }
+            core::advance_to(pipe, consumed_h2, unread_len);
+            return 0, false;
+        }
+    }
+
+    while pipe.readable_len() > 0 {
+        let stream = core::readable_slice(pipe);
+        var req = new_request("GET", "");
+        let ok_parse, consumed = parse_http1_wire_request(stream, req);
+
+        if ok_parse && consumed > 0 {
+            var res = new_response();
+            if server.fast_path {
+                var params = ZeroAllocParams { .. };
+                let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
+                match match_res {
+                    Found f => { res.status_code = 200; },
+                    MethodNotAllowed mna => {
+                        res.status_code = 405;
+                        res.headers.push(make_header("Allow", mna.allow_header[..]));
+                    },
+                    NotFound => { res.status_code = 404; },
+                };
+            } else {
+                var future = internal::new_inline_handler_future(0);
+                let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+                if req.method[..] == "CONNECT" {
+                    header(res, "Connection", "close");
+                }
+            }
+
+            serialize_http1_response(res, server.server_name[..], wire_out);
+            server.requests_processed++;
+            total_handled++;
+
+            core::advance_to(pipe, consumed, consumed);
+        } else {
+            // Check if headers are complete
+            let hdr_end = core::index_of_slice(stream, "\r\n\r\n");
+            if hdr_end >= 0 {
+                // Headers are complete but parsing failed -> fatal syntax / smuggling error!
+                if total_handled == 0 {
+                    serialize_bad_request_error(server.server_name[..], wire_out);
+                }
+                core::advance_to(pipe, 0, pipe.readable_len());
+                return total_handled, false;
+            } else {
+                // Incomplete frame / chunk: examine all currently readable bytes without consuming
+                core::advance_to(pipe, 0, pipe.readable_len());
+                break;
+            }
+        }
+    }
+
+    return total_handled, true;
 }
