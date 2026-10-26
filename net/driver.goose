@@ -4,7 +4,7 @@
 // 2. IoUring: Linux 6.1+ kernel submission/completion (SQ/CQ) ring queues.
 // 3. WindowsRIO: Windows Registered I/O (RIO zero-copy, page-locked memory buffers, mswsock.dll).
 // 4. Kqueue: macOS / Darwin kevent event multiplexing with exact buffer metrics.
-namespace wing;
+namespace internal;
 
 import std;
 

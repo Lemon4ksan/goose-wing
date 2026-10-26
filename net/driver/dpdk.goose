@@ -1,6 +1,6 @@
 // Layer 4 DPDK (Data Plane Development Kit) Poll Mode Driver (PMD) Interface.
 // Maps NIC PCIe BAR registers directly into userspace for line-rate 100G/200G packet processing.
-namespace wing;
+namespace internal;
 
 import std;
 import net.driver.types;

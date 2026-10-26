@@ -14,8 +14,8 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 fn test_poller_creation_and_lifecycle(t: core::T&) {
     t.run("Standard Driver Poller Lifecycle") { sub =>
-        var cfg = wing::auto_transport_driver_config();
-        cfg.active_kind = wing::TransportDriverKind.Standard;
+        var cfg = internal::auto_transport_driver_config();
+        cfg.active_kind = internal::TransportDriverKind.Standard;
 
         var poller = wing::new_poller(cfg);
         sub.assert_true(poller.is_open, "Poller is open");
@@ -27,13 +27,13 @@ fn test_poller_creation_and_lifecycle(t: core::T&) {
     };
 
     t.run("Windows RIO / io_uring / kqueue Probed Poller Creation") { sub =>
-        let plat = wing::detect_target_platform();
-        var cfg = wing::auto_transport_driver_config();
+        let plat = internal::detect_target_platform();
+        var cfg = internal::auto_transport_driver_config();
 
         var poller = wing::new_poller(cfg);
         sub.assert_true(poller.is_open, "Poller created successfully with auto-selected driver");
 
-        if plat == wing::TargetPlatform.Windows && cfg.active_kind == wing::TransportDriverKind.WindowsRIO {
+        if plat == internal::TargetPlatform.Windows && cfg.active_kind == internal::TransportDriverKind.WindowsRIO {
             sub.assert_true(poller.rio_cq_id != 0, "Windows RIO completion queue initialized");
         }
 
@@ -46,7 +46,7 @@ fn test_poller_creation_and_lifecycle(t: core::T&) {
 // 2. Socket Registration & Readiness Multiplexing
 // ----------------------------------------------------------------------------
 fn test_poller_registration_and_readiness(t: core::T&) {
-    var cfg = wing::auto_transport_driver_config();
+    var cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
     t.run("Registration Table: Add, Duplicate Guard, Modify, Deregister") { sub =>
@@ -130,7 +130,7 @@ fn test_poller_registration_and_readiness(t: core::T&) {
 // 3. High-Resolution Timer Wheel
 // ----------------------------------------------------------------------------
 fn test_poller_timer_wheel(t: core::T&) {
-    var cfg = wing::auto_transport_driver_config();
+    var cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
     t.run("One-shot Timer Expiration") { sub =>
@@ -212,7 +212,7 @@ fn dummy_event_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::Even
 }
 
 fn test_event_loop_io(t: core::T&) {
-    var cfg = wing::auto_transport_driver_config();
+    var cfg = internal::auto_transport_driver_config();
     var el = wing::new_event_loop(cfg);
 
     t.run("Bind Connection, Queue Write, Feed Read & Consume") { sub =>
@@ -274,7 +274,7 @@ fn bidi_network_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::Eve
 }
 
 fn test_bidi_client_server_cycle(t: core::T&) {
-    var cfg = wing::auto_transport_driver_config();
+    var cfg = internal::auto_transport_driver_config();
     var el = wing::new_event_loop(cfg);
 
     t.run("Complete Non-blocking Bidi Request-Response Roundtrip") { sub =>
@@ -315,7 +315,7 @@ fn test_bidi_client_server_cycle(t: core::T&) {
 // 6. 15-bit / 4-second Coarse Socket Timeouts (uWebSockets Pattern)
 // ----------------------------------------------------------------------------
 fn test_coarse_socket_timeouts(t: core::T&) {
-    var cfg = wing::auto_transport_driver_config();
+    var cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
     t.run("Coarse 4-second Socket Timeout Expiry & Cancellation") { sub =>

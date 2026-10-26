@@ -1,5 +1,5 @@
 // Windows Registered I/O (RIO) kernel bypass driver and page-locked buffers.
-namespace wing;
+namespace internal;
 
 import std;
 

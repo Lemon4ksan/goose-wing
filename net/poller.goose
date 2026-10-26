@@ -84,7 +84,7 @@ struct PollerTimer {
 // ---- 4. Poller Structure ---------------------------------------------------
 
 struct Poller {
-    driver_cfg: TransportDriverConfig = TransportDriverConfig { .. },
+    driver_cfg: internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
     registrations: SocketRegistration[..512] = [SocketRegistration { .. }; 512],
     timers: PollerTimer[..64] = [PollerTimer { .. }; 64],
     active_fd_count: u32 = 0,
@@ -99,7 +99,7 @@ struct Poller {
     is_open: bool = false,
 }
 
-fn new_poller(driver_cfg: const TransportDriverConfig&) -> Poller {
+fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller {
     var p = Poller {
         driver_cfg: driver_cfg,
         is_open: true,
@@ -107,20 +107,20 @@ fn new_poller(driver_cfg: const TransportDriverConfig&) -> Poller {
     };
 
     // Initialize native OS polling handles if available on platform
-    let plat = detect_target_platform();
-    if driver_cfg.active_kind == TransportDriverKind.WindowsRIO {
-        if plat == TargetPlatform.Windows && driver_cfg.enable_kernel_bypass {
-            let cq = native_rio_create_cq(driver_cfg.ring_size);
+    let plat = internal::detect_target_platform();
+    if driver_cfg.active_kind == internal::TransportDriverKind.WindowsRIO {
+        if plat == internal::TargetPlatform.Windows && driver_cfg.enable_kernel_bypass {
+            let cq = internal::native_rio_create_cq(driver_cfg.ring_size);
             p.rio_cq_id = cq;
         }
-    } else if driver_cfg.active_kind == TransportDriverKind.IoUring {
-        if plat == TargetPlatform.Linux {
-            let fd = native_uring_create(driver_cfg.ring_size, 0);
+    } else if driver_cfg.active_kind == internal::TransportDriverKind.IoUring {
+        if plat == internal::TargetPlatform.Linux {
+            let fd = internal::native_uring_create(driver_cfg.ring_size, 0);
             p.uring_ring_fd = fd;
         }
-    } else if driver_cfg.active_kind == TransportDriverKind.Kqueue {
-        if plat == TargetPlatform.Darwin {
-            let fd = native_kqueue_create();
+    } else if driver_cfg.active_kind == internal::TransportDriverKind.Kqueue {
+        if plat == internal::TargetPlatform.Darwin {
+            let fd = internal::native_kqueue_create();
             p.kqueue_fd = fd;
         }
     }
@@ -132,15 +132,15 @@ fn close_poller(p: Poller&) {
     if !p.is_open { return; }
 
     if p.rio_cq_id != 0 {
-        native_rio_close_cq(p.rio_cq_id);
+        internal::native_rio_close_cq(p.rio_cq_id);
         p.rio_cq_id = 0;
     }
     if p.uring_ring_fd >= 0 {
-        native_uring_close(p.uring_ring_fd);
+        internal::native_uring_close(p.uring_ring_fd);
         p.uring_ring_fd = -1;
     }
     if p.kqueue_fd >= 0 {
-        native_kqueue_close(p.kqueue_fd);
+        internal::native_kqueue_close(p.kqueue_fd);
         p.kqueue_fd = -1;
     }
 
@@ -503,14 +503,14 @@ struct ConnectionBuffer {
 
 struct EventLoop {
     poller: Poller = Poller { .. },
-    driver_cfg: TransportDriverConfig = TransportDriverConfig { .. },
+    driver_cfg: internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
     buffers: ConnectionBuffer[..64] = [ConnectionBuffer { .. }; 64],
     state: LoopState = LoopState.Created,
     iteration_count: u64 = 0,
     events_dispatched_total: u64 = 0,
 }
 
-fn new_event_loop(driver_cfg: const TransportDriverConfig&) -> EventLoop {
+fn new_event_loop(driver_cfg: const internal::TransportDriverConfig&) -> EventLoop {
     var p = new_poller(driver_cfg);
     return EventLoop {
         poller: p,

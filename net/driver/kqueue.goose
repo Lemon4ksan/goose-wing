@@ -1,5 +1,5 @@
 // macOS / Darwin kqueue event multiplexing driver.
-namespace wing;
+namespace internal;
 
 import std;
 

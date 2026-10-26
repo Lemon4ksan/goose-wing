@@ -1,5 +1,5 @@
 // Layer 4 Transport Driver manager: platform probing, graceful fallback, and diagnostics.
-namespace wing;
+namespace internal;
 
 import std;
 import net.driver.types;

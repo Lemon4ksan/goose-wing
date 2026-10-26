@@ -1,5 +1,5 @@
 // Layer 4 Transport Driver types, capabilities, and configurations.
-namespace wing;
+namespace internal;
 
 import std;
 import os;

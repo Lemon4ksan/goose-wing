@@ -1,6 +1,6 @@
 // Layer 4 Linux AF_XDP (XSK) Zero-Copy Kernel-Bypass Driver.
 // Routes Ethernet frames directly between NIC hardware queues and userspace UMEM rings.
-namespace wing;
+namespace internal;
 
 import std;
 import net.driver.types;

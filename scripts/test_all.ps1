@@ -21,6 +21,7 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $fileName
     $psi.Arguments = $cmdArgs
+    $psi.WorkingDirectory = $root
     $psi.UseShellExecute = $false
     if ($redirect) {
         $psi.RedirectStandardOutput = $true

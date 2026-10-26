@@ -1,5 +1,5 @@
 // Linux io_uring asynchronous submission and completion ring driver.
-namespace wing;
+namespace internal;
 
 import std;
 
