@@ -1,6 +1,6 @@
 // Deterministic zero-allocation TLS 1.3 Key Schedule and RFC 9001 QUIC Key Derivation.
 // Conforms to RFC 8446 Section 7.1, RFC 9001 Section 5.1-5.4, and BoringSSL HKDF layout.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

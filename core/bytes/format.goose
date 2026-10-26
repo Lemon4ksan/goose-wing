@@ -3,23 +3,51 @@ namespace core;
 
 import std;
 
+const DIGITS_LUT: const u8[200] = [
+    '0', '0', '0', '1', '0', '2', '0', '3', '0', '4', '0', '5', '0', '6', '0', '7', '0', '8', '0', '9',
+    '1', '0', '1', '1', '1', '2', '1', '3', '1', '4', '1', '5', '1', '6', '1', '7', '1', '8', '1', '9',
+    '2', '0', '2', '1', '2', '2', '2', '3', '2', '4', '2', '5', '2', '6', '2', '7', '2', '8', '2', '9',
+    '3', '0', '3', '1', '3', '2', '3', '3', '3', '4', '3', '5', '3', '6', '3', '7', '3', '8', '3', '9',
+    '4', '0', '4', '1', '4', '2', '4', '3', '4', '4', '4', '5', '4', '6', '4', '7', '4', '8', '4', '9',
+    '5', '0', '5', '1', '5', '2', '5', '3', '5', '4', '5', '5', '5', '6', '5', '7', '5', '8', '5', '9',
+    '6', '0', '6', '1', '6', '2', '6', '3', '6', '4', '6', '5', '6', '6', '6', '7', '6', '8', '6', '9',
+    '7', '0', '7', '1', '7', '2', '7', '3', '7', '4', '7', '5', '7', '6', '7', '7', '7', '8', '7', '9',
+    '8', '0', '8', '1', '8', '2', '8', '3', '8', '4', '8', '5', '8', '6', '8', '7', '8', '8', '8', '9',
+    '9', '0', '9', '1', '9', '2', '9', '3', '9', '4', '9', '5', '9', '6', '9', '7', '9', '8', '9', '9',
+];
+
 // Formats an unsigned 64-bit integer in decimal notation into appendable buffer out.
+// Accelerates integer formatting via 2-digit lookup table without dynamic allocations.
 fn format_u64_dec<B>(val: u64, out: B&) {
     guard val > 0 else {
         out.push('0');
         return;
     }
-    var digits: u8[20] = [0; 20];
+    var digits: u8[24] = [0; 24];
     var count = 0;
     var v = val;
-    while v > 0 {
-        digits[count] = ('0' + ((v % 10) as! u8));
-        v = v / 10;
-        count++;
+    while v >= 100 {
+        let q = v / 100;
+        let r = (v - q * 100) as i64;
+        v = q;
+        digits[count] = DIGITS_LUT[r * 2 + 1];
+        digits[count + 1] = DIGITS_LUT[r * 2];
+        count += 2;
     }
+    if v < 10 {
+        digits[count] = ('0' + (v as u8));
+        count += 1;
+    } else {
+        let r = v as i64;
+        digits[count] = DIGITS_LUT[r * 2 + 1];
+        digits[count + 1] = DIGITS_LUT[r * 2];
+        count += 2;
+    }
+    var rev: u8[24] = [0; 24];
     for i in count {
-        out.push(digits[count - 1 - i]);
+        rev[i] = digits[count - 1 - i];
     }
+    out.append(rev[..count]);
 }
 
 // Formats a signed 64-bit integer in decimal notation into appendable buffer out.

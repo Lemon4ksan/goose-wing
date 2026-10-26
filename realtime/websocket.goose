@@ -459,6 +459,31 @@ fn parse_ws_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
 
 // ---- 5. High-Level Ergonomic WebSocket Client Session -----------------------
 
+// Backpressure and Send Status Codes (uWebSockets pattern)
+enum WsSendStatus {
+    Success,      // Sent immediately or queued below backpressure threshold
+    Backpressure, // Queued successfully, but socket has active backpressure (buffered_amount > 0)
+    Dropped,      // Message dropped because max_backpressure limit was exceeded
+    Closed,       // Socket was closed or aborted due to backpressure overflow
+}
+
+// Declarative WebSocket Endpoint Behavior Specification (uWebSockets App::ws pattern)
+struct WsBehavior {
+    compression: u16 = WS_COMPRESS_DISABLED, // WS_COMPRESS_SHARED_COMPRESSOR
+    max_payload_length: u64 = 65536,
+    idle_timeout_s: u32 = 120,
+    max_backpressure: u64 = 1048576, // 1 MB default
+    close_on_backpressure_limit: bool = false,
+    reset_idle_timeout_on_send: bool = true,
+    send_pings_automatically: bool = false,
+    subprotocol: u8[..64] = [],
+    handler_id: i32 = -1,
+}
+
+fn new_ws_behavior(handler_id: i32 = -1) -> WsBehavior {
+    return WsBehavior { handler_id: handler_id, .. };
+}
+
 struct WebSocketSession {
     is_client: bool = true,
     subprotocol: u8[..64] = [],
@@ -474,10 +499,91 @@ struct WebSocketSession {
     compress_mode: u16 = WS_COMPRESS_DISABLED,
     permessage_deflate: bool = false,
     server_no_context_takeover: bool = true,
+
+    // Per-socket UserData / Typed User Context (uWebSockets getUserData pattern)
+    user_tag: u64 = 0,
+    user_data: u8[..128] = [],
+
+    // Backpressure & Dynamic Flow Control (uWebSockets Backpressure pattern)
+    buffered_amount: u64 = 0,
+    max_backpressure: u64 = 1048576, // 1 MB default
+    close_on_backpressure_limit: bool = false,
+    is_backpressured: bool = false,
+    dropped_messages_count: u64 = 0,
 }
 
 fn new_websocket_session(is_client: bool = true) -> WebSocketSession {
     return WebSocketSession { is_client: is_client, .. };
+}
+
+// Per-Socket UserData accessors (zero-alloc inline context)
+fn ws_set_user_data(ws: WebSocketSession&, data: const u8[:]) -> bool {
+    ws.user_data.clear();
+    guard data.len <= ws.user_data.cap else { return false; }
+    ws.user_data.append(data);
+    return true;
+}
+
+fn ws_get_user_data(ws: const WebSocketSession&) -> const u8[:] {
+    return ws.user_data[..];
+}
+
+fn ws_set_user_tag(ws: WebSocketSession&, tag: u64) {
+    ws.user_tag = tag;
+}
+
+fn ws_get_user_tag(ws: const WebSocketSession&) -> u64 {
+    return ws.user_tag;
+}
+
+// Backpressure & buffer flow control accessors
+fn ws_get_buffered_amount(ws: const WebSocketSession&) -> u64 {
+    return ws.buffered_amount;
+}
+
+fn ws_is_backpressured(ws: const WebSocketSession&) -> bool {
+    return ws.is_backpressured;
+}
+
+fn ws_set_max_backpressure(ws: WebSocketSession&, max_bytes: u64, close_on_limit: bool = false) {
+    ws.max_backpressure = max_bytes;
+    ws.close_on_backpressure_limit = close_on_limit;
+}
+
+// Notifies the session of outbound bytes buffered for delivery.
+// Enforces max_backpressure and overflow drop/close policies.
+fn ws_notify_buffered<B>(ws: WebSocketSession&, bytes_added: u64, out_close: B&) -> WsSendStatus {
+    guard !ws.is_closed else { return WsSendStatus.Closed; }
+    if ws.buffered_amount + bytes_added > ws.max_backpressure {
+        if ws.close_on_backpressure_limit {
+            ws_close(ws, WS_STATUS_POLICY_VIOLATION, "backpressure limit exceeded", out_close);
+            return WsSendStatus.Closed;
+        } else {
+            ws.dropped_messages_count += 1;
+            return WsSendStatus.Dropped;
+        }
+    }
+    ws.buffered_amount += bytes_added;
+    if ws.buffered_amount > 0 {
+        ws.is_backpressured = true;
+        return WsSendStatus.Backpressure;
+    }
+    return WsSendStatus.Success;
+}
+
+// Notifies the session of completed network buffer drainage.
+// Returns true when the buffer drops to 0 from a backpressured state, triggering the 'drain' event.
+fn ws_notify_drained(ws: WebSocketSession&, bytes_drained: u64) -> bool {
+    if bytes_drained >= ws.buffered_amount {
+        ws.buffered_amount = 0;
+    } else {
+        ws.buffered_amount -= bytes_drained;
+    }
+    if ws.buffered_amount == 0 && ws.is_backpressured {
+        ws.is_backpressured = false;
+        return true;
+    }
+    return false;
 }
 
 // Configures PerMessageDeflate (RFC 7692) on the WebSocket session
@@ -527,12 +633,116 @@ fn ws_send_text<B>(ws: WebSocketSession&, text: const u8[:], out: B&) {
     encode_ws_frame(out, WS_OPCODE_TEXT, text, ws.is_client, mask, true);
 }
 
+// Sends UTF-8 text message with backpressure tracking and status code (uWebSockets sendStatus pattern)
+fn ws_send_text_with_status<B>(
+    ws: WebSocketSession&,
+    text: const u8[:],
+    out: B&,
+    compress: bool = false
+) -> WsSendStatus {
+    guard !ws.is_closed else { return WsSendStatus.Closed; }
+    let frame_len = (text.len + 10) as u64;
+    let status = ws_notify_buffered(ws, frame_len, out);
+    if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
+        return status;
+    }
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_TEXT, text, ws.is_client, mask, true);
+    return status;
+}
+
+// Sends UTF-8 text message with shared compressor and backpressure tracking
+fn ws_send_text_compressed_with_status<B>(
+    ws: WebSocketSession&,
+    text: const u8[:],
+    shared_comp: SharedWsCompressor&,
+    out: B&,
+    compress: bool = true
+) -> WsSendStatus {
+    guard !ws.is_closed else { return WsSendStatus.Closed; }
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+
+    if compress && ws.permessage_deflate && text.len > 0 {
+        var comp_wire: u8[..16384] = [];
+        let ok_comp = ws_deflate_message(shared_comp, text, comp_wire, true);
+        if ok_comp && comp_wire.len < text.len {
+            let frame_len = (comp_wire.len + 10) as u64;
+            let status = ws_notify_buffered(ws, frame_len, out);
+            if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
+                return status;
+            }
+            encode_ws_frame_compressed(out, WS_OPCODE_TEXT, comp_wire[..], ws.is_client, mask, true);
+            return status;
+        }
+    }
+
+    let frame_len = (text.len + 10) as u64;
+    let status = ws_notify_buffered(ws, frame_len, out);
+    if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
+        return status;
+    }
+    encode_ws_frame(out, WS_OPCODE_TEXT, text, ws.is_client, mask, true);
+    return status;
+}
+
 // High-level method: sends binary message
 fn ws_send_binary<B>(ws: WebSocketSession&, data: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed, drop outgoing message writes
     guard !ws.is_closed else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_BINARY, data, ws.is_client, mask, true);
+}
+
+// Sends binary message with backpressure tracking and status code (uWebSockets sendStatus pattern)
+fn ws_send_binary_with_status<B>(
+    ws: WebSocketSession&,
+    data: const u8[:],
+    out: B&,
+    compress: bool = false
+) -> WsSendStatus {
+    guard !ws.is_closed else { return WsSendStatus.Closed; }
+    let frame_len = (data.len + 10) as u64;
+    let status = ws_notify_buffered(ws, frame_len, out);
+    if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
+        return status;
+    }
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, WS_OPCODE_BINARY, data, ws.is_client, mask, true);
+    return status;
+}
+
+// Sends binary message with shared compressor and backpressure tracking
+fn ws_send_binary_compressed_with_status<B>(
+    ws: WebSocketSession&,
+    data: const u8[:],
+    shared_comp: SharedWsCompressor&,
+    out: B&,
+    compress: bool = true
+) -> WsSendStatus {
+    guard !ws.is_closed else { return WsSendStatus.Closed; }
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+
+    if compress && ws.permessage_deflate && data.len > 0 {
+        var comp_wire: u8[..16384] = [];
+        let ok_comp = ws_deflate_message(shared_comp, data, comp_wire, true);
+        if ok_comp && comp_wire.len < data.len {
+            let frame_len = (comp_wire.len + 10) as u64;
+            let status = ws_notify_buffered(ws, frame_len, out);
+            if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
+                return status;
+            }
+            encode_ws_frame_compressed(out, WS_OPCODE_BINARY, comp_wire[..], ws.is_client, mask, true);
+            return status;
+        }
+    }
+
+    let frame_len = (data.len + 10) as u64;
+    let status = ws_notify_buffered(ws, frame_len, out);
+    if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
+        return status;
+    }
+    encode_ws_frame(out, WS_OPCODE_BINARY, data, ws.is_client, mask, true);
+    return status;
 }
 
 // High-level method: sends Ping heartbeat
@@ -890,4 +1100,18 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
     }
 
     return session, true;
+}
+
+// Inspects an incoming HTTP Request to determine if it is an RFC 6455 WebSocket Upgrade request
+fn is_websocket_upgrade_request(req: const Request&) -> bool {
+    guard req.method[..] == "GET" else { return false; }
+    let upg = req.headers.find_header("Upgrade");
+    guard core::eq_ascii_fold(upg, "websocket") else { return false; }
+    let conn = req.headers.find_header("Connection");
+    guard core::contains_fold(conn, "upgrade") else { return false; }
+    let ver = req.headers.find_header("Sec-WebSocket-Version");
+    guard ver == "13" else { return false; }
+    let key = req.headers.find_header("Sec-WebSocket-Key");
+    guard is_valid_websocket_key(key) else { return false; }
+    return true;
 }

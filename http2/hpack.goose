@@ -884,22 +884,126 @@ fn get_hpack_static_field(idx: u64) -> HpackStaticField, bool {
 
 // Searches static table for matching name and optional value.
 // Returns (1-based index, exact_value_match).
+// Dispatches in O(1) via first character prefix without scanning all 61 entries.
 fn find_hpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
-    var matched_name_idx: u64 = 0;
-    var idx: u64 = 1;
-    while idx <= HPACK_STATIC_TABLE_ENTRIES {
-        let entry = HPACK_STATIC_TABLE[idx as i64];
-        if entry.name == name {
-            if entry.val == val {
-                return idx, true; // Exact name + value match
-            }
-            if matched_name_idx == 0 {
-                matched_name_idx = idx; // First name match
-            }
+    guard name.len > 0 else { return 0, false; }
+    let c = name[0];
+
+    if c == ':' {
+        if name == ":status" {
+            if val == "200" { return 8, true; }
+            if val == "204" { return 9, true; }
+            if val == "206" { return 10, true; }
+            if val == "304" { return 11, true; }
+            if val == "400" { return 12, true; }
+            if val == "404" { return 13, true; }
+            if val == "500" { return 14, true; }
+            return 8, false;
         }
-        idx++;
+        if name == ":method" {
+            if val == "GET" { return 2, true; }
+            if val == "POST" { return 3, true; }
+            return 2, false;
+        }
+        if name == ":path" {
+            if val == "/" { return 4, true; }
+            if val == "/index.html" { return 5, true; }
+            return 4, false;
+        }
+        if name == ":scheme" {
+            if val == "http" { return 6, true; }
+            if val == "https" { return 7, true; }
+            return 6, false;
+        }
+        if name == ":authority" {
+            return 1, val.len == 0;
+        }
+        return 0, false;
+    } else if c == 'a' {
+        if name == "accept" { return 19, val.len == 0; }
+        if name == "accept-encoding" {
+            if val == "gzip, deflate" { return 16, true; }
+            return 16, false;
+        }
+        if name == "authorization" { return 23, val.len == 0; }
+        if name == "access-control-allow-origin" { return 20, val.len == 0; }
+        if name == "accept-language" { return 17, val.len == 0; }
+        if name == "accept-ranges" { return 18, val.len == 0; }
+        if name == "accept-charset" { return 15, val.len == 0; }
+        if name == "age" { return 21, val.len == 0; }
+        if name == "allow" { return 22, val.len == 0; }
+        return 0, false;
+    } else if c == 'c' {
+        if name == "content-type" { return 31, val.len == 0; }
+        if name == "content-length" { return 28, val.len == 0; }
+        if name == "cookie" { return 32, val.len == 0; }
+        if name == "cache-control" { return 24, val.len == 0; }
+        if name == "content-encoding" { return 26, val.len == 0; }
+        if name == "content-disposition" { return 25, val.len == 0; }
+        if name == "content-language" { return 27, val.len == 0; }
+        if name == "content-location" { return 29, val.len == 0; }
+        if name == "content-range" { return 30, val.len == 0; }
+        return 0, false;
+    } else if c == 'd' {
+        if name == "date" { return 33, val.len == 0; }
+        return 0, false;
+    } else if c == 'e' {
+        if name == "etag" { return 34, val.len == 0; }
+        if name == "expires" { return 36, val.len == 0; }
+        if name == "expect" { return 35, val.len == 0; }
+        return 0, false;
+    } else if c == 'f' {
+        if name == "from" { return 37, val.len == 0; }
+        return 0, false;
+    } else if c == 'h' {
+        if name == "host" { return 38, val.len == 0; }
+        return 0, false;
+    } else if c == 'i' {
+        if name == "if-modified-since" { return 40, val.len == 0; }
+        if name == "if-none-match" { return 41, val.len == 0; }
+        if name == "if-match" { return 39, val.len == 0; }
+        if name == "if-range" { return 42, val.len == 0; }
+        if name == "if-unmodified-since" { return 43, val.len == 0; }
+        return 0, false;
+    } else if c == 'l' {
+        if name == "last-modified" { return 44, val.len == 0; }
+        if name == "location" { return 46, val.len == 0; }
+        if name == "link" { return 45, val.len == 0; }
+        return 0, false;
+    } else if c == 'm' {
+        if name == "max-forwards" { return 47, val.len == 0; }
+        return 0, false;
+    } else if c == 'p' {
+        if name == "proxy-authorization" { return 49, val.len == 0; }
+        if name == "proxy-authenticate" { return 48, val.len == 0; }
+        return 0, false;
+    } else if c == 'r' {
+        if name == "referer" { return 51, val.len == 0; }
+        if name == "range" { return 50, val.len == 0; }
+        if name == "retry-after" { return 53, val.len == 0; }
+        if name == "refresh" { return 52, val.len == 0; }
+        return 0, false;
+    } else if c == 's' {
+        if name == "server" { return 54, val.len == 0; }
+        if name == "set-cookie" { return 55, val.len == 0; }
+        if name == "strict-transport-security" { return 56, val.len == 0; }
+        return 0, false;
+    } else if c == 't' {
+        if name == "transfer-encoding" { return 57, val.len == 0; }
+        return 0, false;
+    } else if c == 'u' {
+        if name == "user-agent" { return 58, val.len == 0; }
+        return 0, false;
+    } else if c == 'v' {
+        if name == "vary" { return 59, val.len == 0; }
+        if name == "via" { return 60, val.len == 0; }
+        return 0, false;
+    } else if c == 'w' {
+        if name == "www-authenticate" { return 61, val.len == 0; }
+        return 0, false;
     }
-    return matched_name_idx, false;
+
+    return 0, false;
 }
 
 // ---- 6. zero-allocation dynamic table (rfc 7541 section 4) ------------------

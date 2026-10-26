@@ -30,11 +30,19 @@ fn ok(err: const Error&) -> bool {
 
 // ---- response model & inspectors -------------------------------------------
 
+const RES_PRESENCE_DATE: u16 = 1 << 0;
+const RES_PRESENCE_CONTENT_LENGTH: u16 = 1 << 1;
+const RES_PRESENCE_CONTENT_TYPE: u16 = 1 << 2;
+const RES_PRESENCE_CONNECTION: u16 = 1 << 3;
+const RES_PRESENCE_TRANSFER_ENCODING: u16 = 1 << 4;
+const RES_PRESENCE_SERVER: u16 = 1 << 5;
+
 struct Response {
     status_code: i32 = 0,
     effective_url: u8[..2048] = [],
     headers: HeaderItem[..32] = [],
     trailers: HeaderItem[..16] = [],
+    presence_mask: u16 = 0,
     redirect_count: i64 = 0,
     url_chain: u8[..256][..16] = [],
     final_method: u8[..16] = "GET",
@@ -101,12 +109,30 @@ fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.trailers, name, value, false);
 }
 
+fn update_response_presence(res: Response&, name: const u8[:]) {
+    if core::eq_ascii_fold(name, "date") {
+        res.presence_mask = res.presence_mask | RES_PRESENCE_DATE;
+    } else if core::eq_ascii_fold(name, "content-length") {
+        res.presence_mask = res.presence_mask | RES_PRESENCE_CONTENT_LENGTH;
+    } else if core::eq_ascii_fold(name, "content-type") {
+        res.presence_mask = res.presence_mask | RES_PRESENCE_CONTENT_TYPE;
+    } else if core::eq_ascii_fold(name, "connection") {
+        res.presence_mask = res.presence_mask | RES_PRESENCE_CONNECTION;
+    } else if core::eq_ascii_fold(name, "transfer-encoding") {
+        res.presence_mask = res.presence_mask | RES_PRESENCE_TRANSFER_ENCODING;
+    } else if core::eq_ascii_fold(name, "server") {
+        res.presence_mask = res.presence_mask | RES_PRESENCE_SERVER;
+    }
+}
+
 fn header(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.headers, name, value, false);
+    update_response_presence(res, name);
 }
 
 fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.headers, name, value, false);
+    update_response_presence(res, name);
 }
 
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {

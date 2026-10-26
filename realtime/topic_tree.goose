@@ -359,6 +359,7 @@ fn is_valid_publish_topic(topic: const u8[:]) -> bool {
 fn topic_find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
     guard is_valid_publish_topic(topic) else { return 0; }
     out_fds.clear();
+    var seen_mask: u64[4] = [0, 0, 0, 0];
 
     for b in tree.buckets.len {
         guard tree.buckets[b].in_use && tree.buckets[b].subscriber_count > 0 else { continue; }
@@ -370,16 +371,24 @@ fn topic_find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i
                 if tree.nodes[cur_i64].in_use {
                     let fd = tree.nodes[cur_i64].sock_fd;
 
-                    var already_added = false;
-                    for d_fd in out_fds {
-                        if d_fd == fd {
-                            already_added = true;
-                            break;
-                        }
-                    }
+                    let h = ((fd as u64) ^ ((fd as u64) >> 8)) & 255;
+                    let word_idx = (h >> 6) as i64;
+                    let bit = (1 as u64) << (h & 63);
 
-                    if !already_added {
+                    if (seen_mask[word_idx] & bit) == 0 {
+                        seen_mask[word_idx] = seen_mask[word_idx] | bit;
                         if out_fds.len < out_fds.cap {
+                            out_fds.push(fd);
+                        }
+                    } else {
+                        var already_added = false;
+                        for d_fd in out_fds {
+                            if d_fd == fd {
+                                already_added = true;
+                                break;
+                            }
+                        }
+                        if !already_added && out_fds.len < out_fds.cap {
                             out_fds.push(fd);
                         }
                     }

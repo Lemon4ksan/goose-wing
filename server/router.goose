@@ -118,10 +118,9 @@ fn update_param_suffix_flag(existing_type: NodeType, new_suffix: const u8[:]) ->
 // Searches the static indices array of a node for a child matching first_byte.
 fn find_child_by_byte(tree: const RadixTree&, cur_idx: i32, b: u8) -> i32 {
     let c_idx = cur_idx as i64;
-    for &byte_val, i in tree.nodes[c_idx].indices {
-        if byte_val == b {
-            return tree.nodes[c_idx].children[i];
-        }
+    let idx = core::index_of_byte(tree.nodes[c_idx].indices[..], b);
+    if idx >= 0 {
+        return tree.nodes[c_idx].children[idx];
     }
     return -1;
 }

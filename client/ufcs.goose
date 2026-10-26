@@ -127,6 +127,90 @@ fn ::receive_view<B>(ws: wing::WebSocketSession&, wire: u8[:], out_view: wing::W
     return wing::ws_receive_view(ws, wire, out_view, out_reply);
 }
 
+// UserData & Typed Context Bridges
+fn ::set_user_data(ws: wing::WebSocketSession&, data: const u8[:]) -> bool {
+    return wing::ws_set_user_data(ws, data);
+}
+
+fn ::get_user_data(ws: const wing::WebSocketSession&) -> const u8[:] {
+    return wing::ws_get_user_data(ws);
+}
+
+fn ::set_user_tag(ws: wing::WebSocketSession&, tag: u64) {
+    wing::ws_set_user_tag(ws, tag);
+}
+
+fn ::get_user_tag(ws: const wing::WebSocketSession&) -> u64 {
+    return wing::ws_get_user_tag(ws);
+}
+
+// Backpressure & Dynamic Flow Control Bridges
+fn ::get_buffered_amount(ws: const wing::WebSocketSession&) -> u64 {
+    return wing::ws_get_buffered_amount(ws);
+}
+
+fn ::is_backpressured(ws: const wing::WebSocketSession&) -> bool {
+    return wing::ws_is_backpressured(ws);
+}
+
+fn ::set_max_backpressure(ws: wing::WebSocketSession&, max_bytes: u64, close_on_limit: bool = false) {
+    wing::ws_set_max_backpressure(ws, max_bytes, close_on_limit);
+}
+
+fn ::notify_buffered<B>(ws: wing::WebSocketSession&, bytes_added: u64, out_close: B&) -> wing::WsSendStatus {
+    return wing::ws_notify_buffered(ws, bytes_added, out_close);
+}
+
+fn ::notify_drained(ws: wing::WebSocketSession&, bytes_drained: u64) -> bool {
+    return wing::ws_notify_drained(ws, bytes_drained);
+}
+
+fn ::send_text_with_status<B>(
+    ws: wing::WebSocketSession&,
+    text: const u8[:],
+    out: B&,
+    compress: bool = false
+) -> wing::WsSendStatus {
+    return wing::ws_send_text_with_status(ws, text, out, compress);
+}
+
+fn ::send_text_compressed_with_status<B>(
+    ws: wing::WebSocketSession&,
+    text: const u8[:],
+    shared_comp: wing::SharedWsCompressor&,
+    out: B&,
+    compress: bool = true
+) -> wing::WsSendStatus {
+    return wing::ws_send_text_compressed_with_status(ws, text, shared_comp, out, compress);
+}
+
+fn ::send_binary_with_status<B>(
+    ws: wing::WebSocketSession&,
+    data: const u8[:],
+    out: B&,
+    compress: bool = false
+) -> wing::WsSendStatus {
+    return wing::ws_send_binary_with_status(ws, data, out, compress);
+}
+
+fn ::send_binary_compressed_with_status<B>(
+    ws: wing::WebSocketSession&,
+    data: const u8[:],
+    shared_comp: wing::SharedWsCompressor&,
+    out: B&,
+    compress: bool = true
+) -> wing::WsSendStatus {
+    return wing::ws_send_binary_compressed_with_status(ws, data, shared_comp, out, compress);
+}
+
+fn ::add_ws_route(server: wing::HttpServer&, path: const u8[:], behavior: const wing::WsBehavior& = wing::WsBehavior { .. }) -> bool {
+    return wing::add_ws_route(server, path, behavior);
+}
+
+fn ::find_ws_route(server: const wing::HttpServer&, path: const u8[:]) -> i32 {
+    return wing::find_ws_route(server, path);
+}
+
 fn ::encode<B>(hdr: const wing::WsFrameHeader&, out: B&) {
     wing::encode_ws_frame_header(out, hdr);
 }

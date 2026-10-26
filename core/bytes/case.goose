@@ -39,8 +39,10 @@ fn to_upper_ascii_byte(b: u8) -> u8 {
 }
 
 // RFC 9110 Section 5.6.3: Compares two byte slices for case-insensitive ASCII equality.
+// Fast path compares slices via vectorized gs_memeq if identical.
 fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
     guard str_a.len == str_b.len else { return false; }
+    if str_a == str_b { return true; }
     for i in str_a.len {
         let ca = if str_a[i] >= 'A' && str_a[i] <= 'Z' { str_a[i] + 32 } else { str_a[i] };
         let cb = if str_b[i] >= 'A' && str_b[i] <= 'Z' { str_b[i] + 32 } else { str_b[i] };

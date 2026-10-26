@@ -322,6 +322,7 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
+    let _ = wing::tcp_init();
     var runner = core::new_runner("RFC 9112 Chunked Transfer & Trailers Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. One-Shot Chunked Decoding with Trailer Extraction", test_oneshot_chunked_trailers);

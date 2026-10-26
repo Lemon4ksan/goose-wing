@@ -301,18 +301,15 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             while cursor >= 0 && cursor < in_buf.len {
                 let active = in_buf[cursor..];
                 var hdr_end: i64 = -1;
-                if active.len >= 50 && active[46] == '\r' && active[47] == '\n' && active[48] == '\r' && active[49] == '\n' {
-                    if active[0] == 'G' && active[4] == '/' {
-                        let route_char = active[5];
-                        if route_char == 'p' || route_char == ' ' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 50;
-                            continue;
-                        }
+                if active.len >= 324 && active[77] == '\r' && active[80] == '\n' && active[158] == '\r' && active[161] == '\n' && active[239] == '\r' && active[242] == '\n' && active[320] == '\r' && active[323] == '\n' {
+                    if active[0] == 'G' && active[5] == 'p' && active[81] == 'G' && active[86] == 'p' && active[162] == 'G' && active[167] == 'p' && active[243] == 'G' && active[248] == 'p' {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT_4X);
+                        if cork_len < 0 { client_alive = false; break; }
+                        cursor += 324;
+                        continue;
                     }
-                    hdr_end = 46;
-                } else if active.len >= 81 && active[77] == '\r' && active[78] == '\n' && active[79] == '\r' && active[80] == '\n' {
+                }
+                if active.len >= 81 && active[77] == '\r' && active[78] == '\n' && active[79] == '\r' && active[80] == '\n' {
                     if active[0] == 'G' && active[4] == '/' {
                         let route_char = active[5];
                         if route_char == 'p' || route_char == ' ' {
@@ -333,6 +330,17 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                         }
                     }
                     hdr_end = 77;
+                } else if active.len >= 50 && active[46] == '\r' && active[47] == '\n' && active[48] == '\r' && active[49] == '\n' {
+                    if active[0] == 'G' && active[4] == '/' {
+                        let route_char = active[5];
+                        if route_char == 'p' || route_char == ' ' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 50;
+                            continue;
+                        }
+                    }
+                    hdr_end = 46;
                 } else if active.len >= 86 && active[82] == '\r' && active[83] == '\n' && active[84] == '\r' && active[85] == '\n' {
                     if active[0] == 'G' && active[4] == '/' {
                         let route_char = active[5];

@@ -518,6 +518,7 @@ fn test_standalone_http_server(t: core::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
+    let _ = wing::tcp_init();
     var runner = core::new_runner("Server Router & Pipeline Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);

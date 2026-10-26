@@ -223,7 +223,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
             0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
         ];
         var out_key: u8[16] = [0; 16];
-        let ok = wing::hkdf_expand_label(wing::HASH_SHA256, prk[..], "key", [], 16, out_key[..]);
+        let ok = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "key", [], 16, out_key[..]);
         sub.assert_true(ok, "hkdf_expand_label succeeds");
 
         // Verify non-zero derivation
@@ -235,45 +235,45 @@ fn test_key_schedule_and_derivations(t: core::T&) {
     };
 
     t.run("TLS-11: Full Key Schedule Lifecycle: Early -> Handshake -> Master -> Resumption") { sub =>
-        let ks, ok_init = wing::ks_init(wing::TLS_AES_128_GCM_SHA256);
+        let ks, ok_init = internal::ks_init(internal::TLS_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds for AES_128_GCM_SHA256");
-        sub.assert_eq(ks.hash_id, wing::HASH_SHA256, "hash_id is SHA256");
+        sub.assert_eq(ks.hash_id, internal::HASH_SHA256, "hash_id is SHA256");
         sub.assert_eq(ks.hash_len, 32, "hash_len is 32");
 
         var sched = ks;
 
         // 1. Early Secret (zero PSK)
-        let ok_early = wing::ks_init_early_secret(sched, []);
+        let ok_early = internal::ks_init_early_secret(sched, []);
         sub.assert_true(ok_early, "init early secret ok");
-        sub.assert_eq(sched.stage, wing::KS_STAGE_EARLY, "stage is early");
+        sub.assert_eq(sched.stage, internal::KS_STAGE_EARLY, "stage is early");
 
         // 2. Advance to Handshake with mock ECDHE secret (32 bytes)
         let ecdhe_secret: u8[32] = [0x42; 32];
-        let ok_hs = wing::ks_advance_to_handshake(sched, ecdhe_secret[..]);
+        let ok_hs = internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
         sub.assert_true(ok_hs, "advance to handshake ok");
-        sub.assert_eq(sched.stage, wing::KS_STAGE_HANDSHAKE, "stage is handshake");
+        sub.assert_eq(sched.stage, internal::KS_STAGE_HANDSHAKE, "stage is handshake");
 
         // Derives handshake traffic secrets
         let ch_sh_hash: u8[32] = [0x55; 32];
-        let ok_hs_traffic = wing::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
+        let ok_hs_traffic = internal::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
         sub.assert_true(ok_hs_traffic, "derive handshake traffic ok");
 
         // 3. Advance to Master Secret
         let transcript_hash: u8[32] = [0xAA; 32];
-        let ok_master = wing::ks_advance_to_master(sched, transcript_hash[..]);
+        let ok_master = internal::ks_advance_to_master(sched, transcript_hash[..]);
         sub.assert_true(ok_master, "advance to master ok");
-        sub.assert_eq(sched.stage, wing::KS_STAGE_MASTER, "stage is master");
+        sub.assert_eq(sched.stage, internal::KS_STAGE_MASTER, "stage is master");
 
         // 4. Advance to Resumption
         let fin_hash: u8[32] = [0xBB; 32];
-        let ok_res = wing::ks_advance_to_resumption(sched, fin_hash[..]);
+        let ok_res = internal::ks_advance_to_resumption(sched, fin_hash[..]);
         sub.assert_true(ok_res, "advance to resumption ok");
-        sub.assert_eq(sched.stage, wing::KS_STAGE_RESUMPTION, "stage is resumption");
+        sub.assert_eq(sched.stage, internal::KS_STAGE_RESUMPTION, "stage is resumption");
 
         // Derive key and IV from application traffic secret
         var app_key: u8[16] = [0; 16];
         var app_iv: u8[12] = [0; 12];
-        let ok_kiv = wing::ks_derive_key_iv(
+        let ok_kiv = internal::ks_derive_key_iv(
             sched.hash_id,
             sched.client_ap_traffic[..32],
             16,
@@ -284,12 +284,12 @@ fn test_key_schedule_and_derivations(t: core::T&) {
 
         // Derive QUIC HP Key
         var hp_key: u8[16] = [0; 16];
-        let ok_hp = wing::ks_derive_quic_hp_key(sched.hash_id, sched.client_ap_traffic[..32], 16, hp_key[..]);
+        let ok_hp = internal::ks_derive_quic_hp_key(sched.hash_id, sched.client_ap_traffic[..32], 16, hp_key[..]);
         sub.assert_true(ok_hp, "derive quic hp key ok");
 
         // Finished verify_data computation
         var verify_data: u8[32] = [0; 32];
-        let ok_vd = wing::ks_compute_finished_verify_data(
+        let ok_vd = internal::ks_compute_finished_verify_data(
             sched.hash_id,
             sched.hash_len,
             sched.client_hs_traffic[..32],
@@ -299,8 +299,8 @@ fn test_key_schedule_and_derivations(t: core::T&) {
         sub.assert_true(ok_vd, "finished verify data computed");
 
         // Key Schedule zeroization
-        wing::ks_zeroize(sched);
-        sub.assert_eq(sched.stage, wing::KS_STAGE_UNINIT, "stage is uninit after zeroize");
+        internal::ks_zeroize(sched);
+        sub.assert_eq(sched.stage, internal::KS_STAGE_UNINIT, "stage is uninit after zeroize");
         sub.assert_eq(sched.current_secret[0], 0, "current secret wiped");
     };
 
@@ -308,7 +308,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
         var traffic_secret: u8[32] = [0x77; 32];
         let orig_b0 = traffic_secret[0];
 
-        let ok_upd = wing::ks_update_traffic_secret(wing::HASH_SHA256, 32, traffic_secret[..]);
+        let ok_upd = internal::ks_update_traffic_secret(internal::HASH_SHA256, 32, traffic_secret[..]);
         sub.assert_true(ok_upd, "traffic secret update succeeds");
         sub.assert_false(traffic_secret[0] == orig_b0, "traffic secret successfully mutated");
     };
@@ -319,28 +319,28 @@ fn test_key_schedule_and_derivations(t: core::T&) {
 // ============================================================================
 fn test_anti_replay_and_psk(t: core::T&) {
     t.run("TLS-13: ZeroRttStrikeRegister Anti-Replay Detection & Epoch Rotation") { sub =>
-        var reg = wing::strike_register_init(10000, 2000); // 10s epoch, 2s tolerance
+        var reg = internal::strike_register_init(10000, 2000); // 10s epoch, 2s tolerance
         let ticket_a: u8[16] = [0x01; 16];
         let ticket_b: u8[16] = [0x02; 16];
 
         // 1. Initial arrival of ticket A succeeds
-        let ok_a1 = wing::strike_register_check_and_insert(reg, ticket_a[..], 1000);
+        let ok_a1 = internal::strike_register_check_and_insert(reg, ticket_a[..], 1000);
         sub.assert_true(ok_a1, "ticket A accepted in epoch 0");
 
         // 2. Immediate replay of ticket A in same epoch fails
-        let ok_a_replay = wing::strike_register_check_and_insert(reg, ticket_a[..], 1500);
+        let ok_a_replay = internal::strike_register_check_and_insert(reg, ticket_a[..], 1500);
         sub.assert_false(ok_a_replay, "ticket A replay detected and rejected");
 
         // 3. Different ticket B in same epoch succeeds
-        let ok_b = wing::strike_register_check_and_insert(reg, ticket_b[..], 2000);
+        let ok_b = internal::strike_register_check_and_insert(reg, ticket_b[..], 2000);
         sub.assert_true(ok_b, "ticket B accepted in epoch 0");
 
         // 4. Advance time to epoch 1 (11000ms): ticket A is in previous window, still rejected!
-        let ok_a_ep1 = wing::strike_register_check_and_insert(reg, ticket_a[..], 11000);
+        let ok_a_ep1 = internal::strike_register_check_and_insert(reg, ticket_a[..], 11000);
         sub.assert_false(ok_a_ep1, "ticket A rejected across epoch boundary into previous window");
 
         // 5. Advance time by 2 epochs (> 25000ms): old epochs cleared, ticket A is accepted again
-        let ok_a_ep3 = wing::strike_register_check_and_insert(reg, ticket_a[..], 25000);
+        let ok_a_ep3 = internal::strike_register_check_and_insert(reg, ticket_a[..], 25000);
         sub.assert_true(ok_a_ep3, "ticket A accepted after full 2-epoch retirement");
     };
 
@@ -350,15 +350,15 @@ fn test_anti_replay_and_psk(t: core::T&) {
         let tolerance_ms: i64 = 1000;
 
         // Exact match: obfuscated = ticket_age_add + 5000 = 105000
-        let ok1 = wing::validate_ticket_age(105000, ticket_age_add, expected_age_ms, tolerance_ms);
+        let ok1 = internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_true(ok1, "exact ticket age valid");
 
         // Within tolerance: 5500ms (diff = 500ms <= 1000ms)
-        let ok2 = wing::validate_ticket_age(105500, ticket_age_add, expected_age_ms, tolerance_ms);
+        let ok2 = internal::validate_ticket_age(105500, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_true(ok2, "ticket age within tolerance valid");
 
         // Out of tolerance: 7000ms (diff = 2000ms > 1000ms)
-        let ok3 = wing::validate_ticket_age(107000, ticket_age_add, expected_age_ms, tolerance_ms);
+        let ok3 = internal::validate_ticket_age(107000, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_false(ok3, "ticket age out of tolerance rejected");
     };
 
@@ -368,18 +368,18 @@ fn test_anti_replay_and_psk(t: core::T&) {
 
         // Derive true expected binder
         var finished_key: u8[32] = [0; 32];
-        wing::hkdf_expand_label(wing::HASH_SHA256, binder_key[..], "finished", [], 32, finished_key[..]);
+        internal::hkdf_expand_label(internal::HASH_SHA256, binder_key[..], "finished", [], 32, finished_key[..]);
         let ch_hash = core::sha256(truncated_ch[..]);
         let expected_binder = core::hmac_sha256(finished_key[..], ch_hash[..]);
 
         // Verification of genuine binder succeeds
-        let ok_v = wing::verify_psk_binder(wing::HASH_SHA256, 32, binder_key[..], truncated_ch[..], expected_binder[..]);
+        let ok_v = internal::verify_psk_binder(internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], expected_binder[..]);
         sub.assert_true(ok_v, "genuine PSK binder verified");
 
         // Tampered binder fails
         var tampered_binder = expected_binder;
         tampered_binder[0] ^= 0xFF;
-        let ok_bad = wing::verify_psk_binder(wing::HASH_SHA256, 32, binder_key[..], truncated_ch[..], tampered_binder[..]);
+        let ok_bad = internal::verify_psk_binder(internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], tampered_binder[..]);
         sub.assert_false(ok_bad, "tampered PSK binder rejected");
     };
 }
