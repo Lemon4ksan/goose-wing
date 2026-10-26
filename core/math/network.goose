@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Specialized network protocol mathematics:
 // Jacobson EWMA RTT estimation (RFC 6298 / RFC 9002 Errata ID 7539),
 // Happy Eyeballs CAD pacing (RFC 8305), AWS backoff jitter, and SOCKS5 CT frame validation.

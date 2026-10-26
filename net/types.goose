@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Semantic strong type aliases for network descriptors, streams, and time units.
 // Eliminates unit ambiguity and primitive obsession across the Layer 4-7 stack.
 namespace wing;

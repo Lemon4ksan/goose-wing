@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for radix tree routing, buffer pools, and server execution pipeline.
 import std;
 import core from "..";

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // net/tick_timer.goose
 // Ultra-Low Overhead 1-Byte Tick Wheel Connection Timeout Sweeper (uSockets loop.c).
 // Eliminates 64-bit nanosecond clocks, red-black trees, and timer heaps for keep-alive timeouts.

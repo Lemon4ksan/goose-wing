@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Base64 and Base64URL encoding & decoding (RFC 4648).
 // Zero-heap allocation when writing into preallocated or bounded buffers.
 namespace core;

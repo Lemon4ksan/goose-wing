@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // FoxIO JA4+ network fingerprinting algorithms: JA4 (TLS) and JA4H (HTTP).
 // Conforms to FoxIO JA4 specification with zero dynamic allocations.
 namespace wing;

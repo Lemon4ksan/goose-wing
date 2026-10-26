@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Deterministic zero-allocation Curve25519 Diffie-Hellman Key Exchange (RFC 7748).
 // Implements constant-time Montgomery ladder using 10-limb 2^25.5 field representation.
 namespace core;

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 set -e
 
 # If arguments were provided and first arg is not "test", execute user command
@@ -10,6 +14,7 @@ echo "[*] Starting Shopify Toxiproxy daemon on 0.0.0.0:8474..."
 /usr/local/bin/toxiproxy-server -host 0.0.0.0 -port 8474 &
 TOXI_PID=$!
 
+# shellcheck disable=SC2329 # Invoked indirectly via trap handler
 cleanup() {
     echo "[*] Shutting down Toxiproxy daemon (PID $TOXI_PID)..."
     kill -TERM "$TOXI_PID" 2>/dev/null || true
@@ -20,7 +25,7 @@ trap cleanup EXIT INT TERM
 # Wait for Toxiproxy to become ready
 echo "[*] Waiting for Toxiproxy daemon to respond..."
 READY=0
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if curl -s http://127.0.0.1:8474/version >/dev/null 2>&1; then
         READY=1
         break

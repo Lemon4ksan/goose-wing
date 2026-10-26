@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Subtest execution, table-driven runners, and test suite lifecycle management.
 namespace core;
 

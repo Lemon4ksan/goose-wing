@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Wing Passive OS Fingerprinting (p0f v3) TCP SYN Engine.
 // Clean-room, zero-heap implementation of standard p0f v3 SYN signature format
 // (RFC 793, RFC 2018, RFC 7323).

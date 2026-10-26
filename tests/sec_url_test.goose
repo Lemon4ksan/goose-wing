@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for URL and query string parsing edge cases.
 import std;
 import core from "..";

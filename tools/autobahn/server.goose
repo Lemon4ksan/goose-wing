@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Dedicated WebSocket Echo Server for Autobahn Testsuite (RFC 6455 Compliance).
 // Zero-allocation, high-performance, strictly RFC-conformant implementation in pure Goose.
 import std;

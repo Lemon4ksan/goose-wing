@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for MASQUE protocols:
 // - RFC 9297: HTTP Datagrams & Capsule Protocol
 // - RFC 9298: Proxying UDP in HTTP (CONNECT-UDP)

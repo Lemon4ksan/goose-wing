@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Comprehensive test suite for Goose native compression: candidate for `core::compress`.
 //
 // Verification Coverage:

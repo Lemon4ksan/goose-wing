@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Test execution context, failure tracking, verbosity modes, and lifecycle state.
 namespace core;
 

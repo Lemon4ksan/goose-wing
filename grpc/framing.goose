@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // gRPC Length-Prefixed Message (LPM) binary framer and gRPC-Web codec.
 // Conforms to gRPC HTTP/2 Wire Protocol Specification and gRPC-Web Protocol.
 namespace wing;

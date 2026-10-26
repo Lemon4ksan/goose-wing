@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Singleflight duplicate call suppression for coalescing identical concurrent requests.
 namespace core;
 

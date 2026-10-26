@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Network Isolation Keys (NIK) and State Partitioning Engine.
 // Implements Chromium / W3C Client State Partitioning across:
 // - Connection Pools (preventing cross-site socket reuse and timing attacks)

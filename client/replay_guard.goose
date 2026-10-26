@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 8470 0-RTT Early Data Anti-Replay Guard and HTTP 425 (Too Early) Recovery.
 // - Protects state-mutating requests from network replay attacks during TLS 1.3 / QUIC 0-RTT handshakes
 // - Signals `Early-Data: 1` header per RFC 8470 Section 5.1

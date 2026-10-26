@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 6797 HTTP Strict Transport Security (HSTS):
 // 1. Header parsing (max-age, includeSubDomains, preload)
 // 2. Static Preload List matcher (.dev, .app TLDs & major secure domains)

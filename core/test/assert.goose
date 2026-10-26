@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Rich soft (assert_*) and hard (require_*) test assertions with detailed failure context.
 namespace core;
 

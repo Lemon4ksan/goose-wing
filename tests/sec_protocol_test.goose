@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for SSRF guard filtering, scheme downgrade sanitization, and URL resolution.
 import std;
 import core from "..";

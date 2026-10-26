@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Origin model, Public Suffix List (PSL) matching, and eTLD+1 extraction.
 namespace core;
 

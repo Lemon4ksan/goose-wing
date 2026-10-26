@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // server/cache.goose
 // Coalescing High-Throughput HTTP Route Cache (uWebSockets HttpCache.h).
 // Protects endpoints from thundering herds by caching rendered HTTP wire responses.

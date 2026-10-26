@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // http/headers/chunked_fsm.goose
 // Compact 64-bit Single-Register FSM Chunked Transfer Coding Decoder (uWebSockets ChunkedEncoding.h).
 // Pure clean-room implementation of uWS bit-packed streaming chunked decoder.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 macOS / Darwin kqueue Event Notification C Shim.
 // Implements kqueue() and kevent() batch event multiplexing with nanosecond timers
 // and byte-accurate socket buffer accounting (struct kevent.data).

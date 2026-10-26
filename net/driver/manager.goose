@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 Transport Driver manager: platform probing, graceful fallback, and diagnostics.
 namespace internal;
 

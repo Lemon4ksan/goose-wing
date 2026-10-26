@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // app.js - Scientific Benchmark Orchestration
 const REFERENCE_DATA = {
   pipelined: {

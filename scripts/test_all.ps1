@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 # scripts/test_all.ps1
 # High-performance parallel verification runner for goose-wing.
 param(

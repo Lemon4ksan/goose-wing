@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Compressed radix trie router with parameter extraction and path canonicalization.
 namespace wing;
 

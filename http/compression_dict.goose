@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Compression Dictionary Transport (IETF draft-ietf-httpbis-compression-dictionary).
 // Implements Chrome 123+ shared dictionary transport for HTTP:
 // - `Use-As-Dictionary` response header parser and cache manager

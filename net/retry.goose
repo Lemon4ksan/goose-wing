@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Two-tier resilience retry architecture: Tier 1 zero-delay stale socket recovery
 // with one-shot stream guards and QUIC protocol fallback; Tier 2 exponential backoff
 // with Full/Equal/Decorrelated Jitter, RFC 9110 Retry-After parser, and Google SRE retry budgets.

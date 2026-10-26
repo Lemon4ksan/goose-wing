@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // QUIC Transport Framing, Packet Headers, Header Protection & Stream Reassembly (RFC 9000, RFC 9001).
 // Implements VarInt codecs, Long/Short header parsers, AES/ChaCha Header Protection,
 // packet number reconstruction, path anti-amplification 3x limits, and zero-heap reassembler.

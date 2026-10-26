@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/poller_event_loop_test.goose
 // Verification suite for Non-blocking Poller & Event Loop over L4 Transport Drivers.
 // 1. Poller Creation & Lifecycle across L4 Driver Backends

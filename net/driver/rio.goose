@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Windows Registered I/O (RIO) kernel bypass driver and page-locked buffers.
 namespace internal;
 

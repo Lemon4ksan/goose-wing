@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 run_cli.py - Headless Command-Line Benchmark Runner
 Executes comprehensive head-to-head performance benchmarks between goose-wing and uWebSockets

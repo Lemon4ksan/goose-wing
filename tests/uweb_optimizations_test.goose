@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for uWebSockets optimizations in goose-wing:
 // 1. 256-bit Header BloomFilter and fast case-insensitive rejection
 // 2. Fast HTTP/1.1 response serialization with pre-formatted status lines

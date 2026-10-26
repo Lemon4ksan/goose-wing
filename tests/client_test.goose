@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for ClientSession, redirect policies, and cookie handling.
 import std;
 import core from "..";

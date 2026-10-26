@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 9112 Chunked Transfer Coding & Incremental Streaming:
 // 1. Chunked wire framing codec (encode_chunk, encode_chunk_end, trailers)
 // 2. ChunkWriter for dynamic chunked uploads (post_chunked / put_chunked)

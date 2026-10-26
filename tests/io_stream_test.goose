@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for Goose Core I/O Stream Module (core/io):
 // - SliceReader cursor semantics, bounds checking, and integer deserialization (BE/LE)
 // - SliceWriter and CountingWriter with capacity guards and integer serialization

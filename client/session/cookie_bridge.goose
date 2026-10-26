@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Cookie Jar integration for client request hops and response ingestion (RFC 6265bis).
 namespace wing;
 

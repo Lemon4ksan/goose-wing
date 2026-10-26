@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for request smuggling defenses and chunked transfer decoding (RFC 9112).
 import std;
 import core from "..";

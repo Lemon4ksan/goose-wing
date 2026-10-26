@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Supervision trees, worker failure containment, and OTP-style restart policies.
 namespace core;
 

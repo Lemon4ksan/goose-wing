@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Cookie security and isolation policy: SameSite, prefixes, and Origin-Bound Cookies
 // (RFC 6265bis, CHIPS).
 namespace wing;

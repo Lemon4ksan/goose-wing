@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Deterministic mock clocks, property fuzzing generators, and typed test spies.
 namespace core;
 

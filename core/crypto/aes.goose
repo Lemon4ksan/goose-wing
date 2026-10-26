@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Advanced Encryption Standard (AES) FIPS 197 and Galois/Counter Mode (AES-GCM) NIST SP 800-38D.
 // Zero dynamic heap allocations on key expansion, block encryption, and AEAD authentication.
 namespace core;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Security tests for cookie prefixes, SSRF filter bypasses, and port validation.
 import std;
 import core from "..";

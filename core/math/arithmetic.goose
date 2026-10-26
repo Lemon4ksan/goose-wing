@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Saturating arithmetic, checked arithmetic, 128-bit multiplication, and Euclidean division.
 namespace core;
 

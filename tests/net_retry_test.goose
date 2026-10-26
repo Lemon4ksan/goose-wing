@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for net/retry: Tier 1 zero-delay stale socket recovery,
 // one-shot stream bug guards, QUIC protocol fallback, Full/Equal/Decorrelated Jitter,
 // RFC 9110 Retry-After parser, circuit breaker, Google SRE adaptive retry budget,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Media types (RFC 9110 Section 8.3) and Structured Field Values (RFC 8941, RFC 9651).
 // Provides media type / parameter parsing, strict unquoting, and SFV item,
 // list, and dictionary decoding.

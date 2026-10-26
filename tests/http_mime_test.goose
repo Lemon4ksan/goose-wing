@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for MIME media types, parameter parsing, unquoting, and structured fields.
 import std;
 import core from "..";

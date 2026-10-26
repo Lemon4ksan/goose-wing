@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Zero-heap circular FIFO ring buffer.
 // Enables streaming producer-consumer pipelines without memmove / memory shifting.
 namespace core;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // In-memory cookie jar with hierarchical indexing and priority eviction
 // (RFC 6265bis, CHIPS).
 namespace wing;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // High-level HTTP verbs, streaming uploads/downloads, and realtime protocol sessions (WebSocket, SSE, MASQUE).
 namespace wing;
 

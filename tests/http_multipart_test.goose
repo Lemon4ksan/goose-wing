@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for multipart/form-data parsing and HTTP range requests.
 import std;
 import core from "..";

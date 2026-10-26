@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Constant-time primitives, key zeroization, KeySlot secrecy pattern, and Dudect Welch t-test verifier.
 namespace core;
 

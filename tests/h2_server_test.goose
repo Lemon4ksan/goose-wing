@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/h2_server_test.goose
 // Verification test suite for HTTP/2 Server Frame Multiplexer (RFC 9113 & RFC 7541).
 import std;

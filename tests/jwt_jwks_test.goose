@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/jwt_jwks_test.goose
 // Verification suite for Universal JWT (RFC 7519), JWS (RFC 7515), and JWKS (RFC 7517).
 // 1. Symmetric HMAC JWS (HS256, HS384, HS512) Signing & Verification

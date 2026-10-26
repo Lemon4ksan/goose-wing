@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // WHATWG URL Standard state machine parser and IPv6 canonicalization.
 namespace core;
 

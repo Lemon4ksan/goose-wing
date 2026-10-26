@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/http3_test.goose
 // Conformance and Security Defense Suite for HTTP/3 (RFC 9114) and QPACK (RFC 9204).
 import std;

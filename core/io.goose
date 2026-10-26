@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Goose Core I/O Stream Module.
 // Provides zero-heap, compile-time inlined streaming abstractions:
 // - types: IoError status codes and buffer sizing constants.

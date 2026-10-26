@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Runtime primitives, bounded message channels, and hardware execution parallelism.
 namespace core;
 

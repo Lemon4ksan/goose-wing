@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Deterministic zero-allocation HTTP/2 Server Frame Multiplexer (RFC 9113 & RFC 7541).
 // Manages server connection sessions, stream demultiplexing, HPACK decoding/encoding,
 // flow control updates, anti-DoS barriers, and dispatching to the Wing Server Pipeline.

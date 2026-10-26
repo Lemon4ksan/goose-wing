@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP header lexical validation, SWAR scanning, and framing checks (RFC 9110, RFC 9112, RFC 9113).
 namespace wing;
 

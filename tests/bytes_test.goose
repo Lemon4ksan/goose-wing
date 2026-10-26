@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for Goose Core Byte String & Zero-Heap Slice Operations (core/bytes):
 // - ASCII character classification & transformations (case.goose)
 // - Case-insensitive folding, prefix/suffix, and substring search (case.goose)

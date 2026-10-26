@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/tls_test.goose
 // Comprehensive deterministic test suite for TLS 1.3 and X.509 PKI in Goose.
 // Validates RFC 8446, RFC 9001 (QUIC Crypto), RFC 5280, RFC 6125, and zero-allocation invariants.

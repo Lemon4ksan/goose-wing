@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for Akamai HTTP/2 Passive Fingerprinting & Active Matching Engine:
 // 1. Presets formatting (Chrome, Firefox, Safari, Wing, cURL) and MD5 hash generation
 // 2. Parsing and bidirectional round-trip deserialization

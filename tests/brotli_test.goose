@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 7932 Brotli Compression & Decompression Engine:
 // 1. Bit-level framing and empty stream handling
 // 2. Uncompressed meta-blocks (Level 0 encoder & decoder) with roundtrip

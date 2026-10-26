@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP Alternative Services (RFC 7838 Alt-Svc) Engine.
 // Zero-heap parser, cache, and automatic HTTP/3 connection promotion manager.
 // - Supports `h3=":443"; ma=86400; persist=1`, `clear`, multiple alternative entries

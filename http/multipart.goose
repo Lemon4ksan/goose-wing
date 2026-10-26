@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Multipart form-data parsing (RFC 7578, RFC 2046) and HTTP range request
 // handling (RFC 9110 Section 14, Section 13.1.5).
 namespace wing;

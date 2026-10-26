@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Goose Core Byte String and Zero-Heap Slice Operations Module.
 // Provides zero-heap, compile-time inlined abstractions for byte slices:
 // - case: ASCII character predicates, case folding, and case conversions.

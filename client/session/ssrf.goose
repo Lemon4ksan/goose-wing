@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // SSRF (Server-Side Request Forgery) protection policy and IP address validation.
 namespace wing;
 

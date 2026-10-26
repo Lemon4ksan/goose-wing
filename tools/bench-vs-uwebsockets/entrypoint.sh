@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 set -e
 
 GW_PORT=${GW_PORT:-3001}
@@ -14,19 +18,20 @@ echo "[entrypoint] Starting uWebSockets server on port $UWS_PORT..."
 export UWS_PID=$!
 
 # Cleanup on exit
+# shellcheck disable=SC2329 # Invoked indirectly via trap handler
 cleanup() {
     echo "[entrypoint] Stopping child processes..."
-    kill $GW_PID 2>/dev/null || true
-    kill $UWS_PID 2>/dev/null || true
-    wait $GW_PID 2>/dev/null || true
-    wait $UWS_PID 2>/dev/null || true
+    kill "$GW_PID" 2>/dev/null || true
+    kill "$UWS_PID" 2>/dev/null || true
+    wait "$GW_PID" 2>/dev/null || true
+    wait "$UWS_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # Wait for both servers to bind
 echo "[entrypoint] Waiting for servers to become ready..."
 for _ in {1..30}; do
-    if nc -z 127.0.0.1 $GW_PORT && nc -z 127.0.0.1 $UWS_PORT; then
+    if nc -z 127.0.0.1 "$GW_PORT" && nc -z 127.0.0.1 "$UWS_PORT"; then
         echo "[entrypoint] Both engines listening and healthy (goose-wing:$GW_PORT, uWebSockets:$UWS_PORT)."
         break
     fi

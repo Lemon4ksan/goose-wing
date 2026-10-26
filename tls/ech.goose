@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Deterministic zero-allocation Encrypted Client Hello (ECH, RFC 9460 & draft-ietf-tls-esni-13+).
 // Provides privacy-preserving SNI encryption via HPKE (RFC 9180) and DNS HTTPS RR (Type 65).
 namespace wing;

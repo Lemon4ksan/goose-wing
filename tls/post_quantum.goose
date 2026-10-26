@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 10024 & FIPS 203 Hybrid Post-Quantum Key Agreement for TLS 1.3.
 // Supports IANA-standardized X25519MLKEM768 (Group 0x11EC) and Chrome draft X25519Kyber768 (Group 0x6399).
 // Formats hybrid 1184-byte ClientHello key shares, parses server 1120-byte encapsulation shares,

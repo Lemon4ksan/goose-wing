@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Public Suffix List rules, eTLD+1 extraction, and domain/path matching (RFC 6265 Section 5.1).
 namespace wing;
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Convenience entry point for h2spec HTTP/2 Conformance Suite.
 Delegates directly to tools/h2spec/runner.py.

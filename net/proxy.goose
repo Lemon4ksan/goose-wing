@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Multi-protocol proxying (SOCKS5/5h RFC 1928 & RFC 1929, SOCKS4/4a, HTTP CONNECT),
 // credential isolation, TLS tunnel buffer hygiene, and 4-tier Slowloris tarpit defenses.
 namespace wing;

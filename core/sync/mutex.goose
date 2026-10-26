@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Baton Mutex: Zero-overhead ownership token passing over channel queues.
 namespace core;
 

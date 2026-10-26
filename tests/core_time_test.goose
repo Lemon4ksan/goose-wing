@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for core/time: duration arithmetic, calendar math, and RFC 3339 codecs.
 import std;
 import core from "..";

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification Suite for RFC 8879 (TLS Certificate Compression via Zstandard),
 // TLS ClientHello Fragmentation, and DNS Cache with Stale-While-Revalidate.
 import std;

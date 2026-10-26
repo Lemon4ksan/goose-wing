@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 DPDK (Data Plane Development Kit) Poll Mode Driver (PMD) Interface.
 // Maps NIC PCIe BAR registers directly into userspace for line-rate 100G/200G packet processing.
 namespace internal;

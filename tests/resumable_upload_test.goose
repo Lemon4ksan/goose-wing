@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for IETF draft-ietf-httpbis-resumable-upload-14:
 // - Creation request formatting with Upload-Complete: ?0 and MIME application/partial-upload
 // - Server 201 Created response parsing (Location, Upload-Offset)

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Date, time, duration arithmetic, monotonic clocks, and RFC 3339 / RFC 9110 HTTP-Date codecs.
 namespace core;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Bitwise rotation, powers of two, byte swapping, and endianness codecs.
 namespace core;
 

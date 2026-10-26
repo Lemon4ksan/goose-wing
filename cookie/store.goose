@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Cookie persistence, SQLite schema generation, batching, and file formats
 // (RFC 6265bis Section 5.4, Netscape cookies.txt).
 namespace wing;

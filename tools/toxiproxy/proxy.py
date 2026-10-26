@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Toxiproxy Proxy Wrapper (ChaosProxy).
 Provides full compatibility with existing Goose-Wing stress test harness

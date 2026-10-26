@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // The Goose Gzip compression container: RFC 1952 Specification.
 namespace core;
 

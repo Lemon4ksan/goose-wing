@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP/3 and QPACK Field Compression Engine (RFC 9204, RFC 9114).
 // Implements RFC 9204 static table (99 entries), zero-allocation dynamic table ring,
 // modular RIC prefix codec, blocked streams manager, and Header Accordion DoS mitigations.

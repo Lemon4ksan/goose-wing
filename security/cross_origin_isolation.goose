@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // W3C Cross-Origin Isolation Engine (COOP, COEP, CORP).
 // Enforces HTML5 §7.2 Cross-Origin-Opener-Policy, Cross-Origin-Embedder-Policy,
 // and Cross-Origin-Resource-Policy for Spectre process sandboxing and secure context verification.

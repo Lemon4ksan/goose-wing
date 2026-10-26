@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Red regression test suite based on uWebSockets & uSockets issue tracker.
 // Tracks verified fixes for vulnerabilities, RFC non-conformances, and edge cases.
 import std;

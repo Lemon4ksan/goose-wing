@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 10024 & FIPS 203 Hybrid Post-Quantum Key Agreement:
 // - NamedGroup validation (0x11EC X25519MLKEM768, 0x6399 X25519Kyber768)
 // - 1184-byte hybrid ClientHello key share wire serialization and deserialization

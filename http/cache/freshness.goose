@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9111 Section 4.2: Mathematical time and freshness calculation engine.
 // Implements apparent age, response delay, corrected initial age, resident time,
 // and hierarchical freshness lifetime calculations with clock skew & monotonic protection.

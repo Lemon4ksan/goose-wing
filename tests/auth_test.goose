@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 7616 Digest Access Authentication, RFC 7617 Basic Authentication,
 // 401 Authenticator Replay Loop, and AWS SigV4 Request Signing.
 import std;

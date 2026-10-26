@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Deterministic zero-allocation HTTP/3 Frame Codec and Stream Invariant Enforcer.
 // Conforms to RFC 9114 Section 7 (HTTP/3 Framing) and RFC 9204 Section 5.
 namespace wing;

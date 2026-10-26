@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification and conformance test suite for core/math.goose (std.math).
 // Tests branchless constant-time arithmetic, saturation logic, Euclidean division,
 // 128-bit multiplication without u128, WyRand v4.2, Lemire fast-range,

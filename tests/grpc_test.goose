@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/grpc_test.goose
 // Verification Suite for gRPC over HTTP/2, HTTP/3, and gRPC-Web Protocol Engine.
 import std;

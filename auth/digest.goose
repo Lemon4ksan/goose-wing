@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 7616 HTTP Digest Access Authentication (obsoleting RFC 2617).
 // Supports SHA-256 (mandatory by RFC 7616 Section 3.4) and MD5 legacy fallback.
 // Handles challenge parsing, HA1/HA2 derivation, qop=auth/auth-int, and Authorization header generation.

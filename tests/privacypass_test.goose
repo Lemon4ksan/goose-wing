@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 9576 Privacy Pass Architecture,
 // RFC 9577 PrivateToken HTTP Authentication Scheme, and RFC 9578 Blind RSA Tokens:
 // - TokenChallenge binary wire serialization and deserialization (RFC 9577 §2.1.1)

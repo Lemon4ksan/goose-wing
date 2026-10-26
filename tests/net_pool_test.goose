@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for net/pool: 5-dimensional PoolKey isolation,
 // two-slice WantQueue, liveness health checks, HTTP/2 IP coalescing, soft-cap quotas,
 // CVE-2026-94441, CVE-2026-56866, and Go #23427 / #49377 defenses.

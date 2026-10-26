@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // URL path manipulation, percent-encoding, file URLs and reference/endpoint resolution.
 namespace core;
 

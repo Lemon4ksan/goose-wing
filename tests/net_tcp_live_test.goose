@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Live TCP loopback verification suite using native OS sockets
 import std;
 import core from "..";

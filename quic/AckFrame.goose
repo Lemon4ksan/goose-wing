@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // QUIC ACK Framing, Optimistic ACK Defense, RTT Estimation & PTO Engine (RFC 9000, RFC 9002).
 // Implements ACK/ACK_ECN codec, OACK validation (ANRW 2025), RTT estimators,
 // packet/time threshold loss detection, and 5-priority PTO state machine.

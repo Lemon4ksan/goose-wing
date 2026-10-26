@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Server-Sent Events (SSE) Protocol Engine (W3C EventSource Specification).
 // Zero-heap, streaming line-based parser and serializer for `text/event-stream`:
 // - Accurate handling of CR, LF, and CRLF line endings

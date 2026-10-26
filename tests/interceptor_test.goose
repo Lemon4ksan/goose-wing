@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for OkHttp/Tower-style 2-tier Interceptor Pipeline:
 // 1. Application Interceptors: Bearer Auth, Request ID, Traceparent, App Header, App Logging
 // 2. Network Interceptors: Wire-level Observation, Per-Hop Headers & Logging, Network Metrics

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 Linux AF_XDP (XSK) Zero-Copy Kernel-Bypass Driver.
 // Routes Ethernet frames directly between NIC hardware queues and userspace UMEM rings.
 namespace internal;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 OS Socket Parameter Tuning & p0f SYN Real Wire Alignment.
 // Configures kernel socket options (TTL, Window Size, Don't Fragment, TCP_NODELAY)
 // matching target browser OS profiles for passive network inspection evasion (p0f v3).

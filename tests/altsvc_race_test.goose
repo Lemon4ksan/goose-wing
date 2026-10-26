@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 7838 Alt-Svc upgrade and Chromium-style Speculative Protocol Racing.
 // Verifies:
 // 1. Zero-heap Alt-Svc header learning and origin caching.

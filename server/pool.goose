@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Server state, connection timers, and pooled buffers for request processing.
 namespace internal;
 

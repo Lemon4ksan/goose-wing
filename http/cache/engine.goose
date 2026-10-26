@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9111: HTTP Caching engine, transaction state machine, and storage coordinator.
 // Implements lookup, freshness evaluation, conditional revalidation, 304 header merge,
 // cascade invalidation for unsafe methods, single-flight request collapsing, and O(1) LRU eviction.

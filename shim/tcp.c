@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 Cross-Platform TCP Socket C Shim for goose-wing.
 // Zero-allocation, high-performance synchronous & non-blocking socket operations
 // conforming exactly to Goose slice binary layout.

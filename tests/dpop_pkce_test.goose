@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for OAuth 2.0 PKCE (RFC 7636) and DPoP (RFC 9449):
 // - PKCE code verifier charset and length invariants (43..128 chars)
 // - PKCE S256 and plain code challenge computation and constant-time validation

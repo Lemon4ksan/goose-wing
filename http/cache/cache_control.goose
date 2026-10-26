@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9111 Section 5.2: Cache-Control and Pragma zero-heap parser.
 // Compresses directives into a 16-bit bitmask and handles delta-seconds overflow clamping.
 namespace wing;

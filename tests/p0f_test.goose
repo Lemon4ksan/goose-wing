@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification Suite for Passive OS Fingerprinting (p0f v3) TCP SYN Engine.
 import std;
 import core from "..";

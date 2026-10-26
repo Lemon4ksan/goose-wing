@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Goose Core Byte String - Fast UTF-8 Validation (RFC 3629 & Unicode Standard).
 // Implements zero-allocation, bounds-checked validation verifying:
 // - 64-bit unrolled ASCII fast-path (8 bytes per cycle checking high-bit mask 0x80)

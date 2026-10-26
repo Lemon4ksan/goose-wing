@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Client session facade, configuration models, and lifecycle methods.
 namespace wing;
 

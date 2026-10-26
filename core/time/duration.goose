@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Nanosecond-precision duration arithmetic, string formatting and parsing.
 namespace core;
 

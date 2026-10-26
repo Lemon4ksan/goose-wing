@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Deterministic zero-allocation HAProxy PROXY Protocol v1 (text) and v2 (binary) parser & serializer.
 // Conforms to the official HAProxy PROXY Protocol specification (Versions 1 and 2),
 // supporting IPv4, IPv6, UNIX domain, and Type-Length-Value (TLV) metadata (ALPN, SNI, Unique ID, SSL/TLS).

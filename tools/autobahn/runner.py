@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Autobahn WebSocket Testsuite Runner for goose-wing.
 Launches the native Goose WebSocket server, executes the Autobahn conformance

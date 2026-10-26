@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Non-blocking I/O multiplexer and event loop engine over Layer 4 drivers.
 // Manages I/O readiness notifications and high-resolution timer queues
 // across Windows RIO, Linux io_uring, macOS kqueue, and Standard POSIX sockets.

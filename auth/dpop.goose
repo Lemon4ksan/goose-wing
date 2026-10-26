@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9449 OAuth 2.0 Demonstrating Proof of Possession (DPoP) at the Application Layer.
 // Provides sender-constraining for OAuth 2.0 access and refresh tokens.
 // Handles JOSE header framing ("typ": "dpop+jwt"), HTM/HTU claims normalization,

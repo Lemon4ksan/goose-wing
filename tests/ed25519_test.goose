@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/ed25519_test.goose
 // Verification test suite for Ed25519 (RFC 8032) and SHA-512 (FIPS 180-4).
 import std;

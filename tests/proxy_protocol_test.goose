@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/proxy_protocol_test.goose
 // Verification test suite for HAProxy PROXY Protocol v1 (text) and v2 (binary).
 import std;

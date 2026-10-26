@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 Windows Registered I/O (RIO) Kernel-Bypass C Shim.
 // Queries the RIO Extension Function Table via SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER
 // and manages page-locked registered memory buffers via mswsock.dll.

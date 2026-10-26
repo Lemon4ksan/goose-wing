@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // High-Performance Native Pub/Sub TopicTree Engine for goose-wing (uWebSockets TopicTree pattern).
 // Conforms to RFC 6455 and MQTT Topic Specification (OASIS MQTT v5.0 §4.7):
 // - Multi-level wildcard '#' matches arbitrary trailing topic hierarchy

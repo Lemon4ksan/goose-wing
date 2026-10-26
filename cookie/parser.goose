@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Set-Cookie header parsing, date tokenization, and cookie URL models (RFC 6265bis).
 namespace wing;
 

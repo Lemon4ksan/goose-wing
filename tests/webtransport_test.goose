@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for W3C / IETF draft-ietf-webtrans-http3-16 and RFC 9221:
 // - Extended CONNECT request formatting with :protocol = webtransport
 // - WebTransport session state transitions (200 OK -> active)

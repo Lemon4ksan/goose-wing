@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9211 (Cache-Status HTTP Response Header) and RFC 9209 (Proxy-Status HTTP Response Header).
 // Provides standardized zero-heap diagnostic inspection and formatting for intermediary caches,
 // proxies, CDN edge nodes, and next-hop failure reporting.

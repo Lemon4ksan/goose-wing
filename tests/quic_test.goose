@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // QUIC Transport & HTTP/3 Echelon 7 Conformance Suite (RFC 9000, RFC 9001, RFC 9002, RFC 9114, RFC 9204).
 // Tests QPACK Static/Dynamic tables, Header Accordion DoS Defenses, VarInt codec,
 // AES/ChaCha Header Protection, Packet Number Reconstruction, Anti-Amplification 3x,

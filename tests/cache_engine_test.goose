@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Comprehensive verification suite for RFC 9111 HTTP Caching Engine.
 // Verifies Cache-Control parsing, freshness calculations, ETag validators,
 // Vary matching, CVE-2026-93750 & CVE-2026-93748 defenses, 304 header merge,

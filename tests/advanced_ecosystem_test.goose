@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification Suite for Advanced Protocol Systems:
 // - RFC 7838 Alt-Svc & H3 Promotion Engine
 // - RFC 8297 103 Early Hints & RFC 8470 0-RTT Anti-Replay Guard

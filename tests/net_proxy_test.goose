@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for net/proxy: SOCKS5/SOCKS5h (RFC 1928 & RFC 1929),
 // HTTP CONNECT tunneling, credential isolation, and 4-tier Slowloris defenses.
 // CVE-2026-94439, CVE-2026-56866, CVE-2025-4673, and CVE-2021-33197 defenses.

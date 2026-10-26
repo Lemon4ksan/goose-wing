@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // tests/hpke_test.goose
 // Verification test suite for Curve25519 (RFC 7748) and HPKE (RFC 9180).
 import std;

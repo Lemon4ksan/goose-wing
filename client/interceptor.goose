@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // OkHttp/Tower-style 2-tier Interceptor Pipeline (Application & Network Interceptors).
 // Compliant with OkHttp Interceptor specification & Tower Service Layer design:
 // - Application Interceptors: Run once per logical call, observe uncompressed/unrouted intent, can rewrite/short-circuit.

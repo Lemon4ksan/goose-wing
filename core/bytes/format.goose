@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Zero-allocation decimal and hexadecimal integer formatting into appendable buffers.
 namespace core;
 

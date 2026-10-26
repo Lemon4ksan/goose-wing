@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for URL parsing, IPv6 formatting, and path resolution.
 import std;
 import core from "..";

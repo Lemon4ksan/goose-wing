@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 h2spec HTTP/2 Conformance Test Runner for goose-wing.
 Compiles and starts the native Goose HTTP/2 server, executes h2spec (RFC 9113 / RFC 7540),

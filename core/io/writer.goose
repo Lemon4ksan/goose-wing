@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Zero-heap, zero-allocation slice stream writer.
 // Serializes bytes and binary integers into fixed or caller-provided slices.
 namespace core;

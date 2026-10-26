@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 Linux AF_XDP (XSK) Kernel-Bypass C Shim.
 // Enables direct zero-copy packet exchange between userspace UMEM and NIC hardware rings
 // without passing through the Linux network stack (sk_buff, iptables, qdisc).

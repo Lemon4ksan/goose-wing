@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // QUIC Congestion Control: BBRv2/v3, CUBIC & User-Space Leaky Bucket Pacer.
 // Implements 7-state BBR FSM (draft-ietf-ccwg-bbr-06), dual-envelope [inflight_lo, inflight_hi],
 // 2% loss threshold, DCTCP/L4S ECN, 5s ProbeRTT, RFC 9438 CUBIC with app-limited freeze,

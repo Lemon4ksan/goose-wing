@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // uWebSockets Official C++ Benchmark Server
 // Provides identical HTTP/1.1 and WebSocket endpoints for head-to-head comparison with goose-wing.
 #include "App.h"

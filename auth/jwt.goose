@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 7519 JSON Web Token (JWT) and RFC 7515 JSON Web Signature (JWS) engine.
 // Symmetric HMAC (HS256, HS384, HS512) and asymmetric Ed25519 (EdDSA / RFC 8037).
 // RFC 8725 BCP security defenses: algorithm pinning, none-alg rejection, clock leeway.

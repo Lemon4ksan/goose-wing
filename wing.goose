@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Networking and HTTP application-layer stack for Goose.
 // Provides URL parsing, cookie management, HTTP framing and headers,
 // client sessions with redirect and SSRF handling, and server primitives.

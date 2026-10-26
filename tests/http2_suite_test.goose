@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP/2 Echelon 6 Conformance & Reference Suite (RFC 7541, RFC 9113, RFC 9218).
 // Tests HPACK Huffman FSM, Zero-Allocation Dynamic Table, Binary Framing,
 // Two-Level Signed Flow Control, RFC 9218 Write Scheduler, and Anti-DoS Defenses.

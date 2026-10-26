@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 6797 HTTP Strict Transport Security (HSTS) & Automated Protocol Upgrade Engine.
 // Supports:
 // - `Strict-Transport-Security` response header parsing (max-age, includeSubDomains, preload)

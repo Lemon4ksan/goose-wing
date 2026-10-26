@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // CSP channels, synchronous rendezvous, and in-order stream reassembler.
 namespace core;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // WebSocket Protocol Framing and Handshake Engine (RFC 6455 & RFC 8441).
 // Pure clean-room zero-allocation implementation:
 // - Zero-copy in-place 64-bit unrolled payload masking / unmasking

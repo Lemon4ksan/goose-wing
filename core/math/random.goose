@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // High-performance pseudorandom number generators and Lemire fast-range reduction.
 namespace core;
 

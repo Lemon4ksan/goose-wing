@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 9421 HTTP Message Signatures:
 // - Component extraction (@method, @target-uri, @authority, @path, custom headers)
 // - Canonical Signature Base string construction

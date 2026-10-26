@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for L4 OS Socket Parameter Tuning (sysnet / net/sockopt.goose):
 // - Browser-accurate TCP SYN & L4 socket profile configuration (Chrome, Safari, Firefox, Wing)
 // - p0f v3 TCP stack parameter invariants (TTL, Window, MSS, WScale, DF, TCP_NODELAY)

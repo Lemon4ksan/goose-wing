@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for net/happy_eyeballs: RFC 8305 and HEv3 connection racing,
 // CAD calculations, 50 ms Resolution Delay, candidate interleaving, and AttemptManager coordination.
 // Defenses for Go #59494 / #35122 (Windows leaked dial timers) and RFC 8305 congestion collapse.

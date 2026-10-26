@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification Suite for FoxIO JA4 (TLS) / JA4H (HTTP) fingerprinting and Wing Profile System.
 import std;
 import core from "..";

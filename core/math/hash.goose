@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Fast non-cryptographic hash functions (FNV-1a, xxHash32, wyhash64) and hash combinators.
 namespace core;
 

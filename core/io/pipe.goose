@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Zero-heap two-cursor streaming byte pipeline (inspired by System.IO.Pipelines).
 // Eliminates buffer shifting, unnecessary copying, and premature allocations.
 // Provides strict monotonicity invariants for cursor tracking (preventing .NET #107213 regressions).

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 9211 (Cache-Status) and RFC 9209 (Proxy-Status):
 // - RFC 9211 Cache-Status header parsing (hit, stored, collapsed, ttl, fwd, key, detail)
 // - RFC 9211 formatting and roundtrip verification

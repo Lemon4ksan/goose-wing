@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Toxiproxy module entry point at tools/ level.
 Redirects to tools/toxiproxy package and provides CLI for running

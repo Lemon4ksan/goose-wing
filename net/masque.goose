@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP Datagrams and Capsules (RFC 9297), MASQUE CONNECT-UDP (RFC 9298), & MASQUE CONNECT-IP (RFC 9484).
 // Zero-heap protocol codec for modern privacy proxies and UDP/IP tunneling over HTTP/2 and HTTP/3.
 namespace wing;

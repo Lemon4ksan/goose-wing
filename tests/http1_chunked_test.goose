@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for RFC 9112 Section 7 (Chunked Transfer Coding & Trailers)
 // 1. One-Shot Chunked Decoding with Trailer Extraction
 // 2. RFC 9112 Smuggling & Desynchronization Defenses (Bare LF, Bounds, Disallowed Trailers)

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for concurrency primitives, channel limits, and worker supervisors.
 import std;
 import core from "..";

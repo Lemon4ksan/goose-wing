@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // goose-wing Ultra High-Performance Benchmark Server vs uWebSockets
 // Architecture: Share-Nothing Reactor-per-Core (epoll multiplexing + 16 KB CorkBuffer + SO_REUSEPORT)
 // Zero-Allocation HTTP/1.1 & WebSocket (RFC 6455) Engine

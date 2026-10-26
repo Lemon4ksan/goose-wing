@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 3339 / ISO 8601 and RFC 9110 HTTP-Date codecs and formatters.
 namespace core;
 

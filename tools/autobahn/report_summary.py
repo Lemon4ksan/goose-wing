@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Summarizes Autobahn RFC 6455 compliance report from reports/autobahn/index.json.
 """

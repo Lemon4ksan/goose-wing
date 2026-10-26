@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Happy Eyeballs v2 (RFC 8305) and v3 connection racing, DNS resolution delay,
 // CAD pacing with absolute floor, candidate interleaving, and Chromium AttemptManager coordination.
 namespace wing;

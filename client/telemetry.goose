@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Network Telemetry, Microsecond Waterfall Timings, and HAR 1.2 Log Engine.
 // Provides zero-allocation metrics collection across request lifecycle stages:
 // Blocked -> DNS -> Connect -> SSL -> Send -> Wait (TTFB) -> Receive

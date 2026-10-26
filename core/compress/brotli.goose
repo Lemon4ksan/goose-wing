@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // The Goose Brotli compression and decompression engine: RFC 7932 Specification.
 // Clean-Room Native Implementation with zero dynamic heap allocations in inner loop.
 // Fully supports:

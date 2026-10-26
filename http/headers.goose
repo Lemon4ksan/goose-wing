@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP header parsing and storage (RFC 9110, RFC 9112).
 // Stores names and values as offset slices into a contiguous buffer with
 // dedicated lookup slots for frequent standard headers.

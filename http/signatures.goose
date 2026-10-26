@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9421 HTTP Message Signatures (obsoleting all previous draft-cavage specifications).
 // Provides end-to-end cryptographic signing and verification of HTTP message components
 // using RFC 8941 Structured Fields formatting for Signature-Input and Signature headers.

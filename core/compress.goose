@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // The Goose standard compression subsystem: candidate for `core::compress`.
 //
 // Clean-Room Native Implementations:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // goose-wing package build configuration sidecar.
 // Configures platform-specific system libraries, compiler flags, and exclusions.
 c_sources_windows = ["shim/rio.c", "shim/uring.c", "shim/kqueue.c", "shim/tcp.c", "shim/simd.c", "shim/af_xdp.c", "shim/smartnic.c"];

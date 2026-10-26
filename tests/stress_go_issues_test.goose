@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Regression and stress tests for Go issue tracker / CVE vulnerabilities
 import std;
 import core from "..";

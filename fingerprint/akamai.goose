@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Akamai HTTP/2 Passive Fingerprinting & Active Matching Engine.
 // Models Akamai Bot Manager, Cloudflare, and Datadome passive client fingerprinting:
 // Format: SETTINGS|WINDOW_UPDATE|PRIORITY|PSEUDO_HEADERS

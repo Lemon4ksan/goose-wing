@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 SmartNIC & Hardware TLS Offload C Shim.
 // Enables hardware offload of TCP and TLS 1.2 / 1.3 crypto directly onto SmartNIC ASICs / DPUs
 // (e.g. NVIDIA BlueField, Mellanox ConnectX-6/7 Dx, Intel Mount Evans).

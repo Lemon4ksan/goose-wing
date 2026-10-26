@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Cross-Origin Resource Sharing (CORS) policy engine.
 namespace wing;
 

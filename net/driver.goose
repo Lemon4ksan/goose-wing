@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Layer 4 Transport Driver Architecture & Zero-Copy Engine.
 // Provides selectable high-performance L4 transport drivers:
 // 1. Standard: Cross-platform zero-dependency sockets (POSIX / WinSock2 stream).

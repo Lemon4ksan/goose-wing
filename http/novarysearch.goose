@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // W3C No-Vary-Search Cache Normalization Engine.
 // Enables HTTP cache hits across query string variations by stripping ignored tracking
 // parameters (e.g. `utm_*`, `fbclid`) and normalizing parameter ordering.

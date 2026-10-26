@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Incremental streaming, chunked transfer encoding (RFC 9112 Section 7.1),
 // and chunked upload/download progress pipeline.
 namespace wing;

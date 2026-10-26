@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for uWebSockets Phase 1 features in goose-wing:
 // 1. Declarative WebSocket Route Registration in HttpServer (app.ws pattern)
 // 2. Per-Socket Typed UserData / Inline State (getUserData pattern)

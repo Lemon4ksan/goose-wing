@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // I/O types, error models, and stream status codes.
 // Conforms to Goose Core zero-heap systems semantics.
 namespace core;

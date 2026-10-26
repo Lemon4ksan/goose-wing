@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Verification suite for Compression Dictionary Transport (IETF / Chrome 123+ dcz/dcb):
 // - `Use-As-Dictionary` response header parsing & dictionary caching
 // - `Available-Dictionary` RFC 8941 Structured Fields byte sequence generation

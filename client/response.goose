@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP response representation, header inspectors, and JSON decoding (RFC 9110).
 namespace wing;
 

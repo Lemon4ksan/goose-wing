@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // W3C / IETF draft-ietf-webtrans-http3-16 (WebTransport over HTTP/3)
 // and RFC 9221 (An Unreliable Datagram Extension to QUIC).
 // Implements extended CONNECT session bootstrapping (:protocol = webtransport),

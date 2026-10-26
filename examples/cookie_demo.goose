@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Example demonstrating cookie jar usage and method chaining.
 import std;
 import wing from "..";

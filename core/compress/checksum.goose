@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // The Goose checksum module: Slicing-by-16 CRC-32 (IEEE 802.3) and Unrolled Adler-32 (RFC 1950).
 namespace core;
 

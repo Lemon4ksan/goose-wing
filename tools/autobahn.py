@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Convenience entry point for Autobahn WebSocket Testsuite.
 Delegates directly to tools/autobahn/runner.py.

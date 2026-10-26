@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Universal Function Call Syntax (UFCS) method bridges for core types.
 namespace core;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Concurrency primitives, actor message passing, CSP channels, supervisor trees, and singleflight call suppression.
 namespace core;
 

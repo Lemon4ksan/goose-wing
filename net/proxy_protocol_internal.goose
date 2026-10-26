@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Internal PROXY protocol wire constants, nibbles, magic preambles, and TLV subtypes.
 namespace internal;
 

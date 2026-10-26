@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Resilient connection pooling, 5-dimensional PoolKey partitioning,
 // two-slice WantQueue, liveness health checks, and HTTP/2 IP coalescing.
 namespace wing;

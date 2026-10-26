@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Wing Profile and Persona Engine.
 // Enforces Wing's authentic zero-heap identity by default, with complete user-level
 // control over headers, meta-headers, TLS parameters, and JA4 fingerprint generation.

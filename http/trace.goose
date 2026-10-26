@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // W3C Trace Context (RFC 9239 / W3C Recommendation 23 November 2021).
 // Provides zero-heap parsing, validation, and generation of `traceparent`
 // and `tracestate` distributed tracing headers.

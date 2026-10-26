@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Zero-heap, zero-allocation 16 KB outbound write corking buffer.
 // Aggregates small frames and header fragments into a single 16384-byte buffer
 // before flushing via vectored I/O (writev / WSASend), matching uWebSockets & sockudo-ws patterns.

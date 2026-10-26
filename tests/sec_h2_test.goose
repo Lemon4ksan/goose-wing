@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Tests for HTTP/2 framer validation and frame limits (RFC 9113).
 import std;
 import core from "..";

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // bench_burst.c - Ultra-Low-Overhead Native C HTTP/1.1 Load Generator
 // Designed to measure maximum line-rate throughput without client-side bottlenecks.
 // Consumes ~10-15% CPU compared to wrk's 50-60%, unlocking full server capacity.

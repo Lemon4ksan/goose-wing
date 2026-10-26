@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Test and demonstration of the clean, stdlib-ready Time & Duration library in goose-wing.
 import std;
 import wing from "..";

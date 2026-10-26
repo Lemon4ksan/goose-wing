@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9110 & RFC 9111 Section 4.1: Conditional request validators and Vary matching engine.
 // Implements EntityTag (ETag) weak/strong comparisons, Last-Modified revalidation,
 // RFC 9111 §4.1 Vary normalization with CVE-2026-93750 defense, and 304 merge filtering.

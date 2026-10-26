@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Position-independent actor addressing, stash buffer, and zero-allocation priority mailboxes.
 namespace core;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP/2 binary framing layer and RFC 9218 extensible prioritization (RFC 9113, RFC 9218).
 // Zero-allocation frame header parsing, stream ID validation, and Structured Field priority codecs.
 namespace wing;

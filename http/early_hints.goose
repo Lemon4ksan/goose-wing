@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // HTTP 103 Early Hints (RFC 8297) and Link Preload / Preconnect Engine.
 // Zero-heap parser for informational 103 responses:
 // - Extracts `Link: <uri>; rel=preload; as=...` and `Link: <origin>; rel=preconnect`

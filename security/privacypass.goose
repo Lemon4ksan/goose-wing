@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RFC 9576 Privacy Pass Architecture, RFC 9577 PrivateToken HTTP Authentication,
 // and RFC 9578 Blind RSA Token Issuance for anti-bot WAF bypass and privacy authorization.
 // Zero-heap binary wire serialization, challenge parsing, redemption caching, and header codecs.

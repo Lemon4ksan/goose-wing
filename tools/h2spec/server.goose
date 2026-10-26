@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Dedicated HTTP/2 Server for h2spec Conformance Testing (RFC 9113 & RFC 7540).
 // Zero-allocation, high-performance, strictly conformant HTTP/2 implementation in pure Goose.
 import std;

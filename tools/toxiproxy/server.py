@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Toxiproxy Server Lifecycle Manager.
 Discovers or downloads official Shopify Toxiproxy binary and manages server process.

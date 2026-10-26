@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // AWS Signature Version 4 (SigV4) Request Signing.
 // Compliant with AWS SigV4 specification for S3, DynamoDB, API Gateway, SQS, etc.
 // Automatically derives HMAC-SHA256 cascade signing keys and injects Authorization, x-amz-date & x-amz-content-sha256.

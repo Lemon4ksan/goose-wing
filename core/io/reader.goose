@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Zero-heap, zero-copy slice stream reader.
 // Maintains cursor offset over a contiguous byte buffer with bounds-checked primitives.
 namespace core;
