@@ -109,7 +109,7 @@ fn test_proxy_v2_conformance(t: core::T&) {
     t.run("PROXY-v2-01: IPv4 TCP binary header parsing") { sub =>
         // Preamble (12) + 0x21 (v2, PROXY) + 0x11 (INET4, STREAM) + len 12 (0x000C)
         var wire: u8[..64] = [];
-        for b in wing::PROXY_V2_PREAMBLE { wire.push(b); }
+        for b in internal::PROXY_V2_PREAMBLE { wire.push(b); }
         wire.push(0x21); // version 2, PROXY command
         wire.push(0x11); // INET4, STREAM (TCP)
         wire.push(0x00); wire.push(12); // payload length = 12
@@ -136,7 +136,7 @@ fn test_proxy_v2_conformance(t: core::T&) {
 
     t.run("PROXY-v2-02: Command LOCAL (health checks)") { sub =>
         var wire: u8[..32] = [];
-        for b in wing::PROXY_V2_PREAMBLE { wire.push(b); }
+        for b in internal::PROXY_V2_PREAMBLE { wire.push(b); }
         wire.push(0x20); // version 2, LOCAL command
         wire.push(0x00); // UNSPEC, UNSPEC
         wire.push(0x00); wire.push(0x00); // payload length = 0
@@ -150,7 +150,7 @@ fn test_proxy_v2_conformance(t: core::T&) {
 
     t.run("PROXY-v2-03: IPv6 TCP binary header parsing") { sub =>
         var wire: u8[..64] = [];
-        for b in wing::PROXY_V2_PREAMBLE { wire.push(b); }
+        for b in internal::PROXY_V2_PREAMBLE { wire.push(b); }
         wire.push(0x21); // version 2, PROXY command
         wire.push(0x21); // INET6, STREAM (TCP)
         wire.push(0x00); wire.push(36); // payload length = 36
@@ -179,14 +179,14 @@ fn test_proxy_v2_conformance(t: core::T&) {
 
         // Wrong version (0x11 instead of 0x21)
         var bad_ver: u8[..32] = [];
-        for b in wing::PROXY_V2_PREAMBLE { bad_ver.push(b); }
+        for b in internal::PROXY_V2_PREAMBLE { bad_ver.push(b); }
         bad_ver.push(0x11); bad_ver.push(0x11); bad_ver.push(0); bad_ver.push(0);
         let _, _, ok_ver = wing::parse_proxy_v2(bad_ver[..]);
         sub.assert_false(ok_ver, "version != 2 rejected");
 
         // Truncated payload length claim
         var trunc_wire: u8[..32] = [];
-        for b in wing::PROXY_V2_PREAMBLE { trunc_wire.push(b); }
+        for b in internal::PROXY_V2_PREAMBLE { trunc_wire.push(b); }
         trunc_wire.push(0x21); trunc_wire.push(0x11);
         trunc_wire.push(0x00); trunc_wire.push(100); // claim 100 bytes but only 16 present
         let _, _, ok_len = wing::parse_proxy_v2(trunc_wire[..]);
@@ -240,7 +240,7 @@ fn test_proxy_v2_tlvs(t: core::T&) {
             ..
         };
         hdr.ssl.has_ssl = true;
-        hdr.ssl.client_flags = wing::PP2_CLIENT_SSL | wing::PP2_CLIENT_CERT_CONN;
+        hdr.ssl.client_flags = internal::PP2_CLIENT_SSL | internal::PP2_CLIENT_CERT_CONN;
         hdr.ssl.verify_result = 0; // successfully verified client cert
         hdr.ssl.version.append("TLSv1.3");
         hdr.ssl.cipher.append("TLS_AES_128_GCM_SHA256");
@@ -255,7 +255,7 @@ fn test_proxy_v2_tlvs(t: core::T&) {
         sub.assert_true(ok_parse, "parse_proxy_v2 parses SSL TLVs cleanly");
         sub.assert_eq(consumed, wire.len, "consumed entire buffer");
         sub.assert_true(back_hdr.ssl.has_ssl, "SSL flag set");
-        sub.assert_eq(back_hdr.ssl.client_flags, wing::PP2_CLIENT_SSL | wing::PP2_CLIENT_CERT_CONN, "client flags preserved");
+        sub.assert_eq(back_hdr.ssl.client_flags, internal::PP2_CLIENT_SSL | internal::PP2_CLIENT_CERT_CONN, "client flags preserved");
         sub.assert_eq(back_hdr.ssl.verify_result, 0, "verify_result is 0");
         sub.assert_bytes_eq(back_hdr.ssl.version[..], "TLSv1.3", "SSL version matches");
         sub.assert_bytes_eq(back_hdr.ssl.cipher[..], "TLS_AES_128_GCM_SHA256", "Cipher matches");

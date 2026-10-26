@@ -6,55 +6,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Constants and Normative Definitions ---------------------------------
-
-// PROXY protocol version 1 prefix: "PROXY "
-const PROXY_V1_PREFIX: const u8[6] = ['P', 'R', 'O', 'X', 'Y', ' '];
-const PROXY_V1_MAX_LEN: i64 = 107; // RFC / HAProxy specification maximum v1 line length
-
-// PROXY protocol version 2 12-byte constant preamble:
-// \x0D \x0A \x0D \x0A \x00 \x0D \x0A \x51 \x55 \x49 \x54 \x0A ("\r\n\r\n\0\r\nQUIT\n")
-const PROXY_V2_PREAMBLE: const u8[12] = [
-    0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A
-];
-
-// Protocol Commands (v2 nibble 0..3)
-const PP2_CMD_LOCAL: u8 = 0x00; // Connection initiated by proxy (health check / discard address)
-const PP2_CMD_PROXY: u8 = 0x01; // Forwarded connection (contains original address)
-
-// Address Families (v2 upper nibble)
-const PP2_FAM_UNSPEC: u8 = 0x00;
-const PP2_FAM_INET4:  u8 = 0x01; // IPv4 (12 bytes: 4B src + 4B dst + 2B sport + 2B dport)
-const PP2_FAM_INET6:  u8 = 0x02; // IPv6 (36 bytes: 16B src + 16B dst + 2B sport + 2B dport)
-const PP2_FAM_UNIX:   u8 = 0x03; // Unix (216 bytes: 108B src + 108B dst)
-
-// Transport Protocols (v2 lower nibble)
-const PP2_TRANS_UNSPEC: u8 = 0x00;
-const PP2_TRANS_STREAM: u8 = 0x01; // TCP
-const PP2_TRANS_DGRAM:  u8 = 0x02; // UDP
-
-// Type-Length-Value (TLV) Types
-const PP2_TYPE_ALPN:      u8 = 0x01; // Application-Layer Protocol Negotiation (e.g. "h2")
-const PP2_TYPE_AUTHORITY: u8 = 0x02; // Host name passed by the client (SNI / Host)
-const PP2_TYPE_CRC32C:    u8 = 0x03; // CRC32c checksum
-const PP2_TYPE_NOOP:      u8 = 0x04; // Ignored padding
-const PP2_TYPE_UNIQUE_ID: u8 = 0x05; // Unique connection ID for tracing
-const PP2_TYPE_SSL:       u8 = 0x20; // SSL/TLS client information
-const PP2_TYPE_NETNS:     u8 = 0x30; // Network namespace name
-
-// SSL Sub-TLV Types
-const PP2_SUBTYPE_SSL_VERSION: u8 = 0x21; // TLS version string (e.g. "TLSv1.3")
-const PP2_SUBTYPE_SSL_CN:      u8 = 0x22; // Client Common Name
-const PP2_SUBTYPE_SSL_CIPHER:  u8 = 0x23; // Cipher name (e.g. "ECDHE-RSA-AES128-GCM-SHA256")
-const PP2_SUBTYPE_SSL_SIG_ALG: u8 = 0x24; // Signature algorithm
-const PP2_SUBTYPE_SSL_KEY_ALG: u8 = 0x25; // Key exchange algorithm
-
-// SSL Client Bitmask Flags
-const PP2_CLIENT_SSL:       u8 = 0x01; // Connection was over TLS
-const PP2_CLIENT_CERT_CONN: u8 = 0x02; // Client provided a certificate in this connection
-const PP2_CLIENT_CERT_SESS: u8 = 0x04; // Client provided a certificate in this session
-
-// ---- 2. Data Structures -----------------------------------------------------
+// ---- 1. Data Structures -----------------------------------------------------
 
 enum ProxyProtocolVersion {
     None,
@@ -215,12 +167,12 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
     // Must start with "PROXY "
     for i in 6 {
-        guard wire[i] == PROXY_V1_PREFIX[i] else { return hdr, 0, false; }
+        guard wire[i] == internal::PROXY_V1_PREFIX[i] else { return hdr, 0, false; }
     }
 
     // Locate CRLF terminator within maximum allowed length (107 bytes)
     var crlf_idx: i64 = -1;
-    let scan_limit = if wire.len < PROXY_V1_MAX_LEN { wire.len } else { PROXY_V1_MAX_LEN };
+    let scan_limit = if wire.len < internal::PROXY_V1_MAX_LEN { wire.len } else { internal::PROXY_V1_MAX_LEN };
     for i in 6 .. scan_limit {
         if wire[i] == '\r' && i + 1 < wire.len && wire[i + 1] == '\n' {
             crlf_idx = i;
@@ -355,7 +307,7 @@ fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
 fn validate_proxy_v2_preamble(wire: const u8[:]) -> bool {
     guard wire.len >= 16 else { return false; }
     for i in 12 {
-        guard wire[i] == PROXY_V2_PREAMBLE[i] else { return false; }
+        guard wire[i] == internal::PROXY_V2_PREAMBLE[i] else { return false; }
     }
     return true;
 }
@@ -364,10 +316,10 @@ fn parse_proxy_v2_command(ver_cmd: u8, out_cmd: ProxyCommand&) -> bool {
     let ver = (ver_cmd >> 4) & 0x0F;
     guard ver == 0x2 else { return false; }
     let cmd = ver_cmd & 0x0F;
-    if cmd == PP2_CMD_LOCAL {
+    if cmd == internal::PP2_CMD_LOCAL {
         out_cmd = ProxyCommand.Local;
         return true;
-    } else if cmd == PP2_CMD_PROXY {
+    } else if cmd == internal::PP2_CMD_PROXY {
         out_cmd = ProxyCommand.Proxy;
         return true;
     }
@@ -501,27 +453,27 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
         let val = wire[val_start..val_end];
 
-        if tlv_type == PP2_TYPE_ALPN {
+        if tlv_type == internal::PP2_TYPE_ALPN {
             if val.len <= hdr.alpn.cap {
                 hdr.alpn.clear();
                 hdr.alpn.append(val);
             }
-        } else if tlv_type == PP2_TYPE_AUTHORITY {
+        } else if tlv_type == internal::PP2_TYPE_AUTHORITY {
             if val.len <= hdr.authority.cap {
                 hdr.authority.clear();
                 hdr.authority.append(val);
             }
-        } else if tlv_type == PP2_TYPE_UNIQUE_ID {
+        } else if tlv_type == internal::PP2_TYPE_UNIQUE_ID {
             if val.len <= hdr.unique_id.cap {
                 hdr.unique_id.clear();
                 hdr.unique_id.append(val);
             }
-        } else if tlv_type == PP2_TYPE_NETNS {
+        } else if tlv_type == internal::PP2_TYPE_NETNS {
             if val.len <= hdr.netns.cap {
                 hdr.netns.clear();
                 hdr.netns.append(val);
             }
-        } else if tlv_type == PP2_TYPE_SSL {
+        } else if tlv_type == internal::PP2_TYPE_SSL {
             guard val.len >= 5 else { return hdr, 0, false; }
             hdr.ssl.has_ssl = true;
             hdr.ssl.client_flags = val[0];
@@ -541,27 +493,27 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
                 guard sub_end <= val.len else { break; }
 
                 let sub_val = val[sub_start..sub_end];
-                if sub_type == PP2_SUBTYPE_SSL_VERSION {
+                if sub_type == internal::PP2_SUBTYPE_SSL_VERSION {
                     if sub_val.len <= hdr.ssl.version.cap {
                         hdr.ssl.version.clear();
                         hdr.ssl.version.append(sub_val);
                     }
-                } else if sub_type == PP2_SUBTYPE_SSL_CN {
+                } else if sub_type == internal::PP2_SUBTYPE_SSL_CN {
                     if sub_val.len <= hdr.ssl.client_cn.cap {
                         hdr.ssl.client_cn.clear();
                         hdr.ssl.client_cn.append(sub_val);
                     }
-                } else if sub_type == PP2_SUBTYPE_SSL_CIPHER {
+                } else if sub_type == internal::PP2_SUBTYPE_SSL_CIPHER {
                     if sub_val.len <= hdr.ssl.cipher.cap {
                         hdr.ssl.cipher.clear();
                         hdr.ssl.cipher.append(sub_val);
                     }
-                } else if sub_type == PP2_SUBTYPE_SSL_SIG_ALG {
+                } else if sub_type == internal::PP2_SUBTYPE_SSL_SIG_ALG {
                     if sub_val.len <= hdr.ssl.sig_alg.cap {
                         hdr.ssl.sig_alg.clear();
                         hdr.ssl.sig_alg.append(sub_val);
                     }
-                } else if sub_type == PP2_SUBTYPE_SSL_KEY_ALG {
+                } else if sub_type == internal::PP2_SUBTYPE_SSL_KEY_ALG {
                     if sub_val.len <= hdr.ssl.key_alg.cap {
                         hdr.ssl.key_alg.clear();
                         hdr.ssl.key_alg.append(sub_val);
@@ -592,7 +544,7 @@ fn format_proxy_v2_addresses<B>(hdr: const ProxyHeader&, out: B&) {
 }
 
 fn format_proxy_v2_ssl_tlv<B>(ssl: const ProxySslInfo&, out: B&) {
-    out.push(PP2_TYPE_SSL);
+    out.push(internal::PP2_TYPE_SSL);
 
     var sub_len = 5;
     if ssl.version.len > 0 { sub_len += 3 + ssl.version.len; }
@@ -604,17 +556,17 @@ fn format_proxy_v2_ssl_tlv<B>(ssl: const ProxySslInfo&, out: B&) {
     append_u32_be(out, ssl.verify_result);
 
     if ssl.version.len > 0 {
-        out.push(PP2_SUBTYPE_SSL_VERSION);
+        out.push(internal::PP2_SUBTYPE_SSL_VERSION);
         append_u16_be(out, ssl.version.len as u16);
         out.append(ssl.version[..]);
     }
     if ssl.cipher.len > 0 {
-        out.push(PP2_SUBTYPE_SSL_CIPHER);
+        out.push(internal::PP2_SUBTYPE_SSL_CIPHER);
         append_u16_be(out, ssl.cipher.len as u16);
         out.append(ssl.cipher[..]);
     }
     if ssl.client_cn.len > 0 {
-        out.push(PP2_SUBTYPE_SSL_CN);
+        out.push(internal::PP2_SUBTYPE_SSL_CN);
         append_u16_be(out, ssl.client_cn.len as u16);
         out.append(ssl.client_cn[..]);
     }
@@ -622,19 +574,19 @@ fn format_proxy_v2_ssl_tlv<B>(ssl: const ProxySslInfo&, out: B&) {
 
 fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
     if hdr.alpn.len > 0 {
-        out.push(PP2_TYPE_ALPN);
+        out.push(internal::PP2_TYPE_ALPN);
         append_u16_be(out, hdr.alpn.len as u16);
         out.append(hdr.alpn[..]);
     }
 
     if hdr.authority.len > 0 {
-        out.push(PP2_TYPE_AUTHORITY);
+        out.push(internal::PP2_TYPE_AUTHORITY);
         append_u16_be(out, hdr.authority.len as u16);
         out.append(hdr.authority[..]);
     }
 
     if hdr.unique_id.len > 0 {
-        out.push(PP2_TYPE_UNIQUE_ID);
+        out.push(internal::PP2_TYPE_UNIQUE_ID);
         append_u16_be(out, hdr.unique_id.len as u16);
         out.append(hdr.unique_id[..]);
     }
@@ -646,25 +598,25 @@ fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
 
 // Formats a PROXY protocol v2 binary header
 fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
-    for b in PROXY_V2_PREAMBLE { out.push(b); }
+    for b in internal::PROXY_V2_PREAMBLE { out.push(b); }
 
-    let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local { PP2_CMD_LOCAL } else { PP2_CMD_PROXY };
+    let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local { internal::PP2_CMD_LOCAL } else { internal::PP2_CMD_PROXY };
     out.push(0x20 | cmd_nibble);
 
-    var fam_nibble: u8 = PP2_FAM_UNSPEC;
+    var fam_nibble: u8 = internal::PP2_FAM_UNSPEC;
     if hdr.family == ProxyAddressFamily.Inet4 {
-        fam_nibble = PP2_FAM_INET4;
+        fam_nibble = internal::PP2_FAM_INET4;
     } else if hdr.family == ProxyAddressFamily.Inet6 {
-        fam_nibble = PP2_FAM_INET6;
+        fam_nibble = internal::PP2_FAM_INET6;
     } else if hdr.family == ProxyAddressFamily.Unix {
-        fam_nibble = PP2_FAM_UNIX;
+        fam_nibble = internal::PP2_FAM_UNIX;
     }
 
-    var trans_nibble: u8 = PP2_TRANS_UNSPEC;
+    var trans_nibble: u8 = internal::PP2_TRANS_UNSPEC;
     if hdr.transport == ProxyTransportProtocol.Stream {
-        trans_nibble = PP2_TRANS_STREAM;
+        trans_nibble = internal::PP2_TRANS_STREAM;
     } else if hdr.transport == ProxyTransportProtocol.Datagram {
-        trans_nibble = PP2_TRANS_DGRAM;
+        trans_nibble = internal::PP2_TRANS_DGRAM;
     }
 
     out.push((fam_nibble << 4) | trans_nibble);
@@ -691,7 +643,7 @@ fn detect_proxy_protocol(wire: const u8[:]) -> ProxyProtocolVersion {
     if wire.len >= 12 {
         var is_v2 = true;
         for i in 12 {
-            if wire[i] != PROXY_V2_PREAMBLE[i] {
+            if wire[i] != internal::PROXY_V2_PREAMBLE[i] {
                 is_v2 = false;
                 break;
             }
@@ -699,7 +651,7 @@ fn detect_proxy_protocol(wire: const u8[:]) -> ProxyProtocolVersion {
         if is_v2 { return ProxyProtocolVersion.V2; }
     }
 
-    if wire.len >= 6 && wire[..6] == PROXY_V1_PREFIX[..] {
+    if wire.len >= 6 && wire[..6] == internal::PROXY_V1_PREFIX[..] {
         return ProxyProtocolVersion.V1;
     }
 

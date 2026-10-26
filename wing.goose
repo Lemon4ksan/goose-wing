@@ -128,6 +128,7 @@ import net.types;
 import net.proxy;
 import net.pool;
 import net.happy_eyeballs;
+import net.proxy_protocol_internal;
 import net.proxy_protocol;
 import net.retry;
 import net.dns;
