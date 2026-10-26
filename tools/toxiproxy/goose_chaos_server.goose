@@ -155,6 +155,11 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                     wing::encode_ws_frame(out_frame, wing::WS_OPCODE_PONG, payload[..], false);
                     wing::tcp_send(conn, out_frame[..]);
                 } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
+                    let code, reason, ok_close = wing::parse_ws_close_payload(payload[..]);
+                    if !ok_close {
+                        send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid close frame");
+                        return;
+                    }
                     var out_frame: u8[>..] = [];
                     wing::encode_ws_frame(out_frame, wing::WS_OPCODE_CLOSE, payload[..], false);
                     wing::tcp_send(conn, out_frame[..]);

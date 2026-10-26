@@ -27,6 +27,9 @@ fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) ->
 const RESP_PLAINTEXT: const u8[:] = 
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
 
+const RESP_PLAINTEXT_4X: const u8[:] = 
+    "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
+
 const RESP_JSON: const u8[:] = 
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: keep-alive\r\n\r\n{\"message\":\"Hello, World!\"}";
 
@@ -106,13 +109,16 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                     }
 
                     var slot_idx: i64 = -1;
-                    let start = next_free_slot;
-                    for s in slots.len {
-                        let idx = (start + s) % slots.len;
-                        if slots[idx].fd == -1 {
-                            slot_idx = idx;
-                            next_free_slot = (idx + 1) % slots.len;
-                            break;
+                    if next_free_slot >= 0 && next_free_slot < slots.len && slots[next_free_slot].fd == -1 {
+                        slot_idx = next_free_slot;
+                        next_free_slot = (next_free_slot + 1) % slots.len;
+                    } else {
+                        for s in slots.len {
+                            if slots[s].fd == -1 {
+                                slot_idx = s;
+                                next_free_slot = (s + 1) % slots.len;
+                                break;
+                            }
                         }
                     }
 
@@ -161,11 +167,19 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 if slot_idx < next_free_slot { next_free_slot = slot_idx; }
                 continue;
             }
+            if recvd == -2 {
+                // EAGAIN / EWOULDBLOCK: restore previous leftover bytes if any
+                if prev_len > 0 {
+                    slots[slot_idx].leftover_len = prev_len;
+                }
+                continue;
+            }
             active_len += recvd;
             if active_len <= 0 || active_len > raw_recv.len {
                 continue;
             }
             let in_buf = raw_recv[..active_len];
+            wing::tcp_set_quickack(conn, true);
 
             if slots[slot_idx].is_ws {
                 // WebSocket Frame Ingress (RFC 6455)
@@ -244,8 +258,16 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 }
 
                 if ws_alive && ws_cork.len > 0 {
-                    let sent = wing::tcp_send(conn, ws_cork[..]);
-                    if sent <= 0 { ws_alive = false; }
+                    var total_sent: i64 = 0;
+                    var send_attempts: i64 = 0;
+                    let target_len = ws_cork.len;
+                    while total_sent < target_len && send_attempts < 16 {
+                        let sent = wing::tcp_send(conn, ws_cork[total_sent..target_len]);
+                        if sent <= 0 { ws_alive = false; break; }
+                        total_sent += sent;
+                        send_attempts += 1;
+                    }
+                    if total_sent < target_len { ws_alive = false; }
                     ws_cork.clear();
                 }
 
@@ -279,7 +301,18 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             while cursor >= 0 && cursor < in_buf.len {
                 let active = in_buf[cursor..];
                 var hdr_end: i64 = -1;
-                if active.len >= 81 && active[77] == '\r' && active[78] == '\n' && active[79] == '\r' && active[80] == '\n' {
+                if active.len >= 50 && active[46] == '\r' && active[47] == '\n' && active[48] == '\r' && active[49] == '\n' {
+                    if active[0] == 'G' && active[4] == '/' {
+                        let route_char = active[5];
+                        if route_char == 'p' || route_char == ' ' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 50;
+                            continue;
+                        }
+                    }
+                    hdr_end = 46;
+                } else if active.len >= 81 && active[77] == '\r' && active[78] == '\n' && active[79] == '\r' && active[80] == '\n' {
                     if active[0] == 'G' && active[4] == '/' {
                         let route_char = active[5];
                         if route_char == 'p' || route_char == ' ' {
@@ -422,8 +455,18 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 
             // Flush cork buffer batch in 1 single tcp_send syscall
             if cork_len > 0 && cork_len <= cork_buf.len {
-                let sent = wing::tcp_send(conn, cork_buf[..cork_len]);
-                if sent <= 0 {
+                var total_sent: i64 = 0;
+                var send_attempts: i64 = 0;
+                while total_sent < cork_len && send_attempts < 16 {
+                    let sent = wing::tcp_send(conn, cork_buf[total_sent..cork_len]);
+                    if sent <= 0 {
+                        client_alive = false;
+                        break;
+                    }
+                    total_sent += sent;
+                    send_attempts += 1;
+                }
+                if !client_alive || total_sent < cork_len {
                     wing::epoll_del(epfd, conn);
                     wing::tcp_close(conn);
                     slots[slot_idx].fd = -1;

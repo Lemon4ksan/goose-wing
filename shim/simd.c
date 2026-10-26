@@ -29,9 +29,17 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
     int64_t rlen = resp.len;
 
     if (clen + rlen > cork_buf.len) {
-        wing_bytes_ro to_send = { cork_buf.data, clen };
-        int32_t sent = wing_tcp_send(conn, to_send);
-        if (sent <= 0) return -1;
+        const uint8_t *p = cork_buf.data;
+        size_t rem = (size_t)clen;
+        int attempts = 0;
+        while (rem > 0 && attempts++ < 16) {
+            wing_bytes_ro to_send = { p, (int64_t)rem };
+            int32_t sent = wing_tcp_send(conn, to_send);
+            if (sent <= 0) return -1;
+            p += sent;
+            rem -= (size_t)sent;
+        }
+        if (rem > 0) return -1;
         clen = 0;
     }
 

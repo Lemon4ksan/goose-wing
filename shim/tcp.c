@@ -112,8 +112,11 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
     setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
 #endif
 #if defined(TCP_DEFER_ACCEPT)
-    int defer = 1;
-    setsockopt(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, &defer, sizeof(defer));
+    const char *def_env = getenv("WING_DEFER_ACCEPT");
+    if (def_env && atoi(def_env) > 0) {
+        int defer = atoi(def_env);
+        setsockopt(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, &defer, sizeof(defer));
+    }
 #endif
 #endif
 
@@ -192,11 +195,9 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
 
-#ifdef _WIN32
-    int bufsize = 131072;
+    int bufsize = 262144;
     setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof(bufsize));
     setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof(bufsize));
-#endif
 
 #if defined(__linux__) && defined(TCP_QUICKACK)
     int qack = 1;
@@ -642,11 +643,9 @@ int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
 
-#ifdef _WIN32
-    int bufsize = 131072;
+    int bufsize = 262144;
     setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof(bufsize));
     setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof(bufsize));
-#endif
 
 #if defined(__linux__) && defined(TCP_QUICKACK)
     int qack = 1;
@@ -883,6 +882,7 @@ int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) {
 #ifndef SO_INCOMING_CPU
 #define SO_INCOMING_CPU 49
 #endif
+    if (getenv("WING_NO_INCOMING_CPU")) return 0;
     long total_cpus = sysconf(_SC_NPROCESSORS_ONLN);
     int target_cpu = (int)cpu_id;
     if (total_cpus > 1) {

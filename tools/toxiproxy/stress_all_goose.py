@@ -2,10 +2,11 @@
 """
 Unified Goose-Wing Toxiproxy Chaos & Security Attack Runner.
 Combines:
-  1. Native Goose HTTP/1.1 Wire Parser (Slicer, Throttling, Space-before-colon)
-  2. HTTP/2 Framing, Multiplexing & CVE Defenses (Rapid Reset, Continuation Flood, Ping Flood)
-  3. WebSocket RFC 6455 Invariant Enforcement & Fuzzing (Unmasked, Frag Ping, Bad UTF-8)
-  4. 50 Heavy Rapid Chaos Cycles over Live OS Sockets
+  1. Native Goose HTTP/1.1 Wire Parser (Slicer, Throttling, Space/Tab-before-colon, Smuggling, CRLF Injection)
+  2. HTTP/2 Framing, Multiplexing & CVE Defenses (Rapid Reset, Continuation Flood, Ping Flood, SETTINGS Flood, Zero-Increment WINDOW_UPDATE, Empty DATA Streak)
+  3. WebSocket RFC 6455 Invariant Enforcement & Fuzzing (Unmasked, Frag Ping, Bad UTF-8, Non-Minimal Len, Interleaving, Bad Close Codes)
+  4. L4 Transport & Chaos Toxics (SlowClose, LimitData truncation, Jitter Spike, Combined Slicer + Bandwidth)
+  5. 50 Heavy Rapid Chaos Cycles over Live OS Sockets
 """
 
 import asyncio
@@ -24,8 +25,11 @@ from toxiproxy import (
     BandwidthToxic,
     ChaosProxy,
     LatencyToxic,
+    LimitDataToxic,
     ResetPeerToxic,
     SlicerToxic,
+    SlowCloseToxic,
+    TimeoutToxic,
 )
 
 SERVER_EXE = Path(__file__).resolve().parent.parent / "bin" / "goose_chaos_server.exe"
@@ -109,12 +113,25 @@ async def read_h2(reader: asyncio.StreamReader) -> tuple[int, int, int, bytes]:
 
 
 # --- WebSocket Helpers ---
-def ws_frame(opcode: int, payload: bytes, fin: bool = True, masked: bool = True, rsv: int = 0) -> bytes:
+def ws_frame(
+    opcode: int,
+    payload: bytes,
+    fin: bool = True,
+    masked: bool = True,
+    rsv: int = 0,
+    force_len_mode: int | None = None,
+) -> bytes:
     b0 = (0x80 if fin else 0x00) | ((rsv & 0x7) << 4) | (opcode & 0x0F)
     out = bytearray([b0])
     l = len(payload)
     mbit = 0x80 if masked else 0x00
-    if l <= 125:
+    if force_len_mode == 126:
+        out.append(mbit | 126)
+        out.extend(struct.pack("!H", l))
+    elif force_len_mode == 127:
+        out.append(mbit | 127)
+        out.extend(struct.pack("!Q", l))
+    elif l <= 125:
         out.append(mbit | l)
     elif l <= 65535:
         out.append(mbit | 126)
@@ -262,6 +279,31 @@ async def main():
         record(b"400 Bad Request" in res, "Space-before-colon smuggling rejection (CVE-2019-16276)")
 
         proxy.clear_toxics()
+        tab_smuggle = b"POST /test HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding\t: chunked\r\n\r\n0\r\n\r\n"
+        res = await run_req(proxy_port, tab_smuggle, timeout=3.0)
+        record(b"400" in res.split(b"\r\n")[0], "Tab-before-colon smuggling rejection (RFC 9112 Section 5.1)")
+
+        proxy.clear_toxics()
+        dup_host = b"GET /ping HTTP/1.1\r\nHost: a.com\r\nHost: b.com\r\n\r\n"
+        res = await run_req(proxy_port, dup_host, timeout=3.0)
+        record(b"400" in res.split(b"\r\n")[0], "Duplicate Host header rejected (RFC 9112 Section 3.2)")
+
+        proxy.clear_toxics()
+        non_final = b"POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked, identity\r\nConnection: close\r\n\r\n0\r\n\r\n"
+        res = await run_req(proxy_port, non_final, timeout=3.0)
+        record(b"400" in res.split(b"\r\n")[0], "Non-final chunked Transfer-Encoding rejected (RFC 9112 Section 6.3)")
+
+        proxy.clear_toxics()
+        huge_chunk = b"POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nFFFFFFFFFFFFFFFFFFFF\r\noverflow\r\n0\r\n\r\n"
+        res = await run_req(proxy_port, huge_chunk, timeout=3.0)
+        record(b"400" in res.split(b"\r\n")[0], "Integer overflow chunk-size rejected (RFC 9112 Section 7.1)")
+
+        proxy.clear_toxics()
+        crlf_inj = b"GET /test\r\nX-Injected: evil HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        res = await run_req(proxy_port, crlf_inj, timeout=3.0)
+        record(b"400" in res.split(b"\r\n")[0] or len(res) == 0, "Request line CRLF injection rejected (RFC 9112 Section 3.1)")
+
+        proxy.clear_toxics()
         proxy.add_toxic(ResetPeerToxic("s3", reset_after_bytes=15, stream="upstream"))
         res = await run_req(proxy_port, req, timeout=3.0)
         record(len(res) == 0, "Abrupt TCP RST survival without deadlock or leak")
@@ -380,6 +422,47 @@ async def main():
         except Exception as e:
             record(False, "PING control-frame flood (CVE-2019-9512)", repr(e))
 
+        try:
+            r, w = await h2_open(proxy_port)
+            w.write(b"".join(h2_frame(0x4, 0x0, 0, b"") for _ in range(100)))
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0xB, "SETTINGS control-frame flood -> GOAWAY ENHANCE_YOUR_CALM (CVE-2019-9515)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "SETTINGS control-frame flood (CVE-2019-9515)", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            w.write(h2_frame(0x8, 0x0, 0, struct.pack("!I", 0)))
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0x1, "Zero-increment WINDOW_UPDATE -> GOAWAY PROTOCOL_ERROR (RFC 9113 Section 6.9)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Zero-increment WINDOW_UPDATE", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            w.write(h2_frame(0x1, 0x4, 1, h2_req_block("POST", b"/echo")))
+            w.write(b"".join(h2_frame(0x0, 0x0, 1, b"") for _ in range(16)))
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0xB, "Empty DATA streak flood -> GOAWAY ENHANCE_YOUR_CALM (CVE-2019-9518)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Empty DATA streak flood (CVE-2019-9518)", repr(e))
+
+        try:
+            r, w = await h2_open(proxy_port)
+            w.write(h2_frame(0x1, 0x5, 2, h2_req_block("GET", b"/ping")))
+            await w.drain()
+            code = await h2_wait_goaway(r)
+            record(code == 0x1, "Client-initiated even stream ID -> GOAWAY PROTOCOL_ERROR (RFC 9113 Section 5.1.1)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Client-initiated even stream ID", repr(e))
+
         # SECTION 3: WebSocket RFC 6455 (native Goose realtime/websocket)
         print("\n3. WebSocket RFC 6455 Framing & Invariants")
         proxy.clear_toxics()
@@ -411,6 +494,10 @@ async def main():
             (ws_frame(0x9, b"P" * 126), 1002, "Control frame payload > 125 rejected (Close 1002)"),
             (ws_frame(0x1, b"rsv", rsv=0x4), 1002, "RSV1 bit without extension rejected (Close 1002)"),
             (ws_frame(0x1, b"\xCE\xBA\xE1\x00\xFF"), 1007, "Invalid UTF-8 text rejected (Close 1007)"),
+            (ws_frame(0x1, b"ShortPayload", force_len_mode=126), 1002, "Non-minimal 16-bit length encoding rejected (Close 1002, RFC 6455 Section 5.2)"),
+            (ws_frame(0x0, b"UnsolicitedCont", fin=True), 1002, "Unsolicited continuation frame rejected (Close 1002, RFC 6455 Section 5.4)"),
+            (ws_frame(0x8, b"\x03"), 1002, "1-byte close payload rejected (Close 1002, RFC 6455 Section 5.5.1)"),
+            (ws_frame(0x8, struct.pack("!H", 1005)), 1002, "Forbidden close code 1005 rejected (Close 1002, RFC 6455 Section 7.4.1)"),
         ]
         for frame, want, desc in ws_attacks:
             try:
@@ -423,8 +510,56 @@ async def main():
             except Exception as e:
                 record(False, desc, repr(e))
 
-        # SECTION 4: Heavy Rapid Chaos Iterations
-        print("\n4. Heavy Rapid Chaos on Native Goose (50 iterations)")
+        try:
+            r, w, _ = await ws_open(proxy_port)
+            w.write(ws_frame(0x1, b"Part1Text", fin=False))
+            await w.drain()
+            w.write(ws_frame(0x2, b"InterleavedBinary", fin=True))
+            await w.drain()
+            code = await ws_close_code(r)
+            record(code == 1002, "Interleaved data frame inside split text rejected (Close 1002, RFC 6455 Section 5.4)", f"code={code}")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Interleaved data frames rejected", repr(e))
+
+        # SECTION 4: L4 Transport & Chaos Toxics (SlowClose, LimitData, Latency & Combined Slicer)
+        print("\n4. L4 Transport & Chaos Toxics")
+        proxy.clear_toxics()
+        proxy.add_toxic(SlowCloseToxic("sc1", delay_ms=250, stream="both"))
+        req_sc = b"POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPONG"
+        t_sc = time.time()
+        res = await run_req(proxy_port, req_sc, timeout=5.0)
+        dur = time.time() - t_sc
+        record(b"200 OK" in res and b"ECHO:PONG" in res and dur >= 0.2, f"SlowClose TCP FIN delay ({dur:.2f}s) handled gracefully")
+
+        proxy.clear_toxics()
+        proxy.add_toxic(LimitDataToxic("ld1", bytes_limit=25, stream="upstream"))
+        req_trunc = b"POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 50\r\n\r\n" + b"X" * 50
+        res = await run_req(proxy_port, req_trunc, timeout=3.0)
+        record(len(res) == 0 or b"400" in res, "LimitData mid-stream truncation handled without server panic or leak")
+
+        proxy.clear_toxics()
+        proxy.add_toxic(LatencyToxic("lat1", latency_ms=40, jitter_ms=20, stream="both"))
+        req_lat = b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        res = await run_req(proxy_port, req_lat, timeout=5.0)
+        record(b"200 OK" in res, "High latency (40ms) and jitter (+-20ms) HTTP/1.1 request delivery")
+
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("ws_mix_s", min_bytes=2, max_bytes=8, delay_ms=1, stream="both"))
+        proxy.add_toxic(BandwidthToxic("ws_mix_b", rate_kib=64, stream="both"))
+        try:
+            r, w, hs = await ws_open(proxy_port, timeout=8.0)
+            blob = os.urandom(2048)
+            w.write(ws_frame(0x2, blob))
+            await w.drain()
+            op, p = await ws_read(r, timeout=8.0)
+            record(hs and op == 0x2 and p == blob, "Combined Slicer + Bandwidth throttling during WebSocket binary echo")
+            await close_w(w)
+        except Exception as e:
+            record(False, "Combined Slicer + Bandwidth throttling on WebSocket", repr(e))
+
+        # SECTION 5: Heavy Rapid Chaos Iterations
+        print("\n5. Heavy Rapid Chaos on Native Goose (50 iterations)")
         proxy.clear_toxics()
         proxy.add_toxic(SlicerToxic("c_slice", min_bytes=2, max_bytes=6, delay_ms=1, stream="both"))
         proxy.add_toxic(LatencyToxic("c_lat", latency_ms=8, jitter_ms=4, stream="both"))

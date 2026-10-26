@@ -11,7 +11,7 @@ This package provides native integration with the official **[Shopify Toxiproxy]
 - **`tools/toxiproxy/client.py`**: Zero-dependency Python REST client for Toxiproxy HTTP API (`localhost:8474`).
 - **`tools/toxiproxy/toxics.py`**: Native Toxic definitions (`LatencyToxic`, `BandwidthToxic`, `SlicerToxic`, `ResetPeerToxic`, `TimeoutToxic`, `SlowCloseToxic`, `LimitDataToxic`).
 - **`tools/toxiproxy/proxy.py`**: High-level `ChaosProxy` session manager supporting sync/async context managers and scoped toxic blocks.
-- **`tools/toxiproxy/stress_all_goose.py`**: 25-stage live chaos stress runner testing HTTP/1.1, HTTP/2, WebSocket, and Rapid Reset/Slowloris defenses.
+- **`tools/toxiproxy/stress_all_goose.py`**: 43-stage live chaos & security attack stress runner testing HTTP/1.1 Smuggling & CRLF injection, HTTP/2 CVEs & Flow Control, WebSocket RFC 6455 invariants, L4 network anomalies, and 50 rapid chaos cycles.
 
 ## Quick Usage
 
@@ -37,7 +37,7 @@ python tools/toxiproxy/server.py --status
 ### 3. Running Chaos Stress Test Suite
 
 ```powershell
-# Unified 25-stage chaos suite covering HTTP/1.1, HTTP/2, WebSocket and 50 rapid cycles
+# Unified 43-stage chaos & attack suite covering HTTP/1.1 smuggling, HTTP/2 CVEs, WebSocket invariants, L4 anomalies and 50 rapid cycles
 python tools/toxiproxy/stress_all_goose.py
 ```
 

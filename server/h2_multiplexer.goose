@@ -451,7 +451,11 @@ fn handle_h2_server_ingress<B>(
                 var wu_r = core::new_slice_reader(frame_payload);
                 let raw_inc, _ = wu_r.read_u32_be();
                 let inc = raw_inc & 0x7FFFFFFF;
-                apply_window_update(sess.conn, hdr.stream_id, inc);
+                let wu_err = apply_window_update(sess.conn, hdr.stream_id, inc);
+                if wu_err != ERR_NO_ERROR {
+                    emit_goaway(sess.conn.last_peer_stream_id, wu_err, out_wire);
+                    return offset + total_frame_len, false;
+                }
             }
         } else if hdr.frame_type == FRAME_RST_STREAM {
             for i in sess.streams.len {
