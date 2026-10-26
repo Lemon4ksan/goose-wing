@@ -379,31 +379,39 @@ fn parse_proxy_v2_family_transport(
     out_fam: ProxyAddressFamily&,
     out_trans: ProxyTransportProtocol&
 ) -> bool {
-    let fam = (fam_trans >> 4) & 0x0F;
-    let trans = fam_trans & 0x0F;
-
-    if fam == PP2_FAM_UNSPEC {
+    // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
+    // Only exact defined combinations (0x00, 0x11, 0x12, 0x21, 0x22, 0x31, 0x32) are valid.
+    // All other values are unspecified and MUST be rejected immediately.
+    if fam_trans == 0x00 {
         out_fam = ProxyAddressFamily.Unspec;
-    } else if fam == PP2_FAM_INET4 {
-        out_fam = ProxyAddressFamily.Inet4;
-    } else if fam == PP2_FAM_INET6 {
-        out_fam = ProxyAddressFamily.Inet6;
-    } else if fam == PP2_FAM_UNIX {
-        out_fam = ProxyAddressFamily.Unix;
-    } else {
-        return false;
-    }
-
-    if trans == PP2_TRANS_UNSPEC {
         out_trans = ProxyTransportProtocol.Unspec;
-    } else if trans == PP2_TRANS_STREAM {
+        return true;
+    } else if fam_trans == 0x11 {
+        out_fam = ProxyAddressFamily.Inet4;
         out_trans = ProxyTransportProtocol.Stream;
-    } else if trans == PP2_TRANS_DGRAM {
+        return true;
+    } else if fam_trans == 0x12 {
+        out_fam = ProxyAddressFamily.Inet4;
         out_trans = ProxyTransportProtocol.Datagram;
-    } else {
-        return false;
+        return true;
+    } else if fam_trans == 0x21 {
+        out_fam = ProxyAddressFamily.Inet6;
+        out_trans = ProxyTransportProtocol.Stream;
+        return true;
+    } else if fam_trans == 0x22 {
+        out_fam = ProxyAddressFamily.Inet6;
+        out_trans = ProxyTransportProtocol.Datagram;
+        return true;
+    } else if fam_trans == 0x31 {
+        out_fam = ProxyAddressFamily.Unix;
+        out_trans = ProxyTransportProtocol.Stream;
+        return true;
+    } else if fam_trans == 0x32 {
+        out_fam = ProxyAddressFamily.Unix;
+        out_trans = ProxyTransportProtocol.Datagram;
+        return true;
     }
-    return true;
+    return false;
 }
 
 fn parse_proxy_v2_addresses(
@@ -413,34 +421,43 @@ fn parse_proxy_v2_addresses(
     hdr: ProxyHeader&,
     out_addr_len: i64&
 ) -> bool {
+    // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
+    // For command LOCAL (0x00), the receiver MUST NOT interpret addresses and MUST NOT report
+    // any address information, preserving the real connection endpoint address.
+    let is_local = hdr.command == ProxyCommand.Local;
+
     if fam == ProxyAddressFamily.Inet4 {
         guard payload_len >= 12 else { return false; }
-        for i in 4 {
-            hdr.src_ipv4[i] = wire[16 + i];
-            hdr.dst_ipv4[i] = wire[20 + i];
+        if !is_local {
+            for i in 4 {
+                hdr.src_ipv4[i] = wire[16 + i];
+                hdr.dst_ipv4[i] = wire[20 + i];
+            }
+            var port_r = core::new_slice_reader(wire[24..]);
+            let sp, _ = port_r.read_u16_be();
+            let dp, _ = port_r.read_u16_be();
+            hdr.src_port = sp;
+            hdr.dst_port = dp;
+            format_ipv4(hdr.src_ipv4, hdr.src_ip_str);
+            format_ipv4(hdr.dst_ipv4, hdr.dst_ip_str);
         }
-        var port_r = core::new_slice_reader(wire[24..]);
-        let sp, _ = port_r.read_u16_be();
-        let dp, _ = port_r.read_u16_be();
-        hdr.src_port = sp;
-        hdr.dst_port = dp;
-        format_ipv4(hdr.src_ipv4, hdr.src_ip_str);
-        format_ipv4(hdr.dst_ipv4, hdr.dst_ip_str);
         out_addr_len = 12;
         return true;
     } else if fam == ProxyAddressFamily.Inet6 {
         guard payload_len >= 36 else { return false; }
-        for i in 16 {
-            hdr.src_ipv6[i] = wire[16 + i];
-            hdr.dst_ipv6[i] = wire[32 + i];
+        if !is_local {
+            for i in 16 {
+                hdr.src_ipv6[i] = wire[16 + i];
+                hdr.dst_ipv6[i] = wire[32 + i];
+            }
+            var port_r = core::new_slice_reader(wire[48..]);
+            let sp, _ = port_r.read_u16_be();
+            let dp, _ = port_r.read_u16_be();
+            hdr.src_port = sp;
+            hdr.dst_port = dp;
+            format_ipv6(hdr.src_ipv6, hdr.src_ip_str);
+            format_ipv6(hdr.dst_ipv6, hdr.dst_ip_str);
         }
-        var port_r = core::new_slice_reader(wire[48..]);
-        let sp, _ = port_r.read_u16_be();
-        let dp, _ = port_r.read_u16_be();
-        hdr.src_port = sp;
-        hdr.dst_port = dp;
-        format_ipv6(hdr.src_ipv6, hdr.src_ip_str);
-        format_ipv6(hdr.dst_ipv6, hdr.dst_ip_str);
         out_addr_len = 36;
         return true;
     } else if fam == ProxyAddressFamily.Unix {

@@ -34,19 +34,33 @@ fn extract_content_length(headers_block: const u8[:]) -> i64, bool {
     return 0, false;
 }
 
+fn drain_and_close(conn: i64) {
+    var dummy: u8[..4096] = [];
+    var loops = 0;
+    while loops < 10 {
+        let recvd = wing::tcp_recv(conn, dummy, 4096, 20);
+        if recvd <= 0 {
+            break;
+        }
+        loops++;
+    }
+    wing::tcp_close(conn);
+}
+
 fn send_ws_close(conn: i64, status_code: u16, reason: const u8[:]) {
-    var close_payload: u8[..128] = [];
+    var close_payload: u8[>..] = [];
     wing::encode_ws_close_payload(close_payload, status_code, reason);
-    var frame_wire: u8[..256] = [];
+    var frame_wire: u8[>..] = [];
     wing::encode_ws_frame(frame_wire, wing::WS_OPCODE_CLOSE, close_payload[..], false);
     wing::tcp_send(conn, frame_wire[..]);
+    drain_and_close(conn);
 }
 
 fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
-    var accept_key: u8[..64] = [];
+    var accept_key: u8[>..] = [];
     wing::compute_websocket_accept(client_key, accept_key);
 
-    var handshake_resp: u8[..512] = [];
+    var handshake_resp: u8[>..] = [];
     format(
         handshake_resp,
         "HTTP/1.1 101 Switching Protocols\r\n",
@@ -58,14 +72,19 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     );
     wing::tcp_send(conn, handshake_resp[..]);
 
-    var ws_buf: u8[..65536] = [];
+    var ws_buf: u8[>..] = [];
+    var frag_opcode: u8 = 0;
+    var frag_buf: u8[>..] = [];
     while true {
         var chunk: u8[..4096] = [];
-        let recvd = wing::tcp_recv(conn, chunk, 4096, 3000);
+        let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
+        if recvd == -2 {
+            continue;
+        }
         if recvd <= 0 {
             break;
         }
-        ws_buf.append(chunk[..]);
+        ws_buf.append(chunk[..recvd]);
 
         while ws_buf.len >= 2 {
             let b0 = ws_buf[0];
@@ -113,42 +132,93 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                 return;
             }
 
-            let total_len = (hdr.header_len as i64) + (hdr.payload_len as i64);
+            // Payload size limit defense (> 64KB)
+            if hdr.payload_len > 65536 {
+                send_ws_close(conn, wing::WS_STATUS_MESSAGE_TOO_BIG, "payload > 64KB");
+                return;
+            }
+
+            let total_len = hdr.header_len + (hdr.payload_len as i64);
             if ws_buf.len < total_len {
                 // Wait for remainder of payload
                 break;
             }
 
-            var payload: u8[..65536] = [];
+            var payload: u8[>..] = [];
             payload.append(ws_buf[(hdr.header_len as i64) .. total_len]);
             wing::mask_websocket_payload(payload[..], hdr.mask_key);
 
-            if hdr.opcode == wing::WS_OPCODE_TEXT {
-                // RFC 6455 Section 8.1: UTF-8 validation
-                if !core::validate_utf8(payload[..]) {
-                    send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf8");
+            if is_control {
+                // RFC 6455 Section 5.4: Control frames can be interleaved at any point
+                if hdr.opcode == wing::WS_OPCODE_PING {
+                    var out_frame: u8[>..] = [];
+                    wing::encode_ws_frame(out_frame, wing::WS_OPCODE_PONG, payload[..], false);
+                    wing::tcp_send(conn, out_frame[..]);
+                } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
+                    var out_frame: u8[>..] = [];
+                    wing::encode_ws_frame(out_frame, wing::WS_OPCODE_CLOSE, payload[..], false);
+                    wing::tcp_send(conn, out_frame[..]);
+                    drain_and_close(conn);
                     return;
                 }
-                var out_frame: u8[..65536] = [];
-                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_TEXT, payload[..], false);
-                wing::tcp_send(conn, out_frame[..]);
-            } else if hdr.opcode == wing::WS_OPCODE_BINARY {
-                var out_frame: u8[..65536] = [];
-                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_BINARY, payload[..], false);
-                wing::tcp_send(conn, out_frame[..]);
-            } else if hdr.opcode == wing::WS_OPCODE_PING {
-                var out_frame: u8[..256] = [];
-                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_PONG, payload[..], false);
-                wing::tcp_send(conn, out_frame[..]);
-            } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
-                var out_frame: u8[..256] = [];
-                wing::encode_ws_frame(out_frame, wing::WS_OPCODE_CLOSE, payload[..], false);
-                wing::tcp_send(conn, out_frame[..]);
-                return;
+            } else {
+                if hdr.opcode == wing::WS_OPCODE_CONTINUATION {
+                    if frag_opcode == 0 {
+                        // RFC 6455 Section 5.4: Unexpected continuation frame
+                        send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unexpected continuation");
+                        return;
+                    }
+                    frag_buf.append(payload[..]);
+                    if hdr.fin {
+                        if frag_opcode == wing::WS_OPCODE_TEXT {
+                            if !core::validate_utf8(frag_buf[..]) {
+                                send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf8");
+                                return;
+                            }
+                            var out_frame: u8[>..] = [];
+                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_TEXT, frag_buf[..], false);
+                            wing::tcp_send(conn, out_frame[..]);
+                        } else if frag_opcode == wing::WS_OPCODE_BINARY {
+                            var out_frame: u8[>..] = [];
+                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_BINARY, frag_buf[..], false);
+                            wing::tcp_send(conn, out_frame[..]);
+                        }
+                        frag_opcode = 0;
+                        frag_buf.clear();
+                    }
+                } else if hdr.opcode == wing::WS_OPCODE_TEXT || hdr.opcode == wing::WS_OPCODE_BINARY {
+                    if frag_opcode != 0 {
+                        // RFC 6455 Section 5.4: Cannot start new data frame while previous is unfinished
+                        send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "interleaved data frames");
+                        return;
+                    }
+                    if !hdr.fin {
+                        frag_opcode = hdr.opcode;
+                        frag_buf.clear();
+                        frag_buf.append(payload[..]);
+                    } else {
+                        if hdr.opcode == wing::WS_OPCODE_TEXT {
+                            if !core::validate_utf8(payload[..]) {
+                                send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf8");
+                                return;
+                            }
+                            var out_frame: u8[>..] = [];
+                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_TEXT, payload[..], false);
+                            wing::tcp_send(conn, out_frame[..]);
+                        } else {
+                            var out_frame: u8[>..] = [];
+                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_BINARY, payload[..], false);
+                            wing::tcp_send(conn, out_frame[..]);
+                        }
+                    }
+                } else {
+                    send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unknown data opcode");
+                    return;
+                }
             }
 
             // Remove processed frame from buffer
-            var remaining: u8[..65536] = [];
+            var remaining: u8[>..] = [];
             remaining.append(ws_buf[total_len..]);
             ws_buf.clear();
             ws_buf.append(remaining[..]);
@@ -213,15 +283,24 @@ fn main() {
             continue;
         }
 
-        var in_buf: u8[..65536] = [];
+        var in_buf: u8[>..] = [];
 
+        var idle_count = 0;
         while in_buf.len < 65000 {
             var chunk: u8[..4096] = [];
-            let recvd = wing::tcp_recv(conn, chunk, 4096, 3000);
+            let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
+            if recvd == -2 {
+                idle_count++;
+                if idle_count >= 6 { // 3 seconds Slowloris timeout
+                    break;
+                }
+                continue;
+            }
             if recvd <= 0 {
                 break;
             }
-            in_buf.append(chunk[..]);
+            idle_count = 0;
+            in_buf.append(chunk[..recvd]);
 
             // 1. Check for HTTP/2 Connection Preface (wait if a sliced prefix arrived)
             if wing::is_partial_h2_client_preface(in_buf[..]) {
@@ -229,6 +308,11 @@ fn main() {
             }
             if wing::is_h2_client_preface(in_buf[..]) {
                 handle_h2_session(conn, in_buf[..]);
+                break;
+            }
+
+            // Reject invalid HTTP/2 preface immediately
+            if in_buf.len >= 4 && in_buf[..4] == "PRI " {
                 break;
             }
 
@@ -247,7 +331,14 @@ fn main() {
                     }
                 }
 
+                let has_te_hdr = core::index_of_slice(in_buf[..body_start], "transfer-encoding") >= 0 || core::index_of_slice(in_buf[..body_start], "Transfer-Encoding") >= 0;
                 let cl, has_cl = extract_content_length(in_buf[..body_start]);
+                if has_te_hdr && has_cl {
+                    // RFC 9112 Section 6.1: Reject TE.CL / CL.TE conflict immediately with 400 Bad Request
+                    let err_resp: const u8[:] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBAD_REQUEST";
+                    wing::tcp_send(conn, err_resp);
+                    break;
+                }
                 if has_cl && in_buf.len < body_start + cl {
                     continue;
                 }

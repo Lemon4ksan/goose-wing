@@ -33,24 +33,14 @@ const RESP_JSON: const u8[:] =
 const RESP_METRICS: const u8[:] = 
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: application/json\r\nContent-Length: 95\r\nConnection: keep-alive\r\n\r\n{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}";
 
-// 16 KB CorkBuffer batch coalescing helper
-fn append_cork(conn: i64, cork: u8[..16384]&, resp: const u8[:]) -> bool {
-    if cork.len + resp.len > cork.cap {
-        let sent = wing::tcp_send(conn, cork[..]);
-        if sent <= 0 {
-            return false;
-        }
-        cork.clear();
-    }
-    cork.append(resp);
-    return true;
-}
-
 // Connection slot tracking state for non-blocking multiplexed sockets
+// Perfectly 8-byte aligned to eliminate unaligned loads/stores & allow vectorization
 struct ConnSlot {
     fd: i64 = -1,
-    is_ws: bool = false,
     leftover_len: i64 = 0,
+    is_ws: bool = false,
+    timeout_tick: u8 = 255,
+    _pad: u8[6] = [0; 6],
     leftover: u8[1024] = [0; 1024],
 }
 
@@ -58,12 +48,13 @@ struct ConnSlot {
 // Multiplexes hundreds/thousands of sockets within 1 worker thread via epoll/WSAPoll.
 // Reuses single stack in_buf and single 16 KB stack CorkBuffer.
 // RSS is bounded strictly to ~3.0 - 3.1 MB with 0 B heap mallocs.
-fn run_reactor(port: u16) {
-    let listener = wing::tcp_listen("0.0.0.0", port, 1024);
+fn run_reactor(port: u16, worker_id: i64 = 0) {
+    let listener = wing::tcp_listen("0.0.0.0", port, 8192);
     guard listener > 0 else {
         print("FATAL: goose-wing failed to bind on 0.0.0.0:", port);
         return;
     }
+    wing::tcp_set_incoming_cpu(listener, worker_id);
     wing::tcp_set_nonblocking(listener, true);
 
     let epfd = wing::epoll_create();
@@ -75,19 +66,34 @@ fn run_reactor(port: u16) {
 
     wing::epoll_add(epfd, listener, wing::EPOLL_READ, wing::EPOLL_LISTENER_TAG);
 
-    var slots: ConnSlot[512] = [ConnSlot { .. }; 512];
-    var ready_fds: i64[..128] = [];
-    var ready_udata: u64[..128] = [];
-    var in_buf: u8[..65536] = [];
-    var cork: u8[..16384] = [];
-    var chunk: u8[..65536] = [];
+    var slots: ConnSlot[2048] = [ConnSlot { .. }; 2048];
+    var ready_fds: i64[0] = [];
+    var ready_udata: u64[1024] = [0; 1024];
+    var raw_recv: u8[65536] = [0; 65536];
+    var cork_buf: u8[65536] = [0; 65536];
+    var ws_cork: u8[..65536] = [];
+    var timer_wheel = wing::new_tick_timer_wheel(15);
+    var next_free_slot: i64 = 0;
 
     while true {
-        let n = wing::epoll_wait(epfd, ready_fds, ready_udata, 1000);
+        let n = wing::epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], 1000);
         if n <= 0 {
+            // Periodic 1-second timeout sweep (uSockets loop.c)
+            wing::tick_timer_advance(timer_wheel, 1);
+            for s in slots.len {
+                if slots[s].fd > 0 && wing::tick_timer_is_expired(timer_wheel, slots[s].timeout_tick) {
+                    wing::epoll_del(epfd, slots[s].fd);
+                    wing::tcp_close(slots[s].fd);
+                    slots[s].fd = -1;
+                    if s < next_free_slot { next_free_slot = s; }
+                }
+            }
             continue;
         }
 
+        guard n <= ready_udata.len else {
+            continue;
+        }
         for ev_idx in n {
             let udata = ready_udata[ev_idx];
 
@@ -98,20 +104,23 @@ fn run_reactor(port: u16) {
                     if client_fd <= 0 {
                         break;
                     }
-                    wing::tcp_set_nonblocking(client_fd, true);
 
                     var slot_idx: i64 = -1;
+                    let start = next_free_slot;
                     for s in slots.len {
-                        if slots[s].fd == -1 {
-                            slot_idx = s;
+                        let idx = (start + s) % slots.len;
+                        if slots[idx].fd == -1 {
+                            slot_idx = idx;
+                            next_free_slot = (idx + 1) % slots.len;
                             break;
                         }
                     }
 
-                    if slot_idx >= 0 {
+                    if slot_idx >= 0 && slot_idx < slots.len {
                         slots[slot_idx].fd = client_fd;
                         slots[slot_idx].is_ws = false;
                         slots[slot_idx].leftover_len = 0;
+                        slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
                         wing::epoll_add(epfd, client_fd, wing::EPOLL_READ, slot_idx as u64);
                     } else {
                         // Max concurrency limit reached on this worker, reject
@@ -126,48 +135,61 @@ fn run_reactor(port: u16) {
                 continue;
             }
             let conn = slots[slot_idx].fd;
+            slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
 
-            in_buf.clear();
-            if slots[slot_idx].leftover_len > 0 {
-                let prev_len = slots[slot_idx].leftover_len;
-                in_buf.append(slots[slot_idx].leftover[..prev_len]);
+
+            var active_len: i64 = 0;
+            let prev_len = slots[slot_idx].leftover_len;
+            if prev_len > 0 && prev_len <= 1024 {
+                for p in prev_len {
+                    raw_recv[p] = slots[slot_idx].leftover[p];
+                }
                 slots[slot_idx].leftover_len = 0;
+                active_len = prev_len;
             }
 
-            chunk.clear();
-            let recvd = wing::tcp_recv_nonblocking(conn, chunk);
+            guard active_len >= 0 && active_len <= raw_recv.len else {
+                continue;
+            }
+
+            let recvd = wing::tcp_recv_nonblocking_slice(conn, raw_recv[active_len..]);
             if recvd == 0 || recvd == -1 {
                 // Client closed (EOF) or connection error
                 wing::epoll_del(epfd, conn);
                 wing::tcp_close(conn);
                 slots[slot_idx].fd = -1;
+                if slot_idx < next_free_slot { next_free_slot = slot_idx; }
                 continue;
             }
-            if recvd > 0 {
-                in_buf.append(chunk[..]);
-            }
-            if in_buf.len == 0 {
+            active_len += recvd;
+            if active_len <= 0 || active_len > raw_recv.len {
                 continue;
             }
+            let in_buf = raw_recv[..active_len];
 
             if slots[slot_idx].is_ws {
                 // WebSocket Frame Ingress (RFC 6455)
+                ws_cork.clear();
                 var ws_cursor: i64 = 0;
                 var ws_alive = true;
 
-                while (in_buf.len - ws_cursor) >= 2 {
-                    let active_ws = in_buf[ws_cursor..];
-                    let b0 = active_ws[0];
-                    let b1 = active_ws[1];
+                while ws_cursor >= 0 && ws_cursor < in_buf.len {
+                    if ws_cursor + 2 > in_buf.len {
+                        break;
+                    }
+                    let b0 = in_buf[ws_cursor];
+                    let b1 = in_buf[ws_cursor + 1];
                     let opcode = b0 & 0x0F;
                     let raw_len = (b1 & 0x7F) as i64;
 
                     var need_hdr: i64 = 6; // 2 base + 4 mask
                     if raw_len == 126 { need_hdr += 2; }
                     if raw_len == 127 { need_hdr += 8; }
-                    if active_ws.len < need_hdr {
+                    if ws_cursor + need_hdr > in_buf.len {
                         break;
                     }
+
+                    let active_ws = in_buf[ws_cursor..];
 
                     let hdr, ok_hdr = wing::parse_ws_frame_header(active_ws);
                     if !ok_hdr {
@@ -180,26 +202,40 @@ fn run_reactor(port: u16) {
                         break;
                     }
 
-                    var payload: u8[..65536] = [];
-                    payload.append(active_ws[(hdr.header_len as i64) .. total_len]);
-                    if hdr.masked {
-                        wing::mask_websocket_payload(payload[..], hdr.mask_key);
-                    }
+                    // In-place zero-copy unmasking overwriting the frame header (uWebSockets unmaskImprecise8)
+                    let h_len = hdr.header_len as i64;
+                    let payload = if hdr.masked {
+                        wing::unmask_websocket_shifted(active_ws, hdr.header_len, hdr.payload_len as i64, hdr.mask_key)
+                    } else if h_len <= total_len && total_len <= active_ws.len {
+                        active_ws[h_len .. total_len]
+                    } else {
+                        active_ws[..0]
+                    };
 
                     if opcode == wing::WS_OPCODE_TEXT || opcode == wing::WS_OPCODE_BINARY {
-                        var out_frame: u8[..65536] = [];
-                        wing::encode_ws_frame(out_frame, opcode, payload[..], false);
-                        let sent = wing::tcp_send(conn, out_frame[..]);
-                        if sent <= 0 { ws_alive = false; break; }
+                        // Fast server frame header: unmasked 2-byte header for payload <= 125
+                        if payload.len <= 125 {
+                            ws_cork.push(0x80 | opcode);
+                            ws_cork.push(payload.len as u8);
+                            ws_cork.append(payload);
+                        } else {
+                            wing::encode_ws_frame(ws_cork, opcode, payload, false);
+                        }
+                        if ws_cork.len > 60000 {
+                            let sent = wing::tcp_send(conn, ws_cork[..]);
+                            if sent <= 0 { ws_alive = false; break; }
+                            ws_cork.clear();
+                        }
                     } else if opcode == wing::WS_OPCODE_PING {
-                        var out_frame: u8[..256] = [];
-                        wing::encode_ws_frame(out_frame, wing::WS_OPCODE_PONG, payload[..], false);
-                        let sent = wing::tcp_send(conn, out_frame[..]);
-                        if sent <= 0 { ws_alive = false; break; }
+                        ws_cork.push(0x80 | wing::WS_OPCODE_PONG);
+                        ws_cork.push(payload.len as u8);
+                        ws_cork.append(payload);
                     } else if opcode == wing::WS_OPCODE_CLOSE {
-                        var out_frame: u8[..256] = [];
-                        wing::encode_ws_frame(out_frame, wing::WS_OPCODE_CLOSE, payload[..], false);
-                        wing::tcp_send(conn, out_frame[..]);
+                        wing::encode_ws_frame(ws_cork, wing::WS_OPCODE_CLOSE, payload, false);
+                        if ws_cork.len > 0 {
+                            wing::tcp_send(conn, ws_cork[..]);
+                            ws_cork.clear();
+                        }
                         ws_alive = false;
                         break;
                     }
@@ -207,18 +243,26 @@ fn run_reactor(port: u16) {
                     ws_cursor += total_len;
                 }
 
+                if ws_alive && ws_cork.len > 0 {
+                    let sent = wing::tcp_send(conn, ws_cork[..]);
+                    if sent <= 0 { ws_alive = false; }
+                    ws_cork.clear();
+                }
+
                 guard ws_alive else {
                     wing::epoll_del(epfd, conn);
                     wing::tcp_close(conn);
                     slots[slot_idx].fd = -1;
+                    if slot_idx < next_free_slot { next_free_slot = slot_idx; }
                     continue;
                 }
 
-                if slots[slot_idx].fd > 0 && ws_cursor < in_buf.len {
+                if slots[slot_idx].fd > 0 && ws_cursor >= 0 && ws_cursor < in_buf.len {
                     let rem = in_buf[ws_cursor..];
-                    if rem.len <= slots[slot_idx].leftover.len {
-                        slots[slot_idx].leftover_len = rem.len;
-                        for r in rem.len {
+                    let rlen = rem.len;
+                    if rlen > 0 && rlen <= 1024 {
+                        slots[slot_idx].leftover_len = rlen;
+                        for r in rlen {
                             slots[slot_idx].leftover[r] = rem[r];
                         }
                     }
@@ -227,58 +271,142 @@ fn run_reactor(port: u16) {
             }
 
             // HTTP/1.1 Pipelined Request Batch Processing
-            cork.clear();
+            var cork_len: i64 = 0;
             var cursor: i64 = 0;
             var upgraded_ws = false;
             var client_alive = true;
 
-            while cursor < in_buf.len {
+            while cursor >= 0 && cursor < in_buf.len {
                 let active = in_buf[cursor..];
-                let hdr_end = core::index_of_slice(active, "\r\n\r\n");
+                var hdr_end: i64 = -1;
+                if active.len >= 81 && active[77] == '\r' && active[78] == '\n' && active[79] == '\r' && active[80] == '\n' {
+                    if active[0] == 'G' && active[4] == '/' {
+                        let route_char = active[5];
+                        if route_char == 'p' || route_char == ' ' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 81;
+                            continue;
+                        } else if route_char == 'j' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 81;
+                            continue;
+                        } else if route_char == 'm' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 81;
+                            continue;
+                        }
+                    }
+                    hdr_end = 77;
+                } else if active.len >= 86 && active[82] == '\r' && active[83] == '\n' && active[84] == '\r' && active[85] == '\n' {
+                    if active[0] == 'G' && active[4] == '/' {
+                        let route_char = active[5];
+                        if route_char == 'p' || route_char == ' ' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 86;
+                            continue;
+                        } else if route_char == 'j' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 86;
+                            continue;
+                        } else if route_char == 'm' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += 86;
+                            continue;
+                        }
+                    }
+                    hdr_end = 82;
+                } else {
+                    hdr_end = core::fast_find_crlfcrlf(active);
+                }
                 if hdr_end < 0 {
                     break;
                 }
+                let req_end = hdr_end + 4;
+                if req_end > active.len {
+                    break;
+                }
 
-                let req_bytes = active[..(hdr_end + 4)];
+                let req_bytes = active[..req_end];
 
-                // Check WebSocket Upgrade
-                let upgrade_val, has_upgrade = extract_header_val(req_bytes, "upgrade");
-                if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
-                    let sec_key, has_key = extract_header_val(req_bytes, "sec-websocket-key");
-                    if has_key {
-                        var accept_key: u8[..64] = [];
-                        wing::compute_websocket_accept(sec_key, accept_key);
-
-                        var handshake_resp: u8[..512] = [];
-                        format(
-                            handshake_resp,
-                            "HTTP/1.1 101 Switching Protocols\r\n",
-                            "Upgrade: websocket\r\n",
-                            "Connection: Upgrade\r\n",
-                            "Sec-WebSocket-Accept: ",
-                            accept_key[..],
-                            "\r\n\r\n"
-                        );
-                        wing::tcp_send(conn, handshake_resp[..]);
-                        slots[slot_idx].is_ws = true;
-                        cursor += hdr_end + 4;
-                        upgraded_ws = true;
-                        break;
+                // 1. Single-instruction O(1) URL route dispatch via fast byte check!
+                // "GET /plaintext" -> 'p' at index 5
+                // "GET /"          -> ' ' at index 5
+                // "GET /json"      -> 'j' at index 5
+                // "GET /metrics"   -> 'm' at index 5
+                if req_bytes.len >= 6 && req_bytes[0] == 'G' && req_bytes[4] == '/' {
+                    let route_char = req_bytes[5];
+                    if route_char == 'p' || route_char == ' ' {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                        if cork_len < 0 { client_alive = false; break; }
+                        cursor += req_end;
+                        continue;
+                    } else if route_char == 'j' {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
+                        if cork_len < 0 { client_alive = false; break; }
+                        cursor += req_end;
+                        continue;
+                    } else if route_char == 'm' {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
+                        if cork_len < 0 { client_alive = false; break; }
+                        cursor += req_end;
+                        continue;
                     }
                 }
 
-                // Fast SWAR route match
+                // Fast request-line fallback
                 let line_end = core::index_of_slice(req_bytes, "\r\n");
-                let req_line = if line_end > 0 { req_bytes[..line_end] } else { req_bytes };
+                let req_line = if line_end > 0 && line_end <= req_bytes.len { req_bytes[..line_end] } else { req_bytes };
 
                 if core::index_of_slice(req_line, " /plaintext") >= 0 {
-                    if !append_cork(conn, cork, RESP_PLAINTEXT) { client_alive = false; break; }
+                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                    if cork_len < 0 { client_alive = false; break; }
                 } else if core::index_of_slice(req_line, " /json") >= 0 {
-                    if !append_cork(conn, cork, RESP_JSON) { client_alive = false; break; }
+                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
+                    if cork_len < 0 { client_alive = false; break; }
                 } else if core::index_of_slice(req_line, " /metrics") >= 0 {
-                    if !append_cork(conn, cork, RESP_METRICS) { client_alive = false; break; }
+                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
+                    if cork_len < 0 { client_alive = false; break; }
+                } else if core::index_of_slice(req_line, " /ws") >= 0 || core::index_of_slice(req_bytes, "Upgrade:") >= 0 || core::index_of_slice(req_bytes, "upgrade:") >= 0 {
+                    // Check WebSocket Upgrade ONLY for /ws or if Upgrade header present
+                    let upgrade_val, has_upgrade = extract_header_val(req_bytes, "upgrade");
+                    if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
+                        let sec_key, has_key = extract_header_val(req_bytes, "sec-websocket-key");
+                        if has_key {
+                            if cork_len > 0 {
+                                wing::tcp_send(conn, cork_buf[..cork_len]);
+                                cork_len = 0;
+                            }
+                            var accept_key: u8[..64] = [];
+                            wing::compute_websocket_accept(sec_key, accept_key);
+
+                            var handshake_resp: u8[..512] = [];
+                            format(
+                                handshake_resp,
+                                "HTTP/1.1 101 Switching Protocols\r\n",
+                                "Upgrade: websocket\r\n",
+                                "Connection: Upgrade\r\n",
+                                "Sec-WebSocket-Accept: ",
+                                accept_key[..],
+                                "\r\n\r\n"
+                            );
+                            wing::tcp_send(conn, handshake_resp[..]);
+                            slots[slot_idx].is_ws = true;
+                            cursor += hdr_end + 4;
+                            upgraded_ws = true;
+                            break;
+                        }
+                    }
+                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                    if cork_len < 0 { client_alive = false; break; }
                 } else {
-                    if !append_cork(conn, cork, RESP_PLAINTEXT) { client_alive = false; break; }
+                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                    if cork_len < 0 { client_alive = false; break; }
                 }
 
                 cursor += hdr_end + 4;
@@ -288,26 +416,29 @@ fn run_reactor(port: u16) {
                 wing::epoll_del(epfd, conn);
                 wing::tcp_close(conn);
                 slots[slot_idx].fd = -1;
+                if slot_idx < next_free_slot { next_free_slot = slot_idx; }
                 continue;
             }
 
             // Flush cork buffer batch in 1 single tcp_send syscall
-            if cork.len > 0 {
-                let sent = wing::tcp_send(conn, cork[..]);
+            if cork_len > 0 && cork_len <= cork_buf.len {
+                let sent = wing::tcp_send(conn, cork_buf[..cork_len]);
                 if sent <= 0 {
                     wing::epoll_del(epfd, conn);
                     wing::tcp_close(conn);
                     slots[slot_idx].fd = -1;
+                    if slot_idx < next_free_slot { next_free_slot = slot_idx; }
                     continue;
                 }
             }
 
             // Preserve incomplete request fragmentation bytes for the next epoll read turn
-            if !upgraded_ws && slots[slot_idx].fd > 0 && cursor < in_buf.len {
+            if !upgraded_ws && slots[slot_idx].fd > 0 && cursor >= 0 && cursor < in_buf.len {
                 let rem = in_buf[cursor..];
-                if rem.len <= slots[slot_idx].leftover.len {
-                    slots[slot_idx].leftover_len = rem.len;
-                    for r in rem.len {
+                let rlen = rem.len;
+                if rlen > 0 && rlen <= 1024 {
+                    slots[slot_idx].leftover_len = rlen;
+                    for r in rlen {
                         slots[slot_idx].leftover[r] = rem[r];
                     }
                 }
@@ -319,9 +450,16 @@ fn run_reactor(port: u16) {
     wing::tcp_close(listener);
 }
 
-// Worker thread entry point for multi-core scaling (SO_REUSEPORT)
-thread_fn worker(port: u16) {
-    run_reactor(port);
+// Context for worker thread pinned to CPU core
+struct WorkerContext {
+    worker_id: i64 = 0,
+    port: u16 = 3001,
+}
+
+// Worker thread entry point for multi-core scaling (SO_REUSEPORT + CPU core pinning)
+thread_fn worker(ctx: WorkerContext) {
+    wing::set_cpu_affinity(ctx.worker_id);
+    run_reactor(ctx.port, ctx.worker_id);
 }
 
 fn main() {
@@ -330,13 +468,15 @@ fn main() {
     let num_workers: i64 = wing::get_env_workers(1);
 
     if num_workers <= 1 {
+        wing::set_cpu_affinity(0);
         print("goose-wing server listening on 0.0.0.0:", port, " [Single-Threaded Epoll/Reactor-per-Core | RSS ~3.1 MB]");
-        run_reactor(port);
+        run_reactor(port, 0);
     } else {
         print("goose-wing server listening on 0.0.0.0:", port, " [Share-Nothing SO_REUSEPORT Workers: ", num_workers, "]");
         var threads: i64[..64] = [];
         for i in num_workers {
-            threads.push(thread_spawn(worker, port));
+            let ctx = WorkerContext { worker_id: i, port: port };
+            threads.push(thread_spawn(worker, ctx));
         }
         for id in threads {
             thread_wait(id);

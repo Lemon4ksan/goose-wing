@@ -5,6 +5,7 @@ Provides full compatibility with existing Goose-Wing stress test harness
 while running against official Shopify Toxiproxy daemon.
 """
 
+import contextlib
 import logging
 import os
 import uuid
@@ -64,6 +65,36 @@ class ChaosProxy:
         self._active_toxics.clear()
         if self._is_running:
             self.client.clear_toxics(self.name)
+
+    @contextlib.contextmanager
+    def toxic(self, t: Toxic):
+        """Context manager to temporarily apply a toxic to this proxy session."""
+        self.add_toxic(t)
+        try:
+            yield t
+        finally:
+            if self._is_running:
+                for p in t.to_api_payloads():
+                    try:
+                        self.client.delete_toxic(self.name, p["name"])
+                    except Exception:
+                        pass
+            if t in self._active_toxics:
+                self._active_toxics.remove(t)
+
+    @contextlib.asynccontextmanager
+    async def atoxic(self, t: Toxic):
+        """Async context manager to temporarily apply a toxic to this proxy session."""
+        with self.toxic(t):
+            yield t
+
+    def start_sync(self) -> int:
+        """Starts the proxy synchronously and returns the bound listen port."""
+        return self._start_sync()
+
+    def stop_sync(self):
+        """Stops the proxy synchronously."""
+        self._stop_sync()
 
     async def start(self) -> int:
         """

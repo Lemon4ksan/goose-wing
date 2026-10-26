@@ -58,12 +58,13 @@
           <div class="field-group field-scenario">
             <label for="select-scenario">Benchmark Scenario</label>
             <select id="select-scenario" onchange="onScenarioChange()">
+              <option value="multi_core_1m" selected>Peak 1M Target: 6 Workers (wrk 128x Pipeline, 512 Conns)</option>
+              <option value="unbounded_burst">Unbounded Line-Rate Burst (Native C: 26.8M req/s)</option>
               <option value="pipelined">HTTP/1.1 Pipelined (Depth 32, Zero-Heap CorkBuffer Batch)</option>
               <option value="plaintext">HTTP/1.1 Plaintext Ping-Pong (Roundtrip Latency)</option>
               <option value="json">HTTP/1.1 JSON Serialization</option>
               <option value="ws_echo">WebSocket Echo (RFC 6455 64-bit Masking)</option>
-              <option value="high_concurrency">High Concurrency (1,000 Connections Keep-Alive)</option>
-              <option value="memory_stress">Zero-Heap Memory Stability (50,000 Reqs)</option>
+              <option value="all">⚡ Full Docker Suite (All 4 Phases: 1, 4, 6, 8 Cores + Burst)</option>
             </select>
           </div>
 
@@ -74,7 +75,7 @@
 
           <div class="field-group field-param">
             <label for="input-duration">Duration (s)</label>
-            <input type="number" id="input-duration" min="1" max="60" value="5">
+            <input type="number" id="input-duration" min="1" max="60" value="4">
           </div>
 
           <div class="field-group field-param" id="group-pipeline">
@@ -83,7 +84,7 @@
           </div>
 
           <div class="actions-row">
-            <button class="btn btn-primary" id="btn-run" onclick="startBenchmark()">Run Benchmark</button>
+            <button class="btn btn-primary" id="btn-run" onclick="startStreamCli()">▶ Run Benchmark</button>
             <button class="btn btn-secondary" onclick="loadReferenceData()">Load Reference</button>
             <button class="btn btn-secondary" onclick="resetToEmpty()">Reset</button>
           </div>
@@ -106,42 +107,6 @@
 
       <!-- Results Container -->
       <div id="results-container" style="display: none;">
-        <!-- KPI Summary Cards -->
-        <div class="kpi-row">
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span>Throughput</span>
-              <span class="kpi-badge badge-win" id="kpi-rps-badge">+0%</span>
-            </div>
-            <div class="kpi-value-row">
-              <span class="kpi-gw-val" id="kpi-gw-rps">—</span>
-              <span class="kpi-uws-val" id="kpi-uws-rps">vs —</span>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span>p99 Tail Latency</span>
-              <span class="kpi-badge badge-win" id="kpi-p99-badge">—</span>
-            </div>
-            <div class="kpi-value-row">
-              <span class="kpi-gw-val" id="kpi-gw-p99">—</span>
-              <span class="kpi-uws-val" id="kpi-uws-p99">vs —</span>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span>Memory Invariant</span>
-              <span class="kpi-badge badge-win">Zero-Heap</span>
-            </div>
-            <div class="kpi-value-row">
-              <span class="kpi-gw-val">0 B mallocs</span>
-              <span class="kpi-uws-val" id="kpi-rss-val">RSS: —</span>
-            </div>
-          </div>
-        </div>
-
         <!-- Results Table -->
         <div class="table-wrap">
           <table class="bench-table">

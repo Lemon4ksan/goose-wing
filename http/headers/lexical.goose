@@ -14,6 +14,130 @@ let NULL_SET: ByteSet = byte_set(NULL_BYTES[..]);
 
 // ---- lexical validation & fast word operations -----------------------------
 
+extern "wing_swar_to_lower_64" fn native_swar_to_lower_64(v: u64) -> u64;
+extern "wing_swar_to_lower" fn native_swar_to_lower(slice: u8[:]);
+
+// 64-bit SWAR parallel ASCII lowercase (Alex Hultman / uWebSockets HttpParser.h)
+// Evaluates 8 ASCII bytes in parallel, translating 'A'..'Z' to 'a'..'z' in 4 CPU cycles without branches.
+fn swar_to_lower_64(v: u64) -> u64 {
+    let is_upper = (v + 0x3F3F3F3F3F3F3F3F) & ~(v + 0x2525252525252525) & 0x8080808080808080;
+    return v | (is_upper >> 2);
+}
+
+// In-place SWAR/vectorized lowercase for header names and values
+fn swar_to_lower(slice: u8[:]) {
+    guard slice.len > 0 else { return; }
+    native_swar_to_lower(slice);
+}
+
+// Fast-path header field byte lowercasing matching uWebSockets isFieldNameByteFastLowercased
+inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
+    if (b >= 'a' && b <= 'z') || b == '-' {
+        return true;
+    }
+    if b >= 'A' && b <= 'Z' {
+        b |= 32;
+        return true;
+    }
+    return is_tchar(b);
+}
+
+// Header presence bitmask constants (O(1) duplicate & smuggling detector)
+const HDR_PRESENCE_NONE: u32              = 0;
+const HDR_PRESENCE_HOST: u32              = 1 << 0;
+const HDR_PRESENCE_CONTENT_LENGTH: u32    = 1 << 1;
+const HDR_PRESENCE_TRANSFER_ENCODING: u32 = 1 << 2;
+const HDR_PRESENCE_CONNECTION: u32        = 1 << 3;
+const HDR_PRESENCE_UPGRADE: u32           = 1 << 4;
+const HDR_PRESENCE_SEC_WEBSOCKET_KEY: u32 = 1 << 5;
+const HDR_PRESENCE_SMUGGLING_MASK: u32    = (1 << 1) | (1 << 2);
+
+struct HeaderPresenceTracker {
+    mask: u32 = 0,
+    host_idx: i16 = -1,
+    cl_idx: i16 = -1,
+    te_idx: i16 = -1,
+    conn_idx: i16 = -1,
+    upgrade_idx: i16 = -1,
+    parsed_cl: i64 = -1,
+    has_duplicate_host: bool = false,
+    has_duplicate_cl: bool = false,
+    has_smuggling_conflict: bool = false,
+}
+
+fn new_header_presence_tracker() -> HeaderPresenceTracker {
+    return HeaderPresenceTracker { .. };
+}
+
+// Tracks header presence and detects duplicates/smuggling in O(1) via bitmask (uWebSockets pattern)
+fn track_header_presence(
+    tracker: HeaderPresenceTracker&,
+    name: const u8[:],
+    val: const u8[:],
+    hdr_idx: i16
+) -> bool {
+    if eq_ascii_fold(name, "host") {
+        if (tracker.mask & HDR_PRESENCE_HOST) != 0 {
+            tracker.has_duplicate_host = true;
+            return false; // RFC 9112 Section 3.2: Duplicate Host MUST be rejected immediately!
+        }
+        tracker.mask |= HDR_PRESENCE_HOST;
+        tracker.host_idx = hdr_idx;
+        return true;
+    }
+
+    if eq_ascii_fold(name, "content-length") {
+        if (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0 {
+            tracker.has_duplicate_cl = true;
+            // Check identical duplicate
+            var parsed_val: i64 = 0;
+            if validate_content_length_value(val, parsed_val) {
+                if tracker.parsed_cl >= 0 && tracker.parsed_cl != parsed_val {
+                    return false; // Conflicting Content-Length values -> smuggling
+                }
+            } else {
+                return false;
+            }
+        } else {
+            tracker.mask |= HDR_PRESENCE_CONTENT_LENGTH;
+            tracker.cl_idx = hdr_idx;
+            var parsed_val: i64 = 0;
+            if validate_content_length_value(val, parsed_val) {
+                tracker.parsed_cl = parsed_val;
+            }
+        }
+        if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
+            tracker.has_smuggling_conflict = true;
+            return false;
+        }
+        return true;
+    }
+
+    if eq_ascii_fold(name, "transfer-encoding") {
+        tracker.mask |= HDR_PRESENCE_TRANSFER_ENCODING;
+        tracker.te_idx = hdr_idx;
+        if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
+            tracker.has_smuggling_conflict = true;
+            return false;
+        }
+        return true;
+    }
+
+    if eq_ascii_fold(name, "connection") {
+        tracker.mask |= HDR_PRESENCE_CONNECTION;
+        tracker.conn_idx = hdr_idx;
+        return true;
+    }
+
+    if eq_ascii_fold(name, "upgrade") {
+        tracker.mask |= HDR_PRESENCE_UPGRADE;
+        tracker.upgrade_idx = hdr_idx;
+        return true;
+    }
+
+    return true;
+}
+
 fn is_tchar(b: u8) -> bool {
     if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
         return true;
@@ -121,17 +245,42 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
     return true;
 }
 
-// RFC 9112 Section 7.3: Standard registered transfer codings
+// RFC 9112 Section 7: Validates a transfer-coding element (e.g. "chunked", "gzip", "identity", "gzip;q=1.0").
+// transfer-coding = token *( OWS ";" OWS transfer-parameter )
 fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
-    return eq_ascii_fold(coding, "chunked") ||
-           eq_ascii_fold(coding, "gzip") ||
-           eq_ascii_fold(coding, "deflate") ||
-           eq_ascii_fold(coding, "compress");
+    let trimmed = trim_lws(coding);
+    guard trimmed.len > 0 else { return false; }
+
+    var semi_idx: i64 = 0;
+    while semi_idx < trimmed.len && trimmed[semi_idx] != ';' {
+        semi_idx++;
+    }
+
+    let name = trim_lws(trimmed[..semi_idx]);
+    guard name.len > 0 else { return false; }
+    for b in name {
+        guard is_tchar(b) else { return false; }
+    }
+
+    // RFC 9112 Section 7.1: chunked transfer-coding has no parameters
+    if eq_ascii_fold(name, "chunked") {
+        return semi_idx == trimmed.len;
+    }
+
+    // If parameters present, ensure valid characters (no control chars or CRLF)
+    if semi_idx < trimmed.len {
+        for b in trimmed[semi_idx..] {
+            if b < 0x20 && b != 0x09 { return false; }
+            if b == 0x7F { return false; }
+        }
+    }
+
+    return true;
 }
 
-// Validates a Transfer-Encoding header value (RFC 9112 Section 6.3, Section 7.1).
-// Only chunked, gzip, deflate, and compress are recognized; if chunked is
-// present, it must appear last and exactly once.
+// Validates a Transfer-Encoding header value (RFC 9112 Section 6.1, Section 7.1 & uWebSockets #1941 / #1943).
+// Allows comma-separated list of transfer codings (e.g. gzip, identity, br, deflate),
+// but requires that 'chunked' (case-insensitive) be the final coding and appear exactly once.
 fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
     let trimmed = trim_lws(val);
     guard trimmed.len > 0 else { return false; }
@@ -152,7 +301,13 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
         guard piece.len > 0 else { return false; }
         guard is_valid_transfer_coding(piece) else { return false; }
 
-        let is_chunked = eq_ascii_fold(piece, "chunked");
+        var semi_idx: i64 = 0;
+        while semi_idx < piece.len && piece[semi_idx] != ';' {
+            semi_idx++;
+        }
+        let coding_name = trim_lws(piece[..semi_idx]);
+
+        let is_chunked = eq_ascii_fold(coding_name, "chunked");
         if is_chunked {
             chunked_count++;
             last_is_chunked = true;
@@ -169,8 +324,8 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
 
     guard count > 0 else { return false; }
     // RFC 9112 Section 7.1: Chunked must not be applied more than once
-    guard chunked_count <= 1 else { return false; }
-    // RFC 9112 Section 6.3: If present in a request, chunked must be the final encoding
+    guard chunked_count == 1 else { return false; }
+    // RFC 9112 Section 6.1: If present in a request, chunked must be the final encoding
     guard last_is_chunked else { return false; }
 
     return true;

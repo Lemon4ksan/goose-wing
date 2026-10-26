@@ -35,8 +35,11 @@ done
 
 if [ "$1" = "--cli" ]; then
     echo "[entrypoint] Running automated CLI benchmark..."
-    python3 /app/run_cli.py
+    shift
+    python3 /app/run_cli.py "$@"
     exit 0
+elif [ "$#" -gt 0 ]; then
+    exec "$@"
 else
     echo "[entrypoint] Starting orchestrator web console on port $BENCH_PORT..."
     echo "[entrypoint] Open your browser at http://localhost:$BENCH_PORT"

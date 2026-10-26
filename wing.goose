@@ -32,6 +32,7 @@ import fingerprint.akamai;
 import http.headers;
 import http.headers.lexical;
 import http.headers.chunked;
+import http.headers.chunked_fsm;
 
 // ---- client session and application layer ----------------------------------
 
@@ -115,8 +116,10 @@ import tls.post_quantum;
 import server.router;
 import server.pool;
 import server.pipeline;
+import server.cache;
 import server.server;
 import server.h2_multiplexer;
+
 
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
@@ -129,7 +132,9 @@ import net.retry;
 import net.dns;
 import net.masque;
 import net.tcp;
+import net.tick_timer;
 import net.isolation;
+
 import net.sockopt;
 import net.driver;
 import net.poller;

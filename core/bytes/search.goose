@@ -59,3 +59,29 @@ fn count_byte(s: const u8[:], b: u8) -> i64 {
     }
     return count;
 }
+
+extern "wing_swar_find_ctl" fn native_swar_find_ctl(s: const u8[:]) -> i64;
+
+// Scans slice 8 bytes at a time in 1 CPU cycle using SWAR hasLess(word, 32) (uWebSockets HttpParser.h).
+// Returns the index of the first control character (< 32, e.g. \r, \n, \t, \0), or s.len if none found.
+fn swar_find_ctl(s: const u8[:]) -> i64 {
+    return native_swar_find_ctl(s);
+}
+
+extern "wing_fast_find_crlfcrlf" fn native_fast_find_crlfcrlf(s: const u8[:]) -> i64;
+
+// High-speed CRLFCRLF (\r\n\r\n) HTTP header delimiter scanner.
+// Returns the index of the first '\r' in \r\n\r\n, or -1 if not found.
+fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
+    guard s.len >= 4 else { return -1; }
+    return native_fast_find_crlfcrlf(s);
+}
+
+// Places sentinel fence bytes '\r' and 'a' at offset length and length+1 in wire buffer (uWebSockets HttpParser.h).
+// Allows SWAR and vectorized parsers to scan safely without bounds checks in the inner loop.
+fn fence_wire_slice(buf: u8[:], length: i64) -> bool {
+    guard length >= 0 && length + 2 <= buf.len else { return false; }
+    buf[length] = '\r';
+    buf[length + 1] = 'a';
+    return true;
+}

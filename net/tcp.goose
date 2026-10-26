@@ -24,6 +24,29 @@ extern "wing_tcp_set_syn_retries" fn native_tcp_set_syn_retries(sock_fd: i64, co
 extern "wing_tcp_get_notsent_bytes" fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64;
 extern "wing_tcp_get_readable_bytes" fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64;
 extern "wing_get_env_port" fn get_env_port(default_port: u16) -> u16;
+extern "wing_get_env_workers" fn get_env_workers(default_workers: i64) -> i64;
+extern "wing_tcp_set_nonblocking" fn native_tcp_set_nonblocking(sock_fd: i64, nonblocking: i32) -> i32;
+extern "wing_tcp_set_quickack" fn native_tcp_set_quickack(sock_fd: i64, enable: i32) -> i32;
+extern "wing_tcp_set_cork" fn native_tcp_set_cork(sock_fd: i64, enable: i32) -> i32;
+extern "wing_tcp_accept_nonblocking" fn native_tcp_accept_nonblocking(listener_fd: i64) -> i64;
+extern "wing_tcp_recv_nonblocking" fn native_tcp_recv_nonblocking(sock_fd: i64, buf: u8[:]) -> i32;
+extern "wing_epoll_create" fn native_epoll_create() -> i64;
+extern "wing_epoll_add" fn native_epoll_add(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32;
+extern "wing_epoll_mod" fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32;
+extern "wing_epoll_del" fn native_epoll_del(epfd: i64, sock_fd: i64) -> i32;
+extern "wing_epoll_wait" fn native_epoll_wait(epfd: i64, out_fds: i64[:], out_udata: u64[:], timeout_ms: i32) -> i32;
+extern "wing_epoll_close" fn native_epoll_close(epfd: i64);
+extern "wing_fast_cork_append" fn native_fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64;
+extern "wing_set_cpu_affinity" fn native_set_cpu_affinity(cpu_id: i64) -> i32;
+extern "wing_tcp_set_incoming_cpu" fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32;
+
+// Event flags for epoll multiplexer
+const EPOLL_READ: u32 = 1;
+const EPOLL_WRITE: u32 = 4;
+const EPOLL_ERR: u32 = 8;
+const EPOLL_HUP: u32 = 16;
+const EPOLL_ET: u32 = 0x80000000;
+const EPOLL_LISTENER_TAG: u64 = 0xFFFFFFFFFFFFFFFF;
 
 // Global initialization flag
 var g_tcp_initialized: bool = false;
@@ -190,6 +213,197 @@ fn tcp_flush_cork(fd: i64, cb: core::CorkBuffer&) -> i32 {
     return sent;
 }
 
+// ---- uWebSockets AsyncSocket BackPressure & Zero-Copy Cork Transition Engine
+
+// Bounded zero-allocation backpressure queue for outbound socket traffic.
+// Matches uWebSockets AsyncSocketData / BackPressure amortized compaction pattern.
+struct BackPressure {
+    data: u8[..65536] = [],
+    pending_removal: i64 = 0,
+    total_buffered: u64 = 0,
+    total_drained: u64 = 0,
+    drop_count: u64 = 0,
+}
+
+fn new_backpressure() -> BackPressure {
+    return BackPressure { .. };
+}
+
+fn backpressure_len(bp: const BackPressure&) -> i64 {
+    return bp.data.len - bp.pending_removal;
+}
+
+fn backpressure_data(bp: const BackPressure&) -> const u8[:] {
+    guard bp.pending_removal < bp.data.len else { return ""; }
+    return bp.data[bp.pending_removal..];
+}
+
+fn backpressure_clear(bp: BackPressure&) {
+    bp.data.clear();
+    bp.pending_removal = 0;
+}
+
+// Appends data to the backpressure buffer, performing compaction if pending_removal > 0
+fn backpressure_append(bp: BackPressure&, bytes: const u8[:]) -> bool {
+    guard bytes.len > 0 else { return true; }
+
+    // If remaining space at tail is insufficient, compact unremoved data to index 0
+    if bp.data.len + bytes.len > bp.data.cap {
+        if bp.pending_removal > 0 {
+            let active_len = bp.data.len - bp.pending_removal;
+            for i in active_len {
+                bp.data[i] = bp.data[bp.pending_removal + i];
+            }
+            while bp.data.len > active_len {
+                bp.data.pop();
+            }
+            bp.pending_removal = 0;
+        }
+    }
+
+    guard bp.data.len + bytes.len <= bp.data.cap else {
+        bp.drop_count += 1;
+        return false;
+    }
+
+    bp.data.append(bytes);
+    bp.total_buffered += bytes.len as u64;
+    return true;
+}
+
+// Advances pending removal and amortizes compaction only when pendingRemoval > (data.len >> 5).
+// Eliminates O(N^2) memory moves on frequent partial packet sends (Alex Hultman / uWS pattern).
+fn backpressure_erase(bp: BackPressure&, n: i64) {
+    guard n > 0 else { return; }
+    bp.pending_removal += n;
+    bp.total_drained += n as u64;
+
+    if bp.pending_removal >= bp.data.len {
+        bp.data.clear();
+        bp.pending_removal = 0;
+    } else if bp.pending_removal > (bp.data.len >> 5) {
+        // Amortized compaction (minimum 1/32nd of buffer)
+        let active_len = bp.data.len - bp.pending_removal;
+        for i in active_len {
+            bp.data[i] = bp.data[bp.pending_removal + i];
+        }
+        while bp.data.len > active_len {
+            bp.data.pop();
+        }
+        bp.pending_removal = 0;
+    }
+}
+
+// Three-level prioritized async write matching uWebSockets AsyncSocket::write:
+// 1. If backpressure exists, drain it first.
+// 2. If no backpressure and cork fits, buffer directly in CorkBuffer (zero-copy into shared reactor buffer).
+// 3. Otherwise flush cork and send directly via syscall. Any unsent remainder spills into BackPressure.
+// Returns (bytes_written, needs_writable_poll).
+fn async_socket_write(
+    fd: i64,
+    cork: core::CorkBuffer&,
+    bp: BackPressure&,
+    data: const u8[:],
+    optionally: bool = false
+) -> i32, bool {
+    guard fd > 0 else { return 0, false; }
+
+    // 1. If we have existing backpressure, write from backpressure first
+    let bp_active = backpressure_len(bp);
+    if bp_active > 0 {
+        let sent = tcp_send(fd, backpressure_data(bp));
+        if sent > 0 {
+            backpressure_erase(bp, sent);
+        }
+
+        // If backpressure is still not fully drained
+        if backpressure_len(bp) > 0 {
+            if optionally {
+                return 0, true;
+            } else {
+                backpressure_append(bp, data);
+                return data.len as i32, true;
+            }
+        }
+    }
+
+    guard data.len > 0 else { return 0, false; }
+
+    // 2. No backpressure. Check if data fits into CorkBuffer
+    if data.len <= core::cork_available(cork) {
+        core::cork_write_exact(cork, data);
+        return data.len as i32, false;
+    }
+
+    // 3. CorkBuffer is full or payload exceeds it. Flush existing cork first
+    if core::cork_pending(cork) > 0 {
+        let cork_slice = core::cork_as_slice(cork);
+        let cork_sent = tcp_send(fd, cork_slice);
+        if cork_sent > 0 {
+            core::cork_consume(cork, cork_sent);
+        }
+        if core::cork_pending(cork) > 0 {
+            // Corked data couldn't be completely flushed, transition remaining cork to backpressure!
+            backpressure_append(bp, core::cork_as_slice(cork));
+            core::cork_reset(cork);
+            if !optionally && data.len > 0 {
+                backpressure_append(bp, data);
+                return data.len as i32, true;
+            }
+            return 0, true;
+        }
+    }
+
+    // 4. Send directly to socket
+    let sent = tcp_send(fd, data);
+    if sent < (data.len as i32) {
+        let unsent_offset = if sent > 0 { sent as i64 } else { 0 };
+        backpressure_append(bp, data[unsent_offset..]);
+        return data.len as i32, true; // Queued to backpressure, socket needs writable poll
+    }
+
+    return sent, false;
+}
+
+// Uncorks the socket and flushes cork buffer. If send is partial, spills remaining cork into backpressure.
+// Returns (bytes_written, needs_writable_poll).
+fn async_socket_uncork(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i32, bool {
+    guard fd > 0 else { return 0, false; }
+    let pending = core::cork_pending(cork);
+    guard pending > 0 else { return 0, false; }
+
+    let cork_slice = core::cork_as_slice(cork);
+    let sent = tcp_send(fd, cork_slice);
+    if sent > 0 {
+        core::cork_consume(cork, sent);
+    }
+
+    if core::cork_pending(cork) > 0 {
+        // Spill remaining cork into per-socket backpressure
+        backpressure_append(bp, core::cork_as_slice(cork));
+        core::cork_reset(cork);
+        return sent, true;
+    }
+
+    return sent, false;
+}
+
+// Drains backpressure queue upon writable event (POLL_WRITE).
+// Returns (bytes_drained, is_fully_empty).
+fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
+    guard fd > 0 else { return 0, true; }
+    let bp_active = backpressure_len(bp);
+    guard bp_active > 0 else { return 0, true; }
+
+    let sent = tcp_send(fd, backpressure_data(bp));
+    if sent > 0 {
+        backpressure_erase(bp, sent);
+    }
+
+    let is_empty = backpressure_len(bp) == 0;
+    return sent, is_empty;
+}
+
 // Receives data directly into a PipeBuffer without intermediate scratch copies.
 // Returns bytes read (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
 fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout_ms: u32 = 5000) -> i32 {
@@ -203,4 +417,122 @@ fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout
         core::commit_write(pipe, recvd);
     }
     return recvd;
+}
+
+// Configures socket non-blocking mode.
+fn tcp_set_nonblocking(fd: i64, nonblocking: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_nonblocking(fd, if nonblocking { 1 } else { 0 }) == 0;
+}
+
+// Sets TCP_QUICKACK (Linux delayed ACK bypass) to eliminate 40ms delayed ACK stalls.
+fn tcp_set_quickack(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_quickack(fd, if enable { 1 } else { 0 }) == 0;
+}
+
+// Sets TCP_CORK (Linux) to coalesce frames at the kernel TCP stack level.
+fn tcp_set_cork(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_cork(fd, if enable { 1 } else { 0 }) == 0;
+}
+
+
+// Accepts an incoming connection in non-blocking mode.
+// Returns socket handle (> 0), 0 if no connection pending (EAGAIN), or -1 on error.
+fn tcp_accept_nonblocking(listener_fd: i64) -> i64 {
+    guard listener_fd > 0 else { return -1; }
+    return native_tcp_accept_nonblocking(listener_fd);
+}
+
+// Receives bytes from non-blocking socket into out buffer without zeroing memory.
+// Returns:
+//   > 0 : bytes received
+//     0 : peer closed connection cleanly (EOF / FIN)
+//    -2 : WouldBlock / EAGAIN (no data ready right now)
+//    -1 : socket error / connection reset
+fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
+    guard fd > 0 else { return -1; }
+    let recvd = native_tcp_recv_nonblocking(fd, g_shared_recv_buf[..65536]);
+    if recvd > 0 {
+        out.append(g_shared_recv_buf[..recvd]);
+    }
+    return recvd;
+}
+
+// Receives bytes from non-blocking socket directly into destination slice.
+fn tcp_recv_nonblocking_slice(fd: i64, dst: u8[:]) -> i32 {
+    guard fd > 0 && dst.len > 0 else { return -1; }
+    return native_tcp_recv_nonblocking(fd, dst);
+}
+
+// Creates an epoll/reactor handle (native epoll_create1 on Linux, WSAPoll on Windows).
+fn epoll_create() -> i64 {
+    tcp_init();
+    return native_epoll_create();
+}
+
+// Registers a socket descriptor in the epoll multiplexer.
+fn epoll_add(epfd: i64, sock_fd: i64, events: u32 = EPOLL_READ, udata: u64 = 0) -> bool {
+    guard epfd >= 0 && sock_fd > 0 else { return false; }
+    return native_epoll_add(epfd, sock_fd, events, udata) == 0;
+}
+
+// Modifies interest flags for a registered socket descriptor.
+fn epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> bool {
+    guard epfd >= 0 && sock_fd > 0 else { return false; }
+    return native_epoll_mod(epfd, sock_fd, events, udata) == 0;
+}
+
+// Removes a socket descriptor from the epoll multiplexer.
+fn epoll_del(epfd: i64, sock_fd: i64) -> bool {
+    guard epfd >= 0 && sock_fd > 0 else { return false; }
+    return native_epoll_del(epfd, sock_fd) == 0;
+}
+
+// Waits for I/O events on the epoll multiplexer directly into fixed-size slices.
+// Avoids allocations, stack memsets, and push overhead (uWebSockets loop.c pattern).
+fn epoll_wait_direct(epfd: i64, raw_fds: i64[:], raw_udata: u64[:], timeout_ms: i32 = -1) -> i32 {
+    guard epfd >= 0 && (raw_fds.len > 0 || raw_udata.len > 0) else { return 0; }
+    return native_epoll_wait(epfd, raw_fds, raw_udata, timeout_ms);
+}
+
+// Waits for I/O events on the epoll multiplexer.
+// Appends ready event descriptors and udata tags to out_fds and out_udata.
+fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1) -> i32 {
+    guard epfd >= 0 else { return 0; }
+    out_fds.clear();
+    out_udata.clear();
+    var raw_fds: i64[256] = [0; 256];
+    var raw_udata: u64[256] = [0; 256];
+    let n = native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
+    for i in n {
+        out_fds.push(raw_fds[i]);
+        out_udata.push(raw_udata[i]);
+    }
+    return n;
+}
+
+// Closes epoll/reactor handle.
+fn epoll_close(epfd: i64) {
+    if epfd >= 0 {
+        native_epoll_close(epfd);
+    }
+}
+
+// Appends HTTP response directly to cork buffer using AVX2 SIMD instructions and flushes if full.
+fn fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64 {
+    return native_fast_cork_append(conn, cork_buf, cork_len, resp);
+}
+
+// Pins calling thread to specific CPU core ID.
+fn set_cpu_affinity(cpu_id: i64) -> bool {
+    guard cpu_id >= 0 else { return false; }
+    return native_set_cpu_affinity(cpu_id) == 0;
+}
+
+// Binds listener incoming socket queue to specific CPU core (SO_INCOMING_CPU).
+fn tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> bool {
+    guard sock_fd > 0 && cpu_id >= 0 else { return false; }
+    return native_tcp_set_incoming_cpu(sock_fd, cpu_id) == 0;
 }

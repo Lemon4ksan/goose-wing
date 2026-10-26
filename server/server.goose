@@ -66,10 +66,15 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     let active_wire = wire[req_offset..];
 
-    // Find end of headers (\r\n\r\n)
-    let hdr_end = core::index_of_slice(active_wire, "\r\n\r\n");
+    // Find end of headers (\r\n\r\n) via AVX2 / 32-bit fast scanner
+    let hdr_end = core::fast_find_crlfcrlf(active_wire);
+    // RFC 9112 Section 2.1 & uWS #1658: Total header block must not exceed 8192 bytes
+    if hdr_end > 8192 || (hdr_end < 0 && active_wire.len > 8192) {
+        return false, 0;
+    }
     guard hdr_end >= 0 else { return false, 0; }
     let header_end_idx = hdr_end + 4;
+    guard header_end_idx <= 8192 else { return false, 0; }
     let header_bytes = active_wire[..header_end_idx];
 
     // Find end of request line
@@ -92,9 +97,20 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     let path_slice = rest[..sp2_rel];
     guard path_slice.len > 0 && path_slice.len <= out_req.url.cap else { return false, 0; }
 
-    // RFC 9110 Section 4.1 & CVE-2022-22970: Reject CTLs (0x00..0x1F, 0x7F) in request target path
+    // RFC 9110 Section 4.1 & RFC 9112 Section 3.2 (uWS #1951):
+    // Request target must only consist of visible ASCII characters (0x21..0x7E).
+    // Reject CTLs (0x00..0x1F, 0x7F) and non-ASCII raw UTF-8 / binary bytes (>= 0x80).
     for b in path_slice {
-        guard b > 0x1F && b != 0x7F else { return false, 0; }
+        guard b >= 0x21 && b <= 0x7E else { return false, 0; }
+    }
+
+    // RFC 9112 Section 3.2.4 & uWS #1952:
+    // Asterisk-form ("*") is ONLY valid for OPTIONS requests.
+    // Origin-form requests for other methods must start with '/'.
+    if path_slice == "*" {
+        guard method_slice == "OPTIONS" else { return false, 0; }
+    } else {
+        guard path_slice[0] == '/' else { return false, 0; }
     }
 
     out_req.url.clear();
@@ -110,6 +126,8 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     out_req.headers.clear();
     clear(out_req.bloom_filter);
+    var presence_tracker = new_header_presence_tracker();
+
     while cursor < rest_headers.len {
         let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
         if rel_end < 0 { break; }
@@ -126,6 +144,10 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         let hval = trim_lws(line[(colon + 1)..]);
         guard is_valid_header_value(hval) else { return false, 0; }
 
+        // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
+        let cur_hdr_idx = out_req.headers.len as i16;
+        guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else { return false, 0; }
+
         var item = HeaderItem { .. };
         guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false, 0; }
         item.name.append(hname);
@@ -139,57 +161,50 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     out_req.trailers.clear();
     out_req.body.clear();
 
-    // Check for Transfer-Encoding and Content-Length using fast Bloom rejection
-    var has_te = false;
-    var te_buf: u8[..64] = [];
-    var has_cl = false;
-    var cl_count = 0;
-    var cl_len: i64 = 0;
+    // RFC 9112 Section 3.2 & uWS #1949: Host header validation in HTTP/1.1
+    if proto_slice == "HTTP/1.1" {
+        // Must have exactly one Host header (verified via bitmask presence)
+        guard (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 else { return false, 0; }
+        let host_idx = presence_tracker.host_idx as i64;
+        guard host_idx >= 0 && host_idx < out_req.headers.len else { return false, 0; }
 
-    let might_te = might_have_header(out_req.bloom_filter, "transfer-encoding");
-    let might_cl = might_have_header(out_req.bloom_filter, "content-length");
-
-    if might_te || might_cl {
-        for &hdr in out_req.headers {
-            if might_te && eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-                if has_te {
-                    // Multiple Transfer-Encoding headers: combine with comma (RFC 9112 Section 6.3)
-                    guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
-                    te_buf.append(", ");
-                    te_buf.append(hdr.value[..]);
-                } else {
-                    has_te = true;
-                    te_buf.clear();
-                    guard hdr.value.len <= te_buf.cap else { return false, 0; }
-                    te_buf.append(hdr.value[..]);
-                }
-            } else if might_cl && eq_ascii_fold(hdr.name[..], "content-length") {
-                has_cl = true;
-                cl_count++;
-                let val_trimmed = trim_lws(hdr.value[..]);
-                guard val_trimmed.len > 0 else { return false, 0; }
-
-                // RFC 9110 Section 8.6 & Go #53188: Content-Length must contain only decimal digits
-                for b in val_trimmed {
-                    guard b >= '0' && b <= '9' else { return false, 0; }
-                }
-
-                let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
-                guard ok_cl && parsed_cl >= 0 else { return false, 0; }
-                if cl_count == 1 {
-                    cl_len = parsed_cl;
-                } else if cl_len != parsed_cl {
-                    // Conflicting multiple Content-Length headers -> reject smuggling attempt
-                    return false, 0;
-                }
-            }
+        let host_val = out_req.headers[host_idx].value[..];
+        guard host_val.len > 0 else { return false, 0; }
+        // Authority in Host MUST NOT contain path ('/'), query ('?'), fragment ('#'), userinfo ('@'), or whitespace
+        for b in host_val {
+            guard b != '/' && b != '?' && b != '#' && b != '@' && b != ' ' && b != '\t' else { return false, 0; }
         }
     }
+
+    // Check for Transfer-Encoding and Content-Length using bitmask presence
+    let has_te = (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (presence_tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
 
     // RFC 9112 Section 6.1 Smuggling Protection:
     // If both Transfer-Encoding and Content-Length are present, reject as smuggling attempt.
     if has_te && has_cl {
         return false, 0;
+    }
+
+    var cl_len: i64 = 0;
+    if has_cl {
+        cl_len = presence_tracker.parsed_cl;
+    }
+
+    var te_buf: u8[..64] = [];
+    if has_te {
+        for &hdr in out_req.headers {
+            if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+                if te_buf.len > 0 {
+                    guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
+                    te_buf.append(", ");
+                    te_buf.append(hdr.value[..]);
+                } else {
+                    guard hdr.value.len <= te_buf.cap else { return false, 0; }
+                    te_buf.append(hdr.value[..]);
+                }
+            }
+        }
     }
 
     let body_start_idx = req_offset + header_end_idx;
@@ -226,7 +241,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
-    let hdr_end = core::index_of_slice(wire, "\r\n\r\n");
+    let hdr_end = core::fast_find_crlfcrlf(wire);
     guard hdr_end >= 0 else { return false, 0; }
     let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
@@ -451,17 +466,27 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
     }
 
     if res.status_code != 204 && res.status_code != 304 {
-        if res.body.len == 0 {
-            out_wire.append("Content-Length: 0\r\n");
-        } else {
-            out_wire.append("Content-Length: ");
-            core::format_i64_dec(res.body.len, out_wire);
-            out_wire.append("\r\n");
+        // uWS #1855 / RFC 9110 §8.6: Do not emit automatic Content-Length if already specified in res.headers (e.g. HEAD)
+        if !res.has_header("content-length") && !res.has_header("transfer-encoding") {
+            if res.body.len == 0 {
+                out_wire.append("Content-Length: 0\r\n");
+            } else {
+                out_wire.append("Content-Length: ");
+                core::format_i64_dec(res.body.len, out_wire);
+                out_wire.append("\r\n");
+            }
         }
     }
 
     let has_conn = res.has_header("connection");
+    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+
     for &hdr in res.headers {
+        // RFC 9110 §8.6 & uWS #1370: Suppress Content-Length from 204 No Content, 304 Not Modified, and 1xx Informational
+        if is_empty_status && eq_ascii_fold(hdr.name[..], "content-length") {
+            continue;
+        }
+
         out_wire.append(hdr.name[..]);
         out_wire.append(": ");
         out_wire.append(hdr.value[..]);
@@ -723,6 +748,11 @@ fn handle_connection_wire<B>(
                 effective_ip.clear();
                 effective_ip.append(proxy_hdr.src_ip_str[..]);
             }
+        } else {
+            // uWS #1927 / HAProxy spec: When PROXY protocol is required, connections
+            // without a valid PROXY preface MUST NOT fall through to plain HTTP.
+            serialize_bad_request_error(server.server_name[..], wire_out);
+            return PipelineOutcome.Handled, false;
         }
     }
 
@@ -775,14 +805,20 @@ fn handle_connection_wire_pipelined<B>(
     var total_handled: i64 = 0;
 
     while stream.len > 0 {
+        // Strip optional benign CRLFs between pipelined requests (RFC 9112 §2.2)
+        while stream.len > 0 && (stream[0] == '\r' || stream[0] == '\n') {
+            stream = stream[1..];
+        }
+        if stream.len == 0 { break; }
+
         var req = new_request("GET", "");
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
         guard ok_parse && consumed > 0 else {
-            if total_handled == 0 {
-                serialize_bad_request_error(server.server_name[..], wire_out);
-                return 0, false;
-            }
-            break;
+            // RFC 9112 Section 9.3 & uWS #1898:
+            // Extra trailing unparseable bytes on the connection stream invalidate the connection
+            // and must produce a 400 Bad Request to prevent smuggling/connection poisoning.
+            serialize_bad_request_error(server.server_name[..], wire_out);
+            return total_handled, false;
         }
 
         var res = new_response();
@@ -885,8 +921,8 @@ fn handle_connection_pipe<B>(
 
             core::advance_to(pipe, consumed, consumed);
         } else {
-            // Check if headers are complete
-            let hdr_end = core::index_of_slice(stream, "\r\n\r\n");
+            // Check if headers are complete via fast scanner
+            let hdr_end = core::fast_find_crlfcrlf(stream);
             if hdr_end >= 0 {
                 // Headers are complete but parsing failed -> fatal syntax / smuggling error!
                 if total_handled == 0 {
@@ -948,5 +984,96 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
         total_served++;
     }
 
+    return total_served;
+}
+
+// Executes a high-performance Share-Nothing Epoll/Reactor loop.
+// Multiplexes all accepted connections within 1 thread, maintaining ~3.1 MB RSS footprint.
+fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    guard listener_fd > 0 else { return 0; }
+    tcp_set_nonblocking(listener_fd, true);
+
+    let epfd = epoll_create();
+    guard epfd >= 0 else { return 0; }
+    epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+
+    var ready_fds: i64[..128] = [];
+    var ready_udata: u64[..128] = [];
+    var cork_wire: u8[..16384] = [];
+    var chunk: u8[..65536] = [];
+    var total_served: i64 = 0;
+
+    var active_socks: i64[512] = [-1; 512];
+
+    while max_connections == 0 || total_served < max_connections {
+        let n = epoll_wait(epfd, ready_fds, ready_udata, 1000);
+        if n <= 0 { continue; }
+
+        for i in n {
+            let udata = ready_udata[i];
+            if udata == EPOLL_LISTENER_TAG {
+                while true {
+                    let client_fd = tcp_accept_nonblocking(listener_fd);
+                    if client_fd <= 0 { break; }
+                    tcp_set_nonblocking(client_fd, true);
+
+                    var slot: i64 = -1;
+                    for s in active_socks.len {
+                        if active_socks[s] == -1 {
+                            slot = s;
+                            break;
+                        }
+                    }
+                    if slot >= 0 {
+                        active_socks[slot] = client_fd;
+                        epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
+                    } else {
+                        tcp_close(client_fd);
+                    }
+                }
+                continue;
+            }
+
+            let slot = udata as i64;
+            if slot < 0 || slot >= active_socks.len || active_socks[slot] <= 0 {
+                continue;
+            }
+            let conn = active_socks[slot];
+
+            chunk.clear();
+            let recvd = tcp_recv_nonblocking(conn, chunk);
+            if recvd == 0 || recvd == -1 {
+                epoll_del(epfd, conn);
+                tcp_close(conn);
+                active_socks[slot] = -1;
+                total_served++;
+                continue;
+            }
+            if recvd <= 0 { continue; }
+
+            cork_wire.clear();
+            let now_ns = core::as_nanos(core::monotonic_now());
+            let count, ok = handle_connection_wire_pipelined(server, "127.0.0.1", chunk[..recvd], now_ns, cork_wire);
+
+            if cork_wire.len > 0 {
+                let sent = tcp_send(conn, cork_wire[..]);
+                if sent <= 0 || !ok {
+                    epoll_del(epfd, conn);
+                    tcp_close(conn);
+                    active_socks[slot] = -1;
+                    total_served++;
+                    continue;
+                }
+            }
+            if !ok {
+                epoll_del(epfd, conn);
+                tcp_close(conn);
+                active_socks[slot] = -1;
+                total_served++;
+            }
+        }
+    }
+
+    epoll_close(epfd);
     return total_served;
 }

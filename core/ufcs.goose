@@ -399,4 +399,13 @@ fn ::has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
     return core::has_query_param_fast(raw_query, key);
 }
 
+// ---- uWebSockets fast primitives -------------------------------------------
+
+fn ::fast_u64toa(val: u64, dst: u8[:]) -> i64 { return core::fast_u64toa(val, dst); }
+fn ::fast_u32toa_hex(val: u32, dst: u8[:]) -> i64 { return core::fast_u32toa_hex(val, dst); }
+fn ::swar_find_ctl(s: const u8[:]) -> i64 { return core::swar_find_ctl(s); }
+fn ::fence_wire_slice(buf: u8[:], length: i64) -> bool { return core::fence_wire_slice(buf, length); }
+
+
+
 

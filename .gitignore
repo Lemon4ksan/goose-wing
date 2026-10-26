@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+*.o
 
 # Byte-compiled Python
 __pycache__/

@@ -428,7 +428,11 @@ fn handle_h2_server_ingress<B>(
                     let param_val, _ = settings_r.read_u32_be();
 
                     if param_id == SETTING_INITIAL_WINDOW_SIZE {
-                        apply_peer_initial_window_size_delta(sess.conn, param_val);
+                        let win_err = apply_peer_initial_window_size_delta(sess.conn, param_val);
+                        if win_err != ERR_NO_ERROR {
+                            emit_goaway(sess.conn.last_peer_stream_id, win_err, out_wire);
+                            return offset + total_frame_len, false;
+                        }
                     } else if param_id == SETTING_MAX_FRAME_SIZE {
                         sess.conn.local_max_frame_size = param_val;
                     }
@@ -579,6 +583,10 @@ fn handle_h2_server_ingress<B>(
             var future = internal::new_inline_handler_future(0);
             let now_ns = (now_ms as u64) * 1000000;
             execute_pipeline(pipeline, timer, client_ip, req, now_ns, res, future);
+
+            if res.status_code == 200 && res.body.len == 0 && sess.streams[i].method[..] != "HEAD" {
+                res.body.append("OK\n");
+            }
 
             // Emit Response
             let has_body = res.body.len > 0;

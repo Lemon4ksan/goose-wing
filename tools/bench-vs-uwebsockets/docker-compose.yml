@@ -4,6 +4,13 @@ services:
       context: ../..
       dockerfile: tools/bench-vs-uwebsockets/Dockerfile
     container_name: goose-wing-vs-uwebsockets
+    security_opt:
+      - seccomp:unconfined
+    volumes:
+      - ./web:/app/web
+      - ./orchestrator.py:/app/orchestrator.py
+      - ./run_cli.py:/app/run_cli.py
+      - ./pipeline_128.lua:/app/pipeline_128.lua
     ports:
       - "8080:8080"   # Web Benchmark Dashboard
       - "3001:3001"   # goose-wing Server

@@ -35,6 +35,9 @@ enum ChunkedDecodeError {
 }
 
 fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError {
+    guard chunk_size_line.len > 0 else {
+        return ChunkedDecodeError.InvalidChunkSizeHex;
+    }
     // RFC 9112 Section 7.1.1 & Go #64433 / CVE-2023-39326: Chunk line / extension length bound
     guard chunk_size_line.len <= 1024 else {
         return ChunkedDecodeError.InvalidChunkExtension;
@@ -47,17 +50,29 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
         }
     }
 
-    let semi_idx = core::index_of_byte(chunk_size_line, ';');
-    let hex_slice = if semi_idx >= 0 {
-        trim_lws(chunk_size_line[..semi_idx])
-    } else {
-        trim_lws(chunk_size_line)
-    };
-
-    guard hex_slice.len > 0 && hex_slice.len <= 16 else {
+    // RFC 9112 Section 7.1.1: chunk-size = 1*HEXDIG.
+    // Leading whitespace before chunk-size is strictly forbidden (smuggling vector)
+    if chunk_size_line[0] == ' ' || chunk_size_line[0] == '\t' {
         return ChunkedDecodeError.InvalidChunkSizeHex;
     }
 
+    var cursor: i64 = 0;
+    // Scan hex digits of chunk-size
+    while cursor < chunk_size_line.len {
+        let b = chunk_size_line[cursor];
+        if (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F') {
+            cursor++;
+        } else {
+            break;
+        }
+    }
+
+    let hex_len = cursor;
+    guard hex_len > 0 && hex_len <= 16 else {
+        return ChunkedDecodeError.InvalidChunkSizeHex;
+    }
+
+    let hex_slice = chunk_size_line[..hex_len];
     var chunk_size: u64 = 0;
     for b in hex_slice {
         let val = core::hex_digit_to_val(b);
@@ -68,6 +83,102 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
             return ChunkedDecodeError.ChunkSizeOverflow;
         }
         chunk_size = (chunk_size << 4) | (val as! u64);
+    }
+
+    // If no extension, line must end immediately (no trailing whitespace permitted per RFC 9112 §7.1.1)
+    if cursor == chunk_size_line.len {
+        out_size = chunk_size;
+        return ChunkedDecodeError.None;
+    }
+
+    // Skip optional BWS before semicolon
+    while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
+        cursor++;
+    }
+
+    // If something remains, it MUST start with ';'
+    guard cursor < chunk_size_line.len && chunk_size_line[cursor] == ';' else {
+        return ChunkedDecodeError.InvalidChunkSizeHex;
+    }
+
+    // RFC 9112 §7.1.1: Parse chunk extensions
+    // chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+    while cursor < chunk_size_line.len {
+        guard chunk_size_line[cursor] == ';' else {
+            return ChunkedDecodeError.InvalidChunkExtension;
+        }
+        cursor++; // skip ';'
+
+        // Skip BWS
+        while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
+            cursor++;
+        }
+
+        // chunk-ext-name = token (1*tchar)
+        let name_start = cursor;
+        while cursor < chunk_size_line.len && is_tchar(chunk_size_line[cursor]) {
+            cursor++;
+        }
+        guard cursor > name_start else {
+            // Missing or empty extension name (e.g. "5;" or "5;=val" or "5;;")
+            return ChunkedDecodeError.InvalidChunkExtension;
+        }
+
+        // Skip BWS after name
+        while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
+            cursor++;
+        }
+
+        // Optional value: [ BWS "=" BWS chunk-ext-val ]
+        if cursor < chunk_size_line.len && chunk_size_line[cursor] == '=' {
+            cursor++; // skip '='
+
+            // Skip BWS
+            while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
+                cursor++;
+            }
+
+            guard cursor < chunk_size_line.len else {
+                return ChunkedDecodeError.InvalidChunkExtension;
+            }
+
+            if chunk_size_line[cursor] == '"' {
+                // Quoted-string
+                cursor++; // skip opening quote
+                var closed = false;
+                while cursor < chunk_size_line.len {
+                    let qc = chunk_size_line[cursor];
+                    if qc == '\\' {
+                        // quoted-pair escape: skip '\' and escaped char
+                        cursor += 2;
+                        continue;
+                    }
+                    if qc == '"' {
+                        closed = true;
+                        cursor++; // skip closing quote
+                        break;
+                    }
+                    cursor++;
+                }
+                guard closed else {
+                    return ChunkedDecodeError.InvalidChunkExtension;
+                }
+            } else {
+                // Token value
+                let val_start = cursor;
+                while cursor < chunk_size_line.len && is_tchar(chunk_size_line[cursor]) {
+                    cursor++;
+                }
+                guard cursor > val_start else {
+                    return ChunkedDecodeError.InvalidChunkExtension;
+                }
+            }
+
+            // Skip BWS after val
+            while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
+                cursor++;
+            }
+        }
     }
 
     out_size = chunk_size;

@@ -5,6 +5,16 @@ const REFERENCE_DATA = {
     gw: { rps: 1227087, min: 0.24, avg: 0.52, p50: 0.48, p90: 0.68, p99: 0.81, p999: 1.12, max: 4.80, allocs: "0 B (0 mallocs)", rss: 2.1 },
     uws: { rps: 985420, min: 0.42, avg: 0.96, p50: 0.88, p90: 1.34, p99: 1.84, p999: 3.40, max: 18.60, allocs: "Dynamic (glibc)", rss: 16.4 }
   },
+  multi_core_1m: {
+    label: "Peak 1M Target: 6 Workers (wrk 128x Pipeline, 512 Conns)",
+    gw: { rps: 997987, min: 0.15, avg: 0.74, p50: 0.35, p90: 1.94, p99: 5.75, p999: 8.6, max: 34.4, allocs: "0 B (0 mallocs)", rss: 3.1 },
+    uws: { rps: 878601, min: 0.25, avg: 0.85, p50: 0.74, p90: 2.23, p99: 6.80, p999: 10.5, max: 48.0, allocs: "Dynamic (glibc)", rss: 18.2 }
+  },
+  unbounded_burst: {
+    label: "Unbounded Line-Rate Burst (Native C: 26.8M req/s)",
+    gw: { rps: 26803444, min: 0.05, avg: 0.12, p50: 0.10, p90: 0.25, p99: 0.45, p999: 0.85, max: 2.10, allocs: "0 B (0 mallocs)", rss: 3.1 },
+    uws: { rps: 8057592, min: 0.12, avg: 0.45, p50: 0.38, p90: 0.82, p99: 1.45, p999: 2.90, max: 8.50, allocs: "Dynamic (glibc)", rss: 18.2 }
+  },
   plaintext: {
     label: "HTTP/1.1 Plaintext Ping-Pong (Roundtrip)",
     gw: { rps: 31613, min: 18.4, avg: 31.2, p50: 29.8, p90: 36.4, p99: 31.6, p999: 42.1, max: 58.0, allocs: "0 B (0 mallocs)", rss: 2.1 },
@@ -195,25 +205,6 @@ function renderTableData(data, sourceLabel) {
     elDeltaRps.innerHTML = `<span class="delta-badge loss">${rpsDiff.toFixed(1)}% (${lossRatio}× lower)</span>`;
   }
 
-  // Update KPI 1 (Throughput)
-  const kpiGwRps = document.getElementById("kpi-gw-rps");
-  const kpiUwsRps = document.getElementById("kpi-uws-rps");
-  const kpiRpsBadge = document.getElementById("kpi-rps-badge");
-  if (kpiGwRps && kpiUwsRps && kpiRpsBadge) {
-    kpiGwRps.textContent = `${formatNumber(gw.rps, 0)} req/s`;
-    kpiUwsRps.textContent = `vs ${formatNumber(uws.rps, 0)}`;
-    if (Math.abs(rpsDiff) < 0.05 || Math.abs(gw.rps - uws.rps) < 1) {
-      kpiRpsBadge.textContent = "parity";
-      kpiRpsBadge.className = "kpi-badge";
-    } else if (rpsDiff > 0) {
-      kpiRpsBadge.textContent = `+${rpsDiff.toFixed(1)}% (${rpsRatio}×)`;
-      kpiRpsBadge.className = "kpi-badge badge-win";
-    } else {
-      kpiRpsBadge.textContent = `${rpsDiff.toFixed(1)}%`;
-      kpiRpsBadge.className = "kpi-badge badge-loss";
-    }
-  }
-
   // 2. Latencies
   const percentiles = ["min", "avg", "p50", "p90", "p99", "p999", "max"];
   percentiles.forEach(p => {
@@ -244,38 +235,6 @@ function renderTableData(data, sourceLabel) {
     }
   });
 
-  // Update KPI 2 (p99 Tail Latency)
-  const kpiGwP99 = document.getElementById("kpi-gw-p99");
-  const kpiUwsP99 = document.getElementById("kpi-uws-p99");
-  const kpiP99Badge = document.getElementById("kpi-p99-badge");
-  if (kpiGwP99 && kpiUwsP99 && kpiP99Badge) {
-    kpiGwP99.textContent = formatLatency(gw.p99);
-    kpiUwsP99.textContent = `vs ${formatLatency(uws.p99)}`;
-    const valGwP99 = Number(gw.p99);
-    const valUwsP99 = Number(uws.p99);
-
-    if (isNaN(valGwP99) || isNaN(valUwsP99)) {
-      kpiP99Badge.textContent = "—";
-      kpiP99Badge.className = "kpi-badge";
-    } else {
-      const diff = valGwP99 - valUwsP99;
-      const pct = (Math.abs(diff) / Math.max(valUwsP99, 0.001)) * 100;
-
-      if (pct < 0.05 || Math.abs(diff) < 0.01) {
-        kpiP99Badge.textContent = "parity";
-        kpiP99Badge.className = "kpi-badge";
-      } else if (valGwP99 < valUwsP99) {
-        const p99Factor = (valUwsP99 / Math.max(valGwP99, 0.001)).toFixed(2);
-        kpiP99Badge.textContent = `${p99Factor}× lower jitter`;
-        kpiP99Badge.className = "kpi-badge badge-win";
-      } else {
-        const p99Slow = (valGwP99 / Math.max(valUwsP99, 0.001)).toFixed(2);
-        kpiP99Badge.textContent = `+${pct.toFixed(1)}% (${p99Slow}×)`;
-        kpiP99Badge.className = "kpi-badge badge-loss";
-      }
-    }
-  }
-
   // 3. Allocations & Memory
   document.getElementById("val-gw-allocs").textContent = gw.allocs || "0 B (0 mallocs)";
   document.getElementById("val-uws-allocs").textContent = uws.allocs || "Dynamic (glibc)";
@@ -301,12 +260,6 @@ function renderTableData(data, sourceLabel) {
     elDeltaRss.innerHTML = `<span class="delta-badge loss">+${diffPct}% (${ratio}× higher)</span>`;
   }
 
-  // Update KPI 3 (RSS)
-  const kpiRssVal = document.getElementById("kpi-rss-val");
-  if (kpiRssVal) {
-    kpiRssVal.textContent = `RSS: ${formatNumber(gw.rss, 1)} MB vs ${formatNumber(uws.rss, 1)} MB`;
-  }
-
   // Display results container
   document.getElementById("empty-state").style.display = "none";
   document.getElementById("results-container").style.display = "block";
@@ -314,7 +267,7 @@ function renderTableData(data, sourceLabel) {
 
 function loadReferenceData() {
   const sc = document.getElementById("select-scenario").value;
-  const ref = REFERENCE_DATA[sc] || REFERENCE_DATA.pipelined;
+  const ref = REFERENCE_DATA[sc] || REFERENCE_DATA.multi_core_1m || REFERENCE_DATA.pipelined;
   renderTableData(ref, "Archived Reference");
 
   log("----------------------------------------------------------------------------------");
@@ -327,52 +280,69 @@ function loadReferenceData() {
   log("----------------------------------------------------------------------------------");
 }
 
-async function startBenchmark() {
-  const sc = document.getElementById("select-scenario").value;
-  const rawConc = parseInt(document.getElementById("input-concurrency").value, 10);
-  const concurrency = isNaN(rawConc) || rawConc <= 0 ? 32 : rawConc;
-  const rawDur = parseInt(document.getElementById("input-duration").value, 10);
-  const duration = isNaN(rawDur) || rawDur <= 0 ? 5 : rawDur;
-  const rawPipe = parseInt(document.getElementById("input-pipeline").value, 10);
-  const pipeline = (sc === "pipelined") ? (isNaN(rawPipe) || rawPipe <= 0 ? 32 : rawPipe) : 1;
+let currentEventSource = null;
 
+function setButtonsStreaming(isStreaming, label = "Streaming Docker CLI...") {
   const btnRun = document.getElementById("btn-run");
-  btnRun.disabled = true;
-  btnRun.textContent = "Running Benchmark...";
+  if (btnRun) {
+    btnRun.disabled = isStreaming;
+    btnRun.innerHTML = isStreaming ? `<span class="spinner"></span> ${label}` : "▶ Run Benchmark";
+  }
+}
+
+function startStreamCli(customScenario) {
+  const sc = customScenario || document.getElementById("select-scenario").value;
+  const rawDur = parseInt(document.getElementById("input-duration").value, 10);
+  const duration = isNaN(rawDur) || rawDur <= 0 ? 4 : rawDur;
+
+  if (currentEventSource) {
+    try { currentEventSource.close(); } catch (_) {}
+    currentEventSource = null;
+  }
+
+  setButtonsStreaming(true, `Streaming ${sc === 'all' ? 'Full Suite' : sc}...`);
 
   log("==================================================================================");
-  log(`[benchmark:start] Workload: ${sc} | Concurrency: ${concurrency} workers | Duration: ${duration}s | Pipeline: ${pipeline}`);
-  log(`[benchmark:init] Establishing non-blocking TCP socket pool with TCP_NODELAY...`);
+  log(`[docker:stream] Connecting to /api/stream_cli?scenario=${encodeURIComponent(sc)}&duration=${duration} via SSE...`);
+  log(`[docker:stream] Live streaming headless benchmark execution directly from Docker container...`);
 
-  try {
-    const res = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario: sc, concurrency, duration, pipeline_depth: pipeline })
-    });
+  const evtSource = new EventSource(`/api/stream_cli?scenario=${encodeURIComponent(sc)}&duration=${duration}`);
+  currentEventSource = evtSource;
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  evtSource.onmessage = function(e) {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.line !== undefined) {
+        log(data.line);
+      }
+      if (data.result) {
+        log(`[docker:stream] Received benchmark metrics payload. Updating dashboard tables...`);
+        renderTableData(data.result, "Live Docker Stream");
+      }
+      if (data.done) {
+        log(`[docker:stream] Benchmark execution finished successfully.`);
+        log("==================================================================================");
+        evtSource.close();
+        currentEventSource = null;
+        setButtonsStreaming(false);
+      }
+    } catch (err) {
+      log(`[docker:error] Parse error: ${err.message}`);
     }
+  };
 
-    const data = await res.json();
-    
-    // Output detailed server logs
-    if (data.logs && Array.isArray(data.logs)) {
-      data.logs.forEach(l => log(l));
-    }
+  evtSource.onerror = function() {
+    log(`[docker:stream] Stream closed.`);
+    log("==================================================================================");
+    try { evtSource.close(); } catch (_) {}
+    currentEventSource = null;
+    setButtonsStreaming(false);
+  };
+}
 
-    renderTableData(data, "Live Test Run");
-    log(`[benchmark:done] Completed successfully. Measured values rendered in table.`);
-    log("==================================================================================");
-  } catch (err) {
-    log(`[benchmark:error] Test failed: ${err.message}`);
-    log(`[benchmark:hint] Ensure servers are running via 'docker compose up' or start them locally.`);
-    log("==================================================================================");
-  } finally {
-    btnRun.disabled = false;
-    btnRun.textContent = "Run Benchmark";
-  }
+async function startBenchmark() {
+  // Delegate directly to real Docker streaming runner
+  startStreamCli();
 }
 
 // Theme Management (System Adaptive with Manual Override)

@@ -145,22 +145,23 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
         cursor = if amp_pos >= 0 { end + 1 } else { end };
         guard statement.len > 0 else { continue; }
 
-        // Fast first-character filter (uWebSockets early exit)
-        if statement[0] == key[0] {
-            let eq_pos = core::index_of_byte(statement, '=');
+        let eq_pos = core::index_of_byte(statement, '=');
+        let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
+
+        var matches = (raw_stmt_key == key);
+        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
+            var decoded_stmt_key: u8[..64] = [];
+            percent_decode_query(raw_stmt_key, decoded_stmt_key);
+            matches = (decoded_stmt_key[..] == key);
+        }
+
+        if matches {
             if eq_pos < 0 {
-                // Valueless parameter, e.g. "?debug"
-                if statement == key {
-                    return true, true;
-                }
-            } else {
-                let stmt_key = statement[..eq_pos];
-                if stmt_key == key {
-                    let stmt_val = statement[eq_pos + 1..];
-                    percent_decode_query(stmt_val, out);
-                    return true, false;
-                }
+                return true, true;
             }
+            let stmt_val = statement[eq_pos + 1..];
+            percent_decode_query(stmt_val, out);
+            return true, false;
         }
     }
     return false, false;
@@ -187,12 +188,18 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
         cursor = if amp_pos >= 0 { end + 1 } else { end };
         guard statement.len > 0 else { continue; }
 
-        if statement[0] == key[0] {
-            let eq_pos = core::index_of_byte(statement, '=');
-            let stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
-            if stmt_key == key {
-                return true;
-            }
+        let eq_pos = core::index_of_byte(statement, '=');
+        let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
+
+        var matches = (raw_stmt_key == key);
+        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
+            var decoded_stmt_key: u8[..64] = [];
+            percent_decode_query(raw_stmt_key, decoded_stmt_key);
+            matches = (decoded_stmt_key[..] == key);
+        }
+
+        if matches {
+            return true;
         }
     }
     return false;

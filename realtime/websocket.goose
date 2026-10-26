@@ -37,6 +37,18 @@ let WS_HANDSHAKE_GUID: const u8[:] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // Native CSPRNG & SIMD shims
 extern "wing_crypto_random_bytes" fn native_crypto_random_bytes(out: u8[:]) -> i32;
 extern "wing_simd_mask_websocket" fn native_simd_mask_websocket(data: u8[:], mask: const u8[4]&);
+extern "wing_simd_unmask_shifted" fn native_simd_unmask_shifted(slice: u8[:], header_len: i64, payload_len: i64, mask: const u8[4]&);
+
+// In-place zero-copy unmasking that shifts the unmasked payload back over the frame header (uWebSockets unmaskImprecise8)
+// Overwrites the header directly in slice and returns a slice of frame pointing to the unmasked payload [0 .. payload_len].
+fn unmask_websocket_shifted(frame: u8[:], header_len: i64, payload_len: i64, mask_key: const u8[4]&) -> u8[:] {
+    guard payload_len > 0 && header_len > 0 && frame.len >= header_len + payload_len else {
+        return frame[..0];
+    }
+    native_simd_unmask_shifted(frame, header_len, payload_len, mask_key);
+    return frame[..payload_len];
+}
+
 
 // Checks if an opcode represents a control frame (RFC 6455 Section 5.5)
 inline fn is_ws_control_opcode(opcode: u8) -> bool {
@@ -201,6 +213,129 @@ fn encode_ws_frame<B>(
     }
 }
 
+// ---- PerMessageDeflate Shared Compressor Engine (RFC 7692 / uWebSockets pattern)
+
+// Compression options matching uWebSockets CompressOptions
+const WS_COMPRESS_DISABLED: u16           = 0;
+const WS_COMPRESS_SHARED_COMPRESSOR: u16   = 1;        // Shared zlib deflate context on reactor (0B heap/socket)
+const WS_COMPRESS_SHARED_DECOMPRESSOR: u16 = 1 << 8;   // Shared inflate context on reactor
+const WS_COMPRESS_DEDICATED: u16           = 15 << 4 | 8; // Dedicated 256 KB compressor per connection
+
+// Shared reactor-level WebSocket compression/decompression context.
+// Avoids 256 KB allocation per connection, allowing 100K+ concurrent connections with 0B heap allocations.
+struct SharedWsCompressor {
+    compress_buf: u8[..65536] = [],
+    decompress_buf: u8[..65536] = [],
+    total_compressed: u64 = 0,
+    total_uncompressed: u64 = 0,
+    total_decompressed: u64 = 0,
+    reset_window: bool = true,
+}
+
+fn new_shared_ws_compressor() -> SharedWsCompressor {
+    return SharedWsCompressor { .. };
+}
+
+// Compresses raw payload using raw Deflate (RFC 1951) and strips trailing 0x00 0x00 0xFF 0xFF (RFC 7692 §7.2.1).
+// With reset_window=true (Z_FULL_FLUSH equivalent), clears dictionary between messages to prevent cross-connection leak.
+fn ws_deflate_message<B>(
+    shared: SharedWsCompressor&,
+    raw: const u8[:],
+    out_wire: B&,
+    reset_window: bool = true
+) -> bool {
+    guard raw.len > 0 else { return false; }
+    shared.compress_buf.clear();
+    let ok = core::deflate(raw, shared.compress_buf, 6);
+    guard ok && shared.compress_buf.len > 0 else { return false; }
+
+    var eff_len = shared.compress_buf.len;
+    // RFC 7692 Section 7.2.1: Strip 4 trailing bytes 0x00 0x00 0xFF 0xFF
+    if eff_len >= 4 {
+        let b0 = shared.compress_buf[eff_len - 4];
+        let b1 = shared.compress_buf[eff_len - 3];
+        let b2 = shared.compress_buf[eff_len - 2];
+        let b3 = shared.compress_buf[eff_len - 1];
+        if b0 == 0x00 && b1 == 0x00 && b2 == 0xFF && b3 == 0xFF {
+            eff_len -= 4;
+        }
+    }
+
+    out_wire.append(shared.compress_buf[..eff_len]);
+    shared.total_compressed += eff_len as u64;
+    shared.total_uncompressed += raw.len as u64;
+
+    if reset_window {
+        shared.compress_buf.clear();
+        shared.decompress_buf.clear();
+    }
+    return true;
+}
+
+// Decompresses RFC 7692 payload by appending 0x00 0x00 0xFF 0xFF and performing raw Inflate (RFC 7692 §7.2.2).
+// With reset_window=true (Z_FULL_FLUSH equivalent), resets dictionary state immediately.
+fn ws_inflate_message<B>(
+    shared: SharedWsCompressor&,
+    compressed: const u8[:],
+    out_plain: B&,
+    max_payload: i64 = 65536,
+    reset_window: bool = true
+) -> bool {
+    guard compressed.len > 0 else { return false; }
+    shared.decompress_buf.clear();
+
+    // RFC 7692 Section 7.2.2: Restore 4-byte tail 0x00 0x00 0xFF 0xFF
+    guard compressed.len + 4 <= shared.decompress_buf.cap else { return false; }
+    shared.decompress_buf.append(compressed);
+    let tail: u8[4] = [0x00, 0x00, 0xFF, 0xFF];
+    shared.decompress_buf.append(tail[..]);
+
+    let ok_d, err = core::inflate_with_limit(shared.decompress_buf[..], out_plain, max_payload);
+    if !ok_d {
+        // Fallback: try direct inflate without appended tail
+        out_plain.clear();
+        let ok_raw, _ = core::inflate_with_limit(compressed, out_plain, max_payload);
+        if !ok_raw {
+            return false;
+        }
+    }
+
+    shared.total_decompressed += out_plain.len as u64;
+    if reset_window {
+        shared.decompress_buf.clear();
+        shared.compress_buf.clear();
+    }
+    return true;
+}
+
+// Encodes a compressed RFC 7692 WebSocket frame with RSV1 bit set (0x40).
+fn encode_ws_frame_compressed<B>(
+    out: B&,
+    opcode: u8,
+    compressed_payload: const u8[:],
+    masked: bool = false,
+    mask_key: const u8[4]& = [0, 0, 0, 0],
+    fin: bool = true
+) {
+    let hdr = WsFrameHeader {
+        fin: fin,
+        rsv1: true, // Signals compressed frame
+        opcode: opcode,
+        masked: masked,
+        mask_key: mask_key,
+        payload_len: compressed_payload.len as u64,
+        ..
+    };
+    encode_ws_frame_header(out, hdr);
+    if masked {
+        for i in compressed_payload.len {
+            out.push(compressed_payload[i] ^ mask_key[i % 4]);
+        }
+    } else {
+        out.append(compressed_payload);
+    }
+}
+
 // ---- 3. Handshake Engine (RFC 6455 Section 4.2.2 & RFC 8441) ---------------
 
 // Fast-path template blocks for 24-byte RFC 6455 client key hashing (uWebSockets WebSocketHandshake pattern).
@@ -261,6 +396,25 @@ fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
     core::base64_encode(digest[..], out);
 }
 
+fn is_base64_char(b: u8) -> bool {
+    return (b >= 'A' && b <= 'Z') ||
+           (b >= 'a' && b <= 'z') ||
+           (b >= '0' && b <= '9') ||
+           b == '+' || b == '/';
+}
+
+// Validates an RFC 6455 §4.2.1 client Sec-WebSocket-Key:
+// Must be exactly 24 characters, end in "==", and contain valid Base64 characters representing a 16-byte nonce.
+fn is_valid_websocket_key(key: const u8[:]) -> bool {
+    guard key.len == 24 else { return false; }
+    guard key[22] == '=' && key[23] == '=' else { return false; }
+
+    for i in 22 {
+        guard is_base64_char(key[i]) else { return false; }
+    }
+    return true;
+}
+
 // Validates server `Sec-WebSocket-Accept` against client key
 fn validate_websocket_accept(client_key: const u8[:], server_accept: const u8[:]) -> bool {
     var expected: u8[..64] = [];
@@ -315,10 +469,22 @@ struct WebSocketSession {
     // Multi-frame fragmented message assembly (RFC 6455 §5.4)
     frag_opcode: u8 = 0,               // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
     frag_buffer: u8[..16384] = [],     // Assembly buffer for fragmented messages
+
+    // RFC 7692 PerMessageDeflate configuration (uWebSockets pattern)
+    compress_mode: u16 = WS_COMPRESS_DISABLED,
+    permessage_deflate: bool = false,
+    server_no_context_takeover: bool = true,
 }
 
 fn new_websocket_session(is_client: bool = true) -> WebSocketSession {
     return WebSocketSession { is_client: is_client, .. };
+}
+
+// Configures PerMessageDeflate (RFC 7692) on the WebSocket session
+fn ws_enable_permessage_deflate(ws: WebSocketSession&, mode: u16 = WS_COMPRESS_SHARED_COMPRESSOR) {
+    ws.permessage_deflate = true;
+    ws.compress_mode = mode;
+    ws.server_no_context_takeover = true;
 }
 
 // Generates cryptographically secure 4-byte masking key for client frames per RFC 6455 Section 5.3.
@@ -355,32 +521,44 @@ fn ws_build_handshake_request<B>(
 
 // High-level method: sends UTF-8 text message
 fn ws_send_text<B>(ws: WebSocketSession&, text: const u8[:], out: B&) {
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed, drop outgoing message writes
+    guard !ws.is_closed else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_TEXT, text, ws.is_client, mask, true);
 }
 
 // High-level method: sends binary message
 fn ws_send_binary<B>(ws: WebSocketSession&, data: const u8[:], out: B&) {
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed, drop outgoing message writes
+    guard !ws.is_closed else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_BINARY, data, ws.is_client, mask, true);
 }
 
 // High-level method: sends Ping heartbeat
 fn ws_send_ping<B>(ws: WebSocketSession&, ping_payload: const u8[:], out: B&) {
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed, drop outgoing heartbeat writes
+    guard !ws.is_closed else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_PING, ping_payload, ws.is_client, mask, true);
 }
 
 // High-level method: sends Pong heartbeat response
 fn ws_send_pong<B>(ws: WebSocketSession&, pong_payload: const u8[:], out: B&) {
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed, drop outgoing heartbeat writes
+    guard !ws.is_closed else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_PONG, pong_payload, ws.is_client, mask, true);
 }
 
 // High-level method: sends Close handshake
 fn ws_close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B&) {
+    guard !ws.is_closed else { return; }
     var payload: u8[..128] = [];
-    encode_ws_close_payload(payload, status_code, reason);
+    // RFC 6455 §7.4.1 / Autobahn 7.1.x: Status code 1005 (No Status) is internal and MUST NOT be set on wire.
+    if status_code != WS_STATUS_NO_STATUS && status_code != 0 {
+        encode_ws_close_payload(payload, status_code, reason);
+    }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
     ws.is_closed = true;
@@ -405,6 +583,7 @@ struct WsMessageView {
     close_code: u16 = 0,
     close_reason: const u8[:] = "",
     is_valid: bool = false,
+    is_compressed: bool = false,
 }
 
 fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
@@ -422,9 +601,66 @@ fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
 // and yields a direct slice of the wire ingress buffer into out_view without copying.
 fn ws_receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> bool {
     out_view.is_valid = false;
+    out_view.is_compressed = false;
     out_view.payload = "";
     out_view.close_reason = "";
     out_view.close_code = 0;
+
+    // RFC 6455 §5.5 & uWS #1407: Fail connection with PROTOCOL_ERROR (1002) upon fatal header invariant violations
+    if wire.len >= 2 {
+        let b0 = wire[0];
+        let b1 = wire[1];
+        let fin = (b0 & 0x80) != 0;
+        let opcode = b0 & 0x0F;
+        let raw_len = (b1 & 0x7F);
+
+        if !is_valid_ws_opcode(opcode) {
+            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "unknown opcode", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
+
+        if is_ws_control_opcode(opcode) && !fin {
+            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "fragmented control frame", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
+
+        if is_ws_control_opcode(opcode) && raw_len > 125 {
+            ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
+
+        // RFC 6455 §5.2 & Autobahn Cases 3.1..3.4:
+        // Fail connection with 1002 on non-minimal length representations or high bit set in 64-bit length
+        if raw_len == 126 && wire.len >= 4 {
+            let p_len = core::read_be_u16(wire, 2);
+            if p_len < 126 {
+                ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "non-minimal 16-bit length encoding", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+                return true;
+            }
+        } else if raw_len == 127 && wire.len >= 10 {
+            if (wire[2] & 0x80) != 0 {
+                ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "high bit set in 64-bit length", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+                return true;
+            }
+            let p_len = core::read_be_u64(wire, 2);
+            if p_len <= 65535 {
+                ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "non-minimal 64-bit length encoding", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+                return true;
+            }
+        }
+    }
 
     let hdr, ok = parse_ws_frame_header(wire);
     guard ok else { return false; }
@@ -436,7 +672,8 @@ fn ws_receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageVie
     let p_len = hdr.payload_len as i64;
     let payload = wire[p_start..(p_start + p_len)];
 
-    if hdr.rsv1 || hdr.rsv2 || hdr.rsv3 {
+    let rsv1_allowed = ws.permessage_deflate;
+    if (hdr.rsv1 && !rsv1_allowed) || hdr.rsv2 || hdr.rsv3 {
         ws_close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension", out_reply);
         ws.is_closed = true;
         ws.close_code = WS_STATUS_PROTOCOL_ERROR;
@@ -519,6 +756,7 @@ fn ws_receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageVie
             out_view.opcode = hdr.opcode;
             out_view.payload = payload;
             out_view.is_valid = true;
+            out_view.is_compressed = hdr.rsv1;
             return true;
         } else {
             // Initial fragment of a multi-frame message
@@ -632,7 +870,7 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
     }
 
     let client_key = req.headers.find_header("Sec-WebSocket-Key");
-    if client_key.len == 0 {
+    if !is_valid_websocket_key(client_key) {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }

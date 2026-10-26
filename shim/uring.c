@@ -58,12 +58,28 @@ int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, u
     return (int32_t)ret;
 }
 
-#ifndef IORING_REGISTER_PBUF_RING
-#define IORING_REGISTER_PBUF_RING 22
+#ifndef IORING_REGISTER_BUFFERS
+#define IORING_REGISTER_BUFFERS 0
+#endif
+
+#ifndef IORING_UNREGISTER_BUFFERS
+#define IORING_UNREGISTER_BUFFERS 1
 #endif
 
 #ifndef IORING_REGISTER_FILES
 #define IORING_REGISTER_FILES 2
+#endif
+
+#ifndef IORING_REGISTER_PBUF_RING
+#define IORING_REGISTER_PBUF_RING 22
+#endif
+
+#ifndef IORING_FEAT_FAST_POLL
+#define IORING_FEAT_FAST_POLL (1U << 5)
+#endif
+
+#ifndef IORING_ACCEPT_MULTISHOT
+#define IORING_ACCEPT_MULTISHOT (1U << 0)
 #endif
 
 struct wing_uring_buf_reg {
@@ -73,6 +89,27 @@ struct wing_uring_buf_reg {
     uint16_t pad;
     uint64_t resv[3];
 };
+
+typedef struct { const void *data; int64_t len; } wing_iovecs_ro;
+
+int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
+    if (iovecs.data == NULL || iovecs.len <= 0) return -EINVAL;
+    return wing_uring_register(ring_fd, IORING_REGISTER_BUFFERS, iovecs.data, (uint32_t)iovecs.len);
+}
+
+int32_t wing_uring_unregister_buffers(int64_t ring_fd) {
+    return wing_uring_register(ring_fd, IORING_UNREGISTER_BUFFERS, NULL, 0);
+}
+
+int32_t wing_uring_has_fast_poll(int64_t ring_fd) {
+    (void)ring_fd;
+    struct io_uring_params params;
+    __builtin_memset(&params, 0, sizeof(params));
+    long fd = syscall(__NR_io_uring_setup, 1, &params);
+    if (fd < 0) return 0;
+    close((int)fd);
+    return (params.features & IORING_FEAT_FAST_POLL) != 0 ? 1 : 0;
+}
 
 int32_t wing_uring_register_pbuf_ring(int64_t ring_fd, uint64_t ring_addr, uint32_t ring_entries, uint16_t bgid) {
     struct wing_uring_buf_reg reg;
@@ -108,6 +145,12 @@ int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_compl
 int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
     (void)ring_fd; (void)opcode; (void)arg; (void)nr_args; return -ENOSYS;
 }
+typedef struct { const void *data; int64_t len; } wing_iovecs_ro;
+int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
+    (void)ring_fd; (void)iovecs; return -ENOSYS;
+}
+int32_t wing_uring_unregister_buffers(int64_t ring_fd) { (void)ring_fd; return -ENOSYS; }
+int32_t wing_uring_has_fast_poll(int64_t ring_fd) { (void)ring_fd; return 0; }
 int32_t wing_uring_register_pbuf_ring(int64_t ring_fd, uint64_t ring_addr, uint32_t ring_entries, uint16_t bgid) {
     (void)ring_fd; (void)ring_addr; (void)ring_entries; (void)bgid; return -ENOSYS;
 }

@@ -16,12 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     python3 \
     netcat-openbsd \
+    wrk \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # 1. Fetch & Install official Goose compiler (v2026.3)
-RUN curl -sSL https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | tar -xz -C /opt && \
+RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | tar -xz -C /opt && \
     ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
 
 # 2. Fetch & Build official uWebSockets C++ library
@@ -39,19 +41,20 @@ COPY shim /app/shim
 RUN mkdir -p /app/bin
 
 # 4. Compile uWebSockets C++ Server with GCC -O3 and Link Time Optimization (LTO)
-RUN g++ -O3 -flto -std=c++17 \
+RUN g++ -O3 -flto -march=native -std=c++17 \
     -I/opt/uWebSockets/src -I/opt/uWebSockets/uSockets/src \
     /app/server_uwebsockets.cpp /opt/uWebSockets/uSockets/*.o \
     -lz -lpthread \
     -o /app/bin/server_uwebsockets
 
-# 5. Generate server_goose_wing.c on-the-fly from .goose source, then compile with GCC -O3
+# 5. Generate server_goose_wing.c on-the-fly from .goose source, then compile with GCC -O3 and Link Time Optimization (LTO)
 RUN goose -o /tmp/server_goose_wing.c /build/repo/tools/bench-vs-uwebsockets/server_goose_wing.goose --standalone && \
-    gcc -O3 -std=c11 -D_GNU_SOURCE \
+    gcc -O3 -flto -march=native -std=c11 -D_GNU_SOURCE \
         -I/app -I/app/shim \
         /tmp/server_goose_wing.c /app/shim/tcp.c /app/shim/simd.c \
         -lpthread \
         -o /app/bin/server_goose_wing && \
+    gcc -O3 -march=native /app/bench_burst.c -lpthread -o /app/bin/bench_burst && \
     rm -f /tmp/server_goose_wing.c && \
     rm -rf /build
 

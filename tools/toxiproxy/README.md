@@ -6,12 +6,12 @@ This package provides native integration with the official **[Shopify Toxiproxy]
 
 - **`tools/bin/toxiproxy-server.exe`**: Official Shopify Toxiproxy daemon binary (compiled in Go).
 - **`tools/bin/toxiproxy-cli.exe`**: Official Toxiproxy CLI utility.
+- **`tools/bin/goose_chaos_server.exe`**: Standalone native Goose server supporting live HTTP/1.1, WebSocket, and HTTP/2.
 - **`tools/toxiproxy/server.py`**: Automatic lifecycle manager and health checker (downloads or spawns daemon on demand).
 - **`tools/toxiproxy/client.py`**: Zero-dependency Python REST client for Toxiproxy HTTP API (`localhost:8474`).
 - **`tools/toxiproxy/toxics.py`**: Native Toxic definitions (`LatencyToxic`, `BandwidthToxic`, `SlicerToxic`, `ResetPeerToxic`, `TimeoutToxic`, `SlowCloseToxic`, `LimitDataToxic`).
-- **`tools/toxiproxy/proxy.py`**: High-level `ChaosProxy` session manager supporting `async/await` and context managers.
-- **`tools/toxiproxy/run_e2e_stress.py`**: 5-stage live chaos stress runner.
-- **`tools/toxiproxy/stress_wing_e2e.py`**: 150-iteration high-frequency chaos stress runner.
+- **`tools/toxiproxy/proxy.py`**: High-level `ChaosProxy` session manager supporting sync/async context managers and scoped toxic blocks.
+- **`tools/toxiproxy/stress_all_goose.py`**: 25-stage live chaos stress runner testing HTTP/1.1, HTTP/2, WebSocket, and Rapid Reset/Slowloris defenses.
 
 ## Quick Usage
 
@@ -34,37 +34,44 @@ python tools/toxiproxy/server.py --status
 .\tools\toxiproxy_cli.bat list
 ```
 
-### 3. Running Stress Test Suites
+### 3. Running Chaos Stress Test Suite
 
 ```powershell
-# 5-stage chaos suite
-python tools/toxiproxy/run_e2e_stress.py
-
-# 150-iteration heavy chaos suite
-python tools/toxiproxy/stress_wing_e2e.py
+# Unified 25-stage chaos suite covering HTTP/1.1, HTTP/2, WebSocket and 50 rapid cycles
+python tools/toxiproxy/stress_all_goose.py
 ```
 
 ### 4. Programmatic Python API
 
+#### Synchronous Usage with Scoped Toxics
 ```python
-import asyncio
 from tools.toxiproxy import ChaosProxy, LatencyToxic, SlicerToxic
 
+# Automatically starts Toxiproxy server if needed, binds ephemeral port:
+with ChaosProxy(upstream_host="127.0.0.1", upstream_port=8080) as proxy:
+    print(f"Chaos proxy listening on 127.0.0.1:{proxy.bound_port}")
+
+    # Inject real network slicing (1..4 byte chunks with 2ms delay):
+    with proxy.toxic(SlicerToxic("stream_slicer", min_bytes=1, max_bytes=4, delay_ms=2)):
+        # ... send requests through proxy.bound_port ...
+        pass
+
+    # Inject 50ms latency with 10ms jitter:
+    with proxy.toxic(LatencyToxic("latency", latency_ms=50, jitter_ms=10)):
+        # ... send requests through proxy.bound_port ...
+        pass
+```
+
+#### Asynchronous Usage
+```python
+import asyncio
+from tools.toxiproxy import ChaosProxy, BandwidthToxic
+
 async def test():
-    # Automatically starts Toxiproxy server if needed, binds ephemeral port:
-    proxy = ChaosProxy(upstream_host="127.0.0.1", upstream_port=8080)
-    proxy_port = await proxy.start()
-
-    # Inject real network slicing:
-    proxy.add_toxic(SlicerToxic("stream_slicer", min_bytes=1, max_bytes=4, delay_ms=2))
-
-    # Add 50ms latency with 10ms jitter:
-    proxy.add_toxic(LatencyToxic("latency", latency_ms=50, jitter_ms=10))
-
-    # ... send requests to 127.0.0.1:proxy_port ...
-
-    proxy.clear_toxics()
-    await proxy.stop()
+    async with ChaosProxy(upstream_host="127.0.0.1", upstream_port=8080) as proxy:
+        async with proxy.atoxic(BandwidthToxic("throttle", rate_kib=32)):
+            # ... run async requests through proxy.bound_port ...
+            pass
 
 asyncio.run(test())
 ```

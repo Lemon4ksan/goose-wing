@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -26,11 +27,19 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/time.h>
+#include <signal.h>
 #include <errno.h>
+#if defined(__linux__)
+#include <sched.h>
+#include <pthread.h>
+#endif
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR   (-1)
 #define closesocket(s) close(s)
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 #endif
 
 #pragma pack(push, 1)
@@ -52,12 +61,13 @@ static void slice_to_cstr(wing_bytes_ro s, char *out, size_t max_out) {
     out[copy_len] = '\0';
 }
 
-// Initializes socket subsystem (WSAStartup on Windows).
+// Initializes socket subsystem (WSAStartup on Windows, ignore SIGPIPE on POSIX).
 int32_t wing_tcp_init(void) {
 #ifdef _WIN32
     WSADATA wsa_data;
     return (int32_t)WSAStartup(MAKEWORD(2, 2), &wsa_data);
 #else
+    signal(SIGPIPE, SIG_IGN);
     return 0;
 #endif
 }
@@ -182,6 +192,17 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
 
+#ifdef _WIN32
+    int bufsize = 131072;
+    setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof(bufsize));
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof(bufsize));
+#endif
+
+#if defined(__linux__) && defined(TCP_QUICKACK)
+    int qack = 1;
+    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &qack, sizeof(qack));
+#endif
+
     return (int64_t)client_sock;
 }
 
@@ -248,12 +269,24 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
         FD_ZERO(&write_fds);
         FD_SET(s, &write_fds);
 
+        // uSockets #258 / #259 & Winsock2 spec:
+        // On Windows, connection failures (RST / ECONNREFUSED) are delivered via exceptfds, NOT writefds.
+        // Without exceptfds, select() ignores connection errors and freezes until the entire timeout expires.
+        fd_set except_fds;
+        FD_ZERO(&except_fds);
+        FD_SET(s, &except_fds);
+
         struct timeval tv;
         tv.tv_sec = timeout_ms / 1000;
         tv.tv_usec = (timeout_ms % 1000) * 1000;
 
-        int sel = select((int)(s + 1), NULL, &write_fds, NULL, &tv);
+        int sel = select((int)(s + 1), NULL, &write_fds, &except_fds, &tv);
         if (sel <= 0) {
+            closesocket(s);
+            return -1;
+        }
+
+        if (FD_ISSET(s, &except_fds)) {
             closesocket(s);
             return -1;
         }
@@ -278,11 +311,38 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
     return (int64_t)s;
 }
 
-// Sends bytes to socket.
+// Sends bytes to socket, ensuring complete write across non-blocking transient buffers.
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
     if (sock_fd <= 0 || data.data == NULL || data.len <= 0) return 0;
-    int sent = send((SOCKET)sock_fd, (const char *)data.data, (int)data.len, 0);
-    return (int32_t)sent;
+    SOCKET s = (SOCKET)sock_fd;
+    const char *ptr = (const char *)data.data;
+    size_t remaining = (size_t)data.len;
+    int retries = 0;
+
+    while (remaining > 0) {
+#ifdef _WIN32
+        int sent = send(s, ptr, (int)remaining, 0);
+        if (sent < 0) {
+            int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK && retries++ < 32) {
+                continue;
+            }
+            return (data.len - remaining) > 0 ? (int32_t)(data.len - remaining) : -1;
+        }
+#else
+        ssize_t sent = send(s, ptr, remaining, MSG_NOSIGNAL);
+        if (sent < 0) {
+            if ((errno == EAGAIN || errno == EWOULDBLOCK) && retries++ < 32) {
+                continue;
+            }
+            return (data.len - remaining) > 0 ? (int32_t)(data.len - remaining) : -1;
+        }
+#endif
+        if (sent == 0) break;
+        ptr += sent;
+        remaining -= (size_t)sent;
+    }
+    return (int32_t)(data.len - remaining);
 }
 
 // Receives bytes from socket into slice buffer.
@@ -514,7 +574,7 @@ int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload
 #endif
 
 #ifdef _WIN32
-#define WING_MAX_POLL_FDS 2048
+#define WING_MAX_POLL_FDS 4096
 typedef struct {
     SOCKET fds[WING_MAX_POLL_FDS];
     uint32_t events[WING_MAX_POLL_FDS];
@@ -582,8 +642,45 @@ int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
 
+#ifdef _WIN32
+    int bufsize = 131072;
+    setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof(bufsize));
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof(bufsize));
+#endif
+
+#if defined(__linux__) && defined(TCP_QUICKACK)
+    int qack = 1;
+    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &qack, sizeof(qack));
+#endif
+
     return (int64_t)client_sock;
 }
+
+// Sets TCP_QUICKACK (Linux delayed ACK bypass) on socket.
+// Prevents 40ms delayed ACK stalls under high-throughput request/response ping-pong.
+int32_t wing_tcp_set_quickack(int64_t sock_fd, int32_t enable) {
+    if (sock_fd <= 0) return -1;
+#if defined(__linux__) && defined(TCP_QUICKACK)
+    int opt = enable ? 1 : 0;
+    return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_QUICKACK, &opt, sizeof(opt));
+#else
+    (void)enable;
+    return 0; // No-op on Windows/macOS
+#endif
+}
+
+// Sets TCP_CORK (Linux) to coalesce partial frames at kernel network stack level.
+int32_t wing_tcp_set_cork(int64_t sock_fd, int32_t enable) {
+    if (sock_fd <= 0) return -1;
+#if defined(__linux__) && defined(TCP_CORK)
+    int opt = enable ? 1 : 0;
+    return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_CORK, &opt, sizeof(opt));
+#else
+    (void)enable;
+    return 0; // No-op on Windows/macOS
+#endif
+}
+
 
 // Receives bytes from non-blocking socket immediately without blocking.
 // Returns:
@@ -639,14 +736,18 @@ int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
 }
 
 int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
-    if (epfd < 0 || out_fds.data == NULL || out_fds.len <= 0) return 0;
-    int max_ev = (int)(out_fds.len < 256 ? out_fds.len : 256);
-    struct epoll_event evs[256];
+    if (epfd < 0 || out_udata.data == NULL || out_udata.len <= 0) return 0;
+    int max_ev = (int)(out_udata.len < 1024 ? out_udata.len : 1024);
+    struct epoll_event evs[1024];
     int n = epoll_wait((int)epfd, evs, max_ev, timeout_ms);
     if (n <= 0) return 0;
-    for (int i = 0; i < n; i++) {
-        out_fds.data[i] = (int64_t)(evs[i].data.u64 == 0xFFFFFFFFFFFFFFFFULL ? -1 : (int64_t)evs[i].data.u64);
-        if (out_udata.data != NULL && i < out_udata.len) {
+    if (out_fds.data != NULL && out_fds.len >= n) {
+        for (int i = 0; i < n; i++) {
+            out_fds.data[i] = (int64_t)(evs[i].data.u64 == 0xFFFFFFFFFFFFFFFFULL ? -1 : (int64_t)evs[i].data.u64);
+            out_udata.data[i] = evs[i].data.u64;
+        }
+    } else {
+        for (int i = 0; i < n; i++) {
             out_udata.data[i] = evs[i].data.u64;
         }
     }
@@ -748,4 +849,51 @@ void wing_epoll_close(int64_t epfd) {
 }
 
 #endif
+
+// Pins current calling thread to specific CPU core ID.
+// Uses physical-first core stride (0, 2, 4, 6, 8, 10) on SMT architectures to eliminate core sharing.
+int32_t wing_set_cpu_affinity(int64_t cpu_id) {
+    if (cpu_id < 0) return -1;
+#if defined(__linux__)
+    long total_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    int target_cpu = (int)cpu_id;
+    if (total_cpus > 1) {
+        int phys = (int)(total_cpus / 2);
+        target_cpu = (cpu_id < phys) ? (int)(cpu_id * 2) : (int)((cpu_id - phys) * 2 + 1);
+    }
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(target_cpu % (int)total_cpus, &cpuset);
+    return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#elif defined(_WIN32)
+    if (cpu_id >= 64) return -1;
+    DWORD_PTR mask = ((DWORD_PTR)1) << cpu_id;
+    return SetThreadAffinityMask(GetCurrentThread(), mask) != 0 ? 0 : -1;
+#else
+    (void)cpu_id;
+    return 0;
+#endif
+}
+
+// Binds listener socket's incoming connection queue directly to specific CPU core (SO_INCOMING_CPU on Linux).
+// Ensures zero cross-core cache invalidation & zero IPI interrupts on multi-worker reactors.
+int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) {
+    if (sock_fd <= 0 || cpu_id < 0) return -1;
+#if defined(__linux__)
+#ifndef SO_INCOMING_CPU
+#define SO_INCOMING_CPU 49
+#endif
+    long total_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    int target_cpu = (int)cpu_id;
+    if (total_cpus > 1) {
+        int phys = (int)(total_cpus / 2);
+        target_cpu = (cpu_id < phys) ? (int)(cpu_id * 2) : (int)((cpu_id - phys) * 2 + 1);
+    }
+    int cpu = target_cpu % (int)total_cpus;
+    return setsockopt((int)sock_fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, sizeof(cpu));
+#else
+    (void)sock_fd; (void)cpu_id;
+    return 0;
+#endif
+}
 

@@ -9,8 +9,15 @@ import base64
 import os
 import socket
 import statistics
+import sys
 import threading
 import time
+
+# Reduce Python GIL switch interval from 5ms down to 50us for high-throughput concurrency
+try:
+    sys.setswitchinterval(0.00005)
+except Exception:
+    pass
 
 
 def get_process_rss_mb(pid):
@@ -67,6 +74,11 @@ def run_http_worker(port, path, duration_sec, pipeline_depth, results_list, stop
     batch_req = build_http_request(path, port, pipeline_depth)
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)
+    except Exception:
+        pass
     s.settimeout(3.0)
 
     try:
@@ -122,7 +134,8 @@ def run_http_worker(port, path, duration_sec, pipeline_depth, results_list, stop
             t1 = time.perf_counter_ns()
 
             per_req_latency_us = ((t1 - t0) / 1000.0) / pipeline_depth
-            latencies_us.append(per_req_latency_us)
+            if len(latencies_us) < 10000:
+                latencies_us.append(per_req_latency_us)
             total_reqs += pipeline_depth
             total_bytes += recvd
         except Exception:
@@ -249,6 +262,11 @@ def encode_ws_frame(payload, mask=True, opcode=0x01):
 def run_ws_worker(port, path, duration_sec, results_list, stop_event):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+    except Exception:
+        pass
     s.settimeout(3.0)
 
     try:
@@ -279,7 +297,8 @@ def run_ws_worker(port, path, duration_sec, results_list, stop_event):
                     break
                 recvd += len(chunk)
             t1 = time.perf_counter_ns()
-            latencies_us.append((t1 - t0) / 1000.0)
+            if len(latencies_us) < 10000:
+                latencies_us.append((t1 - t0) / 1000.0)
             frames += 1
         except Exception:
             break

@@ -50,6 +50,11 @@ fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
         return true;
     }
 
+    // MQTT §4.7.1.3 & uWS #1933: A trailing '+' wildcard matches the empty level after a trailing slash (e.g. 'sport/+' matches 'sport/')
+    if p_cur < pattern.len && pattern[p_cur..] == "+" && t_cur == topic.len && topic.len > 0 && topic[topic.len - 1] == '/' {
+        return true;
+    }
+
     return p_cur == pattern.len && t_cur == topic.len;
 }
 
@@ -61,15 +66,31 @@ struct TopicBucket {
     in_use: bool = false,
 }
 
+// Fixed-capacity palette message for single-serialization broadcast (uWebSockets TopicTree pattern)
+struct TopicPaletteMessage {
+    wire: u8[..4096] = [],
+    in_use: bool = false,
+}
+
 struct SubscriptionNode {
     sock_fd: i64 = -1,
     next_sub: i32 = -1,
     in_use: bool = false,
+    // uWebSockets batch drainage & message palette
+    message_indices: u16[32] = [0; 32],
+    num_message_indices: u8 = 0,
+    prev_drainable: i32 = -1,
+    next_drainable: i32 = -1,
 }
+
+const TOPIC_PALETTE_CAP: i64 = 64;
 
 struct TopicTree {
     buckets: TopicBucket[..256] = [TopicBucket { .. }; 256],
     nodes: SubscriptionNode[..4096] = [SubscriptionNode { .. }; 4096],
+    palette: TopicPaletteMessage[..64] = [TopicPaletteMessage { .. }; 64],
+    palette_len: i32 = 0,
+    drainable_head: i32 = -1,
     active_buckets: i32 = 0,
     active_subscriptions: i32 = 0,
     total_publishes: u64 = 0,
@@ -78,6 +99,39 @@ struct TopicTree {
 
 fn new_topic_tree() -> TopicTree {
     return TopicTree { .. };
+}
+
+// Validates an MQTT topic filter per OASIS MQTT v5.0 §4.7.1.2:
+// - Multi-level wildcard '#' must be the last character and either standalone ("#") or preceded by '/' ("sport/#").
+// - Single-level wildcard '+' must occupy an entire level (must be preceded by '/' or start-of-filter, and followed by '/' or end-of-filter).
+// - Topic filter must not be empty, exceed 64 bytes, or contain null characters.
+fn is_valid_topic_filter(pattern: const u8[:]) -> bool {
+    guard pattern.len > 0 && pattern.len <= 64 else { return false; }
+
+    for i in pattern.len {
+        let b = pattern[i];
+        guard b != 0 else { return false; }
+
+        if b == '#' {
+            // Must be the last character
+            guard i == pattern.len - 1 else { return false; }
+            // If preceded by anything, previous byte must be '/'
+            if i > 0 {
+                guard pattern[i - 1] == '/' else { return false; }
+            }
+        } else if b == '+' {
+            // If preceded by anything, previous byte must be '/'
+            if i > 0 {
+                guard pattern[i - 1] == '/' else { return false; }
+            }
+            // If followed by anything, next byte must be '/'
+            if i + 1 < pattern.len {
+                guard pattern[i + 1] == '/' else { return false; }
+            }
+        }
+    }
+
+    return true;
 }
 
 // Finds the index of a bucket matching the given topic pattern, or -1 if not found.
@@ -92,12 +146,12 @@ fn find_topic_bucket(tree: const TopicTree&, pattern: const u8[:]) -> i32 {
 
 // Allocates or retrieves a topic bucket for the given pattern.
 fn get_or_create_topic_bucket(tree: TopicTree&, pattern: const u8[:]) -> i32 {
+    guard is_valid_topic_filter(pattern) else { return -1; }
+
     let existing = find_topic_bucket(tree, pattern);
     if existing >= 0 {
         return existing;
     }
-
-    guard pattern.len > 0 && pattern.len <= 64 else { return -1; }
 
     for i in tree.buckets.len {
         if !tree.buckets[i].in_use {
@@ -116,9 +170,9 @@ fn get_or_create_topic_bucket(tree: TopicTree&, pattern: const u8[:]) -> i32 {
 }
 
 // Subscribes a socket descriptor to a topic pattern.
-// Returns true on success, false if capacity is exceeded or already subscribed.
+// Returns true on success, false if capacity is exceeded, invalid pattern, or already subscribed.
 fn topic_subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
-    guard sock_fd > 0 && pattern.len > 0 else { return false; }
+    guard sock_fd > 0 && is_valid_topic_filter(pattern) else { return false; }
 
     let b_idx = get_or_create_topic_bucket(tree, pattern);
     guard b_idx >= 0 else { return false; }
@@ -150,6 +204,26 @@ fn topic_subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool
     return false; // Subscription pool full
 }
 
+// Unlinks a subscriber node from the double-linked list of drainable subscribers
+fn unlink_drainable_node(tree: TopicTree&, node_idx: i32) {
+    guard node_idx >= 0 && node_idx < tree.nodes.len as i32 else { return; }
+    let n_i64 = node_idx as i64;
+    let prev = tree.nodes[n_i64].prev_drainable;
+    let next = tree.nodes[n_i64].next_drainable;
+
+    if prev >= 0 {
+        tree.nodes[prev as i64].next_drainable = next;
+    }
+    if next >= 0 {
+        tree.nodes[next as i64].prev_drainable = prev;
+    }
+    if tree.drainable_head == node_idx {
+        tree.drainable_head = next;
+    }
+    tree.nodes[n_i64].prev_drainable = -1;
+    tree.nodes[n_i64].next_drainable = -1;
+}
+
 // Unsubscribes a socket descriptor from a topic pattern.
 // Returns true if unsubscription succeeded, false if not subscribed.
 fn topic_unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
@@ -168,6 +242,11 @@ fn topic_unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bo
                 tree.buckets[b_idx as i64].head_sub = tree.nodes[cur_i64].next_sub;
             } else {
                 tree.nodes[prev as i64].next_sub = tree.nodes[cur_i64].next_sub;
+            }
+
+            if tree.nodes[cur_i64].num_message_indices > 0 {
+                unlink_drainable_node(tree, cur);
+                tree.nodes[cur_i64].num_message_indices = 0;
             }
 
             tree.nodes[cur_i64].in_use = false;
@@ -211,6 +290,11 @@ fn topic_unsubscribe_all(tree: TopicTree&, sock_fd: i64) -> i32 {
                     tree.buckets[b].head_sub = next;
                 } else {
                     tree.nodes[prev as i64].next_sub = next;
+                }
+
+                if tree.nodes[cur_i64].num_message_indices > 0 {
+                    unlink_drainable_node(tree, cur);
+                    tree.nodes[cur_i64].num_message_indices = 0;
                 }
 
                 tree.nodes[cur_i64].in_use = false;
@@ -260,10 +344,20 @@ fn topic_subscriber_count(tree: const TopicTree&, pattern: const u8[:]) -> i32 {
     return tree.buckets[b_idx as i64].subscriber_count;
 }
 
+// Validates a publish topic name per OASIS MQTT v5.0 §3.3.2.1 and uWS #1090:
+// Topic Name in PUBLISH packet MUST NOT contain wildcards ('+' or '#') or null bytes.
+fn is_valid_publish_topic(topic: const u8[:]) -> bool {
+    guard topic.len > 0 && topic.len <= 64 else { return false; }
+    for b in topic {
+        guard b != '+' && b != '#' && b != 0 else { return false; }
+    }
+    return true;
+}
+
 // Finds all distinct sockets subscribed to patterns matching the target topic.
 // Returns the number of distinct sockets stored into out_fds.
 fn topic_find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
-    guard topic.len > 0 else { return 0; }
+    guard is_valid_publish_topic(topic) else { return 0; }
     out_fds.clear();
 
     for b in tree.buckets.len {
@@ -301,7 +395,7 @@ fn topic_find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i
 // Avoids duplicate delivery if a socket matches multiple wildcard patterns.
 // Returns the number of distinct sockets the message was dispatched to.
 fn topic_publish_frame(tree: TopicTree&, topic: const u8[:], frame_wire: const u8[:]) -> i64 {
-    guard topic.len > 0 && frame_wire.len > 0 else { return 0; }
+    guard is_valid_publish_topic(topic) && frame_wire.len > 0 else { return 0; }
 
     var matched_fds: i64[..512] = [];
     topic_find_subscribers(tree, topic, matched_fds);
@@ -340,4 +434,175 @@ fn topic_publish_text(tree: TopicTree&, topic: const u8[:], text: const u8[:]) -
 // Convenience helper to publish binary message to a topic.
 fn topic_publish_binary(tree: TopicTree&, topic: const u8[:], data: const u8[:]) -> i64 {
     return topic_publish(tree, topic, data, WS_OPCODE_BINARY);
+}
+
+// ---- uWebSockets TopicTree Batch Drainage & Message Palette Engine ---------
+
+// Drains all batched messages for a specific subscriber node.
+// Unlinks from drainable list and sends wire frames directly to the socket descriptor.
+fn topic_drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
+    guard node_idx >= 0 && node_idx < tree.nodes.len as i32 else { return 0; }
+    let n_i64 = node_idx as i64;
+    guard tree.nodes[n_i64].in_use && tree.nodes[n_i64].num_message_indices > 0 else { return 0; }
+
+    unlink_drainable_node(tree, node_idx);
+    let count = tree.nodes[n_i64].num_message_indices as i64;
+    let fd = tree.nodes[n_i64].sock_fd;
+    tree.nodes[n_i64].num_message_indices = 0;
+
+    var sent_total: i64 = 0;
+    for i in count {
+        let msg_idx = tree.nodes[n_i64].message_indices[i] as i64;
+        if msg_idx >= 0 && msg_idx < tree.palette.len {
+            let sent = tcp_send(fd, tree.palette[msg_idx].wire[..]);
+            if sent > 0 {
+                sent_total += 1;
+            }
+        }
+    }
+
+    if tree.drainable_head < 0 {
+        tree.palette_len = 0;
+    }
+    return sent_total;
+}
+
+// Drains all drainable subscribers in batch.
+// Iterates through the drainable linked list once, eliminating redundant topic tree traversal.
+// Resets the outgoing message palette to 0 allocations.
+fn topic_tree_drain(tree: TopicTree&) -> i64 {
+    var cur = tree.drainable_head;
+    guard cur >= 0 else { return 0; }
+
+    var total_delivered: i64 = 0;
+    while cur >= 0 {
+        let c_i64 = cur as i64;
+        let next = tree.nodes[c_i64].next_drainable;
+        let fd = tree.nodes[c_i64].sock_fd;
+        let count = tree.nodes[c_i64].num_message_indices as i64;
+
+        tree.nodes[c_i64].num_message_indices = 0;
+        tree.nodes[c_i64].prev_drainable = -1;
+        tree.nodes[c_i64].next_drainable = -1;
+
+        for i in count {
+            let msg_idx = tree.nodes[c_i64].message_indices[i] as i64;
+            if msg_idx >= 0 && msg_idx < tree.palette.len {
+                let sent = tcp_send(fd, tree.palette[msg_idx].wire[..]);
+                if sent > 0 {
+                    total_delivered += 1;
+                }
+            }
+        }
+        cur = next;
+    }
+
+    tree.drainable_head = -1;
+    tree.palette_len = 0;
+    tree.total_messages_delivered += total_delivered as u64;
+    return total_delivered;
+}
+
+// Publishes a message into the outgoing message palette and batches delivery to all subscribers
+// without re-serializing the frame per subscriber. Any subscriber reaching 32 queued messages
+// is drained immediately. Returns the number of distinct sockets queued to.
+fn topic_publish_batch(
+    tree: TopicTree&,
+    topic: const u8[:],
+    payload: const u8[:],
+    opcode: u8 = WS_OPCODE_TEXT,
+    sender_fd: i64 = -1
+) -> i64 {
+    guard is_valid_publish_topic(topic) else { return 0; }
+
+    // If palette reached capacity (64 messages), drain all pending subscribers first
+    if tree.palette_len >= tree.palette.cap as i32 {
+        topic_tree_drain(tree);
+    }
+
+    let msg_idx = tree.palette_len as i64;
+    tree.palette[msg_idx].wire.clear();
+    let no_mask: u8[4] = [0, 0, 0, 0];
+    encode_ws_frame(tree.palette[msg_idx].wire, opcode, payload, false, no_mask, true);
+    tree.palette_len += 1;
+
+    var queued: i64 = 0;
+    for b in tree.buckets.len {
+        guard tree.buckets[b].in_use && tree.buckets[b].subscriber_count > 0 else { continue; }
+        if match_topic(tree.buckets[b].topic_pattern[..], topic) {
+            var cur = tree.buckets[b].head_sub;
+            while cur >= 0 {
+                let c_i64 = cur as i64;
+                if tree.nodes[c_i64].in_use && tree.nodes[c_i64].sock_fd != sender_fd {
+                    var already_queued = false;
+                    let num = tree.nodes[c_i64].num_message_indices as i64;
+                    if num > 0 && tree.nodes[c_i64].message_indices[num - 1] == (msg_idx as u16) {
+                        already_queued = true;
+                    }
+
+                    if !already_queued {
+                        if tree.nodes[c_i64].num_message_indices >= 32 {
+                            topic_drain_subscriber(tree, cur);
+                        }
+
+                        let cur_num = tree.nodes[c_i64].num_message_indices as i64;
+                        tree.nodes[c_i64].message_indices[cur_num] = msg_idx as u16;
+                        tree.nodes[c_i64].num_message_indices += 1;
+
+                        if tree.nodes[c_i64].num_message_indices == 1 {
+                            tree.nodes[c_i64].next_drainable = tree.drainable_head;
+                            tree.nodes[c_i64].prev_drainable = -1;
+                            if tree.drainable_head >= 0 {
+                                tree.nodes[tree.drainable_head as i64].prev_drainable = cur;
+                            }
+                            tree.drainable_head = cur;
+                        }
+                        queued += 1;
+                    }
+                }
+                cur = tree.nodes[c_i64].next_sub;
+            }
+        }
+    }
+
+    tree.total_publishes += 1;
+    return queued;
+}
+
+// Returns the number of currently active messages in the outgoing palette.
+fn topic_palette_size(tree: const TopicTree&) -> i32 {
+    return tree.palette_len;
+}
+
+// Returns the number of subscribers currently queued for batch drainage.
+fn topic_drainable_count(tree: const TopicTree&) -> i32 {
+    var count: i32 = 0;
+    var cur = tree.drainable_head;
+    while cur >= 0 {
+        count += 1;
+        cur = tree.nodes[cur as i64].next_drainable;
+    }
+    return count;
+}
+
+// Checks if a socket descriptor has queued messages awaiting drainage.
+fn topic_subscriber_needs_drain(tree: const TopicTree&, sock_fd: i64) -> bool {
+    guard sock_fd > 0 else { return false; }
+    for i in tree.nodes.len {
+        if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd {
+            return tree.nodes[i].num_message_indices > 0;
+        }
+    }
+    return false;
+}
+
+// Returns the number of messages queued for a given socket descriptor.
+fn topic_subscriber_queued_messages(tree: const TopicTree&, sock_fd: i64) -> i32 {
+    guard sock_fd > 0 else { return 0; }
+    for i in tree.nodes.len {
+        if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd {
+            return tree.nodes[i].num_message_indices;
+        }
+    }
+    return 0;
 }

@@ -345,6 +345,378 @@ fn test_fast_query_parser(t: core::T&) {
     };
 }
 
+fn test_epoll_reactor_multiplexer(t: core::T&) {
+    t.run("1. Non-blocking Epoll Reactor Multiplexing Across Multiple Sockets") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        sub.assert_gt(listener, 0, "Listener created");
+        let port = wing::tcp_getsockname_port(listener);
+        sub.assert_true(wing::tcp_set_nonblocking(listener, true), "Listener configured non-blocking");
+
+        let epfd = wing::epoll_create();
+        sub.assert_gt(epfd, 0, "Epoll reactor created");
+
+        let ok_add_l = wing::epoll_add(epfd, listener, wing::EPOLL_READ, wing::EPOLL_LISTENER_TAG);
+        sub.assert_true(ok_add_l, "Listener added to epoll");
+
+        // Connect 2 clients concurrently
+        let c1 = wing::tcp_connect("127.0.0.1", port, 2000);
+        let c2 = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(c1, 0, "Client 1 connected");
+        sub.assert_gt(c2, 0, "Client 2 connected");
+
+        // Harvest accept readiness
+        var ready_fds: i64[..16] = [];
+        var ready_udata: u64[..16] = [];
+        let n_accept = wing::epoll_wait(epfd, ready_fds, ready_udata, 2000);
+        sub.assert_gt(n_accept, 0, "Accept readiness harvested by epoll_wait");
+
+        var accepted_socks: i64[..8] = [];
+        while true {
+            let s = wing::tcp_accept_nonblocking(listener);
+            if s <= 0 { break; }
+            wing::tcp_set_nonblocking(s, true);
+            accepted_socks.push(s);
+        }
+        sub.assert_eq(accepted_socks.len, 2, "Both client sockets accepted non-blocking");
+
+        // Register accepted sockets in epoll with unique udata tags
+        wing::epoll_add(epfd, accepted_socks[0], wing::EPOLL_READ, 101);
+        wing::epoll_add(epfd, accepted_socks[1], wing::EPOLL_READ, 102);
+
+        // Clients send messages
+        wing::tcp_send(c1, "PING_ONE");
+        wing::tcp_send(c2, "PING_TWO");
+
+        // Reactor harvests read readiness for both sockets in 1 single epoll_wait call
+        ready_fds.clear();
+        ready_udata.clear();
+        let n_data = wing::epoll_wait(epfd, ready_fds, ready_udata, 2000);
+        sub.assert_gt(n_data, 0, "Data readiness events harvested");
+
+        var recvd_1 = false;
+        var recvd_2 = false;
+
+        for i in ready_udata.len {
+            let tag = ready_udata[i];
+            if tag == 101 {
+                var buf: u8[..128] = [];
+                let r = wing::tcp_recv_nonblocking(accepted_socks[0], buf);
+                sub.assert_eq(r, 8, "8 bytes read from sock 0");
+                sub.assert_bytes_eq(buf[..], "PING_ONE", "Matches PING_ONE");
+                recvd_1 = true;
+            } else if tag == 102 {
+                var buf: u8[..128] = [];
+                let r = wing::tcp_recv_nonblocking(accepted_socks[1], buf);
+                sub.assert_eq(r, 8, "8 bytes read from sock 1");
+                sub.assert_bytes_eq(buf[..], "PING_TWO", "Matches PING_TWO");
+                recvd_2 = true;
+            }
+        }
+
+        sub.assert_true(recvd_1, "Socket 0 processed non-blocking in reactor");
+        sub.assert_true(recvd_2, "Socket 1 processed non-blocking in reactor");
+
+        // Clean up
+        wing::epoll_del(epfd, accepted_socks[0]);
+        wing::epoll_del(epfd, accepted_socks[1]);
+        wing::epoll_del(epfd, listener);
+        wing::epoll_close(epfd);
+
+        wing::tcp_close(c1);
+        wing::tcp_close(c2);
+        wing::tcp_close(accepted_socks[0]);
+        wing::tcp_close(accepted_socks[1]);
+        wing::tcp_close(listener);
+    };
+}
+
+fn test_swar_ctl_scanner(t: core::T&) {
+    t.run("1. SWAR hasLess 64-bit Parallel Control Character Scanning") { sub =>
+        // Pure printable ASCII
+        let clean = "Host: api.example.com:8080";
+        let offset_clean = core::swar_find_ctl(clean);
+        sub.assert_eq(offset_clean, clean.len, "No CTL found in clean string");
+
+        // CRLF at offset 16 (on an 8-byte boundary)
+        let crlf_16 = "1234567812345678\r\nRestOfHeader";
+        let offset_16 = core::swar_find_ctl(crlf_16);
+        sub.assert_eq(offset_16, 16, "CRLF found at boundary offset 16");
+
+        // CRLF at odd offset 7
+        let crlf_7 = "1234567\r\nRestOfHeader";
+        let offset_7 = core::swar_find_ctl(crlf_7);
+        sub.assert_eq(offset_7, 7, "CRLF found at offset 7");
+
+        // Embedded NUL at offset 3
+        var with_nul: u8[..16] = [];
+        with_nul.append("abc");
+        with_nul.push(0);
+        with_nul.append("defgh");
+        let offset_nul = core::swar_find_ctl(with_nul[..]);
+        sub.assert_eq(offset_nul, 3, "NUL byte detected at offset 3");
+
+        // Long string (40 bytes) with CR at byte 33
+        var long_str: u8[..48] = [];
+        for _ in 33 { long_str.push('a'); }
+        long_str.push('\r');
+        long_str.push('\n');
+        let offset_long = core::swar_find_ctl(long_str[..]);
+        sub.assert_eq(offset_long, 33, "Long string scanned across 5 64-bit words finds CR at 33");
+    };
+}
+
+fn test_fast_integer_ascii_serializers(t: core::T&) {
+    t.run("1. Fast u64toa and u32toa_hex") { sub =>
+        var buf: u8[32] = [0; 32];
+
+        // u64toa zero
+        let n0 = core::fast_u64toa(0, buf[..]);
+        sub.assert_eq(n0, 1, "0 length is 1");
+        sub.assert_bytes_eq(buf[..n0], "0", "0 formatted");
+
+        // u64toa small
+        let n42 = core::fast_u64toa(42, buf[..]);
+        sub.assert_eq(n42, 2, "42 length is 2");
+        sub.assert_bytes_eq(buf[..n42], "42", "42 formatted");
+
+        // u64toa HTTP Content-Length typical (8192)
+        let n_cl = core::fast_u64toa(8192, buf[..]);
+        sub.assert_eq(n_cl, 4, "8192 length is 4");
+        sub.assert_bytes_eq(buf[..n_cl], "8192", "8192 formatted");
+
+        // u64toa large
+        let n_large = core::fast_u64toa(1234567890123456789, buf[..]);
+        sub.assert_eq(n_large, 19, "Large int length is 19");
+        sub.assert_bytes_eq(buf[..n_large], "1234567890123456789", "Large int matches");
+
+        // u32toa_hex zero
+        let h0 = core::fast_u32toa_hex(0, buf[..]);
+        sub.assert_eq(h0, 1, "hex 0 length is 1");
+        sub.assert_bytes_eq(buf[..h0], "0", "hex 0 matches");
+
+        // u32toa_hex 15 ("f")
+        let h15 = core::fast_u32toa_hex(15, buf[..]);
+        sub.assert_eq(h15, 1, "hex 15 length is 1");
+        sub.assert_bytes_eq(buf[..h15], "f", "hex 15 is 'f'");
+
+        // u32toa_hex 16 ("10")
+        let h16 = core::fast_u32toa_hex(16, buf[..]);
+        sub.assert_eq(h16, 2, "hex 16 length is 2");
+        sub.assert_bytes_eq(buf[..h16], "10", "hex 16 is '10'");
+
+        // u32toa_hex 0xDEADBEEF ("deadbeef")
+        let h_dead = core::fast_u32toa_hex(0xDEADBEEF, buf[..]);
+        sub.assert_eq(h_dead, 8, "0xDEADBEEF length is 8");
+        sub.assert_bytes_eq(buf[..h_dead], "deadbeef", "0xDEADBEEF is 'deadbeef'");
+    };
+}
+
+fn test_ws_unmask_shifted_header_overwrite(t: core::T&) {
+    t.run("1. In-Place Zero-Copy Unmasking with Header Overwrite") { sub =>
+        let mask: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        let original_msg = "Hello, zero-copy WebSocket world with shifted header overwrite!";
+
+        // Build a masked client frame: 6-byte header + payload
+        var frame: u8[..256] = [];
+        wing::encode_ws_frame(frame, wing::WS_OPCODE_TEXT, original_msg, true, mask, true);
+
+        let hdr, ok_hdr = wing::parse_ws_frame_header(frame[..]);
+        sub.assert_true(ok_hdr, "Frame header parsed");
+        sub.assert_eq(hdr.header_len, 6, "Header length is 6 bytes");
+        sub.assert_eq(hdr.payload_len as i64, original_msg.len, "Payload length matches");
+
+        // Shift unmask directly over frame header
+        let unmasked = wing::unmask_websocket_shifted(
+            frame[..],
+            hdr.header_len as i64,
+            hdr.payload_len as i64,
+            hdr.mask_key
+        );
+
+        sub.assert_eq(unmasked.len, original_msg.len, "Unmasked length matches");
+        sub.assert_bytes_eq(unmasked, original_msg, "Unmasked payload matches original plaintext");
+
+        // Verify unmasked data starts at frame[0]
+        sub.assert_bytes_eq(frame[..original_msg.len], original_msg, "Header was cleanly overwritten in-place at index 0");
+    };
+}
+
+fn test_chunked_fsm_decoder(t: core::T&) {
+    t.run("1. 64-bit Register FSM Chunked Stream Decoding") { sub =>
+        var dec = wing::new_chunk_fsm_decoder();
+
+        let raw = "4\r\nWiki\r\n7\r\npedia  \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\n\r\n";
+        var total_body: u8[..128] = [];
+        var cursor: i64 = 0;
+
+        while cursor < raw.len {
+            let st, consumed, chunk = wing::chunk_fsm_feed(dec, raw[cursor..]);
+            cursor += consumed;
+
+            if st == wing::ChunkFsmStatus.YieldChunk {
+                total_body.append(chunk);
+            } else if st == wing::ChunkFsmStatus.Complete {
+                break;
+            } else if st == wing::ChunkFsmStatus.Error {
+                sub.assert_true(false, "FSM decoder encountered unexpected error");
+                break;
+            }
+        }
+
+        sub.assert_bytes_eq(total_body[..], "Wikipedia  in \r\n\r\nchunks.", "Assembled chunked stream matches");
+
+        // Chunk extensions
+        var dec_ext = wing::new_chunk_fsm_decoder();
+        let raw_ext = "5;token=val;foo=\"quoted;val\"\r\nHello\r\n0\r\n\r\n";
+        var ext_body: u8[..64] = [];
+        var ext_cursor: i64 = 0;
+
+        while ext_cursor < raw_ext.len {
+            let st, consumed, chunk = wing::chunk_fsm_feed(dec_ext, raw_ext[ext_cursor..]);
+            ext_cursor += consumed;
+            if st == wing::ChunkFsmStatus.YieldChunk {
+                ext_body.append(chunk);
+            } else if st == wing::ChunkFsmStatus.Complete {
+                break;
+            }
+        }
+        sub.assert_bytes_eq(ext_body[..], "Hello", "Chunk extension decoded properly");
+
+        // Invalid hex chunk size
+        var dec_err = wing::new_chunk_fsm_decoder();
+        let st_err, _, _ = wing::chunk_fsm_feed(dec_err, "Z\r\n");
+        sub.assert_eq(st_err, wing::ChunkFsmStatus.Error, "Invalid hex digit returns Error");
+    };
+}
+
+
+fn test_http_route_cache(t: core::T&) {
+    t.run("1. Dual-Expiry Coalescing HTTP Route Cache") { sub =>
+        var cache = wing::new_http_route_cache(1000, 5000);
+
+        // Initially empty
+        let initial = wing::cache_lookup(cache, 100);
+        sub.assert_eq(initial, wing::CacheLookup.Miss, "Empty cache returns Miss");
+
+        // Store rendered response
+        let wire_sample = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nCached Hello!";
+        let ok_store = wing::cache_store(cache, 1000, wire_sample);
+        sub.assert_true(ok_store, "Response cached successfully");
+
+        // Fresh hit (within lower_expiry 1000ms: at t=1500)
+        let hit_fresh = wing::cache_lookup(cache, 1500);
+        sub.assert_eq(hit_fresh, wing::CacheLookup.HitFresh, "Lookup at t=1500 is Fresh Hit");
+        sub.assert_bytes_eq(cache.wire[..], wire_sample, "Cached wire matches");
+
+        // Stale hit (between 1000ms and 5000ms: at t=3000)
+        let hit_stale = wing::cache_lookup(cache, 3000);
+        sub.assert_eq(hit_stale, wing::CacheLookup.HitStaleNeedsUpdate, "Lookup at t=3000 is Stale Hit");
+        sub.assert_bytes_eq(cache.wire[..], wire_sample, "Stale cached response still served");
+
+        // Expired miss (after upper_expiry 5000ms: at t=7000)
+        let hit_expired = wing::cache_lookup(cache, 7000);
+        sub.assert_eq(hit_expired, wing::CacheLookup.Miss, "Lookup at t=7000 is Miss");
+
+        // Invalidation
+        wing::cache_invalidate(cache);
+        sub.assert_eq(wing::cache_lookup(cache, 1500), wing::CacheLookup.Miss, "Invalidated cache is Miss");
+    };
+}
+
+fn test_tick_timer_wheel(t: core::T&) {
+    t.run("1. 1-Byte Tick Wheel Low-Overhead Timeout Sweeper") { sub =>
+        var wheel = wing::new_tick_timer_wheel(10); // 10s default
+        sub.assert_eq(wheel.current_tick, 0, "Initial tick is 0");
+
+        // Arm two slots
+        let slot1 = wing::tick_timer_arm(wheel, 10);
+        let slot2 = wing::tick_timer_arm(wheel, 5);
+        sub.assert_eq(slot1, 10, "Slot 1 timeout tick is 10");
+        sub.assert_eq(slot2, 5, "Slot 2 timeout tick is 5");
+
+        sub.assert_false(wing::tick_timer_is_expired(wheel, slot1), "Slot 1 not expired at t=0");
+        sub.assert_false(wing::tick_timer_is_expired(wheel, slot2), "Slot 2 not expired at t=0");
+
+        // Advance 5 ticks
+        wing::tick_timer_advance(wheel, 5);
+        sub.assert_eq(wheel.current_tick, 5, "Wheel at tick 5");
+        sub.assert_true(wing::tick_timer_is_expired(wheel, slot2), "Slot 2 expired at t=5");
+        sub.assert_false(wing::tick_timer_is_expired(wheel, slot1), "Slot 1 still active at t=5");
+
+        // Advance 5 more ticks
+        wing::tick_timer_advance(wheel, 5);
+        sub.assert_eq(wheel.current_tick, 10, "Wheel at tick 10");
+        sub.assert_true(wing::tick_timer_is_expired(wheel, slot1), "Slot 1 expired at t=10");
+
+        // Disarmed slot
+        let slot_disarmed = wing::tick_timer_disarm();
+        sub.assert_eq(slot_disarmed, wing::TICK_TIMER_DISARMED, "Disarmed is 255");
+        sub.assert_false(wing::tick_timer_is_expired(wheel, slot_disarmed), "Disarmed slot never expires");
+
+        // Modular wraparound (modulo 240)
+        wheel.current_tick = 235;
+        let slot_wrap = wing::tick_timer_arm(wheel, 10); // (235 + 10) % 240 = 5
+        sub.assert_eq(slot_wrap, 5, "Wraps modulo 240 cleanly to 5");
+        sub.assert_false(wing::tick_timer_is_expired(wheel, slot_wrap), "Not expired before wrap");
+        wing::tick_timer_advance(wheel, 10); // 235 + 10 = 5 mod 240
+        sub.assert_eq(wheel.current_tick, 5, "Advanced across 240 boundary to 5");
+        sub.assert_true(wing::tick_timer_is_expired(wheel, slot_wrap), "Expires at wrapped tick 5");
+    };
+}
+
+fn test_buffer_fencing_margin(t: core::T&) {
+    t.run("1. Wire Buffer Sentinel Fencing") { sub =>
+        var wire_buf: u8[64] = [0; 64];
+        let req_text = "GET /status HTTP/1.1";
+        for i in req_text.len {
+            wire_buf[i] = req_text[i];
+        }
+
+        let ok_fence = core::fence_wire_slice(wire_buf[..], req_text.len);
+        sub.assert_true(ok_fence, "Buffer fenced successfully");
+        sub.assert_eq(wire_buf[req_text.len], '\r', "Byte at len is sentinel CR");
+        sub.assert_eq(wire_buf[req_text.len + 1], 'a', "Byte at len+1 is sentinel 'a' (non-LF)");
+
+        // Out of bounds fence check
+        let bad_fence = core::fence_wire_slice(wire_buf[..], 63);
+        sub.assert_false(bad_fence, "Cannot fence without at least 2 spare bytes margin");
+    };
+}
+
+fn test_tcp_quickack_and_cork(t: core::T&) {
+    t.run("1. TCP QuickACK and Cork Control") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        sub.assert_gt(listener, 0, "Listener created");
+        let port = wing::tcp_getsockname_port(listener);
+
+        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client, 0, "Client connected");
+
+        let accepted = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(accepted, 0, "Accepted incoming connection");
+
+        // Set TCP_QUICKACK
+        let ok_qack = wing::tcp_set_quickack(accepted, true);
+        sub.assert_true(ok_qack, "TCP_QUICKACK configured successfully");
+
+        // Set TCP_CORK enable
+        let ok_cork_on = wing::tcp_set_cork(accepted, true);
+        sub.assert_true(ok_cork_on, "TCP_CORK enabled successfully");
+
+        // Send under cork
+        let sent = wing::tcp_send(accepted, "CORKED_PAYLOAD");
+        sub.assert_gt(sent, 0, "Bytes sent under cork");
+
+        // Uncork
+        let ok_cork_off = wing::tcp_set_cork(accepted, false);
+        sub.assert_true(ok_cork_off, "TCP_CORK disabled successfully (flushed)");
+
+        wing::tcp_close(client);
+        wing::tcp_close(accepted);
+        wing::tcp_close(listener);
+    };
+}
+
 fn main() {
     var runner = core::new_runner("uWebSockets Optimizations Verification Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. 256-bit Header BloomFilter", test_header_bloom_filter);
@@ -356,6 +728,17 @@ fn main() {
     core::run_case(runner, "7. 16 KB CorkBuffer Syscall Coalescing", test_server_cork_buffer);
     core::run_case(runner, "8. Unrolled Handshake, Cached Date & SWAR UTF-8", test_handshake_and_date_and_swar_utf8);
     core::run_case(runner, "9. Fast In-Place Query Parser", test_fast_query_parser);
+    core::run_case(runner, "10. Share-Nothing Epoll Reactor & Non-blocking Multiplexing", test_epoll_reactor_multiplexer);
+    core::run_case(runner, "11. SWAR 64-bit Parallel Control Character Scanning", test_swar_ctl_scanner);
+    core::run_case(runner, "12. Fast Integer & Hex to ASCII Serializers", test_fast_integer_ascii_serializers);
+    core::run_case(runner, "13. In-Place WebSocket Unmasking with Header Overwrite", test_ws_unmask_shifted_header_overwrite);
+    core::run_case(runner, "14. 64-bit Register FSM Chunked Stream Decoder", test_chunked_fsm_decoder);
+    core::run_case(runner, "15. Dual-Expiry Coalescing HTTP Route Cache", test_http_route_cache);
+    core::run_case(runner, "16. 1-Byte Modular Tick Timer Wheel", test_tick_timer_wheel);
+    core::run_case(runner, "17. Wire Buffer Sentinel Fencing", test_buffer_fencing_margin);
+    core::run_case(runner, "18. TCP QuickACK and Cork Control", test_tcp_quickack_and_cork);
     let ok = core::finish(runner);
     assert(ok);
 }
+
+

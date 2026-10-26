@@ -9,6 +9,15 @@ extern "wing_uring_create" fn native_uring_create(entries: u32, flags: u32) -> i
 extern "wing_uring_enter" fn native_uring_enter(ring_fd: i64, to_submit: u32, min_complete: u32, flags: u32) -> i32;
 extern "wing_uring_close" fn native_uring_close(ring_fd: i64);
 extern "wing_uring_register_pbuf_ring" fn native_uring_register_pbuf_ring(ring_fd: i64, ring_addr: u64, ring_entries: u32, bgid: u16) -> i32;
+extern "wing_uring_register_buffers" fn native_uring_register_buffers(ring_fd: i64, iovecs: const UringIovec[:]) -> i32;
+extern "wing_uring_unregister_buffers" fn native_uring_unregister_buffers(ring_fd: i64) -> i32;
+extern "wing_uring_has_fast_poll" fn native_uring_has_fast_poll(ring_fd: i64) -> i32;
+
+// Registered I/O vector for IORING_REGISTER_BUFFERS
+struct UringIovec {
+    iov_base: u64 = 0,
+    iov_len: u64 = 0,
+}
 
 // io_uring opcodes
 const URING_OP_NOP: u8          = 0;
@@ -27,6 +36,12 @@ const URING_OP_CONNECT: u8      = 16;
 const URING_OP_SEND: u8         = 26;
 const URING_OP_RECV: u8         = 27;
 const URING_OP_SEND_ZC: u8      = 31; // Zero-copy send
+
+// io_uring register opcodes & kernel feature flags (uSockets io_uring engine)
+const URING_REGISTER_BUFFERS: u32    = 0;
+const URING_UNREGISTER_BUFFERS: u32  = 1;
+const URING_ACCEPT_MULTISHOT: u16    = 1 << 0;
+const URING_FEAT_FAST_POLL: u32      = 1 << 5;
 
 // io_uring SQE flags
 const URING_SQE_FIXED_FILE: u8    = 1 << 0;
@@ -99,6 +114,36 @@ fn uring_prep_cancel(sqe: UringSqe&, tag_to_cancel: u64) {
     sqe.addr = tag_to_cancel;
     sqe.len = 0;
     sqe.user_data = 0;
+}
+
+// Prepares an SQE for multishot accept (IORING_ACCEPT_MULTISHOT) matching uSockets io_uring
+// Continuously produces completions for incoming connections without resubmitting SQEs
+fn uring_prep_accept_multishot(sqe: UringSqe&, fd: i32, tag: u64) {
+    sqe.opcode = URING_OP_ACCEPT;
+    sqe.flags = 0;
+    sqe.ioprio = URING_ACCEPT_MULTISHOT;
+    sqe.fd = fd;
+    sqe.addr = 0;
+    sqe.len = 0;
+    sqe.user_data = tag;
+}
+
+// Registers fixed preallocated buffers with io_uring (IORING_REGISTER_BUFFERS).
+// Eliminates page pinning and page table traversal overhead on high-frequency packet processing.
+fn uring_register_buffers(ring_fd: i64, iovecs: const UringIovec[:]) -> i32 {
+    guard ring_fd >= 0 && iovecs.len > 0 else { return -1; }
+    return native_uring_register_buffers(ring_fd, iovecs);
+}
+
+// Unregisters fixed buffers previously registered with uring_register_buffers
+fn uring_unregister_buffers(ring_fd: i64) -> i32 {
+    guard ring_fd >= 0 else { return -1; }
+    return native_uring_unregister_buffers(ring_fd);
+}
+
+// Checks if Linux kernel supports IORING_FEAT_FAST_POLL to eliminate userland wakeups
+fn uring_has_fast_poll(ring_fd: i64) -> bool {
+    return native_uring_has_fast_poll(ring_fd) != 0;
 }
 
 // Ring submission and completion tracking state
