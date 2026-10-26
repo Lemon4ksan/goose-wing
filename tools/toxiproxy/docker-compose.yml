@@ -1,0 +1,25 @@
+services:
+  # 1. Full automated 43-stage chaos suite inside isolated Linux container
+  chaos-suite:
+    build:
+      context: ../..
+      dockerfile: tools/toxiproxy/Dockerfile
+    container_name: goose-wing-toxiproxy-chaos
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONUTF8=1
+    ports:
+      - "8474:8474"
+    restart: "no"
+
+  # 2. Standalone Toxiproxy daemon service for local or cross-container chaos testing
+  toxiproxy-daemon:
+    build:
+      context: ../..
+      dockerfile: tools/toxiproxy/Dockerfile
+    container_name: goose-wing-toxiproxy-daemon
+    command: ["/usr/local/bin/toxiproxy-server", "-host", "0.0.0.0", "-port", "8474"]
+    ports:
+      - "8474:8474"
+      - "8475-8500:8475-8500"
+    restart: unless-stopped

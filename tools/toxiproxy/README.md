@@ -36,9 +36,22 @@ python tools/toxiproxy/server.py --status
 
 ### 3. Running Chaos Stress Test Suite
 
+#### Locally:
 ```powershell
 # Unified 43-stage chaos & attack suite covering HTTP/1.1 smuggling, HTTP/2 CVEs, WebSocket invariants, L4 anomalies and 50 rapid cycles
 python tools/toxiproxy/stress_all_goose.py
+```
+
+#### In Docker (Docker Compose):
+```powershell
+# Run the 43-stage suite in a self-contained Linux container
+docker compose -f tools/toxiproxy/docker-compose.yml up --build chaos-suite --abort-on-container-exit
+
+# Or via the Python helper:
+python tools/toxiproxy.py --docker
+
+# Or run standalone Toxiproxy daemon in Docker:
+python tools/toxiproxy.py --daemon
 ```
 
 ### 4. Programmatic Python API

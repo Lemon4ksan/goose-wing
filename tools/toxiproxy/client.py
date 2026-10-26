@@ -7,6 +7,7 @@ Requires zero external dependencies (pure Python standard library).
 
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from typing import Any
@@ -30,10 +31,10 @@ class ToxiproxyError(Exception):
 class ToxiproxyClient:
     """Synchronous REST client for Shopify Toxiproxy."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8474):
-        self.host = host
-        self.port = port
-        self.base_url = f"http://{host}:{port}"
+    def __init__(self, host: str | None = None, port: int | None = None):
+        self.host = host or os.environ.get("TOXIPROXY_HOST", "127.0.0.1")
+        self.port = port or int(os.environ.get("TOXIPROXY_PORT", "8474"))
+        self.base_url = f"http://{self.host}:{self.port}"
 
     def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None

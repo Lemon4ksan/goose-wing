@@ -32,23 +32,23 @@ class ChaosProxy:
 
     def __init__(
         self,
-        listen_host: str = "127.0.0.1",
+        listen_host: str | None = None,
         listen_port: int = 0,
-        upstream_host: str = "127.0.0.1",
+        upstream_host: str | None = None,
         upstream_port: int = 0,
         name: str | None = None,
-        api_host: str = "127.0.0.1",
-        api_port: int = 8474,
+        api_host: str | None = None,
+        api_port: int | None = None,
     ):
-        self.listen_host = listen_host
+        self.listen_host = listen_host or os.environ.get("TOXIPROXY_LISTEN_HOST", "0.0.0.0")
         self.listen_port = listen_port
-        self.upstream_host = upstream_host
+        self.upstream_host = upstream_host or os.environ.get("UPSTREAM_HOST", "127.0.0.1")
         self.upstream_port = upstream_port
         self.name = name or f"gw_chaos_{os.getpid()}_{uuid.uuid4().hex[:8]}"
-        self.api_host = api_host
-        self.api_port = api_port
+        self.api_host = api_host or os.environ.get("TOXIPROXY_HOST", "127.0.0.1")
+        self.api_port = api_port or int(os.environ.get("TOXIPROXY_PORT", "8474"))
 
-        self.client = ToxiproxyClient(api_host, api_port)
+        self.client = ToxiproxyClient(self.api_host, self.api_port)
         self.bound_port: int = 0
         self.listen_addr: str = ""
         self._active_toxics: list[Toxic] = []

@@ -18,8 +18,8 @@ from pathlib import Path
 
 logger = logging.getLogger("ToxiproxyServer")
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8474
+DEFAULT_HOST = os.environ.get("TOXIPROXY_HOST", "127.0.0.1")
+DEFAULT_PORT = int(os.environ.get("TOXIPROXY_PORT", "8474"))
 GITHUB_RELEASE_VERSION = "v2.13.0"
 
 _MANAGED_SERVER_PROCESS: subprocess.Popen | None = None

@@ -1,6 +1,10 @@
 // Layer 4 Linux io_uring Kernel-Bypass C Shim.
 // Executes direct Linux kernel syscalls (__NR_io_uring_setup, __NR_io_uring_enter)
 // without external liburing userland dependencies.
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
 #include <stddef.h>
 

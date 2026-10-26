@@ -273,7 +273,8 @@ fn handle_h2_session(conn: i64, initial_buf: const u8[:]) {
 }
 
 fn main() {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 128);
+    let port_env = wing::get_env_port(0);
+    let listener = wing::tcp_listen("0.0.0.0", port_env, 128);
     if listener <= 0 {
         print("ERROR_FAILED_TO_LISTEN\n");
         return;

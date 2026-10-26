@@ -32,7 +32,9 @@ from toxiproxy import (
     TimeoutToxic,
 )
 
-SERVER_EXE = Path(__file__).resolve().parent.parent / "bin" / "goose_chaos_server.exe"
+_default_bin = "goose_chaos_server.exe" if sys.platform == "win32" else "goose_chaos_server"
+SERVER_EXE = Path(os.environ.get("CHAOS_SERVER_BIN", Path(__file__).resolve().parent.parent / "bin" / _default_bin))
+CONNECT_HOST = os.environ.get("PROXY_CONNECT_HOST", "127.0.0.1")
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -70,7 +72,7 @@ class NativeGooseServer:
 
 
 async def run_req(port: int, data: bytes, timeout: float = 5.0) -> bytes:
-    r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=timeout)
+    r, w = await asyncio.wait_for(asyncio.open_connection(CONNECT_HOST, port), timeout=timeout)
     w.write(data)
     await w.drain()
     buf = bytearray()
@@ -159,7 +161,7 @@ def h2_req_block(method: str, path: bytes) -> bytes:
 
 
 async def h2_open(port: int, timeout: float = 5.0):
-    r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=timeout)
+    r, w = await asyncio.wait_for(asyncio.open_connection(CONNECT_HOST, port), timeout=timeout)
     w.write(H2_PREFACE + h2_frame(0x4, 0x0, 0))
     await w.drain()
     got_settings = got_ack = False
@@ -196,7 +198,7 @@ async def close_w(w: asyncio.StreamWriter):
 
 
 async def ws_open(port: int, timeout: float = 5.0):
-    r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=timeout)
+    r, w = await asyncio.wait_for(asyncio.open_connection(CONNECT_HOST, port), timeout=timeout)
     key = base64.b64encode(os.urandom(16))
     w.write(
         b"GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -233,11 +235,16 @@ async def main():
     print("Starting Goose-Wing Unified Toxiproxy Chaos & Stress Suite\n")
     t_start = time.time()
 
-    # 1. Start native compiled Goose server
-    goose_srv = NativeGooseServer()
-    srv_port = goose_srv.start()
+    # 1. Start native compiled Goose server or connect to external
+    goose_srv = None
+    upstream_h = os.environ.get("UPSTREAM_HOST", "127.0.0.1")
+    if "UPSTREAM_PORT" in os.environ:
+        srv_port = int(os.environ["UPSTREAM_PORT"])
+    else:
+        goose_srv = NativeGooseServer()
+        srv_port = goose_srv.start()
 
-    proxy = ChaosProxy(upstream_host="127.0.0.1", upstream_port=srv_port)
+    proxy = ChaosProxy(upstream_host=upstream_h, upstream_port=srv_port)
     proxy_port = await proxy.start()
 
     passed = 0
@@ -327,7 +334,7 @@ async def main():
         record(b"200 OK" not in res, "70 KB header block refused (64 KB header limit)", res[:60])
 
         t0 = time.time()
-        r, w = await asyncio.open_connection("127.0.0.1", proxy_port)
+        r, w = await asyncio.open_connection(CONNECT_HOST, proxy_port)
         w.write(b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: a")
         await w.drain()
         try:

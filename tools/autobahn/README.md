@@ -42,9 +42,20 @@ python tools/autobahn.py -i "6.*"
 python tools/autobahn.py -i "5.19"
 ```
 
-### 3. Rebuild Server Executable
+### 3. Run in Docker (Docker Compose)
 
-If you modify `tools/autobahn/server.goose`, rebuild with:
+Run the entire Autobahn testsuite in isolated Docker containers (native `goose-wing` WebSocket server + official `crossbario/autobahn-testsuite`):
+```powershell
+docker compose -f tools/autobahn/docker-compose.yml up --build --abort-on-container-exit
+```
+Or via the Python runner:
+```powershell
+python tools/autobahn.py --compose
+```
+
+### 4. Rebuild Server Executable
+
+If you modify `tools/autobahn/server.goose`, rebuild locally with:
 ```powershell
 python tools/autobahn.py --rebuild
 ```

@@ -1,6 +1,9 @@
 // shim/simd.c - SIMD acceleration primitives for goose-wing
 // Provides vectorized WebSocket unmasking, ASCII/UTF-8 fast scan, and CRLF delimiter detection.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -54,6 +57,13 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
         _mm256_storeu_si256((__m256i *)(dst + 64), _mm256_loadu_si256((const __m256i *)(src + 64)));
         _mm256_storeu_si256((__m256i *)(dst + 90), _mm256_loadu_si256((const __m256i *)(src + 90)));
         return clen + 122;
+    } else if (rlen == 488) {
+        // 4x unrolled plaintext response (488 bytes) in 15 AVX2 stores + 8-byte trailer
+        for (int k = 0; k < 15; k++) {
+            _mm256_storeu_si256((__m256i *)(dst + k * 32), _mm256_loadu_si256((const __m256i *)(src + k * 32)));
+        }
+        memcpy(dst + 480, src + 480, 8);
+        return clen + 488;
     } else if (rlen == 142) {
         // JSON response (142 bytes) in 4 AVX2 stores + 1 SSE2 store
         _mm256_storeu_si256((__m256i *)dst, _mm256_loadu_si256((const __m256i *)src));
@@ -525,4 +535,42 @@ void wing_swar_to_lower(wing_bytes_rw slice) {
         i++;
     }
 }
+
+// High-speed vectorized byte search using platform memchr (AVX2 / SSE2)
+int64_t wing_memchr(wing_bytes_ro slice, uint8_t b) {
+    if (!slice.data || slice.len <= 0) return -1;
+    const void *p = memchr(slice.data, b, (size_t)slice.len);
+    if (!p) return -1;
+    return (int64_t)((const uint8_t *)p - slice.data);
+}
+
+// 64-bit SWAR case-insensitive equality comparison (8 bytes per cycle)
+int32_t wing_swar_eq_ascii_fold(wing_bytes_ro a, wing_bytes_ro b) {
+    if (a.len != b.len) return 0;
+    if (a.data == b.data) return 1;
+    size_t len = (size_t)a.len;
+    const uint8_t *da = a.data;
+    const uint8_t *db = b.data;
+    if (!da || !db) return 0;
+    if (memcmp(da, db, len) == 0) return 1;
+
+    size_t i = 0;
+    while (i + 8 <= len) {
+        uint64_t wa, wb;
+        memcpy(&wa, da + i, 8);
+        memcpy(&wb, db + i, 8);
+        if (wing_swar_to_lower_64(wa) != wing_swar_to_lower_64(wb)) {
+            return 0;
+        }
+        i += 8;
+    }
+    while (i < len) {
+        uint8_t ca = (da[i] >= 'A' && da[i] <= 'Z') ? (da[i] + 32) : da[i];
+        uint8_t cb = (db[i] >= 'A' && db[i] <= 'Z') ? (db[i] + 32) : db[i];
+        if (ca != cb) return 0;
+        i++;
+    }
+    return 1;
+}
+
 

@@ -14,6 +14,7 @@ import realtime.topic_tree;
 
 fn http_status_reason_phrase(code: i32) -> const u8[:] {
     return match code {
+        101 => "Switching Protocols",
         200 => "OK",
         201 => "Created",
         202 => "Accepted",
@@ -361,6 +362,10 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
 // Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
 fn serialize_status_line<B>(status_code: i32, out: B&) {
+    if status_code == 101 {
+        out.append("HTTP/1.1 101 Switching Protocols\r\n");
+        return;
+    }
     if status_code == 200 {
         out.append("HTTP/1.1 200 OK\r\n");
         return;

@@ -2,6 +2,9 @@
 // Zero-allocation, high-performance synchronous & non-blocking socket operations
 // conforming exactly to Goose slice binary layout.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #define WIN32_LEAN_AND_MEAN
 #include <stdint.h>
 #include <stddef.h>

@@ -58,14 +58,19 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
     return SERVER_EXE
 
 
-def find_test_runner() -> tuple[str, list[str]]:
+def find_test_runner(prefer_docker: bool = False) -> tuple[str, list[str]]:
     """
     Finds available test runner:
-      1. Local tools/bin/kosoku
-      2. System kosoku
-      3. System wstest (autobahntestsuite)
-      4. Docker crossbario/autobahn-testsuite
+      1. If prefer_docker: Docker crossbario/autobahn-testsuite
+      2. Local tools/bin/kosoku
+      3. System kosoku
+      4. System wstest (autobahntestsuite)
+      5. Docker crossbario/autobahn-testsuite
     """
+    which_docker = shutil.which("docker")
+    if prefer_docker and which_docker:
+        return "docker", [which_docker]
+
     if KOSOKU_EXE.is_file() and os.access(KOSOKU_EXE, os.X_OK):
         return "kosoku", [str(KOSOKU_EXE)]
 
@@ -77,7 +82,6 @@ def find_test_runner() -> tuple[str, list[str]]:
     if which_wstest:
         return "wstest", [which_wstest]
 
-    which_docker = shutil.which("docker")
     if which_docker:
         return "docker", [which_docker]
 
@@ -260,10 +264,11 @@ def run_autobahn(
     parallelism: int = 1,
     out_dir: Path = DEFAULT_OUT_DIR,
     force_rebuild: bool = False,
+    prefer_docker: bool = False,
 ) -> int:
     """Executes the Autobahn test suite against the native server."""
     server_exe = ensure_server_binary(force_rebuild=force_rebuild)
-    runner_type, runner_cmd = find_test_runner()
+    runner_type, runner_cmd = find_test_runner(prefer_docker=prefer_docker)
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -322,7 +327,6 @@ def run_autobahn(
         elif runner_type == "wstest":
             spec_file = out_dir / "fuzzingclient.json"
             spec = {
-                "options": {"failByTitle": False},
                 "outdir": str(out_dir),
                 "servers": [{"url": f"ws://127.0.0.1:{port}"}],
                 "cases": cases or ["*"],
@@ -337,9 +341,49 @@ def run_autobahn(
             elapsed = time.time() - t0
             print(f"[+] Finished wstest execution in {elapsed:.2f}s")
 
+        elif runner_type == "docker":
+            spec_file = out_dir / "fuzzingclient.json"
+            host_target = (
+                "host.docker.internal"
+                if sys.platform in ("win32", "darwin")
+                else "172.17.0.1"
+            )
+            spec = {
+                "outdir": "/reports",
+                "servers": [{"url": f"ws://{host_target}:{port}"}],
+                "cases": cases or ["*"],
+                "exclude-cases": exclude or ["12.*", "13.*"],
+            }
+            with open(spec_file, "w", encoding="utf-8") as f:
+                json.dump(spec, f, indent=2)
+
+            spec_posix = str(spec_file.resolve()).replace("\\", "/")
+            out_posix = str(out_dir.resolve()).replace("\\", "/")
+
+            cmd = [
+                runner_cmd[0],
+                "run",
+                "--rm",
+                "--add-host=host.docker.internal:host-gateway",
+                "-v",
+                f"{spec_posix}:/config/fuzzingclient.json:ro",
+                "-v",
+                f"{out_posix}:/reports",
+                "crossbario/autobahn-testsuite",
+                "wstest",
+                "-m",
+                "fuzzingclient",
+                "-s",
+                "/config/fuzzingclient.json",
+            ]
+            print(f"[*] Running Autobahn via Docker (crossbario/autobahn-testsuite)...")
+            proc = subprocess.run(cmd, check=False)
+            elapsed = time.time() - t0
+            print(f"[+] Finished Docker Autobahn execution in {elapsed:.2f}s")
+
         else:
             print(
-                "[!] Docker Autobahn runner not yet configured; use kosoku instead.",
+                f"[!] Unknown runner type: {runner_type}",
                 file=sys.stderr,
             )
             return 1
@@ -387,14 +431,34 @@ def main():
         action="store_true",
         help="Force rebuild of native goose server executable",
     )
+    parser.add_argument(
+        "--docker",
+        action="store_true",
+        help="Run Autobahn fuzzing client via official Docker image (crossbario/autobahn-testsuite)",
+    )
+    parser.add_argument(
+        "--compose",
+        action="store_true",
+        help="Launch full Autobahn stack (native server + fuzzing client) via docker-compose",
+    )
 
     args = parser.parse_args()
+
+    if args.compose:
+        compose_file = TOOLS_DIR / "autobahn" / "docker-compose.yml"
+        cmd = ["docker", "compose", "-f", str(compose_file), "up", "--build", "--abort-on-container-exit"]
+        print(f"[*] Running Autobahn via docker-compose ({compose_file.name})...")
+        res = subprocess.run(cmd, cwd=str(ROOT_DIR))
+        print_summary_table(DEFAULT_OUT_DIR)
+        sys.exit(res.returncode)
+
     rc = run_autobahn(
         cases=args.cases,
         exclude=args.exclude,
         parallelism=args.parallelism,
         out_dir=args.outdir,
         force_rebuild=args.rebuild,
+        prefer_docker=args.docker,
     )
     sys.exit(rc)
 
