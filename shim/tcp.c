@@ -48,6 +48,10 @@ typedef int SOCKET;
 #endif
 #endif
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 #pragma pack(push, 1)
 typedef struct { const uint8_t *data; int64_t len; } wing_bytes_ro;
 typedef struct { uint8_t *data; int64_t len; } wing_bytes_rw;
@@ -902,4 +906,136 @@ int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) {
     return 0;
 #endif
 }
+
+// -----------------------------------------------------------------------------
+// Layer 4 Cross-Platform UDP Datagram Operations (RFC 9000 QUIC / HTTP/3)
+// -----------------------------------------------------------------------------
+
+// Binds a UDP socket on host:port (non-inheritable, SO_REUSEADDR).
+int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) {
+    wing_tcp_init();
+
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    int opt = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#else
+    int opt = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#if defined(SO_REUSEPORT)
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+#endif
+#endif
+
+    char host_str[128];
+    slice_to_cstr(host, host_str, sizeof(host_str));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (host_str[0] == '\0' || strcmp(host_str, "0.0.0.0") == 0) {
+        addr.sin_addr.s_addr = INADDR_ANY;
+    } else if (strcmp(host_str, "127.0.0.1") == 0 || strcmp(host_str, "localhost") == 0) {
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    } else {
+        addr.sin_addr.s_addr = inet_addr(host_str);
+    }
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        closesocket(s);
+        return -1;
+    }
+
+    return (int64_t)s;
+}
+
+// Sends a UDP datagram to host:port.
+int32_t wing_udp_sendto(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro host, uint16_t port) {
+    if (sock_fd <= 0 || data.data == NULL || data.len < 0) {
+        return -1;
+    }
+    SOCKET s = (SOCKET)sock_fd;
+
+    char host_str[128];
+    slice_to_cstr(host, host_str, sizeof(host_str));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (host_str[0] == '\0' || strcmp(host_str, "127.0.0.1") == 0 || strcmp(host_str, "localhost") == 0) {
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    } else {
+        addr.sin_addr.s_addr = inet_addr(host_str);
+    }
+
+    int res = sendto(s, (const char *)data.data, (int)data.len, MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof(addr));
+    return res;
+}
+
+// Receives a UDP datagram with timeout. Returns bytes read, or -2 on timeout, or -1 on error.
+int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms, uint32_t *peer_ip4, uint16_t *peer_port) {
+    if (sock_fd <= 0 || buf.data == NULL || buf.len <= 0) {
+        return -1;
+    }
+    SOCKET s = (SOCKET)sock_fd;
+
+    if (timeout_ms > 0) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(s, &readfds);
+
+        struct timeval tv;
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+        int sel = select((int)s + 1, &readfds, NULL, NULL, &tv);
+        if (sel == 0) {
+            return -2; // Timeout
+        }
+        if (sel < 0) {
+            return -1;
+        }
+    }
+
+    struct sockaddr_in peer_addr;
+#ifdef _WIN32
+    int addr_len = sizeof(peer_addr);
+#else
+    socklen_t addr_len = sizeof(peer_addr);
+#endif
+    int res = recvfrom(s, (char *)buf.data, (int)buf.len, 0, (struct sockaddr *)&peer_addr, &addr_len);
+    if (res >= 0) {
+        if (peer_port) {
+            *peer_port = ntohs(peer_addr.sin_port);
+        }
+        if (peer_ip4) {
+            *peer_ip4 = peer_addr.sin_addr.s_addr;
+        }
+    }
+    return res;
+}
+
+// Sends a UDP datagram directly to remote IPv4 (network byte order) and port.
+int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_ip4, uint16_t peer_port) {
+    if (sock_fd <= 0 || data.data == NULL || data.len < 0) {
+        return -1;
+    }
+    SOCKET s = (SOCKET)sock_fd;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(peer_port);
+    addr.sin_addr.s_addr = peer_ip4;
+
+    int res = sendto(s, (const char *)data.data, (int)data.len, MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof(addr));
+    return res;
+}
+
 

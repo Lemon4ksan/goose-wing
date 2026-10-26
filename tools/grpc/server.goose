@@ -354,8 +354,28 @@ fn main() {
                     break;
                 }
 
-                handle_grpc_web_http1(conn, in_buf[..], dispatcher);
-                break;
+                // Check Content-Length to ensure entire body has been received
+                var req_complete = true;
+                let cl_pos = core::index_of_slice(in_buf[..hdr_end], "Content-Length:");
+                if cl_pos >= 0 {
+                    let cl_line = in_buf[(cl_pos + 15) .. hdr_end];
+                    var cl_val: i64 = 0;
+                    for c in cl_line {
+                        if c >= '0' && c <= '9' {
+                            cl_val = cl_val * 10 + (c - '0') as i64;
+                        } else if c == '\r' || c == '\n' {
+                            break;
+                        }
+                    }
+                    if in_buf.len < (hdr_end + 4 + cl_val) {
+                        req_complete = false;
+                    }
+                }
+
+                if req_complete {
+                    handle_grpc_web_http1(conn, in_buf[..], dispatcher);
+                    break;
+                }
             }
         }
 

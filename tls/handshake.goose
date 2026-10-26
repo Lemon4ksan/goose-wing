@@ -365,14 +365,13 @@ fn parse_extensions_block(
 }
 
 // Finds an extension by type in the parsed entries array.
-fn find_extension(entries: const TlsExtensionEntry[..32]&, ext_type: u16, out_data: const u8[:]&) -> bool {
+fn find_extension(entries: const TlsExtensionEntry[..32]&, ext_type: u16) -> const u8[:], bool {
     for i in entries.len {
         if entries[i].ext_type == ext_type {
-            out_data = entries[i].data;
-            return true;
+            return entries[i].data, true;
         }
     }
-    return false;
+    return "", false;
 }
 
 // ---- 9. RFC 8879 Certificate Compression & ClientHello Fragmentation --------

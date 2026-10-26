@@ -1,0 +1,29 @@
+services:
+  tls-server:
+    build:
+      context: ../..
+      dockerfile: tools/tls/Dockerfile
+    container_name: goose-wing-tls-server
+    environment:
+      - WING_PORT=8443
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s = socket.socket(); s.connect(('127.0.0.1', 8443)); s.close()\" || exit 1"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+      start_period: 1s
+    restart: "no"
+
+  tls-runner:
+    build:
+      context: ../..
+      dockerfile: tools/tls/Dockerfile
+    container_name: goose-wing-tls-runner
+    depends_on:
+      tls-server:
+        condition: service_healthy
+    entrypoint: ["python3", "/app/tools/tls/runner.py", "--host", "tls-server", "--port", "8443"]
+    restart: "no"

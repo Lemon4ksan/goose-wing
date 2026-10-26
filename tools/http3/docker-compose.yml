@@ -1,0 +1,22 @@
+services:
+  http3-server:
+    build:
+      context: ../..
+      dockerfile: tools/http3/Dockerfile
+    container_name: goose-wing-http3-server
+    environment:
+      - WING_PORT=4433
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "4433:4433/udp"
+    restart: "no"
+
+  http3-runner:
+    build:
+      context: ../..
+      dockerfile: tools/http3/Dockerfile
+    container_name: goose-wing-http3-runner
+    depends_on:
+      - http3-server
+    entrypoint: ["python3", "/app/tools/http3/runner.py", "--host", "http3-server", "--port", "4433"]
+    restart: "no"
