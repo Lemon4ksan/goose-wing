@@ -96,4 +96,3 @@ fn sleep(dur: Duration) {
         sleep_ms(millis_val);
     }
 }
-

@@ -61,7 +61,7 @@ const XSK_RING_FILL: i32 = 5;
 const XSK_RING_COMPLETION: i32 = 6;
 
 const XDP_FLAGS_ZEROCOPY: u32 = 1 << 2;
-const XDP_FLAGS_COPY: u32     = 1 << 1;
+const XDP_FLAGS_COPY: u32 = 1 << 1;
 
 fn new_af_xdp_socket() -> AfXdpSocket {
     return AfXdpSocket {
@@ -81,7 +81,7 @@ fn af_xdp_open_socket(
     umem_addr: u64,
     umem_len: u64,
     chunk_size: u32 = 2048,
-    zero_copy: bool = true
+    zero_copy: bool = true,
 ) -> AfXdpSocket, i32 {
     let fd = native_af_xdp_create_socket();
     if fd < 0 {

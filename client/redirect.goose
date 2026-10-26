@@ -119,7 +119,7 @@ fn compute_redirect_info(
     current_referrer_policy: ReferrerPolicy,
     current_referrer: const u8[:],
     cors_mode: bool,
-    is_main_frame: bool
+    is_main_frame: bool,
 ) -> RedirectInfo {
     let cur_u = core::new_url(current_url_str);
     let sfc = site_for_cookies_from_url(current_url_str);
@@ -142,7 +142,7 @@ fn compute_redirect_info(
         false,
         is_main_frame,
         false,
-        ""
+        "",
     );
 }
 
@@ -150,7 +150,7 @@ fn mutate_redirect_method<B>(
     status_code: i32,
     current_method: const u8[:],
     out_method: B&,
-    clear_body: bool&
+    clear_body: bool&,
 ) {
     out_method.clear();
     clear_body = false;
@@ -175,7 +175,7 @@ fn inherit_target_fragment(
     target_url: core::Url&,
     current_url: const core::Url&,
     clean_loc: const u8[:],
-    preserve_fragment_on_redirect_url: const u8[:]
+    preserve_fragment_on_redirect_url: const u8[:],
 ) {
     let target_hash = hash(target_url);
     let curr_hash = hash(current_url);
@@ -229,7 +229,7 @@ fn validate_redirect_target(
     location_header: const u8[:],
     current_url: const core::Url&,
     cors_mode: bool,
-    tainted_origin: bool
+    tainted_origin: bool,
 ) -> core::Url, RedirectError {
     let clean_loc = trim(location_header);
     guard clean_loc.len > 0 else {
@@ -260,7 +260,7 @@ fn classify_redirect_origin_relation(
     target_url: const core::Url&,
     out_is_downgrade: bool&,
     out_is_cross_origin: bool&,
-    out_is_port_changed: bool&
+    out_is_port_changed: bool&,
 ) {
     let same_orig = core::is_same_origin_url(current_url, target_url);
     let is_downgrade = (scheme(current_url) == "https" && scheme(target_url) == "http");
@@ -312,7 +312,7 @@ fn compute_redirect_info(
         info.new_url,
         info.is_scheme_downgrade,
         info.is_cross_origin,
-        info.is_port_changed
+        info.is_port_changed,
     );
 
     if response_referrer_policy_header.len > 0 {
@@ -325,7 +325,7 @@ fn compute_redirect_info(
         info.new_referrer_policy,
         info.is_cross_origin,
         info.is_scheme_downgrade,
-        info.new_referrer
+        info.new_referrer,
     );
 
     let sfc, tainted = compute_redirect_site_for_cookies(
@@ -336,7 +336,7 @@ fn compute_redirect_info(
         url_chain,
         initiator,
         has_initiator,
-        had_cross_site_hop
+        had_cross_site_hop,
     );
     info.new_site_for_cookies = sfc;
     info.is_cross_site_tainted = tainted;
@@ -382,7 +382,7 @@ fn compute_new_referrer<B>(
     policy: ReferrerPolicy,
     is_cross_origin: bool,
     is_downgrade: bool,
-    out: B&
+    out: B&,
 ) {
     out.clear();
 
@@ -461,7 +461,7 @@ fn sanitize_headers_on_redirect(
     cors_mode: bool,
     tainted_origin: bool,
     enable_referer: bool,
-    trusted_location_forwarding: bool = false
+    trusted_location_forwarding: bool = false,
 ) {
     // Cookie header is stripped and re-evaluated from the cookie jar for the new URL.
     remove_header_by_name(headers, "Cookie");
@@ -487,7 +487,7 @@ fn sanitize_headers_on_redirect(
         redirect_info.is_cross_origin,
         tainted_origin,
         cors_mode,
-        redirect_info.clear_body
+        redirect_info.clear_body,
     );
 
     // Referer Header Application

@@ -23,29 +23,29 @@ const BROTLI_MIN_WINDOW_BITS: u32 = 10;
 const BROTLI_MAX_WINDOW_BITS: u32 = 24;
 
 const BROTLI_CODE_LENGTH_ORDER: i32[18] = [
-    1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 ];
 
 // RFC 7932 Section 5: Insert length base offsets and extra bits
 const INSERT_LENGTH_BASE: u32[24] = [
     0, 1, 2, 3, 4, 5, 6, 8, 10, 14, 18, 26, 34, 50, 66, 98,
-    130, 194, 322, 578, 1090, 2114, 6210, 22594
+    130, 194, 322, 578, 1090, 2114, 6210, 22594,
 ];
 
 const INSERT_LENGTH_EXTRA_BITS: u8[24] = [
     0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
-    6, 7, 8, 9, 10, 12, 14, 24
+    6, 7, 8, 9, 10, 12, 14, 24,
 ];
 
 // RFC 7932 Section 5: Copy length base offsets and extra bits
 const COPY_LENGTH_BASE: u32[24] = [
     2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 38, 54,
-    70, 102, 134, 198, 326, 582, 1094, 2118
+    70, 102, 134, 198, 326, 582, 1094, 2118,
 ];
 
 const COPY_LENGTH_EXTRA_BITS: u8[24] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
-    5, 5, 6, 7, 8, 9, 10, 24
+    5, 5, 6, 7, 8, 9, 10, 24,
 ];
 
 // RFC 7932 Section 5: Cell mappings for 704-command alphabet
@@ -293,7 +293,7 @@ fn decode_brotli_symbol(r: BrotliBitReader&, table: const BrotliHuffmanTable&) -
 fn build_simple_prefix_code(
     r: BrotliBitReader&,
     alphabet_size: i32,
-    table: BrotliHuffmanTable&
+    table: BrotliHuffmanTable&,
 ) -> bool {
     let nsym_minus_1 = brotli_read_bits(r, 2);
     let nsym = (nsym_minus_1 + 1) as i32;
@@ -344,10 +344,10 @@ fn build_simple_prefix_code(
 }
 
 const CODE_LENGTH_PREFIX_LENGTH: u8[16] = [
-    2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4
+    2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4,
 ];
 const CODE_LENGTH_PREFIX_VALUE: u8[16] = [
-    0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5
+    0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5,
 ];
 
 // Reads and builds a Complex Prefix Code (RFC 7932 Section 3.5).
@@ -355,7 +355,7 @@ fn read_complex_prefix_code(
     r: BrotliBitReader&,
     hskip: u32,
     alphabet_size: i32,
-    table: BrotliHuffmanTable&
+    table: BrotliHuffmanTable&,
 ) -> bool {
     var code_lengths: i32[18] = [0; 18];
     var space: u32 = 32;
@@ -457,7 +457,7 @@ fn read_complex_prefix_code(
 fn read_brotli_prefix_code(
     r: BrotliBitReader&,
     alphabet_size: i32,
-    table: BrotliHuffmanTable&
+    table: BrotliHuffmanTable&,
 ) -> bool {
     let hskip = brotli_read_bits(r, 2);
     if hskip == 1 {
@@ -473,7 +473,7 @@ fn decode_brotli_distance(
     dcode: u32,
     npostfix: u32,
     ndirect: u32,
-    dist_ring: u32[4]&
+    dist_ring: u32[4]&,
 ) -> u32 {
     let d0 = dist_ring[0];
     let d1 = dist_ring[1];
@@ -574,7 +574,7 @@ fn brotli_compress_level0<B>(src: const u8[:], out: B&) {
         if chunk_len > 65536 {
             chunk_len = 65536;
         }
-        let chunk = src[offset .. (offset + chunk_len)];
+        let chunk = src[offset..(offset + chunk_len)];
         emit_brotli_uncompressed_chunk(w, chunk, out);
         offset += chunk_len;
     }
@@ -649,7 +649,7 @@ fn read_brotli_block_prefix_tables(
     npostfix: u32,
     out_lit: BrotliHuffmanTable&,
     out_cmd: BrotliHuffmanTable&,
-    out_dist: BrotliHuffmanTable&
+    out_dist: BrotliHuffmanTable&,
 ) -> bool {
     let ok_lit = read_brotli_prefix_code(r, 256, out_lit);
     guard ok_lit else { return false; }
@@ -665,7 +665,7 @@ fn read_brotli_block_prefix_tables(
 fn brotli_decompress_with_limit_impl<B>(
     src: const u8[:],
     out: B&,
-    max_output_bytes: i64 = -1
+    max_output_bytes: i64 = -1,
 ) -> CompressError {
     guard src.len > 0 else {
         return CompressError.InputBufferTruncated;
@@ -879,7 +879,7 @@ fn brotli_decompress_with_limit_impl<B>(
 fn brotli_decompress_with_limit<B>(
     src: const u8[:],
     out: B&,
-    max_output_bytes: i64 = -1
+    max_output_bytes: i64 = -1,
 ) -> bool, CompressError {
     let err = brotli_decompress_with_limit_impl(src, out, max_output_bytes);
     return err == CompressError.None, err;

@@ -47,7 +47,7 @@ fn encode_chunked_payload<B>(
     body: const u8[:],
     trailers: const HeaderItem[..16]&,
     chunk_size: i64,
-    out: B&
+    out: B&,
 ) {
     let step = if chunk_size > 0 { chunk_size } else { 4096 };
     if body.len > 0 {
@@ -154,7 +154,7 @@ fn has_error(dec: const ChunkedStreamDecoder&) -> bool {
 fn feed_chunked_stream<B>(
     dec: ChunkedStreamDecoder&,
     input: const u8[:],
-    out_body: B&
+    out_body: B&,
 ) -> bool, i64 {
     guard dec.state != ChunkedStreamState.Error && dec.state != ChunkedStreamState.Complete else {
         return dec.state == ChunkedStreamState.Complete, 0;

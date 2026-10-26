@@ -197,7 +197,7 @@ fn build_ech_outer_extension<B>(
     cs: const EchCipherSuite&,
     enc: const u8[32]&,
     ciphertext: const u8[:],
-    out: B&
+    out: B&,
 ) -> bool {
     out.push(ECH_CLIENT_OUTER);
     out.push(((cs.kdf_id >> 8) & 0xFF) as u8);
@@ -235,7 +235,7 @@ fn seal_ech_inner(
     inner_padded: const u8[:],
     ephemeral_sk: const u8[32]&,
     out_enc: u8[32]&,
-    out_ct: u8[>..]&
+    out_ct: u8[>..]&,
 ) -> bool {
     var info: u8[..600] = [];
     info.append("tls ech");
@@ -252,7 +252,7 @@ fn seal_ech_inner(
         ephemeral_sk,
         cs.aead_id,
         out_enc,
-        out_ct
+        out_ct,
     );
 }
 

@@ -26,7 +26,7 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
             true,
             "h2",
             sig_algos[..],
-            false
+            false,
         );
 
         sub.assert_eq(ja4_result.len, 36, "JA4 fingerprint length must be exactly 36 chars");
@@ -84,7 +84,7 @@ fn test_ja4h_http_fingerprint(t: core::T&) {
             false,
             "en-US,en;q=0.9",
             cookie_names[..],
-            cookie_values[..]
+            cookie_values[..],
         );
 
         sub.assert_eq(ja4h_result.len, 51, "JA4H fingerprint length must be 51 chars");

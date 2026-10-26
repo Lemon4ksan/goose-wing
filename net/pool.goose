@@ -111,7 +111,7 @@ fn new_network_anonymization_key(
     cross_site: bool = false,
     nonce_val: u64 = 0,
     partition_id: u32 = 0,
-    worker_id: u32 = 0
+    worker_id: u32 = 0,
 ) -> NetworkAnonymizationKey {
     var nak = NetworkAnonymizationKey {
         is_cross_site: cross_site,
@@ -178,7 +178,7 @@ fn new_pool_key(
     port_num: u16,
     proxy_val: ProxyChain,
     partition_val: NetworkAnonymizationKey,
-    policy_val: TlsAndDnsPolicy
+    policy_val: TlsAndDnsPolicy,
 ) -> PoolKey {
     return PoolKey {
         scheme: scheme_val,
@@ -366,7 +366,7 @@ fn is_connection_healthy(
     conn: PooledConnection&,
     now_ns: i64,
     do_extensive_checks: bool = false,
-    healthy_threshold_ns: i64 = IDLE_CONNECTION_HEALTHY_NS
+    healthy_threshold_ns: i64 = IDLE_CONNECTION_HEALTHY_NS,
 ) -> bool {
     if conn.closed || conn.no_new_exchanges || conn.remote_rst {
         return false;
@@ -417,7 +417,7 @@ fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
 fn can_coalesce_h2_connection(
     conn: const PooledConnection&,
     target_key: const PoolKey&,
-    target_resolved_ip: const u8[:]
+    target_resolved_ip: const u8[:],
 ) -> bool, bool {
     // Both must be HTTPS over HTTP/2
     guard conn.protocol == NegotiatedProtocol.Http2 &&
@@ -485,7 +485,7 @@ struct StreamPool {
 fn new_stream_pool(
     max_per_group: i32 = DEFAULT_MAX_SOCKETS_PER_GROUP,
     max_per_proxy: i32 = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
-    soft_cap: i32 = DEFAULT_SOCKET_SOFT_CAP_PER_POOL
+    soft_cap: i32 = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
 ) -> StreamPool {
     return StreamPool {
         max_sockets_per_group: max_per_group,
@@ -545,7 +545,7 @@ fn acquire_pooled_connection(
     key: const PoolKey&,
     target_resolved_ip: const u8[:],
     now_ns: i64,
-    do_extensive_checks: bool = false
+    do_extensive_checks: bool = false,
 ) -> i32, bool {
     // 1. Direct pool match for exact key
     for &c in pool.conns {
@@ -596,7 +596,7 @@ fn register_connection(
     resolved_ip: const u8[:],
     max_streams: i32,
     now_ns: i64,
-    respect_limits: RespectLimits = RespectLimits.Enabled
+    respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> i32 {
     if respect_limits == RespectLimits.Enabled {
         let total_active_conns = pool.conns.len;

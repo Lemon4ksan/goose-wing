@@ -188,7 +188,7 @@ fn subscribe_ex(
     sock_fd: i64,
     pattern: const u8[:],
     out_old: i32&,
-    out_new: i32&
+    out_new: i32&,
 ) -> bool {
     guard sock_fd > 0 && is_valid_topic_filter(pattern) else { return false; }
 
@@ -240,7 +240,7 @@ fn subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
 fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
     tree: TopicTree&,
     sock_fd: i64,
-    pattern: const u8[:]
+    pattern: const u8[:],
 ) -> bool {
     var old_cnt: i32 = 0;
     var new_cnt: i32 = 0;
@@ -278,7 +278,7 @@ fn unsubscribe_ex(
     sock_fd: i64,
     pattern: const u8[:],
     out_old: i32&,
-    out_new: i32&
+    out_new: i32&,
 ) -> bool {
     guard sock_fd > 0 && pattern.len > 0 else { return false; }
 
@@ -339,7 +339,7 @@ fn unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
 fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
     tree: TopicTree&,
     sock_fd: i64,
-    pattern: const u8[:]
+    pattern: const u8[:],
 ) -> bool {
     var old_cnt: i32 = 0;
     var new_cnt: i32 = 0;
@@ -405,7 +405,7 @@ fn unsubscribe_all(tree: TopicTree&, sock_fd: i64) -> i32 {
 // Unsubscribes a socket descriptor from all subscribed topics with callback notification per topic.
 fn unsubscribe_all_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
     tree: TopicTree&,
-    sock_fd: i64
+    sock_fd: i64,
 ) -> i32 {
     guard sock_fd > 0 else { return 0; }
     var unsubs: i32 = 0;
@@ -505,7 +505,7 @@ fn socket_subscription_count(tree: const TopicTree&, sock_fd: i64) -> i32 {
 fn get_socket_topics(
     tree: const TopicTree&,
     sock_fd: i64,
-    out_topics: u8[..64][..32]&
+    out_topics: u8[..64][..32]&,
 ) -> i32 {
     guard sock_fd > 0 else { return 0; }
     out_topics.clear();
@@ -531,7 +531,7 @@ fn get_socket_topics(
 // Iterates through all topic patterns a socket is subscribed to via callback (uWebSockets ws->iterateTopics pattern)
 fn iterate_socket_topics<IterFn: fn(const u8[:])>(
     tree: const TopicTree&,
-    sock_fd: i64
+    sock_fd: i64,
 ) -> i32 {
     guard sock_fd > 0 else { return 0; }
     var count: i32 = 0;
@@ -634,7 +634,7 @@ fn publish(
     tree: TopicTree&,
     topic: const u8[:],
     message: const u8[:],
-    opcode: u8 = WS_OPCODE_TEXT
+    opcode: u8 = WS_OPCODE_TEXT,
 ) -> i64 {
     var frame: u8[..65536] = [];
     let no_mask: u8[4] = [0, 0, 0, 0];
@@ -727,7 +727,7 @@ fn publish_batch(
     topic: const u8[:],
     payload: const u8[:],
     opcode: u8 = WS_OPCODE_TEXT,
-    sender_fd: i64 = -1
+    sender_fd: i64 = -1,
 ) -> i64 {
     guard is_valid_publish_topic(topic) else { return 0; }
 

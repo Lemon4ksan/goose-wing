@@ -10,58 +10,58 @@ import core from "..";
 
 // ---- 1. frame types (rfc 9113 section 6 & rfc 9218 section 7.1) -------------
 
-const FRAME_DATA:            u8 = 0x00;
-const FRAME_HEADERS:         u8 = 0x01;
-const FRAME_PRIORITY:        u8 = 0x02;
-const FRAME_RST_STREAM:      u8 = 0x03;
-const FRAME_SETTINGS:        u8 = 0x04;
-const FRAME_PUSH_PROMISE:    u8 = 0x05;
-const FRAME_PING:            u8 = 0x06;
-const FRAME_GOAWAY:          u8 = 0x07;
-const FRAME_WINDOW_UPDATE:   u8 = 0x08;
-const FRAME_CONTINUATION:    u8 = 0x09;
+const FRAME_DATA: u8 = 0x00;
+const FRAME_HEADERS: u8 = 0x01;
+const FRAME_PRIORITY: u8 = 0x02;
+const FRAME_RST_STREAM: u8 = 0x03;
+const FRAME_SETTINGS: u8 = 0x04;
+const FRAME_PUSH_PROMISE: u8 = 0x05;
+const FRAME_PING: u8 = 0x06;
+const FRAME_GOAWAY: u8 = 0x07;
+const FRAME_WINDOW_UPDATE: u8 = 0x08;
+const FRAME_CONTINUATION: u8 = 0x09;
 const FRAME_PRIORITY_UPDATE: u8 = 0x10; // RFC 9218 Section 7.1
 
 // ---- 2. frame flags (rfc 9113 section 4.1) ----------------------------------
 
-const FLAG_END_STREAM:  u8 = 0x01;
-const FLAG_ACK:         u8 = 0x01;
+const FLAG_END_STREAM: u8 = 0x01;
+const FLAG_ACK: u8 = 0x01;
 const FLAG_END_HEADERS: u8 = 0x04;
-const FLAG_PADDED:      u8 = 0x08;
-const FLAG_PRIORITY:    u8 = 0x20;
+const FLAG_PADDED: u8 = 0x08;
+const FLAG_PRIORITY: u8 = 0x20;
 
 // ---- 3. error codes (rfc 9113 section 7) ------------------------------------
 
-const ERR_NO_ERROR:            u32 = 0x00;
-const ERR_PROTOCOL_ERROR:      u32 = 0x01;
-const ERR_INTERNAL_ERROR:      u32 = 0x02;
-const ERR_FLOW_CONTROL_ERROR:  u32 = 0x03;
-const ERR_SETTINGS_TIMEOUT:    u32 = 0x04;
-const ERR_STREAM_CLOSED:       u32 = 0x05;
-const ERR_FRAME_SIZE_ERROR:    u32 = 0x06;
-const ERR_REFUSED_STREAM:      u32 = 0x07;
-const ERR_CANCEL:              u32 = 0x08;
-const ERR_COMPRESSION_ERROR:   u32 = 0x09;
-const ERR_CONNECT_ERROR:       u32 = 0x0A;
-const ERR_ENHANCE_YOUR_CALM:   u32 = 0x0B;
+const ERR_NO_ERROR: u32 = 0x00;
+const ERR_PROTOCOL_ERROR: u32 = 0x01;
+const ERR_INTERNAL_ERROR: u32 = 0x02;
+const ERR_FLOW_CONTROL_ERROR: u32 = 0x03;
+const ERR_SETTINGS_TIMEOUT: u32 = 0x04;
+const ERR_STREAM_CLOSED: u32 = 0x05;
+const ERR_FRAME_SIZE_ERROR: u32 = 0x06;
+const ERR_REFUSED_STREAM: u32 = 0x07;
+const ERR_CANCEL: u32 = 0x08;
+const ERR_COMPRESSION_ERROR: u32 = 0x09;
+const ERR_CONNECT_ERROR: u32 = 0x0A;
+const ERR_ENHANCE_YOUR_CALM: u32 = 0x0B;
 const ERR_INADEQUATE_SECURITY: u32 = 0x0C;
-const ERR_HTTP_1_1_REQUIRED:   u32 = 0x0D;
+const ERR_HTTP_1_1_REQUIRED: u32 = 0x0D;
 
 // ---- 4. settings identifiers (rfc 9113 section 6.5.2 & rfc 9218) -----------
 
-const SETTING_HEADER_TABLE_SIZE:      u16 = 0x01; // default 4096
-const SETTING_ENABLE_PUSH:            u16 = 0x02; // default 1
+const SETTING_HEADER_TABLE_SIZE: u16 = 0x01;      // default 4096
+const SETTING_ENABLE_PUSH: u16 = 0x02;            // default 1
 const SETTING_MAX_CONCURRENT_STREAMS: u16 = 0x03; // unlimited
-const SETTING_INITIAL_WINDOW_SIZE:    u16 = 0x04; // default 65535
-const SETTING_MAX_FRAME_SIZE:         u16 = 0x05; // default 16384
-const SETTING_MAX_HEADER_LIST_SIZE:   u16 = 0x06; // unlimited
-const SETTING_ENABLE_CONNECT_PROTO:   u16 = 0x08; // RFC 8441
-const SETTING_NO_RFC7540_PRIORITIES:  u16 = 0x09; // RFC 9218 Section 5.1
+const SETTING_INITIAL_WINDOW_SIZE: u16 = 0x04;    // default 65535
+const SETTING_MAX_FRAME_SIZE: u16 = 0x05;         // default 16384
+const SETTING_MAX_HEADER_LIST_SIZE: u16 = 0x06;   // unlimited
+const SETTING_ENABLE_CONNECT_PROTO: u16 = 0x08;   // RFC 8441
+const SETTING_NO_RFC7540_PRIORITIES: u16 = 0x09;  // RFC 9218 Section 5.1
 
 // Client connection preface (RFC 9113 Section 3.4)
 let H2_CLIENT_PREFACE: const u8[24] = [
     'P', 'R', 'I', ' ', '*', ' ', 'H', 'T', 'T', 'P', '/', '2', '.', '0',
-    '\r', '\n', '\r', '\n', 'S', 'M', '\r', '\n', '\r', '\n'
+    '\r', '\n', '\r', '\n', 'S', 'M', '\r', '\n', '\r', '\n',
 ];
 
 // ---- 5. 9-byte frame header -------------------------------------------------
@@ -188,7 +188,7 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
     guard eff_end >= 1 else {
         return payload, ERR_PROTOCOL_ERROR;
     }
-    return payload[1 .. eff_end], ERR_NO_ERROR;
+    return payload[1..eff_end], ERR_NO_ERROR;
 }
 
 // Strips PADDED and PRIORITY fields from HEADERS frame payload.
@@ -196,7 +196,7 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
 fn extract_headers_frame_payload(
     hdr: const FrameHeader&,
     payload: const u8[:],
-    no_rfc7540_priorities: bool = true
+    no_rfc7540_priorities: bool = true,
 ) -> const u8[:], u32 {
     let has_pad = (hdr.flags & FLAG_PADDED) != 0;
     let has_prio = (hdr.flags & FLAG_PRIORITY) != 0;
@@ -213,7 +213,7 @@ fn extract_headers_frame_payload(
         guard eff_end >= (1 + (if has_prio { 5 } else { 0 })) else {
             return raw, ERR_PROTOCOL_ERROR;
         }
-        raw = raw[1 .. eff_end];
+        raw = raw[1..eff_end];
     }
 
     if has_prio {
@@ -286,7 +286,7 @@ fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = fa
         while i < n && raw[i] != '=' && raw[i] != ',' && raw[i] != ' ' && raw[i] != '\t' {
             i++;
         }
-        let key = raw[key_start .. i];
+        let key = raw[key_start..i];
 
         // Skip whitespace before '='
         while i < n && (raw[i] == ' ' || raw[i] == '\t') { i++; }
@@ -307,7 +307,7 @@ fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = fa
         }
 
         if key.len == 1 && key[0] == 'u' && has_val {
-            let val_slice = raw[val_start .. val_end];
+            let val_slice = raw[val_start..val_end];
             if val_slice.len == 1 && val_slice[0] >= '0' && val_slice[0] <= '7' {
                 p.urgency = val_slice[0] - '0';
                 found_any = true;
@@ -317,7 +317,7 @@ fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = fa
                 p.incremental = true;
                 found_any = true;
             } else {
-                let val_slice = raw[val_start .. val_end];
+                let val_slice = raw[val_start..val_end];
                 if val_slice.len == 2 && val_slice[0] == '?' && val_slice[1] == '1' {
                     p.incremental = true;
                     found_any = true;
@@ -336,7 +336,7 @@ fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = fa
 // Returns (prioritized_stream_id, PriorityParam, error_code).
 fn parse_priority_update_payload(
     payload: const u8[:],
-    default_incremental: bool = false
+    default_incremental: bool = false,
 ) -> u32, PriorityParam, u32 {
     var p = PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len >= 4 else {

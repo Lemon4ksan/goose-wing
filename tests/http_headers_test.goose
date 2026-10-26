@@ -139,7 +139,7 @@ fn test_lexical_validation_and_swar(t: core::T&) {
     t.run("Control Character and Embedded NUL Injection Hard Rejection") { sub =>
         // Embedded NUL
         var map = wing::new_header_map();
-        let nul_raw: u8[28] = ['H','o','s','t',':',' ','a',0,'b','c','.','c','o','m','\r','\n','\r','\n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let nul_raw: u8[28] = ['H', 'o', 's', 't', ':', ' ', 'a', 0, 'b', 'c', '.', 'c', 'o', 'm', '\r', '\n', '\r', '\n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let err_nul = wing::parse_headers(nul_raw[..18], map);
         sub.assert_eq(err_nul, wing::HeaderParseError.EmbeddedNull, "Embedded NUL causes immediate parse failure");
 

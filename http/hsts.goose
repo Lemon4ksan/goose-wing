@@ -154,7 +154,7 @@ fn hsts_cache_update(
     cache: HstsCache&,
     hostname: const u8[:],
     raw_header: const u8[:],
-    now_sec: i64
+    now_sec: i64,
 ) -> bool {
     guard hostname.len > 0 else { return false; }
     let dir, ok_d = parse_hsts_header(raw_header);
@@ -222,7 +222,7 @@ fn hsts_upgrade_url<B>(
     cache: const HstsCache&,
     raw_url: const u8[:],
     now_sec: i64,
-    out_url: B&
+    out_url: B&,
 ) -> bool {
     out_url.clear();
     // Must start with "http://"

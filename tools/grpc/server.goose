@@ -13,7 +13,7 @@ fn grpc_test_unary_handler(
     req_payload: const u8[:],
     res_payload: u8[>..]&,
     out_status: wing::GrpcStatusCode&,
-    out_message: u8[..256]&
+    out_message: u8[..256]&,
 ) {
     if handler_id == 1 {
         // helloworld.Greeter/SayHello
@@ -33,7 +33,7 @@ fn grpc_test_unary_handler(
         if req_payload.len >= 2 && req_payload[0] == 0x0A {
             let p_len = req_payload[1] as i64;
             if req_payload.len >= 2 + p_len {
-                name_slice = req_payload[2 .. (2 + p_len)];
+                name_slice = req_payload[2..(2 + p_len)];
             }
         }
 
@@ -74,7 +74,7 @@ fn emit_grpc_h2_headers<B>(
     stream_id: u32,
     res: const wing::Response&,
     end_stream: bool,
-    out: B&
+    out: B&,
 ) {
     var hpack_block: u8[..4096] = [];
     var status_buf: u8[..16] = "200";
@@ -108,7 +108,7 @@ fn emit_grpc_h2_data<B>(
     stream_id: u32,
     body: const u8[:],
     end_stream: bool,
-    out: B&
+    out: B&,
 ) {
     guard body.len > 0 else { return; }
     var flags: u8 = 0;
@@ -130,7 +130,7 @@ fn emit_grpc_h2_trailers<B>(
     hpack_enc: wing::DynamicTable&,
     stream_id: u32,
     trailers: const wing::HeaderItem[..16]&,
-    out: B&
+    out: B&,
 ) {
     var hpack_block: u8[..4096] = [];
     for &t in trailers {
@@ -154,7 +154,7 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
         0, 0, 0,    // len = 0
         4,          // type = SETTINGS
         0,          // flags = 0
-        0, 0, 0, 0  // stream = 0
+        0, 0, 0, 0, // stream = 0
     ];
     wing::tcp_send(conn, server_settings_wire[..]);
 
@@ -358,7 +358,7 @@ fn main() {
                 var req_complete = true;
                 let cl_pos = core::index_of_slice(in_buf[..hdr_end], "Content-Length:");
                 if cl_pos >= 0 {
-                    let cl_line = in_buf[(cl_pos + 15) .. hdr_end];
+                    let cl_line = in_buf[(cl_pos + 15)..hdr_end];
                     var cl_val: i64 = 0;
                     for c in cl_line {
                         if c >= '0' && c <= '9' {

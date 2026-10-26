@@ -15,7 +15,7 @@ fn test_hpack_huffman_and_integer_codec(t: core::T&) {
     t.run("HPACK-01: RFC 7541 Appendix C.2 Huffman Decode Vectors") { sub =>
         // Vector 1: "www.example.com"
         let enc_www: u8[12] = [
-            0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff
+            0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff,
         ];
         var dec_www: u8[..64] = [];
         let ok_www = wing::decode_huffman_exact(enc_www[..], dec_www);
@@ -61,7 +61,7 @@ fn test_hpack_huffman_and_integer_codec(t: core::T&) {
         // Padding bits must strictly be 1s (EOS prefix). Zero bits in padding must fail.
         // "www.example.com" ending with 0x00 instead of 0xff padding
         let bad_pad: u8[12] = [
-            0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0x00
+            0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0x00,
         ];
         var out_bad: u8[..64] = [];
         let ok_bad = wing::decode_huffman_exact(bad_pad[..], out_bad);
@@ -78,7 +78,7 @@ fn test_hpack_huffman_and_integer_codec(t: core::T&) {
         // 5-bit prefix with excessive continuation bytes (shift >= 28)
         let malformed_int: u8[8] = [
             0x1F, // 5 bits all 1s
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00,
         ];
         let val, next_off, ok = wing::hpack_decode_int(malformed_int[..], 0, 5);
         sub.assert_false(ok, "integer exceeding 28 bits shift must fail cleanly without integer overflow");
@@ -281,7 +281,7 @@ fn test_binary_framing_and_rfc9218(t: core::T&) {
         let payload: u8[12] = [
             0x03,                                           // Pad length: 3
             'h', 'e', 'l', 'l', 'o', '!', '!', '!',         // 8 bytes data
-            0x00, 0x00, 0x00                                // 3 bytes padding
+            0x00, 0x00, 0x00,                               // 3 bytes padding
         ];
 
         let unpadded, err = wing::extract_padded_frame_payload(hdr, payload[..]);
@@ -290,7 +290,7 @@ fn test_binary_framing_and_rfc9218(t: core::T&) {
         sub.assert_eq(unpadded, "hello!!!", "unpadded data intact");
 
         // Invalid padding length: pad_len (15) > length (12) -> PROTOCOL_ERROR
-        let bad_payload: u8[12] = [0x0F, 0,0,0,0,0,0,0,0,0,0,0];
+        let bad_payload: u8[12] = [0x0F, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let _, bad_err = wing::extract_padded_frame_payload(hdr, bad_payload[..]);
         sub.assert_eq(bad_err, wing::ERR_PROTOCOL_ERROR, "oversized padding triggers PROTOCOL_ERROR");
     };

@@ -172,7 +172,7 @@ fn test_masque_capsules_and_datagrams(t: core::T&) {
         let fake_dns_query = "dns_packet_bytes";
         sub.assert_true(
             wing::encode_connect_udp_datagram_capsule(datagram_capsule, 0, fake_dns_query),
-            "encode datagram capsule"
+            "encode datagram capsule",
         );
 
         let parsed_capsule, ok_c = wing::parse_http_capsule(datagram_capsule[..]);
@@ -232,7 +232,7 @@ fn test_har_telemetry_and_isolation(t: core::T&) {
         sub.assert_bytes_eq(
             partitioned_key[..],
             "example.com:443{https://site-a.com,https://site-b.com}",
-            "Partitioned socket/cache key includes NIK tuple"
+            "Partitioned socket/cache key includes NIK tuple",
         );
 
         // Empty NIK fallback

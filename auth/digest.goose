@@ -160,7 +160,7 @@ fn calculate_digest_ha1(
     password: const u8[:],
     nonce: const u8[:],
     cnonce: const u8[:],
-    out_ha1_hex: u8[..64]&
+    out_ha1_hex: u8[..64]&,
 ) {
     var a1: u8[>..] = [];
     a1.append(username);
@@ -188,7 +188,7 @@ fn calculate_digest_ha2(
     uri: const u8[:],
     is_auth_int: bool,
     body: const u8[:],
-    out_ha2_hex: u8[..64]&
+    out_ha2_hex: u8[..64]&,
 ) {
     var a2: u8[>..] = [];
     a2.append(method);
@@ -214,7 +214,7 @@ fn calculate_digest_response(
     has_qop: bool,
     is_auth_int: bool,
     ha2_hex: const u8[:],
-    out_response_hex: u8[..64]&
+    out_response_hex: u8[..64]&,
 ) {
     var a3: u8[>..] = [];
     a3.append(ha1_hex);
@@ -246,7 +246,7 @@ fn compute_digest_response(
     nc: u32,
     cnonce: const u8[:],
     body: const u8[:],
-    out_header: u8[..512]&
+    out_header: u8[..512]&,
 ) -> bool {
     guard challenge.valid else { return false; }
 

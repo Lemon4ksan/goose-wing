@@ -266,7 +266,7 @@ fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError 
 fn decode_chunked_body_with_trailers(
     raw: const u8[:],
     out_body: u8[>..]&,
-    out_trailers: HeaderItem[..16]&
+    out_trailers: HeaderItem[..16]&,
 ) -> ChunkedDecodeError, i64 {
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput, 0; }
 

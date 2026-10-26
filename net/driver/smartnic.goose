@@ -17,14 +17,14 @@ extern fn wing_smartnic_set_hardware_tls_tx(
     key: const u8[:],
     iv: const u8[:],
     salt: const u8[:],
-    rec_seq: const u8[:]
+    rec_seq: const u8[:],
 ) -> i32;
 extern fn wing_smartnic_set_hardware_tls_rx(
     fd: i64, version: u16, cipher_type: u16,
     key: const u8[:],
     iv: const u8[:],
     salt: const u8[:],
-    rec_seq: const u8[:]
+    rec_seq: const u8[:],
 ) -> i32;
 
 fn native_smartnic_probe() -> i32 { return wing_smartnic_probe(); }
@@ -57,7 +57,7 @@ enum SmartNicCipherSuite {
 
 const TLS_CIPHER_AES_GCM_128_ID: u16 = 51;
 const TLS_CIPHER_AES_GCM_256_ID: u16 = 52;
-const TLS_1_3_WIRE_VERSION: u16      = 0x0304;
+const TLS_1_3_WIRE_VERSION: u16 = 0x0304;
 
 struct SmartNicConfig {
     model: SmartNicModel = SmartNicModel.Generic,
@@ -94,7 +94,7 @@ fn smartnic_attach_hardware_tls(
     key: const u8[:],
     iv: const u8[:],
     salt: const u8[:],
-    seq: const u8[:]
+    seq: const u8[:],
 ) -> SmartNicSession, i32 {
     guard fd > 0 else { return new_smartnic_session(), -1; }
 
@@ -118,7 +118,7 @@ fn smartnic_attach_hardware_tls(
 
     let tx_err = wing_smartnic_set_hardware_tls_tx(
         fd, TLS_1_3_WIRE_VERSION, cipher_id,
-        key, iv, salt, seq
+        key, iv, salt, seq,
     );
     if tx_err == 0 {
         sess.tx_offloaded = true;
@@ -126,7 +126,7 @@ fn smartnic_attach_hardware_tls(
 
     let rx_err = wing_smartnic_set_hardware_tls_rx(
         fd, TLS_1_3_WIRE_VERSION, cipher_id,
-        key, iv, salt, seq
+        key, iv, salt, seq,
     );
     if rx_err == 0 {
         sess.rx_offloaded = true;

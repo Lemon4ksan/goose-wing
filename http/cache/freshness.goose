@@ -199,7 +199,7 @@ fn compute_freshness_lifetime(
     ts: const CacheTimestamps&,
     shared: bool = false,
     heuristic_fraction: i64 = 10,
-    immutable_min_ttl_sec: i64 = 31536000
+    immutable_min_ttl_sec: i64 = 31536000,
 ) -> i64 {
     guard !has_invalid_freshness(resp_cc) else { return 0; }
 
@@ -239,7 +239,7 @@ fn evaluate_stale_allowance(
     lifetime: i64,
     shared: bool,
     security_zeroed: bool,
-    out_swr: bool&
+    out_swr: bool&,
 ) -> bool {
     out_swr = false;
     guard !is_max_stale_blocked(resp_cc, shared, security_zeroed) else { return false; }
@@ -271,7 +271,7 @@ fn evaluate_stale_if_error(
     current_age: i64,
     lifetime: i64,
     shared: bool,
-    security_zeroed: bool
+    security_zeroed: bool,
 ) -> bool {
     guard !is_max_stale_blocked(resp_cc, shared, security_zeroed) else { return false; }
     let stale_sec = current_age - lifetime;
@@ -299,7 +299,7 @@ fn evaluate_freshness(
     shared: bool = false,
     security_zeroed: bool = false,
     heuristic_fraction: i64 = 10,
-    immutable_min_ttl_sec: i64 = 31536000
+    immutable_min_ttl_sec: i64 = 31536000,
 ) -> FreshnessMetrics {
     var metrics = FreshnessMetrics { .. };
 
@@ -314,7 +314,7 @@ fn evaluate_freshness(
 
     metrics.current_age_sec = compute_current_age(apparent_age, age_hdr, ts);
     metrics.freshness_lifetime_sec = compute_freshness_lifetime(
-        resp_cc, resp_headers, ts, shared, heuristic_fraction, immutable_min_ttl_sec
+        resp_cc, resp_headers, ts, shared, heuristic_fraction, immutable_min_ttl_sec,
     );
 
     let basic_fresh = metrics.current_age_sec < metrics.freshness_lifetime_sec;
@@ -334,11 +334,11 @@ fn evaluate_freshness(
     if !metrics.is_fresh {
         var is_swr = false;
         metrics.stale_allowed = evaluate_stale_allowance(
-            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed, is_swr
+            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed, is_swr,
         );
         metrics.stale_while_revalidate_allowed = is_swr;
         metrics.stale_if_error_allowed = evaluate_stale_if_error(
-            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed
+            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed,
         );
     }
 

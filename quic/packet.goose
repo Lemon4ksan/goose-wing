@@ -17,51 +17,51 @@ const QUIC_MIN_INITIAL_DATAGRAM_LEN: u64 = 1200; // RFC 9000 Section 8.1
 const QUIC_MAX_CID_LEN: u8 = 20;
 
 // QUIC Transport Error Codes (RFC 9000 Section 20.1)
-const QUIC_ERR_NO_ERROR:                 u64 = 0x00;
-const QUIC_ERR_INTERNAL:                 u64 = 0x01;
-const QUIC_ERR_CONNECTION_REFUSED:       u64 = 0x02;
-const QUIC_ERR_FLOW_CONTROL:             u64 = 0x03;
-const QUIC_ERR_STREAM_LIMIT:             u64 = 0x04;
-const QUIC_ERR_STREAM_STATE:             u64 = 0x05;
-const QUIC_ERR_FINAL_SIZE:               u64 = 0x06;
-const QUIC_ERR_FRAME_ENCODING:           u64 = 0x07;
-const QUIC_ERR_TRANSPORT_PARAMETER:      u64 = 0x08;
-const QUIC_ERR_CONNECTION_ID_LIMIT:      u64 = 0x09;
-const QUIC_ERR_PROTOCOL_VIOLATION:       u64 = 0x0A;
-const QUIC_ERR_INVALID_TOKEN:            u64 = 0x0B;
-const QUIC_ERR_APPLICATION_ERROR:        u64 = 0x0C;
-const QUIC_ERR_CRYPTO_BUFFER_EXCEEDED:   u64 = 0x0D;
-const QUIC_ERR_KEY_UPDATE_ERROR:         u64 = 0x0E;
-const QUIC_ERR_AEAD_LIMIT_REACHED:       u64 = 0x0F;
-const QUIC_ERR_NO_VIABLE_PATH:           u64 = 0x10;
+const QUIC_ERR_NO_ERROR: u64 = 0x00;
+const QUIC_ERR_INTERNAL: u64 = 0x01;
+const QUIC_ERR_CONNECTION_REFUSED: u64 = 0x02;
+const QUIC_ERR_FLOW_CONTROL: u64 = 0x03;
+const QUIC_ERR_STREAM_LIMIT: u64 = 0x04;
+const QUIC_ERR_STREAM_STATE: u64 = 0x05;
+const QUIC_ERR_FINAL_SIZE: u64 = 0x06;
+const QUIC_ERR_FRAME_ENCODING: u64 = 0x07;
+const QUIC_ERR_TRANSPORT_PARAMETER: u64 = 0x08;
+const QUIC_ERR_CONNECTION_ID_LIMIT: u64 = 0x09;
+const QUIC_ERR_PROTOCOL_VIOLATION: u64 = 0x0A;
+const QUIC_ERR_INVALID_TOKEN: u64 = 0x0B;
+const QUIC_ERR_APPLICATION_ERROR: u64 = 0x0C;
+const QUIC_ERR_CRYPTO_BUFFER_EXCEEDED: u64 = 0x0D;
+const QUIC_ERR_KEY_UPDATE_ERROR: u64 = 0x0E;
+const QUIC_ERR_AEAD_LIMIT_REACHED: u64 = 0x0F;
+const QUIC_ERR_NO_VIABLE_PATH: u64 = 0x10;
 
 // Frame Types (RFC 9000 Section 19)
-const QUIC_FRAME_PADDING:              u64 = 0x00;
-const QUIC_FRAME_PING:                 u64 = 0x01;
-const QUIC_FRAME_ACK:                  u64 = 0x02;
-const QUIC_FRAME_ACK_ECN:              u64 = 0x03;
-const QUIC_FRAME_RESET_STREAM:         u64 = 0x04;
-const QUIC_FRAME_STOP_SENDING:         u64 = 0x05;
-const QUIC_FRAME_CRYPTO:               u64 = 0x06;
-const QUIC_FRAME_NEW_TOKEN:            u64 = 0x07;
-const QUIC_FRAME_STREAM_BASE:          u64 = 0x08; // 0x08..0x0F
-const QUIC_FRAME_MAX_DATA:             u64 = 0x10;
-const QUIC_FRAME_MAX_STREAM_DATA:      u64 = 0x11;
-const QUIC_FRAME_MAX_STREAMS_BIDI:     u64 = 0x12;
-const QUIC_FRAME_MAX_STREAMS_UNI:      u64 = 0x13;
-const QUIC_FRAME_DATA_BLOCKED:         u64 = 0x14;
-const QUIC_FRAME_STREAM_DATA_BLOCKED:  u64 = 0x15;
+const QUIC_FRAME_PADDING: u64 = 0x00;
+const QUIC_FRAME_PING: u64 = 0x01;
+const QUIC_FRAME_ACK: u64 = 0x02;
+const QUIC_FRAME_ACK_ECN: u64 = 0x03;
+const QUIC_FRAME_RESET_STREAM: u64 = 0x04;
+const QUIC_FRAME_STOP_SENDING: u64 = 0x05;
+const QUIC_FRAME_CRYPTO: u64 = 0x06;
+const QUIC_FRAME_NEW_TOKEN: u64 = 0x07;
+const QUIC_FRAME_STREAM_BASE: u64 = 0x08; // 0x08..0x0F
+const QUIC_FRAME_MAX_DATA: u64 = 0x10;
+const QUIC_FRAME_MAX_STREAM_DATA: u64 = 0x11;
+const QUIC_FRAME_MAX_STREAMS_BIDI: u64 = 0x12;
+const QUIC_FRAME_MAX_STREAMS_UNI: u64 = 0x13;
+const QUIC_FRAME_DATA_BLOCKED: u64 = 0x14;
+const QUIC_FRAME_STREAM_DATA_BLOCKED: u64 = 0x15;
 const QUIC_FRAME_STREAMS_BLOCKED_BIDI: u64 = 0x16;
-const QUIC_FRAME_STREAMS_BLOCKED_UNI:  u64 = 0x17;
-const QUIC_FRAME_NEW_CONNECTION_ID:    u64 = 0x18;
+const QUIC_FRAME_STREAMS_BLOCKED_UNI: u64 = 0x17;
+const QUIC_FRAME_NEW_CONNECTION_ID: u64 = 0x18;
 const QUIC_FRAME_RETIRE_CONNECTION_ID: u64 = 0x19;
-const QUIC_FRAME_PATH_CHALLENGE:       u64 = 0x1A;
-const QUIC_FRAME_PATH_RESPONSE:        u64 = 0x1B;
-const QUIC_FRAME_CONNECTION_CLOSE:     u64 = 0x1C;
+const QUIC_FRAME_PATH_CHALLENGE: u64 = 0x1A;
+const QUIC_FRAME_PATH_RESPONSE: u64 = 0x1B;
+const QUIC_FRAME_CONNECTION_CLOSE: u64 = 0x1C;
 const QUIC_FRAME_CONNECTION_CLOSE_APP: u64 = 0x1D;
-const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
-const QUIC_FRAME_DATAGRAM:            u64 = 0x30; // RFC 9221 Section 3: DATAGRAM without Length
-const QUIC_FRAME_DATAGRAM_LEN:        u64 = 0x31; // RFC 9221 Section 3: DATAGRAM with Length
+const QUIC_FRAME_HANDSHAKE_DONE: u64 = 0x1E;
+const QUIC_FRAME_DATAGRAM: u64 = 0x30;            // RFC 9221 Section 3: DATAGRAM without Length
+const QUIC_FRAME_DATAGRAM_LEN: u64 = 0x31;        // RFC 9221 Section 3: DATAGRAM with Length
 
 // ---- 2. variable-length integer codec (rfc 9000 section 16) ----------------
 
@@ -142,22 +142,22 @@ enum QuicHeaderType {
     Handshake,
     Retry,
     OneRtt,
-    VersionNegotiation
+    VersionNegotiation,
 }
 
 struct QuicHeader {
-    header_type:    QuicHeaderType = QuicHeaderType.OneRtt,
-    version:        u32 = QUIC_VERSION_1,
-    dcid:           u8[..20] = [],
-    scid:           u8[..20] = [],
-    token:          u8[..512] = [],
+    header_type: QuicHeaderType = QuicHeaderType.OneRtt,
+    version: u32 = QUIC_VERSION_1,
+    dcid: u8[..20] = [],
+    scid: u8[..20] = [],
+    token: u8[..512] = [],
     payload_length: u64 = 0,
-    packet_number:  u64 = 0,
-    pn_offset:      u32 = 0,
-    pn_length:      u8 = 0,
-    key_phase:      bool = false,
-    spin_bit:       bool = false,
-    header_len:     u32 = 0
+    packet_number: u64 = 0,
+    pn_offset: u32 = 0,
+    pn_length: u8 = 0,
+    key_phase: bool = false,
+    spin_bit: bool = false,
+    header_len: u32 = 0,
 }
 
 // Parses unmasked QUIC Long or Short header up to the payload boundary.
@@ -179,10 +179,10 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
             guard src.len >= 7 else { return hdr, false; }
             let dlen = src[5];
             guard dlen <= QUIC_MAX_CID_LEN && (7 + dlen) <= src.len else { return hdr, false; }
-            hdr.dcid.append(src[6 .. 6 + dlen]);
+            hdr.dcid.append(src[6..6 + dlen]);
             let slen = src[6 + dlen];
             guard slen <= QUIC_MAX_CID_LEN && (7 + dlen + slen) <= src.len else { return hdr, false; }
-            hdr.scid.append(src[7 + dlen .. 7 + dlen + slen]);
+            hdr.scid.append(src[7 + dlen..7 + dlen + slen]);
             hdr.header_len = 7 + dlen + slen;
             return hdr, true;
         }
@@ -205,20 +205,20 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         guard off < (src.len as u64) else { return hdr, false; }
         let dlen = src[off]; off++;
         guard dlen <= QUIC_MAX_CID_LEN && (off + dlen) <= (src.len as u64) else { return hdr, false; }
-        hdr.dcid.append(src[off .. off + dlen]);
+        hdr.dcid.append(src[off..off + dlen]);
         off += dlen;
 
         guard off < (src.len as u64) else { return hdr, false; }
         let slen = src[off]; off++;
         guard slen <= QUIC_MAX_CID_LEN && (off + slen) <= (src.len as u64) else { return hdr, false; }
-        hdr.scid.append(src[off .. off + slen]);
+        hdr.scid.append(src[off..off + slen]);
         off += slen;
 
         if hdr.header_type == QuicHeaderType.Initial {
             let tok_len, next_tok, ok_tok = quic_decode_varint(src, off);
             guard ok_tok && (next_tok + tok_len) <= (src.len as u64) && tok_len <= (hdr.token.cap as u64) else { return hdr, false; }
             if tok_len > 0 {
-                hdr.token.append(src[next_tok .. next_tok + tok_len]);
+                hdr.token.append(src[next_tok..next_tok + tok_len]);
             }
             off = next_tok + tok_len;
         }
@@ -249,7 +249,7 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
     var off: u64 = 1;
     guard (off + dcid_len_short) <= (src.len as u64) else { return hdr, false; }
     if dcid_len_short > 0 {
-        hdr.dcid.append(src[off .. off + dcid_len_short]);
+        hdr.dcid.append(src[off..off + dcid_len_short]);
         off += dcid_len_short;
     }
     hdr.pn_offset = off as u32;
@@ -272,7 +272,7 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
             ZeroRtt => { b0 |= 0x10; },
             Handshake => { b0 |= 0x20; },
             Retry => { b0 |= 0x30; },
-            _ => { return false; }
+            _ => { return false; },
         }
         out.push(b0);
         out.push(((hdr.version >> 24) & 0xFF) as u8);
@@ -413,11 +413,11 @@ fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) ->
 // ---- 5. path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---
 
 struct PathState {
-    remote_ip:      u8[16] = [0; 16],
-    remote_port:    u16 = 0,
+    remote_ip: u8[16] = [0; 16],
+    remote_port: u16 = 0,
     bytes_received: u64 = 0,
-    bytes_sent:     u64 = 0,
-    is_validated:   bool = false
+    bytes_sent: u64 = 0,
+    is_validated: bool = false,
 }
 
 fn new_path_state(ip: const u8[16]&, port: u16, validated: bool = false) -> PathState {
@@ -450,16 +450,16 @@ fn validate_path(path: PathState&) {
 
 struct Interval {
     start: u64 = 0,
-    end:   u64 = 0 // [start, end)
+    end: u64 = 0, // [start, end)
 }
 
 struct ReassemblyBuffer {
-    intervals:       Interval[..64] = [],
+    intervals: Interval[..64] = [],
     consumed_offset: u64 = 0,
-    max_data_limit:  u64 = 1048576,
-    final_size:      u64 = 0xFFFFFFFFFFFFFFFF,
-    fin_received:    bool = false,
-    data_slab:       u8[>..<] = [] // Must be last!
+    max_data_limit: u64 = 1048576,
+    final_size: u64 = 0xFFFFFFFFFFFFFFFF,
+    fin_received: bool = false,
+    data_slab: u8[>..<] = [], // Must be last!
 }
 
 fn new_reassembly_buffer(max_flow_limit: u64 = 1048576) -> ReassemblyBuffer {
@@ -500,7 +500,7 @@ fn insert_fragment(
     buf: ReassemblyBuffer&,
     offset: u64,
     payload: const u8[:],
-    is_fin: bool
+    is_fin: bool,
 ) -> bool {
     guard (0xFFFFFFFFFFFFFFFF - offset) >= (payload.len as u64) else { return false; }
     let frag_end = offset + (payload.len as u64);
@@ -551,7 +551,7 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&) -> u64 {
     let take_bytes = (avail_end - buf.consumed_offset) as i64;
     guard take_bytes > 0 && take_bytes <= (buf.data_slab.len as i64) else { return 0; }
 
-    out.append(buf.data_slab[0 .. take_bytes]);
+    out.append(buf.data_slab[0..take_bytes]);
     buf.consumed_offset = avail_end;
     buf.intervals.remove_at(0);
 

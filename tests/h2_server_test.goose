@@ -15,7 +15,7 @@ fn encode_client_headers<B>(
     path: const u8[:],
     authority: const u8[:],
     end_stream: bool,
-    out: B&
+    out: B&,
 ) {
     var hdr_block: u8[>..] = [];
     wing::encode_hpack_field(dt, hdr_block, ":method", method, true, false);
@@ -119,15 +119,15 @@ fn test_h2_handshake_and_settings(t: core::T&) {
         sub.assert_ge(out_wire.len, 33 + 9 + 17, "Output has all 3 response frames");
 
         // Check Frame 2 (SETTINGS ACK)
-        let f2_hdr, _ = wing::parse_frame_header(out_wire[33 .. 42]);
+        let f2_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(f2_hdr.frame_type, wing::FRAME_SETTINGS, "Frame 2 is SETTINGS");
         sub.assert_true((f2_hdr.flags & wing::FLAG_ACK) != 0, "Frame 2 has FLAG_ACK");
 
         // Check Frame 3 (PING ACK)
-        let f3_hdr, _ = wing::parse_frame_header(out_wire[42 .. 51]);
+        let f3_hdr, _ = wing::parse_frame_header(out_wire[42..51]);
         sub.assert_eq(f3_hdr.frame_type, wing::FRAME_PING, "Frame 3 is PING");
         sub.assert_true((f3_hdr.flags & wing::FLAG_ACK) != 0, "Frame 3 has FLAG_ACK");
-        let ping_echo = out_wire[51 .. 59];
+        let ping_echo = out_wire[51..59];
         sub.assert_eq(ping_echo[0], 0x11, "PING opaque byte 0 matched");
         sub.assert_eq(ping_echo[7], 0x88, "PING opaque byte 7 matched");
     };
@@ -161,7 +161,7 @@ fn test_h2_handshake_and_settings(t: core::T&) {
         // Frame 1: Server SETTINGS (33 bytes)
         // Frame 2: Server PING ACK (17 bytes)
         sub.assert_eq(cork.cork_pending(), 33 + 17, "Emitted SETTINGS (33) + PING ACK (17)");
-        let f2_hdr, _ = wing::parse_frame_header(emitted[33 .. 42]);
+        let f2_hdr, _ = wing::parse_frame_header(emitted[33..42]);
         sub.assert_eq(f2_hdr.frame_type, wing::FRAME_PING, "Frame 2 is PING ACK in cork");
         sub.assert_true((f2_hdr.flags & wing::FLAG_ACK) != 0, "FLAG_ACK set on PING response");
 
@@ -197,7 +197,7 @@ fn test_h2_request_dispatch(t: core::T&) {
         // 2. Response HEADERS frame for stream 1
         sub.assert_gt(out_wire.len, 33, "Response has frames beyond initial SETTINGS");
 
-        let resp_hdr, err_rh = wing::parse_frame_header(out_wire[33 .. 42]);
+        let resp_hdr, err_rh = wing::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(err_rh, wing::ERR_NO_ERROR, "Decoded response frame header");
         sub.assert_eq(resp_hdr.frame_type, wing::FRAME_HEADERS, "Response frame is HEADERS");
         sub.assert_eq(resp_hdr.stream_id, 1, "Response on stream 1");
@@ -205,7 +205,7 @@ fn test_h2_request_dispatch(t: core::T&) {
 
         // Decode response headers with client HPACK table
         var dec_resp = wing::DecodedH2HeaderList { .. };
-        let hpack_payload = out_wire[42 .. 42 + resp_hdr.length];
+        let hpack_payload = out_wire[42..42 + resp_hdr.length];
         let dec_err = wing::decode_hpack_header_block(client_hpack, hpack_payload, dec_resp);
         sub.assert_eq(dec_err, wing::ERR_NO_ERROR, "Client decoded response HPACK without error");
 
@@ -273,7 +273,7 @@ fn test_h2_request_dispatch(t: core::T&) {
         var off: i64 = 33; // skip Server SETTINGS (33B)
 
         while off + 9 <= out_wire.len {
-            let f_hdr, err_f = wing::parse_frame_header(out_wire[off .. off + 9]);
+            let f_hdr, err_f = wing::parse_frame_header(out_wire[off..off + 9]);
             if err_f == wing::ERR_NO_ERROR && f_hdr.frame_type == wing::FRAME_HEADERS {
                 if f_hdr.stream_id == 1 { found_stream_1 = true; }
                 if f_hdr.stream_id == 3 { found_stream_3 = true; }
@@ -367,7 +367,7 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
 
         // Verify response was emitted for stream 1
         sub.assert_gt(out_wire.len, 33, "Emitted response frame");
-        let resp_hdr, _ = wing::parse_frame_header(out_wire[33 .. 42]);
+        let resp_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(resp_hdr.frame_type, wing::FRAME_HEADERS, "Response is HEADERS");
         sub.assert_eq(resp_hdr.stream_id, 1, "Response on stream 1");
     };
@@ -406,7 +406,7 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
         // Must reject with GOAWAY PROTOCOL_ERROR
         sub.assert_false(ok, "Ingress rejected zero-length non-terminal CONTINUATION");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
-        let g_hdr, _ = wing::parse_frame_header(out_wire[33 .. 42]);
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
     };
 

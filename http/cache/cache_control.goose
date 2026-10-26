@@ -10,24 +10,24 @@ import http.headers;
 
 // ---- cache-control bitmask flags -------------------------------------------
 
-const CC_FLAG_NONE: u32              = 0x0000;
-const CC_NO_STORE: u32               = 0x0001;  // no-store
-const CC_NO_CACHE: u32               = 0x0002;  // no-cache (unqualified or qualified)
-const CC_MUST_REVALIDATE: u32        = 0x0004;  // must-revalidate
-const CC_PROXY_REVALIDATE: u32       = 0x0008;  // proxy-revalidate
-const CC_MUST_UNDERSTAND: u32        = 0x0010;  // must-understand (RFC 9111 Section 5.2.2.3)
-const CC_PRIVATE: u32                = 0x0020;  // private (unqualified or qualified)
-const CC_PUBLIC: u32                 = 0x0040;  // public
-const CC_IMMUTABLE: u32              = 0x0080;  // immutable (RFC 8246)
-const CC_ONLY_IF_CACHED: u32         = 0x0100;  // only-if-cached (RFC 9111 Section 5.2.1.7)
-const CC_NO_TRANSFORM: u32           = 0x0200;  // no-transform
-const CC_INVALID_FRESHNESS: u32      = 0x0400;  // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
-const CC_HAS_MAX_AGE: u32            = 0x0800;  // max-age=delta-seconds
-const CC_HAS_S_MAXAGE: u32           = 0x1000;  // s-maxage=delta-seconds
-const CC_HAS_MAX_STALE: u32          = 0x2000;  // max-stale[=delta-seconds]
-const CC_HAS_MIN_FRESH: u32          = 0x4000;  // min-fresh=delta-seconds
+const CC_FLAG_NONE: u32 = 0x0000;
+const CC_NO_STORE: u32 = 0x0001;                // no-store
+const CC_NO_CACHE: u32 = 0x0002;                // no-cache (unqualified or qualified)
+const CC_MUST_REVALIDATE: u32 = 0x0004;         // must-revalidate
+const CC_PROXY_REVALIDATE: u32 = 0x0008;        // proxy-revalidate
+const CC_MUST_UNDERSTAND: u32 = 0x0010;         // must-understand (RFC 9111 Section 5.2.2.3)
+const CC_PRIVATE: u32 = 0x0020;                 // private (unqualified or qualified)
+const CC_PUBLIC: u32 = 0x0040;                  // public
+const CC_IMMUTABLE: u32 = 0x0080;               // immutable (RFC 8246)
+const CC_ONLY_IF_CACHED: u32 = 0x0100;          // only-if-cached (RFC 9111 Section 5.2.1.7)
+const CC_NO_TRANSFORM: u32 = 0x0200;            // no-transform
+const CC_INVALID_FRESHNESS: u32 = 0x0400;       // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
+const CC_HAS_MAX_AGE: u32 = 0x0800;             // max-age=delta-seconds
+const CC_HAS_S_MAXAGE: u32 = 0x1000;            // s-maxage=delta-seconds
+const CC_HAS_MAX_STALE: u32 = 0x2000;           // max-stale[=delta-seconds]
+const CC_HAS_MIN_FRESH: u32 = 0x4000;           // min-fresh=delta-seconds
 const CC_STALE_WHILE_REVALIDATE: u32 = 0x8000;  // stale-while-revalidate=delta-seconds (RFC 5861 Section 3)
-const CC_STALE_IF_ERROR: u32         = 0x10000; // stale-if-error=delta-seconds (RFC 5861 Section 4)
+const CC_STALE_IF_ERROR: u32 = 0x10000;         // stale-if-error=delta-seconds (RFC 5861 Section 4)
 
 const MAX_DELTA_SECONDS: i32 = 2147483647; // i32::MAX overflow clamp per RFC 9111 Section 1.2.2
 

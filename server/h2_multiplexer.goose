@@ -61,7 +61,7 @@ struct H2ServerSession {
 
 fn new_h2_server_session(
     server_name_str: const u8[:] = "goose-wing/1.0",
-    now_ms: u64 = 0
+    now_ms: u64 = 0,
 ) -> H2ServerSession {
     var sess = H2ServerSession {
         conn: new_h2_connection(now_ms),
@@ -199,7 +199,7 @@ fn emit_response_headers<B>(
     stream_id: u32,
     res: const Response&,
     end_stream: bool,
-    out: B&
+    out: B&,
 ) {
     var hpack_block: u8[..16384] = [];
 
@@ -258,7 +258,7 @@ fn emit_response_data<B>(
     body: const u8[:],
     max_frame_size: u32,
     out: B&,
-    end_stream: bool = true
+    end_stream: bool = true,
 ) {
     guard body.len > 0 else { return; }
 
@@ -278,7 +278,7 @@ fn emit_response_data<B>(
             stream_id: stream_id,
         };
         encode_frame_header_to(hdr, out);
-        out.append(body[offset .. offset + chunk_size]);
+        out.append(body[offset..offset + chunk_size]);
         offset += chunk_size;
     }
 }
@@ -288,7 +288,7 @@ fn emit_response_trailers<B>(
     sess: H2ServerSession&,
     stream_id: u32,
     trailers: const HeaderItem[..16]&,
-    out: B&
+    out: B&,
 ) {
     guard trailers.len > 0 else { return; }
     var hpack_block: u8[..4096] = [];
@@ -360,7 +360,7 @@ fn handle_h2_server_ingress<B>(
     client_ip: const u8[:],
     wire: const u8[:],
     now_ms: u64,
-    out_wire: B&
+    out_wire: B&,
 ) -> i64, bool {
     var offset: i64 = 0;
 
@@ -382,7 +382,7 @@ fn handle_h2_server_ingress<B>(
     var cancelled_streams: u32[..16] = [];
     var p_scan = offset;
     while p_scan + 9 <= wire.len {
-        let sc_hdr, sc_err = parse_frame_header(wire[p_scan .. p_scan + 9], sess.conn.local_max_frame_size);
+        let sc_hdr, sc_err = parse_frame_header(wire[p_scan..p_scan + 9], sess.conn.local_max_frame_size);
         if sc_err != ERR_NO_ERROR {
             break;
         }
@@ -396,7 +396,7 @@ fn handle_h2_server_ingress<B>(
     }
 
     while offset + 9 <= wire.len {
-        let hdr, err_hdr = parse_frame_header(wire[offset .. offset + 9], sess.conn.local_max_frame_size);
+        let hdr, err_hdr = parse_frame_header(wire[offset..offset + 9], sess.conn.local_max_frame_size);
         guard err_hdr == ERR_NO_ERROR else {
             emit_goaway(sess.conn.last_peer_stream_id, err_hdr, out_wire);
             return offset, false;
@@ -409,7 +409,7 @@ fn handle_h2_server_ingress<B>(
             break;
         }
 
-        let frame_payload = wire[offset + 9 .. offset + total_frame_len];
+        let frame_payload = wire[offset + 9..offset + total_frame_len];
 
         // Validate Anti-DoS barriers and protocol invariants
         let err = on_ingress_frame_header(sess.conn, hdr, now_ms);
@@ -573,7 +573,6 @@ fn handle_h2_server_ingress<B>(
            sess.streams[i].headers_received &&
            sess.streams[i].body_received &&
            !sess.streams[i].response_sent {
-
             let target_stream_id = sess.streams[i].stream_id;
 
             // Construct Request

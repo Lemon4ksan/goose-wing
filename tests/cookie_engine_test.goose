@@ -29,7 +29,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
         format(hdr_ok, "abcd=", val_4092[..], "; Secure");
         sub.assert_true(
             wing::set_cookie_header(jar, "https://example.com/", hdr_ok[..], clock.now_us),
-            "4096B name+value must be accepted"
+            "4096B name+value must be accepted",
         );
         sub.assert_eq(jar.cookies.len, 1);
 
@@ -39,7 +39,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
         format(hdr_over, "abcd=", val_4092[..], "; Secure");
         sub.assert_false(
             wing::set_cookie_header(jar, "https://example.com/", hdr_over[..], clock.now_us),
-            "4097B name+value must be rejected"
+            "4097B name+value must be rejected",
         );
         sub.assert_eq(jar.cookies.len, 1);
 
@@ -51,7 +51,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
         format(hdr_long_attr, "attr_cap=ok; Path=", long_path[..]);
         sub.require_true(
             wing::set_cookie_header(jar, "https://example.com/dir/page.html", hdr_long_attr[..], clock.now_us),
-            "cookie with >1024B Path attribute must still be accepted"
+            "cookie with >1024B Path attribute must still be accepted",
         );
         sub.assert_bytes_eq(jar.cookies[1].path[..], "/dir", "1025B Path must be ignored in favor of default-path '/dir'");
     };
@@ -199,7 +199,7 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_119,
         false, // is_same_site = false (cross-site)
         true,  // is_top_level_nav = true
-        false  // is_safe_method = false (POST)
+        false, // is_safe_method = false (POST)
     );
     t.assert_eq(out_119.len, 1, "at t=119s Lax+POST window must allow cross-site top-level POST");
 
@@ -208,14 +208,14 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
     var out_121_post: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_post,
-        false, true, false
+        false, true, false,
     );
     t.assert_eq(out_121_post.len, 0, "at t=121s Lax+POST window expired for unsafe POST");
 
     var out_121_get: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_get,
-        false, true, true
+        false, true, true,
     );
     t.assert_eq(out_121_get.len, 1, "at t=121s safe top-level GET is still allowed under Lax");
 
@@ -313,7 +313,7 @@ fn test_chips_and_10kb_quota(t: core::T&) {
     // 1. Partitioned cookie ingestion with valid top-level site
     t.assert_true(
         wing::set_cookie_header(jar, "https://ad.service.com/", "user_id=123; Secure; Partitioned; SameSite=None", clock.now_us, "https://publisher.com"),
-        "partitioned cookie must be accepted with top-level site"
+        "partitioned cookie must be accepted with top-level site",
     );
     t.assert_eq(jar.cookies.len, 1);
     t.assert_bytes_eq(jar.cookies[0].partition_key[..], "https://publisher.com");
@@ -387,4 +387,3 @@ fn main() {
     let ok = core::finish(runner);
     assert(ok);
 }
-

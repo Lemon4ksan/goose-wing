@@ -380,7 +380,7 @@ fn run_samesite_and_redirect_matrix(t: core::T&) {
         c.creation_utc = create_us;
 
         let got = wing::is_cookie_sendable_for_samesite(
-            c, v.is_same_site, v.is_top_level_nav, v.is_safe_method, now_us
+            c, v.is_same_site, v.is_top_level_nav, v.is_safe_method, now_us,
         );
         sub.assert_eq(got, v.expect_send, v.id);
     };
@@ -388,11 +388,11 @@ fn run_samesite_and_redirect_matrix(t: core::T&) {
     t.run("Schemeful Same-Site (SS-13 & SS-14)") { sub =>
         sub.assert_false(
             wing::is_schemeful_same_site("http", "example.com", "https", "example.com"),
-            "SS-13: http://example.com and https://example.com must be cross-site"
+            "SS-13: http://example.com and https://example.com must be cross-site",
         );
         sub.assert_true(
             wing::is_schemeful_same_site("https", "a.example.com", "https", "b.example.com"),
-            "SS-14: subdomains sharing scheme and eTLD+1 must be same-site"
+            "SS-14: subdomains sharing scheme and eTLD+1 must be same-site",
         );
     };
 }
@@ -407,7 +407,7 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
     // CHIPS-02: Partitioned cookie without Secure is rejected
     t.assert_false(
         wing::set_cookie_header(jar, "https://ads.com/", "c=1; Partitioned", clock.now_us),
-        "CHIPS-02: Partitioned cookie without Secure must be rejected"
+        "CHIPS-02: Partitioned cookie without Secure must be rejected",
     );
 
     // CHIPS-03: Fill partition ("https://news.com", "ads.com") up to 10,000 bytes (5 cookies of 2,000 B)
@@ -557,7 +557,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
         sub.assert_bytes_eq(
             cookie_hdr[..],
             "sid=panel_late; sid=admin_mid; sid=root_guest",
-            "SER-01: longer paths must precede shorter paths"
+            "SER-01: longer paths must precede shorter paths",
         );
 
         // In server parser: get_server_cookie must return FIRST occurrence ("panel_late")
@@ -566,7 +566,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
         sub.assert_bytes_eq(
             val,
             "panel_late",
-            "SRV-01: Server parser must preserve first occurrence to prevent root path shadowing"
+            "SRV-01: Server parser must preserve first occurrence to prevent root path shadowing",
         );
     };
 
@@ -799,7 +799,7 @@ fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
     format(
         json_data,
         "[{\"name\":\"valid\",\"value\":\"ok\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":true},",
-        "{\"name\":\"\",\"value\":\"nameless_val\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":true}]"
+        "{\"name\":\"\",\"value\":\"nameless_val\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":true}]",
     );
 
     let count = wing::import_json(jar, json_data[..], now_us);

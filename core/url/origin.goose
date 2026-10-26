@@ -383,4 +383,3 @@ fn is_same_site_origin_url(origin_val: const Origin&, url_val: const Url&) -> bo
     return eq_ascii_fold(origin_val.scheme[..], site_url.scheme[..]) &&
            eq_ascii_fold(orig_etld[..], site_url.registrable_domain[..]);
 }
-

@@ -144,7 +144,7 @@ fn get(
     is_same_site: bool = true,
     is_top_level_navigation: bool = true,
     is_safe_method: bool = true,
-    partition_key: const u8[:] = ""
+    partition_key: const u8[:] = "",
 ) -> const u8[:] {
     let parsed_url = parse_canonical_cookie_url(req_url);
     for &cookie_val in jar.cookies {
@@ -153,7 +153,7 @@ fn get(
         if !cookie_val.cookie_matches_request(
             parsed_url.host[..], parsed_url.path[..],
             parsed_url.scheme[..], parsed_url.port, parsed_url.is_secure,
-            true, partition_key, is_same_site, is_top_level_navigation, is_safe_method, now_us
+            true, partition_key, is_same_site, is_top_level_navigation, is_safe_method, now_us,
         ) {
             continue;
         }
@@ -297,7 +297,7 @@ fn build_cookie_header<B>(
         host, path,
         if is_secure { "https" } else { "http" },
         if is_secure { 443 } else { 80 },
-        is_secure, true, "", now_us, matched
+        is_secure, true, "", now_us, matched,
     );
     format_cookie_header_value(out, matched[..]);
 }
@@ -321,7 +321,7 @@ fn build_cookie_header<B>(
         true,
         partition_key,
         now_us,
-        matched
+        matched,
     );
     format_cookie_header_value(out, matched[..]);
 }
@@ -333,7 +333,7 @@ fn build_request_cookie_header<B>(
     is_http_api: bool,
     partition_key: const u8[:],
     now_us: i64,
-    out: B&
+    out: B&,
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
     var matched: CanonicalCookie[>..] = [];
@@ -346,7 +346,7 @@ fn build_request_cookie_header<B>(
         is_http_api,
         partition_key,
         now_us,
-        matched
+        matched,
     );
     format_cookie_header_value(out, matched[..]);
 }
@@ -376,7 +376,7 @@ fn get_canonical_cookies_for_request(
         out,
         is_same_site,
         is_top_level_navigation,
-        is_safe_method
+        is_safe_method,
     );
 }
 
@@ -405,7 +405,7 @@ fn get_canonical_cookies_for_request(
             host, path, scheme, port,
             is_secure, is_http_api, partition_key,
             is_same_site, is_top_level_navigation, is_safe_method,
-            now_us
+            now_us,
         ) {
             continue;
         }
@@ -532,12 +532,12 @@ fn purge_domain_priority_rounds(
         if need_to_evict <= 0 { break; }
 
         let target_prio, protect_sec, quota_allowed = resolve_domain_purge_round_params(
-            round_idx, need_to_evict, low_excess, med_excess, high_excess
+            round_idx, need_to_evict, low_excess, med_excess, high_excess,
         );
         if quota_allowed <= 0 { continue; }
 
         let round_evicted = jar.purge_domain_priority_round(
-            etld_plus_one, target_prio, protect_sec, quota_allowed
+            etld_plus_one, target_prio, protect_sec, quota_allowed,
         );
         if round_evicted <= 0 { continue; }
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 Convenience entry point for HTTP/3 & QUIC Interop Verification Suite.
 Delegates directly to tools/http3/runner.py.

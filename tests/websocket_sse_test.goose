@@ -16,7 +16,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         sub.assert_bytes_eq(
             accept_key[..],
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
-            "RFC 6455 Section 1.3 Sec-WebSocket-Accept key derivation matches standard vector"
+            "RFC 6455 Section 1.3 Sec-WebSocket-Accept key derivation matches standard vector",
         );
         sub.assert_true(wing::validate_websocket_accept(client_key, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "Validation succeeds");
         sub.assert_false(wing::validate_websocket_accept(client_key, "invalid_accept_key="), "Tampered accept key rejected");
@@ -416,7 +416,7 @@ fn test_server_sent_events(t: core::T&) {
         sub.assert_true(req.len > 0, "SSE request headers created");
 
         var events: wing::SseEvent[..5] = [];
-        subscr.consume( "data: chunked message\n\n", events);
+        subscr.consume("data: chunked message\n\n", events);
         sub.assert_eq(events.len, 1, "Consumed 1 event via SseSubscription");
         sub.assert_bytes_eq(events[0].data[..], "chunked message", "Event content matches");
     };

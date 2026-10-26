@@ -110,7 +110,7 @@ fn update_isolation_context(
 fn update_from_headers(
     ctx: CrossOriginIsolationContext&,
     headers: const HeaderMap&,
-    document_origin: const u8[:]
+    document_origin: const u8[:],
 ) {
     let coop = headers.get_header("cross-origin-opener-policy");
     let coep = headers.get_header("cross-origin-embedder-policy");
@@ -121,7 +121,7 @@ fn update_from_headers(
 fn update_from_headers(
     ctx: CrossOriginIsolationContext&,
     headers: const HeaderItem[:],
-    document_origin: const u8[:]
+    document_origin: const u8[:],
 ) {
     let coop = headers.find_header("cross-origin-opener-policy");
     let coep = headers.find_header("cross-origin-embedder-policy");

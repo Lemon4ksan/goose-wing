@@ -490,7 +490,6 @@ fn identify_akamai_family(fp: const AkamaiFingerprint&) -> AkamaiBrowserFamily {
     return AkamaiBrowserFamily.Unknown;
 }
 
-
 // Detects passive fingerprint anomalies between User-Agent declarations and HTTP/2 wire profile.
 fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) -> AkamaiAnomaly, const u8[:] {
     guard fp.pseudo_headers.len == 4 else {
@@ -563,7 +562,7 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
 // Extracts an AkamaiFingerprint from binary HTTP/2 connection wire frames.
 fn extract_akamai_from_wire(
     wire_bytes: const u8[:],
-    pseudo_headers_order: const u8[:]
+    pseudo_headers_order: const u8[:],
 ) -> AkamaiFingerprint, bool {
     var fp = AkamaiFingerprint { .. };
     guard wire_bytes.len >= 9 else { return fp, false; }
@@ -716,7 +715,7 @@ fn order_pseudo_headers(
     authority: const u8[:],
     scheme: const u8[:],
     path: const u8[:],
-    out: HeaderItem[..4]&
+    out: HeaderItem[..4]&,
 ) {
     out.clear();
     for b in fp.pseudo_headers {

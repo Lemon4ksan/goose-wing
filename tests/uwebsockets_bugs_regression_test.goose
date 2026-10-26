@@ -35,7 +35,7 @@ fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
     res.status_code = 200;
     wing::set_header(res, "Content-Length", "1024");
     // Body is intentionally empty (HEAD response)
-    
+
     var wire_out: u8[..1024] = [];
     wing::serialize_http1_response(res, "GooseWing", wire_out);
     let wire_str = wire_out[..];
@@ -84,7 +84,7 @@ fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
     let frag_ping: u8[6] = [
         0x09, // FIN=0, opcode=Ping
         0x80, // Masked, len=0
-        0x01, 0x02, 0x03, 0x04 // Mask key
+        0x01, 0x02, 0x03, 0x04, // Mask key
     ];
     let ok1 = wing::receive(ws, frag_ping[..], msg, reply);
     t.assert_true(ok1, "receive must handle protocol error");
@@ -98,7 +98,7 @@ fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
         0x89, // FIN=1, opcode=Ping
         0xFE, // Masked, len=126 (0x7E)
         0x00, 0x7E, // 126 bytes extended length
-        0x01, 0x02, 0x03, 0x04 // Mask key
+        0x01, 0x02, 0x03, 0x04, // Mask key
     ];
     let ok2 = wing::receive(ws2, oversize_ping[..], msg, reply2);
     t.assert_true(ok2, "receive must handle protocol error");
@@ -330,7 +330,7 @@ fn test_uweb_1898_extra_bytes_connection_poisoning(t: core::T&) {
     var server = wing::new_http_server();
     wing::add_route(server.pipeline.router, "POST", "/submit", 1);
 
-    let poisoned_stream: const u8[:] = 
+    let poisoned_stream: const u8[:] =
         "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nHELLOPOISON_EXTRA_BYTES_LINGERING";
 
     var wire_out: u8[..4096] = [];
@@ -338,7 +338,6 @@ fn test_uweb_1898_extra_bytes_connection_poisoning(t: core::T&) {
     t.assert_false(ok, "Trailing unparseable bytes after Content-Length must invalidate the stream (ok = false)");
     t.assert_true(core::index_of_slice(wire_out[..], "400 Bad Request") >= 0, "Must serialize 400 Bad Request for poisoned connection");
 }
-
 
 fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
     // RFC 6455 §5.2 & Autobahn Cases 3.1, 3.2, 3.3, 3.4 / uWS #1407:
@@ -353,7 +352,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
     var wire_non_minimal_16: u8[..32] = [
         0x81, 0xFE, 0x00, 0x0A,
         0x11, 0x22, 0x33, 0x44,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     let handled1 = wing::receive_view(ws, wire_non_minimal_16[..], view, reply);
     t.assert_true(handled1, "Handled non-minimal 16-bit length frame");
@@ -364,7 +363,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
     var ws2 = wing::new_websocket_session(false);
     var wire_high_bit_64: u8[..32] = [
         0x81, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-        0x11, 0x22, 0x33, 0x44
+        0x11, 0x22, 0x33, 0x44,
     ];
     let handled2 = wing::receive_view(ws2, wire_high_bit_64[..], view, reply);
     t.assert_true(handled2, "Handled high-bit 64-bit length frame");
@@ -446,7 +445,7 @@ fn test_uweb_1948_proxy_v2_command_and_family_validation(t: core::T&) {
     // 2. Command LOCAL (0x20) MUST NOT expose proxied addresses; native endpoint address MUST be preserved.
 
     let preamble: const u8[12] = [
-        0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A
+        0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
     ];
 
     // Case 1: fam_trans = 0x01 (UNSPEC + STREAM) - MUST FAIL

@@ -63,7 +63,7 @@ fn count_byte(s: const u8[:], b: u8) -> i64 {
     return count;
 }
 
-extern "wing_swar_find_ctl" fn native_swar_find_ctl(s: const u8[:]) -> i64;
+extern fn native_swar_find_ctl(s: const u8[:]) -> i64 = "wing_swar_find_ctl";
 
 // Scans slice 8 bytes at a time in 1 CPU cycle using SWAR hasLess(word, 32) (uWebSockets HttpParser.h).
 // Returns the index of the first control character (< 32, e.g. \r, \n, \t, \0), or s.len if none found.
@@ -71,7 +71,7 @@ fn swar_find_ctl(s: const u8[:]) -> i64 {
     return native_swar_find_ctl(s);
 }
 
-extern "wing_fast_find_crlfcrlf" fn native_fast_find_crlfcrlf(s: const u8[:]) -> i64;
+extern fn native_fast_find_crlfcrlf(s: const u8[:]) -> i64 = "wing_fast_find_crlfcrlf";
 
 // High-speed CRLFCRLF (\r\n\r\n) HTTP header delimiter scanner.
 // Returns the index of the first '\r' in \r\n\r\n, or -1 if not found.

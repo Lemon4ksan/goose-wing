@@ -138,7 +138,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         if rel_end < 0 { break; }
         if rel_end == 0 { break; } // Empty line reached
 
-        let line = rest_headers[cursor .. (cursor + rel_end)];
+        let line = rest_headers[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
         // RFC 9112 Section 5.1 & Go #34540 / CVE-2019-16276:
         // Reject header field names with leading whitespace, spaces before colon, or non-tchar bytes.
@@ -243,7 +243,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
             wire[body_start_idx..],
             out_req.body,
-            out_req.trailers
+            out_req.trailers,
         );
         guard dec_err == ChunkedDecodeError.None else { return false, 0; }
 
@@ -298,7 +298,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         if rel_end < 0 { break; }
         if rel_end == 0 { break; }
 
-        let line = rest_headers[cursor .. (cursor + rel_end)];
+        let line = rest_headers[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
         guard colon > 0 else { return false, 0; }
         let hname = line[..colon];
@@ -358,7 +358,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
             wire[header_end_idx..],
             out_res.body,
-            out_res.trailers
+            out_res.trailers,
         );
         guard dec_err == ChunkedDecodeError.None else { return false, 0; }
         return true, header_end_idx + chunked_consumed;
@@ -427,7 +427,7 @@ fn serialize_http1_chunked_response<Res, B>(
     res: const Res&,
     server_name: const u8[:],
     chunk_size: i64,
-    out_wire: B&
+    out_wire: B&,
 ) {
     serialize_status_line(res.status_code, out_wire);
     serialize_server_header(server_name, out_wire);
@@ -669,7 +669,7 @@ fn new_http_server(
 fn new_http_server_with_quota<Q>(
     host_str: const u8[:],
     port_num: u16,
-    quota: Q
+    quota: Q,
 ) -> HttpServer {
     var server = HttpServer {
         pipeline: new_server_pipeline_config(host_str, quota),
@@ -793,7 +793,7 @@ fn iterate_socket_topics<IterFn: fn(const u8[:])>(server: const HttpServer&, soc
 fn defer_ws_upgrade(
     server: const HttpServer&,
     req: const Request&,
-    sock_fd: i64
+    sock_fd: i64,
 ) -> WsPendingUpgrade, bool {
     let r_idx = find_ws_route(server, req.url[..]);
     guard r_idx >= 0 else {
@@ -813,7 +813,7 @@ fn defer_ws_upgrade(
 fn complete_ws_upgrade<B>(
     server: HttpServer&,
     pending: WsPendingUpgrade&,
-    out_wire: B&
+    out_wire: B&,
 ) -> WebSocketSession, bool {
     guard pending.in_use && !pending.is_aborted else {
         return WebSocketSession { .. }, false;
@@ -911,7 +911,7 @@ fn handle_connection_wire<B>(
     client_ip: const u8[:],
     wire_in: const u8[:],
     now_ns: u64,
-    wire_out: B&
+    wire_out: B&,
 ) -> PipelineOutcome, bool {
     wire_out.clear();
 
@@ -1093,7 +1093,7 @@ fn handle_connection_wire_pipelined_stream<B>(
     client_ip: const u8[:],
     wire_in: const u8[:],
     now_ns: u64,
-    wire_out: B&
+    wire_out: B&,
 ) -> i64, i64, bool {
     wire_out.clear();
     var stream = wire_in;
@@ -1216,7 +1216,7 @@ fn handle_connection_wire_pipelined<B>(
     client_ip: const u8[:],
     wire_in: const u8[:],
     now_ns: u64,
-    wire_out: B&
+    wire_out: B&,
 ) -> i64, bool {
     let count, _, ok = handle_connection_wire_pipelined_stream(server, client_ip, wire_in, now_ns, wire_out);
     return count, ok;
@@ -1231,7 +1231,7 @@ fn handle_connection_pipe<B>(
     client_ip: const u8[:],
     pipe: core::PipeBuffer&,
     now_ns: u64,
-    wire_out: B&
+    wire_out: B&,
 ) -> i64, bool {
     let unread_len = pipe.readable_len();
     guard unread_len > 0 else { return 0, true; }

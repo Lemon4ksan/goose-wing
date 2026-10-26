@@ -9,12 +9,12 @@ import .router;
 
 // ---- extractor bitmasks ----------------------------------------------------
 
-let ENTRY_NONE:     u32 = 0;
-let ENTRY_CONN:     u32 = 1 << 0;
-let ENTRY_PARAMS:   u32 = 1 << 1;
-let ENTRY_COOKIES:  u32 = 1 << 2;
+let ENTRY_NONE: u32 = 0;
+let ENTRY_CONN: u32 = 1 << 0;
+let ENTRY_PARAMS: u32 = 1 << 1;
+let ENTRY_COOKIES: u32 = 1 << 2;
 let ENTRY_SECURITY: u32 = 1 << 3;
-let ENTRY_ALL:      u32 = 0x0F;
+let ENTRY_ALL: u32 = 0x0F;
 
 // ---- header map pool -------------------------------------------------------
 

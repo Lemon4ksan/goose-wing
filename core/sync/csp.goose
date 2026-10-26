@@ -58,7 +58,7 @@ fn chan_rendezvous_reply<Tag>(ok: bool = true) -> bool {
 enum MuxEvent {
     DataPacket { stream_id: u16, bytes: u8[..256] },
     ControlCmd { code: u8 },
-    TimerTick  { timestamp_ns: u64 },
+    TimerTick { timestamp_ns: u64 },
     Shutdown,
 }
 

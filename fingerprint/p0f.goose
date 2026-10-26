@@ -30,23 +30,23 @@ enum P0fTcpOption {
 
 // Canonical TCP Quirks recognized in p0f v3.
 struct P0fQuirks {
-    df: bool = false,        // Don't Fragment bit set
-    id_plus: bool = false,   // IP ID non-zero when DF set
-    id_minus: bool = false,  // IP ID zero when DF NOT set
-    ecn: bool = false,       // ECN flags set (ECE/CWR)
-    zero_plus: bool = false, // Reserved bits non-zero
-    flow: bool = false,      // IPv6 flow label non-zero
-    seq_minus: bool = false, // Sequence number zero
-    ack_plus: bool = false,  // ACK non-zero in pure SYN
-    ack_minus: bool = false, // ACK zero in SYN+ACK
-    uptr_plus: bool = false, // Urgent pointer non-zero
-    urgf_plus: bool = false, // URG flag set
-    pushf_plus: bool = false,// PUSH flag set
-    ts1_minus: bool = false, // Own timestamp zero
-    ts2_plus: bool = false,  // Peer timestamp non-zero in initial SYN
-    opt_plus: bool = false,  // Trailing data after EOL
-    expt: bool = false,      // Experimental option ID (253, 254)
-    bad: bool = false,       // Malformed option
+    df: bool = false,         // Don't Fragment bit set
+    id_plus: bool = false,    // IP ID non-zero when DF set
+    id_minus: bool = false,   // IP ID zero when DF NOT set
+    ecn: bool = false,        // ECN flags set (ECE/CWR)
+    zero_plus: bool = false,  // Reserved bits non-zero
+    flow: bool = false,       // IPv6 flow label non-zero
+    seq_minus: bool = false,  // Sequence number zero
+    ack_plus: bool = false,   // ACK non-zero in pure SYN
+    ack_minus: bool = false,  // ACK zero in SYN+ACK
+    uptr_plus: bool = false,  // Urgent pointer non-zero
+    urgf_plus: bool = false,  // URG flag set
+    pushf_plus: bool = false, // PUSH flag set
+    ts1_minus: bool = false,  // Own timestamp zero
+    ts2_plus: bool = false,   // Peer timestamp non-zero in initial SYN
+    opt_plus: bool = false,   // Trailing data after EOL
+    expt: bool = false,       // Experimental option ID (253, 254)
+    bad: bool = false,        // Malformed option
 }
 
 // Complete parsed p0f v3 TCP SYN signature structure (8 fields).
@@ -280,13 +280,13 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
     let c6 = colons[6];
 
     let f0 = raw[..c0];
-    let f1 = raw[c0 + 1 .. c1];
-    let f2 = raw[c1 + 1 .. c2];
-    let f3 = raw[c2 + 1 .. c3];
-    let f4 = raw[c3 + 1 .. c4];
-    let f5 = raw[c4 + 1 .. c5];
-    let f6 = raw[c5 + 1 .. c6];
-    let f7 = raw[c6 + 1 ..];
+    let f1 = raw[c0 + 1..c1];
+    let f2 = raw[c1 + 1..c2];
+    let f3 = raw[c2 + 1..c3];
+    let f4 = raw[c3 + 1..c4];
+    let f5 = raw[c4 + 1..c5];
+    let f6 = raw[c5 + 1..c6];
+    let f7 = raw[c6 + 1..];
 
     var sig = P0fSignature {
         ip_version: 0,
@@ -353,7 +353,7 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
         guard comma_idx >= 0 else { return dummy, false; }
 
         let ws_str = f4[..comma_idx];
-        let scale_str = f4[comma_idx + 1 ..];
+        let scale_str = f4[comma_idx + 1..];
 
         if scale_str == "*" || scale_str == "-1" {
             sig.window_scale = -1;

@@ -70,7 +70,7 @@ fn prepare_hop_cookie_header(
         matched_cookies,
         samesite_eval.context_type != SameSiteContextType.CrossSite,
         ctx.is_main_frame,
-        safe_method
+        safe_method,
     );
 
     remove_header_by_name(ctx.headers, "Cookie");
@@ -101,7 +101,7 @@ fn ingest_hop_response_cookies(
                 parsed_cookie,
                 samesite_eval,
                 ctx.is_main_frame,
-                is_sec_channel
+                is_sec_channel,
             );
             if can_write {
                 session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us);

@@ -22,7 +22,7 @@ struct CheckedI64 {
     overflow: bool = false,
 }
 
-extern "gs_mulhi_u64" fn mulhi_u64(a: u64, b: u64) -> u64;
+extern fn mulhi_u64(a: u64, b: u64) -> u64 = "gs_mulhi_u64";
 
 // 64x64 -> 128-bit unsigned expanding multiplication returning (lo, hi).
 // Executed in a single hardware instruction (mulq on x86-64, umulh on ARM64).

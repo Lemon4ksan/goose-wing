@@ -300,7 +300,7 @@ fn find_matching_entry(
     req_url: const u8[:],
     req_hash: u32,
     req_headers: const HeaderMap&,
-    is_get: bool
+    is_get: bool,
 ) -> i64 {
     var matched_idx: i64 = -1;
     var newest_date_unix: i64 = -1;
@@ -350,7 +350,7 @@ fn lookup(
     cache: HttpCache&,
     req: const Request&,
     cur_now: core::Time,
-    cur_mono: core::MonotonicInstant = core::MonotonicInstant { .. }
+    cur_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
 
@@ -399,7 +399,7 @@ fn lookup(
     let metrics = evaluate_freshness(
         matched_entry.cc, req_cc, matched_entry.headers, ts,
         cache.options.shared, matched_entry.security_zeroed,
-        cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec
+        cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec,
     );
 
     if (metrics.is_fresh && !metrics.requires_revalidation) || (metrics.stale_allowed && !metrics.requires_revalidation) {
@@ -432,7 +432,7 @@ fn freshen_cached_entry_304(
     cache: HttpCache&,
     revalidate_entry_idx: i64,
     resp: const Response&,
-    ts: const CacheTimestamps&
+    ts: const CacheTimestamps&,
 ) -> ResponseDecision {
     var dec = ResponseDecision { .. };
     guard revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len else {
@@ -462,7 +462,7 @@ fn is_response_cacheable(
     req_cc: const CacheControl&,
     req_headers: const HeaderMap&,
     resp: const Response&,
-    resp_cc: const CacheControl&
+    resp_cc: const CacheControl&,
 ) -> bool {
     if req_cc.is_no_store() || resp_cc.is_no_store() { return false; }
     if resp_cc.is_must_understand() && !is_heuristically_cacheable_status(resp.status_code) { return false; }
@@ -515,7 +515,7 @@ fn on_response(
     req: const Request&,
     resp: const Response&,
     ts: const CacheTimestamps&,
-    revalidate_entry_idx: i64 = -1
+    revalidate_entry_idx: i64 = -1,
 ) -> ResponseDecision {
     var dec = ResponseDecision { response: copy(resp), .. };
 

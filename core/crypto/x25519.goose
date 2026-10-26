@@ -10,7 +10,7 @@ import std;
 // ---- 1. Field Element (10 limbs, alternating 26 and 25 bits) ----------------
 
 struct Fe10 {
-    v: i64[10] = [0; 10]
+    v: i64[10] = [0; 10],
 }
 
 inline fn x25519_load_u32_le(bytes: const u8[:], off: i64) -> u32 {

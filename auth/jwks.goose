@@ -54,7 +54,7 @@ fn new_jwks() -> Jwks {
 fn add_ed25519_key(
     jwks: Jwks&,
     kid: const u8[:],
-    pub_key: const u8[32]
+    pub_key: const u8[32],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
     var key = JwksKey {
@@ -76,7 +76,7 @@ fn add_symmetric_key(
     jwks: Jwks&,
     kid: const u8[:],
     alg: JwtAlg,
-    secret_key: const u8[:]
+    secret_key: const u8[:],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
     guard secret_key.len > 0 && secret_key.len <= 64 else { return false; }
@@ -245,7 +245,7 @@ fn dispatch_jwks_verification(
     options: const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header: JwtHeader&,
-    out_claims: JwtClaims&
+    out_claims: JwtClaims&,
 ) -> JwtError {
     if key.kty == JwkKeyType.OKP {
         return verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims);
@@ -263,7 +263,7 @@ fn verify(
     options: const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header: JwtHeader&,
-    out_claims: JwtClaims&
+    out_claims: JwtClaims&,
 ) -> JwtError {
     let parse_err = parse_jwt_unverified(token, out_header, out_claims);
     guard parse_err == JwtError.None else { return parse_err; }

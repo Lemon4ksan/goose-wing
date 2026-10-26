@@ -206,7 +206,7 @@ fn push_log(pipeline: InterceptorPipeline&, msg: const u8[:]) {
 fn apply_app_interceptors_request(
     pipeline: InterceptorPipeline&,
     req: Request&,
-    clock_us: i64
+    clock_us: i64,
 ) {
     for &entry in pipeline.entries {
         guard entry.enabled && entry.scope == InterceptorScope.Application else { continue; }
@@ -264,7 +264,7 @@ fn apply_app_interceptors_response(
     req: const Request&,
     resp: Response&,
     err: const Error&,
-    duration_us: i64
+    duration_us: i64,
 ) {
     pipeline.metrics.total_requests += 1;
     pipeline.metrics.last_request_duration_us = duration_us;
@@ -308,7 +308,7 @@ fn apply_network_interceptors_request(
     target_url: const u8[:],
     method: const u8[:],
     body_len: i64,
-    hop_index: i64
+    hop_index: i64,
 ) {
     pipeline.metrics.network_hops += 1;
     if body_len > 0 {
@@ -346,7 +346,7 @@ fn apply_network_interceptors_response(
     pipeline: InterceptorPipeline&,
     resp: Response&,
     hop_index: i64,
-    hop_duration_us: i64
+    hop_duration_us: i64,
 ) {
     pipeline.metrics.last_hop_duration_us = hop_duration_us;
     pipeline.metrics.total_bytes_received += resp.body.len as! u64;

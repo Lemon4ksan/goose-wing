@@ -37,7 +37,7 @@ fn hpke_labeled_extract(
     suite_id: const u8[:],
     salt: const u8[:],
     label: const u8[:],
-    ikm: const u8[:]
+    ikm: const u8[:],
 ) -> u8[32] {
     var labeled_ikm: u8[..256] = [];
     labeled_ikm.append("HPKE-v1");
@@ -55,7 +55,7 @@ fn hpke_labeled_expand(
     label: const u8[:],
     info: const u8[:],
     length: u16,
-    out: u8[:]
+    out: u8[:],
 ) -> bool {
     var labeled_info: u8[..256] = [];
     labeled_info.push(((length >> 8) & 0xFF) as u8);
@@ -75,7 +75,7 @@ fn derive_kem_shared_secret(
     dh: const u8[32]&,
     enc: const u8[32]&,
     pkR: const u8[32]&,
-    out_shared_secret: u8[32]&
+    out_shared_secret: u8[32]&,
 ) -> bool {
     var kem_context: u8[64] = [0; 64];
     for i in 32 {
@@ -91,7 +91,7 @@ fn dhkem_x25519_encap(
     pkR: const u8[32]&,
     ephemeral_sk: const u8[32]&,
     out_enc: u8[32]&,
-    out_shared_secret: u8[32]&
+    out_shared_secret: u8[32]&,
 ) -> bool {
     out_enc = core::x25519_base_scalarmult(ephemeral_sk);
     let dh = core::x25519_scalarmult(ephemeral_sk, pkR);
@@ -104,7 +104,7 @@ fn dhkem_x25519_decap(
     enc: const u8[32]&,
     skR: const u8[32]&,
     pkR: const u8[32]&,
-    out_shared_secret: u8[32]&
+    out_shared_secret: u8[32]&,
 ) -> bool {
     let dh = core::x25519_scalarmult(skR, enc);
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];
@@ -122,7 +122,7 @@ fn hpke_setup_base_s(
     aead_id: u16,
     ephemeral_sk: const u8[32]&,
     out_enc: u8[32]&,
-    out_ctx: HpkeContext&
+    out_ctx: HpkeContext&,
 ) -> bool {
     guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
@@ -182,7 +182,7 @@ fn hpke_setup_base_r(
     kem_id: u16,
     kdf_id: u16,
     aead_id: u16,
-    out_ctx: HpkeContext&
+    out_ctx: HpkeContext&,
 ) -> bool {
     guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
@@ -246,7 +246,7 @@ fn hpke_seal(
     ctx: HpkeContext&,
     aad: const u8[:],
     pt: const u8[:],
-    out_ct: u8[>..]&
+    out_ct: u8[>..]&,
 ) -> bool {
     let nonce = hpke_compute_nonce(ctx);
     ctx.seq += 1;
@@ -274,7 +274,7 @@ fn hpke_open(
     ctx: HpkeContext&,
     aad: const u8[:],
     ct_with_tag: const u8[:],
-    out_pt: u8[>..]&
+    out_pt: u8[>..]&,
 ) -> bool {
     guard ct_with_tag.len >= 16 else { return false; }
     let ct_len = ct_with_tag.len - 16;
@@ -307,7 +307,7 @@ fn hpke_seal_base(
     ephemeral_sk: const u8[32]&,
     aead_id: u16,
     out_enc: u8[32]&,
-    out_ct: u8[>..]&
+    out_ct: u8[>..]&,
 ) -> bool {
     var ctx = HpkeContext { .. };
     guard hpke_setup_base_s(
@@ -318,7 +318,7 @@ fn hpke_seal_base(
         aead_id,
         ephemeral_sk,
         out_enc,
-        ctx
+        ctx,
     ) else {
         return false;
     }
@@ -333,7 +333,7 @@ fn hpke_open_base(
     aad: const u8[:],
     ct_with_tag: const u8[:],
     aead_id: u16,
-    out_pt: u8[>..]&
+    out_pt: u8[>..]&,
 ) -> bool {
     var ctx = HpkeContext { .. };
     guard hpke_setup_base_r(
@@ -343,7 +343,7 @@ fn hpke_open_base(
         HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
         HPKE_KDF_HKDF_SHA256,
         aead_id,
-        ctx
+        ctx,
     ) else {
         return false;
     }

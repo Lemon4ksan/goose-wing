@@ -36,17 +36,17 @@ fn byte_to_frame_type(b: u8) -> H2FrameType {
         0x7 => H2FrameType.GoAway,
         0x8 => H2FrameType.WindowUpdate,
         0x9 => H2FrameType.Continuation,
-        _   => H2FrameType.Unknown,
+        _ => H2FrameType.Unknown,
     };
 }
 
 // ---- frame flags -----------------------------------------------------------
 
-let H2_FLAG_END_STREAM:  u8 = 0x01;
-let H2_FLAG_ACK:         u8 = 0x01;
+let H2_FLAG_END_STREAM: u8 = 0x01;
+let H2_FLAG_ACK: u8 = 0x01;
 let H2_FLAG_END_HEADERS: u8 = 0x04;
-let H2_FLAG_PADDED:      u8 = 0x08;
-let H2_FLAG_PRIORITY:    u8 = 0x20;
+let H2_FLAG_PADDED: u8 = 0x08;
+let H2_FLAG_PRIORITY: u8 = 0x20;
 
 // ---- error codes -----------------------------------------------------------
 

@@ -17,8 +17,8 @@ let NULL_SET: ByteSet = byte_set(NULL_BYTES[..]);
 
 // ---- lexical validation & fast word operations -----------------------------
 
-extern "wing_swar_to_lower_64" fn native_swar_to_lower_64(v: u64) -> u64;
-extern "wing_swar_to_lower" fn native_swar_to_lower(slice: u8[:]);
+extern fn native_swar_to_lower_64(v: u64) -> u64 = "wing_swar_to_lower_64";
+extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
 
 // 64-bit SWAR parallel ASCII lowercase (Alex Hultman / uWebSockets HttpParser.h)
 // Evaluates 8 ASCII bytes in parallel, translating 'A'..'Z' to 'a'..'z' in 4 CPU cycles without branches.
@@ -46,14 +46,14 @@ inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
 }
 
 // Header presence bitmask constants (O(1) duplicate & smuggling detector)
-const HDR_PRESENCE_NONE: u32              = 0;
-const HDR_PRESENCE_HOST: u32              = 1 << 0;
-const HDR_PRESENCE_CONTENT_LENGTH: u32    = 1 << 1;
+const HDR_PRESENCE_NONE: u32 = 0;
+const HDR_PRESENCE_HOST: u32 = 1 << 0;
+const HDR_PRESENCE_CONTENT_LENGTH: u32 = 1 << 1;
 const HDR_PRESENCE_TRANSFER_ENCODING: u32 = 1 << 2;
-const HDR_PRESENCE_CONNECTION: u32        = 1 << 3;
-const HDR_PRESENCE_UPGRADE: u32           = 1 << 4;
+const HDR_PRESENCE_CONNECTION: u32 = 1 << 3;
+const HDR_PRESENCE_UPGRADE: u32 = 1 << 4;
 const HDR_PRESENCE_SEC_WEBSOCKET_KEY: u32 = 1 << 5;
-const HDR_PRESENCE_SMUGGLING_MASK: u32    = (1 << 1) | (1 << 2);
+const HDR_PRESENCE_SMUGGLING_MASK: u32 = (1 << 1) | (1 << 2);
 
 struct HeaderPresenceTracker {
     mask: u32 = 0,
@@ -77,7 +77,7 @@ fn track_header_presence(
     tracker: HeaderPresenceTracker&,
     name: const u8[:],
     val: const u8[:],
-    hdr_idx: i16
+    hdr_idx: i16,
 ) -> bool {
     if eq_ascii_fold(name, "host") {
         if (tracker.mask & HDR_PRESENCE_HOST) != 0 {

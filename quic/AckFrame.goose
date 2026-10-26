@@ -21,61 +21,61 @@ enum PnSpaceId {
 // ACK Range interval [smallest, largest], inclusive
 struct AckInterval {
     smallest: u64 = 0,
-    largest:  u64 = 0,
+    largest: u64 = 0,
 }
 
 struct AckRange {
-    gap:       u64 = 0,
+    gap: u64 = 0,
     ack_range: u64 = 0,
 }
 
 // ACK / ACK_ECN Frame structure (RFC 9000 Section 19.3)
 struct AckFrame {
-    is_ecn:          bool = false,
-    largest_acked:   u64 = 0,
-    ack_delay:       u64 = 0,
+    is_ecn: bool = false,
+    largest_acked: u64 = 0,
+    ack_delay: u64 = 0,
     first_ack_range: u64 = 0,
-    ranges:          AckRange[..64] = [],
-    ect0_count:      u64 = 0,
-    ect1_count:      u64 = 0,
-    ecn_ce_count:    u64 = 0,
+    ranges: AckRange[..64] = [],
+    ect0_count: u64 = 0,
+    ect1_count: u64 = 0,
+    ecn_ce_count: u64 = 0,
 }
 
 struct SentPacketMeta {
-    pn:            u64 = 0,
-    time_sent_us:  u64 = 0,
-    size_bytes:    u64 = 0,
+    pn: u64 = 0,
+    time_sent_us: u64 = 0,
+    size_bytes: u64 = 0,
     ack_eliciting: bool = false,
-    in_flight:     bool = false,
+    in_flight: bool = false,
 }
 
 struct PnSpaceState {
-    space_id:                      PnSpaceId = PnSpaceId.Initial,
-    largest_sent_pn:               u64 = 0,
-    has_sent_packets:              bool = false,
-    largest_acked_pn:              u64 = 0,
-    has_acked_packets:             bool = false,
-    largest_recv_pn:               u64 = 0,
-    has_recv_packets:              bool = false,
+    space_id: PnSpaceId = PnSpaceId.Initial,
+    largest_sent_pn: u64 = 0,
+    has_sent_packets: bool = false,
+    largest_acked_pn: u64 = 0,
+    has_acked_packets: bool = false,
+    largest_recv_pn: u64 = 0,
+    has_recv_packets: bool = false,
     time_of_last_ack_eliciting_us: u64 = 0,
-    loss_time_us:                  u64 = 0,
-    sent_packets:                  SentPacketMeta[..128] = [],
-    recv_ranges:                   AckInterval[..64] = [],
+    loss_time_us: u64 = 0,
+    sent_packets: SentPacketMeta[..128] = [],
+    recv_ranges: AckInterval[..64] = [],
 }
 
 struct RttState {
-    latest_rtt_us:        u64 = 0,
-    min_rtt_us:           u64 = 0,
-    smoothed_rtt_us:      u64 = 333000, // kInitialRtt = 333 ms (RFC 9002 Sec 6.2.2)
-    rttvar_us:            u64 = 166500, // kInitialRtt / 2
-    max_ack_delay_us:     u64 = 25000,  // 25 ms default (RFC 9000 Sec 18.2)
+    latest_rtt_us: u64 = 0,
+    min_rtt_us: u64 = 0,
+    smoothed_rtt_us: u64 = 333000,      // kInitialRtt = 333 ms (RFC 9002 Sec 6.2.2)
+    rttvar_us: u64 = 166500,            // kInitialRtt / 2
+    max_ack_delay_us: u64 = 25000,      // 25 ms default (RFC 9000 Sec 18.2)
     first_sample_time_us: u64 = 0,
 }
 
 const QUIC_LOSS_PACKET_THRESHOLD: u64 = 3;    // kPacketThreshold (RFC 9002 Sec 6.1.1)
-const QUIC_LOSS_TIME_NUMERATOR:   u64 = 9;    // 9/8 kTimeThreshold (RFC 9002 Sec 6.1.2)
+const QUIC_LOSS_TIME_NUMERATOR: u64 = 9;      // 9/8 kTimeThreshold (RFC 9002 Sec 6.1.2)
 const QUIC_LOSS_TIME_DENOMINATOR: u64 = 8;
-const QUIC_TIMER_GRANULARITY_US:  u64 = 1000; // 1 ms kGranularity
+const QUIC_TIMER_GRANULARITY_US: u64 = 1000; // 1 ms kGranularity
 
 // ---- 2. ack frame encoder & decoder (rfc 9000 section 19.3) -----------------
 
@@ -179,7 +179,7 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
     };
 
     var prev_smallest = ranges[0].smallest;
-    for i in 1 .. ranges.len {
+    for i in 1..ranges.len {
         let cur_range = ranges[i];
         guard prev_smallest >= cur_range.largest + 2 else { return AckFrame {}, false; }
         let gap = prev_smallest - cur_range.largest - 2;
@@ -198,7 +198,7 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
 fn parse_and_validate_ack(
     space: const PnSpaceState&,
     ack: const AckFrame&,
-    out_intervals: AckInterval[..64]&
+    out_intervals: AckInterval[..64]&,
 ) -> bool {
     guard space.has_sent_packets else { return false; }
     guard ack.largest_acked <= space.largest_sent_pn else { return false; } // OACK forward attack!
@@ -274,7 +274,7 @@ fn update_rtt(
     latest_rtt: u64,
     ack_delay: u64,
     handshake_confirmed: bool,
-    now_us: u64
+    now_us: u64,
 ) {
     rtt.latest_rtt_us = latest_rtt;
 
@@ -312,7 +312,7 @@ fn detect_lost_packets(
     space: PnSpaceState&,
     rtt: const RttState&,
     now_us: u64,
-    out_lost: SentPacketMeta[..64]&
+    out_lost: SentPacketMeta[..64]&,
 ) {
     guard space.has_acked_packets else { return; }
     space.loss_time_us = 0;
@@ -365,9 +365,9 @@ enum PtoTimerMode {
 }
 
 struct PtoTimerDecision {
-    mode:           PtoTimerMode = PtoTimerMode.None,
+    mode: PtoTimerMode = PtoTimerMode.None,
     target_time_us: u64 = 0,
-    space_id:       PnSpaceId = PnSpaceId.Initial,
+    space_id: PnSpaceId = PnSpaceId.Initial,
 }
 
 // Finds earliest loss detection time across all active spaces (Priority 1).
@@ -409,7 +409,7 @@ fn evaluate_pto_timer(
     is_server: bool,
     is_amplification_limited: bool,
     peer_completed_addr_validation: bool,
-    handshake_confirmed: bool
+    handshake_confirmed: bool,
 ) -> PtoTimerDecision {
     // Priority 1: Time threshold loss detection
     let loss_t, loss_sp = get_earliest_loss_time(spaces);

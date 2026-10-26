@@ -62,7 +62,7 @@ fn build_grpc_request_headers(
     cfg: const GrpcCallConfig&,
     host: const u8[:],
     scheme: const u8[:],
-    out_headers: HeaderMap&
+    out_headers: HeaderMap&,
 ) {
     reset_for_keep_alive(out_headers);
 
@@ -109,7 +109,7 @@ fn build_grpc_http_request(
     cfg: const GrpcCallConfig&,
     base_url: const u8[:],
     serialized_msg: const u8[:],
-    out_req: Request&
+    out_req: Request&,
 ) {
     out_req.method.clear();
     out_req.method.append("POST");
@@ -176,7 +176,7 @@ fn parse_grpc_unary_response(
     res_trailers: const HeaderMap&,
     body: const u8[:],
     is_web: bool,
-    out_resp: GrpcResponse&
+    out_resp: GrpcResponse&,
 ) -> bool {
     out_resp.payload.clear();
     out_resp.message.clear();
@@ -244,7 +244,7 @@ fn grpc_unary_call(
     base_url: const u8[:],
     cfg: const GrpcCallConfig&,
     request_msg: const u8[:],
-    out_resp: GrpcResponse&
+    out_resp: GrpcResponse&,
 ) -> bool {
     var req = new_request("POST", "");
     build_grpc_http_request(cfg, base_url, request_msg, req);

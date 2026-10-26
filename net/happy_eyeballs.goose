@@ -24,7 +24,7 @@ fn compute_effective_cad_ms(
     observed_rtt_ms: i64,
     rtt_known: bool,
     min_cad_ms: i64 = HE_MIN_CAD_MS,
-    max_cad_ms: i64 = HE_MAX_CAD_MS
+    max_cad_ms: i64 = HE_MAX_CAD_MS,
 ) -> i64 {
     let eff_min = core::ct_max_i64(min_cad_ms, HE_ABSOLUTE_FLOOR_CAD_MS);
     let eff_max = core::ct_max_i64(max_cad_ms, eff_min);
@@ -89,7 +89,7 @@ fn new_dns_candidate(
     ip_str: const u8[:],
     port_num: u16,
     proto: L4Protocol = L4Protocol.Tcp,
-    prec: i32 = 40
+    prec: i32 = 40,
 ) -> DnsCandidate {
     var c = DnsCandidate {
         family: fam,
@@ -109,7 +109,7 @@ fn interleave_candidates_he(
     ipv6_list: const DnsCandidate[:],
     ipv4_list: const DnsCandidate[:],
     out: DnsCandidate[..32]&,
-    first_family_count: i32 = HE_FIRST_ADDRESS_FAMILY_COUNT
+    first_family_count: i32 = HE_FIRST_ADDRESS_FAMILY_COUNT,
 ) {
     out.clear();
     var idx6: i64 = 0;
@@ -240,7 +240,7 @@ fn check_dns_resolution_delay_tick(task: DnsRaceTask&, now_ms: i64) -> bool {
 // Injects late DNS responses into an already running candidate list.
 fn inject_late_dns_candidates(
     pending_queue: DnsCandidate[..32]&,
-    new_candidates: const DnsCandidate[:]
+    new_candidates: const DnsCandidate[:],
 ) {
     for &nc in new_candidates {
         if pending_queue.len < 32 {
@@ -402,7 +402,7 @@ fn should_create_dns_alpn_h3_job(
     is_https: bool,
     quic_enabled: bool,
     uses_proxy: bool,
-    has_available_quic_session: bool
+    has_available_quic_session: bool,
 ) -> bool {
     // Only created on HTTPS, when QUIC is enabled, no proxy is configured,
     // and no existing QUIC session can be synchronously reused.
@@ -413,7 +413,7 @@ fn should_create_dns_alpn_h3_job(
 fn compute_main_job_waiting_delay_ms(
     has_open_tcp_in_pool: bool,
     dns_alpn_h3_failed_no_match: bool,
-    configured_quic_delay_ms: i64 = 200
+    configured_quic_delay_ms: i64 = 200,
 ) -> i64 {
     // Optimization: if TCP socket already exists or ALPN confirms no HTTP/3, cancel waiting delay
     if has_open_tcp_in_pool || dns_alpn_h3_failed_no_match {

@@ -10,38 +10,38 @@ import std;
 import core from "..";
 
 // Native C shims (shim/tcp.c)
-extern "wing_tcp_init" fn native_tcp_init() -> i32;
-extern "wing_tcp_cleanup" fn native_tcp_cleanup();
-extern "wing_tcp_listen" fn native_tcp_listen(host: const u8[:], port: u16, backlog: i32) -> i64;
-extern "wing_tcp_getsockname_port" fn native_tcp_getsockname_port(sock_fd: i64) -> u16;
-extern "wing_tcp_accept" fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64;
-extern "wing_tcp_connect" fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64;
-extern "wing_tcp_send" fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32;
-extern "wing_tcp_send2" fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32;
-extern "wing_tcp_recv" fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32;
-extern "wing_tcp_close" fn native_tcp_close(sock_fd: i64);
-extern "wing_tcp_set_defer_accept" fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32;
-extern "wing_tcp_set_user_timeout" fn native_tcp_set_user_timeout(sock_fd: i64, timeout_ms: u32) -> i32;
-extern "wing_tcp_set_keepalive_params" fn native_tcp_set_keepalive_params(sock_fd: i64, idle_sec: i32, intvl_sec: i32, cnt: i32) -> i32;
-extern "wing_tcp_set_syn_retries" fn native_tcp_set_syn_retries(sock_fd: i64, count: i32) -> i32;
-extern "wing_tcp_get_notsent_bytes" fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64;
-extern "wing_tcp_get_readable_bytes" fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64;
-extern "wing_get_env_port" fn get_env_port(default_port: u16) -> u16;
-extern "wing_get_env_workers" fn get_env_workers(default_workers: i64) -> i64;
-extern "wing_tcp_set_nonblocking" fn native_tcp_set_nonblocking(sock_fd: i64, nonblocking: i32) -> i32;
-extern "wing_tcp_set_quickack" fn native_tcp_set_quickack(sock_fd: i64, enable: i32) -> i32;
-extern "wing_tcp_set_cork" fn native_tcp_set_cork(sock_fd: i64, enable: i32) -> i32;
-extern "wing_tcp_accept_nonblocking" fn native_tcp_accept_nonblocking(listener_fd: i64) -> i64;
-extern "wing_tcp_recv_nonblocking" fn native_tcp_recv_nonblocking(sock_fd: i64, buf: u8[:]) -> i32;
-extern "wing_epoll_create" fn native_epoll_create() -> i64;
-extern "wing_epoll_add" fn native_epoll_add(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32;
-extern "wing_epoll_mod" fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32;
-extern "wing_epoll_del" fn native_epoll_del(epfd: i64, sock_fd: i64) -> i32;
-extern "wing_epoll_wait" fn native_epoll_wait(epfd: i64, out_fds: i64[:], out_udata: u64[:], timeout_ms: i32) -> i32;
-extern "wing_epoll_close" fn native_epoll_close(epfd: i64);
-extern "wing_fast_cork_append" fn native_fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64;
-extern "wing_set_cpu_affinity" fn native_set_cpu_affinity(cpu_id: i64) -> i32;
-extern "wing_tcp_set_incoming_cpu" fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32;
+extern fn native_tcp_init() -> i32 = "wing_tcp_init";
+extern fn native_tcp_cleanup() = "wing_tcp_cleanup";
+extern fn native_tcp_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_tcp_listen";
+extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
+extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
+extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
+extern fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send";
+extern fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 = "wing_tcp_send2";
+extern fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32 = "wing_tcp_recv";
+extern fn native_tcp_close(sock_fd: i64) = "wing_tcp_close";
+extern fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32 = "wing_tcp_set_defer_accept";
+extern fn native_tcp_set_user_timeout(sock_fd: i64, timeout_ms: u32) -> i32 = "wing_tcp_set_user_timeout";
+extern fn native_tcp_set_keepalive_params(sock_fd: i64, idle_sec: i32, intvl_sec: i32, cnt: i32) -> i32 = "wing_tcp_set_keepalive_params";
+extern fn native_tcp_set_syn_retries(sock_fd: i64, count: i32) -> i32 = "wing_tcp_set_syn_retries";
+extern fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64 = "wing_tcp_get_notsent_bytes";
+extern fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64 = "wing_tcp_get_readable_bytes";
+extern fn get_env_port(default_port: u16) -> u16 = "wing_get_env_port";
+extern fn get_env_workers(default_workers: i64) -> i64 = "wing_get_env_workers";
+extern fn native_tcp_set_nonblocking(sock_fd: i64, nonblocking: i32) -> i32 = "wing_tcp_set_nonblocking";
+extern fn native_tcp_set_quickack(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_quickack";
+extern fn native_tcp_set_cork(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_cork";
+extern fn native_tcp_accept_nonblocking(listener_fd: i64) -> i64 = "wing_tcp_accept_nonblocking";
+extern fn native_tcp_recv_nonblocking(sock_fd: i64, buf: u8[:]) -> i32 = "wing_tcp_recv_nonblocking";
+extern fn native_epoll_create() -> i64 = "wing_epoll_create";
+extern fn native_epoll_add(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_add";
+extern fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_mod";
+extern fn native_epoll_del(epfd: i64, sock_fd: i64) -> i32 = "wing_epoll_del";
+extern fn native_epoll_wait(epfd: i64, out_fds: i64[:], out_udata: u64[:], timeout_ms: i32) -> i32 = "wing_epoll_wait";
+extern fn native_epoll_close(epfd: i64) = "wing_epoll_close";
+extern fn native_fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64 = "wing_fast_cork_append";
+extern fn native_set_cpu_affinity(cpu_id: i64) -> i32 = "wing_set_cpu_affinity";
+extern fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32 = "wing_tcp_set_incoming_cpu";
 
 // Event flags for epoll multiplexer
 const EPOLL_READ: u32 = 1;
@@ -307,7 +307,7 @@ fn async_socket_write(
     cork: core::CorkBuffer&,
     bp: BackPressure&,
     data: const u8[:],
-    optionally: bool = false
+    optionally: bool = false,
 ) -> i32, bool {
     guard fd > 0 else { return 0, false; }
 
@@ -439,7 +439,6 @@ fn tcp_set_cork(fd: i64, enable: bool = true) -> bool {
     guard fd > 0 else { return false; }
     return native_tcp_set_cork(fd, if enable { 1 } else { 0 }) == 0;
 }
-
 
 // Accepts an incoming connection in non-blocking mode.
 // Returns socket handle (> 0), 0 if no connection pending (EAGAIN), or -1 on error.

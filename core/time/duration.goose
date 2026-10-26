@@ -6,25 +6,24 @@ namespace core;
 
 import std;
 
-
-const NANOSECOND:  i64 = 1;
+const NANOSECOND: i64 = 1;
 const MICROSECOND: i64 = 1000 * NANOSECOND;
 const MILLISECOND: i64 = 1000 * MICROSECOND;
-const SECOND:      i64 = 1000 * MILLISECOND;
-const MINUTE:      i64 = 60 * SECOND;
-const HOUR:        i64 = 60 * MINUTE;
-const DAY:         i64 = 24 * HOUR;
-const WEEK:        i64 = 7 * DAY;
+const SECOND: i64 = 1000 * MILLISECOND;
+const MINUTE: i64 = 60 * SECOND;
+const HOUR: i64 = 60 * MINUTE;
+const DAY: i64 = 24 * HOUR;
+const WEEK: i64 = 7 * DAY;
 
 // Exact scalar time conversions
 const SECS_PER_MINUTE: i64 = 60;
-const SECS_PER_HOUR:   i64 = 3600;
-const SECS_PER_DAY:    i64 = 86400;
+const SECS_PER_HOUR: i64 = 3600;
+const SECS_PER_DAY: i64 = 86400;
 
-const NANOS_PER_MICRO:   i64 = 1000;
-const MICROS_PER_MILLI:  i64 = 1000;
-const NANOS_PER_MILLI:   i64 = 1000000;
-const NANOS_PER_SEC:     i64 = 1000000000;
+const NANOS_PER_MICRO: i64 = 1000;
+const MICROS_PER_MILLI: i64 = 1000;
+const NANOS_PER_MILLI: i64 = 1000000;
+const NANOS_PER_SEC: i64 = 1000000000;
 
 // Extreme 64-bit integer duration boundaries
 const DURATION_MIN_NANOS: i64 = -9223372036854775807 - 1;
@@ -33,7 +32,6 @@ let DURATION_MIN_FORMATTED: const u8[:] = "-2562047h47m16.854775808s";
 
 // Maximum wall clock seconds representable in i64 nanoseconds (~292 years)
 const MAX_WALL_SEC_FOR_NANOS: i64 = 9223372036;
-
 
 // ---- duration: nanosecond-precision interval -------------------------------
 
@@ -259,4 +257,3 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     if is_neg { total_nanos = -total_nanos; }
     return Duration { nanos: total_nanos }, true;
 }
-

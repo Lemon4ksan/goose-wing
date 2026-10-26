@@ -106,7 +106,7 @@ fn poly1305_process_block(
     m: const u8[17]&,
     r0: u64, r1: u64, r2: u64, r3: u64, r4: u64,
     s1: u64, s2: u64, s3: u64, s4: u64,
-    h0: u64&, h1: u64&, h2: u64&, h3: u64&, h4: u64&
+    h0: u64&, h1: u64&, h2: u64&, h3: u64&, h4: u64&,
 ) {
     let m0: u64 = core::read_le_u32(m[..], 0) & 0x3FFFFFF;
     let m1: u64 = (core::read_le_u32(m[..], 3) >> 2) & 0x3FFFFFF;
@@ -132,7 +132,7 @@ fn poly1305_process_block(
 
 fn poly1305_finalize(
     key32: const u8[32]&,
-    h0_in: u64, h1_in: u64, h2_in: u64, h3_in: u64, h4_in: u64
+    h0_in: u64, h1_in: u64, h2_in: u64, h3_in: u64, h4_in: u64,
 ) -> u8[16] {
     var h0 = h0_in;
     var h1 = h1_in;

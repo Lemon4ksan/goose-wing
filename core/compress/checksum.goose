@@ -577,54 +577,54 @@ simd fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
 
     // Process 64 bytes per iteration (4 x 16-byte slicing-by-16)
     while offset + 64 <= buf.len {
-        let s = buf[offset .. offset + 64];
+        let s = buf[offset..offset + 64];
 
         // Block 0: bytes 0..15
         c ^= read_le_u32(s, 0);
-        let a0 = CRC32_TABLE_15[c & 0xFF]         ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
+        let a0 = CRC32_TABLE_15[c & 0xFF] ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
         let a1 = CRC32_TABLE_13[(c >> 16) & 0xFF] ^ CRC32_TABLE_12[c >> 24];
-        let a2 = CRC32_TABLE_11[s[4]]             ^ CRC32_TABLE_10[s[5]];
-        let a3 = CRC32_TABLE_9[s[6]]              ^ CRC32_TABLE_8[s[7]];
-        let a4 = CRC32_TABLE_7[s[8]]              ^ CRC32_TABLE_6[s[9]];
-        let a5 = CRC32_TABLE_5[s[10]]             ^ CRC32_TABLE_4[s[11]];
-        let a6 = CRC32_TABLE_3[s[12]]             ^ CRC32_TABLE_2[s[13]];
-        let a7 = CRC32_TABLE_1[s[14]]             ^ CRC32_TABLE_0[s[15]];
+        let a2 = CRC32_TABLE_11[s[4]] ^ CRC32_TABLE_10[s[5]];
+        let a3 = CRC32_TABLE_9[s[6]] ^ CRC32_TABLE_8[s[7]];
+        let a4 = CRC32_TABLE_7[s[8]] ^ CRC32_TABLE_6[s[9]];
+        let a5 = CRC32_TABLE_5[s[10]] ^ CRC32_TABLE_4[s[11]];
+        let a6 = CRC32_TABLE_3[s[12]] ^ CRC32_TABLE_2[s[13]];
+        let a7 = CRC32_TABLE_1[s[14]] ^ CRC32_TABLE_0[s[15]];
         c = ((a0 ^ a1) ^ (a2 ^ a3)) ^ ((a4 ^ a5) ^ (a6 ^ a7));
 
         // Block 1: bytes 16..31
         c ^= read_le_u32(s, 16);
-        let b0 = CRC32_TABLE_15[c & 0xFF]         ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
+        let b0 = CRC32_TABLE_15[c & 0xFF] ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
         let b1 = CRC32_TABLE_13[(c >> 16) & 0xFF] ^ CRC32_TABLE_12[c >> 24];
-        let b2 = CRC32_TABLE_11[s[20]]            ^ CRC32_TABLE_10[s[21]];
-        let b3 = CRC32_TABLE_9[s[22]]             ^ CRC32_TABLE_8[s[23]];
-        let b4 = CRC32_TABLE_7[s[24]]             ^ CRC32_TABLE_6[s[25]];
-        let b5 = CRC32_TABLE_5[s[26]]             ^ CRC32_TABLE_4[s[27]];
-        let b6 = CRC32_TABLE_3[s[28]]             ^ CRC32_TABLE_2[s[29]];
-        let b7 = CRC32_TABLE_1[s[30]]             ^ CRC32_TABLE_0[s[31]];
+        let b2 = CRC32_TABLE_11[s[20]] ^ CRC32_TABLE_10[s[21]];
+        let b3 = CRC32_TABLE_9[s[22]] ^ CRC32_TABLE_8[s[23]];
+        let b4 = CRC32_TABLE_7[s[24]] ^ CRC32_TABLE_6[s[25]];
+        let b5 = CRC32_TABLE_5[s[26]] ^ CRC32_TABLE_4[s[27]];
+        let b6 = CRC32_TABLE_3[s[28]] ^ CRC32_TABLE_2[s[29]];
+        let b7 = CRC32_TABLE_1[s[30]] ^ CRC32_TABLE_0[s[31]];
         c = ((b0 ^ b1) ^ (b2 ^ b3)) ^ ((b4 ^ b5) ^ (b6 ^ b7));
 
         // Block 2: bytes 32..47
         c ^= read_le_u32(s, 32);
-        let c0 = CRC32_TABLE_15[c & 0xFF]         ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
+        let c0 = CRC32_TABLE_15[c & 0xFF] ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
         let c1 = CRC32_TABLE_13[(c >> 16) & 0xFF] ^ CRC32_TABLE_12[c >> 24];
-        let c2 = CRC32_TABLE_11[s[36]]            ^ CRC32_TABLE_10[s[37]];
-        let c3 = CRC32_TABLE_9[s[38]]             ^ CRC32_TABLE_8[s[39]];
-        let c4 = CRC32_TABLE_7[s[40]]             ^ CRC32_TABLE_6[s[41]];
-        let c5 = CRC32_TABLE_5[s[42]]             ^ CRC32_TABLE_4[s[43]];
-        let c6 = CRC32_TABLE_3[s[44]]             ^ CRC32_TABLE_2[s[45]];
-        let c7 = CRC32_TABLE_1[s[46]]             ^ CRC32_TABLE_0[s[47]];
+        let c2 = CRC32_TABLE_11[s[36]] ^ CRC32_TABLE_10[s[37]];
+        let c3 = CRC32_TABLE_9[s[38]] ^ CRC32_TABLE_8[s[39]];
+        let c4 = CRC32_TABLE_7[s[40]] ^ CRC32_TABLE_6[s[41]];
+        let c5 = CRC32_TABLE_5[s[42]] ^ CRC32_TABLE_4[s[43]];
+        let c6 = CRC32_TABLE_3[s[44]] ^ CRC32_TABLE_2[s[45]];
+        let c7 = CRC32_TABLE_1[s[46]] ^ CRC32_TABLE_0[s[47]];
         c = ((c0 ^ c1) ^ (c2 ^ c3)) ^ ((c4 ^ c5) ^ (c6 ^ c7));
 
         // Block 3: bytes 48..63
         c ^= read_le_u32(s, 48);
-        let d0 = CRC32_TABLE_15[c & 0xFF]         ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
+        let d0 = CRC32_TABLE_15[c & 0xFF] ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
         let d1 = CRC32_TABLE_13[(c >> 16) & 0xFF] ^ CRC32_TABLE_12[c >> 24];
-        let d2 = CRC32_TABLE_11[s[52]]            ^ CRC32_TABLE_10[s[53]];
-        let d3 = CRC32_TABLE_9[s[54]]             ^ CRC32_TABLE_8[s[55]];
-        let d4 = CRC32_TABLE_7[s[56]]             ^ CRC32_TABLE_6[s[57]];
-        let d5 = CRC32_TABLE_5[s[58]]             ^ CRC32_TABLE_4[s[59]];
-        let d6 = CRC32_TABLE_3[s[60]]             ^ CRC32_TABLE_2[s[61]];
-        let d7 = CRC32_TABLE_1[s[62]]             ^ CRC32_TABLE_0[s[63]];
+        let d2 = CRC32_TABLE_11[s[52]] ^ CRC32_TABLE_10[s[53]];
+        let d3 = CRC32_TABLE_9[s[54]] ^ CRC32_TABLE_8[s[55]];
+        let d4 = CRC32_TABLE_7[s[56]] ^ CRC32_TABLE_6[s[57]];
+        let d5 = CRC32_TABLE_5[s[58]] ^ CRC32_TABLE_4[s[59]];
+        let d6 = CRC32_TABLE_3[s[60]] ^ CRC32_TABLE_2[s[61]];
+        let d7 = CRC32_TABLE_1[s[62]] ^ CRC32_TABLE_0[s[63]];
         c = ((d0 ^ d1) ^ (d2 ^ d3)) ^ ((d4 ^ d5) ^ (d6 ^ d7));
 
         offset += 64;
@@ -632,28 +632,28 @@ simd fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
 
     // Process remaining 16-byte blocks
     while offset + 16 <= buf.len {
-        let s = buf[offset .. offset + 16];
+        let s = buf[offset..offset + 16];
         c ^= read_le_u32(s, 0);
-        let t0 = CRC32_TABLE_15[c & 0xFF]         ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
+        let t0 = CRC32_TABLE_15[c & 0xFF] ^ CRC32_TABLE_14[(c >> 8) & 0xFF];
         let t1 = CRC32_TABLE_13[(c >> 16) & 0xFF] ^ CRC32_TABLE_12[c >> 24];
-        let t2 = CRC32_TABLE_11[s[4]]             ^ CRC32_TABLE_10[s[5]];
-        let t3 = CRC32_TABLE_9[s[6]]              ^ CRC32_TABLE_8[s[7]];
-        let t4 = CRC32_TABLE_7[s[8]]              ^ CRC32_TABLE_6[s[9]];
-        let t5 = CRC32_TABLE_5[s[10]]             ^ CRC32_TABLE_4[s[11]];
-        let t6 = CRC32_TABLE_3[s[12]]             ^ CRC32_TABLE_2[s[13]];
-        let t7 = CRC32_TABLE_1[s[14]]             ^ CRC32_TABLE_0[s[15]];
+        let t2 = CRC32_TABLE_11[s[4]] ^ CRC32_TABLE_10[s[5]];
+        let t3 = CRC32_TABLE_9[s[6]] ^ CRC32_TABLE_8[s[7]];
+        let t4 = CRC32_TABLE_7[s[8]] ^ CRC32_TABLE_6[s[9]];
+        let t5 = CRC32_TABLE_5[s[10]] ^ CRC32_TABLE_4[s[11]];
+        let t6 = CRC32_TABLE_3[s[12]] ^ CRC32_TABLE_2[s[13]];
+        let t7 = CRC32_TABLE_1[s[14]] ^ CRC32_TABLE_0[s[15]];
         c = ((t0 ^ t1) ^ (t2 ^ t3)) ^ ((t4 ^ t5) ^ (t6 ^ t7));
         offset += 16;
     }
 
     // Process remaining 8-byte blocks
     while offset + 8 <= buf.len {
-        let s = buf[offset .. offset + 8];
+        let s = buf[offset..offset + 8];
         c ^= read_le_u32(s, 0);
-        let r0 = CRC32_TABLE_7[c & 0xFF]         ^ CRC32_TABLE_6[(c >> 8) & 0xFF];
+        let r0 = CRC32_TABLE_7[c & 0xFF] ^ CRC32_TABLE_6[(c >> 8) & 0xFF];
         let r1 = CRC32_TABLE_5[(c >> 16) & 0xFF] ^ CRC32_TABLE_4[c >> 24];
-        let r2 = CRC32_TABLE_3[s[4]]             ^ CRC32_TABLE_2[s[5]];
-        let r3 = CRC32_TABLE_1[s[6]]             ^ CRC32_TABLE_0[s[7]];
+        let r2 = CRC32_TABLE_3[s[4]] ^ CRC32_TABLE_2[s[5]];
+        let r3 = CRC32_TABLE_1[s[6]] ^ CRC32_TABLE_0[s[7]];
         c = (r0 ^ r1) ^ (r2 ^ r3);
         offset += 8;
     }
@@ -676,7 +676,6 @@ fn crc32(buf: const u8[:]) -> u32 {
 
 const ADLER_BASE: u32 = 65521;
 const ADLER_NMAX: i64 = 5552;
-
 
 // Computes running Adler-32 checksum across buf with 16-lane parallel prefix-sum reduction.
 simd fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
@@ -783,7 +782,7 @@ fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
         var v4 = seed - XXH64_PRIME1;
 
         while offset + 32 <= buf.len {
-            let s = buf[offset .. offset + 32];
+            let s = buf[offset..offset + 32];
             v1 = xxh64_round(v1, read_le_u64(s, 0));
             v2 = xxh64_round(v2, read_le_u64(s, 8));
             v3 = xxh64_round(v3, read_le_u64(s, 16));

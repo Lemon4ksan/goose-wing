@@ -21,7 +21,7 @@ fn new_aws_credentials(
     access_key: const u8[:],
     secret_key: const u8[:],
     region: const u8[:] = "us-east-1",
-    service: const u8[:] = "s3"
+    service: const u8[:] = "s3",
 ) -> AwsCredentials {
     var creds = AwsCredentials { .. };
     creds.access_key_id.append(access_key);
@@ -38,7 +38,7 @@ fn derive_aws_signing_key(
     secret_key: const u8[:],
     date_stamp: const u8[:], // "YYYYMMDD"
     region: const u8[:],
-    service: const u8[:]
+    service: const u8[:],
 ) -> u8[32] {
     var k_secret: u8[..140] = [];
     k_secret.append("AWS4");
@@ -55,7 +55,7 @@ fn build_aws_string_to_sign<B>(
     datetime_iso: const u8[:],
     credential_scope: const u8[:],
     canon_req_hash_hex: const u8[:],
-    out: B&
+    out: B&,
 ) {
     out.clear();
     out.append("AWS4-HMAC-SHA256\n");
@@ -71,7 +71,7 @@ fn format_aws_authorization<B>(
     credential_scope: const u8[:],
     signed_headers: const u8[:],
     sig_hex: const u8[:],
-    out: B&
+    out: B&,
 ) {
     out.clear();
     out.append("AWS4-HMAC-SHA256 Credential=");
@@ -88,7 +88,7 @@ fn format_aws_authorization<B>(
 fn sign_aws_sigv4<R>(
     req: R&,
     creds: const AwsCredentials&,
-    datetime_iso: const u8[:]
+    datetime_iso: const u8[:],
 ) -> bool {
     guard creds.access_key_id.len > 0 && creds.secret_access_key.len > 0 else { return false; }
     guard datetime_iso.len >= 16 else { return false; }

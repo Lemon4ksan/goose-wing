@@ -266,14 +266,10 @@ fn akamai(session: const Session&) -> u8[..256] {
     return akamai(p);
 }
 
-
 fn akamai_hash(session: const Session&) -> u8[..32] {
     let p = wing_default_profile();
     return akamai_hash(p);
 }
-
-
-
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {
     session.proxy_url.clear();
@@ -334,7 +330,7 @@ fn doh_query(
     domain: const u8[:],
     qtype: u16,
     tx_id: u16,
-    out_resp: DnsResponse&
+    out_resp: DnsResponse&,
 ) -> bool {
     var req = new_request(if session.doh.use_post { "POST" } else { "GET" }, "");
 
@@ -369,7 +365,7 @@ fn lookup_cached_ech_config(
     dns_cache: const DnsCache&,
     domain: const u8[:],
     now_sec: i64,
-    out_ech: u8[..512]&
+    out_ech: u8[..512]&,
 ) -> bool {
     var cached = DnsCacheEntry { .. };
     let cache_status = dns_cache_lookup(dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
@@ -388,7 +384,7 @@ fn discover_and_cache_ech_config(
     session: Session&,
     domain: const u8[:],
     now_sec: i64,
-    out_ech: u8[..512]&
+    out_ech: u8[..512]&,
 ) -> bool {
     guard session.enable_doh && session.auto_ech_discovery else { return false; }
 
@@ -425,7 +421,7 @@ fn resolve_ech_config(
     session: Session&,
     domain: const u8[:],
     now_sec: i64,
-    out_ech: u8[..512]&
+    out_ech: u8[..512]&,
 ) -> bool {
     out_ech.clear();
     if lookup_cached_ech_config(session.dns_cache, domain, now_sec, out_ech) {
@@ -632,7 +628,7 @@ fn mock_route(
     method: const u8[:],
     pattern_url: const u8[:],
     status_code: i32,
-    body_str: const u8[:]
+    body_str: const u8[:],
 ) -> MockExchange& {
     var route = MockExchange {
         status_code: status_code,

@@ -15,7 +15,7 @@ fn test_unary_handler(
     req_payload: const u8[:],
     res_payload: u8[>..]&,
     out_status: wing::GrpcStatusCode&,
-    out_message: u8[..256]&
+    out_message: u8[..256]&,
 ) {
     if handler_id == 1 {
         // Greeter.SayHello
@@ -209,7 +209,7 @@ fn test_server_streaming_handler(
     req_payload: const u8[:],
     writer: wing::GrpcServerStreamWriter&,
     out_status: wing::GrpcStatusCode&,
-    out_message: u8[..256]&
+    out_message: u8[..256]&,
 ) {
     if handler_id == 2 {
         // Stream 3 events
@@ -277,7 +277,7 @@ fn test_client_streaming_handler(
     reader: const wing::GrpcClientStreamReader&,
     res_payload: u8[>..]&,
     out_status: wing::GrpcStatusCode&,
-    out_message: u8[..256]&
+    out_message: u8[..256]&,
 ) {
     if handler_id == 3 {
         let count = wing::client_stream_count(reader);

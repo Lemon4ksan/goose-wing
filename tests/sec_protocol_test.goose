@@ -85,7 +85,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/secure",
-            false, false
+            false, false,
         );
         sub.assert_true(redirect_info.is_scheme_downgrade, "scheme downgrade detected");
 
@@ -141,7 +141,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://app.client.com/data", "https://api.trusted.com/data",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://app.client.com/data",
-            false, false
+            false, false,
         );
         sub.assert_true(redirect_info.is_cross_origin, "cross origin redirect");
         sub.assert_false(redirect_info.is_scheme_downgrade, "no scheme downgrade");

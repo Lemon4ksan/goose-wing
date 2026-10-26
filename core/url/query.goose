@@ -228,4 +228,3 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
     }
     return false;
 }
-

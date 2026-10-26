@@ -12,14 +12,14 @@ import .hpack;
 
 // ---- 1. session constants & limits ------------------------------------------
 
-const MAX_INITIAL_WINDOW_SIZE: i64  = 0x7FFFFFFF; // 2^31 - 1
-const DEFAULT_WINDOW_SIZE:     i64  = 65535;
-const DEFAULT_RESET_BURST:     u64  = 1000;       // nghttp2 v1.57.0 reference (CVE-2023-44487)
-const DEFAULT_RESET_RATE:      u64  = 33;         // Tokens per second
-const MAX_CONT_FRAMES_LIMIT:   u32  = 16;         // CONTINUATION Flood defense (CVE-2024-28182 / CVE-2024-30255)
+const MAX_INITIAL_WINDOW_SIZE: i64 = 0x7FFFFFFF; // 2^31 - 1
+const DEFAULT_WINDOW_SIZE: i64 = 65535;
+const DEFAULT_RESET_BURST: u64 = 1000;            // nghttp2 v1.57.0 reference (CVE-2023-44487)
+const DEFAULT_RESET_RATE: u64 = 33;               // Tokens per second
+const MAX_CONT_FRAMES_LIMIT: u32 = 16;            // CONTINUATION Flood defense (CVE-2024-28182 / CVE-2024-30255)
 const MAX_HEADER_BLOCK_SIZE_LIMIT: u32 = 65536;   // Hard 64 KB ceiling for any CONTINUATION / HEADERS block
-const MAX_EMPTY_FRAME_STREAK:  u32  = 8;          // Empty Frame Flooding defense (CVE-2019-9518)
-const MAX_PENDING_CTRL_FRAMES: u32  = 64;         // PING / SETTINGS Flood defense (CVE-2019-9512 / CVE-2019-9515)
+const MAX_EMPTY_FRAME_STREAK: u32 = 8;            // Empty Frame Flooding defense (CVE-2019-9518)
+const MAX_PENDING_CTRL_FRAMES: u32 = 64;          // PING / SETTINGS Flood defense (CVE-2019-9512 / CVE-2019-9515)
 const MAX_CONCURRENCY_VIOLATIONS: u32 = 5;        // Rapid Reset non-cancelling variant defense
 const DEFAULT_MAX_HEADER_BLOCK_DURATION_MS: u64 = 10000; // Slow-Drip CONTINUATION memory retention defense
 
@@ -146,7 +146,7 @@ type SessionState = H2Connection;
 fn new_h2_connection(
     now_ms: u64 = 0,
     max_header_list: u32 = 8192,
-    behind_proxy: bool = false
+    behind_proxy: bool = false,
 ) -> H2Connection {
     return H2Connection {
         hpack_dec: new_dynamic_table(HPACK_DEFAULT_MAX_DYN_SIZE),
@@ -160,7 +160,7 @@ fn new_h2_connection(
 inline fn new_session_state(
     now_ms: u64 = 0,
     max_header_list: u32 = 8192,
-    behind_proxy: bool = false
+    behind_proxy: bool = false,
 ) -> H2Connection {
     return new_h2_connection(now_ms, max_header_list, behind_proxy);
 }

@@ -68,8 +68,6 @@ struct ProxyHeader {
 
 // ---- 3. Helper Codecs -------------------------------------------------------
 
-
-
 // Formats an IPv4 address into dotted decimal string notation (e.g. "192.168.0.1")
 fn format_ipv4<B>(ip: const u8[4]&, out: B&) {
     format(out, ip[0] as i64);
@@ -176,7 +174,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     // Locate CRLF terminator within maximum allowed length (107 bytes)
     var crlf_idx: i64 = -1;
     let scan_limit = if wire.len < internal::PROXY_V1_MAX_LEN { wire.len } else { internal::PROXY_V1_MAX_LEN };
-    for i in 6 .. scan_limit {
+    for i in 6..scan_limit {
         if wire[i] == '\r' && i + 1 < wire.len && wire[i + 1] == '\n' {
             crlf_idx = i;
             break;
@@ -332,7 +330,7 @@ fn parse_proxy_v2_command(ver_cmd: u8, out_cmd: ProxyCommand&) -> bool {
 fn parse_proxy_v2_family_transport(
     fam_trans: u8,
     out_fam: ProxyAddressFamily&,
-    out_trans: ProxyTransportProtocol&
+    out_trans: ProxyTransportProtocol&,
 ) -> bool {
     // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
     // Only exact defined combinations (0x00, 0x11, 0x12, 0x21, 0x22, 0x31, 0x32) are valid.
@@ -374,7 +372,7 @@ fn parse_proxy_v2_addresses(
     payload_len: i64,
     fam: ProxyAddressFamily,
     hdr: ProxyHeader&,
-    out_addr_len: i64&
+    out_addr_len: i64&,
 ) -> bool {
     // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
     // For command LOCAL (0x00), the receiver MUST NOT interpret addresses and MUST NOT report

@@ -11,10 +11,10 @@ import core from "..";
 
 // ---- 1. Privacy Pass Constants & Token Types --------------------------------
 
-const SCHEME_PRIVATE_TOKEN: const u8[:]            = "PrivateToken";
+const SCHEME_PRIVATE_TOKEN: const u8[:] = "PrivateToken";
 const HEADER_SEC_PRIVATE_STATE_TOKEN: const u8[:] = "Sec-Private-State-Token";
 
-const TOKEN_TYPE_BLIND_RSA: u16           = 0x0001; // RFC 9578 Blind RSA
+const TOKEN_TYPE_BLIND_RSA: u16 = 0x0001;           // RFC 9578 Blind RSA
 const TOKEN_TYPE_PUBLICLY_VERIFIABLE: u16 = 0x0002; // RFC 9578 §6 Publicly Verifiable
 
 // Checks whether token type is a GREASE identifier (RFC 9577 §6.2.1)
@@ -41,12 +41,12 @@ struct TokenChallenge {
 struct Token {
     token_type: u16 = TOKEN_TYPE_BLIND_RSA,
     nonce: u8[32] = [
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
     challenge_digest: u8[32] = [
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
     token_key_id: u8[..32] = [],
     authenticator: u8[..256] = [],
@@ -54,8 +54,8 @@ struct Token {
 
 struct CachedToken {
     challenge_digest: u8[32] = [
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
     token: Token = Token { .. },
     raw_token: u8[..512] = [],

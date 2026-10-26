@@ -218,7 +218,7 @@ fn test_serve_range_and_patch_validation(t: core::T&) {
             "text/plain",
             status,
             headers,
-            body_out
+            body_out,
         ) { offset, len, out =>
             out.append(source_data[offset..offset + len]);
         };

@@ -25,7 +25,7 @@ fn test_cve_ipv4_formats_ssrf(t: core::T&) {
         "http://0x7f000001/admin",
         "http://0x7f.0.0.1/admin",
         "http://127.1/admin",
-        "http://10.1/internal"
+        "http://10.1/internal",
     ];
 
     for &url in targets {
@@ -45,7 +45,7 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: core::T&) {
     let lh_targets: const u8[..64][..3] = [
         "http://localhost/admin",
         "http://localhost./admin",
-        "http://service.localhost/admin"
+        "http://service.localhost/admin",
     ];
     for &url in lh_targets {
         var req_lh = wing::new_get(url[..]);
@@ -64,7 +64,7 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: core::T&) {
     let tunnel_targets: const u8[..64][..3] = [
         "http://[::127.0.0.1]/status",
         "http://[64:ff9b::127.0.0.1]/status",
-        "http://[2002:7f00:1::]/status"
+        "http://[2002:7f00:1::]/status",
     ];
     for &url in tunnel_targets {
         var req_t = wing::new_get(url[..]);
@@ -121,7 +121,7 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com:443/login", "https://example.com:8443/admin",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com:443/login",
-            false, false
+            false, false,
         );
 
         sub.assert_true(redirect_info.is_cross_origin, "different port must be cross-origin");
@@ -147,7 +147,7 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "POST", 302, "https://example.com/api", "https://other.com/api",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/api",
-            false, false
+            false, false,
         );
 
         wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, false);
@@ -171,7 +171,7 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "POST", 303, "https://example.com/upload", "https://example.com/status",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/upload",
-            false, false
+            false, false,
         );
         sub.assert_true(redirect_info.clear_body, "303 clears body");
 
@@ -369,7 +369,7 @@ fn test_cve_proxy_authorization_leakage(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://proxy.origin.com/resource", "https://other-domain.com/landing",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://proxy.origin.com/resource",
-            false, false
+            false, false,
         );
 
         wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, false, false);
@@ -511,7 +511,7 @@ fn test_cve_rfc7578_reject_content_transfer_encoding(t: core::T&) {
     t.run("Multipart form-data part containing Content-Transfer-Encoding MUST be rejected") { sub =>
         let boundary = "boundary123";
         let body = "--boundary123\r\nContent-Disposition: form-data; name=\"upload\"\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--boundary123--\r\n";
-        
+
         let msg, err = wing::parse_multipart(body, boundary);
         sub.assert_false(wing::is_ok(err), "RFC 7578 Section 4.7: Content-Transfer-Encoding in multipart MUST be rejected");
         sub.assert_false(msg.valid, "Multipart message marked invalid");
@@ -539,7 +539,7 @@ fn test_cve_2023_39326_chunk_extension_overflow(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_go_60997_localhost_secure_cookies(t: core::T&) {
     var session = wing::new_session();
-    
+
     wing::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
     wing::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");
 

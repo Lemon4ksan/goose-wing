@@ -438,7 +438,7 @@ fn test_smartnic_ktls_offload(t: core::T&) {
             key128[..],
             iv[..],
             salt[..],
-            seq[..]
+            seq[..],
         );
         sub.assert_eq(err, 0, "smartnic_attach_hardware_tls succeeded");
         sub.assert_true(sess.ktls_active, "kTLS active");

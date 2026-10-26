@@ -24,11 +24,11 @@ struct RequestTimings {
 fn compute_total_timing_us(t: const RequestTimings&) -> i64 {
     var total: i64 = 0;
     if t.blocked_us > 0 { total += t.blocked_us; }
-    if t.dns_us > 0     { total += t.dns_us; }
+    if t.dns_us > 0 { total += t.dns_us; }
     if t.connect_us > 0 { total += t.connect_us; }
-    if t.ssl_us > 0     { total += t.ssl_us; }
-    if t.send_us > 0    { total += t.send_us; }
-    if t.wait_us > 0    { total += t.wait_us; }
+    if t.ssl_us > 0 { total += t.ssl_us; }
+    if t.send_us > 0 { total += t.send_us; }
+    if t.wait_us > 0 { total += t.wait_us; }
     if t.receive_us > 0 { total += t.receive_us; }
     return total;
 }

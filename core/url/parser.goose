@@ -1184,4 +1184,3 @@ fn resolve_relative_path_against_base(
     out_url.valid = true;
     return out_url, UrlParseError.None;
 }
-

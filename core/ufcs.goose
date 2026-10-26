@@ -239,7 +239,7 @@ fn ::on_rtt_sample(
     latest_rtt_us: u64,
     ack_delay_us: u64 = 0,
     max_ack_delay_us: u64 = 25000,
-    handshake_confirmed: bool = false
+    handshake_confirmed: bool = false,
 ) {
     core::on_rtt_sample(est, latest_rtt_us, ack_delay_us, max_ack_delay_us, handshake_confirmed);
 }
@@ -408,7 +408,3 @@ fn ::fast_u64toa(val: u64, dst: u8[:]) -> i64 { return core::fast_u64toa(val, ds
 fn ::fast_u32toa_hex(val: u32, dst: u8[:]) -> i64 { return core::fast_u32toa_hex(val, dst); }
 fn ::swar_find_ctl(s: const u8[:]) -> i64 { return core::swar_find_ctl(s); }
 fn ::fence_wire_slice(buf: u8[:], length: i64) -> bool { return core::fence_wire_slice(buf, length); }
-
-
-
-

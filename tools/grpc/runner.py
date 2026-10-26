@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 gRPC & gRPC-Web End-to-End Verification Test Runner for goose-wing.
 Validates Unary RPCs over HTTP/2, gRPC-Web (binary & text), metadata propagation,

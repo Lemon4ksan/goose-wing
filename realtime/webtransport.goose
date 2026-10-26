@@ -14,11 +14,11 @@ import client.response;
 
 // ---- 1. WebTransport & RFC 9221 Constants (draft-16) -------------------------
 
-const WEBTRANSPORT_PROTOCOL: const u8[:]              = "webtransport";
-const SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64         = 0x2b603742;
-const SETTINGS_H3_DATAGRAM: u64                       = 0x33;
+const WEBTRANSPORT_PROTOCOL: const u8[:] = "webtransport";
+const SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64 = 0x2b603742;
+const SETTINGS_H3_DATAGRAM: u64 = 0x33;
 
-const STREAM_TYPE_WEBTRANSPORT: u64                   = 0x54;
+const STREAM_TYPE_WEBTRANSPORT: u64 = 0x54;
 
 // ---- 2. WebTransport Models -------------------------------------------------
 

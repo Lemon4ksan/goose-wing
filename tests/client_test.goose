@@ -94,19 +94,19 @@ fn test_site_for_cookies_and_rfc6265bis(t: core::T&) {
         // Same site, same scheme -> First-party
         sub.assert_true(
             wing::is_first_party(sfc, "https://sub.example.com/api", true),
-            "https://sub.example.com is first-party to https://example.com"
+            "https://sub.example.com is first-party to https://example.com",
         );
 
         // Same registrable domain, DIFFERENT scheme -> NOT first-party under schemeful same-site!
         sub.assert_false(
             wing::is_first_party(sfc, "http://example.com/api", true),
-            "http://example.com is NOT first-party to https://example.com (Schemeful Same-Site)"
+            "http://example.com is NOT first-party to https://example.com (Schemeful Same-Site)",
         );
 
         // Different domain -> Cross-site
         sub.assert_false(
             wing::is_first_party(sfc, "https://attacker.com/api", true),
-            "attacker.com is cross-site"
+            "attacker.com is cross-site",
         );
     };
 
@@ -136,7 +136,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_301 = wing::compute_redirect_info(
             "POST", 301, "https://example.com/old", "https://example.com/new",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/old",
-            false, false
+            false, false,
         );
         sub.assert_bytes_eq(info_301.new_method[..], "GET", "301 mutates POST to GET");
         sub.assert_true(info_301.clear_body, "body cleared on 301 POST->GET");
@@ -145,7 +145,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_302 = wing::compute_redirect_info(
             "POST", 302, "https://example.com/login", "https://example.com/dashboard",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/login",
-            false, false
+            false, false,
         );
         sub.assert_bytes_eq(info_302.new_method[..], "GET", "302 mutates POST to GET");
         sub.assert_true(info_302.clear_body, "body cleared on 302 POST->GET");
@@ -154,7 +154,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_303 = wing::compute_redirect_info(
             "PUT", 303, "https://example.com/item", "https://example.com/items",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/item",
-            false, false
+            false, false,
         );
         sub.assert_bytes_eq(info_303.new_method[..], "GET", "303 mutates PUT to GET");
         sub.assert_true(info_303.clear_body, "body cleared on 303 PUT->GET");
@@ -165,7 +165,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_307 = wing::compute_redirect_info(
             "POST", 307, "https://example.com/upload", "https://s3.example.com/upload",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/upload",
-            false, false
+            false, false,
         );
         sub.assert_bytes_eq(info_307.new_method[..], "POST", "307 preserves POST");
         sub.assert_false(info_307.clear_body, "307 preserves request body");
@@ -174,7 +174,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_308 = wing::compute_redirect_info(
             "DELETE", 308, "https://example.com/res/1", "https://api.example.com/res/1",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/res/1",
-            false, false
+            false, false,
         );
         sub.assert_bytes_eq(info_308.new_method[..], "DELETE", "308 preserves DELETE");
         sub.assert_false(info_308.clear_body, "308 preserves request body");
@@ -191,7 +191,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "POST", 302, "https://api.example.com/v1/auth", "https://attacker.org/leak",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://api.example.com/v1/auth",
-            false, false
+            false, false,
         );
         sub.assert_true(redirect_info.is_cross_origin, "detected cross-origin redirect");
 
@@ -228,7 +228,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/secure",
-            false, false
+            false, false,
         );
         sub.assert_true(redirect_info.is_scheme_downgrade, "detected scheme downgrade");
 
@@ -250,7 +250,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/old_endpoint", "https://example.com/new_endpoint",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/old_endpoint",
-            false, false
+            false, false,
         );
         sub.assert_false(redirect_info.is_cross_origin, "same origin redirect");
         sub.assert_false(redirect_info.is_scheme_downgrade, "no scheme downgrade");
@@ -395,7 +395,7 @@ fn test_ssrf_subnets(t: core::T&) {
             "http://[::1]/internal",
             "http://10.20.30.40/metrics",
             "http://192.168.1.1/router",
-            "http://169.254.169.254/latest/meta-data/"
+            "http://169.254.169.254/latest/meta-data/",
         ];
 
         for &target_url in blocked_urls {

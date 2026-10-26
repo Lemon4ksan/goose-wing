@@ -497,4 +497,3 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
     // Resolve combined path against base URL authority
     return parse_url_with_base(combined[..], base_url);
 }
-

@@ -70,7 +70,7 @@ enum Socks5Error {
 fn build_socks5_greeting(
     has_credentials: bool,
     enable_gssapi: bool,
-    out: u8[..16]&
+    out: u8[..16]&,
 ) {
     out.clear();
     out.push(SOCKS5_VER);
@@ -104,7 +104,7 @@ fn parse_socks5_greeting_reply(buf: const u8[:]) -> u8, Socks5Error {
 fn build_socks5_rfc1929_auth(
     username: const u8[:],
     password: const u8[:],
-    out: u8[..520]&
+    out: u8[..520]&,
 ) -> Socks5Error {
     out.clear();
     guard username.len >= 1 && username.len <= 255 else { return Socks5Error.AuthFailed; }
@@ -137,7 +137,7 @@ fn build_socks5_connect_request(
     resolved_ipv4: const u8[4]&,
     has_ipv4: bool,
     port: u16,
-    out: u8[..300]&
+    out: u8[..300]&,
 ) -> Socks5Error {
     out.clear();
     out.push(SOCKS5_VER);
@@ -248,7 +248,7 @@ fn build_http_connect_request(
     target_port: u16,
     proxy_auth: const u8[:],
     user_agent: const u8[:],
-    out: u8[..1024]&
+    out: u8[..1024]&,
 ) {
     out.clear();
     format(out, "CONNECT ", target_host, ":", target_port, " HTTP/1.1\r\nHost: ", target_host, ":", target_port, "\r\n");
@@ -316,7 +316,7 @@ fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
 // OkHttp RealConnection parity: "TLS tunnel buffered too many bytes".
 fn verify_connect_tunnel_response(
     raw_response: const u8[:],
-    sink_buffered_bytes: i64 = 0
+    sink_buffered_bytes: i64 = 0,
 ) -> ConnectTunnelError {
     guard raw_response.len >= 12 else { return ConnectTunnelError.InvalidStatusLine; }
 
@@ -396,7 +396,7 @@ fn new_header_reader(cfg: SlowlorisDefenseConfig, start_mono_ns: i64) -> HeaderR
 fn feed_header_bytes(
     reader: HeaderReader&,
     chunk: const u8[:],
-    now_mono_ns: i64
+    now_mono_ns: i64,
 ) -> SlowlorisViolation {
     if reader.headers_complete { return SlowlorisViolation.None; }
 

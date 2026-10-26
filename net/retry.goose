@@ -37,7 +37,7 @@ fn has_idempotency_key<Req>(req: const Req&) -> bool {
 fn should_retry_tier1_stale_socket<Req>(
     reused_connection: bool,
     headers_received: bool,
-    req: const Req&
+    req: const Req&,
 ) -> bool {
     // Invariant 1: Only reused connections are retried at Tier 1; fresh dials fail fast
     guard reused_connection else { return false; }
@@ -68,7 +68,7 @@ fn evaluate_tier1_retry<Req>(
     err_code: i32,
     reused_connection: bool,
     headers_received: bool,
-    req: const Req&
+    req: const Req&,
 ) -> Tier1Decision {
     // Chromium QUIC protocol fallback: automatically retry over TCP/TLS before headers
     if err_code == ERR_QUIC_PROTOCOL_ERROR && !headers_received {
@@ -91,7 +91,7 @@ enum JitterStrategy {
     None,
     FullJitter,       // Default recommended strategy
     EqualJitter,      // Guarantees non-zero floor
-    DecorrelatedJitter,// Stateful previous-sleep random walk
+    DecorrelatedJitter, // Stateful previous-sleep random walk
 }
 
 struct BackoffConfig {
@@ -103,7 +103,7 @@ struct BackoffConfig {
 fn new_backoff_config(
     base: i64 = 100,
     cap: i64 = 10000,
-    strat: JitterStrategy = JitterStrategy.FullJitter
+    strat: JitterStrategy = JitterStrategy.FullJitter,
 ) -> BackoffConfig {
     return BackoffConfig {
         base_ms: base,
@@ -127,7 +127,7 @@ fn compute_backoff_jitter_ms(
     cfg: const BackoffConfig&,
     attempt: i64,
     prev_sleep_ms: i64&,
-    rng_seed: u64&
+    rng_seed: u64&,
 ) -> i64 {
     // Compute capped deterministic exponential target t = min(c, b * 2^a)
     let safe_attempt = if attempt < 0 { 0 } else if attempt > 60 { 60 } else { attempt };
@@ -201,7 +201,7 @@ fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64,
 // Supports delay-seconds (1*DIGIT without signs/decimals/units) and IMF-fixdate with exact UTC round-trip check.
 fn parse_retry_after_ms(
     header_raw: const u8[:],
-    now_unix_ms: i64
+    now_unix_ms: i64,
 ) -> i64, bool {
     let clean = trim(header_raw);
     guard clean.len > 0 else { return 0, false; }
@@ -238,7 +238,7 @@ fn trip_circuit_breaker_if_exceeded(
     breaker: HostCircuitBreaker&,
     host_str: const u8[:],
     retry_after_ms: i64,
-    now_mono_ns: i64
+    now_mono_ns: i64,
 ) -> bool {
     guard retry_after_ms > breaker.max_retry_after_ms else { return false; }
 
@@ -279,7 +279,7 @@ fn trip_circuit_breaker_if_exceeded(
 fn is_host_circuit_broken(
     breaker: HostCircuitBreaker&,
     host_str: const u8[:],
-    now_mono_ns: i64
+    now_mono_ns: i64,
 ) -> bool {
     for &h in breaker.hosts {
         if core::eq_ascii_fold(h.host[..], host_str) {
@@ -310,7 +310,7 @@ struct AdaptiveRetryBudget {
 fn new_adaptive_retry_budget(
     ratio_pct: i64 = 20,
     min_per_sec: i64 = 2,
-    window_dur_sec: i64 = 10
+    window_dur_sec: i64 = 10,
 ) -> AdaptiveRetryBudget {
     return AdaptiveRetryBudget {
         window_duration_ns: window_dur_sec * 1000000000,

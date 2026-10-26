@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 TLS 1.3 End-to-End Interop Verification Test Runner for goose-wing.
 Validates RFC 8446 (TLS 1.3), RFC 6066 (SNI), RFC 7301 (ALPN),

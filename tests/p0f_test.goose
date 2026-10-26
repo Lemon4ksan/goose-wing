@@ -37,7 +37,7 @@ fn test_wing_authentic_p0f(t: core::T&) {
         sub.assert_bytes_eq(
             formatted[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
-            "Wing authentic p0f v3 wire signature matches canonical specification"
+            "Wing authentic p0f v3 wire signature matches canonical specification",
         );
     };
 
@@ -55,7 +55,7 @@ fn test_wing_authentic_p0f(t: core::T&) {
         sub.assert_bytes_eq(
             p_p0f[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
-            "Default BrowserProfile exports authentic Wing p0f signature"
+            "Default BrowserProfile exports authentic Wing p0f signature",
         );
 
         // Client session exposes p0f signature
@@ -64,7 +64,7 @@ fn test_wing_authentic_p0f(t: core::T&) {
         sub.assert_bytes_eq(
             s_p0f[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
-            "New client session default p0f reflects Wing authentic identity"
+            "New client session default p0f reflects Wing authentic identity",
         );
     };
 }
@@ -201,7 +201,7 @@ fn test_p0f_pattern_matching(t: core::T&) {
         sub.assert_bytes_eq(
             formatted[..],
             "4:128:0:1400:16384,2:mss,ws:df,ecn:0",
-            "Custom signature formatted correctly"
+            "Custom signature formatted correctly",
         );
 
         // Plug into BrowserProfile
@@ -211,7 +211,7 @@ fn test_p0f_pattern_matching(t: core::T&) {
         sub.assert_bytes_eq(
             prof_str[..],
             "4:128:0:1400:16384,2:mss,ws:df,ecn:0",
-            "BrowserProfile successfully incorporates custom p0f signature"
+            "BrowserProfile successfully incorporates custom p0f signature",
         );
     };
 }

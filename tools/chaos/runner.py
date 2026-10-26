@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 goose-wing Network Chaos & TCP Micro-Slicing E2E Verification Runner.
 Exercises serve_reactor under TCP packet fragmentation, micro-slicing,

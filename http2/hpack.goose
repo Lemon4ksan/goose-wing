@@ -13,18 +13,18 @@ import .framing;
 // ---- 1. hpack constants & limits --------------------------------------------
 
 const HPACK_STATIC_TABLE_ENTRIES: u64 = 61;
-const HPACK_ENTRY_OVERHEAD:       u64 = 32; // RFC 7541 Section 4.1 (+32 bytes per entry)
+const HPACK_ENTRY_OVERHEAD: u64 = 32; // RFC 7541 Section 4.1 (+32 bytes per entry)
 const HPACK_DEFAULT_MAX_DYN_SIZE: u64 = 4096;
-const HPACK_MAX_RING_ENTRIES:     u64 = 128; // 4096 / 32 = 128 (power of two)
-const HPACK_RING_MASK:            u64 = 127;
-const HPACK_MAX_ARENA_BYTES:      u64 = 4096;
+const HPACK_MAX_RING_ENTRIES: u64 = 128; // 4096 / 32 = 128 (power of two)
+const HPACK_RING_MASK: u64 = 127;
+const HPACK_MAX_ARENA_BYTES: u64 = 4096;
 
 const HUFF_ACCEPTED: u8 = 0x01; // Terminal state valid for 0..7 padding bits
-const HUFF_SYM:      u8 = 0x02; // Transition emitted an output symbol
-const HUFF_FAIL:     u8 = 0x04; // Transition hit EOS (256) or invalid code
+const HUFF_SYM: u8 = 0x02;      // Transition emitted an output symbol
+const HUFF_FAIL: u8 = 0x04;     // Transition hit EOS (256) or invalid code
 
 const HPACK_MAX_INT_SHIFT: u32 = 28; // Max bit shift for integer decoding
-const HPACK_MAX_INT_VAL:   u64 = 0x7FFFFFFF;
+const HPACK_MAX_INT_VAL: u64 = 0x7FFFFFFF;
 
 // ---- 2. 256-state huffman fsm tables ----------------------------------------
 
@@ -586,12 +586,12 @@ const HUFF_SYM_CODES: u32[256] = [
 const HUFF_SYM_LENS: u8[256] = [
     13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,
     28, 28, 28, 28, 28, 28, 30, 28, 28, 28, 28, 28, 28, 28, 28, 28,
-     6, 10, 10, 12, 13,  6,  8, 11, 10, 10,  8, 11,  8,  6,  6,  6,
-     5,  5,  5,  6,  6,  6,  6,  6,  6,  6,  7,  8, 15,  6, 12, 10,
-    13,  6,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,
-     7,  7,  7,  7,  7,  7,  7,  7,  8,  7,  8, 13, 19, 13, 14,  6,
-    15,  5,  6,  5,  6,  5,  6,  6,  6,  5,  7,  7,  6,  6,  6,  5,
-     6,  7,  6,  5,  5,  6,  7,  7,  7,  7,  7, 15, 11, 14, 13, 28,
+    6, 10, 10, 12, 13, 6, 8, 11, 10, 10, 8, 11, 8, 6, 6, 6,
+    5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 7, 8, 15, 6, 12, 10,
+    13, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7, 7, 7, 7, 7, 8, 7, 8, 13, 19, 13, 14, 6,
+    15, 5, 6, 5, 6, 5, 6, 6, 6, 5, 7, 7, 6, 6, 6, 5,
+    6, 7, 6, 5, 5, 6, 7, 7, 7, 7, 7, 15, 11, 14, 13, 28,
     20, 22, 20, 20, 22, 22, 22, 23, 22, 23, 23, 23, 23, 23, 24, 23,
     24, 24, 22, 23, 24, 23, 23, 23, 23, 21, 22, 23, 22, 23, 23, 24,
     22, 21, 20, 22, 22, 23, 23, 21, 23, 22, 22, 24, 21, 22, 23, 23,
@@ -636,7 +636,7 @@ fn huff_decode_step(
     dst: u8[:],
     dst_len: u64,
     src: const u8[:],
-    is_final: bool
+    is_final: bool,
 ) -> u64, bool {
     var state = ctx.fstate;
     var flags = ctx.flags;
@@ -695,7 +695,7 @@ fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     var tmp: u8[4096] = [0; 4096];
     let written, ok = huff_decode_step(ctx, tmp[..], 0, src, true);
     guard ok else { return false; }
-    out.append(tmp[.. written as i64]);
+    out.append(tmp[..written as i64]);
     return true;
 }
 
@@ -1023,10 +1023,10 @@ struct HpackHeaderField {
 struct DynamicTable {
     entries: HpackHeaderField[128] = [HpackHeaderField { .. }; 128],
     arena: u8[4096] = [0; 4096],
-    head: u64 = 0,           // Oldest entry index in ring
-    count: u64 = 0,          // Current number of active entries
-    arena_write_pos: u32 = 0,// Sequential write cursor in arena
-    used_bytes: u64 = 0,     // Total protocol size (sum of meta_size)
+    head: u64 = 0,            // Oldest entry index in ring
+    count: u64 = 0,           // Current number of active entries
+    arena_write_pos: u32 = 0, // Sequential write cursor in arena
+    used_bytes: u64 = 0,      // Total protocol size (sum of meta_size)
     max_allowed_size: u64 = 4096, // From SETTINGS_HEADER_TABLE_SIZE
     current_max_size: u64 = 4096, // Set by HPACK size updates
 }
@@ -1173,8 +1173,8 @@ fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, 
     let v_off = entry.val_off;
     let v_len = entry.val_len as u32;
 
-    out_name.append(dt.arena[n_off .. n_off + n_len]);
-    out_val.append(dt.arena[v_off .. v_off + v_len]);
+    out_name.append(dt.arena[n_off..n_off + n_len]);
+    out_val.append(dt.arena[v_off..v_off + v_len]);
     return true;
 }
 
@@ -1249,7 +1249,7 @@ fn decode_hpack_string<B>(src: const u8[:], offset: u64, out: B&) -> u64, bool {
         return offset, false;
     }
 
-    let raw_slice = src[next_off .. next_off + str_len];
+    let raw_slice = src[next_off..next_off + str_len];
     if is_huff {
         let ok_huff = huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
@@ -1268,7 +1268,7 @@ fn decode_hpack_header_block(
     src: const u8[:],
     out: DecodedH2HeaderList&,
     max_header_list_size: u32 = 8192,
-    validate_http2_rules: bool = true
+    validate_http2_rules: bool = true,
 ) -> u32 {
     var offset: u64 = 0;
     let src_len = src.len as u64;
@@ -1487,7 +1487,7 @@ fn encode_hpack_field<B>(
     name: const u8[:],
     val: const u8[:],
     indexing: bool = true,
-    use_huffman: bool = true
+    use_huffman: bool = true,
 ) -> bool {
     // 1. Check for exact match in static table
     let s_idx, exact_s = find_hpack_static_field(name, val);

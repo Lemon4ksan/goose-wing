@@ -33,7 +33,6 @@ inline fn tick_timer_arm(wheel: const TickTimerWheel&, delay_sec: u8 = 0) -> u8 
     return (wheel.current_tick + d) % TICK_TIMER_MODULO;
 }
 
-
 // Disarms a connection slot timeout.
 inline fn tick_timer_disarm() -> u8 {
     return TICK_TIMER_DISARMED;
@@ -44,9 +43,6 @@ fn tick_timer_advance(wheel: TickTimerWheel&, elapsed_seconds: u32 = 1) -> u8 {
     wheel.current_tick = ((wheel.current_tick + elapsed_seconds) % TICK_TIMER_MODULO) as u8;
     return wheel.current_tick;
 }
-
-
-
 
 // Checks if an armed slot has reached its timeout.
 inline fn tick_timer_is_expired(wheel: const TickTimerWheel&, slot_timeout: u8) -> bool {

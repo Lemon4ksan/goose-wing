@@ -137,7 +137,7 @@ fn download_stream<F: fn(const StreamProgress&)>(
     session: Session&,
     url: const u8[:],
     chunk_size: i64,
-    out_body: u8[>..]&
+    out_body: u8[>..]&,
 ) -> Response, Error {
     let resp, err = get(session, url);
     guard ok(err) else { return resp, err; }
@@ -178,7 +178,7 @@ fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
 fn ws_perform_handshake(
     session: Session&,
     req: Request&,
-    client_key: const u8[:]
+    client_key: const u8[:],
 ) -> WebSocketSession, Response, Error {
     let resp, err = do(session, req);
     guard ok(err) else {
@@ -190,7 +190,7 @@ fn ws_perform_handshake(
         return new_websocket_session(true), resp, make_error(
             resp.status_code,
             "websocket_handshake",
-            "server did not return 101 Switching Protocols"
+            "server did not return 101 Switching Protocols",
         );
     }
 
@@ -200,7 +200,7 @@ fn ws_perform_handshake(
         return new_websocket_session(true), resp, make_error(
             400,
             "websocket_handshake",
-            "missing or invalid Upgrade header in server response"
+            "missing or invalid Upgrade header in server response",
         );
     }
 
@@ -211,7 +211,7 @@ fn ws_perform_handshake(
         has_upgrade_token = true;
     } else {
         for t in 0..conn.len {
-            if t + 7 <= conn.len && eq_ascii_fold(conn[t..t+7], "upgrade") {
+            if t + 7 <= conn.len && eq_ascii_fold(conn[t..t + 7], "upgrade") {
                 has_upgrade_token = true;
                 break;
             }
@@ -221,7 +221,7 @@ fn ws_perform_handshake(
         return new_websocket_session(true), resp, make_error(
             400,
             "websocket_handshake",
-            "missing Connection: Upgrade header in server response"
+            "missing Connection: Upgrade header in server response",
         );
     }
 
@@ -231,7 +231,7 @@ fn ws_perform_handshake(
         return new_websocket_session(true), resp, make_error(
             400,
             "websocket_handshake",
-            "invalid Sec-WebSocket-Accept key in server response"
+            "invalid Sec-WebSocket-Accept key in server response",
         );
     }
 
@@ -300,7 +300,7 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
 fn sse_perform_connect(
     session: Session&,
     sub: SseSubscription,
-    req: Request&
+    req: Request&,
 ) -> SseSubscription, Response, Error {
     var eff_sub = sub;
     let resp, err = do(session, req);
@@ -312,7 +312,7 @@ fn sse_perform_connect(
         return eff_sub, resp, make_error(
             resp.status_code,
             "sse_connect",
-            "server returned non-2xx status for SSE stream"
+            "server returned non-2xx status for SSE stream",
         );
     }
 
@@ -321,7 +321,7 @@ fn sse_perform_connect(
         return eff_sub, resp, make_error(
             415,
             "sse_connect",
-            "server response is not text/event-stream"
+            "server response is not text/event-stream",
         );
     }
 
@@ -363,7 +363,7 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
         return resp, make_error(
             resp.status_code,
             "sse_reconnect",
-            "server returned non-2xx status during reconnection"
+            "server returned non-2xx status during reconnection",
         );
     }
 
@@ -379,7 +379,7 @@ fn connect_udp(
     target_host: const u8[:],
     target_port: u16,
     stream_id: u64 = 0,
-    use_datagrams: bool = true
+    use_datagrams: bool = true,
 ) -> MasqueTunnelSession, Response, Error {
     var tunnel = new_connect_udp_tunnel(proxy_url, target_host, target_port, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;
@@ -420,7 +420,7 @@ fn connect_ip(
     session: Session&,
     proxy_url: const u8[:],
     stream_id: u64 = 0,
-    use_datagrams: bool = true
+    use_datagrams: bool = true,
 ) -> MasqueTunnelSession, Response, Error {
     var tunnel = new_connect_ip_tunnel(proxy_url, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;

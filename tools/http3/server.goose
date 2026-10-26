@@ -8,10 +8,10 @@ import core from "../..";
 import wing from "../..";
 
 // Native UDP C bindings (shim/tcp.c)
-extern "wing_udp_bind" fn native_udp_bind(host: const u8[:], port: u16) -> i64;
-extern "wing_udp_sendto" fn native_udp_sendto(sock_fd: i64, data: const u8[:], host: const u8[:], port: u16) -> i32;
-extern "wing_udp_sendto_ip4" fn native_udp_sendto_ip4(sock_fd: i64, data: const u8[:], peer_ip4: u32, port: u16) -> i32;
-extern "wing_udp_recvfrom" fn native_udp_recvfrom(sock_fd: i64, buf: u8[:], timeout_ms: u32, peer_ip: u32&, peer_port: u16&) -> i32;
+extern fn native_udp_bind(host: const u8[:], port: u16) -> i64 = "wing_udp_bind";
+extern fn native_udp_sendto(sock_fd: i64, data: const u8[:], host: const u8[:], port: u16) -> i32 = "wing_udp_sendto";
+extern fn native_udp_sendto_ip4(sock_fd: i64, data: const u8[:], peer_ip4: u32, port: u16) -> i32 = "wing_udp_sendto_ip4";
+extern fn native_udp_recvfrom(sock_fd: i64, buf: u8[:], timeout_ms: u32, peer_ip: u32&, peer_port: u16&) -> i32 = "wing_udp_recvfrom";
 
 fn append_u64<B>(out: B&, val: u64) {
     if val == 0 {

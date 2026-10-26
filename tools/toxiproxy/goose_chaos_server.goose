@@ -12,7 +12,7 @@ fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) ->
     while cursor < headers_block.len {
         let rel_end = core::index_of_slice(headers_block[cursor..], "\r\n");
         if rel_end < 0 { break; }
-        let line = headers_block[cursor .. (cursor + rel_end)];
+        let line = headers_block[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
         if colon > 0 {
             let hname = line[..colon];
@@ -71,7 +71,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
         "Connection: Upgrade\r\n",
         "Sec-WebSocket-Accept: ",
         accept_key[..],
-        "\r\n\r\n"
+        "\r\n\r\n",
     );
     wing::tcp_send(conn, handshake_resp[..]);
 
@@ -148,7 +148,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
             }
 
             var payload: u8[>..] = [];
-            payload.append(ws_buf[(hdr.header_len as i64) .. total_len]);
+            payload.append(ws_buf[(hdr.header_len as i64)..total_len]);
             wing::mask_websocket_payload(payload[..], hdr.mask_key);
 
             if is_control {
@@ -381,7 +381,7 @@ fn main() {
                         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ",
                         resp_body.len,
                         "\r\nConnection: close\r\n\r\n",
-                        resp_body[..]
+                        resp_body[..],
                     );
                     wing::tcp_send(conn, resp_wire[..]);
                     break;

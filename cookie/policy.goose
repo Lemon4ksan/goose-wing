@@ -272,7 +272,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
 fn compute_site_for_cookies_with_ancestors(
     top_url: const u8[:],
     ancestor_urls: const u8[:][:],
-    is_sandboxed: bool = false
+    is_sandboxed: bool = false,
 ) -> SiteForCookies {
     if is_sandboxed || starts_with(top_url, "data:") || starts_with(top_url, "about:") {
         return null_site_for_cookies();
@@ -351,7 +351,7 @@ fn can_set_canonical_cookie_for_context(
     cookie_val: const CanonicalCookie&,
     context: const SameSiteCookieContext&,
     is_main_frame: bool,
-    is_secure_channel: bool
+    is_secure_channel: bool,
 ) -> bool, i64 {
     // Cross-site subresources or non-main frame navigations cannot set SameSite cookies
     if !is_main_frame && context.context_type == SameSiteContextType.CrossSite {

@@ -353,8 +353,6 @@ fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) ->
     return imported_count;
 }
 
-
-
 // ---- internal implementation helpers ---------------------------------------
 
 fn same_site_sqlite_code(same_site: CookieSameSite) -> i64 {
@@ -584,7 +582,7 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
         line[tab_positions[3] + 1..tab_positions[4]],
         line[tab_positions[4] + 1..tab_positions[5]],
         line[tab_positions[5] + 1..],
-        is_httponly
+        is_httponly,
     );
 
     if !cookie_ref.host_only && is_public_suffix_domain(cookie_ref.domain[..]) {

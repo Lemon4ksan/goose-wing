@@ -155,7 +155,7 @@ fn update(
     cache: AltSvcCache&,
     origin: const u8[:],
     raw_altsvc: const u8[:],
-    now_sec: i64
+    now_sec: i64,
 ) {
     var endpoints: AltSvcEndpoint[..4] = [];
     let ok, is_clear = parse_altsvc_header(raw_altsvc, endpoints);
@@ -221,7 +221,7 @@ fn lookup_h3(
     cache: const AltSvcCache&,
     origin: const u8[:],
     now_sec: i64,
-    out_ep: AltSvcEndpoint&
+    out_ep: AltSvcEndpoint&,
 ) -> bool {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return false; }

@@ -225,11 +225,11 @@ fn test_header_protection_and_pn(t: core::T&) {
     t.run("HP-01: RFC 9001 Appendix A.2 Header Protection Vector") { sub =>
         let hp_key: u8[16] = [
             0x9f, 0x50, 0x44, 0x9e, 0x04, 0xa0, 0xe8, 0x10,
-            0x28, 0x3a, 0x1e, 0x99, 0x33, 0xad, 0xed, 0xd2
+            0x28, 0x3a, 0x1e, 0x99, 0x33, 0xad, 0xed, 0xd2,
         ];
         let sample: u8[16] = [
             0xd1, 0xb1, 0xc9, 0x8d, 0xd7, 0x68, 0x9f, 0xb8,
-            0xec, 0x11, 0xd2, 0x42, 0xb1, 0x23, 0xdc, 0x9b
+            0xec, 0x11, 0xd2, 0x42, 0xb1, 0x23, 0xdc, 0x9b,
         ];
         let mask = wing::aes128_header_protect_mask(hp_key, sample);
         let expected_mask: u8[5] = [0x43, 0x7b, 0x9a, 0xec, 0x36];
@@ -414,36 +414,36 @@ fn test_ack_and_pto_engine(t: core::T&) {
         var spaces: wing::PnSpaceState[3] = [
             wing::PnSpaceState { space_id: wing::PnSpaceId.Initial, .. },
             wing::PnSpaceState { space_id: wing::PnSpaceId.Handshake, .. },
-            wing::PnSpaceState { space_id: wing::PnSpaceId.ApplicationData, .. }
+            wing::PnSpaceState { space_id: wing::PnSpaceId.ApplicationData, .. },
         ];
         var rtt = wing::RttState { smoothed_rtt_us: 50000, rttvar_us: 10000, .. };
 
         // Priority 2: Server at anti-amplification limit
         let dec_amp = wing::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, true, true, false, false
+            spaces, rtt, 0, 1000000, true, true, false, false,
         );
         sub.assert_eq(dec_amp.mode, wing::PtoTimerMode.AntiAmplification, "server at amp limit returns AntiAmplification");
 
         // Priority 3: Client Anti-deadlock PTO when no packets in flight
         let dec_deadlock = wing::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, false, false, false, false
+            spaces, rtt, 0, 1000000, false, false, false, false,
         );
         sub.assert_eq(dec_deadlock.mode, wing::PtoTimerMode.AntiDeadlock, "client anti-deadlock armed");
 
         // Priority 5: Standard PTO when packets in flight
         spaces[0].sent_packets.push(wing::SentPacketMeta {
-            pn: 1, time_sent_us: 1000000, ack_eliciting: true, in_flight: true
+            pn: 1, time_sent_us: 1000000, ack_eliciting: true, in_flight: true,
         });
         spaces[0].time_of_last_ack_eliciting_us = 1000000;
         let dec_std = wing::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, true, false, true, false
+            spaces, rtt, 0, 1000000, true, false, true, false,
         );
         sub.assert_eq(dec_std.mode, wing::PtoTimerMode.StandardPto, "standard PTO scheduled");
 
         // Priority 1: Time threshold loss detection takes precedence over PTO
         spaces[0].loss_time_us = 1010000;
         let dec_loss = wing::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, true, false, true, false
+            spaces, rtt, 0, 1000000, true, false, true, false,
         );
         sub.assert_eq(dec_loss.mode, wing::PtoTimerMode.LossTime, "loss time timer takes Priority 1");
     };

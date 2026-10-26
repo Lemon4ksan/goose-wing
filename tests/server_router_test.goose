@@ -495,7 +495,7 @@ fn test_standalone_http_server(t: core::T&) {
             'G' as u8, 'E' as u8, 'T' as u8, ' ' as u8,
             '/' as u8, 's' as u8, 'a' as u8, 'f' as u8, 'e' as u8, 0x00, // Embedded NUL CTL!
             ' ' as u8, 'H' as u8, 'T' as u8, 'T' as u8, 'P' as u8, '/' as u8, '1' as u8, '.' as u8, '1' as u8,
-            '\r' as u8, '\n' as u8, '\r' as u8, '\n' as u8, 0, 0, 0, 0, 0
+            '\r' as u8, '\n' as u8, '\r' as u8, '\n' as u8, 0, 0, 0, 0, 0,
         ];
         let _, ok5 = wing::handle_connection_wire(server, "127.0.0.1", bad_url[..23], 1000000000, out5);
         sub.assert_false(ok5, "CTL in URL path rejected");

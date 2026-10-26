@@ -62,37 +62,37 @@ fn test_cross_origin_isolation(t: core::T&) {
         // Same-origin subresource: always allowed
         sub.assert_true(
             wing::is_subresource_allowed(isolated_ctx, "https://main.app.com", ""),
-            "Same-origin resource always allowed"
+            "Same-origin resource always allowed",
         );
 
         // Cross-origin with CORP: cross-origin: allowed
         sub.assert_true(
             wing::is_subresource_allowed(isolated_ctx, "https://cdn.other.com", "cross-origin"),
-            "Cross-origin subresource with CORP: cross-origin allowed"
+            "Cross-origin subresource with CORP: cross-origin allowed",
         );
 
         // Same-site subresource (subdomain) with CORP: same-site: allowed under require-corp
         sub.assert_true(
             wing::is_subresource_allowed(isolated_ctx, "https://static.app.com", "same-site"),
-            "Same-site subresource with CORP: same-site allowed"
+            "Same-site subresource with CORP: same-site allowed",
         );
 
         // Cross-site subresource with CORP: same-site: BLOCKED
         sub.assert_false(
             wing::is_subresource_allowed(isolated_ctx, "https://cdn.evil.com", "same-site"),
-            "Cross-site subresource with CORP: same-site BLOCKED"
+            "Cross-site subresource with CORP: same-site BLOCKED",
         );
 
         // Cross-origin with missing CORP: BLOCKED by require-corp
         sub.assert_false(
             wing::is_subresource_allowed(isolated_ctx, "https://cdn.other.com", ""),
-            "Cross-origin subresource without CORP BLOCKED by require-corp"
+            "Cross-origin subresource without CORP BLOCKED by require-corp",
         );
 
         // Cross-origin with CORP: same-origin: BLOCKED
         sub.assert_false(
             wing::is_subresource_allowed(isolated_ctx, "https://cdn.other.com", "same-origin"),
-            "Cross-origin subresource declaring same-origin BLOCKED"
+            "Cross-origin subresource declaring same-origin BLOCKED",
         );
     };
 }

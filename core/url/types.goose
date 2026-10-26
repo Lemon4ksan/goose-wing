@@ -262,4 +262,3 @@ fn is_secure_scheme(url_val: const Url&) -> bool {
     let scheme_str = scheme(url_val);
     return scheme_str == "https" || scheme_str == "wss";
 }
-

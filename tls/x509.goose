@@ -465,7 +465,7 @@ fn verify_certificate_chain(
     chain_certs: const ParsedCert[..8]&,
     raw_certs: const u8[:][..8]&,
     trust_store: const TrustAnchorStore&,
-    now_unix: i64
+    now_unix: i64,
 ) -> TlsAlert {
     guard chain_certs.len > 0 else { return TlsAlert.BadCertificate; }
 
@@ -571,7 +571,7 @@ fn match_uri_san(san_uri_host: const u8[:], request_host: const u8[:]) -> bool {
 // Enforces that legacy PKCS#1 v1.5 RSA schemes are rejected in TLS 1.3.
 fn verify_signature_scheme_curve_binding(
     sig_scheme: u16,
-    spki_oid: const u8[:]
+    spki_oid: const u8[:],
 ) -> bool {
     if sig_scheme == SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
         return spki_oid == OID_SECP256R1[..] || spki_oid == OID_EC_PUBLIC_KEY[..];
@@ -591,7 +591,7 @@ fn verify_signature_scheme_curve_binding(
 fn build_certificate_verify_message(
     is_server: bool,
     transcript_hash: const u8[:],
-    out: u8[:]
+    out: u8[:],
 ) -> i64, bool {
     let needed = 98 + transcript_hash.len;
     guard out.len >= needed else { return 0, false; }

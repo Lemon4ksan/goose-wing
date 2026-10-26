@@ -95,7 +95,7 @@ fn test_hpke_rfc9180(t: core::T&) {
             skEm,
             wing::HPKE_AEAD_AES_128_GCM,
             enc,
-            ct
+            ct,
         );
         sub.assert_true(ok_seal, "hpke_seal_base succeeds");
 
@@ -131,7 +131,7 @@ fn test_hpke_rfc9180(t: core::T&) {
             aad,
             ct[..],
             wing::HPKE_AEAD_AES_128_GCM,
-            decrypted
+            decrypted,
         );
         sub.assert_true(ok_open, "hpke_open_base succeeds");
         sub.assert_eq(decrypted.len, pt.len, "decrypted length matches plaintext");
@@ -149,7 +149,7 @@ fn test_hpke_rfc9180(t: core::T&) {
             aad,
             ct[..],
             wing::HPKE_AEAD_AES_128_GCM,
-            dec_tampered
+            dec_tampered,
         );
         sub.assert_false(ok_tamper, "tampered ciphertext fails decryption");
     };
@@ -184,7 +184,7 @@ fn test_hpke_rfc9180(t: core::T&) {
             alice_sk,
             wing::HPKE_AEAD_CHACHA20_POLY1305,
             enc,
-            ct
+            ct,
         );
         sub.assert_true(ok_seal, "ChaCha20Poly1305 seal succeeds");
 
@@ -196,7 +196,7 @@ fn test_hpke_rfc9180(t: core::T&) {
             aad,
             ct[..],
             wing::HPKE_AEAD_CHACHA20_POLY1305,
-            decrypted
+            decrypted,
         );
         sub.assert_true(ok_open, "ChaCha20Poly1305 open succeeds");
         sub.assert_eq(decrypted.len, pt.len, "decrypted length matches");

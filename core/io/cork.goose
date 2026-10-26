@@ -92,7 +92,7 @@ fn cork_write_u16_be(cb: CorkBuffer&, v: u16) -> IoError {
     guard cork_available(cb) >= 2 else {
         return IoError.BufferFull;
     }
-    cb.storage[cb.len]     = ((v >> 8) & 0xFF) as u8;
+    cb.storage[cb.len] = ((v >> 8) & 0xFF) as u8;
     cb.storage[cb.len + 1] = (v & 0xFF) as u8;
     cb.len += 2;
     return IoError.None;
@@ -103,7 +103,7 @@ fn cork_write_u24_be(cb: CorkBuffer&, v: u32) -> IoError {
     guard cork_available(cb) >= 3 else {
         return IoError.BufferFull;
     }
-    cb.storage[cb.len]     = ((v >> 16) & 0xFF) as u8;
+    cb.storage[cb.len] = ((v >> 16) & 0xFF) as u8;
     cb.storage[cb.len + 1] = ((v >> 8) & 0xFF) as u8;
     cb.storage[cb.len + 2] = (v & 0xFF) as u8;
     cb.len += 3;
@@ -115,7 +115,7 @@ fn cork_write_u32_be(cb: CorkBuffer&, v: u32) -> IoError {
     guard cork_available(cb) >= 4 else {
         return IoError.BufferFull;
     }
-    cb.storage[cb.len]     = ((v >> 24) & 0xFF) as u8;
+    cb.storage[cb.len] = ((v >> 24) & 0xFF) as u8;
     cb.storage[cb.len + 1] = ((v >> 16) & 0xFF) as u8;
     cb.storage[cb.len + 2] = ((v >> 8) & 0xFF) as u8;
     cb.storage[cb.len + 3] = (v & 0xFF) as u8;
@@ -128,7 +128,7 @@ fn cork_write_u64_be(cb: CorkBuffer&, v: u64) -> IoError {
     guard cork_available(cb) >= 8 else {
         return IoError.BufferFull;
     }
-    cb.storage[cb.len]     = ((v >> 56) & 0xFF) as u8;
+    cb.storage[cb.len] = ((v >> 56) & 0xFF) as u8;
     cb.storage[cb.len + 1] = ((v >> 48) & 0xFF) as u8;
     cb.storage[cb.len + 2] = ((v >> 40) & 0xFF) as u8;
     cb.storage[cb.len + 3] = ((v >> 32) & 0xFF) as u8;

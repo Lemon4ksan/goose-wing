@@ -533,7 +533,7 @@ fn test_ws_unmask_shifted_header_overwrite(t: core::T&) {
             frame[..],
             hdr.header_len as i64,
             hdr.payload_len as i64,
-            hdr.mask_key
+            hdr.mask_key,
         );
 
         sub.assert_eq(unmasked.len, original_msg.len, "Unmasked length matches");
@@ -591,7 +591,6 @@ fn test_chunked_fsm_decoder(t: core::T&) {
         sub.assert_eq(st_err, internal::ChunkFsmStatus.Error, "Invalid hex digit returns Error");
     };
 }
-
 
 fn test_http_route_cache(t: core::T&) {
     t.run("1. Dual-Expiry Coalescing HTTP Route Cache") { sub =>
@@ -743,5 +742,3 @@ fn main() {
     let ok = core::finish(runner);
     assert(ok);
 }
-
-

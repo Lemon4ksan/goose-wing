@@ -117,7 +117,7 @@ fn decode_grpc_web_frame<B>(
     offset: u32,
     out_payload: B&,
     out_is_trailers: bool&,
-    out_compressed: bool&
+    out_compressed: bool&,
 ) -> bool, u32 {
     let off = offset as i64;
     guard off >= 0 && (wire.len - off) >= 5 else { return false, 0; }
@@ -142,7 +142,7 @@ fn decode_grpc_web_frame<B>(
 fn parse_grpc_web_trailers(
     trailer_bytes: const u8[:],
     out_status: GrpcStatusCode&,
-    out_message: u8[..256]&
+    out_message: u8[..256]&,
 ) -> bool {
     out_status = GrpcStatusCode.Ok;
     out_message.clear();

@@ -429,9 +429,7 @@ fn akamai(profile: const BrowserProfile&) -> u8[..256] {
     return akamai_fingerprint_to_string(profile.akamai);
 }
 
-
 // Computes the 32-character hexadecimal MD5 Akamai hash for this profile.
 fn akamai_hash(profile: const BrowserProfile&) -> u8[..32] {
     return akamai_fingerprint_hash(profile.akamai);
 }
-

@@ -35,25 +35,25 @@ fn driver_kind_name(kind: TransportDriverKind) -> u8[:] {
 }
 
 // Driver capability bitmask flags
-const CAP_NONE: u32                = 0;
-const CAP_KERNEL_BYPASS: u32       = 1 << 0; // Direct hardware/kernel bypass rings
-const CAP_ZERO_COPY: u32           = 1 << 1; // Zero copy between userspace and NIC/kernel
-const CAP_RING_COMPLETION: u32     = 1 << 2; // Circular submission/completion ring queues
-const CAP_BATCH_IO: u32            = 1 << 3; // Batched syscall submission / CQ reaping
+const CAP_NONE: u32 = 0;
+const CAP_KERNEL_BYPASS: u32 = 1 << 0;       // Direct hardware/kernel bypass rings
+const CAP_ZERO_COPY: u32 = 1 << 1;           // Zero copy between userspace and NIC/kernel
+const CAP_RING_COMPLETION: u32 = 1 << 2;     // Circular submission/completion ring queues
+const CAP_BATCH_IO: u32 = 1 << 3;            // Batched syscall submission / CQ reaping
 const CAP_PAGE_LOCKED_BUFFERS: u32 = 1 << 4; // Pre-registered pinned virtual memory
-const CAP_DIRECT_DESCRIPTORS: u32  = 1 << 5; // Fixed socket table without fd lookup overhead
-const CAP_MULTISHOT_RECV: u32      = 1 << 6; // Repeated receive events on single submission
-const CAP_EXACT_BUF_METRICS: u32   = 1 << 7; // Kernel reports exact unread bytes in buffer
-const CAP_NIC_TLS_OFFLOAD: u32     = 1 << 8; // SmartNIC hardware TLS crypto offload (kTLS / Mellanox / BlueField)
-const CAP_AF_XDP_UMEM: u32         = 1 << 9; // Linux AF_XDP zero-copy UMEM ring buffer
-const CAP_DPDK_PMD: u32            = 1 << 10; // DPDK Poll Mode Driver (PCIe BAR ring)
+const CAP_DIRECT_DESCRIPTORS: u32 = 1 << 5;  // Fixed socket table without fd lookup overhead
+const CAP_MULTISHOT_RECV: u32 = 1 << 6;      // Repeated receive events on single submission
+const CAP_EXACT_BUF_METRICS: u32 = 1 << 7;   // Kernel reports exact unread bytes in buffer
+const CAP_NIC_TLS_OFFLOAD: u32 = 1 << 8;     // SmartNIC hardware TLS crypto offload (kTLS / Mellanox / BlueField)
+const CAP_AF_XDP_UMEM: u32 = 1 << 9;         // Linux AF_XDP zero-copy UMEM ring buffer
+const CAP_DPDK_PMD: u32 = 1 << 10; // DPDK Poll Mode Driver (PCIe BAR ring)
 
 // Transport driver error status codes
-const ERR_SUCCESS: i32             = 0;
-const ERR_ENOSYS: i32              = -38; // POSIX ENOSYS: function not implemented
+const ERR_SUCCESS: i32 = 0;
+const ERR_ENOSYS: i32 = -38; // POSIX ENOSYS: function not implemented
 
 // Default buffer and queue sizing
-const DEFAULT_RING_SIZE: u32              = 1024;
+const DEFAULT_RING_SIZE: u32 = 1024;
 const DEFAULT_REGISTERED_BUFFER_SIZE: u32 = 65536;
 
 // Checks if a capability bit is enabled

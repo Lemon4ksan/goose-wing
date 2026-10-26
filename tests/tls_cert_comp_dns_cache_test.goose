@@ -27,7 +27,7 @@ fn test_rfc8879_certificate_compression(t: core::T&) {
             hs_payload,
             wing::CERT_COMPRESS_ZSTD,
             fake_cert.len as u32,
-            compressed[..]
+            compressed[..],
         );
 
         let parsed, ok_parse = wing::parse_compressed_certificate(hs_payload[..]);

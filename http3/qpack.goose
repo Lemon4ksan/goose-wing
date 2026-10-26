@@ -11,53 +11,53 @@ import std;
 // ---- 1. constants, error codes and limits -----------------------------------
 
 const QPACK_STATIC_TABLE_SIZE: u64 = 99;
-const QPACK_ENTRY_OVERHEAD:    u64 = 32; // RFC 9204 Section 3.2.1 (+32 bytes per entry)
+const QPACK_ENTRY_OVERHEAD: u64 = 32; // RFC 9204 Section 3.2.1 (+32 bytes per entry)
 const QPACK_DEFAULT_MAX_TABLE: u64 = 4096;
 const QPACK_MAX_BLOCKED_STREAMS: u32 = 128;
 
 // HTTP/3 Error Codes (RFC 9114 Section 8.1 & RFC 9204 Section 2.2.3)
-const H3_ERR_NO_ERROR:              u64 = 0x0100;
-const H3_ERR_GENERAL_PROTOCOL:      u64 = 0x0101;
-const H3_ERR_INTERNAL:              u64 = 0x0102;
-const H3_ERR_STREAM_CREATION:       u64 = 0x0103;
-const H3_ERR_CLOSED_CRITICAL_STREAM:u64 = 0x0104;
-const H3_ERR_FRAME_UNEXPECTED:      u64 = 0x0105;
-const H3_ERR_FRAME_ERROR:           u64 = 0x0106;
-const H3_ERR_EXCESSIVE_LOAD:        u64 = 0x0107;
-const H3_ERR_ID_ERROR:              u64 = 0x0108;
-const H3_ERR_SETTINGS_ERROR:        u64 = 0x0109;
-const H3_ERR_MISSING_SETTINGS:      u64 = 0x010A;
-const H3_ERR_REQUEST_REJECTED:      u64 = 0x010B;
-const H3_ERR_REQUEST_CANCELLED:     u64 = 0x010C;
-const H3_ERR_REQUEST_INCOMPLETE:    u64 = 0x010D;
-const H3_ERR_CONNECT_ERROR:         u64 = 0x010F;
-const H3_ERR_VERSION_FALLBACK:      u64 = 0x0110;
+const H3_ERR_NO_ERROR: u64 = 0x0100;
+const H3_ERR_GENERAL_PROTOCOL: u64 = 0x0101;
+const H3_ERR_INTERNAL: u64 = 0x0102;
+const H3_ERR_STREAM_CREATION: u64 = 0x0103;
+const H3_ERR_CLOSED_CRITICAL_STREAM: u64 = 0x0104;
+const H3_ERR_FRAME_UNEXPECTED: u64 = 0x0105;
+const H3_ERR_FRAME_ERROR: u64 = 0x0106;
+const H3_ERR_EXCESSIVE_LOAD: u64 = 0x0107;
+const H3_ERR_ID_ERROR: u64 = 0x0108;
+const H3_ERR_SETTINGS_ERROR: u64 = 0x0109;
+const H3_ERR_MISSING_SETTINGS: u64 = 0x010A;
+const H3_ERR_REQUEST_REJECTED: u64 = 0x010B;
+const H3_ERR_REQUEST_CANCELLED: u64 = 0x010C;
+const H3_ERR_REQUEST_INCOMPLETE: u64 = 0x010D;
+const H3_ERR_CONNECT_ERROR: u64 = 0x010F;
+const H3_ERR_VERSION_FALLBACK: u64 = 0x0110;
 const H3_ERR_QPACK_DECOMPRESSION_FAILED: u64 = 0x0200;
 const H3_ERR_QPACK_ENCODER_STREAM_ERROR: u64 = 0x0201;
 const H3_ERR_QPACK_DECODER_STREAM_ERROR: u64 = 0x0202;
 
 // HTTP/3 Frame Types (RFC 9114 Section 7.2)
-const H3_FRAME_DATA:          u64 = 0x00;
-const H3_FRAME_HEADERS:       u64 = 0x01;
-const H3_FRAME_CANCEL_PUSH:   u64 = 0x03;
-const H3_FRAME_SETTINGS:      u64 = 0x04;
-const H3_FRAME_PUSH_PROMISE:  u64 = 0x05;
-const H3_FRAME_GOAWAY:        u64 = 0x07;
-const H3_FRAME_MAX_PUSH_ID:   u64 = 0x0D;
+const H3_FRAME_DATA: u64 = 0x00;
+const H3_FRAME_HEADERS: u64 = 0x01;
+const H3_FRAME_CANCEL_PUSH: u64 = 0x03;
+const H3_FRAME_SETTINGS: u64 = 0x04;
+const H3_FRAME_PUSH_PROMISE: u64 = 0x05;
+const H3_FRAME_GOAWAY: u64 = 0x07;
+const H3_FRAME_MAX_PUSH_ID: u64 = 0x0D;
 const H3_FRAME_PRIORITY_UPDATE_REQUEST: u64 = 0xF0700; // RFC 9218 Section 7.2
-const H3_FRAME_PRIORITY_UPDATE_PUSH:    u64 = 0xF0701; // RFC 9218 Section 7.2
+const H3_FRAME_PRIORITY_UPDATE_PUSH: u64 = 0xF0701;    // RFC 9218 Section 7.2
 
 // HTTP/3 Unidirectional Stream Types (RFC 9114 Section 6.2)
-const H3_STREAM_CONTROL:       u64 = 0x00;
-const H3_STREAM_PUSH:          u64 = 0x01;
+const H3_STREAM_CONTROL: u64 = 0x00;
+const H3_STREAM_PUSH: u64 = 0x01;
 const H3_STREAM_QPACK_ENCODER: u64 = 0x02;
 const H3_STREAM_QPACK_DECODER: u64 = 0x03;
 
 // HTTP/3 Settings Identifiers (RFC 9114 Section 7.2.4.1 & RFC 9204 Section 5)
 const H3_SETTING_QPACK_MAX_TABLE_CAPACITY: u64 = 0x01; // default 0
-const H3_SETTING_MAX_FIELD_SECTION_SIZE:   u64 = 0x06; // unlimited default
-const H3_SETTING_QPACK_BLOCKED_STREAMS:     u64 = 0x07; // default 0
-const H3_SETTING_ENABLE_CONNECT_PROTOCOL:  u64 = 0x08; // RFC 9220 Extended CONNECT
+const H3_SETTING_MAX_FIELD_SECTION_SIZE: u64 = 0x06;   // unlimited default
+const H3_SETTING_QPACK_BLOCKED_STREAMS: u64 = 0x07; // default 0
+const H3_SETTING_ENABLE_CONNECT_PROTOCOL: u64 = 0x08; // RFC 9220 Extended CONNECT
 
 enum QpackError {
     None,
@@ -72,39 +72,39 @@ enum QpackError {
 }
 
 struct HeaderField {
-    name:  u8[..256] = [],
+    name: u8[..256] = [],
     value: u8[..4096] = [],
-    never_index: bool = false
+    never_index: bool = false,
 }
 
 struct DynamicEntry {
     abs_index: u64 = 0,
     ref_count: u32 = 0,
-    name:      u8[..256] = [],
-    value:     u8[..4096] = []
+    name: u8[..256] = [],
+    value: u8[..4096] = [],
 }
 
 struct BlockedStreamEntry {
-    stream_id:        u64 = 0,
+    stream_id: u64 = 0,
     req_insert_count: u64 = 0,
-    encoded_data:     u8[..4096] = []
+    encoded_data: u8[..4096] = [],
 }
 
 struct QpackTable {
-    head_idx:           u32 = 0,
-    capacity_bytes:     u64 = 0,
+    head_idx: u32 = 0,
+    capacity_bytes: u64 = 0,
     max_capacity_bytes: u64 = 0,
-    used_bytes:         u64 = 0,
-    insert_count:       u64 = 0, // TotalNumberOfInserts
-    known_rcvd_count:   u64 = 0, // Known Received Count
-    draining_index:     u64 = 0, // Active indexing lower bound
-    max_blocked:        u32 = 16,
-    max_field_section:  u64 = 16384,
+    used_bytes: u64 = 0,
+    insert_count: u64 = 0,       // TotalNumberOfInserts
+    known_rcvd_count: u64 = 0,   // Known Received Count
+    draining_index: u64 = 0,     // Active indexing lower bound
+    max_blocked: u32 = 16,
+    max_field_section: u64 = 16384,
     encoder_stream_opened: bool = false,
     decoder_stream_opened: bool = false,
     control_stream_opened: bool = false,
-    blocked_streams:    BlockedStreamEntry[..128] = [],
-    entries:            DynamicEntry[>..<] = [] // Must be last!
+    blocked_streams: BlockedStreamEntry[..128] = [],
+    entries: DynamicEntry[>..<] = [], // Must be last!
 }
 
 // Calculates RFC 9204 Section 3.2.1 protocol weight (+32 byte overhead).
@@ -116,7 +116,7 @@ fn qpack_entry_cost(name_len: u64, val_len: u64) -> u64 {
 
 struct QpackStaticEntry {
     name: const u8[:] = "",
-    val:  const u8[:] = ""
+    val: const u8[:] = "",
 }
 
 const QPACK_STATIC_TABLE: QpackStaticEntry[99] = [
@@ -218,7 +218,7 @@ const QPACK_STATIC_TABLE: QpackStaticEntry[99] = [
     QpackStaticEntry { name: "user-agent", val: "" },                        // 95
     QpackStaticEntry { name: "x-forwarded-for", val: "" },                   // 96
     QpackStaticEntry { name: "x-frame-options", val: "deny" },               // 97
-    QpackStaticEntry { name: "x-frame-options", val: "sameorigin" }          // 98
+    QpackStaticEntry { name: "x-frame-options", val: "sameorigin" },         // 98
 ];
 
 // Returns static table entry at 0-based index (0..98).
@@ -414,7 +414,7 @@ fn qpack_lookup_absolute(
     tbl: const QpackTable&,
     abs_idx: u64,
     out_name: u8[..256]&,
-    out_val: u8[..4096]&
+    out_val: u8[..4096]&,
 ) -> bool {
     out_name.clear();
     out_val.clear();
@@ -471,7 +471,7 @@ fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B
     guard ok_len else { return offset, false; }
     guard (next_off + str_len) <= (src.len as u64) else { return offset, false; }
 
-    let raw_slice = src[next_off .. next_off + str_len];
+    let raw_slice = src[next_off..next_off + str_len];
     if is_huff {
         let ok_huff = huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
@@ -583,7 +583,7 @@ fn emit_field_checked(
     budget_left: u64&,
     name: const u8[:],
     val: const u8[:],
-    never_index: bool = false
+    never_index: bool = false,
 ) -> QpackError {
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
     guard budget_left >= cost else {
@@ -605,7 +605,7 @@ fn decode_qpack_section(
     tbl: const QpackTable&,
     src: const u8[:],
     out_fields: HeaderField[>..]&,
-    max_field_section: u64 = 16384
+    max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
     var offset: u64 = 0;
@@ -787,7 +787,7 @@ fn encode_qpack_field<B>(
     out: B&,
     name: const u8[:],
     val: const u8[:],
-    use_huffman: bool = true
+    use_huffman: bool = true,
 ) {
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {

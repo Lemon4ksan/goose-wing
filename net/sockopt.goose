@@ -12,23 +12,23 @@ import core from "..";
 // ---- 1. OS-Level Socket Constants ------------------------------------------
 
 // Protocol Levels
-const IPPROTO_IP: i32  = 0;
+const IPPROTO_IP: i32 = 0;
 const IPPROTO_TCP: i32 = 6;
 
 // Socket Level Constants
-const SOL_SOCKET_WIN: i32   = 0xFFFF;
+const SOL_SOCKET_WIN: i32 = 0xFFFF;
 const SOL_SOCKET_POSIX: i32 = 1;
 
 // Socket Option Names (Universal / Windows / Linux)
-const SO_RCVBUF_OPT: i32    = 0x1002; // Windows SO_RCVBUF (or 8 on Linux)
-const SO_SNDBUF_OPT: i32    = 0x1001; // Windows SO_SNDBUF (or 7 on Linux)
+const SO_RCVBUF_OPT: i32 = 0x1002;    // Windows SO_RCVBUF (or 8 on Linux)
+const SO_SNDBUF_OPT: i32 = 0x1001;    // Windows SO_SNDBUF (or 7 on Linux)
 const SO_KEEPALIVE_OPT: i32 = 0x0008; // SO_KEEPALIVE
-const TCP_NODELAY_OPT: i32  = 0x0001; // TCP_NODELAY
+const TCP_NODELAY_OPT: i32 = 0x0001;  // TCP_NODELAY
 
 // IP Level Option Names
-const IP_TTL_OPT: i32       = 4;      // IP_TTL
-const IP_DONTFRAG_WIN: i32  = 14;     // Windows IP_DONTFRAGMENT
-const IP_MTU_DISCOVER_LINUX: i32 = 10;// Linux IP_MTU_DISCOVER (PMTUDISC_DO = 2)
+const IP_TTL_OPT: i32 = 4;             // IP_TTL
+const IP_DONTFRAG_WIN: i32 = 14;       // Windows IP_DONTFRAGMENT
+const IP_MTU_DISCOVER_LINUX: i32 = 10; // Linux IP_MTU_DISCOVER (PMTUDISC_DO = 2)
 
 // ---- 2. Socket p0f Profile Configuration -----------------------------------
 

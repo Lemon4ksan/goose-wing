@@ -28,10 +28,10 @@ const DCB_MAGIC_BYTE1: u8 = 0x44; // 'D'
 const DCB_MAGIC_BYTE2: u8 = 0x43; // 'C'
 const DCB_MAGIC_BYTE3: u8 = 0x42; // 'B'
 
-const HEADER_USE_AS_DICTIONARY: const u8[:]   = "use-as-dictionary";
+const HEADER_USE_AS_DICTIONARY: const u8[:] = "use-as-dictionary";
 const HEADER_AVAILABLE_DICTIONARY: const u8[:] = "available-dictionary";
-const ENCODING_DCZ: const u8[:]               = "dcz";
-const ENCODING_DCB: const u8[:]               = "dcb";
+const ENCODING_DCZ: const u8[:] = "dcz";
+const ENCODING_DCB: const u8[:] = "dcb";
 
 // ---- 2. Dictionary Models & Cache ------------------------------------------
 
@@ -225,7 +225,7 @@ fn dictionary_cache_insert(
     id_str: const u8[:],
     body: const u8[:],
     ttl_sec: u32,
-    now_sec: i64
+    now_sec: i64,
 ) -> bool {
     guard body.len > 0 else { return false; }
 
@@ -292,7 +292,7 @@ fn dictionary_lookup_for_request(
     origin: const u8[:],
     url_path: const u8[:],
     now_sec: i64,
-    out_base64_hash: u8[..64]&
+    out_base64_hash: u8[..64]&,
 ) -> bool {
     for &entry in cache.entries {
         if entry.valid && entry.origin[..] == origin {
@@ -313,7 +313,7 @@ fn dictionary_lookup_for_request(
 fn dictionary_lookup_by_hash(
     cache: const DictionaryCache&,
     hash: const u8[32]&,
-    out_entry: DictionaryEntry&
+    out_entry: DictionaryEntry&,
 ) -> bool {
     for &entry in cache.entries {
         if entry.valid && entry.sha256_hash == hash {
@@ -328,7 +328,7 @@ fn dictionary_lookup_by_hash(
 fn decompress_dcz_payload<B>(
     compressed_payload: const u8[:],
     dictionary_content: const u8[:],
-    out_buf: B&
+    out_buf: B&,
 ) -> bool {
     // 1. Attempt standard Zstandard decompression on payload
     var decompressed: u8[>..] = [];
@@ -350,7 +350,7 @@ fn decompress_dcz_payload<B>(
 fn encode_dcz_response<B>(
     out: B&,
     dict_hash: const u8[32]&,
-    raw_content: const u8[:]
+    raw_content: const u8[:],
 ) -> bool {
     var compressed_zstd: u8[>..] = [];
     guard core::zstd_compress(raw_content, compressed_zstd) else { return false; }
@@ -361,7 +361,7 @@ fn encode_dcz_response<B>(
 fn decompress_dcb_payload<B>(
     compressed_payload: const u8[:],
     dictionary_content: const u8[:],
-    out_buf: B&
+    out_buf: B&,
 ) -> bool {
     var decompressed: u8[>..] = [];
     let ok_b, err_b = core::brotli_decompress(compressed_payload, decompressed);
@@ -380,7 +380,7 @@ fn decompress_dcb_payload<B>(
 fn encode_dcb_response<B>(
     out: B&,
     dict_hash: const u8[32]&,
-    raw_content: const u8[:]
+    raw_content: const u8[:],
 ) -> bool {
     var compressed_brotli: u8[>..] = [];
     guard core::brotli_compress(raw_content, compressed_brotli, 0) else { return false; }

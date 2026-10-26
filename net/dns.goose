@@ -24,13 +24,13 @@ const DNS_RCODE_SERVFAIL: u8 = 2;
 const DNS_RCODE_NXDOMAIN: u8 = 3;
 
 // RFC 9460 SvcParamKey Registrations (Section 14.3)
-const SVC_PARAM_MANDATORY: u16       = 0;
-const SVC_PARAM_ALPN: u16            = 1;
+const SVC_PARAM_MANDATORY: u16 = 0;
+const SVC_PARAM_ALPN: u16 = 1;
 const SVC_PARAM_NO_DEFAULT_ALPN: u16 = 2;
-const SVC_PARAM_PORT: u16            = 3;
-const SVC_PARAM_IPV4HINT: u16        = 4;
-const SVC_PARAM_ECH: u16             = 5; // Encrypted Client Hello ECHConfigList
-const SVC_PARAM_IPV6HINT: u16        = 6;
+const SVC_PARAM_PORT: u16 = 3;
+const SVC_PARAM_IPV4HINT: u16 = 4;
+const SVC_PARAM_ECH: u16 = 5; // Encrypted Client Hello ECHConfigList
+const SVC_PARAM_IPV6HINT: u16 = 6;
 
 // ---- 2. Data Structures ----------------------------------------------------
 
@@ -445,7 +445,7 @@ fn dns_cache_lookup(
     domain: const u8[:],
     qtype: u16,
     now_sec: i64,
-    out_entry: DnsCacheEntry&
+    out_entry: DnsCacheEntry&,
 ) -> DnsCacheStatus {
     for &e in cache.entries {
         if e.valid && e.qtype == qtype && e.domain[..] == domain {

@@ -437,4 +437,3 @@ fn end_of_year(time_val: Time) -> Time {
     let year_val, _, _, _, _, _ = civil_parts(time_val);
     return date(year_val, Month.December, 31, 23, 59, 59, 999999999, time_val.tz_offset);
 }
-

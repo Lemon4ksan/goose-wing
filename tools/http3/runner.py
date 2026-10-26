@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """
 HTTP/3 & QUIC End-to-End Interop Verification Test Runner for goose-wing.
 Validates RFC 9000 (QUIC Transport), RFC 9114 (HTTP/3), and RFC 9204 (QPACK)

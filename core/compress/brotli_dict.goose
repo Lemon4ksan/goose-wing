@@ -17,34 +17,34 @@ const BROTLI_DICT_NDBITS: u8[25] = [0, 0, 0, 0, 10, 10, 11, 11, 10, 10, 10, 10, 
 // Byte-offset values per word length (0..24)
 const BROTLI_DICT_DOFFSET: u32[25] = [
     0, 0, 0, 0, 0, 4096, 9216, 21504, 35840, 44032, 53248, 63488, 74752,
-    87040, 93696, 100864, 104704, 106752, 108928, 113536, 115968, 118528, 119872, 121280, 122016
+    87040, 93696, 100864, 104704, 106752, 108928, 113536, 115968, 118528, 119872, 121280, 122016,
 ];
 
 // ---- 2. 121 RFC 7932 Word Transformations (Appendix B) ---------------------
 
-const TRANSFORM_IDENTITY:         u8 = 0;
-const TRANSFORM_OMIT_LAST_1:      u8 = 1;
-const TRANSFORM_OMIT_LAST_2:      u8 = 2;
-const TRANSFORM_OMIT_LAST_3:      u8 = 3;
-const TRANSFORM_OMIT_LAST_4:      u8 = 4;
-const TRANSFORM_OMIT_LAST_5:      u8 = 5;
-const TRANSFORM_OMIT_LAST_6:      u8 = 6;
-const TRANSFORM_OMIT_LAST_7:      u8 = 7;
-const TRANSFORM_OMIT_LAST_8:      u8 = 8;
-const TRANSFORM_OMIT_LAST_9:      u8 = 9;
-const TRANSFORM_UPPERCASE_FIRST:  u8 = 10;
-const TRANSFORM_UPPERCASE_ALL:    u8 = 11;
-const TRANSFORM_OMIT_FIRST_1:     u8 = 12;
-const TRANSFORM_OMIT_FIRST_2:     u8 = 13;
-const TRANSFORM_OMIT_FIRST_3:     u8 = 14;
-const TRANSFORM_OMIT_FIRST_4:     u8 = 15;
-const TRANSFORM_OMIT_FIRST_5:     u8 = 16;
-const TRANSFORM_OMIT_FIRST_6:     u8 = 17;
-const TRANSFORM_OMIT_FIRST_7:     u8 = 18;
-const TRANSFORM_OMIT_FIRST_8:     u8 = 19;
-const TRANSFORM_OMIT_FIRST_9:     u8 = 20;
-const TRANSFORM_SHIFT_FIRST:      u8 = 21;
-const TRANSFORM_SHIFT_ALL:        u8 = 22;
+const TRANSFORM_IDENTITY: u8 = 0;
+const TRANSFORM_OMIT_LAST_1: u8 = 1;
+const TRANSFORM_OMIT_LAST_2: u8 = 2;
+const TRANSFORM_OMIT_LAST_3: u8 = 3;
+const TRANSFORM_OMIT_LAST_4: u8 = 4;
+const TRANSFORM_OMIT_LAST_5: u8 = 5;
+const TRANSFORM_OMIT_LAST_6: u8 = 6;
+const TRANSFORM_OMIT_LAST_7: u8 = 7;
+const TRANSFORM_OMIT_LAST_8: u8 = 8;
+const TRANSFORM_OMIT_LAST_9: u8 = 9;
+const TRANSFORM_UPPERCASE_FIRST: u8 = 10;
+const TRANSFORM_UPPERCASE_ALL: u8 = 11;
+const TRANSFORM_OMIT_FIRST_1: u8 = 12;
+const TRANSFORM_OMIT_FIRST_2: u8 = 13;
+const TRANSFORM_OMIT_FIRST_3: u8 = 14;
+const TRANSFORM_OMIT_FIRST_4: u8 = 15;
+const TRANSFORM_OMIT_FIRST_5: u8 = 16;
+const TRANSFORM_OMIT_FIRST_6: u8 = 17;
+const TRANSFORM_OMIT_FIRST_7: u8 = 18;
+const TRANSFORM_OMIT_FIRST_8: u8 = 19;
+const TRANSFORM_OMIT_FIRST_9: u8 = 20;
+const TRANSFORM_SHIFT_FIRST: u8 = 21;
+const TRANSFORM_SHIFT_ALL: u8 = 22;
 
 struct BrotliTransform {
     prefix: const u8[:],
@@ -198,13 +198,13 @@ fn emit_transformed_word_body<B>(word: const u8[:], tt: u8, out: B&) {
     }
 
     if len > 0 {
-        let sub = word[start .. (start + len)];
+        let sub = word[start..(start + len)];
         if tt == TRANSFORM_UPPERCASE_FIRST {
             var first = sub[0];
             if first >= 'a' && first <= 'z' { first -= 32; }
             out.push(first);
             if sub.len > 1 {
-                out.append(sub[1 .. sub.len]);
+                out.append(sub[1..sub.len]);
             }
         } else if tt == TRANSFORM_UPPERCASE_ALL {
             for b in sub {
@@ -222,7 +222,7 @@ fn emit_transformed_word_body<B>(word: const u8[:], tt: u8, out: B&) {
 fn brotli_transform_word<B>(
     word: const u8[:],
     transform_idx: u32,
-    out: B&
+    out: B&,
 ) -> bool {
     guard (transform_idx as i64) < 121 else { return false; }
     let t = BROTLI_TRANSFORMS[transform_idx as i64];
@@ -238,7 +238,7 @@ fn brotli_lookup_dictionary_word<B>(
     distance: u32,
     max_dist: u32,
     copy_len: u32,
-    out: B&
+    out: B&,
 ) -> bool {
     guard copy_len >= 4 && copy_len <= 24 else { return false; }
     guard distance > max_dist else { return false; }
@@ -255,6 +255,6 @@ fn brotli_lookup_dictionary_word<B>(
     let end_offset = offset + (copy_len as u64);
     guard (end_offset as i64) <= BROTLI_DICTIONARY.len else { return false; }
 
-    let base_word = BROTLI_DICTIONARY[(offset as i64) .. (end_offset as i64)];
+    let base_word = BROTLI_DICTIONARY[(offset as i64)..(end_offset as i64)];
     return brotli_transform_word(base_word, transform_id, out);
 }

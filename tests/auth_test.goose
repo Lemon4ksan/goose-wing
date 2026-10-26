@@ -57,7 +57,7 @@ fn test_rfc7616_official_ietf_vector(t: core::T&) {
         var auth_header: u8[..512] = [];
         let ok_d = wing::compute_digest_response(chal, creds, "GET", "/dir/index.html", 1, cnonce, "", auth_header);
         sub.assert_true(ok_d, "MD5 digest computed");
-        
+
         let expected_md5 = "8ca523f5e9506fed4657c9700eebdbec";
         var found_md5 = false;
         if auth_header.len >= expected_md5.len {
@@ -136,7 +136,7 @@ fn test_aws_sigv4_signing(t: core::T&) {
             "AKIAIOSFODNN7EXAMPLE",
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             "us-east-1",
-            "s3"
+            "s3",
         );
 
         var req = wing::new_get("https://examplebucket.s3.amazonaws.com/test.txt");

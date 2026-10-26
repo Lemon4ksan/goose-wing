@@ -125,7 +125,6 @@ fn weekday_short_name(weekday_val: Weekday) -> const u8[:] {
     return WEEKDAY_SHORT_NAMES[weekday_number(weekday_val)];
 }
 
-
 // ---- civil calendar math (Howard Hinnant) ----------------------------------
 
 // Converts between proleptic Gregorian calendar (year, month, day) and days since
@@ -169,4 +168,3 @@ fn days_in_month(year_val: i64, month_val: i64) -> i64 {
         _ => 0,
     }
 }
-

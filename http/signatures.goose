@@ -14,10 +14,10 @@ import client.response;
 // ---- 1. RFC 9421 Constants --------------------------------------------------
 
 const HEADER_SIGNATURE_INPUT: const u8[:] = "Signature-Input";
-const HEADER_SIGNATURE: const u8[:]       = "Signature";
+const HEADER_SIGNATURE: const u8[:] = "Signature";
 
-const SIG_ALG_HMAC_SHA256: const u8[:]    = "hmac-sha256";
-const SIG_ALG_ED25519: const u8[:]        = "ed25519";
+const SIG_ALG_HMAC_SHA256: const u8[:] = "hmac-sha256";
+const SIG_ALG_ED25519: const u8[:] = "ed25519";
 
 // ---- 2. Signature Models ----------------------------------------------------
 
@@ -47,7 +47,7 @@ fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -
         let url = req.url[..];
         var start = 0;
         for i in url.len - 2 {
-            if url[i] == ':' && url[i+1] == '/' && url[i+2] == '/' {
+            if url[i] == ':' && url[i + 1] == '/' && url[i + 2] == '/' {
                 start = i + 3;
                 break;
             }

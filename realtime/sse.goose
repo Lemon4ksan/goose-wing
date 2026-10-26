@@ -179,7 +179,7 @@ fn sse_format_event<B>(
     event_type: const u8[:],
     data: const u8[:],
     id: const u8[:] = "",
-    retry_ms: u32 = 0
+    retry_ms: u32 = 0,
 ) {
     if retry_ms > 0 {
         out.append("retry: ");
@@ -236,7 +236,7 @@ fn sse_build_request_headers<B>(
     sub: const SseSubscription&,
     host: const u8[:],
     path: const u8[:],
-    out: B&
+    out: B&,
 ) {
     out.append("GET ");
     out.append(path);
@@ -272,4 +272,3 @@ fn init_response(res: Response&) {
     set_header(res, "Cache-Control", "no-cache");
     set_header(res, "Connection", "keep-alive");
 }
-

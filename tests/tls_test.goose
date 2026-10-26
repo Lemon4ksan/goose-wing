@@ -110,7 +110,7 @@ fn test_record_layer_and_dos(t: core::T&) {
 
     t.run("TLS-05: Nonce XOR Derivation") { sub =>
         var iv: u8[12] = [
-            0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33
+            0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
         ];
         // Seq num = 1 -> nonce[11] ^= 1 -> 0x33 ^ 1 = 0x32
         let nonce1 = wing::compute_record_nonce(iv, 1);
@@ -129,7 +129,7 @@ fn test_record_layer_and_dos(t: core::T&) {
         let decrypted: u8[16] = [
             0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
             0x17, // true type
-            0x00, 0x00, 0x00, 0x00 // padding
+            0x00, 0x00, 0x00, 0x00, // padding
         ];
 
         let plain, inner_type, alert = wing::unpack_tls_inner_plaintext(decrypted[..]);
@@ -223,7 +223,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
             0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
         ];
         var out_key: u8[16] = [0; 16];
         let ok = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "key", [], 16, out_key[..]);
@@ -281,7 +281,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
             sched.client_ap_traffic[..32],
             16,
             app_key[..],
-            app_iv
+            app_iv,
         );
         sub.assert_true(ok_kiv, "derive key and IV ok");
 
@@ -297,7 +297,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
             sched.hash_len,
             sched.client_hs_traffic[..32],
             transcript_hash[..],
-            verify_data[..]
+            verify_data[..],
         );
         sub.assert_true(ok_vd, "finished verify data computed");
 
@@ -609,27 +609,27 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         // 0x0403 (secp256r1) requires P-256
         sub.assert_true(
             wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256, wing::OID_SECP256R1[..]),
-            "secp256r1 scheme binds to P-256 SPKI"
+            "secp256r1 scheme binds to P-256 SPKI",
         );
         sub.assert_false(
             wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256, wing::OID_SECP384R1[..]),
-            "secp256r1 scheme rejects P-384 SPKI"
+            "secp256r1 scheme rejects P-384 SPKI",
         );
 
         // Ed25519 requires Ed25519 OID
         sub.assert_true(
             wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_ED25519, wing::OID_ED25519[..]),
-            "ed25519 binds to ed25519 SPKI"
+            "ed25519 binds to ed25519 SPKI",
         );
 
         // Strict RFC 8446 Invariant: Legacy PKCS#1 v1.5 RSA schemes MUST be rejected in CertificateVerify
         sub.assert_false(
             wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_RSA_PKCS1_SHA256, wing::OID_RSA_ENCRYPTION[..]),
-            "legacy PKCS#1 RSA is strictly forbidden in TLS 1.3 CertificateVerify"
+            "legacy PKCS#1 RSA is strictly forbidden in TLS 1.3 CertificateVerify",
         );
         sub.assert_false(
             wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_RSA_PKCS1_SHA384, wing::OID_RSA_ENCRYPTION[..]),
-            "legacy PKCS#1 SHA384 is strictly forbidden in TLS 1.3 CertificateVerify"
+            "legacy PKCS#1 SHA384 is strictly forbidden in TLS 1.3 CertificateVerify",
         );
     };
 

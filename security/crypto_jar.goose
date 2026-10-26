@@ -9,13 +9,13 @@ import core from "..";
 
 // ---- protocol wire constants & overhead definitions ------------------------
 
-let WIRE_VER_XCHACHA20: u8   = 0x01;
+let WIRE_VER_XCHACHA20: u8 = 0x01;
 let WIRE_VER_HKDF_AES_GCM: u8 = 0x02;
 let WIRE_VER_HMAC_SHA256: u8 = 0x03;
 
-let K_OVERHEAD_XCHACHA20: i64    = 53; // 1 + 4 + 8 + 24 + 16
+let K_OVERHEAD_XCHACHA20: i64 = 53;    // 1 + 4 + 8 + 24 + 16
 let K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
-let K_OVERHEAD_HMAC_SHA256: i64  = 45; // 1 + 4 + 8 + 32
+let K_OVERHEAD_HMAC_SHA256: i64 = 45;  // 1 + 4 + 8 + 32
 
 // Additional Authenticated Data (AAD) for context binding:
 // ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.

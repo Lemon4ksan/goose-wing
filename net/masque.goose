@@ -9,25 +9,25 @@ import std;
 
 // ---- 1. Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
-const CAPSULE_DATAGRAM: u64                 = 0x00;   // RFC 9297 Section 3.5
-const CAPSULE_PADDING: u64                  = 0x01;   // RFC 9297 Section 3.6
-const CAPSULE_ADDRESS_ASSIGN: u64           = 0x1E;   // RFC 9484 CONNECT-IP Section 4.1
-const CAPSULE_ADDRESS_REQUEST: u64          = 0x1F;   // RFC 9484 CONNECT-IP Section 4.2
-const CAPSULE_ROUTE_ADVERTISEMENT: u64      = 0x20;   // RFC 9484 CONNECT-IP Section 4.3
-const CAPSULE_WT_RESET_STREAM: u64          = 0x2841; // WebTransport
-const CAPSULE_WT_STOP_SENDING: u64          = 0x2842; // WebTransport
-const CAPSULE_CLOSE_WEBTRANSPORT: u64       = 0x2843; // WebTransport
-const CAPSULE_DRAIN_WEBTRANSPORT: u64       = 0x78AE; // WebTransport
+const CAPSULE_DATAGRAM: u64 = 0x00;                   // RFC 9297 Section 3.5
+const CAPSULE_PADDING: u64 = 0x01;                    // RFC 9297 Section 3.6
+const CAPSULE_ADDRESS_ASSIGN: u64 = 0x1E;             // RFC 9484 CONNECT-IP Section 4.1
+const CAPSULE_ADDRESS_REQUEST: u64 = 0x1F;            // RFC 9484 CONNECT-IP Section 4.2
+const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x20;        // RFC 9484 CONNECT-IP Section 4.3
+const CAPSULE_WT_RESET_STREAM: u64 = 0x2841;          // WebTransport
+const CAPSULE_WT_STOP_SENDING: u64 = 0x2842;          // WebTransport
+const CAPSULE_CLOSE_WEBTRANSPORT: u64 = 0x2843;       // WebTransport
+const CAPSULE_DRAIN_WEBTRANSPORT: u64 = 0x78AE;       // WebTransport
 
 // Legacy draft backward-compatibility constants
-const CAPSULE_DRAFT_ADDRESS_ASSIGN: u64     = 0x3861;
-const CAPSULE_DRAFT_ADDRESS_REQUEST: u64    = 0x3862;
-const CAPSULE_DRAFT_ROUTE_ADVERTISEMENT: u64= 0x3863;
+const CAPSULE_DRAFT_ADDRESS_ASSIGN: u64 = 0x3861;
+const CAPSULE_DRAFT_ADDRESS_REQUEST: u64 = 0x3862;
+const CAPSULE_DRAFT_ROUTE_ADVERTISEMENT: u64 = 0x3863;
 
 const MASQUE_PROTOCOL_CONNECT_UDP: const u8[:] = "connect-udp";
-const MASQUE_PROTOCOL_CONNECT_IP: const u8[:]  = "connect-ip";
-const MASQUE_CAPSULE_HEADER: const u8[:]       = "capsule-protocol";
-const MASQUE_CAPSULE_VALUE: const u8[:]        = "?1";
+const MASQUE_PROTOCOL_CONNECT_IP: const u8[:] = "connect-ip";
+const MASQUE_CAPSULE_HEADER: const u8[:] = "capsule-protocol";
+const MASQUE_CAPSULE_VALUE: const u8[:] = "?1";
 
 struct HttpCapsule {
     capsule_type: u64 = 0,
@@ -55,7 +55,7 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
     let start_idx = off2 as i64;
     let end_idx = total_len as i64;
     c.capsule_type = ctype;
-    c.payload = src[start_idx .. end_idx];
+    c.payload = src[start_idx..end_idx];
     c.header_len = off2;
     return c, true;
 }
@@ -319,7 +319,7 @@ fn new_connect_udp_tunnel(
     target_host: const u8[:],
     target_port: u16,
     stream_id: u64 = 0,
-    use_datagrams: bool = true
+    use_datagrams: bool = true,
 ) -> MasqueTunnelSession {
     var s = MasqueTunnelSession {
         stream_id: stream_id,
@@ -338,7 +338,7 @@ fn new_connect_udp_tunnel(
 fn new_connect_ip_tunnel(
     proxy_url: const u8[:],
     stream_id: u64 = 0,
-    use_datagrams: bool = true
+    use_datagrams: bool = true,
 ) -> MasqueTunnelSession {
     var s = MasqueTunnelSession {
         stream_id: stream_id,
@@ -356,7 +356,7 @@ fn new_connect_ip_tunnel(
 fn build_masque_connect_request(
     tunnel: const MasqueTunnelSession&,
     out_headers: HeaderItem[..16]&,
-    out_path: u8[..256]&
+    out_path: u8[..256]&,
 ) {
     out_headers.clear();
     out_headers.set_header(":method", "CONNECT");

@@ -245,7 +245,7 @@ fn test_ech_protocol(t: core::T&) {
             inner_padded[..],
             client_ephemeral_sk,
             enc,
-            ciphertext
+            ciphertext,
         );
         sub.assert_true(ok_seal, "seal_ech_inner succeeds");
         sub.assert_eq(ciphertext.len, inner_padded.len + 16, "ciphertext len = padded len + 16B tag");
@@ -277,7 +277,7 @@ fn test_ech_protocol(t: core::T&) {
             outer_aad,
             ciphertext[..],
             cs.aead_id,
-            decrypted
+            decrypted,
         );
         sub.assert_true(ok_open, "server decrypts ECH ciphertext successfully");
         sub.assert_eq(decrypted.len, inner_padded.len, "decrypted length matches padded inner");

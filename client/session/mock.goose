@@ -101,7 +101,7 @@ fn resolve_target_origin<B>(target: const u8[:], out: B&) {
 fn build_mock_response(
     route: const MockExchange&,
     current_url: const core::Url&,
-    sent_headers: const HeaderItem[:]
+    sent_headers: const HeaderItem[:],
 ) -> Response {
     var resp = Response {
         status_code: route.status_code,

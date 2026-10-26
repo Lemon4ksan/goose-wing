@@ -10,18 +10,18 @@ namespace internal;
 import std;
 import core from "../..";
 
-const CHUNK_STATE_HAS_SIZE: u64               = 0x8000000000000000;
-const CHUNK_STATE_IS_CHUNKED: u64             = 0x4000000000000000;
-const CHUNK_STATE_EXTENSION_MODE: u64         = 0x2000000000000000;
-const CHUNK_STATE_TRAILER_MODE: u64           = 0x1000000000000000;
+const CHUNK_STATE_HAS_SIZE: u64 = 0x8000000000000000;
+const CHUNK_STATE_IS_CHUNKED: u64 = 0x4000000000000000;
+const CHUNK_STATE_EXTENSION_MODE: u64 = 0x2000000000000000;
+const CHUNK_STATE_TRAILER_MODE: u64 = 0x1000000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_NAME: u64 = 0x0800000000000000;
-const CHUNK_STATE_EXTENSION_QUOTED: u64       = 0x0400000000000000;
-const CHUNK_STATE_EXTENSION_EXPECTS_LF: u64   = 0x0200000000000000;
-const CHUNK_STATE_EXTENSION_IN_NAME: u64      = 0x0100000000000000;
+const CHUNK_STATE_EXTENSION_QUOTED: u64 = 0x0400000000000000;
+const CHUNK_STATE_EXTENSION_EXPECTS_LF: u64 = 0x0200000000000000;
+const CHUNK_STATE_EXTENSION_IN_NAME: u64 = 0x0100000000000000;
 
-const CHUNK_STATE_SIZE_MASK: u64              = 0x00FFFFFFFFFFFFFF;
-const CHUNK_STATE_SIZE_OVERFLOW: u64          = 0x000F000000000000;
-const CHUNK_STATE_IS_ERROR: u64               = 0xFFFFFFFFFFFFFFFF;
+const CHUNK_STATE_SIZE_MASK: u64 = 0x00FFFFFFFFFFFFFF;
+const CHUNK_STATE_SIZE_OVERFLOW: u64 = 0x000F000000000000;
+const CHUNK_STATE_IS_ERROR: u64 = 0xFFFFFFFFFFFFFFFF;
 
 enum ChunkFsmStatus {
     NeedMore,
@@ -66,7 +66,7 @@ inline fn is_chunk_token_char(c: u8) -> bool {
 // Returns (status, bytes_consumed, out_chunk_slice).
 fn chunk_fsm_feed(
     dec: ChunkFsmDecoder&,
-    data: const u8[:]
+    data: const u8[:],
 ) -> ChunkFsmStatus, i64, const u8[:] {
     var offset: i64 = 0;
     while offset < data.len {
@@ -256,7 +256,7 @@ fn chunk_fsm_feed(
                     dec.state = CHUNK_STATE_IS_ERROR;
                     return ChunkFsmStatus.Error, offset, data[..0];
                 }
-                let chunk_slice = data[offset .. (offset + chunk_len)];
+                let chunk_slice = data[offset..(offset + chunk_len)];
                 offset += size as i64;
                 dec.state = CHUNK_STATE_IS_CHUNKED;
                 return ChunkFsmStatus.YieldChunk, offset, chunk_slice;
@@ -279,7 +279,7 @@ fn chunk_fsm_feed(
                         dec.state = CHUNK_STATE_IS_ERROR;
                         return ChunkFsmStatus.Error, offset, data[..0];
                     }
-                    chunk_slice = data[offset .. (offset + max_app_emit)];
+                    chunk_slice = data[offset..(offset + max_app_emit)];
                 } else {
                     chunk_slice = data[offset..];
                 }

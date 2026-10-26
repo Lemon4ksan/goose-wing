@@ -3,7 +3,7 @@
 
 // Phase 2 RED test suite based on .gemini audit reports and Go / uWebSockets issue trackers.
 // Verifies protocol flaws, RFC non-conformances, and security bypasses that are CURRENTLY UNFIXED in goose-wing.
-// 
+//
 // Issues covered:
 // 1. RFC 9110 §8.6 & Go #81642 / uWS #1370: Status 204 No Content Body Leakage (HTTP Smuggling)
 // 2. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed IP-Literal Host Header Acceptance

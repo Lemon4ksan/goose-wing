@@ -13,7 +13,7 @@ fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) ->
     while cursor < headers_block.len {
         let rel_end = core::index_of_slice(headers_block[cursor..], "\r\n");
         if rel_end < 0 { break; }
-        let line = headers_block[cursor .. (cursor + rel_end)];
+        let line = headers_block[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
         if colon > 0 {
             let hname = line[..colon];
@@ -27,16 +27,16 @@ fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) ->
     return "", false;
 }
 
-const RESP_PLAINTEXT: const u8[:] = 
+const RESP_PLAINTEXT: const u8[:] =
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
 
-const RESP_PLAINTEXT_4X: const u8[:] = 
+const RESP_PLAINTEXT_4X: const u8[:] =
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
 
-const RESP_JSON: const u8[:] = 
+const RESP_JSON: const u8[:] =
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: keep-alive\r\n\r\n{\"message\":\"Hello, World!\"}";
 
-const RESP_METRICS: const u8[:] = 
+const RESP_METRICS: const u8[:] =
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: application/json\r\nContent-Length: 95\r\nConnection: keep-alive\r\n\r\n{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}";
 
 // Connection slot tracking state for non-blocking multiplexed sockets
@@ -146,7 +146,6 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             let conn = slots[slot_idx].fd;
             slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
 
-
             var active_len: i64 = 0;
             let prev_len = slots[slot_idx].leftover_len;
             if prev_len > 0 && prev_len <= 1024 {
@@ -224,7 +223,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                     let payload = if hdr.masked {
                         wing::unmask_websocket_shifted(active_ws, hdr.header_len, hdr.payload_len as i64, hdr.mask_key)
                     } else if h_len <= total_len && total_len <= active_ws.len {
-                        active_ws[h_len .. total_len]
+                        active_ws[h_len..total_len]
                     } else {
                         active_ws[..0]
                     };
@@ -437,7 +436,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                                 "Connection: Upgrade\r\n",
                                 "Sec-WebSocket-Accept: ",
                                 accept_key[..],
-                                "\r\n\r\n"
+                                "\r\n\r\n",
                             );
                             wing::tcp_send(conn, handshake_resp[..]);
                             slots[slot_idx].is_ws = true;

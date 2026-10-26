@@ -98,7 +98,7 @@ fn encode_client_preambles<B1, B2, B3>(
     conn: H3Connection&,
     out_ctrl: B1&,
     out_qpack_enc: B2&,
-    out_qpack_dec: B3&
+    out_qpack_dec: B3&,
 ) -> bool {
     // 1. Control Stream: Stream Type 0x00 || SETTINGS Frame
     quic_encode_varint(out_ctrl, H3_STREAM_CONTROL);
@@ -168,7 +168,7 @@ fn send_request_headers<B>(
     path: const u8[:],
     extra_headers: const HeaderMap&,
     end_stream: bool,
-    out: B&
+    out: B&,
 ) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found else { return false; }
@@ -211,7 +211,7 @@ fn send_request_data<B>(
     stream_id: u64,
     data: const u8[:],
     end_stream: bool,
-    out: B&
+    out: B&,
 ) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found else { return false; }
@@ -236,7 +236,7 @@ fn handle_stream_data(
     stream_id: u64,
     is_bidi: bool,
     data: const u8[:],
-    fin: bool
+    fin: bool,
 ) -> u64 {
     // -------------------------------------------------------------------------
     // A. Unidirectional Streams (Control, QPACK Encoder/Decoder)

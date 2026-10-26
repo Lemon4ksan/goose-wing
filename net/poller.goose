@@ -12,13 +12,13 @@ import core from "..";
 
 // Time conversion constants
 const NANOS_PER_MILLI: u64 = 1000000;
-const NANOS_PER_SEC: u64   = 1000000000;
+const NANOS_PER_SEC: u64 = 1000000000;
 
 // Poller and event loop capacity limits (Scaled for High-Density Concurrency)
 const POLLER_MAX_REGISTRATIONS: i64 = 512;
-const POLLER_MAX_TIMERS: i64        = 64;
-const EVENT_LOOP_MAX_BUFFERS: i64   = 64;
-const CONNECTION_BUFFER_CAP: i64    = 4096;
+const POLLER_MAX_TIMERS: i64 = 64;
+const EVENT_LOOP_MAX_BUFFERS: i64 = 64;
+const CONNECTION_BUFFER_CAP: i64 = 4096;
 
 // Coarse 4-second timer constants (uSockets / uWebSockets pattern)
 const COARSE_TIMEOUT_GRANULARITY_NS: u64 = 4000000000; // 4 seconds per tick
@@ -26,12 +26,12 @@ const COARSE_TIMEOUT_DISABLED: u8 = 255;
 
 // ---- 1. Readiness Event Flags & Types --------------------------------------
 
-const POLL_NONE: u32    = 0;
-const POLL_READ: u32    = 1 << 0; // Ready to read / incoming connection ready to accept
-const POLL_WRITE: u32   = 1 << 1; // Socket buffer space available for write
-const POLL_ERROR: u32   = 1 << 2; // Error condition on descriptor
-const POLL_HANGUP: u32  = 1 << 3; // Connection terminated / remote EOF
-const POLL_TIMER: u32   = 1 << 4; // High-resolution timer or coarse socket timeout fired
+const POLL_NONE: u32 = 0;
+const POLL_READ: u32 = 1 << 0;    // Ready to read / incoming connection ready to accept
+const POLL_WRITE: u32 = 1 << 1;   // Socket buffer space available for write
+const POLL_ERROR: u32 = 1 << 2;   // Error condition on descriptor
+const POLL_HANGUP: u32 = 1 << 3;  // Connection terminated / remote EOF
+const POLL_TIMER: u32 = 1 << 4;   // High-resolution timer or coarse socket timeout fired
 
 enum PollInterest {
     None,
@@ -186,7 +186,7 @@ fn register_socket(
     fd: SocketFd,
     tag: EventTag,
     interest: PollInterest,
-    trigger: PollTrigger = PollTrigger.Level
+    trigger: PollTrigger = PollTrigger.Level,
 ) -> bool {
     guard fd >= 0 else { return false; }
     guard find_registration(p, fd) < 0 else { return false; } // Already registered
@@ -215,7 +215,7 @@ fn modify_socket(
     fd: SocketFd,
     tag: EventTag,
     interest: PollInterest,
-    trigger: PollTrigger = PollTrigger.Level
+    trigger: PollTrigger = PollTrigger.Level,
 ) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
@@ -250,7 +250,7 @@ fn add_timer(
     delay_ms: Milliseconds,
     tag: EventTag,
     periodic: bool = false,
-    now_ns: Nanoseconds = 0
+    now_ns: Nanoseconds = 0,
 ) -> bool {
     guard timer_id != 0 else { return false; }
 
@@ -426,7 +426,7 @@ fn poll_events(
     p: Poller&,
     timeout_ms: i64,
     now_ns: Nanoseconds,
-    out_events: PollReadyEvent[..64]&
+    out_events: PollReadyEvent[..64]&,
 ) -> i32 {
     out_events.clear();
     p.total_polls += 1;
@@ -558,7 +558,7 @@ fn bind_connection(
     fd: SocketFd,
     tag: EventTag,
     interest: PollInterest,
-    trigger: PollTrigger = PollTrigger.Level
+    trigger: PollTrigger = PollTrigger.Level,
 ) -> bool {
     guard register_socket(ev_loop.poller, fd, tag, interest, trigger) else { return false; }
 
@@ -656,7 +656,7 @@ fn flush_writes(ev_loop: EventLoop&, tag: EventTag) -> i64 {
 fn run_loop_once<HandlerFn: fn(EventTag, const PollReadyEvent&, EventLoop&)>(
     ev_loop: EventLoop&,
     timeout_ms: i64,
-    now_ns: Nanoseconds
+    now_ns: Nanoseconds,
 ) -> i32 {
     ev_loop.state = LoopState.Running;
     ev_loop.iteration_count += 1;

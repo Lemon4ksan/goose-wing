@@ -105,7 +105,7 @@ fn test_dpop_rfc9449(t: core::T&) {
             "https://resource.example.org/protected/resource",
             token,
             nonce,
-            now_sec
+            now_sec,
         );
         sub.assert_true(ok_ver, "DPoP proof successfully verified");
 
@@ -117,7 +117,7 @@ fn test_dpop_rfc9449(t: core::T&) {
             "https://resource.example.org/protected/resource",
             token,
             nonce,
-            now_sec
+            now_sec,
         );
         sub.assert_false(fail_method, "Verification fails on method mismatch");
 
@@ -129,7 +129,7 @@ fn test_dpop_rfc9449(t: core::T&) {
             "https://resource.example.org/protected/resource",
             "different_token",
             nonce,
-            now_sec
+            now_sec,
         );
         sub.assert_false(fail_token, "Verification fails on ATH mismatch");
 
@@ -141,7 +141,7 @@ fn test_dpop_rfc9449(t: core::T&) {
             "https://resource.example.org/protected/resource",
             token,
             "stale_nonce",
-            now_sec
+            now_sec,
         );
         sub.assert_false(fail_nonce, "Verification fails on nonce mismatch");
 
@@ -153,7 +153,7 @@ fn test_dpop_rfc9449(t: core::T&) {
             "https://resource.example.org/protected/resource",
             token,
             nonce,
-            now_sec
+            now_sec,
         );
         sub.assert_false(fail_key, "Verification fails on bad signature");
     };

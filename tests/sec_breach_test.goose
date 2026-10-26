@@ -43,7 +43,7 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
             "__Host-key=secret; Domain=example.com; Secure; Path=/",
             "example.com",
             "/",
-            clock.now_us
+            clock.now_us,
         );
         sub.assert_false(ok, "parse_canonical_set_cookie must return false for __Host- with Domain attribute");
     };

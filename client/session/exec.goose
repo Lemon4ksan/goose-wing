@@ -34,7 +34,7 @@ import client.session.cookie_bridge;
 // Appends query parameters to a URL buffer, preserving trailing fragment if present (RFC 3986 Section 4.1).
 fn append_query_params_preserving_fragment(
     out: u8[..2048]&,
-    query_params: const QueryItem[:]
+    query_params: const QueryItem[:],
 ) {
     guard query_params.len > 0 else { return; }
 
@@ -74,7 +74,7 @@ fn build_effective_url(
     base_url: const u8[:],
     req_url: const u8[:],
     query_params: const QueryItem[:],
-    out: u8[..2048]&
+    out: u8[..2048]&,
 ) {
     out.clear();
     let parsed_base = core::new_url(base_url);
@@ -179,7 +179,7 @@ fn apply_redirect_transition(
         ctx.cors_mode,
         ctx.tainted_origin,
         session.enable_referer,
-        is_trusted
+        is_trusted,
     );
     return no_error();
 }
@@ -272,7 +272,7 @@ fn process_redirect_hop(
         ctx.cors_mode,
         ctx.tainted_origin,
         ctx.is_main_frame,
-        ctx.had_cross_site_hop
+        ctx.had_cross_site_hop,
     );
 
     guard redirect_info.error == RedirectError.None else {
@@ -292,7 +292,7 @@ fn execute_mock_or_echo_hop(
     session: Session&,
     ctx: RequestExecutionContext&,
     current_url: const core::Url&,
-    out_dns_err: RedirectError&
+    out_dns_err: RedirectError&,
 ) -> Response {
     out_dns_err = RedirectError.None;
     let curr_href = href(current_url);
@@ -364,7 +364,7 @@ fn execute_mock_or_echo_hop(
                     is_https,
                     session.enable_protocol_racing,
                     session.proxy_url.len > 0,
-                    false
+                    false,
                 );
                 if race_eligible {
                     // Protocol race: QUIC Alternative Job vs TCP Main Job (Chromium JobController / RFC 8305)
@@ -594,7 +594,7 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
                             session.creds.nonce_counter,
                             session.creds.cnonce[..],
                             ctx.body[..],
-                            auth_header_val
+                            auth_header_val,
                         );
                         if ok_d {
                             session.creds.nonce_counter += 1;

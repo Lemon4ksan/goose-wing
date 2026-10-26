@@ -12,10 +12,10 @@ import client.response;
 
 // ---- 1. Resumable Uploads Constants (draft-14) -------------------------------
 
-const HEADER_UPLOAD_OFFSET: const u8[:]   = "Upload-Offset";
+const HEADER_UPLOAD_OFFSET: const u8[:] = "Upload-Offset";
 const HEADER_UPLOAD_COMPLETE: const u8[:] = "Upload-Complete";
-const MIME_PARTIAL_UPLOAD: const u8[:]    = "application/partial-upload";
-const STATUS_RESUMABLE_SUPPORTED: i32     = 104;
+const MIME_PARTIAL_UPLOAD: const u8[:] = "application/partial-upload";
+const STATUS_RESUMABLE_SUPPORTED: i32 = 104;
 
 // ---- 2. Resumable Upload Session State ---------------------------------------
 
@@ -82,7 +82,7 @@ fn parse_upload_boolean(val: const u8[:]) -> bool {
         i += 1;
     }
     if i + 1 < val.len && val[i] == '?' {
-        return val[i+1] == '1';
+        return val[i + 1] == '1';
     }
     return false;
 }

@@ -141,7 +141,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
 
         sub.assert_true(
             wing::encode_client_preambles(conn, ctrl_buf, qenc_buf, qdec_buf),
-            "encode client preambles"
+            "encode client preambles",
         );
 
         // Control stream starts with VarInt 0x00 followed by SETTINGS frame
@@ -177,7 +177,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         sub.assert_eq(
             err_no_set,
             wing::H3_ERR_MISSING_SETTINGS,
-            "first frame not SETTINGS triggers H3_MISSING_SETTINGS (0x010A)"
+            "first frame not SETTINGS triggers H3_MISSING_SETTINGS (0x010A)",
         );
 
         // Valid server control stream: Stream Type 0x00 || SETTINGS frame
@@ -197,7 +197,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         sub.assert_eq(
             err_second,
             wing::H3_ERR_FRAME_UNEXPECTED,
-            "second SETTINGS frame triggers H3_FRAME_UNEXPECTED (0x0105)"
+            "second SETTINGS frame triggers H3_FRAME_UNEXPECTED (0x0105)",
         );
     };
 
@@ -228,7 +228,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         sub.assert_eq(
             err_qpack,
             wing::H3_ERR_CLOSED_CRITICAL_STREAM,
-            "closing QPACK encoder stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)"
+            "closing QPACK encoder stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)",
         );
 
         // Reset conn to test control stream closure
@@ -238,7 +238,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         sub.assert_eq(
             err_crit,
             wing::H3_ERR_CLOSED_CRITICAL_STREAM,
-            "closing control stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)"
+            "closing control stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)",
         );
     };
 }
@@ -268,7 +268,7 @@ fn test_h3_request_streams(t: core::T&) {
             "/v1/submit",
             extra_hdrs,
             false, // not end of stream
-            req_buf
+            req_buf,
         );
         sub.assert_true(ok_send, "send request headers succeeds");
 
@@ -340,7 +340,7 @@ fn test_h3_request_streams(t: core::T&) {
         sub.assert_eq(
             err,
             wing::H3_ERR_FRAME_UNEXPECTED,
-            "DATA before HEADERS triggers H3_FRAME_UNEXPECTED (0x0105)"
+            "DATA before HEADERS triggers H3_FRAME_UNEXPECTED (0x0105)",
         );
     };
 

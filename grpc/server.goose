@@ -51,7 +51,7 @@ fn is_grpc_request(req: const Request&) -> bool {
 fn parse_grpc_path(
     path: const u8[:],
     out_service: u8[..64]&,
-    out_method: u8[..64]&
+    out_method: u8[..64]&,
 ) -> bool {
     out_service.clear();
     out_method.clear();
@@ -166,7 +166,7 @@ fn register_method(
     service: const u8[:],
     method: const u8[:],
     method_type: GrpcMethodType,
-    handler_id: u16
+    handler_id: u16,
 ) -> bool {
     guard d.methods.len < d.methods.cap else { return false; }
     var entry = GrpcMethodEntry {
@@ -190,7 +190,7 @@ fn register_unary(
     d: GrpcServerDispatcher&,
     service: const u8[:],
     method: const u8[:],
-    handler_id: u16
+    handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.Unary, handler_id);
 }
@@ -199,7 +199,7 @@ fn register_server_streaming(
     d: GrpcServerDispatcher&,
     service: const u8[:],
     method: const u8[:],
-    handler_id: u16
+    handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.ServerStreaming, handler_id);
 }
@@ -208,7 +208,7 @@ fn register_client_streaming(
     d: GrpcServerDispatcher&,
     service: const u8[:],
     method: const u8[:],
-    handler_id: u16
+    handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.ClientStreaming, handler_id);
 }
@@ -217,7 +217,7 @@ fn register_bidi_streaming(
     d: GrpcServerDispatcher&,
     service: const u8[:],
     method: const u8[:],
-    handler_id: u16
+    handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.BidiStreaming, handler_id);
 }
@@ -247,7 +247,7 @@ fn build_grpc_trailers_only_response(
     status: GrpcStatusCode,
     message: const u8[:],
     ctx: const GrpcServerContext&,
-    out_res: Response&
+    out_res: Response&,
 ) {
     out_res.status_code = HTTP_STATUS_OK;
     out_res.headers.clear();
@@ -314,7 +314,7 @@ fn build_grpc_wire_response(
     message: const u8[:],
     raw_lpm_body: const u8[:],
     ctx: const GrpcServerContext&,
-    out_res: Response&
+    out_res: Response&,
 ) {
     out_res.status_code = HTTP_STATUS_OK;
     out_res.headers.clear();
@@ -397,7 +397,7 @@ fn extract_grpc_server_context(
     req: const Request&,
     out_ctx: GrpcServerContext&,
     now_mono_ns: u64 = 0,
-    req_start_mono_ns: u64 = 0
+    req_start_mono_ns: u64 = 0,
 ) -> bool {
     out_ctx.service.clear();
     out_ctx.method.clear();
@@ -467,7 +467,7 @@ fn new_grpc_client_stream_reader() -> GrpcClientStreamReader {
 fn parse_client_stream(
     raw_body: const u8[:],
     is_web_text: bool,
-    out_reader: GrpcClientStreamReader&
+    out_reader: GrpcClientStreamReader&,
 ) -> bool {
     out_reader.wire.clear();
     out_reader.spans.clear();
@@ -529,7 +529,7 @@ fn new_grpc_server_stream_writer() -> GrpcServerStreamWriter {
 fn write_stream_message(
     writer: GrpcServerStreamWriter&,
     payload: const u8[:],
-    compressed: bool = false
+    compressed: bool = false,
 ) {
     encode_grpc_lpm(payload, writer.body, compressed);
     writer.message_count += 1;
@@ -544,7 +544,7 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     req: const Request&,
     now_mono_ns: u64,
     res: Response&,
-    req_start_mono_ns: u64 = 0
+    req_start_mono_ns: u64 = 0,
 ) -> bool {
     // 1. Validate gRPC Content-Type
     guard is_grpc_request(req) else { return false; }
@@ -650,7 +650,7 @@ fn dispatch_grpc_server_streaming<HandlerFn: fn(u16, GrpcServerContext&, const u
     req: const Request&,
     now_mono_ns: u64,
     res: Response&,
-    req_start_mono_ns: u64 = 0
+    req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
     var ctx = new_grpc_server_context();
@@ -726,7 +726,7 @@ fn dispatch_grpc_client_streaming<HandlerFn: fn(u16, GrpcServerContext&, const G
     req: const Request&,
     now_mono_ns: u64,
     res: Response&,
-    req_start_mono_ns: u64 = 0
+    req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
     var ctx = new_grpc_server_context();

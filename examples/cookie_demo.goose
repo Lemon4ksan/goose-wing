@@ -93,7 +93,7 @@ fn main() {
     let ingested = jar.set_cookie_header(
         "https://api.crypto-dex.io/v1/orders",
         "order_token=ord_live_7766; Secure; HttpOnly; SameSite=Strict; Max-Age=3600",
-        now_us
+        now_us,
     );
     assert(ingested, "Set-Cookie from HTTPS URL ingested");
     let val_by_url = jar.get("https://api.crypto-dex.io/v1/orders", "order_token", now_us);
@@ -160,7 +160,7 @@ fn main() {
     let local_ok = jar.set_cookie_header(
         "http://127.0.0.1:80/dev",
         "__Host-dev_key=secret_123; Secure; Path=/",
-        now_us
+        now_us,
     );
     assert(local_ok, "__Host- cookie accepted on http://127.0.0.1 as trustworthy secure context");
     let dev_val = jar.get("http://127.0.0.1:80/dev", "__Host-dev_key", now_us);
@@ -194,7 +194,7 @@ fn main() {
         "__Host-embed_session=token_abc; Secure; Path=/; Partitioned",
         now_us,
         true,
-        "https://site-a.com"
+        "https://site-a.com",
     );
     assert(chips_ingested, "CHIPS partitioned cookie ingested under site-a partition");
 

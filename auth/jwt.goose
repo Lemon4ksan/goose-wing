@@ -11,11 +11,11 @@ import json;
 import core from "..";
 
 // Cryptographic key and signature sizes
-const ED25519_KEY_LEN: i64        = 32;
-const ED25519_SIG_LEN: i64        = 64;
-const HMAC_SHA256_MAC_LEN: i64    = 32;
-const HMAC_SHA384_MAC_LEN: i64    = 48;
-const HMAC_SHA512_MAC_LEN: i64    = 64;
+const ED25519_KEY_LEN: i64 = 32;
+const ED25519_SIG_LEN: i64 = 64;
+const HMAC_SHA256_MAC_LEN: i64 = 32;
+const HMAC_SHA384_MAC_LEN: i64 = 48;
+const HMAC_SHA512_MAC_LEN: i64 = 64;
 
 // Default claim validation clock skew leeway (seconds)
 const DEFAULT_JWT_LEEWAY_SECONDS: i64 = 60;
@@ -490,7 +490,7 @@ fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtVal
 fn build_jwt_signing_input<B>(
     header: const JwtHeader&,
     claims: const JwtClaims&,
-    out_token: B&
+    out_token: B&,
 ) {
     var hdr_json: u8[>..] = [];
     serialize_jwt_header(header, hdr_json);
@@ -508,7 +508,7 @@ fn append_jwt_hmac_signature<B>(
     alg: JwtAlg,
     secret_key: const u8[:],
     signing_input: const u8[:],
-    out_token: B&
+    out_token: B&,
 ) {
     out_token.push('.');
     if alg == JwtAlg.HS256 {
@@ -528,7 +528,7 @@ fn sign_jwt_hmac<B>(
     header: const JwtHeader&,
     claims: const JwtClaims&,
     secret_key: const u8[:],
-    out_token: B&
+    out_token: B&,
 ) -> bool {
     guard header.alg == JwtAlg.HS256 || header.alg == JwtAlg.HS384 || header.alg == JwtAlg.HS512 else {
         return false;
@@ -545,7 +545,7 @@ fn sign_jwt_hmac<B>(
 fn append_jwt_eddsa_signature<B>(
     seed_key: const u8[32],
     signing_input: const u8[:],
-    out_token: B&
+    out_token: B&,
 ) {
     let sig64 = core::ed25519_sign(seed_key, signing_input);
     out_token.push('.');
@@ -557,7 +557,7 @@ fn sign_jwt_eddsa<B>(
     header: const JwtHeader&,
     claims: const JwtClaims&,
     seed_key: const u8[32],
-    out_token: B&
+    out_token: B&,
 ) -> bool {
     guard header.alg == JwtAlg.EdDSA else { return false; }
     out_token.clear();
@@ -573,7 +573,7 @@ fn sign_jwt_eddsa<B>(
 fn split_jwt_parts(
     token: const u8[:],
     dot1: i64&,
-    dot2: i64&
+    dot2: i64&,
 ) -> bool {
     dot1 = -1;
     dot2 = -1;
@@ -632,7 +632,7 @@ fn validate_jwt_identity_claims(claims: const JwtClaims&, options: const JwtVali
 fn validate_jwt_claims_rules(
     claims: const JwtClaims&,
     options: const JwtValidationOptions&,
-    now_unix_sec: i64
+    now_unix_sec: i64,
 ) -> JwtError {
     if !validate_jwt_expiration(claims.exp, options.require_exp, options.leeway_seconds, now_unix_sec) {
         return JwtError.TokenExpired;
@@ -669,7 +669,7 @@ fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
 fn parse_jwt_unverified(
     token: const u8[:],
     out_header: JwtHeader&,
-    out_claims: JwtClaims&
+    out_claims: JwtClaims&,
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
@@ -697,7 +697,7 @@ fn verify_jwt_hmac_signature(
     alg: JwtAlg,
     secret_key: const u8[:],
     signing_input: const u8[:],
-    sig_bytes: const u8[:]
+    sig_bytes: const u8[:],
 ) -> bool {
     if alg == JwtAlg.HS256 {
         guard sig_bytes.len == HMAC_SHA256_MAC_LEN else { return false; }
@@ -722,7 +722,7 @@ fn verify_jwt_hmac(
     options: const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header: JwtHeader&,
-    out_claims: JwtClaims&
+    out_claims: JwtClaims&,
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
@@ -755,7 +755,7 @@ fn verify_jwt_hmac(
 fn verify_jwt_eddsa_signature(
     public_key: const u8[32],
     signing_input: const u8[:],
-    sig_bytes: const u8[:]
+    sig_bytes: const u8[:],
 ) -> bool {
     guard sig_bytes.len == ED25519_SIG_LEN else { return false; }
     var sig64: u8[64] = [0; 64];
@@ -772,7 +772,7 @@ fn verify_jwt_eddsa(
     options: const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header: JwtHeader&,
-    out_claims: JwtClaims&
+    out_claims: JwtClaims&,
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;

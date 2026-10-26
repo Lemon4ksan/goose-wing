@@ -7,16 +7,16 @@ namespace internal;
 import std;
 
 // Native Windows RIO C shims (mswsock.dll)
-extern "wing_rio_probe" fn native_rio_probe() -> i32;
-extern "wing_rio_available" fn native_rio_available() -> i32;
-extern "wing_rio_register_buffer" fn native_rio_register_buffer(ptr: u64, len: u32) -> u64;
-extern "wing_rio_deregister_buffer" fn native_rio_deregister_buffer(buf_id: u64);
-extern "wing_rio_create_cq" fn native_rio_create_cq(queue_size: u32) -> u64;
-extern "wing_rio_close_cq" fn native_rio_close_cq(cq_id: u64);
-extern "wing_rio_dequeue_completion" fn native_rio_dequeue_completion(cq_id: u64, results_ptr: u64, count: u32) -> u32;
-extern "wing_rio_create_rq" fn native_rio_create_rq(sock_fd: i64, cq_id: u64, max_recv: u32, max_send: u32) -> u64;
-extern "wing_rio_receive" fn native_rio_receive(rq_id: u64, buf_id: u64, offset: u32, length: u32, req_context: u64) -> i32;
-extern "wing_rio_send" fn native_rio_send(rq_id: u64, buf_id: u64, offset: u32, length: u32, req_context: u64) -> i32;
+extern fn native_rio_probe() -> i32 = "wing_rio_probe";
+extern fn native_rio_available() -> i32 = "wing_rio_available";
+extern fn native_rio_register_buffer(ptr: u64, len: u32) -> u64 = "wing_rio_register_buffer";
+extern fn native_rio_deregister_buffer(buf_id: u64) = "wing_rio_deregister_buffer";
+extern fn native_rio_create_cq(queue_size: u32) -> u64 = "wing_rio_create_cq";
+extern fn native_rio_close_cq(cq_id: u64) = "wing_rio_close_cq";
+extern fn native_rio_dequeue_completion(cq_id: u64, results_ptr: u64, count: u32) -> u32 = "wing_rio_dequeue_completion";
+extern fn native_rio_create_rq(sock_fd: i64, cq_id: u64, max_recv: u32, max_send: u32) -> u64 = "wing_rio_create_rq";
+extern fn native_rio_receive(rq_id: u64, buf_id: u64, offset: u32, length: u32, req_context: u64) -> i32 = "wing_rio_receive";
+extern fn native_rio_send(rq_id: u64, buf_id: u64, offset: u32, length: u32, req_context: u64) -> i32 = "wing_rio_send";
 
 // Page-locked registered memory buffer slice descriptor for Windows RIO
 struct RioBufferDescriptor {

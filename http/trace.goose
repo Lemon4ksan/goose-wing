@@ -40,7 +40,7 @@ fn parse_hex_u8(src: const u8[:], offset: i64) -> u8, bool {
 
 // Formats a u8 into 2 lowercase hex characters
 fn format_hex_u8<B>(val: u8, out: B&) {
-    let hex_chars: const u8[16] = ['0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'];
+    let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
     out.push(hex_chars[(val >> 4) & 0x0F]);
     out.push(hex_chars[val & 0x0F]);
 }

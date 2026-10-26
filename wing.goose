@@ -124,7 +124,6 @@ import server.cache;
 import server.server;
 import server.h2_multiplexer;
 
-
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
 import net.types;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Dedicated TLS 1.3 Interop Server for goose-wing E2E Verification.
 // Conforms to RFC 8446 (TLS 1.3), RFC 6066 (SNI), RFC 7301 (ALPN), and RFC 8879 (Cert Compression).
 import std;
@@ -49,7 +52,7 @@ fn handle_tls_connection(conn: i64) {
                 let msg_len = ((record_payload[1] as u32) << 16) | ((record_payload[2] as u32) << 8) | record_payload[3];
 
                 if msg_type == wing::HS_MSG_CLIENT_HELLO && record_payload.len >= 4 + (msg_len as i64) {
-                    let ch_payload = record_payload[4 .. 4 + (msg_len as i64)];
+                    let ch_payload = record_payload[4..4 + (msg_len as i64)];
 
                     // Parse ClientHello:
                     // ClientHello starts at byte 34 (after 2-byte legacy_ver + 32-byte client_random)
@@ -70,7 +73,7 @@ fn handle_tls_connection(conn: i64) {
                                 if ch_payload.len >= ext_start + 2 {
                                     let ext_total_len = (((ch_payload[ext_start] as u16) << 8) | ch_payload[ext_start + 1]) as i64;
                                     if ch_payload.len >= ext_start + 2 + ext_total_len {
-                                        let exts_slice = ch_payload[ext_start .. (ext_start + 2 + ext_total_len)];
+                                        let exts_slice = ch_payload[ext_start..(ext_start + 2 + ext_total_len)];
 
                                         var entries: wing::TlsExtensionEntry[..32] = [];
                                         let ok_exts = wing::parse_extensions_block(exts_slice, entries);

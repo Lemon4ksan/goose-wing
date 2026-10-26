@@ -29,7 +29,7 @@ fn test_dns_name_length_overflow(t: core::T&) {
     let bad_dns: u8[12] = [
         0x00, 0x01, 0x81, 0x80,
         0x00, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00
+        0x00, 0x00, 0x00, 0x00,
     ];
     var resp = wing::DnsResponse {};
     let ok = wing::parse_dns_response(bad_dns[..], resp);
@@ -40,7 +40,7 @@ fn test_websocket_length_overflow(t: core::T&) {
     // Header with extended payload length 0x7FFFFFFFFFFFFFFF
     let bad_ws_hdr: u8[10] = [
         0x81, 0x7F,
-        0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+        0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     ];
     var session = wing::new_websocket_session(true);
     var msg = wing::WsMessage {};
@@ -67,9 +67,9 @@ fn test_proxy_protocol_overflow(t: core::T&) {
 fn test_masque_address_capsule_bounds(t: core::T&) {
     // Address capsule with oversized IP bytes (>16 bytes)
     var payload: u8[..32] = [];
-    payload.push(1); // request_id = 1
-    payload.push(4); // ip_version = 4
-    payload.push(32);// prefix_len = 32
+    payload.push(1);  // request_id = 1
+    payload.push(4);  // ip_version = 4
+    payload.push(32); // prefix_len = 32
     for i in 20 { payload.push(0xAA); } // 20 bytes (> 16 cap)
 
     let req, ok = wing::decode_address_request_capsule(payload[..]);

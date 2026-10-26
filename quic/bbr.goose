@@ -34,10 +34,10 @@ fn int_cbrt(val: u64) -> u64 {
 // ---- 2. user-space leaky bucket pacer (picoquic model) ----------------------
 
 struct Pacer {
-    pacing_rate_bps:     u64 = 10000000, // 10 Mbps initial default
-    bucket_balance_us:   i64 = 0,
+    pacing_rate_bps: u64 = 10000000, // 10 Mbps initial default
+    bucket_balance_us: i64 = 0,
     last_pacing_time_us: u64 = 0,
-    burst_allowance_us:  i64 = 20000,    // 20 ms max burst allowance
+    burst_allowance_us: i64 = 20000,     // 20 ms max burst allowance
 }
 
 fn new_pacer(initial_rate_bps: u64 = 10000000) -> Pacer {
@@ -89,25 +89,25 @@ enum BbrMode {
     ProbeRtt,
 }
 
-const BBR_BETA_NUM:   u64 = 70;  // 0.7 inflight reduction on congestion
+const BBR_BETA_NUM: u64 = 70;    // 0.7 inflight reduction on congestion
 const BBR_BETA_DENOM: u64 = 100;
 const BBR_MIN_CWND_BYTES: u64 = 4 * 1200; // 4 * MSS
 
 struct BbrState {
-    mode:                   BbrMode = BbrMode.Startup,
-    pacer:                  Pacer = Pacer {},
-    cwnd_bytes:             u64 = 10 * 1200, // Initial cwnd (RFC 9002 Sec 7.2)
-    bw_hi_bps:              u64 = 0,
-    bw_lo_bps:              u64 = 0,
-    inflight_hi_bytes:      u64 = 0xFFFFFFFFFFFFFFFF,
-    inflight_lo_bytes:      u64 = 0xFFFFFFFFFFFFFFFF,
-    min_rtt_us:             u64 = 0xFFFFFFFFFFFFFFFF,
-    min_rtt_stamp_us:       u64 = 0,
-    probe_rtt_done_stamp_us:u64 = 0,
-    probe_rtt_round_done:   bool = false,
-    cycle_index:            u8 = 0,
-    ecn_alpha_scaled:       u64 = 0, // EWMA scaled by 1024
-    app_limited:            bool = false,
+    mode: BbrMode = BbrMode.Startup,
+    pacer: Pacer = Pacer {},
+    cwnd_bytes: u64 = 10 * 1200, // Initial cwnd (RFC 9002 Sec 7.2)
+    bw_hi_bps: u64 = 0,
+    bw_lo_bps: u64 = 0,
+    inflight_hi_bytes: u64 = 0xFFFFFFFFFFFFFFFF,
+    inflight_lo_bytes: u64 = 0xFFFFFFFFFFFFFFFF,
+    min_rtt_us: u64 = 0xFFFFFFFFFFFFFFFF,
+    min_rtt_stamp_us: u64 = 0,
+    probe_rtt_done_stamp_us: u64 = 0,
+    probe_rtt_round_done: bool = false,
+    cycle_index: u8 = 0,
+    ecn_alpha_scaled: u64 = 0, // EWMA scaled by 1024
+    app_limited: bool = false,
 }
 
 fn new_bbr_state() -> BbrState {
@@ -184,7 +184,7 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
             gain_num = 1000;
             gain_denom = 1000;
         },
-        _ => {}
+        _ => {},
     }
 
     let pacing_bps = (eff_bw * gain_num) / gain_denom;
@@ -204,7 +204,7 @@ fn bbr_on_congestion_signal(
     loss_bytes: u64,
     total_acked_bytes: u64,
     ecn_ce_count: u64,
-    new_acked_packets: u64
+    new_acked_packets: u64,
 ) {
     var has_loss_signal = false;
     if total_acked_bytes > 0 && (loss_bytes * 100) > (total_acked_bytes * 2) {
@@ -253,7 +253,7 @@ fn bbr_advance_cycle(bbr: BbrState&, round_done: bool) {
         ProbeBwUp => {
             bbr.mode = BbrMode.ProbeBwDown;
         },
-        _ => {}
+        _ => {},
     }
     bbr_update_pacing_and_cwnd(bbr);
 }
@@ -261,12 +261,12 @@ fn bbr_advance_cycle(bbr: BbrState&, round_done: bool) {
 // ---- 4. cubic congestion control (rfc 9438) & app-limited freeze -------------
 
 struct CubicState {
-    cwnd_segments:   u64 = 10,
-    w_max_segments:  u64 = 10,
-    epoch_start_us:  u64 = 0,
-    k_ms:            u64 = 0,
-    app_limited:     bool = false,
-    last_update_us:  u64 = 0,
+    cwnd_segments: u64 = 10,
+    w_max_segments: u64 = 10,
+    epoch_start_us: u64 = 0,
+    k_ms: u64 = 0,
+    app_limited: bool = false,
+    last_update_us: u64 = 0,
 }
 
 fn new_cubic_state() -> CubicState {
@@ -287,7 +287,7 @@ fn cubic_on_ack(
     now_us: u64,
     rtt_us: u64,
     bytes_in_flight: u64,
-    mss_bytes: u64 = 1200
+    mss_bytes: u64 = 1200,
 ) -> u64 {
     let cur_cwnd_bytes = cubic.cwnd_segments * mss_bytes;
     // App-limited check: pipe utilization < 75%

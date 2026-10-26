@@ -120,7 +120,7 @@ fn extract_grpc_status(
     headers: const HeaderMap&,
     trailers: const HeaderMap&,
     out_status: GrpcStatusCode&,
-    out_message: u8[..256]&
+    out_message: u8[..256]&,
 ) -> bool {
     out_message.clear();
 

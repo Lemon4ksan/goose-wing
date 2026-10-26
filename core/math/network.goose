@@ -13,18 +13,18 @@ import core.math.arithmetic;
 import core.math.random;
 
 // Happy Eyeballs v2/v3 normative pacing constants (RFC 8305 / draft-ietf-happy-happyeyeballs-v3)
-const HE_ABSOLUTE_MIN_DELAY_MS: i64       = 10;   // MUST NOT be less than 10ms
-const HE_RECOMMENDED_MIN_DELAY_MS: i64    = 100;
-const HE_DEFAULT_ATTEMPT_DELAY_MS: i64    = 250;
-const HE_GO_FALLBACK_DELAY_MS: i64        = 300;
-const HE_MAX_ATTEMPT_DELAY_MS: i64        = 2000;
-const HE_LAST_RESORT_SYNTHESIS_MS: i64    = 2000;
+const HE_ABSOLUTE_MIN_DELAY_MS: i64 = 10;         // MUST NOT be less than 10ms
+const HE_RECOMMENDED_MIN_DELAY_MS: i64 = 100;
+const HE_DEFAULT_ATTEMPT_DELAY_MS: i64 = 250;
+const HE_GO_FALLBACK_DELAY_MS: i64 = 300;
+const HE_MAX_ATTEMPT_DELAY_MS: i64 = 2000;
+const HE_LAST_RESORT_SYNTHESIS_MS: i64 = 2000;
 
 // QUIC loss detection & congestion constants (RFC 9002)
-const QUIC_INITIAL_RTT_US: u64            = 333000; // 333 ms
+const QUIC_INITIAL_RTT_US: u64 = 333000;            // 333 ms
 const QUIC_AGGRESSIVE_INITIAL_RTT_US: u64 = 100000; // 100 ms
-const QUIC_TIMER_GRANULARITY_US: u64      = 1000;   // 1 ms
-const QUIC_PACKET_THRESHOLD: u64          = 3;
+const QUIC_TIMER_GRANULARITY_US: u64 = 1000;        // 1 ms
+const QUIC_PACKET_THRESHOLD: u64 = 3;
 
 // Converts seconds from RFC 9110 Retry-After header to milliseconds with saturation.
 inline fn retry_after_sec_to_ms_sat(seconds: i64) -> i64 {
@@ -114,7 +114,7 @@ inline fn calculate_defensive_adjusted_rtt(latest_rtt_us: u64, min_rtt_us: u64, 
     return ct_select_u64(
         can_subtract_mask,
         latest_rtt_us - effective_ack_delay,
-        latest_rtt_us
+        latest_rtt_us,
     );
 }
 
@@ -124,7 +124,7 @@ fn on_rtt_sample(
     latest_rtt_us: u64,
     ack_delay_us: u64,
     max_ack_delay_us: u64,
-    handshake_confirmed: bool
+    handshake_confirmed: bool,
 ) {
     if latest_rtt_us == 0 {
         return;
@@ -147,7 +147,7 @@ fn on_rtt_sample(
     let abs_diff = ct_select_u64(
         ct_mask_u64(ct_lt_u64(prior_srtt, adjusted_rtt)),
         adjusted_rtt - prior_srtt,
-        prior_srtt - adjusted_rtt
+        prior_srtt - adjusted_rtt,
     );
 
     est.rttvar_scaled = (est.rttvar_scaled - (est.rttvar_scaled >> 2)) + abs_diff;
@@ -181,16 +181,16 @@ fn socks5_expected_frame_len_ct(buf: const u8[:]) -> u32 {
     let domain_len = buf[4] as u32;
 
     let is_v5_mask = ct_mask_u32(ct_eq_u32(ver, 0x05));
-    let m_ipv4   = ct_mask_u32(ct_eq_u32(atyp, 0x01));
+    let m_ipv4 = ct_mask_u32(ct_eq_u32(atyp, 0x01));
     let m_domain = ct_mask_u32(ct_eq_u32(atyp, 0x03));
-    let m_ipv6   = ct_mask_u32(ct_eq_u32(atyp, 0x04));
+    let m_ipv6 = ct_mask_u32(ct_eq_u32(atyp, 0x04));
 
     // Domain name must contain 1..255 characters
     let valid_domain_mask = m_domain & (~ct_mask_u32(ct_is_zero_u32(domain_len)));
 
-    let len_ipv4: u32   = 10;                 // 4 header + 4 IPv4 + 2 port
+    let len_ipv4: u32 = 10;                   // 4 header + 4 IPv4 + 2 port
     let len_domain: u32 = 7 + domain_len;     // 4 header + 1 len + domain + 2 port
-    let len_ipv6: u32   = 22;                 // 4 header + 16 IPv6 + 2 port
+    let len_ipv6: u32 = 22;                   // 4 header + 16 IPv6 + 2 port
 
     let selected_len = (m_ipv4 & len_ipv4) |
                        (valid_domain_mask & len_domain) |

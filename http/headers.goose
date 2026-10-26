@@ -1502,4 +1502,3 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
         dst.append_header(name, val);
     }
 }
-

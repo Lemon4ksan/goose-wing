@@ -171,7 +171,7 @@ fn is_hello_retry_request(server_random: const u8[32]&) -> bool {
 fn compress_hrr_transcript(
     hash_len: u8,
     ch1_hash: const u8[:],
-    out: u8[:]
+    out: u8[:],
 ) -> i64, bool {
     guard ch1_hash.len == hash_len else { return 0, false; }
     let total_len = 4 + (hash_len as i64);
@@ -337,7 +337,7 @@ struct TlsExtensionEntry {
 // Parses extension block into static array of entries without heap allocation.
 fn parse_extensions_block(
     ext_block_bytes: const u8[:],
-    entries: TlsExtensionEntry[..32]&
+    entries: TlsExtensionEntry[..32]&,
 ) -> bool {
     entries.clear();
     var cursor = cursor_from(ext_block_bytes);
@@ -376,9 +376,9 @@ fn find_extension(entries: const TlsExtensionEntry[..32]&, ext_type: u16) -> con
 
 // ---- 9. RFC 8879 Certificate Compression & ClientHello Fragmentation --------
 
-const CERT_COMPRESS_ZLIB: u16   = 1;
+const CERT_COMPRESS_ZLIB: u16 = 1;
 const CERT_COMPRESS_BROTLI: u16 = 2;
-const CERT_COMPRESS_ZSTD: u16   = 3; // RFC 8879 Section 3 (Zstandard)
+const CERT_COMPRESS_ZSTD: u16 = 3; // RFC 8879 Section 3 (Zstandard)
 
 struct CompressedCertMsg {
     algorithm: u16 = CERT_COMPRESS_ZSTD,
@@ -423,7 +423,7 @@ fn encode_compressed_certificate_payload<B>(
     out: B&,
     algorithm: u16,
     uncompressed_len: u32,
-    compressed_data: const u8[:]
+    compressed_data: const u8[:],
 ) {
     out.push(((algorithm >> 8) & 0xFF) as u8);
     out.push((algorithm & 0xFF) as u8);
@@ -447,7 +447,7 @@ fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len
 fn fragment_client_hello<B>(
     raw_ch: const u8[:],
     first_record_len: i64,
-    out_records: B&
+    out_records: B&,
 ) -> bool {
     guard first_record_len > 0 && first_record_len < raw_ch.len else { return false; }
 

@@ -81,7 +81,7 @@ fn write_u16_be(w: SliceWriter&, v: u16) -> IoError {
     guard available(w) >= 2 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = ((v >> 8) & 0xFF) as u8;
+    w.buf[w.cursor] = ((v >> 8) & 0xFF) as u8;
     w.buf[w.cursor + 1] = (v & 0xFF) as u8;
     w.cursor += 2;
     return IoError.None;
@@ -92,7 +92,7 @@ fn write_u16_le(w: SliceWriter&, v: u16) -> IoError {
     guard available(w) >= 2 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = (v & 0xFF) as u8;
+    w.buf[w.cursor] = (v & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
     w.cursor += 2;
     return IoError.None;
@@ -103,7 +103,7 @@ fn write_u24_be(w: SliceWriter&, v: u32) -> IoError {
     guard available(w) >= 3 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = ((v >> 16) & 0xFF) as u8;
+    w.buf[w.cursor] = ((v >> 16) & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
     w.buf[w.cursor + 2] = (v & 0xFF) as u8;
     w.cursor += 3;
@@ -115,7 +115,7 @@ fn write_u24_le(w: SliceWriter&, v: u32) -> IoError {
     guard available(w) >= 3 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = (v & 0xFF) as u8;
+    w.buf[w.cursor] = (v & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
     w.buf[w.cursor + 2] = ((v >> 16) & 0xFF) as u8;
     w.cursor += 3;
@@ -127,7 +127,7 @@ fn write_u32_be(w: SliceWriter&, v: u32) -> IoError {
     guard available(w) >= 4 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = ((v >> 24) & 0xFF) as u8;
+    w.buf[w.cursor] = ((v >> 24) & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 16) & 0xFF) as u8;
     w.buf[w.cursor + 2] = ((v >> 8) & 0xFF) as u8;
     w.buf[w.cursor + 3] = (v & 0xFF) as u8;
@@ -140,7 +140,7 @@ fn write_u32_le(w: SliceWriter&, v: u32) -> IoError {
     guard available(w) >= 4 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = (v & 0xFF) as u8;
+    w.buf[w.cursor] = (v & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
     w.buf[w.cursor + 2] = ((v >> 16) & 0xFF) as u8;
     w.buf[w.cursor + 3] = ((v >> 24) & 0xFF) as u8;
@@ -153,7 +153,7 @@ fn write_u64_be(w: SliceWriter&, v: u64) -> IoError {
     guard available(w) >= 8 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = ((v >> 56) & 0xFF) as u8;
+    w.buf[w.cursor] = ((v >> 56) & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 48) & 0xFF) as u8;
     w.buf[w.cursor + 2] = ((v >> 40) & 0xFF) as u8;
     w.buf[w.cursor + 3] = ((v >> 32) & 0xFF) as u8;
@@ -170,7 +170,7 @@ fn write_u64_le(w: SliceWriter&, v: u64) -> IoError {
     guard available(w) >= 8 else {
         return IoError.BufferFull;
     }
-    w.buf[w.cursor]     = (v & 0xFF) as u8;
+    w.buf[w.cursor] = (v & 0xFF) as u8;
     w.buf[w.cursor + 1] = ((v >> 8) & 0xFF) as u8;
     w.buf[w.cursor + 2] = ((v >> 16) & 0xFF) as u8;
     w.buf[w.cursor + 3] = ((v >> 24) & 0xFF) as u8;

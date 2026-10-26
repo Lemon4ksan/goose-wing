@@ -13,14 +13,14 @@ import core from "..";
 
 // ---- 1. RFC 9449 Constants & Identifiers ------------------------------------
 
-const DPOP_HEADER: const u8[:]       = "DPoP";
+const DPOP_HEADER: const u8[:] = "DPoP";
 const DPOP_NONCE_HEADER: const u8[:] = "DPoP-Nonce";
-const DPOP_AUTH_SCHEME: const u8[:]  = "DPoP";
-const DPOP_JWT_TYP: const u8[:]      = "dpop+jwt";
+const DPOP_AUTH_SCHEME: const u8[:] = "DPoP";
+const DPOP_JWT_TYP: const u8[:] = "dpop+jwt";
 
 const DPOP_ERR_INVALID_PROOF: const u8[:] = "invalid_dpop_proof";
 const DPOP_ERR_INVALID_TOKEN: const u8[:] = "invalid_token";
-const DPOP_ERR_USE_NONCE: const u8[:]     = "use_dpop_nonce";
+const DPOP_ERR_USE_NONCE: const u8[:] = "use_dpop_nonce";
 
 // ---- 2. DPoP Models ---------------------------------------------------------
 
@@ -228,7 +228,6 @@ fn create_dpop_proof<B>(
 }
 
 // ---- 5. DPoP Proof Verification ---------------------------------------------
-
 
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: const u8[:]) -> bool {
     let expected_sig = core::hmac_sha256(key, signing_input);

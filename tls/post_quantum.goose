@@ -12,11 +12,11 @@ import core from "..";
 
 // ---- 1. RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
-const GROUP_X25519_MLKEM768: u16          = 0x11EC; // RFC 10024 official IANA group
-const GROUP_X25519_KYBER768_DRAFT00: u16  = 0x6399; // Chrome 124-130 draft group
+const GROUP_X25519_MLKEM768: u16 = 0x11EC;          // RFC 10024 official IANA group
+const GROUP_X25519_KYBER768_DRAFT00: u16 = 0x6399;  // Chrome 124-130 draft group
 
-const X25519_KEY_LEN: i64          = 32;
-const MLKEM768_PUBLIC_LEN: i64     = 1152;
+const X25519_KEY_LEN: i64 = 32;
+const MLKEM768_PUBLIC_LEN: i64 = 1152;
 const MLKEM768_CIPHERTEXT_LEN: i64 = 1088;
 const HYBRID_CLIENT_SHARE_LEN: i64 = 32 + 1152; // 1184 bytes
 const HYBRID_SERVER_SHARE_LEN: i64 = 32 + 1088; // 1120 bytes

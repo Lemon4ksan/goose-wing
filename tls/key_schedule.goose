@@ -37,7 +37,7 @@ fn hkdf_expand_label(
     label: const u8[:],
     context: const u8[:],
     length: u16,
-    out: u8[:]
+    out: u8[:],
 ) -> bool {
     let full_label_len = 6 + label.len;
     guard full_label_len >= 7 && full_label_len <= 255 else { return false; }
@@ -71,7 +71,7 @@ fn derive_secret(
     secret: const u8[:],
     label: const u8[:],
     transcript_hash: const u8[:],
-    out: u8[:]
+    out: u8[:],
 ) -> bool {
     guard out.len >= hash_len else { return false; }
 
@@ -146,7 +146,7 @@ fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
         ks.current_secret[..ks.hash_len],
         "res binder",
         [],
-        ks.binder_key[..ks.hash_len]
+        ks.binder_key[..ks.hash_len],
     );
 }
 
@@ -159,7 +159,7 @@ fn ks_derive_early_traffic(ks: KeySchedule&, client_hello_hash: const u8[:]) -> 
         ks.current_secret[..ks.hash_len],
         "c e traffic",
         client_hello_hash,
-        ks.client_early_traffic[..ks.hash_len]
+        ks.client_early_traffic[..ks.hash_len],
     );
 }
 
@@ -174,7 +174,7 @@ fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -
         ks.current_secret[..ks.hash_len],
         "derived",
         [],
-        derived[..ks.hash_len]
+        derived[..ks.hash_len],
     ) {
         return false;
     }
@@ -205,7 +205,7 @@ fn ks_derive_handshake_traffic(ks: KeySchedule&, ch_sh_hash: const u8[:]) -> boo
         ks.current_secret[..ks.hash_len],
         "c hs traffic",
         ch_sh_hash,
-        ks.client_hs_traffic[..ks.hash_len]
+        ks.client_hs_traffic[..ks.hash_len],
     );
     let ok_s = derive_secret(
         ks.hash_id,
@@ -213,7 +213,7 @@ fn ks_derive_handshake_traffic(ks: KeySchedule&, ch_sh_hash: const u8[:]) -> boo
         ks.current_secret[..ks.hash_len],
         "s hs traffic",
         ch_sh_hash,
-        ks.server_hs_traffic[..ks.hash_len]
+        ks.server_hs_traffic[..ks.hash_len],
     );
     return ok_c && ok_s;
 }
@@ -232,7 +232,7 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
         ks.current_secret[..ks.hash_len],
         "derived",
         [],
-        derived[..ks.hash_len]
+        derived[..ks.hash_len],
     ) {
         return false;
     }
@@ -258,7 +258,7 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
         ks.current_secret[..ks.hash_len],
         "c ap traffic",
         transcript_hash,
-        ks.client_ap_traffic[..ks.hash_len]
+        ks.client_ap_traffic[..ks.hash_len],
     );
     let ok_s = derive_secret(
         ks.hash_id,
@@ -266,7 +266,7 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
         ks.current_secret[..ks.hash_len],
         "s ap traffic",
         transcript_hash,
-        ks.server_ap_traffic[..ks.hash_len]
+        ks.server_ap_traffic[..ks.hash_len],
     );
     let ok_exp = derive_secret(
         ks.hash_id,
@@ -274,7 +274,7 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
         ks.current_secret[..ks.hash_len],
         "exp master",
         transcript_hash,
-        ks.exporter_secret[..ks.hash_len]
+        ks.exporter_secret[..ks.hash_len],
     );
     return ok_c && ok_s && ok_exp;
 }
@@ -289,7 +289,7 @@ fn ks_advance_to_resumption(ks: KeySchedule&, finished_transcript_hash: const u8
         ks.current_secret[..ks.hash_len],
         "res master",
         finished_transcript_hash,
-        ks.resumption_secret[..ks.hash_len]
+        ks.resumption_secret[..ks.hash_len],
     );
     if ok {
         ks.stage = KS_STAGE_RESUMPTION;
@@ -303,7 +303,7 @@ fn ks_derive_key_iv(
     secret: const u8[:],
     key_len: u16,
     out_key: u8[:],
-    out_iv: u8[12]&
+    out_iv: u8[12]&,
 ) -> bool {
     let ok_k = hkdf_expand_label(hash_id, secret, "key", [], key_len, out_key);
     let ok_iv = hkdf_expand_label(hash_id, secret, "iv", [], 12, out_iv[..]);
@@ -315,7 +315,7 @@ fn ks_derive_quic_hp_key(
     hash_id: u8,
     secret: const u8[:],
     hp_key_len: u16,
-    out_hp_key: u8[:]
+    out_hp_key: u8[:],
 ) -> bool {
     return hkdf_expand_label(hash_id, secret, "quic hp", [], hp_key_len, out_hp_key);
 }
@@ -326,7 +326,7 @@ fn ks_compute_finished_verify_data(
     hash_len: u8,
     base_key: const u8[:],
     transcript_hash: const u8[:],
-    out_verify_data: u8[:]
+    out_verify_data: u8[:],
 ) -> bool {
     guard out_verify_data.len >= hash_len else { return false; }
 
@@ -357,7 +357,7 @@ fn ks_update_traffic_secret(hash_id: u8, hash_len: u8, traffic_secret: u8[:]) ->
         traffic_secret[..hash_len],
         "traffic upd",
         [],
-        next_secret[..hash_len]
+        next_secret[..hash_len],
     ) {
         return false;
     }
@@ -390,7 +390,7 @@ fn verify_psk_binder(
     hash_len: u8,
     binder_key: const u8[:],
     truncated_ch: const u8[:],
-    expected_binder: const u8[:]
+    expected_binder: const u8[:],
 ) -> bool {
     guard expected_binder.len == hash_len else { return false; }
 
@@ -507,7 +507,7 @@ fn validate_ticket_age(
     obfuscated_ticket_age: u32,
     ticket_age_add: u32,
     expected_age_ms: i64,
-    tolerance_ms: i64
+    tolerance_ms: i64,
 ) -> bool {
     let raw_age = (obfuscated_ticket_age - ticket_age_add) as i64;
     let diff = if raw_age > expected_age_ms {

@@ -84,7 +84,7 @@ fn u8_to_tls_alert(code: u8) -> TlsAlert, bool {
 // ---- 2. Zero-Copy Parsers (ByteCursor & ByteBuilder) -------------------------
 
 struct ByteCursor {
-    buf: const u8[:] = []
+    buf: const u8[:] = [],
 }
 
 inline fn cursor_from(buf: const u8[:]) -> ByteCursor {
@@ -379,7 +379,7 @@ fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool
     guard sample_offset + 16 <= pkt.len else {
         return pkt[..0], false;
     }
-    return pkt[sample_offset .. sample_offset + 16], true;
+    return pkt[sample_offset..sample_offset + 16], true;
 }
 
 // Connection container for QUIC Crypto state machine isolation.
