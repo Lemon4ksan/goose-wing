@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Wing Passive OS Fingerprinting (p0f v3) TCP SYN Engine.
-// Clean-room, zero-heap implementation of standard p0f v3 SYN signature format
-// (RFC 793, RFC 2018, RFC 7323).
-//
-// Unlike traditional spoofing tools, Wing defines its own authentic, recognizable
-// systems engine TCP profile without browser or legacy OS mimicry, while offering
-// a clean API for user-defined custom signatures, parsing, and packet matching.
+// Passive OS fingerprinting (p0f v3) TCP SYN parser and matcher (RFC 793, RFC 2018, RFC 7323).
+// Provides signature parsing, packet matching, and a default TCP profile for wing.
 namespace wing;
 
 import std;

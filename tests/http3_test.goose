@@ -140,7 +140,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         var qdec_buf: u8[..16] = [];
 
         sub.assert_true(
-            wing::h3_encode_client_preambles(conn, ctrl_buf, qenc_buf, qdec_buf),
+            wing::encode_client_preambles(conn, ctrl_buf, qenc_buf, qdec_buf),
             "encode client preambles"
         );
 
@@ -173,7 +173,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         wing::quic_encode_varint(bad_ctrl, wing::H3_STREAM_CONTROL);
         wing::encode_h3_goaway_frame(bad_ctrl, 0);
 
-        let err_no_set = wing::h3_handle_stream_data(conn, 3, false, bad_ctrl[..], false);
+        let err_no_set = wing::handle_stream_data(conn, 3, false, bad_ctrl[..], false);
         sub.assert_eq(
             err_no_set,
             wing::H3_ERR_MISSING_SETTINGS,
@@ -186,14 +186,14 @@ fn test_h3_unidirectional_streams(t: core::T&) {
         wing::quic_encode_varint(good_ctrl, wing::H3_STREAM_CONTROL);
         wing::encode_h3_settings_frame(good_ctrl, settings);
 
-        let err_ok = wing::h3_handle_stream_data(conn2, 3, false, good_ctrl[..], false);
+        let err_ok = wing::handle_stream_data(conn2, 3, false, good_ctrl[..], false);
         sub.assert_eq(err_ok, wing::H3_ERR_NO_ERROR, "valid control stream processed ok");
         sub.assert_true(conn2.peer_settings_received, "peer settings recorded");
 
         // Second SETTINGS frame received later on control stream
         var second_settings: u8[..64] = [];
         wing::encode_h3_settings_frame(second_settings, settings);
-        let err_second = wing::h3_handle_stream_data(conn2, 3, false, second_settings[..], false);
+        let err_second = wing::handle_stream_data(conn2, 3, false, second_settings[..], false);
         sub.assert_eq(
             err_second,
             wing::H3_ERR_FRAME_UNEXPECTED,

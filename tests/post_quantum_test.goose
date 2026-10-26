@@ -32,7 +32,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
         sub.assert_eq(wire.len, 1188, "Wire length is exactly 1188 bytes");
 
         var parsed = wing::PostQuantumKeyShare { .. };
-        let ok_parse = wire[..].parse_hybrid_key_share(parsed);
+        let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Hybrid key share parsed via UFCS");
         sub.assert_eq(parsed.group, wing::GROUP_X25519_MLKEM768, "Group is 0x11EC");
         sub.assert_bytes_eq(parsed.x25519_public[..], share.x25519_public[..], "X25519 component matches");
@@ -48,13 +48,13 @@ fn test_post_quantum_hybrid(t: core::T&) {
 
         // Edge cases
         var bad_parsed = wing::PostQuantumKeyShare { .. };
-        sub.assert_false(wire[..10].parse_hybrid_key_share(bad_parsed), "Truncated wire fails");
+        sub.assert_false(bad_parsed.parse_hybrid_key_share(wire[..10]), "Truncated wire fails");
 
         var corrupt_wire: u8[>..] = [];
         corrupt_wire.append(wire[..]);
         corrupt_wire[0] = 0x00;
         corrupt_wire[1] = 0x1D; // classical X25519, not PQ
-        sub.assert_false(corrupt_wire[..].parse_hybrid_key_share(bad_parsed), "Non-PQ group fails");
+        sub.assert_false(bad_parsed.parse_hybrid_key_share(corrupt_wire[..]), "Non-PQ group fails");
     };
 
     t.run("Hybrid 1120-Byte Server Key Share Wire Codec") { sub =>
@@ -71,7 +71,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
         sub.assert_eq(wire.len, 1124, "Server wire length is exactly 1124 bytes");
 
         var parsed_server = wing::PostQuantumServerShare { .. };
-        let ok_parse = wire[..].parse_hybrid_server_key_share(parsed_server);
+        let ok_parse = parsed_server.parse_hybrid_server_key_share(wire[..]);
         sub.assert_true(ok_parse, "Server hybrid key share parsed via UFCS");
         sub.assert_eq(parsed_server.group, wing::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
         sub.assert_bytes_eq(parsed_server.x25519_public[..], server_share.x25519_public[..], "Server X25519 component matches");
@@ -87,7 +87,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
 
         // Edge case
         var bad_parsed = wing::PostQuantumServerShare { .. };
-        sub.assert_false(wire[..500].parse_hybrid_server_key_share(bad_parsed), "Truncated server wire fails");
+        sub.assert_false(bad_parsed.parse_hybrid_server_key_share(wire[..500]), "Truncated server wire fails");
     };
 
     t.run("Hybrid Shared Secret Combiner (RFC 10024 §4)") { sub =>

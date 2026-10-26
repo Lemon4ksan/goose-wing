@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Comprehensive verification suite for RFC 9111 HTTP Caching Engine.
+// Verification suite for RFC 9111 HTTP caching engine.
 // Verifies Cache-Control parsing, freshness calculations, ETag validators,
 // Vary matching, CVE-2026-93750 & CVE-2026-93748 defenses, 304 header merge,
 // request collapsing, and unsafe method cascade invalidation.
@@ -402,7 +402,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
         let t0 = core::unix(1000, 0);
 
         var req = wing::new_get("https://example.com/missing");
-        wing::header(req, "Cache-Control", "only-if-cached");
+        wing::set_header(req, "Cache-Control", "only-if-cached");
 
         let dec = wing::lookup(cache, req, t0);
         sub.assert_true(dec.kind == wing::LookupResultKind.Fail504, "only-if-cached returns Fail504 on miss");
@@ -529,8 +529,8 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
         var req = wing::new_request("GET", "https://api.example.com/feed");
         var resp = wing::new_response();
         resp.status_code = 200;
-        wing::header(resp, "cache-control", "max-age=60, stale-while-revalidate=120");
-        wing::header(resp, "etag", "\"feed-v1\"");
+        wing::set_header(resp, "cache-control", "max-age=60, stale-while-revalidate=120");
+        wing::set_header(resp, "etag", "\"feed-v1\"");
         resp.body.append("Feed Content V1");
 
         let dec_store = wing::on_response(cache, req, resp, ts);
@@ -567,8 +567,8 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
         var req = wing::new_request("GET", "https://api.example.com/prices");
         var resp = wing::new_response();
         resp.status_code = 200;
-        wing::header(resp, "cache-control", "max-age=60, stale-if-error=300");
-        wing::header(resp, "etag", "\"prices-v1\"");
+        wing::set_header(resp, "cache-control", "max-age=60, stale-if-error=300");
+        wing::set_header(resp, "etag", "\"prices-v1\"");
         resp.body.append("Price: $42.00");
 
         let dec_store = wing::on_response(cache, req, resp, ts);

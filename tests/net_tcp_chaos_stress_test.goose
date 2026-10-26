@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Comprehensive E2E Chaos Stress Test using Live OS TCP Sockets.
+// End-to-end chaos stress test using live TCP sockets.
 // Operates either standalone or through an intermediate ToxiProxy.
 import std;
 import core from "..";

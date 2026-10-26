@@ -6,7 +6,7 @@
 // 1. Zero-heap Alt-Svc header learning and origin caching.
 // 2. Promotion of TCP (HTTP/1.1 / HTTP/2) connections to HTTP/3 (QUIC).
 // 3. Speculative racing between Alternative Job (H3) and Main Job (TCP).
-// 4. Firewall UDP drop simulation, seamless fallback to TCP without user error.
+// 4. Firewall UDP drop simulation, fallback to TCP without user error.
 // 5. Chromium-identical exponential failure backoff (5s, 10s, 20s... 320s).
 // 6. Fast-path TCP bypass during backoff window.
 // 7. Success recovery and failure counter reset.

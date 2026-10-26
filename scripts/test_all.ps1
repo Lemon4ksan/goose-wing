@@ -37,25 +37,20 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect
 Write-Host "`n[1/3] Typechecking core and wing libraries..." -ForegroundColor Yellow
 $swCore = [System.Diagnostics.Stopwatch]::StartNew()
 $corePath = Join-Path $root "core.goose"
-$checkCoreProc = Start-GooseProcess "goose" "check `"$corePath`"" $true
-$checkCoreOut = $checkCoreProc.StandardOutput.ReadToEnd()
-$checkCoreProc.WaitForExit()
-
-if ($checkCoreProc.ExitCode -ne 0) {
+$checkCoreOut = & goose check $corePath 2>&1
+if ($LASTEXITCODE -ne 0) {
     Write-Host "FATAL: goose check core.goose failed!" -ForegroundColor Red
-    Write-Host $checkCoreOut -ForegroundColor Yellow
+    Write-Host ($checkCoreOut -join "`n") -ForegroundColor Yellow
     exit 1
 }
 
 $wingPath = Join-Path $root "wing.goose"
-$checkProc = Start-GooseProcess "goose" "check `"$wingPath`"" $true
-$checkOut = $checkProc.StandardOutput.ReadToEnd()
-$checkProc.WaitForExit()
+$checkWingOut = & goose check $wingPath 2>&1
 $swCore.Stop()
 
-if ($checkProc.ExitCode -ne 0) {
+if ($LASTEXITCODE -ne 0) {
     Write-Host "FATAL: goose check wing.goose failed!" -ForegroundColor Red
-    Write-Host $checkOut -ForegroundColor Yellow
+    Write-Host ($checkWingOut -join "`n") -ForegroundColor Yellow
     exit 1
 }
 Write-Host "  OK: core & wing libraries typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
@@ -73,14 +68,10 @@ if ($CheckOnly) {
     $swCheck = [System.Diagnostics.Stopwatch]::StartNew()
     $failed = 0
     foreach ($file in $testFiles) {
-        $proc = Start-GooseProcess "goose" "check `"$($file.FullName)`"" $true
-        $out = $proc.StandardOutput.ReadToEnd()
-        $err = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit()
-        if ($proc.ExitCode -ne 0) {
+        $out = & goose check $file.FullName 2>&1
+        if ($LASTEXITCODE -ne 0) {
             Write-Host "FATAL: Typechecking $($file.Name) failed!" -ForegroundColor Red
-            if ($out) { Write-Host $out -ForegroundColor Yellow }
-            if ($err) { Write-Host $err -ForegroundColor Red }
+            Write-Host ($out -join "`n") -ForegroundColor Yellow
             $failed++
         }
     }

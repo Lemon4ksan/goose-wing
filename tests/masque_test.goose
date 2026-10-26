@@ -238,7 +238,7 @@ fn test_masque_client_sessions_and_tunneling(t: core::T&) {
         wing::encode_address_assign_capsule(assign_capsule_wire, assign);
 
         var dummy_pkt: u8[>..] = [];
-        let recv_ok = wing::tunnel_receive_capsule(tunnel_mut, assign_capsule_wire[..], dummy_pkt);
+        let recv_ok = wing::receive_capsule(tunnel_mut, assign_capsule_wire[..], dummy_pkt);
         sub.assert_true(recv_ok, "ADDRESS_ASSIGN capsule ingested");
         sub.assert_bytes_eq(tunnel_mut.assigned_ip[..], [10, 8, 0, 5], "Tunnel assigned IP is 10.8.0.5");
         sub.assert_eq(tunnel_mut.assigned_prefix_len, 24, "Tunnel prefix length is /24");

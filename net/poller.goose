@@ -386,7 +386,7 @@ fn check_coarse_timeouts(p: Poller&, now_ns: Nanoseconds, out_events: PollReadyE
     return fired;
 }
 
-// ---- 7. Simulated Events (for Testing & High-Performance In-Memory Multiplexing) -
+// ---- 7. Simulated Events (Testing & In-Memory Multiplexing) -----------------
 
 fn simulate_read_ready(p: Poller&, fd: SocketFd, bytes_avail: i64 = 0) -> bool {
     let idx = find_registration(p, fd);
@@ -504,10 +504,20 @@ struct ConnectionBuffer {
     in_use: bool = false,
 }
 
+// Deferred cross-thread or asynchronous task (uWebSockets / uSockets loop->defer pattern)
+struct DeferredTask {
+    tag: EventTag = 0,
+    user_data: u64 = 0,
+    task_id: u32 = 0,
+    in_use: bool = false,
+}
+
 struct EventLoop {
     poller: Poller = Poller { .. },
     driver_cfg: internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
     buffers: ConnectionBuffer[..64] = [ConnectionBuffer { .. }; 64],
+    deferred_tasks: DeferredTask[..64] = [DeferredTask { .. }; 64],
+    deferred_count: u32 = 0,
     state: LoopState = LoopState.Created,
     iteration_count: u64 = 0,
     events_dispatched_total: u64 = 0,
@@ -660,5 +670,43 @@ fn run_loop_once<HandlerFn: fn(EventTag, const PollReadyEvent&, EventLoop&)>(
         ev_loop.events_dispatched_total += 1;
     }
 
+    return count;
+}
+
+// Defers execution of a task to the event loop thread (uWebSockets / uSockets loop->defer pattern)
+fn defer_task(ev_loop: EventLoop&, tag: EventTag, user_data: u64, task_id: u32 = 0) -> bool {
+    guard ev_loop.deferred_count < ev_loop.deferred_tasks.len as u32 else { return false; }
+    let idx = ev_loop.deferred_count as i64;
+    ev_loop.deferred_tasks[idx].tag = tag;
+    ev_loop.deferred_tasks[idx].user_data = user_data;
+    ev_loop.deferred_tasks[idx].task_id = task_id;
+    ev_loop.deferred_tasks[idx].in_use = true;
+    ev_loop.deferred_count += 1;
+    return true;
+}
+
+fn has_deferred_tasks(ev_loop: const EventLoop&) -> bool {
+    return ev_loop.deferred_count > 0;
+}
+
+fn deferred_task_count(ev_loop: const EventLoop&) -> u32 {
+    return ev_loop.deferred_count;
+}
+
+// Drains all pending deferred tasks in single pass, dispatching to TaskFn callback
+fn drain_deferred_tasks<TaskFn: fn(EventTag, u64, u32, EventLoop&)>(ev_loop: EventLoop&) -> u32 {
+    let count = ev_loop.deferred_count;
+    guard count > 0 else { return 0; }
+
+    for i in count as i64 {
+        if ev_loop.deferred_tasks[i].in_use {
+            let tag = ev_loop.deferred_tasks[i].tag;
+            let user_data = ev_loop.deferred_tasks[i].user_data;
+            let task_id = ev_loop.deferred_tasks[i].task_id;
+            ev_loop.deferred_tasks[i].in_use = false;
+            TaskFn(tag, user_data, task_id, ev_loop);
+        }
+    }
+    ev_loop.deferred_count = 0;
     return count;
 }

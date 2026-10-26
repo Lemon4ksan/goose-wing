@@ -26,7 +26,7 @@ fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
         sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_post), "Non-idempotent POST without Idempotency-Key rejected");
 
         // 5. Non-idempotent POST WITH Idempotency-Key: approved for retry
-        wing::header(req_post, "Idempotency-Key", "uuid-v4-998811-aabbcc");
+        wing::set_header(req_post, "Idempotency-Key", "uuid-v4-998811-aabbcc");
         sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_post), "POST with Idempotency-Key approved for Tier 1 retry");
 
         // 6. Non-idempotent PATCH without Idempotency-Key: rejected
@@ -34,7 +34,7 @@ fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
         sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_patch), "PATCH without Idempotency-Key rejected");
 
         // 7. Non-idempotent PATCH WITH Idempotency-Key: approved
-        wing::header(req_patch, "Idempotency-Key", "patch-key-1");
+        wing::set_header(req_patch, "Idempotency-Key", "patch-key-1");
         sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_patch), "PATCH with Idempotency-Key approved");
 
         // 8. Idempotent RFC methods sweep

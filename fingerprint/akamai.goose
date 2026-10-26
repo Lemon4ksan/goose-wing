@@ -238,7 +238,7 @@ fn akamai_safari_preset() -> AkamaiFingerprint {
     return fp;
 }
 
-// Authentic Wing High-Performance Systems Engine preset:
+// Wing client preset:
 // Settings: 1:65536;2:0;3:100;4:6291456;6:262144
 // Window Update: 15663105
 // Priority: 0

@@ -326,7 +326,7 @@ fn push_header_order(profile: BrowserProfile&, header_name: const u8[:]) {
 }
 
 // Computes the FoxIO JA4 TLS fingerprint for this profile.
-fn profile_ja4(profile: const BrowserProfile&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
+fn ja4(profile: const BrowserProfile&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
     return compute_ja4(
         profile.tls.ciphers[..],
         profile.tls.extensions[..],
@@ -339,7 +339,7 @@ fn profile_ja4(profile: const BrowserProfile&, is_quic: bool = false, sni: bool 
 }
 
 // Computes the FoxIO JA4H HTTP client fingerprint for this profile under given method and parameters.
-fn profile_ja4h(
+fn ja4h(
     profile: const BrowserProfile&,
     method: const u8[:],
     proto: const u8[:],
@@ -415,7 +415,7 @@ fn set_p0f(profile: BrowserProfile&, sig: const P0fSignature&) {
 }
 
 // Computes the p0f v3 format string for this profile.
-fn profile_p0f(profile: const BrowserProfile&) -> u8[..128] {
+fn p0f(profile: const BrowserProfile&) -> u8[..128] {
     return format_p0f(profile.p0f);
 }
 
@@ -425,11 +425,13 @@ fn set_akamai(profile: BrowserProfile&, fp: const AkamaiFingerprint&) {
 }
 
 // Formats the Akamai HTTP/2 fingerprint string for this profile.
-fn profile_akamai(profile: const BrowserProfile&) -> u8[..256] {
+fn akamai(profile: const BrowserProfile&) -> u8[..256] {
     return akamai_fingerprint_to_string(profile.akamai);
 }
 
+
 // Computes the 32-character hexadecimal MD5 Akamai hash for this profile.
-fn profile_akamai_hash(profile: const BrowserProfile&) -> u8[..32] {
+fn akamai_hash(profile: const BrowserProfile&) -> u8[..32] {
     return akamai_fingerprint_hash(profile.akamai);
 }
+

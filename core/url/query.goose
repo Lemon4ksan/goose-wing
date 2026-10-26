@@ -14,7 +14,7 @@ struct QueryParamItem {
 }
 
 struct QueryParamsList {
-    items: QueryParamItem[..32] = [],
+    items: QueryParamItem[..128] = [],
 }
 
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) {
@@ -105,19 +105,40 @@ fn has_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> bool {
     return false;
 }
 
-// CVE-2026-39825 defense: Count query parameters separated by '&' and verify it does not exceed maximum limit.
+// CVE-2026-39825 & CVE-2025-61726 defense: Count query parameters separated by '&',
+// verify total count does not exceed limit, and enforce per-token length limit (256 bytes)
+// to prevent fixed-buffer parser overflow.
 const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 1024;
+const MAX_URL_QUERY_TOKEN_LIMIT: i64 = 256;
 
 fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUERY_PARAMS_LIMIT) -> bool {
     guard query.len > 0 else { return true; }
+    var q = query;
+    if q[0] == '?' {
+        q = q[1..];
+    }
+    guard q.len > 0 else { return true; }
     var count: i64 = 1;
-    for b in query {
+    var token_len: i64 = 0;
+    for b in q {
         if b == '&' {
+            if token_len > MAX_URL_QUERY_TOKEN_LIMIT {
+                return false;
+            }
+            token_len = 0;
             count++;
             if count > max_allowed {
                 return false;
             }
+        } else {
+            token_len++;
+            if token_len > MAX_URL_QUERY_TOKEN_LIMIT {
+                return false;
+            }
         }
+    }
+    if token_len > MAX_URL_QUERY_TOKEN_LIMIT {
+        return false;
     }
     return true;
 }

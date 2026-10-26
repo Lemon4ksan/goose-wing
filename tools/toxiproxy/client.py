@@ -26,6 +26,7 @@ logger = logging.getLogger("ToxiproxyClient")
 
 class ToxiproxyError(Exception):
     """Base exception for Toxiproxy API errors."""
+
     def __init__(self, status: int, message: str):
         super().__init__(f"Toxiproxy HTTP {status}: {message}")
         self.status = status
@@ -40,9 +41,7 @@ class ToxiproxyClient:
         self.port = port or int(os.environ.get("TOXIPROXY_PORT", "8474"))
         self.base_url = f"http://{self.host}:{self.port}"
 
-    def _request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None
-    ) -> Any:
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         url = f"{self.base_url}{path}"
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Accept": "application/json"}
@@ -61,7 +60,9 @@ class ToxiproxyClient:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise ToxiproxyError(exc.code, err_body) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Could not connect to Toxiproxy at {self.base_url}: {exc.reason}") from exc
+            raise RuntimeError(
+                f"Could not connect to Toxiproxy at {self.base_url}: {exc.reason}"
+            ) from exc
 
     def version(self) -> str:
         data = self._request("GET", "/version")

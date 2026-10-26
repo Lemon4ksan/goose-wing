@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// The Goose Zstandard (zstd) decompression engine: RFC 8878 Specification.
-// Clean-Room Native Implementation with zero dynamic heap allocations in inner loop.
+// Zstandard (zstd) decompression engine (RFC 8878).
+// Implementation uses no dynamic heap allocations in the inner loop.
 namespace core;
 
 import std;

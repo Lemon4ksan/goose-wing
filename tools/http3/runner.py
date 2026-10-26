@@ -6,6 +6,7 @@ against the native server running over live UDP datagrams.
 """
 
 import argparse
+import io
 import socket
 import struct
 import subprocess
@@ -14,9 +15,13 @@ import time
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
@@ -63,6 +68,7 @@ class NativeHttp3Server:
             bufsize=1,
             cwd=str(ROOT_DIR),
         )
+        assert self.proc and self.proc.stdout and self.proc.stderr
 
         t_start = time.time()
         while time.time() - t_start < timeout:
@@ -135,9 +141,9 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     vn_req.extend(dcid)
     vn_req.append(len(scid))
     vn_req.extend(scid)
-    vn_req.append(0)   # Token len = 0
+    vn_req.append(0)  # Token len = 0
     vn_req.append(10)  # Payload len = 10
-    vn_req.append(1)   # Packet number = 1
+    vn_req.append(1)  # Packet number = 1
     vn_req.extend(b"0123456789")
 
     s.sendto(vn_req, (host, port))
@@ -155,9 +161,9 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     init_req.extend(dcid)
     init_req.append(len(scid))
     init_req.extend(scid)
-    init_req.append(0)   # Token len = 0
+    init_req.append(0)  # Token len = 0
     init_req.append(10)  # Payload len = 10
-    init_req.append(1)   # Packet number = 1
+    init_req.append(1)  # Packet number = 1
     init_req.extend(b"0123456789")
     # Pad to 1200 bytes per RFC 9000 Section 8.1
     if len(init_req) < 1200:
@@ -182,7 +188,10 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     # Checks presence of QPACK_MAX_TABLE_CAPACITY (0x01, 4096 = 0x5000) and MAX_FIELD_SECTION_SIZE (0x06)
     has_qpack_cap = b"\x01\x50\x00" in init_res or b"\x01\x40" in init_res
     has_section_sz = b"\x06\x80\x01\x00\x00" in init_res or b"\x06" in init_res
-    record(has_qpack_cap and has_section_sz, "RFC 9114 SETTINGS Parameters (QPACK Table Capacity & Section Size)")
+    record(
+        has_qpack_cap and has_section_sz,
+        "RFC 9114 SETTINGS Parameters (QPACK Table Capacity & Section Size)",
+    )
 
     # 5. RFC 9114 §7.2.8 GREASE Frame Conformance
     # GREASE frame type 0x21 (33) with length 0
@@ -193,7 +202,10 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     # Setting 0x02 (SETTINGS_ENABLE_PUSH) is strictly forbidden in HTTP/3
     s.sendto(b"H3_SET_TEST:\x02\x01", (host, port))
     set_err_res, _ = s.recvfrom(1024)
-    record(set_err_res == b"ERR:265", "Rejection of Forbidden HTTP/2 Setting (H3_ERR_SETTINGS_ERROR = 0x0109)")
+    record(
+        set_err_res == b"ERR:265",
+        "Rejection of Forbidden HTTP/2 Setting (H3_ERR_SETTINGS_ERROR = 0x0109)",
+    )
 
     # 7. RFC 9114 HTTP/3 HEADERS & DATA Request/Response Roundtrip
     # HEADERS frame: type 0x01, len 4, QPACK payload [0x00, 0x00, 0xd1, 0xd9]
@@ -204,7 +216,10 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
 
     # Validate HEADERS frame (0x01) + DATA frame (0x00) with body text
     has_h3_headers = len(h3_res) >= 5 and h3_res[0] == 0x01
-    has_h3_data = b"\x00\x1dHello from goose-wing HTTP/3!" in h3_res or b"Hello from goose-wing HTTP/3!" in h3_res
+    has_h3_data = (
+        b"\x00\x1dHello from goose-wing HTTP/3!" in h3_res
+        or b"Hello from goose-wing HTTP/3!" in h3_res
+    )
     record(has_h3_headers and has_h3_data, "RFC 9114 HTTP/3 HEADERS & DATA Stream Roundtrip")
 
     # 8. RFC 9204 QPACK Static Table Indexing (:status 200 = Index 25)
@@ -221,21 +236,27 @@ def main():
         description="goose-wing HTTP/3 & QUIC Interop Verification Runner"
     )
     parser.add_argument("--host", default="127.0.0.1", help="Target server host")
-    parser.add_argument("--port", type=int, default=0, help="Target server port (if already running)")
+    parser.add_argument(
+        "--port", type=int, default=0, help="Target server port (if already running)"
+    )
     parser.add_argument("--docker", action="store_true", help="Run HTTP/3 suite in Docker")
-    parser.add_argument(
-        "--compose", action="store_true", help="Launch via docker compose"
-    )
-    parser.add_argument(
-        "--rebuild", action="store_true", help="Rebuild HTTP/3 server executable"
-    )
+    parser.add_argument("--compose", action="store_true", help="Launch via docker compose")
+    parser.add_argument("--rebuild", action="store_true", help="Rebuild HTTP/3 server executable")
     args = parser.parse_args()
 
     if args.compose:
         compose_file = TOOLS_DIR / "http3" / "docker-compose.yml"
-        cmd = ["docker", "compose", "-f", str(compose_file), "up", "--build", "--abort-on-container-exit"]
+        cmd = [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "up",
+            "--build",
+            "--abort-on-container-exit",
+        ]
         print(f"[*] Running HTTP/3 suite via docker compose ({compose_file.name})...")
-        sys.exit(subprocess.run(cmd, cwd=str(ROOT_DIR)).returncode)
+        sys.exit(subprocess.run(cmd, check=False, cwd=str(ROOT_DIR)).returncode)
 
     if args.port > 0:
         passed, failed = run_e2e_tests(args.host, args.port)

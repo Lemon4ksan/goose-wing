@@ -169,9 +169,7 @@ def main() -> int:
         action="store_true",
         help="Preview file modifications without writing to disk.",
     )
-    parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Show all files scanned."
-    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Show all files scanned.")
     parser.add_argument(
         "--ext",
         action="append",
@@ -225,9 +223,7 @@ def main() -> int:
         )
 
         rel_path = (
-            file_path.relative_to(repo_root)
-            if file_path.is_relative_to(repo_root)
-            else file_path
+            file_path.relative_to(repo_root) if file_path.is_relative_to(repo_root) else file_path
         )
 
         if not ok:
@@ -255,9 +251,7 @@ def main() -> int:
     print("=" * 60)
 
     if args.check and violation_count > 0:
-        print(
-            f"\nERROR: {violation_count} file(s) are missing required license headers."
-        )
+        print(f"\nERROR: {violation_count} file(s) are missing required license headers.")
         return 1
 
     return 0

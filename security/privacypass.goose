@@ -368,7 +368,7 @@ fn get_private_token(
 fn attach_private_token<R>(req: R&, token_bytes: const u8[:]) {
     var auth_header: u8[..1024] = [];
     format_private_token_authorization(token_bytes, auth_header);
-    header(req, "Authorization", auth_header[..]);
+    set_header(req, "Authorization", auth_header[..]);
 }
 
 // Checks whether an HTTP response has a PrivateToken challenge.

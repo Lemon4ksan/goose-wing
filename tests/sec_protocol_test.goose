@@ -78,9 +78,9 @@ fn test_ipv4_mapped_ipv6_ssrf(t: core::T&) {
 fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
     t.run("sanitize_headers_on_redirect: Scheme Downgrade to Trusted Host Strips Sensitive Headers") { sub =>
         var req = wing::new_get("https://example.com/secure");
-        wing::header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
-        wing::header(req, "X-API-Key", "super-secret-token");
-        wing::header(req, "Custom-Key", "public-data");
+        wing::set_header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
+        wing::set_header(req, "X-API-Key", "super-secret-token");
+        wing::set_header(req, "Custom-Key", "public-data");
 
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
@@ -118,7 +118,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
         wing::mock_route(session, "GET", "http://example.com/cleartext_api", 200, "{\"ok\":true}");
 
         var req = wing::new_get("https://example.com/login");
-        wing::header(req, "Authorization", "Bearer top_secret_credential");
+        wing::set_header(req, "Authorization", "Bearer top_secret_credential");
 
         let res, err = wing::execute_request(session, req);
         sub.assert_true(wing::ok(err), "request succeeded");
@@ -135,7 +135,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
 
     t.run("Cross-Origin HTTPS -> HTTPS to Trusted Host Preserves Credentials") { sub =>
         var req = wing::new_get("https://app.client.com/data");
-        wing::header(req, "Authorization", "Bearer shared_token");
+        wing::set_header(req, "Authorization", "Bearer shared_token");
 
         // Cross-origin redirect, but both ends are secure HTTPS
         let redirect_info = wing::compute_redirect_info(

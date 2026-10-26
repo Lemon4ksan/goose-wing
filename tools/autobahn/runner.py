@@ -11,6 +11,7 @@ and formats a complete RFC 6455 compliance report.
 """
 
 import argparse
+import io
 import json
 import os
 import shutil
@@ -21,9 +22,13 @@ import urllib.request
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
@@ -32,9 +37,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 TOOLS_DIR = ROOT_DIR / "tools"
 BIN_DIR = TOOLS_DIR / "bin"
 SERVER_SRC = TOOLS_DIR / "autobahn" / "server.goose"
-SERVER_EXE = BIN_DIR / (
-    "autobahn_server.exe" if sys.platform == "win32" else "autobahn_server"
-)
+SERVER_EXE = BIN_DIR / ("autobahn_server.exe" if sys.platform == "win32" else "autobahn_server")
 KOSOKU_EXE = BIN_DIR / ("kosoku.exe" if sys.platform == "win32" else "kosoku")
 DEFAULT_OUT_DIR = ROOT_DIR / "reports" / "autobahn"
 
@@ -45,9 +48,7 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
     if not force_rebuild and SERVER_EXE.is_file():
         return SERVER_EXE
 
-    print(
-        f"[*] Building native Autobahn WebSocket server: {SERVER_SRC} -> {SERVER_EXE}..."
-    )
+    print(f"[*] Building native Autobahn WebSocket server: {SERVER_SRC} -> {SERVER_EXE}...")
     cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
     res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True)
     if res.returncode != 0:
@@ -114,6 +115,7 @@ class GooseAutobahnServer:
             bufsize=1,
             cwd=str(ROOT_DIR),
         )
+        assert self.proc and self.proc.stdout and self.proc.stderr
 
         t_start = time.time()
         while time.time() - t_start < timeout:
@@ -138,9 +140,7 @@ class GooseAutobahnServer:
         # Try clean HTTP shutdown trigger
         if self.port > 0:
             try:
-                urllib.request.urlopen(
-                    f"http://127.0.0.1:{self.port}/shutdown", timeout=0.5
-                )
+                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/shutdown", timeout=0.5)
             except Exception:
                 pass
 
@@ -195,9 +195,7 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
     print("\n" + "=" * 78)
     print(" Autobahn WebSocket Testsuite (RFC 6455) Compliance Report")
     print("=" * 78)
-    print(
-        f"{'Category':<5} | {'Description':<42} | {'Total':<5} | {'Passed':<6} | {'Status'}"
-    )
+    print(f"{'Category':<5} | {'Description':<42} | {'Total':<5} | {'Passed':<6} | {'Status'}")
     print("-" * 78)
 
     total_passed = 0
@@ -348,9 +346,7 @@ def run_autobahn(
         elif runner_type == "docker":
             spec_file = out_dir / "fuzzingclient.json"
             host_target = (
-                "host.docker.internal"
-                if sys.platform in ("win32", "darwin")
-                else "172.17.0.1"
+                "host.docker.internal" if sys.platform in ("win32", "darwin") else "172.17.0.1"
             )
             spec = {
                 "outdir": "/reports",
@@ -380,7 +376,7 @@ def run_autobahn(
                 "-s",
                 "/config/fuzzingclient.json",
             ]
-            print(f"[*] Running Autobahn via Docker (crossbario/autobahn-testsuite)...")
+            print("[*] Running Autobahn via Docker (crossbario/autobahn-testsuite)...")
             proc = subprocess.run(cmd, check=False)
             elapsed = time.time() - t0
             print(f"[+] Finished Docker Autobahn execution in {elapsed:.2f}s")
@@ -450,9 +446,17 @@ def main():
 
     if args.compose:
         compose_file = TOOLS_DIR / "autobahn" / "docker-compose.yml"
-        cmd = ["docker", "compose", "-f", str(compose_file), "up", "--build", "--abort-on-container-exit"]
+        cmd = [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "up",
+            "--build",
+            "--abort-on-container-exit",
+        ]
         print(f"[*] Running Autobahn via docker-compose ({compose_file.name})...")
-        res = subprocess.run(cmd, cwd=str(ROOT_DIR))
+        res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR))
         print_summary_table(DEFAULT_OUT_DIR)
         sys.exit(res.returncode)
 

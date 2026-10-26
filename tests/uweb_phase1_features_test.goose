@@ -165,7 +165,7 @@ fn test_backpressure_and_drain(t: core::T&) {
 fn test_selective_compression(t: core::T&) {
     t.run("1. Selective Compression Flag Toggle") { sub =>
         var ws = wing::new_websocket_session(false);
-        wing::ws_enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
+        wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
         var comp = wing::new_shared_ws_compressor();
 
         let repetitive_text = "{\"event\":\"trade\",\"ticker\":\"BTC-USDT\",\"price\":65432.10,\"volume\":1.54321,\"timestamp\":1700000000}";
@@ -181,7 +181,7 @@ fn test_selective_compression(t: core::T&) {
 
         // 2. Send with compress = false (selective uncompressed bypass)
         var ws2 = wing::new_websocket_session(false);
-        wing::ws_enable_permessage_deflate(ws2, wing::WS_COMPRESS_SHARED_COMPRESSOR);
+        wing::enable_permessage_deflate(ws2, wing::WS_COMPRESS_SHARED_COMPRESSOR);
 
         var out_plain: u8[..1024] = [];
         let st_p = ws2.send_text_compressed_with_status(repetitive_text, comp, out_plain, false);

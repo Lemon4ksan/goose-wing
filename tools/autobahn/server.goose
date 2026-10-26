@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Dedicated WebSocket Echo Server for Autobahn Testsuite (RFC 6455 Compliance).
-// Zero-allocation, high-performance, strictly RFC-conformant implementation in pure Goose.
+// RFC-conformant WebSocket implementation in pure Goose.
 import std;
 import core from "../..";
 import wing from "../..";
@@ -39,9 +39,9 @@ fn drain_and_close(conn: i64) {
     wing::tcp_close(conn);
 }
 
-fn send_ws_close(conn: i64, status_code: u16, reason: const u8[:]) {
+fn send_close(conn: i64, status_code: u16, reason: const u8[:]) {
     var close_payload: u8[>..] = [];
-    wing::encode_ws_close_payload(close_payload, status_code, reason);
+    wing::encode_close_payload(close_payload, status_code, reason);
     var frame_wire: u8[>..] = [];
     wing::encode_ws_frame(frame_wire, wing::WS_OPCODE_CLOSE, close_payload[..], false);
     wing::tcp_send(conn, frame_wire[..]);
@@ -120,31 +120,31 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
 
             // RFC 6455 Section 5.1: Client to Server MUST be masked
             if (b1 & 0x80) == 0 {
-                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unmasked client frame");
+                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unmasked client frame");
                 return;
             }
 
             // RFC 6455 Section 5.2: Reserved bits MUST be 0
             if (b0 & 0x70) != 0 {
-                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "rsv bits set");
+                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "rsv bits set");
                 return;
             }
 
             // RFC 6455 Section 5.2: Opcode validation
             if !wing::is_valid_ws_opcode(opcode) {
-                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid opcode");
+                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid opcode");
                 return;
             }
 
             // RFC 6455 Section 5.4 & 5.5: Control frame fragmentation forbidden
             if is_control && !fin {
-                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "fragmented control frame");
+                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "fragmented control frame");
                 return;
             }
 
             // RFC 6455 Section 5.5: Control frame payload length <= 125
             if is_control && (b1 & 0x7F) > 125 {
-                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125");
+                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125");
                 return;
             }
 
@@ -159,7 +159,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
 
             let hdr, ok_hdr = wing::parse_ws_frame_header(ws_buf[..]);
             if !ok_hdr {
-                send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "malformed frame header");
+                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "malformed frame header");
                 return;
             }
 
@@ -182,26 +182,26 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                 } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
                     if payload.len == 0 {
                         // Empty close: valid (1005 NO_STATUS)
-                        send_ws_close(conn, wing::WS_STATUS_NORMAL, "");
+                        send_close(conn, wing::WS_STATUS_NORMAL, "");
                         return;
                     } else if payload.len == 1 {
                         // Protocol error: status code must be 2 bytes
-                        send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "close code must be 2 bytes");
+                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "close code must be 2 bytes");
                         return;
                     } else {
                         let code = ((payload[0] as u16) << 8) | payload[1];
                         if !is_valid_close_code(code) {
-                            send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid close code");
+                            send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid close code");
                             return;
                         }
                         if payload.len > 2 {
                             let reason = payload[2..];
                             if !core::validate_utf8(reason) {
-                                send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 in close reason");
+                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 in close reason");
                                 return;
                             }
                         }
-                        send_ws_close(conn, code, "");
+                        send_close(conn, code, "");
                         return;
                     }
                 }
@@ -209,7 +209,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                 // Handle Data Frames (TEXT, BINARY, CONTINUATION)
                 if hdr.opcode == wing::WS_OPCODE_TEXT || hdr.opcode == wing::WS_OPCODE_BINARY {
                     if frag_active {
-                        send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "interleaved new data frame in fragment");
+                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "interleaved new data frame in fragment");
                         return;
                     }
 
@@ -217,7 +217,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                         // Unfragmented message
                         if hdr.opcode == wing::WS_OPCODE_TEXT {
                             if !core::validate_utf8(payload[..]) {
-                                send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 text payload");
+                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 text payload");
                                 return;
                             }
                         }
@@ -231,7 +231,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                     }
                 } else if hdr.opcode == wing::WS_OPCODE_CONTINUATION {
                     if !frag_active {
-                        send_ws_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "continuation without starting fragment");
+                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "continuation without starting fragment");
                         return;
                     }
                     frag_buf.append(payload[..]);
@@ -240,7 +240,7 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                         // End of fragmented message
                         if frag_opcode == wing::WS_OPCODE_TEXT {
                             if !core::validate_utf8(frag_buf[..]) {
-                                send_ws_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 assembled payload");
+                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 assembled payload");
                                 return;
                             }
                         }

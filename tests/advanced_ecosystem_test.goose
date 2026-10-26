@@ -52,26 +52,26 @@ fn test_altsvc_and_h3_promotion(t: core::T&) {
         let raw = "h3=\":443\"; ma=1000";
 
         // Insert at t = 1000
-        wing::altsvc_cache_update(cache, origin, raw, 1000);
+        wing::update(cache, origin, raw, 1000);
 
         // Lookup at t = 1500 (500s elapsed < 1000s max-age)
         var promoted_ep = wing::AltSvcEndpoint { .. };
-        let has_h3 = wing::altsvc_lookup_h3(cache, origin, 1500, promoted_ep);
+        let has_h3 = wing::lookup_h3(cache, origin, 1500, promoted_ep);
         sub.assert_true(has_h3, "Lookup succeeds and promotes to HTTP/3");
         sub.assert_bytes_eq(promoted_ep.proto[..], "h3", "Promoted proto is h3");
         sub.assert_eq(promoted_ep.port, 443, "Promoted port is 443");
 
         // Simulate connection failure (e.g. UDP blocked by firewall)
-        wing::altsvc_record_failure(cache, origin, 1501);
+        wing::record_failure(cache, origin, 1501);
 
         // Immediate subsequent lookup at t = 1502 must fail (broken_until_sec active)
         var fail_ep = wing::AltSvcEndpoint { .. };
-        let is_broken = wing::altsvc_lookup_h3(cache, origin, 1502, fail_ep);
+        let is_broken = wing::lookup_h3(cache, origin, 1502, fail_ep);
         sub.assert_false(is_broken, "Immediate lookup after failure returns false (backoff active)");
 
         // Clear directive invalidation
-        wing::altsvc_cache_update(cache, origin, "clear", 1600);
-        let cleared = wing::altsvc_lookup_h3(cache, origin, 1600, fail_ep);
+        wing::update(cache, origin, "clear", 1600);
+        let cleared = wing::lookup_h3(cache, origin, 1600, fail_ep);
         sub.assert_false(cleared, "Clear directive purged origin from cache");
     };
 }

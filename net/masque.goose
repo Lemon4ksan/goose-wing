@@ -371,7 +371,7 @@ fn build_masque_connect_request(
 }
 
 // Sends a packet through the tunnel: either as a QUIC DATAGRAM frame or as an in-stream DATAGRAM capsule.
-fn tunnel_send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B&) -> bool {
+fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B&) -> bool {
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     var ok = false;
@@ -391,7 +391,7 @@ fn tunnel_send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_
 }
 
 // Ingests an incoming in-stream Capsule from the tunnel wire stream.
-fn tunnel_receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
+fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let c, ok_c = parse_http_capsule(capsule_wire);
@@ -416,7 +416,7 @@ fn tunnel_receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u
 }
 
 // Ingests an incoming QUIC DATAGRAM frame from the tunnel.
-fn tunnel_receive_quic_datagram<B>(tunnel: MasqueTunnelSession&, datagram_frame_payload: const u8[:], out_packet: B&) -> bool {
+fn receive_quic_datagram<B>(tunnel: MasqueTunnelSession&, datagram_frame_payload: const u8[:], out_packet: B&) -> bool {
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let q_id, ctx_id, pkt, ok = decode_http_datagram(datagram_frame_payload);

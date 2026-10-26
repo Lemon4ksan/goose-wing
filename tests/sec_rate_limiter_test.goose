@@ -102,17 +102,17 @@ fn test_sharded_gcra_limiter(t: core::T&) {
         let ip_b = "10.0.0.5";
 
         // IP A exhausts its quota (2 requests)
-        let d_a1 = wing::check_keyed_rate_limit(limiter, ip_a, 1, now);
-        let d_a2 = wing::check_keyed_rate_limit(limiter, ip_a, 1, now);
-        let d_a3 = wing::check_keyed_rate_limit(limiter, ip_a, 1, now);
+        let d_a1 = wing::check_rate_limit(limiter, ip_a, 1, now);
+        let d_a2 = wing::check_rate_limit(limiter, ip_a, 1, now);
+        let d_a3 = wing::check_rate_limit(limiter, ip_a, 1, now);
 
         sub.assert_true(wing::is_allowed(d_a1), "IP A req 1 allowed");
         sub.assert_true(wing::is_allowed(d_a2), "IP A req 2 allowed");
         sub.assert_false(wing::is_allowed(d_a3), "IP A req 3 rejected (exhausted)");
 
         // IP B must NOT be affected by IP A's exhaustion!
-        let d_b1 = wing::check_keyed_rate_limit(limiter, ip_b, 1, now);
-        let d_b2 = wing::check_keyed_rate_limit(limiter, ip_b, 1, now);
+        let d_b1 = wing::check_rate_limit(limiter, ip_b, 1, now);
+        let d_b2 = wing::check_rate_limit(limiter, ip_b, 1, now);
         sub.assert_true(wing::is_allowed(d_b1), "IP B req 1 allowed independently");
         sub.assert_true(wing::is_allowed(d_b2), "IP B req 2 allowed independently");
     };
@@ -155,7 +155,7 @@ fn test_probabilistic_ddos_mitigation(t: core::T&) {
         // Run 500 requests
         for i in 500 {
             let tat_before = pgcra.cell.tat_ns;
-            let dec = wing::check_probabilistic(pgcra, 1, now);
+            let dec = wing::check_rate_limit(pgcra, 1, now);
             if pgcra.cell.tat_ns != tat_before {
                 sampled_count += 1;
             } else {

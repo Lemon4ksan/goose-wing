@@ -158,7 +158,3 @@ import grpc.framing;
 import grpc.status;
 import grpc.client;
 import grpc.server;
-
-// ---- ufcs method bridges ---------------------------------------------------
-
-import client.ufcs;

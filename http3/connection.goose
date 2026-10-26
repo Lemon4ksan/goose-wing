@@ -94,7 +94,7 @@ fn new_h3_client_connection(settings: const H3Settings&) -> H3Connection {
 // ---- 2. Preamble & Unidirectional Stream Creation ---------------------------
 
 // Encodes client preambles for control, QPACK encoder, and QPACK decoder streams.
-fn h3_encode_client_preambles<B1, B2, B3>(
+fn encode_client_preambles<B1, B2, B3>(
     conn: H3Connection&,
     out_ctrl: B1&,
     out_qpack_enc: B2&,
@@ -127,7 +127,7 @@ fn find_h3_stream_idx(conn: const H3Connection&, stream_id: u64) -> i32, bool {
 }
 
 // Allocates a new client request stream (0, 4, 8, ...).
-fn h3_open_request_stream(conn: H3Connection&) -> u64, bool {
+fn open_request_stream(conn: H3Connection&) -> u64, bool {
     guard conn.state == H3ConnState.Active || conn.state == H3ConnState.Connecting else {
         return 0, false;
     }
@@ -159,7 +159,7 @@ fn h3_open_request_stream(conn: H3Connection&) -> u64, bool {
 }
 
 // Encodes request headers into QPACK field section and wraps in a HEADERS frame.
-fn h3_send_request_headers<B>(
+fn send_request_headers<B>(
     conn: H3Connection&,
     stream_id: u64,
     method: const u8[:],
@@ -206,7 +206,7 @@ fn h3_send_request_headers<B>(
 }
 
 // Encodes a DATA frame on an open request stream.
-fn h3_send_request_data<B>(
+fn send_request_data<B>(
     conn: H3Connection&,
     stream_id: u64,
     data: const u8[:],
@@ -231,7 +231,7 @@ fn h3_send_request_data<B>(
 
 // Handles incoming raw bytes on a given stream.
 // Returns H3_ERR_NO_ERROR (0x0100) or appropriate HTTP/3 error code.
-fn h3_handle_stream_data(
+fn handle_stream_data(
     conn: H3Connection&,
     stream_id: u64,
     is_bidi: bool,
@@ -499,7 +499,7 @@ fn h3_handle_stream_data(
 
 // ---- 5. Stream Inspection Accessors ----------------------------------------
 
-fn h3_get_status_code(conn: const H3Connection&, stream_id: u64) -> i32, bool {
+fn get_status_code(conn: const H3Connection&, stream_id: u64) -> i32, bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     if found && conn.streams[s_idx].headers_received {
         return conn.streams[s_idx].status_code, true;
@@ -507,7 +507,7 @@ fn h3_get_status_code(conn: const H3Connection&, stream_id: u64) -> i32, bool {
     return 0, false;
 }
 
-fn h3_get_response_body(conn: const H3Connection&, stream_id: u64) -> const u8[:], bool {
+fn get_response_body(conn: const H3Connection&, stream_id: u64) -> const u8[:], bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     if found {
         return conn.streams[s_idx].received_body[..], true;
@@ -515,7 +515,7 @@ fn h3_get_response_body(conn: const H3Connection&, stream_id: u64) -> const u8[:
     return "", false;
 }
 
-fn h3_is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
+fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     if found {
         return conn.streams[s_idx].fin_received;

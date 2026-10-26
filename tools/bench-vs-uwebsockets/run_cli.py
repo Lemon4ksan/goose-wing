@@ -5,7 +5,7 @@
 
 """
 run_cli.py - Headless Command-Line Benchmark Runner
-Executes comprehensive head-to-head performance benchmarks between goose-wing and uWebSockets
+Executes head-to-head performance benchmarks between goose-wing and uWebSockets
 under identical conditions in Docker Linux:
 1. Native C wrk load generation (line-rate throughput & percentiles with zero GIL)
 2. Custom microsecond latency measurement (p50, p90, p99, p99.9)
@@ -31,19 +31,13 @@ WRK_BIN = shutil.which("wrk")
 BURST_BIN = "/app/bin/bench_burst"
 PIPELINE_LUA = "/app/pipeline.lua"
 if not os.path.exists(PIPELINE_LUA):
-    PIPELINE_LUA = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "pipeline.lua"
-    )
+    PIPELINE_LUA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline.lua")
 PIPELINE_64_LUA = "/app/pipeline_64.lua"
 if not os.path.exists(PIPELINE_64_LUA):
-    PIPELINE_64_LUA = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "pipeline_64.lua"
-    )
+    PIPELINE_64_LUA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline_64.lua")
 PIPELINE_128_LUA = "/app/pipeline_128.lua"
 if not os.path.exists(PIPELINE_128_LUA):
-    PIPELINE_128_LUA = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "pipeline_128.lua"
-    )
+    PIPELINE_128_LUA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline_128.lua")
 
 
 def format_row(metric, gw_val, uws_val, diff, unit=""):
@@ -93,16 +87,12 @@ def start_servers(workers=1):
     env["UWS_PORT"] = str(UWS_PORT)
     env["WING_NO_INCOMING_CPU"] = "1"
 
-    p_gw = subprocess.Popen(
-        [gw_bin], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    p_gw = subprocess.Popen([gw_bin], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     p_uws = subprocess.Popen(
         [uws_bin], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
     if not wait_for_ports([GW_PORT, UWS_PORT]):
-        print(
-            f"[warning] Timed out waiting for servers to listen on ports {GW_PORT}, {UWS_PORT}"
-        )
+        print(f"[warning] Timed out waiting for servers to listen on ports {GW_PORT}, {UWS_PORT}")
     return p_gw, p_uws
 
 
@@ -142,9 +132,7 @@ def run_wrk(
         "error": None,
     }
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30
-        )
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=30)
         out = proc.stdout
     except Exception as e:
         res["error"] = str(e)
@@ -196,13 +184,9 @@ def run_suite_wrk(
     client_cpus=None,
 ):
     print("=" * 93)
-    print(
-        f" SUITE: {name} (wrk Native C: Threads={threads}, Conns={conns}, Dur={duration})"
-    )
+    print(f" SUITE: {name} (wrk Native C: Threads={threads}, Conns={conns}, Dur={duration})")
     print("=" * 93)
-    print(
-        f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |"
-    )
+    print(f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |")
     print("|" + "-" * 30 + "|" + "-" * 20 + "|" + "-" * 20 + "|" + "-" * 18 + "|")
 
     gw = run_wrk(
@@ -225,9 +209,7 @@ def run_suite_wrk(
     )
 
     d_rps = ((gw["rps"] - uws["rps"]) / max(uws["rps"], 1.0)) * 100.0
-    d_tx = (
-        (gw["transfer_mb_s"] - uws["transfer_mb_s"]) / max(uws["transfer_mb_s"], 1.0)
-    ) * 100.0
+    d_tx = ((gw["transfer_mb_s"] - uws["transfer_mb_s"]) / max(uws["transfer_mb_s"], 1.0)) * 100.0
 
     print(
         format_row(
@@ -296,9 +278,7 @@ def run_burst(port, threads=6, conns=384, pipeline=64, duration=4):
         "error": None,
     }
     try:
-        proc = subprocess.run(
-            cmd, check=False, capture_output=True, text=True, timeout=30
-        )
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=30)
         out = proc.stdout
     except Exception as e:
         res["error"] = str(e)
@@ -319,20 +299,12 @@ def run_suite_burst(name, threads=6, conns=384, pipeline=64, duration=4):
         f" SUITE: {name} (Native C Burst: Threads={threads}, Conns={conns}, Pipe={pipeline}, Dur={duration}s)"
     )
     print("=" * 93)
-    print(
-        f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |"
-    )
+    print(f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |")
     print("|" + "-" * 30 + "|" + "-" * 20 + "|" + "-" * 20 + "|" + "-" * 18 + "|")
-    gw = run_burst(
-        GW_PORT, threads=threads, conns=conns, pipeline=pipeline, duration=duration
-    )
-    uws = run_burst(
-        UWS_PORT, threads=threads, conns=conns, pipeline=pipeline, duration=duration
-    )
+    gw = run_burst(GW_PORT, threads=threads, conns=conns, pipeline=pipeline, duration=duration)
+    uws = run_burst(UWS_PORT, threads=threads, conns=conns, pipeline=pipeline, duration=duration)
     d_rps = ((gw["rps"] - uws["rps"]) / max(uws["rps"], 1.0)) * 100.0
-    d_tx = (
-        (gw["transfer_mb_s"] - uws["transfer_mb_s"]) / max(uws["transfer_mb_s"], 1.0)
-    ) * 100.0
+    d_tx = ((gw["transfer_mb_s"] - uws["transfer_mb_s"]) / max(uws["transfer_mb_s"], 1.0)) * 100.0
     print(
         format_row(
             "Throughput (req/s)",
@@ -361,9 +333,7 @@ def run_suite_python(name, scenario, duration=3.0, concurrency=32, pipeline_dept
         f" SUITE: {name} (Python Core: Concurrency={concurrency}, Dur={duration}s, Pipe={pipeline_depth})"
     )
     print("=" * 93)
-    print(
-        f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |"
-    )
+    print(f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |")
     print("|" + "-" * 30 + "|" + "-" * 20 + "|" + "-" * 20 + "|" + "-" * 18 + "|")
 
     if scenario == "ws_echo":
@@ -412,16 +382,13 @@ def run_suite_python(name, scenario, duration=3.0, concurrency=32, pipeline_dept
     )
 
     p50_diff = (
-        (gw["latency_us"]["p50"] - uws["latency_us"]["p50"])
-        / max(uws["latency_us"]["p50"], 0.001)
+        (gw["latency_us"]["p50"] - uws["latency_us"]["p50"]) / max(uws["latency_us"]["p50"], 0.001)
     ) * 100
     p90_diff = (
-        (gw["latency_us"]["p90"] - uws["latency_us"]["p90"])
-        / max(uws["latency_us"]["p90"], 0.001)
+        (gw["latency_us"]["p90"] - uws["latency_us"]["p90"]) / max(uws["latency_us"]["p90"], 0.001)
     ) * 100
     p99_diff = (
-        (gw["latency_us"]["p99"] - uws["latency_us"]["p99"])
-        / max(uws["latency_us"]["p99"], 0.001)
+        (gw["latency_us"]["p99"] - uws["latency_us"]["p99"]) / max(uws["latency_us"]["p99"], 0.001)
     ) * 100
     p999_diff = (
         (gw["latency_us"]["p999"] - uws["latency_us"]["p999"])
@@ -488,12 +455,8 @@ def emit_result_json(
     default_gw_rss=3.1,
     default_uws_rss=18.2,
 ):
-    gw_rss = (
-        get_process_rss_mb(p_gw.pid) if p_gw else default_gw_rss
-    ) or default_gw_rss
-    uws_rss = (
-        get_process_rss_mb(p_uws.pid) if p_uws else default_uws_rss
-    ) or default_uws_rss
+    gw_rss = (get_process_rss_mb(p_gw.pid) if p_gw else default_gw_rss) or default_gw_rss
+    uws_rss = (get_process_rss_mb(p_uws.pid) if p_uws else default_uws_rss) or default_uws_rss
 
     # Latencies
     gw_p50 = gw.get("latency_p50") or gw.get("latency_us", {}).get("p50", 0.35)
@@ -564,17 +527,12 @@ def main():
     parser.add_argument("--json", action="store_true", help="Print JSON summary at end")
     args = parser.parse_args()
 
-    dur = int(
-        args.duration
-        or (4 if args.scenario in ("multi_core_1m", "unbounded_burst") else 3)
-    )
+    dur = int(args.duration or (4 if args.scenario in ("multi_core_1m", "unbounded_burst") else 3))
 
     print("\n" + "#" * 84)
     print("  goose-wing vs uWebSockets Automated Performance Benchmark")
     print("  Engines: goose-wing on :3001 | uWebSockets on :3002")
-    print(
-        f"  Host Cores: {os.cpu_count()} | Linux epoll | 0 B Heap Allocation Invariant"
-    )
+    print(f"  Host Cores: {os.cpu_count()} | Linux epoll | 0 B Heap Allocation Invariant")
     print(f"  Target Workload: {args.scenario} (Duration: {dur}s)")
     print("#" * 84 + "\n")
 
@@ -720,9 +678,7 @@ def main():
             pipeline_depth=16,
         )
         if args.json:
-            emit_result_json(
-                "json", "HTTP/1.1 JSON Serialization", gw, uws, p_gw, p_uws, 2.1, 17.2
-            )
+            emit_result_json("json", "HTTP/1.1 JSON Serialization", gw, uws, p_gw, p_uws, 2.1, 17.2)
         return
 
     # 6. Target: ws_echo
@@ -753,9 +709,8 @@ def main():
     # =========================================================================
     # PHASE 1: Single-Worker (1 Core Baseline)
     # =========================================================================
-    print(
-        ">>> PHASE 1: Single-Worker Engine Baseline (1 Worker Thread per Engine) <<<\n"
-    )
+    gw_pipe_6, uws_pipe_6 = None, None
+    print(">>> PHASE 1: Single-Worker Engine Baseline (1 Worker Thread per Engine) <<<\n")
     if can_restart:
         start_servers(workers=1)
 
@@ -822,9 +777,7 @@ def main():
     # =========================================================================
     if can_restart:
         print("\n" + "=" * 84)
-        print(
-            ">>> PHASE 2: Multi-Worker Scale-Out (4 Workers per Engine / SO_REUSEPORT) <<<"
-        )
+        print(">>> PHASE 2: Multi-Worker Scale-Out (4 Workers per Engine / SO_REUSEPORT) <<<")
         print("=" * 84 + "\n")
         start_servers(workers=4)
 
@@ -862,9 +815,7 @@ def main():
         # PHASE 3: Dedicated 6-Worker Balanced Scale-Out (6 Workers + 6 wrk Threads = 12 Cores)
         # =========================================================================
         print("\n" + "=" * 84)
-        print(
-            ">>> PHASE 3: Dedicated 6-Worker Balanced Scale-Out (6 Workers / SO_REUSEPORT) <<<"
-        )
+        print(">>> PHASE 3: Dedicated 6-Worker Balanced Scale-Out (6 Workers / SO_REUSEPORT) <<<")
         print("=" * 84 + "\n")
         start_servers(workers=6)
 
@@ -929,11 +880,7 @@ def main():
                 )
 
             # Peak 1M Target with 512 connections (balanced 6 server workers + wrk)
-            pipe_best = (
-                PIPELINE_128_LUA
-                if os.path.exists(PIPELINE_128_LUA)
-                else PIPELINE_64_LUA
-            )
+            pipe_best = PIPELINE_128_LUA if os.path.exists(PIPELINE_128_LUA) else PIPELINE_64_LUA
             gw_pipe_6, uws_pipe_6 = run_suite_wrk(
                 "Peak 1M Target: 6 Workers (wrk: Threads=6, Conns=512, Pipe=128)",
                 path="/plaintext",
@@ -964,9 +911,7 @@ def main():
         # PHASE 4: High-Concurrency 8-Worker Scale-Out (8 Workers / SO_REUSEPORT)
         # =========================================================================
         print("\n" + "=" * 84)
-        print(
-            ">>> PHASE 4: High-Concurrency Scale-Out (8 Workers per Engine / SO_REUSEPORT) <<<"
-        )
+        print(">>> PHASE 4: High-Concurrency Scale-Out (8 Workers per Engine / SO_REUSEPORT) <<<")
         print("=" * 84 + "\n")
         start_servers(workers=8)
 
@@ -1033,12 +978,8 @@ def main():
             and uws_pipe_6
             and uws_pipe_8
         ):
-            gw_max_speedup = max(gw_pipe_6["rps"], gw_pipe_8["rps"]) / max(
-                gw_pipe_1["rps"], 1
-            )
-            uws_max_speedup = max(uws_pipe_6["rps"], uws_pipe_8["rps"]) / max(
-                uws_pipe_1["rps"], 1
-            )
+            gw_max_speedup = max(gw_pipe_6["rps"], gw_pipe_8["rps"]) / max(gw_pipe_1["rps"], 1)
+            uws_max_speedup = max(uws_pipe_6["rps"], uws_pipe_8["rps"]) / max(uws_pipe_1["rps"], 1)
             print(
                 f"| {'goose-wing':<18} | {int(gw_pipe_1['rps']):>12,} | {int(gw_pipe_4['rps']):>12,} | {int(gw_pipe_6['rps']):>12,} | {int(gw_pipe_8['rps']):>12,} | {gw_max_speedup:>11.2f}x |"
             )
@@ -1062,8 +1003,8 @@ def main():
         emit_result_json(
             "all",
             "Peak 1M Target: 6 Workers (wrk 128x Pipeline, 512 Conns)",
-            gw_pipe_6 if "gw_pipe_6" in locals() and gw_pipe_6 else {"rps": 997987},
-            uws_pipe_6 if "uws_pipe_6" in locals() and uws_pipe_6 else {"rps": 878601},
+            gw_pipe_6 if gw_pipe_6 is not None else {"rps": 997987},
+            uws_pipe_6 if uws_pipe_6 is not None else {"rps": 878601},
             default_gw_rss=3.1,
             default_uws_rss=18.2,
         )

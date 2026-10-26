@@ -163,7 +163,7 @@ fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter {
 }
 
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
-fn check_keyed_rate_limit(
+fn check_rate_limit(
     limiter: ShardedGcraLimiter&,
     key_str: const u8[:],
     cost_n: u64,
@@ -226,7 +226,7 @@ fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> Probabilis
 
 // 5% sampled check: 19 of 20 requests pass immediately without touch;
 // 1 in 20 applies cost * sample_rate to the TAT cell.
-fn check_probabilistic(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
+fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
     pgcra.rng_state ^= pgcra.rng_state >> 12;
     pgcra.rng_state ^= pgcra.rng_state << 25;
     pgcra.rng_state ^= pgcra.rng_state >> 27;

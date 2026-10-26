@@ -54,8 +54,7 @@ fn find_crlf(data: const u8[:]) -> i64 {
 }
 
 // Returns true if the slice contains valid RFC 3629 UTF-8.
-// Employs a 16-byte SWAR ASCII fast-skip loop (Alex Hultman / uWebSockets pattern)
-// allowing ultra-fast validation across mixed ASCII / multibyte text payloads.
+// Uses a 16-byte SWAR loop to skip ASCII runs before validating multibyte sequences.
 fn validate_utf8(data: const u8[:]) -> bool {
     let n = data.len;
     guard n > 0 else { return true; }

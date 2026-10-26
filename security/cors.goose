@@ -65,7 +65,7 @@ fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bo
 }
 
 // Validates whether the incoming Origin is permitted under policy.
-fn is_cors_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool {
+fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool {
     let clean_origin = trim_lws(origin_str);
     guard clean_origin.len > 0 else { return false; }
 
@@ -128,7 +128,7 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
         return CorsResult.InvalidConfig;
     }
 
-    guard is_cors_origin_allowed(policy, origin) else {
+    guard is_origin_allowed(policy, origin) else {
         return CorsResult.RejectedOrigin;
     }
 

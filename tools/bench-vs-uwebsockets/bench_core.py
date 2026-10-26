@@ -55,11 +55,7 @@ def get_process_rss_mb(pid):
             cols = out.replace('"', "").strip().split(",")
             if len(cols) >= 5:
                 mem_str = (
-                    cols[4]
-                    .replace("K", "")
-                    .replace(" ", "")
-                    .replace("\xa0", "")
-                    .replace(",", "")
+                    cols[4].replace("K", "").replace(" ", "").replace("\xa0", "").replace(",", "")
                 )
                 return round(float(mem_str) / 1024, 2)
     except Exception:
@@ -188,9 +184,7 @@ def run_http_benchmark(
         p50 = all_latencies[int(len(all_latencies) * 0.50)]
         p90 = all_latencies[int(len(all_latencies) * 0.90)]
         p99 = all_latencies[int(len(all_latencies) * 0.99)]
-        p999 = all_latencies[
-            min(int(len(all_latencies) * 0.999), len(all_latencies) - 1)
-        ]
+        p999 = all_latencies[min(int(len(all_latencies) * 0.999), len(all_latencies) - 1)]
         min_lat = min(all_latencies)
         avg_lat = statistics.mean(all_latencies)
         max_lat = max(all_latencies)
@@ -311,9 +305,7 @@ def run_ws_worker(port, path, duration_sec, results_list, stop_event):
     results_list.append((frames, latencies_us))
 
 
-def run_websocket_benchmark(
-    port, path="/ws", concurrency=16, duration_sec=5.0, label="Target"
-):
+def run_websocket_benchmark(port, path="/ws", concurrency=16, duration_sec=5.0, label="Target"):
     stop_event = threading.Event()
     threads = []
     worker_results = []
@@ -343,9 +335,7 @@ def run_websocket_benchmark(
         p50 = all_latencies[int(len(all_latencies) * 0.50)]
         p90 = all_latencies[int(len(all_latencies) * 0.90)]
         p99 = all_latencies[int(len(all_latencies) * 0.99)]
-        p999 = all_latencies[
-            min(int(len(all_latencies) * 0.999), len(all_latencies) - 1)
-        ]
+        p999 = all_latencies[min(int(len(all_latencies) * 0.999), len(all_latencies) - 1)]
         min_lat = min(all_latencies)
         avg_lat = statistics.mean(all_latencies)
         max_lat = max(all_latencies)

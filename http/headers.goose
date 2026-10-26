@@ -1452,7 +1452,7 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
     return false;
 }
 
-fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..16]&) {
+fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&) {
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
         if eq_ascii_fold(name, "connection") {
@@ -1466,7 +1466,7 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..16]&)
                 let token = trim_lws(val[cursor..comma_idx]);
                 // Empty connection token (e.g. trailing comma or empty header #46313) is skipped without aborting
                 if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
-                    if out_tokens.len < 16 {
+                    if out_tokens.len < out_tokens.cap {
                         var tok_buf: u8[..64] = [];
                         tok_buf.append(token);
                         out_tokens.push(tok_buf);
@@ -1483,7 +1483,7 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..16]&)
 fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
     dst.reset_for_keep_alive();
 
-    var custom_tokens: u8[..64][..16] = [];
+    var custom_tokens: u8[..64][..32] = [];
     src.collect_connection_tokens(custom_tokens);
 
     for &entry in src.entries {

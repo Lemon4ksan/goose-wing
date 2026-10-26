@@ -307,9 +307,9 @@ fn test_jwks_serialization_and_parsing(t: core::T&) {
         wing::add_symmetric_key(jwks, "hmac-key-2026", wing::JwtAlg.HS256, hmac_sec);
 
         sub.assert_eq(jwks.keys.len, 2, "2 keys in JWKS");
-        sub.assert_eq(wing::find_jwks_key(jwks, "ed25519-key-2026"), 0, "Find ed key idx");
-        sub.assert_eq(wing::find_jwks_key(jwks, "hmac-key-2026"), 1, "Find hmac key idx");
-        sub.assert_eq(wing::find_jwks_key(jwks, "unknown-key"), -1, "Unknown key returns -1");
+        sub.assert_eq(wing::find_key(jwks, "ed25519-key-2026"), 0, "Find ed key idx");
+        sub.assert_eq(wing::find_key(jwks, "hmac-key-2026"), 1, "Find hmac key idx");
+        sub.assert_eq(wing::find_key(jwks, "unknown-key"), -1, "Unknown key returns -1");
 
         // Serialize to JSON
         var jwks_json: u8[>..] = [];
@@ -373,7 +373,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
         opts.expected_issuer.append("auth.corp.com");
 
-        let err = wing::verify_jwt_with_jwks(token[..], jwks, opts, now_sec, out_h, out_c);
+        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.None, "EdDSA token verified through JWKS");
         sub.assert_bytes_eq(out_h.kid[..], "auth-srv-v1", "kid resolved correctly");
         sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "admin_alice", "Subject matches");
@@ -392,7 +392,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         var out_c = wing::new_jwt_claims();
         let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
 
-        let err = wing::verify_jwt_with_jwks(token[..], jwks, opts, now_sec, out_h, out_c);
+        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.None, "HMAC token verified through JWKS");
         sub.assert_bytes_eq(out_h.kid[..], "legacy-sym-v1", "kid resolved");
         sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "service_worker", "Subject matches");
@@ -411,7 +411,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         var out_c = wing::new_jwt_claims();
         let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
 
-        let err = wing::verify_jwt_with_jwks(token[..], jwks, opts, now_sec, out_h, out_c);
+        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.KeyNotFound, "Unknown kid returned KeyNotFound");
     };
 }

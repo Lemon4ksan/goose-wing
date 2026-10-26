@@ -35,8 +35,8 @@ fn test_header_bloom_filter(t: core::T&) {
 
     t.run("2. Request Struct with Integrated BloomFilter") { sub =>
         var req = wing::new_request("GET", "/api/v1/status");
-        req.header("Host", "api.example.com");
-        req.header("Accept", "application/json");
+        req.set_header("Host", "api.example.com");
+        req.set_header("Accept", "application/json");
 
         sub.assert_true(req.has_header("host"), "Request has host");
         sub.assert_true(req.has_header("ACCEPT"), "Request has ACCEPT (case-insensitive)");

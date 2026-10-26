@@ -304,7 +304,7 @@ fn execute_mock_or_echo_hop(
     let is_https = current_url.is_secure_scheme();
 
     var candidate_h3_ep = AltSvcEndpoint { .. };
-    let has_h3 = session.enable_altsvc && is_https && altsvc_lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
+    let has_h3 = session.enable_altsvc && is_https && lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
 
     let curr_path = core::pathname(current_url);
     var matched_dict_b64: u8[..64] = [];
@@ -370,7 +370,7 @@ fn execute_mock_or_echo_hop(
                     // Protocol race: QUIC Alternative Job vs TCP Main Job (Chromium JobController / RFC 8305)
                     if route.simulate_quic_blocked {
                         // QUIC handshake dropped/blocked by firewall -> Main TCP Job wins!
-                        altsvc_record_failure(session.altsvc, origin_buf[..], now_sec);
+                        record_failure(session.altsvc, origin_buf[..], now_sec);
                         resp.protocol.clear();
                         if route.protocol.len > 0 {
                             resp.protocol.append(route.protocol[..]);
@@ -379,17 +379,17 @@ fn execute_mock_or_echo_hop(
                         }
                     } else {
                         // QUIC handshake succeeds -> HTTP/3 wins!
-                        altsvc_record_success(session.altsvc, origin_buf[..]);
+                        record_success(session.altsvc, origin_buf[..]);
                         resp.protocol.clear();
                         resp.protocol.append("h3");
                     }
                 } else if session.enable_altsvc {
                     if route.simulate_quic_blocked {
-                        altsvc_record_failure(session.altsvc, origin_buf[..], now_sec);
+                        record_failure(session.altsvc, origin_buf[..], now_sec);
                         resp.protocol.clear();
                         resp.protocol.append(if route.protocol.len > 0 { route.protocol[..] } else { "HTTP/1.1" });
                     } else {
-                        altsvc_record_success(session.altsvc, origin_buf[..]);
+                        record_success(session.altsvc, origin_buf[..]);
                         resp.protocol.clear();
                         resp.protocol.append("h3");
                     }
@@ -403,7 +403,7 @@ fn execute_mock_or_echo_hop(
             if session.enable_altsvc && is_https {
                 let alt_svc_val = header(resp, "Alt-Svc");
                 if alt_svc_val.len > 0 {
-                    altsvc_cache_update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+                    update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
                 }
             }
 
@@ -447,7 +447,7 @@ fn execute_mock_or_echo_hop(
     resp.body.append("{\"id\":1042,\"status\":\"confirmed\",\"ok\":true}");
 
     if has_h3 && session.enable_altsvc {
-        altsvc_record_success(session.altsvc, origin_buf[..]);
+        record_success(session.altsvc, origin_buf[..]);
         resp.protocol.clear();
         resp.protocol.append("h3");
     }
@@ -455,7 +455,7 @@ fn execute_mock_or_echo_hop(
     if session.enable_altsvc && is_https {
         let alt_svc_val = header(resp, "Alt-Svc");
         if alt_svc_val.len > 0 {
-            altsvc_cache_update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+            update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
         }
     }
 

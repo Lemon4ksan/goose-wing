@@ -3,7 +3,7 @@
 
 // http/headers/chunked_fsm.goose
 // Compact 64-bit Single-Register FSM Chunked Transfer Coding Decoder (uWebSockets ChunkedEncoding.h).
-// Pure clean-room implementation of uWS bit-packed streaming chunked decoder.
+// Bit-packed streaming chunked decoder based on the uWebSockets design.
 // Encodes all parser sub-states and chunk size in a single u64 register (0 heap allocations).
 namespace internal;
 

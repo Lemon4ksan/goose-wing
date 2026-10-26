@@ -52,20 +52,20 @@ fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
 }
 
 // Parses a hybrid ClientHello KeyShareEntry from raw bytes
-fn parse_hybrid_key_share(raw: const u8[:], out: PostQuantumKeyShare&) -> bool {
+fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool {
     guard raw.len >= 4 + HYBRID_CLIENT_SHARE_LEN else { return false; }
 
-    out.group = core::read_be_u16(raw, 0);
-    guard is_post_quantum_group(out.group) else { return false; }
+    share.group = core::read_be_u16(raw, 0);
+    guard is_post_quantum_group(share.group) else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == HYBRID_CLIENT_SHARE_LEN else { return false; }
 
     for i in 32 {
-        out.x25519_public[i] = raw[4 + i];
+        share.x25519_public[i] = raw[4 + i];
     }
     for i in 1152 {
-        out.mlkem768_public[i] = raw[36 + i];
+        share.mlkem768_public[i] = raw[36 + i];
     }
 
     return true;
@@ -81,20 +81,20 @@ fn format_hybrid_server_key_share<B>(share: const PostQuantumServerShare&, out: 
 }
 
 // Parses a hybrid ServerHello KeyShareEntry from raw bytes
-fn parse_hybrid_server_key_share(raw: const u8[:], out: PostQuantumServerShare&) -> bool {
+fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:]) -> bool {
     guard raw.len >= 4 + HYBRID_SERVER_SHARE_LEN else { return false; }
 
-    out.group = core::read_be_u16(raw, 0);
-    guard is_post_quantum_group(out.group) else { return false; }
+    share.group = core::read_be_u16(raw, 0);
+    guard is_post_quantum_group(share.group) else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == HYBRID_SERVER_SHARE_LEN else { return false; }
 
     for i in 32 {
-        out.x25519_public[i] = raw[4 + i];
+        share.x25519_public[i] = raw[4 + i];
     }
     for i in 1088 {
-        out.mlkem768_ciphertext[i] = raw[36 + i];
+        share.mlkem768_ciphertext[i] = raw[36 + i];
     }
 
     return true;

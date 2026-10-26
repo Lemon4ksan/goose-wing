@@ -496,7 +496,7 @@ fn test_canonical_wpt_and_edge_vectors(t: core::T&) {
         sub.assert_true(url_auth04.valid, "AUTH-04: valid relative resolution");
         sub.assert_bytes_eq(core::href(url_auth04), "http://example.com/secure/login", "AUTH-04: single slash resolves from root of base");
 
-        // AUTH-05: Last @ in authority serves as userinfo delimiter per WHATWG URL
+        // AUTH-05: Last @ in authority delimits userinfo per WHATWG URL
         let url_auth05 = core::new_url("http://user@evil.com:pass@good.com/");
         sub.assert_true(url_auth05.valid, "AUTH-05: valid userinfo with multiple @");
         sub.assert_bytes_eq(core::hostname(url_auth05), "good.com", "AUTH-05: host after last @ is good.com");

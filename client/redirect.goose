@@ -466,6 +466,11 @@ fn sanitize_headers_on_redirect(
     // Cookie header is stripped and re-evaluated from the cookie jar for the new URL.
     remove_header_by_name(headers, "Cookie");
 
+    // Go #82350: Strip stale Host header on cross-origin redirects
+    if redirect_info.is_cross_origin {
+        remove_header_by_name(headers, "Host");
+    }
+
     // Strip sensitive headers on cross-origin redirects or scheme downgrades.
     if redirect_info.is_scheme_downgrade || (redirect_info.is_cross_origin && (!trusted_location_forwarding || redirect_info.is_port_changed)) {
         remove_sensitive_headers(headers);

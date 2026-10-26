@@ -129,7 +129,7 @@ fn test_cache_interceptor_boundary(t: core::T&) {
 
         let m2 = wing::network_metrics(client);
         sub.assert_eq(m2.total_requests, 2 as u64, "2 logical app requests");
-        // Crucial OkHttp invariant: Network hops DID NOT increase on cache hit!
+        // OkHttp invariant: Network hops did not increase on cache hit.
         sub.assert_eq(m2.network_hops, 1 as u64, "Network hops remained 1 (network bypassed!)");
 
         // But Application Logging DID run for the cached request!

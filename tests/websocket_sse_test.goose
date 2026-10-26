@@ -74,7 +74,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
             ..
         };
         var buf_med: u8[>..] = [];
-        wing::encode_ws_frame_header(buf_med, hdr_med);
+        hdr_med.encode(buf_med);
         sub.assert_eq(buf_med.len, 4, "Medium unmasked frame header length is 2 + 2 = 4 bytes");
 
         let parsed_med, ok_m = wing::parse_ws_frame_header(buf_med[..]);
@@ -90,7 +90,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
             ..
         };
         var buf_lg: u8[>..] = [];
-        wing::encode_ws_frame_header(buf_lg, hdr_lg);
+        hdr_lg.encode(buf_lg);
         sub.assert_eq(buf_lg.len, 10, "Large frame header length is 2 + 8 = 10 bytes");
 
         let parsed_lg, ok_l = wing::parse_ws_frame_header(buf_lg[..]);
@@ -111,10 +111,10 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         // Close payload codec
         var close_buf: u8[>..] = [];
-        wing::encode_ws_close_payload(close_buf, wing::WS_STATUS_NORMAL, "goodbye");
+        wing::encode_close_payload(close_buf, wing::WS_STATUS_NORMAL, "goodbye");
         sub.assert_eq(close_buf.len, 2 + 7, "2 status bytes + 7 reason bytes");
 
-        let code, reason, ok_close = wing::parse_ws_close_payload(close_buf[..]);
+        let code, reason, ok_close = wing::parse_close_payload(close_buf[..]);
         sub.assert_true(ok_close, "Close payload parsed successfully");
         sub.assert_eq(code, wing::WS_STATUS_NORMAL, "Status is 1000 Normal");
         sub.assert_bytes_eq(reason, "goodbye", "Reason matches");
@@ -146,33 +146,33 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         sub.assert_true(req.len > 0, "Handshake request created via UFCS");
 
         var text_frame: u8[>..] = [];
-        wing::ws_send_text(session, "hello server", text_frame);
+        wing::send_text(session, "hello server", text_frame);
         sub.assert_true(text_frame.len > 0, "Text frame generated");
 
         var ping_frame: u8[>..] = [];
-        wing::ws_send_ping(session, "heartbeat", ping_frame);
+        wing::send_ping(session, "heartbeat", ping_frame);
         sub.assert_true(ping_frame.len > 0, "Ping frame generated");
 
         var close_frame: u8[>..] = [];
-        wing::ws_close(session, wing::WS_STATUS_NORMAL, "goodbye", close_frame);
+        wing::close(session, wing::WS_STATUS_NORMAL, "goodbye", close_frame);
         sub.assert_true(session.is_closed, "Session marked closed");
         sub.assert_eq(session.close_code, wing::WS_STATUS_NORMAL, "Close code set");
     };
 
-    t.run("7. Aoni-Style Automated Client WebSocket Upgrade & ws_receive Engine") { sub =>
+    t.run("7. Aoni-Style Automated Client WebSocket Upgrade & receive Engine") { sub =>
         var client = wing::new_client();
         wing::add_mock_websocket(client, "https://stream.example.com/ws", "chat.v1");
 
         var ws_sess, resp, err = client.ws("wss://stream.example.com/ws") { req =>
             req.bearer("token123");
-            req.header("Sec-WebSocket-Protocol", "chat.v1");
+            req.set_header("Sec-WebSocket-Protocol", "chat.v1");
         };
 
         sub.assert_true(err.ok(), "Client ws upgrade succeeded");
         sub.assert_eq(resp.status_code, 101, "Response status 101 Switching Protocols");
         sub.assert_bytes_eq(ws_sess.subprotocol[..], "chat.v1", "Subprotocol negotiated");
 
-        // Test automatic ws_receive on incoming Ping
+        // Test automatic receive on incoming Ping
         var incoming_ping: u8[>..] = [];
         let no_mask: u8[4] = [0, 0, 0, 0];
         wing::encode_ws_frame(incoming_ping, wing::WS_OPCODE_PING, "ping-payload", false, no_mask, true);
@@ -180,7 +180,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         var msg = wing::WsMessage { .. };
         var pong_reply: u8[>..] = [];
         let handled_ping = ws_sess.receive(incoming_ping[..], msg, pong_reply);
-        sub.assert_true(handled_ping, "ws_receive processed ping frame");
+        sub.assert_true(handled_ping, "receive processed ping frame");
         sub.assert_eq(msg.opcode, wing::WS_OPCODE_PING, "Message opcode is PING");
         sub.assert_true(pong_reply.len > 0, "Automatic Pong response generated into reply buffer");
 
@@ -233,8 +233,8 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         var msg1 = wing::WsMessage { .. };
         var reply1: u8[..128] = [];
-        let ok1 = wing::ws_receive(ws, f1_wire[..], msg1, reply1);
-        sub.assert_true(ok1, "ws_receive accepted initial fragment");
+        let ok1 = wing::receive(ws, f1_wire[..], msg1, reply1);
+        sub.assert_true(ok1, "receive accepted initial fragment");
         sub.assert_false(msg1.is_valid, "Message not complete on initial fragment");
 
         // Interleaved Control Frame: PING with FIN=1 during fragmentation (RFC 6455 §5.4)
@@ -243,8 +243,8 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         var ping_msg = wing::WsMessage { .. };
         var ping_reply: u8[..128] = [];
-        let ok_p = wing::ws_receive(ws, ping_wire[..], ping_msg, ping_reply);
-        sub.assert_true(ok_p, "ws_receive accepted interleaved PING");
+        let ok_p = wing::receive(ws, ping_wire[..], ping_msg, ping_reply);
+        sub.assert_true(ok_p, "receive accepted interleaved PING");
         sub.assert_true(ping_msg.is_valid, "Ping message was delivered");
         sub.assert_eq(ping_msg.opcode, wing::WS_OPCODE_PING, "Ping opcode delivered");
         sub.assert_gt(ping_reply.len, 0, "Pong response generated for interleaved ping");
@@ -255,8 +255,8 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         var msg2 = wing::WsMessage { .. };
         var reply2: u8[..128] = [];
-        let ok2 = wing::ws_receive(ws, f2_wire[..], msg2, reply2);
-        sub.assert_true(ok2, "ws_receive accepted terminal CONTINUATION fragment");
+        let ok2 = wing::receive(ws, f2_wire[..], msg2, reply2);
+        sub.assert_true(ok2, "receive accepted terminal CONTINUATION fragment");
         sub.assert_true(msg2.is_valid, "Message is valid upon terminal fragment");
         sub.assert_eq(msg2.opcode, wing::WS_OPCODE_TEXT, "Assembled message preserved original opcode (TEXT)");
         sub.assert_bytes_eq(msg2.data[..], "Hello, World!", "Assembled payload matches combined fragments");
@@ -273,7 +273,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         var msg1 = wing::WsMessage { .. };
         var reply1: u8[..128] = [];
-        wing::ws_receive(ws1, bad_text_wire[..], msg1, reply1);
+        wing::receive(ws1, bad_text_wire[..], msg1, reply1);
 
         sub.assert_false(msg1.is_valid, "Invalid UTF-8 text rejected");
         sub.assert_true(ws1.is_closed, "Connection closed on invalid UTF-8");
@@ -286,7 +286,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         var msg2 = wing::WsMessage { .. };
         var reply2: u8[..128] = [];
-        wing::ws_receive(ws2, unexpected_cont[..], msg2, reply2);
+        wing::receive(ws2, unexpected_cont[..], msg2, reply2);
 
         sub.assert_false(msg2.is_valid, "Orphan continuation rejected");
         sub.assert_true(ws2.is_closed, "Connection closed on protocol error");
@@ -298,12 +298,12 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         wing::encode_ws_frame(frag_start, wing::WS_OPCODE_TEXT, "part1", false, no_mask, false);
         var msg3 = wing::WsMessage { .. };
         var reply3: u8[..128] = [];
-        wing::ws_receive(ws3, frag_start[..], msg3, reply3);
+        wing::receive(ws3, frag_start[..], msg3, reply3);
 
         // Next frame is another TEXT frame instead of CONTINUATION
         var bad_interleave: u8[..128] = [];
         wing::encode_ws_frame(bad_interleave, wing::WS_OPCODE_BINARY, "binary-data", false, no_mask, true);
-        wing::ws_receive(ws3, bad_interleave[..], msg3, reply3);
+        wing::receive(ws3, bad_interleave[..], msg3, reply3);
 
         sub.assert_false(msg3.is_valid, "Interleaved data frame rejected");
         sub.assert_true(ws3.is_closed, "Connection closed on interleaving error");
@@ -416,7 +416,7 @@ fn test_server_sent_events(t: core::T&) {
         sub.assert_true(req.len > 0, "SSE request headers created");
 
         var events: wing::SseEvent[..5] = [];
-        wing::sse_consume(subscr, "data: chunked message\n\n", events);
+        subscr.consume( "data: chunked message\n\n", events);
         sub.assert_eq(events.len, 1, "Consumed 1 event via SseSubscription");
         sub.assert_bytes_eq(events[0].data[..], "chunked message", "Event content matches");
     };
@@ -442,7 +442,7 @@ fn test_server_sent_events(t: core::T&) {
 
         // Server-side response initialization
         var s_resp = wing::new_response();
-        wing::sse_init_response(s_resp);
+        wing::init_response(s_resp);
         sub.assert_eq(s_resp.status_code, 200, "Server SSE status 200");
         sub.assert_bytes_eq(wing::header(s_resp, "Content-Type"), "text/event-stream", "Content-Type text/event-stream");
     };

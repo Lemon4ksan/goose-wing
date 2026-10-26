@@ -79,7 +79,7 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: core::T&) {
 fn test_cve_crlf_header_injection(t: core::T&) {
     t.run("Header Name with CRLF or Control Characters must be Sanitized/Rejected") { sub =>
         var req = wing::new_get("https://example.com/api");
-        wing::header(req, "X-Injected\r\nEvil: true", "valid-value");
+        wing::set_header(req, "X-Injected\r\nEvil: true", "valid-value");
 
         var has_injected_crlf = false;
         for hdr in req.headers {
@@ -94,7 +94,7 @@ fn test_cve_crlf_header_injection(t: core::T&) {
 
     t.run("Header Value with CRLF must be Sanitized/Rejected") { sub =>
         var req = wing::new_get("https://example.com/api");
-        wing::header(req, "X-Test", "value\r\nSet-Cookie: pwned=true");
+        wing::set_header(req, "X-Test", "value\r\nSet-Cookie: pwned=true");
 
         var has_injected_crlf = false;
         for hdr in req.headers {
@@ -114,8 +114,8 @@ fn test_cve_crlf_header_injection(t: core::T&) {
 fn test_cve_port_change_and_representation_headers(t: core::T&) {
     t.run("CVE-2022-27776: Port Change on Trusted Host Must Strip Authorization") { sub =>
         var req = wing::new_get("https://example.com:443/login");
-        wing::header(req, "Authorization", "Bearer top_secret");
-        wing::header(req, "X-API-Key", "secret-key-123");
+        wing::set_header(req, "Authorization", "Bearer top_secret");
+        wing::set_header(req, "X-API-Key", "secret-key-123");
 
         // Redirect to same hostname example.com, but different port 8443
         let redirect_info = wing::compute_redirect_info(
@@ -142,7 +142,7 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
     t.run("Cross-Origin Redirect Must Strip Signatures and CSRF Tokens") { sub =>
         var req = wing::new_post("https://example.com/api");
         wing::sign_hmac_sha256(req, "secret");
-        wing::header(req, "X-CSRF-Token", "csrf-token-abc");
+        wing::set_header(req, "X-CSRF-Token", "csrf-token-abc");
 
         let redirect_info = wing::compute_redirect_info(
             "POST", 302, "https://example.com/api", "https://other.com/api",
@@ -164,9 +164,9 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
 
     t.run("Method Mutation to GET Must Strip Conditional / Representation Headers") { sub =>
         var req = wing::new_post("https://example.com/upload");
-        wing::header(req, "If-Match", "\"etag-123\"");
-        wing::header(req, "If-None-Match", "\"etag-456\"");
-        wing::header(req, "Expect", "100-continue");
+        wing::set_header(req, "If-Match", "\"etag-123\"");
+        wing::set_header(req, "If-None-Match", "\"etag-456\"");
+        wing::set_header(req, "Expect", "100-continue");
 
         let redirect_info = wing::compute_redirect_info(
             "POST", 303, "https://example.com/upload", "https://example.com/status",
@@ -236,7 +236,7 @@ fn test_cve_netscape_import_security(t: core::T&) {
         let clock = core::new_mock_clock();
 
         let netscape_psl = "co.uk\tTRUE\t/\tFALSE\t0\tsupercookie\tevil\n";
-        let count = wing::import_canonical_netscape(jar, netscape_psl, clock.now_us);
+        let count = wing::import_netscape(jar, netscape_psl, clock.now_us);
 
         sub.assert_eq(count, 0, "supercookie on public suffix co.uk must not be imported");
         sub.assert_eq(jar.cookies.len, 0, "jar must remain empty");
@@ -247,7 +247,7 @@ fn test_cve_netscape_import_security(t: core::T&) {
         let clock = core::new_mock_clock();
 
         let netscape_ctl = "example.com\tTRUE\t/\tFALSE\t0\tbad\x01name\tval\n";
-        let count = wing::import_canonical_netscape(jar, netscape_ctl, clock.now_us);
+        let count = wing::import_netscape(jar, netscape_ctl, clock.now_us);
 
         sub.assert_eq(count, 0, "cookie with CTL byte in name must not be imported");
         sub.assert_eq(jar.cookies.len, 0, "jar must remain empty");
@@ -363,8 +363,8 @@ fn test_cve_proxy_authorization_leakage(t: core::T&) {
 
     t.run("CVE-2025-4673: Cross-Origin Redirect Must Strip Proxy-Authorization") { sub =>
         var req = wing::new_get("https://proxy.origin.com/resource");
-        wing::header(req, "Proxy-Authorization", "Basic secret_proxy_tok");
-        wing::header(req, "Authorization", "Bearer user_token");
+        wing::set_header(req, "Proxy-Authorization", "Basic secret_proxy_tok");
+        wing::set_header(req, "Authorization", "Bearer user_token");
 
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://proxy.origin.com/resource", "https://other-domain.com/landing",

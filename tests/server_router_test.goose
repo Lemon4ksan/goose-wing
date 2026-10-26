@@ -353,7 +353,7 @@ fn test_standalone_http_server(t: core::T&) {
 
         var resp = wing::new_response();
         resp.status_code = 200;
-        wing::header(resp, "content-type", "application/json");
+        wing::set_header(resp, "content-type", "application/json");
         resp.body.append("{\"status\":\"ok\"}");
 
         var out_wire: u8[>..] = [];

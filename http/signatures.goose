@@ -231,8 +231,8 @@ fn sign_http_request(
     core::base64_encode(sig_raw[..], sig_hdr);
     sig_hdr.push(':');
 
-    header(req, HEADER_SIGNATURE_INPUT, input_hdr[..]);
-    header(req, HEADER_SIGNATURE, sig_hdr[..]);
+    set_header(req, HEADER_SIGNATURE_INPUT, input_hdr[..]);
+    set_header(req, HEADER_SIGNATURE, sig_hdr[..]);
 
     return true;
 }

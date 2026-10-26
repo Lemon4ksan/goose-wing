@@ -517,6 +517,9 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
             } else {
                 view.host = host_port_slice;
             }
+            guard validate_host_punycode_labels(view.host) else {
+                return view, UrlParseError.InvalidHost;
+            }
         }
     }
 
@@ -560,6 +563,28 @@ fn new_url_view(raw_input: const u8[:]) -> UrlView {
     return view;
 }
 
+// Go #78760 / CVE-2026-39821: Reject invalid ACE/Punycode labels that contain no non-ASCII delta.
+fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
+    var cursor: i64 = 0;
+    while cursor < host_str.len {
+        var end = host_str.len;
+        for i in cursor..host_str.len {
+            if host_str[i] == '.' {
+                end = i;
+                break;
+            }
+        }
+        let label = host_str[cursor..end];
+        if label.len >= 4 && eq_ascii_fold(label[..4], "xn--") {
+            if label.len == 4 || label[label.len - 1] == '-' {
+                return false;
+            }
+        }
+        cursor = end + 1;
+    }
+    return true;
+}
+
 fn extract_host_and_port_canonical<B>(
     host_port: const u8[:],
     host_out: B&,
@@ -584,14 +609,39 @@ fn extract_host_and_port_canonical<B>(
 
         let ipv6_body = host_port[1..close_bracket];
         var compressed_ipv6: u8[..64] = [];
-        let ipv6_ok = parse_and_compress_ipv6(ipv6_body, compressed_ipv6);
-        guard ipv6_ok else {
-            return UrlParseError.InvalidIpv6;
-        }
+        let pct_pos = index_of_slice(ipv6_body, "%25");
 
-        host_out.push('[');
-        host_out.append(compressed_ipv6[..]);
-        host_out.push(']');
+        if pct_pos >= 0 {
+            let addr_to_parse = ipv6_body[..pct_pos];
+            let zone_id = ipv6_body[pct_pos + 3..];
+            guard zone_id.len > 0 && zone_id.len <= 32 else {
+                return UrlParseError.InvalidIpv6;
+            }
+            for b in zone_id {
+                let is_unreserved = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') ||
+                                    b == '-' || b == '.' || b == '_' || b == '~';
+                guard is_unreserved else { return UrlParseError.InvalidIpv6; }
+            }
+            let ipv6_ok = parse_and_compress_ipv6(addr_to_parse, compressed_ipv6);
+            guard ipv6_ok else {
+                return UrlParseError.InvalidIpv6;
+            }
+
+            host_out.push('[');
+            host_out.append(compressed_ipv6[..]);
+            host_out.append("%25");
+            host_out.append(zone_id);
+            host_out.push(']');
+        } else {
+            let ipv6_ok = parse_and_compress_ipv6(ipv6_body, compressed_ipv6);
+            guard ipv6_ok else {
+                return UrlParseError.InvalidIpv6;
+            }
+
+            host_out.push('[');
+            host_out.append(compressed_ipv6[..]);
+            host_out.push(']');
+        }
 
         if close_bracket + 1 < host_port.len {
             if host_port[close_bracket + 1] != ':' {
@@ -624,6 +674,9 @@ fn extract_host_and_port_canonical<B>(
     }
     guard !has_forbidden_host_code_point(host_str) else {
         return UrlParseError.ForbiddenHostCodePoint;
+    }
+    guard validate_host_punycode_labels(host_str) else {
+        return UrlParseError.InvalidHost;
     }
 
     host_out.append(host_str);
@@ -878,7 +931,7 @@ fn is_windows_drive_segment(seg: const u8[:]) -> bool {
     return false;
 }
 
-fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..64]&, last_was_dot: bool&) {
+fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..256]&, last_was_dot: bool&) {
     if is_dot_segment(seg) {
         last_was_dot = true;
     } else if is_double_dot_segment(seg) {
@@ -906,7 +959,7 @@ fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_start
         } else {
             out_url.href.append(seg);
         }
-        if seg_starts.len < 64 {
+        if seg_starts.len < seg_starts.cap {
             seg_starts.push(cur_start);
         }
     }
@@ -922,7 +975,7 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
     }
 
     let is_file = out_url.scheme_end == 4 && out_url.href.len >= 4 && out_url.href[..4] == "file";
-    var seg_starts: i32[..64] = [];
+    var seg_starts: i32[..256] = [];
 
     var scan_idx = 0;
     if raw_path[0] == '/' || (is_spec && raw_path[0] == '\\') {

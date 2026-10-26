@@ -38,7 +38,7 @@ fn main() {
         req.bearer("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
         req.query("dry_run", "false");
         if order_payload.urgent {
-            req.header("X-Priority-Lane", "ultra-low-latency");
+            req.set_header("X-Priority-Lane", "ultra-low-latency");
         }
         req.json(order_payload);
     };
@@ -67,7 +67,7 @@ fn main() {
     print("Status: ", res2.status_code, " Server: ", res2.header("server"));
 
     let res3, err3 = session.do(req2) { req =>
-        req.header("X-Retry-Attempt", "2");
+        req.set_header("X-Retry-Attempt", "2");
         req.query("replay", "true");
     };
     guard err3.ok() else { return; }

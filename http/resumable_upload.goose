@@ -102,10 +102,10 @@ fn format_upload_creation_request(
     req.url.append(endpoint);
 
     // Upload-Complete: ?0 or ?1
-    header(req, HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
+    set_header(req, HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
 
     if first_chunk.len > 0 {
-        header(req, "Content-Type", MIME_PARTIAL_UPLOAD);
+        set_header(req, "Content-Type", MIME_PARTIAL_UPLOAD);
         req.body.clear();
         req.body.append(first_chunk);
     }
@@ -144,15 +144,15 @@ fn format_upload_chunk_request(
     req.url.clear();
     req.url.append(state.upload_url[..]);
 
-    header(req, "Content-Type", MIME_PARTIAL_UPLOAD);
+    set_header(req, "Content-Type", MIME_PARTIAL_UPLOAD);
 
     // Upload-Offset: <offset>
     var offset_str: u8[..32] = [];
     upload_format_int(offset_str, state.offset);
-    header(req, HEADER_UPLOAD_OFFSET, offset_str[..]);
+    set_header(req, HEADER_UPLOAD_OFFSET, offset_str[..]);
 
     // Upload-Complete: ?0 or ?1
-    header(req, HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
+    set_header(req, HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
 
     req.body.clear();
     req.body.append(chunk);

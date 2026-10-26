@@ -258,7 +258,33 @@ fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) ->
 fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool {
     var norm_expected_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(expected_uri, norm_expected_uri) else { return false; }
-    return core::contains(claims_json, norm_expected_uri[..]);
+
+    // RFC 9449 Section 4.3: Extract and validate the 'htu' claim exactly.
+    // The 'htu' claim MUST NOT contain a query ('?') or fragment ('#').
+    let htu_idx = core::index_of_slice(claims_json, "\"htu\":");
+    guard htu_idx >= 0 else { return false; }
+
+    var pos = htu_idx + 6;
+    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+        pos += 1;
+    }
+    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
+    pos += 1; // skip opening quote
+    let val_start = pos;
+    while pos < claims_json.len && claims_json[pos] != '"' {
+        pos += 1;
+    }
+    guard pos < claims_json.len else { return false; }
+    let htu_val = claims_json[val_start..pos];
+
+    // RFC 9449 Section 4.3: Reject if 'htu' contains query or fragment
+    for b in htu_val {
+        if b == '?' || b == '#' { return false; }
+    }
+
+    var norm_htu: u8[..256] = [];
+    guard normalize_dpop_target_uri(htu_val, norm_htu) else { return false; }
+    return norm_htu[..] == norm_expected_uri[..];
 }
 
 fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
@@ -331,12 +357,12 @@ fn verify_dpop_proof(
 
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
-    header(req, DPOP_HEADER, proof);
+    set_header(req, DPOP_HEADER, proof);
     if access_token.len > 0 {
         var auth_val: u8[..384] = [];
         auth_val.append("DPoP ");
         auth_val.append(access_token);
-        header(req, "Authorization", auth_val[..]);
+        set_header(req, "Authorization", auth_val[..]);
     }
 }
 

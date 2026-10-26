@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // RFC 7932 Brotli Static Built-in Dictionary and Word Transformations.
-// Clean-Room Native Implementation in Goose.
+// Native implementation in Goose.
 namespace core;
 
 import std;

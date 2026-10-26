@@ -34,6 +34,7 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        413 => "Payload Too Large",
         417 => "Expectation Failed",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
@@ -165,10 +166,12 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     out_req.trailers.clear();
     out_req.body.clear();
 
-    // RFC 9112 Section 3.2 & uWS #1949: Host header validation in HTTP/1.1
+    // RFC 9112 Section 3.2 & uWS #1949: Host header validation
     if proto_slice == "HTTP/1.1" {
-        // Must have exactly one Host header (verified via bitmask presence)
+        // Must have exactly one Host header in HTTP/1.1 (verified via bitmask presence)
         guard (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 else { return false, 0; }
+    }
+    if (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 {
         let host_idx = presence_tracker.host_idx as i64;
         guard host_idx >= 0 && host_idx < out_req.headers.len else { return false, 0; }
 
@@ -177,6 +180,26 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         // Authority in Host MUST NOT contain path ('/'), query ('?'), fragment ('#'), userinfo ('@'), or whitespace
         for b in host_val {
             guard b != '/' && b != '?' && b != '#' && b != '@' && b != ' ' && b != '\t' else { return false, 0; }
+        }
+
+        // Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Structural IP-literal Host validation
+        if host_val[0] == '[' {
+            let close_idx = core::index_of_byte(host_val, ']');
+            guard close_idx > 1 else { return false, 0; }
+            var comp_buf: u8[..64] = [];
+            guard core::parse_and_compress_ipv6(host_val[1..close_idx], comp_buf) else { return false, 0; }
+            if close_idx + 1 < host_val.len {
+                guard host_val[close_idx + 1] == ':' else { return false, 0; }
+                let port_part = host_val[close_idx + 2..];
+                guard port_part.len > 0 && port_part.len <= 5 else { return false, 0; }
+                for pb in port_part { guard pb >= '0' && pb <= '9' else { return false, 0; } }
+                let p_num, p_ok = core::parse_u64_dec(port_part);
+                guard p_ok && p_num <= 65535 else { return false, 0; }
+            }
+        } else {
+            for b in host_val {
+                guard b != '[' && b != ']' else { return false, 0; }
+            }
         }
     }
 
@@ -534,7 +557,9 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
 
     serialize_http1_headers(res, server_name, out_wire);
 
-    if res.body.len > 0 {
+    // RFC 9110 §8.6 & Go #81642 / uWS #1370: Status 204, 304, and 1xx MUST NOT emit a message body on wire
+    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+    if res.body.len > 0 && !is_empty_status {
         out_wire.append(res.body[..]);
     }
 }
@@ -550,7 +575,8 @@ fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:
     }
 
     serialize_http1_headers(res, server_name, wire_headers);
-    if res.body.len == 0 {
+    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+    if res.body.len == 0 || is_empty_status {
         return tcp_send(fd, wire_headers[..]);
     }
     return tcp_send2(fd, wire_headers[..], res.body[..]);
@@ -704,31 +730,152 @@ fn find_ws_route(server: const HttpServer&, path: const u8[:]) -> i32 {
 // ---- Server Pub/Sub Broadcast Engine (uWebSockets TopicTree pattern) --------
 
 fn publish(server: HttpServer&, topic: const u8[:], message: const u8[:], opcode: u8 = WS_OPCODE_TEXT) -> i64 {
-    return topic_publish(server.topic_tree, topic, message, opcode);
+    return publish(server.topic_tree, topic, message, opcode);
 }
 
 fn publish_text(server: HttpServer&, topic: const u8[:], text: const u8[:]) -> i64 {
-    return topic_publish_text(server.topic_tree, topic, text);
+    return publish_text(server.topic_tree, topic, text);
 }
 
 fn publish_binary(server: HttpServer&, topic: const u8[:], data: const u8[:]) -> i64 {
-    return topic_publish_binary(server.topic_tree, topic, data);
+    return publish_binary(server.topic_tree, topic, data);
 }
 
 fn subscribe(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
-    return topic_subscribe(server.topic_tree, sock_fd, topic_pattern);
+    return subscribe(server.topic_tree, sock_fd, topic_pattern);
 }
 
 fn unsubscribe(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
-    return topic_unsubscribe(server.topic_tree, sock_fd, topic_pattern);
+    return unsubscribe(server.topic_tree, sock_fd, topic_pattern);
 }
 
 fn unsubscribe_all(server: HttpServer&, sock_fd: i64) -> i32 {
-    return topic_unsubscribe_all(server.topic_tree, sock_fd);
+    return unsubscribe_all(server.topic_tree, sock_fd);
 }
 
 fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
-    return topic_find_subscribers(server.topic_tree, topic, out_fds);
+    return find_subscribers(server.topic_tree, topic, out_fds);
+}
+
+fn subscribe_ex(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:], out_old: i32&, out_new: i32&) -> bool {
+    return subscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
+}
+
+fn unsubscribe_ex(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:], out_old: i32&, out_new: i32&) -> bool {
+    return unsubscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
+}
+
+fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
+    return subscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
+}
+
+fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
+    return unsubscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
+}
+
+fn unsubscribe_all_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(server: HttpServer&, sock_fd: i64) -> i32 {
+    return unsubscribe_all_with_hook<HookFn>(server.topic_tree, sock_fd);
+}
+
+fn get_socket_topic_count(server: const HttpServer&, sock_fd: i64) -> i32 {
+    return socket_subscription_count(server.topic_tree, sock_fd);
+}
+
+fn get_socket_topics(server: const HttpServer&, sock_fd: i64, out_topics: u8[..64][..32]&) -> i32 {
+    return get_socket_topics(server.topic_tree, sock_fd, out_topics);
+}
+
+fn iterate_socket_topics<IterFn: fn(const u8[:])>(server: const HttpServer&, sock_fd: i64) -> i32 {
+    return iterate_socket_topics<IterFn>(server.topic_tree, sock_fd);
+}
+
+// Asynchronous WebSocket Upgrade helpers (uWebSockets res->onAborted & res->upgrade pattern)
+fn defer_ws_upgrade(
+    server: const HttpServer&,
+    req: const Request&,
+    sock_fd: i64
+) -> WsPendingUpgrade, bool {
+    let r_idx = find_ws_route(server, req.url[..]);
+    guard r_idx >= 0 else {
+        return WsPendingUpgrade { .. }, false;
+    }
+    let client_key = req.headers.find_header("Sec-WebSocket-Key");
+    guard is_valid_websocket_key(client_key) else {
+        return WsPendingUpgrade { .. }, false;
+    }
+    let subprotocol = req.headers.find_header("Sec-WebSocket-Protocol");
+    let extensions = req.headers.find_header("Sec-WebSocket-Extensions");
+
+    var pending = new_ws_pending_upgrade(sock_fd, client_key, r_idx, subprotocol, extensions);
+    return pending, true;
+}
+
+fn complete_ws_upgrade<B>(
+    server: HttpServer&,
+    pending: WsPendingUpgrade&,
+    out_wire: B&
+) -> WebSocketSession, bool {
+    guard pending.in_use && !pending.is_aborted else {
+        return WebSocketSession { .. }, false;
+    }
+
+    var accept_key: u8[..64] = [];
+    compute_websocket_accept(pending.client_key[..], accept_key);
+
+    out_wire.append("HTTP/1.1 101 Switching Protocols\r\n");
+    out_wire.append("Upgrade: websocket\r\n");
+    out_wire.append("Connection: Upgrade\r\n");
+    out_wire.append("Sec-WebSocket-Accept: ");
+    out_wire.append(accept_key[..]);
+    out_wire.append("\r\n");
+
+    let route_behavior = if pending.route_idx >= 0 && pending.route_idx < server.ws_routes.len as i32 {
+        server.ws_routes[pending.route_idx as i64].behavior
+    } else {
+        WsBehavior { .. }
+    };
+
+    let subproto = if pending.subprotocol.len > 0 {
+        pending.subprotocol[..]
+    } else {
+        route_behavior.subprotocol[..]
+    };
+
+    if subproto.len > 0 {
+        out_wire.append("Sec-WebSocket-Protocol: ");
+        out_wire.append(subproto);
+        out_wire.append("\r\n");
+    }
+
+    var compress_active = false;
+    if route_behavior.compression != WS_COMPRESS_DISABLED {
+        if core::contains_fold(pending.extensions[..], "permessage-deflate") {
+            out_wire.append("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n");
+            compress_active = true;
+        }
+    }
+
+    out_wire.append("\r\n");
+
+    var session = new_websocket_session(false);
+    session.compress_mode = route_behavior.compression;
+    session.permessage_deflate = compress_active;
+    session.max_backpressure = route_behavior.max_backpressure;
+    session.close_on_backpressure_limit = route_behavior.close_on_backpressure_limit;
+    session.idle_timeout_s = route_behavior.idle_timeout_s;
+    session.send_pings_automatically = route_behavior.send_pings_automatically;
+    session.reset_idle_timeout_on_send = route_behavior.reset_idle_timeout_on_send;
+
+    if subproto.len > 0 && subproto.len <= session.subprotocol.cap {
+        session.subprotocol.append(subproto);
+    }
+    session.user_tag = pending.user_tag;
+    if pending.user_data.len > 0 && pending.user_data.len <= session.user_data.cap {
+        session.user_data.append(pending.user_data[..]);
+    }
+
+    pending.in_use = false;
+    return session, true;
 }
 
 fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
@@ -740,6 +887,15 @@ fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
 // must not fall through to the HTTP/1.1 parser (found by Toxiproxy SlicerToxic).
 fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
     return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == H2_CLIENT_PREFACE[..raw_stream.len];
+}
+
+const MAX_SERVER_BODY_LIMIT: i64 = 10 * 1024 * 1024; // 10 MB payload limit
+
+fn serialize_payload_too_large_error<B>(server_name: const u8[:], wire_out: B&) {
+    var err_resp = new_response();
+    err_resp.status_code = 413; // Payload Too Large
+    set_header(err_resp, "Connection", "close");
+    serialize_http1_response(err_resp, server_name, wire_out);
 }
 
 fn serialize_bad_request_error<B>(server_name: const u8[:], wire_out: B&) {
@@ -776,11 +932,16 @@ fn handle_connection_wire<B>(
                 var ws_res = new_response();
                 var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
                 if ok_upg {
+                    sess.max_backpressure = entry.behavior.max_backpressure;
+                    sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
+                    sess.idle_timeout_s = entry.behavior.idle_timeout_s;
+                    sess.send_pings_automatically = entry.behavior.send_pings_automatically;
+                    sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
                     if entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR {
                         let client_ext = req.header("sec-websocket-extensions");
                         if core::contains_fold(client_ext, "permessage-deflate") {
                             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-                            ws_enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
+                            enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
                         }
                     }
                     serialize_http1_response(ws_res, server.server_name[..], wire_out);
@@ -864,11 +1025,16 @@ fn handle_connection_wire<B>(
             var ws_res = new_response();
             var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
             if ok_upg {
+                sess.max_backpressure = entry.behavior.max_backpressure;
+                sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
+                sess.idle_timeout_s = entry.behavior.idle_timeout_s;
+                sess.send_pings_automatically = entry.behavior.send_pings_automatically;
+                sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
                 if entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR {
                     let client_ext = req.header("sec-websocket-extensions");
                     if core::contains_fold(client_ext, "permessage-deflate") {
                         ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-                        ws_enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
+                        enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
                     }
                 }
                 serialize_http1_response(ws_res, server.server_name[..], wire_out);
@@ -886,7 +1052,7 @@ fn handle_connection_wire<B>(
     // If request method is CONNECT, force Connection: close so the server never treats
     // an established tunnel or subsequent bytes as pipelined HTTP requests.
     if req.method[..] == "CONNECT" {
-        header(res, "Connection", "close");
+        set_header(res, "Connection", "close");
     }
 
     serialize_http1_response(res, server.server_name[..], wire_out);
@@ -895,34 +1061,91 @@ fn handle_connection_wire<B>(
     return outcome, true;
 }
 
-// Processes an incoming connection stream that may contain multiple pipelined HTTP requests (RFC 9112 Section 9.3).
-// Concatenates all serialized responses into wire_out and returns (total_requests_processed, ok).
-fn handle_connection_wire_pipelined<B>(
+fn is_possible_http_method_prefix(stream: const u8[:]) -> bool {
+    guard stream.len > 0 else { return true; }
+    if core::starts_with(stream, "GET") { return true; }
+    if core::starts_with(stream, "POST") { return true; }
+    if core::starts_with(stream, "HEAD") { return true; }
+    if core::starts_with(stream, "PUT") { return true; }
+    if core::starts_with(stream, "DELETE") { return true; }
+    if core::starts_with(stream, "OPTIONS") { return true; }
+    if core::starts_with(stream, "PATCH") { return true; }
+    if core::starts_with(stream, "CONNECT") { return true; }
+    if core::starts_with(stream, "TRACE") { return true; }
+    if stream.len < 7 {
+        if "OPTIONS"[..stream.len] == stream { return true; }
+        if "CONNECT"[..stream.len] == stream { return true; }
+        if "DELETE"[..stream.len] == stream { return true; }
+        if "PATCH"[..stream.len] == stream { return true; }
+        if "TRACE"[..stream.len] == stream { return true; }
+        if "POST"[..stream.len] == stream { return true; }
+        if "HEAD"[..stream.len] == stream { return true; }
+        if "GET"[..stream.len] == stream { return true; }
+        if "PUT"[..stream.len] == stream { return true; }
+    }
+    return false;
+}
+
+// Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
+// Returns (total_requests_processed, total_bytes_consumed, ok).
+fn handle_connection_wire_pipelined_stream<B>(
     server: HttpServer&,
     client_ip: const u8[:],
     wire_in: const u8[:],
     now_ns: u64,
     wire_out: B&
-) -> i64, bool {
+) -> i64, i64, bool {
     wire_out.clear();
     var stream = wire_in;
     var total_handled: i64 = 0;
+    var total_consumed: i64 = 0;
 
     while stream.len > 0 {
         // Strip optional benign CRLFs between pipelined requests (RFC 9112 §2.2)
         while stream.len > 0 && (stream[0] == '\r' || stream[0] == '\n') {
             stream = stream[1..];
+            total_consumed++;
         }
         if stream.len == 0 { break; }
 
         var req = new_request("GET", "");
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
         guard ok_parse && consumed > 0 else {
-            // RFC 9112 Section 9.3 & uWS #1898:
-            // Extra trailing unparseable bytes on the connection stream invalidate the connection
-            // and must produce a 400 Bad Request to prevent smuggling/connection poisoning.
-            serialize_bad_request_error(server.server_name[..], wire_out);
-            return total_handled, false;
+            let hdr_end = core::fast_find_crlfcrlf(stream);
+            let is_valid_prefix = is_possible_http_method_prefix(stream);
+
+            if hdr_end >= 0 && stream.len <= 8192 && is_valid_prefix {
+                // Headers are complete; check if Content-Length body is still incomplete
+                let cl_str = req.header("content-length");
+                if cl_str.len > 0 {
+                    let cl_val, cl_ok = core::parse_i64_dec(trim(cl_str));
+                    if cl_ok && cl_val >= 0 {
+                        if cl_val > MAX_SERVER_BODY_LIMIT {
+                            // RFC 9110 Section 15.5.14: Payload Too Large
+                            serialize_payload_too_large_error(server.server_name[..], wire_out);
+                            return total_handled, total_consumed, false;
+                        }
+                        if stream.len < (hdr_end + 4 + cl_val) {
+                            // Body incomplete: keep stream in leftover and await remaining packets
+                            return total_handled, total_consumed, true;
+                        }
+                    }
+                }
+                let te_str = req.header("transfer-encoding");
+                if core::contains_fold(te_str, "chunked") {
+                    // Chunked body not finished (awaiting final 0\r\n\r\n)
+                    return total_handled, total_consumed, true;
+                }
+            }
+
+            if hdr_end >= 0 || stream.len > 8192 || !is_valid_prefix {
+                // Complete headers but invalid syntax, or header overflow > 8192,
+                // or trailing unparseable poison bytes: 400 Bad Request
+                serialize_bad_request_error(server.server_name[..], wire_out);
+                return total_handled, total_consumed, false;
+            }
+            // Legitimate incomplete request across packet boundary: return so caller preserves stream in leftover
+            return total_handled, total_consumed, true;
         }
 
         // WebSocket Upgrade Interception on Pipelined Stream
@@ -934,18 +1157,23 @@ fn handle_connection_wire_pipelined<B>(
                 var ws_res = new_response();
                 var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
                 if ok_upg {
+                    sess.max_backpressure = entry.behavior.max_backpressure;
+                    sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
+                    sess.idle_timeout_s = entry.behavior.idle_timeout_s;
+                    sess.send_pings_automatically = entry.behavior.send_pings_automatically;
+                    sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
                     if entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR {
                         let client_ext = req.header("sec-websocket-extensions");
                         if core::contains_fold(client_ext, "permessage-deflate") {
                             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-                            ws_enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
+                            enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
                         }
                     }
                     serialize_http1_response(ws_res, server.server_name[..], wire_out);
                     server.requests_processed++;
                     total_handled++;
-                    stream = stream[consumed..];
-                    return total_handled, true;
+                    total_consumed += consumed;
+                    return total_handled, total_consumed, true;
                 }
             }
         }
@@ -966,18 +1194,32 @@ fn handle_connection_wire_pipelined<B>(
             var future = internal::new_inline_handler_future(0);
             let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
             if req.method[..] == "CONNECT" {
-                header(res, "Connection", "close");
+                set_header(res, "Connection", "close");
             }
         }
 
         serialize_http1_response(res, server.server_name[..], wire_out);
         server.requests_processed++;
         total_handled++;
+        total_consumed += consumed;
 
         stream = stream[consumed..];
     }
 
-    return total_handled, true;
+    return total_handled, total_consumed, true;
+}
+
+// Processes an incoming connection stream that may contain multiple pipelined HTTP requests (RFC 9112 Section 9.3).
+// Concatenates all serialized responses into wire_out and returns (total_requests_processed, ok).
+fn handle_connection_wire_pipelined<B>(
+    server: HttpServer&,
+    client_ip: const u8[:],
+    wire_in: const u8[:],
+    now_ns: u64,
+    wire_out: B&
+) -> i64, bool {
+    let count, _, ok = handle_connection_wire_pipelined_stream(server, client_ip, wire_in, now_ns, wire_out);
+    return count, ok;
 }
 
 // Incremental Sans-IO pipeline handler using PipeBuffer (RFC 9112 & System.IO.Pipelines model).
@@ -1040,7 +1282,7 @@ fn handle_connection_pipe<B>(
                 var future = internal::new_inline_handler_future(0);
                 let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
                 if req.method[..] == "CONNECT" {
-                    header(res, "Connection", "close");
+                    set_header(res, "Connection", "close");
                 }
             }
 
@@ -1070,8 +1312,8 @@ fn handle_connection_pipe<B>(
     return total_handled, true;
 }
 
-// Executes a high-performance live TCP accept & dispatch loop.
-// Utilizes zero-copy pipelined ingestion and automatic CorkBuffer batching.
+// Executes a live TCP accept and dispatch loop.
+// Uses pipelined ingestion and automatic CorkBuffer batching.
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     guard listener_fd > 0 else { return 0; }
     var pipe = core::new_pipe_buffer();
@@ -1116,7 +1358,14 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
     return total_served;
 }
 
-// Executes a high-performance Share-Nothing Epoll/Reactor loop.
+struct ReactorConnSlot {
+    fd: i64 = -1,
+    leftover_len: i64 = 0,
+    timeout_tick: u8 = 255,
+    leftover: u8[4096] = [0; 4096],
+}
+
+// Executes a share-nothing reactor loop with epoll.
 // Multiplexes all accepted connections within 1 thread, maintaining ~3.1 MB RSS footprint.
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     guard listener_fd > 0 else { return 0; }
@@ -1132,11 +1381,34 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
     var chunk: u8[..65536] = [];
     var total_served: i64 = 0;
 
-    var active_socks: i64[512] = [-1; 512];
+    var active_slots: ReactorConnSlot[128] = [ReactorConnSlot { .. }; 128];
     var next_free_slot: i64 = 0;
+    var timer_wheel = new_tick_timer_wheel(15);
+    var last_sweep_sec: i64 = 0;
 
     while max_connections == 0 || total_served < max_connections {
         let n = epoll_wait(epfd, ready_fds, ready_udata, 1000);
+
+        // 1-second Tick Wheel Connection Timeout Sweeper (Slowloris defense & slot reclamation)
+        let now_sec = (core::as_nanos(core::monotonic_now()) / 1000000000) as i64;
+        if now_sec > last_sweep_sec {
+            let elapsed = if last_sweep_sec == 0 { 1 } else { (now_sec - last_sweep_sec) as u32 };
+            last_sweep_sec = now_sec;
+            tick_timer_advance(timer_wheel, elapsed);
+
+            for s in active_slots.len {
+                if active_slots[s].fd > 0 && tick_timer_is_expired(timer_wheel, active_slots[s].timeout_tick) {
+                    epoll_del(epfd, active_slots[s].fd);
+                    tcp_close(active_slots[s].fd);
+                    active_slots[s].fd = -1;
+                    active_slots[s].leftover_len = 0;
+                    active_slots[s].timeout_tick = 255;
+                    total_served++;
+                    if s < next_free_slot { next_free_slot = s; }
+                }
+            }
+        }
+
         if n <= 0 { continue; }
 
         for i in n {
@@ -1148,16 +1420,33 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
                     tcp_set_nonblocking(client_fd, true);
 
                     var slot: i64 = -1;
-                    for k in active_socks.len {
-                        let s = (next_free_slot + k) % active_socks.len;
-                        if active_socks[s] == -1 {
+                    for k in active_slots.len {
+                        let s = (next_free_slot + k) % active_slots.len;
+                        if active_slots[s].fd == -1 {
                             slot = s;
-                            next_free_slot = (s + 1) % active_socks.len;
+                            next_free_slot = (s + 1) % active_slots.len;
                             break;
                         }
                     }
+                    if slot < 0 {
+                        // Emergency sweep if slots are full: evict any expired or stale connection
+                        for s in active_slots.len {
+                            if active_slots[s].fd > 0 && tick_timer_is_expired(timer_wheel, active_slots[s].timeout_tick) {
+                                epoll_del(epfd, active_slots[s].fd);
+                                tcp_close(active_slots[s].fd);
+                                active_slots[s].fd = -1;
+                                active_slots[s].leftover_len = 0;
+                                active_slots[s].timeout_tick = 255;
+                                total_served++;
+                                slot = s;
+                                break;
+                            }
+                        }
+                    }
                     if slot >= 0 {
-                        active_socks[slot] = client_fd;
+                        active_slots[slot].fd = client_fd;
+                        active_slots[slot].leftover_len = 0;
+                        active_slots[slot].timeout_tick = tick_timer_arm(timer_wheel, 15);
                         epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
                     } else {
                         tcp_close(client_fd);
@@ -1167,33 +1456,51 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
             }
 
             let slot = udata as i64;
-            if slot < 0 || slot >= active_socks.len || active_socks[slot] <= 0 {
+            if slot < 0 || slot >= active_slots.len || active_slots[slot].fd <= 0 {
                 continue;
             }
-            let conn = active_socks[slot];
+            let conn = active_slots[slot].fd;
+            let prev_len = active_slots[slot].leftover_len;
+            active_slots[slot].timeout_tick = tick_timer_arm(timer_wheel, 15);
 
             chunk.clear();
+            if prev_len > 0 && prev_len <= 4096 {
+                for p in prev_len {
+                    chunk.push(active_slots[slot].leftover[p]);
+                }
+                active_slots[slot].leftover_len = 0;
+            }
+
             let recvd = tcp_recv_nonblocking(conn, chunk);
             if recvd == 0 || recvd == -1 {
                 epoll_del(epfd, conn);
                 tcp_close(conn);
-                active_socks[slot] = -1;
+                active_slots[slot].fd = -1;
+                active_slots[slot].leftover_len = 0;
+                active_slots[slot].timeout_tick = 255;
                 next_free_slot = slot;
                 total_served++;
                 continue;
             }
-            if recvd <= 0 { continue; }
+            if recvd < 0 {
+                if prev_len > 0 {
+                    active_slots[slot].leftover_len = prev_len;
+                }
+                continue;
+            }
 
             cork_wire.clear();
             let now_ns = core::as_nanos(core::monotonic_now());
-            let count, ok = handle_connection_wire_pipelined(server, "127.0.0.1", chunk[..recvd], now_ns, cork_wire);
+            let count, consumed, ok = handle_connection_wire_pipelined_stream(server, "127.0.0.1", chunk[..], now_ns, cork_wire);
 
             if cork_wire.len > 0 {
                 let sent = tcp_send(conn, cork_wire[..]);
                 if sent <= 0 || !ok {
                     epoll_del(epfd, conn);
                     tcp_close(conn);
-                    active_socks[slot] = -1;
+                    active_slots[slot].fd = -1;
+                    active_slots[slot].leftover_len = 0;
+                    active_slots[slot].timeout_tick = 255;
                     next_free_slot = slot;
                     total_served++;
                     continue;
@@ -1202,9 +1509,31 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
             if !ok {
                 epoll_del(epfd, conn);
                 tcp_close(conn);
-                active_socks[slot] = -1;
+                active_slots[slot].fd = -1;
+                active_slots[slot].leftover_len = 0;
+                active_slots[slot].timeout_tick = 255;
                 next_free_slot = slot;
                 total_served++;
+                continue;
+            }
+
+            // Preserve unconsumed bytes for the next epoll turn
+            if consumed < chunk.len {
+                let rem = chunk[consumed..];
+                if rem.len <= 4096 {
+                    active_slots[slot].leftover_len = rem.len;
+                    for m in rem.len {
+                        active_slots[slot].leftover[m] = rem[m];
+                    }
+                } else {
+                    epoll_del(epfd, conn);
+                    tcp_close(conn);
+                    active_slots[slot].fd = -1;
+                    active_slots[slot].leftover_len = 0;
+                    active_slots[slot].timeout_tick = 255;
+                    next_free_slot = slot;
+                    total_served++;
+                }
             }
         }
     }

@@ -19,8 +19,8 @@ fn test_http_signatures(t: core::T&) {
             url: "https://example.com/api/orders?status=active",
             ..
         };
-        wing::header(req, "Content-Type", "application/json");
-        wing::header(req, "Digest", "SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=");
+        wing::set_header(req, "Content-Type", "application/json");
+        wing::set_header(req, "Digest", "SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=");
 
         var params = wing::HttpSignatureParams {
             label: "sig1",
@@ -52,8 +52,8 @@ fn test_http_signatures(t: core::T&) {
             url: "https://api.bank.com/v1/accounts/12345",
             ..
         };
-        wing::header(req, "Host", "api.bank.com");
-        wing::header(req, "Accept", "application/json");
+        wing::set_header(req, "Host", "api.bank.com");
+        wing::set_header(req, "Accept", "application/json");
 
         var params = wing::HttpSignatureParams {
             label: "sig-bank",

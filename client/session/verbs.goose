@@ -255,9 +255,9 @@ fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error 
     normalize_realtime_url(url, eff_url);
 
     var req = new_request("GET", eff_url[..]);
-    header(req, "Upgrade", "websocket");
-    header(req, "Connection", "Upgrade");
-    header(req, "Sec-WebSocket-Version", "13");
+    set_header(req, "Upgrade", "websocket");
+    set_header(req, "Connection", "Upgrade");
+    set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
     var seed: u64 = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
@@ -267,7 +267,7 @@ fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error 
     }
     var client_key: u8[..32] = [];
     generate_websocket_key(nonce, client_key);
-    header(req, "Sec-WebSocket-Key", client_key[..]);
+    set_header(req, "Sec-WebSocket-Key", client_key[..]);
 
     return ws_perform_handshake(session, req, client_key[..]);
 }
@@ -278,9 +278,9 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
     normalize_realtime_url(url, eff_url);
 
     var req = new_request("GET", eff_url[..]);
-    header(req, "Upgrade", "websocket");
-    header(req, "Connection", "Upgrade");
-    header(req, "Sec-WebSocket-Version", "13");
+    set_header(req, "Upgrade", "websocket");
+    set_header(req, "Connection", "Upgrade");
+    set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
     var seed: u64 = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
@@ -290,7 +290,7 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
     }
     var client_key: u8[..32] = [];
     generate_websocket_key(nonce, client_key);
-    header(req, "Sec-WebSocket-Key", client_key[..]);
+    set_header(req, "Sec-WebSocket-Key", client_key[..]);
 
     F(&req);
 
@@ -333,7 +333,7 @@ fn sse_perform_connect(
 fn sse(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error {
     var sub = new_sse_subscription(url);
     var req = new_request("GET", url);
-    sse_prepare_request(sub, req);
+    sub.prepare_request(req);
     return sse_perform_connect(session, sub, req);
 }
 
@@ -341,7 +341,7 @@ fn sse(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error 
 fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error {
     var sub = new_sse_subscription(url);
     var req = new_request("GET", url);
-    sse_prepare_request(sub, req);
+    sub.prepare_request(req);
     F(&req);
     return sse_perform_connect(session, sub, req);
 }
@@ -350,7 +350,7 @@ fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> SseSubscription,
 fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
     let eff_url = if sub.url.len > 0 { sub.url[..] } else { "" };
     var req = new_request("GET", eff_url);
-    sse_prepare_request(sub, req);
+    sub.prepare_request(req);
 
     let resp, err = do(session, req);
     guard ok(err) else {

@@ -128,11 +128,6 @@ fn update_response_presence(res: Response&, name: const u8[:]) {
     }
 }
 
-fn header(res: Response&, name: const u8[:], value: const u8[:]) {
-    set_header(res.headers, name, value, false);
-    update_response_presence(res, name);
-}
-
 fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.headers, name, value, false);
     update_response_presence(res, name);

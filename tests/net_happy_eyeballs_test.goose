@@ -229,7 +229,7 @@ fn test_attempt_manager_racing_and_winner(t: core::T&) {
         sub.assert_eq(mgr.attempts.len, 3, "3 attempts now active");
 
         // Attempt 2 (IPv4) wins at t=550
-        // Crucial defense (Go #59494, #35122): All other attempts (1 and 3) must be cancelled immediately to prevent leaked dials on Windows!
+        // Defense (Go #59494, #35122): All other attempts (1 and 3) must be cancelled immediately to prevent leaked dials on Windows!
         let won = wing::bind_winner_attempt(mgr, 2);
         sub.assert_true(won, "Attempt 2 bound as winner");
         sub.assert_true(mgr.has_winner, "Manager marked has_winner");

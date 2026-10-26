@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Layer 4 Cross-Platform TCP Socket Engine for goose-wing.
-// Zero-allocation, high-performance synchronous & non-blocking socket wrappers
+// Synchronous and non-blocking socket wrappers
 // supporting live OS TCP connections over Windows Winsock2 and POSIX.
 namespace wing;
 

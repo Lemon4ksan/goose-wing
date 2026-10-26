@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// High-performance pseudorandom number generators and Lemire fast-range reduction.
+// Pseudorandom number generators and Lemire fast-range reduction.
 namespace core;
 
 import std;
@@ -43,7 +43,7 @@ inline fn next_u32(rng: WyRand&) -> u32 {
     return (next_u64(rng) >> 32) as! u32;
 }
 
-// Ultra-fast 64-bit to 32-bit PRNG (w1rand).
+// 64-bit to 32-bit PRNG (w1rand).
 inline fn w1rand_next(state: u64&) -> u32 {
     state += WYP0_V42;
     let prod = wymum(state ^ WYP1_V42, state);

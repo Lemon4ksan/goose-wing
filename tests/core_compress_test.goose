@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Comprehensive test suite for Goose native compression: candidate for `core::compress`.
+// Test suite for Goose compression (`core::compress`).
 //
 // Verification Coverage:
 // 1. RFC 1950 Adler-32 & IEEE 802.3 CRC-32 Checksum Standards
@@ -769,7 +769,7 @@ fn test_zstandard_rfc8878(t: core::T&) {
         sub.assert_eq(decomp[..], expected, "Decoded pangram must match verbatim");
     };
 
-    t.run("Clean-Room Native Zstd Round-Trip (Small, Medium, Large)") { sub =>
+    t.run("Native Zstd Round-Trip (Small, Medium, Large)") { sub =>
         let samples: const u8[:][3] = [
             "Zstd clean room native Goose compressor test payload.",
             "High-performance systems programming in Goose: modern syntax, zero-heap memory model, C++ and Rust speed.",
@@ -935,7 +935,7 @@ fn main() {
     core::run_case(runner, "11. Concatenated Gzip Members & FHCRC", test_concatenated_gzip_and_fhcrc);
     core::run_case(runner, "12. Decompression Bomb Quota Guards", test_zipbomb_quota_guards);
     core::run_case(runner, "13. Resumable Arbitrary-Chunk Streaming", test_resumable_streaming_chunk_by_chunk);
-    core::run_case(runner, "14. RFC 8878 Zstandard Frame Decompression & Clean-Room Vectors", test_zstandard_rfc8878);
+    core::run_case(runner, "14. RFC 8878 Zstandard Frame Decompression & Test Vectors", test_zstandard_rfc8878);
     let ok = core::finish(runner);
     assert(ok);
 }

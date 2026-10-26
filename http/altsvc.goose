@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // HTTP Alternative Services (RFC 7838 Alt-Svc) Engine.
-// Zero-heap parser, cache, and automatic HTTP/3 connection promotion manager.
+// Zero-heap parser, cache, and HTTP/3 connection promotion manager.
 // - Supports `h3=":443"; ma=86400; persist=1`, `clear`, multiple alternative entries
 // - Manages per-origin alternative service mapping with TTL (`ma`) and failure backoff
-// - Seamlessly promotes TCP (H1/H2) connections to UDP (HTTP/3 / QUIC)
+// - Promotes TCP (H1/H2) connections to UDP (HTTP/3 / QUIC)
 namespace wing;
 
 import std;
@@ -151,7 +151,7 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
 // ---- 3. Alt-Svc Cache Operations -------------------------------------------
 
 // Inserts or updates an Alt-Svc mapping for an origin (RFC 7838 Section 3)
-fn altsvc_cache_update(
+fn update(
     cache: AltSvcCache&,
     origin: const u8[:],
     raw_altsvc: const u8[:],
@@ -217,7 +217,7 @@ fn altsvc_cache_update(
 }
 
 // Queries Alt-Svc cache for HTTP/3 ("h3") endpoint promotion
-fn altsvc_lookup_h3(
+fn lookup_h3(
     cache: const AltSvcCache&,
     origin: const u8[:],
     now_sec: i64,
@@ -244,7 +244,7 @@ fn altsvc_lookup_h3(
 }
 
 // Records an alternative service connection failure with exponential backoff (Chromium/Mach model)
-fn altsvc_record_failure(cache: AltSvcCache&, origin: const u8[:], now_sec: i64) {
+fn record_failure(cache: AltSvcCache&, origin: const u8[:], now_sec: i64) {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return; }
 
@@ -256,7 +256,7 @@ fn altsvc_record_failure(cache: AltSvcCache&, origin: const u8[:], now_sec: i64)
 }
 
 // Records an alternative service connection success, resetting consecutive failures and clearing broken status.
-fn altsvc_record_success(cache: AltSvcCache&, origin: const u8[:]) {
+fn record_success(cache: AltSvcCache&, origin: const u8[:]) {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return; }
 
@@ -265,14 +265,14 @@ fn altsvc_record_success(cache: AltSvcCache&, origin: const u8[:]) {
 }
 
 // Checks if an origin's alternative service is currently marked broken (within exponential backoff).
-fn altsvc_is_broken(cache: const AltSvcCache&, origin: const u8[:], now_sec: i64) -> bool {
+fn is_broken(cache: const AltSvcCache&, origin: const u8[:], now_sec: i64) -> bool {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return false; }
     return now_sec < cache.entries[idx].broken_until_sec;
 }
 
 // Returns the number of consecutive failure attempts recorded for an origin.
-fn altsvc_failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 {
+fn failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return 0; }
     return cache.entries[idx].failed_attempts;

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Layer 4 Transport Driver Architecture & Zero-Copy Engine.
-// Provides selectable high-performance L4 transport drivers:
+// Selectable L4 transport drivers:
 // 1. Standard: Cross-platform zero-dependency sockets (POSIX / WinSock2 stream).
 // 2. IoUring: Linux 6.1+ kernel submission/completion (SQ/CQ) ring queues.
 // 3. WindowsRIO: Windows Registered I/O (RIO zero-copy, page-locked memory buffers, mswsock.dll).

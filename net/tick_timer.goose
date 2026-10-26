@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // net/tick_timer.goose
-// Ultra-Low Overhead 1-Byte Tick Wheel Connection Timeout Sweeper (uSockets loop.c).
-// Eliminates 64-bit nanosecond clocks, red-black trees, and timer heaps for keep-alive timeouts.
+// 1-byte tick wheel connection timeout sweeper based on uSockets loop.c.
+// Uses an 8-bit modular tick counter updated once per second instead of timer heaps.
 // Uses an 8-bit modular tick counter (modulo 240) updated every 1 second:
 // - Arming a timeout for D seconds costs 1 byte: slot_timeout = (current_tick + D) % 240.
 // - Disarming costs 1 byte write: slot_timeout = 255.

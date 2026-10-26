@@ -251,25 +251,29 @@ fn user_agent(session: const Session&) -> const u8[:] {
     return profile_user_agent(session.profile);
 }
 
-fn session_ja4(session: const Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
+fn ja4(session: const Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
     let p = wing_default_profile();
-    return profile_ja4(p, is_quic, sni);
+    return ja4(p, is_quic, sni);
 }
 
-fn session_p0f(session: const Session&) -> u8[..128] {
+fn p0f(session: const Session&) -> u8[..128] {
     let p = wing_default_profile();
-    return profile_p0f(p);
+    return p0f(p);
 }
 
-fn session_akamai(session: const Session&) -> u8[..256] {
+fn akamai(session: const Session&) -> u8[..256] {
     let p = wing_default_profile();
-    return profile_akamai(p);
+    return akamai(p);
 }
 
-fn session_akamai_hash(session: const Session&) -> u8[..32] {
+
+fn akamai_hash(session: const Session&) -> u8[..32] {
     let p = wing_default_profile();
-    return profile_akamai_hash(p);
+    return akamai_hash(p);
 }
+
+
+
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {
     session.proxy_url.clear();
@@ -454,14 +458,14 @@ fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
     resolve_target_origin(target, origin_buf);
     let now_sec = session.virtual_clock_us / 1000000;
     var ep = AltSvcEndpoint { .. };
-    return altsvc_lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
+    return lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
 }
 
 fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
     resolve_target_origin(target, origin_buf);
     let now_sec = session.virtual_clock_us / 1000000;
-    return altsvc_is_broken(session.altsvc, origin_buf[..], now_sec);
+    return is_broken(session.altsvc, origin_buf[..], now_sec);
 }
 
 // ---- compression dictionary transport configuration (chrome 123+ dcz/dcb) --
@@ -496,39 +500,39 @@ fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool 
 // ---- interceptor pipeline configuration (okhttp/tower-style) ---------------
 
 fn add_app_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
-    return add_pipeline_logging(session.pipeline, InterceptorScope.Application, level);
+    return add_logging(session.pipeline, InterceptorScope.Application, level);
 }
 
 fn add_network_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
-    return add_pipeline_logging(session.pipeline, InterceptorScope.Network, level);
+    return add_logging(session.pipeline, InterceptorScope.Network, level);
 }
 
 fn add_app_bearer_auth(session: Session&, token: const u8[:]) -> bool {
-    return add_pipeline_bearer_auth(session.pipeline, token);
+    return add_bearer_auth(session.pipeline, token);
 }
 
 fn add_app_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
-    return add_pipeline_header(session.pipeline, InterceptorScope.Application, name, val);
+    return add_header(session.pipeline, InterceptorScope.Application, name, val);
 }
 
 fn add_network_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
-    return add_pipeline_header(session.pipeline, InterceptorScope.Network, name, val);
+    return add_header(session.pipeline, InterceptorScope.Network, name, val);
 }
 
 fn add_app_request_id(session: Session&, prefix: const u8[:] = "req-") -> bool {
-    return add_pipeline_request_id(session.pipeline, prefix);
+    return add_request_id(session.pipeline, prefix);
 }
 
 fn add_app_traceparent(session: Session&, sample_flag: const u8[:] = "01") -> bool {
-    return add_pipeline_traceparent(session.pipeline, sample_flag);
+    return add_traceparent(session.pipeline, sample_flag);
 }
 
 fn add_app_retry(session: Session&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
-    return add_pipeline_retry(session.pipeline, max_retries, retry_on_5xx);
+    return add_retry(session.pipeline, max_retries, retry_on_5xx);
 }
 
 fn add_network_metrics(session: Session&) -> bool {
-    return add_pipeline_metrics(session.pipeline);
+    return add_metrics(session.pipeline);
 }
 
 fn network_metrics(session: const Session&) -> const NetworkMetrics& {

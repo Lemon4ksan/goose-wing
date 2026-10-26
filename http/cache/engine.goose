@@ -206,7 +206,7 @@ fn abort_writer(writers: CacheWriters&, flight_idx: i64) {
 
 // ---- http cache engine container -------------------------------------------
 
-// High-performance HTTP caching coordinator with intrusive O(1) LRU list.
+// HTTP cache coordinator with intrusive O(1) LRU list.
 struct HttpCache {
     options: CacheOptions = CacheOptions { .. },
     entries: CachedEntry[..16] = [],

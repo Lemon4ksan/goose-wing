@@ -33,7 +33,7 @@ fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
 
     var res = wing::new_response();
     res.status_code = 200;
-    wing::header(res, "Content-Length", "1024");
+    wing::set_header(res, "Content-Length", "1024");
     // Body is intentionally empty (HEAD response)
     
     var wire_out: u8[..1024] = [];
@@ -86,8 +86,8 @@ fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
         0x80, // Masked, len=0
         0x01, 0x02, 0x03, 0x04 // Mask key
     ];
-    let ok1 = wing::ws_receive(ws, frag_ping[..], msg, reply);
-    t.assert_true(ok1, "ws_receive must handle protocol error");
+    let ok1 = wing::receive(ws, frag_ping[..], msg, reply);
+    t.assert_true(ok1, "receive must handle protocol error");
     t.assert_true(ws.is_closed, "WebSocket must be marked closed on fragmented control frame");
     t.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 
@@ -100,8 +100,8 @@ fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
         0x00, 0x7E, // 126 bytes extended length
         0x01, 0x02, 0x03, 0x04 // Mask key
     ];
-    let ok2 = wing::ws_receive(ws2, oversize_ping[..], msg, reply2);
-    t.assert_true(ok2, "ws_receive must handle protocol error");
+    let ok2 = wing::receive(ws2, oversize_ping[..], msg, reply2);
+    t.assert_true(ok2, "receive must handle protocol error");
     t.assert_true(ws2.is_closed, "WebSocket must be closed on oversized control frame");
     t.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 }
@@ -116,9 +116,9 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
     // uWebSockets Issue #1924 / #1933:
     // Publishing to empty TopicTree or querying non-existent topic must return 0 without panicking.
     var tree = wing::new_topic_tree();
-    t.assert_eq(wing::topic_subscriber_count(tree, "non/existent"), 0, "Subscriber count on non-existent topic must be 0");
+    t.assert_eq(wing::subscriber_count(tree, "non/existent"), 0, "Subscriber count on non-existent topic must be 0");
     var out_fds: i64[..512] = [];
-    let count = wing::topic_find_subscribers(tree, "test/topic", out_fds);
+    let count = wing::find_subscribers(tree, "test/topic", out_fds);
     t.assert_eq(count, 0, "Finding subscribers in empty tree must return 0");
 }
 
@@ -191,7 +191,7 @@ fn test_uweb_1370_204_no_content_length(t: core::T&) {
     // with status code 204 (No Content).
     var res = wing::new_response();
     res.status_code = 204;
-    wing::header(res, "Content-Length", "0"); // User handler mistakenly sets Content-Length
+    wing::set_header(res, "Content-Length", "0"); // User handler mistakenly sets Content-Length
 
     var wire_out: u8[..1024] = [];
     wing::serialize_http1_response(res, "GooseWing", wire_out);
@@ -208,7 +208,7 @@ fn test_rfc_6455_1005_empty_close_payload(t: core::T&) {
 
     var ws = wing::new_websocket_session(false);
     var wire_out: u8[..256] = [];
-    wing::ws_close(ws, wing::WS_STATUS_NO_STATUS, "", wire_out);
+    wing::close(ws, wing::WS_STATUS_NO_STATUS, "", wire_out);
 
     let hdr, ok = wing::parse_ws_frame_header(wire_out[..]);
     t.assert_true(ok, "Close frame must parse");
@@ -242,18 +242,18 @@ fn test_uweb_1932_ws_send_blocked_when_closed(t: core::T&) {
     // all subsequent sends (text, binary, ping) MUST be dropped without writing frames.
     var ws = wing::new_websocket_session(false);
     var close_wire: u8[..128] = [];
-    wing::ws_close(ws, wing::WS_STATUS_NORMAL, "bye", close_wire);
+    wing::close(ws, wing::WS_STATUS_NORMAL, "bye", close_wire);
     t.assert_true(ws.is_closed, "Session is closed");
 
     var wire_out: u8[..256] = [];
-    wing::ws_send_text(ws, "should be dropped", wire_out);
-    t.assert_eq(wire_out.len, 0, "ws_send_text must emit 0 bytes after session is closed");
+    wing::send_text(ws, "should be dropped", wire_out);
+    t.assert_eq(wire_out.len, 0, "send_text must emit 0 bytes after session is closed");
 
-    wing::ws_send_binary(ws, "binary drop", wire_out);
-    t.assert_eq(wire_out.len, 0, "ws_send_binary must emit 0 bytes after session is closed");
+    wing::send_binary(ws, "binary drop", wire_out);
+    t.assert_eq(wire_out.len, 0, "send_binary must emit 0 bytes after session is closed");
 
-    wing::ws_send_ping(ws, "ping drop", wire_out);
-    t.assert_eq(wire_out.len, 0, "ws_send_ping must emit 0 bytes after session is closed");
+    wing::send_ping(ws, "ping drop", wire_out);
+    t.assert_eq(wire_out.len, 0, "send_ping must emit 0 bytes after session is closed");
 }
 
 fn test_mqtt_invalid_multilevel_wildcard_rejection(t: core::T&) {
@@ -263,12 +263,12 @@ fn test_mqtt_invalid_multilevel_wildcard_rejection(t: core::T&) {
     // Patterns like "sport/#/tennis" or "sport#" or "sport+foo" are syntactically illegal!
     var tree = wing::new_topic_tree();
 
-    t.assert_false(wing::topic_subscribe(tree, 10, "sport/#/tennis"), "'#' in middle of topic pattern must be rejected");
-    t.assert_false(wing::topic_subscribe(tree, 10, "sport#"), "'#' not preceded by '/' must be rejected");
-    t.assert_false(wing::topic_subscribe(tree, 10, "sport+"), "'+' not occupying entire segment must be rejected");
-    t.assert_true(wing::topic_subscribe(tree, 10, "sport/#"), "Valid 'sport/#' must be accepted");
-    t.assert_true(wing::topic_subscribe(tree, 10, "#"), "Valid '#' must be accepted");
-    t.assert_true(wing::topic_subscribe(tree, 10, "sport/+/tennis"), "Valid 'sport/+/tennis' must be accepted");
+    t.assert_false(wing::subscribe(tree, 10, "sport/#/tennis"), "'#' in middle of topic pattern must be rejected");
+    t.assert_false(wing::subscribe(tree, 10, "sport#"), "'#' not preceded by '/' must be rejected");
+    t.assert_false(wing::subscribe(tree, 10, "sport+"), "'+' not occupying entire segment must be rejected");
+    t.assert_true(wing::subscribe(tree, 10, "sport/#"), "Valid 'sport/#' must be accepted");
+    t.assert_true(wing::subscribe(tree, 10, "#"), "Valid '#' must be accepted");
+    t.assert_true(wing::subscribe(tree, 10, "sport/+/tennis"), "Valid 'sport/+/tennis' must be accepted");
 }
 
 fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: core::T&) {
@@ -276,24 +276,24 @@ fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: core::T&) {
     // "The Topic Name in the PUBLISH packet MUST NOT contain wildcard characters [MQTT-3.3.2-1]."
     // Publishing to wildcard topics ("sport/+", "sport/#", "+", "#") is illegal and MUST be rejected.
     var tree = wing::new_topic_tree();
-    t.assert_true(wing::topic_subscribe(tree, 10, "sport/+"), "Subscribe to 'sport/+'");
-    t.assert_true(wing::topic_subscribe(tree, 20, "sport/#"), "Subscribe to 'sport/#'");
+    t.assert_true(wing::subscribe(tree, 10, "sport/+"), "Subscribe to 'sport/+'");
+    t.assert_true(wing::subscribe(tree, 20, "sport/#"), "Subscribe to 'sport/#'");
 
     var fds: i64[..512] = [];
     // Legitimate publish to concrete topic: matches both
-    let count1 = wing::topic_find_subscribers(tree, "sport/tennis", fds);
+    let count1 = wing::find_subscribers(tree, "sport/tennis", fds);
     t.assert_eq(count1, 2, "Concrete topic 'sport/tennis' matches 2 subscribers");
 
     // Illegal publish containing '+' wildcard: must return 0
-    let count2 = wing::topic_find_subscribers(tree, "sport/+", fds);
+    let count2 = wing::find_subscribers(tree, "sport/+", fds);
     t.assert_eq(count2, 0, "Publish to wildcard topic 'sport/+' MUST be rejected (0 subscribers)");
 
     // Illegal publish containing '#' wildcard: must return 0
-    let count3 = wing::topic_find_subscribers(tree, "sport/#", fds);
+    let count3 = wing::find_subscribers(tree, "sport/#", fds);
     t.assert_eq(count3, 0, "Publish to wildcard topic 'sport/#' MUST be rejected (0 subscribers)");
 
     // Standalone wildcard publish: must return 0
-    let count4 = wing::topic_find_subscribers(tree, "#", fds);
+    let count4 = wing::find_subscribers(tree, "#", fds);
     t.assert_eq(count4, 0, "Publish to wildcard topic '#' MUST be rejected (0 subscribers)");
 }
 
@@ -355,7 +355,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
         0x11, 0x22, 0x33, 0x44,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     ];
-    let handled1 = wing::ws_receive_view(ws, wire_non_minimal_16[..], view, reply);
+    let handled1 = wing::receive_view(ws, wire_non_minimal_16[..], view, reply);
     t.assert_true(handled1, "Handled non-minimal 16-bit length frame");
     t.assert_true(ws.is_closed, "Session must be closed on non-minimal length");
     t.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
@@ -366,7 +366,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
         0x81, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
         0x11, 0x22, 0x33, 0x44
     ];
-    let handled2 = wing::ws_receive_view(ws2, wire_high_bit_64[..], view, reply);
+    let handled2 = wing::receive_view(ws2, wire_high_bit_64[..], view, reply);
     t.assert_true(handled2, "Handled high-bit 64-bit length frame");
     t.assert_true(ws2.is_closed, "Session must be closed on high-bit in 64-bit length");
     t.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
@@ -414,10 +414,10 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
     // "The |Sec-WebSocket-Key| MUST be a base64-encoded value that, when decoded, is 16 bytes in length."
     // Handshake request with malformed, short, or non-base64 key MUST be rejected with HTTP 400.
     var req_bad = wing::new_request("GET", "/ws");
-    wing::header(req_bad, "Upgrade", "websocket");
-    wing::header(req_bad, "Connection", "Upgrade");
-    wing::header(req_bad, "Sec-WebSocket-Version", "13");
-    wing::header(req_bad, "Sec-WebSocket-Key", "short_invalid_key");
+    wing::set_header(req_bad, "Upgrade", "websocket");
+    wing::set_header(req_bad, "Connection", "Upgrade");
+    wing::set_header(req_bad, "Sec-WebSocket-Version", "13");
+    wing::set_header(req_bad, "Sec-WebSocket-Key", "short_invalid_key");
 
     var res_bad = wing::new_response();
     let sess_bad, ok_bad = wing::ws_upgrade_request(req_bad, res_bad);
@@ -426,10 +426,10 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
 
     // Valid 16-byte nonce base64-encoded (RFC 6455 example)
     var req_good = wing::new_request("GET", "/ws");
-    wing::header(req_good, "Upgrade", "websocket");
-    wing::header(req_good, "Connection", "Upgrade");
-    wing::header(req_good, "Sec-WebSocket-Version", "13");
-    wing::header(req_good, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+    wing::set_header(req_good, "Upgrade", "websocket");
+    wing::set_header(req_good, "Connection", "Upgrade");
+    wing::set_header(req_good, "Sec-WebSocket-Version", "13");
+    wing::set_header(req_good, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
     var res_good = wing::new_response();
     let sess_good, ok_good = wing::ws_upgrade_request(req_good, res_good);

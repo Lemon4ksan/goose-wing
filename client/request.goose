@@ -124,19 +124,14 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 
 // ---- ufcs request mutators -------------------------------------------------
 
-// Sets a header on the request. Matches existing headers case-insensitively,
-// drops control characters, and marks credential headers sensitive.
-fn header(req: Request&, name: const u8[:], value: const u8[:]) {
-    add_header(req.bloom_filter, name);
-    set_header(req.headers, name, value, false);
-}
-
 // Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
     add_header(req.bloom_filter, name);
     set_header(req.headers, name, value, true);
 }
 
+// Sets a header on the request. Matches existing headers case-insensitively,
+// drops control characters, and marks credential headers sensitive.
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
     add_header(req.bloom_filter, name);
     set_header(req.headers, name, value, false);
@@ -178,7 +173,7 @@ fn set_timeout_ms(req: Request&, ms: i64) {
 }
 
 fn text(req: Request&, body_str: const u8[:]) {
-    header(req, "Content-Type", "text/plain; charset=utf-8");
+    set_header(req, "Content-Type", "text/plain; charset=utf-8");
     req.body.clear();
     req.body.append(body_str);
     req.rewind_buf.clear();
@@ -188,7 +183,7 @@ fn text(req: Request&, body_str: const u8[:]) {
 }
 
 fn raw_json(req: Request&, json_str: const u8[:]) {
-    header(req, "Content-Type", "application/json");
+    set_header(req, "Content-Type", "application/json");
     req.body.clear();
     req.body.append(json_str);
     req.rewind_buf.clear();
@@ -198,7 +193,7 @@ fn raw_json(req: Request&, json_str: const u8[:]) {
 }
 
 fn json<T>(req: Request&, payload: const T&) {
-    header(req, "Content-Type", "application/json");
+    set_header(req, "Content-Type", "application/json");
     req.body.clear();
     req.body.push('{');
     var first = true;
@@ -247,8 +242,8 @@ fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
 // ---- middleware & signers --------------------------------------------------
 
 fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
-    header(req, "X-Trace-Id", trace_id);
-    header(req, "X-B3-Sampled", "1");
+    set_header(req, "X-Trace-Id", trace_id);
+    set_header(req, "X-B3-Sampled", "1");
 }
 
 fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
@@ -257,5 +252,5 @@ fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
     sig.append(secret_key);
     sig.append(":len=");
     format(sig, req.body.len);
-    header(req, "X-Signature-256", sig[..]);
+    set_header(req, "X-Signature-256", sig[..]);
 }

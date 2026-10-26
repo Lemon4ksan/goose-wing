@@ -10,6 +10,7 @@ and formats test outcomes.
 """
 
 import argparse
+import io
 import os
 import shutil
 import subprocess
@@ -19,9 +20,13 @@ import urllib.request
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
@@ -30,9 +35,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 TOOLS_DIR = ROOT_DIR / "tools"
 BIN_DIR = TOOLS_DIR / "bin"
 SERVER_SRC = TOOLS_DIR / "h2spec" / "server.goose"
-SERVER_EXE = BIN_DIR / (
-    "h2spec_server.exe" if sys.platform == "win32" else "h2spec_server"
-)
+SERVER_EXE = BIN_DIR / ("h2spec_server.exe" if sys.platform == "win32" else "h2spec_server")
 H2SPEC_EXE = BIN_DIR / ("h2spec.exe" if sys.platform == "win32" else "h2spec")
 
 
@@ -90,6 +93,7 @@ class GooseH2Server:
             bufsize=1,
             cwd=str(ROOT_DIR),
         )
+        assert self.proc and self.proc.stdout and self.proc.stderr
 
         t_start = time.time()
         while time.time() - t_start < timeout:
@@ -113,9 +117,7 @@ class GooseH2Server:
 
         if self.port > 0:
             try:
-                urllib.request.urlopen(
-                    f"http://127.0.0.1:{self.port}/shutdown", timeout=0.5
-                )
+                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/shutdown", timeout=0.5)
             except Exception:
                 pass
 
@@ -194,16 +196,12 @@ def main():
         default="generic",
         help="Spec section to test: generic, http2/3.5, http2/4.1, hpack, or all",
     )
-    parser.add_argument(
-        "-S", "--strict", action="store_true", help="Run in strict mode"
-    )
+    parser.add_argument("-S", "--strict", action="store_true", help="Run in strict mode")
     parser.add_argument(
         "-o", "--timeout", type=int, default=2, help="Timeout in seconds for each test"
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose test log")
-    parser.add_argument(
-        "--rebuild", action="store_true", help="Force rebuild server binary"
-    )
+    parser.add_argument("--rebuild", action="store_true", help="Force rebuild server binary")
 
     args = parser.parse_args()
     rc = run_h2spec(

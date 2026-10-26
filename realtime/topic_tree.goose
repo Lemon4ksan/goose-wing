@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// High-Performance Native Pub/Sub TopicTree Engine for goose-wing (uWebSockets TopicTree pattern).
+// Pub/sub topic tree engine for goose-wing based on the uWebSockets TopicTree design.
 // Conforms to RFC 6455 and MQTT Topic Specification (OASIS MQTT v5.0 §4.7):
 // - Multi-level wildcard '#' matches arbitrary trailing topic hierarchy
 // - Single-level wildcard '+' matches any individual topic segment
@@ -172,9 +172,24 @@ fn get_or_create_topic_bucket(tree: TopicTree&, pattern: const u8[:]) -> i32 {
     return -1; // Topic buckets full
 }
 
-// Subscribes a socket descriptor to a topic pattern.
+// Subscription lifecycle event descriptor (uWebSockets subscription hook pattern)
+struct TopicSubscriptionEvent {
+    topic: u8[..64] = [],
+    sock_fd: i64 = -1,
+    old_subscribers: i32 = 0,
+    new_subscribers: i32 = 0,
+    is_joined: bool = false,
+}
+
+// Subscribes a socket descriptor to a topic pattern with old and new subscriber count feedback.
 // Returns true on success, false if capacity is exceeded, invalid pattern, or already subscribed.
-fn topic_subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+fn subscribe_ex(
+    tree: TopicTree&,
+    sock_fd: i64,
+    pattern: const u8[:],
+    out_old: i32&,
+    out_new: i32&
+) -> bool {
     guard sock_fd > 0 && is_valid_topic_filter(pattern) else { return false; }
 
     let b_idx = get_or_create_topic_bucket(tree, pattern);
@@ -185,6 +200,8 @@ fn topic_subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool
     while cur >= 0 {
         let cur_i64 = cur as i64;
         if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+            out_old = tree.buckets[b_idx as i64].subscriber_count;
+            out_new = tree.buckets[b_idx as i64].subscriber_count;
             return true; // Already subscribed
         }
         cur = tree.nodes[cur_i64].next_sub;
@@ -197,14 +214,41 @@ fn topic_subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool
             tree.nodes[i].next_sub = tree.buckets[b_idx as i64].head_sub;
             tree.nodes[i].in_use = true;
 
+            let old_cnt = tree.buckets[b_idx as i64].subscriber_count;
             tree.buckets[b_idx as i64].head_sub = i as i32;
             tree.buckets[b_idx as i64].subscriber_count += 1;
             tree.active_subscriptions += 1;
+
+            out_old = old_cnt;
+            out_new = old_cnt + 1;
             return true;
         }
     }
 
     return false; // Subscription pool full
+}
+
+// Subscribes a socket descriptor to a topic pattern.
+// Returns true on success, false if capacity is exceeded, invalid pattern, or already subscribed.
+fn subscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+    var old_cnt: i32 = 0;
+    var new_cnt: i32 = 0;
+    return subscribe_ex(tree, sock_fd, pattern, old_cnt, new_cnt);
+}
+
+// Subscribes a socket descriptor with subscription lifecycle callback notification (uWebSockets subscription hook)
+fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
+    tree: TopicTree&,
+    sock_fd: i64,
+    pattern: const u8[:]
+) -> bool {
+    var old_cnt: i32 = 0;
+    var new_cnt: i32 = 0;
+    let ok = subscribe_ex(tree, sock_fd, pattern, old_cnt, new_cnt);
+    if ok && old_cnt != new_cnt {
+        HookFn(pattern, old_cnt, new_cnt, sock_fd);
+    }
+    return ok;
 }
 
 // Unlinks a subscriber node from the double-linked list of drainable subscribers
@@ -227,9 +271,15 @@ fn unlink_drainable_node(tree: TopicTree&, node_idx: i32) {
     tree.nodes[n_i64].next_drainable = -1;
 }
 
-// Unsubscribes a socket descriptor from a topic pattern.
+// Unsubscribes a socket descriptor from a topic pattern with old and new subscriber count feedback.
 // Returns true if unsubscription succeeded, false if not subscribed.
-fn topic_unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+fn unsubscribe_ex(
+    tree: TopicTree&,
+    sock_fd: i64,
+    pattern: const u8[:],
+    out_old: i32&,
+    out_new: i32&
+) -> bool {
     guard sock_fd > 0 && pattern.len > 0 else { return false; }
 
     let b_idx = find_topic_bucket(tree, pattern);
@@ -255,8 +305,13 @@ fn topic_unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bo
             tree.nodes[cur_i64].in_use = false;
             tree.nodes[cur_i64].sock_fd = -1;
             tree.nodes[cur_i64].next_sub = -1;
+
+            let old_cnt = tree.buckets[b_idx as i64].subscriber_count;
             tree.buckets[b_idx as i64].subscriber_count -= 1;
             tree.active_subscriptions -= 1;
+
+            out_old = old_cnt;
+            out_new = old_cnt - 1;
 
             if tree.buckets[b_idx as i64].subscriber_count <= 0 {
                 tree.buckets[b_idx as i64].in_use = false;
@@ -272,10 +327,33 @@ fn topic_unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bo
     return false;
 }
 
+// Unsubscribes a socket descriptor from a topic pattern.
+// Returns true if unsubscription succeeded, false if not subscribed.
+fn unsubscribe(tree: TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+    var old_cnt: i32 = 0;
+    var new_cnt: i32 = 0;
+    return unsubscribe_ex(tree, sock_fd, pattern, old_cnt, new_cnt);
+}
+
+// Unsubscribes a socket descriptor with subscription lifecycle callback notification (uWebSockets subscription hook)
+fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
+    tree: TopicTree&,
+    sock_fd: i64,
+    pattern: const u8[:]
+) -> bool {
+    var old_cnt: i32 = 0;
+    var new_cnt: i32 = 0;
+    let ok = unsubscribe_ex(tree, sock_fd, pattern, old_cnt, new_cnt);
+    if ok {
+        HookFn(pattern, old_cnt, new_cnt, sock_fd);
+    }
+    return ok;
+}
+
 // Unsubscribes a socket descriptor from all subscribed topics.
 // Invoked automatically when a connection terminates to reclaim pool slots.
 // Returns total number of unsubscriptions performed.
-fn topic_unsubscribe_all(tree: TopicTree&, sock_fd: i64) -> i32 {
+fn unsubscribe_all(tree: TopicTree&, sock_fd: i64) -> i32 {
     guard sock_fd > 0 else { return 0; }
     var unsubs: i32 = 0;
 
@@ -324,8 +402,65 @@ fn topic_unsubscribe_all(tree: TopicTree&, sock_fd: i64) -> i32 {
     return unsubs;
 }
 
+// Unsubscribes a socket descriptor from all subscribed topics with callback notification per topic.
+fn unsubscribe_all_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
+    tree: TopicTree&,
+    sock_fd: i64
+) -> i32 {
+    guard sock_fd > 0 else { return 0; }
+    var unsubs: i32 = 0;
+
+    for b in tree.buckets.len {
+        guard tree.buckets[b].in_use else { continue; }
+
+        var prev: i32 = -1;
+        var cur = tree.buckets[b].head_sub;
+
+        while cur >= 0 {
+            let cur_i64 = cur as i64;
+            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+                let next = tree.nodes[cur_i64].next_sub;
+                if prev < 0 {
+                    tree.buckets[b].head_sub = next;
+                } else {
+                    tree.nodes[prev as i64].next_sub = next;
+                }
+
+                if tree.nodes[cur_i64].num_message_indices > 0 {
+                    unlink_drainable_node(tree, cur);
+                    tree.nodes[cur_i64].num_message_indices = 0;
+                }
+
+                tree.nodes[cur_i64].in_use = false;
+                tree.nodes[cur_i64].sock_fd = -1;
+                tree.nodes[cur_i64].next_sub = -1;
+
+                let old_cnt = tree.buckets[b].subscriber_count;
+                tree.buckets[b].subscriber_count -= 1;
+                tree.active_subscriptions -= 1;
+                unsubs += 1;
+
+                HookFn(tree.buckets[b].topic_pattern[..], old_cnt, old_cnt - 1, sock_fd);
+
+                cur = next;
+            } else {
+                prev = cur;
+                cur = tree.nodes[cur_i64].next_sub;
+            }
+        }
+
+        if tree.buckets[b].subscriber_count <= 0 {
+            tree.buckets[b].in_use = false;
+            tree.buckets[b].head_sub = -1;
+            tree.active_buckets -= 1;
+        }
+    }
+
+    return unsubs;
+}
+
 // Checks if a socket is subscribed to a topic pattern.
-fn is_topic_subscribed(tree: const TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
+fn is_subscribed(tree: const TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
     let b_idx = find_topic_bucket(tree, pattern);
     guard b_idx >= 0 else { return false; }
 
@@ -341,10 +476,79 @@ fn is_topic_subscribed(tree: const TopicTree&, sock_fd: i64, pattern: const u8[:
 }
 
 // Returns the total number of subscribers for a given topic pattern.
-fn topic_subscriber_count(tree: const TopicTree&, pattern: const u8[:]) -> i32 {
+fn subscriber_count(tree: const TopicTree&, pattern: const u8[:]) -> i32 {
     let b_idx = find_topic_bucket(tree, pattern);
     guard b_idx >= 0 else { return 0; }
     return tree.buckets[b_idx as i64].subscriber_count;
+}
+
+// Returns the number of distinct topic patterns a socket is currently subscribed to
+fn socket_subscription_count(tree: const TopicTree&, sock_fd: i64) -> i32 {
+    guard sock_fd > 0 else { return 0; }
+    var count: i32 = 0;
+    for b in tree.buckets.len {
+        guard tree.buckets[b].in_use else { continue; }
+        var cur = tree.buckets[b].head_sub;
+        while cur >= 0 {
+            let cur_i64 = cur as i64;
+            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+                count += 1;
+                break;
+            }
+            cur = tree.nodes[cur_i64].next_sub;
+        }
+    }
+    return count;
+}
+
+// Retrieves all topic patterns a socket is subscribed to (uWebSockets ws->iterateTopics pattern)
+fn get_socket_topics(
+    tree: const TopicTree&,
+    sock_fd: i64,
+    out_topics: u8[..64][..32]&
+) -> i32 {
+    guard sock_fd > 0 else { return 0; }
+    out_topics.clear();
+    for b in tree.buckets.len {
+        guard tree.buckets[b].in_use else { continue; }
+        var cur = tree.buckets[b].head_sub;
+        while cur >= 0 {
+            let cur_i64 = cur as i64;
+            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+                if out_topics.len < out_topics.cap {
+                    var pat: u8[..64] = [];
+                    pat.append(tree.buckets[b].topic_pattern[..]);
+                    out_topics.push(pat);
+                }
+                break;
+            }
+            cur = tree.nodes[cur_i64].next_sub;
+        }
+    }
+    return out_topics.len as i32;
+}
+
+// Iterates through all topic patterns a socket is subscribed to via callback (uWebSockets ws->iterateTopics pattern)
+fn iterate_socket_topics<IterFn: fn(const u8[:])>(
+    tree: const TopicTree&,
+    sock_fd: i64
+) -> i32 {
+    guard sock_fd > 0 else { return 0; }
+    var count: i32 = 0;
+    for b in tree.buckets.len {
+        guard tree.buckets[b].in_use else { continue; }
+        var cur = tree.buckets[b].head_sub;
+        while cur >= 0 {
+            let cur_i64 = cur as i64;
+            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+                IterFn(tree.buckets[b].topic_pattern[..]);
+                count += 1;
+                break;
+            }
+            cur = tree.nodes[cur_i64].next_sub;
+        }
+    }
+    return count;
 }
 
 // Validates a publish topic name per OASIS MQTT v5.0 §3.3.2.1 and uWS #1090:
@@ -359,7 +563,7 @@ fn is_valid_publish_topic(topic: const u8[:]) -> bool {
 
 // Finds all distinct sockets subscribed to patterns matching the target topic.
 // Returns the number of distinct sockets stored into out_fds.
-fn topic_find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
+fn find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
     guard is_valid_publish_topic(topic) else { return 0; }
     out_fds.clear();
     var seen_mask: u64[4] = [0, 0, 0, 0];
@@ -406,11 +610,11 @@ fn topic_find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i
 // Publishes a pre-encoded raw WebSocket frame to all subscribers matching the target topic.
 // Avoids duplicate delivery if a socket matches multiple wildcard patterns.
 // Returns the number of distinct sockets the message was dispatched to.
-fn topic_publish_frame(tree: TopicTree&, topic: const u8[:], frame_wire: const u8[:]) -> i64 {
+fn publish_frame(tree: TopicTree&, topic: const u8[:], frame_wire: const u8[:]) -> i64 {
     guard is_valid_publish_topic(topic) && frame_wire.len > 0 else { return 0; }
 
     var matched_fds: i64[..512] = [];
-    topic_find_subscribers(tree, topic, matched_fds);
+    find_subscribers(tree, topic, matched_fds);
 
     var delivered: i64 = 0;
     for fd in matched_fds {
@@ -426,7 +630,7 @@ fn topic_publish_frame(tree: TopicTree&, topic: const u8[:], frame_wire: const u
 }
 
 // Encodes the message once into a server frame (unmasked per RFC 6455) and broadcasts to all topic subscribers.
-fn topic_publish(
+fn publish(
     tree: TopicTree&,
     topic: const u8[:],
     message: const u8[:],
@@ -435,24 +639,24 @@ fn topic_publish(
     var frame: u8[..65536] = [];
     let no_mask: u8[4] = [0, 0, 0, 0];
     encode_ws_frame(frame, opcode, message, false, no_mask, true);
-    return topic_publish_frame(tree, topic, frame[..]);
+    return publish_frame(tree, topic, frame[..]);
 }
 
 // Convenience helper to publish UTF-8 text message to a topic.
-fn topic_publish_text(tree: TopicTree&, topic: const u8[:], text: const u8[:]) -> i64 {
-    return topic_publish(tree, topic, text, WS_OPCODE_TEXT);
+fn publish_text(tree: TopicTree&, topic: const u8[:], text: const u8[:]) -> i64 {
+    return publish(tree, topic, text, WS_OPCODE_TEXT);
 }
 
 // Convenience helper to publish binary message to a topic.
-fn topic_publish_binary(tree: TopicTree&, topic: const u8[:], data: const u8[:]) -> i64 {
-    return topic_publish(tree, topic, data, WS_OPCODE_BINARY);
+fn publish_binary(tree: TopicTree&, topic: const u8[:], data: const u8[:]) -> i64 {
+    return publish(tree, topic, data, WS_OPCODE_BINARY);
 }
 
 // ---- uWebSockets TopicTree Batch Drainage & Message Palette Engine ---------
 
 // Drains all batched messages for a specific subscriber node.
 // Unlinks from drainable list and sends wire frames directly to the socket descriptor.
-fn topic_drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
+fn drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
     guard node_idx >= 0 && node_idx < tree.nodes.len as i32 else { return 0; }
     let n_i64 = node_idx as i64;
     guard tree.nodes[n_i64].in_use && tree.nodes[n_i64].num_message_indices > 0 else { return 0; }
@@ -482,7 +686,7 @@ fn topic_drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
 // Drains all drainable subscribers in batch.
 // Iterates through the drainable linked list once, eliminating redundant topic tree traversal.
 // Resets the outgoing message palette to 0 allocations.
-fn topic_tree_drain(tree: TopicTree&) -> i64 {
+fn drain(tree: TopicTree&) -> i64 {
     var cur = tree.drainable_head;
     guard cur >= 0 else { return 0; }
 
@@ -518,7 +722,7 @@ fn topic_tree_drain(tree: TopicTree&) -> i64 {
 // Publishes a message into the outgoing message palette and batches delivery to all subscribers
 // without re-serializing the frame per subscriber. Any subscriber reaching 32 queued messages
 // is drained immediately. Returns the number of distinct sockets queued to.
-fn topic_publish_batch(
+fn publish_batch(
     tree: TopicTree&,
     topic: const u8[:],
     payload: const u8[:],
@@ -529,7 +733,7 @@ fn topic_publish_batch(
 
     // If palette reached capacity (64 messages), drain all pending subscribers first
     if tree.palette_len >= tree.palette.cap as i32 {
-        topic_tree_drain(tree);
+        drain(tree);
     }
 
     let msg_idx = tree.palette_len as i64;
@@ -554,7 +758,7 @@ fn topic_publish_batch(
 
                     if !already_queued {
                         if tree.nodes[c_i64].num_message_indices >= 32 {
-                            topic_drain_subscriber(tree, cur);
+                            drain_subscriber(tree, cur);
                         }
 
                         let cur_num = tree.nodes[c_i64].num_message_indices as i64;
@@ -582,12 +786,12 @@ fn topic_publish_batch(
 }
 
 // Returns the number of currently active messages in the outgoing palette.
-fn topic_palette_size(tree: const TopicTree&) -> i32 {
+fn palette_size(tree: const TopicTree&) -> i32 {
     return tree.palette_len;
 }
 
 // Returns the number of subscribers currently queued for batch drainage.
-fn topic_drainable_count(tree: const TopicTree&) -> i32 {
+fn drainable_count(tree: const TopicTree&) -> i32 {
     var count: i32 = 0;
     var cur = tree.drainable_head;
     while cur >= 0 {
@@ -598,7 +802,7 @@ fn topic_drainable_count(tree: const TopicTree&) -> i32 {
 }
 
 // Checks if a socket descriptor has queued messages awaiting drainage.
-fn topic_subscriber_needs_drain(tree: const TopicTree&, sock_fd: i64) -> bool {
+fn subscriber_needs_drain(tree: const TopicTree&, sock_fd: i64) -> bool {
     guard sock_fd > 0 else { return false; }
     for i in tree.nodes.len {
         if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd {
@@ -609,7 +813,7 @@ fn topic_subscriber_needs_drain(tree: const TopicTree&, sock_fd: i64) -> bool {
 }
 
 // Returns the number of messages queued for a given socket descriptor.
-fn topic_subscriber_queued_messages(tree: const TopicTree&, sock_fd: i64) -> i32 {
+fn subscriber_queued_messages(tree: const TopicTree&, sock_fd: i64) -> i32 {
     guard sock_fd > 0 else { return 0; }
     for i in tree.nodes.len {
         if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd {

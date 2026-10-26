@@ -182,11 +182,11 @@ fn test_redirect_state_machine(t: core::T&) {
 
     t.run("Cross-Origin Sensitive Header Sanitization (CVE Mitigations)") { sub =>
         var req = wing::new_post("https://api.example.com/v1/auth");
-        wing::header(req, "Authorization", "Bearer secret_jwt_token_123");
-        wing::header(req, "X-API-Key", "api-key-99999");
-        wing::header(req, "X-Auth-Token", "auth-token-xyz");
-        wing::header(req, "Cookie", "session=active; tracking=1");
-        wing::header(req, "Accept", "application/json");
+        wing::set_header(req, "Authorization", "Bearer secret_jwt_token_123");
+        wing::set_header(req, "X-API-Key", "api-key-99999");
+        wing::set_header(req, "X-Auth-Token", "auth-token-xyz");
+        wing::set_header(req, "Cookie", "session=active; tracking=1");
+        wing::set_header(req, "Accept", "application/json");
 
         let redirect_info = wing::compute_redirect_info(
             "POST", 302, "https://api.example.com/v1/auth", "https://attacker.org/leak",
@@ -222,8 +222,8 @@ fn test_redirect_state_machine(t: core::T&) {
 
     t.run("Scheme Downgrade Stripping (CVE-2024-1968)") { sub =>
         var req = wing::new_get("https://example.com/secure");
-        wing::header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
-        wing::header(req, "Custom-Key", "val");
+        wing::set_header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
+        wing::set_header(req, "Custom-Key", "val");
 
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
@@ -244,8 +244,8 @@ fn test_redirect_state_machine(t: core::T&) {
 
     t.run("Same-Origin Redirect Preserves Sensitive Credentials") { sub =>
         var req = wing::new_get("https://example.com/old_endpoint");
-        wing::header(req, "Authorization", "Bearer keep_me_safe");
-        wing::header(req, "X-API-Key", "my_api_key");
+        wing::set_header(req, "Authorization", "Bearer keep_me_safe");
+        wing::set_header(req, "X-API-Key", "my_api_key");
 
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/old_endpoint", "https://example.com/new_endpoint",

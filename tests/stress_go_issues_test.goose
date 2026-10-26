@@ -45,7 +45,7 @@ fn test_websocket_length_overflow(t: core::T&) {
     var session = wing::new_websocket_session(true);
     var msg = wing::WsMessage {};
     var reply: u8[..64] = [];
-    let ok = wing::ws_receive(session, bad_ws_hdr[..], msg, reply);
+    let ok = wing::receive(session, bad_ws_hdr[..], msg, reply);
     t.assert_false(ok, "Huge 64-bit length frame without wire bytes must return false without overflow");
 
     // Close frame with illegal 1-byte payload must close with PROTOCOL_ERROR
@@ -53,7 +53,7 @@ fn test_websocket_length_overflow(t: core::T&) {
     var session2 = wing::new_websocket_session(false);
     var msg2 = wing::WsMessage {};
     var reply2: u8[..64] = [];
-    let ok2 = wing::ws_receive(session2, bad_close[..], msg2, reply2);
+    let ok2 = wing::receive(session2, bad_close[..], msg2, reply2);
     t.assert_true(ok2 && session2.is_closed && session2.close_code == wing::WS_STATUS_PROTOCOL_ERROR, "Close frame with 1-byte payload must trigger WS_STATUS_PROTOCOL_ERROR");
 }
 

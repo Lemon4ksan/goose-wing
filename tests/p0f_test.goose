@@ -51,7 +51,7 @@ fn test_wing_authentic_p0f(t: core::T&) {
 
         // Profile default has wing_p0f_signature
         let profile = wing::wing_default_profile();
-        let p_p0f = wing::profile_p0f(profile);
+        let p_p0f = wing::p0f(profile);
         sub.assert_bytes_eq(
             p_p0f[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
@@ -60,7 +60,7 @@ fn test_wing_authentic_p0f(t: core::T&) {
 
         // Client session exposes p0f signature
         let session = wing::new_client();
-        let s_p0f = wing::session_p0f(session);
+        let s_p0f = wing::p0f(session);
         sub.assert_bytes_eq(
             s_p0f[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
@@ -207,7 +207,7 @@ fn test_p0f_pattern_matching(t: core::T&) {
         // Plug into BrowserProfile
         var profile = wing::custom_profile();
         wing::set_p0f(profile, custom);
-        let prof_str = wing::profile_p0f(profile);
+        let prof_str = wing::p0f(profile);
         sub.assert_bytes_eq(
             prof_str[..],
             "4:128:0:1400:16384,2:mss,ws:df,ecn:0",

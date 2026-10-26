@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// High-performance, zero-heap gRPC server dispatcher.
+// gRPC server dispatcher.
 // Implements RFC gRPC over HTTP/2, RFC 7540/9113 framing, and RFC gRPC-Web (binary and text).
 namespace wing;
 

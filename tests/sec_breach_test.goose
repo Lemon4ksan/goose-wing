@@ -385,10 +385,10 @@ fn test_rate_limiter_burst_and_concurrency(t: core::T&) {
         var limiter = wing::new_sharded_limiter(quota);
         let now_ns: u64 = 5000000000;
 
-        let dec_ip1 = wing::check_keyed_rate_limit(limiter, "192.168.1.100", 1, now_ns);
+        let dec_ip1 = wing::check_rate_limit(limiter, "192.168.1.100", 1, now_ns);
         sub.assert_true(wing::is_allowed(dec_ip1));
 
-        let dec_ip2 = wing::check_keyed_rate_limit(limiter, "10.0.0.50", 1, now_ns);
+        let dec_ip2 = wing::check_rate_limit(limiter, "10.0.0.50", 1, now_ns);
         sub.assert_true(wing::is_allowed(dec_ip2), "Distinct client key must have independent rate quota");
     };
 
@@ -399,7 +399,7 @@ fn test_rate_limiter_burst_and_concurrency(t: core::T&) {
         var allowed_count = 0;
         let now_ns: u64 = 1000000000;
         for i in 100 {
-            let dec = wing::check_probabilistic(pgcra, 1, now_ns);
+            let dec = wing::check_rate_limit(pgcra, 1, now_ns);
             if wing::is_allowed(dec) {
                 allowed_count++;
             }

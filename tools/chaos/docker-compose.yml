@@ -1,0 +1,29 @@
+services:
+  chaos-server:
+    build:
+      context: ../..
+      dockerfile: tools/chaos/Dockerfile
+    container_name: goose-wing-chaos-server
+    environment:
+      - WING_PORT=8088
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s = socket.socket(); s.connect(('127.0.0.1', 8088)); s.close()\" || exit 1"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+      start_period: 1s
+    restart: "no"
+
+  chaos-runner:
+    build:
+      context: ../..
+      dockerfile: tools/chaos/Dockerfile
+    container_name: goose-wing-chaos-runner
+    depends_on:
+      chaos-server:
+        condition: service_healthy
+    entrypoint: ["python3", "/app/tools/chaos/runner.py", "--host", "chaos-server", "--port", "8088"]
+    restart: "no"

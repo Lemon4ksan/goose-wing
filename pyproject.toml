@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+    "BLE001", # Blind except: test runners and cleanup routines safely swallow exceptions on shutdown/teardown
+    "S110",   # try-except-pass: safe in test cleanup sockets and optional shutdown hooks
+]
+
+[tool.basedpyright]
+include = ["tools"]
+exclude = ["vendor", "build", "scratch", ".git"]
+typeCheckingMode = "standard"
+extraPaths = [
+    "tools/autobahn",
+    "tools/chaos",
+    "tools/grpc",
+    "tools/h2spec",
+    "tools/http3",
+    "tools/tls",
+    "tools/toxiproxy",
+]
+

@@ -802,7 +802,7 @@ fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
         "{\"name\":\"\",\"value\":\"nameless_val\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":true}]"
     );
 
-    let count = wing::import_canonical_json(jar, json_data[..], now_us);
+    let count = wing::import_json(jar, json_data[..], now_us);
     t.assert_eq(count, 2, "Both valid named and nameless cookies imported from JSON");
     t.assert_eq(jar.cookies.len, 2);
     t.assert_bytes_eq(jar.cookies[0].name[..], "valid");

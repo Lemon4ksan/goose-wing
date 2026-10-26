@@ -95,7 +95,7 @@ fn add_symmetric_key(
 }
 
 // Finds the index of a key by kid (-1 if not found)
-fn find_jwks_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
+fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
     for i in jwks.keys.len {
         let k = jwks.keys[i];
         if k.valid && k.kid[..] == kid {
@@ -231,7 +231,7 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
 
 fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
     if kid.len > 0 {
-        return find_jwks_key(jwks, kid);
+        return find_key(jwks, kid);
     }
     if jwks.keys.len == 1 && jwks.keys[0].valid {
         return 0;
@@ -241,7 +241,7 @@ fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
 
 fn dispatch_jwks_verification(
     token: const u8[:],
-    key: const JwkKey&,
+    key: const JwksKey&,
     options: const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header: JwtHeader&,
@@ -257,7 +257,7 @@ fn dispatch_jwks_verification(
 
 // Verifies a JWT against a JWKS key set.
 // Uses the `kid` in the JWT header to locate the active key and performs signature & claims validation.
-fn verify_jwt_with_jwks(
+fn verify(
     token: const u8[:],
     jwks: const Jwks&,
     options: const JwtValidationOptions&,

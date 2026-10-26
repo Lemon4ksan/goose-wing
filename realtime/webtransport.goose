@@ -106,8 +106,8 @@ fn format_webtransport_connect_request(
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
     // :protocol = webtransport
-    header(req, ":protocol", WEBTRANSPORT_PROTOCOL);
-    header(req, "sec-webtransport-http3-draft", "draft16");
+    set_header(req, ":protocol", WEBTRANSPORT_PROTOCOL);
+    set_header(req, "sec-webtransport-http3-draft", "draft16");
 }
 
 // Validates whether server response accepts the WebTransport session

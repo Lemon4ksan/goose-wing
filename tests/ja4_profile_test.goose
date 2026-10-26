@@ -113,12 +113,12 @@ fn test_wing_profile_and_session(t: core::T&) {
         sub.assert_eq(p.upgrade_insecure_requests[..], "1", "Upgrade-Insecure-Requests is 1");
 
         // Inspect Wing JA4 TLS profile
-        let w_ja4 = wing::profile_ja4(p);
+        let w_ja4 = wing::ja4(p);
         sub.assert_eq(w_ja4.len, 36, "Wing JA4 length is 36 chars");
         sub.assert_bytes_eq(w_ja4[..11], "t13d0910h2_", "Wing JA4 prefix: 9 modern ciphers, 10 extensions, TLS 1.3, h2 ALPN");
 
         // Inspect Wing JA4H HTTP profile
-        let w_ja4h = wing::profile_ja4h(p, "GET", "HTTP/2");
+        let w_ja4h = wing::ja4h(p, "GET", "HTTP/2");
         sub.assert_bytes_eq(w_ja4h[..12], "ge20nn05enus", "Wing JA4H: GET, H2, no-cookie, no-referer, 5 headers, enus");
     };
 
@@ -141,7 +141,7 @@ fn test_wing_profile_and_session(t: core::T&) {
         sub.assert_true(has_zstd, "Zstandard present in session default Accept-Encoding");
 
         // Session JA4
-        let s_ja4 = wing::session_ja4(session);
+        let s_ja4 = wing::ja4(session);
         sub.assert_bytes_eq(s_ja4[..11], "t13d0910h2_", "Session JA4 matches Wing default profile");
     };
 
@@ -163,7 +163,7 @@ fn test_wing_profile_and_session(t: core::T&) {
         session.set_profile(custom);
         sub.assert_bytes_eq(wing::user_agent(session), "WingCustomWorker/3.1", "Custom profile UA applied");
 
-        let custom_ja4h = wing::profile_ja4h(custom, "POST", "HTTP/2");
+        let custom_ja4h = wing::ja4h(custom, "POST", "HTTP/2");
         sub.assert_bytes_eq(custom_ja4h[..12], "po20nn05dede", "Custom JA4H reflects custom profile headers (dede lang, 5 headers)");
     };
 }

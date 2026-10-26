@@ -78,7 +78,7 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
     return true;
 }
 
-fn add_pipeline_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: LogLevel) -> bool {
+fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: LogLevel) -> bool {
     let entry = InterceptorEntry {
         scope: scope,
         kind: InterceptorKind.Logging,
@@ -89,7 +89,7 @@ fn add_pipeline_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope,
     return add_interceptor(pipeline, entry);
 }
 
-fn add_pipeline_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
+fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
     var entry = InterceptorEntry {
         scope: InterceptorScope.Application,
         kind: InterceptorKind.AuthBearer,
@@ -102,7 +102,7 @@ fn add_pipeline_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) 
     return add_interceptor(pipeline, entry);
 }
 
-fn add_pipeline_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
+fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
     var entry = InterceptorEntry {
         scope: scope,
         kind: InterceptorKind.Header,
@@ -114,7 +114,7 @@ fn add_pipeline_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, 
     return add_interceptor(pipeline, entry);
 }
 
-fn add_pipeline_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool {
+fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool {
     var entry = InterceptorEntry {
         scope: InterceptorScope.Application,
         kind: InterceptorKind.RequestId,
@@ -127,7 +127,7 @@ fn add_pipeline_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] =
     return add_interceptor(pipeline, entry);
 }
 
-fn add_pipeline_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
+fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
     var entry = InterceptorEntry {
         scope: InterceptorScope.Application,
         kind: InterceptorKind.Traceparent,
@@ -140,7 +140,7 @@ fn add_pipeline_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u
     return add_interceptor(pipeline, entry);
 }
 
-fn add_pipeline_retry(pipeline: InterceptorPipeline&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
+fn add_retry(pipeline: InterceptorPipeline&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
     let entry = InterceptorEntry {
         scope: InterceptorScope.Application,
         kind: InterceptorKind.RetryPolicy,
@@ -152,7 +152,7 @@ fn add_pipeline_retry(pipeline: InterceptorPipeline&, max_retries: i32, retry_on
     return add_interceptor(pipeline, entry);
 }
 
-fn add_pipeline_metrics(pipeline: InterceptorPipeline&) -> bool {
+fn add_metrics(pipeline: InterceptorPipeline&) -> bool {
     let entry = InterceptorEntry {
         scope: InterceptorScope.Network,
         kind: InterceptorKind.Metrics,
@@ -192,7 +192,7 @@ fn generate_traceparent<B>(counter: u64, clock_us: i64, flag: const u8[:], out: 
     }
 }
 
-fn push_pipeline_log(pipeline: InterceptorPipeline&, msg: const u8[:]) {
+fn push_log(pipeline: InterceptorPipeline&, msg: const u8[:]) {
     guard pipeline.record_logs else { return; }
     if pipeline.log_entries.len < pipeline.log_entries.cap {
         var entry: u8[..128] = [];
@@ -240,19 +240,19 @@ fn apply_app_interceptors_request(
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
                 format(line, "--> ", req.method[..], " ", req.url[..]);
-                push_pipeline_log(pipeline, line[..]);
+                push_log(pipeline, line[..]);
 
                 if lvl == LogLevel.Headers || lvl == LogLevel.Body {
                     for &h in req.headers {
                         var h_line: u8[..256] = [];
                         format(h_line, "--> ", h.name[..], ": ", h.value[..]);
-                        push_pipeline_log(pipeline, h_line[..]);
+                        push_log(pipeline, h_line[..]);
                     }
                 }
                 if lvl == LogLevel.Body && req.body.len > 0 {
                     var b_line: u8[..256] = [];
                     format(b_line, "--> (body ", req.body.len, " bytes)");
-                    push_pipeline_log(pipeline, b_line[..]);
+                    push_log(pipeline, b_line[..]);
                 }
             }
         }
@@ -281,19 +281,19 @@ fn apply_app_interceptors_response(
                 } else {
                     format(line, "<-- FAILED (", err.message[..], ")");
                 }
-                push_pipeline_log(pipeline, line[..]);
+                push_log(pipeline, line[..]);
 
                 if ok(err) && (lvl == LogLevel.Headers || lvl == LogLevel.Body) {
                     for &h in resp.headers {
                         var h_line: u8[..256] = [];
                         format(h_line, "<-- ", h.name[..], ": ", h.value[..]);
-                        push_pipeline_log(pipeline, h_line[..]);
+                        push_log(pipeline, h_line[..]);
                     }
                 }
                 if ok(err) && lvl == LogLevel.Body && resp.body.len > 0 {
                     var b_line: u8[..256] = [];
                     format(b_line, "<-- (body ", resp.body.len, " bytes)");
-                    push_pipeline_log(pipeline, b_line[..]);
+                    push_log(pipeline, b_line[..]);
                 }
             }
         }
@@ -328,13 +328,13 @@ fn apply_network_interceptors_request(
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
                 format(line, "--> (net hop ", hop_index, ") ", method, " ", target_url);
-                push_pipeline_log(pipeline, line[..]);
+                push_log(pipeline, line[..]);
 
                 if lvl == LogLevel.Headers || lvl == LogLevel.Body {
                     for &h in headers {
                         var h_line: u8[..256] = [];
                         format(h_line, "--> (net) ", h.name[..], ": ", h.value[..]);
-                        push_pipeline_log(pipeline, h_line[..]);
+                        push_log(pipeline, h_line[..]);
                     }
                 }
             }
@@ -359,7 +359,7 @@ fn apply_network_interceptors_response(
             if lvl != LogLevel.None {
                 var line: u8[..256] = [];
                 format(line, "<-- (net hop ", hop_index, ") ", resp.status_code, " (", hop_duration_us, " us)");
-                push_pipeline_log(pipeline, line[..]);
+                push_log(pipeline, line[..]);
             }
         }
     }

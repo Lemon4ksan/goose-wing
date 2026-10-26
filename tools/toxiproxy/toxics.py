@@ -61,7 +61,9 @@ class Toxic:
                 }
             ]
         else:
-            raise ValueError(f"Invalid stream direction: {self.stream}. Must be upstream, downstream, or both.")
+            raise ValueError(
+                f"Invalid stream direction: {self.stream}. Must be upstream, downstream, or both."
+            )
 
 
 class LatencyToxic(Toxic):
@@ -124,7 +126,7 @@ class SlicerToxic(Toxic):
         name: str = "slicer",
         min_bytes: int | None = None,
         max_bytes: int | None = None,
-        delay_ms: int | float = 0,
+        delay_ms: float = 0,
         average_size: int = 100,
         size_variation: int = 20,
         stream: str = "both",

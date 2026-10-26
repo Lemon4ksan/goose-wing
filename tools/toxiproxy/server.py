@@ -80,7 +80,9 @@ def download_toxiproxy_server(target_dir: Path | None = None) -> Path:
 class ToxiproxyServer:
     """Controls the local Shopify Toxiproxy daemon."""
 
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, binary_path: Path | None = None):
+    def __init__(
+        self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, binary_path: Path | None = None
+    ):
         self.host = host
         self.port = port
         self.binary_path = binary_path or find_toxiproxy_server_binary()
@@ -115,8 +117,10 @@ class ToxiproxyServer:
 
         cmd = [
             str(self.binary_path),
-            "-host", self.host,
-            "-port", str(self.port),
+            "-host",
+            self.host,
+            "-port",
+            str(self.port),
         ]
         logger.info("Starting Toxiproxy daemon: %s", " ".join(cmd))
         self.process = subprocess.Popen(
@@ -141,7 +145,9 @@ class ToxiproxyServer:
                 )
             time.sleep(0.1)
 
-        raise TimeoutError(f"Toxiproxy server failed to become healthy at {self.api_url} within {timeout_sec}s")
+        raise TimeoutError(
+            f"Toxiproxy server failed to become healthy at {self.api_url} within {timeout_sec}s"
+        )
 
     def stop(self):
         """Stops the managed server process if this instance spawned it."""
@@ -191,10 +197,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Toxiproxy Server Supervisor")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host to bind to")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port for Toxiproxy HTTP API")
+    parser.add_argument(
+        "--port", type=int, default=DEFAULT_PORT, help="Port for Toxiproxy HTTP API"
+    )
     parser.add_argument("--status", action="store_true", help="Check server status")
     parser.add_argument("--start", action="store_true", help="Start server in foreground")
-    parser.add_argument("--download", action="store_true", help="Download official toxiproxy binary")
+    parser.add_argument(
+        "--download", action="store_true", help="Download official toxiproxy binary"
+    )
 
     args = parser.parse_args()
 

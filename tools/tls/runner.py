@@ -6,6 +6,7 @@ ServerHello negotiation, ChangeCipherSpec, and record layer framing against the 
 """
 
 import argparse
+import io
 import socket
 import struct
 import subprocess
@@ -14,9 +15,13 @@ import time
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
@@ -35,9 +40,7 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
 
     print(f"[*] Building native TLS server: {SERVER_SRC} -> {SERVER_EXE}...")
     cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
-    res = subprocess.run(
-        cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True
-    )
+    res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True)
     if res.returncode != 0:
         print("[!] Failed to build TLS server:", file=sys.stderr)
         if res.stdout:
@@ -65,6 +68,7 @@ class NativeTlsServer:
             bufsize=1,
             cwd=str(ROOT_DIR),
         )
+        assert self.proc and self.proc.stdout and self.proc.stderr
 
         t_start = time.time()
         while time.time() - t_start < timeout:
@@ -218,9 +222,7 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     s.close()
 
     # Validate response starts with Handshake record (0x16, 0x03, 0x03)
-    has_hs_rec = (
-        len(resp) >= 5 and resp[0] == 0x16 and resp[1] == 0x03 and resp[2] == 0x03
-    )
+    has_hs_rec = len(resp) >= 5 and resp[0] == 0x16 and resp[1] == 0x03 and resp[2] == 0x03
     record(
         has_hs_rec,
         "TLS 1.3 ServerHello Record Header (0x16 0x03 0x03)",
@@ -285,25 +287,29 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="goose-wing TLS 1.3 Interop Verification Runner"
-    )
+    parser = argparse.ArgumentParser(description="goose-wing TLS 1.3 Interop Verification Runner")
     parser.add_argument("--host", default="127.0.0.1", help="Target server host")
-    parser.add_argument("--port", type=int, default=0, help="Target server port (if already running)")
+    parser.add_argument(
+        "--port", type=int, default=0, help="Target server port (if already running)"
+    )
     parser.add_argument("--docker", action="store_true", help="Run TLS suite in Docker")
-    parser.add_argument(
-        "--compose", action="store_true", help="Launch via docker compose"
-    )
-    parser.add_argument(
-        "--rebuild", action="store_true", help="Rebuild TLS server executable"
-    )
+    parser.add_argument("--compose", action="store_true", help="Launch via docker compose")
+    parser.add_argument("--rebuild", action="store_true", help="Rebuild TLS server executable")
     args = parser.parse_args()
 
     if args.compose:
         compose_file = TOOLS_DIR / "tls" / "docker-compose.yml"
-        cmd = ["docker", "compose", "-f", str(compose_file), "up", "--build", "--abort-on-container-exit"]
+        cmd = [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "up",
+            "--build",
+            "--abort-on-container-exit",
+        ]
         print(f"[*] Running TLS suite via docker compose ({compose_file.name})...")
-        sys.exit(subprocess.run(cmd, cwd=str(ROOT_DIR)).returncode)
+        sys.exit(subprocess.run(cmd, check=False, cwd=str(ROOT_DIR)).returncode)
 
     if args.port > 0:
         passed, failed = run_e2e_tests(args.host, args.port)

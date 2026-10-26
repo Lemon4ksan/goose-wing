@@ -151,7 +151,7 @@ fn execute_pipeline(
 
     // Stage 3: Rate limiter check
     if cfg.enable_rate_limiter {
-        let rl_decision = check_keyed_rate_limit(cfg.limiter, client_ip, 1, now_ns);
+        let rl_decision = check_rate_limit(cfg.limiter, client_ip, 1, now_ns);
         apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
         if !is_allowed(rl_decision) {
             if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }

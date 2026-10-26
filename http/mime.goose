@@ -128,6 +128,11 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
         var p_item = MediaTypeParam { .. };
         guard parse_single_media_param(p_trim, p_item) else { return false; }
 
+        // Go #82343: RFC 2231 extended boundary parameter (boundary*=) must not be accepted or override boundary
+        if core::starts_with(p_item.name[..], "boundary*") {
+            continue;
+        }
+
         if mt.params.len < 16 {
             mt.params.push(p_item);
         }
