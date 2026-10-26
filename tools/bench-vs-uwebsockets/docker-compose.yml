@@ -1,0 +1,15 @@
+services:
+  benchmark:
+    build:
+      context: ../..
+      dockerfile: tools/bench-vs-uwebsockets/Dockerfile
+    container_name: goose-wing-vs-uwebsockets
+    ports:
+      - "8080:8080"   # Web Benchmark Dashboard
+      - "3001:3001"   # goose-wing Server
+      - "3002:3002"   # uWebSockets Server
+    environment:
+      - BENCH_PORT=8080
+      - GW_PORT=3001
+      - UWS_PORT=3002
+    restart: unless-stopped

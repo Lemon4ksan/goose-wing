@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -35,6 +36,9 @@ typedef int SOCKET;
 #pragma pack(push, 1)
 typedef struct { const uint8_t *data; int64_t len; } wing_bytes_ro;
 typedef struct { uint8_t *data; int64_t len; } wing_bytes_rw;
+typedef struct { int64_t *data; int64_t len; } wing_slice_i64;
+typedef struct { uint64_t *data; int64_t len; } wing_slice_u64;
+typedef struct { uint32_t *data; int64_t len; } wing_slice_u32;
 #pragma pack(pop)
 
 // Helper to copy a slice into a null-terminated stack string buffer
@@ -83,11 +87,24 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
     if (s == INVALID_SOCKET) {
         return -1;
     }
+#ifdef _WIN32
+    // uSockets #263: Do not inherit socket handles into child processes (prevents keep-alive hangs)
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
 
+    // uSockets #101 / #167: On Windows, use SO_EXCLUSIVEADDRUSE to prevent port hijacking attacks (CWE-200).
+    // SO_REUSEADDR on Windows permits rogue processes to forcibly bind to the same port and steal connections.
+    int opt = 1;
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
+#else
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
 #if defined(SO_REUSEPORT)
     setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+#endif
+#if defined(TCP_DEFER_ACCEPT)
+    int defer = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, &defer, sizeof(defer));
+#endif
 #endif
 
     char host_str[128];
@@ -157,6 +174,10 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     if (client_sock == INVALID_SOCKET) {
         return -1;
     }
+#ifdef _WIN32
+    // uSockets #263: Do not inherit accepted socket handles into child processes
+    SetHandleInformation((HANDLE)client_sock, HANDLE_FLAG_INHERIT, 0);
+#endif
 
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
@@ -172,6 +193,10 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
     if (s == INVALID_SOCKET) {
         return -1;
     }
+#ifdef _WIN32
+    // uSockets #263: Do not inherit socket handles into child processes (prevents keep-alive hangs)
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+#endif
 
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
@@ -388,16 +413,10 @@ int32_t wing_tcp_set_syn_retries(int64_t sock_fd, int32_t count) {
 #endif
 }
 
-// Queries kernel backlog of unacknowledged / unsent bytes (tcpi_notsent_bytes via TCP_INFO).
+// Queries kernel backlog of unacknowledged / unsent bytes in output queue.
 int64_t wing_tcp_get_notsent_bytes(int64_t sock_fd) {
     if (sock_fd <= 0) return -1;
-#if defined(__linux__) && defined(TCP_INFO)
-    struct tcp_info info;
-    socklen_t len = sizeof(info);
-    if (getsockopt((int)sock_fd, IPPROTO_TCP, TCP_INFO, &info, &len) == 0) {
-        return (int64_t)info.tcpi_notsent_bytes;
-    }
-#elif defined(TIOCOUTQ)
+#if defined(TIOCOUTQ)
     int outq = 0;
     if (ioctl((int)sock_fd, TIOCOUTQ, &outq) == 0) {
         return (int64_t)outq;
@@ -489,3 +508,244 @@ int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload
     return (int32_t)sent;
 #endif
 }
+
+#if defined(__linux__)
+#include <sys/epoll.h>
+#endif
+
+#ifdef _WIN32
+#define WING_MAX_POLL_FDS 2048
+typedef struct {
+    SOCKET fds[WING_MAX_POLL_FDS];
+    uint32_t events[WING_MAX_POLL_FDS];
+    uint64_t udata[WING_MAX_POLL_FDS];
+    int count;
+} wing_poll_ctx_t;
+#endif
+
+// Reads worker count from WING_WORKERS environment variable, or returns default_workers
+int64_t wing_get_env_workers(int64_t default_workers) {
+    const char *w = getenv("WING_WORKERS");
+    if (w && *w) {
+        int val = atoi(w);
+        if (val > 0 && val <= 128) return (int64_t)val;
+    }
+    return default_workers > 0 ? default_workers : 1;
+}
+
+// Configures socket non-blocking mode (O_NONBLOCK on POSIX, FIONBIO on Windows).
+int32_t wing_tcp_set_nonblocking(int64_t sock_fd, int32_t nonblocking) {
+    if (sock_fd <= 0) return -1;
+#ifdef _WIN32
+    u_long mode = nonblocking ? 1 : 0;
+    return ioctlsocket((SOCKET)sock_fd, FIONBIO, &mode) == 0 ? 0 : -1;
+#else
+    int flags = fcntl((int)sock_fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    return fcntl((int)sock_fd, F_SETFL, nonblocking ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK)) == 0 ? 0 : -1;
+#endif
+}
+
+// Accepts an incoming connection immediately in non-blocking mode without timeout.
+// Returns socket fd (> 0), 0 if no pending connections (EAGAIN/EWOULDBLOCK), or -1 on error.
+int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
+    if (listener_fd <= 0) return -1;
+    SOCKET l = (SOCKET)listener_fd;
+
+#if defined(__linux__) && defined(SOCK_NONBLOCK) && defined(SOCK_CLOEXEC)
+    int client_sock = accept4((int)l, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (client_sock < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        return -1;
+    }
+#else
+    SOCKET client_sock = accept(l, NULL, NULL);
+    if (client_sock == INVALID_SOCKET) {
+#ifdef _WIN32
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK) return 0;
+#else
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+#endif
+        return -1;
+    }
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)client_sock, HANDLE_FLAG_INHERIT, 0);
+    u_long mode = 1;
+    ioctlsocket(client_sock, FIONBIO, &mode);
+#else
+    int flags = fcntl(client_sock, F_GETFL, 0);
+    fcntl(client_sock, F_SETFL, flags | O_NONBLOCK);
+#endif
+#endif
+
+    int nodelay = 1;
+    setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
+    return (int64_t)client_sock;
+}
+
+// Receives bytes from non-blocking socket immediately without blocking.
+// Returns:
+//   > 0 : bytes received
+//     0 : peer closed connection cleanly (EOF / FIN)
+//    -2 : WouldBlock / EAGAIN (no data ready right now)
+//    -1 : socket error / connection reset
+int32_t wing_tcp_recv_nonblocking(int64_t sock_fd, wing_bytes_rw buf) {
+    if (sock_fd <= 0 || buf.data == NULL || buf.len <= 0) return -1;
+    SOCKET s = (SOCKET)sock_fd;
+
+    int recvd = recv(s, (char *)buf.data, (int)buf.len, 0);
+    if (recvd > 0) return (int32_t)recvd;
+    if (recvd == 0) return 0; // EOF / clean disconnect
+
+#ifdef _WIN32
+    int err = WSAGetLastError();
+    if (err == WSAEWOULDBLOCK) return -2;
+#else
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+#endif
+    return -1;
+}
+
+// ---- Share-Nothing Epoll / Reactor Multiplexer C Engine ---------------------
+
+#if defined(__linux__)
+
+int64_t wing_epoll_create(void) {
+    int fd = epoll_create1(EPOLL_CLOEXEC);
+    return fd < 0 ? -1 : (int64_t)fd;
+}
+
+int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
+    if (epfd < 0 || sock_fd <= 0) return -1;
+    struct epoll_event ev;
+    ev.events = events;
+    ev.data.u64 = udata;
+    return epoll_ctl((int)epfd, EPOLL_CTL_ADD, (int)sock_fd, &ev) == 0 ? 0 : -1;
+}
+
+int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
+    if (epfd < 0 || sock_fd <= 0) return -1;
+    struct epoll_event ev;
+    ev.events = events;
+    ev.data.u64 = udata;
+    return epoll_ctl((int)epfd, EPOLL_CTL_MOD, (int)sock_fd, &ev) == 0 ? 0 : -1;
+}
+
+int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
+    if (epfd < 0 || sock_fd <= 0) return -1;
+    return epoll_ctl((int)epfd, EPOLL_CTL_DEL, (int)sock_fd, NULL) == 0 ? 0 : -1;
+}
+
+int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+    if (epfd < 0 || out_fds.data == NULL || out_fds.len <= 0) return 0;
+    int max_ev = (int)(out_fds.len < 256 ? out_fds.len : 256);
+    struct epoll_event evs[256];
+    int n = epoll_wait((int)epfd, evs, max_ev, timeout_ms);
+    if (n <= 0) return 0;
+    for (int i = 0; i < n; i++) {
+        out_fds.data[i] = (int64_t)(evs[i].data.u64 == 0xFFFFFFFFFFFFFFFFULL ? -1 : (int64_t)evs[i].data.u64);
+        if (out_udata.data != NULL && i < out_udata.len) {
+            out_udata.data[i] = evs[i].data.u64;
+        }
+    }
+    return n;
+}
+
+void wing_epoll_close(int64_t epfd) {
+    if (epfd >= 0) close((int)epfd);
+}
+
+#else
+
+// Windows & Darwin Cross-Platform WSAPoll fallback implementation
+int64_t wing_epoll_create(void) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)calloc(1, sizeof(wing_poll_ctx_t));
+    if (!ctx) return -1;
+    return (int64_t)(uintptr_t)ctx;
+}
+
+int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
+    if (!ctx || sock_fd <= 0 || ctx->count >= WING_MAX_POLL_FDS) return -1;
+    for (int i = 0; i < ctx->count; i++) {
+        if (ctx->fds[i] == (SOCKET)sock_fd) {
+            ctx->events[i] = events;
+            ctx->udata[i] = udata;
+            return 0;
+        }
+    }
+    ctx->fds[ctx->count] = (SOCKET)sock_fd;
+    ctx->events[ctx->count] = events;
+    ctx->udata[ctx->count] = udata;
+    ctx->count++;
+    return 0;
+}
+
+int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
+    if (!ctx || sock_fd <= 0) return -1;
+    for (int i = 0; i < ctx->count; i++) {
+        if (ctx->fds[i] == (SOCKET)sock_fd) {
+            ctx->events[i] = events;
+            ctx->udata[i] = udata;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
+    if (!ctx || sock_fd <= 0) return -1;
+    for (int i = 0; i < ctx->count; i++) {
+        if (ctx->fds[i] == (SOCKET)sock_fd) {
+            ctx->fds[i] = ctx->fds[ctx->count - 1];
+            ctx->events[i] = ctx->events[ctx->count - 1];
+            ctx->udata[i] = ctx->udata[ctx->count - 1];
+            ctx->count--;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
+    if (!ctx || ctx->count <= 0 || out_fds.data == NULL || out_fds.len <= 0) return 0;
+
+#ifdef _WIN32
+    WSAPOLLFD pfd[WING_MAX_POLL_FDS];
+    int count = ctx->count;
+    for (int i = 0; i < count; i++) {
+        pfd[i].fd = ctx->fds[i];
+        pfd[i].events = (SHORT)((ctx->events[i] & 1 ? POLLRDNORM : 0) | (ctx->events[i] & 4 ? POLLWRNORM : 0));
+        pfd[i].revents = 0;
+    }
+    int res = WSAPoll(pfd, (ULONG)count, timeout_ms);
+    if (res <= 0) return 0;
+
+    int ready = 0;
+    for (int i = 0; i < count && ready < (int)out_fds.len; i++) {
+        if (pfd[i].revents != 0) {
+            out_fds.data[ready] = (int64_t)pfd[i].fd;
+            if (out_udata.data != NULL && ready < (int)out_udata.len) {
+                out_udata.data[ready] = ctx->udata[i];
+            }
+            ready++;
+        }
+    }
+    return ready;
+#else
+    return 0;
+#endif
+}
+
+void wing_epoll_close(int64_t epfd) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
+    if (ctx) free(ctx);
+}
+
+#endif
+

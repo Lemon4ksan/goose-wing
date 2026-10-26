@@ -14,3 +14,7 @@ __pycache__/
 .gemini/
 scratch/
 vendor/
+
+# Benchmarks and e2e
+reports/
+tools/bench-vs-uwebsockets/server_goose_wing.c

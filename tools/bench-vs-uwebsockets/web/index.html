@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>goose-wing vs uWebSockets Benchmark Harness</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="shell">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1 class="project-title">
+          <span class="tag-gw">goose-wing</span>
+          <span class="tag-vs">vs</span>
+          <span class="tag-uws">uWebSockets</span>
+        </h1>
+        <p class="project-desc">Systems Networking Benchmark &amp; Resource Utilization Harness</p>
+      </div>
+      <div class="header-right">
+        <div class="system-pill" id="system-info" style="display: none;">
+          <span id="system-env">Linux x86_64</span>
+        </div>
+        <div class="endpoint-pill" id="endpoint-gw">
+          <span class="dot"></span>
+          <span class="ep-name">goose-wing</span>
+          <span class="ep-port">:3001</span>
+          <span class="ep-state" id="gw-state">checking</span>
+        </div>
+        <div class="endpoint-pill" id="endpoint-uws">
+          <span class="dot"></span>
+          <span class="ep-name">uWebSockets</span>
+          <span class="ep-port">:3002</span>
+          <span class="ep-state" id="uws-state">checking</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btn-theme" onclick="cycleTheme()" title="Toggle color theme (Auto / Light / Dark)">
+          <span id="theme-icon">◐</span>
+          <span id="theme-label">Auto</span>
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="checkStatus()">Refresh</button>
+      </div>
+    </header>
+
+    <!-- Offline Notice -->
+    <div class="alert-box" id="offline-notice" style="display: none;">
+      <strong>Target Daemons Offline:</strong> Neither <code>:3001</code> (goose-wing) nor <code>:3002</code> (uWebSockets) are responding.
+      Start both servers via <code>docker compose up</code> inside <code>tools/bench-vs-uwebsockets</code>, or click <em>Load Archived Reference</em> below to inspect calibrated hardware runs.
+    </div>
+
+    <!-- Test Configuration -->
+    <section class="card">
+      <div class="card-header">
+        <span class="card-title">Test Configuration</span>
+      </div>
+      <div class="config-body">
+        <div class="config-grid">
+          <div class="field-group field-scenario">
+            <label for="select-scenario">Benchmark Scenario</label>
+            <select id="select-scenario" onchange="onScenarioChange()">
+              <option value="pipelined">HTTP/1.1 Pipelined (Depth 32, Zero-Heap CorkBuffer Batch)</option>
+              <option value="plaintext">HTTP/1.1 Plaintext Ping-Pong (Roundtrip Latency)</option>
+              <option value="json">HTTP/1.1 JSON Serialization</option>
+              <option value="ws_echo">WebSocket Echo (RFC 6455 64-bit Masking)</option>
+              <option value="high_concurrency">High Concurrency (1,000 Connections Keep-Alive)</option>
+              <option value="memory_stress">Zero-Heap Memory Stability (50,000 Reqs)</option>
+            </select>
+          </div>
+
+          <div class="field-group field-param">
+            <label for="input-concurrency">Concurrency</label>
+            <input type="number" id="input-concurrency" min="1" max="512" value="32">
+          </div>
+
+          <div class="field-group field-param">
+            <label for="input-duration">Duration (s)</label>
+            <input type="number" id="input-duration" min="1" max="60" value="5">
+          </div>
+
+          <div class="field-group field-param" id="group-pipeline">
+            <label for="input-pipeline">Pipeline Depth</label>
+            <input type="number" id="input-pipeline" min="1" max="128" value="32">
+          </div>
+
+          <div class="actions-row">
+            <button class="btn btn-primary" id="btn-run" onclick="startBenchmark()">Run Benchmark</button>
+            <button class="btn btn-secondary" onclick="loadReferenceData()">Load Reference</button>
+            <button class="btn btn-secondary" onclick="resetToEmpty()">Reset</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Benchmark Results -->
+    <section class="card">
+      <div class="card-header">
+        <span class="card-title">Benchmark Results</span>
+        <span class="active-status" id="active-scenario-label">Ready (No active test)</span>
+      </div>
+
+      <!-- Empty state placeholder -->
+      <div class="empty-state" id="empty-state">
+        <div class="empty-prompt">No benchmark run recorded for this session</div>
+        <div class="empty-sub">Select a scenario above and click <strong>Run Benchmark</strong> for live sockets, or <strong>Load Reference</strong> to view calibrated baselines.</div>
+      </div>
+
+      <!-- Results Container -->
+      <div id="results-container" style="display: none;">
+        <!-- KPI Summary Cards -->
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-header">
+              <span>Throughput</span>
+              <span class="kpi-badge badge-win" id="kpi-rps-badge">+0%</span>
+            </div>
+            <div class="kpi-value-row">
+              <span class="kpi-gw-val" id="kpi-gw-rps">—</span>
+              <span class="kpi-uws-val" id="kpi-uws-rps">vs —</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">
+              <span>p99 Tail Latency</span>
+              <span class="kpi-badge badge-win" id="kpi-p99-badge">—</span>
+            </div>
+            <div class="kpi-value-row">
+              <span class="kpi-gw-val" id="kpi-gw-p99">—</span>
+              <span class="kpi-uws-val" id="kpi-uws-p99">vs —</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">
+              <span>Memory Invariant</span>
+              <span class="kpi-badge badge-win">Zero-Heap</span>
+            </div>
+            <div class="kpi-value-row">
+              <span class="kpi-gw-val">0 B mallocs</span>
+              <span class="kpi-uws-val" id="kpi-rss-val">RSS: —</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Results Table -->
+        <div class="table-wrap">
+          <table class="bench-table">
+            <thead>
+              <tr>
+                <th class="col-metric">Metric</th>
+                <th class="col-num">goose-wing</th>
+                <th class="col-num">uWebSockets</th>
+                <th class="col-delta-head">Delta / Comparison</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="section-row">
+                <td colspan="4">Throughput</td>
+              </tr>
+              <tr>
+                <td class="metric-name">Throughput (RPS)</td>
+                <td class="num col-gw" id="val-gw-rps">—</td>
+                <td class="num col-uws" id="val-uws-rps">—</td>
+                <td class="num" id="val-delta-rps">—</td>
+              </tr>
+              <tr class="section-row">
+                <td colspan="4">Latency Percentiles</td>
+              </tr>
+              <tr>
+                <td class="metric-name">Min Latency</td>
+                <td class="num col-gw" id="val-gw-min">—</td>
+                <td class="num col-uws" id="val-uws-min">—</td>
+                <td class="num" id="val-delta-min">—</td>
+              </tr>
+              <tr>
+                <td class="metric-name">Average (Mean)</td>
+                <td class="num col-gw" id="val-gw-avg">—</td>
+                <td class="num col-uws" id="val-uws-avg">—</td>
+                <td class="num" id="val-delta-avg">—</td>
+              </tr>
+              <tr>
+                <td class="metric-name">p50 (Median)</td>
+                <td class="num col-gw" id="val-gw-p50">—</td>
+                <td class="num col-uws" id="val-uws-p50">—</td>
+                <td class="num" id="val-delta-p50">—</td>
+              </tr>
+              <tr>
+                <td class="metric-name">p90</td>
+                <td class="num col-gw" id="val-gw-p90">—</td>
+                <td class="num col-uws" id="val-uws-p90">—</td>
+                <td class="num" id="val-delta-p90">—</td>
+              </tr>
+              <tr>
+                <td class="metric-name">p99 (Tail Latency)</td>
+                <td class="num col-gw" id="val-gw-p99">—</td>
+                <td class="num col-uws" id="val-uws-p99">—</td>
+                <td class="num" id="val-delta-p99">—</td>
+              </tr>
+              <tr>
+                <td class="metric-name">p99.9</td>
+                <td class="num col-gw" id="val-gw-p999">—</td>
+                <td class="num col-uws" id="val-uws-p999">—</td>
+                <td class="num" id="val-delta-p999">—</td>
+              </tr>
+              <tr>
+                <td class="metric-name">Max Latency</td>
+                <td class="num col-gw" id="val-gw-max">—</td>
+                <td class="num col-uws" id="val-uws-max">—</td>
+                <td class="num" id="val-delta-max">—</td>
+              </tr>
+              <tr class="section-row">
+                <td colspan="4">Memory &amp; Allocations</td>
+              </tr>
+              <tr>
+                <td class="metric-name">Heap Allocations / Req</td>
+                <td class="num col-gw" id="val-gw-allocs">0 B (0 mallocs)</td>
+                <td class="num col-uws" id="val-uws-allocs">Dynamic (glibc)</td>
+                <td class="num"><span class="delta-badge win">Zero-Heap Invariant</span></td>
+              </tr>
+              <tr>
+                <td class="metric-name">Process RSS Memory</td>
+                <td class="num col-gw" id="val-gw-rss">—</td>
+                <td class="num col-uws" id="val-uws-rss">—</td>
+                <td class="num" id="val-delta-rss">—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Execution Console -->
+    <section class="card console-card">
+      <div class="card-header">
+        <span class="card-title">Execution Console</span>
+        <div class="console-actions">
+          <span class="log-count" id="log-count">0 lines</span>
+          <button class="btn btn-secondary btn-sm" onclick="copyConsoleLog()">Copy Log</button>
+          <button class="btn btn-secondary btn-sm" onclick="clearConsole()">Clear</button>
+        </div>
+      </div>
+      <pre class="terminal" id="console-output"></pre>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
