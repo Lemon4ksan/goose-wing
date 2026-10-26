@@ -17,17 +17,17 @@ import .store;
 // and partition key isolation.
 struct CanonicalCookieJar {
     // Quotas and thresholds
-    max_cookies_per_domain: i64 = K_DOMAIN_MAX_COOKIES,       // 180
-    purge_cookies_per_domain: i64 = K_DOMAIN_PURGE_COOKIES,   // 30
-    target_cookies_per_domain: i64 = K_DOMAIN_TARGET_COOKIES, // 150
+    max_cookies_per_domain: i64 = internal::K_DOMAIN_MAX_COOKIES,       // 180
+    purge_cookies_per_domain: i64 = internal::K_DOMAIN_PURGE_COOKIES,   // 30
+    target_cookies_per_domain: i64 = internal::K_DOMAIN_TARGET_COOKIES, // 150
 
-    quota_low: i64 = K_DOMAIN_COOKIES_QUOTA_LOW,              // 30
-    quota_medium: i64 = K_DOMAIN_COOKIES_QUOTA_MEDIUM,        // 50
-    quota_high: i64 = K_DOMAIN_COOKIES_QUOTA_HIGH,            // 70
+    quota_low: i64 = internal::K_DOMAIN_COOKIES_QUOTA_LOW,              // 30
+    quota_medium: i64 = internal::K_DOMAIN_COOKIES_QUOTA_MEDIUM,        // 50
+    quota_high: i64 = internal::K_DOMAIN_COOKIES_QUOTA_HIGH,            // 70
 
-    max_cookies_global: i64 = K_MAX_COOKIES,                  // 3300
-    purge_cookies_global: i64 = K_PURGE_COOKIES,              // 300
-    target_cookies_global: i64 = K_GLOBAL_TARGET_COOKIES,     // 3000
+    max_cookies_global: i64 = internal::K_MAX_COOKIES,                  // 3300
+    purge_cookies_global: i64 = internal::K_PURGE_COOKIES,              // 300
+    target_cookies_global: i64 = internal::K_GLOBAL_TARGET_COOKIES,     // 3000
 
     seq_counter: i64 = 1,
 
@@ -492,7 +492,7 @@ fn enforce_chips_quota(
     var total_bytes: i64 = 0;
     jar.gather_chips_candidates(partition_key, etld_plus_one, candidates, total_bytes);
 
-    guard total_bytes > K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES else { return 0; }
+    guard total_bytes > internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES else { return 0; }
 
     candidates.stable_sort() { a, b => a.chips_lra_candidate_less(b) };
 
@@ -500,7 +500,7 @@ fn enforce_chips_quota(
     var evicted_count: i64 = 0;
 
     for &candidate_cookie in candidates {
-        if total_bytes <= K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES { break; }
+        if total_bytes <= internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES { break; }
         total_bytes -= candidate_cookie.payload_size();
         to_delete_seqs.push(candidate_cookie.creation_seq);
         evicted_count += 1;
@@ -835,7 +835,7 @@ fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64,
     var candidates: CanonicalCookie[>..] = [];
     for &cookie_val in jar.cookies {
         let elapsed_us = now_us - cookie_val.last_access_utc;
-        if elapsed_us >= K_SAFE_FROM_GLOBAL_PURGE_US {
+        if elapsed_us >= internal::K_SAFE_FROM_GLOBAL_PURGE_US {
             candidates.push(cookie_val);
         }
     }

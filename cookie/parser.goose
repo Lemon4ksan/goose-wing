@@ -340,7 +340,7 @@ fn parse_cookie_payload_pair(
     let raw_val = if eq_pos >= 0 { trim(name_val_part[eq_pos + 1..]) } else { trim(name_val_part) };
 
     guard raw_name.len > 0 || raw_val.len > 0 else { return "", false; }
-    if raw_name.len + raw_val.len > K_MAX_COOKIE_NAME_VAL_LEN {
+    if raw_name.len + raw_val.len > internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return "", false;
     }
 
@@ -372,7 +372,7 @@ fn apply_parsed_cookie_attribute(
     let attr_name = if attr_eq_pos >= 0 { trim(clean_attr[..attr_eq_pos]) } else { clean_attr };
     let attr_val = if attr_eq_pos >= 0 { trim(clean_attr[attr_eq_pos + 1..]) } else { "" };
 
-    guard attr_val.len <= K_MAX_COOKIE_ATTR_VAL_LEN else { return; }
+    guard attr_val.len <= internal::K_MAX_COOKIE_ATTR_VAL_LEN else { return; }
 
     if eq_ascii_fold(attr_name, "httponly") {
         cookie_ref.httponly = true;
@@ -429,7 +429,7 @@ fn apply_parsed_max_age_attribute(
         return;
     }
 
-    let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
+    let max_allowed_seconds = internal::K_MAX_COOKIE_AGE_US / 1000000;
     let capped_sec = core::ct_min_i64(max_age_val, max_allowed_seconds);
     cookie_ref.expires_utc = now_us + capped_sec * 1000000;
 }
@@ -446,8 +446,8 @@ fn apply_parsed_expires_attribute(
     guard expires_ok else { return; }
 
     cookie_ref.persistent = true;
-    if expires_us > now_us && (expires_us - now_us > K_MAX_COOKIE_AGE_US) {
-        cookie_ref.expires_utc = now_us + K_MAX_COOKIE_AGE_US; // 400 days cap
+    if expires_us > now_us && (expires_us - now_us > internal::K_MAX_COOKIE_AGE_US) {
+        cookie_ref.expires_utc = now_us + internal::K_MAX_COOKIE_AGE_US; // 400 days cap
     } else {
         cookie_ref.expires_utc = expires_us;
     }

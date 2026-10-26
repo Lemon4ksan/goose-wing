@@ -12,6 +12,7 @@ import core from ".";
 
 // ---- cookie engine ---------------------------------------------------------
 
+import cookie.limits;
 import cookie.constants;
 import cookie.canonical;
 import cookie.psl;

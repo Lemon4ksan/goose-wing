@@ -58,7 +58,7 @@ fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
 fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if cookie_val.same_site != CookieSameSite.Default { return false; }
     let elapsed_us = now_us - cookie_val.creation_utc;
-    return elapsed_us >= 0 && elapsed_us <= K_LAX_ALLOWING_UNSAFE_WINDOW_US;
+    return elapsed_us >= 0 && elapsed_us <= internal::K_LAX_ALLOWING_UNSAFE_WINDOW_US;
 }
 
 // Combined size of name and value in bytes (RFC 6265bis Section 5.5).
@@ -146,7 +146,7 @@ fn with_partition_key(cookie_ref: CanonicalCookie&, key: const u8[:]) -> Canonic
 
 // Sets cookie expiration from a relative Max-Age in seconds, capped at 400 days (RFC 6265bis Section 5.5).
 fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64) -> CanonicalCookie& {
-    let max_allowed_seconds = K_MAX_COOKIE_AGE_US / 1000000;
+    let max_allowed_seconds = internal::K_MAX_COOKIE_AGE_US / 1000000;
     let capped_sec = core::ct_min_i64(seconds, max_allowed_seconds);
     cookie_ref.expires_utc = now_us + capped_sec * 1000000;
     cookie_ref.persistent = true;

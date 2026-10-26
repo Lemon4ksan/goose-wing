@@ -103,8 +103,8 @@ struct PendingStoreOp {
 // WriteBackBatcher manages asynchronous, non-blocking mutation batching
 // with queue coalescing and threshold-based transaction committing.
 struct WriteBackBatcher {
-    max_batch_size: i64 = 512,       // K_COMMIT_AFTER_BATCH_SIZE
-    commit_interval_ms: i64 = 30000, // K_COMMIT_INTERVAL_MS
+    max_batch_size: i64 = internal::K_COMMIT_AFTER_BATCH_SIZE,       // 512
+    commit_interval_ms: i64 = internal::K_COMMIT_INTERVAL_MS,         // 30000
     last_commit_ms: i64 = 0,
     total_committed_ops: i64 = 0,
     total_coalesced_ops: i64 = 0,
@@ -116,8 +116,8 @@ struct WriteBackBatcher {
 // Constructs a new WriteBackBatcher with default Chromium thresholds.
 fn new_write_back_batcher(now_ms: i64 = 0) -> WriteBackBatcher {
     return WriteBackBatcher {
-        max_batch_size: K_COMMIT_AFTER_BATCH_SIZE,
-        commit_interval_ms: K_COMMIT_INTERVAL_MS,
+        max_batch_size: internal::K_COMMIT_AFTER_BATCH_SIZE,
+        commit_interval_ms: internal::K_COMMIT_INTERVAL_MS,
         last_commit_ms: now_ms,
         total_committed_ops: 0,
         total_coalesced_ops: 0,
@@ -585,7 +585,7 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     if !cookie_ref.host_only && is_public_suffix_domain(cookie_ref.domain[..]) {
         return false;
     }
-    if cookie_ref.name.len + cookie_ref.value.len > K_MAX_COOKIE_NAME_VAL_LEN {
+    if cookie_ref.name.len + cookie_ref.value.len > internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return false;
     }
     return true;
