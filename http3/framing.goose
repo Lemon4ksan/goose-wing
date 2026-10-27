@@ -145,9 +145,9 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
 
         offset = off2;
 
-        // RFC 9114 Section 7.2.4.1: An endpoint that receives any HTTP/2 setting identifier
-        // (0x02, 0x03, 0x04, 0x05) MUST treat this as a connection error of type H3_SETTINGS_ERROR.
-        if id == 0x02 || id == 0x03 || id == 0x04 || id == 0x05 {
+        // RFC 9114 Section 7.2.4.1: An endpoint that receives any reserved HTTP/2 setting identifier
+        // (0x00, 0x02, 0x03, 0x04, 0x05) MUST treat this as a connection error of type H3_SETTINGS_ERROR.
+        if id == 0x00 || id == 0x02 || id == 0x03 || id == 0x04 || id == 0x05 {
             return H3_ERR_SETTINGS_ERROR;
         }
 

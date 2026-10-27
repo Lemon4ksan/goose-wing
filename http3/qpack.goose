@@ -295,6 +295,9 @@ fn encode_ric(ric: u64, max_cap: u64) -> u64 {
 // Decodes Base index from sign bit S and DeltaBase (RFC 9204 Section 4.5.1.2).
 fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
     if sign_bit == 0 {
+        guard (0xFFFFFFFFFFFFFFFF - ric) >= delta_base else {
+            return 0, QpackError.DecompressionFailed;
+        }
         return ric + delta_base, QpackError.None;
     }
     guard ric > delta_base else {
@@ -605,7 +608,7 @@ fn emit_field_checked(
     never_index: bool = false,
 ) -> QpackError {
     // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase valid token chars or pseudo-header
-    guard name.len > 0 else { return QpackError.DecompressionFailed; }
+    guard name.len > 0 && (name.len > 1 || name[0] != ':') else { return QpackError.DecompressionFailed; }
     for i in name.len {
         let c = name[i];
         if i == 0 && c == ':' {
@@ -701,7 +704,9 @@ fn decode_qpack_section(
         if (b & 0xF0) == 0x10 {
             let post_idx, next_off, ok = hpack_decode_int(src, offset, 4);
             guard ok else { return QpackError.DecompressionFailed; }
+            guard (0xFFFFFFFFFFFFFFFF - base) >= post_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base + post_idx;
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.3
             var n: u8[..256] = [];
             var v: u8[..4096] = [];
             guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
@@ -757,7 +762,9 @@ fn decode_qpack_section(
             let is_never_index = (b & 0x08) != 0;
             let post_name_idx, val_start, ok_idx = hpack_decode_int(src, offset, 3);
             guard ok_idx else { return QpackError.DecompressionFailed; }
+            guard (0xFFFFFFFFFFFFFFFF - base) >= post_name_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base + post_name_idx;
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.5
 
             var n: u8[..256] = [];
             var dummy_v: u8[..4096] = [];
@@ -799,15 +806,10 @@ fn decode_qpack_section(
         return QpackError.DecompressionFailed;
     }
 
-    // Invariant: If dynamic table was used, RIC must equal max_dyn_abs_used + 1.
-    if used_any_dyn {
-        guard ric == (max_dyn_abs_used + 1) else {
-            return QpackError.DecompressionFailed;
-        }
-    } else {
-        guard ric == 0 else {
-            return QpackError.DecompressionFailed;
-        }
+    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must be >= minimum required insert count and <= TotalNumberOfInserts.
+    let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
+    guard ric >= min_ric && ric <= tbl.insert_count else {
+        return QpackError.DecompressionFailed;
     }
 
     return QpackError.None;

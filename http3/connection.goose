@@ -356,6 +356,34 @@ fn handle_stream_data(
             }
         }
 
+        // Process instructions on Peer QPACK Encoder Stream (RFC 9204 §4.3)
+        if stream_id == conn.peer_qpack_enc_stream_id && offset < (data.len as u64) {
+            while offset < (data.len as u64) {
+                let next_off, q_err = qpack_process_encoder_instruction(conn.qpack_table, data, offset);
+                if q_err != QpackError.None {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+                    return H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+                }
+                offset = next_off;
+            }
+            return H3_ERR_NO_ERROR;
+        }
+
+        // Process instructions on Peer QPACK Decoder Stream (RFC 9204 §4.4)
+        if stream_id == conn.peer_qpack_dec_stream_id && offset < (data.len as u64) {
+            while offset < (data.len as u64) {
+                let next_off, q_err = qpack_process_decoder_instruction(conn.qpack_table, data, offset);
+                if q_err != QpackError.None {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_QPACK_DECODER_STREAM_ERROR;
+                    return H3_ERR_QPACK_DECODER_STREAM_ERROR;
+                }
+                offset = next_off;
+            }
+            return H3_ERR_NO_ERROR;
+        }
+
         return H3_ERR_NO_ERROR;
     }
 
@@ -515,6 +543,11 @@ fn handle_stream_data(
                 }
 
                 if field.name[..] == ":status" {
+                    if field.value.len != 3 {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
+                    }
                     let sc, ok_sc = core::parse_i32_dec(field.value[..]);
                     if !ok_sc || sc < 100 || sc > 599 || sc == 101 {
                         conn.state = H3ConnState.Closed;
@@ -536,16 +569,20 @@ fn handle_stream_data(
             if conn.streams[s_idx].status_code >= 200 {
                 if !conn.streams[s_idx].headers_received {
                     conn.streams[s_idx].headers_received = true;
-                } else {
+                } else if !conn.streams[s_idx].trailers_received {
                     conn.streams[s_idx].trailers_received = true;
+                } else {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+                    return H3_ERR_FRAME_UNEXPECTED;
                 }
             }
         }
 
         // 2. DATA Frame
         if hdr.frame_type == H3_FRAME_DATA {
-            // DATA before HEADERS is a fatal protocol error
-            if !conn.streams[s_idx].headers_received {
+            // DATA before HEADERS or after trailers is a fatal protocol error
+            if !conn.streams[s_idx].headers_received || conn.streams[s_idx].trailers_received {
                 conn.state = H3ConnState.Closed;
                 conn.error_code = H3_ERR_FRAME_UNEXPECTED;
                 return H3_ERR_FRAME_UNEXPECTED;

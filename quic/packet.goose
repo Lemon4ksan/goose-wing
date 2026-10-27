@@ -233,6 +233,7 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         hdr.payload_length = plen;
         hdr.pn_offset = next_plen as u32;
         hdr.pn_length = (first & 0x03) + 1;
+        guard plen >= hdr.pn_length else { return hdr, false; }
         guard (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
         hdr.header_len = (next_plen + hdr.pn_length) as u32;
         return hdr, true;
@@ -262,6 +263,7 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
 // Encodes a QUIC Long or Short header in unmasked form into out buffer.
 fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     guard pn_len >= 1 && pn_len <= 4 else { return false; }
+    guard hdr.dcid.len <= QUIC_MAX_CID_LEN && hdr.scid.len <= QUIC_MAX_CID_LEN else { return false; }
     let pn_bits = (pn_len - 1) & 0x03;
 
     if hdr.header_type != QuicHeaderType.OneRtt {
@@ -339,6 +341,8 @@ fn chacha20_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) ->
 
 // Applies header protection mask to packet header and packet number field (RFC 9001 Section 5.4.1).
 fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: const u8[5]&) {
+    guard pkt.len > 0 && pn_len >= 1 && pn_len <= 4 else { return; }
+    guard (pn_offset as u64) + pn_len <= (pkt.len as u64) else { return; }
     let is_long = (pkt[0] & 0x80) != 0;
     if is_long {
         pkt[0] ^= (hp_mask[0] & 0x0F);
@@ -353,6 +357,7 @@ fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: cons
 
 // Removes header protection mask in-place, returning true packet number length and truncated PN.
 fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -> u8, u64 {
+    guard pkt.len > 0 else { return 0, 0; }
     let is_long = (pkt[0] & 0x80) != 0;
     if is_long {
         pkt[0] ^= (hp_mask[0] & 0x0F);
@@ -360,6 +365,15 @@ fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -
         pkt[0] ^= (hp_mask[0] & 0x1F);
     }
     let pn_len: u8 = (pkt[0] & 0x03) + 1;
+    if (pn_offset as u64) + pn_len > (pkt.len as u64) {
+        // Revert first byte unmasking on bounds violation
+        if is_long {
+            pkt[0] ^= (hp_mask[0] & 0x0F);
+        } else {
+            pkt[0] ^= (hp_mask[0] & 0x1F);
+        }
+        return 0, 0;
+    }
     var trunc_pn: u64 = 0;
 
     for i in (pn_len as i64) {
@@ -393,6 +407,7 @@ fn encode_packet_number<B>(out: B&, pn: u64, pn_len: u8) -> bool {
 
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
 fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
+    guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn; }
     let pn_nbits: u64 = (pn_len as u64) * 8;
     let expected_pn: u64 = largest_acked_pn + 1;
     let pn_win: u64 = (1 as u64) << pn_nbits;
@@ -431,7 +446,15 @@ fn can_send_on_path(path: const PathState&, packet_bytes: u64) -> bool {
     if path.is_validated {
         return true;
     }
-    return (path.bytes_sent + packet_bytes) <= (3 * path.bytes_received);
+    let max_allow = if path.bytes_received > (0xFFFFFFFFFFFFFFFF / 3) {
+        0xFFFFFFFFFFFFFFFF
+    } else {
+        3 * path.bytes_received
+    };
+    if (0xFFFFFFFFFFFFFFFF - path.bytes_sent) < packet_bytes {
+        return false;
+    }
+    return (path.bytes_sent + packet_bytes) <= max_allow;
 }
 
 fn on_path_bytes_received(path: PathState&, bytes: u64) {
@@ -467,8 +490,8 @@ fn new_reassembly_buffer(max_flow_limit: u64 = 1048576) -> ReassemblyBuffer {
 }
 
 // Merges a new interval [new_start, new_end) into sorted non-overlapping intervals array.
-fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end: u64) {
-    guard new_start < new_end else { return; }
+fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end: u64) -> bool {
+    guard new_start < new_end else { return true; }
     var cur_s = new_start;
     var cur_e = new_end;
     var i = 0;
@@ -478,8 +501,9 @@ fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end
         if cur_e < it.start {
             if intervals.len < intervals.cap {
                 intervals.insert_at(i, Interval { start: cur_s, end: cur_e });
+                return true;
             }
-            return;
+            return false;
         }
         if cur_s > it.end {
             i++;
@@ -492,7 +516,9 @@ fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end
 
     if intervals.len < intervals.cap {
         intervals.push(Interval { start: cur_s, end: cur_e });
+        return true;
     }
+    return false;
 }
 
 // Inserts incoming STREAM or CRYPTO fragment, enforcing flow control and FIN invariants.
@@ -543,7 +569,7 @@ fn insert_fragment(
         buf.data_slab[slab_idx] = payload[payload_skip + idx];
     }
 
-    merge_reassembly_interval(buf.intervals, eff_start, frag_end);
+    guard merge_reassembly_interval(buf.intervals, eff_start, frag_end) else { return false; }
     return true;
 }
 
@@ -598,7 +624,8 @@ fn decode_quic_datagram_frame(src: const u8[:], offset: u64, packet_end: u64 = 0
         let dlen, off2, ok2 = quic_decode_varint(src, off1);
         guard ok2 else { return "", offset, false; }
         let eff_end = off2 + dlen;
-        guard eff_end <= src.len as u64 else { return "", offset, false; }
+        let limit = if packet_end > 0 && packet_end <= (src.len as u64) { packet_end } else { src.len as u64 };
+        guard eff_end <= limit else { return "", offset, false; }
         return src[(off2 as i64)..(eff_end as i64)], eff_end, true;
     }
     return "", offset, false;
