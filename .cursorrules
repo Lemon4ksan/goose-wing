@@ -1,0 +1,11 @@
+# Cursor rules
+
+See [.agents/AGENTS.md](file:///.agents/AGENTS.md) for all architectural invariants, Goose language conventions, and testing requirements.
+
+## Key rules
+
+- Read and follow [.agents/AGENTS.md](file:///.agents/AGENTS.md).
+- Target language is Goose (`.goose`). Use Goose §7.10 extern syntax: `extern fn name(...) = "sym";`.
+- Do not use dynamic heap allocations on wire parsing or serialization paths; use bounded arrays (`u8[..N]`) and slices (`u8[:]`).
+- Run `powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly` before finishing changes.
+- Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `perf:`, `style:`, `test:`, `chore:`). Do not edit `version.txt` manually.

@@ -1,0 +1,1 @@
+See [.agents/AGENTS.md](file:///.agents/AGENTS.md) for the complete rules, engineering invariants, Goose language specifications, and workflow guidelines.
