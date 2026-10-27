@@ -10,6 +10,7 @@ import http.headers;
 
 // RFC 9112 Section 7.1.2: Disallowed trailer fields threatening message framing or routing
 fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
+    // RFC 9110 §6.5.1 & Go #81143: Forbidden trailer fields
     return eq_ascii_fold(hname, "content-length") ||
            eq_ascii_fold(hname, "transfer-encoding") ||
            eq_ascii_fold(hname, "trailer") ||
@@ -19,6 +20,8 @@ fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
            eq_ascii_fold(hname, "set-cookie") ||
            eq_ascii_fold(hname, "cookie") ||
            eq_ascii_fold(hname, "content-range") ||
+           eq_ascii_fold(hname, "content-type") ||
+           eq_ascii_fold(hname, "content-encoding") ||
            eq_ascii_fold(hname, "te");
 }
 

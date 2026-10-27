@@ -1491,6 +1491,12 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
         let val = src.raw_buf[entry.values_begin..entry.values_end];
 
         if is_hop_by_hop_header_name(name) {
+            // RFC 9110 §7.6.1, RFC 9113 §8.2.2 & Go #21096:
+            // "An intermediary MUST remove any received TE header field prior to forwarding the message,
+            // EXCEPT that the presence of the keyword 'trailers' MAY be forwarded (and is required by gRPC)."
+            if eq_ascii_fold(name, "te") && eq_ascii_fold(core::trim_lws(val), "trailers") {
+                dst.append_header(name, val);
+            }
             continue;
         }
 

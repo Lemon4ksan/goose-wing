@@ -423,6 +423,13 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
         return view, UrlParseError.EmptyInput;
     }
 
+    // RFC 3986 §2 & CVE-2023-26159: Reject unencoded CRLF or NUL control characters (smuggling defense)
+    for b in raw_input {
+        guard b != '\r' && b != '\n' && b != 0 else {
+            return view, UrlParseError.ForbiddenHostCodePoint;
+        }
+    }
+
     view.raw = raw_input;
 
     // Find scheme separator ':'
@@ -495,8 +502,20 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
                 if host_port_slice[scan_idx] == ']' { close_bracket = scan_idx; break; }
             }
             if close_bracket > 0 {
-                view.host = host_port_slice[1..close_bracket];
-                if close_bracket + 1 < host_port_slice.len && host_port_slice[close_bracket + 1] == ':' {
+                let inside_brackets = host_port_slice[1..close_bracket];
+                // RFC 3986 §3.2.2 & Go #75678 (CVE-2025-47912):
+                // Bracketed host MUST be a valid IPv6 literal (or IPvFuture).
+                // Hostnames and IPv4 addresses MUST NOT be enclosed in brackets.
+                var dummy_comp: u8[..64] = [];
+                guard parse_and_compress_ipv6(inside_brackets, dummy_comp) else {
+                    return view, UrlParseError.InvalidIpv6;
+                }
+                view.host = inside_brackets;
+                if close_bracket + 1 < host_port_slice.len {
+                    // RFC 3986 §3.2.2 & Go #78569: Any character following ']' MUST be ':' introducing port number
+                    guard host_port_slice[close_bracket + 1] == ':' else {
+                        return view, UrlParseError.InvalidHost;
+                    }
                     let port_str = host_port_slice[close_bracket + 2..];
                     let port_num, port_ok = parse_port_number(port_str);
                     if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }

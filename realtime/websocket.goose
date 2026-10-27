@@ -172,14 +172,17 @@ fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
 
     let mask_bit: u8 = if hdr.masked { 0x80 } else { 0x00 };
 
-    if hdr.payload_len <= 125 {
-        out.push(mask_bit | (hdr.payload_len as u8));
-    } else if hdr.payload_len <= 65535 {
+    // RFC 6455 §5.5 & uWS #1407: Control frames MUST NOT exceed 125 bytes and MUST NEVER use extended length
+    let eff_len = if is_ws_control_opcode(hdr.opcode) && hdr.payload_len > 125 { 125 as u64 } else { hdr.payload_len };
+
+    if eff_len <= 125 {
+        out.push(mask_bit | (eff_len as u8));
+    } else if eff_len <= 65535 {
         out.push(mask_bit | 126);
-        core::write_be_u16(out, hdr.payload_len as u16);
+        core::write_be_u16(out, eff_len as u16);
     } else {
         out.push(mask_bit | 127);
-        core::write_be_u64(out, hdr.payload_len);
+        core::write_be_u64(out, eff_len);
     }
 
     if hdr.masked {
@@ -196,22 +199,26 @@ fn encode_ws_frame<B>(
     mask_key: const u8[4] = [0 as u8; 4],
     fin: bool = true,
 ) {
+    // RFC 6455 §5.5: Control frames MUST NOT exceed 125 bytes and MUST NOT be fragmented
+    let eff_payload = if is_ws_control_opcode(opcode) && payload.len > 125 { payload[..125] } else { payload };
+    let eff_fin = if is_ws_control_opcode(opcode) { true } else { fin };
+
     let hdr = WsFrameHeader {
-        fin: fin,
+        fin: eff_fin,
         opcode: opcode,
         masked: is_client,
         mask_key: mask_key,
-        payload_len: payload.len as u64,
+        payload_len: eff_payload.len as u64,
         ..
     };
     hdr.encode(out);
 
     if is_client {
-        for i in payload.len {
-            out.push(payload[i] ^ mask_key[i % 4]);
+        for i in eff_payload.len {
+            out.push(eff_payload[i] ^ mask_key[i % 4]);
         }
     } else {
-        out.append(payload);
+        out.append(eff_payload);
     }
 }
 
@@ -840,7 +847,9 @@ fn build_handshake_request<B>(
     client_key: const u8[:],
     out: B&,
 ) {
-    format(out, "GET ", path, " HTTP/1.1\r\nHost: ", host, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ", client_key);
+    // RFC 6455 §4.1 & RFC 9112 §3.2.1 & Go #76635: If path is empty, default to '/'
+    let eff_path = if path.len > 0 { path } else { "/" };
+    format(out, "GET ", eff_path, " HTTP/1.1\r\nHost: ", host, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ", client_key);
     if ws.subprotocol.len > 0 {
         format(out, "\r\nSec-WebSocket-Protocol: ", ws.subprotocol[..]);
     }
@@ -1105,9 +1114,10 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
     let p_len = hdr.payload_len as i64;
     let payload = wire[p_start..(p_start + p_len)];
 
-    let rsv1_allowed = ws.permessage_deflate;
+    // RFC 7692 §5.1 & uWS #1164: RSV1 is only valid on initial data frame (Text/Binary), NEVER on Continuation or Control frames
+    let rsv1_allowed = ws.permessage_deflate && (hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY);
     if (hdr.rsv1 && !rsv1_allowed) || hdr.rsv2 || hdr.rsv3 {
-        close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension", out_reply);
+        close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension or on non-initial data frame", out_reply);
         ws.is_closed = true;
         ws.close_code = WS_STATUS_PROTOCOL_ERROR;
         return true;
@@ -1147,11 +1157,11 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                 ws.close_code = WS_STATUS_PROTOCOL_ERROR;
                 return true;
             }
-            // RFC 6455 §5.5.1: Close reason MUST be valid UTF-8
+            // RFC 6455 §5.5.1 / §8.1 / §7.4.1 / Autobahn 6.4.1: Close reason MUST be valid UTF-8
             if reason.len > 0 && !core::validate_utf8(reason) {
-                close(ws, WS_STATUS_PROTOCOL_ERROR, "invalid UTF-8 in close reason", out_reply);
+                close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in close reason", out_reply);
                 ws.is_closed = true;
-                ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+                ws.close_code = WS_STATUS_INVALID_PAYLOAD;
                 return true;
             }
             out_view.opcode = WS_OPCODE_CLOSE;

@@ -278,7 +278,11 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     guard line_end > 0 else { return false, 0; }
 
     let status_line = header_bytes[..line_end];
-    guard status_line.len >= 12 && status_line[..7] == "HTTP/1." else { return false, 0; }
+    // RFC 9112 §3.1.2 & uWS #1949: Exactly SP between HTTP-version and 3-digit status code
+    guard status_line.len >= 12 && status_line[..7] == "HTTP/1." && status_line[8] == ' ' else { return false, 0; }
+    if status_line.len > 12 {
+        guard status_line[12] == ' ' else { return false, 0; }
+    }
 
     // Parse 3-digit status code
     let c0 = status_line[9] - '0';
@@ -353,8 +357,10 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         }
     }
 
-    // RFC 9112 Section 6.1: In responses, Transfer-Encoding overrides Content-Length
-    if has_te && validate_transfer_encoding_value(te_buf[..]) {
+    // RFC 9112 Section 6.1 & RFC 7230 §3.3.3: In responses, Transfer-Encoding overrides Content-Length.
+    // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
+    if has_te {
+        guard validate_transfer_encoding_value(te_buf[..]) else { return false, 0; }
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
             wire[header_end_idx..],
             out_res.body,

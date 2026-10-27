@@ -654,6 +654,16 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
 
     // Parse and coalesce ranges
     let rs, r_err = parse_range_header(req_range_header, resource_len, true, 16);
+    if r_err == RangeError.InvalidUnit || r_err == RangeError.ExceededMaxRanges {
+        // RFC 9110 §14.1.2 & Go #81508 / #81858 (CVE-2026-78667): Unrecognized unit or excessive ranges (>16) must be ignored and served with 200 OK
+        out_status = 200;
+        insert_header(out_headers, "content-type", content_type);
+        var len_str: u8[..32] = [];
+        format(len_str, resource_len);
+        insert_header(out_headers, "content-length", len_str[..]);
+        OpenFn(0, resource_len, out_body);
+        return;
+    }
     if !rs.is_satisfiable || !is_ok(r_err) {
         out_status = 416;
         var cr_val: u8[>..] = [];
