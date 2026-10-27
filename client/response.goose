@@ -31,6 +31,13 @@ fn ok(err: const Error&) -> bool {
     return err.code == 0;
 }
 
+// RFC 9110 §15.2 & Go #65035: Validates that consecutive informational 1xx responses
+// do not exceed the configured threshold (default: 5) to prevent infinite loops.
+fn validate_informational_response_count(count: i32, max_limit: i32 = 5) -> bool {
+    guard count >= 0 && count <= max_limit else { return false; }
+    return true;
+}
+
 // ---- response model & inspectors -------------------------------------------
 
 const RES_PRESENCE_DATE: u16 = 1 << 0;

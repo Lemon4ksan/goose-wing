@@ -1446,15 +1446,111 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
                 return ERR_PROTOCOL_ERROR;
             }
         }
+
+        var has_connect_method = false;
+        var has_options_method = false;
+        var has_other_method = false;
+        var has_protocol = false;
+        var has_status = false;
+        for &f in out.fields {
+            if f.name[..] == ":method" {
+                if f.value[..] == "CONNECT" {
+                    has_connect_method = true;
+                } else if f.value[..] == "OPTIONS" {
+                    has_options_method = true;
+                } else {
+                    has_other_method = true;
+                }
+            }
+            if f.name[..] == ":protocol" {
+                has_protocol = true;
+            }
+            if f.name[..] == ":status" {
+                has_status = true;
+            }
+        }
+
+        // RFC 9113 Section 8.3: Pseudo-headers for requests MUST NOT appear in responses;
+        // pseudo-headers for responses MUST NOT appear in requests.
+        if name == ":status" {
+            for &f in out.fields {
+                if f.name[..] == ":method" || f.name[..] == ":scheme" ||
+                   f.name[..] == ":path" || f.name[..] == ":protocol" {
+                    return ERR_PROTOCOL_ERROR;
+                }
+            }
+        }
+        if name == ":method" || name == ":scheme" || name == ":path" || name == ":protocol" {
+            if has_status {
+                return ERR_PROTOCOL_ERROR;
+            }
+        }
+
+        // RFC 9113 Section 8.5 & RFC 8441:
+        // For CONNECT requests, :path and :scheme MUST be omitted unless Extended CONNECT (:protocol) is used.
+        if name == ":path" || name == ":scheme" {
+            if has_connect_method && !has_protocol {
+                return ERR_PROTOCOL_ERROR;
+            }
+        }
+        if name == ":method" && val == "CONNECT" {
+            if !has_protocol {
+                for &f in out.fields {
+                    if f.name[..] == ":path" || f.name[..] == ":scheme" {
+                        return ERR_PROTOCOL_ERROR;
+                    }
+                }
+            }
+        }
+        if name == ":protocol" {
+            for &f in out.fields {
+                if f.name[..] == ":method" && f.value[..] != "CONNECT" {
+                    return ERR_PROTOCOL_ERROR;
+                }
+            }
+        }
+        if name == ":method" && val != "CONNECT" {
+            if has_protocol {
+                return ERR_PROTOCOL_ERROR;
+            }
+        }
+
         // RFC 9113 Section 8.3.1 & Go #78762: :path must start with '/' or be '*' for OPTIONS
         if name == ":path" {
             guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
-            guard val[0] == '/' || (val.len == 1 && val[0] == '*') else {
-                return ERR_PROTOCOL_ERROR;
+            if val.len == 1 && val[0] == '*' {
+                // Asterisk-form '*' is ONLY valid for OPTIONS method
+                if has_connect_method || has_other_method {
+                    return ERR_PROTOCOL_ERROR;
+                }
+            } else {
+                guard val[0] == '/' else { return ERR_PROTOCOL_ERROR; }
+            }
+        }
+        if name == ":method" && val != "OPTIONS" {
+            for &f in out.fields {
+                if f.name[..] == ":path" && f.value[..] == "*" {
+                    return ERR_PROTOCOL_ERROR;
+                }
             }
         }
     } else {
         out.has_regular_header = true;
+
+        // RFC 9113 Section 8.2.1 & Section 8.3.1 (Go #78762):
+        // Validate Host header duplicates and consistency with :authority
+        if name == "host" {
+            for &f in out.fields {
+                if f.name[..] == "host" {
+                    return ERR_PROTOCOL_ERROR;
+                }
+                if f.name[..] == ":authority" {
+                    if f.value[..] != val {
+                        return ERR_PROTOCOL_ERROR;
+                    }
+                }
+            }
+        }
     }
 
     // Check Content-Length consistency (CVE-2026-78660 / Go #81115)

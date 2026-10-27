@@ -46,6 +46,27 @@ fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     }
 }
 
+// CVE-2026-42507 & Go #79346: Escapes control characters (< 0x20 and >= 0x7F) in untrusted
+// header and protocol tokens for safe diagnostic logging without CRLF injection.
+fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
+    for b in input {
+        if b == '\r' {
+            out.append("\\r");
+        } else if b == '\n' {
+            out.append("\\n");
+        } else if b == '\t' {
+            out.append("\\t");
+        } else if b < 0x20 || b >= 0x7F {
+            out.append("\\x");
+            let hex_chars: const u8[:] = "0123456789ABCDEF";
+            out.push(hex_chars[(b >> 4) & 0x0F]);
+            out.push(hex_chars[b & 0x0F]);
+        } else {
+            out.push(b);
+        }
+    }
+}
+
 // A sanitized HeaderItem, detecting sensitive headers and stripping control bytes.
 fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> HeaderItem {
     let sens = is_sensitive || is_heuristic_sensitive_header(name);

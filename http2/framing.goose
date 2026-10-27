@@ -133,9 +133,10 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
             return ERR_PROTOCOL_ERROR;
         }
     } else {
-        // Stream ID > 0 rules
+        // Stream ID > 0 rules (RFC 9113 §6.5, §6.7, §6.8, §6.10)
         if hdr.frame_type == FRAME_SETTINGS ||
            hdr.frame_type == FRAME_PING ||
+           hdr.frame_type == FRAME_GOAWAY ||
            hdr.frame_type == FRAME_PRIORITY_UPDATE {
             return ERR_PROTOCOL_ERROR;
         }

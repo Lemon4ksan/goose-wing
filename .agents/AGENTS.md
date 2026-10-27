@@ -40,7 +40,30 @@ Releases are automated via Google's `release-please` workflow on `main`.
     ```powershell
     powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
     ```
-  - Core libraries (`core.goose`, `wing.goose`) and all 79 test suites must pass without errors or warnings.
+  - Core libraries (`core.goose`, `wing.goose`) and all test suites must pass without errors or warnings.
+
+## Pragmatic systems engineering principles
+
+Adapted engineering invariants to preserve zero-allocation networking performance:
+
+- **Boundary discipline (parse once at boundary)**:
+  - Validate and parse raw network wire bytes into typed, bounded structures immediately upon ingress (L4 driver, TLS record layer, HTTP framer).
+  - Internal routines and hot-path state machines must trust validated types without redundant defensive assertions.
+  - Keep domain protocol logic in pure, deterministic functions without side effects where possible.
+- **Minimal diffs and laziness**:
+  - Implement the smallest self-contained change that solves the issue.
+  - Do not refactor adjacent code or reorganize modules unless directly required by the task.
+  - If code is already clear, local, and performs without dynamic allocations, leave it alone.
+- **Specification-first testing**:
+  - Test protocol behavior and wire-level conformance against RFC vectors and specifications, not internal private helper implementations.
+  - Write failing behavioral test vectors before fixing protocol bugs when reproducible.
+  - Do not introduce mock harnesses that obscure real transport dynamics.
+- **Idempotent lifecycle operations**:
+  - Connection teardowns, socket closures, FSM resets, and timer cancellations must produce identical safe states whether called once, repeated, or executed after a mid-flight failure.
+- **Prohibited anti-patterns**:
+  - Never split performance-critical FSMs, SWAR loops, or protocol decoders into micro-functions solely to satisfy arbitrary cyclomatic complexity metrics. Locality and compiler inlining take priority over shallow function counts.
+  - Avoid premature deduplication (DRY) across independent protocol boundaries where structural similarities exist but specifications differ.
+  - Never initiate a radical rewrite of working subsystems from first principles without explicit user instruction.
 
 ## Goose language rules
 
