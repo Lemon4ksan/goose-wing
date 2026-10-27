@@ -214,7 +214,11 @@ fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderM
             return snap;
         }
 
-        if !has_vary_field(snap.items, field_name) && snap.items.len < 16 {
+        if !has_vary_field(snap.items, field_name) {
+            guard snap.items.len < snap.items.cap && field_name.len <= 64 else {
+                snap.valid = false;
+                return snap;
+            }
             var item = VaryItem { .. };
             item.name.append(field_name);
             item.is_absent = !extract_vary_value(req_headers, field_name, item.value);

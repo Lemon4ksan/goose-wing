@@ -321,18 +321,26 @@ fn apply_decoded_headers_to_stream(st: H2ServerStream&, dec_list: const DecodedH
         let v = entry.value[..];
         if n == ":method" {
             st.method.clear();
-            st.method.append(v);
+            if v.len <= st.method.cap {
+                st.method.append(v);
+            }
         } else if n == ":path" {
             st.path.clear();
-            st.path.append(v);
+            if v.len <= st.path.cap {
+                st.path.append(v);
+            }
         } else if n == ":scheme" {
             st.scheme.clear();
-            st.scheme.append(v);
+            if v.len <= st.scheme.cap {
+                st.scheme.append(v);
+            }
         } else if n == ":authority" {
             st.authority.clear();
-            st.authority.append(v);
+            if v.len <= st.authority.cap {
+                st.authority.append(v);
+            }
         } else {
-            if st.headers.len < 32 {
+            if st.headers.len < st.headers.cap {
                 st.headers.push(make_header(n, v));
             }
         }
@@ -508,6 +516,9 @@ fn handle_h2_server_ingress<B>(
                     sess.header_accum_end_stream = (hdr.flags & FLAG_END_STREAM) != 0;
                     if fragment.len <= sess.header_accumulator.cap {
                         sess.header_accumulator.append(fragment);
+                    } else {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+                        return offset + total_frame_len, false;
                     }
                 }
             }
@@ -516,6 +527,9 @@ fn handle_h2_server_ingress<B>(
                 let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
                 if sess.header_accumulator.len + frame_payload.len <= sess.header_accumulator.cap {
                     sess.header_accumulator.append(frame_payload);
+                } else {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+                    return offset + total_frame_len, false;
                 }
                 if (hdr.flags & FLAG_END_HEADERS) != 0 {
                     var dec_list = DecodedH2HeaderList { .. };
@@ -550,7 +564,13 @@ fn handle_h2_server_ingress<B>(
                 }
 
                 if d_start <= d_end && d_end <= frame_payload.len {
-                    sess.streams[s_idx].body.append(frame_payload[d_start..d_end]);
+                    let d_len = d_end - d_start;
+                    if sess.streams[s_idx].body.len + d_len <= sess.streams[s_idx].body.cap {
+                        sess.streams[s_idx].body.append(frame_payload[d_start..d_end]);
+                    } else {
+                        emit_rst_stream(hdr.stream_id, ERR_INTERNAL_ERROR, out_wire);
+                        sess.streams[s_idx].active = false;
+                    }
                 }
 
                 on_data_frame_received(sess.conn, hdr, frame_payload.len as u32);

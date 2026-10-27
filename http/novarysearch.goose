@@ -169,17 +169,27 @@ fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&
 
         let k, v, has_eq = pair.split_once_byte('=');
         var p = QueryParam { .. };
-        let k_len = if k.len <= p.key.cap { k.len } else { p.key.cap };
+        guard k.len <= p.key.cap else {
+            out.clear();
+            return;
+        }
         if has_eq {
-            p.key.append(k[..k_len]);
-            let v_len = if v.len <= p.val.cap { v.len } else { p.val.cap };
-            p.val.append(v[..v_len]);
+            guard v.len <= p.val.cap else {
+                out.clear();
+                return;
+            }
+            p.key.append(k);
+            p.val.append(v);
         } else {
-            p.key.append(pair[..k_len]);
+            p.key.append(pair[..k.len]);
         }
 
         // Only keep if not ignored by No-Vary-Search rules
-        if !is_param_ignored(nvs, p.key[..]) && params.len < params.cap {
+        if !is_param_ignored(nvs, p.key[..]) {
+            guard params.len < params.cap else {
+                out.clear();
+                return;
+            }
             params.push(p);
         }
     }

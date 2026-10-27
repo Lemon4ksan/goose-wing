@@ -130,6 +130,7 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
     out_header.cty.clear();
     out_header.typ.clear();
     out_header.typ.append("JWT");
+    var had_error = false;
 
     json::each_member(reader) { key =>
         scratch.clear();
@@ -138,21 +139,33 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
             out_header.alg = parse_jwt_alg(alg_str);
         } else if key == "typ" {
             let typ_str = json::read_string(reader, scratch);
-            out_header.typ.clear();
-            out_header.typ.append(typ_str);
+            if typ_str.len <= out_header.typ.cap {
+                out_header.typ.clear();
+                out_header.typ.append(typ_str);
+            } else {
+                had_error = true;
+            }
         } else if key == "kid" {
             let kid_str = json::read_string(reader, scratch);
-            out_header.kid.clear();
-            out_header.kid.append(kid_str);
+            if kid_str.len <= out_header.kid.cap {
+                out_header.kid.clear();
+                out_header.kid.append(kid_str);
+            } else {
+                had_error = true;
+            }
         } else if key == "cty" {
             let cty_str = json::read_string(reader, scratch);
-            out_header.cty.clear();
-            out_header.cty.append(cty_str);
+            if cty_str.len <= out_header.cty.cap {
+                out_header.cty.clear();
+                out_header.cty.append(cty_str);
+            } else {
+                had_error = true;
+            }
         } else {
             json::skip(reader);
         }
     };
-    return json::finish(reader);
+    return json::finish(reader) && !had_error;
 }
 
 // ---- 3. JWT Claims Model & Parser -------------------------------------------
@@ -398,26 +411,43 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     out_claims.nbf = -1;
     out_claims.iat = -1;
     out_claims.custom_claims.clear();
+    var had_error = false;
 
     json::each_member(reader) { key =>
         scratch.clear();
         if key == "iss" {
             let s = json::read_string(reader, scratch);
-            out_claims.iss.append(s);
+            if s.len <= out_claims.iss.cap {
+                out_claims.iss.append(s);
+            } else {
+                had_error = true;
+            }
         } else if key == "sub" {
             let s = json::read_string(reader, scratch);
-            out_claims.sub.append(s);
+            if s.len <= out_claims.sub.cap {
+                out_claims.sub.append(s);
+            } else {
+                had_error = true;
+            }
         } else if key == "aud" {
             let p = json::peek(reader);
             if p == '"' {
                 let s = json::read_string(reader, scratch);
-                out_claims.aud.append(s);
+                if s.len <= out_claims.aud.cap {
+                    out_claims.aud.append(s);
+                } else {
+                    had_error = true;
+                }
             } else {
                 json::skip(reader);
             }
         } else if key == "jti" {
             let s = json::read_string(reader, scratch);
-            out_claims.jti.append(s);
+            if s.len <= out_claims.jti.cap {
+                out_claims.jti.append(s);
+            } else {
+                had_error = true;
+            }
         } else if key == "exp" {
             out_claims.exp = json::read_int(reader);
         } else if key == "nbf" {
@@ -428,36 +458,42 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
             let p = json::peek(reader);
             if p == '"' {
                 let s = json::read_string(reader, scratch);
-                if out_claims.custom_claims.len < out_claims.custom_claims.cap {
+                if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 && s.len <= 256 {
                     var item = JwtClaimItem { .. };
                     item.key.append(key);
                     item.val_str.append(s);
                     out_claims.custom_claims.push(item);
+                } else {
+                    had_error = true;
                 }
             } else if p == 't' || p == 'f' {
                 let b = json::read_bool(reader);
-                if out_claims.custom_claims.len < out_claims.custom_claims.cap {
+                if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 {
                     var item = JwtClaimItem { .. };
                     item.key.append(key);
                     item.val_bool = b;
                     item.is_bool = true;
                     out_claims.custom_claims.push(item);
+                } else {
+                    had_error = true;
                 }
             } else if (p >= '0' && p <= '9') || p == '-' {
                 let n = json::read_int(reader);
-                if out_claims.custom_claims.len < out_claims.custom_claims.cap {
+                if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 {
                     var item = JwtClaimItem { .. };
                     item.key.append(key);
                     item.val_num = n;
                     item.is_num = true;
                     out_claims.custom_claims.push(item);
+                } else {
+                    had_error = true;
                 }
             } else {
                 json::skip(reader);
             }
         }
     };
-    return json::finish(reader);
+    return json::finish(reader) && !had_error;
 }
 
 // ---- 4. JWT Validation Options ----------------------------------------------

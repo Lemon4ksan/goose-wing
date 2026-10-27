@@ -39,9 +39,7 @@ fn skip_whitespace_and_commas(raw: const u8[:], idx: i64&) {
 fn parse_digest_param_key(raw: const u8[:], idx: i64&, out_key: u8[..32]&) -> bool {
     out_key.clear();
     while idx < raw.len && raw[idx] != '=' && raw[idx] != ' ' && raw[idx] != '\t' {
-        if out_key.len < out_key.cap {
-            out_key.push(raw[idx]);
-        }
+        guard out_key.try_push(raw[idx]) else { return false; }
         idx += 1;
     }
     return out_key.len > 0;
@@ -61,9 +59,8 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
             if raw[idx] == '\\' && idx + 1 < raw.len {
                 idx += 1;
             }
-            if out_val.len < 128 {
-                out_val.push(raw[idx]);
-            }
+            guard out_val.len < out_val.cap else { return false; }
+            out_val.push(raw[idx]);
             idx += 1;
         }
         if idx < raw.len && raw[idx] == '"' {
@@ -74,9 +71,8 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
 
     // Token
     while idx < raw.len && raw[idx] != ',' && raw[idx] != ' ' && raw[idx] != '\t' && raw[idx] != '\r' && raw[idx] != '\n' {
-        if out_val.len < 128 {
-            out_val.push(raw[idx]);
-        }
+        guard out_val.len < out_val.cap else { return false; }
+        out_val.push(raw[idx]);
         idx += 1;
     }
     return true;

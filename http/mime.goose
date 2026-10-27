@@ -406,16 +406,12 @@ fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
             let esc = raw[cursor];
             // RFC 8941 Section 3.3.3: ONLY \" and \\ are permitted escape sequences
             guard esc == '"' || esc == '\\' else { return false; }
-            if out_bare.text.len < 1088 {
-                out_bare.text.push(esc);
-            }
+            guard out_bare.text.try_push(esc) else { return false; }
             cursor++;
         } else {
             // Printable ASCII %x20-7E only
             guard b >= 0x20 && b <= 0x7E else { return false; }
-            if out_bare.text.len < 1088 {
-                out_bare.text.push(b);
-            }
+            guard out_bare.text.try_push(b) else { return false; }
             cursor++;
         }
     }
@@ -573,16 +569,12 @@ fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareIte
             let v1 = lower_hex_val(raw[cursor + 2]);
             guard v0 >= 0 && v1 >= 0 else { return false; } // Uppercase hex (A-F) is FORBIDDEN
             let decoded_byte = ((v0 << 4) | v1) as u8;
-            if out_bare.text.len < 1088 {
-                out_bare.text.push(decoded_byte);
-            }
+            guard out_bare.text.try_push(decoded_byte) else { return false; }
             cursor += 3;
         } else {
             // Printable ASCII %x20-7E except % and "
             guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
-            if out_bare.text.len < 1088 {
-                out_bare.text.push(b);
-            }
+            guard out_bare.text.try_push(b) else { return false; }
             cursor++;
         }
     }
@@ -680,7 +672,8 @@ fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..1
                 break;
             }
         }
-        if !found && out_params.len < 16 {
+        if !found {
+            guard out_params.len < out_params.cap else { return false; }
             var new_p = SfvParam { key: param_key, value: param_val };
             out_params.push(new_p);
         }
@@ -721,9 +714,8 @@ fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> b
         var item = SfvItem { .. };
         guard parse_sfv_bare_item(raw, cursor, item.bare) else { return false; }
         guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
-        if member.inner_list.len < 32 {
-            member.inner_list.push(item);
-        }
+        guard member.inner_list.len < member.inner_list.cap else { return false; }
+        member.inner_list.push(item);
         guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
     }
     return parse_sfv_parameters(raw, cursor, member.inner_params);
@@ -769,9 +761,8 @@ fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
             guard parse_sfv_member_item(raw, cursor, member) else { return false; }
         }
 
-        if out.members.len < 64 {
-            out.members.push(member);
-        }
+        guard out.members.len < out.members.cap else { return false; }
+        out.members.push(member);
 
         var has_more = false;
         guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
@@ -822,7 +813,8 @@ fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
                 break;
             }
         }
-        if !found && out.entries.len < 64 {
+        if !found {
+            guard out.entries.len < out.entries.cap else { return false; }
             var new_entry = SfvDictEntry { key: key, member: member };
             out.entries.push(new_entry);
         }

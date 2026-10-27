@@ -798,6 +798,12 @@ fn handle_obs_fold(line: const u8[:], is_first_header: bool, allow_obs_fold: boo
     let orig_end = map.entries[prev_idx].values_end;
     let orig_val = map.raw_buf[orig_begin..orig_end];
 
+    let needed = orig_val.len + 1 + trimmed_continuation.len;
+    guard (map.raw_buf.len + needed) <= map.raw_buf.cap else {
+        map.valid = false;
+        return HeaderParseError.CapacityExceeded;
+    }
+
     let new_begin = map.raw_buf.len as u16;
     map.raw_buf.append(orig_val);
     map.raw_buf.push(' ');

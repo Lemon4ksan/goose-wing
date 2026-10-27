@@ -142,7 +142,7 @@ inline fn traceparent_is_sampled(tp: const Traceparent&) -> bool {
 // ---- 2. tracestate model & parsing -----------------------------------------
 
 struct TracestateMember {
-    key: u8[..64] = [],
+    key: u8[..256] = [],
     val: u8[..256] = [],
 }
 
