@@ -264,9 +264,15 @@ fn extract_headers_frame_payload(
 // ---- 7. settings parameter validation --------------------------------------
 
 // Validates an HTTP/2 SETTINGS parameter bounds (RFC 9113 Section 6.5.2 & RFC 9218 Section 5.1).
-fn validate_settings_parameter(param_id: u16, val: u32) -> u32 {
-    if param_id == SETTING_ENABLE_PUSH && val != 0 && val != 1 {
-        return ERR_PROTOCOL_ERROR;
+fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool = false) -> u32 {
+    if param_id == SETTING_ENABLE_PUSH {
+        if val != 0 && val != 1 {
+            return ERR_PROTOCOL_ERROR;
+        }
+        // RFC 9113 Section 6.5.2: Server MUST NOT send ENABLE_PUSH with val != 0 to client
+        if receiver_is_client && val != 0 {
+            return ERR_PROTOCOL_ERROR;
+        }
     }
     if param_id == SETTING_INITIAL_WINDOW_SIZE && val > 0x7FFFFFFF {
         return ERR_FLOW_CONTROL_ERROR;

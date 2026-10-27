@@ -1521,6 +1521,15 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
             }
         }
 
+        // RFC 9113 Section 8.3.1 & uWS #1949: :authority MUST NOT contain path, query, fragment, or userinfo
+        if name == ":authority" {
+            for b in val {
+                if b == '/' || b == '?' || b == '#' || b == '@' {
+                    return ERR_PROTOCOL_ERROR;
+                }
+            }
+        }
+
         // RFC 9113 Section 8.3.1 & Go #78762, Go #77843: :path must start with '/' or be '*' for OPTIONS
         if name == ":path" {
             guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
@@ -1549,6 +1558,18 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
         }
     } else {
         out.has_regular_header = true;
+
+        // RFC 9113 Section 8.1.2: Disallowed header fields in HTTP/2 trailer block
+        if out.is_trailer {
+            if name == "content-length" || name == "transfer-encoding" ||
+               name == "host" || name == "connection" || name == "keep-alive" ||
+               name == "upgrade" || name == "trailer" {
+                return ERR_PROTOCOL_ERROR;
+            }
+            if name == "te" && val != "trailers" {
+                return ERR_PROTOCOL_ERROR;
+            }
+        }
 
         // RFC 9113 Section 8.2.1 & Section 8.3.1 (Go #78762):
         // Validate Host header duplicates and consistency with :authority

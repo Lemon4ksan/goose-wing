@@ -860,6 +860,20 @@ fn validate_header_framing_conflicts(map: HeaderMap&, wk_id: WellKnownHeader, va
             map.valid = false;
             return HeaderParseError.InvalidContentLength;
         }
+    } else if wk_id == WellKnownHeader.Host {
+        // RFC 9112 Section 7.2: Duplicate Host header is forbidden (request smuggling protection)
+        if has_header(map, "host") {
+            map.valid = false;
+            return HeaderParseError.InvalidHeaderName;
+        }
+        // RFC 9112 Section 7.2, RFC 3986 Section 3.2.2 & uWS #1949:
+        // Host MUST NOT contain path ('/'), query ('?'), fragment ('#'), or userinfo ('@')
+        for b in val_trimmed {
+            if b == '/' || b == '?' || b == '#' || b == '@' {
+                map.valid = false;
+                return HeaderParseError.InvalidHeaderValue;
+            }
+        }
     }
     return HeaderParseError.None;
 }

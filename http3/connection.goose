@@ -413,13 +413,69 @@ fn handle_stream_data(
                 return H3_ERR_QPACK_DECOMPRESSION_FAILED;
             }
 
+            var seen_regular = false;
+            var pseudo_status_count: i32 = 0;
+            var pseudo_method_count: i32 = 0;
+            var pseudo_scheme_count: i32 = 0;
+            var pseudo_authority_count: i32 = 0;
+            var pseudo_path_count: i32 = 0;
+
             // Extract status code and validate fields
             for field in decoded_fields {
+                let is_pseudo = field.name.len > 0 && field.name[0] == ':';
+
                 // Trailers MUST NOT contain pseudo-headers (RFC 9114 Section 4.3)
-                if conn.streams[s_idx].headers_received && field.name.len > 0 && field.name[0] == ':' {
+                if conn.streams[s_idx].headers_received && is_pseudo {
                     conn.state = H3ConnState.Closed;
                     conn.error_code = H3_ERR_GENERAL_PROTOCOL;
                     return H3_ERR_GENERAL_PROTOCOL;
+                }
+
+                // RFC 9114 Section 4.3: Pseudo-headers MUST appear before any regular headers
+                if is_pseudo {
+                    if seen_regular {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
+                    }
+                    if field.name[..] == ":status" {
+                        pseudo_status_count++;
+                        if pseudo_status_count > 1 {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                            return H3_ERR_GENERAL_PROTOCOL;
+                        }
+                    } else if field.name[..] == ":method" {
+                        pseudo_method_count++;
+                        if pseudo_method_count > 1 {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                            return H3_ERR_GENERAL_PROTOCOL;
+                        }
+                    } else if field.name[..] == ":scheme" {
+                        pseudo_scheme_count++;
+                        if pseudo_scheme_count > 1 {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                            return H3_ERR_GENERAL_PROTOCOL;
+                        }
+                    } else if field.name[..] == ":authority" {
+                        pseudo_authority_count++;
+                        if pseudo_authority_count > 1 {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                            return H3_ERR_GENERAL_PROTOCOL;
+                        }
+                    } else if field.name[..] == ":path" {
+                        pseudo_path_count++;
+                        if pseudo_path_count > 1 {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                            return H3_ERR_GENERAL_PROTOCOL;
+                        }
+                    }
+                } else {
+                    seen_regular = true;
                 }
 
                 // Forbidden connection-specific headers in HTTP/3 (RFC 9114 Section 4.2)
