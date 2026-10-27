@@ -31,18 +31,24 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | IPv6 Zone ID SSRF Bypass | Link-local scope ID abuse (CVE-2025-22870) | Rejects URLs containing unescaped or percent-encoded zone IDs (e.g. `http://[fe80::1%25eth0]/`) when used across security boundaries. |
 | Quadratic Path Backtracking | Path traversal algorithmic DoS (CVE-2026-56860) | Iterative dot-segment normalization (`/a/../b/../c`) is performed in a single $O(N)$ linear forward scan over the flat buffer, so inputs such as `/././../` cannot trigger $O(N^2)$ backtracking. |
 | Mixed Dot-Segment Encoding | Traversal obfuscation (RFC 3986 §5.2.4) | Normalizes and rejects mixed encoded/unencoded traversal sequences such as `.%2e`, `%2e.`, and `%2e%2e`. |
-| Bracketed Hostname Validation | Hostname parsing confusion (CVE-2025-47912, CVE-2026-25679) | Enforces that `[` and `]` may only appear as enclosing brackets for valid RFC 5952 IPv6 addresses starting at character 0 of the host component. Trailing data after `]` or mid-host brackets are rejected with `UrlParseError.InvalidHost`. |
+| Bracketed Hostname Validation | Hostname parsing confusion (CVE-2025-47912, CVE-2026-25679) | Enforces that `[` and `]` may only appear as enclosing brackets for valid RFC 5952 IPv6 addresses starting at character 0 of the host component. Non-IPv6 addresses in brackets (such as `http://[127.0.0.1]/` or `http://[example.com]/`) fail with `UrlParseError.InvalidIpv6`. Mid-host brackets (such as `http://foo[::1]/`) fail with `UrlParseError.ForbiddenHostCodePoint`. |
+| Relative Path Authority Protection | URL authority promotion (RFC 3986 §4.2, Go #81292) | Relative paths starting with encoded slashes or double slashes do not promote path elements to authority components when resolved against base URLs. |
 | Port Range Bounds | Out-of-range port injection (RFC 3986) | Validates that numeric ports fall within $[0, 65535]$. Values $> 65535$ or non-numeric port characters return `UrlParseError.InvalidPort`. Port 0 is rejected as an invalid endpoint for HTTP client requests. |
 | CSRF Resource Isolation | W3C Fetch Metadata Policy | Evaluates Sec-Fetch-Site, Sec-Fetch-Mode, and Sec-Fetch-Dest across the 9-row decision matrix ($\pi_{FM}$). Cross-site state-changing requests are rejected before body parsing. |
-
+ 
 ## 4. HTTP/1.1 parsing and request smuggling (`http/headers.goose`)
-
+ 
 | Issue | Specification or CVE | goose-wing behavior |
 | :--- | :--- | :--- |
 | TE.CL / CL.TE Request Smuggling | RFC 9112 §6.3, CWE-444 | If a request contains both `Transfer-Encoding` and `Content-Length`, `Content-Length` is removed or the request is rejected. |
 | Duplicate Content-Length Headers | RFC 9112 §6.3.3 | Duplicate `Content-Length` headers are rejected with a hard syntax error unless all values are identical digits. Conflicting or comma-delimited `Content-Length` values are rejected immediately. |
+| Host Header Syntax Validation | RFC 9112 §7.2, uWebSockets #1949 | Validates that `Host` values consist solely of `uri-host [ ":" port ]`. Field values containing path (`/`), query (`?`), fragment (`#`), userinfo (`@`), or control characters return `HeaderParseError.InvalidHeaderValue`. |
+| Duplicate Host Headers | RFC 9112 §7.2, Go #60374 | Rejects requests with more than one `Host` header field with `HeaderParseError.InvalidHeaderName` to prevent request smuggling and cache poisoning. |
 | Bare LF Chunk Desync | Chunked framing desynchronization (CVE-2025-22871, RFC 9112 §7.1) | CRLF (`\r\n`) is required in chunk-size lines and chunk-data terminators. Any bare line feed (`\n`) without carriage return (`\r`) in chunk framing terminates the connection with a 400 Bad Request error. |
+| Chunk Extension Whitespace Tolerance | RFC 9112 §7.1.1, Go #82257 | Bad whitespace (`' '` or `\t`) preceding the semicolon in chunk extensions parses without failing or causing parser desynchronization. |
 | Hop-by-Hop Header Stripping | RFC 9110 §7.6.1 | Strips all standard hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailers`, `Transfer-Encoding`, `Upgrade`) along with any custom headers named in the `Connection` header token list before forwarding. |
+| Diagnostic Error Control Character Escaping | Log injection (CVE-2026-42507, Go #79346) | Untrusted header names and tokens included in diagnostic error messages escape ASCII control characters (< 0x20 and 0x7F) as hexadecimal `\xHH` sequences. |
+| Excessive 1xx Informational Response Limit | RFC 9110 §15.2, Go #65035 | Caps incoming consecutive 1xx informational responses at 5 before aborting the request, preventing unbounded client-side polling loops. |
 | Chunked Trailer Bombs | Unbounded memory exhaustion (CWE-400 / RFC 9112 §7.1.2) | Trailers are capped at 16 headers and 4,096 bytes total. Exceeding these bounds aborts parsing with a framing error. |
 | Sensitive Header Bans in Trailers | RFC 9110 §6.5.2 | These headers are rejected in chunked trailers: `Authorization`, `Set-Cookie`, `Cookie`, `Content-Range`, `TE`, `Host`, and `Transfer-Encoding`. |
 | Comma-Fold Isolation | RFC 9110 §5.3, RFC 6265bis | `Set-Cookie`, `WWW-Authenticate`, and `Proxy-Authenticate` headers are flagged with `HEADER_FLAG_NO_COMMA_FOLD`. They are never joined with commas, so cookie attributes stay intact. |
@@ -65,6 +71,9 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | `__Host-` Cookie Attribute Smuggling | RFC 6265bis §5.6 | `__Host-` cookies must have `Secure`, must not have a `Domain` attribute, and must have `Path=/`. Any attempt by a subdomain to set a `__Host-` cookie with a `Domain` attribute is rejected. |
 | `__Secure-` Cookie Over Non-TLS | RFC 6265bis §5.6 | Cookies prefixed with `__Secure-` must be served over HTTPS / TLS and must have the `Secure` flag. Plain HTTP attempts are discarded. |
 | Public Suffix Boundary Isolation | Mozilla PSL Rules | Prevents supercookies by prohibiting `Domain` attributes matching Public Suffixes (e.g. `com`, `co.uk`, `github.io`). |
+| Relative Path Attribute Ignored | Path override injection (RFC 6265bis §5.4, Go #82389) | Cookie `Path` attributes lacking a leading `/` (e.g. `Path=relative/path`) are ignored, preserving the default request URI path. |
+| Cache-Control max-age Arithmetic Saturation | RFC 9110 §13.2.1 | `max-age` delta seconds exceeding 31-bit integers clamp to $2,147,483,647$ seconds (`MAX_DELTA_SECONDS`) without signed arithmetic overflow. |
+| Cross-Origin Redirect Credential Stripping | Credential leakage (RFC 9110 §15.4, CVE-2025-4673, CVE-2024-45336) | `Authorization` and `Proxy-Authorization` headers are purged in-place when a redirect targets a different origin (scheme, host, or port). |
 | Cross-Origin Port Isolation | RFC 6265 §8.5 | Binds cookies to specific origin ports when configured, preventing port-based cross-application session leakage on `localhost`. |
 | Chromium 6-Round GC | Chromium `CookieMonster` | Enforces asymmetric eviction (Round 4 domain cookies purged before host cookies, Round 5 host cookies, Round 6 global LRU), respecting 30-day purge immunity. |
 
@@ -143,6 +152,7 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | Proxy Credential Origin Leakage | `Proxy-Authorization` headers leaking to target origin servers after CONNECT tunnel establishment. | `sanitize_tunnel_headers_for_origin()` strips `Proxy-Authorization`, `Proxy-Authenticate`, and `Proxy-Connection` before sending traffic through the tunnel. |
 | TLS Prefix Injection (Tunnel Buffer Smuggling) | Malicious or compromised HTTP proxy injecting raw bytes into the TCP stream immediately following `200 Connection Established`. | OkHttp parity: `verify_connect_tunnel_response()` checks buffer cleanliness (`!source.exhausted() || !sink.exhausted()`). Any leftover bytes after `\r\n\r\n` abort the connection with `TunnelBufferedTooManyBytes`. |
 | Slowloris & Reverse-Slowloris Tarpits | Malicious servers sending headers 1 byte every few seconds, perpetually resetting idle timers and exhausting client sockets. | 4-layer defense: Layer 1 Monotonic Cumulative Deadline (10s non-resetting), Layer 2 1s `Expect: 100-continue`, Layer 3 64 KB memory ceiling, Layer 4 256 B/s Byte-Drip gate. |
+| Scheme Isolation in Pool Keys | Connection pool reuse across schemes (CVE-2026-94441, Go #81656) | `PoolKey` binds the URI scheme (`h2c://` vs `https://`). Unencrypted HTTP/2 cleartext connections cannot be reused for TLS-secured HTTPS endpoints. |
 | Form-Data One-Shot Stream Retry Bug | Stale socket error re-sending an already drained one-shot request body stream, sending a truncated or empty body to the server. | Tier 1 stale socket retry requires `req.rewindable && !req.body_consumed` (Go `Request.GetBody` pattern). A consumed one-shot stream fails instead of being sent again with an empty body. |
 | Idempotency Violation on Retry | Retrying non-idempotent `POST` requests after network glitches, risking duplicate payment charges or duplicate mutations. | Tier 1 stale socket recovery restricts retries to idempotent methods (`GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`, `TRACE`) unless an explicit `Idempotency-Key` header is present. |
 | Retry Storms & Cascading Failures | Overloaded servers returning 503 or 429 attacked by synchronized client retry waves ($O(N^2)$ amplified load). | Tier 2 implements Full Jitter ($s_a = \mathcal{U}(0, \min(c, b \cdot 2^a))$), RFC 9110 `Retry-After` parsing (`1*DIGIT` and `IMF-fixdate` exact UTC round-trip), host circuit breaker, and Google SRE adaptive retry budget (capped at 20%). |
@@ -162,25 +172,48 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | Forbidden Connection Headers (RFC 9113 §8.2.2) | HTTP/1.1 connection-specific headers (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Transfer-Encoding`, `Upgrade`, `TE != trailers`) causing proxy confusion. | Rejected with `ERR_PROTOCOL_ERROR` when found in an HPACK block. |
 | Two-Level Flow Control Overflow & Negative Windows (RFC 9113 §6.9, Go #58456) | Window update overflow beyond $2^{31}-1$; peer shrinking `SETTINGS_INITIAL_WINDOW_SIZE` below current stream usage resulting in negative stream windows. | Flow control uses signed 64-bit integers (`int64`). `WINDOW_UPDATE` checking $win + inc > 2^{31}-1$ returns `ERR_FLOW_CONTROL_ERROR`. Initial window size decreases apply signed deltas, allowing streams to enter negative window states without overflow, preventing writes until replenished. |
 | RFC 9218 Urgency Starvation | Urgency 0..7 starvation between incremental (`i`) and non-incremental streams within the same urgency bucket. | Round-robin scheduler with `bucket_prefer_incremental[8]` alternation toggle preventing incremental stream starvation while prioritizing lower urgency values ($0 < 1 < \dots < 7$). |
+| GOAWAY Stream ID 0 Invariant | RFC 9113 §6.8, Go #80759 | `validate_frame_header_rules` enforces that GOAWAY frames carry stream ID 0. Non-zero stream IDs return `ERR_PROTOCOL_ERROR`. |
+| GOAWAY Peer Role Stream ID Parity | RFC 9113 §6.8, Go #80759 | `validate_goaway_last_stream_id` enforces peer stream initiation parity: clients can only acknowledge even stream IDs or 0; servers can only acknowledge odd stream IDs, 0, or $2^{31}-1$. |
+| Stream Ingestion Rejection After GOAWAY | RFC 9113 §6.8, Go #82365 | Incoming headers frames on streams with identifier $> \text{last\_stream\_id}$ after receiving GOAWAY return `ERR_REFUSED_STREAM`. |
+| Pseudo-Header Request and Response Segregation | RFC 9113 §8.3 | Request pseudo-headers (`:method`, `:path`, `:scheme`, `:authority`, `:protocol`) are rejected in responses; `:status` is rejected in requests with `ERR_PROTOCOL_ERROR`. |
+| Trailer Section Forbidden Pseudo-Headers | RFC 9113 §8.3, Go #78775 | Any pseudo-header appearing in a trailer block returns `ERR_PROTOCOL_ERROR`. |
+| Trailer Section Disallowed Framing Headers | RFC 9113 §8.1.2 | Framing and routing headers (`content-length`, `transfer-encoding`, `host`, `connection`, `keep-alive`, `upgrade`, `trailer`, and `te != "trailers"`) in trailer blocks return `ERR_PROTOCOL_ERROR`. |
+| :path Pseudo-Header Character Validation | RFC 9113 §8.3.1, Go #77843 | Rejects raw `<`, `>`, `"`, `\`, `^`, `{`, `|`, `}`, interior spaces, and ASCII control characters with `ERR_PROTOCOL_ERROR`. |
+| Asterisk-Form :path Restriction | RFC 9113 §8.3.1, RFC 9110 §7.1 | Value `*` for `:path` is permitted solely when `:method` is `OPTIONS`. All other methods return `ERR_PROTOCOL_ERROR`. |
+| Standard CONNECT Scheme and Path Rejection | RFC 9113 §8.5, RFC 8441 | Rejects standard CONNECT requests containing `:scheme` or `:path` without `:protocol` with `ERR_PROTOCOL_ERROR`. |
+| :authority Character Validation | RFC 9113 §8.3.1, uWebSockets #1949 | Rejects path (`/`), query (`?`), fragment (`#`), and userinfo (`@`) in `:authority` with `ERR_PROTOCOL_ERROR`. |
+| Client SETTINGS Rejection of ENABLE_PUSH | RFC 9113 §6.5.2 | Rejects `SETTINGS_ENABLE_PUSH != 0` received by a client from a server with `ERR_PROTOCOL_ERROR`. |
 
-## 15. Test coverage
+## 15. HTTP/3, QPACK, and WebTransport (`http3/*`, `realtime/webtransport.goose`)
 
-The defenses in this document are tested by 30 suites in `tests/`:
-- `tests/http2_suite_test.goose` (188 checks): RFC 7541 256-state Huffman FSM, zero-allocation dynamic table, binary framing, signed two-level flow control, RFC 9218 priority write scheduler, Rapid Reset token bucket, CONTINUATION flood & slow-drip defense, empty frame flood, and PING/SETTINGS quotas.
-- `tests/sec_h2_test.goose` (136 checks): CONTINUATION flood & interleaving guard (CVE-2024-27983), Rapid Reset & resource DoS floods (CVE-2023-44487 & CVE-2019-9512), SETTINGS bounds, and stream ID invariants.
-- `tests/net_pool_test.goose` (195 checks): 5D PoolKey isolation, two-slice WantQueue, is_connection_healthy, H2 IP coalescing, soft caps.
-- `tests/net_happy_eyeballs_test.goose` (49 checks): RFC 8305 / HEv3 racing, 50 ms RD, CAD $\ge 10\text{ ms}$ floor, interleaving, Last Resort NAT64.
-- `tests/net_proxy_test.goose` (97 checks): SOCKS5/5h, RFC 1929 version 0x01, credential stripping, tunnel buffer hygiene, 4-tier Slowloris.
-- `tests/net_retry_test.goose` (82 checks): Tier 1 stale socket guards, one-shot stream defense, QUIC fallback, Full/Equal/Decorrelated Jitter, RFC 9110 Retry-After, circuit breaker, Google SRE budget.
-- `tests/sec_smuggler_test.goose` (122 checks): Request smuggling, bare CR rejection, chunked LF desync, TE validation, URL quadratic backtracking, SFV overflow.
-- `tests/sec_ct_test.goose` (263 checks): Constant-time math, Dudect Welch's $t$-test, AES-256-GCM, XChaCha20-Poly1305, CryptoJar AAD timestamp binding.
-- `tests/sec_csrf_test.goose` (41 checks): W3C Fetch Metadata 9-row decision matrix, fail-closed cookie gate, Vary & HSTS injection.
-- `tests/sec_rate_limiter_test.goose` (38 checks): GCRA TAT virtual scheduling, multi-cell reservation, 256-micro-shard table, 5% DDoS sampling.
-- `tests/server_router_test.goose` (48 checks): ZeroAllocParams, static route precedence, dot-segment canonicalization, 405 Method Not Allowed + Allow, Tako v2 pool, pipeline integration.
-- `tests/cookie_engine_test.goose` (78 checks) & `tests/cookie_vectors_test.goose` (1,113 checks): CookieMonster WPT compliance, layered prefixes, 6-round GC.
-- `tests/http_headers_test.goose` (65 checks), `tests/http_mime_test.goose` (87 checks), `tests/http_multipart_test.goose` (60 checks): Zero-heap HTTP engine.
-- `tests/cache_engine_test.goose` (98 checks): RFC 9111 HTTP caching engine, 304 merge, ETag validators, single-flight request collapsing.
-- `tests/core_time_test.goose` (334 checks), `tests/core_url_test.goose` (357 checks), `tests/core_sync_test.goose` (68 checks), `tests/core_math_test.goose` (134 checks), `tests/core_compress_test.goose` (326 checks): Core runtime primitives.
-- `tests/sec_cve_test.goose` (56 checks), `tests/sec_protocol_test.goose` (36 checks), `tests/sec_cookie_test.goose` (38 checks), `tests/sec_concurrency_test.goose` (18 checks), `tests/app_session_test.goose` (80 checks), `tests/sec_bomber_test.goose` (42 checks), `tests/sec_breach_test.goose` (28 checks), `tests/sec_url_test.goose` (44 checks).
+| Issue | Specification or CVE | goose-wing behavior |
+| :--- | :--- | :--- |
+| Duplicate Control Stream Creation | RFC 9114 §6.2.1, Go #78102 | A second unidirectional stream carrying type `0x00` (`H3_STREAM_CONTROL`) terminates the connection with `H3_ERR_STREAM_CREATION` (0x0103). |
+| QPACK Duplicate Pseudo-Headers | RFC 9114 §4.3 | Rejects duplicate `:status`, `:method`, `:scheme`, `:authority`, or `:path` pseudo-headers with `H3_ERR_GENERAL_PROTOCOL` (0x0101). |
+| QPACK Pseudo-Header Ordering | RFC 9114 §4.3 | Pseudo-headers appearing after regular headers in a HEADERS frame terminate the connection with `H3_ERR_GENERAL_PROTOCOL` (0x0101). |
+| WebTransport Session Negotiation | draft-ietf-webtrans-http3-16, RFC 9297 | Validates `:method = "CONNECT"` and `:protocol = "webtransport"`, rejecting non-conforming session requests with 400 Bad Request. |
+| WebTransport Stream Type Isolation | draft-ietf-webtrans-http3-16 §4.2 | Unidirectional streams carrying varint prefix `0x54` route to WebTransport session queues; bidirectional streams route via framing type `0x4143`. Unmatched session IDs return protocol errors. |
 
-Total: 3,630+ checks across 30 suites.
+## 16. WebSocket protocol and handshake (`realtime/websocket.goose`)
+
+| Issue | Specification or CVE | goose-wing behavior |
+| :--- | :--- | :--- |
+| Missing Host Header on Upgrade | RFC 6455 §4.2.1 | Upgrade requests lacking a `Host` header field fail with HTTP 400 Bad Request before generating an accept token. |
+| Subprotocol Agreement Verification | RFC 6455 §4.2.2 | If the server selects a subprotocol, it must match one of the tokens requested in the client's `Sec-WebSocket-Protocol` header. Unmatched subprotocols are not negotiated. |
+| Control Frame Fragmentation Rejection | RFC 6455 §5.5 | Control frames (Ping, Pong, Close) with `FIN = 0` are rejected with close code 1002 (Protocol Error). |
+| Control Frame Size Limit | RFC 6455 §5.5 | Control frame payloads $> 125$ bytes are rejected with close code 1002 (Protocol Error). |
+| Zero-Length Ping and Pong Roundtrip | RFC 6455 §5.5, Go #7825 | Empty Ping frames (`payload.len == 0`) trigger an empty Pong response with matched application data. |
+| Close Frame 1-Byte Payload Rejection | RFC 6455 §5.5.1 | Close frames with a payload length of exactly 1 byte fail the connection with close code 1002 (Protocol Error). |
+| Close Frame Reserved Status Codes | RFC 6455 §7.4.2 | Rejects status codes in Close frames that are reserved or forbidden on the wire (0-999, 1004, 1005, 1006, 1015, and 1016-2999). |
+
+## 17. Test coverage
+
+The defenses in this document are tested by 86 test suites across `tests/`:
+- Protocol tracking suites: `tests/red_issues_tracker_phase5_test.goose`, `tests/red_issues_tracker_phase6_test.goose`, `tests/red_issues_tracker_phase7_test.goose`, `tests/red_issues_tracker_phase8_test.goose`, `tests/red_issues_tracker_phase9_test.goose`.
+- HTTP/2 reference suites: `tests/http2_suite_test.goose`, `tests/sec_h2_test.goose`, `tests/http2_stream_fsm_test.goose`.
+- HTTP/3 and WebTransport suites: `tests/http3_test.goose`, `tests/webtransport_test.goose`.
+- WebSocket and realtime suites: `tests/websocket_test.goose`, `tests/uwebsockets_bugs_regression_test.goose`.
+- Security and perimeter suites: `tests/sec_cve_test.goose`, `tests/sec_smuggler_test.goose`, `tests/sec_csrf_test.goose`, `tests/sec_rate_limiter_test.goose`, `tests/sec_ct_test.goose`, `tests/sec_cookie_test.goose`.
+- Core transport and pool suites: `tests/net_pool_test.goose`, `tests/net_proxy_test.goose`, `tests/net_happy_eyeballs_test.goose`, `tests/net_retry_test.goose`.
+
+Total: 3,800+ checks across 86 suites.

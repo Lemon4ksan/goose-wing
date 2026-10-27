@@ -96,11 +96,13 @@
 ### 4.1 Flat-buffer `HeaderMap` (`http/headers.goose`)
 - Flat buffer: Stores raw header text in a flat 8 KB continuous buffer with `\0\0` termination (Chromium `raw_headers_` pattern) accompanied by 128 compact 16-byte `HeaderEntry` descriptor records.
 - O(1) inline lookups: 64 compile-time slots (`inline_slots[64]`) provide index-based lookups for canonical headers (`Host`, `Authorization`, `Content-Type`, `User-Agent`, `Set-Cookie`, etc.) without hashing.
+- Host header validation (RFC 9112 §7.2, uWebSockets #1949): Enforces that `Host` contains only `uri-host [ ":" port ]`. Rejects values containing `/`, `?`, `#`, or `@` with `HeaderParseError.InvalidHeaderValue`. Rejects duplicate `Host` headers with `HeaderParseError.InvalidHeaderName`.
 - Vectorized SWAR tokenizer: 64-bit SIMD Within A Register algorithms (`swar_has_zero_byte`, `swar_has_byte`, `swar_has_ctl_or_del`) accelerate delimiter and control character validation.
 - Chromium 304 cache merging: In-place replacement of cached headers on HTTP 304 Not Modified responses.
 
 ### 4.2 RFC 9112 chunked transfer coding
 - CRLF only (CVE-2025-22871): Rejects bare LF (`\n`) in chunk-size lines, chunk data boundaries, and trailers. A bare LF aborts parsing with a 400 Bad Request error.
+- Chunk extension whitespace tolerance (RFC 9112 §7.1.1, Go #82257): Accepts bad whitespace (`' '` or `\t`) preceding the semicolon in chunk extensions without failing.
 - TE.CL / CL.TE handling:
   - If both `Transfer-Encoding` and `Content-Length` are present, `Content-Length` is stripped or the request is rejected, per RFC 9112 §6.3.
   - Duplicate `Content-Length` headers are rejected unless all values are identical digits.
@@ -119,6 +121,10 @@
 - HPACK 256-state Huffman FSM: Nibble-based Huffman decoder operating on 4-bit nibbles with a 16 KiB table that fits in the L1 data cache.
 - Dynamic table with in-place ring buffer: Zero-heap sliding window table with byte-exact eviction and integer shift bounds preventing Trail of Bits FIND-401 integer overflow (CVE-2022-41723).
 - Lowercase header invariant: Per RFC 9113 §8.2.1, outgoing response headers are lowercased during serialization.
+- Pseudo-header and trailer rules (RFC 9113 §8.1.2, §8.3, Go #78775): Pseudo-headers starting with `:` are forbidden in trailer sections and return `ERR_PROTOCOL_ERROR`. Trailer sections containing connection-specific or message framing headers (`content-length`, `transfer-encoding`, `host`, `connection`, `keep-alive`, `upgrade`, `trailer`, `te != "trailers"`) return `ERR_PROTOCOL_ERROR`.
+- Target URI validation (RFC 9113 §8.3.1, Go #77843, uWebSockets #1949): The `:path` pseudo-header rejects characters `<`, `>`, `"`, `\`, `^`, `{`, `|`, `}`, interior spaces, and ASCII controls. The `:authority` pseudo-header rejects `/`, `?`, `#`, and `@`. Violations fail with `ERR_PROTOCOL_ERROR`.
+- Push promise settings negotiation (RFC 9113 §6.5.2): Clients reject server `SETTINGS` frames where `SETTINGS_ENABLE_PUSH != 0` with `ERR_PROTOCOL_ERROR`.
+- GOAWAY stream ID parity (RFC 9113 §6.8, Go #80759, Go #82365): Client-sent GOAWAY frames must specify stream ID 0 or an even stream ID. Server-sent GOAWAY frames must specify 0, an odd stream ID, or `0x7FFFFFFF`. Incoming streams with ID greater than `last_stream_id` are rejected with `ERR_REFUSED_STREAM`.
 
 ### 5.2 Server frame multiplexer (`server/h2_multiplexer.goose`)
 - Connection preface validation: Validates the 24-byte client connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`).
@@ -141,9 +147,13 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 
 ### 6.2 HTTP/3 and QPACK (RFC 9114, RFC 9204)
 - QPACK dynamic and static codec: 99-entry static table codec and encoder/decoder stream framing with prefix integer decoders.
-- Unidirectional stream coordination:
+- Pseudo-header invariants (RFC 9114 §4.3):
+  - Duplicate pseudo-headers (`:status`, `:method`, `:scheme`, `:authority`, `:path`) are rejected with `H3_ERR_GENERAL_PROTOCOL` (0x0101).
+  - Pseudo-headers must precede regular headers in the decoded field section. Any pseudo-header encountered after regular headers triggers `H3_ERR_GENERAL_PROTOCOL`.
+- Unidirectional stream coordination (RFC 9114 §6.2):
   - Control Stream (type `0x00`) with mandatory initial `SETTINGS` frame.
   - QPACK Encoder (`0x02`) and Decoder (`0x03`) unidirectional streams.
+  - Duplicate control, encoder, or decoder streams are rejected with `H3_STREAM_CREATION_ERROR` (0x0103).
   - If the peer closes a critical stream, the connection is closed with `H3_CLOSED_CRITICAL_STREAM`.
 - Alt-Svc promotion (RFC 7838):
   - Cache tracking advertised HTTP/3 endpoints with `ma` (max-age) and exponential failure backoff ($5\text{s}, 10\text{s}, 20\text{s} \dots 320\text{s}$).
@@ -162,9 +172,14 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 
 ### 7.1 WebSocket (RFC 6455, RFC 8441)
 - 64-bit SWAR masking: Payload masking and unmasking using 64-bit unrolled XOR iterations (`core::read_be_u64` and `core::write_be_u64_at`), 8 bytes per iteration.
-- Control frame invariants: Control frames (`PING`, `PONG`, `CLOSE`) must have `FIN == 1` and a payload of at most 125 bytes; fragmented control frames are rejected.
+- Control frame invariants: Control frames (`PING`, `PONG`, `CLOSE`) must have `FIN == 1` and a payload of at most 125 bytes; fragmented control frames are rejected with close code 1002.
+- Ping and Pong handling (RFC 6455 §5.5, Go #7825): Empty Ping frames (`payload.len == 0`) trigger an empty Pong response with matching empty payload without terminating the connection.
+- Close frame validation (RFC 6455 §5.5.1, §7.4.2): Payloads of exactly 1 byte and reserved status codes (0-999, 1004, 1005, 1006, 1015, 1016-2999) trigger close code 1002 (Protocol Error).
 - Extended CONNECT: Multiplexes WebSocket connections over HTTP/2 and HTTP/3 streams without spawning dedicated TCP connections.
-- Zero-alloc handshake: Calculates `Sec-WebSocket-Accept` using fixed-stack 128-byte SHA-1 and Base64 buffers.
+- Zero-alloc handshake:
+  - Validates mandatory headers (`Upgrade: websocket`, `Connection: Upgrade`, `Sec-WebSocket-Key`, and RFC 6455 §4.2.1 `Host`). Missing `Host` returns 400 Bad Request.
+  - Subprotocol negotiation (RFC 6455 §4.2.2): Matches selected subprotocols against client requested tokens in `Sec-WebSocket-Protocol`. Unmatched subprotocols are never returned.
+  - Calculates `Sec-WebSocket-Accept` using fixed-stack 128-byte SHA-1 and Base64 buffers.
 
 ### 7.2 Server-sent events (W3C EventSource)
 - Incremental line normalizer: Stream parser that normalizes `CR`, `LF`, and `CRLF` boundaries across fragmented network reads.
