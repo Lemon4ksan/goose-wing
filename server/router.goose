@@ -391,11 +391,11 @@ fn is_dot_dot_segment(seg: const u8[:]) -> bool {
 
 // Resolves dot-segments (. and ..), collapses duplicate slashes, and strips query strings and fragments.
 // Output always begins with '/' and clamps at root boundary (RFC 3986 Section 5.2.4).
-fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
+fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
     out.clear();
     guard raw_path.len > 0 else {
         out.push('/');
-        return;
+        return true;
     }
 
     var s = strip_query_and_fragment(raw_path);
@@ -432,7 +432,10 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
             continue;
         }
 
-        guard out.len + seg.len + 1 <= out.cap else { break; }
+        guard out.len + seg.len + 1 <= out.cap else {
+            out.clear();
+            return false;
+        }
         out.push('/');
         out.append(seg);
     }
@@ -440,6 +443,7 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
     if out.len == 0 {
         out.push('/');
     }
+    return true;
 }
 
 // ---- route matching --------------------------------------------------------
@@ -520,7 +524,7 @@ fn match_path(
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
     var canon_path: u8[..512] = [];
-    canonicalize_route_path(path, canon_path);
+    guard canonicalize_route_path(path, canon_path) else { return RouteMatchResult.NotFound; }
     let eff_path = canon_path[..];
 
     guard tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }

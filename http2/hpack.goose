@@ -1178,6 +1178,26 @@ fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, 
     return true;
 }
 
+fn get_indexed_header_name<B>(dt: const DynamicTable&, idx: u64, out_name: B&) -> bool {
+    out_name.clear();
+    guard idx >= 1 else { return false; }
+
+    if idx <= HPACK_STATIC_TABLE_ENTRIES {
+        let s, ok = get_hpack_static_field(idx);
+        guard ok else { return false; }
+        out_name.append(s.name);
+        return true;
+    }
+
+    let entry, ok = lookup_dynamic_index(dt, idx);
+    guard ok else { return false; }
+
+    let n_off = entry.name_off;
+    let n_len = entry.name_len as u32;
+    out_name.append(dt.arena[n_off..n_off + n_len]);
+    return true;
+}
+
 // Updates dynamic table maximum size per HPACK instruction (001xxxxx).
 fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool {
     guard new_max <= dt.max_allowed_size else { return false; }
@@ -1331,8 +1351,7 @@ fn decode_hpack_header_block(
                 mut_off = next_name_off;
             } else {
                 // Indexed name
-                var tmp_val: u8[..16] = [];
-                let ok_n = get_indexed_header(dt, name_idx, entry.name, tmp_val);
+                let ok_n = get_indexed_header_name(dt, name_idx, entry.name);
                 guard ok_n else { return ERR_COMPRESSION_ERROR; }
             }
 
@@ -1392,8 +1411,7 @@ fn decode_hpack_header_block(
             guard ok_name else { return ERR_COMPRESSION_ERROR; }
             mut_off = next_name_off;
         } else {
-            var tmp_val: u8[..16] = [];
-            let ok_n = get_indexed_header(dt, name_idx, entry.name, tmp_val);
+            let ok_n = get_indexed_header_name(dt, name_idx, entry.name);
             guard ok_n else { return ERR_COMPRESSION_ERROR; }
         }
 
@@ -1521,10 +1539,10 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
             }
         }
 
-        // RFC 9113 Section 8.3.1 & uWS #1949: :authority MUST NOT contain path, query, fragment, or userinfo
+        // RFC 9113 Section 8.3.1 & uWS #1949: :authority MUST NOT contain path, query, fragment, userinfo, whitespace or commas
         if name == ":authority" {
             for b in val {
-                if b == '/' || b == '?' || b == '#' || b == '@' {
+                if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
                     return ERR_PROTOCOL_ERROR;
                 }
             }

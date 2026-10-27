@@ -1339,7 +1339,8 @@ fn get_all_values(map: const HeaderMap&, name: const u8[:], out_values: u8[..256
             if eq_ascii_fold(entry_name, name) {
                 let val = map.raw_buf[entry.values_begin..entry.values_end];
                 var item: u8[..256] = [];
-                item.append(val);
+                let v_len = core::ct_min_i64(val.len, item.cap);
+                item.append(val[..v_len]);
                 out_values.push(item);
             }
         }
@@ -1501,7 +1502,7 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&)
                 let token = trim_lws(val[cursor..comma_idx]);
                 // Empty connection token (e.g. trailing comma or empty header #46313) is skipped without aborting
                 if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
-                    if out_tokens.len < out_tokens.cap {
+                    if out_tokens.len < out_tokens.cap && token.len <= 64 {
                         var tok_buf: u8[..64] = [];
                         tok_buf.append(token);
                         out_tokens.push(tok_buf);

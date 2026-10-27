@@ -13,7 +13,7 @@ import http.headers;
 
 // Unquotes a double-quoted string (RFC 9110 Section 5.6.4).
 // Rejects unclosed quotes, escaped trailing delimiters, and control characters.
-fn strict_unquote<B>(input: const u8[:], out: B&) -> bool {
+fn strict_unquote<B>(input: const u8[:], out: B&, max_out_len: i64 = 65536) -> bool {
     guard input.len >= 2 else { return false; }
     guard input[0] == '"' && input[input.len - 1] == '"' else { return false; }
 
@@ -36,6 +36,7 @@ fn strict_unquote<B>(input: const u8[:], out: B&) -> bool {
             let next_b = input[i + 1];
             // Quoted-pair allows visible ASCII and space
             guard (next_b >= 0x20 && next_b <= 0x7E) || next_b == '\t' else { return false; }
+            guard out.len < max_out_len else { return false; }
             out.push(next_b);
             i += 2;
         } else {
@@ -45,6 +46,7 @@ fn strict_unquote<B>(input: const u8[:], out: B&) -> bool {
             } else if b == 0x7F {
                 return false;
             }
+            guard out.len < max_out_len else { return false; }
             out.push(b);
             i++;
         }
@@ -83,14 +85,16 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
     let p_name = p_name_raw.trim_lws();
     let p_val_raw = p_val_raw.trim_lws();
     guard is_valid_header_name(p_name) else { return false; }
+    guard p_name.len <= p_item.name.cap else { return false; }
 
     p_item.name.append(p_name);
     to_lower(p_item.name[..]);
 
     if p_val_raw.len > 0 && p_val_raw[0] == '"' {
-        guard strict_unquote(p_val_raw, p_item.value) else { return false; }
+        guard strict_unquote(p_val_raw, p_item.value, 256) else { return false; }
     } else {
         guard is_valid_header_value(p_val_raw) else { return false; }
+        guard p_val_raw.len <= p_item.value.cap else { return false; }
         p_item.value.append(p_val_raw);
     }
     return true;
@@ -133,9 +137,17 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
             continue;
         }
 
-        if mt.params.len < 16 {
-            mt.params.push(p_item);
+        // RFC 2046 / Go #82343: Duplicate boundary parameter MUST be rejected
+        if p_item.name[..] == "boundary" {
+            for &existing in mt.params {
+                if existing.name[..] == "boundary" {
+                    return false;
+                }
+            }
         }
+
+        guard mt.params.len < mt.params.cap else { return false; }
+        mt.params.push(p_item);
     }
     return true;
 }
@@ -152,6 +164,7 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     let raw_type, raw_sub, has_slash = mime_part.split_once_byte('/');
     guard has_slash && raw_type.len > 0 && raw_sub.len > 0 else { return mt, false; }
     guard is_valid_header_name(raw_type) && is_valid_header_name(raw_sub) else { return mt, false; }
+    guard raw_type.len <= mt.type_name.cap && raw_sub.len <= mt.subtype.cap else { return mt, false; }
 
     mt.type_name.append(raw_type);
     to_lower(mt.type_name[..]);

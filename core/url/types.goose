@@ -11,6 +11,7 @@ import std;
 enum UrlParseError {
     None,
     EmptyInput,
+    InputTooLong,
     InvalidScheme,
     MissingHost,
     InvalidHost,

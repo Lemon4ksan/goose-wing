@@ -25,7 +25,7 @@ fn default_port_for_scheme(scheme_str: const u8[:]) -> i32 {
 }
 
 // Fast-path pre-cleaner: trims C0 controls and spaces (<= 0x20) and strips 0x09, 0x0A, 0x0D
-fn clean_input_string<B>(raw: const u8[:], out: B&) {
+fn clean_input_string<B>(raw: const u8[:], out: B&) -> bool {
     out.clear();
     var start_idx = 0;
     while start_idx < raw.len && raw[start_idx] <= 0x20 {
@@ -37,15 +37,21 @@ fn clean_input_string<B>(raw: const u8[:], out: B&) {
     }
 
     let trimmed = raw[start_idx..end_idx];
+    guard trimmed.len <= out.cap else { return false; }
     if find_any(trimmed, URL_TAB_CRLF_SET) < 0 {
         out.append(trimmed);
     } else {
         for char_byte in trimmed {
             if char_byte != 0x09 && char_byte != 0x0A && char_byte != 0x0D {
-                out.push(char_byte);
+                if out.len < out.cap {
+                    out.push(char_byte);
+                } else {
+                    return false;
+                }
             }
         }
     }
+    return true;
 }
 
 fn has_forbidden_host_code_point(host_str: const u8[:]) -> bool {
@@ -144,7 +150,9 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
     var out_url = Url { valid: false, .. };
 
     var cleaned: u8[..2048] = [];
-    clean_input_string(raw_input, cleaned);
+    guard clean_input_string(raw_input, cleaned) else {
+        return out_url, UrlParseError.InputTooLong;
+    }
     guard cleaned.len > 0 else {
         if has_base {
             return resolve_relative_path_against_base(out_url, base_url, "");
@@ -164,6 +172,9 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
 
     if colon_idx > 0 {
         // Explicit scheme present
+        guard colon_idx <= scheme_str.cap else {
+            return out_url, UrlParseError.InvalidScheme;
+        }
         scheme_str.append(input_bytes[..colon_idx]);
         to_lower(scheme_str[..]);
         remainder_start = colon_idx + 1;
@@ -697,6 +708,9 @@ fn extract_host_and_port_canonical<B>(
     guard validate_host_punycode_labels(host_str) else {
         return UrlParseError.InvalidHost;
     }
+    guard host_str.len <= host_out.cap else {
+        return UrlParseError.InvalidHost;
+    }
 
     host_out.append(host_str);
 
@@ -950,7 +964,7 @@ fn is_windows_drive_segment(seg: const u8[:]) -> bool {
     return false;
 }
 
-fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..256]&, last_was_dot: bool&) {
+fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..1024]&, last_was_dot: bool&) -> bool {
     if is_dot_segment(seg) {
         last_was_dot = true;
     } else if is_double_dot_segment(seg) {
@@ -970,6 +984,7 @@ fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_start
         }
     } else {
         last_was_dot = false;
+        guard out_url.href.len + seg.len + 1 <= out_url.href.cap else { return false; }
         out_url.href.push('/');
         let cur_start = out_url.href.len as i32;
         if is_file && seg_starts.len == 0 && is_windows_drive_segment(seg) && seg[1] == '|' {
@@ -978,10 +993,10 @@ fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_start
         } else {
             out_url.href.append(seg);
         }
-        if seg_starts.len < seg_starts.cap {
-            seg_starts.push(cur_start);
-        }
+        guard seg_starts.len < seg_starts.cap else { return false; }
+        seg_starts.push(cur_start);
     }
+    return true;
 }
 
 fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
@@ -994,7 +1009,7 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
     }
 
     let is_file = out_url.scheme_end == 4 && out_url.href.len >= 4 && out_url.href[..4] == "file";
-    var seg_starts: i32[..256] = [];
+    var seg_starts: i32[..1024] = [];
 
     var scan_idx = 0;
     if raw_path[0] == '/' || (is_spec && raw_path[0] == '\\') {
@@ -1011,7 +1026,10 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
 
         if is_delim {
             let seg = raw_path[seg_start..scan_idx];
-            handle_path_segment(seg, is_file, out_url, seg_starts, last_was_dot);
+            guard handle_path_segment(seg, is_file, out_url, seg_starts, last_was_dot) else {
+                out_url.valid = false;
+                return;
+            }
             seg_start = scan_idx + 1;
         }
         scan_idx++;

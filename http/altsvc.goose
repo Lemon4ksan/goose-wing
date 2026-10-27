@@ -109,6 +109,7 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         let rem_entry = rem_entry_raw.trim_lws();
 
         var ep = AltSvcEndpoint { .. };
+        guard proto_token.len <= ep.proto.cap else { continue; }
         ep.proto.append(proto_token);
 
         // Find authority inside quotes: "host:port"
@@ -124,6 +125,7 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         guard has_colon else { continue; }
 
         if host_part.len > 0 {
+            guard host_part.len <= ep.host.cap else { continue; }
             ep.host.append(host_part);
         }
 
@@ -142,7 +144,9 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
             }
         }
 
-        out_endpoints.push(ep);
+        if out_endpoints.len < out_endpoints.cap {
+            out_endpoints.push(ep);
+        }
     }
 
     return true, false;
@@ -193,6 +197,7 @@ fn update(
         valid: true,
         ..
     };
+    guard origin.len <= entry.origin.cap else { return; }
     entry.origin.append(origin);
     for &ep in endpoints { entry.endpoints.push(ep); }
 

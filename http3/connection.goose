@@ -424,11 +424,29 @@ fn handle_stream_data(
             for field in decoded_fields {
                 let is_pseudo = field.name.len > 0 && field.name[0] == ':';
 
-                // Trailers MUST NOT contain pseudo-headers (RFC 9114 Section 4.3)
-                if conn.streams[s_idx].headers_received && is_pseudo {
-                    conn.state = H3ConnState.Closed;
-                    conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-                    return H3_ERR_GENERAL_PROTOCOL;
+                // Trailers MUST NOT contain pseudo-headers or disallowed headers (RFC 9114 Section 4.3)
+                if conn.streams[s_idx].headers_received {
+                    if is_pseudo {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
+                    }
+                    if eq_ascii_fold(field.name[..], "content-length") ||
+                       eq_ascii_fold(field.name[..], "host") ||
+                       eq_ascii_fold(field.name[..], "trailer") {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
+                    }
+                }
+
+                // RFC 9114 Section 4.2: Field values MUST NOT contain forbidden CTL characters
+                for b in field.value {
+                    if (b < 0x20 && b != '\t') || b == 0x7F {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
+                    }
                 }
 
                 // RFC 9114 Section 4.3: Pseudo-headers MUST appear before any regular headers
@@ -473,6 +491,11 @@ fn handle_stream_data(
                             conn.error_code = H3_ERR_GENERAL_PROTOCOL;
                             return H3_ERR_GENERAL_PROTOCOL;
                         }
+                    } else {
+                        // Undefined or invalid pseudo-header (RFC 9114 Section 4.3)
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
                     }
                 } else {
                     seen_regular = true;

@@ -185,14 +185,17 @@ fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) 
         let mt, mt_ok = parse_content_disposition(disp_raw);
         if mt_ok {
             let p_name = param(mt, "name");
-            part.name.append(p_name);
+            let name_len = core::ct_min_i64(p_name.len, part.name.cap);
+            part.name.append(p_name[..name_len]);
             let p_fn = param(mt, "filename");
-            part.filename.append(p_fn);
+            let fn_len = core::ct_min_i64(p_fn.len, part.filename.cap);
+            part.filename.append(p_fn[..fn_len]);
         }
     }
     let ct_raw = get_header(part_headers, "content-type");
     if ct_raw.len > 0 {
-        part.content_type.append(ct_raw);
+        let ct_len = core::ct_min_i64(ct_raw.len, part.content_type.cap);
+        part.content_type.append(ct_raw[..ct_len]);
     }
 }
 

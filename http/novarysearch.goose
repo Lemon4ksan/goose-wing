@@ -106,7 +106,8 @@ fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) {
 
         if end > start && out.len < out.cap {
             var item: u8[..64] = [];
-            item.append(inner_list[start..end]);
+            let item_len = core::ct_min_i64(end - start, item.cap);
+            item.append(inner_list[start..start + item_len]);
             out.push(item);
         }
         cursor = end + 1;

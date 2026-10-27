@@ -18,10 +18,11 @@ struct QueryParamsList {
     overflow: bool = false,
 }
 
-fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) {
+fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
     var scan_idx = 0;
-    while scan_idx < input_bytes.len && out.len < out.cap {
+    while scan_idx < input_bytes.len {
+        guard out.len < out.cap else { return false; }
         let b = input_bytes[scan_idx];
         if b == '%' && scan_idx + 2 < input_bytes.len {
             let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);
@@ -40,6 +41,7 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) {
         out.push(b);
         scan_idx++;
     }
+    return true;
 }
 
 // Parses a query string into key-value pairs, decoding percent sequences.
@@ -112,7 +114,7 @@ fn has_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> bool {
 // CVE-2026-39825 & CVE-2025-61726 defense: Count query parameters separated by '&',
 // verify total count does not exceed limit, and enforce per-token length limit (256 bytes)
 // to prevent fixed-buffer parser overflow.
-const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 1024;
+const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 128;
 const MAX_URL_QUERY_TOKEN_LIMIT: i64 = 256;
 
 fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUERY_PARAMS_LIMIT) -> bool {
@@ -179,8 +181,8 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
         var matches = (raw_stmt_key == key);
         if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
             var decoded_stmt_key: u8[..64] = [];
-            percent_decode_query(raw_stmt_key, decoded_stmt_key);
-            matches = (decoded_stmt_key[..] == key);
+            let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
+            matches = dec_ok && (decoded_stmt_key[..] == key);
         }
 
         if matches {
@@ -222,8 +224,8 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
         var matches = (raw_stmt_key == key);
         if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
             var decoded_stmt_key: u8[..64] = [];
-            percent_decode_query(raw_stmt_key, decoded_stmt_key);
-            matches = (decoded_stmt_key[..] == key);
+            let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
+            matches = dec_ok && (decoded_stmt_key[..] == key);
         }
 
         if matches {
