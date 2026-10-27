@@ -71,13 +71,23 @@ fn swar_find_ctl(s: const u8[:]) -> i64 {
     return native_swar_find_ctl(s);
 }
 
-extern fn native_fast_find_crlfcrlf(s: const u8[:]) -> i64 = "wing_fast_find_crlfcrlf";
-
 // High-speed CRLFCRLF (\r\n\r\n) HTTP header delimiter scanner.
 // Returns the index of the first '\r' in \r\n\r\n, or -1 if not found.
 fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
     guard s.len >= 4 else { return -1; }
-    return native_fast_find_crlfcrlf(s);
+    let limit = s.len - 4;
+    var i: i64 = 0;
+    while i <= limit {
+        if s[i] == '\r' && s[i + 1] == '\n' && s[i + 2] == '\r' && s[i + 3] == '\n' {
+            return i;
+        }
+        if s[i + 1] != '\r' {
+            i += 2;
+        } else {
+            i++;
+        }
+    }
+    return -1;
 }
 
 // Places sentinel fence bytes '\r' and 'a' at offset length and length+1 in wire buffer (uWebSockets HttpParser.h).

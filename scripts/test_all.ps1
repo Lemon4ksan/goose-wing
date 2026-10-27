@@ -13,7 +13,15 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 $testsDir = Join-Path $root "tests"
-$optFlag = if ($Release) { "-O2" } else { "-O0" }
+$optFlag = "-O2"
+
+# Ensure 16-byte stack alignment and 32MB stack on Windows x64 to prevent GCC 16 AVX2 #GP faults
+if ($IsWindows -or $env:OS -like "*Windows*") {
+    $gccNoAvx = Join-Path $root "tools\gcc_noavx.cmd"
+    if ((Test-Path $gccNoAvx) -and (-not $env:GOOSE_CC)) {
+        $env:GOOSE_CC = $gccNoAvx
+    }
+}
 
 Write-Host " goose-wing powershell test runner" -ForegroundColor Cyan
 

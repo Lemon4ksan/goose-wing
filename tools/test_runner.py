@@ -117,6 +117,12 @@ def main() -> int:
 
     goose = find_goose_binary()
 
+    # Ensure 16-byte stack alignment and 32MB stack on Windows x64 to prevent GCC 16 AVX2 #GP faults
+    if platform.system() == "Windows":
+        gcc_noavx = root_dir / "tools" / "gcc_noavx.cmd"
+        if gcc_noavx.exists():
+            os.environ.setdefault("GOOSE_CC", str(gcc_noavx))
+
     print(cyan(bold(" goose-wing test runner")))
 
     # 1. Typecheck core, wing and examples
@@ -201,7 +207,7 @@ def main() -> int:
         return 0
 
     # 4. Parallel compilation
-    opt_flag = "-O2" if args.release else "-O0"
+    opt_flag = "-O2"
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
     print(
         f"\n{yellow(f'[2/3] Compiling {len(all_test_files)} suites ({args.jobs} parallel workers, {opt_flag})...')}"

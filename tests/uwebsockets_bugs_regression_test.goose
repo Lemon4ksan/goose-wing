@@ -413,6 +413,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
     // "The |Sec-WebSocket-Key| MUST be a base64-encoded value that, when decoded, is 16 bytes in length."
     // Handshake request with malformed, short, or non-base64 key MUST be rejected with HTTP 400.
     var req_bad = wing::new_request("GET", "/ws");
+    wing::set_header(req_bad, "Host", "example.com");
     wing::set_header(req_bad, "Upgrade", "websocket");
     wing::set_header(req_bad, "Connection", "Upgrade");
     wing::set_header(req_bad, "Sec-WebSocket-Version", "13");
@@ -425,6 +426,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
 
     // Valid 16-byte nonce base64-encoded (RFC 6455 example)
     var req_good = wing::new_request("GET", "/ws");
+    wing::set_header(req_good, "Host", "example.com");
     wing::set_header(req_good, "Upgrade", "websocket");
     wing::set_header(req_good, "Connection", "Upgrade");
     wing::set_header(req_good, "Sec-WebSocket-Version", "13");

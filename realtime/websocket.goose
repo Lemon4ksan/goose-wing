@@ -1332,9 +1332,16 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
         return WebSocketSession { .. }, false;
     }
 
-    // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field
-    let host = req.headers.find_header("Host");
-    if host.len == 0 {
+    // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field or absolute URI authority
+    var has_host = req.headers.find_header("Host").len > 0;
+    if !has_host && req.url.len > 0 {
+        let u = core::new_url(req.url[..]);
+        let h = core::host(u);
+        if u.valid && h.len > 0 {
+            has_host = true;
+        }
+    }
+    if !has_host {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
