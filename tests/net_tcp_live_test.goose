@@ -10,6 +10,7 @@ fn test_tcp_loopback_echo(t: core::T&) {
     // 1. Listen on ephemeral port
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener socket must be created successfully");
+    defer wing::tcp_close(listener);
 
     let port = wing::tcp_getsockname_port(listener);
     t.assert_true(port > 0, "Bound port must be non-zero ephemeral port");
@@ -17,10 +18,12 @@ fn test_tcp_loopback_echo(t: core::T&) {
     // 2. Connect client
     let client = wing::tcp_connect("127.0.0.1", port, 2000);
     t.assert_true(client > 0, "Client must connect to loopback listener");
+    defer wing::tcp_close(client);
 
     // 3. Accept connection on server
     let server_conn = wing::tcp_accept(listener, 2000);
     t.assert_true(server_conn > 0, "Server must accept connection");
+    defer wing::tcp_close(server_conn);
 
     // 4. Send HTTP request from client
     let req_bytes: const u8[:] = "GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n";
@@ -53,11 +56,6 @@ fn test_tcp_loopback_echo(t: core::T&) {
     t.assert_true(ok_resp, "Client parsed HTTP/1.1 response");
     t.assert_eq(resp.status_code, 200, "Status is 200");
     t.assert_eq(resp.body[..], "HELLO", "Body is HELLO");
-
-    // 8. Clean socket shutdown
-    wing::tcp_close(client);
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
 }
 
 fn main() {

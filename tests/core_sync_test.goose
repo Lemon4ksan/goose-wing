@@ -190,6 +190,25 @@ fn test_classical_primitives(t: core::T&) {
         }
         sub.assert_eq(ticks_collected, 3, "All 3 countdown ticks were captured");
     };
+
+    t.run("Case 4: Scoped Permit Release via defer") { sub =>
+        // Drain any leftover permits from global queue
+        while true {
+            let _, ok = core::sem_try_acquire();
+            if !ok { break; }
+        }
+        var sem = core::new_semaphore(1);
+        {
+            let permit = sem.acquire();
+            defer sem.release(permit);
+            let p_blocked, ok_blocked = sem.try_acquire();
+            sub.assert_false(ok_blocked, "Semaphore quota exhausted while scoped permit held");
+        }
+        // At block exit, defer automatically releases the permit!
+        let p_free, ok_free = sem.try_acquire();
+        sub.assert_true(ok_free, "Permit automatically returned to pool via defer upon block exit");
+        sem.release(p_free);
+    };
 }
 
 // ---- suite 3: cyclic barrier two-phase turnstile synchronization ----------

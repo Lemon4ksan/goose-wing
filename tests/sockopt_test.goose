@@ -88,6 +88,7 @@ fn test_live_socket_options(t: core::T&) {
     t.run("OS Socket Option Tuning & Telemetry") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener socket created");
+        defer wing::tcp_close(listener);
 
         let port = wing::tcp_getsockname_port(listener);
         sub.assert_gt(port as i64, 0, "Bound to valid ephemeral port");
@@ -118,9 +119,11 @@ fn test_live_socket_options(t: core::T&) {
         // End-to-end CorkBuffer -> tcp_flush_cork -> tcp_recv_pipe into PipeBuffer
         let client_sock = wing::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client_sock, 0, "Client connected to listener");
+        defer wing::tcp_close(client_sock);
 
         let accepted_sock = wing::tcp_accept(listener, 2000);
         sub.assert_gt(accepted_sock, 0, "Accepted incoming connection");
+        defer wing::tcp_close(accepted_sock);
 
         var cork = core::new_cork_buffer();
         cork.cork_write("WING_PIPE_STREAM_PAYLOAD");
@@ -135,10 +138,6 @@ fn test_live_socket_options(t: core::T&) {
         sub.assert_eq(recvd, 24, "tcp_recv_pipe read directly into pipe storage");
         sub.assert_eq(pipe.readable_len(), 24, "PipeBuffer has 24 readable bytes");
         sub.assert_eq(pipe.readable_slice(), "WING_PIPE_STREAM_PAYLOAD", "Direct pipe slice matches wire payload");
-
-        wing::tcp_close(client_sock);
-        wing::tcp_close(accepted_sock);
-        wing::tcp_close(listener);
     };
 }
 

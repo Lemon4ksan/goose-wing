@@ -1353,6 +1353,7 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
         if conn <= 0 {
             continue;
         }
+        defer tcp_close(conn);
 
         pipe.pipe_reset();
         cork.cork_reset();
@@ -1379,7 +1380,6 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
                 }
             }
         }
-        tcp_close(conn);
         total_served++;
     }
 
@@ -1401,6 +1401,7 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
 
     let epfd = epoll_create();
     guard epfd >= 0 else { return 0; }
+    defer epoll_close(epfd);
     epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
 
     var ready_fds: i64[..128] = [];
@@ -1566,6 +1567,5 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         }
     }
 
-    epoll_close(epfd);
     return total_served;
 }
