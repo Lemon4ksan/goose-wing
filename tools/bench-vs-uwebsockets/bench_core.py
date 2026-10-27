@@ -33,14 +33,14 @@ def get_process_rss_mb(pid):
             # Linux /proc/<pid>/statm: second field is resident pages (4KB)
             statm_path = f"/proc/{pid}/statm"
             if os.path.exists(statm_path):
-                with open(statm_path, "r") as f:
+                with open(statm_path) as f:
                     parts = f.read().split()
                     pages = int(parts[1])
                     return round((pages * 4096) / (1024 * 1024), 2)
             # Fallback to status
             status_path = f"/proc/{pid}/status"
             if os.path.exists(status_path):
-                with open(status_path, "r") as f:
+                with open(status_path) as f:
                     for line in f:
                         if line.startswith("VmRSS:"):
                             kb = int(line.split()[1])

@@ -84,5 +84,5 @@ if __name__ == "__main__":
     else:
         # Default: run local Python stress runner
         runner_script = Path(_pkg_dir) / "stress_all_goose.py"
-        cmd = [sys.executable, str(runner_script)] + unknown
+        cmd = [sys.executable, str(runner_script), *unknown]
         sys.exit(subprocess.run(cmd, check=False, cwd=str(root)).returncode)

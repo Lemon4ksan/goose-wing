@@ -24,7 +24,11 @@ import sys
 import time
 from pathlib import Path
 
-if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stdout, io.TextIOWrapper)
+    and sys.stdout.encoding
+    and sys.stdout.encoding.lower() != "utf-8"
+):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -138,22 +142,22 @@ def ws_frame(
 ) -> bytes:
     b0 = (0x80 if fin else 0x00) | ((rsv & 0x7) << 4) | (opcode & 0x0F)
     out = bytearray([b0])
-    l = len(payload)
+    payload_len = len(payload)
     mbit = 0x80 if masked else 0x00
     if force_len_mode == 126:
         out.append(mbit | 126)
-        out.extend(struct.pack("!H", l))
+        out.extend(struct.pack("!H", payload_len))
     elif force_len_mode == 127:
         out.append(mbit | 127)
-        out.extend(struct.pack("!Q", l))
-    elif l <= 125:
-        out.append(mbit | l)
-    elif l <= 65535:
+        out.extend(struct.pack("!Q", payload_len))
+    elif payload_len <= 125:
+        out.append(mbit | payload_len)
+    elif payload_len <= 65535:
         out.append(mbit | 126)
-        out.extend(struct.pack("!H", l))
+        out.extend(struct.pack("!H", payload_len))
     else:
         out.append(mbit | 127)
-        out.extend(struct.pack("!Q", l))
+        out.extend(struct.pack("!Q", payload_len))
     if masked:
         mask = os.urandom(4)
         out.extend(mask)
@@ -267,7 +271,9 @@ async def main():
 
     def record(ok: bool, desc: str, detail: str | bytes = ""):
         nonlocal passed, failed
-        detail_str = detail.decode("utf-8", errors="replace") if isinstance(detail, bytes) else detail
+        detail_str = (
+            detail.decode("utf-8", errors="replace") if isinstance(detail, bytes) else detail
+        )
         if ok:
             print(f"[PASS] {desc}")
             passed += 1

@@ -120,7 +120,7 @@ def process_file(
         return True, "skipped (unsupported extension)"
 
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             content = f.read()
     except Exception as e:
         return False, f"error reading file: {e}"

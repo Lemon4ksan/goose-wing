@@ -19,12 +19,20 @@ import time
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stdout, io.TextIOWrapper)
+    and sys.stdout.encoding
+    and sys.stdout.encoding.lower() != "utf-8"
+):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stderr, io.TextIOWrapper)
+    and sys.stderr.encoding
+    and sys.stderr.encoding.lower() != "utf-8"
+):
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -174,10 +182,10 @@ def build_client_hello(
     # 3. Handshake message header: [type=1, u24 length]
     hs = bytearray()
     hs.append(1)  # ClientHello
-    l = len(ch)
-    hs.append((l >> 16) & 0xFF)
-    hs.append((l >> 8) & 0xFF)
-    hs.append(l & 0xFF)
+    msg_len = len(ch)
+    hs.append((msg_len >> 16) & 0xFF)
+    hs.append((msg_len >> 8) & 0xFF)
+    hs.append(msg_len & 0xFF)
     hs.extend(ch)
 
     # 4. TLS Plaintext Record Header: [type=0x16, ver=0x0301, len=u16]

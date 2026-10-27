@@ -22,12 +22,20 @@ import urllib.request
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stdout, io.TextIOWrapper)
+    and sys.stdout.encoding
+    and sys.stdout.encoding.lower() != "utf-8"
+):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stderr, io.TextIOWrapper)
+    and sys.stderr.encoding
+    and sys.stderr.encoding.lower() != "utf-8"
+):
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -177,7 +185,7 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
         print(f"[!] Report index not found at {index_file}")
         return 0, 0, 0
 
-    with open(index_file, "r", encoding="utf-8") as f:
+    with open(index_file, encoding="utf-8") as f:
         data = json.load(f)
 
     if not data:

@@ -1,17 +1,59 @@
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
-ignore = [
-    "BLE001", # Blind except: test runners and cleanup routines safely swallow exceptions on shutdown/teardown
-    "S110",   # try-except-pass: safe in test cleanup sockets and optional shutdown hooks
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "UP",    # pyupgrade
+    "SIM",   # flake8-simplify
+    "PIE",   # flake8-pie
+    "RUF",   # ruff-specific rules
 ]
+ignore = [
+    "E402",   # module level import not at top of file (sys.path manipulation in test harnesses)
+    "E501",   # line length (handled by ruff format)
+    "SIM105", # use contextlib.suppress (test teardowns explicitly use try-except-pass)
+    "SIM108", # use ternary operator instead of if-else-block
+    "BLE001", # blind except in test runners and socket cleanup routines
+    "S110",   # try-except-pass in socket teardown hooks
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.basedpyright]
 include = ["tools"]
-exclude = ["vendor", "build", "scratch", ".git"]
+exclude = ["vendor", "build", "scratch", ".git", ".venv"]
+pythonVersion = "3.12"
+pythonPlatform = "Windows"
 typeCheckingMode = "standard"
+reportMissingTypeStubs = false
+extraPaths = [
+    "tools/autobahn",
+    "tools/chaos",
+    "tools/grpc",
+    "tools/h2spec",
+    "tools/http3",
+    "tools/tls",
+    "tools/toxiproxy",
+]
+
+[tool.pyright]
+include = ["tools"]
+exclude = ["vendor", "build", "scratch", ".git", ".venv"]
+pythonVersion = "3.12"
+pythonPlatform = "Windows"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
 extraPaths = [
     "tools/autobahn",
     "tools/chaos",

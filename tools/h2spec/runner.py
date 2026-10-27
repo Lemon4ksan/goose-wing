@@ -20,12 +20,20 @@ import urllib.request
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
-if isinstance(sys.stdout, io.TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stdout, io.TextIOWrapper)
+    and sys.stdout.encoding
+    and sys.stdout.encoding.lower() != "utf-8"
+):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-if isinstance(sys.stderr, io.TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+if (
+    isinstance(sys.stderr, io.TextIOWrapper)
+    and sys.stderr.encoding
+    and sys.stderr.encoding.lower() != "utf-8"
+):
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
