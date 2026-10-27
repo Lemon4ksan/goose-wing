@@ -1230,8 +1230,8 @@ fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
             return false;
         }
         for b in val {
-            if b == 0 || b == '\r' || b == '\n' {
-                return false; // Forbidden NUL, CR, LF
+            if (b < 0x20 && b != '\t') || b == 0x7F {
+                return false; // Forbidden CTL characters and DEL (RFC 9113 Section 8.2.1)
             }
         }
     }
@@ -1428,6 +1428,14 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
 
     let is_pseudo = (name[0] == ':');
     if is_pseudo {
+        // RFC 9113 Section 8.3: Validate that pseudo-header is defined in HTTP/2 spec
+        let is_valid_pseudo = (name == ":method" || name == ":scheme" ||
+                               name == ":authority" || name == ":path" ||
+                               name == ":protocol" || name == ":status");
+        guard is_valid_pseudo else {
+            return ERR_PROTOCOL_ERROR;
+        }
+
         // Pseudo-headers MUST appear before any regular headers (RFC 9113 Section 8.3)
         if out.has_regular_header {
             return ERR_PROTOCOL_ERROR;

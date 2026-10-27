@@ -491,7 +491,7 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
                 let sub_len = sub_len_u16 as i64;
                 let sub_start = sub_offset + 3;
                 let sub_end = sub_start + sub_len;
-                guard sub_end <= val.len else { break; }
+                guard sub_end <= val.len else { return hdr, 0, false; }
 
                 let sub_val = val[sub_start..sub_end];
                 if sub_type == internal::PP2_SUBTYPE_SSL_VERSION {
@@ -522,10 +522,17 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
                 }
                 sub_offset = sub_end;
             }
+            // HAProxy PROXY Protocol v2 §2.2 & uWS #1927: Truncated SSL sub-TLVs must reject
+            guard sub_offset == val.len else { return hdr, 0, false; }
         }
 
         tlv_offset = val_end;
     }
+
+    // HAProxy PROXY Protocol v2 §2.2 & uWS #1927 / #1948:
+    // Total length of address block and TLVs must strictly equal payload_len.
+    // Trailing unparsed bytes or truncated TLVs MUST be rejected immediately.
+    guard tlv_offset == tlv_limit else { return hdr, 0, false; }
 
     return hdr, total_required, true;
 }

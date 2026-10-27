@@ -198,7 +198,8 @@ fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..8]&) {
         let trimmed_name = name_tok.trim_lws();
         if trimmed_name.len > 0 && out_fields.len < 8 {
             var buf: u8[..64] = [];
-            buf.append(trimmed_name);
+            let store_len = if trimmed_name.len > 64 { 64 } else { trimmed_name.len };
+            buf.append(trimmed_name[..store_len]);
             out_fields.push(buf);
         }
     }

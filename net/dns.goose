@@ -173,6 +173,10 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
             continue;
         }
 
+        // RFC 1035 §2.3.4 & §4.1.4: High 2 bits MUST be 00 for uncompressed labels,
+        // and label length MUST NOT exceed 63 octets. (01 and 10 are reserved).
+        guard (b & 0xC0) == 0 && b <= 63 else { return false; }
+
         let label_len = b;
         current_off += 1;
         guard current_off + label_len <= raw.len else { return false; }

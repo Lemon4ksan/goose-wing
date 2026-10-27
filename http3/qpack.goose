@@ -342,6 +342,13 @@ fn qpack_set_capacity(tbl: QpackTable&, new_cap: u64) -> bool {
 
 // Inserts an entry into the dynamic table with literal name and value.
 fn qpack_insert_literal(tbl: QpackTable&, name: const u8[:], val: const u8[:]) -> bool {
+    // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase
+    for c in name {
+        if c >= 'A' && c <= 'Z' {
+            return false;
+        }
+    }
+
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
     if cost > tbl.capacity_bytes {
         qpack_evict_until(tbl, 0);
@@ -585,6 +592,13 @@ fn emit_field_checked(
     val: const u8[:],
     never_index: bool = false,
 ) -> QpackError {
+    // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase
+    for c in name {
+        if c >= 'A' && c <= 'Z' {
+            return QpackError.DecompressionFailed;
+        }
+    }
+
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
     guard budget_left >= cost else {
         return QpackError.HeaderListTooLarge;

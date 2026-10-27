@@ -20,7 +20,7 @@ struct QueryParamsList {
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) {
     out.clear();
     var scan_idx = 0;
-    while scan_idx < input_bytes.len {
+    while scan_idx < input_bytes.len && out.len < out.cap {
         let b = input_bytes[scan_idx];
         if b == '%' && scan_idx + 2 < input_bytes.len {
             let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);

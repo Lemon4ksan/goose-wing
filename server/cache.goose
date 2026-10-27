@@ -22,7 +22,7 @@ struct HttpRouteCache {
     created_ms: u64 = 0,
     lower_expiry_ms: u64 = 1000,
     upper_expiry_ms: u64 = 5000,
-    wire: u8[..65536] = [],
+    wire: u8[..8192] = [],
     is_valid: bool = false,
     is_updating: bool = false,
 }

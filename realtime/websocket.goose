@@ -521,7 +521,24 @@ fn generate_websocket_key<B>(random_16: const u8[16]&, out: B&) {
 // Encodes a Close frame payload (2-byte status code + optional UTF-8 reason)
 fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
     core::write_be_u16(out, status_code);
-    out.append(reason);
+    // RFC 6455 §5.5 & §5.5.1 / uWS #1407: Control frame payload must NOT exceed 125 bytes.
+    // Close payload contains 2-byte status code, so reason is clamped to at most 123 bytes.
+    var eff_len = reason.len;
+    if eff_len > 123 {
+        eff_len = 123;
+        // Avoid truncating in the middle of a multi-byte UTF-8 sequence
+        while eff_len > 0 && (reason[eff_len - 1] & 0xC0) == 0x80 {
+            eff_len--;
+        }
+        if eff_len > 0 && (reason[eff_len - 1] & 0x80) != 0 {
+            let lead = reason[eff_len - 1];
+            let exp_bytes = if (lead & 0xE0) == 0xC0 { 2 } else if (lead & 0xF0) == 0xE0 { 3 } else if (lead & 0xF8) == 0xF0 { 4 } else { 1 };
+            if eff_len + exp_bytes - 1 > 123 {
+                eff_len--;
+            }
+        }
+    }
+    out.append(reason[..eff_len]);
 }
 
 // Parses a Close frame payload into (status_code, reason_slice, ok)

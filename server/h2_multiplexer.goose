@@ -26,7 +26,7 @@ struct H2ServerStream {
     scheme: u8[..16] = [],
     authority: u8[..128] = [],
     headers: HeaderItem[..32] = [],
-    body: u8[..65536] = [],
+    body: u8[..8192] = [],
 }
 
 fn reset_server_stream(st: H2ServerStream&) {

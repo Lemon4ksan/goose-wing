@@ -109,10 +109,17 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         guard b >= 0x21 && b <= 0x7E else { return false, 0; }
     }
 
-    // RFC 9112 Section 3.2.4 & uWS #1952:
+    // RFC 9112 Section 3.2.3 & Section 9.3.6:
+    // Authority-form ("host:port") is ONLY valid for CONNECT requests.
     // Asterisk-form ("*") is ONLY valid for OPTIONS requests.
     // Origin-form requests for other methods must start with '/'.
-    if path_slice == "*" {
+    if method_slice == "CONNECT" {
+        guard path_slice != "*" && path_slice[0] != '/' else { return false, 0; }
+        let col = core::index_of_byte(path_slice, ':');
+        guard col > 0 && col + 1 < path_slice.len else { return false, 0; }
+        let port_num, port_ok = core::parse_port_number(path_slice[(col + 1)..]);
+        guard port_ok && port_num > 0 else { return false, 0; }
+    } else if path_slice == "*" {
         guard method_slice == "OPTIONS" else { return false, 0; }
     } else {
         guard path_slice[0] == '/' else { return false, 0; }
@@ -177,9 +184,10 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
         let host_val = out_req.headers[host_idx].value[..];
         guard host_val.len > 0 else { return false, 0; }
-        // Authority in Host MUST NOT contain path ('/'), query ('?'), fragment ('#'), userinfo ('@'), or whitespace
+        // RFC 9112 Section 3.2, 7.2 & 9.5: Authority in Host MUST NOT contain path ('/'),
+        // query ('?'), fragment ('#'), userinfo ('@'), multiple values (','), or whitespace
         for b in host_val {
-            guard b != '/' && b != '?' && b != '#' && b != '@' && b != ' ' && b != '\t' else { return false, 0; }
+            guard b != '/' && b != '?' && b != '#' && b != '@' && b != ',' && b != ' ' && b != '\t' else { return false, 0; }
         }
 
         // Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Structural IP-literal Host validation
@@ -1209,6 +1217,11 @@ fn handle_connection_wire_pipelined_stream<B>(
         total_handled++;
         total_consumed += consumed;
 
+        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
+        if req.method[..] == "CONNECT" {
+            break;
+        }
+
         stream = stream[consumed..];
     }
 
@@ -1297,6 +1310,11 @@ fn handle_connection_pipe<B>(
             total_handled++;
 
             core::advance_to(pipe, consumed, consumed);
+
+            // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
+            if req.method[..] == "CONNECT" {
+                break;
+            }
         } else {
             // Check if headers are complete via fast scanner
             let hdr_end = core::fast_find_crlfcrlf(stream);

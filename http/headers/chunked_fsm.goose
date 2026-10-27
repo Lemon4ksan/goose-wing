@@ -18,9 +18,11 @@ const CHUNK_STATE_EXTENSION_EXPECTS_NAME: u64 = 0x0800000000000000;
 const CHUNK_STATE_EXTENSION_QUOTED: u64 = 0x0400000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_LF: u64 = 0x0200000000000000;
 const CHUNK_STATE_EXTENSION_IN_NAME: u64 = 0x0100000000000000;
+const CHUNK_STATE_SEEN_HEX: u64 = 0x0080000000000000;
+const CHUNK_STATE_SEEN_BWS: u64 = 0x0040000000000000;
 
-const CHUNK_STATE_SIZE_MASK: u64 = 0x00FFFFFFFFFFFFFF;
-const CHUNK_STATE_SIZE_OVERFLOW: u64 = 0x000F000000000000;
+const CHUNK_STATE_SIZE_MASK: u64 = 0x0000FFFFFFFFFFFF;
+const CHUNK_STATE_SIZE_OVERFLOW: u64 = 0x0000F00000000000;
 const CHUNK_STATE_IS_ERROR: u64 = 0xFFFFFFFFFFFFFFFF;
 
 enum ChunkFsmStatus {
@@ -116,8 +118,19 @@ fn chunk_fsm_feed(
                 let c = data[offset];
 
                 if (dec.state & CHUNK_STATE_EXTENSION_MODE) == 0 {
+                    if c == ' ' || c == '\t' {
+                        // RFC 9112 Section 7.1.1: BWS preceding semicolon in chunk extension
+                        guard (dec.state & CHUNK_STATE_SEEN_HEX) != 0 else {
+                            dec.state = CHUNK_STATE_IS_ERROR;
+                            return ChunkFsmStatus.Error, offset, data[..0];
+                        }
+                        dec.state |= CHUNK_STATE_SEEN_BWS;
+                        offset++;
+                        continue;
+                    }
+
                     if c == ';' {
-                        if !chunk_fsm_has_size(dec.state) && chunk_fsm_size(dec.state) == 0 && (dec.state & CHUNK_STATE_IS_CHUNKED) == 0 {
+                        guard (dec.state & CHUNK_STATE_SEEN_HEX) != 0 else {
                             dec.state = CHUNK_STATE_IS_ERROR;
                             return ChunkFsmStatus.Error, offset, data[..0];
                         }
@@ -127,17 +140,25 @@ fn chunk_fsm_feed(
                     }
 
                     if c == '\r' {
+                        guard (dec.state & CHUNK_STATE_SEEN_HEX) != 0 else {
+                            dec.state = CHUNK_STATE_IS_ERROR;
+                            return ChunkFsmStatus.Error, offset, data[..0];
+                        }
                         dec.state |= CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_LF;
                         offset++;
                         continue;
                     }
 
                     if c == '\n' {
-                        offset++;
-                        dec.state += 2; // +2 for trailing CRLF after chunk data
-                        dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
-                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF);
-                        break;
+                        // RFC 9112 Section 7.1 & Section 2.2: Bare LF in chunk size is forbidden (CVE-2023-45287)
+                        dec.state = CHUNK_STATE_IS_ERROR;
+                        return ChunkFsmStatus.Error, offset, data[..0];
+                    }
+
+                    // If BWS was already seen, further hex digits are forbidden
+                    if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 {
+                        dec.state = CHUNK_STATE_IS_ERROR;
+                        return ChunkFsmStatus.Error, offset, data[..0];
                     }
 
                     var num: u64 = 0;
@@ -157,9 +178,9 @@ fn chunk_fsm_feed(
                         return ChunkFsmStatus.Error, offset, data[..0];
                     }
 
-                    let bits = dec.state & CHUNK_STATE_IS_CHUNKED;
+                    let bits = dec.state & (CHUNK_STATE_IS_CHUNKED | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
                     dec.state = (dec.state & CHUNK_STATE_SIZE_MASK) * 16 + num;
-                    dec.state |= bits;
+                    dec.state |= bits | CHUNK_STATE_SEEN_HEX;
                     offset++;
                 } else {
                     if (dec.state & CHUNK_STATE_EXTENSION_EXPECTS_LF) != 0 {
@@ -170,7 +191,7 @@ fn chunk_fsm_feed(
                         offset++;
                         dec.state += 2;
                         dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
-                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF);
+                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
                         break;
                     }
 
@@ -190,6 +211,10 @@ fn chunk_fsm_feed(
                     }
 
                     if (dec.state & CHUNK_STATE_EXTENSION_EXPECTS_NAME) != 0 {
+                        if c == ' ' || c == '\t' {
+                            offset++;
+                            continue; // BWS after ';'
+                        }
                         if !is_chunk_token_char(c) {
                             dec.state = CHUNK_STATE_IS_ERROR;
                             return ChunkFsmStatus.Error, offset, data[..0];
@@ -216,15 +241,10 @@ fn chunk_fsm_feed(
                     }
 
                     offset++;
-                    if c == '\n' && (dec.state & CHUNK_STATE_EXTENSION_QUOTED) == 0 {
-                        if (dec.state & CHUNK_STATE_EXTENSION_EXPECTS_NAME) != 0 {
-                            dec.state = CHUNK_STATE_IS_ERROR;
-                            return ChunkFsmStatus.Error, offset, data[..0];
-                        }
-                        dec.state += 2;
-                        dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
-                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF);
-                        break;
+                    if c == '\n' {
+                        // RFC 9112 Section 7.1: Bare LF in chunk extension is forbidden
+                        dec.state = CHUNK_STATE_IS_ERROR;
+                        return ChunkFsmStatus.Error, offset, data[..0];
                     }
                 }
             }

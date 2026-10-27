@@ -128,7 +128,8 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
            hdr.frame_type == FRAME_HEADERS ||
            hdr.frame_type == FRAME_PRIORITY ||
            hdr.frame_type == FRAME_RST_STREAM ||
-           hdr.frame_type == FRAME_CONTINUATION {
+           hdr.frame_type == FRAME_CONTINUATION ||
+           hdr.frame_type == FRAME_PUSH_PROMISE {
             return ERR_PROTOCOL_ERROR;
         }
     } else {
@@ -165,6 +166,12 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
     }
     if hdr.frame_type == FRAME_PRIORITY_UPDATE && hdr.length < 4 {
         return ERR_FRAME_SIZE_ERROR;
+    }
+    if hdr.frame_type == FRAME_PUSH_PROMISE {
+        let min_len: u32 = if (hdr.flags & FLAG_PADDED) != 0 { 5 } else { 4 };
+        if hdr.length < min_len {
+            return ERR_FRAME_SIZE_ERROR;
+        }
     }
 
     return ERR_NO_ERROR;

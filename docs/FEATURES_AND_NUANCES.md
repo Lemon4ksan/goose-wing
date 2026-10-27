@@ -149,8 +149,14 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Cache tracking advertised HTTP/3 endpoints with `ma` (max-age) and exponential failure backoff ($5\text{s}, 10\text{s}, 20\text{s} \dots 320\text{s}$).
 
 ### 6.3 WebTransport over HTTP/3 (draft-16, RFC 9221)
-- Extended CONNECT initiation: Initiates bidirectional WebTransport sessions via `:protocol = webtransport`.
+- Extended CONNECT initiation and inspection: Initiates and validates bidirectional WebTransport sessions via `:protocol = webtransport` and `sec-webtransport-http3-draft: draft16`.
+- Unidirectional and bidirectional stream framing:
+  - Unidirectional streams: Prefixed with VarInt stream type `0x54` (`STREAM_TYPE_WEBTRANSPORT`) and VarInt Session ID.
+  - Bidirectional streams: Initiated via VarInt signal `0x41` (`WEBTRANSPORT_BIDI_SIGNAL`) and VarInt Session ID.
 - Datagram transport: Encapsulates unreliable UDP datagrams (`DATAGRAM` frames `0x30`/`0x31`) with varint Session ID multiplexing.
+- HTTP/3 error code translation: Bidirectional mapping between 32-bit application error codes and HTTP/3 error code range (`0x52e4a40fa8db`..`0x52e5ac983162`) with strict skipping of GREASE points (`(h3 - 0x21) % 0x1F != 0`).
+- Capsule protocol (draft-16 Section 8): Zero-allocation codecs for `CLOSE_WEBTRANSPORT` (error code and reason phrase), `DRAIN_WEBTRANSPORT`, `WT_RESET_STREAM`, and `WT_STOP_SENDING`.
+- Session lifecycle: State machine handling active, draining, and closed transitions with reason tracking.
 
 ## 7. Streaming and RPC (WebSocket, SSE, gRPC)
 

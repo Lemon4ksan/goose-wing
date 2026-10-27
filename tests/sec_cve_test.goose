@@ -659,6 +659,10 @@ fn test_rfc6055_fqdn_trailing_dot_cookie_matching(t: core::T&) {
 }
 
 fn main() {
+    let _ = wing::tcp_init();
+    var dummy: u8[4] = [0, 0, 0, 0];
+    wing::swar_to_lower(dummy[..]);
+
     var runner = core::new_runner("CVE Regression Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. CVE-2021-28918 & CVE-2021-29922 (Octal/Hex/Dword/Shorthand IPv4 SSRF)", test_cve_ipv4_formats_ssrf);

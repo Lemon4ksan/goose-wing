@@ -720,6 +720,7 @@ fn test_tcp_quickack_and_cork(t: core::T&) {
 }
 
 fn main() {
+    let _ = wing::tcp_init();
     var runner = core::new_runner("uWebSockets Optimizations Verification Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. 256-bit Header BloomFilter", test_header_bloom_filter);
     core::run_case(runner, "2. Fast HTTP/1.1 Response Serialization", test_fast_serialization);
