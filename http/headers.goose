@@ -1513,13 +1513,32 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&)
     }
 }
 
+fn is_token_in_connection_header_map(src: const HeaderMap&, target_name: const u8[:]) -> bool {
+    for &entry in src.entries {
+        let name = src.raw_buf[entry.name_begin..entry.name_end];
+        if eq_ascii_fold(name, "connection") {
+            let val = src.raw_buf[entry.values_begin..entry.values_end];
+            var cursor: i64 = 0;
+            while cursor < val.len {
+                var comma_idx = cursor;
+                while comma_idx < val.len && val[comma_idx] != ',' {
+                    comma_idx++;
+                }
+                let token = trim_lws(val[cursor..comma_idx]);
+                if token.len > 0 && eq_ascii_fold(token, target_name) {
+                    return true;
+                }
+                cursor = comma_idx + 1;
+            }
+        }
+    }
+    return false;
+}
+
 // Copies headers from src to dst, omitting standard hop-by-hop headers and
 // any header listed in a Connection header token (RFC 9110 Section 7.6.1).
 fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
     dst.reset_for_keep_alive();
-
-    var custom_tokens: u8[..64][..32] = [];
-    src.collect_connection_tokens(custom_tokens);
 
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
@@ -1535,8 +1554,7 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
             continue;
         }
 
-        let is_custom_hop = custom_tokens.any() { eq_ascii_fold(name, it[..]) };
-        if is_custom_hop {
+        if is_token_in_connection_header_map(src, name) {
             continue;
         }
 

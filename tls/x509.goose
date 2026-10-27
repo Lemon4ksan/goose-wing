@@ -322,7 +322,7 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
 
     var maybe_version = cursor_from(raw_cert[..0]);
     var tag: u8 = 0;
-    if cert_seq.buf.len > 0 && cert_seq.buf[0] == 0xA0 {
+    if tbs_seq.buf.len > 0 && tbs_seq.buf[0] == 0xA0 {
         if !get_any_asn1_element(tbs_seq, tag, maybe_version) { return false; }
     }
 

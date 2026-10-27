@@ -161,6 +161,7 @@ fn new_cross_origin_guard() -> CrossOriginGuard {
 
 fn add_trusted_origin(guard_cfg: CrossOriginGuard&, origin_str: const u8[:]) -> bool {
     guard guard_cfg.trusted_origins.len < guard_cfg.trusted_origins.cap else { return false; }
+    guard origin_str.len <= 128 else { return false; }
     var entry: u8[..128] = [];
     entry.append(origin_str);
     guard_cfg.trusted_origins.push(entry);
@@ -169,6 +170,7 @@ fn add_trusted_origin(guard_cfg: CrossOriginGuard&, origin_str: const u8[:]) -> 
 
 fn add_exempt_path(guard_cfg: CrossOriginGuard&, path_str: const u8[:]) -> bool {
     guard guard_cfg.exempt_paths.len < guard_cfg.exempt_paths.cap else { return false; }
+    guard path_str.len <= 128 else { return false; }
     var entry: u8[..128] = [];
     entry.append(path_str);
     guard_cfg.exempt_paths.push(entry);
@@ -299,9 +301,15 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
 // Extracts FetchContext from an incoming Request.
 fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> FetchContext {
     var ctx = FetchContext { .. };
-    ctx.method.append(req.method[..]);
+    ctx.method.clear();
+    if req.method.len <= ctx.method.cap {
+        ctx.method.append(req.method[..]);
+    }
     ctx.method_is_safe = (req.method[..] == "GET" || req.method[..] == "HEAD" || req.method[..] == "OPTIONS");
-    ctx.target_host.append(target_host);
+    ctx.target_host.clear();
+    if target_host.len <= ctx.target_host.cap {
+        ctx.target_host.append(target_host);
+    }
 
     for &h in req.headers {
         let name = h.name[..];
@@ -316,11 +324,15 @@ fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> Fetc
         } else if core::eq_ascii_fold(name, "Sec-Fetch-User") {
             ctx.user_activated = (val == "?1");
         } else if core::eq_ascii_fold(name, "Origin") {
-            ctx.origin.append(val);
-            ctx.has_origin = true;
+            if !ctx.has_origin && val.len <= ctx.origin.cap {
+                ctx.origin.append(val);
+                ctx.has_origin = true;
+            }
         } else if core::eq_ascii_fold(name, "Referer") {
-            ctx.referer.append(val);
-            ctx.has_referer = true;
+            if !ctx.has_referer && val.len <= ctx.referer.cap {
+                ctx.referer.append(val);
+                ctx.has_referer = true;
+            }
         } else if core::eq_ascii_fold(name, "Cookie") {
             ctx.has_session_cookie = true;
         } else if core::eq_ascii_fold(name, "Authorization") || core::eq_ascii_fold(name, "X-API-Key") {

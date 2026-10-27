@@ -517,6 +517,11 @@ fn insert_fragment(
         if frag_end < buf.consumed_offset {
             return false; // QUIC_ERR_FINAL_SIZE
         }
+        for i in buf.intervals.len {
+            if buf.intervals[i].end > frag_end {
+                return false; // QUIC_ERR_FINAL_SIZE: data already buffered beyond declared final size
+            }
+        }
         buf.fin_received = true;
         buf.final_size = frag_end;
     }

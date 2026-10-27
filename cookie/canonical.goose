@@ -40,8 +40,12 @@ struct CanonicalCookie {
 // 4096 bytes and contain no control characters (RFC 6265bis Section 5.5).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
-    new_cookie.name.append(name);
-    new_cookie.value.append(val);
+    if name.len <= new_cookie.name.cap {
+        new_cookie.name.append(name);
+    }
+    if val.len <= new_cookie.value.cap {
+        new_cookie.value.append(val);
+    }
     return new_cookie;
 }
 

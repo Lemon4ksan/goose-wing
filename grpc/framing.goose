@@ -8,6 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 import grpc.constants;
+import grpc.status;
 import http.mime;
 
 // ---- 1. Length-Prefixed Message (LPM) Framing ------------------------------
@@ -101,9 +102,15 @@ fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out
     trailer_body.append("\r\n");
 
     if message.len > 0 {
-        trailer_body.append("grpc-message: ");
-        trailer_body.append(message);
-        trailer_body.append("\r\n");
+        var enc_msg: u8[>..] = [];
+        encode_grpc_message(message, enc_msg);
+        let max_msg_bytes = (trailer_body.cap - trailer_body.len - 18) as i64;
+        if max_msg_bytes > 0 {
+            let take_len = if enc_msg.len > max_msg_bytes { max_msg_bytes } else { enc_msg.len };
+            trailer_body.append("grpc-message: ");
+            trailer_body.append(enc_msg[..take_len]);
+            trailer_body.append("\r\n");
+        }
     }
 
     out.push(GRPC_WEB_FLAG_TRAILERS);
@@ -173,7 +180,10 @@ fn parse_grpc_web_trailers(
                     }
                 } else if core::eq_ascii_fold(name, "grpc-message") {
                     out_message.clear();
-                    out_message.append(val);
+                    var dec: u8[>..] = [];
+                    decode_grpc_message(val, dec);
+                    let take_len = if dec.len > out_message.cap { out_message.cap } else { dec.len };
+                    out_message.append(dec[..take_len]);
                 }
             }
         }

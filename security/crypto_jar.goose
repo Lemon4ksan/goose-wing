@@ -36,6 +36,7 @@ fn build_signed_to_sign<B>(key_id: u32, cookie_sec: i64, cookie_name: const u8[:
     core::write_be_u32(out, key_id);
     core::write_be_u64(out, cookie_sec as u64);
     core::write_be_u16(out, cookie_name.len as u16);
+    out.append(cookie_name);
     core::write_be_u32(out, payload.len as u32);
     out.append(payload);
 }

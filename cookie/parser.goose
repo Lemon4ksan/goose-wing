@@ -34,10 +34,14 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    parsed_cookie.domain.append(default_domain);
+    if default_domain.len <= parsed_cookie.domain.cap {
+        parsed_cookie.domain.append(default_domain);
+    }
     to_lower(parsed_cookie.domain[..]);
     parsed_cookie.path.clear();
-    parsed_cookie.path.append(default_path);
+    if default_path.len <= parsed_cookie.path.cap {
+        parsed_cookie.path.append(default_path);
+    }
     parsed_cookie.host_only = true;
     parsed_cookie.creation_utc = now_us;
     parsed_cookie.last_access_utc = now_us;
@@ -343,6 +347,7 @@ fn parse_cookie_payload_pair(
     let raw_val = if eq_pos >= 0 { trim(name_val_part[eq_pos + 1..]) } else { trim(name_val_part) };
 
     guard raw_name.len > 0 || raw_val.len > 0 else { return "", false; }
+    guard raw_name.len <= cookie_ref.name.cap && raw_val.len <= cookie_ref.value.cap else { return "", false; }
     if raw_name.len + raw_val.len > internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return "", false;
     }
@@ -404,6 +409,7 @@ fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u
     let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
     // RFC 6265 Section 5.2.3: If domain still begins with '.', ignore the domain attribute
     guard clean_domain.len > 0 && clean_domain[0] != '.' else { return; }
+    guard clean_domain.len <= cookie_ref.domain.cap else { return; }
     cookie_ref.domain.clear();
     cookie_ref.domain.append(clean_domain);
     to_lower(cookie_ref.domain[..]);
@@ -412,6 +418,7 @@ fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u
 
 fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
     guard attr_val.len > 0 && attr_val[0] == '/' else { return; }
+    guard attr_val.len <= cookie_ref.path.cap else { return; }
     cookie_ref.path.clear();
     cookie_ref.path.append(attr_val);
 }

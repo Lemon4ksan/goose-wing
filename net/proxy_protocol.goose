@@ -184,8 +184,8 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     let line = wire[6..crlf_idx];
     let consumed = crlf_idx + 2;
 
-    // Check for "UNKNOWN" protocol
-    if line.len >= 7 && line[..7] == "UNKNOWN" {
+    // Check for "UNKNOWN" protocol (must be "UNKNOWN" or followed by space)
+    if line == "UNKNOWN" || (line.len > 7 && line[..8] == "UNKNOWN ") {
         hdr.command = ProxyCommand.Local;
         hdr.family = ProxyAddressFamily.Unspec;
         hdr.transport = ProxyTransportProtocol.Unspec;

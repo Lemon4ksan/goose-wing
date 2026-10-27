@@ -573,15 +573,26 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     }
     guard tab_positions.len >= 6 else { return false; }
 
+    let d_part = line[..tab_positions[0]];
+    let p_part = line[tab_positions[1] + 1..tab_positions[2]];
+    let n_part = line[tab_positions[4] + 1..tab_positions[5]];
+    let v_part = line[tab_positions[5] + 1..];
+
+    guard d_part.len <= cookie_ref.domain.cap else { return false; }
+    guard p_part.len <= cookie_ref.path.cap else { return false; }
+    guard n_part.len <= cookie_ref.name.cap else { return false; }
+    guard v_part.len <= cookie_ref.value.cap else { return false; }
+    guard n_part.len + v_part.len <= internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
+
     populate_netscape_cookie_fields(
         cookie_ref,
-        line[..tab_positions[0]],
+        d_part,
         line[tab_positions[0] + 1..tab_positions[1]],
-        line[tab_positions[1] + 1..tab_positions[2]],
+        p_part,
         line[tab_positions[2] + 1..tab_positions[3]],
         line[tab_positions[3] + 1..tab_positions[4]],
-        line[tab_positions[4] + 1..tab_positions[5]],
-        line[tab_positions[5] + 1..],
+        n_part,
+        v_part,
         is_httponly,
     );
 
@@ -602,11 +613,19 @@ fn read_canonical_cookie_json_object(json_reader: json::Reader&, parsed_cookie: 
 
 fn read_json_cookie_member(json_reader: json::Reader&, key: const u8[:], cookie_ref: CanonicalCookie&) {
     var scratch: u8[>..] = [];
-    if key == "name" { cookie_ref.name.clear(); cookie_ref.name.append(json::read_string(json_reader, scratch)); }
-    else if key == "value" { cookie_ref.value.clear(); cookie_ref.value.append(json::read_string(json_reader, scratch)); }
-    else if key == "domain" { cookie_ref.domain.clear(); cookie_ref.domain.append(json::read_string(json_reader, scratch)); }
-    else if key == "path" { cookie_ref.path.clear(); cookie_ref.path.append(json::read_string(json_reader, scratch)); }
-    else if key == "creation_utc" { cookie_ref.creation_utc = json::read_int(json_reader); }
+    if key == "name" {
+        let s = json::read_string(json_reader, scratch);
+        if s.len <= cookie_ref.name.cap { cookie_ref.name.clear(); cookie_ref.name.append(s); }
+    } else if key == "value" {
+        let s = json::read_string(json_reader, scratch);
+        if s.len <= cookie_ref.value.cap { cookie_ref.value.clear(); cookie_ref.value.append(s); }
+    } else if key == "domain" {
+        let s = json::read_string(json_reader, scratch);
+        if s.len <= cookie_ref.domain.cap { cookie_ref.domain.clear(); cookie_ref.domain.append(s); }
+    } else if key == "path" {
+        let s = json::read_string(json_reader, scratch);
+        if s.len <= cookie_ref.path.cap { cookie_ref.path.clear(); cookie_ref.path.append(s); }
+    } else if key == "creation_utc" { cookie_ref.creation_utc = json::read_int(json_reader); }
     else if key == "last_access_utc" { cookie_ref.last_access_utc = json::read_int(json_reader); }
     else if key == "last_update_utc" { cookie_ref.last_update_utc = json::read_int(json_reader); }
     else if key == "expires_utc" { cookie_ref.expires_utc = json::read_int(json_reader); }

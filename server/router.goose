@@ -401,7 +401,6 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
     var s = strip_query_and_fragment(raw_path);
     s = strip_scheme_and_authority(s);
 
-    var seg_starts: i32[..32] = [];
     var scan_idx = 0;
     while scan_idx < s.len && s[scan_idx] == '/' {
         scan_idx += 1;
@@ -423,19 +422,18 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) {
         }
 
         if is_dot_dot_segment(seg) {
-            if seg_starts.len > 0 {
-                let pop_to = seg_starts[seg_starts.len - 1] as i64;
-                out.resize(pop_to - 1);
-                seg_starts.pop();
+            if out.len > 0 {
+                var last_slash: i64 = out.len - 1;
+                while last_slash > 0 && out[last_slash] != '/' {
+                    last_slash--;
+                }
+                out.resize(last_slash);
             }
             continue;
         }
 
         guard out.len + seg.len + 1 <= out.cap else { break; }
         out.push('/');
-        if seg_starts.len < seg_starts.cap {
-            seg_starts.push(out.len as i32);
-        }
         out.append(seg);
     }
 

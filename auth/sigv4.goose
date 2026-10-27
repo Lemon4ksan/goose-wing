@@ -24,12 +24,12 @@ fn new_aws_credentials(
     service: const u8[:] = "s3",
 ) -> AwsCredentials {
     var creds = AwsCredentials { .. };
-    creds.access_key_id.append(access_key);
-    creds.secret_access_key.append(secret_key);
+    if access_key.len <= creds.access_key_id.cap { creds.access_key_id.append(access_key); }
+    if secret_key.len <= creds.secret_access_key.cap { creds.secret_access_key.append(secret_key); }
     creds.region.clear();
-    creds.region.append(region);
+    if region.len <= creds.region.cap { creds.region.append(region); }
     creds.service.clear();
-    creds.service.append(service);
+    if service.len <= creds.service.cap { creds.service.append(service); }
     return creds;
 }
 
@@ -40,7 +40,7 @@ fn derive_aws_signing_key(
     region: const u8[:],
     service: const u8[:],
 ) -> u8[32] {
-    var k_secret: u8[..140] = [];
+    var k_secret: u8[>..] = [];
     k_secret.append("AWS4");
     k_secret.append(secret_key);
 

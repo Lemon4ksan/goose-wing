@@ -57,6 +57,7 @@ fn add_ed25519_key(
     pub_key: const u8[32],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
+    guard kid.len <= 64 else { return false; }
     var key = JwksKey {
         kty: JwkKeyType.OKP,
         crv: "Ed25519",
@@ -79,6 +80,7 @@ fn add_symmetric_key(
     secret_key: const u8[:],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
+    guard kid.len <= 64 else { return false; }
     guard secret_key.len > 0 && secret_key.len <= 64 else { return false; }
     var key = JwksKey {
         kty: JwkKeyType.Oct,
@@ -171,27 +173,37 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
                             key_item.kty = parse_jwk_key_type(kty_str);
                         } else if field_key == "crv" {
                             let crv_str = json::read_string(reader, scratch);
-                            key_item.crv.clear();
-                            key_item.crv.append(crv_str);
+                            if crv_str.len <= key_item.crv.cap {
+                                key_item.crv.clear();
+                                key_item.crv.append(crv_str);
+                            }
                         } else if field_key == "alg" {
                             let alg_str = json::read_string(reader, scratch);
                             key_item.alg = parse_jwt_alg(alg_str);
                         } else if field_key == "use" {
                             let use_str = json::read_string(reader, scratch);
-                            key_item.use.clear();
-                            key_item.use.append(use_str);
+                            if use_str.len <= key_item.use.cap {
+                                key_item.use.clear();
+                                key_item.use.append(use_str);
+                            }
                         } else if field_key == "kid" {
                             let kid_str = json::read_string(reader, scratch);
-                            key_item.kid.clear();
-                            key_item.kid.append(kid_str);
+                            if kid_str.len <= key_item.kid.cap {
+                                key_item.kid.clear();
+                                key_item.kid.append(kid_str);
+                            }
                         } else if field_key == "x" {
                             let x_str = json::read_string(reader, scratch);
-                            raw_x.clear();
-                            raw_x.append(x_str);
+                            if x_str.len <= raw_x.cap {
+                                raw_x.clear();
+                                raw_x.append(x_str);
+                            }
                         } else if field_key == "k" {
                             let k_str = json::read_string(reader, scratch);
-                            raw_k.clear();
-                            raw_k.append(k_str);
+                            if k_str.len <= raw_k.cap {
+                                raw_k.clear();
+                                raw_k.append(k_str);
+                            }
                         } else {
                             json::skip(reader);
                         }

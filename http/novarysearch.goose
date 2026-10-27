@@ -150,7 +150,7 @@ fn bytes_less_than(a: const u8[:], b: const u8[:]) -> bool {
 // Normalizes a raw query string (e.g. `utm_source=tw&id=10&utm_medium=web`)
 // into a canonical sorted string without ignored parameters (`id=10`)
 fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&, out: B&) {
-    var params: QueryParam[..32] = [];
+    var params: QueryParam[..128] = [];
 
     var cursor: i64 = 0;
     // Skip leading '?' if present
@@ -168,11 +168,13 @@ fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&
 
         let k, v, has_eq = pair.split_once_byte('=');
         var p = QueryParam { .. };
+        let k_len = if k.len <= p.key.cap { k.len } else { p.key.cap };
         if has_eq {
-            p.key.append(k);
-            p.val.append(v);
+            p.key.append(k[..k_len]);
+            let v_len = if v.len <= p.val.cap { v.len } else { p.val.cap };
+            p.val.append(v[..v_len]);
         } else {
-            p.key.append(pair);
+            p.key.append(pair[..k_len]);
         }
 
         // Only keep if not ignored by No-Vary-Search rules

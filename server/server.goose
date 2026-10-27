@@ -354,6 +354,10 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
             cl_count++;
             let val_trimmed = trim_lws(hdr.value[..]);
             guard val_trimmed.len > 0 else { return false, 0; }
+            // RFC 9110 §8.6: Content-Length = 1*DIGIT (no leading '+' or '-' sign)
+            for b in val_trimmed {
+                guard b >= '0' && b <= '9' else { return false, 0; }
+            }
             let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
             guard ok_cl && parsed_cl >= 0 else { return false, 0; }
             if cl_count == 1 {

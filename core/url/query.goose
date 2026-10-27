@@ -15,6 +15,7 @@ struct QueryParamItem {
 
 struct QueryParamsList {
     items: QueryParamItem[..128] = [],
+    overflow: bool = false,
 }
 
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) {
@@ -81,6 +82,9 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
             list.items.push(item);
         }
         start = end + 1;
+    }
+    if start < input.len {
+        list.overflow = true;
     }
     return list;
 }

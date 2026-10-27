@@ -13,6 +13,7 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 $testsDir = Join-Path $root "tests"
+$binDir = Join-Path $root "bin"
 $optFlag = "-O2"
 
 # Ensure 16-byte stack alignment and 32MB stack on Windows x64 to prevent GCC 16 AVX2 #GP faults
@@ -109,10 +110,14 @@ $maxConcurrent = if ($Jobs -gt 0) { [Math]::Min($Jobs, [Environment]::ProcessorC
 Write-Host "`n[2/3] Compiling $($testFiles.Count) suites (max $maxConcurrent parallel, $optFlag)..." -ForegroundColor Yellow
 $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
 
+if (-not (Test-Path $binDir)) {
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+}
+
 $buildTasks = @()
 $queue = [System.Collections.Queue]::new()
 foreach ($file in $testFiles) {
-    $exeName = [System.IO.Path]::ChangeExtension($file.FullName, ".exe")
+    $exeName = Join-Path $binDir "$($file.BaseName).exe"
     $queue.Enqueue([PSCustomObject]@{
         File = $file
         Exe = $exeName
@@ -176,17 +181,17 @@ $failedSuites = 0
 foreach ($task in $buildTasks) {
     try {
         if (-not (Test-Path $task.Exe)) {
-            Write-Host "  FAIL: tests/$($task.File.Name) executable not found" -ForegroundColor Red
+            Write-Host "  FAIL: bin/$([System.IO.Path]::GetFileName($task.Exe)) executable not found" -ForegroundColor Red
             $failedSuites++
             continue
         }
-        Write-Host "`n>>> Running tests/$($task.File.Name)..." -ForegroundColor Cyan
+        Write-Host "`n>>> Running bin/$([System.IO.Path]::GetFileName($task.Exe)) (tests/$($task.File.Name))..." -ForegroundColor Cyan
         $runProc = Start-GooseProcess $task.Exe "" $false
         $runProc.WaitForExit()
         if ($runProc.ExitCode -eq 0) {
             $passedSuites++
         } else {
-            Write-Host "  FAIL: tests/$($task.File.Name) exited with code $($runProc.ExitCode)" -ForegroundColor Red
+            Write-Host "  FAIL: bin/$([System.IO.Path]::GetFileName($task.Exe)) exited with code $($runProc.ExitCode)" -ForegroundColor Red
             $failedSuites++
         }
     } finally {

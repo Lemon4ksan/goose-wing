@@ -42,8 +42,10 @@ struct CacheControl {
     min_fresh: i32 = -1,
     stale_while_revalidate: i32 = -1,
     stale_if_error: i32 = -1,
-    private_fields: u8[..64][..8] = [],
-    no_cache_fields: u8[..64][..8] = [],
+    private_overflow: bool = false,
+    no_cache_overflow: bool = false,
+    private_fields: u8[..64][..16] = [],
+    no_cache_fields: u8[..64][..16] = [],
 }
 
 // Constructs a zero-initialized CacheControl structure with default unset values (-1).
@@ -146,7 +148,7 @@ fn has_stale_if_error(cc: const CacheControl&) -> bool {
 // Checks if a given field name is covered by qualified private="field1, field2".
 fn is_private_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
     guard (cc.flags & CC_PRIVATE) != 0 else { return false; }
-    guard cc.private_fields.len > 0 else { return true; }
+    if cc.private_overflow || cc.private_fields.len == 0 { return true; }
     for &f in cc.private_fields {
         if eq_ascii_fold(f[..], field_name) {
             return true;
@@ -158,7 +160,7 @@ fn is_private_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
 // Checks if a given field name is covered by qualified no-cache="field1, field2".
 fn is_no_cache_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
     guard (cc.flags & CC_NO_CACHE) != 0 else { return false; }
-    guard cc.no_cache_fields.len > 0 else { return true; }
+    if cc.no_cache_overflow || cc.no_cache_fields.len == 0 { return true; }
     for &f in cc.no_cache_fields {
         if eq_ascii_fold(f[..], field_name) {
             return true;
@@ -187,7 +189,7 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
 }
 
 // Extracts comma-separated or quoted field names into an inline fixed-capacity array.
-fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..8]&) {
+fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow: bool&) {
     let s = raw_val.trim_lws().trim_byte('"').trim_lws();
     guard s.len > 0 else { return; }
 
@@ -196,11 +198,14 @@ fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..8]&) {
         let name_tok, ok = tok.token_next();
         guard ok else { break; }
         let trimmed_name = name_tok.trim_lws();
-        if trimmed_name.len > 0 && out_fields.len < 8 {
-            var buf: u8[..64] = [];
-            let store_len = if trimmed_name.len > 64 { 64 } else { trimmed_name.len };
-            buf.append(trimmed_name[..store_len]);
-            out_fields.push(buf);
+        if trimmed_name.len > 0 {
+            if out_fields.len < out_fields.cap && trimmed_name.len <= 64 {
+                var buf: u8[..64] = [];
+                buf.append(trimmed_name);
+                out_fields.push(buf);
+            } else {
+                overflow = true;
+            }
         }
     }
 }
@@ -215,7 +220,7 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
     }
     if eq_ascii_fold(name, "no-cache") {
         cc.flags |= CC_NO_CACHE;
-        if val.len > 0 { parse_field_names(val, cc.no_cache_fields); }
+        if val.len > 0 { parse_field_names(val, cc.no_cache_fields, cc.no_cache_overflow); }
         return true;
     }
     if eq_ascii_fold(name, "must-revalidate") {
@@ -236,7 +241,7 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
     }
     if eq_ascii_fold(name, "private") {
         cc.flags |= CC_PRIVATE;
-        if val.len > 0 { parse_field_names(val, cc.private_fields); }
+        if val.len > 0 { parse_field_names(val, cc.private_fields, cc.private_overflow); }
         return true;
     }
     if eq_ascii_fold(name, "immutable") {

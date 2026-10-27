@@ -268,40 +268,30 @@ fn build_http_connect_request(
     out.append("Proxy-Connection: Keep-Alive\r\n\r\n");
 }
 
-// Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers, and Connection tokens so credentials never leak to origin (RFC 9110 Section 7.6.1 & Go #16875).
-fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
-    var custom_tokens: u8[..64][..16] = [];
+fn is_token_in_connection_headers<H>(headers: const H&, target_name: const u8[:]) -> bool {
     for &h in headers {
         if eq_ascii_fold(h.name[..], "connection") {
             var rest: const u8[:] = h.value[..];
             while rest.len > 0 {
                 let token_raw, remaining, has_comma = core::split_once_byte(rest, ',');
                 let token = trim_lws(token_raw);
-                if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
-                    if custom_tokens.len < 16 {
-                        var tok_buf: u8[..64] = [];
-                        tok_buf.append(token);
-                        custom_tokens.push(tok_buf);
-                    }
+                if token.len > 0 && eq_ascii_fold(token, target_name) {
+                    return true;
                 }
                 if !has_comma { break; }
                 rest = remaining;
             }
         }
     }
+    return false;
+}
 
+// Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers, and Connection tokens so credentials never leak to origin (RFC 9110 Section 7.6.1 & Go #16875).
+fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
     var write_idx = 0;
     for read_idx in headers.len {
         let h_name = headers[read_idx].name[..];
-        var drop = is_hop_by_hop_header_name(h_name);
-        if !drop {
-            for &tok in custom_tokens {
-                if eq_ascii_fold(h_name, tok[..]) {
-                    drop = true;
-                    break;
-                }
-            }
-        }
+        let drop = is_hop_by_hop_header_name(h_name) || is_token_in_connection_headers(headers, h_name);
         if !drop {
             if write_idx != read_idx {
                 headers[write_idx] = copy(headers[read_idx]);

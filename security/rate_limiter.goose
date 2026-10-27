@@ -162,6 +162,22 @@ fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter {
     return ShardedGcraLimiter { quota: quota, .. };
 }
 
+fn format_gcra_key(key_str: const u8[:], out: u8[..64]&) {
+    out.clear();
+    if key_str.len <= 64 {
+        out.append(key_str);
+    } else {
+        out.append(key_str[..48]);
+        let h = core::fnv1a_64(key_str);
+        for i in 16 {
+            let shift = (15 - i) * 4;
+            let nibble = ((h >> shift) & 0x0F) as u8;
+            let ch = if nibble < 10 { '0' + nibble } else { 'a' + (nibble - 10) };
+            out.push(ch);
+        }
+    }
+}
+
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
 fn check_rate_limit(
     limiter: ShardedGcraLimiter&,
@@ -169,11 +185,13 @@ fn check_rate_limit(
     cost_n: u64,
     now_ns: u64,
 ) -> RateLimitDecision {
+    var eff_key: u8[..64] = [];
+    format_gcra_key(key_str, eff_key);
     let shard_idx = (core::fnv1a_64(key_str) & 0xFF) as i64;
 
     // Find existing slot
     for idx in limiter.shards[shard_idx].slots.len {
-        if limiter.shards[shard_idx].slots[idx].active && limiter.shards[shard_idx].slots[idx].key[..] == key_str {
+        if limiter.shards[shard_idx].slots[idx].active && limiter.shards[shard_idx].slots[idx].key[..] == eff_key[..] {
             return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[idx].cell, cost_n, now_ns);
         }
     }
@@ -195,7 +213,7 @@ fn check_rate_limit(
 
     if slot_idx >= 0 {
         limiter.shards[shard_idx].slots[slot_idx].key.clear();
-        limiter.shards[shard_idx].slots[slot_idx].key.append(key_str);
+        limiter.shards[shard_idx].slots[slot_idx].key.append(eff_key[..]);
         limiter.shards[shard_idx].slots[slot_idx].cell.tat_ns = now_ns;
         limiter.shards[shard_idx].slots[slot_idx].active = true;
         return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[slot_idx].cell, cost_n, now_ns);

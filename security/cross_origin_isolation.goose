@@ -98,7 +98,9 @@ fn update_isolation_context(
     ctx.coop = parse_coop(coop_header);
     ctx.coep = parse_coep(coep_header);
     ctx.document_origin.clear();
-    ctx.document_origin.append(document_origin);
+    if document_origin.len <= ctx.document_origin.cap {
+        ctx.document_origin.append(document_origin);
+    }
 
     // Context is cross-origin isolated if:
     // COOP is same-origin AND COEP is require-corp or credentialless (W3C HTML §7.2)

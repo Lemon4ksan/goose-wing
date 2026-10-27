@@ -104,6 +104,7 @@ fn unmarshal_token_challenge(data: const u8[:], out: TokenChallenge&) -> bool {
     out.token_type = tt;
 
     let iss_len = (((data[2] << 8) | data[3]) as i64);
+    guard iss_len <= out.issuer_name.cap else { return false; }
     guard data.len >= 4 + iss_len + 1 else { return false; }
 
     for i in iss_len {
@@ -115,6 +116,7 @@ fn unmarshal_token_challenge(data: const u8[:], out: TokenChallenge&) -> bool {
     offset += 1;
 
     guard ctx_len == 0 || ctx_len == 32 else { return false; }
+    guard ctx_len <= out.redemption_context.cap else { return false; }
     guard data.len >= offset + ctx_len + 2 else { return false; }
 
     for i in ctx_len {
@@ -125,6 +127,7 @@ fn unmarshal_token_challenge(data: const u8[:], out: TokenChallenge&) -> bool {
     let orig_len = (((data[offset] << 8) | data[offset + 1]) as i64);
     offset += 2;
 
+    guard orig_len <= out.origin_info.cap else { return false; }
     guard data.len >= offset + orig_len else { return false; }
     for i in orig_len {
         out.origin_info.push(data[offset + i]);
@@ -157,6 +160,7 @@ fn marshal_token<B>(token: const Token&, out: B&) {
 // Unmarshals Token from RFC 9577 §2.2.1 binary representation.
 fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token&) -> bool {
     guard key_id_len >= 0 && auth_len >= 0 else { return false; }
+    guard key_id_len <= out.token_key_id.cap && auth_len <= out.authenticator.cap else { return false; }
     let expected_len = 2 + 32 + 32 + key_id_len + auth_len;
     guard data.len >= expected_len else { return false; }
 

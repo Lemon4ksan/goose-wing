@@ -32,6 +32,7 @@ fn new_cors_policy() -> CorsPolicy {
 // Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     guard policy.allowed_origins.len < policy.allowed_origins.cap else { return false; }
+    guard origin_pattern.len <= 128 else { return false; }
     var entry: u8[..128] = [];
     entry.append(origin_pattern);
     policy.allowed_origins.push(entry);

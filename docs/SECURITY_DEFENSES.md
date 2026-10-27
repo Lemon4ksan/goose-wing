@@ -206,14 +206,33 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | Close Frame 1-Byte Payload Rejection | RFC 6455 §5.5.1 | Close frames with a payload length of exactly 1 byte fail the connection with close code 1002 (Protocol Error). |
 | Close Frame Reserved Status Codes | RFC 6455 §7.4.2 | Rejects status codes in Close frames that are reserved or forbidden on the wire (0-999, 1004, 1005, 1006, 1015, and 1016-2999). |
 
-## 17. Test coverage
+## 17. Fixed-capacity buffer and heapless truncation defenses (`server/router.goose`, `http/*`, `net/*`, `security/*`, `tls/*`, `cookie/*`)
 
-The defenses in this document are tested by 86 test suites across `tests/`:
-- Protocol tracking suites: `tests/red_issues_tracker_phase5_test.goose`, `tests/red_issues_tracker_phase6_test.goose`, `tests/red_issues_tracker_phase7_test.goose`, `tests/red_issues_tracker_phase8_test.goose`, `tests/red_issues_tracker_phase9_test.goose`.
+| Issue | Specification or CVE | goose-wing behavior |
+| :--- | :--- | :--- |
+| Router Path Dot-Segment Desync | Capacity truncation smuggling | Rewrote segment popping in `canonicalize_route_path` to scan backward for `/` in place rather than tracking segment start offsets in a fixed `i32[..32]` array. Paths of arbitrary segment depth cannot desynchronize dot-dot segments. |
+| Hop-by-Hop Connection Token Leakage | RFC 9110 §7.6.1, Go #16875 | Scans `Connection:` tokens directly in place within header strings via `is_token_in_connection_headers` and `is_token_in_connection_header_map` instead of parsing tokens into a fixed-capacity buffer. Tokens past 16 or 32 can never leak across proxy tunnels or gateways. |
+| Cache-Control Private Field Silent Drop | RFC 9111 §5.2.2.7 | Expanded private and no-cache field limits to 16 and added `private_overflow` / `no_cache_overflow` flags. On buffer overflow, `CacheControl` fails closed by treating the directive as unqualified, preventing targeted field caching leaks. |
+| No-Vary-Search Parameter Smuggling | WICG No-Vary-Search | Expanded query parameter normalization capacity to 128 elements (`QueryParam[..128]`) and bounded key/value extraction with slice clamping to eliminate truncation aborts. |
+| Strict Response Content-Length Format | RFC 9110 §8.6, RFC 9112 §6.1 | Rejects response `Content-Length` headers containing `+` or `-` prefixes. Only decimal digits (`'0'..'9'`) are accepted. |
+| PROXY Protocol v1 Delimiter Enforcement | HAProxy PROXY Protocol v1 | Enforces that `"UNKNOWN"` is matched exactly or followed by a space delimiter (`"UNKNOWN "`), rejecting invalid commands like `"UNKNOWNFOOBAR"`. |
+| Privacy Pass Wire Challenge Length Bounds | RFC 9578 | Enforces strict capacity guards on issuer name ($\le 128$), redemption context ($\le 32$), and origin info ($\le 256$), safely returning false on oversized payloads. |
+| SignedJar Cookie Name Context Swapping | Cryptographic integrity | `build_signed_to_sign` explicitly binds `cookie_name` bytes into the HMAC-SHA256 signature preimage alongside its 16-bit length prefix, preventing cross-cookie attribute swapping. |
+| QUIC Final Size Verification | RFC 9000 §4.5 | `insert_fragment` validates that a STREAM frame carrying `FIN` does not specify a `final_size` smaller than any previously received out-of-order interval in `buf.intervals`. |
+| X.509 v3 ASN.1 Version Parsing | RFC 5280 §4.1.2.1 | Corrected tag inspection in `parse_x509_certificate` to inspect `tbs_seq` rather than `cert_seq` for context-specific tag `0xA0`, allowing standard v3 certificates to parse. |
+| Set-Cookie Length Bounds | RFC 6265bis §5.5 | Validates that cookie `name` does not exceed 256 bytes and `domain`/`path` attributes do not exceed 256 bytes before appending to stack buffers, rejecting oversized fields safely. |
+| CSRF FetchContext Method & Header Hygiene | W3C Fetch Metadata | Clears `ctx.method` and bounds `target_host`, `Origin`, and `Referer` to buffer limits. Retains only the first valid Origin and Referer instead of concatenating duplicate headers. |
+| gRPC-Web Trailers CRLF Sanitization | gRPC Wire Spec | Percent-encodes `message` in `encode_grpc_web_trailers` using `encode_grpc_message` and bounds trailer body generation to prevent CRLF trailer injection and buffer overflow. |
+| Keyed Rate Limiter Key Bounds | GCRA rate limiter | Normalizes rate limit keys $> 64$ bytes into a deterministic 64-byte token (prefix + FNV-1a hex hash), preventing capacity panic aborts on long keys. |
+
+## 18. Test coverage
+
+The defenses in this document are tested by 88 test suites across `tests/`:
+- Protocol tracking suites: `tests/red_issues_tracker_phase5_test.goose`, `tests/red_issues_tracker_phase6_test.goose`, `tests/red_issues_tracker_phase7_test.goose`, `tests/red_issues_tracker_phase8_test.goose`, `tests/red_issues_tracker_phase9_test.goose`, `tests/red_issues_tracker_phase10_test.goose`, `tests/red_issues_tracker_phase11_test.goose`.
 - HTTP/2 reference suites: `tests/http2_suite_test.goose`, `tests/sec_h2_test.goose`, `tests/http2_stream_fsm_test.goose`.
 - HTTP/3 and WebTransport suites: `tests/http3_test.goose`, `tests/webtransport_test.goose`.
 - WebSocket and realtime suites: `tests/websocket_test.goose`, `tests/uwebsockets_bugs_regression_test.goose`.
 - Security and perimeter suites: `tests/sec_cve_test.goose`, `tests/sec_smuggler_test.goose`, `tests/sec_csrf_test.goose`, `tests/sec_rate_limiter_test.goose`, `tests/sec_ct_test.goose`, `tests/sec_cookie_test.goose`.
 - Core transport and pool suites: `tests/net_pool_test.goose`, `tests/net_proxy_test.goose`, `tests/net_happy_eyeballs_test.goose`, `tests/net_retry_test.goose`.
 
-Total: 3,800+ checks across 86 suites.
+Total: 3,850+ checks across 88 suites.
