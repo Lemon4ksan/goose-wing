@@ -408,3 +408,17 @@ fn ::fast_u64toa(val: u64, dst: u8[:]) -> i64 { return core::fast_u64toa(val, ds
 fn ::fast_u32toa_hex(val: u32, dst: u8[:]) -> i64 { return core::fast_u32toa_hex(val, dst); }
 fn ::swar_find_ctl(s: const u8[:]) -> i64 { return core::swar_find_ctl(s); }
 fn ::fence_wire_slice(buf: u8[:], length: i64) -> bool { return core::fence_wire_slice(buf, length); }
+
+// ---- safe fixed-capacity buffer operations ---------------------------------
+
+fn ::try_push<A, T>(arr: A&, item: T) -> bool {
+    guard arr.len < arr.cap else { return false; }
+    arr.push(item);
+    return true;
+}
+
+fn ::try_append<A, S>(arr: A&, slice: S) -> bool {
+    guard arr.len + slice.len <= arr.cap else { return false; }
+    arr.append(slice);
+    return true;
+}

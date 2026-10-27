@@ -58,6 +58,35 @@ fn test_path_dot_segment_capacity_desync(t: core::T&) {
         }
         sub.assert_eq(s_count, 256, "Exactly 256 '/s' segments must remain; segment 256 MUST NOT be popped by target/..");
     };
+
+    t.run("Fixed-capacity try_push and try_append return false on capacity boundary") { sub =>
+        var arr: i32[..4] = [];
+        sub.assert_true(arr.try_push(10), "try_push 1 should succeed");
+        sub.assert_true(arr.try_push(20), "try_push 2 should succeed");
+        sub.assert_true(arr.try_push(30), "try_push 3 should succeed");
+        sub.assert_true(arr.try_push(40), "try_push 4 should succeed");
+        sub.assert_false(arr.try_push(50), "try_push 5 MUST fail on full buffer");
+        sub.assert_eq(arr.len, 4, "arr.len must remain 4 without truncation corruption");
+
+        var str: u8[..6] = [];
+        sub.assert_true(str.try_append("abc"), "try_append abc should succeed");
+        sub.assert_false(str.try_append("defg"), "try_append defg MUST fail because 3 + 4 > 6");
+        sub.assert_eq(str.len, 3, "str.len must remain 3 after failed try_append");
+        sub.assert_true(str.try_append("def"), "try_append def should succeed exactly filling capacity");
+        sub.assert_eq(str.len, 6, "str.len must be 6");
+    };
+
+    t.run("URL path depth exceeding 1024 segments returns UrlParseError.PathTooDeep") { sub =>
+        var deep_path: u8[..2048] = [];
+        deep_path.append("http://example.com");
+        for i in 1025 {
+            deep_path.push('/');
+        }
+
+        let parsed, err = core::parse_url(deep_path[..]);
+        sub.assert_false(parsed.valid, "URL with > 1024 segments must be invalid");
+        sub.assert_true(err == core::UrlParseError.PathTooDeep, "Error code MUST be UrlParseError.PathTooDeep");
+    };
 }
 
 // ----------------------------------------------------------------------------

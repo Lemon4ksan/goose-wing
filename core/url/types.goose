@@ -12,6 +12,7 @@ enum UrlParseError {
     None,
     EmptyInput,
     InputTooLong,
+    PathTooDeep,
     InvalidScheme,
     MissingHost,
     InvalidHost,

@@ -240,7 +240,10 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
             out_url.href.append(scheme_str[..]);
             out_url.href.push(':');
             out_url.scheme_end = scheme_str.len as i32;
-            append_canonical_path_and_query(out_url, is_spec, remainder);
+            let path_err = append_canonical_path_and_query(out_url, is_spec, remainder);
+            guard path_err == UrlParseError.None else {
+                return out_url, path_err;
+            }
             out_url.valid = true;
             return out_url, UrlParseError.None;
         }
@@ -392,7 +395,10 @@ fn parse_absolute_authority_url(
     }
 
     // Pathname, Search, and Hash
-    append_canonical_path_and_query(out_url, is_spec, path_and_beyond);
+    let path_err = append_canonical_path_and_query(out_url, is_spec, path_and_beyond);
+    guard path_err == UrlParseError.None else {
+        return out_url, path_err;
+    }
 
     out_url.valid = true;
     return out_url, UrlParseError.None;
@@ -964,7 +970,7 @@ fn is_windows_drive_segment(seg: const u8[:]) -> bool {
     return false;
 }
 
-fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..1024]&, last_was_dot: bool&) -> bool {
+fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_starts: i32[..1024]&, last_was_dot: bool&) -> UrlParseError {
     if is_dot_segment(seg) {
         last_was_dot = true;
     } else if is_double_dot_segment(seg) {
@@ -984,28 +990,35 @@ fn handle_path_segment(seg: const u8[:], is_file: bool, out_url: Url&, seg_start
         }
     } else {
         last_was_dot = false;
-        guard out_url.href.len + seg.len + 1 <= out_url.href.cap else { return false; }
-        out_url.href.push('/');
+        guard out_url.href.try_push('/') else {
+            return UrlParseError.InputTooLong;
+        }
         let cur_start = out_url.href.len as i32;
         if is_file && seg_starts.len == 0 && is_windows_drive_segment(seg) && seg[1] == '|' {
-            out_url.href.push(seg[0]);
-            out_url.href.push(':');
+            guard out_url.href.try_push(seg[0]) && out_url.href.try_push(':') else {
+                return UrlParseError.InputTooLong;
+            }
         } else {
-            out_url.href.append(seg);
+            guard out_url.href.try_append(seg) else {
+                return UrlParseError.InputTooLong;
+            }
         }
-        guard seg_starts.len < seg_starts.cap else { return false; }
-        seg_starts.push(cur_start);
+        guard seg_starts.try_push(cur_start) else {
+            return UrlParseError.PathTooDeep;
+        }
     }
-    return true;
+    return UrlParseError.None;
 }
 
-fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
+fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) -> UrlParseError {
     let path_start_offset: i64 = out_url.href.len;
     guard raw_path.len > 0 else {
         if is_spec {
-            out_url.href.push('/');
+            guard out_url.href.try_push('/') else {
+                return UrlParseError.InputTooLong;
+            }
         }
-        return;
+        return UrlParseError.None;
     }
 
     let is_file = out_url.scheme_end == 4 && out_url.href.len >= 4 && out_url.href[..4] == "file";
@@ -1026,9 +1039,10 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
 
         if is_delim {
             let seg = raw_path[seg_start..scan_idx];
-            guard handle_path_segment(seg, is_file, out_url, seg_starts, last_was_dot) else {
+            let seg_err = handle_path_segment(seg, is_file, out_url, seg_starts, last_was_dot);
+            guard seg_err == UrlParseError.None else {
                 out_url.valid = false;
-                return;
+                return seg_err;
             }
             seg_start = scan_idx + 1;
         }
@@ -1045,16 +1059,23 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) {
 
     if has_trailing_slash {
         if out_url.href.len == path_start_offset {
-            out_url.href.push('/');
+            guard out_url.href.try_push('/') else {
+                return UrlParseError.InputTooLong;
+            }
         } else if out_url.href[out_url.href.len - 1] != '/' {
-            out_url.href.push('/');
+            guard out_url.href.try_push('/') else {
+                return UrlParseError.InputTooLong;
+            }
         }
     } else if out_url.href.len == path_start_offset && is_spec {
-        out_url.href.push('/');
+        guard out_url.href.try_push('/') else {
+            return UrlParseError.InputTooLong;
+        }
     }
+    return UrlParseError.None;
 }
 
-fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond: const u8[:]) {
+fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond: const u8[:]) -> UrlParseError {
     var query_pos = -1;
     var hash_pos = -1;
     for scan_idx in path_and_beyond.len {
@@ -1071,21 +1092,32 @@ fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond
     let raw_path = path_and_beyond[..path_end];
 
     out_url.pathname_start = out_url.href.len as i32;
-    collapse_path_directly(out_url, is_spec, raw_path);
+    let path_err = collapse_path_directly(out_url, is_spec, raw_path);
+    guard path_err == UrlParseError.None else {
+        out_url.valid = false;
+        return path_err;
+    }
     out_url.pathname_end = out_url.href.len as i32;
 
     if query_pos >= 0 {
         out_url.search_start = out_url.href.len as i32;
         let q_end = if hash_pos >= 0 { hash_pos } else { path_and_beyond.len };
-        out_url.href.append(path_and_beyond[query_pos..q_end]);
+        guard out_url.href.try_append(path_and_beyond[query_pos..q_end]) else {
+            out_url.valid = false;
+            return UrlParseError.InputTooLong;
+        }
         out_url.search_end = out_url.href.len as i32;
     }
 
     if hash_pos >= 0 {
         out_url.hash_start = out_url.href.len as i32;
-        out_url.href.append(path_and_beyond[hash_pos..]);
+        guard out_url.href.try_append(path_and_beyond[hash_pos..]) else {
+            out_url.valid = false;
+            return UrlParseError.InputTooLong;
+        }
         out_url.hash_end = out_url.href.len as i32;
     }
+    return UrlParseError.None;
 }
 
 fn copy_base_authority_offsets(out_url: Url&, base_url: const Url&) {
@@ -1217,7 +1249,10 @@ fn resolve_relative_path_against_base(
         combined_path.append(rel_input);
     }
 
-    append_canonical_path_and_query(out_url, is_spec, combined_path[..]);
+    let path_err = append_canonical_path_and_query(out_url, is_spec, combined_path[..]);
+    guard path_err == UrlParseError.None else {
+        return out_url, path_err;
+    }
     out_url.valid = true;
     return out_url, UrlParseError.None;
 }
