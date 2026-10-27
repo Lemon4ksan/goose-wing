@@ -574,9 +574,9 @@ fn verify_signature_scheme_curve_binding(
     spki_oid: const u8[:],
 ) -> bool {
     if sig_scheme == SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
-        return spki_oid == OID_SECP256R1[..] || spki_oid == OID_EC_PUBLIC_KEY[..];
+        return spki_oid == OID_SECP256R1[..];
     } else if sig_scheme == SIG_SCHEME_ECDSA_SECP384R1_SHA384 {
-        return spki_oid == OID_SECP384R1[..] || spki_oid == OID_EC_PUBLIC_KEY[..];
+        return spki_oid == OID_SECP384R1[..];
     } else if sig_scheme == SIG_SCHEME_ED25519 {
         return spki_oid == OID_ED25519[..];
     } else if sig_scheme == SIG_SCHEME_RSA_PSS_RSAE_SHA256 || sig_scheme == SIG_SCHEME_RSA_PSS_RSAE_SHA384 {

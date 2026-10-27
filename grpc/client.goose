@@ -200,7 +200,7 @@ fn parse_grpc_unary_response(
             var is_trailers = false;
             var is_comp = false;
             let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
-            guard ok_frame else { break; }
+            guard ok_frame else { return false; }
 
             if is_trailers {
                 parse_grpc_web_trailers(frame_payload[..], out_resp.status, out_resp.message);
@@ -227,7 +227,7 @@ fn parse_grpc_unary_response(
         return ok_lpm;
     }
 
-    if has_wire_status {
+    if body.len == 0 && has_wire_status {
         out_resp.is_trailers_only = true;
         return true;
     }

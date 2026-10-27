@@ -183,6 +183,7 @@ fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
         aborted: false,
         ..
     };
+    guard key.len <= flight.key.cap else { return false, -1; }
     flight.key.append(key);
     writers.flights.push(flight);
     return true, writers.flights.len - 1;
@@ -468,7 +469,7 @@ fn is_response_cacheable(
     if resp_cc.is_must_understand() && !is_heuristically_cacheable_status(resp.status_code) { return false; }
 
     if cache.options.shared {
-        if resp_cc.is_private() && resp_cc.private_fields.len == 0 && !cache.options.cache_private {
+        if resp_cc.is_private() && (resp_cc.private_overflow || resp_cc.private_fields.len == 0) && !cache.options.cache_private {
             return false;
         }
         if req_headers.request_has_authorization() {
@@ -568,8 +569,11 @@ fn on_response(
         return dec;
     }
 
-    let vary_snap = record_vary_snapshot(resp_headers.get_header("vary"), req_headers);
-    guard !vary_snap.has_star else {
+    var vary_combined: u8[>..] = [];
+    get_combined(resp_headers, "vary", vary_combined);
+    let vary_slice = if vary_combined.len > 0 { vary_combined[..] } else { resp_headers.get_header("vary") };
+    let vary_snap = record_vary_snapshot(vary_slice, req_headers);
+    guard !vary_snap.has_star && vary_snap.valid else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }

@@ -553,10 +553,18 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
             } else {
                 view.host = host_port_slice;
             }
+            if view.is_special && !eq_ascii_fold(view.scheme, "file") && view.host.len == 0 {
+                return view, UrlParseError.MissingHost;
+            }
+            guard !has_forbidden_host_code_point(view.host) else {
+                return view, UrlParseError.ForbiddenHostCodePoint;
+            }
             guard validate_host_punycode_labels(view.host) else {
                 return view, UrlParseError.InvalidHost;
             }
         }
+    } else if view.is_special && !eq_ascii_fold(view.scheme, "file") {
+        return view, UrlParseError.MissingHost;
     }
 
     let rest = raw_input[cursor..];
@@ -599,8 +607,16 @@ fn new_url_view(raw_input: const u8[:]) -> UrlView {
     return view;
 }
 
-// Go #78760 / CVE-2026-39821: Reject invalid ACE/Punycode labels that contain no non-ASCII delta.
+// Go #78760 / CVE-2026-39821 & CVE-2026-97044: Reject invalid ACE/Punycode labels that contain no
+// non-ASCII delta, and enforce RFC 1035 DNS label (<= 63B) and total domain (<= 253B) length limits.
 fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
+    let trimmed = if host_str.len > 0 && host_str[host_str.len - 1] == '.' {
+        host_str[..host_str.len - 1]
+    } else {
+        host_str
+    };
+    guard trimmed.len <= 253 else { return false; }
+
     var cursor: i64 = 0;
     while cursor < host_str.len {
         var end = host_str.len;
@@ -611,6 +627,9 @@ fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
             }
         }
         let label = host_str[cursor..end];
+        if label.len > 63 {
+            return false;
+        }
         if label.len >= 4 && eq_ascii_fold(label[..4], "xn--") {
             if label.len == 4 || label[label.len - 1] == '-' {
                 return false;

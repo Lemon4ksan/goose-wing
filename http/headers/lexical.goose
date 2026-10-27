@@ -107,6 +107,8 @@ fn track_header_presence(
             var parsed_val: i64 = 0;
             if validate_content_length_value(val, parsed_val) {
                 tracker.parsed_cl = parsed_val;
+            } else {
+                return false;
             }
         }
         if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {

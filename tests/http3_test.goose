@@ -371,6 +371,258 @@ fn test_h3_request_streams(t: core::T&) {
 }
 
 // ============================================================================
+// 5. QPACK Table Lifecycle, String Decoding & Stream Instructions (RFC 9204)
+// ============================================================================
+fn test_qpack_table_and_codec(t: core::T&) {
+    t.run("QPACK-01: Table Capacity and Entry Management") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+        sub.assert_eq(tbl.capacity_bytes, 4096, "capacity is 4096");
+        sub.assert_eq(tbl.insert_count, 0, "initial insert count is 0");
+
+        // Literal insertion
+        sub.assert_true(wing::qpack_insert_literal(tbl, "custom-key", "custom-val"), "insert literal");
+        sub.assert_eq(tbl.insert_count, 1, "insert count incremented to 1");
+
+        // Lookup absolute
+        var name_buf: u8[..256] = [];
+        var val_buf: u8[..4096] = [];
+        let ok_lookup = wing::qpack_lookup_absolute(tbl, 0, name_buf, val_buf);
+        sub.assert_true(ok_lookup, "lookup absolute 0");
+        sub.assert_eq(name_buf[..], "custom-key", "key matches");
+        sub.assert_eq(val_buf[..], "custom-val", "val matches");
+
+        // Static name reference insertion (index 17 is ":status")
+        sub.assert_true(wing::qpack_insert_named_static(tbl, 17, "200"), "insert named static");
+        sub.assert_eq(tbl.insert_count, 2, "insert count is 2");
+
+        // Dynamic name reference insertion (relative 0 is latest entry: ":status")
+        sub.assert_true(wing::qpack_insert_named_dynamic(tbl, 0, "404"), "insert named dynamic");
+        sub.assert_eq(tbl.insert_count, 3, "insert count is 3");
+
+        // Duplicate entry (relative 0 is latest entry)
+        sub.assert_true(wing::qpack_duplicate(tbl, 0), "duplicate latest entry");
+        sub.assert_eq(tbl.insert_count, 4, "insert count is 4");
+
+        // Capacity shrink causing eviction
+        sub.assert_true(wing::qpack_set_capacity(tbl, 100), "shrink capacity");
+        sub.assert_eq(tbl.capacity_bytes, 100, "capacity updated");
+
+        // Section ACK and cancellation
+        wing::qpack_ack_section(tbl, 4, 1);
+        wing::qpack_cancel_stream(tbl, 4);
+        wing::qpack_increment_received(tbl, 2);
+    };
+
+    t.run("QPACK-02: String Decoding (Plain and Huffman)") { sub =>
+        // Plain string: "custom-value"
+        var plain_encoded: u8[..32] = [];
+        plain_encoded.push(12); // length 12, H=0
+        plain_encoded.append("custom-value");
+
+        var plain_out: u8[..64] = [];
+        let next_p, ok_p = wing::decode_qpack_string(plain_encoded[..], 0, 7, plain_out);
+        sub.assert_true(ok_p, "decode plain string");
+        sub.assert_eq(plain_out[..], "custom-value", "plain string matches");
+        sub.assert_eq(next_p, 13, "next offset is 13");
+
+        // Out-of-bounds offset test
+        var err_out: u8[..16] = [];
+        let _, ok_err = wing::decode_qpack_string(plain_encoded[..], 50, 7, err_out);
+        sub.assert_false(ok_err, "decode out-of-bounds string fails safely");
+    };
+
+    t.run("QPACK-03: Encoder Stream Instruction Parsing") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+
+        // 1. Set Dynamic Table Capacity instruction: 0x3F 0xE1 0x1F (capacity 4096)
+        var enc_cap: u8[..16] = [];
+        enc_cap.push(0x3F);
+        enc_cap.push(0xE1);
+        enc_cap.push(0x1F);
+        let _, err1 = wing::qpack_process_encoder_instruction(tbl, enc_cap[..], 0);
+        sub.assert_eq(err1, wing::QpackError.None, "set capacity instruction succeeds");
+
+        // 2. Insert with literal name and value: 0100 0110 "custom" 0000 0101 "value"
+        var enc_lit: u8[..32] = [];
+        enc_lit.push(0x46); // 0100 0110 (N=0, H=0, name_len=6)
+        enc_lit.append("custom");
+        enc_lit.push(0x05); // H=0, val_len=5
+        enc_lit.append("value");
+        let _, err2 = wing::qpack_process_encoder_instruction(tbl, enc_lit[..], 0);
+        sub.assert_eq(err2, wing::QpackError.None, "insert literal instruction succeeds");
+        sub.assert_eq(tbl.insert_count, 1, "table has 1 entry");
+
+        // 3. Duplicate instruction: 000xxxxx (duplicate relative index 0)
+        var enc_dup: u8[..4] = [];
+        enc_dup.push(0x00); // 0000 0000: duplicate rel 0
+        let _, err3 = wing::qpack_process_encoder_instruction(tbl, enc_dup[..], 0);
+        sub.assert_eq(err3, wing::QpackError.None, "duplicate instruction succeeds");
+        sub.assert_eq(tbl.insert_count, 2, "table has 2 entries");
+    };
+
+    t.run("QPACK-04: Decoder Stream Instruction Parsing") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+
+        // 1. Section Acknowledgment (1xxxxxxx) for stream 4
+        var dec_ack: u8[..8] = [];
+        dec_ack.push(0x84); // 1000 0100 -> stream 4
+        let _, err_d1 = wing::qpack_process_decoder_instruction(tbl, dec_ack[..], 0);
+        sub.assert_eq(err_d1, wing::QpackError.None, "section ack succeeds");
+
+        // 2. Stream Cancellation (01xxxxxx) for stream 4
+        var dec_canc: u8[..8] = [];
+        dec_canc.push(0x44); // 0100 0100 -> stream 4
+        let _, err_d2 = wing::qpack_process_decoder_instruction(tbl, dec_canc[..], 0);
+        sub.assert_eq(err_d2, wing::QpackError.None, "stream cancellation succeeds");
+
+        // 3. Insert Count Increment (00xxxxxx) with increment 3
+        var dec_inc: u8[..8] = [];
+        dec_inc.push(0x03); // 0000 0011 -> inc 3
+        let _, err_d3 = wing::qpack_process_decoder_instruction(tbl, dec_inc[..], 0);
+        sub.assert_eq(err_d3, wing::QpackError.None, "insert count increment succeeds");
+        sub.assert_eq(tbl.known_rcvd_count, 3, "known received count updated to 3");
+    };
+
+    t.run("QPACK-05: Section Decoding (Static, Dynamic, and Literal Fields)") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+        // Insert entry: "x-api-version" -> "v2"
+        wing::qpack_insert_literal(tbl, "x-api-version", "v2");
+
+        // Build section:
+        var sec: u8[..128] = [];
+        // Encoded RIC: RIC=1, max_cap=4096 => encoded = 2 (RFC 9204 Section 4.5.1)
+        let enc_ric = wing::encode_ric(1, tbl.capacity_bytes);
+        sec.push(enc_ric as u8);
+        // Sign=0, DeltaBase=0 => 0x00
+        sec.push(0x00);
+
+        // 1. Static Indexed Field: :status 200 (index 25 -> 0xC0 | 25 = 0xD9)
+        sec.push(0xD9);
+
+        // 2. Dynamic Indexed Field: relative index 0 -> 0x80 | 0 = 0x80
+        sec.push(0x80);
+
+        // 3. Literal Field Line with Static Name Reference:
+        // index 0 (:authority), literal value "test.com"
+        // 0101 0000 (0x50 with T=1, static, index 0): 0x50
+        sec.push(0x50);
+        sec.push(8); // val len 8, H=0
+        sec.append("test.com");
+
+        // 4. Literal Field Line with Literal Name:
+        // 0010 0000 (0x20: N=0, H=0): name "foo", val "bar"
+        sec.push(0x23); // name_len 3
+        sec.append("foo");
+        sec.push(0x03); // val len 3
+        sec.append("bar");
+
+        var out_fields: wing::HeaderField[>..] = [];
+        let err = wing::decode_qpack_section(tbl, sec[..], out_fields, 16384);
+        sub.assert_eq(err, wing::QpackError.None, "decode section succeeds");
+        sub.assert_eq(out_fields.len, 4, "4 fields decoded");
+
+        sub.assert_eq(out_fields[0].name[..], ":status", "field 0 name is :status");
+        sub.assert_eq(out_fields[0].value[..], "200", "field 0 val is 200");
+
+        sub.assert_eq(out_fields[1].name[..], "x-api-version", "field 1 name is x-api-version");
+        sub.assert_eq(out_fields[1].value[..], "v2", "field 1 val is v2");
+
+        sub.assert_eq(out_fields[2].name[..], ":authority", "field 2 name is :authority");
+        sub.assert_eq(out_fields[2].value[..], "test.com", "field 2 val is test.com");
+
+        sub.assert_eq(out_fields[3].name[..], "foo", "field 3 name is foo");
+        sub.assert_eq(out_fields[3].value[..], "bar", "field 3 val is bar");
+    };
+}
+
+// ============================================================================
+// 6. HTTP/3 Extended Frames & Stream Edge-Cases
+// ============================================================================
+fn test_h3_extended_frames(t: core::T&) {
+    t.run("H3-13: Extended Frame Encoding & Inbound Ingestion") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = wing::new_h3_client_connection(settings);
+
+        // Encode and parse CANCEL_PUSH frame
+        var cp_buf: u8[..32] = [];
+        sub.assert_true(wing::encode_h3_cancel_push(cp_buf, 42), "encode CANCEL_PUSH");
+        let cp_hdr, ok_cp_hdr = wing::parse_h3_frame_header(cp_buf[..], 0);
+        sub.assert_true(ok_cp_hdr, "parse CANCEL_PUSH frame header");
+        let cp_id, ok_cp = wing::parse_h3_cancel_push(cp_buf[cp_hdr.header_len..cp_hdr.header_len + cp_hdr.payload_len]);
+        sub.assert_true(ok_cp, "parse CANCEL_PUSH");
+        sub.assert_eq(cp_id, 42, "push id matches");
+
+        // Encode and parse MAX_PUSH_ID frame
+        var mp_buf: u8[..32] = [];
+        sub.assert_true(wing::encode_h3_max_push_id(mp_buf, 100), "encode MAX_PUSH_ID");
+        let mp_hdr, ok_mp_hdr = wing::parse_h3_frame_header(mp_buf[..], 0);
+        sub.assert_true(ok_mp_hdr, "parse MAX_PUSH_ID frame header");
+        let mp_id, ok_mp = wing::parse_h3_max_push_id(mp_buf[mp_hdr.header_len..mp_hdr.header_len + mp_hdr.payload_len]);
+        sub.assert_true(ok_mp, "parse MAX_PUSH_ID");
+        sub.assert_eq(mp_id, 100, "max push id matches");
+
+        // Encode and parse PRIORITY_UPDATE frame for Request Stream
+        var pu_buf: u8[..64] = [];
+        let p_req = wing::PriorityParam { urgency: 3, incremental: true };
+        sub.assert_true(wing::encode_h3_priority_update_request(pu_buf, 0, p_req), "encode PRIORITY_UPDATE req");
+        let pu_hdr, ok_pu_hdr = wing::parse_h3_frame_header(pu_buf[..], 0);
+        sub.assert_true(ok_pu_hdr, "parse PRIORITY_UPDATE req header");
+        let pr_elem, pr_prio, ok_pr = wing::parse_h3_priority_update_request(pu_buf[pu_hdr.header_len..pu_hdr.header_len + pu_hdr.payload_len]);
+        sub.assert_true(ok_pr, "parse PRIORITY_UPDATE req");
+        sub.assert_eq(pr_elem, 0, "elem id is 0");
+        sub.assert_eq(pr_prio.urgency, 3, "urgency is 3");
+        sub.assert_true(pr_prio.incremental, "incremental is true");
+
+        // Encode and parse PRIORITY_UPDATE frame for Push Stream
+        var pp_buf: u8[..64] = [];
+        let p_push = wing::PriorityParam { urgency: 5, incremental: false };
+        sub.assert_true(wing::encode_h3_priority_update_push(pp_buf, 1, p_push), "encode PRIORITY_UPDATE push");
+        let pp_hdr, ok_pp_hdr = wing::parse_h3_frame_header(pp_buf[..], 0);
+        sub.assert_true(ok_pp_hdr, "parse PRIORITY_UPDATE push header");
+        let pp_elem, pp_prio, ok_pp = wing::parse_h3_priority_update_push(pp_buf[pp_hdr.header_len..pp_hdr.header_len + pp_hdr.payload_len]);
+        sub.assert_true(ok_pp, "parse PRIORITY_UPDATE push");
+        sub.assert_eq(pp_elem, 1, "elem id is 1");
+        sub.assert_eq(pp_prio.urgency, 5, "urgency is 5");
+        sub.assert_false(pp_prio.incremental, "incremental is false");
+
+        // Ingest control stream with extended frames (CANCEL_PUSH, MAX_PUSH_ID, PRIORITY_UPDATE)
+        var ctrl_wire: u8[..256] = [];
+        wing::quic_encode_varint(ctrl_wire, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(ctrl_wire, settings);
+        wing::encode_h3_cancel_push(ctrl_wire, 1);
+        wing::encode_h3_max_push_id(ctrl_wire, 10);
+        wing::encode_h3_priority_update_request(ctrl_wire, 0, p_req);
+
+        let err_ctrl = conn.handle_stream_data(3, false, ctrl_wire[..], false);
+        sub.assert_eq(err_ctrl, wing::H3_ERR_NO_ERROR, "ingest extended frames on control stream");
+    };
+
+    t.run("H3-14: Send Request Data Edge Cases") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = wing::new_h3_client_connection(settings);
+
+        let sid, _ = conn.open_request_stream();
+
+        // Send headers
+        var req_buf: u8[..256] = [];
+        var hdrs = wing::new_header_map();
+        conn.send_request_headers(sid, "GET", "https", "example.com", "/", hdrs, false, req_buf);
+
+        // Send data without end_stream
+        var data_chunk: u8[..64] = [];
+        sub.assert_true(conn.send_request_data(sid, "part1", false, data_chunk), "send data chunk 1");
+
+        // Send data with end_stream
+        data_chunk.clear();
+        sub.assert_true(conn.send_request_data(sid, "part2", true, data_chunk), "send data chunk 2 with FIN");
+
+        // Send on non-existent stream fails
+        data_chunk.clear();
+        sub.assert_false(conn.send_request_data(999, "bad", false, data_chunk), "send on unknown stream fails");
+    };
+}
+
+// ============================================================================
 // Main HTTP/3 Conformance Runner
 // ============================================================================
 fn main() {
@@ -380,6 +632,8 @@ fn main() {
     core::run_case(runner, "2. SETTINGS Frame Conformance & Protocol Defenses", test_h3_settings_conformance);
     core::run_case(runner, "3. Unidirectional Control and QPACK Streams", test_h3_unidirectional_streams);
     core::run_case(runner, "4. Request Stream Lifecycle & Full Request-Response Multiplexing", test_h3_request_streams);
+    core::run_case(runner, "5. QPACK Table Lifecycle, String Decoding & Stream Instructions", test_qpack_table_and_codec);
+    core::run_case(runner, "6. HTTP/3 Extended Frames & Stream Edge-Cases", test_h3_extended_frames);
 
     let ok = core::finish(runner);
     assert(ok);

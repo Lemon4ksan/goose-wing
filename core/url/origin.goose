@@ -241,9 +241,9 @@ fn check_known_explicit_suffix<B>(domain: const u8[:], out: B&, is_icann: bool&)
 
 fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
     out.clear();
-    guard clean_domain.len > 0 else { return false; }
+    guard clean_domain.len > 0 && clean_domain.len <= 256 else { return false; }
 
-    var lower_domain: u8[..128] = [];
+    var lower_domain: u8[..256] = [];
     lower_domain.append(clean_domain);
     to_lower(lower_domain[..]);
     let norm_domain = lower_domain[..];
@@ -273,18 +273,18 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
 fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.clear();
     let clean_host = trim_byte(host, '.');
-    guard clean_host.len > 0 else { return; }
+    guard clean_host.len > 0 && clean_host.len <= 256 else { return; }
 
     if is_ip_address_literal(clean_host) || count_byte(clean_host, '.') == 0 {
-        out.append(clean_host);
+        out.try_append(clean_host);
         return;
     }
 
-    var suffix: u8[..128] = [];
+    var suffix: u8[..256] = [];
     compute_public_suffix(clean_host, suffix);
 
     if suffix.len == 0 || eq_ascii_fold(clean_host, suffix[..]) {
-        out.append(clean_host);
+        out.try_append(clean_host);
         return;
     }
 
@@ -293,12 +293,12 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
         let prefix = clean_host[..clean_host.len - suffix_len - 1];
         let last_dot_in_prefix = last_index_of_byte(prefix, '.');
         let start_pos = if last_dot_in_prefix >= 0 { last_dot_in_prefix + 1 } else { 0 };
-        out.append(clean_host[start_pos..]);
+        out.try_append(clean_host[start_pos..]);
         to_lower(out[..]);
         return;
     }
 
-    out.append(clean_host);
+    out.try_append(clean_host);
     to_lower(out[..]);
 }
 
@@ -373,7 +373,7 @@ fn is_schemeful_same_site_urls(url_a: const Url&, url_b: const Url&) -> bool {
 
 fn is_same_site_origin_url(origin_val: const Origin&, url_val: const Url&) -> bool {
     if origin_val.kind == OriginKind.Opaque || !url_val.valid { return false; }
-    var orig_etld: u8[..128] = [];
+    var orig_etld: u8[..256] = [];
     extract_etld_plus_one(origin_val.host[..], orig_etld);
 
     let site_url = registrable_site_from_url(url_val);

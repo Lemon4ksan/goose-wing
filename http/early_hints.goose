@@ -44,9 +44,11 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
     var p_val = p_val_raw.trim_lws().trim_byte('"');
 
     if p_name == "rel" {
+        guard p_val.len <= link.rel.cap else { return; }
         link.rel.clear();
         link.rel.append(p_val);
     } else if p_name == "as" {
+        guard p_val.len <= link.as_type.cap else { return; }
         link.as_type.clear();
         link.as_type.append(p_val);
     } else if p_name == "crossorigin" {
@@ -78,6 +80,7 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
         let uri_slice = raw[cursor..close_angle];
         cursor = close_angle + 1;
 
+        guard uri_slice.len <= 256 else { return false; }
         var link = EarlyHintLink { .. };
         link.uri.append(uri_slice);
 
@@ -109,6 +112,7 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
             }
         }
 
+        guard out_links.len < out_links.cap else { return false; }
         out_links.push(link);
     }
     return true;

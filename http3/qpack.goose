@@ -476,13 +476,17 @@ fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B
     let is_huff = (src[offset] & ((1 as u8) << prefix_bits)) != 0;
     let str_len, next_off, ok_len = hpack_decode_int(src, offset, prefix_bits);
     guard ok_len else { return offset, false; }
-    guard (next_off + str_len) <= (src.len as u64) else { return offset, false; }
 
-    let raw_slice = src[next_off..next_off + str_len];
+    let noff = next_off as i64;
+    let slen = str_len as i64;
+    guard noff >= 0 && slen >= 0 && noff <= (src.len - slen) else { return offset, false; }
+
+    let raw_slice = src[noff..noff + slen];
     if is_huff {
         let ok_huff = huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
     } else {
+        guard out.len + raw_slice.len <= out.cap else { return offset, false; }
         out.append(raw_slice);
     }
     return next_off + str_len, true;
@@ -584,6 +588,14 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
 // ---- 6. incremental field emission & header accordion protection ------------
 
+inline fn is_qpack_token_char(c: u8) -> bool {
+    if c >= 'a' && c <= 'z' { return true; }
+    if c >= '0' && c <= '9' { return true; }
+    return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+           c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
+           c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+}
+
 // Emits a parsed field line, enforcing SETTINGS_MAX_FIELD_SECTION_SIZE + 32-byte overhead.
 fn emit_field_checked(
     out_fields: HeaderField[>..]&,
@@ -592,9 +604,14 @@ fn emit_field_checked(
     val: const u8[:],
     never_index: bool = false,
 ) -> QpackError {
-    // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase
-    for c in name {
-        if c >= 'A' && c <= 'Z' {
+    // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase valid token chars or pseudo-header
+    guard name.len > 0 else { return QpackError.DecompressionFailed; }
+    for i in name.len {
+        let c = name[i];
+        if i == 0 && c == ':' {
+            continue; // pseudo header prefix
+        }
+        if !is_qpack_token_char(c) {
             return QpackError.DecompressionFailed;
         }
     }

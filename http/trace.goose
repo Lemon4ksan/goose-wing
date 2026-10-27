@@ -152,8 +152,8 @@ struct Tracestate {
 }
 
 // Key validation conforming to W3C Section 3.3:
-// simple key: [a-z0-9_*/-]{1,256}
-// multi-tenant key: [a-z0-9_*/-]{1,241}@[a-z0-9_*/-]{1,14}
+// simple key: [a-z][a-z0-9_*/-]{0,255}
+// multi-tenant key: [a-z0-9_*/-]{1,241}@[a-z][a-z0-9_*/-]{0,13}
 fn is_valid_tracestate_key(key: const u8[:]) -> bool {
     guard key.len >= 1 && key.len <= 256 else { return false; }
     var at_pos: i64 = -1;
@@ -173,14 +173,20 @@ fn is_valid_tracestate_key(key: const u8[:]) -> bool {
         let system_len = key.len - at_pos - 1;
         guard tenant_len >= 1 && tenant_len <= 241 else { return false; }
         guard system_len >= 1 && system_len <= 14 else { return false; }
+        let sys_first = key[at_pos + 1];
+        guard (sys_first >= 'a' && sys_first <= 'z') || (sys_first >= '0' && sys_first <= '9') else { return false; }
+    } else {
+        // Simple key MUST start with lowercase ASCII letter (W3C §3.3.1.1: lcalpha)
+        let first = key[0];
+        guard first >= 'a' && first <= 'z' else { return false; }
     }
     return true;
 }
 
 // Value validation conforming to W3C Section 3.3:
-// 0..256 printable ASCII chars excluding comma ',' and equal '='
+// 1..256 printable ASCII chars excluding comma ',' and equal '='
 fn is_valid_tracestate_val(val: const u8[:]) -> bool {
-    guard val.len <= 256 else { return false; }
+    guard val.len >= 1 && val.len <= 256 else { return false; }
     for b in val {
         guard b >= 0x20 && b <= 0x7E && b != ',' && b != '=' else { return false; }
     }

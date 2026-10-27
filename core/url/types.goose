@@ -127,7 +127,7 @@ struct Origin {
 
 struct RegistrableSite {
     scheme: u8[..16] = [],
-    registrable_domain: u8[..128] = [],
+    registrable_domain: u8[..256] = [],
 }
 
 // Global monotonic nonce generator for opaque origins

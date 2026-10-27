@@ -429,6 +429,10 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
         return Url { valid: false, .. }, UrlParseError.RelativeWithoutBase;
     }
 
+    guard endpoint.len <= 2048 else {
+        return Url { valid: false, .. }, UrlParseError.InputTooLong;
+    }
+
     var cleaned_endpoint: u8[..2048] = [];
     clean_input_string(endpoint, cleaned_endpoint);
     guard cleaned_endpoint.len > 0 else {
@@ -481,18 +485,26 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
     // Build combined path: base_pathname + "/" + subpath (stripping leading slashes from subpath)
     var combined: u8[..2048] = [];
     let base_path = pathname(base_url);
-    combined.append(base_path);
+    guard combined.try_append(base_path) else {
+        return Url { valid: false, .. }, UrlParseError.InputTooLong;
+    }
 
     if combined.len == 0 || combined[combined.len - 1] != '/' {
-        combined.push('/');
+        guard combined.try_push('/') else {
+            return Url { valid: false, .. }, UrlParseError.InputTooLong;
+        }
     }
 
     var sub_start = 0;
     while sub_start < raw_subpath.len && (raw_subpath[sub_start] == '/' || raw_subpath[sub_start] == '\\') {
         sub_start++;
     }
-    combined.append(raw_subpath[sub_start..]);
-    combined.append(query_and_hash);
+    guard combined.try_append(raw_subpath[sub_start..]) else {
+        return Url { valid: false, .. }, UrlParseError.InputTooLong;
+    }
+    guard combined.try_append(query_and_hash) else {
+        return Url { valid: false, .. }, UrlParseError.InputTooLong;
+    }
 
     // Resolve combined path against base URL authority
     return parse_url_with_base(combined[..], base_url);

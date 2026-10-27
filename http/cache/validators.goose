@@ -178,7 +178,7 @@ fn has_vary_field(items: const VaryItem[..16]&, field_name: const u8[:]) -> bool
 }
 
 // Extracts canonical header value from request headers for Vary recording.
-fn extract_vary_value(req_headers: const HeaderMap&, field_name: const u8[:], out_val: u8[..256]&) -> bool {
+fn extract_vary_value(req_headers: const HeaderMap&, field_name: const u8[:], out_val: u8[..256]&, is_oversized: bool&) -> bool {
     var val_buf: u8[>..] = [];
     let ok_c = get_combined(req_headers, field_name, val_buf);
     let raw = if ok_c && val_buf.len > 0 {
@@ -189,8 +189,11 @@ fn extract_vary_value(req_headers: const HeaderMap&, field_name: const u8[:], ou
         return false; // Absent
     };
 
-    let cap_slice = if raw.len <= 256 { raw } else { raw[..256] };
-    out_val.append(cap_slice);
+    if raw.len > out_val.cap {
+        is_oversized = true;
+        return false;
+    }
+    out_val.append(raw);
     return true;
 }
 
@@ -221,7 +224,12 @@ fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderM
             }
             var item = VaryItem { .. };
             item.name.append(field_name);
-            item.is_absent = !extract_vary_value(req_headers, field_name, item.value);
+            var is_oversized = false;
+            item.is_absent = !extract_vary_value(req_headers, field_name, item.value, is_oversized);
+            if is_oversized {
+                snap.valid = false;
+                return snap;
+            }
             snap.items.push(item);
         }
     }

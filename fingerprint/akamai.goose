@@ -344,9 +344,8 @@ fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
                     let val_val, ok_val = parse_u32_dec(token[(colon_idx + 1)..token.len]);
                     guard ok_val else { return fp, false; }
 
-                    if fp.settings.len < fp.settings.cap {
-                        fp.settings.push(AkamaiSetting { id: id_val as u16, val: val_val });
-                    }
+                    guard fp.settings.len < fp.settings.cap else { return fp, false; }
+                    fp.settings.push(AkamaiSetting { id: id_val as u16, val: val_val });
                 }
                 start = idx + 1;
             }
@@ -385,14 +384,13 @@ fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
                     let w, ok4 = parse_u32_dec(token[(colons[2] + 1)..token.len]);
                     guard ok1 && ok2 && ok3 && ok4 else { return fp, false; }
 
-                    if fp.priority_frames.len < fp.priority_frames.cap {
-                        fp.priority_frames.push(AkamaiPriorityFrame {
-                            stream_id: s_id,
-                            exclusive: (excl & 1) as u8,
-                            dep_stream_id: dep,
-                            weight: w as u16,
-                        });
-                    }
+                    guard fp.priority_frames.len < fp.priority_frames.cap else { return fp, false; }
+                    fp.priority_frames.push(AkamaiPriorityFrame {
+                        stream_id: s_id,
+                        exclusive: (excl & 1) as u8,
+                        dep_stream_id: dep,
+                        weight: w as u16,
+                    });
                 }
                 start = idx + 1;
             }
@@ -404,9 +402,8 @@ fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
     if pseudo_part.len > 0 {
         for b in pseudo_part {
             if b != ',' && b != ' ' {
-                if fp.pseudo_headers.len < fp.pseudo_headers.cap {
-                    fp.pseudo_headers.push(b);
-                }
+                guard fp.pseudo_headers.len < fp.pseudo_headers.cap else { return fp, false; }
+                fp.pseudo_headers.push(b);
             }
         }
     }
@@ -719,6 +716,7 @@ fn order_pseudo_headers(
 ) {
     out.clear();
     for b in fp.pseudo_headers {
+        guard out.len < out.cap else { break; }
         if b == 'm' {
             out.push(make_header(":method", method));
         } else if b == 'a' {

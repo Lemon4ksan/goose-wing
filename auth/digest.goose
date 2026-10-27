@@ -63,9 +63,8 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
             out_val.push(raw[idx]);
             idx += 1;
         }
-        if idx < raw.len && raw[idx] == '"' {
-            idx += 1; // skip closing quote
-        }
+        guard idx < raw.len && raw[idx] == '"' else { return false; }
+        idx += 1; // skip closing quote
         return true;
     }
 
@@ -97,10 +96,10 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         guard idx < raw_header.len else { break; }
 
         var key: u8[..32] = [];
-        guard parse_digest_param_key(raw_header, idx, key) else { break; }
+        guard parse_digest_param_key(raw_header, idx, key) else { return chal, false; }
 
         var val: u8[..128] = [];
-        guard parse_digest_param_val(raw_header, idx, val) else { break; }
+        guard parse_digest_param_val(raw_header, idx, val) else { return chal, false; }
 
         if eq_ascii_fold(key[..], "realm") {
             chal.realm.clear();

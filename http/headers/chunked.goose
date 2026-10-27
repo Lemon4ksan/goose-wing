@@ -49,9 +49,9 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
         return ChunkedDecodeError.InvalidChunkExtension;
     }
 
-    // RFC 9112 Section 7.1.1: Reject bare CR or non-HTAB control characters in chunk extensions
+    // RFC 9112 Section 7.1.1: Reject bare CR, non-HTAB control characters, and DEL in chunk extensions
     for b in chunk_size_line {
-        if b == '\r' || (b < 0x20 && b != 0x09) {
+        if b == '\r' || (b < 0x20 && b != 0x09) || b == 0x7F {
             return ChunkedDecodeError.InvalidChunkExtension;
         }
     }
@@ -155,7 +155,14 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
                 while cursor < chunk_size_line.len {
                     let qc = chunk_size_line[cursor];
                     if qc == '\\' {
-                        // quoted-pair escape: skip '\' and escaped char
+                        // quoted-pair escape: skip '\' and escaped char per RFC 9112 Section 7.1.1
+                        guard cursor + 1 < chunk_size_line.len else {
+                            return ChunkedDecodeError.InvalidChunkExtension;
+                        }
+                        let esc = chunk_size_line[cursor + 1];
+                        guard esc == '\t' || (esc >= 0x20 && esc <= 0x7E) || esc >= 0x80 else {
+                            return ChunkedDecodeError.InvalidChunkExtension;
+                        }
                         cursor += 2;
                         continue;
                     }

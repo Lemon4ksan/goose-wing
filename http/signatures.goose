@@ -265,8 +265,14 @@ fn verify_http_signature(
     let sig_header_val = req.header(HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
-    // Check if sig_header_val contains expected_b64
-    guard core::contains(sig_header_val, expected_b64[..]) else {
+    // Must match label: e.g. label=:<base64>:
+    var expected_labeled: u8[..256] = [];
+    expected_labeled.append(label);
+    expected_labeled.append("=:");
+    expected_labeled.append(expected_b64[..]);
+    expected_labeled.push(':');
+
+    guard core::contains(sig_header_val, expected_labeled[..]) else {
         return false;
     }
 

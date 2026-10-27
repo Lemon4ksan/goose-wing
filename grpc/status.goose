@@ -130,6 +130,8 @@ fn extract_grpc_status(
         let code_int, ok_code = core::parse_u32_dec(trim_lws(trailer_status));
         if ok_code {
             out_status = grpc_status_from_code(code_int);
+        } else {
+            out_status = GrpcStatusCode.Unknown;
         }
 
         let trailer_msg = get_header(trailers, HEADER_GRPC_MESSAGE);
@@ -145,6 +147,8 @@ fn extract_grpc_status(
         let code_int, ok_code = core::parse_u32_dec(trim_lws(header_status));
         if ok_code {
             out_status = grpc_status_from_code(code_int);
+        } else {
+            out_status = GrpcStatusCode.Unknown;
         }
 
         let header_msg = get_header(headers, HEADER_GRPC_MESSAGE);

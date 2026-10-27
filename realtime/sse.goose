@@ -66,7 +66,12 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
         var valid_digits = field_val.len > 0;
         for b in field_val {
             if b >= '0' && b <= '9' {
-                num = num * 10 + (b - '0');
+                let digit = (b - '0') as u32;
+                if num > (0xFFFFFFFF - digit) / 10 {
+                    num = 0xFFFFFFFF;
+                } else {
+                    num = num * 10 + digit;
+                }
             } else {
                 valid_digits = false;
                 break;
@@ -82,9 +87,9 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
 fn sse_process_line<E>(p: SseParser&, out_events: E&) {
     let line = p.line_buf[..];
 
-    // Empty line indicates event boundary (W3C Section 6: dispatch the event)
+    // Empty line indicates event boundary (W3C Section 6 / §9.2.6: dispatch the event)
     if line.len == 0 {
-        if p.cur_data.len > 0 || p.cur_event.len > 0 {
+        if p.cur_data.len > 0 {
             var ev = SseEvent {
                 retry_ms: p.retry_ms,
                 is_valid: true,
@@ -103,6 +108,8 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
             // Reset current event buffer, keep last_event_id and retry_ms
             p.cur_event.clear();
             p.cur_data.clear();
+        } else {
+            p.cur_event.clear();
         }
         return;
     }
@@ -187,14 +194,33 @@ fn sse_format_event<B>(
         out.push('\n');
     }
     if id.len > 0 {
-        out.append("id: ");
-        out.append(id);
-        out.push('\n');
+        var clean_id_len: i64 = id.len;
+        for i in id.len {
+            if id[i] == '\r' || id[i] == '\n' {
+                clean_id_len = i;
+                break;
+            }
+        }
+        if clean_id_len > 0 {
+            out.append("id: ");
+            out.append(id[..clean_id_len]);
+            out.push('\n');
+        }
     }
-    if event_type.len > 0 && event_type != "message" {
-        out.append("event: ");
-        out.append(event_type);
-        out.push('\n');
+    if event_type.len > 0 {
+        var clean_ev_len: i64 = event_type.len;
+        for i in event_type.len {
+            if event_type[i] == '\r' || event_type[i] == '\n' {
+                clean_ev_len = i;
+                break;
+            }
+        }
+        let clean_ev = event_type[..clean_ev_len];
+        if clean_ev.len > 0 && clean_ev != "message" {
+            out.append("event: ");
+            out.append(clean_ev);
+            out.push('\n');
+        }
     }
 
     // Split multi-line data into separate data: lines

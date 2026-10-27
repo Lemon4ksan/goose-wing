@@ -220,7 +220,16 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
     }
     if eq_ascii_fold(name, "no-cache") {
         cc.flags |= CC_NO_CACHE;
-        if val.len > 0 { parse_field_names(val, cc.no_cache_fields, cc.no_cache_overflow); }
+        if val.len > 0 {
+            let s = val.trim_lws().trim_byte('"').trim_lws();
+            if s.len > 0 {
+                parse_field_names(val, cc.no_cache_fields, cc.no_cache_overflow);
+            } else {
+                cc.no_cache_overflow = true;
+            }
+        } else {
+            cc.no_cache_overflow = true;
+        }
         return true;
     }
     if eq_ascii_fold(name, "must-revalidate") {
@@ -241,7 +250,16 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
     }
     if eq_ascii_fold(name, "private") {
         cc.flags |= CC_PRIVATE;
-        if val.len > 0 { parse_field_names(val, cc.private_fields, cc.private_overflow); }
+        if val.len > 0 {
+            let s = val.trim_lws().trim_byte('"').trim_lws();
+            if s.len > 0 {
+                parse_field_names(val, cc.private_fields, cc.private_overflow);
+            } else {
+                cc.private_overflow = true;
+            }
+        } else {
+            cc.private_overflow = true;
+        }
         return true;
     }
     if eq_ascii_fold(name, "immutable") {

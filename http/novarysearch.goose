@@ -15,8 +15,8 @@ import http.headers;
 
 struct NoVarySearch {
     ignore_all_params: bool = false,       // `params` without argument
-    params: u8[..16][..64] = [],           // Explicit list of ignored parameters
-    except_params: u8[..16][..64] = [],    // Parameters that MUST NOT be ignored
+    params: u8[..64][..16] = [],           // Explicit list of ignored parameters
+    except_params: u8[..64][..16] = [],    // Parameters that MUST NOT be ignored
     key_order_matters: bool = false,       // Default false (key order does not affect cache hit)
     is_valid: bool = false,
 }
@@ -48,7 +48,7 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
         while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
 
         var has_val = false;
-        var val_slice: const u8[:] = "";
+        var val_slice: const u8[:] = raw[..0];
         if cursor < raw.len && raw[cursor] == '=' {
             cursor++; // skip '='
             while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
@@ -56,15 +56,18 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
             if cursor < raw.len && raw[cursor] == '(' {
                 // Inner list: e.g. ("id" "page")
                 let rel_close = core::index_of_byte(raw[cursor..], ')');
-                let list_end = if rel_close >= 0 { cursor + rel_close + 1 } else { raw.len };
+                guard rel_close >= 0 else { return NoVarySearch { .. }, false; }
+                let list_end = cursor + rel_close + 1;
                 val_slice = raw[cursor..list_end];
                 cursor = list_end;
                 has_val = true;
-            } else if cursor < raw.len && raw[cursor] == '?' {
+            } else if cursor + 2 <= raw.len && raw[cursor] == '?' {
                 // Boolean: ?0 or ?1
                 val_slice = raw[cursor..cursor + 2];
                 cursor += 2;
                 has_val = true;
+            } else {
+                return NoVarySearch { .. }, false;
             }
         }
 
@@ -73,13 +76,20 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
                 nvs.ignore_all_params = true;
             } else if val_slice.len >= 2 && val_slice[0] == '(' {
                 // Parse strings inside inner list
-                parse_inner_string_list(val_slice, nvs.params);
+                guard parse_inner_string_list(val_slice, nvs.params) else {
+                    return NoVarySearch { .. }, false;
+                }
             } else if val_slice == "?0" {
                 nvs.ignore_all_params = false;
+            } else {
+                return NoVarySearch { .. }, false;
             }
         } else if token == "except" {
-            if has_val && val_slice.len >= 2 && val_slice[0] == '(' {
-                parse_inner_string_list(val_slice, nvs.except_params);
+            guard has_val && val_slice.len >= 2 && val_slice[0] == '(' else {
+                return NoVarySearch { .. }, false;
+            }
+            guard parse_inner_string_list(val_slice, nvs.except_params) else {
+                return NoVarySearch { .. }, false;
             }
         } else if token == "key-order" {
             if has_val && val_slice == "?0" {
@@ -87,31 +97,36 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
             } else {
                 nvs.key_order_matters = false;
             }
+        } else {
+            return NoVarySearch { .. }, false;
         }
     }
 
     return nvs, true;
 }
 
-fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) {
+fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) -> bool {
     var cursor: i64 = 0;
     while cursor < inner_list.len {
-        let rel_q1 = core::index_of_byte(inner_list[cursor..], '"');
-        guard rel_q1 >= 0 else { break; }
-        let start = cursor + rel_q1 + 1;
+        while cursor < inner_list.len && (inner_list[cursor] == ' ' || inner_list[cursor] == '\t' || inner_list[cursor] == '(') {
+            cursor++;
+        }
+        if cursor == inner_list.len || inner_list[cursor] == ')' { break; }
+        guard inner_list[cursor] == '"' else { return false; }
+        let start = cursor + 1;
 
         let rel_q2 = core::index_of_byte(inner_list[start..], '"');
-        guard rel_q2 >= 0 else { break; }
+        guard rel_q2 >= 0 else { return false; }
         let end = start + rel_q2;
+        let item_len = end - start;
+        guard item_len <= 64 && out.len < out.cap else { return false; }
 
-        if end > start && out.len < out.cap {
-            var item: u8[..64] = [];
-            let item_len = core::ct_min_i64(end - start, item.cap);
-            item.append(inner_list[start..start + item_len]);
-            out.push(item);
-        }
+        var item: u8[..64] = [];
+        item.append(inner_list[start..end]);
+        out.push(item);
         cursor = end + 1;
     }
+    return true;
 }
 
 // ---- 3. Query Parameter Filter & Normalizer --------------------------------

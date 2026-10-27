@@ -494,7 +494,7 @@ fn parse_client_stream(
         guard reader.remaining() >= len_val else { return false; }
         let skip_err = reader.skip(len_val);
         guard skip_err == core::IoError.None else { return false; }
-        guard out_reader.spans.len < out_reader.spans.cap else { break; }
+        guard out_reader.spans.len < out_reader.spans.cap else { return false; }
 
         let span = GrpcMessageSpan {
             offset: payload_offset,

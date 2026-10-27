@@ -193,6 +193,7 @@ fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
     let disp_part_raw, params_part, has_semi = trimmed.split_once_byte(';');
     let disp_part = disp_part_raw.trim_lws();
     guard is_valid_header_name(disp_part) else { return mt, false; }
+    guard disp_part.len <= mt.type_name.cap else { return mt, false; }
 
     mt.type_name.append(disp_part);
     to_lower(mt.type_name[..]);
@@ -310,9 +311,8 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     while cursor < raw.len {
         let b = raw[cursor];
         if (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.' || b == '*' {
-            if out_key.len < 64 {
-                out_key.push(b);
-            }
+            guard out_key.len < out_key.cap else { return false; }
+            out_key.push(b);
             cursor++;
         } else if b >= 'A' && b <= 'Z' {
             // Uppercase in key is a STRICT SYNTAX ERROR per RFC 8941 Section 3.1.2
@@ -433,9 +433,8 @@ fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bo
     while cursor < raw.len {
         let b = raw[cursor];
         if is_tchar(b) || b == ':' || b == '/' {
-            if out_bare.text.len < 1088 {
-                out_bare.text.push(b);
-            }
+            guard out_bare.text.len < out_bare.text.cap else { return false; }
+            out_bare.text.push(b);
             cursor++;
         } else {
             break;
@@ -459,9 +458,8 @@ fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
         guard (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '+' || b == '/' || b == '=' else {
             return false;
         }
-        if b64_bytes.len < 1088 {
-            b64_bytes.push(b);
-        }
+        guard b64_bytes.len < b64_bytes.cap else { return false; }
+        b64_bytes.push(b);
         cursor++;
     }
     guard cursor < raw.len && raw[cursor] == ':' else { return false; }
@@ -497,18 +495,21 @@ fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
         if c2 == '=' {
             guard c3 == '=' && i + 4 == src.len else { return false; }
             guard (v1 & 0x0F) == 0 else { return false; } // non-zero pad bits
+            guard out.len < out.cap else { return false; }
             out.push(((v0 << 2) | (v1 >> 4)) as u8);
         } else if c3 == '=' {
             guard i + 4 == src.len else { return false; }
             let v2 = b64_val(c2);
             guard v2 >= 0 else { return false; }
             guard (v2 & 0x03) == 0 else { return false; } // non-zero pad bits
+            guard out.len + 2 <= out.cap else { return false; }
             out.push(((v0 << 2) | (v1 >> 4)) as u8);
             out.push(((v1 << 4) | (v2 >> 2)) as u8);
         } else {
             let v2 = b64_val(c2);
             let v3 = b64_val(c3);
             guard v2 >= 0 && v3 >= 0 else { return false; }
+            guard out.len + 3 <= out.cap else { return false; }
             out.push(((v0 << 2) | (v1 >> 4)) as u8);
             out.push(((v1 << 4) | (v2 >> 2)) as u8);
             out.push(((v2 << 6) | v3) as u8);

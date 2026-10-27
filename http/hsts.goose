@@ -48,8 +48,15 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
         } else if eq_ascii_fold(token, "preload") {
             d.preload = true;
         } else if eq_ascii_fold(token, "max-age") {
+            guard !d.valid else { return d, false; } // RFC 6797 §6.1: Duplicate max-age is forbidden!
             // Read '='
             while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t' || raw[idx] == '=') {
+                idx += 1;
+            }
+            // Skip optional quote
+            var in_quote = false;
+            if idx < raw.len && raw[idx] == '"' {
+                in_quote = true;
                 idx += 1;
             }
             var num: i64 = 0;
@@ -57,6 +64,10 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
             while idx < raw.len && raw[idx] >= '0' && raw[idx] <= '9' {
                 num = num * 10 + (raw[idx] - '0');
                 has_digit = true;
+                idx += 1;
+            }
+            if in_quote {
+                guard idx < raw.len && raw[idx] == '"' else { return d, false; }
                 idx += 1;
             }
             if has_digit {
@@ -77,7 +88,7 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
 // ---- 3. HSTS Cache & Preload List -------------------------------------------
 
 struct HstsEntry {
-    host: u8[..64] = [],
+    host: u8[..256] = [],
     expiry_epoch_sec: i64 = 0,
     include_subdomains: bool = false,
     is_preload: bool = false,
@@ -249,8 +260,12 @@ fn hsts_upgrade_url<B>(
         }
     }
 
-    var hostname: u8[..64] = [];
+    var hostname: u8[..256] = [];
     let end_of_host = if port_start >= 0 && port_start < host_end { port_start } else { host_end };
+    guard (end_of_host - 7) <= hostname.cap else {
+        out_url.append(raw_url);
+        return false;
+    }
     hostname.append(raw_url[7..end_of_host]);
 
     // Check if known HSTS host

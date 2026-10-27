@@ -251,7 +251,31 @@ fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) ->
             method_upper.push(b);
         }
     }
-    return core::contains(claims_json, method_upper[..]);
+    let htm_idx = core::index_of_slice(claims_json, "\"htm\":");
+    guard htm_idx >= 0 else { return false; }
+
+    var pos = htm_idx + 6;
+    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+        pos += 1;
+    }
+    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
+    pos += 1;
+    let val_start = pos;
+    while pos < claims_json.len && claims_json[pos] != '"' {
+        pos += 1;
+    }
+    guard pos < claims_json.len else { return false; }
+    let htm_val = claims_json[val_start..pos];
+
+    var htm_upper: u8[..16] = [];
+    for b in htm_val {
+        if b >= 'a' && b <= 'z' {
+            htm_upper.push(b - 32);
+        } else {
+            htm_upper.push(b);
+        }
+    }
+    return htm_upper[..] == method_upper[..];
 }
 
 fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool {

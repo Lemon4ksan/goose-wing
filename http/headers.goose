@@ -873,9 +873,10 @@ fn validate_header_framing_conflicts(map: HeaderMap&, wk_id: WellKnownHeader, va
             return HeaderParseError.InvalidHeaderName;
         }
         // RFC 9112 Section 7.2, RFC 3986 Section 3.2.2 & uWS #1949:
-        // Host MUST NOT contain path ('/'), query ('?'), fragment ('#'), or userinfo ('@')
+        // Host MUST NOT contain path ('/'), query ('?'), fragment ('#'), userinfo ('@'),
+        // whitespace, DEL (0x7F), or comma (',')
         for b in val_trimmed {
-            if b == '/' || b == '?' || b == '#' || b == '@' {
+            if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
                 map.valid = false;
                 return HeaderParseError.InvalidHeaderValue;
             }
@@ -1361,7 +1362,8 @@ fn get_set_cookie(map: const HeaderMap&, out_cookies: u8[..1024][>..]&) {
         let entry = map.entries[cur as i64];
         let val = map.raw_buf[entry.values_begin..entry.values_end];
         var cookie_str: u8[..1024] = [];
-        cookie_str.append(val);
+        let copy_len = if val.len <= cookie_str.cap { val.len } else { cookie_str.cap };
+        cookie_str.append(val[..copy_len]);
         out_cookies.push(cookie_str);
         cur = entry.next_idx;
     }

@@ -216,6 +216,22 @@ fn test_quic_varint_and_framing(t: core::T&) {
         sub.assert_true(wing::quic_is_server_stream(3), "stream 3 is server");
         sub.assert_true(wing::quic_is_uni_stream(3), "stream 3 is uni");
     };
+
+    t.run("DATAGRAM-01: RFC 9221 Unreliable Datagram Framing") { sub =>
+        var buf1: u8[..64] = [];
+        sub.assert_true(wing::encode_quic_datagram_frame(buf1, "telemetry-payload", true), "encode datagram with length");
+        let d1, next1, ok1 = wing::decode_quic_datagram_frame(buf1[..], 0);
+        sub.assert_true(ok1, "decode datagram with length");
+        sub.assert_eq(d1, "telemetry-payload", "payload matches with length");
+        sub.assert_eq(next1, buf1.len as u64, "consumed all bytes");
+
+        var buf2: u8[..64] = [];
+        sub.assert_true(wing::encode_quic_datagram_frame(buf2, "raw-stream-end", false), "encode datagram without length");
+        let d2, next2, ok2 = wing::decode_quic_datagram_frame(buf2[..], 0, buf2.len as u64);
+        sub.assert_true(ok2, "decode datagram without length");
+        sub.assert_eq(d2, "raw-stream-end", "payload matches without length");
+        sub.assert_eq(next2, buf2.len as u64, "consumed all bytes");
+    };
 }
 
 // ============================================================================
@@ -268,6 +284,109 @@ fn test_header_protection_and_pn(t: core::T&) {
         // Out-of-order packet in the past (e.g. pn 254 arriving when largest acked is 256)
         let pn_past = wing::decode_packet_number(256, 254, 1);
         sub.assert_eq(pn_past, 254, "out-of-order past pn 254 correctly reconstructed");
+    };
+
+    t.run("HP-03: ChaCha20 & AES-256 Header Protection") { sub =>
+        let hp_key: u8[32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let sample: u8[16] = [
+            0xd1, 0xb1, 0xc9, 0x8d, 0xd7, 0x68, 0x9f, 0xb8,
+            0xec, 0x11, 0xd2, 0x42, 0xb1, 0x23, 0xdc, 0x9b,
+        ];
+        let chacha_mask = wing::chacha20_header_protect_mask(hp_key, sample);
+        sub.assert_true(chacha_mask.len == 5, "chacha20 mask is 5 bytes");
+
+        let aes256_mask = wing::aes256_header_protect_mask(hp_key, sample);
+        sub.assert_true(aes256_mask.len == 5, "aes256 mask is 5 bytes");
+
+        // Protect & unprotect with ChaCha20 mask on long header
+        var pkt: u8[16] = [
+            0xC3, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x05, 0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB, 0xCC,
+        ];
+        let orig_b0 = pkt[0];
+        wing::apply_header_protection(pkt[..], 9, 4, chacha_mask);
+        sub.assert_true(pkt[0] != orig_b0, "first byte masked");
+
+        let pn_len, trunc_pn = wing::remove_header_protection(pkt[..], 9, chacha_mask);
+        sub.assert_eq(pn_len, 4, "recovered 4-byte PN");
+        sub.assert_eq(trunc_pn, 0x12345678, "recovered truncated PN matches");
+        sub.assert_eq(pkt[0], orig_b0, "first byte restored");
+    };
+
+    t.run("HDR-02: QUIC Header Parsing Across All Packet Types") { sub =>
+        // 1. Handshake Packet Header
+        var h_hdr = wing::QuicHeader {
+            header_type: wing::QuicHeaderType.Handshake,
+            version: wing::QUIC_VERSION_1,
+            payload_length: 120,
+            packet_number: 42,
+            ..
+        };
+        h_hdr.dcid.append("dcid1234");
+        h_hdr.scid.append("scid5678");
+
+        var h_buf: u8[..128] = [];
+        sub.assert_true(wing::encode_quic_header(h_buf, h_hdr, 2), "encode Handshake header");
+        let parsed_h, ok_h = wing::parse_quic_header(h_buf[..], 0);
+        sub.assert_true(ok_h, "parse Handshake header");
+        sub.assert_eq(parsed_h.header_type, wing::QuicHeaderType.Handshake, "type is Handshake");
+        sub.assert_eq(parsed_h.dcid[..], "dcid1234", "dcid matches");
+        sub.assert_eq(parsed_h.scid[..], "scid5678", "scid matches");
+        sub.assert_eq(parsed_h.payload_length, 120, "payload length matches");
+
+        // 2. 0-RTT Packet Header
+        var z_hdr = wing::QuicHeader {
+            header_type: wing::QuicHeaderType.ZeroRtt,
+            version: wing::QUIC_VERSION_1,
+            payload_length: 50,
+            packet_number: 1,
+            ..
+        };
+        z_hdr.dcid.append("zero-dcid");
+        var z_buf: u8[..128] = [];
+        sub.assert_true(wing::encode_quic_header(z_buf, z_hdr, 1), "encode 0-RTT header");
+        let parsed_z, ok_z = wing::parse_quic_header(z_buf[..], 0);
+        sub.assert_true(ok_z, "parse 0-RTT header");
+        sub.assert_eq(parsed_z.header_type, wing::QuicHeaderType.ZeroRtt, "type is ZeroRtt");
+
+        // 3. Retry Packet Header
+        var r_hdr = wing::QuicHeader {
+            header_type: wing::QuicHeaderType.Retry,
+            version: wing::QUIC_VERSION_1,
+            ..
+        };
+        r_hdr.dcid.append("retry-dcid");
+        r_hdr.scid.append("retry-scid");
+        var r_buf: u8[..128] = [];
+        sub.assert_true(wing::encode_quic_header(r_buf, r_hdr, 1), "encode Retry header");
+        r_buf.append("retry-token-data-16bytes");
+        let parsed_r, ok_r = wing::parse_quic_header(r_buf[..], 0);
+        sub.assert_true(ok_r, "parse Retry header");
+        sub.assert_eq(parsed_r.header_type, wing::QuicHeaderType.Retry, "type is Retry");
+
+        // 4. Version Negotiation Packet Header (version = 0)
+        var vn_buf: u8[..64] = [];
+        vn_buf.push(0x80); // Long header, ver=0
+        vn_buf.push(0x00);
+        vn_buf.push(0x00);
+        vn_buf.push(0x00);
+        vn_buf.push(0x00);
+        vn_buf.push(4); // dcid len
+        vn_buf.append("dcid");
+        vn_buf.push(4); // scid len
+        vn_buf.append("scid");
+        vn_buf.push(0x00); vn_buf.push(0x00); vn_buf.push(0x00); vn_buf.push(0x01);
+
+        let parsed_vn, ok_vn = wing::parse_quic_header(vn_buf[..], 0);
+        sub.assert_true(ok_vn, "parse Version Negotiation header");
+        sub.assert_eq(parsed_vn.header_type, wing::QuicHeaderType.VersionNegotiation, "type is VersionNegotiation");
+        sub.assert_eq(parsed_vn.dcid[..], "dcid", "VN dcid matches");
+        sub.assert_eq(parsed_vn.scid[..], "scid", "VN scid matches");
     };
 }
 
@@ -447,6 +566,79 @@ fn test_ack_and_pto_engine(t: core::T&) {
         );
         sub.assert_eq(dec_loss.mode, wing::PtoTimerMode.LossTime, "loss time timer takes Priority 1");
     };
+
+    t.run("ACK-03: Descending Interval Tracking & Frame Construction") { sub =>
+        var ranges: wing::AckInterval[..64] = [];
+
+        // Record PN 10
+        wing::record_received_pn(ranges, 10);
+        sub.assert_eq(ranges.len, 1, "1 range recorded");
+        sub.assert_eq(ranges[0].smallest, 10, "smallest is 10");
+        sub.assert_eq(ranges[0].largest, 10, "largest is 10");
+
+        // Record PN 11 -> merges into [10..11]
+        wing::record_received_pn(ranges, 11);
+        sub.assert_eq(ranges.len, 1, "still 1 range after contiguous PN 11");
+        sub.assert_eq(ranges[0].smallest, 10, "smallest is 10");
+        sub.assert_eq(ranges[0].largest, 11, "largest is 11");
+
+        // Record PN 13 -> creates new range: [13..13], [10..11]
+        wing::record_received_pn(ranges, 13);
+        sub.assert_eq(ranges.len, 2, "2 ranges after gap");
+        sub.assert_eq(ranges[0].largest, 13, "range 0 largest is 13");
+        sub.assert_eq(ranges[1].largest, 11, "range 1 largest is 11");
+
+        // Record duplicate PN 10 -> ignored
+        wing::record_received_pn(ranges, 10);
+        sub.assert_eq(ranges.len, 2, "duplicate PN 10 ignored");
+
+        // Record PN 12 -> bridges the gap, merging into [10..13]
+        wing::record_received_pn(ranges, 12);
+        sub.assert_eq(ranges.len, 1, "gap bridged into 1 range [10..13]");
+        sub.assert_eq(ranges[0].smallest, 10, "smallest is 10");
+        sub.assert_eq(ranges[0].largest, 13, "largest is 13");
+
+        // Build ACK frame from interval set
+        let ack, ok_ack = wing::build_ack_frame(ranges, 150, false);
+        sub.assert_true(ok_ack, "build_ack_frame succeeds");
+        sub.assert_eq(ack.largest_acked, 13, "largest acked is 13");
+        sub.assert_eq(ack.first_ack_range, 3, "first ack range is 13 - 10 = 3");
+        sub.assert_eq(ack.ranges.len, 0, "no extra ranges");
+        sub.assert_eq(ack.ack_delay, 150, "ack delay is 150");
+    };
+
+    t.run("LOSS-01: Packet and Time Threshold Loss Detection (RFC 9002)") { sub =>
+        var space = wing::PnSpaceState {
+            space_id: wing::PnSpaceId.ApplicationData,
+            has_acked_packets: true,
+            largest_acked_pn: 10,
+            ..
+        };
+        // Sent packets: PN 5 (t=1000), PN 6 (t=1000), PN 8 (t=1000)
+        space.sent_packets.push(wing::SentPacketMeta {
+            pn: 5, time_sent_us: 1000, ack_eliciting: true, in_flight: true,
+        });
+        space.sent_packets.push(wing::SentPacketMeta {
+            pn: 6, time_sent_us: 1000, ack_eliciting: true, in_flight: true,
+        });
+        space.sent_packets.push(wing::SentPacketMeta {
+            pn: 8, time_sent_us: 1000, ack_eliciting: true, in_flight: true,
+        });
+
+        var rtt = wing::RttState {
+            smoothed_rtt_us: 40000,
+            latest_rtt_us: 40000,
+            ..
+        };
+
+        var lost: wing::SentPacketMeta[..64] = [];
+        wing::detect_lost_packets(space, rtt, 100000, lost);
+
+        // Packets 5 and 6 meet packet threshold (10 >= 5 + 3 and 10 >= 6 + 3)
+        sub.assert_true(lost.len >= 2, "at least 2 lost packets detected");
+        sub.assert_eq(lost[0].pn, 5, "packet 5 detected as lost");
+        sub.assert_eq(lost[1].pn, 6, "packet 6 detected as lost");
+    };
 }
 
 // ============================================================================
@@ -529,6 +721,15 @@ fn test_bbr_cubic_and_pacing(t: core::T&) {
         sub.assert_eq(cwnd1, 24000, "cwnd frozen during application-limited period");
         // Epoch start advanced by 1s idle time (from 1000000 to 2000000)
         sub.assert_eq(cubic.epoch_start_us, 2000000, "epoch start frozen/advanced by elapsed idle time");
+    };
+
+    t.run("CUBIC-02: Loss Multiplicative Window Reduction (RFC 9438)") { sub =>
+        var cubic = wing::new_cubic_state();
+        cubic.cwnd_segments = 100;
+        wing::cubic_on_loss(cubic, 5000000);
+        sub.assert_eq(cubic.w_max_segments, 100, "w_max saved as 100");
+        sub.assert_eq(cubic.cwnd_segments, 70, "cwnd reduced to 70 (beta 0.7)");
+        sub.assert_eq(cubic.epoch_start_us, 5000000, "epoch start reset to now");
     };
 }
 

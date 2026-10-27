@@ -268,12 +268,64 @@ fn test_settings_and_stream_id_invariants(t: core::T&) {
     };
 }
 
+fn test_h2_wire_framing_and_types(t: core::T&) {
+    t.run("WIRE-01: Frame Type Mapping and Extension Handling (RFC 9113 Sec 6)") { sub =>
+        sub.assert_eq(wing::byte_to_frame_type(0x0), wing::H2FrameType.Data, "0x0 is Data");
+        sub.assert_eq(wing::byte_to_frame_type(0x1), wing::H2FrameType.Headers, "0x1 is Headers");
+        sub.assert_eq(wing::byte_to_frame_type(0x2), wing::H2FrameType.Priority, "0x2 is Priority");
+        sub.assert_eq(wing::byte_to_frame_type(0x3), wing::H2FrameType.RstStream, "0x3 is RstStream");
+        sub.assert_eq(wing::byte_to_frame_type(0x4), wing::H2FrameType.Settings, "0x4 is Settings");
+        sub.assert_eq(wing::byte_to_frame_type(0x5), wing::H2FrameType.PushPromise, "0x5 is PushPromise");
+        sub.assert_eq(wing::byte_to_frame_type(0x6), wing::H2FrameType.Ping, "0x6 is Ping");
+        sub.assert_eq(wing::byte_to_frame_type(0x7), wing::H2FrameType.GoAway, "0x7 is GoAway");
+        sub.assert_eq(wing::byte_to_frame_type(0x8), wing::H2FrameType.WindowUpdate, "0x8 is WindowUpdate");
+        sub.assert_eq(wing::byte_to_frame_type(0x9), wing::H2FrameType.Continuation, "0x9 is Continuation");
+        sub.assert_eq(wing::byte_to_frame_type(0x0A), wing::H2FrameType.Unknown, "0x0A is Unknown");
+        sub.assert_eq(wing::byte_to_frame_type(0xFF), wing::H2FrameType.Unknown, "0xFF is Unknown");
+    };
+
+    t.run("WIRE-02: 9-Byte Frame Header Decoding & Reserved Bit Masking (RFC 9113 Sec 4.1)") { sub =>
+        // Truncated header (< 9 bytes)
+        var short_buf: u8[8] = [0; 8];
+        let _, err_short = wing::parse_h2_frame_header(short_buf[..]);
+        sub.assert_eq(err_short, wing::H2ErrorCode.FrameSizeError, "short header returns FrameSizeError");
+
+        // Valid DATA frame: length 128 (0x000080), type 0x00, flags 0x01 (END_STREAM), stream 5 (0x00000005)
+        var data_hdr_raw: u8[9] = [
+            0x00, 0x00, 0x80, // length = 128
+            0x00,             // type = DATA
+            0x01,             // flags = END_STREAM
+            0x00, 0x00, 0x00, 0x05, // stream ID = 5
+        ];
+        let h1, err1 = wing::parse_h2_frame_header(data_hdr_raw[..]);
+        sub.assert_eq(err1, wing::H2ErrorCode.NoError, "valid DATA header returns NoError");
+        sub.assert_true(h1.valid, "valid flag is true");
+        sub.assert_eq(h1.payload_len, 128, "payload len is 128");
+        sub.assert_eq(h1.frame_type, wing::H2FrameType.Data, "frame type is Data");
+        sub.assert_eq(h1.flags, 0x01, "flags match");
+        sub.assert_eq(h1.stream_id, 5, "stream id is 5");
+
+        // HEADERS frame with reserved high bit set: stream 0x80000003 -> masked to 3
+        var res_hdr_raw: u8[9] = [
+            0x00, 0x01, 0x00, // length = 256
+            0x01,             // type = HEADERS
+            0x04,             // flags = END_HEADERS
+            0x80, 0x00, 0x00, 0x03, // stream ID = 3 with high bit set
+        ];
+        let h2, err2 = wing::parse_h2_frame_header(res_hdr_raw[..]);
+        sub.assert_eq(err2, wing::H2ErrorCode.NoError, "reserved bit header returns NoError");
+        sub.assert_eq(h2.stream_id, 3, "reserved bit masked out to stream id 3");
+        sub.assert_eq(h2.payload_len, 256, "payload len is 256");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("HTTP/2 Framer Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. CONTINUATION Flood & Interleaving Guard (CVE-2024-27983)", test_continuation_flood_and_interleaving);
     core::run_case(runner, "2. Rapid Reset & Resource DoS Floods (CVE-2023-44487 & CVE-2019-9512)", test_rapid_reset_and_dos_floods);
     core::run_case(runner, "3. SETTINGS & Stream ID Invariants ", test_settings_and_stream_id_invariants);
+    core::run_case(runner, "4. Frame Header Parsing & Type Mapping (RFC 9113)", test_h2_wire_framing_and_types);
 
     let ok = core::finish(runner);
     assert(ok);

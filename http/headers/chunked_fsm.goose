@@ -18,6 +18,7 @@ const CHUNK_STATE_EXTENSION_EXPECTS_NAME: u64 = 0x0800000000000000;
 const CHUNK_STATE_EXTENSION_QUOTED: u64 = 0x0400000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_LF: u64 = 0x0200000000000000;
 const CHUNK_STATE_EXTENSION_IN_NAME: u64 = 0x0100000000000000;
+const CHUNK_STATE_EXTENSION_EXPECTS_VAL: u64 = 0x0020000000000000;
 const CHUNK_STATE_SEEN_HEX: u64 = 0x0080000000000000;
 const CHUNK_STATE_SEEN_BWS: u64 = 0x0040000000000000;
 
@@ -191,17 +192,17 @@ fn chunk_fsm_feed(
                         offset++;
                         dec.state += 2;
                         dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
-                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
+                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
                         break;
                     }
 
-                    if c == 0x00 || (c < 0x20 && c != '\r' && c != '\n' && c != '\t') {
+                    if c == 0x00 || (c < 0x20 && c != '\r' && c != '\n' && c != '\t') || c == 0x7F {
                         dec.state = CHUNK_STATE_IS_ERROR;
                         return ChunkFsmStatus.Error, offset, data[..0];
                     }
 
                     if c == '\r' {
-                        if (dec.state & CHUNK_STATE_EXTENSION_EXPECTS_NAME) != 0 {
+                        if (dec.state & (CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED)) != 0 {
                             dec.state = CHUNK_STATE_IS_ERROR;
                             return ChunkFsmStatus.Error, offset, data[..0];
                         }
@@ -224,6 +225,7 @@ fn chunk_fsm_feed(
                     } else if (dec.state & CHUNK_STATE_EXTENSION_IN_NAME) != 0 {
                         if c == '=' {
                             dec.state &= ~CHUNK_STATE_EXTENSION_IN_NAME;
+                            dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_VAL;
                         } else if c == ';' {
                             dec.state &= ~CHUNK_STATE_EXTENSION_IN_NAME;
                             dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
@@ -231,12 +233,32 @@ fn chunk_fsm_feed(
                             dec.state = CHUNK_STATE_IS_ERROR;
                             return ChunkFsmStatus.Error, offset, data[..0];
                         }
-                    } else {
-                        if c == '"' {
-                            dec.state ^= CHUNK_STATE_EXTENSION_QUOTED;
+                    } else if (dec.state & CHUNK_STATE_EXTENSION_EXPECTS_VAL) != 0 {
+                        if c == ' ' || c == '\t' {
+                            offset++;
+                            continue; // BWS after '='
                         }
-                        if c == ';' && (dec.state & CHUNK_STATE_EXTENSION_QUOTED) == 0 {
-                            dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
+                        if c == '"' {
+                            dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
+                            dec.state |= CHUNK_STATE_EXTENSION_QUOTED;
+                        } else if is_chunk_token_char(c) {
+                            dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
+                        } else {
+                            dec.state = CHUNK_STATE_IS_ERROR;
+                            return ChunkFsmStatus.Error, offset, data[..0];
+                        }
+                    } else {
+                        if (dec.state & CHUNK_STATE_EXTENSION_QUOTED) != 0 {
+                            if c == '"' {
+                                dec.state &= ~CHUNK_STATE_EXTENSION_QUOTED;
+                            }
+                        } else {
+                            if c == ';' {
+                                dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
+                            } else if c != ' ' && c != '\t' && !is_chunk_token_char(c) {
+                                dec.state = CHUNK_STATE_IS_ERROR;
+                                return ChunkFsmStatus.Error, offset, data[..0];
+                            }
                         }
                     }
 
@@ -286,6 +308,15 @@ fn chunk_fsm_feed(
                     return ChunkFsmStatus.Error, offset, data[..0];
                 }
                 offset += 2;
+                dec.state = CHUNK_STATE_IS_CHUNKED;
+                continue;
+            } else if size == 1 {
+                // Split CRLF: previously consumed body and '\r', expecting final '\n'
+                if data[offset] != '\n' {
+                    dec.state = CHUNK_STATE_IS_ERROR;
+                    return ChunkFsmStatus.Error, offset, data[..0];
+                }
+                offset += 1;
                 dec.state = CHUNK_STATE_IS_CHUNKED;
                 continue;
             }

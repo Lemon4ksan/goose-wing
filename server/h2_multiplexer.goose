@@ -433,10 +433,20 @@ fn handle_h2_server_ingress<B>(
                 sess.client_settings_acked = true;
             } else {
                 // Parse client settings (pairs of u16 identifier + u32 value)
+                guard (frame_payload.len % 6) == 0 else {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
                 var settings_r = core::new_slice_reader(frame_payload);
                 while settings_r.remaining() >= 6 {
                     let param_id, _ = settings_r.read_u16_be();
                     let param_val, _ = settings_r.read_u32_be();
+
+                    let val_err = validate_settings_parameter(param_id, param_val, false);
+                    if val_err != ERR_NO_ERROR {
+                        emit_goaway(sess.conn.last_peer_stream_id, val_err, out_wire);
+                        return offset + total_frame_len, false;
+                    }
 
                     if param_id == SETTING_INITIAL_WINDOW_SIZE {
                         let win_err = apply_peer_initial_window_size_delta(sess.conn, param_val);
@@ -479,9 +489,17 @@ fn handle_h2_server_ingress<B>(
             var block_start: i64 = 0;
             var block_end: i64 = frame_payload.len;
 
-            // Handle PADDED flag
-            if (hdr.flags & FLAG_PADDED) != 0 && frame_payload.len >= 1 {
+            // Handle PADDED flag RFC 9113 Section 6.1 / 6.2
+            if (hdr.flags & FLAG_PADDED) != 0 {
+                if frame_payload.len < 1 {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
                 let pad_len = frame_payload[0] as i64;
+                if pad_len >= frame_payload.len {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
                 block_start += 1;
                 block_end -= pad_len;
             }
@@ -500,10 +518,44 @@ fn handle_h2_server_ingress<B>(
                         emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
                         return offset + total_frame_len, false;
                     }
+
+                    // RFC 9113 Section 8.3.1: Mandatory request pseudo-headers
+                    var has_method = false;
+                    var has_scheme = false;
+                    var has_path = false;
+                    var is_connect = false;
+                    for &f in dec_list.fields {
+                        if f.name[..] == ":method" {
+                            has_method = true;
+                            if f.value[..] == "CONNECT" { is_connect = true; }
+                        } else if f.name[..] == ":scheme" {
+                            has_scheme = true;
+                        } else if f.name[..] == ":path" {
+                            has_path = true;
+                        }
+                    }
+                    if !has_method || (!is_connect && (!has_scheme || !has_path)) {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
+
+                    // RFC 9113 Section 8.1.1: Content-Length on END_STREAM
+                    if (hdr.flags & FLAG_END_STREAM) != 0 && dec_list.has_content_length && dec_list.content_length_val != 0 {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
+
                     if !is_cancelled {
                         let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
                         if found {
                             apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+                            if dec_list.has_content_length {
+                                sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
+                                let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+                                if c_found {
+                                    sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
+                                }
+                            }
                             if (hdr.flags & FLAG_END_STREAM) != 0 {
                                 sess.streams[s_idx].body_received = true;
                             }
@@ -538,10 +590,43 @@ fn handle_h2_server_ingress<B>(
                         emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
                         return offset + total_frame_len, false;
                     }
+
+                    // RFC 9113 Section 8.3.1: Mandatory request pseudo-headers
+                    var has_method = false;
+                    var has_scheme = false;
+                    var has_path = false;
+                    var is_connect = false;
+                    for &f in dec_list.fields {
+                        if f.name[..] == ":method" {
+                            has_method = true;
+                            if f.value[..] == "CONNECT" { is_connect = true; }
+                        } else if f.name[..] == ":scheme" {
+                            has_scheme = true;
+                        } else if f.name[..] == ":path" {
+                            has_path = true;
+                        }
+                    }
+                    if !has_method || (!is_connect && (!has_scheme || !has_path)) {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
+
+                    if sess.header_accum_end_stream && dec_list.has_content_length && dec_list.content_length_val != 0 {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
+
                     if !is_cancelled {
                         let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
                         if found {
                             apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+                            if dec_list.has_content_length {
+                                sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
+                                let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+                                if c_found {
+                                    sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
+                                }
+                            }
                             if sess.header_accum_end_stream {
                                 sess.streams[s_idx].body_received = true;
                             }
@@ -552,6 +637,19 @@ fn handle_h2_server_ingress<B>(
                 }
             }
         } else if hdr.frame_type == FRAME_DATA {
+            // Handle PADDED flag RFC 9113 Section 6.1
+            if (hdr.flags & FLAG_PADDED) != 0 {
+                if frame_payload.len < 1 {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
+                let pad_len = frame_payload[0] as i64;
+                if pad_len >= frame_payload.len {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
+            }
+
             let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
             if found {
                 var d_start: i64 = 0;
@@ -573,13 +671,24 @@ fn handle_h2_server_ingress<B>(
                     }
                 }
 
-                on_data_frame_received(sess.conn, hdr, frame_payload.len as u32);
+                let flow_err = on_data_frame_received(sess.conn, hdr, frame_payload.len as u32);
+                if flow_err != ERR_NO_ERROR {
+                    emit_goaway(sess.conn.last_peer_stream_id, flow_err, out_wire);
+                    return offset + total_frame_len, false;
+                }
 
-                // Replenish receive windows if consumed
-                emit_window_update(0, frame_payload.len as u32, out_wire);
-                emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
+                // Replenish receive windows if consumed and non-zero
+                if frame_payload.len > 0 {
+                    emit_window_update(0, frame_payload.len as u32, out_wire);
+                    emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
+                }
 
                 if (hdr.flags & FLAG_END_STREAM) != 0 {
+                    let dec_cl = sess.streams[s_idx].declared_content_length;
+                    if dec_cl >= 0 && dec_cl != (sess.streams[s_idx].body.len as i64) {
+                        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                        return offset + total_frame_len, false;
+                    }
                     sess.streams[s_idx].body_received = true;
                 }
             }

@@ -214,7 +214,7 @@ fn send_request_data<B>(
     out: B&,
 ) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
-    guard found else { return false; }
+    guard found && s_idx >= 0 && s_idx < conn.streams.len else { return false; }
     guard conn.streams[s_idx].headers_sent else { return false; }
 
     let ok_frame = encode_h3_data_frame(out, data);
@@ -425,7 +425,8 @@ fn handle_stream_data(
                 let is_pseudo = field.name.len > 0 && field.name[0] == ':';
 
                 // Trailers MUST NOT contain pseudo-headers or disallowed headers (RFC 9114 Section 4.3)
-                if conn.streams[s_idx].headers_received {
+                let is_trailer_section = conn.streams[s_idx].headers_received && conn.streams[s_idx].status_code >= 200;
+                if is_trailer_section {
                     if is_pseudo {
                         conn.state = H3ConnState.Closed;
                         conn.error_code = H3_ERR_GENERAL_PROTOCOL;
@@ -515,9 +516,12 @@ fn handle_stream_data(
 
                 if field.name[..] == ":status" {
                     let sc, ok_sc = core::parse_i32_dec(field.value[..]);
-                    if ok_sc {
-                        conn.streams[s_idx].status_code = sc;
+                    if !ok_sc || sc < 100 || sc > 599 || sc == 101 {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
                     }
+                    conn.streams[s_idx].status_code = sc;
                 } else if eq_ascii_fold(field.name[..], "content-length") {
                     let cl, ok_cl = core::parse_i64_dec(field.value[..]);
                     if !ok_cl || cl < 0 || (conn.streams[s_idx].content_length >= 0 && conn.streams[s_idx].content_length != cl) {
@@ -529,10 +533,12 @@ fn handle_stream_data(
                 }
             }
 
-            if !conn.streams[s_idx].headers_received {
-                conn.streams[s_idx].headers_received = true;
-            } else {
-                conn.streams[s_idx].trailers_received = true;
+            if conn.streams[s_idx].status_code >= 200 {
+                if !conn.streams[s_idx].headers_received {
+                    conn.streams[s_idx].headers_received = true;
+                } else {
+                    conn.streams[s_idx].trailers_received = true;
+                }
             }
         }
 
@@ -580,7 +586,7 @@ fn handle_stream_data(
 
 fn get_status_code(conn: const H3Connection&, stream_id: u64) -> i32, bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
-    if found && conn.streams[s_idx].headers_received {
+    if found && s_idx >= 0 && s_idx < conn.streams.len && conn.streams[s_idx].headers_received {
         return conn.streams[s_idx].status_code, true;
     }
     return 0, false;
@@ -588,7 +594,7 @@ fn get_status_code(conn: const H3Connection&, stream_id: u64) -> i32, bool {
 
 fn get_response_body(conn: const H3Connection&, stream_id: u64) -> const u8[:], bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
-    if found {
+    if found && s_idx >= 0 && s_idx < conn.streams.len {
         return conn.streams[s_idx].received_body[..], true;
     }
     return "", false;
@@ -596,7 +602,7 @@ fn get_response_body(conn: const H3Connection&, stream_id: u64) -> const u8[:], 
 
 fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
-    if found {
+    if found && s_idx >= 0 && s_idx < conn.streams.len {
         return conn.streams[s_idx].fin_received;
     }
     return false;

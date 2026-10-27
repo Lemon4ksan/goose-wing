@@ -393,12 +393,18 @@ fn is_connection_healthy(
 
 // Checks if a candidate host matches an active TLS Subject Alternative Name (SAN).
 fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
+    // Reject candidate host containing wildcard '*'
+    guard !core::contains_byte(target_host, '*') else { return false; }
+
     if eq_ascii_fold(pattern, target_host) {
         return true;
     }
-    // Wildcard SAN check (*.example.com)
+    // Wildcard SAN check (*.example.com) per RFC 6125 §6.4.3
     if starts_with(pattern, "*.") && target_host.len > 2 {
         let suffix = pattern[2..];
+        // Wildcards MUST NOT apply to top-level domains (*.com)
+        guard core::contains_byte(suffix, '.') else { return false; }
+
         var dot_idx = -1;
         for i in target_host.len {
             if target_host[i] == '.' { dot_idx = i; break; }

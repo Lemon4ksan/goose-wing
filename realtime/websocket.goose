@@ -1206,6 +1206,13 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
 
         if hdr.fin {
             // Unfragmented single-frame message: Zero-copy direct slice!
+            if payload.len > ws.frag_buffer.cap {
+                close(ws, WS_STATUS_MESSAGE_TOO_BIG, "payload exceeds capacity", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+                out_view.is_valid = false;
+                return true;
+            }
             if hdr.opcode == WS_OPCODE_TEXT {
                 if !core::validate_utf8(payload) {
                     close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
@@ -1293,10 +1300,42 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
         out_msg.close_reason.append(view.close_reason);
     }
     out_msg.data.clear();
-    if view.payload.len > 0 && view.payload.len <= out_msg.data.cap {
+    if view.payload.len > out_msg.data.cap {
+        close(ws, WS_STATUS_MESSAGE_TOO_BIG, "message exceeds buffer capacity", out_reply);
+        ws.is_closed = true;
+        ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+        out_msg.is_valid = false;
+        return false;
+    }
+    if view.payload.len > 0 {
         out_msg.data.append(view.payload);
     }
     return true;
+}
+
+// Checks if a requested token is present in the comma-separated header value list (RFC 6455 §4.2.1).
+fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
+    var i: u64 = 0;
+    let n = list.len as u64;
+    while i < n {
+        while i < n && (list[i] == ' ' || list[i] == '\t' || list[i] == ',') {
+            i++;
+        }
+        if i >= n { break; }
+        let start = i;
+        while i < n && list[i] != ',' {
+            i++;
+        }
+        var end = i;
+        while end > start && (list[end - 1] == ' ' || list[end - 1] == '\t') {
+            end--;
+        }
+        let tok = list[start..end];
+        if core::eq_ascii_fold(tok, target) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Checks if a requested subprotocol is present in the comma-separated Sec-WebSocket-Protocol header list (RFC 6455 §4.2.2).
@@ -1352,8 +1391,16 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
         return WebSocketSession { .. }, false;
     }
 
-    let conn = req.headers.find_header("Connection");
-    if !core::contains_fold(conn, "upgrade") {
+    var has_upgrade_connection = false;
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], "connection") {
+            if has_header_token_fold(hdr.value[..], "upgrade") {
+                has_upgrade_connection = true;
+                break;
+            }
+        }
+    }
+    if !has_upgrade_connection {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }

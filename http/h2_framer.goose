@@ -140,14 +140,18 @@ fn validate_h2_stream_association(hdr: const H2FrameHeader&) -> H2ErrorCode {
     if hdr.stream_id == 0 {
         if hdr.frame_type == H2FrameType.Data ||
            hdr.frame_type == H2FrameType.Headers ||
+           hdr.frame_type == H2FrameType.Priority ||
            hdr.frame_type == H2FrameType.RstStream ||
+           hdr.frame_type == H2FrameType.PushPromise ||
            hdr.frame_type == H2FrameType.Continuation {
             return H2ErrorCode.ProtocolError;
         }
         return H2ErrorCode.NoError;
     }
 
-    if hdr.frame_type == H2FrameType.Settings || hdr.frame_type == H2FrameType.Ping {
+    if hdr.frame_type == H2FrameType.Settings ||
+       hdr.frame_type == H2FrameType.Ping ||
+       hdr.frame_type == H2FrameType.GoAway {
         return H2ErrorCode.ProtocolError;
     }
     return H2ErrorCode.NoError;

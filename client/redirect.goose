@@ -181,9 +181,11 @@ fn inherit_target_fragment(
     let curr_hash = hash(current_url);
     if target_hash.len == 0 && curr_hash.len > 0 {
         if preserve_fragment_on_redirect_url.len == 0 || clean_loc != preserve_fragment_on_redirect_url {
-            target_url.hash_start = target_url.href.len as i32;
-            target_url.href.append(curr_hash);
-            target_url.hash_end = target_url.href.len as i32;
+            if target_url.href.len + curr_hash.len <= target_url.href.cap {
+                target_url.hash_start = target_url.href.len as i32;
+                target_url.href.append(curr_hash);
+                target_url.hash_end = target_url.href.len as i32;
+            }
         }
     }
 }
@@ -443,11 +445,11 @@ fn sanitize_origin_header_on_redirect(
 ) {
     let origin_idx = find_header_index(headers[..], "Origin");
     if origin_idx >= 0 && (is_cross_origin || tainted_origin) {
-        if cors_mode || tainted_origin {
+        if clear_body && !cors_mode && !tainted_origin {
+            remove_header_by_name(headers, "Origin");
+        } else {
             headers[origin_idx].value.clear();
             headers[origin_idx].value.append("null");
-        } else if clear_body {
-            remove_header_by_name(headers, "Origin");
         }
     }
 }

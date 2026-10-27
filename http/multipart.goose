@@ -44,7 +44,7 @@ fn default_multipart_options() -> MultipartOptions {
 struct MultipartPart {
     name: u8[..64] = [],
     filename: u8[..256] = [],
-    content_type: u8[..64] = [],
+    content_type: u8[..128] = [],
     headers: HeaderMap = HeaderMap { .. },
     data: const u8[:] = "",
 }
@@ -100,12 +100,16 @@ fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, 
 // Whether boundary contains only characters allowed by RFC 2046 Section 5.1.1.
 fn validate_boundary_string(boundary: const u8[:]) -> bool {
     guard boundary.len >= 1 && boundary.len <= 70 else { return false; }
+    // RFC 2046 Section 5.1.1: The boundary parameter must not end with a space.
+    if boundary[boundary.len - 1] == ' ' {
+        return false;
+    }
     for b in boundary {
         if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
             continue;
         }
         if b == '\'' || b == '(' || b == ')' || b == '+' || b == '_' || b == ',' ||
-           b == '-' || b == '.' || b == '/' || b == ':' || b == '=' || b == '?' {
+           b == '-' || b == '.' || b == '/' || b == ':' || b == '=' || b == '?' || b == ' ' {
             continue;
         }
         return false;
@@ -179,17 +183,17 @@ fn find_next_boundary_delim(body: const u8[:], cursor: i64, part_delim: const u8
     return -1;
 }
 
-fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) {
+fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) -> bool {
     let disp_raw = get_header(part_headers, "content-disposition");
     if disp_raw.len > 0 {
         let mt, mt_ok = parse_content_disposition(disp_raw);
         if mt_ok {
             let p_name = param(mt, "name");
-            let name_len = core::ct_min_i64(p_name.len, part.name.cap);
-            part.name.append(p_name[..name_len]);
+            guard p_name.len <= part.name.cap else { return false; }
+            part.name.append(p_name);
             let p_fn = param(mt, "filename");
-            let fn_len = core::ct_min_i64(p_fn.len, part.filename.cap);
-            part.filename.append(p_fn[..fn_len]);
+            guard p_fn.len <= part.filename.cap else { return false; }
+            part.filename.append(p_fn);
         }
     }
     let ct_raw = get_header(part_headers, "content-type");
@@ -197,6 +201,7 @@ fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) 
         let ct_len = core::ct_min_i64(ct_raw.len, part.content_type.cap);
         part.content_type.append(ct_raw[..ct_len]);
     }
+    return true;
 }
 
 // Delimiters are matched using a 16-bit Boyer-Moore-Horspool shift table,
@@ -311,7 +316,11 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
 
         var part = MultipartPart { headers: part_headers, .. };
         part.data = part_data;
-        populate_part_metadata(part_headers, part);
+        let meta_ok = populate_part_metadata(part_headers, part);
+        guard meta_ok else {
+            msg.valid = false;
+            return msg, MultipartError.InvalidPartHeaders;
+        }
         msg.parts.push(part);
 
         cursor = next_delim_pos + part_delim.len;

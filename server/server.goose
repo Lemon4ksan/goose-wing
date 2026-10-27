@@ -1211,9 +1211,10 @@ fn handle_connection_wire_pipelined_stream<B>(
         } else {
             var future = internal::new_inline_handler_future(0);
             let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
-            if req.method[..] == "CONNECT" {
-                set_header(res, "Connection", "close");
-            }
+        }
+
+        if req.method[..] == "CONNECT" {
+            set_header(res, "Connection", "close");
         }
 
         serialize_http1_response(res, server.server_name[..], wire_out);
@@ -1223,6 +1224,7 @@ fn handle_connection_wire_pipelined_stream<B>(
 
         // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
         if req.method[..] == "CONNECT" {
+            total_consumed = wire_in.len;
             break;
         }
 
@@ -1304,9 +1306,10 @@ fn handle_connection_pipe<B>(
             } else {
                 var future = internal::new_inline_handler_future(0);
                 let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
-                if req.method[..] == "CONNECT" {
-                    set_header(res, "Connection", "close");
-                }
+            }
+
+            if req.method[..] == "CONNECT" {
+                set_header(res, "Connection", "close");
             }
 
             serialize_http1_response(res, server.server_name[..], wire_out);
@@ -1317,6 +1320,7 @@ fn handle_connection_pipe<B>(
 
             // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
             if req.method[..] == "CONNECT" {
+                core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
                 break;
             }
         } else {

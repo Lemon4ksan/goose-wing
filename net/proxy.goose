@@ -309,6 +309,7 @@ fn verify_connect_tunnel_response(
     sink_buffered_bytes: i64 = 0,
 ) -> ConnectTunnelError {
     guard raw_response.len >= 12 else { return ConnectTunnelError.InvalidStatusLine; }
+    guard starts_with(raw_response, "HTTP/1.") else { return ConnectTunnelError.InvalidStatusLine; }
 
     // Find \r\n\r\n boundary separating headers from potential smuggled body bytes
     let delim_idx = core::index_of_slice(raw_response, "\r\n\r\n");
@@ -318,6 +319,14 @@ fn verify_connect_tunnel_response(
     // Parse status code from "HTTP/1.x 200 ..."
     let space_idx = core::index_of_byte(raw_response, ' ');
     guard space_idx > 0 && space_idx + 4 <= raw_response.len else { return ConnectTunnelError.InvalidStatusLine; }
+
+    // Ensure status code is exactly 3 digits followed by ' ' or '\r' or '\n'
+    if space_idx + 4 < raw_response.len {
+        let after_code = raw_response[space_idx + 4];
+        guard after_code == ' ' || after_code == '\r' || after_code == '\n' else {
+            return ConnectTunnelError.InvalidStatusLine;
+        }
+    }
 
     let status_code_str = raw_response[space_idx + 1..space_idx + 4];
     if status_code_str == "407" {

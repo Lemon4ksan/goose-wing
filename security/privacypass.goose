@@ -238,27 +238,30 @@ fn parse_private_token_challenge(
             while idx < params_str.len && params_str[idx] != '"' {
                 idx += 1;
             }
+            guard idx < params_str.len && params_str[idx] == '"' else { return false; }
         } else {
             while idx < params_str.len && params_str[idx] != ',' && params_str[idx] != ' ' {
                 idx += 1;
             }
         }
         let val = params_str[val_start..idx];
-        if in_quotes && idx < params_str.len && params_str[idx] == '"' {
-            idx += 1;
+        if in_quotes {
+            idx += 1; // skip closing quote
         }
 
         if eq_ascii_fold(key, "challenge") {
+            guard val.len <= challenge_b64.cap else { return false; }
             challenge_b64.clear();
             challenge_b64.append(val);
         } else if eq_ascii_fold(key, "token-key") {
             var raw_key: u8[>..] = [];
             if core::base64url_decode(val, raw_key) {
+                guard raw_key.len <= out_token_key.cap else { return false; }
                 for b in raw_key {
-                    if out_token_key.len < out_token_key.cap {
-                        out_token_key.push(b);
-                    }
+                    out_token_key.push(b);
                 }
+            } else {
+                return false;
             }
         } else if eq_ascii_fold(key, "max-age") {
             var secs: i64 = 0;
