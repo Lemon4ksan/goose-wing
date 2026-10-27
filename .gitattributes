@@ -1,1 +1,11 @@
 * text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.goose linguist-language=Goose
+*.build linguist-language=TOML
+
+vendor/** linguist-vendored
+reports/** linguist-generated

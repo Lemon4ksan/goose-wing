@@ -11,6 +11,7 @@ bin/
 __pycache__/
 *.py[codz]
 *$py.class
+.ruff_cache/
 
 # Agentic stuff
 .gemini/
@@ -20,3 +21,10 @@ vendor/
 # Benchmarks and e2e
 reports/
 tools/bench-vs-uwebsockets/server_goose_wing.c
+
+# goose-crap build artifacts and test binaries
+*.gcrap-cov
+*.gcrap-cov.raw
+*.gcrap-baseline.json
+*.gcrap_bak
+.system_generated/

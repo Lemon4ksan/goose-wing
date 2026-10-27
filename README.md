@@ -1,6 +1,6 @@
 # goose-wing
 
-[![Goose Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/aardappel/goose)
+[![Goose Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose)
 [![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey.svg?style=flat-square)](LICENSE)
 [![Throughput](https://img.shields.io/badge/throughput-1.23M%20TCP%20%7C%2024.6M%20In--Memory-brightgreen.svg?style=flat-square)](#benchmarks)
 
@@ -10,7 +10,7 @@ Current project status: Feature-Complete Alpha. Expect breaking changes.
 
 ## Overview
 
-`goose-wing` is a zero-allocation networking and HTTP server engine written in [Goose](https://github.com/goose-lang/goose). It implements IETF and W3C specifications without runtime garbage collection. The stack uses bounded inline buffers, SIMD and SWAR tokenizers, and deterministic state machines.
+`goose-wing` is a zero-allocation networking and HTTP server engine written in [Goose](https://github.com/Lemon4ksan/goose). It implements IETF and W3C specifications without runtime garbage collection. The stack uses bounded inline buffers, SIMD and SWAR tokenizers, and deterministic state machines.
 
 ## Subsystems
 
@@ -149,10 +149,10 @@ Comparison against [`aoni/fast`](https://github.com/lemon4ksan/aoni), a zero-all
 
 ## Tests
 
-The test suite validates RFC compliance, Chromium edge cases, cryptographic vectors, and CVE defenses across 73 test suites and 8,000 assertions:
+The test suite validates RFC compliance, Chromium edge cases, cryptographic vectors, and CVE defenses across 84 test suites:
 
 ```powershell
-# Typecheck the entire library and all 70 test suites
+# Typecheck the entire library and all 84 test suites
 powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
 
 # Run all test suites in parallel with native execution
@@ -165,8 +165,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1
 ============================================================
 [1/3] Typechecking core and wing libraries...
   OK: core & wing libraries typechecked cleanly in 886ms.
-[2/2] Running typecheck on 70 suites...
-  OK: All 70 suites typechecked cleanly in 48.07s.
+[2/2] Running typecheck on 84 suites...
+  OK: All 84 suites typechecked cleanly in 14.20s.
 ============================================================
  Typecheck Complete: 100% Valid, 0 Errors, 0 Warnings
 ============================================================
@@ -174,9 +174,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1
 
 ## Documentation
 
+- [Architecture](ARCHITECTURE.md): Memory model, ingress boundaries, module layout, and request/response data flow.
 - [Features and nuances](docs/FEATURES_AND_NUANCES.md): 52 implementation phases, buffer budgets, algorithm complexities, fail-closed thresholds, and edge cases.
 - [Security defenses](docs/SECURITY_DEFENSES.md): CVE defenses, protocol attack mitigations, constant-time arithmetic, and zero-heap invariants.
 - [Caller reference](docs/CALLER_REFERENCE.md): Container capacities, time arithmetic, and concurrency primitives.
+- [Contributing](CONTRIBUTING.md) and [Security policy](SECURITY.md): Development workflow, coding standards, and vulnerability disclosure.
 
 ## License
 
