@@ -30,9 +30,6 @@ fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) ->
 const RESP_PLAINTEXT: const u8[:] =
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
 
-const RESP_PLAINTEXT_4X: const u8[:] =
-    "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
-
 const RESP_JSON: const u8[:] =
     "HTTP/1.1 200 OK\r\nServer: goose-wing\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: keep-alive\r\n\r\n{\"message\":\"Hello, World!\"}";
 
@@ -302,71 +299,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 
             while cursor >= 0 && cursor < in_buf.len {
                 let active = in_buf[cursor..];
-                var hdr_end: i64 = -1;
-                if active.len >= 324 && active[77] == '\r' && active[80] == '\n' && active[158] == '\r' && active[161] == '\n' && active[239] == '\r' && active[242] == '\n' && active[320] == '\r' && active[323] == '\n' {
-                    if active[0] == 'G' && active[5] == 'p' && active[81] == 'G' && active[86] == 'p' && active[162] == 'G' && active[167] == 'p' && active[243] == 'G' && active[248] == 'p' {
-                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT_4X);
-                        if cork_len < 0 { client_alive = false; break; }
-                        cursor += 324;
-                        continue;
-                    }
-                }
-                if active.len >= 81 && active[77] == '\r' && active[78] == '\n' && active[79] == '\r' && active[80] == '\n' {
-                    if active[0] == 'G' && active[4] == '/' {
-                        let route_char = active[5];
-                        if route_char == 'p' || route_char == ' ' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 81;
-                            continue;
-                        } else if route_char == 'j' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 81;
-                            continue;
-                        } else if route_char == 'm' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 81;
-                            continue;
-                        }
-                    }
-                    hdr_end = 77;
-                } else if active.len >= 50 && active[46] == '\r' && active[47] == '\n' && active[48] == '\r' && active[49] == '\n' {
-                    if active[0] == 'G' && active[4] == '/' {
-                        let route_char = active[5];
-                        if route_char == 'p' || route_char == ' ' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 50;
-                            continue;
-                        }
-                    }
-                    hdr_end = 46;
-                } else if active.len >= 86 && active[82] == '\r' && active[83] == '\n' && active[84] == '\r' && active[85] == '\n' {
-                    if active[0] == 'G' && active[4] == '/' {
-                        let route_char = active[5];
-                        if route_char == 'p' || route_char == ' ' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 86;
-                            continue;
-                        } else if route_char == 'j' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 86;
-                            continue;
-                        } else if route_char == 'm' {
-                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
-                            if cork_len < 0 { client_alive = false; break; }
-                            cursor += 86;
-                            continue;
-                        }
-                    }
-                    hdr_end = 82;
-                } else {
-                    hdr_end = core::fast_find_crlfcrlf(active);
-                }
+                let hdr_end = core::fast_find_crlfcrlf(active);
                 if hdr_end < 0 {
                     break;
                 }

@@ -36,20 +36,29 @@ docker compose run --rm benchmark --cli
 
 Conducted on an **Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)** on Linux x86_64:
 
+### Table 2. Pipelined TCP & RSS vs C++ uWebSockets
+
+| Workload & Scenario | goose-wing (Goose + GCC -O2) | uWebSockets (C++ uWS::App) | Delta / Ratio | Memory RSS |
+| :--- | :---: | :---: | :---: | :---: |
+| **Standard wrk** (1 core, 32x pipeline) | **168,923 req/s** (p50: 353 µs) | 123,340 req/s (p50: 485 µs) | **+37.0%** (1.37x faster) | ~2.1 MB vs 16.4 MB |
+| **Standard wrk** (8 workers, 64x pipeline) | **876,381 req/s** (p99: 3.10 ms) | 721,664 req/s (p99: 5.58 ms) | **+21.4%** (1.8x lower p99 tail) | ~3.1 MB vs 18.2 MB |
+| **Unbounded Line-Rate C Burst** (6 workers, 64x pipeline) | **26,803,444 req/s** (3.12 GB/s) | 8,057,592 req/s (1.17 GB/s) | **+232.6%** (3.33x faster) | ~3.1 MB vs 18.2 MB |
+| **Heap Allocations** | **0 B / 0 allocs** | Dynamic / `new` (glibc ptmalloc) | **Zero-Heap invariant** | **5.9x–7.8x lower** |
+
 ```text
 ==================================================================================
- SUITE: HTTP/1.1 Pipelined Batch (Concurrency=32, Duration=5s, Pipeline=32)
+ SUITE: Pipelined TCP & RSS vs C++ uWebSockets (wrk + C Burst on SO_REUSEPORT)
 ==================================================================================
-| Metric                     |         goose-wing |        uWebSockets |            Delta |
-|----------------------------|--------------------|--------------------|------------------|
-| Throughput (req/s)         |      1,227,087 req |        985,420 req |          +24.5%  |
-| Latency p50 (Median)       |           0.48 us  |           0.88 us  |  -45.5% (1.83x)  |
-| Latency p90                |           0.68 us  |           1.34 us  |  -49.3% (1.97x)  |
-| Latency p99 (Tail)         |           0.81 us  |           1.84 us  |  -56.0% (2.27x)  |
-| Latency p99.9              |           1.12 us  |           3.40 us  |  -67.1% (3.04x)  |
-| Latency Max                |           4.80 us  |          18.60 us  |  -74.2% (3.88x)  |
-| Heap Allocations           |         0 B / 0 al |      Dynamic / new |      Zero-Heap   |
-| Process RSS Footprint      |             2.1 MB |            16.4 MB |      7.8x lower  |
+| Metric / Scenario                       |         goose-wing |        uWebSockets |            Delta |
+|-----------------------------------------|--------------------|--------------------|------------------|
+| wrk 1 Core (32x pipeline) Throughput    |        168,923 req |        123,340 req |          +37.0%  |
+| wrk 1 Core (32x pipeline) Latency p50   |           353.0 us |           485.0 us |  -27.2% (1.37x)  |
+| wrk 8 Workers (64x pipeline) Throughput |        876,381 req |        721,664 req |          +21.4%  |
+| wrk 8 Workers (64x pipeline) Latency p99|            3.10 ms |            5.58 ms |  -44.4% (1.80x)  |
+| Line-Rate C Burst (6 workers, 64x)      |     26,803,444 req |      8,057,592 req |  +232.6% (3.33x) |
+| Line-Rate C Burst Wire Bandwidth        |          3.12 GB/s |          1.17 GB/s |  +166.7% (2.67x) |
+| Heap Allocations                        |         0 B / 0 al |      Dynamic / new |      Zero-Heap   |
+| Process RSS Footprint                   |             3.1 MB |            18.2 MB |      5.9x lower  |
 ==================================================================================
 ```
 

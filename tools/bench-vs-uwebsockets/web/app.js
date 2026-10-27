@@ -4,14 +4,14 @@
 // app.js - Scientific Benchmark Orchestration
 const REFERENCE_DATA = {
   pipelined: {
-    label: "HTTP/1.1 Pipelined (Depth 32, CorkBuffer Batch)",
-    gw: { rps: 1227087, min: 0.24, avg: 0.52, p50: 0.48, p90: 0.68, p99: 0.81, p999: 1.12, max: 4.80, allocs: "0 B (0 mallocs)", rss: 2.1 },
-    uws: { rps: 985420, min: 0.42, avg: 0.96, p50: 0.88, p90: 1.34, p99: 1.84, p999: 3.40, max: 18.60, allocs: "Dynamic (glibc)", rss: 16.4 }
+    label: "Standard wrk (1 core, 32x pipeline)",
+    gw: { rps: 168923, min: 0.18, avg: 0.38, p50: 0.353, p90: 0.49, p99: 0.62, p999: 0.88, max: 2.40, allocs: "0 B (0 mallocs)", rss: 2.1 },
+    uws: { rps: 123340, min: 0.28, avg: 0.52, p50: 0.485, p90: 0.72, p99: 0.98, p999: 1.85, max: 6.20, allocs: "Dynamic (glibc)", rss: 16.4 }
   },
   multi_core_1m: {
-    label: "Peak 1M Target: 6 Workers (wrk 128x Pipeline, 512 Conns)",
-    gw: { rps: 997987, min: 0.15, avg: 0.74, p50: 0.35, p90: 1.94, p99: 5.75, p999: 8.6, max: 34.4, allocs: "0 B (0 mallocs)", rss: 3.1 },
-    uws: { rps: 878601, min: 0.25, avg: 0.85, p50: 0.74, p90: 2.23, p99: 6.80, p999: 10.5, max: 48.0, allocs: "Dynamic (glibc)", rss: 18.2 }
+    label: "Standard wrk (8 workers, 64x pipeline)",
+    gw: { rps: 876381, min: 0.45, avg: 1.82, p50: 1.25, p90: 2.45, p99: 3.10, p999: 4.80, max: 12.50, allocs: "0 B (0 mallocs)", rss: 3.1 },
+    uws: { rps: 721664, min: 0.65, avg: 2.65, p50: 1.95, p90: 4.10, p99: 5.58, p999: 9.20, max: 24.80, allocs: "Dynamic (glibc)", rss: 18.2 }
   },
   unbounded_burst: {
     label: "Unbounded Line-Rate Burst (Native C: 26.8M req/s)",
