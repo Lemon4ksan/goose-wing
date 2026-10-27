@@ -526,16 +526,10 @@ fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
     var eff_len = reason.len;
     if eff_len > 123 {
         eff_len = 123;
-        // Avoid truncating in the middle of a multi-byte UTF-8 sequence
-        while eff_len > 0 && (reason[eff_len - 1] & 0xC0) == 0x80 {
+        // Avoid truncating in the middle of a multi-byte UTF-8 sequence:
+        // A cut at eff_len splits a UTF-8 codepoint iff reason[eff_len] is a continuation byte (10xxxxxx).
+        while eff_len > 0 && (reason[eff_len] & 0xC0) == 0x80 {
             eff_len--;
-        }
-        if eff_len > 0 && (reason[eff_len - 1] & 0x80) != 0 {
-            let lead = reason[eff_len - 1];
-            let exp_bytes = if (lead & 0xE0) == 0xC0 { 2 } else if (lead & 0xF0) == 0xE0 { 3 } else if (lead & 0xF8) == 0xF0 { 4 } else { 1 };
-            if eff_len + exp_bytes - 1 > 123 {
-                eff_len--;
-            }
         }
     }
     out.append(reason[..eff_len]);
@@ -1428,9 +1422,18 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
 
     var session = new_websocket_session(false);
     if subprotocol.len > 0 && subprotocol.len <= session.subprotocol.cap {
-        // RFC 6455 §4.2.2 item 5: Server MUST only select a subprotocol requested by the client
-        let client_protos = req.headers.find_header("Sec-WebSocket-Protocol");
-        if has_subprotocol_token(client_protos, subprotocol) {
+        // RFC 6455 §4.1 & §4.2.2 item 5: Server MUST only select a subprotocol requested by the client
+        // across one or more Sec-WebSocket-Protocol header fields.
+        var proto_matched = false;
+        for &hdr in req.headers {
+            if core::eq_ascii_fold(hdr.name[..], "sec-websocket-protocol") {
+                if has_subprotocol_token(hdr.value[..], subprotocol) {
+                    proto_matched = true;
+                    break;
+                }
+            }
+        }
+        if proto_matched {
             out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
             session.subprotocol.append(subprotocol);
         }
@@ -1447,8 +1450,16 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     guard host.len > 0 else { return false; }
     let upg = req.headers.find_header("Upgrade");
     guard core::eq_ascii_fold(upg, "websocket") else { return false; }
-    let conn = req.headers.find_header("Connection");
-    guard core::contains_fold(conn, "upgrade") else { return false; }
+    var has_upgrade_conn = false;
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], "connection") {
+            if has_header_token_fold(hdr.value[..], "upgrade") {
+                has_upgrade_conn = true;
+                break;
+            }
+        }
+    }
+    guard has_upgrade_conn else { return false; }
     let ver = req.headers.find_header("Sec-WebSocket-Version");
     guard ver == "13" else { return false; }
     let key = req.headers.find_header("Sec-WebSocket-Key");

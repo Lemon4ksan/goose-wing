@@ -569,6 +569,9 @@ fn inflate_ex<B>(
                 }
             }
 
+            // RFC 1951 §3.2.7: End-of-Block symbol 256 MUST have a non-zero code length
+            guard lit_dist_lens[256] > 0 else { return CompressError.CodeLengthsIncomplete, r.pos; }
+
             var dyn_lit = HuffmanTable { .. };
             let res_lit = construct_huffman_table(lit_dist_lens[..nlen], nlen, dyn_lit);
             guard res_lit >= 0 else { return CompressError.CodeLengthsOverSubscribed, r.pos; }

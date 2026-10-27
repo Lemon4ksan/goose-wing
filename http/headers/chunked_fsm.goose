@@ -71,6 +71,10 @@ fn chunk_fsm_feed(
     dec: ChunkFsmDecoder&,
     data: const u8[:],
 ) -> ChunkFsmStatus, i64, const u8[:] {
+    if dec.state == CHUNK_STATE_IS_ERROR {
+        return ChunkFsmStatus.Error, 0, data[..0];
+    }
+
     var offset: i64 = 0;
     while offset < data.len {
         // 1. Trailer mode
@@ -82,11 +86,12 @@ fn chunk_fsm_feed(
                 if sub_st == 0 {
                     if c == '\r' {
                         dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 1;
-                    } else if c == '\n' {
+                    } else if is_chunk_token_char(c) {
+                        dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 2;
+                    } else {
+                        // RFC 9112 §7.1.2 & §5.2: Reject bare LF, obs-fold, empty field-name, or CTL at trailer line start
                         dec.state = CHUNK_STATE_IS_ERROR;
                         return ChunkFsmStatus.Error, offset, data[..0];
-                    } else {
-                        dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 2;
                     }
                 } else if sub_st == 1 {
                     if c == '\n' {
@@ -98,15 +103,17 @@ fn chunk_fsm_feed(
                 } else if sub_st == 2 {
                     if c == '\r' {
                         dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 3;
-                    } else if c == '\n' {
+                    } else if c == '\n' || c == 0x00 || (c < 0x20 && c != '\t') || c == 0x7F {
                         dec.state = CHUNK_STATE_IS_ERROR;
                         return ChunkFsmStatus.Error, offset, data[..0];
                     }
                 } else if sub_st == 3 {
                     if c == '\n' {
                         dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 0;
-                    } else if c != '\r' {
-                        dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 2;
+                    } else {
+                        // RFC 9112 §2.2: Bare CR in trailer line MUST be rejected
+                        dec.state = CHUNK_STATE_IS_ERROR;
+                        return ChunkFsmStatus.Error, offset, data[..0];
                     }
                 }
             }

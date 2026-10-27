@@ -1400,6 +1400,9 @@ fn decode_sequences<B>(
 ) -> CompressError {
     if offset >= block_end {
         // No sequences section: block is purely literals
+        if max_output_bytes >= 0 && (out_buf.len as i64) + lit_buf.len > max_output_bytes {
+            return CompressError.OutputBufferOverflow;
+        }
         out_buf.append(lit_buf);
         return CompressError.None;
     }
@@ -1409,7 +1412,13 @@ fn decode_sequences<B>(
     var nb_seq: i64 = 0;
 
     if b0 == 0 {
-        // 0 sequences: remaining data is literals
+        // 0 sequences: remaining data is literals (RFC 8878 §3.1.1.3.2.1: no trailing bytes allowed)
+        if offset != block_end {
+            return CompressError.CorruptedBitstream;
+        }
+        if max_output_bytes >= 0 && (out_buf.len as i64) + lit_buf.len > max_output_bytes {
+            return CompressError.OutputBufferOverflow;
+        }
         out_buf.append(lit_buf);
         return CompressError.None;
     } else if b0 < 128 {
@@ -2309,7 +2318,25 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                 return CompressError.InvalidBlockType;
             }
 
-            if block_size > ZSTD_BLOCKSIZE_MAX || offset + block_size > src.len {
+            if block_size > ZSTD_BLOCKSIZE_MAX {
+                return CompressError.InputBufferTruncated;
+            }
+
+            if block_type == ZSTD_BLOCK_TYPE_RLE {
+                // RFC 8878 §3.1.1.2.1: RLE_Block content is 1 byte repeated block_size times
+                if offset + 1 > src.len {
+                    return CompressError.InputBufferTruncated;
+                }
+                if max_output_bytes >= 0 && (out_buf.len as i64) + block_size > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
+                let rle_byte = src[offset];
+                offset += 1;
+                out_buf.resize(out_buf.len + block_size, rle_byte);
+                continue;
+            }
+
+            if offset + block_size > src.len {
                 return CompressError.InputBufferTruncated;
             }
             let block_end = offset + block_size;
@@ -2320,13 +2347,6 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                 }
                 out_buf.append(src[offset..block_end]);
                 offset = block_end;
-            } else if block_type == ZSTD_BLOCK_TYPE_RLE {
-                if max_output_bytes >= 0 && (out_buf.len as i64) + block_size > max_output_bytes {
-                    return CompressError.OutputBufferOverflow;
-                }
-                let rle_byte = src[offset];
-                offset = block_end;
-                out_buf.resize(out_buf.len + block_size, rle_byte);
             } else if block_type == ZSTD_BLOCK_TYPE_COMPRESSED {
                 let lits = decode_literals(src, offset, block_end, lit_buf, huf_table);
                 if !lits.ok {
@@ -2349,6 +2369,11 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                     return seq_err;
                 }
             }
+        }
+
+        // RFC 8878 §3.1.1.1.4: Verify decompressed size matches declared Frame_Content_Size
+        if frame_content_size >= 0 && (out_buf.len - frame_start_out) != frame_content_size {
+            return CompressError.SizeMismatch;
         }
 
         // Validate Content Checksum if present

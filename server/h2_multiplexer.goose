@@ -296,12 +296,22 @@ fn emit_response_trailers<B>(
     for &hdr in trailers {
         let name_slice = hdr.name[..];
         let val_slice = hdr.value[..];
-        var lower_name: u8[..64] = [];
-        for c in name_slice {
-            let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
-            lower_name.push(lc);
+        // RFC 9113 §8.1 / §8.2.2 & RFC 9110 §6.5.1: Trailers MUST NOT include pseudo-headers,
+        // hop-by-hop connection headers, or disallowed framing/routing trailer fields.
+        if name_slice.len > 0 && name_slice[0] != ':' &&
+           !eq_ascii_fold(name_slice, "connection") &&
+           !eq_ascii_fold(name_slice, "keep-alive") &&
+           !eq_ascii_fold(name_slice, "proxy-connection") &&
+           !eq_ascii_fold(name_slice, "transfer-encoding") &&
+           !eq_ascii_fold(name_slice, "upgrade") &&
+           !is_disallowed_trailer_field(name_slice) {
+            var lower_name: u8[..64] = [];
+            for c in name_slice {
+                let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
+                lower_name.push(lc);
+            }
+            encode_hpack_field(sess.hpack_enc, hpack_block, lower_name[..], val_slice, true, false);
         }
-        encode_hpack_field(sess.hpack_enc, hpack_block, lower_name[..], val_slice, true, false);
     }
 
     let flags: u8 = FLAG_END_HEADERS | FLAG_END_STREAM;
