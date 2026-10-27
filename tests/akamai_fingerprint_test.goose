@@ -233,19 +233,7 @@ fn test_akamai_pseudo_header_ordering(t: core::T&) {
 }
 
 fn test_akamai_browser_profiles(t: core::T&) {
-    t.run("BrowserProfile presets export authentic Akamai fingerprints") { sub =>
-        let cp = wing::chrome_profile();
-        let fp_str = wing::akamai(cp);
-        sub.assert_eq(fp_str[..], "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p", "Chrome profile has Chrome Akamai fingerprint");
-
-        let ffp = wing::firefox_profile();
-        let fp_str2 = wing::akamai(ffp);
-        sub.assert_eq(fp_str2[..], "1:65536;4:131072;5:16384|12517377|0|m,p,a,s", "Firefox profile has Firefox Akamai fingerprint");
-
-        let sp = wing::safari_profile();
-        let fp_str3 = wing::akamai(sp);
-        sub.assert_eq(fp_str3[..], "2:0;3:100;4:2097152|10485760|0|m,s,a,p", "Safari profile has Safari Akamai fingerprint");
-
+    t.run("ClientProfile exports authentic Wing Akamai fingerprint") { sub =>
         let wp = wing::wing_default_profile();
         let fp_str4 = wing::akamai(wp);
         sub.assert_eq(fp_str4[..], "1:65536;2:0;3:100;4:6291456;6:262144|15663105|0|m,a,s,p", "Wing default profile has authentic Wing Akamai fingerprint");

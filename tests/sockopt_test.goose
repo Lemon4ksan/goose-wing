@@ -2,60 +2,48 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Verification suite for L4 OS Socket Parameter Tuning (sysnet / net/sockopt.goose):
-// - Browser-accurate TCP SYN & L4 socket profile configuration (Chrome, Safari, Firefox, Wing)
+// - Authentic Wing NetStack, Custom, and None L4 socket profile configurations
 // - p0f v3 TCP stack parameter invariants (TTL, Window, MSS, WScale, DF, TCP_NODELAY)
-// - ProfileKind and Profile dispatch overloads
+// - Profile and ClientProfile dispatch overloads
 // - Socket option summary formatting
 import std;
 import core from "..";
 import wing from "..";
 
 fn test_socket_p0f_profiles(t: core::T&) {
-    t.run("Chrome Windows 10/11 Socket Profile") { sub =>
-        let chrome_cfg = internal::p0f_socket_config(wing::ProfileKind.Chrome);
-        sub.assert_eq(chrome_cfg.ttl, 128, "Chrome TTL is 128");
-        sub.assert_eq(chrome_cfg.window_size, 64240, "Chrome window size is 64240");
-        sub.assert_true(chrome_cfg.has_dont_fragment, "Chrome DF is enabled");
-        sub.assert_true(chrome_cfg.tcp_nodelay, "Chrome TCP_NODELAY is enabled");
-        sub.assert_eq(chrome_cfg.wscale, 8, "Chrome WScale is 8");
-        sub.assert_eq(chrome_cfg.mss, 1460, "Chrome MSS is 1460");
-        sub.assert_true(internal::validate_p0f_socket_invariants(chrome_cfg), "Chrome invariants valid");
-    };
-
-    t.run("Safari macOS Sonoma Socket Profile") { sub =>
-        let safari_cfg = internal::p0f_socket_config(wing::ProfileKind.Safari);
-        sub.assert_eq(safari_cfg.ttl, 64, "Safari TTL is 64");
-        sub.assert_eq(safari_cfg.window_size, 65535, "Safari window size is 65535");
-        sub.assert_true(safari_cfg.has_dont_fragment, "Safari DF is enabled");
-        sub.assert_eq(safari_cfg.wscale, 6, "Safari WScale is 6");
-        sub.assert_true(internal::validate_p0f_socket_invariants(safari_cfg), "Safari invariants valid");
-    };
-
-    t.run("Firefox Linux Socket Profile") { sub =>
-        let firefox_cfg = internal::p0f_socket_config(wing::ProfileKind.Firefox);
-        sub.assert_eq(firefox_cfg.ttl, 64, "Firefox TTL is 64");
-        sub.assert_eq(firefox_cfg.window_size, 65495, "Firefox window size is 65495");
-        sub.assert_true(firefox_cfg.has_dont_fragment, "Firefox DF is enabled");
-        sub.assert_eq(firefox_cfg.wscale, 7, "Firefox WScale is 7");
-        sub.assert_true(internal::validate_p0f_socket_invariants(firefox_cfg), "Firefox invariants valid");
-    };
-
     t.run("Wing Authentic Zero-Heap NetStack Profile") { sub =>
-        let wing_cfg = internal::p0f_socket_config(wing::ProfileKind.Wing);
+        let wing_cfg = internal::p0f_socket_config(wing::Profile.Wing);
         sub.assert_eq(wing_cfg.ttl, 64, "Wing TTL is 64");
-        sub.assert_eq(wing_cfg.window_size, 65536, "Wing window size is 65536");
+        sub.assert_eq(wing_cfg.window_size, 65535, "Wing window size is 65535");
         sub.assert_true(wing_cfg.has_dont_fragment, "Wing DF is enabled");
+        sub.assert_true(wing_cfg.tcp_nodelay, "Wing TCP_NODELAY is enabled");
         sub.assert_eq(wing_cfg.wscale, 8, "Wing WScale is 8");
+        sub.assert_eq(wing_cfg.mss, 1460, "Wing MSS is 1460");
+        sub.assert_true(internal::validate_p0f_socket_invariants(wing_cfg), "Wing invariants valid");
+    };
 
-        // Profile enum overload
-        let p_wing = internal::p0f_socket_config(wing::Profile.Wing);
-        sub.assert_eq(p_wing.ttl, 64, "Profile.Wing TTL matches");
+    t.run("Custom Socket Profile") { sub =>
+        let custom_cfg = internal::p0f_socket_config(wing::Profile.Custom);
+        sub.assert_eq(custom_cfg.ttl, 64, "Custom TTL is 64");
+        sub.assert_eq(custom_cfg.window_size, 65535, "Custom window size is 65535");
+        sub.assert_true(custom_cfg.has_dont_fragment, "Custom DF is enabled");
+        sub.assert_eq(custom_cfg.wscale, 8, "Custom WScale is 8");
+        sub.assert_true(internal::validate_p0f_socket_invariants(custom_cfg), "Custom invariants valid");
+    };
+
+    t.run("None / Raw Socket Profile") { sub =>
+        let none_cfg = internal::p0f_socket_config(wing::Profile.None);
+        sub.assert_eq(none_cfg.ttl, 64, "None TTL is 64");
+        sub.assert_eq(none_cfg.window_size, 65535, "None window size is 65535");
+        sub.assert_false(none_cfg.has_dont_fragment, "None DF is disabled");
+        sub.assert_eq(none_cfg.wscale, 7, "None WScale is 7");
+        sub.assert_true(internal::validate_p0f_socket_invariants(none_cfg), "None invariants valid");
     };
 }
 
 fn test_socket_invariant_validation(t: core::T&) {
     t.run("Invariant Boundary Checks") { sub =>
-        var bad_cfg = internal::p0f_socket_config(wing::ProfileKind.Chrome);
+        var bad_cfg = internal::p0f_socket_config(wing::Profile.Wing);
 
         // Invalid TTL
         bad_cfg.ttl = 99;
@@ -85,14 +73,14 @@ fn test_socket_invariant_validation(t: core::T&) {
     };
 
     t.run("Summary String Formatting") { sub =>
-        let cfg = internal::p0f_socket_config(wing::ProfileKind.Chrome);
+        let cfg = internal::p0f_socket_config(wing::Profile.Wing);
         var summary: u8[>..] = [];
         internal::format_socket_p0f_summary(cfg, summary);
         sub.assert_true(summary.len > 0, "Summary formatted");
         // Verify key substrings
-        sub.assert_contains(summary[..], "Windows 10/11 (Chrome)", "Summary contains OS");
-        sub.assert_contains(summary[..], "TTL=128", "Summary contains TTL");
-        sub.assert_contains(summary[..], "Window=64240", "Summary contains Window");
+        sub.assert_contains(summary[..], "Wing/1.0 NetStack", "Summary contains OS/stack name");
+        sub.assert_contains(summary[..], "TTL=64", "Summary contains TTL");
+        sub.assert_contains(summary[..], "Window=65535", "Summary contains Window");
     };
 }
 

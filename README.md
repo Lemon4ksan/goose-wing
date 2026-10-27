@@ -6,6 +6,8 @@
 
 Zero-allocation systems networking and HTTP engine for Goose
 
+Current project status: Feature-Complete Alpha. Expect breaking changes.
+
 ## Overview
 
 `goose-wing` is a zero-allocation networking and HTTP server engine written in [Goose](https://github.com/goose-lang/goose). It implements IETF and W3C specifications without runtime garbage collection. The stack uses bounded inline buffers, SIMD and SWAR tokenizers, and deterministic state machines.
@@ -37,7 +39,7 @@ import wing from "..";
 
 fn main() {
     var sess = wing::new_session("https://api.example.com") { s =>
-        s.set_profile(wing::Profile.Chrome131);
+        s.set_profile(wing::Profile.Wing);
         s.set_timeout_ms(5000);
         s.default_header("Accept", "application/json");
     };

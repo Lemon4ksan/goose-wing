@@ -3,6 +3,7 @@
 
 // Demonstration of the goose-wing Unified App-Layer API (Variant 2 + Variant 3 synthesis).
 import std;
+import core from "..";
 import wing from "..";
 
 struct CreateOrderReq {
@@ -20,7 +21,7 @@ struct OrderConfirmation {
 
 fn main() {
     var session = wing::new_session("https://api.exchange.io") { sess =>
-        sess.set_profile(wing::Profile.Chrome131);
+        sess.set_profile(wing::Profile.Wing);
         sess.set_proxy("socks5://127.0.0.1:1080");
         sess.set_timeout_ms(10000);
         sess.set_cookie("session_id", "sid_998877aabb");

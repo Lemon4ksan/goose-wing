@@ -13,14 +13,6 @@ import fingerprint.p0f;
 import fingerprint.akamai;
 
 // Profile kind.
-enum ProfileKind {
-    Wing,      // Authentic Wing Zero-Heap Systems Engine identity (Default)
-    Custom,    // 100% User-controlled custom persona
-    None,      // Minimal / bare profile without default headers
-    Chrome,    // Modern Chromium persona
-    Firefox,   // Modern Firefox persona
-    Safari,    // Modern Safari persona
-}
 
 // HTTP/2 protocol settings for the persona.
 struct H2Settings {
@@ -49,9 +41,9 @@ struct TlsFingerprintSpec {
     alpn: u8[..16] = [],
 }
 
-// Full persona specification governing outbound request appearance and wire fingerprint.
-struct BrowserProfile {
-    kind: ProfileKind = ProfileKind.Wing,
+// Client profile specification governing outbound request appearance and wire fingerprint.
+struct ClientProfile {
+    kind: Profile = Profile.Wing,
     user_agent: u8[..256] = [],
     accept: u8[..192] = [],
     accept_encoding: u8[..64] = [],
@@ -66,27 +58,18 @@ struct BrowserProfile {
     akamai: AkamaiFingerprint = AkamaiFingerprint { .. },
 }
 
+// Backward-compatible alias for existing callers
+type BrowserProfile = ClientProfile;
+
 // ---- authentic wing default profile ----------------------------------------
 
 // Constructs the authentic Wing profile. It doesn't impersonate any existing
 // browser and presents a clean, recognizable systems stack fingerprint.
-fn wing_default_profile() -> BrowserProfile {
-    var p = BrowserProfile {
-        kind: ProfileKind.Wing,
-        h2: H2Settings {
-            header_table_size: 65536,
-            enable_push: 0,
-            max_concurrent_streams: 100,
-            initial_window_size: 6291456,
-            max_frame_size: 16384,
-            max_header_list_size: 262144,
-        },
-        h3: H3Settings {
-            qpack_max_table_capacity: 4096,
-            max_field_section_size: 65536,
-            qpack_blocked_streams: 16,
-            enable_connect_protocol: 1,
-        },
+fn wing_default_profile() -> ClientProfile {
+    var p = ClientProfile {
+        kind: Profile.Wing,
+        h2: H2Settings { .. },
+        h3: H3Settings { .. },
         tls: TlsFingerprintSpec { .. },
         p0f: wing_p0f_signature(),
         akamai: akamai_wing_preset(),
@@ -153,166 +136,34 @@ fn wing_default_profile() -> BrowserProfile {
 }
 
 // Constructs a completely custom, blank persona for full user control.
-fn custom_profile() -> BrowserProfile {
-    return BrowserProfile {
-        kind: ProfileKind.Custom,
+fn custom_profile() -> ClientProfile {
+    return ClientProfile {
+        kind: Profile.Custom,
         ..
     };
 }
 
-// Constructs a modern Chrome 124+ browser persona with authentic Akamai HTTP/2 fingerprint.
-fn chrome_profile() -> BrowserProfile {
-    var p = BrowserProfile {
-        kind: ProfileKind.Chrome,
-        h2: H2Settings {
-            header_table_size: 65536,
-            enable_push: 0,
-            max_concurrent_streams: 100,
-            initial_window_size: 6291456,
-            max_frame_size: 16384,
-            max_header_list_size: 262144,
-        },
-        h3: H3Settings {
-            qpack_max_table_capacity: 4096,
-            max_field_section_size: 65536,
-            qpack_blocked_streams: 16,
-            enable_connect_protocol: 1,
-        },
-        tls: TlsFingerprintSpec { .. },
-        p0f: wing_p0f_signature(),
-        akamai: akamai_chrome_preset(),
+// Constructs a minimal / bare profile without default headers.
+fn none_profile() -> ClientProfile {
+    return ClientProfile {
+        kind: Profile.None,
         ..
     };
-    p.user_agent.append("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
-    p.accept.append("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-    p.accept_encoding.append("gzip, deflate, br, zstd");
-    p.accept_language.append("en-US,en;q=0.9");
-    p.upgrade_insecure_requests.append("1");
-
-    p.tls.supported_versions.push(0x0304);
-    p.tls.supported_versions.push(0x0303);
-    p.tls.ciphers.push(0x1301);
-    p.tls.ciphers.push(0x1302);
-    p.tls.ciphers.push(0x1303);
-    p.tls.alpn.append("h2");
-
-    push_header_order(p, "sec-ch-ua");
-    push_header_order(p, "sec-ch-ua-mobile");
-    push_header_order(p, "sec-ch-ua-platform");
-    push_header_order(p, "upgrade-insecure-requests");
-    push_header_order(p, "user-agent");
-    push_header_order(p, "accept");
-    push_header_order(p, "sec-fetch-site");
-    push_header_order(p, "sec-fetch-mode");
-    push_header_order(p, "sec-fetch-user");
-    push_header_order(p, "sec-fetch-dest");
-    push_header_order(p, "accept-encoding");
-    push_header_order(p, "accept-language");
-    return p;
 }
 
-// Constructs a modern Firefox 124+ browser persona with authentic Akamai HTTP/2 fingerprint.
-fn firefox_profile() -> BrowserProfile {
-    var p = BrowserProfile {
-        kind: ProfileKind.Firefox,
-        h2: H2Settings {
-            header_table_size: 65536,
-            enable_push: 0,
-            max_concurrent_streams: 100,
-            initial_window_size: 131072,
-            max_frame_size: 16384,
-            max_header_list_size: 262144,
-        },
-        h3: H3Settings {
-            qpack_max_table_capacity: 4096,
-            max_field_section_size: 65536,
-            qpack_blocked_streams: 16,
-            enable_connect_protocol: 1,
-        },
-        tls: TlsFingerprintSpec { .. },
-        p0f: wing_p0f_signature(),
-        akamai: akamai_firefox_preset(),
-        ..
-    };
-    p.user_agent.append("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0");
-    p.accept.append("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-    p.accept_encoding.append("gzip, deflate, br, zstd");
-    p.accept_language.append("en-US,en;q=0.5");
-    p.upgrade_insecure_requests.append("1");
-
-    p.tls.supported_versions.push(0x0304);
-    p.tls.supported_versions.push(0x0303);
-    p.tls.ciphers.push(0x1301);
-    p.tls.ciphers.push(0x1302);
-    p.tls.ciphers.push(0x1303);
-    p.tls.alpn.append("h2");
-
-    push_header_order(p, "user-agent");
-    push_header_order(p, "accept");
-    push_header_order(p, "accept-language");
-    push_header_order(p, "accept-encoding");
-    push_header_order(p, "upgrade-insecure-requests");
-    push_header_order(p, "sec-fetch-dest");
-    push_header_order(p, "sec-fetch-mode");
-    push_header_order(p, "sec-fetch-site");
-    push_header_order(p, "sec-fetch-user");
-    return p;
-}
-
-// Constructs a modern Safari 17+ browser persona with authentic Akamai HTTP/2 fingerprint.
-fn safari_profile() -> BrowserProfile {
-    var p = BrowserProfile {
-        kind: ProfileKind.Safari,
-        h2: H2Settings {
-            header_table_size: 4096,
-            enable_push: 0,
-            max_concurrent_streams: 100,
-            initial_window_size: 2097152,
-            max_frame_size: 16384,
-            max_header_list_size: 262144,
-        },
-        h3: H3Settings {
-            qpack_max_table_capacity: 4096,
-            max_field_section_size: 65536,
-            qpack_blocked_streams: 16,
-            enable_connect_protocol: 1,
-        },
-        tls: TlsFingerprintSpec { .. },
-        p0f: wing_p0f_signature(),
-        akamai: akamai_safari_preset(),
-        ..
-    };
-    p.user_agent.append("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15");
-    p.accept.append("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-    p.accept_encoding.append("gzip, deflate, br");
-    p.accept_language.append("en-US,en;q=0.9");
-
-    p.tls.supported_versions.push(0x0304);
-    p.tls.supported_versions.push(0x0303);
-    p.tls.ciphers.push(0x1301);
-    p.tls.ciphers.push(0x1302);
-    p.tls.ciphers.push(0x1303);
-    p.tls.alpn.append("h2");
-
-    push_header_order(p, "user-agent");
-    push_header_order(p, "accept");
-    push_header_order(p, "accept-language");
-    push_header_order(p, "accept-encoding");
-    return p;
-}
-
-// Constructs a profile according to the specified ProfileKind.
-fn new_browser_profile(kind: ProfileKind) -> BrowserProfile {
-    if kind == ProfileKind.Chrome {
-        return chrome_profile();
-    } else if kind == ProfileKind.Firefox {
-        return firefox_profile();
-    } else if kind == ProfileKind.Safari {
-        return safari_profile();
-    } else if kind == ProfileKind.Custom {
+// Constructs a profile according to the specified Profile enum.
+fn new_client_profile(kind: Profile) -> ClientProfile {
+    if kind == Profile.Custom {
         return custom_profile();
+    } else if kind == Profile.None {
+        return none_profile();
     }
     return wing_default_profile();
+}
+
+// Backward-compatible alias
+fn new_browser_profile(kind: Profile) -> ClientProfile {
+    return new_client_profile(kind);
 }
 
 // ---- profile manipulation & builder functions -------------------------------

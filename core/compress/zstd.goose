@@ -287,10 +287,6 @@ struct HufWeightTable {
     is_defined: bool = false,
 }
 
-const EMPTY_HUF_TABLE: HufTable = HufTable {};
-const EMPTY_FSE_TABLE: FseTable = FseTable {};
-const EMPTY_HUF_WEIGHT_TABLE: HufWeightTable = HufWeightTable {};
-
 const DEFAULT_LL_ENTRIES: FseEntry[64] = [
     FseEntry { base_val: 0, new_state: 0, nb_bits: 4, extra_bits: 0 },
     FseEntry { base_val: 0, new_state: 16, nb_bits: 4, extra_bits: 0 },
@@ -832,7 +828,7 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
             return false;
         }
 
-        var weight_fse_table = EMPTY_HUF_WEIGHT_TABLE;
+        var weight_fse_table = HufWeightTable {};
         if !fse_build_weight_dtable(fse_counts[..], fse_max_sym, fse_log, weight_fse_table) {
             return false;
         }
@@ -2292,10 +2288,10 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
 
         // Initialize block state
         var rep: u32[3] = [1, 4, 8];
-        var huf_table = EMPTY_HUF_TABLE;
-        var ll_table = EMPTY_FSE_TABLE;
-        var ml_table = EMPTY_FSE_TABLE;
-        var of_table = EMPTY_FSE_TABLE;
+        var huf_table = HufTable {};
+        var ll_table = FseTable {};
+        var ml_table = FseTable {};
+        var of_table = FseTable {};
         var lit_buf: u8[>..] = [];
 
         let frame_start_out = out_buf.len;

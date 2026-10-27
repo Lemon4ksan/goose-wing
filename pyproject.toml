@@ -21,4 +21,3 @@ extraPaths = [
     "tools/tls",
     "tools/toxiproxy",
 ]
-

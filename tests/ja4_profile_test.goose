@@ -107,7 +107,7 @@ fn test_ja4h_http_fingerprint(t: core::T&) {
 fn test_wing_profile_and_session(t: core::T&) {
     t.run("1. Wing Authentic Default Profile Inspection") { sub =>
         let p = wing::wing_default_profile();
-        sub.assert_eq(p.kind, wing::ProfileKind.Wing, "Default profile kind is Wing");
+        sub.assert_eq(p.kind, wing::Profile.Wing, "Default profile kind is Wing");
         sub.assert_contains(p.user_agent[..], "Wing/1.0", "Wing authentic UA string");
         sub.assert_contains(p.accept_encoding[..], "zstd", "Wing advertises native RFC 8878 Zstandard!");
         sub.assert_eq(p.upgrade_insecure_requests[..], "1", "Upgrade-Insecure-Requests is 1");

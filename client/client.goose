@@ -181,10 +181,19 @@ fn new_client<F: fn(Client&)>() -> Client {
     return client;
 }
 
-// Backward-compatible session factory aliases
 inline fn new_session() -> Client { return new_client(); }
 inline fn new_session(cfg: ClientConfig) -> Client { return new_client(cfg); }
 inline fn new_session(base_url: const u8[:]) -> Client { return new_client(base_url); }
+fn new_session<F: fn(Client&)>(base_url: const u8[:]) -> Client {
+    var client = new_client(base_url);
+    F(&client);
+    return client;
+}
+fn new_session<F: fn(Client&)>() -> Client {
+    var client = new_client();
+    F(&client);
+    return client;
+}
 
 // ---- ufcs session mutators & configuration ---------------------------------
 
@@ -194,14 +203,7 @@ fn set_base_url(session: Session&, url: const u8[:]) {
 }
 
 fn apply_profile(client: Client&, profile: const BrowserProfile&) {
-    client.profile = match profile.kind {
-        Wing => Profile.Wing,
-        Custom => Profile.Custom,
-        None => Profile.None,
-        Chrome => Profile.Custom,
-        Firefox => Profile.Custom,
-        Safari => Profile.Custom,
-    };
+    client.profile = profile.kind;
     client.default_headers.clear();
     if profile.user_agent.len > 0 {
         client.default_headers.push(make_header("User-Agent", profile.user_agent[..]));

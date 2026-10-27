@@ -157,14 +157,16 @@ When creating a `Client`, outbound destinations are checked against private and 
 
 Requests targeting these addresses from untrusted inputs are blocked unless explicitly allowed.
 
-### Browser profile headers
+### Client profile headers
 
-Setting a profile with `client.set_profile(wing::Profile.Chrome131)` sets standard browser header ordering:
-- `User-Agent`
-- `Sec-CH-UA`, `Sec-CH-UA-Mobile`, `Sec-CH-UA-Platform`
-- `Accept`, `Accept-Language`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`
+Setting a profile with `client.set_profile(wing::Profile.Wing)` sets the authentic zero-allocation systems engine identity:
+- `User-Agent: Wing/1.0 (Goose Zero-Heap Systems Engine) NetStack/7.0`
+- `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8`
+- `Accept-Encoding: zstd, gzip, br`
+- `Accept-Language: en-US,en;q=0.9`
+- `Upgrade-Insecure-Requests: 1`
 
-Explicitly added headers overwrite profile defaults.
+`wing::Profile.Custom` allows callers to construct full custom header topologies without preset defaults, while `wing::Profile.None` creates a bare transport client without default headers. Explicitly added headers overwrite profile defaults.
 
 ### HTTP cache
 

@@ -20,7 +20,9 @@
 #include <ws2tcpip.h>
 #include <mstcpip.h>
 #include <windows.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
+#endif
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -395,7 +397,7 @@ int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
     if (pfnRtlGenRandom == NULL) {
         HMODULE hAdvApi = GetModuleHandleA("advapi32.dll");
         if (hAdvApi != NULL) {
-            pfnRtlGenRandom = (RtlGenRandomFn)GetProcAddress(hAdvApi, "SystemFunction036");
+            pfnRtlGenRandom = (RtlGenRandomFn)(void *)GetProcAddress(hAdvApi, "SystemFunction036");
         }
     }
     if (pfnRtlGenRandom != NULL) {
@@ -451,6 +453,13 @@ int32_t wing_tcp_set_keepalive_params(int64_t sock_fd, int32_t idle_sec, int32_t
     int opt = 1;
     setsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&opt, sizeof(opt));
 #ifdef _WIN32
+    (void)cnt;
+#if defined(TCP_KEEPCNT)
+    if (cnt > 0) {
+        DWORD keepcnt = (DWORD)cnt;
+        setsockopt((SOCKET)sock_fd, IPPROTO_TCP, TCP_KEEPCNT, (const char *)&keepcnt, sizeof(keepcnt));
+    }
+#endif
     struct tcp_keepalive settings;
     settings.onoff = 1;
     settings.keepalivetime = (u_long)(idle_sec > 0 ? idle_sec * 1000 : 1000);

@@ -121,10 +121,10 @@ fn tcp_send2(fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 {
     return native_tcp_send2(fd, hdr, payload);
 }
 
-// Global shared 512 KB receive loop buffer (LIBUS_RECV_BUFFER_LENGTH = 524288) in .bss
+// Global shared 64 KB receive loop buffer (LIBUS_RECV_BUFFER_LENGTH = 65536) in .bss
 // Eliminates the 4 KB stack memset [0; 4096] on every single recv call.
-const RECV_BUFFER_CAP: i64 = 524288;
-var g_shared_recv_buf: u8[524288] = [0; 524288];
+const RECV_BUFFER_CAP: i64 = 65536;
+var g_shared_recv_buf: u8[65536] = [0; 65536];
 
 // Receives bytes from TCP socket directly into the provided destination slice (zero-copy, zero-heap).
 // Returns bytes received (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.

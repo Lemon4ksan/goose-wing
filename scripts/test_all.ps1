@@ -15,9 +15,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $testsDir = Join-Path $root "tests"
 $optFlag = if ($Release) { "-O2" } else { "-O0" }
 
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host " goose-wing High-Performance Test Runner" -ForegroundColor Cyan
-Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host " goose-wing powershell test runner" -ForegroundColor Cyan
 
 # Helper to start process with redirected output (avoids terminal cursor collisions)
 function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect = $true) {
@@ -53,7 +51,21 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host ($checkWingOut -join "`n") -ForegroundColor Yellow
     exit 1
 }
-Write-Host "  OK: core & wing libraries typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
+
+$examplesDir = Join-Path $root "examples"
+if (Test-Path $examplesDir) {
+    $exampleFiles = Get-ChildItem -Path $examplesDir -Filter "*.goose"
+    foreach ($ex in $exampleFiles) {
+        $checkExOut = & goose check $ex.FullName 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FATAL: goose check $($ex.Name) failed!" -ForegroundColor Red
+            Write-Host ($checkExOut -join "`n") -ForegroundColor Yellow
+            exit 1
+        }
+    }
+}
+$swCore.Stop()
+Write-Host "  OK: core, wing & examples typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
 
 # 2. Discover test suites
 $testFiles = Get-ChildItem -Path $testsDir -Filter $Pattern | Where-Object { $_.Extension -eq ".goose" } | Sort-Object Name
@@ -80,9 +92,7 @@ if ($CheckOnly) {
         exit 1
     }
     Write-Host "  OK: All $($testFiles.Count) suites typechecked cleanly in $($swCheck.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
-    Write-Host "`n============================================================" -ForegroundColor Cyan
-    Write-Host " Typecheck Complete: 100% Valid ($($swCheck.Elapsed.TotalSeconds.ToString('F2'))s)" -ForegroundColor Green
-    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "`nTypecheck Complete: 100% Valid ($($swCheck.Elapsed.TotalSeconds.ToString('F2'))s)" -ForegroundColor Green
     exit 0
 }
 

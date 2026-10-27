@@ -1,0 +1,31 @@
+name: "Feature Request"
+description: "Suggest a new protocol capability, driver, or zero-allocation optimization for goose-wing"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement for goose-wing.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: Describe the motivation, relevant RFC specifications, or performance bottleneck.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the proposed design, including hypothetical Goose API signatures and buffer ownership models.
+      render: goose
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative designs or existing workarounds considered.
+    validations:
+      required: false

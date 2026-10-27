@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      goose: ${{ steps.filter.outputs.goose }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Filter file paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            goose:
+              - '**/*.goose'
+
+  lint-and-licensing:
+    name: Lint and license check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff
+        run: |
+          pip install ruff
+
+      - name: Check license headers
+        run: |
+          python tools/licensing.py --check
+
+      - name: Run ruff
+        run: |
+          ruff check tools/
+
+  c-shims:
+    name: Compile C shims
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install clang and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang
+
+      - name: Compile with gcc
+        run: |
+          gcc -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/af_xdp.c shim/smartnic.c
+          rm -f *.o
+
+      - name: Compile with clang
+        run: |
+          clang -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/af_xdp.c shim/smartnic.c
+          rm -f *.o
+
+  e2e-protocols:
+    name: Protocol tests
+    needs: changes
+    if: needs.changes.outputs.goose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install docker compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin
+
+      - name: Test gRPC
+        run: |
+          python tools/grpc.py --docker
+
+      - name: Test TLS 1.3
+        run: |
+          python tools/tls.py --docker
+
+      - name: Test HTTP/3
+        run: |
+          python tools/http3.py --docker
+
+      - name: Test toxiproxy
+        run: |
+          python tools/toxiproxy.py --docker

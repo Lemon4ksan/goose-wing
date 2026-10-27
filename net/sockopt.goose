@@ -34,7 +34,7 @@ const IP_MTU_DISCOVER_LINUX: i32 = 10; // Linux IP_MTU_DISCOVER (PMTUDISC_DO = 2
 
 struct SocketP0fProfile {
     ttl: i32 = 64,
-    window_size: i32 = 65536,
+    window_size: i32 = 65535,
     has_dont_fragment: bool = true,
     tcp_nodelay: bool = true,
     tcp_keepalive: bool = true,
@@ -43,44 +43,34 @@ struct SocketP0fProfile {
     os_name: u8[..32] = "Universal/POSIX",
 }
 
-// Generates the exact socket option profile corresponding to a BrowserProfile
-fn p0f_socket_config(browser: const wing::BrowserProfile&) -> SocketP0fProfile {
+// Generates the socket option profile from an active Profile enum
+fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
     var cfg = SocketP0fProfile { .. };
 
-    if browser.kind == wing::ProfileKind.Chrome {
-        // Windows 10/11 Chrome: TTL=128, Initial Window=64240, DF=1, WScale=8
-        cfg.ttl = 128;
-        cfg.window_size = 64240;
-        cfg.has_dont_fragment = true;
-        cfg.tcp_nodelay = true;
+    if p == wing::Profile.None {
+        // Minimal / raw OS socket defaults
+        cfg.ttl = 64;
+        cfg.window_size = 65535;
+        cfg.has_dont_fragment = false;
+        cfg.tcp_nodelay = false;
         cfg.mss = 1460;
-        cfg.wscale = 8;
+        cfg.wscale = 7;
         cfg.os_name.clear();
-        cfg.os_name.append("Windows 10/11 (Chrome)");
-    } else if browser.kind == wing::ProfileKind.Safari {
-        // macOS Sonoma Safari: TTL=64, Initial Window=65535, DF=1, WScale=6
+        cfg.os_name.append("Raw/None NetStack");
+    } else if p == wing::Profile.Custom {
+        // User-customized L4 socket configuration
         cfg.ttl = 64;
         cfg.window_size = 65535;
         cfg.has_dont_fragment = true;
         cfg.tcp_nodelay = true;
         cfg.mss = 1460;
-        cfg.wscale = 6;
+        cfg.wscale = 8;
         cfg.os_name.clear();
-        cfg.os_name.append("macOS Sonoma (Safari)");
-    } else if browser.kind == wing::ProfileKind.Firefox {
-        // Ubuntu/Linux Firefox: TTL=64, Initial Window=65495, DF=1, WScale=7
-        cfg.ttl = 64;
-        cfg.window_size = 65495;
-        cfg.has_dont_fragment = true;
-        cfg.tcp_nodelay = true;
-        cfg.mss = 1460;
-        cfg.wscale = 7;
-        cfg.os_name.clear();
-        cfg.os_name.append("Linux/Ubuntu (Firefox)");
+        cfg.os_name.append("Custom NetStack");
     } else {
-        // Wing Authentic: TTL=64, Initial Window=65536, DF=1, WScale=8
+        // Wing Authentic: TTL=64, Initial Window=65535, DF=1, WScale=8, TCP_NODELAY=1
         cfg.ttl = 64;
-        cfg.window_size = 65536;
+        cfg.window_size = 65535;
         cfg.has_dont_fragment = true;
         cfg.tcp_nodelay = true;
         cfg.mss = 1460;
@@ -92,22 +82,9 @@ fn p0f_socket_config(browser: const wing::BrowserProfile&) -> SocketP0fProfile {
     return cfg;
 }
 
-// Generates the socket option profile from a ProfileKind enum
-fn p0f_socket_config(kind: wing::ProfileKind) -> SocketP0fProfile {
-    let bp = wing::new_browser_profile(kind);
-    return p0f_socket_config(bp);
-}
-
-// Generates the socket option profile from an active Profile enum
-fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
-    var kind = wing::ProfileKind.Wing;
-    if p == wing::Profile.Custom {
-        kind = wing::ProfileKind.Custom;
-    } else if p == wing::Profile.None {
-        kind = wing::ProfileKind.None;
-    }
-    let bp = wing::new_browser_profile(kind);
-    return p0f_socket_config(bp);
+// Generates the socket option profile corresponding to a ClientProfile
+fn p0f_socket_config(profile: const wing::ClientProfile&) -> SocketP0fProfile {
+    return p0f_socket_config(profile.kind);
 }
 
 // Validates whether the socket profile parameters comply with p0f v3 invariants

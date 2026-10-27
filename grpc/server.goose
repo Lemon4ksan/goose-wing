@@ -42,7 +42,10 @@ fn is_grpc_web_text(ct: const u8[:]) -> bool {
 
 // Inspects an incoming Request to determine if it is a gRPC call
 fn is_grpc_request(req: const Request&) -> bool {
-    let ct = req.header("content-type");
+    var ct = req.header("content-type");
+    if ct.len == 0 {
+        ct = find_header(req.headers[..], "content-type");
+    }
     return ct.len > 0 && is_grpc_content_type(ct);
 }
 
