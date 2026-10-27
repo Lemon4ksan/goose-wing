@@ -1201,6 +1201,7 @@ struct DecodedH2HeaderList {
     has_regular_header: bool = false,
     has_content_length: bool = false,
     content_length_val: i64 = -1,
+    is_trailer: bool = false,
 }
 
 // Validates RFC 9113 Section 8.2.1 header field syntax:
@@ -1428,6 +1429,11 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
 
     let is_pseudo = (name[0] == ':');
     if is_pseudo {
+        // RFC 9113 Section 8.3 & Go #78775: Pseudo-header fields MUST NOT appear in trailer sections.
+        if out.is_trailer {
+            return ERR_PROTOCOL_ERROR;
+        }
+
         // RFC 9113 Section 8.3: Validate that pseudo-header is defined in HTTP/2 spec
         let is_valid_pseudo = (name == ":method" || name == ":scheme" ||
                                name == ":authority" || name == ":path" ||
@@ -1515,7 +1521,7 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
             }
         }
 
-        // RFC 9113 Section 8.3.1 & Go #78762: :path must start with '/' or be '*' for OPTIONS
+        // RFC 9113 Section 8.3.1 & Go #78762, Go #77843: :path must start with '/' or be '*' for OPTIONS
         if name == ":path" {
             guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
             if val.len == 1 && val[0] == '*' {
@@ -1525,6 +1531,13 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
                 }
             } else {
                 guard val[0] == '/' else { return ERR_PROTOCOL_ERROR; }
+                // RFC 9113 Section 8.3.1 & Go #77843: Validate RFC 3986 path characters.
+                // Control chars, space (0x20), DEL (0x7F), and raw < > " \ ^ { | } are forbidden.
+                for b in val {
+                    if b <= 0x20 || b == 0x7F || b == '<' || b == '>' || b == '"' || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}' {
+                        return ERR_PROTOCOL_ERROR;
+                    }
+                }
             }
         }
         if name == ":method" && val != "OPTIONS" {

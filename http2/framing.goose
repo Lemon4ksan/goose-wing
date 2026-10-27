@@ -178,6 +178,22 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
     return ERR_NO_ERROR;
 }
 
+// RFC 9113 Section 6.8 & Go #80759:
+// Validates GOAWAY Last-Stream-ID based on peer stream initiation roles.
+// A client can only acknowledge peer streams (server-initiated: even or 0).
+// A server can only acknowledge peer streams (client-initiated: odd or 0, or 2^31 - 1 for graceful shutdown).
+fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -> bool {
+    let sid = last_stream_id & 0x7FFFFFFF;
+    if sid == 0 {
+        return true;
+    }
+    if sender_is_client {
+        return (sid % 2) == 0;
+    } else {
+        return (sid % 2) != 0;
+    }
+}
+
 // ---- 6. payload extractors & padding validation ----------------------------
 
 // Strips PADDED flag length byte and trailing padding octets from frame payload.

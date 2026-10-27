@@ -322,6 +322,12 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
             return ERR_PROTOCOL_ERROR;
         }
 
+        // RFC 9113 Section 6.8 & Go #82365:
+        // After receiving GOAWAY, any new stream with ID > goaway_last_stream_id must be refused
+        if s.goaway_received && hdr.stream_id > s.goaway_last_stream_id {
+            return ERR_REFUSED_STREAM;
+        }
+
         if s.active_stream_count >= s.max_concurrent_streams {
             s.concurrency_violations++;
             if s.concurrency_violations > MAX_CONCURRENCY_VIOLATIONS {
@@ -417,6 +423,14 @@ fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> 
         }
     }
 
+    return ERR_NO_ERROR;
+}
+
+// RFC 9113 Section 6.8 & Go #82365: Ingests GOAWAY frame (last_stream_id and error_code).
+fn apply_goaway(s: H2Connection&, last_stream_id: u32, error_code: u32) -> u32 {
+    s.goaway_received = true;
+    s.goaway_last_stream_id = last_stream_id & 0x7FFFFFFF;
+    s.goaway_error_code = error_code;
     return ERR_NO_ERROR;
 }
 

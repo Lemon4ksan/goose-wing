@@ -1299,11 +1299,43 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
     return true;
 }
 
+// Checks if a requested subprotocol is present in the comma-separated Sec-WebSocket-Protocol header list (RFC 6455 §4.2.2).
+fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
+    var i: u64 = 0;
+    let n = list.len as u64;
+    while i < n {
+        while i < n && (list[i] == ' ' || list[i] == '\t' || list[i] == ',') {
+            i++;
+        }
+        if i >= n { break; }
+        let start = i;
+        while i < n && list[i] != ',' {
+            i++;
+        }
+        var end = i;
+        while end > start && (list[end - 1] == ' ' || list[end - 1] == '\t') {
+            end--;
+        }
+        let tok = list[start..end];
+        if tok == target {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.
 fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: const u8[:] = "") -> WebSocketSession, bool {
     let method = req.method[..];
     if method != "GET" {
         out_resp.status_code = 405;
+        return WebSocketSession { .. }, false;
+    }
+
+    // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field
+    let host = req.headers.find_header("Host");
+    if host.len == 0 {
+        out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
 
@@ -1342,8 +1374,12 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
 
     var session = new_websocket_session(false);
     if subprotocol.len > 0 && subprotocol.len <= session.subprotocol.cap {
-        out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
-        session.subprotocol.append(subprotocol);
+        // RFC 6455 §4.2.2 item 5: Server MUST only select a subprotocol requested by the client
+        let client_protos = req.headers.find_header("Sec-WebSocket-Protocol");
+        if has_subprotocol_token(client_protos, subprotocol) {
+            out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
+            session.subprotocol.append(subprotocol);
+        }
     }
 
     return session, true;
@@ -1352,6 +1388,9 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
 // Inspects an incoming HTTP Request to determine if it is an RFC 6455 WebSocket Upgrade request
 fn is_websocket_upgrade_request(req: const Request&) -> bool {
     guard req.method[..] == "GET" else { return false; }
+    // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field
+    let host = req.headers.find_header("Host");
+    guard host.len > 0 else { return false; }
     let upg = req.headers.find_header("Upgrade");
     guard core::eq_ascii_fold(upg, "websocket") else { return false; }
     let conn = req.headers.find_header("Connection");
