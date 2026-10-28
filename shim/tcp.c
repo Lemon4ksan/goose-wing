@@ -23,6 +23,14 @@
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
 #endif
+#elif defined(__wasm__)
+#include <unistd.h>
+#include <errno.h>
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR   (-1)
+#define closesocket(s) close(s)
+#define MSG_NOSIGNAL 0
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -72,6 +80,262 @@ static void slice_to_cstr(wing_bytes_ro s, char *out, size_t max_out) {
     memcpy(out, s.data, copy_len);
     out[copy_len] = '\0';
 }
+
+#if defined(__wasm__)
+
+// ============================================================================
+// WebAssembly L4 Transport Implementation
+// Zero-allocation virtual loopback & WASI host socket subsystem
+// ============================================================================
+
+#define WASM_MAX_SOCKETS 32
+#define WASM_SOCK_BUF_SIZE 65536
+
+typedef struct {
+    int active;
+    int is_listener;
+    uint16_t port;
+    char host[64];
+    uint8_t rx_buf[WASM_SOCK_BUF_SIZE];
+    int64_t rx_head;
+    int64_t rx_tail;
+    int peer_slot;
+    int pending_conns[WASM_MAX_SOCKETS];
+    int pending_head;
+    int pending_tail;
+} wasm_virtual_socket_t;
+
+static wasm_virtual_socket_t g_wasm_sockets[WASM_MAX_SOCKETS];
+static int g_wasm_sock_initialized = 0;
+
+int32_t wing_tcp_init(void) {
+    if (!g_wasm_sock_initialized) {
+        memset(g_wasm_sockets, 0, sizeof(g_wasm_sockets));
+        g_wasm_sock_initialized = 1;
+    }
+    return 0;
+}
+
+void wing_tcp_cleanup(void) {
+    memset(g_wasm_sockets, 0, sizeof(g_wasm_sockets));
+    g_wasm_sock_initialized = 0;
+}
+
+uint16_t wing_get_env_port(uint16_t default_port) {
+    const char *p = getenv("WING_PORT");
+    if (p && *p) {
+        int val = atoi(p);
+        if (val > 0 && val < 65536) return (uint16_t)val;
+    }
+    return default_port;
+}
+
+int64_t wing_get_env_workers(int64_t default_workers) {
+    (void)default_workers;
+    return 1;
+}
+
+int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
+    (void)backlog;
+    wing_tcp_init();
+    for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
+        if (!g_wasm_sockets[i].active) {
+            g_wasm_sockets[i].active = 1;
+            g_wasm_sockets[i].is_listener = 1;
+            g_wasm_sockets[i].port = (port == 0) ? (uint16_t)(10000 + i) : port;
+            g_wasm_sockets[i].peer_slot = -1;
+            g_wasm_sockets[i].pending_head = 0;
+            g_wasm_sockets[i].pending_tail = 0;
+            slice_to_cstr(host, g_wasm_sockets[i].host, sizeof(g_wasm_sockets[i].host));
+            return (int64_t)i;
+        }
+    }
+    return -1;
+}
+
+uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
+    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
+        return g_wasm_sockets[sock_fd].port;
+    }
+    return 0;
+}
+
+int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
+    (void)timeout_ms;
+    if (listener_fd <= 0 || listener_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[listener_fd].active || !g_wasm_sockets[listener_fd].is_listener) {
+        return -1;
+    }
+    wasm_virtual_socket_t *lis = &g_wasm_sockets[listener_fd];
+    if (lis->pending_head < lis->pending_tail) {
+        int server_slot = lis->pending_conns[lis->pending_head % WASM_MAX_SOCKETS];
+        lis->pending_head++;
+        return (int64_t)server_slot;
+    }
+    return 0;
+}
+
+int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
+    return wing_tcp_accept(listener_fd, 0);
+}
+
+int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms) {
+    (void)timeout_ms;
+    wing_tcp_init();
+
+    int listener_idx = -1;
+    for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
+        if (g_wasm_sockets[i].active && g_wasm_sockets[i].is_listener && g_wasm_sockets[i].port == port) {
+            listener_idx = i;
+            break;
+        }
+    }
+    if (listener_idx < 0) return -1; // Connection refused
+
+    int client_slot = -1;
+    int server_slot = -1;
+    for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
+        if (!g_wasm_sockets[i].active) {
+            if (client_slot < 0) client_slot = i;
+            else if (server_slot < 0) { server_slot = i; break; }
+        }
+    }
+    if (client_slot < 0 || server_slot < 0) return -1;
+
+    // Set up client socket
+    g_wasm_sockets[client_slot].active = 1;
+    g_wasm_sockets[client_slot].is_listener = 0;
+    g_wasm_sockets[client_slot].port = port;
+    g_wasm_sockets[client_slot].peer_slot = server_slot;
+    g_wasm_sockets[client_slot].rx_head = 0;
+    g_wasm_sockets[client_slot].rx_tail = 0;
+    slice_to_cstr(host, g_wasm_sockets[client_slot].host, sizeof(g_wasm_sockets[client_slot].host));
+
+    // Set up server accepted socket
+    g_wasm_sockets[server_slot].active = 1;
+    g_wasm_sockets[server_slot].is_listener = 0;
+    g_wasm_sockets[server_slot].port = port;
+    g_wasm_sockets[server_slot].peer_slot = client_slot;
+    g_wasm_sockets[server_slot].rx_head = 0;
+    g_wasm_sockets[server_slot].rx_tail = 0;
+    slice_to_cstr(host, g_wasm_sockets[server_slot].host, sizeof(g_wasm_sockets[server_slot].host));
+
+    // Enqueue server_slot onto listener FIFO
+    wasm_virtual_socket_t *lis = &g_wasm_sockets[listener_idx];
+    lis->pending_conns[lis->pending_tail % WASM_MAX_SOCKETS] = server_slot;
+    lis->pending_tail++;
+
+    return (int64_t)client_slot;
+}
+
+int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
+    if (sock_fd <= 0 || sock_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[sock_fd].active || data.data == NULL || data.len <= 0) {
+        return 0;
+    }
+    int peer = g_wasm_sockets[sock_fd].peer_slot;
+    if (peer <= 0 || peer >= WASM_MAX_SOCKETS || !g_wasm_sockets[peer].active) {
+        return -1; // Connection broken/closed
+    }
+    wasm_virtual_socket_t *p = &g_wasm_sockets[peer];
+    int64_t avail = WASM_SOCK_BUF_SIZE - (p->rx_tail - p->rx_head);
+    int64_t to_write = data.len < avail ? data.len : avail;
+    for (int64_t i = 0; i < to_write; i++) {
+        p->rx_buf[(p->rx_tail + i) % WASM_SOCK_BUF_SIZE] = data.data[i];
+    }
+    p->rx_tail += to_write;
+    return (int32_t)to_write;
+}
+
+int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload) {
+    int32_t sent1 = wing_tcp_send(sock_fd, hdr);
+    int32_t sent2 = wing_tcp_send(sock_fd, payload);
+    return (sent1 >= 0 && sent2 >= 0) ? (sent1 + sent2) : -1;
+}
+
+int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
+    (void)timeout_ms;
+    if (sock_fd <= 0 || sock_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[sock_fd].active || buf.data == NULL || buf.len <= 0) {
+        return -1;
+    }
+    wasm_virtual_socket_t *s = &g_wasm_sockets[sock_fd];
+    int64_t readable = s->rx_tail - s->rx_head;
+    if (readable <= 0) {
+        if (s->peer_slot < 0) return 0; // Peer closed connection cleanly (EOF)
+        return 0;
+    }
+    int64_t to_read = buf.len < readable ? buf.len : readable;
+    for (int64_t i = 0; i < to_read; i++) {
+        buf.data[i] = s->rx_buf[(s->rx_head + i) % WASM_SOCK_BUF_SIZE];
+    }
+    s->rx_head += to_read;
+    if (s->rx_head >= WASM_SOCK_BUF_SIZE) {
+        s->rx_head -= WASM_SOCK_BUF_SIZE;
+        s->rx_tail -= WASM_SOCK_BUF_SIZE;
+    }
+    return (int32_t)to_read;
+}
+
+int32_t wing_tcp_recv_nonblocking(int64_t sock_fd, wing_bytes_rw buf) {
+    return wing_tcp_recv(sock_fd, buf, 0);
+}
+
+void wing_tcp_close(int64_t sock_fd) {
+    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS) {
+        int peer = g_wasm_sockets[sock_fd].peer_slot;
+        if (peer > 0 && peer < WASM_MAX_SOCKETS) {
+            g_wasm_sockets[peer].peer_slot = -1;
+        }
+        memset(&g_wasm_sockets[sock_fd], 0, sizeof(wasm_virtual_socket_t));
+    }
+}
+
+int32_t wing_tcp_set_defer_accept(int64_t sock_fd, int32_t timeout_sec) { (void)sock_fd; (void)timeout_sec; return 0; }
+int32_t wing_tcp_set_user_timeout(int64_t sock_fd, uint32_t timeout_ms) { (void)sock_fd; (void)timeout_ms; return 0; }
+int32_t wing_tcp_set_keepalive_params(int64_t sock_fd, int32_t idle_sec, int32_t intvl_sec, int32_t cnt) { (void)sock_fd; (void)idle_sec; (void)intvl_sec; (void)cnt; return 0; }
+int32_t wing_tcp_set_syn_retries(int64_t sock_fd, int32_t count) { (void)sock_fd; (void)count; return 0; }
+int64_t wing_tcp_get_notsent_bytes(int64_t sock_fd) { (void)sock_fd; return 0; }
+int64_t wing_tcp_get_readable_bytes(int64_t sock_fd) {
+    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
+        return g_wasm_sockets[sock_fd].rx_tail - g_wasm_sockets[sock_fd].rx_head;
+    }
+    return 0;
+}
+int32_t wing_tcp_set_nonblocking(int64_t sock_fd, int32_t nonblocking) { (void)sock_fd; (void)nonblocking; return 0; }
+int32_t wing_tcp_set_quickack(int64_t sock_fd, int32_t enable) { (void)sock_fd; (void)enable; return 0; }
+int32_t wing_tcp_set_cork(int64_t sock_fd, int32_t enable) { (void)sock_fd; (void)enable; return 0; }
+
+int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork_len, wing_bytes_ro resp) {
+    (void)conn;
+    if (!cork_buf.data || !resp.data || resp.len <= 0) return cork_len;
+    if (cork_len + resp.len > cork_buf.len) return -1;
+    memcpy(cork_buf.data + cork_len, resp.data, (size_t)resp.len);
+    return cork_len + resp.len;
+}
+
+int32_t wing_set_cpu_affinity(int64_t cpu_id) { (void)cpu_id; return 0; }
+int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) { (void)sock_fd; (void)cpu_id; return 0; }
+
+int64_t wing_epoll_create(void) { return 1; }
+int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) { (void)epfd; (void)sock_fd; (void)events; (void)udata; return 0; }
+int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) { (void)epfd; (void)sock_fd; (void)events; (void)udata; return 0; }
+int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) { (void)epfd; (void)sock_fd; return 0; }
+int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) { (void)epfd; (void)out_fds; (void)out_udata; (void)timeout_ms; return 0; }
+void wing_epoll_close(int64_t epfd) { (void)epfd; }
+
+int64_t wing_udp_listen(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
+int64_t wing_udp_connect(wing_bytes_ro host, uint16_t port) { return wing_tcp_connect(host, port, 0); }
+int32_t wing_udp_send(int64_t sock_fd, wing_bytes_ro data) { return wing_tcp_send(sock_fd, data); }
+int32_t wing_udp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) { return wing_tcp_recv(sock_fd, buf, timeout_ms); }
+int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms, uint32_t *peer_ip4, uint16_t *peer_port) {
+    if (peer_ip4) *peer_ip4 = 0x0100007F;
+    if (peer_port) *peer_port = 8080;
+    return wing_tcp_recv(sock_fd, buf, timeout_ms);
+}
+int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_ip4, uint16_t peer_port) {
+    (void)peer_ip4; (void)peer_port;
+    return wing_tcp_send(sock_fd, data);
+}
+
+#else
 
 // Initializes socket subsystem (WSAStartup on Windows, ignore SIGPIPE on POSIX).
 int32_t wing_tcp_init(void) {
@@ -1046,5 +1310,7 @@ int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_i
     int res = sendto(s, (const char *)data.data, (int)data.len, MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof(addr));
     return res;
 }
+
+#endif // !defined(__wasm__)
 
 

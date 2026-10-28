@@ -163,6 +163,58 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
         let err_huge, _ = wing::decode_chunked_body_with_trailers(huge[..], out_body, out_trailers);
         sub.assert_eq(err_huge, wing::ChunkedDecodeError.DisallowedTrailer, "Trailer > 4096 bytes rejected");
     };
+
+    t.run("RFC 9112 Section 7.1: Chunk size 64-bit integer overflow rejection") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        // 1. 0xffffffffffffffff (16 hex digits: 2^64 - 1, signed overflow)
+        let raw_max = "FFFFFFFFFFFFFFFF\r\nWiki\r\n0\r\n\r\n";
+        let err_max, _ = wing::decode_chunked_body_with_trailers(raw_max, out_body, out_trailers);
+        sub.assert_eq(err_max, wing::ChunkedDecodeError.ChunkSizeOverflow, "0xffffffffffffffff rejected as ChunkSizeOverflow");
+
+        // 2. 0x10000000000000000 (17 hex digits: 2^64 overflow)
+        let raw_17 = "10000000000000000\r\nWiki\r\n0\r\n\r\n";
+        let err_17, _ = wing::decode_chunked_body_with_trailers(raw_17, out_body, out_trailers);
+        sub.assert_eq(err_17, wing::ChunkedDecodeError.ChunkSizeOverflow, "0x10000000000000000 rejected as ChunkSizeOverflow");
+
+        // 3. 7fffffffffffffff + 1 = 8000000000000000 (16 hex digits: signed i64 overflow)
+        let raw_signed = "8000000000000000\r\nWiki\r\n0\r\n\r\n";
+        let err_signed, _ = wing::decode_chunked_body_with_trailers(raw_signed, out_body, out_trailers);
+        sub.assert_eq(err_signed, wing::ChunkedDecodeError.ChunkSizeOverflow, "7fffffffffffffff + 1 rejected as ChunkSizeOverflow");
+
+        // Direct parse_chunk_size_hex unit tests
+        var sz: u64 = 0;
+        let err_p1 = wing::parse_chunk_size_hex("FFFFFFFFFFFFFFFF", sz);
+        sub.assert_eq(err_p1, wing::ChunkedDecodeError.ChunkSizeOverflow, "parse_chunk_size_hex overflows on FFFFFFFFFFFFFFFF");
+
+        let err_p2 = wing::parse_chunk_size_hex("10000000000000000", sz);
+        sub.assert_eq(err_p2, wing::ChunkedDecodeError.ChunkSizeOverflow, "parse_chunk_size_hex overflows on 17 hex digits");
+
+        let err_p3 = wing::parse_chunk_size_hex("8000000000000000", sz);
+        sub.assert_eq(err_p3, wing::ChunkedDecodeError.ChunkSizeOverflow, "parse_chunk_size_hex overflows on 8000000000000000");
+    };
+
+    t.run("RFC 9112 Section 7.1: Leading zeros in chunk size accepted") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        // Chunk size with leading zeros > 16 characters total, but small value
+        let raw_zeros = "00000000000000000004\r\nWiki\r\n00000000000000000000\r\n\r\n";
+        let err_zeros, consumed = wing::decode_chunked_body_with_trailers(raw_zeros, out_body, out_trailers);
+        sub.assert_eq(err_zeros, wing::ChunkedDecodeError.None, "Leading zeros in chunk size decoded successfully");
+        sub.assert_bytes_eq(out_body[..], "Wiki", "Payload reassembled correctly with leading zeros");
+        sub.assert_eq(consumed, raw_zeros.len, "All raw bytes consumed");
+
+        var sz: u64 = 0;
+        let err_p = wing::parse_chunk_size_hex("00000000000000000005", sz);
+        sub.assert_eq(err_p, wing::ChunkedDecodeError.None, "parse_chunk_size_hex accepts leading zeros");
+        sub.assert_eq(sz, 5, "Size parsed as 5");
+
+        let err_p0 = wing::parse_chunk_size_hex("00000000000000000000", sz);
+        sub.assert_eq(err_p0, wing::ChunkedDecodeError.None, "parse_chunk_size_hex accepts leading zeros for zero");
+        sub.assert_eq(sz, 0, "Size parsed as 0");
+    };
 }
 
 // ----------------------------------------------------------------------------

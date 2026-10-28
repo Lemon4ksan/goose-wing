@@ -373,6 +373,45 @@ fn test_cors_policy_and_matching(t: core::T&) {
         let res_code = wing::evaluate_cors(policy, req, res);
         sub.assert_true(res_code == wing::CorsResult.InvalidConfig, "wildcard with allow_credentials rejected with InvalidConfig");
     };
+
+    t.run("CORS Multi-Origin Wildcard with Credentials Rejection (Fetch §3.2.2)") { sub =>
+        var policy = wing::new_cors_policy();
+        wing::add_allowed_origin(policy, "https://portal.example.com");
+        wing::add_allowed_origin(policy, "*");
+        policy.allow_credentials = true; // Illegal per Fetch spec §3.2.2 even if multiple origins present
+
+        var req = wing::new_request("GET", "/api/data");
+        req.headers.push(wing::make_header("Origin", "https://portal.example.com"));
+
+        var res = wing::new_response();
+        let res_code = wing::evaluate_cors(policy, req, res);
+        sub.assert_true(res_code == wing::CorsResult.InvalidConfig, "wildcard in multi-origin with allow_credentials rejected with InvalidConfig");
+    };
+
+    t.run("CORS Null Origin & Sandboxed Iframe Rejection (RFC 6454)") { sub =>
+        // 1. Wildcard policy without credentials must NOT match Origin: null (sandboxed iframe / data: URI bypass)
+        var wild_policy = wing::new_cors_policy();
+        wing::add_allowed_origin(wild_policy, "*");
+        wild_policy.allow_credentials = false;
+
+        var iframe_req = wing::new_request("GET", "/api/data");
+        iframe_req.headers.push(wing::make_header("Origin", "null"));
+        var iframe_res = wing::new_response();
+        let wild_null_code = wing::evaluate_cors(wild_policy, iframe_req, iframe_res);
+        sub.assert_true(wild_null_code == wing::CorsResult.RejectedOrigin, "Origin: null rejected against wildcard pattern");
+        sub.assert_false(iframe_res.has_header("Access-Control-Allow-Origin"), "never reflect Access-Control-Allow-Origin: null");
+
+        // 2. Case-insensitive "NULL" rejection when allow_credentials is true
+        var cred_policy = wing::new_cors_policy();
+        wing::add_allowed_origin(cred_policy, "https://app.example.com");
+        cred_policy.allow_credentials = true;
+
+        var upper_null_req = wing::new_request("GET", "/api/user");
+        upper_null_req.headers.push(wing::make_header("Origin", "NULL"));
+        var upper_null_res = wing::new_response();
+        let upper_code = wing::evaluate_cors(cred_policy, upper_null_req, upper_null_res);
+        sub.assert_true(upper_code == wing::CorsResult.RejectedOrigin, "Origin: NULL rejected when credentials enabled");
+    };
 }
 
 // ----------------------------------------------------------------------------

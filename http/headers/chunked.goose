@@ -74,18 +74,30 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
     }
 
     let hex_len = cursor;
-    guard hex_len > 0 && hex_len <= 16 else {
+    guard hex_len > 0 else {
         return ChunkedDecodeError.InvalidChunkSizeHex;
     }
 
-    let hex_slice = chunk_size_line[..hex_len];
+    // RFC 9112 Section 7.1: Strip leading zeros (chunk-size = 1*HEXDIG)
+    var sig_start: i64 = 0;
+    while sig_start < hex_len && chunk_size_line[sig_start] == '0' {
+        sig_start++;
+    }
+
+    let sig_len = hex_len - sig_start;
+    // If significant hex digits exceed 16, chunk size strictly exceeds 64-bit integer range
+    if sig_len > 16 {
+        return ChunkedDecodeError.ChunkSizeOverflow;
+    }
+
     var chunk_size: u64 = 0;
-    for b in hex_slice {
+    for b in chunk_size_line[sig_start..hex_len] {
         let val = core::hex_digit_to_val(b);
         guard val >= 0 else {
             return ChunkedDecodeError.InvalidChunkSizeHex;
         }
-        if chunk_size > 0x0FFFFFFFFFFFFFFF {
+        // RFC 9112 §7.1: Reject chunks larger than internal representation (signed 63-bit / 0x7FFFFFFFFFFFFFFF)
+        if chunk_size > 0x07FFFFFFFFFFFFFF {
             return ChunkedDecodeError.ChunkSizeOverflow;
         }
         chunk_size = (chunk_size << 4) | (val as! u64);
@@ -305,11 +317,8 @@ fn decode_chunked_body_with_trailers(
             return tr_err, 0;
         }
 
-        // Guard 64-bit signed cast & addition overflow (e.g. FFFFFFFFFFFFFFFF\r\n)
+        // Chunk size must fit within raw input buffer
         guard chunk_size <= (raw.len as u64) else {
-            if chunk_size > 0x7FFFFFFFFFFFFFF0 {
-                return ChunkedDecodeError.ChunkSizeOverflow, 0;
-            }
             return ChunkedDecodeError.UnexpectedEof, 0;
         }
         let csize = chunk_size as! i64;

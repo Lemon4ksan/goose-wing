@@ -181,8 +181,15 @@ fn test_if_range_and_seconds_truncation(t: core::T&) {
         sub.assert_true(ok_strong, "Strong ETag match succeeds");
 
         // Weak ETag MUST NEVER match in If-Range per RFC 9110 Section 13.1.5
-        let bad_weak = wing::evaluate_if_range("W/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
-        sub.assert_false(bad_weak, "Weak ETag forbidden in If-Range");
+        let bad_weak1 = wing::evaluate_if_range("W/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
+        sub.assert_false(bad_weak1, "Weak ETag forbidden in If-Range");
+
+        let bad_weak2 = wing::evaluate_if_range("w/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
+        sub.assert_false(bad_weak2, "Lowercase weak ETag forbidden in If-Range");
+
+        // Resource ETag being weak is also forbidden per RFC 9110 Section 13.1.5
+        let bad_weak3 = wing::evaluate_if_range("\"strong-etag-1\"", "W/\"strong-etag-1\"", file_time);
+        sub.assert_false(bad_weak3, "Weak target representation ETag forbidden in If-Range");
     };
 
     t.run("HTTP-Date Seconds Truncation for Filesystem Timestamps") { sub =>
@@ -246,6 +253,63 @@ fn test_serve_range_and_patch_validation(t: core::T&) {
     };
 }
 
+fn test_boundary_delimiter_and_disposition_invariants(t: core::T&) {
+    t.run("Incomplete Final Boundary Delimiter (Missing Closing Dashes) Rejected") { sub =>
+        // Truncated payload ends with intermediate delimiter --bnd\r\n without closing '--'
+        let boundary = "IncompBnd";
+        var body: u8[>..] = [];
+        body.append("--IncompBnd\r\n");
+        body.append("Content-Disposition: form-data; name=\"field\"\r\n\r\n");
+        body.append("data\r\n");
+        body.append("--IncompBnd\r\n");
+
+        let msg, err = wing::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, wing::MultipartError.PrematureEOF, "Truncated payload without closing dashes rejected as PrematureEOF");
+        sub.assert_false(msg.valid, "Message marked invalid");
+    };
+
+    t.run("Part Body Containing Boundary Collision Substring Preserved Intact") { sub =>
+        // Body contains --bnd--invalid_suffix which must NOT be treated as closing delimiter
+        let boundary = "SafeBnd";
+        var body: u8[>..] = [];
+        body.append("--SafeBnd\r\n");
+        body.append("Content-Disposition: form-data; name=\"upload\"\r\n\r\n");
+        body.append("pre\r\n--SafeBnd--not_close\r\npost\r\n");
+        body.append("--SafeBnd--\r\n");
+
+        let msg, err = wing::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, wing::MultipartError.None, "Payload with inner --bnd--collision parsed cleanly");
+        sub.assert_true(msg.valid, "Message valid");
+        sub.assert_eq(msg.parts.len, 1, "Exactly 1 part extracted");
+        sub.assert_bytes_eq(msg.parts[0].data, "pre\r\n--SafeBnd--not_close\r\npost", "Body containing false boundary suffix preserved intact");
+    };
+
+    t.run("RFC 7578 Section 4.2 Content-Disposition form-data Enforcement") { sub =>
+        let boundary = "DispBnd";
+        // Part 1: disposition-type is 'attachment' instead of 'form-data'
+        var bad_body: u8[>..] = [];
+        bad_body.append("--DispBnd\r\n");
+        bad_body.append("Content-Disposition: attachment; filename=\"file.bin\"\r\n\r\n");
+        bad_body.append("bytes\r\n");
+        bad_body.append("--DispBnd--\r\n");
+
+        let msg1, err1 = wing::parse_multipart(bad_body[..], boundary);
+        sub.assert_eq(err1, wing::MultipartError.InvalidPartHeaders, "Non-form-data Content-Disposition rejected");
+        sub.assert_false(msg1.valid, "Message marked invalid");
+
+        // Part 2: Malformed Content-Disposition header with unclosed quote
+        var malformed_body: u8[>..] = [];
+        malformed_body.append("--DispBnd\r\n");
+        malformed_body.append("Content-Disposition: form-data; name=\"unclosed\r\n\r\n");
+        malformed_body.append("bytes\r\n");
+        malformed_body.append("--DispBnd--\r\n");
+
+        let msg2, err2 = wing::parse_multipart(malformed_body[..], boundary);
+        sub.assert_eq(err2, wing::MultipartError.InvalidPartHeaders, "Malformed Content-Disposition header rejected");
+        sub.assert_false(msg2.valid, "Message marked invalid on malformed disposition");
+    };
+}
+
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
@@ -257,6 +321,7 @@ fn main() {
     core::run_case(runner, "4. CVE-2011-3192 Apache Killer Defense & Coalescing", test_cve_2011_3192_apache_killer_and_coalescing);
     core::run_case(runner, "5. If-Range & Seconds Truncation", test_if_range_and_seconds_truncation);
     core::run_case(runner, "6. Window Reader serve_range & Byte-Range PATCH", test_serve_range_and_patch_validation);
+    core::run_case(runner, "7. Boundary Delimiters & RFC 7578 Disposition Enforcement", test_boundary_delimiter_and_disposition_invariants);
 
     let ok = core::finish(runner);
     assert(ok);

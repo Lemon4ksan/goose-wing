@@ -47,6 +47,11 @@ fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bo
     let pat = trim_lws(pattern);
     guard cand.len > 0 && pat.len > 0 else { return false; }
 
+    // RFC 6454 / Fetch §3.2.2: Opaque origin "null" MUST NOT match wildcard '*' or subdomain patterns
+    if eq_ascii_fold(cand, "null") {
+        return eq_ascii_fold(pat, "null");
+    }
+
     if pat == "*" || eq_ascii_fold(cand, pat) {
         return true;
     }
@@ -70,8 +75,8 @@ fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool
     let clean_origin = trim_lws(origin_str);
     guard clean_origin.len > 0 else { return false; }
 
-    // Disallow "null" origin when credentials are enabled
-    if policy.allow_credentials && clean_origin == "null" {
+    // Disallow "null" origin when credentials are enabled (RFC 6454 / Fetch §3.2.2)
+    if policy.allow_credentials && eq_ascii_fold(clean_origin, "null") {
         return false;
     }
 
@@ -88,15 +93,15 @@ fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool
     return false;
 }
 
-// Returns true if the policy configures only wildcard '*' origins.
-fn has_only_wildcard_origin(policy: const CorsPolicy&) -> bool {
+// Returns true if the policy configures any wildcard '*' origins.
+fn has_wildcard_origin(policy: const CorsPolicy&) -> bool {
     guard policy.allowed_origins.len > 0 else { return false; }
     for idx in policy.allowed_origins.len {
-        if policy.allowed_origins[idx][..] != "*" {
-            return false;
+        if policy.allowed_origins[idx][..] == "*" {
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 // Populates preflight response headers and sets 204 No Content status.
@@ -124,8 +129,8 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
     let origin = trim_lws(origin_raw);
     guard origin.len > 0 else { return CorsResult.NoCors; }
 
-    // Check configuration validity: allow_credentials == true with only "*" origin is invalid
-    if policy.allow_credentials && has_only_wildcard_origin(policy) {
+    // Check configuration validity: allow_credentials == true with wildcard "*" origin is invalid (Fetch §3.2.2)
+    if policy.allow_credentials && has_wildcard_origin(policy) {
         return CorsResult.InvalidConfig;
     }
 
@@ -133,8 +138,8 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
         return CorsResult.RejectedOrigin;
     }
 
-    let is_single_wildcard = policy.allowed_origins.len == 1 && policy.allowed_origins[0][..] == "*";
-    let allow_origin_val = if !policy.allow_credentials && is_single_wildcard { "*" } else { origin };
+    let is_wildcard_allow = !policy.allow_credentials && has_wildcard_origin(policy);
+    let allow_origin_val = if is_wildcard_allow { "*" } else { origin };
     res.headers.set_header("Access-Control-Allow-Origin", allow_origin_val);
 
     if policy.allow_credentials {

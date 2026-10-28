@@ -122,19 +122,32 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
 // Parses a multipart/form-data payload according to RFC 7578 and RFC 2046.
 //
 // The boundary must be between 1 and 70 ASCII characters (RFC 2046 Section 5.1.1).
+// Validates delimiter line endings and closing dashes per RFC 2046 Section 5.1.1.
+fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
+    var pad_idx = pos;
+    while pad_idx < body.len && (body[pad_idx] == ' ' || body[pad_idx] == '\t') {
+        pad_idx++;
+    }
+    if pad_idx + 2 <= body.len && body[pad_idx] == '-' && body[pad_idx + 1] == '-' {
+        var close_idx = pad_idx + 2;
+        while close_idx < body.len && (body[close_idx] == ' ' || body[close_idx] == '\t') {
+            close_idx++;
+        }
+        return close_idx == body.len ||
+               (close_idx + 2 <= body.len && body[close_idx] == '\r' && body[close_idx + 1] == '\n') ||
+               (close_idx < body.len && body[close_idx] == '\n');
+    }
+    return (pad_idx + 2 <= body.len && body[pad_idx] == '\r' && body[pad_idx + 1] == '\n') ||
+           (pad_idx < body.len && body[pad_idx] == '\n');
+}
+
 fn find_initial_boundary(body: const u8[:], init_delim: const u8[:]) -> i64 {
     var cursor: i64 = 0;
     while cursor + init_delim.len <= body.len {
         if body[cursor..cursor + init_delim.len] == init_delim[..] {
             if cursor == 0 || body[cursor - 1] == '\n' {
                 let post_init = cursor + init_delim.len;
-                var pad_init = post_init;
-                while pad_init < body.len && (body[pad_init] == ' ' || body[pad_init] == '\t') {
-                    pad_init++;
-                }
-                if (pad_init + 2 <= body.len && body[pad_init] == '-' && body[pad_init + 1] == '-') ||
-                   (pad_init + 2 <= body.len && body[pad_init] == '\r' && body[pad_init + 1] == '\n') ||
-                   (pad_init < body.len && body[pad_init] == '\n') {
+                if is_valid_delimiter_suffix(body, post_init) {
                     return cursor;
                 }
             }
@@ -169,13 +182,7 @@ fn find_next_boundary_delim(body: const u8[:], cursor: i64, part_delim: const u8
             return -1;
         }
         let post_pos = found + part_delim.len;
-        var pad_pos = post_pos;
-        while pad_pos < body.len && (body[pad_pos] == ' ' || body[pad_pos] == '\t') {
-            pad_pos++;
-        }
-        if (pad_pos + 2 <= body.len && body[pad_pos] == '-' && body[pad_pos + 1] == '-') ||
-           (pad_pos + 2 <= body.len && body[pad_pos] == '\r' && body[pad_pos + 1] == '\n') ||
-           (pad_pos < body.len && body[pad_pos] == '\n') {
+        if is_valid_delimiter_suffix(body, post_pos) {
             return found;
         }
         search_pos = found + 1;
@@ -187,14 +194,13 @@ fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) 
     let disp_raw = get_header(part_headers, "content-disposition");
     if disp_raw.len > 0 {
         let mt, mt_ok = parse_content_disposition(disp_raw);
-        if mt_ok {
-            let p_name = param(mt, "name");
-            guard p_name.len <= part.name.cap else { return false; }
-            part.name.append(p_name);
-            let p_fn = param(mt, "filename");
-            guard p_fn.len <= part.filename.cap else { return false; }
-            part.filename.append(p_fn);
-        }
+        guard mt_ok && eq_ascii_fold(mt.type_name[..], "form-data") else { return false; }
+        let p_name = param(mt, "name");
+        guard p_name.len <= part.name.cap else { return false; }
+        part.name.append(p_name);
+        let p_fn = param(mt, "filename");
+        guard p_fn.len <= part.filename.cap else { return false; }
+        part.filename.append(p_fn);
     }
     let ct_raw = get_header(part_headers, "content-type");
     if ct_raw.len > 0 {
@@ -241,6 +247,7 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     cursor += init_delim.len;
 
     var total_memory_used: i64 = 0;
+    var has_closing_delimiter = false;
 
     while cursor < body.len {
         while cursor < body.len && (body[cursor] == ' ' || body[cursor] == '\t') {
@@ -248,7 +255,16 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
         }
 
         if cursor + 2 <= body.len && body[cursor] == '-' && body[cursor + 1] == '-' {
-            break; // Closing boundary "--" reached
+            var check_pos = cursor + 2;
+            while check_pos < body.len && (body[check_pos] == ' ' || body[check_pos] == '\t') {
+                check_pos++;
+            }
+            if check_pos == body.len ||
+               (check_pos + 2 <= body.len && body[check_pos] == '\r' && body[check_pos + 1] == '\n') ||
+               (check_pos < body.len && body[check_pos] == '\n') {
+                has_closing_delimiter = true;
+                break; // Valid closing boundary reached
+            }
         }
 
         if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
@@ -256,6 +272,11 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
         } else if cursor < body.len && body[cursor] == '\n' {
             cursor += 1;
         } else {
+            msg.valid = false;
+            return msg, MultipartError.PrematureEOF;
+        }
+
+        guard cursor < body.len else {
             msg.valid = false;
             return msg, MultipartError.PrematureEOF;
         }
@@ -324,6 +345,11 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
         msg.parts.push(part);
 
         cursor = next_delim_pos + part_delim.len;
+    }
+
+    guard has_closing_delimiter else {
+        msg.valid = false;
+        return msg, MultipartError.PrematureEOF;
     }
 
     msg.valid = true;
@@ -581,9 +607,12 @@ fn evaluate_if_range(
     let trimmed = trim_lws(if_range_header);
     guard trimmed.len > 0 else { return false; }
 
-    // If strong ETag (starts with '"' and ends with '"', not weak W/"...")
+    // RFC 9110 Section 13.1.5: Weak ETags are strictly forbidden in If-Range
+    guard !starts_with_fold(trimmed, "w/") else { return false; }
+    guard !starts_with_fold(etag, "w/") else { return false; }
+
+    // If strong ETag (starts with '"' and ends with '"')
     if trimmed[0] == '"' && trimmed[trimmed.len - 1] == '"' {
-        guard !starts_with_fold(trimmed, "w/") else { return false; } // Weak ETags forbidden
         return trimmed == etag;
     }
 
