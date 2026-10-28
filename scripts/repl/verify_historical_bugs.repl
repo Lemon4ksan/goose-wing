@@ -120,3 +120,46 @@ fn scan_is_cte_header(addr: i32, len: i32) -> i32 {
 # Pre-load lowercase "content-transfer-encoding" at 2048
 :pkt 2048 "content-transfer-encoding"
 :assert scan_is_cte_header(EDGE_ADDR, EDGE_LEN) == 1
+
+# 6. Injects Transfer-Encoding value at page edge
+# "gzip, chunked"
+:pkt_edge 677a69702c206368756e6b6564
+
+:assert EDGE_LEN == 13
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation validator verifying that final coding in comma-separated list is "chunked"
+fn scan_final_coding_is_chunked(addr: i32, len: i32) -> i32 {
+    if len < 7 { return 0; }
+    var last_comma: i32 = -1;
+    var i: i32 = 0;
+    while i < len {
+        if load_u8(addr + i) == 44 { last_comma = i; } // ','
+        i += 1;
+    }
+    var start = if last_comma >= 0 { last_comma + 1 } else { 0 };
+    while start < len && (load_u8(addr + start) == 32 || load_u8(addr + start) == 9) {
+        start += 1;
+    }
+    var end = len;
+    while end > start && (load_u8(addr + end - 1) == 32 || load_u8(addr + end - 1) == 9) {
+        end -= 1;
+    }
+    let piece_len = end - start;
+    if piece_len != 7 { return 0; }
+    // "chunked" is 7 bytes
+    if load_u8(addr + start) != 99 { return 0; }     // 'c'
+    if load_u8(addr + start + 1) != 104 { return 0; } // 'h'
+    if load_u8(addr + start + 2) != 117 { return 0; } // 'u'
+    if load_u8(addr + start + 3) != 110 { return 0; } // 'n'
+    if load_u8(addr + start + 4) != 107 { return 0; } // 'k'
+    if load_u8(addr + start + 5) != 101 { return 0; } // 'e'
+    if load_u8(addr + start + 6) != 100 { return 0; } // 'd'
+    return 1;
+}
+
+:assert scan_final_coding_is_chunked(EDGE_ADDR, EDGE_LEN) == 1
+
+# Invalid non-final chunked at page edge: "chunked, gzip"
+:pkt_edge 6368756e6b65642c20677a6970
+:assert scan_final_coding_is_chunked(EDGE_ADDR, EDGE_LEN) == 0

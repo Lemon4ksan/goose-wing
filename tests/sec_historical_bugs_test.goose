@@ -265,6 +265,106 @@ fn test_openssl_33428_ech_alpn_isolation(t: core::T&) {
     };
 }
 
+fn test_openssl_33332_redirect_sensitive_header_purging(t: core::T&) {
+    t.run("OpenSSL #33332 & Go #82350: Cross-origin redirect strips sensitive headers and Host") { sub =>
+        var headers: wing::HeaderItem[..32] = [];
+        headers.push(wing::make_header("Authorization", "Bearer secret-token"));
+        headers.push(wing::make_header("Cookie", "session=xyz123"));
+        headers.push(wing::make_header("X-Api-Key", "super-secret-key"));
+        headers.push(wing::make_header("Host", "api.bank.com"));
+        headers.push(wing::make_header("X-Custom-Data", "regular-value"));
+
+        var rinfo = wing::RedirectInfo {
+            is_cross_origin: true,
+            is_scheme_downgrade: false,
+            is_port_changed: false,
+            ..
+        };
+
+        wing::sanitize_headers_on_redirect(headers, rinfo, false, false, false, false);
+
+        sub.assert_false(wing::has_header(headers[..], "Authorization"), "Authorization must be stripped on cross-origin redirect");
+        sub.assert_false(wing::has_header(headers[..], "Cookie"), "Cookie must be stripped on redirect");
+        sub.assert_false(wing::has_header(headers[..], "X-Api-Key"), "X-Api-Key must be stripped on cross-origin redirect");
+        sub.assert_false(wing::has_header(headers[..], "Host"), "Stale Host header must be stripped on cross-origin redirect (Go #82350)");
+        sub.assert_true(wing::has_header(headers[..], "X-Custom-Data"), "Non-sensitive custom header must be preserved");
+    };
+
+    t.run("CVE-2018-1000007: Scheme downgrade (HTTPS -> HTTP) strips credentials even to trusted host") { sub =>
+        var headers: wing::HeaderItem[..32] = [];
+        headers.push(wing::make_header("Authorization", "Basic dXNlcjpwYXNz"));
+        headers.push(wing::make_header("X-Custom", "safe"));
+
+        var rinfo = wing::RedirectInfo {
+            is_cross_origin: false,
+            is_scheme_downgrade: true,
+            is_port_changed: false,
+            ..
+        };
+
+        // trusted_location_forwarding = true
+        wing::sanitize_headers_on_redirect(headers, rinfo, false, false, false, true);
+
+        sub.assert_false(wing::has_header(headers[..], "Authorization"), "Scheme downgrade MUST strip credentials even if host is trusted");
+        sub.assert_true(wing::has_header(headers[..], "X-Custom"), "Non-sensitive header preserved");
+    };
+}
+
+fn test_uweb_1941_chained_transfer_encoding_validation(t: core::T&) {
+    t.run("uWS #1941 / #1943 & RFC 9112 §6.1: Valid chained transfer codings ending in chunked") { sub =>
+        sub.assert_true(wing::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
+        sub.assert_true(wing::validate_transfer_encoding_value("gzip, chunked"), "gzip, chunked is valid");
+        sub.assert_true(wing::validate_transfer_encoding_value("identity, chunked"), "identity, chunked is valid");
+        sub.assert_true(wing::validate_transfer_encoding_value("deflate, gzip, chunked"), "deflate, gzip, chunked is valid");
+    };
+
+    t.run("uWS #1941 / #1943: Rejection of invalid transfer codings or non-final chunked") { sub =>
+        sub.assert_false(wing::validate_transfer_encoding_value("chunked, gzip"), "chunked before gzip MUST be rejected");
+        sub.assert_false(wing::validate_transfer_encoding_value("gzip, chunked,"), "Trailing comma MUST be rejected");
+        sub.assert_false(wing::validate_transfer_encoding_value("chunked, chunked"), "Duplicate chunked MUST be rejected");
+        sub.assert_false(wing::validate_transfer_encoding_value("identity"), "Missing chunked MUST be rejected");
+    };
+}
+
+fn test_cve_2026_42507_diagnostic_log_injection_defense(t: core::T&) {
+    t.run("CVE-2026-42507 & Go #79346: Escapes CRLF and control characters in untrusted tokens") { sub =>
+        var out: u8[..128] = [];
+        wing::escape_diagnostic_control_chars("admin\r\nSet-Cookie: pwn=1\x00\x1b", out);
+
+        sub.assert_false(core::contains_byte(out[..], 13), "Raw CR (13) must not be present in output");
+        sub.assert_false(core::contains_byte(out[..], 10), "Raw LF (10) must not be present in output");
+        sub.assert_false(core::contains_byte(out[..], 0), "Raw NUL (0) must not be present in output");
+        sub.assert_true(core::index_of_slice(out[..], "\\r\\n") >= 0, "CRLF properly escaped as literal '\\r\\n'");
+    };
+}
+
+fn test_h2_window_update_and_settings_cpu_limits(t: core::T&) {
+    t.run("RFC 9113 §6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
+        var conn = wing::new_h2_connection(0, 8192, false);
+
+        // Increment > 2^31 - 1 is a PROTOCOL_ERROR
+        let err_proto = wing::apply_window_update(conn, 0, (wing::MAX_INITIAL_WINDOW_SIZE as u32) + 1);
+        sub.assert_eq(err_proto, wing::ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
+
+        // Increment pushing window past 2^31 - 1 is a FLOW_CONTROL_ERROR
+        let err_flow = wing::apply_window_update(conn, 0, wing::MAX_INITIAL_WINDOW_SIZE as u32);
+        sub.assert_eq(err_flow, wing::ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
+    };
+
+    t.run("CVE-2026-78669 & Go #81742: Excessive repeated INITIAL_WINDOW_SIZE changes throttled") { sub =>
+        var conn = wing::new_h2_connection(0, 8192, false);
+
+        for i in 16 {
+            let res = wing::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
+            sub.assert_eq(res, wing::ERR_NO_ERROR, "First 16 window updates succeed");
+        }
+
+        // 17th update triggers ENHANCE_YOUR_CALM defense
+        let res_17 = wing::apply_peer_initial_window_size_delta(conn, 65535);
+        sub.assert_eq(res_17, wing::ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -277,6 +377,10 @@ fn main() {
     core::run_case(runner, "7. Go #66434 / RFC 7578 §4.7: Content-Transfer-Encoding Rejection", test_go_66434_content_transfer_encoding_rejection);
     core::run_case(runner, "8. uWS #1662 / Autobahn 6.x: Streaming UTF-8 Chunk Boundaries", test_uwebsockets_1662_streaming_utf8_continuation);
     core::run_case(runner, "9. OpenSSL #33428: ECH Outer vs Inner ALPN Strict Isolation", test_openssl_33428_ech_alpn_isolation);
+    core::run_case(runner, "10. OpenSSL #33332 & Go #82350: Redirect Sensitive Header Purging", test_openssl_33332_redirect_sensitive_header_purging);
+    core::run_case(runner, "11. uWS #1941: Chained Transfer-Encoding List & Chunked Finality", test_uweb_1941_chained_transfer_encoding_validation);
+    core::run_case(runner, "12. CVE-2026-42507: Diagnostic Log CRLF & Control Escaping", test_cve_2026_42507_diagnostic_log_injection_defense);
+    core::run_case(runner, "13. RFC 9113 & CVE-2026-78669: H2 Window Bounds & Throttling", test_h2_window_update_and_settings_cpu_limits);
 
     let ok = core::finish(runner);
     assert(ok);
