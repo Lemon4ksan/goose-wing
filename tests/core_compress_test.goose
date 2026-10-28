@@ -918,7 +918,157 @@ fn test_zstandard_rfc8878(t: core::T&) {
             sub.assert_eq(decompressed[..], payload, "Decompressed bytes must match original verbatim");
         }
     };
-}
+
+    t.run("RFC 8878 Block Header Validation & Return Code Conformance") { sub =>
+        // Vector 1: Reserved block type (Block_Type = 3) must return InvalidBlockType
+        let invalid_block_type_frame: u8[9] = [
+            0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x00, 0x07, 0x00, 0x00,
+        ];
+        var out1: u8[>..] = [];
+        let ok1, err1 = core::zstd_decompress(invalid_block_type_frame[..], out1);
+        sub.assert_false(ok1, "Reserved block type 3 must be rejected");
+        sub.assert_eq(err1, core::CompressError.InvalidBlockType, "Must return InvalidBlockType");
+
+        // Vector 2: Block_Size exceeding Window_Size (RFC 8878 §3.1.1.2.4)
+        // Multi-segment frame with Window_Size = 1 KB (WD = 0x00), but Block_Size = 2048
+        var invalid_block_size_frame: u8[>..] = [];
+        let prefix: u8[9] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00, 0x01, 0x40, 0x00];
+        invalid_block_size_frame.append(prefix[..]);
+        for i in 2048 {
+            invalid_block_size_frame.push(0x55);
+        }
+        var out2: u8[>..] = [];
+        let ok2, err2 = core::zstd_decompress(invalid_block_size_frame[..], out2);
+        sub.assert_false(ok2, "Block_Size exceeding Window_Size must be rejected");
+        sub.assert_eq(err2, core::CompressError.CorruptedBitstream, "Must return CorruptedBitstream when Block_Size > Block_Maximum_Size");
+
+        // Vector 3: Reserved bit in Frame_Header_Descriptor must return InvalidHeader
+        let invalid_fhd_frame: u8[9] = [
+            0x28, 0xB5, 0x2F, 0xFD, 0x28, 0x00, 0x01, 0x00, 0x00,
+        ];
+        var out3: u8[>..] = [];
+        let ok3, err3 = core::zstd_decompress(invalid_fhd_frame[..], out3);
+        sub.assert_false(ok3, "Reserved bit in FHD must be rejected");
+        sub.assert_eq(err3, core::CompressError.InvalidHeader, "Must return InvalidHeader");
+    };
+
+    t.run("RFC 8878 Sliding Window, Quota Defense & Pre-existing Buffer Isolation") { sub =>
+        // Vector 1: Relative quota enforcement with pre-existing buffer contents
+        let message = "Testing relative quota calculation with pre-existing buffer content.";
+        var wire: u8[>..] = [];
+        core::zstd_compress(message, wire, false);
+
+        var restored: u8[>..] = [];
+        for i in 100 {
+            restored.push(0xAA);
+        }
+        let quota = message.len as i64;
+        let ok_d, err_d = core::zstd_decompress_with_limit(wire[..], restored, quota);
+        sub.assert_true(ok_d, "Decompress with quota matching payload size must succeed even if out_buf already contains data");
+        sub.assert_eq(err_d, core::CompressError.None, "Must succeed with None");
+        sub.assert_eq(restored.len, 100 + message.len, "Length must be 100 + message.len");
+        sub.assert_eq(restored[100..], message, "Appended data must match message");
+
+        // Vector 2: RLE block exceeding output quota must return OutputBufferOverflow
+        let rle_frame: u8[10] = [
+            0x28, 0xB5, 0x2F, 0xFD,
+            0x00,
+            0x00,
+            0xA3, 0x0F, 0x00,
+            0x42,
+        ];
+        var out_rle: u8[>..] = [];
+        let ok_rle, err_rle = core::zstd_decompress_with_limit(rle_frame[..], out_rle, 200);
+        sub.assert_false(ok_rle, "RLE block exceeding quota must fail");
+        sub.assert_eq(err_rle, core::CompressError.OutputBufferOverflow, "Must return OutputBufferOverflow");
+
+        // Vector 3: Cross-frame / pre-existing buffer boundary isolation
+        // Craft a 2-block frame: Block 1 is raw (100 bytes), Block 2 is compressed with 1 sequence referencing offset=2045
+        var frame_leak: u8[>..] = [];
+        let hdr_leak: u8[6] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+        frame_leak.append(hdr_leak[..]);
+        // Block 1 header: Last=0, Type=0 (Raw), Size=100 -> 0x20, 0x03, 0x00
+        let blk1_hdr: u8[3] = [0x20, 0x03, 0x00];
+        frame_leak.append(blk1_hdr[..]);
+        for i in 100 {
+            frame_leak.push(0x58);
+        }
+        // Block 2 header: Last=1, Type=2 (Compressed), Size=8 -> 0x45, 0x00, 0x00
+        let blk2_hdr: u8[3] = [0x45, 0x00, 0x00];
+        frame_leak.append(blk2_hdr[..]);
+        // Block 2 payload: lit_hdr(0x00), nb_seq=1(0x01), modes=0x54, ll=0, of=11(0x0B), ml=0, seq_bits=[0x00, 0x80]
+        let blk2_payload: u8[8] = [0x00, 0x01, 0x54, 0x00, 0x0B, 0x00, 0x00, 0x80];
+        frame_leak.append(blk2_payload[..]);
+
+        var pre_buf: u8[>..] = [];
+        for i in 5000 {
+            pre_buf.push(0x7F);
+        }
+        let ok_leak, err_leak = core::zstd_decompress(frame_leak[..], pre_buf);
+        sub.assert_false(ok_leak, "Sequence offset pointing before frame_start_out into pre-existing buffer must be rejected");
+        sub.assert_eq(err_leak, core::CompressError.DistanceOutOfBounds, "Must return DistanceOutOfBounds for pre-frame cross-boundary reference");
+    };
+
+    t.run("RFC 8878 Repeat Offset Edge Cases & 4-Stream Huffman Integrity") { sub =>
+        // Vector 1: Repeat offset 3 when lit_len == 0 and rep0 == 1 evaluates to 0 (RFC 8878 §3.1.1.5)
+        var frame_rep0: u8[>..] = [];
+        let hdr_rep0: u8[6] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+        frame_rep0.append(hdr_rep0[..]);
+        // Block 1 header: Last=0, Type=0 (Raw), Size=50 -> 0x90, 0x01, 0x00
+        let b1_hdr: u8[3] = [0x90, 0x01, 0x00];
+        frame_rep0.append(b1_hdr[..]);
+        for i in 50 {
+            frame_rep0.push(0x41);
+        }
+        // Block 2 header: Last=1, Type=2 (Compressed), Size=8 -> 0x45, 0x00, 0x00
+        let b2_hdr: u8[3] = [0x45, 0x00, 0x00];
+        frame_rep0.append(b2_hdr[..]);
+        // Block 2 payload: lit_hdr(0x00), nb_seq=1(0x01), modes=0x54, ll=0, of=1(base=2,eb=1), ml=0, seq_bits=[0x00, 0xC0] -> of_extra=1 -> offset_val=3
+        let b2_payload: u8[8] = [0x00, 0x01, 0x54, 0x00, 0x01, 0x00, 0x00, 0xC0];
+        frame_rep0.append(b2_payload[..]);
+
+        var out_rep0: u8[>..] = [];
+        let ok_rep0, err_rep0 = core::zstd_decompress(frame_rep0[..], out_rep0);
+        sub.assert_false(ok_rep0, "Repeat offset evaluating to 0 must be rejected as corrupted");
+        sub.assert_eq(err_rep0, core::CompressError.CorruptedBitstream, "Must return CorruptedBitstream for rep0 <= 1 when Offset_Value is 3 and lit_len is 0");
+
+        // Vector 2: Treeless literals block without prior Huffman table (RFC 8878 §3.1.1.3.1.1)
+        var frame_treeless: u8[>..] = [];
+        let hdr_tree: u8[6] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+        frame_treeless.append(hdr_tree[..]);
+        // Block 1 header: Last=1, Type=2 (Compressed), Size=5 -> 0x2D, 0x00, 0x00
+        let b_tree_hdr: u8[3] = [0x2D, 0x00, 0x00];
+        frame_treeless.append(b_tree_hdr[..]);
+        // Lit header: lit_type=3(Treeless), size_format=0, regen=5, comp=1 -> 0x53, 0x40, 0x00
+        // Stream: 0x80, Sequences: 0x00
+        let b_tree_payload: u8[5] = [0x53, 0x40, 0x00, 0x80, 0x00];
+        frame_treeless.append(b_tree_payload[..]);
+
+        var out_treeless: u8[>..] = [];
+        let ok_treeless, err_treeless = core::zstd_decompress(frame_treeless[..], out_treeless);
+        sub.assert_false(ok_treeless, "Treeless literals without prior table must be rejected");
+        sub.assert_eq(err_treeless, core::CompressError.CorruptedBitstream, "Must return CorruptedBitstream for uninitialized Treeless table");
+
+        // Vector 3: 4-stream Huffman jump table stream length 0 (RFC 8878 §3.1.1.3.1.2 & §4.2.2)
+        var frame_4s_zero: u8[>..] = [];
+        let hdr_4s: u8[6] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+        frame_4s_zero.append(hdr_4s[..]);
+        // Block 1 header: Last=1, Type=2 (Compressed), Size=12 -> 0x65, 0x00, 0x00
+        let b_4s_hdr: u8[3] = [0x65, 0x00, 0x00];
+        frame_4s_zero.append(b_4s_hdr[..]);
+        let b_4s_payload: u8[12] = [
+            0x87, 0x00, 0x02,
+            0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+            0x80, 0x80, 0x00
+        ];
+        frame_4s_zero.append(b_4s_payload[..]);
+
+        var out_4s: u8[>..] = [];
+        let ok_4s, err_4s = core::zstd_decompress(frame_4s_zero[..], out_4s);
+        sub.assert_false(ok_4s, "4-stream Huffman with invalid size or zero-length stream must be rejected");
+        sub.assert_eq(err_4s, core::CompressError.CorruptedBitstream, "Must return CorruptedBitstream for malformed 4-stream jump table");
+    };
+ }
 
 fn test_rfc1951_bounds_and_error_handling(t: core::T&) {
     t.run("Stored Block LEN/NLEN Mismatch Rejection") { sub =>

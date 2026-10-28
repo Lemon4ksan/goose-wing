@@ -827,6 +827,10 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
         if !fse_read_ncount(fse_slice, fse_offset, fse_counts[..], fse_max_sym, fse_log) {
             return false;
         }
+        // RFC 8878 §4.2.1.2: Maximum accuracy log for Huffman weights is 6 bits
+        if fse_log > 6 {
+            return false;
+        }
 
         var weight_fse_table = HufWeightTable {};
         if !fse_build_weight_dtable(fse_counts[..], fse_max_sym, fse_log, weight_fse_table) {
@@ -886,6 +890,7 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
 }
 
 fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]) -> bool {
+    if r.underflow || r.src.len == 0 { return false; }
     var decoded: i64 = 0;
     let count = dst.len;
     let mask = (1 << table.table_log) - 1;
@@ -1284,6 +1289,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let val = read_le_u24(src, offset);
             regenerated_size = (val >> 4) & 0x3FF;
             compressed_size = (val >> 14) & 0x3FF;
+            if compressed_size < 1 { return DecodedLiterals { ok: false }; }
         } else if size_format == 1 {
             single_stream = false;
             lh_size = 3;
@@ -1291,6 +1297,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let val = read_le_u24(src, offset);
             regenerated_size = (val >> 4) & 0x3FF;
             compressed_size = (val >> 14) & 0x3FF;
+            if compressed_size < 10 || regenerated_size < 6 { return DecodedLiterals { ok: false }; }
         } else if size_format == 2 {
             single_stream = false;
             lh_size = 4;
@@ -1298,6 +1305,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let val = read_le_u32(src, offset);
             regenerated_size = (val >> 4) & 0x3FFF;
             compressed_size = (val >> 18) & 0x3FFF;
+            if compressed_size < 10 || regenerated_size < 6 { return DecodedLiterals { ok: false }; }
         } else {
             single_stream = false;
             lh_size = 5;
@@ -1306,6 +1314,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let b4 = src[offset + 4] as u32;
             regenerated_size = (val >> 4) & 0x3FFFF;
             compressed_size = ((val >> 22) & 0x3FF) | (b4 << 10);
+            if compressed_size < 10 || regenerated_size < 6 { return DecodedLiterals { ok: false }; }
         }
         offset += lh_size;
 
@@ -1316,6 +1325,11 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
         if lit_type == 2 {
             // Read Huffman tree description
             if !huf_read_table(src, offset, huf_table) {
+                return DecodedLiterals { ok: false };
+            }
+        } else if lit_type == 3 {
+            // RFC 8878 §3.1.1.3.1.1: Treeless literals require prior Huffman tree in frame
+            if !huf_table.is_defined {
                 return DecodedLiterals { ok: false };
             }
         }
@@ -1340,7 +1354,7 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
 
             let total_streams = c_end - offset;
             let s4 = total_streams - s1 - s2 - s3;
-            if s4 < 0 { return DecodedLiterals { ok: false }; }
+            if s1 < 1 || s2 < 1 || s3 < 1 || s4 < 1 { return DecodedLiterals { ok: false }; }
 
             let stream_size_chunk = (regenerated_size + 3) / 4;
             let c1 = stream_size_chunk;
@@ -1397,10 +1411,13 @@ fn decode_sequences<B>(
     ml_table: FseTable&,
     of_table: FseTable&,
     max_output_bytes: i64,
+    frame_start_out: i64 = 0,
+    window_size: i64 = 0,
+    initial_out_len: i64 = 0,
 ) -> CompressError {
     if offset >= block_end {
         // No sequences section: block is purely literals
-        if max_output_bytes >= 0 && (out_buf.len as i64) + lit_buf.len > max_output_bytes {
+        if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + lit_buf.len > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
         out_buf.append(lit_buf);
@@ -1416,7 +1433,7 @@ fn decode_sequences<B>(
         if offset != block_end {
             return CompressError.CorruptedBitstream;
         }
-        if max_output_bytes >= 0 && (out_buf.len as i64) + lit_buf.len > max_output_bytes {
+        if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + lit_buf.len > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
         out_buf.append(lit_buf);
@@ -1494,6 +1511,10 @@ fn decode_sequences<B>(
         var max_sym: i32 = 0;
         var table_log: i32 = 0;
         if !fse_read_ncount(src, offset, counts[..], max_sym, table_log) {
+            return CompressError.CorruptedBitstream;
+        }
+        // RFC 8878 §3.1.1.3.2.1: Maximum accuracy log for offset code table is 8
+        if table_log > 8 {
             return CompressError.CorruptedBitstream;
         }
         if !fse_build_dtable(counts[..], max_sym, table_log, of_table, 2) {
@@ -1680,11 +1701,14 @@ fn decode_sequences<B>(
                 else { offset_A = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_A; }
             } else {
                 if lit_len_A > 0 { offset_A = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_A; }
-                else { offset_A = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset_A; }
+                else {
+                    if rep0 <= 1 { return CompressError.CorruptedBitstream; }
+                    offset_A = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset_A;
+                }
             }
 
             if max_output_bytes >= 0 {
-                if (out_buf.len as i64) + (lit_len_A as i64) + (match_len_A as i64) > max_output_bytes {
+                if ((out_buf.len - initial_out_len) as i64) + (lit_len_A as i64) + (match_len_A as i64) > max_output_bytes {
                     return CompressError.OutputBufferOverflow;
                 }
             }
@@ -1722,15 +1746,17 @@ fn decode_sequences<B>(
                 let off = offset_A as i64;
                 let m_len = match_len_A as i64;
                 let out_len = out_buf.len;
-                if off <= 0 || off > out_len { return CompressError.DistanceOutOfBounds; }
+                let current_decoded = out_len - frame_start_out;
+                let max_offset = if window_size > 0 && window_size < current_decoded { window_size } else { current_decoded };
+                if off <= 0 || off > max_offset { return CompressError.DistanceOutOfBounds; }
                 let src_idx = out_len - off;
                 if off >= m_len {
                     let src_end = src_idx + m_len;
-                    if src_idx >= 0 && src_end <= out_len {
+                    if src_idx >= frame_start_out && src_end <= out_len {
                         out_buf.append(out_buf[src_idx..src_end]);
                     } else { return CompressError.DistanceOutOfBounds; }
                 } else if off == 1 {
-                    if src_idx >= 0 && src_idx < out_len {
+                    if src_idx >= frame_start_out && src_idx < out_len {
                         let b = out_buf[src_idx];
                         out_buf.resize(out_len + m_len, b);
                     } else { return CompressError.DistanceOutOfBounds; }
@@ -1844,11 +1870,14 @@ fn decode_sequences<B>(
                 else { offset_B = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_B; }
             } else {
                 if lit_len_B > 0 { offset_B = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset_B; }
-                else { offset_B = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset_B; }
+                else {
+                    if rep0 <= 1 { return CompressError.CorruptedBitstream; }
+                    offset_B = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset_B;
+                }
             }
 
             if max_output_bytes >= 0 {
-                if (out_buf.len as i64) + (lit_len_B as i64) + (match_len_B as i64) > max_output_bytes {
+                if ((out_buf.len - initial_out_len) as i64) + (lit_len_B as i64) + (match_len_B as i64) > max_output_bytes {
                     return CompressError.OutputBufferOverflow;
                 }
             }
@@ -1886,15 +1915,17 @@ fn decode_sequences<B>(
                 let off = offset_B as i64;
                 let m_len = match_len_B as i64;
                 let out_len = out_buf.len;
-                if off <= 0 || off > out_len { return CompressError.DistanceOutOfBounds; }
+                let current_decoded = out_len - frame_start_out;
+                let max_offset = if window_size > 0 && window_size < current_decoded { window_size } else { current_decoded };
+                if off <= 0 || off > max_offset { return CompressError.DistanceOutOfBounds; }
                 let src_idx = out_len - off;
                 if off >= m_len {
                     let src_end = src_idx + m_len;
-                    if src_idx >= 0 && src_end <= out_len {
+                    if src_idx >= frame_start_out && src_end <= out_len {
                         out_buf.append(out_buf[src_idx..src_end]);
                     } else { return CompressError.DistanceOutOfBounds; }
                 } else if off == 1 {
-                    if src_idx >= 0 && src_idx < out_len {
+                    if src_idx >= frame_start_out && src_idx < out_len {
                         let b = out_buf[src_idx];
                         out_buf.resize(out_len + m_len, b);
                     } else { return CompressError.DistanceOutOfBounds; }
@@ -1970,11 +2001,14 @@ fn decode_sequences<B>(
                 else { offset = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset; }
             } else {
                 if lit_len > 0 { offset = rep2; rep2 = rep1; rep1 = rep0; rep0 = offset; }
-                else { offset = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset; }
+                else {
+                    if rep0 <= 1 { return CompressError.CorruptedBitstream; }
+                    offset = rep0 - 1; rep2 = rep1; rep1 = rep0; rep0 = offset;
+                }
             }
 
             if max_output_bytes >= 0 {
-                if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
+                if ((out_buf.len - initial_out_len) as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
                     return CompressError.OutputBufferOverflow;
                 }
             }
@@ -2010,15 +2044,17 @@ fn decode_sequences<B>(
                 let off = offset as i64;
                 let m_len = match_len as i64;
                 let out_len = out_buf.len;
-                if off <= 0 || off > out_len { return CompressError.DistanceOutOfBounds; }
+                let current_decoded = out_len - frame_start_out;
+                let max_offset = if window_size > 0 && window_size < current_decoded { window_size } else { current_decoded };
+                if off <= 0 || off > max_offset { return CompressError.DistanceOutOfBounds; }
                 let src_idx = out_len - off;
                 if off >= m_len {
                     let src_end = src_idx + m_len;
-                    if src_idx >= 0 && src_end <= out_len {
+                    if src_idx >= frame_start_out && src_end <= out_len {
                         out_buf.append(out_buf[src_idx..src_end]);
                     } else { return CompressError.DistanceOutOfBounds; }
                 } else if off == 1 {
-                    if src_idx >= 0 && src_idx < out_len {
+                    if src_idx >= frame_start_out && src_idx < out_len {
                         let b = out_buf[src_idx];
                         out_buf.resize(out_len + m_len, b);
                     } else { return CompressError.DistanceOutOfBounds; }
@@ -2098,6 +2134,7 @@ fn decode_sequences<B>(
                     rep1 = rep0;
                     rep0 = offset;
                 } else {
+                    if rep0 <= 1 { return CompressError.CorruptedBitstream; }
                     offset = rep0 - 1;
                     rep2 = rep1;
                     rep1 = rep0;
@@ -2106,7 +2143,7 @@ fn decode_sequences<B>(
             }
 
             if max_output_bytes >= 0 {
-                if (out_buf.len as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
+                if ((out_buf.len - initial_out_len) as i64) + (lit_len as i64) + (match_len as i64) > max_output_bytes {
                     return CompressError.OutputBufferOverflow;
                 }
             }
@@ -2146,19 +2183,21 @@ fn decode_sequences<B>(
                 let off = offset as i64;
                 let m_len = match_len as i64;
                 let out_len = out_buf.len;
-                if off <= 0 || off > out_len {
+                let current_decoded = out_len - frame_start_out;
+                let max_offset = if window_size > 0 && window_size < current_decoded { window_size } else { current_decoded };
+                if off <= 0 || off > max_offset {
                     return CompressError.DistanceOutOfBounds;
                 }
                 let src_idx = out_len - off;
                 if off >= m_len {
                     let src_end = src_idx + m_len;
-                    if src_idx >= 0 && src_end <= out_len {
+                    if src_idx >= frame_start_out && src_end <= out_len {
                         out_buf.append(out_buf[src_idx..src_end]);
                     } else {
                         return CompressError.DistanceOutOfBounds;
                     }
                 } else if off == 1 {
-                    if src_idx >= 0 && src_idx < out_len {
+                    if src_idx >= frame_start_out && src_idx < out_len {
                         let b = out_buf[src_idx];
                         out_buf.resize(out_len + m_len, b);
                     } else {
@@ -2188,7 +2227,7 @@ fn decode_sequences<B>(
     if lit_ptr >= 0 && lit_ptr <= lit_buf.len {
         let rem_lit = lit_buf.len - lit_ptr;
         if rem_lit > 0 {
-            if max_output_bytes >= 0 && (out_buf.len as i64) + rem_lit > max_output_bytes {
+            if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + rem_lit > max_output_bytes {
                 return CompressError.OutputBufferOverflow;
             }
             out_buf.append(lit_buf[lit_ptr..lit_buf.len]);
@@ -2249,10 +2288,13 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
         }
 
         if dict_id_flag == 1 {
+            if offset + 1 > src.len { return CompressError.InputBufferTruncated; }
             offset += 1;
         } else if dict_id_flag == 2 {
+            if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
             offset += 2;
         } else if dict_id_flag == 3 {
+            if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
             offset += 4;
         }
 
@@ -2291,7 +2333,8 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
             }
         }
 
-        if frame_content_size >= 0 && max_output_bytes >= 0 && frame_content_size > max_output_bytes {
+        let total_decoded = (out_buf.len - initial_out_len) as i64;
+        if frame_content_size >= 0 && max_output_bytes >= 0 && (total_decoded + frame_content_size) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
 
@@ -2306,6 +2349,8 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
         let frame_start_out = out_buf.len;
         var last_block = false;
 
+        let block_max_size = if window_size > 0 && window_size < ZSTD_BLOCKSIZE_MAX { window_size } else { ZSTD_BLOCKSIZE_MAX };
+
         while !last_block {
             if offset + 3 > src.len { return CompressError.InputBufferTruncated; }
             let header_val = read_le_u24(src, offset);
@@ -2318,8 +2363,9 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                 return CompressError.InvalidBlockType;
             }
 
-            if block_size > ZSTD_BLOCKSIZE_MAX {
-                return CompressError.InputBufferTruncated;
+            // RFC 8878 §3.1.1.2.4: Block_Size must not exceed Block_Maximum_Size = min(Window_Size, 128 KB)
+            if block_size > block_max_size {
+                return CompressError.CorruptedBitstream;
             }
 
             if block_type == ZSTD_BLOCK_TYPE_RLE {
@@ -2327,7 +2373,7 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                 if offset + 1 > src.len {
                     return CompressError.InputBufferTruncated;
                 }
-                if max_output_bytes >= 0 && (out_buf.len as i64) + block_size > max_output_bytes {
+                if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + block_size > max_output_bytes {
                     return CompressError.OutputBufferOverflow;
                 }
                 let rle_byte = src[offset];
@@ -2342,7 +2388,7 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
             let block_end = offset + block_size;
 
             if block_type == ZSTD_BLOCK_TYPE_RAW {
-                if max_output_bytes >= 0 && (out_buf.len as i64) + block_size > max_output_bytes {
+                if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + block_size > max_output_bytes {
                     return CompressError.OutputBufferOverflow;
                 }
                 out_buf.append(src[offset..block_end]);
@@ -2364,6 +2410,9 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                     ml_table,
                     of_table,
                     max_output_bytes,
+                    frame_start_out,
+                    window_size,
+                    initial_out_len,
                 );
                 if seq_err != CompressError.None {
                     return seq_err;
