@@ -309,6 +309,48 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         sub.assert_true(ws3.is_closed, "Connection closed on interleaving error");
         sub.assert_eq(ws3.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
     };
+
+    t.run("10. Streaming consume_frame_view, >16KB Zero-Copy & Multi-Token Upgrade") { sub =>
+        // 10.1 Unfragmented > 16 KB message via receive_view / consume_frame_view
+        var ws_large = wing::new_websocket_session(false);
+        let mask: u8[4] = [0x12, 0x34, 0x56, 0x78];
+        var big_payload: u8[>..] = [];
+        for i in 20000 {
+            big_payload.push('A');
+        }
+        var big_wire: u8[>..] = [];
+        wing::encode_ws_frame(big_wire, wing::WS_OPCODE_TEXT, big_payload[..], true, mask, true);
+
+        // Partial slice: should return (0, false) without closing
+        var view = wing::WsMessageView { .. };
+        var reply: u8[..256] = [];
+        let c_part, h_part = wing::consume_frame_view(ws_large, big_wire[..100], view, reply);
+        sub.assert_eq(c_part, 0, "Partial valid frame consumes 0 bytes");
+        sub.assert_false(h_part, "Partial valid frame returns handled=false");
+        sub.assert_false(ws_large.is_closed, "Session stays open while waiting for frame bytes");
+
+        // Full slice: should consume entire 20008-byte frame zero-copy
+        let c_full, h_full = wing::consume_frame_view(ws_large, big_wire[..], view, reply);
+        sub.assert_true(h_full, "Full 20KB frame handled");
+        sub.assert_eq(c_full, big_wire.len, "Consumed exact frame length");
+        sub.assert_false(ws_large.is_closed, "Session stays open on 20KB frame within 64KB max_payload_length");
+        sub.assert_true(view.is_valid, "Zero-copy view is valid");
+        sub.assert_eq(view.payload.len, 20000, "Zero-copy payload length is 20000");
+
+        // 10.2 Multi-token Upgrade header in ws_upgrade_request and is_websocket_upgrade_request
+        var upg_req = wing::new_request("GET", "https://example.com/ws");
+        upg_req.set_header("Host", "example.com");
+        upg_req.set_header("Upgrade", "h2c, WebSocket");
+        upg_req.set_header("Connection", "keep-alive, Upgrade");
+        upg_req.set_header("Sec-WebSocket-Version", "13");
+        upg_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+
+        sub.assert_true(wing::is_websocket_upgrade_request(upg_req), "is_websocket_upgrade_request accepts multi-token Upgrade");
+        var upg_resp = wing::new_response();
+        let _, ok_upg = wing::ws_upgrade_request(upg_req, upg_resp);
+        sub.assert_true(ok_upg, "ws_upgrade_request accepts multi-token Upgrade");
+        sub.assert_eq(upg_resp.status_code, 101, "Status 101 Switching Protocols");
+    };
 }
 
 fn test_http3_priority_update(t: core::T&) {
@@ -445,6 +487,30 @@ fn test_server_sent_events(t: core::T&) {
         wing::init_response(s_resp);
         sub.assert_eq(s_resp.status_code, 200, "Server SSE status 200");
         sub.assert_bytes_eq(wing::header(s_resp, "Content-Type"), "text/event-stream", "Content-Type text/event-stream");
+    };
+
+    t.run("7. W3C EventSource Empty Data Dispatch, Leading BOM, and CR Sanitization") { sub =>
+        // Empty data field ("data:\n\n") must dispatch an event with empty data,
+        // and "data:\ndata: hello\n\n" must preserve the leading newline ("\nhello").
+        let stream_empty = "\xEF\xBB\xBFdata:\n\ndata:\ndata: hello\n\n";
+        var parser = wing::new_sse_parser();
+        var events: wing::SseEvent[..10] = [];
+        wing::sse_feed(parser, stream_empty, events);
+
+        sub.assert_eq(events.len, 2, "Both empty-data and leading-empty-line events dispatched after BOM strip");
+        sub.assert_bytes_eq(events[0].data[..], "", "Event 0 has empty string data");
+        sub.assert_bytes_eq(events[1].data[..], "\nhello", "Event 1 preserves leading newline before second data line");
+
+        // Serializer splits CRLF and bare CR in data
+        var formatted: u8[>..] = [];
+        wing::sse_format_event(formatted, "msg", "a\r\nb\rc\nd");
+        sub.assert_bytes_eq(formatted[..], "event: msg\ndata: a\ndata: b\ndata: c\ndata: d\n\n", "CRLF and bare CR split into separate data lines");
+
+        // Empty path defaults to "/"
+        var sub_empty_path = wing::new_sse_subscription("https://example.com");
+        var hdr_out: u8[..256] = [];
+        wing::sse_build_request_headers(sub_empty_path, "example.com", "", hdr_out);
+        sub.assert_true(core::starts_with(hdr_out[..], "GET / HTTP/1.1\r\n"), "Empty SSE path defaults to '/'");
     };
 }
 

@@ -39,38 +39,6 @@ fn drain_and_close(conn: i64) {
     wing::tcp_close(conn);
 }
 
-fn send_close(conn: i64, status_code: u16, reason: const u8[:]) {
-    var close_payload: u8[>..] = [];
-    wing::encode_close_payload(close_payload, status_code, reason);
-    var frame_wire: u8[>..] = [];
-    wing::encode_ws_frame(frame_wire, wing::WS_OPCODE_CLOSE, close_payload[..], false);
-    wing::tcp_send(conn, frame_wire[..]);
-    drain_and_close(conn);
-}
-
-fn send_ws_pong(conn: i64, payload: const u8[:]) {
-    var frame_wire: u8[>..] = [];
-    wing::encode_ws_frame(frame_wire, wing::WS_OPCODE_PONG, payload, false);
-    wing::tcp_send(conn, frame_wire[..]);
-}
-
-fn send_ws_message(conn: i64, opcode: u8, payload: const u8[:]) {
-    var frame_wire: u8[>..] = [];
-    wing::encode_ws_frame(frame_wire, opcode, payload, false);
-    wing::tcp_send(conn, frame_wire[..]);
-}
-
-fn is_valid_close_code(code: u16) -> bool {
-    if code == 1000 || code == 1001 || code == 1002 || code == 1003 ||
-       code == 1007 || code == 1008 || code == 1009 || code == 1010 || code == 1011 {
-        return true;
-    }
-    if code >= 3000 && code <= 4999 {
-        return true;
-    }
-    return false;
-}
-
 fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     var accept_key: u8[>..] = [];
     wing::compute_websocket_accept(client_key, accept_key);
@@ -87,13 +55,12 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     );
     wing::tcp_send(conn, handshake_resp[..]);
 
-    var ws_buf: u8[>..] = [];
-    var frag_active = false;
-    var frag_opcode: u8 = 0;
-    var frag_buf: u8[>..] = [];
+    var ws = wing::new_websocket_session(false);
+    wing::set_max_payload_length(ws, 16777216); // 16 MB for Autobahn Case 9.x large payload tests
 
+    var ws_buf: u8[>..] = [];
     var idle_count = 0;
-    while true {
+    while !ws.is_closed {
         var chunk: u8[..16384] = [];
         let recvd = wing::tcp_recv(conn, chunk, 16384, 500);
         if recvd == -2 {
@@ -111,149 +78,38 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
         idle_count = 0;
         ws_buf.append(chunk[..recvd]);
 
-        while ws_buf.len >= 2 {
-            let b0 = ws_buf[0];
-            let b1 = ws_buf[1];
-            let opcode = b0 & 0x0F;
-            let fin = (b0 & 0x80) != 0;
-            let is_control = (opcode & 0x08) != 0;
-
-            // RFC 6455 Section 5.1: Client to Server MUST be masked
-            if (b1 & 0x80) == 0 {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unmasked client frame");
-                return;
-            }
-
-            // RFC 6455 Section 5.2: Reserved bits MUST be 0
-            if (b0 & 0x70) != 0 {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "rsv bits set");
-                return;
-            }
-
-            // RFC 6455 Section 5.2: Opcode validation
-            if !wing::is_valid_ws_opcode(opcode) {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid opcode");
-                return;
-            }
-
-            // RFC 6455 Section 5.4 & 5.5: Control frame fragmentation forbidden
-            if is_control && !fin {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "fragmented control frame");
-                return;
-            }
-
-            // RFC 6455 Section 5.5: Control frame payload length <= 125
-            if is_control && (b1 & 0x7F) > 125 {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125");
-                return;
-            }
-
-            // Variable length header offset
-            let raw_len = (b1 & 0x7F) as i64;
-            var need_hdr: i64 = 2 + 4; // 2 bytes base + 4 bytes mask
-            if raw_len == 126 { need_hdr += 2; }
-            if raw_len == 127 { need_hdr += 8; }
-            if ws_buf.len < need_hdr {
+        while ws_buf.len >= 2 && !ws.is_closed {
+            var view = wing::WsMessageView { .. };
+            var reply: u8[>..] = [];
+            let consumed, handled = wing::consume_frame_view(ws, ws_buf[..], view, reply);
+            if !handled {
                 break;
             }
 
-            let hdr, ok_hdr = wing::parse_ws_frame_header(ws_buf[..]);
-            if !ok_hdr {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "malformed frame header");
+            if reply.len > 0 {
+                wing::tcp_send(conn, reply[..]);
+            }
+
+            if view.is_valid && (view.opcode == wing::WS_OPCODE_TEXT || view.opcode == wing::WS_OPCODE_BINARY) {
+                var echo_wire: u8[>..] = [];
+                if view.opcode == wing::WS_OPCODE_TEXT {
+                    wing::send_text(ws, view.payload, echo_wire);
+                } else {
+                    wing::send_binary(ws, view.payload, echo_wire);
+                }
+                if echo_wire.len > 0 {
+                    wing::tcp_send(conn, echo_wire[..]);
+                }
+            }
+
+            if ws.is_closed {
+                drain_and_close(conn);
                 return;
-            }
-
-            let total_len = hdr.header_len + (hdr.payload_len as i64);
-            if ws_buf.len < total_len {
-                // Incomplete frame, wait for more bytes from socket
-                break;
-            }
-
-            var payload: u8[>..] = [];
-            payload.append(ws_buf[(hdr.header_len as i64)..total_len]);
-            wing::mask_websocket_payload(payload[..], hdr.mask_key);
-
-            // Handle Control Frames (can be interleaved)
-            if is_control {
-                if hdr.opcode == wing::WS_OPCODE_PING {
-                    send_ws_pong(conn, payload[..]);
-                } else if hdr.opcode == wing::WS_OPCODE_PONG {
-                    // Unsolicited or heartbeat pong: ignored
-                } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
-                    if payload.len == 0 {
-                        // Empty close: valid (1005 NO_STATUS)
-                        send_close(conn, wing::WS_STATUS_NORMAL, "");
-                        return;
-                    } else if payload.len == 1 {
-                        // Protocol error: status code must be 2 bytes
-                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "close code must be 2 bytes");
-                        return;
-                    } else {
-                        let code = ((payload[0] as u16) << 8) | payload[1];
-                        if !is_valid_close_code(code) {
-                            send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid close code");
-                            return;
-                        }
-                        if payload.len > 2 {
-                            let reason = payload[2..];
-                            if !core::validate_utf8(reason) {
-                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 in close reason");
-                                return;
-                            }
-                        }
-                        send_close(conn, code, "");
-                        return;
-                    }
-                }
-            } else {
-                // Handle Data Frames (TEXT, BINARY, CONTINUATION)
-                if hdr.opcode == wing::WS_OPCODE_TEXT || hdr.opcode == wing::WS_OPCODE_BINARY {
-                    if frag_active {
-                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "interleaved new data frame in fragment");
-                        return;
-                    }
-
-                    if hdr.fin {
-                        // Unfragmented message
-                        if hdr.opcode == wing::WS_OPCODE_TEXT {
-                            if !core::validate_utf8(payload[..]) {
-                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 text payload");
-                                return;
-                            }
-                        }
-                        send_ws_message(conn, hdr.opcode, payload[..]);
-                    } else {
-                        // Start of fragmented message
-                        frag_active = true;
-                        frag_opcode = hdr.opcode;
-                        frag_buf.clear();
-                        frag_buf.append(payload[..]);
-                    }
-                } else if hdr.opcode == wing::WS_OPCODE_CONTINUATION {
-                    if !frag_active {
-                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "continuation without starting fragment");
-                        return;
-                    }
-                    frag_buf.append(payload[..]);
-
-                    if hdr.fin {
-                        // End of fragmented message
-                        if frag_opcode == wing::WS_OPCODE_TEXT {
-                            if !core::validate_utf8(frag_buf[..]) {
-                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf-8 assembled payload");
-                                return;
-                            }
-                        }
-                        send_ws_message(conn, frag_opcode, frag_buf[..]);
-                        frag_active = false;
-                        frag_buf.clear();
-                    }
-                }
             }
 
             // Advance buffer
             var remaining: u8[>..] = [];
-            remaining.append(ws_buf[total_len..]);
+            remaining.append(ws_buf[consumed..]);
             ws_buf.clear();
             ws_buf.append(remaining[..]);
         }

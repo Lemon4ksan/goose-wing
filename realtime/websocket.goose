@@ -686,7 +686,7 @@ struct WebSocketSession {
     // Multi-frame fragmented message assembly (RFC 6455 §5.4 & RFC 7692 §5.1)
     frag_opcode: u8 = 0,               // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
     frag_compressed: bool = false,     // RFC 7692: remembers if initial fragment had RSV1 set
-    frag_buffer: u8[..16384] = [],     // Assembly buffer for fragmented messages
+    frag_buffer: u8[..65536] = [],     // Assembly buffer for fragmented messages
 
     // RFC 7692 PerMessageDeflate configuration (uWebSockets pattern)
     compress_mode: u16 = WS_COMPRESS_DISABLED,
@@ -1408,7 +1408,7 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
 
         if hdr.fin {
             // Unfragmented single-frame message: Zero-copy direct slice!
-            if (ws.max_payload_length > 0 && (payload.len as u64) > ws.max_payload_length) || payload.len > ws.frag_buffer.cap {
+            if ws.max_payload_length > 0 && (payload.len as u64) > ws.max_payload_length {
                 close(ws, WS_STATUS_MESSAGE_TOO_BIG, "payload exceeds capacity", out_reply);
                 ws.is_closed = true;
                 ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
@@ -1495,6 +1495,32 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
     }
 
     return true;
+}
+
+// Streams and dispatches a single WebSocket frame from the front of `wire`:
+// - Returns `(0, false)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
+// - Returns `(consumed, true)` when a complete frame was processed or a fatal header violation closed the session.
+fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> i64, bool {
+    out_view.is_valid = false;
+    guard wire.len >= 2 else { return 0, false; }
+
+    let hdr, ok_hdr = parse_ws_frame_header(wire);
+    if ok_hdr {
+        let hdr_len = hdr.header_len as u64;
+        let wire_len = wire.len as u64;
+        if hdr_len <= wire_len && hdr.payload_len <= (wire_len - hdr_len) {
+            let total_len = (hdr_len + hdr.payload_len) as i64;
+            let handled = receive_view(ws, wire[..total_len], out_view, out_reply);
+            return total_len, handled || ws.is_closed;
+        }
+    }
+
+    // Incomplete frame header or payload: check if header already violates RFC 6455 invariants
+    let handled = receive_view(ws, wire, out_view, out_reply);
+    if handled || ws.is_closed {
+        return wire.len, true;
+    }
+    return 0, false;
 }
 
 // Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,
@@ -1598,8 +1624,16 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
         return WebSocketSession { .. }, false;
     }
 
-    let upg = req.headers.find_header("Upgrade");
-    if !core::eq_ascii_fold(upg, "websocket") {
+    var has_upgrade_header = false;
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], "upgrade") {
+            if has_header_token_fold(hdr.value[..], "websocket") {
+                has_upgrade_header = true;
+                break;
+            }
+        }
+    }
+    if !has_upgrade_header {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
@@ -1667,8 +1701,16 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field
     let host = req.headers.find_header("Host");
     guard host.len > 0 else { return false; }
-    let upg = req.headers.find_header("Upgrade");
-    guard core::eq_ascii_fold(upg, "websocket") else { return false; }
+    var has_upgrade_hdr = false;
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], "upgrade") {
+            if has_header_token_fold(hdr.value[..], "websocket") {
+                has_upgrade_hdr = true;
+                break;
+            }
+        }
+    }
+    guard has_upgrade_hdr else { return false; }
     var has_upgrade_conn = false;
     for &hdr in req.headers {
         if core::eq_ascii_fold(hdr.name[..], "connection") {

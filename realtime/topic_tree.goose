@@ -18,13 +18,20 @@ const TOPIC_TREE_MAX_SUBSCRIPTIONS: i64 = 4096;
 
 // Matches an MQTT topic pattern (with optional '+' and '#' wildcards) against a concrete topic name.
 fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
+    guard pattern.len > 0 && topic.len > 0 else { return false; }
+
+    // OASIS MQTT v5.0 §4.7.2: Topics starting with '$' MUST NOT match filters starting with '+' or '#'
+    if topic[0] == '$' && (pattern[0] == '+' || pattern[0] == '#') {
+        return false;
+    }
+
     if pattern == topic { return true; }
     if pattern == "#" { return true; }
 
     var p_cur: i64 = 0;
     var t_cur: i64 = 0;
 
-    while p_cur < pattern.len && t_cur < topic.len {
+    while true {
         var p_next = p_cur;
         while p_next < pattern.len && pattern[p_next] != '/' {
             p_next++;
@@ -45,20 +52,22 @@ fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
             return false;
         }
 
-        p_cur = if p_next < pattern.len { p_next + 1 } else { p_next };
-        t_cur = if t_next < topic.len { t_next + 1 } else { t_next };
-    }
+        let p_has_more = p_next < pattern.len;
+        let t_has_more = t_next < topic.len;
 
-    if p_cur < pattern.len && pattern[p_cur..] == "#" {
-        return true;
+        if p_has_more && t_has_more {
+            p_cur = p_next + 1;
+            t_cur = t_next + 1;
+        } else if !p_has_more && !t_has_more {
+            return true;
+        } else if p_has_more && !t_has_more {
+            // MQTT §4.7.1.2: 'sport/#' matches parent level 'sport'
+            return pattern[p_next..] == "/#";
+        } else {
+            return false;
+        }
     }
-
-    // MQTT §4.7.1.3 & uWS #1933: A trailing '+' wildcard matches the empty level after a trailing slash (e.g. 'sport/+' matches 'sport/')
-    if p_cur < pattern.len && pattern[p_cur..] == "+" && t_cur == topic.len && topic.len > 0 && topic[topic.len - 1] == '/' {
-        return true;
-    }
-
-    return p_cur == pattern.len && t_cur == topic.len;
+    return false;
 }
 
 struct TopicBucket {
@@ -636,6 +645,7 @@ fn publish(
     message: const u8[:],
     opcode: u8 = WS_OPCODE_TEXT,
 ) -> i64 {
+    guard message.len + 14 <= 65536 else { return 0; }
     var frame: u8[..65536] = [];
     let no_mask: u8[4] = [0, 0, 0, 0];
     encode_ws_frame(frame, opcode, message, false, no_mask, true);
@@ -729,7 +739,7 @@ fn publish_batch(
     opcode: u8 = WS_OPCODE_TEXT,
     sender_fd: i64 = -1,
 ) -> i64 {
-    guard is_valid_publish_topic(topic) else { return 0; }
+    guard is_valid_publish_topic(topic) && payload.len + 14 <= 4096 else { return 0; }
 
     // If palette reached capacity (64 messages), drain all pending subscribers first
     if tree.palette_len >= tree.palette.cap as i32 {
@@ -742,6 +752,8 @@ fn publish_batch(
     encode_ws_frame(tree.palette[msg_idx].wire, opcode, payload, false, no_mask, true);
     tree.palette_len += 1;
 
+    var seen_fds: i64[..512] = [];
+    var seen_mask: u64[4] = [0, 0, 0, 0];
     var queued: i64 = 0;
     for b in tree.buckets.len {
         guard tree.buckets[b].in_use && tree.buckets[b].subscriber_count > 0 else { continue; }
@@ -750,7 +762,29 @@ fn publish_batch(
             while cur >= 0 {
                 let c_i64 = cur as i64;
                 if tree.nodes[c_i64].in_use && tree.nodes[c_i64].sock_fd != sender_fd {
+                    let fd = tree.nodes[c_i64].sock_fd;
+                    let h = ((fd as u64) ^ ((fd as u64) >> 8)) & 255;
+                    let word_idx = (h >> 6) as i64;
+                    let bit = (1 as u64) << (h & 63);
+
                     var already_queued = false;
+                    if (seen_mask[word_idx] & bit) == 0 {
+                        seen_mask[word_idx] = seen_mask[word_idx] | bit;
+                        if seen_fds.len < seen_fds.cap {
+                            seen_fds.push(fd);
+                        }
+                    } else {
+                        for s_fd in seen_fds {
+                            if s_fd == fd {
+                                already_queued = true;
+                                break;
+                            }
+                        }
+                        if !already_queued && seen_fds.len < seen_fds.cap {
+                            seen_fds.push(fd);
+                        }
+                    }
+
                     let num = tree.nodes[c_i64].num_message_indices as i64;
                     if num > 0 && tree.nodes[c_i64].message_indices[num - 1] == (msg_idx as u16) {
                         already_queued = true;
@@ -805,8 +839,8 @@ fn drainable_count(tree: const TopicTree&) -> i32 {
 fn subscriber_needs_drain(tree: const TopicTree&, sock_fd: i64) -> bool {
     guard sock_fd > 0 else { return false; }
     for i in tree.nodes.len {
-        if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd {
-            return tree.nodes[i].num_message_indices > 0;
+        if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd && tree.nodes[i].num_message_indices > 0 {
+            return true;
         }
     }
     return false;
@@ -815,10 +849,11 @@ fn subscriber_needs_drain(tree: const TopicTree&, sock_fd: i64) -> bool {
 // Returns the number of messages queued for a given socket descriptor.
 fn subscriber_queued_messages(tree: const TopicTree&, sock_fd: i64) -> i32 {
     guard sock_fd > 0 else { return 0; }
+    var total: i32 = 0;
     for i in tree.nodes.len {
         if tree.nodes[i].in_use && tree.nodes[i].sock_fd == sock_fd {
-            return tree.nodes[i].num_message_indices;
+            total += tree.nodes[i].num_message_indices;
         }
     }
-    return 0;
+    return total;
 }

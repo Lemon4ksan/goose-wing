@@ -30,6 +30,8 @@ struct SseParser {
     retry_ms: u32 = 3000,
     line_buf: u8[..4096] = [],
     prev_was_cr: bool = false,
+    has_data: bool = false,
+    bom_checked: bool = false,
 }
 
 fn new_sse_parser() -> SseParser {
@@ -41,11 +43,13 @@ fn new_sse_parser() -> SseParser {
 fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8[:]) {
     if field_name == "event" {
         p.cur_event.clear();
-        p.cur_event.append(field_val);
+        let copy_len = if field_val.len <= p.cur_event.cap { field_val.len } else { p.cur_event.cap };
+        p.cur_event.append(field_val[..copy_len]);
     } else if field_name == "data" {
-        if p.cur_data.len > 0 && p.cur_data.len < 4096 {
+        if p.has_data && p.cur_data.len < 4096 {
             p.cur_data.push('\n');
         }
+        p.has_data = true;
         for b in field_val {
             if p.cur_data.len < 4096 {
                 p.cur_data.push(b);
@@ -59,7 +63,8 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
         }
         if !has_null {
             p.last_event_id.clear();
-            p.last_event_id.append(field_val);
+            let copy_len = if field_val.len <= p.last_event_id.cap { field_val.len } else { p.last_event_id.cap };
+            p.last_event_id.append(field_val[..copy_len]);
         }
     } else if field_name == "retry" {
         var num: u32 = 0;
@@ -85,11 +90,19 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
 
 // Processes a complete line buffer
 fn sse_process_line<E>(p: SseParser&, out_events: E&) {
-    let line = p.line_buf[..];
+    var line = p.line_buf[..];
+
+    // W3C EventSource §9.2.5: One leading U+FEFF BOM (0xEF 0xBB 0xBF) must be stripped if present
+    if !p.bom_checked {
+        p.bom_checked = true;
+        if line.len >= 3 && line[0] == 0xEF && line[1] == 0xBB && line[2] == 0xBF {
+            line = line[3..];
+        }
+    }
 
     // Empty line indicates event boundary (W3C Section 6 / §9.2.6: dispatch the event)
     if line.len == 0 {
-        if p.cur_data.len > 0 {
+        if p.has_data {
             var ev = SseEvent {
                 retry_ms: p.retry_ms,
                 is_valid: true,
@@ -103,11 +116,14 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
             ev.data.append(p.cur_data[..]);
             ev.id.append(p.last_event_id[..]);
 
-            out_events.push(ev);
+            if out_events.len < out_events.cap {
+                out_events.push(ev);
+            }
 
             // Reset current event buffer, keep last_event_id and retry_ms
             p.cur_event.clear();
             p.cur_data.clear();
+            p.has_data = false;
         } else {
             p.cur_event.clear();
         }
@@ -223,14 +239,22 @@ fn sse_format_event<B>(
         }
     }
 
-    // Split multi-line data into separate data: lines
+    // Split multi-line data into separate data: lines (handling LF, CRLF, and bare CR)
     var start: i64 = 0;
-    for i in data.len {
-        if data[i] == '\n' {
+    var i: i64 = 0;
+    while i < data.len {
+        if data[i] == '\r' || data[i] == '\n' {
             out.append("data: ");
             out.append(data[start..i]);
             out.push('\n');
-            start = i + 1;
+            if data[i] == '\r' && i + 1 < data.len && data[i + 1] == '\n' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            start = i;
+        } else {
+            i += 1;
         }
     }
     out.append("data: ");
@@ -252,7 +276,8 @@ struct SseSubscription {
 fn new_sse_subscription(url: const u8[:] = "") -> SseSubscription {
     var sub = SseSubscription { .. };
     if url.len > 0 {
-        sub.url.append(url);
+        let copy_len = if url.len <= sub.url.cap { url.len } else { sub.url.cap };
+        sub.url.append(url[..copy_len]);
     }
     return sub;
 }
@@ -264,8 +289,9 @@ fn sse_build_request_headers<B>(
     path: const u8[:],
     out: B&,
 ) {
+    let eff_path = if path.len > 0 { path } else { "/" };
     out.append("GET ");
-    out.append(path);
+    out.append(eff_path);
     out.append(" HTTP/1.1\r\nHost: ");
     out.append(host);
     out.append("\r\nAccept: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive");

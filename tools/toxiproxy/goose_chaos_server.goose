@@ -50,15 +50,6 @@ fn drain_and_close(conn: i64) {
     wing::tcp_close(conn);
 }
 
-fn send_close(conn: i64, status_code: u16, reason: const u8[:]) {
-    var close_payload: u8[>..] = [];
-    wing::encode_close_payload(close_payload, status_code, reason);
-    var frame_wire: u8[>..] = [];
-    wing::encode_ws_frame(frame_wire, wing::WS_OPCODE_CLOSE, close_payload[..], false);
-    wing::tcp_send(conn, frame_wire[..]);
-    drain_and_close(conn);
-}
-
 fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     var accept_key: u8[>..] = [];
     wing::compute_websocket_accept(client_key, accept_key);
@@ -75,10 +66,9 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     );
     wing::tcp_send(conn, handshake_resp[..]);
 
+    var ws = wing::new_websocket_session(false);
     var ws_buf: u8[>..] = [];
-    var frag_opcode: u8 = 0;
-    var frag_buf: u8[>..] = [];
-    while true {
+    while !ws.is_closed {
         var chunk: u8[..4096] = [];
         let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
         if recvd == -2 {
@@ -89,145 +79,38 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
         }
         ws_buf.append(chunk[..recvd]);
 
-        while ws_buf.len >= 2 {
-            let b0 = ws_buf[0];
-            let b1 = ws_buf[1];
-            let opcode = b0 & 0x0F;
-            let fin = (b0 & 0x80) != 0;
-            let is_control = opcode >= 8;
-
-            // RFC 6455 Section 5.1: Client to Server MUST be masked
-            if (b1 & 0x80) == 0 {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unmasked client frame");
-                return;
-            }
-
-            // RFC 6455 Section 5.4 & 5.5: Control frame fragmentation
-            if is_control && !fin {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "fragmented control frame");
-                return;
-            }
-
-            // RFC 6455 Section 5.5: Control frame payload length <= 125
-            if is_control && (b1 & 0x7F) > 125 {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125");
-                return;
-            }
-
-            // RFC 6455 Section 5.2: Reserved bits must be 0
-            if (b0 & 0x70) != 0 {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "rsv bits set");
-                return;
-            }
-
-            // Wait until the full variable-length header (len ext + mask key) has arrived
-            let raw_len = (b1 & 0x7F) as i64;
-            var need_hdr: i64 = 2 + 4;
-            if raw_len == 126 { need_hdr += 2; }
-            if raw_len == 127 { need_hdr += 8; }
-            if ws_buf.len < need_hdr {
+        while ws_buf.len >= 2 && !ws.is_closed {
+            var view = wing::WsMessageView { .. };
+            var reply: u8[>..] = [];
+            let consumed, handled = wing::consume_frame_view(ws, ws_buf[..], view, reply);
+            if !handled {
                 break;
             }
 
-            let hdr, ok_hdr = wing::parse_ws_frame_header(ws_buf[..]);
-            if !ok_hdr {
-                send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "malformed frame");
-                return;
+            if reply.len > 0 {
+                wing::tcp_send(conn, reply[..]);
             }
 
-            // Payload size limit defense (> 64KB)
-            if hdr.payload_len > 65536 {
-                send_close(conn, wing::WS_STATUS_MESSAGE_TOO_BIG, "payload > 64KB");
-                return;
-            }
-
-            let total_len = hdr.header_len + (hdr.payload_len as i64);
-            if ws_buf.len < total_len {
-                // Wait for remainder of payload
-                break;
-            }
-
-            var payload: u8[>..] = [];
-            payload.append(ws_buf[(hdr.header_len as i64)..total_len]);
-            wing::mask_websocket_payload(payload[..], hdr.mask_key);
-
-            if is_control {
-                // RFC 6455 Section 5.4: Control frames can be interleaved at any point
-                if hdr.opcode == wing::WS_OPCODE_PING {
-                    var out_frame: u8[>..] = [];
-                    wing::encode_ws_frame(out_frame, wing::WS_OPCODE_PONG, payload[..], false);
-                    wing::tcp_send(conn, out_frame[..]);
-                } else if hdr.opcode == wing::WS_OPCODE_CLOSE {
-                    let code, reason, ok_close = wing::parse_close_payload(payload[..]);
-                    if !ok_close {
-                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "invalid close frame");
-                        return;
-                    }
-                    var out_frame: u8[>..] = [];
-                    wing::encode_ws_frame(out_frame, wing::WS_OPCODE_CLOSE, payload[..], false);
-                    wing::tcp_send(conn, out_frame[..]);
-                    drain_and_close(conn);
-                    return;
-                }
-            } else {
-                if hdr.opcode == wing::WS_OPCODE_CONTINUATION {
-                    if frag_opcode == 0 {
-                        // RFC 6455 Section 5.4: Unexpected continuation frame
-                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unexpected continuation");
-                        return;
-                    }
-                    frag_buf.append(payload[..]);
-                    if hdr.fin {
-                        if frag_opcode == wing::WS_OPCODE_TEXT {
-                            if !core::validate_utf8(frag_buf[..]) {
-                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf8");
-                                return;
-                            }
-                            var out_frame: u8[>..] = [];
-                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_TEXT, frag_buf[..], false);
-                            wing::tcp_send(conn, out_frame[..]);
-                        } else if frag_opcode == wing::WS_OPCODE_BINARY {
-                            var out_frame: u8[>..] = [];
-                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_BINARY, frag_buf[..], false);
-                            wing::tcp_send(conn, out_frame[..]);
-                        }
-                        frag_opcode = 0;
-                        frag_buf.clear();
-                    }
-                } else if hdr.opcode == wing::WS_OPCODE_TEXT || hdr.opcode == wing::WS_OPCODE_BINARY {
-                    if frag_opcode != 0 {
-                        // RFC 6455 Section 5.4: Cannot start new data frame while previous is unfinished
-                        send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "interleaved data frames");
-                        return;
-                    }
-                    if !hdr.fin {
-                        frag_opcode = hdr.opcode;
-                        frag_buf.clear();
-                        frag_buf.append(payload[..]);
-                    } else {
-                        if hdr.opcode == wing::WS_OPCODE_TEXT {
-                            if !core::validate_utf8(payload[..]) {
-                                send_close(conn, wing::WS_STATUS_INVALID_PAYLOAD, "invalid utf8");
-                                return;
-                            }
-                            var out_frame: u8[>..] = [];
-                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_TEXT, payload[..], false);
-                            wing::tcp_send(conn, out_frame[..]);
-                        } else {
-                            var out_frame: u8[>..] = [];
-                            wing::encode_ws_frame(out_frame, wing::WS_OPCODE_BINARY, payload[..], false);
-                            wing::tcp_send(conn, out_frame[..]);
-                        }
-                    }
+            if view.is_valid && (view.opcode == wing::WS_OPCODE_TEXT || view.opcode == wing::WS_OPCODE_BINARY) {
+                var echo_wire: u8[>..] = [];
+                if view.opcode == wing::WS_OPCODE_TEXT {
+                    wing::send_text(ws, view.payload, echo_wire);
                 } else {
-                    send_close(conn, wing::WS_STATUS_PROTOCOL_ERROR, "unknown data opcode");
-                    return;
+                    wing::send_binary(ws, view.payload, echo_wire);
                 }
+                if echo_wire.len > 0 {
+                    wing::tcp_send(conn, echo_wire[..]);
+                }
+            }
+
+            if ws.is_closed {
+                drain_and_close(conn);
+                return;
             }
 
             // Remove processed frame from buffer
             var remaining: u8[>..] = [];
-            remaining.append(ws_buf[total_len..]);
+            remaining.append(ws_buf[consumed..]);
             ws_buf.clear();
             ws_buf.append(remaining[..]);
         }

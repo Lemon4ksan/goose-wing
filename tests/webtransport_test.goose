@@ -72,6 +72,18 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
         let ok_frame = wing::decode_quic_datagram_frame(frame_wire[..], extracted_msg);
         sub.assert_true(ok_frame, "QUIC DATAGRAM frame decoded");
         sub.assert_bytes_eq(extracted_msg[..], datagram_msg, "Extracted payload matches verbatim");
+
+        // Oversized datagram (> 1500B) rejection without panic
+        var huge_dgram: u8[>..] = [];
+        huge_dgram.push(0x01); // session_id = 1
+        for i in 1600 { huge_dgram.push('X'); }
+        var dec_huge = wing::WebTransportDatagram { .. };
+        sub.assert_false(wing::decode_webtransport_datagram(huge_dgram[..], dec_huge), "Oversized >1500B datagram rejected safely");
+
+        // Truncated QUIC DATAGRAM frame with huge 62-bit varint length rejected without overflow
+        let trunc_quic: u8[9] = [0x31, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        var out_trunc: u8[>..] = [];
+        sub.assert_false(wing::decode_quic_datagram_frame(trunc_quic[..], out_trunc), "Huge 62-bit varint length rejected safely");
     };
 }
 

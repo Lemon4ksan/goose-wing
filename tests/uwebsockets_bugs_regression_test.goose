@@ -108,10 +108,18 @@ fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
 
 fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
     // uWebSockets Issue #1933 & OASIS MQTT v5.0 §4.7.1.3:
-    // 'sport/+' MUST match 'sport/' (trailing slash level).
+    // 'sport/+' MUST match 'sport/' (trailing slash level), but 'sport' MUST NOT match 'sport/'.
     t.assert_true(wing::match_topic("sport/+", "sport/"), "'sport/+' must match 'sport/' with trailing slash");
+    t.assert_false(wing::match_topic("sport/+", "sport/a/"), "'sport/+' must NOT match 'sport/a/' (two trailing levels)");
+    t.assert_false(wing::match_topic("sport", "sport/"), "'sport' must NOT match 'sport/'");
+    t.assert_false(wing::match_topic("sport/", "sport"), "'sport/' must NOT match 'sport'");
     t.assert_true(wing::match_topic("sport/#", "sport/"), "'sport/#' must match 'sport/'");
     t.assert_true(wing::match_topic("sport/#", "sport"), "'sport/#' must match 'sport'");
+
+    // OASIS MQTT v5.0 §4.7.2: Topics starting with '$' must not match root '+' or '#'
+    t.assert_false(wing::match_topic("#", "$SYS/stats"), "'#' must NOT match '$SYS/stats'");
+    t.assert_false(wing::match_topic("+/stats", "$SYS/stats"), "'+/stats' must NOT match '$SYS/stats'");
+    t.assert_true(wing::match_topic("$SYS/#", "$SYS/stats"), "'$SYS/#' must match '$SYS/stats'");
 
     // uWebSockets Issue #1924 / #1933:
     // Publishing to empty TopicTree or querying non-existent topic must return 0 without panicking.
@@ -120,6 +128,14 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
     var out_fds: i64[..512] = [];
     let count = wing::find_subscribers(tree, "test/topic", out_fds);
     t.assert_eq(count, 0, "Finding subscribers in empty tree must return 0");
+
+    // Batch publish deduplication across overlapping wildcard buckets
+    t.assert_true(wing::subscribe(tree, 77, "chat/+"), "Sub 77 to chat/+");
+    t.assert_true(wing::subscribe(tree, 77, "chat/#"), "Sub 77 to chat/#");
+    let queued = wing::publish_batch(tree, "chat/room1", "hello");
+    t.assert_eq(queued, 1, "publish_batch must queue message once per distinct socket across overlapping buckets");
+    t.assert_true(wing::subscriber_needs_drain(tree, 77), "Socket 77 needs drain");
+    t.assert_eq(wing::subscriber_queued_messages(tree, 77), 1, "Socket 77 has exactly 1 queued message");
 }
 
 fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: core::T&) {

@@ -140,7 +140,8 @@ fn format_webtransport_connect_request(
     req.method.clear();
     req.method.append("CONNECT");
     req.url.clear();
-    req.url.append(url_target);
+    let copy_len = if url_target.len <= req.url.cap { url_target.len } else { req.url.cap };
+    req.url.append(url_target[..copy_len]);
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
     // :protocol = webtransport
@@ -256,7 +257,7 @@ fn decode_webtransport_datagram(
     guard ok else { return false; }
 
     out.session_id = s_id;
-    guard idx <= wire.len else { return false; }
+    guard idx <= wire.len && (wire.len - idx) <= out.payload.cap else { return false; }
 
     for i in (wire.len - idx) {
         out.payload.push(wire[idx + i]);
@@ -293,7 +294,7 @@ fn decode_quic_datagram_frame(
         return true;
     } else if frame_type == QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
-        guard ok_l && idx + (len as i64) <= wire.len else { return false; }
+        guard ok_l && idx <= wire.len && len <= ((wire.len - idx) as u64) else { return false; }
         for i in (len as i64) {
             out_payload.push(wire[idx + i]);
         }
@@ -461,7 +462,8 @@ fn close_webtransport_session(session: WebTransportSession&, code: u32, reason: 
     session.is_active = false;
     session.close_code = code;
     session.close_reason.clear();
-    session.close_reason.append(reason);
+    let copy_len = if reason.len <= session.close_reason.cap { reason.len } else { session.close_reason.cap };
+    session.close_reason.append(reason[..copy_len]);
 }
 
 fn drain_webtransport_session(session: WebTransportSession&) {
