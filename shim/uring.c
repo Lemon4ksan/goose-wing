@@ -11,6 +11,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
+typedef struct {
+    const void *data;
+    int64_t len;
+} wing_iovecs_ro;
+
 #if defined(__linux__)
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -97,11 +102,6 @@ struct wing_uring_buf_reg {
     uint64_t resv[3];
 };
 
-typedef struct {
-    const void *data;
-    int64_t len;
-} wing_iovecs_ro;
-
 int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
     if (iovecs.data == NULL || iovecs.len <= 0) return -EINVAL;
     return wing_uring_register(ring_fd, IORING_REGISTER_BUFFERS, iovecs.data, (uint32_t)iovecs.len);
@@ -167,10 +167,6 @@ int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, u
     (void)nr_args;
     return -ENOSYS;
 }
-typedef struct {
-    const void *data;
-    int64_t len;
-} wing_iovecs_ro;
 int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
     (void)ring_fd;
     (void)iovecs;

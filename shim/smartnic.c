@@ -7,6 +7,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
+
 #if defined(__linux__)
 #include <unistd.h>
 #include <sys/socket.h>
@@ -92,13 +97,6 @@ int32_t wing_smartnic_enable_ktls(int64_t fd) {
     return 0;
 }
 
-#pragma pack(push, 1)
-typedef struct {
-    const uint8_t *data;
-    int64_t len;
-} wing_bytes_ro;
-#pragma pack(pop)
-
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
                                           wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
     if (cipher_type == TLS_CIPHER_AES_GCM_128 && key.len >= 16) {
@@ -171,13 +169,6 @@ int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t
 #include <winsock2.h>
 #include <windows.h>
 
-#pragma pack(push, 1)
-typedef struct {
-    const uint8_t *data;
-    int64_t len;
-} wing_bytes_ro;
-#pragma pack(pop)
-
 // Windows SmartNIC & Hardware Chimney Offload probing
 int32_t wing_smartnic_probe(void) {
     // Windows RIO and Winsock Chimney Offload probe
@@ -223,13 +214,6 @@ int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t
 #ifndef ENOSYS
 #define ENOSYS 38
 #endif
-
-#pragma pack(push, 1)
-typedef struct {
-    const uint8_t *data;
-    int64_t len;
-} wing_bytes_ro;
-#pragma pack(pop)
 
 int32_t wing_smartnic_probe(void) { return -ENOSYS; }
 int32_t wing_smartnic_enable_ktls(int64_t fd) {
