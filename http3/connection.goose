@@ -74,6 +74,7 @@ struct H3Connection {
     peer_qpack_enc_opened: bool = false,
     peer_qpack_dec_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
     peer_qpack_dec_opened: bool = false,
+    ignored_uni_streams: u64[..16] = [],
     goaway_received: bool = false,
     goaway_max_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
     error_code: u64 = H3_ERR_NO_ERROR,
@@ -244,6 +245,12 @@ fn handle_stream_data(
     if !is_bidi {
         guard data.len > 0 || fin else { return H3_ERR_NO_ERROR; }
 
+        for sid in conn.ignored_uni_streams {
+            if sid == stream_id {
+                return H3_ERR_NO_ERROR;
+            }
+        }
+
         var offset: u64 = 0;
 
         let is_known = (conn.peer_control_opened && stream_id == conn.peer_control_stream_id) ||
@@ -281,6 +288,9 @@ fn handle_stream_data(
                 conn.peer_qpack_dec_stream_id = stream_id;
             } else {
                 // Unknown unidirectional stream: ignore payload (RFC 9114 Section 6.2)
+                if conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap {
+                    conn.ignored_uni_streams.push(stream_id);
+                }
                 return H3_ERR_NO_ERROR;
             }
         }
@@ -295,16 +305,28 @@ fn handle_stream_data(
                 conn.error_code = H3_ERR_CLOSED_CRITICAL_STREAM;
                 return H3_ERR_CLOSED_CRITICAL_STREAM;
             }
+            for i in conn.ignored_uni_streams.len {
+                if conn.ignored_uni_streams[i] == stream_id {
+                    conn.ignored_uni_streams.remove_at(i);
+                    break;
+                }
+            }
         }
 
         // Process frames on Peer Control Stream
         if stream_id == conn.peer_control_stream_id && offset < (data.len as u64) {
             while offset < (data.len as u64) {
                 let hdr, ok_hdr = parse_h3_frame_header(data, offset);
-                guard ok_hdr else { return H3_ERR_FRAME_ERROR; }
+                guard ok_hdr else {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_FRAME_ERROR;
+                    return H3_ERR_FRAME_ERROR;
+                }
 
                 offset += hdr.header_len;
-                guard offset + hdr.payload_len <= (data.len as u64) else {
+                guard (0xFFFFFFFFFFFFFFFF - offset) >= hdr.payload_len && (offset + hdr.payload_len) <= (data.len as u64) else {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_FRAME_ERROR;
                     return H3_ERR_FRAME_ERROR;
                 }
 
@@ -414,10 +436,16 @@ fn handle_stream_data(
     var offset: u64 = 0;
     while offset < (data.len as u64) {
         let hdr, ok_hdr = parse_h3_frame_header(data, offset);
-        guard ok_hdr else { return H3_ERR_FRAME_ERROR; }
+        guard ok_hdr else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
+            return H3_ERR_FRAME_ERROR;
+        }
 
         offset += hdr.header_len;
-        guard offset + hdr.payload_len <= (data.len as u64) else {
+        guard (0xFFFFFFFFFFFFFFFF - offset) >= hdr.payload_len && (offset + hdr.payload_len) <= (data.len as u64) else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
             return H3_ERR_FRAME_ERROR;
         }
 

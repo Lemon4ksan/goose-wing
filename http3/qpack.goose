@@ -253,6 +253,50 @@ fn find_qpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
 
 // ---- 3. prefix integer codec (ric and base) --------------------------------
 
+const QPACK_MAX_INT_VAL: u64 = 0x3FFFFFFFFFFFFFFF; // 62 bits (RFC 9204 Section 4.1.1)
+
+// Decodes a QPACK prefixed integer up to 62 bits (RFC 9204 Section 4.1.1).
+// Returns (value, next_offset, ok).
+// Guarantees zero allocation, 62-bit boundary checks, and overflow detection.
+fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64, bool {
+    guard offset < (src.len as u64) else { return 0, offset, false; }
+    guard prefix_bits >= 1 && prefix_bits <= 8 else { return 0, offset, false; }
+
+    let mask = (((1 as u32) << prefix_bits) - 1) as u8;
+    var val = (src[offset] & mask) as u64;
+    var idx = offset + 1;
+
+    if val < (mask as u64) {
+        return val, idx, true;
+    }
+
+    // Multibyte continuation (RFC 7541 Section 5.1 & RFC 9204 Section 4.1.1)
+    var shift: u32 = 0;
+    while idx < (src.len as u64) {
+        let b = src[idx];
+        let payload = (b & 0x7F) as u64;
+
+        // Up to 62 bits: maximum shift is 56
+        if shift > 56 || (shift == 56 && payload > 0x3F) {
+            return 0, idx, false; // Exceeds 62 bits: RFC 9204 §4.1.1 overflow
+        }
+
+        let term = payload << shift;
+        if (QPACK_MAX_INT_VAL - val) < term {
+            return 0, idx, false; // Overflow beyond 2^62 - 1
+        }
+        val += term;
+        idx++;
+
+        if (b & 0x80) == 0 {
+            return val, idx, true;
+        }
+        shift += 7;
+    }
+
+    return 0, offset, false;
+}
+
 // Decodes Required Insert Count per RFC 9204 Section 4.5.1.1.
 fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError {
     if enc_ric == 0 {
@@ -263,8 +307,14 @@ fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError
     guard full_range > 0 && enc_ric <= full_range else {
         return 0, QpackError.DecompressionFailed;
     }
+    guard (0xFFFFFFFFFFFFFFFF - total_inserts) >= max_entries else {
+        return 0, QpackError.DecompressionFailed;
+    }
     let max_value = total_inserts + max_entries;
     let max_wrapped = (max_value / full_range) * full_range;
+    guard (0xFFFFFFFFFFFFFFFF - max_wrapped) >= (enc_ric - 1) else {
+        return 0, QpackError.DecompressionFailed;
+    }
     var ric = max_wrapped + enc_ric - 1;
 
     if ric > max_value {
@@ -273,7 +323,7 @@ fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError
         }
         ric -= full_range;
     }
-    guard ric != 0 else {
+    guard ric != 0 && ric <= 0x3FFFFFFFFFFFFFFF else {
         return 0, QpackError.DecompressionFailed;
     }
     return ric, QpackError.None;
@@ -298,7 +348,11 @@ fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
         guard (0xFFFFFFFFFFFFFFFF - ric) >= delta_base else {
             return 0, QpackError.DecompressionFailed;
         }
-        return ric + delta_base, QpackError.None;
+        let base = ric + delta_base;
+        guard base <= 0x3FFFFFFFFFFFFFFF else {
+            return 0, QpackError.DecompressionFailed;
+        }
+        return base, QpackError.None;
     }
     guard ric > delta_base else {
         return 0, QpackError.DecompressionFailed;
@@ -333,6 +387,7 @@ fn qpack_evict_until(tbl: QpackTable&, target_bytes: u64) {
         tbl.used_bytes = if tbl.used_bytes >= cost { tbl.used_bytes - cost } else { 0 };
         tbl.entries.remove_at(0);
     }
+    tbl.draining_index = if tbl.entries.len > 0 { tbl.entries[0].abs_index } else { tbl.insert_count };
 }
 
 // Updates dynamic table capacity via Set Dynamic Table Capacity instruction.
@@ -477,7 +532,7 @@ fn qpack_increment_received(tbl: QpackTable&, inc: u64) {
 fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B&) -> u64, bool {
     guard offset < (src.len as u64) else { return offset, false; }
     let is_huff = (src[offset] & ((1 as u8) << prefix_bits)) != 0;
-    let str_len, next_off, ok_len = hpack_decode_int(src, offset, prefix_bits);
+    let str_len, next_off, ok_len = qpack_decode_int(src, offset, prefix_bits);
     guard ok_len else { return offset, false; }
 
     let noff = next_off as i64;
@@ -502,7 +557,7 @@ fn qpack_process_encoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 1. Set Dynamic Table Capacity: 001xxxxx (5-bit prefix)
     if (b & 0xE0) == 0x20 {
-        let cap, next_off, ok = hpack_decode_int(src, offset, 5);
+        let cap, next_off, ok = qpack_decode_int(src, offset, 5);
         guard ok else { return offset, QpackError.EncoderStreamError; }
         guard qpack_set_capacity(tbl, cap) else { return offset, QpackError.EncoderStreamError; }
         return next_off, QpackError.None;
@@ -510,8 +565,9 @@ fn qpack_process_encoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 2. Insert with Name Reference: 1Txxxxxx (6-bit prefix)
     if (b & 0x80) != 0 {
+        guard tbl.capacity_bytes > 0 else { return offset, QpackError.EncoderStreamError; }
         let is_static = (b & 0x40) != 0;
-        let name_idx, val_off, ok_idx = hpack_decode_int(src, offset, 6);
+        let name_idx, val_off, ok_idx = qpack_decode_int(src, offset, 6);
         guard ok_idx else { return offset, QpackError.EncoderStreamError; }
 
         var val_buf: u8[..4096] = [];
@@ -532,6 +588,7 @@ fn qpack_process_encoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 3. Insert with Literal Name: 01Hxxxxx (5-bit prefix)
     if (b & 0xC0) == 0x40 {
+        guard tbl.capacity_bytes > 0 else { return offset, QpackError.EncoderStreamError; }
         var name_buf: u8[..256] = [];
         let val_start, ok_name = decode_qpack_string(src, offset, 5, name_buf);
         guard ok_name else { return offset, QpackError.EncoderStreamError; }
@@ -548,7 +605,8 @@ fn qpack_process_encoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 4. Duplicate: 000xxxxx (5-bit prefix)
     if (b & 0xE0) == 0x00 {
-        let rel_idx, next_off, ok = hpack_decode_int(src, offset, 5);
+        guard tbl.capacity_bytes > 0 else { return offset, QpackError.EncoderStreamError; }
+        let rel_idx, next_off, ok = qpack_decode_int(src, offset, 5);
         guard ok else { return offset, QpackError.EncoderStreamError; }
         guard qpack_duplicate(tbl, rel_idx) else { return offset, QpackError.EncoderStreamError; }
         return next_off, QpackError.None;
@@ -564,7 +622,7 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 1. Section Acknowledgment: 1xxxxxxx (7-bit prefix)
     if (b & 0x80) != 0 {
-        let stream_id, next_off, ok = hpack_decode_int(src, offset, 7);
+        let stream_id, next_off, ok = qpack_decode_int(src, offset, 7);
         guard ok else { return offset, QpackError.DecoderStreamError; }
         qpack_ack_section(tbl, stream_id, 0);
         return next_off, QpackError.None;
@@ -572,7 +630,7 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 2. Stream Cancellation: 01xxxxxx (6-bit prefix)
     if (b & 0xC0) == 0x40 {
-        let stream_id, next_off, ok = hpack_decode_int(src, offset, 6);
+        let stream_id, next_off, ok = qpack_decode_int(src, offset, 6);
         guard ok else { return offset, QpackError.DecoderStreamError; }
         qpack_cancel_stream(tbl, stream_id);
         return next_off, QpackError.None;
@@ -580,8 +638,10 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
     // 3. Insert Count Increment: 00xxxxxx (6-bit prefix)
     if (b & 0xC0) == 0x00 {
-        let inc, next_off, ok = hpack_decode_int(src, offset, 6);
+        let inc, next_off, ok = qpack_decode_int(src, offset, 6);
         guard ok && inc > 0 else { return offset, QpackError.DecoderStreamError; }
+        guard (0xFFFFFFFFFFFFFFFF - tbl.known_rcvd_count) >= inc else { return offset, QpackError.DecoderStreamError; }
+        guard (tbl.known_rcvd_count + inc) <= tbl.insert_count else { return offset, QpackError.DecoderStreamError; }
         qpack_increment_received(tbl, inc);
         return next_off, QpackError.None;
     }
@@ -647,7 +707,7 @@ fn decode_qpack_section(
     var budget = max_field_section;
 
     // 1. Decode EncodedInsertCount (8-bit prefix)
-    let enc_ric, base_off, ok_ric = hpack_decode_int(src, offset, 8);
+    let enc_ric, base_off, ok_ric = qpack_decode_int(src, offset, 8);
     guard ok_ric else { return QpackError.DecompressionFailed; }
 
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.capacity_bytes);
@@ -656,7 +716,7 @@ fn decode_qpack_section(
     // 2. Decode Sign bit and DeltaBase (7-bit prefix)
     guard base_off < (src.len as u64) else { return QpackError.DecompressionFailed; }
     let sign_bit: u8 = if (src[base_off] & 0x80) != 0 { 1 } else { 0 };
-    let delta_base, fields_off, ok_db = hpack_decode_int(src, base_off, 7);
+    let delta_base, fields_off, ok_db = qpack_decode_int(src, base_off, 7);
     guard ok_db else { return QpackError.DecompressionFailed; }
 
     let base, base_err = decode_base(sign_bit, delta_base, ric);
@@ -673,7 +733,7 @@ fn decode_qpack_section(
         // Case A: Indexed Field Line: 1Txxxxxx (6-bit prefix)
         if (b & 0x80) != 0 {
             let is_static = (b & 0x40) != 0;
-            let idx, next_off, ok = hpack_decode_int(src, offset, 6);
+            let idx, next_off, ok = qpack_decode_int(src, offset, 6);
             guard ok else { return QpackError.DecompressionFailed; }
 
             if is_static {
@@ -702,7 +762,7 @@ fn decode_qpack_section(
 
         // Case B: Indexed Field Line With Post-Base Index: 0001xxxx (4-bit prefix)
         if (b & 0xF0) == 0x10 {
-            let post_idx, next_off, ok = hpack_decode_int(src, offset, 4);
+            let post_idx, next_off, ok = qpack_decode_int(src, offset, 4);
             guard ok else { return QpackError.DecompressionFailed; }
             guard (0xFFFFFFFFFFFFFFFF - base) >= post_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base + post_idx;
@@ -726,7 +786,7 @@ fn decode_qpack_section(
         if (b & 0xC0) == 0x40 {
             let is_never_index = (b & 0x20) != 0;
             let is_static = (b & 0x10) != 0;
-            let name_idx, val_start, ok_idx = hpack_decode_int(src, offset, 4);
+            let name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 4);
             guard ok_idx else { return QpackError.DecompressionFailed; }
 
             var n: u8[..256] = [];
@@ -760,7 +820,7 @@ fn decode_qpack_section(
         // Case D: Literal Field Line With Post-Base Name Reference: 0000Nxxx (3-bit prefix)
         if (b & 0xF0) == 0x00 {
             let is_never_index = (b & 0x08) != 0;
-            let post_name_idx, val_start, ok_idx = hpack_decode_int(src, offset, 3);
+            let post_name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 3);
             guard ok_idx else { return QpackError.DecompressionFailed; }
             guard (0xFFFFFFFFFFFFFFFF - base) >= post_name_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base + post_name_idx;

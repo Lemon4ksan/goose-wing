@@ -475,12 +475,19 @@ fn test_qpack_table_and_codec(t: core::T&) {
         let _, err_d2 = wing::qpack_process_decoder_instruction(tbl, dec_canc[..], 0);
         sub.assert_eq(err_d2, wing::QpackError.None, "stream cancellation succeeds");
 
-        // 3. Insert Count Increment (00xxxxxx) with increment 3
+        // 3. Insert Count Increment (00xxxxxx) with increment 3 (RFC 9204 Section 4.4.3)
+        tbl.insert_count = 3;
         var dec_inc: u8[..8] = [];
         dec_inc.push(0x03); // 0000 0011 -> inc 3
         let _, err_d3 = wing::qpack_process_decoder_instruction(tbl, dec_inc[..], 0);
         sub.assert_eq(err_d3, wing::QpackError.None, "insert count increment succeeds");
         sub.assert_eq(tbl.known_rcvd_count, 3, "known received count updated to 3");
+
+        // 4. Excess Insert Count Increment beyond insert_count must fail with DecoderStreamError
+        dec_inc.clear();
+        dec_inc.push(0x01); // inc 1 -> 3 + 1 = 4 > insert_count (3)
+        let _, err_d4 = wing::qpack_process_decoder_instruction(tbl, dec_inc[..], 0);
+        sub.assert_eq(err_d4, wing::QpackError.DecoderStreamError, "excess increment rejected per RFC 9204 Section 4.4.3");
     };
 
     t.run("QPACK-05: Section Decoding (Static, Dynamic, and Literal Fields)") { sub =>
@@ -623,6 +630,130 @@ fn test_h3_extended_frames(t: core::T&) {
 }
 
 // ============================================================================
+// 7. Team QPackStrike Protocol Hardening Suite (RFC 9114, RFC 9204, RFC 9000)
+// ============================================================================
+fn test_round1_qpackstrike_suite(t: core::T&) {
+    t.run("QPACK-R1-01: 62-bit Integer Decoding and Overflow Rejection (RFC 9204 Section 4.1.1)") { sub =>
+        // 62-bit integer: 0x3FFFFFFFFFFFFFFF
+        // With 7-bit prefix: prefix byte 0x7F, followed by 9 continuation octets
+        var buf62: u8[..16] = [0x7F, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F];
+        let val62, next_off62, ok62 = wing::qpack_decode_int(buf62[..], 0, 7);
+        sub.assert_true(ok62, "decode max 62-bit integer 0x3FFFFFFFFFFFFFFF succeeds");
+        sub.assert_eq(val62, wing::QPACK_MAX_INT_VAL, "decoded value matches 0x3FFFFFFFFFFFFFFF");
+        sub.assert_eq(next_off62, 10, "consumed 10 bytes");
+
+        // 63-bit integer overflow: payload > 0x3F at 9th continuation byte (0x40)
+        var buf_overflow: u8[..16] = [0x7F, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x40];
+        let _, _, ok_ovf = wing::qpack_decode_int(buf_overflow[..], 0, 7);
+        sub.assert_false(ok_ovf, "63-bit integer overflow rejected");
+
+        // Overflow on encoder stream returns EncoderStreamError
+        var tbl = wing::new_qpack_table(4096, 16);
+        var enc_ovf: u8[..16] = [0x3F, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x40];
+        let _, err_enc = wing::qpack_process_encoder_instruction(tbl, enc_ovf[..], 0);
+        sub.assert_eq(err_enc, wing::QpackError.EncoderStreamError, "overflow on encoder stream yields EncoderStreamError");
+
+        // Overflow on decoder stream returns DecoderStreamError
+        var dec_ovf: u8[..16] = [0xFF, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x40];
+        let _, err_dec = wing::qpack_process_decoder_instruction(tbl, dec_ovf[..], 0);
+        sub.assert_eq(err_dec, wing::QpackError.DecoderStreamError, "overflow on decoder stream yields DecoderStreamError");
+    };
+
+    t.run("QPACK-R1-02: Zero Capacity Rejects Dynamic Table Insertion (RFC 9204 Section 3.2.3, 3.2.4)") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+        tbl.capacity_bytes = 0; // Explicitly capacity 0
+
+        // Attempt Insert with Literal Name when capacity is 0
+        var enc_lit: u8[..32] = [];
+        enc_lit.push(0x46);
+        enc_lit.append("custom");
+        enc_lit.push(0x05);
+        enc_lit.append("value");
+        let _, err_ins = wing::qpack_process_encoder_instruction(tbl, enc_lit[..], 0);
+        sub.assert_eq(err_ins, wing::QpackError.EncoderStreamError, "insert when capacity=0 rejected with EncoderStreamError");
+
+        // Attempt Duplicate when capacity is 0
+        var enc_dup: u8[..4] = [0x00];
+        let _, err_dup = wing::qpack_process_encoder_instruction(tbl, enc_dup[..], 0);
+        sub.assert_eq(err_dup, wing::QpackError.EncoderStreamError, "duplicate when capacity=0 rejected with EncoderStreamError");
+    };
+
+    t.run("H3-R1-01: Frame Payload Length Integer Overflow Protection (RFC 9114 Section 7.1)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = wing::new_h3_client_connection(settings);
+
+        // Control stream: valid SETTINGS frame first
+        var ctrl_wire: u8[..128] = [];
+        wing::quic_encode_varint(ctrl_wire, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(3, false, ctrl_wire[..], false);
+        sub.assert_true(conn.peer_settings_received, "peer settings received");
+
+        // Now send frame header with maliciously crafted 62-bit payload length (0x3FFFFFFFFFFFFFF0)
+        // that would overflow 'offset + hdr.payload_len'
+        var mal_frame: u8[..32] = [];
+        wing::quic_encode_varint(mal_frame, wing::H3_FRAME_CANCEL_PUSH);
+        wing::quic_encode_varint(mal_frame, 0x3FFFFFFFFFFFFFF0);
+        mal_frame.push(0x00);
+
+        let err = conn.handle_stream_data(3, false, mal_frame[..], false);
+        sub.assert_eq(err, wing::H3_ERR_FRAME_ERROR, "huge payload_len triggers H3_FRAME_ERROR without overflow");
+        sub.assert_eq(conn.state, wing::H3ConnState.Closed, "connection closed on frame error");
+    };
+
+    t.run("H3-R1-02: HTTP/2 Reserved Frame 0x0A (ALTSVC) Rejection (RFC 9114 Section 7.2.8)") { sub =>
+        sub.assert_true(wing::is_h2_reserved_frame_in_h3(0x0A), "0x0A is reserved from H2");
+        sub.assert_false(wing::is_allowed_on_control_stream(0x0A), "0x0A forbidden on control stream");
+        sub.assert_false(wing::is_allowed_on_request_stream(0x0A), "0x0A forbidden on request stream");
+
+        let settings = wing::H3Settings { .. };
+        var conn = wing::new_h3_client_connection(settings);
+
+        // Control stream with valid SETTINGS followed by frame type 0x0A
+        var ctrl_wire: u8[..64] = [];
+        wing::quic_encode_varint(ctrl_wire, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(ctrl_wire, settings);
+        wing::quic_encode_varint(ctrl_wire, 0x0A);
+        wing::quic_encode_varint(ctrl_wire, 0);
+
+        let err = conn.handle_stream_data(3, false, ctrl_wire[..], false);
+        sub.assert_eq(err, wing::H3_ERR_FRAME_UNEXPECTED, "frame 0x0A rejected with H3_FRAME_UNEXPECTED");
+    };
+
+    t.run("H3-R1-03: Unknown Unidirectional Stream Persistence (RFC 9114 Section 6.2)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = wing::new_h3_client_connection(settings);
+
+        var ctrl: u8[..64] = [];
+        wing::quic_encode_varint(ctrl, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(ctrl, settings);
+        conn.handle_stream_data(3, false, ctrl[..], false);
+
+        // Open unknown unidirectional stream 15 (type 0x21 GREASE)
+        var chunk1: u8[..16] = [];
+        wing::quic_encode_varint(chunk1, 0x21);
+        let err1 = conn.handle_stream_data(15, false, chunk1[..], false);
+        sub.assert_eq(err1, wing::H3_ERR_NO_ERROR, "unknown uni stream chunk 1 accepted");
+
+        // Send second chunk with leading byte 0x00
+        var chunk2: u8[..16] = [0x00, 0x01, 0x02, 0x03];
+        let err2 = conn.handle_stream_data(15, false, chunk2[..], false);
+        sub.assert_eq(err2, wing::H3_ERR_NO_ERROR, "unknown uni stream chunk 2 ignored safely");
+        sub.assert_eq(conn.error_code, wing::H3_ERR_NO_ERROR, "connection still valid");
+    };
+
+    t.run("QUIC-R1-01: Datagram Frame Length Integer Overflow Protection (RFC 9221 Section 3)") { sub =>
+        var wire: u8[..16] = [];
+        wing::quic_encode_varint(wire, wing::QUIC_FRAME_DATAGRAM_LEN);
+        wing::quic_encode_varint(wire, 0x3FFFFFFFFFFFFFF0);
+
+        let payload, _, ok = wing::decode_quic_datagram_frame(wire[..], 0, wire.len as u64);
+        sub.assert_false(ok, "overflowing datagram frame length safely rejected");
+        sub.assert_eq(payload.len, 0, "no slice produced");
+    };
+}
+
+// ============================================================================
 // Main HTTP/3 Conformance Runner
 // ============================================================================
 fn main() {
@@ -634,6 +765,7 @@ fn main() {
     core::run_case(runner, "4. Request Stream Lifecycle & Full Request-Response Multiplexing", test_h3_request_streams);
     core::run_case(runner, "5. QPACK Table Lifecycle, String Decoding & Stream Instructions", test_qpack_table_and_codec);
     core::run_case(runner, "6. HTTP/3 Extended Frames & Stream Edge-Cases", test_h3_extended_frames);
+    core::run_case(runner, "7. Team QPackStrike Protocol Hardening Suite", test_round1_qpackstrike_suite);
 
     let ok = core::finish(runner);
     assert(ok);

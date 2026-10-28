@@ -21,9 +21,9 @@ fn is_h3_grease_frame(frame_type: u64) -> bool {
     return ((frame_type - 0x21) % 0x1F) == 0;
 }
 
-// Checks if a frame type is reserved from HTTP/2 (RFC 9114 Section 7.2.8: 0x02, 0x06, 0x08, 0x09).
+// Checks if a frame type is reserved from HTTP/2 (RFC 9114 Section 7.2.8: 0x02, 0x06, 0x08, 0x09, 0x0a).
 fn is_h2_reserved_frame_in_h3(frame_type: u64) -> bool {
-    return frame_type == 0x02 || frame_type == 0x06 || frame_type == 0x08 || frame_type == 0x09;
+    return frame_type == 0x02 || frame_type == 0x06 || frame_type == 0x08 || frame_type == 0x09 || frame_type == 0x0A;
 }
 
 // Checks if a frame is permitted on the HTTP/3 Control Stream (RFC 9114 Section 7.2).

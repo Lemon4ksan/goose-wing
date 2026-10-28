@@ -121,10 +121,11 @@ fn quic_decode_varint_reader(r: core::SliceReader&) -> u64, bool {
 
 // Decodes a variable-length integer from big-endian wire format.
 fn quic_decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
-    guard offset <= (src.len as u64) else { return 0, offset, false; }
+    guard offset < (src.len as u64) else { return 0, offset, false; }
     var r = core::new_slice_reader(src[(offset as i64)..]);
     let val, ok = quic_decode_varint_reader(r);
     guard ok else { return 0, offset, false; }
+    guard (0xFFFFFFFFFFFFFFFF - offset) >= (r.cursor as u64) else { return 0, offset, false; }
     return val, offset + (r.cursor as u64), true;
 }
 
@@ -233,9 +234,9 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         hdr.payload_length = plen;
         hdr.pn_offset = next_plen as u32;
         hdr.pn_length = (first & 0x03) + 1;
-        guard plen >= hdr.pn_length else { return hdr, false; }
-        guard (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
-        hdr.header_len = (next_plen + hdr.pn_length) as u32;
+        guard plen >= (hdr.pn_length as u64) else { return hdr, false; }
+        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= (hdr.pn_length as u64) && (next_plen + (hdr.pn_length as u64)) <= (src.len as u64) else { return hdr, false; }
+        hdr.header_len = (next_plen + (hdr.pn_length as u64)) as u32;
         return hdr, true;
     }
 
@@ -623,9 +624,9 @@ fn decode_quic_datagram_frame(src: const u8[:], offset: u64, packet_end: u64 = 0
     } else if ftype == QUIC_FRAME_DATAGRAM_LEN {
         let dlen, off2, ok2 = quic_decode_varint(src, off1);
         guard ok2 else { return "", offset, false; }
-        let eff_end = off2 + dlen;
         let limit = if packet_end > 0 && packet_end <= (src.len as u64) { packet_end } else { src.len as u64 };
-        guard eff_end <= limit else { return "", offset, false; }
+        guard (0xFFFFFFFFFFFFFFFF - off2) >= dlen && (off2 + dlen) <= limit else { return "", offset, false; }
+        let eff_end = off2 + dlen;
         return src[(off2 as i64)..(eff_end as i64)], eff_end, true;
     }
     return "", offset, false;
