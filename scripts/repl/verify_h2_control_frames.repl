@@ -1,0 +1,106 @@
+# scripts/repl/verify_h2_control_frames.repl
+# HTTP/2 Control Frame Invariants (RFC 9113): SETTINGS, PING, WINDOW_UPDATE, RST_STREAM
+# tested flush at the 64 KB Wasm page boundary.
+
+# 1. Valid 9-byte SETTINGS ACK Frame at Page Edge
+# Length = 0 (0x000000), Type = SETTINGS (0x04), Flags = ACK (0x01), Stream ID = 0 (0x00000000)
+:pkt_edge 000000040100000000
+
+:assert EDGE_ADDR == 65527
+:assert EDGE_LEN == 9
+
+# Memory safety: reading 1 byte past 9-byte header must trap
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation HTTP/2 control frame validator enforcing RFC 9113 invariants
+fn validate_h2_ctrl_frame_wire(addr: i32, len: i32) -> i32 {
+    if len < 9 { return -1; } // incomplete frame header
+    let l0 = load_u8(addr);
+    let l1 = load_u8(addr + 1);
+    let l2 = load_u8(addr + 2);
+    let payload_len = (l0 << 16) | (l1 << 8) | l2;
+    let ftype = load_u8(addr + 3);
+    let flags = load_u8(addr + 4);
+    let sid_b0 = load_u8(addr + 5);
+    let sid_b1 = load_u8(addr + 6);
+    let sid_b2 = load_u8(addr + 7);
+    let sid_b3 = load_u8(addr + 8);
+    let sid = ((sid_b0 & 127) << 24) | (sid_b1 << 16) | (sid_b2 << 8) | sid_b3;
+
+    // RFC 9113 §6.5: SETTINGS
+    if ftype == 4 {
+        if sid != 0 { return 1; } // PROTOCOL_ERROR: SETTINGS stream ID must be 0
+        let is_ack = (flags & 1) != 0;
+        if is_ack && payload_len != 0 {
+            return 6; // FRAME_SIZE_ERROR: SETTINGS with ACK must have length 0
+        }
+        if (payload_len % 6) != 0 {
+            return 6; // FRAME_SIZE_ERROR: SETTINGS payload must be multiple of 6
+        }
+        return 0; // Valid SETTINGS
+    }
+
+    // RFC 9113 §6.7: PING
+    if ftype == 6 {
+        if sid != 0 { return 1; } // PROTOCOL_ERROR: PING stream ID must be 0
+        if payload_len != 8 {
+            return 6; // FRAME_SIZE_ERROR: PING payload length must be exactly 8
+        }
+        return 0; // Valid PING
+    }
+
+    // RFC 9113 §6.9: WINDOW_UPDATE
+    if ftype == 8 {
+        if payload_len != 4 {
+            return 6; // FRAME_SIZE_ERROR: WINDOW_UPDATE length must be 4
+        }
+        return 0; // Valid WINDOW_UPDATE header
+    }
+
+    // RFC 9113 §6.4: RST_STREAM
+    if ftype == 3 {
+        if sid == 0 { return 1; } // PROTOCOL_ERROR: RST_STREAM stream ID cannot be 0
+        if payload_len != 4 {
+            return 6; // FRAME_SIZE_ERROR: RST_STREAM length must be 4
+        }
+        return 0; // Valid RST_STREAM
+    }
+
+    return 0;
+}
+
+# Streaming split check across all 8 prefix fragments at page edge
+# Prefixes 1..8 return -1 (incomplete) without trap; full 9 bytes returns 0 (valid)
+:split_check validate_h2_ctrl_frame_wire EDGE_ADDR EDGE_LEN -1 0
+
+# Wire mutation fuzzing: 256 random bit flips and byte boundary mutations at page edge
+:mutate validate_h2_ctrl_frame_wire EDGE_ADDR EDGE_LEN 256
+
+# 2. RFC 9113 Violation Invariant Assertions
+# SETTINGS ACK with length 6 (violation: length must be 0) -> FRAME_SIZE_ERROR (6)
+:pkt 2048 000006040100000000
+:assert validate_h2_ctrl_frame_wire(2048, 9) == 6
+
+# SETTINGS with non-zero Stream ID 1 (violation: stream ID must be 0) -> PROTOCOL_ERROR (1)
+:pkt 2060 000006040000000001
+:assert validate_h2_ctrl_frame_wire(2060, 9) == 1
+
+# SETTINGS with payload length 5 (violation: not multiple of 6) -> FRAME_SIZE_ERROR (6)
+:pkt 2080 000005040000000000
+:assert validate_h2_ctrl_frame_wire(2080, 9) == 6
+
+# PING with payload length 7 instead of 8 -> FRAME_SIZE_ERROR (6)
+:pkt 2100 000007060000000000
+:assert validate_h2_ctrl_frame_wire(2100, 9) == 6
+
+# PING on Stream ID 3 (violation: stream ID must be 0) -> PROTOCOL_ERROR (1)
+:pkt 2120 000008060000000003
+:assert validate_h2_ctrl_frame_wire(2120, 9) == 1
+
+# RST_STREAM on Stream ID 0 (violation: cannot reset stream 0) -> PROTOCOL_ERROR (1)
+:pkt 2140 000004030000000000
+:assert validate_h2_ctrl_frame_wire(2140, 9) == 1
+
+# RST_STREAM with length 5 instead of 4 -> FRAME_SIZE_ERROR (6)
+:pkt 2160 000005030000000001
+:assert validate_h2_ctrl_frame_wire(2160, 9) == 6

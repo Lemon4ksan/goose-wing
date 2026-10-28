@@ -152,9 +152,7 @@ def recv_all(s: socket.socket, timeout: float = 3.0) -> bytes:
     return bytes(buf)
 
 
-# -----------------------------------------------------------------------------
-# Test Cases
-# -----------------------------------------------------------------------------
+# Test cases
 
 
 def test_1byte_micro_slicing(host: str, port: int):

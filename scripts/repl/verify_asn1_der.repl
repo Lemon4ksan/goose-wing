@@ -1,0 +1,192 @@
+# scripts/repl/verify_asn1_der.repl
+# ASN.1 DER (X.690 / RFC 5280) Tag-Length-Value (TLV) parsing, canonical DER enforcement,
+# overstated length buffer underrun defense, integer padding validation, and page-edge safety.
+
+# 1. Canonical ASN.1 DER TLV Header & Bounds Parser
+# Enforces ITU-T X.690 Section 10.1 & RFC 5280 Section 4.1:
+# - Short form: 0..127 (1 byte)
+# - Long form: 1..4 length octets; values < 128 in long form are strictly FORBIDDEN (non-minimal).
+# - Indefinite length 0x80 is strictly FORBIDDEN in DER.
+# - Reserved initial octet 0xFF is strictly FORBIDDEN.
+# - Redundant leading zeros in long form (e.g. 0x82 0x00 0x80) are strictly FORBIDDEN.
+# - Enforces 31-bit non-negative bound (0..0x7FFFFFFF).
+# Returns payload length (> 0) on success, -1 on incomplete/truncated, -2 on DER violation.
+fn parse_der_tlv(addr: i32, len: i32) -> i32 {
+    if len < 2 { return -1; }
+    let tag = load_u8(addr);
+    let b1 = load_u8(addr + 1);
+    var hdr_len: i32 = 2;
+    var val_len: i32 = 0;
+
+    if (b1 & 128) == 0 {
+        val_len = b1;
+    } else {
+        if b1 == 128 || b1 == 255 {
+            return -2; // Indefinite form (0x80) or reserved (0xFF)
+        }
+        let num_octets = b1 & 127;
+        if num_octets < 1 || num_octets > 4 {
+            return -2; // Unsupported multi-byte length > 4 octets
+        }
+        hdr_len += num_octets;
+        if len < hdr_len {
+            return -1; // Truncated length header
+        }
+
+        var l_acc: i32 = 0;
+        var j: i32 = 0;
+        while j < num_octets {
+            let oct = load_u8(addr + 2 + j);
+            if j == 0 && oct == 0 {
+                return -2; // Redundant leading zero padding in length octets
+            }
+            l_acc = (l_acc << 8) | oct;
+            j += 1;
+        }
+
+        // Non-minimal encoding check: values < 128 MUST use short form
+        if l_acc < 128 {
+            return -2;
+        }
+        if l_acc < 0 {
+            return -2; // 31-bit overflow
+        }
+        val_len = l_acc;
+    }
+
+    // Overstated length / buffer underrun defense:
+    // Ensure all payload bytes actually exist within the slice boundary
+    if len < hdr_len + val_len {
+        return -1; // Truncated payload
+    }
+
+    return val_len;
+}
+
+# 2. Canonical DER TLV Verification at 64 KB Wasm Page Boundary
+# Valid Short-Form DER Integer: Tag 0x02, Length 3, Value: [0x01, 0x00, 0x01] (65537)
+:pkt_edge 0203010001
+:assert EDGE_ADDR == 65531
+:assert EDGE_LEN == 5
+
+# Negative trap assertions: off-by-one and boundary overflow traps
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+:assert_trap load_u8(65536) OutOfBoundsMemoryAccess
+
+# Fragmented stream split check: all prefixes 1..4 return -1 without Wasm trap; full 5 bytes returns 3
+:split_check parse_der_tlv EDGE_ADDR EDGE_LEN -1 3
+
+# Wire mutation fuzzing at page edge: 256 randomized mutations
+:mutate parse_der_tlv EDGE_ADDR EDGE_LEN 256
+
+# Valid Long-Form DER Sequence: Tag 0x30, Length 128 (0x81, 0x80), followed by 128 zero octets
+# Injects header only at 2048 to test length decoder rules
+:pkt 2048 308180
+:assert parse_der_tlv(2048, 3) == -1
+
+# 3. Canonical DER Rejection Invariant Vectors
+# Vector A: Reject non-minimal long form encoding (Length 127 encoded as 0x81 0x7F) -> -2
+:pkt 2100 02817F
+:assert parse_der_tlv(2100, 3) == -2
+
+# Vector B: Reject BER indefinite form (Length 0x80) -> -2
+:pkt 2120 3080
+:assert parse_der_tlv(2120, 2) == -2
+
+# Vector C: Reject reserved initial octet (Length 0xFF) -> -2
+:pkt 2140 02FF01
+:assert parse_der_tlv(2140, 3) == -2
+
+# Vector D: Reject redundant leading zeros in long form (Length 128 encoded as 0x82 0x00 0x80) -> -2
+:pkt 2160 02820080
+:assert parse_der_tlv(2160, 4) == -2
+
+# 4. Overstated Length / Buffer Underrun Attack at Page Edge
+# Injects Tag 0x04 (OCTET STRING), Length claimed = 32 (0x20), but only 4 bytes of payload provided (total 6 bytes)
+:pkt_edge 042001020304
+:assert EDGE_ADDR == 65530
+:assert EDGE_LEN == 6
+
+# Parser strictly detects buffer underrun and returns -1 without reading past page boundary
+:assert parse_der_tlv(EDGE_ADDR, EDGE_LEN) == -1
+
+# Confirm any out-of-bounds index past EDGE_ADDR + EDGE_LEN triggers immediate Wasm trap
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# 5. DER Integer Padding & Serial Number Rules (X.690 Section 8.3 & RFC 5280 Section 4.1.2.2)
+# Enforces:
+# - Empty integer is invalid
+# - Redundant leading zero: val[0] == 0x00 && (val[1] & 0x80) == 0 is forbidden
+# - Redundant leading 0xFF: val[0] == 0xFF && (val[1] & 0x80) != 0 is forbidden
+# - Negative serial number in X.509: (val[0] & 0x80) != 0 is forbidden
+fn validate_der_integer_elem(addr: i32, len: i32) -> i32 {
+    if len < 2 { return -1; }
+    let tag = load_u8(addr);
+    if tag != 2 { return 0; } // Tag must be INTEGER (0x02)
+
+    let vlen = load_u8(addr + 1);
+    if vlen > 127 { return 0; } // Support short-form length for unit element
+    if len < 2 + vlen { return -1; } // Truncated integer payload
+    if vlen == 0 { return 0; } // Empty integer forbidden in DER
+
+    let b0 = load_u8(addr + 2);
+    if vlen == 1 {
+        // Single byte integer: must be positive for serial number (0..127)
+        if (b0 & 128) != 0 { return 0; }
+        return 1;
+    }
+
+    let b1 = load_u8(addr + 3);
+
+    // Negative serial number forbidden
+    if (b0 & 128) != 0 { return 0; }
+
+    // Redundant leading zero check
+    if b0 == 0 && (b1 & 128) == 0 {
+        return 0; // Redundant zero
+    }
+
+    return 1; // Valid DER integer
+}
+
+# Legal leading zero for MSB >= 0x80: Tag 0x02, Len 2, [0x00, 0x80] (value 128)
+:pkt 2200 02020080
+:assert validate_der_integer_elem(2200, 4) == 1
+
+# Redundant leading zero: Tag 0x02, Len 2, [0x00, 0x01] (should be encoded as [0x01])
+:pkt 2220 02020001
+:assert validate_der_integer_elem(2220, 4) == 0
+
+# Negative integer rejected for serial number: Tag 0x02, Len 2, [0xFF, 0x01]
+:pkt 2240 0202FF01
+:assert validate_der_integer_elem(2240, 4) == 0
+
+# Single byte positive integer: Tag 0x02, Len 1, [0x7F] (value 127)
+:pkt 2260 02017F
+:assert validate_der_integer_elem(2260, 3) == 1
+
+# Single byte negative integer rejected: Tag 0x02, Len 1, [0x80] (-128)
+:pkt 2280 020180
+:assert validate_der_integer_elem(2280, 3) == 0
+
+# Page-edge validation of 4-byte serial number: Tag 0x02, Len 4, [0x00, 0xAA, 0xBB, 0xCC] (6 bytes total)
+:pkt_edge 020400AABBCC
+:assert EDGE_ADDR == 65530
+:assert EDGE_LEN == 6
+:assert validate_der_integer_elem(EDGE_ADDR, EDGE_LEN) == 1
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+:split_check validate_der_integer_elem EDGE_ADDR EDGE_LEN -1 1
+:mutate validate_der_integer_elem EDGE_ADDR EDGE_LEN 256
+
+# 6. Pure Framing Computation JIT Parity & Latency Gates
+fn calc_asn1_tag_class(tag: i64) -> i64 {
+    return (tag >> 6) & 3;
+}
+
+fn derive_der_short_len(b: i64) -> i64 {
+    if (b & 128) == 0 { return b; }
+    return -1;
+}
+
+:bench_gate calc_asn1_tag_class(0x30) 500 10000
+:bench_gate derive_der_short_len(0x2A) 500 10000

@@ -24,7 +24,7 @@ if ($IsWindows -or $env:OS -like "*Windows*") {
     }
 }
 
-Write-Host " goose-wing powershell test runner" -ForegroundColor Cyan
+Write-Host "Goose-wing test runner" -ForegroundColor Cyan
 
 # Helper to start process with redirected output (avoids terminal cursor collisions)
 function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect = $true) {
@@ -40,13 +40,13 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect
     return [System.Diagnostics.Process]::Start($psi)
 }
 
-# 1. Typecheck library core & wing
+# Typecheck core and wing libraries
 Write-Host "`n[1/3] Typechecking core and wing libraries..." -ForegroundColor Yellow
 $swCore = [System.Diagnostics.Stopwatch]::StartNew()
 $corePath = Join-Path $root "core.goose"
 $checkCoreOut = & goose check $corePath 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "FATAL: goose check core.goose failed!" -ForegroundColor Red
+    Write-Host "Error: goose check core.goose failed." -ForegroundColor Red
     Write-Host ($checkCoreOut -join "`n") -ForegroundColor Yellow
     exit 1
 }
@@ -56,7 +56,7 @@ $checkWingOut = & goose check $wingPath 2>&1
 $swCore.Stop()
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "FATAL: goose check wing.goose failed!" -ForegroundColor Red
+    Write-Host "Error: goose check wing.goose failed." -ForegroundColor Red
     Write-Host ($checkWingOut -join "`n") -ForegroundColor Yellow
     exit 1
 }
@@ -67,23 +67,23 @@ if (Test-Path $examplesDir) {
     foreach ($ex in $exampleFiles) {
         $checkExOut = & goose check $ex.FullName 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "FATAL: goose check $($ex.Name) failed!" -ForegroundColor Red
+            Write-Host "Error: goose check $($ex.Name) failed." -ForegroundColor Red
             Write-Host ($checkExOut -join "`n") -ForegroundColor Yellow
             exit 1
         }
     }
 }
 $swCore.Stop()
-Write-Host "  OK: core, wing & examples typechecked cleanly in $($swCore.ElapsedMilliseconds)ms." -ForegroundColor Green
+Write-Host "  core, wing and examples typechecked cleanly in $($swCore.ElapsedMilliseconds) ms." -ForegroundColor Green
 
-# 2. Discover test suites
+# Discover test suites
 $testFiles = Get-ChildItem -Path $testsDir -Filter $Pattern | Where-Object { $_.Extension -eq ".goose" } | Sort-Object Name
 if ($testFiles.Count -eq 0) {
     Write-Host "No test files matching '$Pattern' found in $testsDir." -ForegroundColor Yellow
     exit 0
 }
 
-# 3. Check-only mode
+# Check-only mode
 if ($CheckOnly) {
     Write-Host "`n[2/2] Running typecheck on $($testFiles.Count) suites..." -ForegroundColor Yellow
     $swCheck = [System.Diagnostics.Stopwatch]::StartNew()
@@ -91,7 +91,7 @@ if ($CheckOnly) {
     foreach ($file in $testFiles) {
         $out = & goose check $file.FullName 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "FATAL: Typechecking $($file.Name) failed!" -ForegroundColor Red
+            Write-Host "Error: typechecking $($file.Name) failed." -ForegroundColor Red
             Write-Host ($out -join "`n") -ForegroundColor Yellow
             $failed++
         }
@@ -100,12 +100,12 @@ if ($CheckOnly) {
     if ($failed -gt 0) {
         exit 1
     }
-    Write-Host "  OK: All $($testFiles.Count) suites typechecked cleanly in $($swCheck.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
-    Write-Host "`nTypecheck Complete: 100% Valid ($($swCheck.Elapsed.TotalSeconds.ToString('F2'))s)" -ForegroundColor Green
+    Write-Host "  All $($testFiles.Count) suites typechecked cleanly in $($swCheck.Elapsed.TotalSeconds.ToString('F2')) s." -ForegroundColor Green
+    Write-Host "`nTypecheck complete ($($swCheck.Elapsed.TotalSeconds.ToString('F2')) s)." -ForegroundColor Green
     exit 0
 }
 
-# 4. Parallel compilation using bounded worker pool (prevents temp file collisions & I/O thrashing)
+# Parallel compilation
 $maxConcurrent = if ($Jobs -gt 0) { [Math]::Min($Jobs, [Environment]::ProcessorCount) } else { 4 }
 Write-Host "`n[2/3] Compiling $($testFiles.Count) suites (max $maxConcurrent parallel, $optFlag)..." -ForegroundColor Yellow
 $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
@@ -153,7 +153,7 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
             if ($task.Process.ExitCode -eq 0) {
                 Write-Host "  [$completedCount/$totalCount] Built $($task.File.Name) ($elapsedSec s)" -ForegroundColor Green
             } else {
-                Write-Host "  [$completedCount/$totalCount] FAIL: $($task.File.Name) (code $($task.Process.ExitCode))" -ForegroundColor Red
+                Write-Host "  [$completedCount/$totalCount] [FAIL] $($task.File.Name) (code $($task.Process.ExitCode))" -ForegroundColor Red
                 $out = $task.Process.StandardOutput.ReadToEnd()
                 $err = $task.Process.StandardError.ReadToEnd()
                 if ($out) { Write-Host $out -ForegroundColor Yellow }
@@ -167,12 +167,12 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
 $swBuild.Stop()
 
 if ($buildFailed -ne 0) {
-    Write-Host "FATAL: $buildFailed suite(s) failed to compile!" -ForegroundColor Red
+    Write-Host "Error: $buildFailed suite(s) failed to compile." -ForegroundColor Red
     exit 1
 }
-Write-Host "  OK: All $($testFiles.Count) suites compiled cleanly in $($swBuild.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
+Write-Host "  All $($testFiles.Count) suites compiled cleanly in $($swBuild.Elapsed.TotalSeconds.ToString('F2')) s." -ForegroundColor Green
 
-# 5. Execute test suites sequentially with formatted reports
+# Execute test suites
 Write-Host "`n[3/3] Executing verification suites..." -ForegroundColor Yellow
 $swRun = [System.Diagnostics.Stopwatch]::StartNew()
 $passedSuites = 0
@@ -181,17 +181,17 @@ $failedSuites = 0
 foreach ($task in $buildTasks) {
     try {
         if (-not (Test-Path $task.Exe)) {
-            Write-Host "  FAIL: bin/$([System.IO.Path]::GetFileName($task.Exe)) executable not found" -ForegroundColor Red
+            Write-Host "  [FAIL] bin/$([System.IO.Path]::GetFileName($task.Exe)) executable not found" -ForegroundColor Red
             $failedSuites++
             continue
         }
-        Write-Host "`n>>> Running bin/$([System.IO.Path]::GetFileName($task.Exe)) (tests/$($task.File.Name))..." -ForegroundColor Cyan
+        Write-Host "`nRunning tests/$($task.File.Name)..." -ForegroundColor Cyan
         $runProc = Start-GooseProcess $task.Exe "" $false
         $runProc.WaitForExit()
         if ($runProc.ExitCode -eq 0) {
             $passedSuites++
         } else {
-            Write-Host "  FAIL: bin/$([System.IO.Path]::GetFileName($task.Exe)) exited with code $($runProc.ExitCode)" -ForegroundColor Red
+            Write-Host "  [FAIL] bin/$([System.IO.Path]::GetFileName($task.Exe)) exited with code $($runProc.ExitCode)" -ForegroundColor Red
             $failedSuites++
         }
     } finally {
@@ -203,10 +203,8 @@ foreach ($task in $buildTasks) {
 $swRun.Stop()
 
 $totalSeconds = $swCore.Elapsed.TotalSeconds + $swBuild.Elapsed.TotalSeconds + $swRun.Elapsed.TotalSeconds
-Write-Host "`n============================================================" -ForegroundColor Cyan
-Write-Host " Summary: $passedSuites/$($testFiles.Count) suites passed ($failedSuites failed)" -ForegroundColor $(if ($failedSuites -eq 0) { "Green" } else { "Red" })
-Write-Host " Timing:  Build: $($swBuild.Elapsed.TotalSeconds.ToString('F2'))s | Run: $($swRun.Elapsed.TotalSeconds.ToString('F2'))s | Total: $($totalSeconds.ToString('F2'))s" -ForegroundColor Cyan
-Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "`nSummary: $passedSuites/$($testFiles.Count) suites passed ($failedSuites failed)" -ForegroundColor $(if ($failedSuites -eq 0) { "Green" } else { "Red" })
+Write-Host "Timing:  Build: $($swBuild.Elapsed.TotalSeconds.ToString('F2'))s | Run: $($swRun.Elapsed.TotalSeconds.ToString('F2'))s | Total: $($totalSeconds.ToString('F2'))s" -ForegroundColor Cyan
 
 if ($failedSuites -ne 0) {
     exit 1

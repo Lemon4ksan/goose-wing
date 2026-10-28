@@ -264,7 +264,7 @@ def main() -> int:
                 failed_count += 1
                 continue
 
-            print(f"\n{cyan(f'>>> Running tests/{f.name}...')}")
+            print(f"\n{cyan(f'Running tests/{f.name}...')}")
             code, out, err = run_command([str(exe_path)], cwd=root_dir)
 
             if out:
@@ -289,17 +289,16 @@ def main() -> int:
     dt_run = time.perf_counter() - t0_run
     total_time = time.perf_counter() - t0_core
 
-    print(cyan("\n============================================================"))
+    print()
     status_color = green if failed_count == 0 else red
     print(
         status_color(
             bold(
-                f" Summary: {passed_count}/{len(all_test_files)} suites passed ({failed_count} failed)"
+                f"Summary: {passed_count}/{len(all_test_files)} suites passed ({failed_count} failed)"
             )
         )
     )
-    print(cyan(f" Timing:  Build: {dt_build:.2f}s | Run: {dt_run:.2f}s | Total: {total_time:.2f}s"))
-    print(cyan("============================================================"))
+    print(cyan(f"Timing:  Build: {dt_build:.2f}s | Run: {dt_run:.2f}s | Total: {total_time:.2f}s"))
 
     return 1 if failed_count > 0 else 0
 

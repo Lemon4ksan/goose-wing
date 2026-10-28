@@ -1,0 +1,79 @@
+# scripts/repl/verify_ws_autobahn.repl
+# WebSocket framing and Autobahn test vectors (RFC 6455 sections 5.2, 5.5, 7.4).
+# Returns 0 on success or close code 1002 (protocol error).
+
+fn validate_ws_frame(addr: i32, is_client_ingress: i32) -> i32 {
+    let b0 = load_u8(addr);
+    let b1 = load_u8(addr + 1);
+
+    let fin = (b0 >> 7) & 0x1;
+    let rsv1 = (b0 >> 6) & 0x1;
+    let rsv2 = (b0 >> 5) & 0x1;
+    let rsv3 = (b0 >> 4) & 0x1;
+    let opcode = b0 & 0x0F;
+
+    let masked = (b1 >> 7) & 0x1;
+    let basic_len = b1 & 0x7F;
+
+    // Autobahn case 3.x: RSV bits must be 0 without extensions
+    if rsv1 != 0 || rsv2 != 0 || rsv3 != 0 {
+        return 1002; // protocol error
+    }
+
+    // Check opcode validity (0, 1, 2, 8, 9, 10)
+    let is_ctrl = (opcode & 0x08) != 0;
+    if opcode != 0 && opcode != 1 && opcode != 2 && opcode != 8 && opcode != 9 && opcode != 10 {
+        return 1002; // unknown opcode
+    }
+
+    // Autobahn case 5.x: control frames must not be fragmented (fin=1)
+    if is_ctrl && fin == 0 {
+        return 1002; // fragmented control frame
+    }
+
+    // Autobahn case 5.x: control frame payloads must not exceed 125 bytes
+    if is_ctrl && basic_len > 125 {
+        return 1002; // control frame payload too large
+    }
+
+    // Autobahn case 1.x and RFC 6455 section 5.1: client frames must be masked
+    if is_client_ingress == 1 && masked == 0 {
+        return 1002; // unmasked frame from client
+    }
+
+    return 0; // ok
+}
+
+# Valid client text frame (fin=1, opcode=1, masked=1, len=5)
+# b0 = 0x81, b1 = 0x85 (masked, 5 bytes), mask = 11223344
+:pkt 2048 818511223344
+:mem 2048 6
+:assert validate_ws_frame(2048, 1) == 0
+
+# Autobahn case 3.1: RSV1 set without extension produces protocol error
+# b0 = 0xC1 (fin=1, rsv1=1, opcode=1)
+:pkt 2060 C18511223344
+:assert validate_ws_frame(2060, 1) == 1002
+
+# Autobahn case 3.2: RSV2 set without extension produces protocol error
+# b0 = 0xA1 (fin=1, rsv2=1, opcode=1)
+:pkt 2080 A18511223344
+:assert validate_ws_frame(2080, 1) == 1002
+
+# Autobahn case 5.1: fragmented PING produces protocol error
+# b0 = 0x09 (fin=0, opcode=9), b1 = 0x80
+:pkt 2100 098011223344
+:assert validate_ws_frame(2100, 1) == 1002
+
+# Autobahn case 5.18: PING payload exceeding 125 bytes produces protocol error
+# b0 = 0x89 (fin=1, opcode=9), b1 = 0xFE (mask=1, len=126)
+:pkt 2120 89FE11223344
+:assert validate_ws_frame(2120, 1) == 1002
+
+# Autobahn case 1.1: unmasked client frame produces protocol error
+# b0 = 0x81 (fin=1, opcode=1), b1 = 0x05 (mask=0, len=5)
+:pkt 2140 810568656C6C6F
+:assert validate_ws_frame(2140, 1) == 1002
+
+# Unmasked server frame is allowed
+:assert validate_ws_frame(2140, 0) == 0

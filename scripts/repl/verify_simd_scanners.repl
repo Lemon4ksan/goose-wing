@@ -1,7 +1,7 @@
 # scripts/repl/verify_simd_scanners.repl
-# Zero-allocation in-memory verification for SIMD/SWAR scanners in goose-wing.
+# SIMD scanner verification for delimiters and masking.
 
-# 1. HTTP Delimiter SIMD Inspection
+# HTTP delimiter SIMD scan
 :pkt 2048 "GET /api/v2/orders HTTP/1.1\r\nHost: example.com\r\n\r\n"
 :simd 2048 47
 :mem 2048 32
@@ -16,7 +16,7 @@ fn scan_slashes_at(addr: i32) -> i32 {
 # In "GET /api/v2/orde", '/' is at index 4 (16), index 8 (256), and index 11 (2048) -> bitmask 2320
 :assert scan_slashes_at(2048) == 2320
 
-# 2. WebSocket 128-bit SIMD In-place XOR Unmasking
+# WebSocket 128-bit SIMD XOR unmasking
 # Payload: 16 bytes "Hello Goose Wing"
 # Mask: [0xAA, 0xBB, 0xCC, 0xDD] repeating
 :pkt 4096 "Hello Goose Wing"

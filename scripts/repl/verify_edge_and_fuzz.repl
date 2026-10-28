@@ -1,0 +1,102 @@
+# scripts/repl/verify_edge_and_fuzz.repl
+# Hardware page-edge sliding, negative trap assertions, deterministic split checks,
+# wire mutation fuzzing, and JIT performance parity gates.
+
+# 1. HTTP/2 Frame Header at 64 KB Wasm Page Edge
+# Injects a 9-byte HEADERS frame (RFC 9113 section 4.1):
+# Payload length = 8 (0x000008), Type = HEADERS (0x01), Flags = END_STREAM|END_HEADERS (0x05), Stream ID = 3
+:pkt_edge 000008010500000003
+
+# Verify session variables computed by :pkt_edge
+:assert EDGE_ADDR == 65527
+:assert EDGE_LEN == 9
+
+# In-bounds reads at boundary
+:assert load_u8(EDGE_ADDR) == 0
+:assert load_u8(EDGE_ADDR + 2) == 8
+:assert load_u8(EDGE_ADDR + 3) == 1
+:assert load_u8(EDGE_ADDR + 4) == 5
+:assert load_u8(EDGE_ADDR + 8) == 3
+
+# Negative trap assertions: off-by-one and boundary overflow traps
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+:assert_trap load_u8(65536) OutOfBoundsMemoryAccess
+:assert_trap load_u8(65540) OutOfBoundsMemoryAccess
+:assert_trap 42 / 0 DivisionByZero
+
+# HTTP/2 9-byte header parser with strict bounds guard
+fn decode_h2_header(addr: i32, len: i32) -> i32 {
+    if len < 9 { return -1; }
+    let l0 = load_u8(addr);
+    let l1 = load_u8(addr + 1);
+    let l2 = load_u8(addr + 2);
+    let ftype = load_u8(addr + 3);
+    let sid_b0 = load_u8(addr + 5);
+    let sid_b1 = load_u8(addr + 6);
+    let sid_b2 = load_u8(addr + 7);
+    let sid_b3 = load_u8(addr + 8);
+    let sid = ((sid_b0 & 0x7F) << 24) | (sid_b1 << 16) | (sid_b2 << 8) | sid_b3;
+    if sid == 0 && ftype == 1 { return -2; }
+    return (l0 << 16) | (l1 << 8) | l2;
+}
+
+# Verify TCP streaming fragmentation across all prefixes 1..8 at page boundary
+# Prefix lengths 1..8 must return -1 without Wasm trap; full 9 bytes returns payload length 8
+:split_check decode_h2_header EDGE_ADDR EDGE_LEN -1 8
+
+# Wire mutation fuzzing: 256 randomized bit-flips and byte boundary mutations at page edge
+:mutate decode_h2_header EDGE_ADDR EDGE_LEN 256
+
+# 2. WebSocket Masked Frame at Page Edge (RFC 6455 section 5.2)
+# 11 bytes: FIN+text (0x81), Masked + len 5 (0x85), Mask Key (0x01020304), Payload "hello" (0x68656C6C6F)
+:pkt_edge 81850102030468656C6C6F
+
+:assert EDGE_ADDR == 65525
+:assert EDGE_LEN == 11
+
+# Trap when reading 1 byte past frame
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Bounded WebSocket frame validator
+fn validate_ws_frame(addr: i32, len: i32) -> i32 {
+    if len < 2 { return -1; }
+    let b1 = load_u8(addr + 1);
+    let masked = (b1 & 0x80) != 0;
+    var payload_len: i32 = (b1 & 0x7F) as! i32;
+    var hdr_len: i32 = 2;
+    if payload_len == 126 {
+        hdr_len += 2;
+        if len < hdr_len { return -1; }
+        payload_len = (load_u8(addr + 2) << 8) | load_u8(addr + 3);
+    } else if payload_len == 127 {
+        hdr_len += 8;
+        if len < hdr_len { return -1; }
+        payload_len = (load_u8(addr + 6) << 24) | (load_u8(addr + 7) << 16) | (load_u8(addr + 8) << 8) | load_u8(addr + 9);
+    }
+    if masked {
+        hdr_len += 4;
+    }
+    if len < hdr_len + payload_len {
+        return -1;
+    }
+    return payload_len;
+}
+
+# Split check across all 10 prefixes at page edge; full 11 bytes returns 5
+:split_check validate_ws_frame EDGE_ADDR EDGE_LEN -1 5
+
+# Wire mutation fuzzing: 256 randomized mutations at page edge without memory traps
+:mutate validate_ws_frame EDGE_ADDR EDGE_LEN 256
+
+# 3. Pure Framing Computation JIT Parity & Latency Gates
+fn calc_h2_stream_word(hi: i64, lo: i64) -> i64 {
+    return ((hi & 127) << 16) | (lo & 65535);
+}
+
+fn derive_mask_key(m1: i64, m2: i64) -> i64 {
+    return ((m1 ^ 0x5A5A5A5A) << 16) | (m2 & 65535);
+}
+
+# Bit-exact JIT/VM parity check + max latency 500 ns/op
+:bench_gate calc_h2_stream_word(1, 42) 500 10000
+:bench_gate derive_mask_key(12345, 67890) 500 10000

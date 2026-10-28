@@ -3,12 +3,12 @@
 
 <#
 .SYNOPSIS
-    verify_wing_gate.ps1 - Hardware Enforcement Gate for AI-Generated Goose Code.
-    Enforces strict mathematical complexity ceilings (goose-crap), zero-allocation Wasm memory
-    invariants and JIT parity (gosling), and protocol regression verification (goose-wing).
+    verify_wing_gate.ps1 - Verification gate for goose-wing code.
+    Runs formatting, static typecheck, complexity and bounds checks (goose-crap, gosling),
+    and optional test suites.
 
 .PARAMETER TargetFile
-    Path to the .goose source file being audited/refactored in goose-wing.
+    Path to the .goose source file being audited or refactored.
 
 .PARAMETER MaxGCrap
     Maximum allowable G-CRAP score for any function (default: 25).
@@ -17,7 +17,7 @@
     Simulated branch coverage for risk estimation (default: 0.85).
 
 .PARAMETER ReplScript
-    Optional path to a .repl script containing packet injection (:pkt) and assertions (:assert).
+    Optional path to a .repl script with packet injection (:pkt) and assertions (:assert).
 
 .PARAMETER TestSuite
     Optional path to a .goose test suite to execute.
@@ -36,22 +36,19 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 
-Write-Host "Goose-Wing verification gate: goose-crap + gosling -> goose-wing" -ForegroundColor Cyan
-Write-Host "Target: $TargetFile" -ForegroundColor Yellow
-Write-Host "Max G-CRAP Ceiling: $MaxGCrap | Simulated Cov: $($SimCov * 100)%" -ForegroundColor Yellow
+Write-Host "Verifying $TargetFile"
+Write-Host "Ceiling: G-CRAP $MaxGCrap, simulated coverage $($SimCov * 100)%"
 
 if (-not (Test-Path $TargetFile)) {
-    Write-Host "ERROR: Target file does not exist: $TargetFile" -ForegroundColor Red
+    Write-Host "Error: Target file does not exist: $TargetFile" -ForegroundColor Red
     exit 1
 }
 
-# -----------------------------------------------------------------------------
-# Phase 1: Formatting & Static Typechecking
-# -----------------------------------------------------------------------------
-Write-Host "`n[1/4] Checking Goose formatting and syntax..." -ForegroundColor Cyan
+# Phase 1: formatting and typecheck
+Write-Host "`nPhase 1: Format and typecheck"
 $fmtOut = & goose format --check $TargetFile 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "REJECTED: Code formatting violation in $TargetFile." -ForegroundColor Red
+    Write-Host "Formatting error in $TargetFile." -ForegroundColor Red
     if ($fmtOut) {
         Write-Host ($fmtOut -join "`n") -ForegroundColor Yellow
     }
@@ -67,18 +64,16 @@ if ($LASTEXITCODE -ne 0) {
     $wingPath = Join-Path $root "wing.goose"
     $chkOut = & goose check $wingPath 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "REJECTED: Static typecheck failed in $TargetFile." -ForegroundColor Red
+        Write-Host "Typecheck failed in $TargetFile." -ForegroundColor Red
         Write-Host ($chkOut -join "`n") -ForegroundColor Yellow
         exit 1
     }
 }
 $ErrorActionPreference = $prevEAP
-Write-Host "  PASS: Formatting & typecheck 100% clean." -ForegroundColor Green
+Write-Host "  Format and typecheck passed." -ForegroundColor Green
 
-# -----------------------------------------------------------------------------
-# Phase 2: Gosling Hardware Sandbox & Complexity Gate
-# -----------------------------------------------------------------------------
-Write-Host "`n[2/4] Executing Gosling Hardware Gate (:gate ceiling = $MaxGCrap)..." -ForegroundColor Cyan
+# Phase 2: complexity gate
+Write-Host "`nPhase 2: Complexity gate (ceiling: $MaxGCrap)"
 $goslingRepl = "D:\GooseProjects\gosling\bin\gosling-repl.exe"
 if (-not (Test-Path $goslingRepl)) {
     $goslingRepl = Join-Path $root "..\gosling\bin\gosling-repl.exe"
@@ -96,32 +91,30 @@ if (Test-Path $goslingRepl) {
         $ErrorActionPreference = $prevEap
         if ($gateRc -eq 0) {
             Write-Host ($gateOut -join "`n")
-            Write-Host "  PASS: Gosling hardware gate verified." -ForegroundColor Green
+            Write-Host "  Complexity gate passed." -ForegroundColor Green
         } else {
-            Write-Host "  NOTICE: Gosling-repl AST capacity exceeded for large file ($TargetFile); deferring to native goose-crap." -ForegroundColor Yellow
+            Write-Host "  gosling-repl AST capacity exceeded for $TargetFile; deferring to goose-crap." -ForegroundColor Yellow
         }
     } catch {
-        Write-Host "  NOTICE: Gosling-repl skipped for large file ($TargetFile)." -ForegroundColor Yellow
+        Write-Host "  gosling-repl skipped for $TargetFile." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  SKIP: gosling-repl binary not found (optional)." -ForegroundColor Yellow
+    Write-Host "  gosling-repl not found (optional)." -ForegroundColor Yellow
 }
 
-# If custom .repl batch script provided (e.g. packet injection & assertions)
+# Optional .repl verification script
 if ($ReplScript -ne "" -and (Test-Path $ReplScript) -and (Test-Path $goslingRepl)) {
-    Write-Host "`nExecuting Gosling batch assertions ($ReplScript)..." -ForegroundColor Cyan
+    Write-Host "`nExecuting verification script: $ReplScript"
     $scriptOut = & $goslingRepl $ReplScript 2>&1
     Write-Host ($scriptOut -join "`n")
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "REJECTED: Gosling batch verification script failed!" -ForegroundColor Red
+        Write-Host "Verification script failed: $ReplScript" -ForegroundColor Red
         exit 1
     }
 }
 
-# -----------------------------------------------------------------------------
-# Phase 3: Goose-CRAP Ratchet & Safety Radar
-# -----------------------------------------------------------------------------
-Write-Host "`n[3/4] Evaluating Goose-CRAP Ratchet & Baseline..." -ForegroundColor Cyan
+# Phase 3: complexity baseline check
+Write-Host "`nPhase 3: Baseline check"
 $crapBin = "D:\GooseProjects\goose-crap\bin\goose-crap.exe"
 if (-not (Test-Path $crapBin)) {
     $crapBin = Join-Path $root "..\goose-crap\bin\goose-crap.exe"
@@ -136,28 +129,26 @@ if (Test-Path $crapBin) {
     $crapOut = & $crapBin @crapArgs 2>&1
     Write-Host ($crapOut -join "`n")
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "REJECTED: goose-crap detected G-CRAP regression or unproven BCE hazard!" -ForegroundColor Red
+        Write-Host "goose-crap reported complexity regression or unproven bounds check." -ForegroundColor Red
         exit 1
     }
-    Write-Host "  PASS: goose-crap risk radar verified." -ForegroundColor Green
+    Write-Host "  Baseline check passed." -ForegroundColor Green
 } else {
-    Write-Host "  SKIP: goose-crap.exe not found at $crapBin (optional)." -ForegroundColor Yellow
+    Write-Host "  goose-crap not found (optional)." -ForegroundColor Yellow
 }
 
-# -----------------------------------------------------------------------------
-# Phase 4: Test Suite Execution
-# -----------------------------------------------------------------------------
+# Phase 4: test suite
 if ($TestSuite -ne "") {
-    Write-Host "`n[4/4] Executing test suite ($TestSuite)..." -ForegroundColor Cyan
+    Write-Host "`nPhase 4: Test suite ($TestSuite)"
     if (-not (Test-Path $TestSuite)) {
-        Write-Host "ERROR: Test suite not found: $TestSuite" -ForegroundColor Red
+        Write-Host "Test suite not found: $TestSuite" -ForegroundColor Red
         exit 1
     }
     $testBin = Join-Path $root "bin\gate_test_tmp.exe"
     $env:GOOSE_CC = Join-Path $root "tools\gcc_noavx.cmd"
     $bldOut = & goose build -O2 -o $testBin $TestSuite 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "REJECTED: Test compilation failed:" -ForegroundColor Red
+        Write-Host "Test compilation failed:" -ForegroundColor Red
         Write-Host ($bldOut -join "`n") -ForegroundColor Yellow
         exit 1
     }
@@ -166,15 +157,13 @@ if ($TestSuite -ne "") {
     $testRc = $LASTEXITCODE
     if (Test-Path $testBin) { Remove-Item -Force $testBin }
     if ($testRc -ne 0) {
-        Write-Host "REJECTED: Test suite failed with code $testRc!" -ForegroundColor Red
+        Write-Host "Test suite failed with exit code $testRc." -ForegroundColor Red
         exit 1
     }
-    Write-Host "  PASS: Test suite executed with 0 failures." -ForegroundColor Green
+    Write-Host "  Test suite passed." -ForegroundColor Green
 } else {
-    Write-Host "`n[4/4] No dedicated test suite specified. Skipping phase 4." -ForegroundColor Gray
+    Write-Host "`nPhase 4: No test suite specified." -ForegroundColor Gray
 }
 
-Write-Host "`n========================================================================" -ForegroundColor Green
-Write-Host "  ALL GATES PASSED: Target is verified, deterministic, and within bounds!" -ForegroundColor Green
-Write-Host "========================================================================" -ForegroundColor Green
+Write-Host "`nAll verification checks passed for $TargetFile." -ForegroundColor Green
 exit 0
