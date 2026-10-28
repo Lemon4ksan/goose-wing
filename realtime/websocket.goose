@@ -1584,13 +1584,6 @@ fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessage
     return consumed, handled;
 }
 
-// Streams and dispatches a single WebSocket frame from the front of `wire`:
-// - Returns `(0, false)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
-// - Returns `(consumed, true)` when a complete frame was processed or a fatal header violation closed the session.
-fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> i64, bool {
-    return consume_frame_view_into(ws, wire, ws.frag_buffer, ws.frag_buffer.cap, out_view, out_reply);
-}
-
 // Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,
 // answers Close with Close echo, reassembles multi-frame fragmented messages (RFC 6455 §5.4),
 // validates strict UTF-8 on text and close frames, and populates out_msg upon message completion.
