@@ -4,7 +4,7 @@
 <#
 .SYNOPSIS
     verify_wing_gate.ps1 - Verification gate for goose-wing code.
-    Runs formatting, static typecheck, complexity and bounds checks (goose-crap, gosling),
+    Runs formatting, static typecheck, hardware complexity gate (goose-lit),
     and optional test suites.
 
 .PARAMETER TargetFile
@@ -16,11 +16,11 @@
 .PARAMETER SimCov
     Simulated branch coverage for risk estimation (default: 0.85).
 
-.PARAMETER ReplScript
-    Optional path to a .repl script with packet injection (:pkt) and assertions (:assert).
+.PARAMETER LitScript
+    Optional path to a .goose LIT verification test suite.
 
 .PARAMETER TestSuite
-    Optional path to a .goose test suite to execute.
+    Optional path to a .goose test suite to compile and execute.
 #>
 
 param(
@@ -29,7 +29,7 @@ param(
 
     [int]$MaxGCrap = 25,
     [double]$SimCov = 0.85,
-    [string]$ReplScript = "",
+    [string]$LitScript = "",
     [string]$TestSuite = ""
 )
 
@@ -72,72 +72,58 @@ if ($LASTEXITCODE -ne 0) {
 $ErrorActionPreference = $prevEAP
 Write-Host "  Format and typecheck passed." -ForegroundColor Green
 
-# Phase 2: complexity gate
+# Phase 2: Hardware complexity gate via goose-lit
 Write-Host "`nPhase 2: Complexity gate (ceiling: $MaxGCrap)"
-$goslingRepl = "D:\GooseProjects\gosling\bin\gosling-repl.exe"
-if (-not (Test-Path $goslingRepl)) {
-    $goslingRepl = Join-Path $root "..\gosling\bin\gosling-repl.exe"
-}
-if (-not (Test-Path $goslingRepl)) {
-    $goslingRepl = Join-Path $root "bin\gosling-repl.exe"
+$litBin = "D:\GooseProjects\goose-lit\bin\goose-lit.exe"
+if (-not (Test-Path $litBin)) {
+    $litBin = Join-Path $root "..\goose-lit\bin\goose-lit.exe"
 }
 
-if (Test-Path $goslingRepl) {
-    try {
-        $prevEap = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        $gateOut = & $goslingRepl --gate $TargetFile $MaxGCrap $SimCov 2>&1
-        $gateRc = $LASTEXITCODE
-        $ErrorActionPreference = $prevEap
-        if ($gateRc -eq 0) {
-            Write-Host ($gateOut -join "`n")
-            Write-Host "  Complexity gate passed." -ForegroundColor Green
-        } else {
-            Write-Host "  gosling-repl AST capacity exceeded for $TargetFile; deferring to goose-crap." -ForegroundColor Yellow
+if (-not (Test-Path $litBin)) {
+    $cmd = Get-Command "goose-lit" -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $litBin = $cmd.Source
+    }
+}
+
+if (Test-Path $litBin) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $gateOut = & $litBin gate $TargetFile $MaxGCrap --cov $SimCov 2>&1
+    $gateRc = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    Write-Host ($gateOut -join "`n")
+    if ($gateRc -eq 0) {
+        Write-Host "  Complexity gate passed." -ForegroundColor Green
+    } else {
+        Write-Host "  Complexity gate rejected for $TargetFile (exit $gateRc)." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "  goose-lit not found (optional)." -ForegroundColor Yellow
+}
+
+# Phase 3: Optional LIT verification script
+if ($LitScript -ne "") {
+    Write-Host "`nPhase 3: Executing LIT verification script: $LitScript"
+    if (-not (Test-Path $LitScript)) {
+        Write-Host "LIT verification script not found: $LitScript" -ForegroundColor Red
+        exit 1
+    }
+    if (Test-Path $litBin) {
+        $scriptOut = & $litBin $LitScript 2>&1
+        Write-Host ($scriptOut -join "`n")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "LIT verification script failed: $LitScript" -ForegroundColor Red
+            exit 1
         }
-    } catch {
-        Write-Host "  gosling-repl skipped for $TargetFile." -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "  gosling-repl not found (optional)." -ForegroundColor Yellow
-}
-
-# Optional .repl verification script
-if ($ReplScript -ne "" -and (Test-Path $ReplScript) -and (Test-Path $goslingRepl)) {
-    Write-Host "`nExecuting verification script: $ReplScript"
-    $scriptOut = & $goslingRepl $ReplScript 2>&1
-    Write-Host ($scriptOut -join "`n")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Verification script failed: $ReplScript" -ForegroundColor Red
-        exit 1
+        Write-Host "  LIT verification passed." -ForegroundColor Green
+    } else {
+        Write-Host "  goose-lit runner not available to run $LitScript." -ForegroundColor Yellow
     }
 }
 
-# Phase 3: complexity baseline check
-Write-Host "`nPhase 3: Baseline check"
-$crapBin = "D:\GooseProjects\goose-crap\bin\goose-crap.exe"
-if (-not (Test-Path $crapBin)) {
-    $crapBin = Join-Path $root "..\goose-crap\bin\goose-crap.exe"
-}
-$wingBaseline = "D:\GooseProjects\goose-wing\.gcrap-baseline.json"
-
-if (Test-Path $crapBin) {
-    $crapArgs = @("$TargetFile", "--threshold", "$MaxGCrap")
-    if (Test-Path $wingBaseline) {
-        $crapArgs += @("--baseline", "$wingBaseline", "--delta", "0.0")
-    }
-    $crapOut = & $crapBin @crapArgs 2>&1
-    Write-Host ($crapOut -join "`n")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "goose-crap reported complexity regression or unproven bounds check." -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "  Baseline check passed." -ForegroundColor Green
-} else {
-    Write-Host "  goose-crap not found (optional)." -ForegroundColor Yellow
-}
-
-# Phase 4: test suite
+# Phase 4: Test suite
 if ($TestSuite -ne "") {
     Write-Host "`nPhase 4: Test suite ($TestSuite)"
     if (-not (Test-Path $TestSuite)) {

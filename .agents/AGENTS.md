@@ -41,79 +41,55 @@ Releases are automated via Google's `release-please` workflow on `main`.
     powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
     ```
   - Core libraries (`core.goose`, `wing.goose`) and all test suites must pass without errors or warnings.
-- **Hardware enforcement gate (`goose-crap` + `gosling`)**:
+- **Hardware enforcement gate (`goose-lit`)**:
   - Every modified or refactored `.goose` file must pass the hardware complexity gate before finalizing changes:
     ```powershell
     powershell -ExecutionPolicy Bypass -File .\scripts\verify_wing_gate.ps1 -TargetFile "<path\to\file.goose>" -MaxGCrap 25
     ```
-  - Pass `-ReplScript "<path\to\checks.repl>"` and `-TestSuite "<path\to\test.goose>"` to combine static complexity gating with in-memory packet assertions and unit tests in a single run.
+  - Pass `-LitScript "<path\to\test.goose>"` and `-TestSuite "<path\to\test.goose>"` to combine static complexity gating with native LIT assertions and unit tests in a single run.
   - If the script exits with code 1 (`GATE REJECTED`), functions must be flattened with `guard` clauses, bounds checks proved, and cyclomatic depth reduced until all functions pass.
 
-## Gosling REPL and wire verification workflow
+## Goose LIT and native wire verification workflow
 
-Use `..\gosling\bin\gosling-repl.exe` (`..\gosling\compiler\repl.goose`) to compile, fuzz, and benchmark `goose-wing` protocol parsers, SIMD scanners, and L4 socket state machines in memory without starting external network servers:
+Use `..\goose-lit\bin\goose-lit.exe` to run LLVM-style `// RUN:` test directives, FileCheck output matching, and static G-CRAP complexity analysis without Wasm virtualization:
 
 ```powershell
-# Composable one-liner: load, inject packet, inspect SIMD, and assert without string escaping or `n
-..\gosling\bin\gosling-repl.exe -q -l http\parser.goose `
-  --pkt '2048:"GET /index.html HTTP/1.1\r\n\r\n"' `
-  --simd 2048:47 `
-  -a "scan_uri(2048, 28) == 1"
+# Execute a single native LIT test suite
+..\goose-lit\bin\goose-lit.exe tests\lit\verify_wire_framing.goose
 
-# Hardware complexity gate with JSON/TSV structured reporting
-..\gosling\bin\gosling-repl.exe -l auth\jwks.goose --gate 25 --cov 0.85 --format json
+# Run all native LIT verification suites in parallel
+powershell -ExecutionPolicy Bypass -File .\scripts\test_lit.ps1
 
-# Execute a batch .repl verification script
-..\gosling\bin\gosling-repl.exe "<path\to\verify_parser.repl>"
+# Hardware complexity gate analysis
+..\goose-lit\bin\goose-lit.exe gate auth/jwks.goose 25 --cov 0.85
 
-# Execute all in-memory protocol verification suites (< 300ms)
-powershell -ExecutionPolicy Bypass -File .\scripts\test_repl.ps1
+# Risk radar table output
+..\goose-lit\bin\goose-lit.exe crap http/headers.goose --threshold 25.0
 ```
 
-### Composable CLI flags
+### Goose LIT CLI commands and options
 
-| CLI flag | Arguments | Purpose in `goose-wing` workflows |
+| Subcommand / Option | Arguments | Purpose in `goose-wing` workflows |
 | :--- | :--- | :--- |
-| `-l`, `--load` | `<file.goose>` | Loads declarations into session (can be repeated for dependencies). |
-| `--set` | `<name>=<val>` | Pre-sets session variable before execution. |
-| `-e`, `--eval` | `<expr\|:cmd>` | Evaluates expression, statement, or REPL command. |
-| `-a`, `--assert` | `<lhs> == <rhs>` | Evaluates assertion; exits with code 2 on mismatch or trap. |
-| `--pkt` | `<addr>:<hex\|"str">` | Injects raw wire bytes or escaped HTTP/TLS/gRPC payload into linear memory. |
-| `--pkt-file` | `<addr>:<path>` | Injects binary test vector file directly into linear memory. |
-| `--mem` | `[addr][:len]` | Dumps linear memory in hex and ASCII (default 2048:64). |
-| `--simd` | `[addr][:byte]` | Inspects 16-byte `v128` window and match mask (default 2048:'/'). |
-| `--crap` | `[fn]` | Computes `G-CRAP`, `CC`, `EffCC`, `BCE`, and archetype. |
-| `--gate` | `[file.goose\|max] [cov]` | Enforces hardware gate thresholds (exits with code 3 on violation). |
+| `<path>` | `<file.goose\|dir>` | Discovers and executes all `// RUN:` directives under target. |
+| `filecheck` | `<file.goose>` | Verifies standard input against `// CHECK:` patterns in target file. |
+| `gate` | `<path> [ceiling]` | Enforces G-CRAP risk gate ceiling (default 25.0, exits with 1 on violation). |
+| `crap` | `<path>` | Runs static G-CRAP complexity and bounds risk analysis radar. |
+| `inspect` | `<file\|hex>` | Dumps byte buffers in hex/ASCII or 128-bit SIMD lanes (`--simd`). |
+| `--prefix` | `<PREFIX>` | Configures FileCheck pattern prefix (default `CHECK`). |
 | `--cov` | `<0.0..1.0>` | Sets simulated branch coverage for crap and gate analysis (default 0.85). |
-| `--format` | `text\|json\|tsv` | Sets output format for crap and gate reporting. |
-| `--wasm` | `<fn\|expr>` | Disassembles generated Wasm bytecode. |
-| `--dump-wasm` | `<path>` | Saves compiled Wasm bytecode to file. |
-| `--jit` | `<fn(args)\|expr>` | Compiles to x86_64, executes on CPU, and verifies VM parity (code 4 on mismatch). |
-| `--bench` | `<fn(args)\|expr>[:iters]` | Benchmarks execution time between Wasm VM and native JIT. |
-| `-q`, `--quiet` | - | Suppresses banners and non-error status messages. |
-| `--keep-going` | - | Continues execution across multiple assertions instead of aborting on first failure. |
-| `-i`, `--interactive` | - | Enters interactive REPL terminal after batch steps. |
+| `--threshold` | `<val>` | Sets G-CRAP warning threshold for radar reporting (default 25.0). |
+| `--format` | `table\|md\|json` | Sets output format for report formatting. |
 
-Exit codes: `0` = Success, `1` = Syntax/Compile/CLI error, `2` = Assertion/Trap failure, `3` = Gate ceiling breach, `4` = JIT parity mismatch.
+### LIT test directives and FileCheck patterns
 
-### Interactive and script meta-commands
-
-| REPL command | Purpose in `goose-wing` workflows |
+| Directive | Purpose in test files (`tests/lit/*.goose`) |
 | :--- | :--- |
-| `:load <file.goose>` | Strips `namespace`/`import` headers, hot-reloads declarations into the session, and compiles them to Wasm in memory. |
-| `:decls` / `:undef <sym>` | Lists active session functions/types or removes a symbol before redefining it. |
-| `:pkt <addr> <hex\|"str">` | Injects raw wire bytes or escaped HTTP/TLS/gRPC payloads directly into persistent linear memory (`2048..65535`). |
-| `:pkt_file <addr> <path>` | Injects binary test vector file into persistent linear memory. |
-| `:simd <addr> [byte]` | Displays a 16-byte `v128` memory window at `<addr>`, lane-by-lane matches against `[byte]` (default `'/'`, `47`), and the computed `i8x16.bitmask`. |
-| `:mem [addr] [len]` | Dumps linear memory in hex and ASCII to inspect zero-copy parser state or serialized frames. |
-| `:sockets` | Inspects the 8 virtual in-memory L4 socket slots (`wing_tcp_listen`, `wing_tcp_connect`, `wing_tcp_accept`, `wing_tcp_send`, `wing_tcp_recv`, `wing_tcp_close`) pre-bound in every session. |
-| `:assert <lhs> == <rhs>` | Evaluates both expressions in the Wasm VM and fails with exit code 1 on trap (`OutOfBoundsMemoryAccess`, `IntegerOverflow`) or value mismatch. |
-| `:crap [fn] [cov]` | Computes cyclomatic complexity (`CC`), nesting-weighted `EffCC`, unproven bounds checks (`BCE`), overflow ops (`OVF`), and `G-CRAP` archetype (`SAFE_PRIMITIVE`, `VERIFIED_DISPATCH`, `FUZZ_PRIORITY`, `PANIC_HAZARD`). |
-| `:gate [max_gcrap] [cov]` | Rejects the session (exit code 1) if any function exceeds `max_gcrap`, `EffCC > 15`, or contains unproven `BCE` at `< 80%` simulated coverage. |
-| `:wasm <fn\|expr>` | Disassembles generated W3C WebAssembly bytecode, including `0xFC` bulk memory and `0xFD` 128-bit SIMD opcodes. |
-| `:dump_wasm <path>` | Saves compiled Wasm bytecode to file. |
-| `:jit <fn(args)>` | Compiles Wasm bytecode to native x86_64 machine code, executes it on the CPU, and verifies `BIT-EXACT MATCH` against the Wasm VM. |
-| `:bench <fn(args)> [iters]` | Benchmarks execution time (`ns/op`) and speedup between the Wasm interpreter and native x86_64 JIT. |
+| `// RUN: goose %s \| %FileCheck %s` | Compiles and executes test via native Goose and pipes stdout to FileCheck. |
+| `// RUN: goose check %s` | Typechecks test file statically. |
+| `// CHECK: <pattern>` | Asserts that `<pattern>` appears in output stream. |
+| `// CHECK-NEXT: <pattern>` | Asserts that `<pattern>` appears on the immediate next line. |
+| `// CHECK-NOT: <pattern>` | Asserts that `<pattern>` does not appear before next match. |
 
 ## Pragmatic systems engineering principles
 

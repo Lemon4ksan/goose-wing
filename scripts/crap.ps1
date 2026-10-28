@@ -2,43 +2,42 @@
 # Copyright (c) 2026 Lemon4ksan
 
 # scripts/crap.ps1
-# Local runner for goose-crap risk radar in goose-wing.
-# TODO: make a goose-crap github ci/cd
+# Local runner for goose-lit crap risk radar in goose-wing.
+
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$CrapArgs
 )
 
 $root = Split-Path -Parent $PSScriptRoot
-$crapBin = Join-Path $root "..\goose-crap\bin\goose-crap.exe"
+$litBin = Join-Path $root "..\goose-lit\bin\goose-lit.exe"
 
-# If binary does not exist, build it from sibling goose-crap repository
-if (-not (Test-Path $crapBin)) {
-    $crapDir = Join-Path $root "..\goose-crap"
-    if (Test-Path (Join-Path $crapDir "bin.goose")) {
-        Write-Host "Building native goose-crap..." -ForegroundColor Cyan
-        & goose build -o "$crapBin" (Join-Path $crapDir "bin.goose")
+# If binary does not exist, build it from sibling goose-lit repository
+if (-not (Test-Path $litBin)) {
+    $litDir = Join-Path $root "..\goose-lit"
+    if (Test-Path (Join-Path $litDir "bin.goose")) {
+        Write-Host "Building native goose-lit..." -ForegroundColor Cyan
+        & goose build --cc gcc -O2 -o "$litBin" (Join-Path $litDir "bin.goose")
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "Error: Failed to compile goose-crap." -ForegroundColor Red
+            Write-Host "Error: Failed to compile goose-lit." -ForegroundColor Red
             exit $LASTEXITCODE
         }
     } else {
-        # Check PATH
-        $cmd = Get-Command "goose-crap" -ErrorAction SilentlyContinue
+        $cmd = Get-Command "goose-lit" -ErrorAction SilentlyContinue
         if ($cmd) {
-            $crapBin = $cmd.Source
+            $litBin = $cmd.Source
         } else {
-            Write-Host "Error: goose-crap binary not found. Please clone goose-crap beside goose-wing." -ForegroundColor Red
+            Write-Host "Error: goose-lit binary not found. Please clone goose-lit beside goose-wing." -ForegroundColor Red
             exit 1
         }
     }
 }
 
 if ($CrapArgs.Count -eq 0) {
-    # Default scan: analyze goose-wing core, http, http3, quic, and tls
-    Write-Host "Running default goose-crap risk audit on goose-wing..." -ForegroundColor Cyan
-    & $crapBin $root --threshold 25.0 --format table
+    # Default scan: analyze goose-wing core and http
+    Write-Host "Running default goose-lit crap risk audit on goose-wing..." -ForegroundColor Cyan
+    & $litBin crap $root --threshold 25.0 --format table
 } else {
-    & $crapBin @CrapArgs
+    & $litBin crap @CrapArgs
 }
 exit $LASTEXITCODE
