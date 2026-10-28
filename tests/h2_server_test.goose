@@ -51,6 +51,26 @@ fn encode_client_data<B>(stream_id: u32, payload: const u8[:], end_stream: bool,
     out.append(payload);
 }
 
+// Helper to encode client trailers in a HEADERS frame
+fn encode_client_trailers<B>(
+    dt: wing::DynamicTable&,
+    stream_id: u32,
+    name: const u8[:],
+    value: const u8[:],
+    out: B&,
+) {
+    var hdr_block: u8[>..] = [];
+    wing::encode_hpack_field(dt, hdr_block, name, value, true, false);
+    let hdr = wing::FrameHeader {
+        length: hdr_block.len as u32,
+        frame_type: wing::FRAME_HEADERS,
+        flags: wing::FLAG_END_HEADERS | wing::FLAG_END_STREAM,
+        stream_id: stream_id,
+    };
+    wing::encode_frame_header_to(hdr, out);
+    out.append(hdr_block[..]);
+}
+
 // ============================================================================
 // 1. Connection Preface, Handshake & Settings Negotiation
 // ============================================================================
@@ -446,12 +466,241 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
     };
 }
 
+// ============================================================================
+// 5. RFC 9113 Protocol Invariants & Zero-Allocation Ingress
+// ============================================================================
+fn test_h2_protocol_invariants(t: core::T&) {
+    t.run("H2-09: Client Request Trailers Accepted (RFC 9113 §8.1.2)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "POST", "/upload/trailers", 10);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        encode_client_headers(client_hpack, 1, "POST", "/upload/trailers", "localhost", false, wire);
+        encode_client_data(1, "body-content-here", false, wire);
+        encode_client_trailers(client_hpack, 1, "x-checksum", "sha256-abc12345", wire);
+
+        var out_wire: u8[>..] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress succeeded on request with trailers");
+        var found_resp = false;
+        var off: i64 = 33; // skip server SETTINGS (33B)
+        while off + 9 <= out_wire.len {
+            let f_hdr, err_f = wing::parse_frame_header(out_wire[off..off + 9]);
+            if err_f == wing::ERR_NO_ERROR && f_hdr.frame_type == wing::FRAME_HEADERS && f_hdr.stream_id == 1 {
+                found_resp = true;
+                break;
+            }
+            off += 9 + (f_hdr.length as i64);
+        }
+        sub.assert_true(found_resp, "Response HEADERS frame emitted on stream 1");
+    };
+
+    t.run("H2-10: Client Trailers with Pseudo-Headers Rejected (RFC 9113 §8.1.2)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "POST", "/upload/pseudo-trailer", 11);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        encode_client_headers(client_hpack, 1, "POST", "/upload/pseudo-trailer", "localhost", false, wire);
+        encode_client_trailers(client_hpack, 1, ":status", "200", wire);
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress remained alive on stream error");
+        sub.assert_gt(out_wire.len, 33, "Output generated");
+        let rst_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(rst_hdr.frame_type, wing::FRAME_RST_STREAM, "Emitted RST_STREAM");
+        sub.assert_eq(rst_hdr.stream_id, 1, "RST_STREAM on stream 1");
+    };
+
+    t.run("H2-11: Large Flow Control Ingress Window Replenishment (RFC 9113 §6.9)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "POST", "/bulk", 12);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        encode_client_headers(client_hpack, 1, "POST", "/bulk", "localhost", false, wire);
+
+        var chunk: u8[>..] = [];
+        for i in 15000 { chunk.push('X'); }
+        for step in 5 {
+            let is_last = (step == 4);
+            encode_client_data(1, chunk[..], is_last, wire);
+        }
+
+        var out_wire: u8[>..] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress handled >65535 bytes without FLOW_CONTROL_ERROR");
+        sub.assert_eq(consumed, wire.len, "Consumed entire 75KB wire");
+        sub.assert_ge(sess.conn.conn_recv_window, 0, "conn_recv_window replenished");
+    };
+
+    t.run("H2-12: Stream State Transition to Closed (RFC 9113 §5.1)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/test", 13);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        var out_wire: u8[>..] = [];
+        wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        var all_ok = true;
+        for i in 135 {
+            let s_id: u32 = ((i * 2) + 1) as u32;
+            var s_wire: u8[>..] = [];
+            encode_client_headers(client_hpack, s_id, "GET", "/test", "localhost", true, s_wire);
+            var s_out: u8[>..] = [];
+            let _, ok_st = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", s_wire[..], 1000, s_out);
+            if !ok_st {
+                all_ok = false;
+                break;
+            }
+        }
+        sub.assert_true(all_ok, "135 sequential streams processed without stream leak or REFUSED_STREAM");
+        sub.assert_eq(sess.conn.active_stream_count, 0, "All completed streams decremented active count to 0");
+    };
+
+    t.run("H2-13: Stream WINDOW_UPDATE increment 0 emits RST_STREAM (RFC 9113 §6.9)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/test", 14);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", false, wire);
+
+        let wu_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_WINDOW_UPDATE,
+            flags: 0,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(wu_hdr, wire);
+        let zeros: u8[4] = [0, 0, 0, 0];
+        for b in zeros { wire.push(b); }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Connection remains open after stream-level WINDOW_UPDATE error");
+        var found_rst = false;
+        var off: i64 = 33;
+        while off + 9 <= out_wire.len {
+            let f_hdr, _ = wing::parse_frame_header(out_wire[off..off + 9]);
+            if f_hdr.frame_type == wing::FRAME_RST_STREAM && f_hdr.stream_id == 1 {
+                found_rst = true;
+                break;
+            }
+            off += 9 + (f_hdr.length as i64);
+        }
+        sub.assert_true(found_rst, "Server emitted RST_STREAM on stream 1");
+    };
+
+    t.run("H2-14: Client SETTINGS_ENABLE_PUSH != 0 rejected (RFC 9113 §6.5.2)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        let s_hdr = wing::FrameHeader {
+            length: 6,
+            frame_type: wing::FRAME_SETTINGS,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(s_hdr, wire);
+        core::append_u16_be(wire, wing::SETTING_ENABLE_PUSH);
+        core::append_u32_be(wire, 1);
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Server rejected client ENABLE_PUSH != 0");
+        sub.assert_gt(out_wire.len, 33, "Emitted GOAWAY");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "GOAWAY emitted");
+    };
+
+    t.run("H2-15: gRPC Response Body Preserved Without Spurious OK (RFC 9113)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        encode_client_headers(client_hpack, 1, "POST", "/not-found", "localhost", true, wire);
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress handled request");
+        var has_data = false;
+        var off: i64 = 33;
+        while off + 9 <= out_wire.len {
+            let f_hdr, _ = wing::parse_frame_header(out_wire[off..off + 9]);
+            if f_hdr.frame_type == wing::FRAME_DATA && f_hdr.stream_id == 1 {
+                has_data = true;
+            }
+            off += 9 + (f_hdr.length as i64);
+        }
+        sub.assert_false(has_data, "No DATA frame emitted for non-200 empty response");
+    };
+
+    t.run("H2-16: PRIORITY Self-Dependency Rejection (RFC 9113 §5.3.1)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        let prio_hdr = wing::FrameHeader {
+            length: 5,
+            frame_type: wing::FRAME_PRIORITY,
+            flags: 0,
+            stream_id: 3,
+        };
+        wing::encode_frame_header_to(prio_hdr, wire);
+        let prio_payload: u8[5] = [0x00, 0x00, 0x00, 0x03, 0x10];
+        for b in prio_payload { wire.push(b); }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Connection remains open");
+        sub.assert_gt(out_wire.len, 33, "Output contains frames");
+        let rst_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(rst_hdr.frame_type, wing::FRAME_RST_STREAM, "Frame is RST_STREAM");
+        sub.assert_eq(rst_hdr.stream_id, 3, "RST_STREAM on stream 3");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("HTTP/2 Server Frame Multiplexer Conformance Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. Preface, Handshake & Settings Negotiation", test_h2_handshake_and_settings);
     core::run_case(runner, "2. Stream Multiplexing & Pipeline Dispatch", test_h2_request_dispatch);
     core::run_case(runner, "3. HttpServer End-to-End HTTP/2 Integration", test_h2_server_wire_integration);
     core::run_case(runner, "4. CONTINUATION Assembly, Anti-DoS & Rapid Reset", test_h2_continuation_and_anti_dos);
+    core::run_case(runner, "5. RFC 9113 Protocol Invariants & Zero-Allocation Ingress", test_h2_protocol_invariants);
     let ok = core::finish(runner);
     assert(ok);
 }
