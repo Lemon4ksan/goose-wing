@@ -258,6 +258,32 @@ fn test_gcra_arithmetic_and_overflow(t: core::T&) {
         // After cost 3 from burst 5, remaining burst must decrement to 3
         sub.assert_eq(remaining, 3, "burst correctly decrements without u64 wrap-around");
     };
+
+    t.run("Clock Drift & Backward NTP Jump Recovery") { sub =>
+        let quota = wing::new_gcra_quota(10, core::secs(1), 2);
+        var cell = wing::GcraCell { tat_ns: 60000000000 }; // TAT at 60s
+        let now_backward: u64 = 10000000000; // Clock jumped back to 10s (50s backward jump)
+        let dec = wing::gcra_check_n(quota, cell, 1, now_backward);
+        let retry_after = match dec {
+            Rejected r => r.retry_after_ns,
+            Allowed _ => 0,
+            _ => 999999999999,
+        };
+        sub.assert_true(retry_after <= 200000000, "retry_after bounded to emission interval under 50s clock jump");
+    };
+
+    t.run("Clock Drift & Backward NTP Jump Recovery in Reservation") { sub =>
+        let quota = wing::new_gcra_quota(1, core::secs(1), 0);
+        var cell = wing::GcraCell { tat_ns: 70000000000 }; // TAT at 70s
+        let now_backward: u64 = 10000000000; // Clock jumped back to 10s
+        let dec = wing::gcra_reserve_n(quota, cell, 1, now_backward, 5000000000);
+        let wait_ns = match dec {
+            Reserved r => r.wait_ns,
+            Allowed _ => 0,
+            Rejected r => r.retry_after_ns,
+        };
+        sub.assert_true(wait_ns <= 1000000000, "reservation wait_ns bounded under 60s clock jump");
+    };
 }
 
 // ----------------------------------------------------------------------------

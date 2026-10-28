@@ -415,6 +415,61 @@ fn test_cors_policy_and_matching(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 4. Constant-Time CSRF Token Validation & OTP Mask Verification
+// ----------------------------------------------------------------------------
+fn test_csrf_constant_time_tokens(t: core::T&) {
+    t.run("Double-Submit Token Validation (subtle_equal)") { sub =>
+        let tok1 = "3b9a1f4c7e2d8a0b5c4f3e2d1a0b9c8d";
+        let tok2 = "3b9a1f4c7e2d8a0b5c4f3e2d1a0b9c8d";
+        let tok3 = "3b9a1f4c7e2d8a0b5c4f3e2d1a0b9c8e"; // last byte differs
+        let tok4 = "3b9a1f4c7e2d8a0b"; // shorter
+
+        sub.assert_true(wing::validate_csrf_token(tok1, tok2), "matching tokens valid");
+        sub.assert_false(wing::validate_csrf_token(tok1, tok3), "differing last byte invalid");
+        sub.assert_false(wing::validate_csrf_token(tok1, tok4), "different length invalid");
+        sub.assert_false(wing::validate_csrf_token("", ""), "empty tokens invalid");
+    };
+
+    t.run("Masked CSRF Token Verification (OTP XOR)") { sub =>
+        let raw: const u8[16] = [
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+            0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+        ];
+        let mask1: const u8[16] = [
+            0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55,
+            0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55,
+        ];
+        var masked1: u8[..32] = [];
+        sub.assert_true(wing::mask_csrf_token(mask1[..], raw[..], masked1), "masking succeeds");
+        sub.assert_eq(masked1.len, 32, "masked token is 32 bytes");
+        sub.assert_true(wing::verify_masked_csrf_token(masked1[..], raw[..]), "masked token 1 verifies against raw secret");
+
+        // Different mask for same secret
+        let mask2: const u8[16] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        ];
+        var masked2: u8[..32] = [];
+        sub.assert_true(wing::mask_csrf_token(mask2[..], raw[..], masked2), "masking 2 succeeds");
+        sub.assert_true(wing::verify_masked_csrf_token(masked2[..], raw[..]), "masked token 2 verifies against same raw secret");
+
+        // Tampered masked token
+        masked1[20] ^= 0x01;
+        sub.assert_false(wing::verify_masked_csrf_token(masked1[..], raw[..]), "tampered token fails verification");
+
+        // Wrong length
+        sub.assert_false(wing::verify_masked_csrf_token(masked1[..16], raw[..]), "truncated token fails verification");
+    };
+
+    t.run("Constant-Time Case-Fold Origin Host Comparison") { sub =>
+        sub.assert_true(wing::subtle_equal_ascii_fold("example.com", "EXAMPLE.COM"), "case-insensitive match");
+        sub.assert_true(wing::subtle_equal_ascii_fold("secure.bank.com:8443", "secure.bank.com:8443"), "identical match");
+        sub.assert_false(wing::subtle_equal_ascii_fold("attacker.com", "victim.com"), "different hosts mismatch");
+        sub.assert_false(wing::subtle_equal_ascii_fold("victim.com.evil", "victim.com"), "prefix mismatch");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
@@ -423,6 +478,7 @@ fn main() {
     core::run_case(runner, "1. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
     core::run_case(runner, "2. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
     core::run_case(runner, "3. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
+    core::run_case(runner, "4. Constant-Time CSRF Token Validation & OTP Mask Verification", test_csrf_constant_time_tokens);
 
     let ok = core::finish(runner);
     assert(ok);

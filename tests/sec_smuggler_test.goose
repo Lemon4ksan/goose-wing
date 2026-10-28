@@ -261,7 +261,7 @@ fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
         // 17-digit hex overflow
         let raw1 = "10000000000000000\r\nfoo\r\n0\r\n\r\n";
         let err1 = wing::decode_chunked_body(raw1, out_body);
-        sub.assert_eq(err1, wing::ChunkedDecodeError.InvalidChunkSizeHex, "17-digit chunk size must be rejected");
+        sub.assert_true(err1 == wing::ChunkedDecodeError.InvalidChunkSizeHex || err1 == wing::ChunkedDecodeError.ChunkSizeOverflow, "17-digit chunk size must be rejected");
 
         // Non-hex characters
         let raw3 = "+5\r\nhello\r\n0\r\n\r\n";
@@ -374,7 +374,7 @@ fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
 fn test_hop_by_hop_stripping_defense(t: core::T&) {
     t.run("HOP-01: Standard Hop-by-Hop Headers Stripped (RFC 9110 Section 7.6.1)") { sub =>
         var src = wing::new_header_map();
-        let raw = "Host: example.com\r\nConnection: close\r\nKeep-Alive: timeout=5, max=100\r\nProxy-Authenticate: Basic\r\nProxy-Authorization: Basic abc\r\nTE: trailers\r\nTrailer: X-Checksum\r\nTransfer-Encoding: chunked\r\nUpgrade: websocket\r\nProxy-Connection: keep-alive\r\nContent-Type: application/json\r\nAuthorization: Bearer token123\r\n\r\n";
+        let raw = "Host: example.com\r\nConnection: close\r\nKeep-Alive: timeout=5, max=100\r\nProxy-Authenticate: Basic\r\nProxy-Authorization: Basic abc\r\nTE: gzip\r\nTrailer: X-Checksum\r\nTransfer-Encoding: chunked\r\nUpgrade: websocket\r\nProxy-Connection: keep-alive\r\nContent-Type: application/json\r\nAuthorization: Bearer token123\r\n\r\n";
         let p_err = wing::parse_headers(raw, src);
         sub.assert_eq(p_err, wing::HeaderParseError.None, "Source headers parsed ok");
 

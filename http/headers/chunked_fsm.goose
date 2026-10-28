@@ -156,7 +156,8 @@ fn chunk_fsm_feed(
                     }
 
                     if c == '\r' {
-                        guard (dec.state & CHUNK_STATE_SEEN_HEX) != 0 else {
+                        // RFC 9112 Section 7.1.1: Whitespace preceding CRLF without extension is strictly forbidden
+                        guard (dec.state & CHUNK_STATE_SEEN_HEX) != 0 && (dec.state & CHUNK_STATE_SEEN_BWS) == 0 else {
                             dec.state = CHUNK_STATE_IS_ERROR;
                             return ChunkFsmStatus.Error, offset, data[..0];
                         }

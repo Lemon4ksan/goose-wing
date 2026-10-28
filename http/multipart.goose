@@ -97,8 +97,8 @@ fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, 
     return -1;
 }
 
-// Whether boundary contains only characters allowed by RFC 2046 Section 5.1.1.
-fn validate_boundary_string(boundary: const u8[:]) -> bool {
+// Validates an unquoted boundary character sequence according to RFC 2046 Section 5.1.1.
+fn validate_raw_boundary_chars(boundary: const u8[:]) -> bool {
     guard boundary.len >= 1 && boundary.len <= 70 else { return false; }
     // RFC 2046 Section 5.1.1: The boundary parameter must not end with a space.
     if boundary[boundary.len - 1] == ' ' {
@@ -115,6 +115,18 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
         return false;
     }
     return true;
+}
+
+// Whether boundary contains only characters allowed by RFC 2046 Section 5.1.1.
+// Handles both raw boundaries and boundaries enclosed in quotes (RFC 7578 Section 4.4).
+fn validate_boundary_string(boundary: const u8[:]) -> bool {
+    guard boundary.len >= 1 else { return false; }
+    if boundary[0] == '"' {
+        var unquoted: u8[..74] = [];
+        guard strict_unquote(boundary, unquoted, 74) else { return false; }
+        return validate_raw_boundary_chars(unquoted[..]);
+    }
+    return validate_raw_boundary_chars(boundary);
 }
 
 // ---- multipart parsing -----------------------------------------------------
@@ -217,11 +229,25 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     var msg = MultipartMessage { .. };
     guard body.len > 0 else { return msg, MultipartError.EmptyInput; }
 
-    guard boundary.len >= 1 && boundary.len <= 70 else {
+    var eff_boundary: u8[..74] = [];
+    if boundary.len > 0 && boundary[0] == '"' {
+        guard strict_unquote(boundary, eff_boundary, 74) else {
+            msg.valid = false;
+            return msg, MultipartError.InvalidBoundaryCharacters;
+        }
+    } else {
+        guard boundary.len <= 70 else {
+            msg.valid = false;
+            return msg, MultipartError.InvalidBoundaryLength;
+        }
+        eff_boundary.append(boundary);
+    }
+
+    guard eff_boundary.len >= 1 && eff_boundary.len <= 70 else {
         msg.valid = false;
         return msg, MultipartError.InvalidBoundaryLength;
     }
-    guard validate_boundary_string(boundary) else {
+    guard validate_raw_boundary_chars(eff_boundary[..]) else {
         msg.valid = false;
         return msg, MultipartError.InvalidBoundaryCharacters;
     }
@@ -231,10 +257,10 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     }
 
     var init_delim: u8[..74] = "--";
-    init_delim.append(boundary);
+    init_delim.append(eff_boundary[..]);
 
     var part_delim: u8[..76] = "\n--";
-    part_delim.append(boundary);
+    part_delim.append(eff_boundary[..]);
 
     var shift_table: u16[256] = [0; 256];
     build_bmh_shift_table(part_delim[..], shift_table);
@@ -296,11 +322,11 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
 
         let raw_part_headers = body[cursor..header_end];
         // Go #81741 / CVE-2026-94440 & Go #65383: Account for header memory to prevent limit bypass
-        total_memory_used += raw_part_headers.len;
-        guard total_memory_used <= options.max_memory_bytes else {
+        guard options.max_memory_bytes - total_memory_used >= raw_part_headers.len else {
             msg.valid = false;
             return msg, MultipartError.ExceededMaxMemory;
         }
+        total_memory_used += raw_part_headers.len;
 
         var part_headers = HeaderMap { .. };
         let h_err = parse_headers(raw_part_headers, part_headers);
@@ -329,11 +355,11 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
         }
 
         let part_data = body[cursor..part_end];
-        total_memory_used += part_data.len;
-        guard total_memory_used <= options.max_memory_bytes else {
+        guard options.max_memory_bytes - total_memory_used >= part_data.len else {
             msg.valid = false;
             return msg, MultipartError.ExceededMaxMemory;
         }
+        total_memory_used += part_data.len;
 
         var part = MultipartPart { headers: part_headers, .. };
         part.data = part_data;
@@ -627,15 +653,17 @@ fn evaluate_if_range(
     return mod_sec == parsed_sec;
 }
 
-// Validates a Content-Range header for a byte-range PATCH payload.
+// Validates a Content-Range header for a byte-range PATCH payload (draft-wright-http-range-patch).
+// Syntax: bytes <first-byte-pos>-<last-byte-pos>/(<complete-length> | "*")
 fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i64, i64, bool {
+    guard body_len >= 0 else { return 0, 0, false; }
     let trimmed = trim_lws(content_range_val);
     guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes ") else {
         return 0, 0, false;
     }
 
-    let rem = trimmed[6..];
-    // Unsatisfied form "bytes */1000" is an explicit syntax error in PATCH
+    let rem = trimmed[6..].trim_lws();
+    // Unsatisfied form "bytes */1000" or wildcard range "bytes */*" is an explicit syntax error in PATCH
     guard rem.len > 0 && rem[0] != '*' else { return 0, 0, false; }
 
     var slash_pos: i64 = -1;
@@ -647,14 +675,23 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
     }
     guard slash_pos > 0 else { return 0, 0, false; }
 
-    let range_part = rem[..slash_pos];
+    let range_part = rem[..slash_pos].trim_lws();
+    guard range_part.len > 0 && range_part != "*" else { return 0, 0, false; }
+
     let start_raw, end_raw, has_dash = range_part.split_once_byte('-');
     guard has_dash && start_raw.len > 0 && end_raw.len > 0 else { return 0, 0, false; }
 
-    let start_val, s_ok = parse_i64_slice(start_raw);
-    let end_val, e_ok = parse_i64_slice(end_raw);
+    let start_val, s_ok = parse_i64_slice(start_raw.trim_lws());
+    let end_val, e_ok = parse_i64_slice(end_raw.trim_lws());
     guard s_ok && e_ok && start_val >= 0 && end_val >= start_val else {
         return 0, 0, false;
+    }
+
+    let total_part = rem[slash_pos + 1..].trim_lws();
+    guard total_part.len > 0 else { return 0, 0, false; }
+    if total_part != "*" {
+        let total_val, t_ok = parse_i64_slice(total_part);
+        guard t_ok && total_val > end_val else { return 0, 0, false; }
     }
 
     guard end_val - start_val < 9223372036854775807 else { return 0, 0, false; }

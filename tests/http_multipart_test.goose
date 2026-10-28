@@ -448,6 +448,129 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: core::T&) {
     };
 }
 
+fn test_round3_boundary_quoting_patch_and_quotas(t: core::T&) {
+    t.run("RFC 7578 / RFC 2046 Quoted Boundary Unquoting and Validation") { sub =>
+        // 1. Valid quoted boundary
+        sub.assert_true(wing::validate_boundary_string("\"valid-quoted-bnd\""), "Standard quoted boundary accepted");
+
+        // 2. Interior space is valid in RFC 2046 bchars
+        sub.assert_true(wing::validate_boundary_string("\"valid boundary with spaces\""), "Quoted boundary with interior spaces accepted");
+
+        // 3. Trailing space rejected per RFC 2046 Section 5.1.1
+        sub.assert_false(wing::validate_boundary_string("\"boundary with trailing space \""), "Quoted boundary ending with space rejected");
+
+        // 4. Escaped quotes inside boundary rejected (quote is not an RFC 2046 bchar)
+        sub.assert_false(wing::validate_boundary_string("\"escaped\\\"quote\""), "Escaped quote inside boundary rejected");
+
+        // 5. Escaped backslash inside boundary rejected (backslash is not an RFC 2046 bchar)
+        sub.assert_false(wing::validate_boundary_string("\"escaped\\\\pair\""), "Escaped backslash inside boundary rejected");
+
+        // 6. Unclosed quote rejected
+        sub.assert_false(wing::validate_boundary_string("\"unclosed-boundary"), "Unclosed quoted boundary rejected");
+
+        // 7. Escaped terminal quote rejected
+        sub.assert_false(wing::validate_boundary_string("\"escaped-terminal\\\""), "Escaped terminal quote rejected");
+
+        // 8. Empty quotes rejected (length 0)
+        sub.assert_false(wing::validate_boundary_string("\"\""), "Empty quoted boundary rejected");
+
+        // 9. Quoted boundary with invalid character rejected
+        sub.assert_false(wing::validate_boundary_string("\"bad@boundary\""), "Quoted boundary with @ rejected");
+
+        // 10. parse_multipart with quoted boundary parameter
+        var body: u8[>..] = [];
+        body.append("--QuotedBnd\r\n");
+        body.append("Content-Disposition: form-data; name=\"msg\"\r\n\r\n");
+        body.append("hello quoted\r\n");
+        body.append("--QuotedBnd--\r\n");
+
+        let msg, err = wing::parse_multipart(body[..], "\"QuotedBnd\"");
+        sub.assert_eq(err, wing::MultipartError.None, "parse_multipart unquotes boundary and matches wire delimiters");
+        sub.assert_true(msg.valid, "Message valid");
+        sub.assert_eq(msg.parts.len, 1, "1 part extracted");
+        sub.assert_bytes_eq(msg.parts[0].data, "hello quoted", "Part body extracted correctly");
+    };
+
+    t.run("Byte-Range PATCH Validation Syntax & Wildcards (draft-wright)") { sub =>
+        // 1. Wildcard complete-length: bytes 0-9/* (accepted)
+        let s_wc, e_wc, ok_wc = wing::validate_byterange_patch("bytes 0-9/*", 10);
+        sub.assert_true(ok_wc, "Wildcard complete-length bytes 0-9/* accepted");
+        sub.assert_eq(s_wc, 0, "Start 0");
+        sub.assert_eq(e_wc, 9, "End 9");
+
+        // 2. Wildcard range interval: bytes */* (rejected)
+        let s_wc2, e_wc2, ok_wc2 = wing::validate_byterange_patch("bytes */*", 0);
+        sub.assert_false(ok_wc2, "Wildcard range bytes */* rejected in PATCH");
+
+        // 3. Inverted range interval: bytes 50-20/100 (start > end, rejected)
+        let s_inv, e_inv, ok_inv = wing::validate_byterange_patch("bytes 50-20/100", 10);
+        sub.assert_false(ok_inv, "Inverted range bytes 50-20/100 rejected");
+
+        // 4. Negative offset: bytes -10-20/100 (rejected)
+        let s_neg, e_neg, ok_neg = wing::validate_byterange_patch("bytes -10-20/100", 10);
+        sub.assert_false(ok_neg, "Negative start offset rejected");
+
+        // 5. Non-numeric range characters: bytes 0-abc/100 (rejected)
+        let s_nan, e_nan, ok_nan = wing::validate_byterange_patch("bytes 0-abc/100", 10);
+        sub.assert_false(ok_nan, "Non-numeric range characters rejected");
+
+        // 6. Non-numeric total characters: bytes 0-9/xyz (rejected)
+        let s_nan_tot, e_nan_tot, ok_nan_tot = wing::validate_byterange_patch("bytes 0-9/xyz", 10);
+        sub.assert_false(ok_nan_tot, "Non-numeric total length rejected");
+
+        // 7. Complete length <= end byte: bytes 0-9/5 (rejected)
+        let s_short, e_short, ok_short = wing::validate_byterange_patch("bytes 0-9/5", 10);
+        sub.assert_false(ok_short, "Complete length <= last byte rejected");
+
+        // 8. Missing complete length: bytes 0-9/ (rejected)
+        let s_miss, e_miss, ok_miss = wing::validate_byterange_patch("bytes 0-9/", 10);
+        sub.assert_false(ok_miss, "Missing complete length after slash rejected");
+
+        // 9. Negative body length: bytes 0-9/10 with body_len = -1 (rejected)
+        let s_neg_len, e_neg_len, ok_neg_len = wing::validate_byterange_patch("bytes 0-9/10", -1);
+        sub.assert_false(ok_neg_len, "Negative body length rejected");
+    };
+
+    t.run("Maximum Parts and Memory Accounting Boundary Conditions") { sub =>
+        let boundary = "QuotaBnd";
+        var body_3parts: u8[>..] = [];
+        body_3parts.append("--QuotaBnd\r\nContent-Disposition: form-data; name=\"p1\"\r\n\r\nv1\r\n");
+        body_3parts.append("--QuotaBnd\r\nContent-Disposition: form-data; name=\"p2\"\r\n\r\nv2\r\n");
+        body_3parts.append("--QuotaBnd\r\nContent-Disposition: form-data; name=\"p3\"\r\n\r\nv3\r\n");
+        body_3parts.append("--QuotaBnd--\r\n");
+
+        // Exactly max_parts: 3 parts with max_parts = 3 succeeds
+        var opts_exact = wing::default_multipart_options();
+        opts_exact.max_parts = 3;
+        let msg_exact, err_exact = wing::parse_multipart(body_3parts[..], boundary, opts_exact);
+        sub.assert_eq(err_exact, wing::MultipartError.None, "Exactly max_parts (3 of 3) succeeds");
+        sub.assert_true(msg_exact.valid, "Exact parts count valid");
+        sub.assert_eq(msg_exact.parts.len, 3, "All 3 parts parsed");
+
+        // Exceeding max_parts by 1: 3 parts with max_parts = 2 rejected
+        var opts_exceed = wing::default_multipart_options();
+        opts_exceed.max_parts = 2;
+        let msg_exceed, err_exceed = wing::parse_multipart(body_3parts[..], boundary, opts_exceed);
+        sub.assert_eq(err_exceed, wing::MultipartError.ExceededMaxParts, "max_parts + 1 rejected with ExceededMaxParts");
+        sub.assert_false(msg_exceed.valid, "Exceeded parts invalid");
+
+        // max_parts = 0 rejected immediately
+        var opts_zero = wing::default_multipart_options();
+        opts_zero.max_parts = 0;
+        let msg_zero, err_zero = wing::parse_multipart(body_3parts[..], boundary, opts_zero);
+        sub.assert_eq(err_zero, wing::MultipartError.ExceededMaxParts, "max_parts = 0 rejected with ExceededMaxParts");
+        sub.assert_false(msg_zero.valid, "Zero max_parts invalid");
+
+        // Memory quota boundary: calculate total header + body bytes of first part
+        // Content-Disposition: form-data; name="p1"\r\n (45 bytes) + v1 (2 bytes) = 47 bytes
+        var opts_mem = wing::default_multipart_options();
+        opts_mem.max_memory_bytes = 46; // 1 byte less than part 1 requires
+        let msg_mem, err_mem = wing::parse_multipart(body_3parts[..], boundary, opts_mem);
+        sub.assert_eq(err_mem, wing::MultipartError.ExceededMaxMemory, "Memory quota boundary enforced with ExceededMaxMemory");
+        sub.assert_false(msg_mem.valid, "Memory exceeded message invalid");
+    };
+}
+
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
@@ -461,6 +584,7 @@ fn main() {
     core::run_case(runner, "6. Window Reader serve_range & Byte-Range PATCH", test_serve_range_and_patch_validation);
     core::run_case(runner, "7. Boundary Delimiters & RFC 7578 Disposition Enforcement", test_boundary_delimiter_and_disposition_invariants);
     core::run_case(runner, "8. RFC 9110 Coalescing, Overflow Guard & Nested Boundaries", test_rfc9110_coalescing_and_nested_boundaries);
+    core::run_case(runner, "9. Boundary Quoting, Byte-Range PATCH & Quotas", test_round3_boundary_quoting_patch_and_quotas);
 
     let ok = core::finish(runner);
     assert(ok);

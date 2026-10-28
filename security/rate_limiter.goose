@@ -54,6 +54,9 @@ struct GcraCell {
     tat_ns: u64 = 0,
 }
 
+// Maximum allowable backward clock jump tolerance before clamping TAT
+const GCRA_MAX_CLOCK_DRIFT_NS: u64 = 5000000000; // 5.0s
+
 // Evaluates rate limit admission for a request consuming cost_n tokens at now_ns.
 // Returns Allowed with remaining capacity, or Rejected with retry_after_ns.
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
@@ -62,7 +65,17 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     let delta = core::mul_sat_u64(cost_n, t);
 
     let limit_window = core::add_sat_u64(tau, t);
-    let tat_old = cell.tat_ns;
+    var tat_old = cell.tat_ns;
+
+    // Clock drift & backward jump protection:
+    // If system or NTP clock jumps backward (now_ns < tat_old - drift_threshold),
+    // clamp tat_old to the operational window (now_ns + limit_window) to prevent
+    // prolonged client lockouts and denial of service.
+    let drift_threshold = core::add_sat_u64(limit_window, GCRA_MAX_CLOCK_DRIFT_NS);
+    if tat_old > core::add_sat_u64(now_ns, drift_threshold) {
+        tat_old = core::add_sat_u64(now_ns, limit_window);
+    }
+
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     let tat_new = core::add_sat_u64(tat_base, delta);
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
@@ -110,7 +123,13 @@ fn gcra_reserve_n(
     let delta = core::mul_sat_u64(cost_n, t);
 
     let limit_window = core::add_sat_u64(tau, t);
-    let tat_old = cell.tat_ns;
+    var tat_old = cell.tat_ns;
+
+    let drift_threshold = core::add_sat_u64(limit_window, GCRA_MAX_CLOCK_DRIFT_NS);
+    if tat_old > core::add_sat_u64(now_ns, drift_threshold) {
+        tat_old = core::add_sat_u64(now_ns, limit_window);
+    }
+
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     let tat_new = core::add_sat_u64(tat_base, delta);
     let t_allow = core::sub_sat_u64(tat_new, limit_window);

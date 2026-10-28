@@ -186,10 +186,58 @@ fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> 
     return false;
 }
 
+// Branchless constant-time equality check for byte slices (tokens, nonces).
+fn subtle_equal(a: const u8[:], b: const u8[:]) -> bool {
+    return core::ct_eq_bytes(a, b);
+}
+
+// Branchless constant-time case-insensitive ASCII comparison.
+fn subtle_equal_ascii_fold(a: const u8[:], b: const u8[:]) -> bool {
+    guard a.len == b.len else { return false; }
+    var diff: u32 = 0;
+    for i in a.len {
+        let ca = if a[i] >= 'A' && a[i] <= 'Z' { a[i] + 32 } else { a[i] };
+        let cb = if b[i] >= 'A' && b[i] <= 'Z' { b[i] + 32 } else { b[i] };
+        diff |= (ca ^ cb);
+    }
+    let non_zero = (diff | (0 - diff)) >> 31;
+    return non_zero == 0;
+}
+
+// Constant-time double-submit CSRF token validation.
+fn validate_csrf_token(cookie_token: const u8[:], request_token: const u8[:]) -> bool {
+    guard cookie_token.len > 0 && request_token.len > 0 else { return false; }
+    return subtle_equal(cookie_token, request_token);
+}
+
+// Masks a CSRF token using a one-time pad XOR mask into out: [mask (N bytes) | masked_secret (N bytes)].
+fn mask_csrf_token<B>(mask: const u8[:], raw_secret: const u8[:], out: B&) -> bool {
+    guard mask.len > 0 && mask.len == raw_secret.len else { return false; }
+    out.clear();
+    for b in mask { out.push(b); }
+    for i in mask.len { out.push(raw_secret[i] ^ mask[i]); }
+    return true;
+}
+
+// Unmasks and validates a masked CSRF token against expected raw secret in constant time.
+fn verify_masked_csrf_token(masked_token: const u8[:], expected_unmasked: const u8[:]) -> bool {
+    let n = expected_unmasked.len;
+    guard n > 0 && masked_token.len == n * 2 else { return false; }
+    var diff: u32 = 0;
+    for i in n {
+        let mask_byte = masked_token[i];
+        let masked_secret_byte = masked_token[n + i];
+        let unmasked_byte = masked_secret_byte ^ mask_byte;
+        diff |= (unmasked_byte ^ expected_unmasked[i]);
+    }
+    let non_zero = (diff | (0 - diff)) >> 31;
+    return non_zero == 0;
+}
+
 fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]) -> bool {
     guard origin_str.len > 0 else { return false; }
     for &orig in guard_cfg.trusted_origins {
-        if core::eq_ascii_fold(orig[..], origin_str) {
+        if subtle_equal_ascii_fold(orig[..], origin_str) {
             return true;
         }
     }
@@ -255,7 +303,7 @@ fn evaluate_fallback_origin_fetch(guard_cfg: const CrossOriginGuard&, ctx: const
     let candidate = if ctx.has_origin { ctx.origin[..] } else { ctx.referer[..] };
     let candidate_host = extract_host_from_url(candidate);
 
-    if candidate_host.len > 0 && candidate_host == ctx.target_host[..] {
+    if candidate_host.len > 0 && subtle_equal_ascii_fold(candidate_host, ctx.target_host[..]) {
         return CsrfDecision.Allow;
     }
     if is_origin_trusted(guard_cfg, candidate) {

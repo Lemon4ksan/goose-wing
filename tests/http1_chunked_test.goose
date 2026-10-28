@@ -261,6 +261,24 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
         sub.assert_eq(err_p0, wing::ChunkedDecodeError.None, "parse_chunk_size_hex accepts leading zeros for zero");
         sub.assert_eq(sz, 0, "Size parsed as 0");
     };
+
+    t.run("RFC 9112 Section 7.1.1: Chunked FSM rejects trailing whitespace without extension") { sub =>
+        var dec = internal::new_chunk_fsm_decoder();
+        // Space between chunk-size and CRLF without ';'
+        let st_sp, _, _ = internal::chunk_fsm_feed(dec, "5 \r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st_sp, internal::ChunkFsmStatus.Error, "Trailing space after chunk-size without extension rejected");
+
+        var dec_tab = internal::new_chunk_fsm_decoder();
+        // Tab between chunk-size and CRLF without ';'
+        let st_tab, _, _ = internal::chunk_fsm_feed(dec_tab, "5\t\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st_tab, internal::ChunkFsmStatus.Error, "Trailing tab after chunk-size without extension rejected");
+
+        // Valid extension with leading space (BWS preceding ';') must still succeed
+        var dec_ok = internal::new_chunk_fsm_decoder();
+        let st_ok, _, slice = internal::chunk_fsm_feed(dec_ok, "5 ;ext=1\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st_ok, internal::ChunkFsmStatus.YieldChunk, "Space before semicolon in valid extension accepted");
+        sub.assert_bytes_eq(slice, "hello", "Payload correctly yielded");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -362,6 +380,25 @@ fn test_httpserver_chunked_ingress(t: core::T&) {
         let ok, _ = wing::parse_http1_wire_request(wire, req);
         sub.assert_false(ok, "Non-chunked transfer encoding rejected");
     };
+
+    t.run("Smuggling Guard: RFC 9112 Section 6.1 Unrecognized transfer coding rejected") { sub =>
+        var req1 = wing::new_request("POST", "/data");
+        // Unknown transfer coding preceding chunked
+        let wire1 = "POST /data HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: bogus, chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        let ok1, _ = wing::parse_http1_wire_request(wire1, req1);
+        sub.assert_false(ok1, "Transfer-Encoding with unrecognized coding 'bogus' must be rejected");
+
+        // Chunked not final: chunked followed by identity or gzip
+        var req2 = wing::new_request("POST", "/data");
+        let wire2 = "POST /data HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked, identity\r\n\r\n";
+        let ok2, _ = wing::parse_http1_wire_request(wire2, req2);
+        sub.assert_false(ok2, "Transfer-Encoding: chunked, identity must be rejected");
+
+        var req3 = wing::new_request("POST", "/data");
+        let wire3 = "POST /data HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked, gzip\r\n\r\n";
+        let ok3, _ = wing::parse_http1_wire_request(wire3, req3);
+        sub.assert_false(ok3, "Transfer-Encoding: chunked, gzip must be rejected");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -416,6 +453,15 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
         sub.assert_eq(parsed_trs.len, 1, "1 trailer reconstructed");
         sub.assert_bytes_eq(parsed_trs[0].name[..], "X-Complete", "Trailer name correct");
         sub.assert_bytes_eq(parsed_trs[0].value[..], "true", "Trailer value correct");
+    };
+
+    t.run("RFC 9112 Section 6.1: Response wire parser strips Content-Length when chunked present") { sub =>
+        let wire_dual = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        var res = wing::new_response();
+        let ok_parse, consumed = wing::parse_http1_wire_response(wire_dual, res);
+        sub.assert_true(ok_parse, "Dual TE+CL in response parsed cleanly (TE overrides CL)");
+        sub.assert_bytes_eq(res.body[..], "hello", "Body decoded from chunked");
+        sub.assert_false(wing::has_header(res, "content-length"), "Content-Length header MUST be stripped per RFC 9112 Section 6.1");
     };
 }
 

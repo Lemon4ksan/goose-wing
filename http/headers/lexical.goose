@@ -267,6 +267,14 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
         guard is_tchar(b) else { return false; }
     }
 
+    // RFC 9112 Section 6.1: Reject unrecognized transfer codings (must be chunked, gzip, deflate, compress, or identity)
+    let is_known = eq_ascii_fold(name, "chunked") ||
+                   eq_ascii_fold(name, "gzip") ||
+                   eq_ascii_fold(name, "deflate") ||
+                   eq_ascii_fold(name, "compress") ||
+                   eq_ascii_fold(name, "identity");
+    guard is_known else { return false; }
+
     // RFC 9112 Section 7.1: chunked transfer-coding has no parameters
     if eq_ascii_fold(name, "chunked") {
         return semi_idx == trimmed.len;

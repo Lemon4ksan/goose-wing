@@ -373,6 +373,10 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
     if has_te {
         guard validate_transfer_encoding_value(te_buf[..]) else { return false, 0; }
+        // RFC 9112 Section 6.1: An intermediary or recipient processing chunked MUST remove Content-Length
+        if has_cl {
+            remove_header_by_name(out_res.headers, "content-length");
+        }
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
             wire[header_end_idx..],
             out_res.body,
