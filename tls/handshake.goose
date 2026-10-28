@@ -352,21 +352,10 @@ fn validate_hrr_selected_group(
     client_initial_shares: const u16[:],
 ) -> bool {
     // 1. Must be in supported_groups
-    var in_supported = false;
-    for g in client_supported_groups {
-        if g == selected_group {
-            in_supported = true;
-            break;
-        }
-    }
-    guard in_supported else { return false; }
+    guard client_supported_groups.contains(selected_group) else { return false; }
 
     // 2. MUST NOT be among the groups for which client already provided a key_share
-    for s in client_initial_shares {
-        if s == selected_group {
-            return false;
-        }
-    }
+    guard !client_initial_shares.contains(selected_group) else { return false; }
     return true;
 }
 
@@ -433,12 +422,7 @@ fn validate_server_cipher_suite(
     client_offered_suites: const u16[:],
 ) -> bool {
     guard is_supported_tls13_cipher_suite(selected_cs) else { return false; }
-    for cs in client_offered_suites {
-        if cs == selected_cs {
-            return true;
-        }
-    }
-    return false;
+    return client_offered_suites.contains(selected_cs);
 }
 
 // ---- 6. SNI Extension Parser (RFC 6066 Section 3) ---------------------------
@@ -901,13 +885,6 @@ fn is_forbidden_nst_extension(ext_type: u16) -> bool {
     };
 }
 
-fn has_extension_type(seen: const u16[:], ext_type: u16) -> bool {
-    for x in seen {
-        if x == ext_type { return true; }
-    }
-    return false;
-}
-
 fn parse_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
     // RFC 8446 Section 4.2.10: In NewSessionTicket, early_data MUST be uint32 max_early_data_size
     guard cursor_len(ext_data) == 4 else { return false; }
@@ -932,7 +909,7 @@ fn parse_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: N
         guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
 
         // RFC 8446 Section 4.2: Extensions MUST NOT contain duplicates
-        guard !has_extension_type(seen_types[..], ext_type) else { return false; }
+        guard !seen_types.contains(ext_type) else { return false; }
         if seen_types.len < seen_types.cap {
             seen_types.push(ext_type);
         }

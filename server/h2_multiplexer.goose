@@ -391,12 +391,7 @@ fn apply_decoded_trailers_to_stream(st: H2ServerStream&, dec_list: const Decoded
 }
 
 inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) -> bool {
-    for id in cancelled {
-        if id == stream_id {
-            return true;
-        }
-    }
-    return false;
+    return cancelled.contains(stream_id);
 }
 
 // ---- 4. Complete Ingress Frame Processing & Pipeline Dispatch ---------------
