@@ -1221,6 +1221,81 @@ fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: core::T&) {
     };
 }
 
+fn test_h2_rst_stream_data_flow_control_invariants(t: core::T&) {
+    t.run("RFC 9113 §5.1 & §6.9: DATA frame on stream closed via RST_STREAM accounts for connection flow control") { sub =>
+        var conn = wing::new_h2_connection(0);
+        // Initial conn_recv_window = 65535
+        sub.assert_eq(conn.conn_recv_window, 65535, "Initial connection receive window is 65535");
+
+        // 1. Open stream 1 via HEADERS
+        let h_hdr = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
+        let err_h = wing::on_ingress_frame_header(conn, h_hdr, 0);
+        sub.assert_eq(err_h, wing::ERR_NO_ERROR, "HEADERS on stream 1 accepted");
+        sub.assert_eq(conn.active_stream_count, 1, "1 active stream");
+
+        // 2. Client cancels stream 1 via RST_STREAM
+        let rst_hdr = wing::FrameHeader { length: 4, frame_type: wing::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let err_rst = wing::on_ingress_frame_header(conn, rst_hdr, 0);
+        sub.assert_eq(err_rst, wing::ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
+        sub.assert_eq(conn.active_stream_count, 0, "Active stream count decremented to 0");
+
+        // 3. In-flight DATA frame arrives on stream 1 (length = 1000)
+        let data_hdr = wing::FrameHeader { length: 1000, frame_type: wing::FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = wing::on_data_frame_received(conn, data_hdr, 1000);
+        // Must return ERR_STREAM_CLOSED (stream error) rather than connection error
+        sub.assert_eq(err_data, wing::ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
+        // BUT connection receive window MUST be accounted (decremented by 1000) per RFC 9113 §5.1 / §6.9
+        sub.assert_eq(conn.conn_recv_window, 64535, "Connection receive window accounted: 65535 - 1000 = 64535");
+    };
+
+    t.run("RFC 9113 §6.9: Oversized DATA frame exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR") { sub =>
+        var conn = wing::new_h2_connection(0);
+        // Set connection receive window to 500 bytes
+        conn.conn_recv_window = 500;
+
+        // Open stream 1
+        let h_hdr = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
+        wing::on_ingress_frame_header(conn, h_hdr, 0);
+
+        // Reset stream 1
+        let rst_hdr = wing::FrameHeader { length: 4, frame_type: wing::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        wing::on_ingress_frame_header(conn, rst_hdr, 0);
+
+        // Peer sends DATA frame of 600 bytes on closed stream 1 (exceeding conn_recv_window = 500)
+        let data_hdr = wing::FrameHeader { length: 600, frame_type: wing::FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = wing::on_data_frame_received(conn, data_hdr, 600);
+        // RFC 9113 §6.9: Connection flow control violation MUST trigger FLOW_CONTROL_ERROR, NOT STREAM_CLOSED!
+        sub.assert_eq(err_data, wing::ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
+        sub.assert_true(conn.conn_recv_window < 0, "Connection receive window underflowed to negative value");
+    };
+
+    t.run("RFC 9113 §5.1 & §6.9: Multiple in-flight DATA frames after RST_STREAM prevent window lockup") { sub =>
+        var conn = wing::new_h2_connection(0);
+
+        // Open stream 3
+        let h_hdr = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 3 };
+        wing::on_ingress_frame_header(conn, h_hdr, 0);
+
+        // Reset stream 3
+        let rst_hdr = wing::FrameHeader { length: 4, frame_type: wing::FRAME_RST_STREAM, flags: 0, stream_id: 3 };
+        wing::on_ingress_frame_header(conn, rst_hdr, 0);
+
+        // Peer sends 4 in-flight DATA chunks of 10000 bytes each
+        for i in 4 {
+            let data_chunk = wing::FrameHeader { length: 10000, frame_type: wing::FRAME_DATA, flags: 0, stream_id: 3 };
+            let err_c = wing::on_data_frame_received(conn, data_chunk, 10000);
+            sub.assert_eq(err_c, wing::ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
+        }
+        // Total connection window consumed: 40000
+        sub.assert_eq(conn.conn_recv_window, 25535, "Connection receive window accounted: 65535 - 40000 = 25535");
+
+        // Replenish connection window via WINDOW_UPDATE (+40000)
+        let err_win = wing::apply_window_update(conn, 0, 40000);
+        sub.assert_eq(err_win, wing::ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
+        sub.assert_eq(conn.conn_send_window, 105535, "Connection send window replenished without lockup");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1251,6 +1326,7 @@ fn main() {
     core::run_case(runner, "25. LimitReader EOF vs LimitExceeded Boundary Underflow Defenses", test_limit_reader_boundary_eof_and_underflow_defenses);
     core::run_case(runner, "26. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
     core::run_case(runner, "27. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);
+    core::run_case(runner, "28. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants", test_h2_rst_stream_data_flow_control_invariants);
 
     let ok = core::finish(runner);
     assert(ok);

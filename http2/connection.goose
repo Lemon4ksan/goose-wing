@@ -494,8 +494,17 @@ fn compute_stream_send_quota(s: const H2Connection&, stream_id: u32) -> i64 {
 }
 
 // Updates receive windows upon processing incoming DATA frame (including padding).
+// Conforms to RFC 9113 §5.1 & §6.9: Flow-controlled DATA frames MUST always be accounted
+// against the connection flow-control window, even if the stream is closed or in error.
 fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len: u32) -> u32 {
     guard hdr.stream_id != 0 else { return ERR_PROTOCOL_ERROR; }
+
+    // RFC 9113 §6.9: Always account for DATA frames against connection flow control first
+    let total_consumed = hdr.length as i64;
+    s.conn_recv_window -= total_consumed;
+    if s.conn_recv_window < 0 {
+        return ERR_FLOW_CONTROL_ERROR;
+    }
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     guard found else {
@@ -508,12 +517,6 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
     if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
        s.streams[s_idx].state == H2StreamState.Closed {
         return ERR_STREAM_CLOSED;
-    }
-
-    let total_consumed = hdr.length as i64;
-    s.conn_recv_window -= total_consumed;
-    if s.conn_recv_window < 0 {
-        return ERR_FLOW_CONTROL_ERROR;
     }
 
     s.streams[s_idx].recv_window -= total_consumed;
