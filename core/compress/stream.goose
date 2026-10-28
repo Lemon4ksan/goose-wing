@@ -38,7 +38,7 @@ fn detect_container_format(src: const u8[:]) -> ContainerFormat {
             return ContainerFormat.Zstd;
         }
     }
-    if src.len >= 10 && src[0] == 0x1F && src[1] == 0x8B && src[2] == 0x08 {
+    if src.len >= 10 && src[0] == 0x1F && src[1] == 0x8B && src[2] == 0x08 && ((src[3] & 0xE0) == 0) {
         return ContainerFormat.Gzip;
     }
     if src.len >= 6 {
@@ -293,12 +293,12 @@ fn zstream_decompress_write_limit<B>(
     out: B&,
     max_output_bytes: i64 = 0,
 ) -> CompressError {
-    d.in_buf.append(chunk);
-    d.total_in += chunk.len as u64;
-
     if d.is_finished {
+        guard chunk.len == 0 else { return CompressError.CorruptedBitstream; }
         return CompressError.None;
     }
+    d.in_buf.append(chunk);
+    d.total_in += chunk.len as u64;
 
     // Phase 1: Parse container header
     if !d.header_parsed {
@@ -429,6 +429,8 @@ fn zstream_decompress_write_limit<B>(
             let expected_adler = read_be_u32(d.in_buf[..], 0);
             guard d.adler == expected_adler else { return CompressError.ChecksumMismatch; }
             drain_in_buf(d, 4);
+            // RFC 1950 exact finality: Zlib stream trailer ends at Adler-32
+            guard d.in_buf.len == 0 else { return CompressError.CorruptedBitstream; }
             d.is_finished = true;
         } else if d.format == ContainerFormat.Gzip {
             if d.in_buf.len < 8 {

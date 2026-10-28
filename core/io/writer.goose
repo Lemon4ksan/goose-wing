@@ -42,6 +42,7 @@ fn as_written_slice(w: const SliceWriter&) -> const u8[:] {
 // Writes as many bytes from src as will fit.
 // Returns (bytes_written, IoError).
 fn write(w: SliceWriter&, src: const u8[:]) -> i64, IoError {
+    guard src.len > 0 else { return 0, IoError.None; }
     let avail = available(w);
     if avail == 0 {
         return 0, IoError.BufferFull;
@@ -56,6 +57,9 @@ fn write(w: SliceWriter&, src: const u8[:]) -> i64, IoError {
 
 // Writes exactly src.len bytes, failing with BufferFull if capacity is insufficient.
 fn write_exact(w: SliceWriter&, src: const u8[:]) -> IoError {
+    guard src.len >= 0 else {
+        return IoError.InvalidArgument;
+    }
     guard available(w) >= src.len else {
         return IoError.BufferFull;
     }
@@ -192,6 +196,9 @@ fn new_counting_writer() -> CountingWriter {
 }
 
 fn write(cw: CountingWriter&, src: const u8[:]) -> i64, IoError {
+    guard src.len >= 0 else {
+        return 0, IoError.InvalidArgument;
+    }
     cw.total_written += src.len;
     return src.len, IoError.None;
 }

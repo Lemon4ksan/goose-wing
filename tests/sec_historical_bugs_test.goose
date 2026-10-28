@@ -1119,6 +1119,108 @@ fn test_compression_header_flags_window_and_stream_boundaries(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 21. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality
 // ----------------------------------------------------------------------------
+fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: core::T&) {
+    t.run("PipeBuffer completed write rejection") { sub =>
+        var pipe = core::new_pipe_buffer();
+        core::complete_pipe(pipe);
+        sub.assert_true(pipe.is_completed, "Pipe is marked completed");
+
+        // Write attempt on completed pipe must fail with Closed
+        let w_n, w_err = core::write(pipe, "unauthorized payload");
+        sub.assert_eq(w_n, 0, "0 bytes written to completed pipe");
+        sub.assert_eq(w_err, core::IoError.Closed, "Write to completed pipe MUST return Closed");
+
+        // commit_write on completed pipe must fail with Closed
+        let c_err = core::commit_write(pipe, 4);
+        sub.assert_eq(c_err, core::IoError.Closed, "commit_write on completed pipe MUST return Closed");
+
+        // get_write_span on completed pipe must fail with Closed
+        let span, s_err = core::get_write_span(pipe, 1);
+        sub.assert_eq(span.len, 0, "0 length span for completed pipe");
+        sub.assert_eq(s_err, core::IoError.Closed, "get_write_span on completed pipe MUST return Closed");
+    };
+
+    t.run("PipeBuffer streaming read, partial drain and clean EOF") { sub =>
+        var pipe = core::new_pipe_buffer();
+        let payload = "0123456789";
+        let w_n, w_err = core::write(pipe, payload);
+        sub.assert_eq(w_n, 10, "Wrote 10 bytes to pipe");
+        sub.assert_eq(w_err, core::IoError.None, "Write succeeds");
+
+        // Mark transport as completed (writer finished)
+        core::complete_pipe(pipe);
+
+        // Read first 5 bytes
+        var buf1: u8[5] = [0; 5];
+        let r1_n, r1_err = core::read(pipe, buf1[..]);
+        sub.assert_eq(r1_n, 5, "Read 5 bytes");
+        sub.assert_eq(r1_err, core::IoError.None, "First read succeeds");
+        sub.assert_eq(buf1[..], "01234", "Read contents match");
+
+        // 0-byte read attempt on unexhausted completed pipe must return None
+        var empty_buf: u8[0] = [];
+        let z_n, z_err = core::read(pipe, empty_buf[..]);
+        sub.assert_eq(z_n, 0, "0 bytes read into empty buffer");
+        sub.assert_eq(z_err, core::IoError.None, "0-byte read MUST return None without error");
+
+        // Read remaining 5 bytes
+        var buf2: u8[5] = [0; 5];
+        let r2_n, r2_err = core::read(pipe, buf2[..]);
+        sub.assert_eq(r2_n, 5, "Read remaining 5 bytes");
+        sub.assert_eq(r2_err, core::IoError.None, "Second read succeeds");
+        sub.assert_eq(buf2[..], "56789", "Remaining contents match");
+
+        // Pipe is now drained and completed: read MUST return Eof
+        var buf3: u8[4] = [0; 4];
+        let r3_n, r3_err = core::read(pipe, buf3[..]);
+        sub.assert_eq(r3_n, 0, "0 bytes read from drained completed pipe");
+        sub.assert_eq(r3_err, core::IoError.Eof, "Drained completed pipe MUST return Eof");
+    };
+
+    t.run("SliceWriter 0-byte write on full buffer returns None") { sub =>
+        var storage: u8[4] = [0; 4];
+        var w = core::new_slice_writer(storage[..]);
+        let w_n, w_err = w.write("1234");
+        sub.assert_eq(w_n, 4, "Wrote 4 bytes");
+        sub.assert_eq(w_err, core::IoError.None, "Write ok");
+        sub.assert_eq(w.available(), 0, "Writer is full");
+
+        // 0-byte write attempt on full SliceWriter
+        var empty_src: u8[0] = [];
+        let z_n, z_err = w.write(empty_src[..]);
+        sub.assert_eq(z_n, 0, "0 bytes written");
+        sub.assert_eq(z_err, core::IoError.None, "0-byte write on full SliceWriter MUST return None, NOT BufferFull");
+    };
+
+    t.run("SliceReader 0-byte read on EOF reader returns None") { sub =>
+        var r = core::new_slice_reader("");
+        sub.assert_true(r.is_eof(), "SliceReader is EOF");
+
+        // 0-byte read attempt on EOF SliceReader
+        var empty_dst: u8[0] = [];
+        let z_n, z_err = r.read(empty_dst[..]);
+        sub.assert_eq(z_n, 0, "0 bytes read");
+        sub.assert_eq(z_err, core::IoError.None, "0-byte read on EOF SliceReader MUST return None, NOT Eof");
+    };
+
+    t.run("Streaming Zlib trailing garbage rejected with CorruptedBitstream") { sub =>
+        let payload = "Streaming exact finality vector.";
+        var comp: u8[>..] = [];
+        core::zlib_compress(payload, comp, 6);
+
+        // Append 4 trailing garbage bytes
+        comp.push(0xCA);
+        comp.push(0xFE);
+        comp.push(0xBA);
+        comp.push(0xBE);
+
+        var decomp = core::new_zstream_decompressor(core::ContainerFormat.Zlib);
+        var restored: u8[>..] = [];
+        let err = decomp.write(comp[..], restored);
+        sub.assert_eq(err, core::CompressError.CorruptedBitstream, "Streaming Zlib trailing garbage MUST return CorruptedBitstream");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1148,6 +1250,8 @@ fn main() {
     core::run_case(runner, "24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants", test_rfc7748_x25519_constant_time_montgomery_ladder);
     core::run_case(runner, "25. LimitReader EOF vs LimitExceeded Boundary Underflow Defenses", test_limit_reader_boundary_eof_and_underflow_defenses);
     core::run_case(runner, "26. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
+    core::run_case(runner, "27. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);
+
     let ok = core::finish(runner);
     assert(ok);
 }

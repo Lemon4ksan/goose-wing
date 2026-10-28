@@ -37,6 +37,7 @@ fn reset(r: SliceReader&, src: const u8[:]) {
 // Reads up to dst.len bytes from the stream into dst.
 // Returns (bytes_read, IoError).
 fn read(r: SliceReader&, dst: u8[:]) -> i64, IoError {
+    guard dst.len > 0 else { return 0, IoError.None; }
     if is_eof(r) {
         return 0, IoError.Eof;
     }
@@ -51,6 +52,9 @@ fn read(r: SliceReader&, dst: u8[:]) -> i64, IoError {
 
 // Reads exactly dst.len bytes, failing with UnexpectedEof if stream has fewer bytes remaining.
 fn read_exact(r: SliceReader&, dst: u8[:]) -> IoError {
+    guard dst.len >= 0 else {
+        return IoError.InvalidArgument;
+    }
     guard remaining(r) >= dst.len else {
         return IoError.UnexpectedEof;
     }

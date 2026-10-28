@@ -67,7 +67,7 @@ fn write_space(p: const PipeBuffer&) -> i64 {
 
 // Returns total capacity available if unconsumed bytes are compacted.
 fn total_available(p: const PipeBuffer&) -> i64 {
-    let used = p.written - p.consumed;
+    let used = if p.written > p.consumed { p.written - p.consumed } else { 0 };
     let avail = PIPE_BUFFER_CAP - used;
     return if avail > 0 { avail } else { 0 };
 }
@@ -127,6 +127,9 @@ fn advance_to(p: PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> IoErr
 // Provides a writable span for transport drivers to receive into.
 // Automatically compacts if needed to ensure at least min_size bytes are available.
 fn get_write_span(p: PipeBuffer&, min_size: i64 = 1) -> u8[:], IoError {
+    guard !p.is_completed else {
+        return p.storage[..0], IoError.Closed;
+    }
     guard min_size > 0 && min_size <= PIPE_BUFFER_CAP else {
         return p.storage[..0], IoError.InvalidArgument;
     }
@@ -141,6 +144,9 @@ fn get_write_span(p: PipeBuffer&, min_size: i64 = 1) -> u8[:], IoError {
 
 // Commits bytes written by transport driver into the pipe.
 fn commit_write(p: PipeBuffer&, bytes_written: i64) -> IoError {
+    guard !p.is_completed else {
+        return IoError.Closed;
+    }
     guard bytes_written >= 0 else {
         return IoError.InvalidArgument;
     }
@@ -153,6 +159,9 @@ fn commit_write(p: PipeBuffer&, bytes_written: i64) -> IoError {
 
 // High-level write helper copying src into the pipe.
 fn write(p: PipeBuffer&, src: const u8[:]) -> i64, IoError {
+    guard !p.is_completed else {
+        return 0, IoError.Closed;
+    }
     guard src.len > 0 else { return 0, IoError.None; }
     if write_space(p) < src.len && p.consumed > 0 {
         compact_pipe(p);
@@ -165,6 +174,34 @@ fn write(p: PipeBuffer&, src: const u8[:]) -> i64, IoError {
     }
     p.written += src.len;
     return src.len, IoError.None;
+}
+
+// Reads and consumes bytes from the pipe into dst.
+// Returns (bytes_read, IoError).
+fn read(p: PipeBuffer&, dst: u8[:]) -> i64, IoError {
+    guard dst.len > 0 else { return 0, IoError.None; }
+    let avail = readable_len(p);
+    if avail == 0 {
+        return 0, if p.is_completed { IoError.Eof } else { IoError.None };
+    }
+    let to_read = if dst.len < avail { dst.len } else { avail };
+    for i in to_read {
+        dst[i] = p.storage[p.consumed + i];
+    }
+    advance_to(p, to_read, to_read);
+    return to_read, IoError.None;
+}
+
+// Peeks at bytes in the pipe without advancing read cursors.
+fn peek(p: const PipeBuffer&, dst: u8[:]) -> i64 {
+    guard dst.len > 0 else { return 0; }
+    let avail = readable_len(p);
+    if avail == 0 { return 0; }
+    let to_peek = if dst.len < avail { dst.len } else { avail };
+    for i in to_peek {
+        dst[i] = p.storage[p.consumed + i];
+    }
+    return to_peek;
 }
 
 // Marks the pipe as completed by transport (no more writes will occur).
