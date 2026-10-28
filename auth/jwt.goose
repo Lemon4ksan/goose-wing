@@ -303,6 +303,7 @@ struct JwtClaims {
     iss: u8[..128] = [],
     sub: u8[..128] = [],
     aud: u8[..128] = [],
+    audiences: u8[..128][..8] = [],
     jti: u8[..64] = [],
     exp: i64 = -1,
     nbf: i64 = -1,
@@ -332,6 +333,23 @@ fn set_audience(claims: JwtClaims&, aud: const u8[:]) {
     claims.aud.clear();
     if aud.len <= claims.aud.cap {
         claims.aud.append(aud);
+    }
+    claims.audiences.clear();
+    if claims.audiences.len < claims.audiences.cap && aud.len <= 128 {
+        var item: u8[..128] = [];
+        item.append(aud);
+        claims.audiences.push(item);
+    }
+}
+
+fn add_audience(claims: JwtClaims&, aud: const u8[:]) {
+    if claims.aud.len == 0 && aud.len <= claims.aud.cap {
+        claims.aud.append(aud);
+    }
+    if claims.audiences.len < claims.audiences.cap && aud.len <= 128 {
+        var item: u8[..128] = [];
+        item.append(aud);
+        claims.audiences.push(item);
     }
 }
 
@@ -473,7 +491,17 @@ fn serialize_jwt_claims<B>(claims: const JwtClaims&, out: B&) {
         json::format_string(out, claims.sub[..]);
         first = false;
     }
-    if claims.aud.len > 0 {
+    if claims.audiences.len > 1 {
+        if !first { out.push(','); }
+        json::format_key(out, "aud");
+        out.push('[');
+        for i in claims.audiences.len {
+            if i > 0 { out.push(','); }
+            json::format_string(out, claims.audiences[i][..]);
+        }
+        out.push(']');
+        first = false;
+    } else if claims.aud.len > 0 {
         if !first { out.push(','); }
         json::format_key(out, "aud");
         json::format_string(out, claims.aud[..]);
@@ -578,11 +606,30 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
                 if s.len <= out_claims.aud.cap {
                     out_claims.aud.clear();
                     out_claims.aud.append(s);
+                    if out_claims.audiences.len < out_claims.audiences.cap {
+                        var item: u8[..128] = [];
+                        item.append(s);
+                        out_claims.audiences.push(item);
+                    }
                 } else {
                     had_error = true;
                 }
+            } else if p == '[' {
+                json::each_element(reader) {
+                    scratch.clear();
+                    let s = json::read_string(reader, scratch);
+                    if out_claims.aud.len == 0 && s.len <= out_claims.aud.cap {
+                        out_claims.aud.append(s);
+                    }
+                    if out_claims.audiences.len < out_claims.audiences.cap && s.len <= 128 {
+                        var item: u8[..128] = [];
+                        item.append(s);
+                        out_claims.audiences.push(item);
+                    }
+                };
             } else {
                 json::skip(reader);
+                had_error = true;
             }
         } else if key == "jti" {
             if seen_jti {
@@ -856,8 +903,22 @@ fn validate_jwt_identity_claims(claims: const JwtClaims&, options: const JwtVali
     if options.expected_issuer.len > 0 && claims.iss[..] != options.expected_issuer[..] {
         return JwtError.IssuerMismatch;
     }
-    if options.expected_audience.len > 0 && claims.aud[..] != options.expected_audience[..] {
-        return JwtError.AudienceMismatch;
+    if options.expected_audience.len > 0 {
+        var matched = false;
+        if claims.aud.len > 0 && claims.aud[..] == options.expected_audience[..] {
+            matched = true;
+        }
+        if !matched && claims.audiences.len > 0 {
+            for &a in claims.audiences {
+                if a[..] == options.expected_audience[..] {
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if !matched {
+            return JwtError.AudienceMismatch;
+        }
     }
     if options.expected_subject.len > 0 && claims.sub[..] != options.expected_subject[..] {
         return JwtError.SubjectMismatch;
@@ -931,17 +992,17 @@ fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bo
 }
 
 fn is_matching_jwt_typ(header_typ: const u8[:], expected_typ: const u8[:]) -> bool {
-    if header_typ == expected_typ {
+    if core::eq_ascii_fold(header_typ, expected_typ) {
         return true;
     }
     // Handle "application/" media type prefix equivalence per RFC 8725 §3.11
     if core::starts_with(expected_typ, "application/") {
-        if header_typ == expected_typ[12..] {
+        if core::eq_ascii_fold(header_typ, expected_typ[12..]) {
             return true;
         }
     }
     if core::starts_with(header_typ, "application/") {
-        if header_typ[12..] == expected_typ {
+        if core::eq_ascii_fold(header_typ[12..], expected_typ) {
             return true;
         }
     }

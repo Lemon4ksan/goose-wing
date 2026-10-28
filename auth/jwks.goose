@@ -305,6 +305,9 @@ fn dispatch_jwks_verification(
     if key.use.len > 0 && key.use[..] != "sig" {
         return JwtError.UnsupportedAlgorithm;
     }
+    if out_header.alg == JwtAlg.None && !options.allow_none_alg {
+        return JwtError.UnsupportedAlgorithm;
+    }
     if key.alg != JwtAlg.None && key.alg != out_header.alg {
         return JwtError.AlgorithmMismatch;
     }

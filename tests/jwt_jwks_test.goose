@@ -792,6 +792,62 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.TypeMismatch, "Type confusion between id+jwt and at+jwt rejected");
     };
+
+    t.run("Case-insensitive typ verification (RFC 8725 §3.11)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"AT+JWT\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        wing::set_expected_type(opts, "at+jwt");
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "Case-insensitive typ comparison succeeds");
+    };
+
+    t.run("Multi-audience array claims parsing & verification (RFC 7519 §4.1.3)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+        let clm_json = "{\"sub\":\"alice\",\"aud\":[\"https://api.one.com\",\"https://api.two.com\"],\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        opts.expected_audience.append("https://api.two.com");
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "Multi-audience array matches second audience");
+
+        // Fails when requesting unlisted audience
+        var opts_bad = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        opts_bad.expected_audience.append("https://api.three.com");
+        let err_bad = wing::verify_jwt_hmac(token[..], secret, opts_bad, now_sec, out_h, out_c);
+        sub.assert_eq(err_bad, wing::JwtError.AudienceMismatch, "Unlisted audience fails validation");
+    };
+
+    t.run("JWKS oct key without alg rejects alg:none attack") { sub =>
+        var jwks = wing::new_jwks();
+        let key_json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c3VwZXJfc2VjcmV0X2tleV8zMl9ieXRlcyEh\",\"kid\":\"k-sym-01\"}]}";
+        let ok_parse = wing::parse_jwks_json(key_json, jwks);
+        sub.assert_true(ok_parse, "JWKS parsed");
+
+        let hdr_none = "eyJhbGciOiJub25lIiwia2lkIjoiay1zeW0tMDEiLCJ0eXAiOiJKV1QifQ";
+        let clm_none = "eyJzdWIiOiJhbGljZSIsImV4cCI6MjAwMDAwMDAwMH0";
+        var token_none: u8[..256] = [];
+        token_none.append(hdr_none);
+        token_none.push('.' as u8);
+        token_none.append(clm_none);
+        token_none.push('.' as u8);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.None);
+        opts.allow_none_alg = false;
+        let err = wing::verify(token_none[..], jwks, opts, now_sec, out_h, out_c);
+        sub.assert_true(err == wing::JwtError.UnsupportedAlgorithm || err == wing::JwtError.KeyNotFound, "alg:none against JWKS oct key rejected");
+    };
 }
 
 // ----------------------------------------------------------------------------
