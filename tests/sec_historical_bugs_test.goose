@@ -951,6 +951,80 @@ fn test_rfc7748_x25519_constant_time_montgomery_ladder(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 19. LimitReader EOF vs LimitExceeded Boundary Underflow Defenses
 // ----------------------------------------------------------------------------
+fn test_limit_reader_boundary_eof_and_underflow_defenses(t: core::T&) {
+    t.run("Stream of exact limit length reaches EOF cleanly without false LimitExceeded") { sub =>
+        let data = "0123456789"; // exactly 10 bytes
+        var lr = core::new_limit_reader(data, 10);
+
+        var buf: u8[10] = [0; 10];
+        let n1, err1 = lr.read(buf[..]);
+        sub.assert_eq(n1, 10, "Read all 10 bytes matching limit");
+        sub.assert_eq(err1, core::IoError.None, "First read succeeds");
+        sub.assert_eq(lr.remaining(), 0, "0 bytes remaining under limit");
+        sub.assert_false(lr.exceeded, "Limit not exceeded initially");
+
+        // Next read MUST return Eof, NOT LimitExceeded, because stream ended cleanly at limit
+        var buf2: u8[10] = [0; 10];
+        let n2, err2 = lr.read(buf2[..]);
+        sub.assert_eq(n2, 0, "0 bytes read at EOF");
+        sub.assert_eq(err2, core::IoError.Eof, "Stream at exact limit boundary MUST return Eof");
+        sub.assert_false(lr.exceeded, "Exceeded flag MUST NOT be set when stream ends cleanly at limit");
+    };
+
+    t.run("Zero-byte read on exhausted limit returns None without setting exceeded") { sub =>
+        let data = "0123456789";
+        var lr = core::new_limit_reader(data, 5);
+
+        var buf: u8[5] = [0; 5];
+        let n1, err1 = lr.read(buf[..]);
+        sub.assert_eq(n1, 5, "Read 5 bytes");
+        sub.assert_eq(err1, core::IoError.None, "First read ok");
+
+        // Zero-byte slice read attempt
+        var empty_buf: u8[0] = [];
+        let n0, err0 = lr.read(empty_buf[..]);
+        sub.assert_eq(n0, 0, "0 bytes read into empty buffer");
+        sub.assert_eq(err0, core::IoError.None, "0-byte read MUST return None without error");
+        sub.assert_false(lr.exceeded, "Exceeded flag MUST NOT be set by 0-byte read");
+    };
+
+    t.run("Overflow read attempt when unread bytes remain in stream triggers LimitExceeded") { sub =>
+        let data = "0123456789EXCESS"; // 16 bytes, limit 10
+        var lr = core::new_limit_reader(data, 10);
+
+        var buf: u8[10] = [0; 10];
+        let n1, err1 = lr.read(buf[..]);
+        sub.assert_eq(n1, 10, "Read 10 bytes up to limit");
+        sub.assert_eq(err1, core::IoError.None, "First read ok");
+
+        // Attempt to read past limit when data remains in stream MUST trigger LimitExceeded
+        var extra: u8[4] = [0; 4];
+        let n2, err2 = lr.read(extra[..]);
+        sub.assert_eq(n2, 0, "0 bytes read past limit");
+        sub.assert_eq(err2, core::IoError.LimitExceeded, "Attempting to read unconsumed stream data past limit triggers LimitExceeded");
+        sub.assert_true(lr.exceeded, "Exceeded flag MUST be set");
+    };
+
+    t.run("Empty stream with limit 0 returns Eof cleanly") { sub =>
+        var lr = core::new_limit_reader("", 0);
+        var buf: u8[4] = [0; 4];
+        let n, err = lr.read(buf[..]);
+        sub.assert_eq(n, 0, "0 bytes read from empty stream");
+        sub.assert_eq(err, core::IoError.Eof, "Empty stream with limit 0 MUST return Eof");
+        sub.assert_false(lr.exceeded, "Empty stream MUST NOT set exceeded flag");
+    };
+
+    t.run("read_slice with negative count returns InvalidArgument") { sub =>
+        var lr = core::new_limit_reader("data", 4);
+        let slice, err = lr.read_slice(-1);
+        sub.assert_eq(err, core::IoError.InvalidArgument, "Negative count MUST return InvalidArgument");
+        sub.assert_false(lr.exceeded, "Negative count MUST NOT mark exceeded");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 20. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries
+// ----------------------------------------------------------------------------
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -978,6 +1052,7 @@ fn main() {
     core::run_case(runner, "22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity", test_rfc8439_poly1305_block_boundary_padding_overflow);
     core::run_case(runner, "23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses", test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse);
     core::run_case(runner, "24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants", test_rfc7748_x25519_constant_time_montgomery_ladder);
+    core::run_case(runner, "25. LimitReader EOF vs LimitExceeded Boundary Underflow Defenses", test_limit_reader_boundary_eof_and_underflow_defenses);
     let ok = core::finish(runner);
     assert(ok);
 }

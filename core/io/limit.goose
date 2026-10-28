@@ -39,8 +39,16 @@ fn is_exhausted(lr: const LimitReader&) -> bool {
 }
 
 // Reads up to dst.len bytes bounded by limit_remaining.
-// If limit is already 0, returns (0, LimitExceeded).
+// If underlying stream is EOF, returns (0, Eof).
+// If dst.len is 0, returns (0, None).
+// If limit is already 0 and unread stream bytes remain, returns (0, LimitExceeded).
 fn read(lr: LimitReader&, dst: u8[:]) -> i64, IoError {
+    if dst.len == 0 {
+        return 0, IoError.None;
+    }
+    if is_eof(lr.reader) {
+        return 0, IoError.Eof;
+    }
     if lr.limit_remaining <= 0 {
         lr.exceeded = true;
         return 0, IoError.LimitExceeded;
@@ -51,7 +59,7 @@ fn read(lr: LimitReader&, dst: u8[:]) -> i64, IoError {
     lr.limit_remaining -= n;
     lr.bytes_consumed += n;
 
-    if err == IoError.Eof && lr.limit_remaining > 0 {
+    if err == IoError.Eof {
         return n, IoError.Eof;
     }
     return n, err;
@@ -59,6 +67,15 @@ fn read(lr: LimitReader&, dst: u8[:]) -> i64, IoError {
 
 // Zero-copy: yields slice up to count bytes, bounded by limit.
 fn read_slice(lr: LimitReader&, count: i64) -> const u8[:], IoError {
+    guard count >= 0 else {
+        return "", IoError.InvalidArgument;
+    }
+    if count == 0 {
+        return "", IoError.None;
+    }
+    if is_eof(lr.reader) {
+        return "", IoError.UnexpectedEof;
+    }
     guard count <= lr.limit_remaining else {
         lr.exceeded = true;
         return "", IoError.LimitExceeded;
@@ -73,6 +90,9 @@ fn read_slice(lr: LimitReader&, count: i64) -> const u8[:], IoError {
 
 // Reads single byte subject to limit.
 fn read_u8(lr: LimitReader&) -> u8, IoError {
+    if is_eof(lr.reader) {
+        return 0, IoError.UnexpectedEof;
+    }
     guard lr.limit_remaining >= 1 else {
         lr.exceeded = true;
         return 0, IoError.LimitExceeded;
@@ -87,6 +107,9 @@ fn read_u8(lr: LimitReader&) -> u8, IoError {
 
 // Reads 32-bit BE integer subject to 4-byte limit.
 fn read_u32_be(lr: LimitReader&) -> u32, IoError {
+    if is_eof(lr.reader) {
+        return 0, IoError.UnexpectedEof;
+    }
     guard lr.limit_remaining >= 4 else {
         lr.exceeded = true;
         return 0, IoError.LimitExceeded;
