@@ -526,12 +526,6 @@ fn handle_h2_server_ingress<B>(
                         return offset + total_frame_len, false;
                     }
 
-                    // RFC 9113 Section 6.5.2: Clients MUST NOT send SETTINGS_ENABLE_PUSH with value != 0
-                    if param_id == SETTING_ENABLE_PUSH && param_val != 0 {
-                        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                        return offset + total_frame_len, false;
-                    }
-
                     if param_id == SETTING_INITIAL_WINDOW_SIZE {
                         let win_err = apply_peer_initial_window_size_delta(sess.conn, param_val);
                         if win_err != ERR_NO_ERROR {

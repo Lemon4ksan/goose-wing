@@ -614,29 +614,38 @@ fn test_h2_protocol_invariants(t: core::T&) {
         sub.assert_true(found_rst, "Server emitted RST_STREAM on stream 1");
     };
 
-    t.run("H2-14: Client SETTINGS_ENABLE_PUSH != 0 rejected (RFC 9113 §6.5.2)") { sub =>
+    t.run("H2-14: Client SETTINGS_ENABLE_PUSH > 1 rejected, 0 and 1 accepted (RFC 9113 §6.5.2)") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
-        var wire: u8[>..] = [];
-        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        var wire_ok: u8[>..] = [];
+        wire_ok.append(wing::H2_CLIENT_PREFACE[..]);
         let s_hdr = wing::FrameHeader {
             length: 6,
             frame_type: wing::FRAME_SETTINGS,
             flags: 0,
             stream_id: 0,
         };
+        wing::encode_frame_header_to(s_hdr, wire_ok);
+        core::append_u16_be(wire_ok, wing::SETTING_ENABLE_PUSH);
+        core::append_u32_be(wire_ok, 1);
+
+        var out_ok: u8[>..] = [];
+        let _, ok1 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_ok[..], 1000, out_ok);
+        sub.assert_true(ok1, "Server accepted client ENABLE_PUSH == 1");
+
+        var wire: u8[>..] = [];
         wing::encode_frame_header_to(s_hdr, wire);
         core::append_u16_be(wire, wing::SETTING_ENABLE_PUSH);
-        core::append_u32_be(wire, 1);
+        core::append_u32_be(wire, 2);
 
         var out_wire: u8[>..] = [];
         let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
 
-        sub.assert_false(ok, "Server rejected client ENABLE_PUSH != 0");
-        sub.assert_gt(out_wire.len, 33, "Emitted GOAWAY");
-        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_false(ok, "Server rejected client ENABLE_PUSH > 1");
+        sub.assert_gt(out_wire.len, 0, "Emitted GOAWAY");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[0..9]);
         sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "GOAWAY emitted");
     };
 

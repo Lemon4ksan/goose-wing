@@ -59,6 +59,9 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     wing::set_max_payload_length(ws, 16777216); // 16 MB for Autobahn Case 9.x large payload tests
 
     var ws_buf: u8[>..] = [];
+    var frag_buf: u8[>..] = [];
+    var reply: u8[>..] = [];
+    var echo_wire: u8[>..] = [];
     var idle_count = 0;
     while !ws.is_closed {
         var chunk: u8[..16384] = [];
@@ -78,20 +81,27 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
         idle_count = 0;
         ws_buf.append(chunk[..recvd]);
 
-        while ws_buf.len >= 2 && !ws.is_closed {
-            var view = wing::WsMessageView { .. };
-            var reply: u8[>..] = [];
-            let consumed, handled = wing::consume_frame_view(ws, ws_buf[..], view, reply);
+        var cursor: i64 = 0;
+        while cursor + 2 <= ws_buf.len && !ws.is_closed {
+            reply.clear();
+            let consumed, handled, view = wing::consume_frame_view_into(
+                ws,
+                ws_buf[cursor..],
+                frag_buf,
+                16777216,
+                reply,
+            );
             if !handled {
                 break;
             }
+            cursor += consumed;
 
             if reply.len > 0 {
                 wing::tcp_send(conn, reply[..]);
             }
 
             if view.is_valid && (view.opcode == wing::WS_OPCODE_TEXT || view.opcode == wing::WS_OPCODE_BINARY) {
-                var echo_wire: u8[>..] = [];
+                echo_wire.clear();
                 if view.opcode == wing::WS_OPCODE_TEXT {
                     wing::send_text(ws, view.payload, echo_wire);
                 } else {
@@ -106,12 +116,18 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                 drain_and_close(conn);
                 return;
             }
+        }
 
-            // Advance buffer
-            var remaining: u8[>..] = [];
-            remaining.append(ws_buf[consumed..]);
-            ws_buf.clear();
-            ws_buf.append(remaining[..]);
+        // Advance buffer past consumed frames
+        if cursor > 0 {
+            if cursor >= ws_buf.len {
+                ws_buf.clear();
+            } else {
+                var remaining: u8[>..] = [];
+                remaining.append(ws_buf[cursor..]);
+                ws_buf.clear();
+                ws_buf.append(remaining[..]);
+            }
         }
     }
 }

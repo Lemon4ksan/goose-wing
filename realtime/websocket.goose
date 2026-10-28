@@ -686,6 +686,7 @@ struct WebSocketSession {
     // Multi-frame fragmented message assembly (RFC 6455 §5.4 & RFC 7692 §5.1)
     frag_opcode: u8 = 0,               // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
     frag_compressed: bool = false,     // RFC 7692: remembers if initial fragment had RSV1 set
+    frag_utf8_offset: i64 = 0,         // Validated UTF-8 prefix byte offset across streaming fragments
     frag_buffer: u8[..65536] = [],     // Assembly buffer for fragmented messages
 
     // RFC 7692 PerMessageDeflate configuration (uWebSockets pattern)
@@ -1160,6 +1161,7 @@ fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B
     ws.close_code = status_code;
     ws.frag_opcode = 0;
     ws.frag_compressed = false;
+    ws.frag_utf8_offset = 0;
     ws.frag_buffer.clear();
 }
 
@@ -1195,14 +1197,16 @@ fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
 }
 
 // Dispatches incoming raw frame wire bytes using zero-copy non-owning payload views:
-// unmasks payload in-place, handles Ping/Pong and Close echoes, validates strict UTF-8,
-// and yields a direct slice of the wire ingress buffer into out_view without copying.
-fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> bool {
-    out_view.is_valid = false;
-    out_view.is_compressed = false;
-    out_view.payload = "";
-    out_view.close_reason = "";
-    out_view.close_code = 0;
+// unmasks payload in-place, handles Ping/Pong and Close echoes, validates strict streaming UTF-8,
+// and returns (handled, view) with a direct slice of the wire ingress buffer into view without copying.
+fn receive_view_into<B, F>(
+    ws: WebSocketSession&,
+    wire: u8[:],
+    frag_buf: F&,
+    max_frag_cap: i64,
+    out_reply: B&,
+) -> bool, WsMessageView {
+    var out_view = WsMessageView { .. };
 
     // RFC 6455 §5.5 & uWS #1407: Fail connection with PROTOCOL_ERROR (1002) upon fatal header invariant violations
     if wire.len >= 2 {
@@ -1216,21 +1220,21 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             close(ws, WS_STATUS_PROTOCOL_ERROR, "unknown opcode", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
         if is_ws_control_opcode(opcode) && !fin {
             close(ws, WS_STATUS_PROTOCOL_ERROR, "fragmented control frame", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
         if is_ws_control_opcode(opcode) && raw_len > 125 {
             close(ws, WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
         // RFC 6455 §5.4: Interleaved data frame during fragmentation
@@ -1240,8 +1244,9 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
-            ws.frag_buffer.clear();
-            return true;
+            ws.frag_utf8_offset = 0;
+            frag_buf.clear();
+            return true, out_view;
         }
 
         // RFC 6455 §5.4: Continuation frame without starting fragment
@@ -1249,7 +1254,7 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             close(ws, WS_STATUS_PROTOCOL_ERROR, "continuation frame without starting fragment", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
         // RFC 6455 §5.1: Masking enforcement - check immediately upon receiving header
@@ -1259,7 +1264,7 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             close(ws, WS_STATUS_PROTOCOL_ERROR, reason, out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
         // RFC 6455 §5.2 & RFC 7692 §5.1: RSV bit enforcement - check immediately upon receiving header
@@ -1271,7 +1276,7 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension or on non-initial data frame", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
         // RFC 6455 §5.2 & Autobahn Cases 3.1..3.4:
@@ -1282,33 +1287,33 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                 close(ws, WS_STATUS_PROTOCOL_ERROR, "non-minimal 16-bit length encoding", out_reply);
                 ws.is_closed = true;
                 ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-                return true;
+                return true, out_view;
             }
         } else if raw_len == 127 && wire.len >= 10 {
             if (wire[2] & 0x80) != 0 {
                 close(ws, WS_STATUS_PROTOCOL_ERROR, "high bit set in 64-bit length", out_reply);
                 ws.is_closed = true;
                 ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-                return true;
+                return true, out_view;
             }
             let p_len = core::read_be_u64(wire, 2);
             if p_len <= 65535 {
                 close(ws, WS_STATUS_PROTOCOL_ERROR, "non-minimal 64-bit length encoding", out_reply);
                 ws.is_closed = true;
                 ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-                return true;
+                return true, out_view;
             }
         }
     }
 
     let hdr, ok = parse_ws_frame_header(wire);
-    guard ok else { return false; }
+    guard ok else { return false, out_view; }
 
     // RFC 6455 §5.5.1: If connection is closing or closed, incoming data frames MUST be discarded
     if ws.is_closed || ws.close_received {
         if !is_ws_control_opcode(hdr.opcode) {
             out_view.is_valid = false;
-            return false;
+            return false, out_view;
         }
     }
 
@@ -1320,13 +1325,14 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
         ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
         ws.frag_opcode = 0;
         ws.frag_compressed = false;
-        ws.frag_buffer.clear();
-        return true;
+        ws.frag_utf8_offset = 0;
+        frag_buf.clear();
+        return true, out_view;
     }
 
     let wire_len = wire.len as u64;
     let p_start_u = hdr.header_len as u64;
-    guard p_start_u <= wire_len && hdr.payload_len <= (wire_len - p_start_u) else { return false; }
+    guard p_start_u <= wire_len && hdr.payload_len <= (wire_len - p_start_u) else { return false, out_view; }
     let p_start = hdr.header_len as i64;
     let p_len = hdr.payload_len as i64;
     let payload = wire[p_start..(p_start + p_len)];
@@ -1342,18 +1348,18 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             out_view.opcode = WS_OPCODE_PING;
             out_view.payload = payload;
             out_view.is_valid = true;
-            return true;
+            return true, out_view;
         } else if hdr.opcode == WS_OPCODE_PONG {
             ws.pongs_received += 1;
             out_view.opcode = WS_OPCODE_PONG;
             out_view.payload = payload;
             out_view.is_valid = true;
-            return true;
+            return true, out_view;
         } else if hdr.opcode == WS_OPCODE_CLOSE {
             if ws.close_received {
                 // RFC 6455 §5.5.1: Duplicate Close frame received; ignore/discard
                 out_view.is_valid = false;
-                return false;
+                return false, out_view;
             }
             ws.close_received = true;
             let code, reason, ok_close = parse_close_payload(payload);
@@ -1363,8 +1369,9 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                 ws.close_code = WS_STATUS_PROTOCOL_ERROR;
                 ws.frag_opcode = 0;
                 ws.frag_compressed = false;
-                ws.frag_buffer.clear();
-                return true;
+                ws.frag_utf8_offset = 0;
+                frag_buf.clear();
+                return true, out_view;
             }
             // RFC 6455 §5.5.1 / §8.1 / §7.4.1 / Autobahn 6.4.1: Close reason MUST be valid UTF-8
             if reason.len > 0 && !core::validate_utf8(reason) {
@@ -1373,8 +1380,9 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                 ws.close_code = WS_STATUS_INVALID_PAYLOAD;
                 ws.frag_opcode = 0;
                 ws.frag_compressed = false;
-                ws.frag_buffer.clear();
-                return true;
+                ws.frag_utf8_offset = 0;
+                frag_buf.clear();
+                return true, out_view;
             }
             out_view.opcode = WS_OPCODE_CLOSE;
             out_view.close_code = code;
@@ -1389,8 +1397,9 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             ws.close_code = code;
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
-            ws.frag_buffer.clear();
-            return true;
+            ws.frag_utf8_offset = 0;
+            frag_buf.clear();
+            return true, out_view;
         }
     }
 
@@ -1402,8 +1411,9 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
-            ws.frag_buffer.clear();
-            return true;
+            ws.frag_utf8_offset = 0;
+            frag_buf.clear();
+            return true, out_view;
         }
 
         if hdr.fin {
@@ -1413,7 +1423,7 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                 ws.is_closed = true;
                 ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
                 out_view.is_valid = false;
-                return true;
+                return true, out_view;
             }
             // RFC 7692 §8.1: UTF-8 validation ONLY applies to uncompressed plaintext payload
             if hdr.opcode == WS_OPCODE_TEXT && !hdr.rsv1 {
@@ -1421,88 +1431,130 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                     close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
                     ws.is_closed = true;
                     ws.close_code = WS_STATUS_INVALID_PAYLOAD;
-                    return true;
+                    return true, out_view;
                 }
             }
             out_view.opcode = hdr.opcode;
             out_view.payload = payload;
             out_view.is_valid = true;
             out_view.is_compressed = hdr.rsv1;
-            return true;
+            return true, out_view;
         } else {
             // Initial fragment of a multi-frame message
             ws.frag_opcode = hdr.opcode;
             ws.frag_compressed = hdr.rsv1;
-            ws.frag_buffer.clear();
-            if (ws.max_payload_length > 0 && (payload.len as u64) > ws.max_payload_length) || payload.len > ws.frag_buffer.cap {
+            ws.frag_utf8_offset = 0;
+            frag_buf.clear();
+            let eff_cap = if ws.max_payload_length > 0 && (ws.max_payload_length as i64) < max_frag_cap { ws.max_payload_length as i64 } else { max_frag_cap };
+            if eff_cap > 0 && payload.len > eff_cap {
                 close(ws, WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
                 ws.is_closed = true;
                 ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
                 ws.frag_opcode = 0;
                 ws.frag_compressed = false;
-                ws.frag_buffer.clear();
-                return true;
+                ws.frag_utf8_offset = 0;
+                frag_buf.clear();
+                return true, out_view;
             }
-            ws.frag_buffer.append(payload);
+            frag_buf.append(payload);
+
+            // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 validation on initial fragment
+            if ws.frag_opcode == WS_OPCODE_TEXT && !ws.frag_compressed {
+                let valid_len, ok_u8 = core::validate_utf8_streaming(frag_buf[..], false);
+                if !ok_u8 {
+                    close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in initial fragment", out_reply);
+                    ws.is_closed = true;
+                    ws.close_code = WS_STATUS_INVALID_PAYLOAD;
+                    ws.frag_opcode = 0;
+                    ws.frag_compressed = false;
+                    ws.frag_utf8_offset = 0;
+                    frag_buf.clear();
+                    return true, out_view;
+                }
+                ws.frag_utf8_offset = valid_len;
+            }
+
             out_view.is_valid = false;
-            return true;
+            return true, out_view;
         }
     } else if hdr.opcode == WS_OPCODE_CONTINUATION {
         if ws.frag_opcode == 0 {
             close(ws, WS_STATUS_PROTOCOL_ERROR, "continuation frame without starting fragment", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-            return true;
+            return true, out_view;
         }
 
-        if (ws.max_payload_length > 0 && ((ws.frag_buffer.len + payload.len) as u64) > ws.max_payload_length) || ws.frag_buffer.len + payload.len > ws.frag_buffer.cap {
+        let eff_cap = if ws.max_payload_length > 0 && (ws.max_payload_length as i64) < max_frag_cap { ws.max_payload_length as i64 } else { max_frag_cap };
+        if eff_cap > 0 && (frag_buf.len + payload.len) > eff_cap {
             close(ws, WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds capacity", out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
-            ws.frag_buffer.clear();
-            return true;
+            ws.frag_utf8_offset = 0;
+            frag_buf.clear();
+            return true, out_view;
         }
-        ws.frag_buffer.append(payload);
+        frag_buf.append(payload);
+
+        // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 validation across fragment boundary
+        if ws.frag_opcode == WS_OPCODE_TEXT && !ws.frag_compressed {
+            let valid_len, ok_u8 = core::validate_utf8_streaming(frag_buf[ws.frag_utf8_offset..], hdr.fin);
+            if !ok_u8 {
+                let err_msg = if hdr.fin { "invalid UTF-8 in assembled message" } else { "invalid UTF-8 in fragment" };
+                close(ws, WS_STATUS_INVALID_PAYLOAD, err_msg, out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_INVALID_PAYLOAD;
+                ws.frag_opcode = 0;
+                ws.frag_compressed = false;
+                ws.frag_utf8_offset = 0;
+                frag_buf.clear();
+                return true, out_view;
+            }
+            ws.frag_utf8_offset += valid_len;
+        }
 
         if hdr.fin {
             let was_compressed = ws.frag_compressed;
-            // RFC 7692 §8.1: UTF-8 validation ONLY applies to uncompressed plaintext messages
-            if ws.frag_opcode == WS_OPCODE_TEXT && !was_compressed {
-                if !core::validate_utf8(ws.frag_buffer[..]) {
-                    close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in assembled message", out_reply);
-                    ws.is_closed = true;
-                    ws.close_code = WS_STATUS_INVALID_PAYLOAD;
-                    ws.frag_opcode = 0;
-                    ws.frag_compressed = false;
-                    ws.frag_buffer.clear();
-                    return true;
-                }
-            }
             out_view.opcode = ws.frag_opcode;
-            out_view.payload = ws.frag_buffer[..];
+            out_view.payload = frag_buf[..];
             out_view.is_valid = true;
             out_view.is_compressed = was_compressed;
 
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
-            return true;
+            ws.frag_utf8_offset = 0;
+            return true, out_view;
         } else {
             out_view.is_valid = false;
-            return true;
+            return true, out_view;
         }
     }
 
-    return true;
+    return true, out_view;
 }
 
-// Streams and dispatches a single WebSocket frame from the front of `wire`:
-// - Returns `(0, false)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
-// - Returns `(consumed, true)` when a complete frame was processed or a fatal header violation closed the session.
-fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> i64, bool {
-    out_view.is_valid = false;
-    guard wire.len >= 2 else { return 0, false; }
+// Dispatches incoming raw frame wire bytes using zero-copy non-owning payload views:
+// unmasks payload in-place, handles Ping/Pong and Close echoes, validates strict UTF-8,
+// and yields a direct slice of the wire ingress buffer into out_view without copying.
+fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> bool {
+    let handled, view = receive_view_into(ws, wire, ws.frag_buffer, ws.frag_buffer.cap, out_reply);
+    out_view = view;
+    return handled;
+}
+
+// Streams and dispatches a single WebSocket frame from the front of `wire` into a caller-supplied assembly buffer:
+// - Returns `(0, false, view)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
+// - Returns `(consumed, true, view)` when a complete frame was processed or a fatal header violation closed the session.
+fn consume_frame_view_into<B, F>(
+    ws: WebSocketSession&,
+    wire: u8[:],
+    frag_buf: F&,
+    max_frag_cap: i64,
+    out_reply: B&,
+) -> i64, bool, WsMessageView {
+    guard wire.len >= 2 else { return 0, false, WsMessageView { .. }; }
 
     let hdr, ok_hdr = parse_ws_frame_header(wire);
     if ok_hdr {
@@ -1510,17 +1562,33 @@ fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessage
         let wire_len = wire.len as u64;
         if hdr_len <= wire_len && hdr.payload_len <= (wire_len - hdr_len) {
             let total_len = (hdr_len + hdr.payload_len) as i64;
-            let handled = receive_view(ws, wire[..total_len], out_view, out_reply);
-            return total_len, handled || ws.is_closed;
+            let handled, view = receive_view_into(ws, wire[..total_len], frag_buf, max_frag_cap, out_reply);
+            return total_len, handled || ws.is_closed, view;
         }
     }
 
     // Incomplete frame header or payload: check if header already violates RFC 6455 invariants
-    let handled = receive_view(ws, wire, out_view, out_reply);
+    let handled, view = receive_view_into(ws, wire, frag_buf, max_frag_cap, out_reply);
     if handled || ws.is_closed {
-        return wire.len, true;
+        return wire.len, true, view;
     }
-    return 0, false;
+    return 0, false, view;
+}
+
+// Streams and dispatches a single WebSocket frame from the front of `wire`:
+// - Returns `(0, false)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
+// - Returns `(consumed, true)` when a complete frame was processed or a fatal header violation closed the session.
+fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> i64, bool {
+    let consumed, handled, view = consume_frame_view_into(ws, wire, ws.frag_buffer, ws.frag_buffer.cap, out_reply);
+    out_view = view;
+    return consumed, handled;
+}
+
+// Streams and dispatches a single WebSocket frame from the front of `wire`:
+// - Returns `(0, false)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
+// - Returns `(consumed, true)` when a complete frame was processed or a fatal header violation closed the session.
+fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&, out_reply: B&) -> i64, bool {
+    return consume_frame_view_into(ws, wire, ws.frag_buffer, ws.frag_buffer.cap, out_view, out_reply);
 }
 
 // Dispatches incoming raw frame wire bytes: unmasks payload, automatically prepares Pong for Ping,

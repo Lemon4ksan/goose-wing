@@ -50,9 +50,38 @@ SERVER_EXE = Path(
         "CHAOS_SERVER_BIN", Path(__file__).resolve().parent.parent / "bin" / _default_bin
     )
 )
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+SERVER_SRC = Path(__file__).resolve().parent / "goose_chaos_server.goose"
 CONNECT_HOST = os.environ.get("PROXY_CONNECT_HOST", "127.0.0.1")
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def ensure_server_binary(force_rebuild: bool = False) -> Path:
+    """Ensures the native Goose Chaos server is compiled and ready."""
+    SERVER_EXE.parent.mkdir(parents=True, exist_ok=True)
+    if not force_rebuild and SERVER_EXE.is_file():
+        if SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
+            return SERVER_EXE
+
+    print(f"[*] Building native Goose Chaos server: {SERVER_SRC} -> {SERVER_EXE}...")
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        gcc_wrapper = ROOT_DIR / "tools" / "gcc_noavx.cmd"
+        if gcc_wrapper.is_file():
+            env["GOOSE_CC"] = str(gcc_wrapper)
+    cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
+    res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env)
+    if res.returncode != 0:
+        print("[!] Failed to build Chaos server:", file=sys.stderr)
+        if res.stdout:
+            print(res.stdout, file=sys.stderr)
+        if res.stderr:
+            print(res.stderr, file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[+] Successfully built {SERVER_EXE.name}")
+    return SERVER_EXE
 
 
 class NativeGooseServer:
@@ -61,8 +90,7 @@ class NativeGooseServer:
         self.port = 0
 
     def start(self) -> int:
-        if not SERVER_EXE.is_file():
-            raise FileNotFoundError(f"Missing {SERVER_EXE}")
+        ensure_server_binary()
         self.proc = subprocess.Popen(
             [str(SERVER_EXE)],
             stdout=subprocess.PIPE,
