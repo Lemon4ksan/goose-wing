@@ -920,6 +920,379 @@ fn test_zstandard_rfc8878(t: core::T&) {
     };
 }
 
+fn test_rfc1951_bounds_and_error_handling(t: core::T&) {
+    t.run("Stored Block LEN/NLEN Mismatch Rejection") { sub =>
+        // BFINAL=1, BTYPE=00 (stored), 5 zero padding bits -> byte 0 = 0x01
+        // LEN = 4 (0x04, 0x00), Corrupted NLEN = 4 (0x04, 0x00) != ~4 (0xFB, 0xFF)
+        let bad_stored: u8[9] = [
+            0x01, 0x04, 0x00, 0x04, 0x00, 0x74, 0x65, 0x73, 0x74,
+        ];
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(bad_stored[..], restored);
+        sub.assert_false(ok, "Stored block with mismatched LEN/NLEN must fail");
+        sub.assert_eq(err, core::CompressError.LengthMismatch, "Error must be LengthMismatch");
+    };
+
+    t.run("Dynamic Huffman HLIT Bound Rejection (HLIT > 29)") { sub =>
+        // BFINAL=1 (1), BTYPE=2 (0b10), HLIT=30 (0b11110) -> 0xF5
+        // HDIST=0 (0b00000), HCLEN low 3 bits=0 -> 0x00
+        // HCLEN bit 3=0, padding -> 0x00
+        let bad_hlit: u8[3] = [0xF5, 0x00, 0x00];
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(bad_hlit[..], restored);
+        sub.assert_false(ok, "Dynamic block with HLIT > 29 must fail");
+        sub.assert_eq(err, core::CompressError.TooManyLengthOrDistanceCodes, "Error must be TooManyLengthOrDistanceCodes");
+    };
+
+    t.run("Dynamic Huffman Incomplete Code Lengths Tree Rejection") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);  // BFINAL=1
+        core::write_bits(w, 2, 2, wire);  // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);  // HLIT=0 (257)
+        core::write_bits(w, 0, 5, wire);  // HDIST=0 (1)
+        core::write_bits(w, 0, 4, wire);  // HCLEN=0 (4 codes: 16, 17, 18, 0)
+        core::write_bits(w, 2, 3, wire);  // code 16 has length 2 (incomplete: sum=0.25 < 1)
+        core::write_bits(w, 0, 3, wire);  // code 17 has length 0
+        core::write_bits(w, 0, 3, wire);  // code 18 has length 0
+        core::write_bits(w, 0, 3, wire);  // code 0 has length 0
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Incomplete code lengths tree must be rejected");
+        sub.assert_eq(err, core::CompressError.CodeLengthsIncomplete, "Error must be CodeLengthsIncomplete");
+    };
+
+    t.run("Dynamic Huffman Incomplete Literal Tree Rejection") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);   // BFINAL=1
+        core::write_bits(w, 2, 2, wire);   // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);   // HLIT=0 (nlen = 257)
+        core::write_bits(w, 10, 5, wire);  // HDIST=10 (ndist = 11, total_codes = 268)
+        core::write_bits(w, 14, 4, wire);  // HCLEN=14 (ncode = 18)
+
+        // Code lengths for h_code:
+        // Index 2 (sym 18) = 1, Index 17 (sym 1) = 1, all others 0 -> complete tree (0 and 1)
+        for i in 18 {
+            if i == 2 || i == 17 {
+                core::write_bits(w, 1, 3, wire);
+            } else {
+                core::write_bits(w, 0, 3, wire);
+            }
+        }
+
+        // Emit code lengths for lit_dist_lens:
+        // Canonical codes: sym 1 gets code 0 (len 1), sym 18 gets code 1 (len 1)
+        // 138 zeros via sym 18 (bit 1 + extra 127)
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 127, 7, wire);
+
+        // 118 zeros via sym 18 (bit 1 + extra 107) -> cur_idx = 256
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 107, 7, wire);
+
+        // Symbol 256: length 1 via sym 1 (bit 0) -> cur_idx = 257
+        core::write_bits(w, 0, 1, wire);
+
+        // 11 zeros for distance codes via sym 18 (bit 1 + extra 0) -> cur_idx = 268
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 0, 7, wire);
+
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Incomplete literal/length tree must be rejected");
+        sub.assert_eq(err, core::CompressError.CodeLengthsIncomplete, "Error must be CodeLengthsIncomplete");
+    };
+
+    t.run("Fixed Huffman Distance Out of Bounds (At Stream Start)") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire); // BFINAL=1
+        core::write_bits(w, 1, 2, wire); // BTYPE=1 (Fixed Huffman)
+        // Match len 3 (symbol 257, 7 bits)
+        core::write_bits(w, core::FIXED_LIT_CODE[257] as u32, 7, wire);
+        // Distance 1 (dist symbol 0, 5 bits) at curr_decoded = 0
+        core::write_bits(w, core::FIXED_DIST_CODE[0] as u32, 5, wire);
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Distance referencing prior to stream start must fail");
+        sub.assert_eq(err, core::CompressError.DistanceOutOfBounds, "Error must be DistanceOutOfBounds");
+    };
+
+    t.run("Preset Dictionary Distance Out of Bounds (Prior to Dict Start)") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire); // BFINAL=1
+        core::write_bits(w, 1, 2, wire); // BTYPE=1 (Fixed Huffman)
+        // Match len 3 (symbol 257, 7 bits)
+        core::write_bits(w, core::FIXED_LIT_CODE[257] as u32, 7, wire);
+        // Distance 4 (dist symbol 3, 5 bits, DISTS_BASE[3]=4, 0 extra bits) at curr_decoded = 0
+        core::write_bits(w, core::FIXED_DIST_CODE[3] as u32, 5, wire);
+        core::flush_bits(w, wire);
+
+        // Dictionary has 3 bytes ("abc"), but distance is 4 (exceeds available history 0 + 3 = 3)
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate_with_dict(wire[..], restored, "abc");
+        sub.assert_false(ok, "Match referencing prior to dictionary start must fail");
+        sub.assert_eq(err, core::CompressError.DistanceOutOfBounds, "Error must be DistanceOutOfBounds");
+    };
+
+    t.run("Preset Dictionary: Valid Match Spanning Dict and Output") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire); // BFINAL=1
+        core::write_bits(w, 1, 2, wire); // BTYPE=1 (Fixed Huffman)
+        // Match len 4 (symbol 258, 7 bits)
+        core::write_bits(w, core::FIXED_LIT_CODE[258] as u32, 7, wire);
+        // Distance 3 (dist symbol 2, 5 bits, DISTS_BASE[2]=3, 0 extra bits)
+        core::write_bits(w, core::FIXED_DIST_CODE[2] as u32, 5, wire);
+        // EOB symbol 256 (7 bits)
+        core::write_bits(w, core::FIXED_LIT_CODE[256] as u32, 7, wire);
+        core::flush_bits(w, wire);
+
+        // Dict "ABC", match dist 3, len 4 -> produces "ABCA"
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate_with_dict(wire[..], restored, "ABC");
+        sub.assert_true(ok, "Valid match against preset dictionary must succeed");
+        sub.assert_eq(err, core::CompressError.None, "Error must be None");
+        sub.assert_eq(restored[..], "ABCA", "Decoded output must match 'ABCA'");
+    };
+
+    t.run("Preset Dictionary with Quota Guard (inflate_with_dict_limit)") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire); // BFINAL=1
+        core::write_bits(w, 1, 2, wire); // BTYPE=1 (Fixed Huffman)
+        // Match len 4 (symbol 258, 7 bits)
+        core::write_bits(w, core::FIXED_LIT_CODE[258] as u32, 7, wire);
+        // Distance 3 (dist symbol 2, 5 bits)
+        core::write_bits(w, core::FIXED_DIST_CODE[2] as u32, 5, wire);
+        // EOB symbol 256
+        core::write_bits(w, core::FIXED_LIT_CODE[256] as u32, 7, wire);
+        core::flush_bits(w, wire);
+
+        // Quota = 2 bytes (smaller than match len 4) -> must fail with OutputBufferOverflow
+        var restored_fail: u8[>..] = [];
+        let ok_f, err_f = core::inflate_with_dict_limit(wire[..], restored_fail, "ABC", 2);
+        sub.assert_false(ok_f, "inflate_with_dict_limit exceeding quota must fail");
+        sub.assert_eq(err_f, core::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+
+        // Quota = 10 bytes -> must succeed
+        var restored_ok: u8[>..] = [];
+        let ok_s, err_s = core::inflate_with_dict_limit(wire[..], restored_ok, "ABC", 10);
+        sub.assert_true(ok_s, "inflate_with_dict_limit within quota must succeed");
+        sub.assert_eq(err_s, core::CompressError.None, "Error must be None");
+        sub.assert_eq(restored_ok[..], "ABCA", "Output must match 'ABCA'");
+    };
+
+    t.run("Concatenated Multi-Member Gzip Quota Defense") { sub =>
+        let part1 = "12345678901234567890"; // 20 bytes
+        let part2 = "abcdefghijklmnopqrst"; // 20 bytes
+        var gz1: u8[>..] = [];
+        var gz2: u8[>..] = [];
+        core::gzip_compress(part1, gz1, 6);
+        core::gzip_compress(part2, gz2, 6);
+
+        var multi_gz: u8[>..] = [];
+        multi_gz.append(gz1[..]);
+        multi_gz.append(gz2[..]); // Total uncompressed: 40 bytes
+
+        // Quota = 30 bytes (allows member 1 [20 bytes], but member 2 [20 bytes] would total 40 bytes)
+        var restored: u8[>..] = [];
+        let ok, err = core::gzip_decompress_with_limit(multi_gz[..], restored, 30);
+        sub.assert_false(ok, "Multi-member Gzip exceeding cumulative quota must fail");
+        sub.assert_eq(err, core::CompressError.OutputBufferOverflow, "Error must be OutputBufferOverflow");
+        sub.assert_true(restored.len <= 30, "Restored length must not exceed quota limit of 30");
+    };
+
+    t.run("Chunked ZStream Streaming Quota Defense") { sub =>
+        let message = "Chunked streaming decompressor quota verification across multiple TCP slices.";
+        var zb: u8[>..] = [];
+        core::zlib_compress(message, zb, 6);
+
+        var decompressor = core::new_zstream_decompressor(core::ContainerFormat.Zlib);
+        var restored: u8[>..] = [];
+        let quota: i64 = 25; // Smaller than message.len
+
+        var offset: i64 = 0;
+        var hit_overflow = false;
+        while offset < zb.len {
+            let chunk_size = if zb.len - offset < 8 { zb.len - offset } else { 8 };
+            let chunk = zb[offset..offset + chunk_size];
+            let err = decompressor.write_with_limit(chunk, restored, quota);
+            if err == core::CompressError.OutputBufferOverflow {
+                hit_overflow = true;
+                break;
+            }
+            offset += chunk_size;
+        }
+
+        sub.assert_true(hit_overflow, "Streaming decompression exceeding quota must trigger OutputBufferOverflow");
+        sub.assert_true((restored.len as i64) <= quota, "Restored length must not exceed quota limit");
+    };
+
+    t.run("Dynamic Huffman HDIST Bound Rejection (HDIST > 29)") { sub =>
+        // BFINAL=1, BTYPE=2 (Dynamic), HLIT=0 (257 codes), HDIST=30 (0b11110) > 29 -> illegal
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);  // BFINAL=1
+        core::write_bits(w, 2, 2, wire);  // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);  // HLIT=0 (257)
+        core::write_bits(w, 30, 5, wire); // HDIST=30 (> 29, illegal)
+        core::write_bits(w, 0, 4, wire);  // HCLEN=0 (4 codes)
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Dynamic block with HDIST > 29 must fail");
+        sub.assert_eq(err, core::CompressError.TooManyLengthOrDistanceCodes, "Error must be TooManyLengthOrDistanceCodes");
+    };
+
+    t.run("Dynamic Huffman Repeat Without Previous Length at Index 0") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);   // BFINAL=1
+        core::write_bits(w, 2, 2, wire);   // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);   // HLIT=0 (257)
+        core::write_bits(w, 0, 5, wire);   // HDIST=0 (1)
+        core::write_bits(w, 14, 4, wire);  // HCLEN=14 (18 codes)
+
+        // Code lengths: sym 16 (index 0) = 1, sym 1 (index 17) = 1, all others 0
+        for i in 18 {
+            if i == 0 || i == 17 {
+                core::write_bits(w, 1, 3, wire);
+            } else {
+                core::write_bits(w, 0, 3, wire);
+            }
+        }
+
+        // Canonical codes: sym 1 gets code 0, sym 16 gets code 1
+        // Emit sym 16 at cur_idx = 0 (bit 1 + 2 bits repeat count: 0)
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 0, 2, wire);
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Symbol 16 at index 0 must fail with RepeatWithoutPreviousLength");
+        sub.assert_eq(err, core::CompressError.RepeatWithoutPreviousLength, "Error must be RepeatWithoutPreviousLength");
+    };
+
+    t.run("Dynamic Huffman RLE Sym 16 Repeat Overflow (cur_idx + count > total_codes)") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);   // BFINAL=1
+        core::write_bits(w, 2, 2, wire);   // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);   // HLIT=0 (257)
+        core::write_bits(w, 0, 5, wire);   // HDIST=0 (1, total_codes = 258)
+        core::write_bits(w, 14, 4, wire);  // HCLEN=14 (18 codes)
+
+        // Code lengths: sym 16 (index 0) = 1, sym 1 (index 17) = 1
+        for i in 18 {
+            if i == 0 || i == 17 {
+                core::write_bits(w, 1, 3, wire);
+            } else {
+                core::write_bits(w, 0, 3, wire);
+            }
+        }
+
+        // Canonical codes: sym 1 gets code 0, sym 16 gets code 1
+        // Emit 256 lengths of 1 using sym 1 (code 0) -> cur_idx becomes 256
+        for i in 256 {
+            core::write_bits(w, 0, 1, wire);
+        }
+
+        // Now cur_idx = 256. total_codes = 258. Remaining codes = 2.
+        // Emit sym 16 (code 1) with count = 3 (extra bits = 0) -> cur_idx + count = 259 > 258!
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 0, 2, wire);
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Symbol 16 repeat exceeding total_codes must fail");
+        sub.assert_eq(err, core::CompressError.TooManyLengthOrDistanceCodes, "Error must be TooManyLengthOrDistanceCodes");
+    };
+
+    t.run("Dynamic Huffman RLE Sym 17 Repeat Zeros Overflow (cur_idx + count > total_codes)") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);   // BFINAL=1
+        core::write_bits(w, 2, 2, wire);   // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);   // HLIT=0 (257)
+        core::write_bits(w, 0, 5, wire);   // HDIST=0 (1, total_codes = 258)
+        core::write_bits(w, 14, 4, wire);  // HCLEN=14 (18 codes)
+
+        // Code lengths: sym 17 (index 1) = 1, sym 1 (index 17) = 1
+        for i in 18 {
+            if i == 1 || i == 17 {
+                core::write_bits(w, 1, 3, wire);
+            } else {
+                core::write_bits(w, 0, 3, wire);
+            }
+        }
+
+        // Canonical codes: sym 1 gets code 0, sym 17 gets code 1
+        // Emit 256 lengths of 1 using sym 1 (code 0) -> cur_idx becomes 256
+        for i in 256 {
+            core::write_bits(w, 0, 1, wire);
+        }
+
+        // Now cur_idx = 256. total_codes = 258. Remaining codes = 2.
+        // Emit sym 17 (code 1) with count = 3 (extra bits = 0) -> cur_idx + count = 259 > 258!
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 0, 3, wire);
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Symbol 17 repeat zeros exceeding total_codes must fail");
+        sub.assert_eq(err, core::CompressError.TooManyLengthOrDistanceCodes, "Error must be TooManyLengthOrDistanceCodes");
+    };
+
+    t.run("Dynamic Huffman RLE Sym 18 Repeat Zeros Overflow (cur_idx + count > total_codes)") { sub =>
+        var wire: u8[>..] = [];
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        core::write_bits(w, 1, 1, wire);   // BFINAL=1
+        core::write_bits(w, 2, 2, wire);   // BTYPE=2 (Dynamic)
+        core::write_bits(w, 0, 5, wire);   // HLIT=0 (257)
+        core::write_bits(w, 0, 5, wire);   // HDIST=0 (1, total_codes = 258)
+        core::write_bits(w, 14, 4, wire);  // HCLEN=14 (18 codes)
+
+        // Code lengths: sym 18 (index 2) = 1, sym 1 (index 17) = 1
+        for i in 18 {
+            if i == 2 || i == 17 {
+                core::write_bits(w, 1, 3, wire);
+            } else {
+                core::write_bits(w, 0, 3, wire);
+            }
+        }
+
+        // Canonical codes: sym 1 gets code 0, sym 18 gets code 1
+        // Emit 250 lengths of 1 using sym 1 (code 0) -> cur_idx becomes 250
+        for i in 250 {
+            core::write_bits(w, 0, 1, wire);
+        }
+
+        // Now cur_idx = 250. total_codes = 258. Remaining codes = 8.
+        // Emit sym 18 (code 1) with count = 11 (extra bits = 0) -> cur_idx + count = 261 > 258!
+        core::write_bits(w, 1, 1, wire);
+        core::write_bits(w, 0, 7, wire);
+        core::flush_bits(w, wire);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], restored);
+        sub.assert_false(ok, "Symbol 18 repeat zeros exceeding total_codes must fail");
+        sub.assert_eq(err, core::CompressError.TooManyLengthOrDistanceCodes, "Error must be TooManyLengthOrDistanceCodes");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Goose Native Compression Engine Verification Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. IEEE 802.3 CRC-32 & RFC 1950 Adler-32 Checksums", test_checksums);
@@ -936,6 +1309,7 @@ fn main() {
     core::run_case(runner, "12. Decompression Bomb Quota Guards", test_zipbomb_quota_guards);
     core::run_case(runner, "13. Resumable Arbitrary-Chunk Streaming", test_resumable_streaming_chunk_by_chunk);
     core::run_case(runner, "14. RFC 8878 Zstandard Frame Decompression & Test Vectors", test_zstandard_rfc8878);
+    core::run_case(runner, "15. RFC 1951 Stored Blocks & Huffman Header Bounds", test_rfc1951_bounds_and_error_handling);
     let ok = core::finish(runner);
     assert(ok);
 }

@@ -227,13 +227,15 @@ fn construct_huffman_table(lengths: const i32[:], n_symbols: i32, table: Huffman
     for i in 512 {
         table.fast[i] = -1;
     }
+    var non_zero_count: i32 = 0;
     for s in n_symbols {
         let len = lengths[s];
         if len > 0 && len <= MAX_BITS {
             table.count[len]++;
+            non_zero_count++;
         }
     }
-    if table.count[0] == n_symbols {
+    if non_zero_count == 0 {
         return 0;
     }
 
@@ -336,7 +338,7 @@ fn decode_huffman_symbol(r: BitReader&, table: const HuffmanTable&) -> i32, bool
         code <<= 1;
     }
 
-    return -1, false;
+    return -1, true;
 }
 
 // ---- decompressor: rfc 1951 inflate ----------------------------------------
@@ -350,9 +352,13 @@ fn decode_block_codes<B>(
     out_start_pos: i64 = 0,
     max_output_bytes: i64 = 0,
 ) -> CompressError {
+    let d_len = if dict.len > 32768 { 32768 as i64 } else { dict.len };
     loop {
         // Fast path: tight inline decoding of consecutive 9-bit literals
         while r.bit_count >= 15 {
+            if max_output_bytes > 0 && (out.len - out_start_pos) >= max_output_bytes {
+                return CompressError.OutputBufferOverflow;
+            }
             let fast_val = lit_table.fast[(r.bit_buf & 0x1FF) as i64];
             if fast_val < 0 { break; }
             let sym = fast_val & 0xFFFF;
@@ -360,9 +366,6 @@ fn decode_block_codes<B>(
             let fast_len = fast_val >> 16;
             r.bit_buf >>= fast_len;
             r.bit_count -= fast_len;
-            if max_output_bytes > 0 && (out.len - out_start_pos) >= max_output_bytes {
-                return CompressError.OutputBufferOverflow;
-            }
             out.push(sym as u8);
         }
 
@@ -407,6 +410,11 @@ fn decode_block_codes<B>(
 
             let dist_i64 = match_dist as i64;
             let curr_decoded = out.len - out_start_pos;
+            let max_avail_dist = curr_decoded + d_len;
+            guard dist_i64 <= max_avail_dist else {
+                return CompressError.DistanceOutOfBounds;
+            }
+
             if dist_i64 <= curr_decoded {
                 let back_idx = out.len - dist_i64;
                 let m_len = match_len as i64;
@@ -429,9 +437,7 @@ fn decode_block_codes<B>(
                         let b = out[out.len - dist_i64];
                         out.push(b);
                     } else {
-                        guard dict.len > 0 else { return CompressError.DistanceOutOfBounds; }
                         let dict_back = dist_i64 - curr;
-                        guard dict_back <= dict.len else { return CompressError.DistanceOutOfBounds; }
                         let dict_idx = dict.len - dict_back;
                         let b = dict[dict_idx];
                         out.push(b);
@@ -504,10 +510,12 @@ fn inflate_ex<B>(
             // Dynamic Huffman block
             let hlit_val, ok_hlit = read_bits(r, 5);
             guard ok_hlit else { return CompressError.InputBufferTruncated, r.pos; }
+            guard hlit_val <= 29 else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
             let nlen = (hlit_val as i32) + 257;
 
             let hdist_val, ok_hdist = read_bits(r, 5);
             guard ok_hdist else { return CompressError.InputBufferTruncated, r.pos; }
+            guard hdist_val <= 29 else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
             let ndist = (hdist_val as i32) + 1;
 
             let hclen_val, ok_hclen = read_bits(r, 4);
@@ -523,7 +531,9 @@ fn inflate_ex<B>(
 
             var h_code = HuffmanTable { .. };
             let res_c = construct_huffman_table(code_lens_table[..], 19, h_code);
-            guard res_c >= 0 else { return CompressError.CodeLengthsOverSubscribed, r.pos; }
+            guard res_c == 0 else {
+                return if res_c < 0 { CompressError.CodeLengthsOverSubscribed } else { CompressError.CodeLengthsIncomplete }, r.pos;
+            }
 
             var lit_dist_lens: i32[320] = [0; 320];
             var cur_idx: i32 = 0;
@@ -543,8 +553,8 @@ fn inflate_ex<B>(
                     let rpt_bits, ok_rb = read_bits(r, 2);
                     guard ok_rb else { return CompressError.InputBufferTruncated, r.pos; }
                     let count = (rpt_bits as i32) + 3;
+                    guard cur_idx + count <= total_codes else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
                     for i in count {
-                        guard cur_idx < total_codes else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
                         lit_dist_lens[cur_idx] = prev_len;
                         cur_idx++;
                     }
@@ -552,8 +562,8 @@ fn inflate_ex<B>(
                     let rpt_bits, ok_rb = read_bits(r, 3);
                     guard ok_rb else { return CompressError.InputBufferTruncated, r.pos; }
                     let count = (rpt_bits as i32) + 3;
+                    guard cur_idx + count <= total_codes else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
                     for i in count {
-                        guard cur_idx < total_codes else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
                         lit_dist_lens[cur_idx] = 0;
                         cur_idx++;
                     }
@@ -561,11 +571,13 @@ fn inflate_ex<B>(
                     let rpt_bits, ok_rb = read_bits(r, 7);
                     guard ok_rb else { return CompressError.InputBufferTruncated, r.pos; }
                     let count = (rpt_bits as i32) + 11;
+                    guard cur_idx + count <= total_codes else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
                     for i in count {
-                        guard cur_idx < total_codes else { return CompressError.TooManyLengthOrDistanceCodes, r.pos; }
                         lit_dist_lens[cur_idx] = 0;
                         cur_idx++;
                     }
+                } else {
+                    return CompressError.InvalidHuffmanCode, r.pos;
                 }
             }
 
@@ -574,11 +586,28 @@ fn inflate_ex<B>(
 
             var dyn_lit = HuffmanTable { .. };
             let res_lit = construct_huffman_table(lit_dist_lens[..nlen], nlen, dyn_lit);
-            guard res_lit >= 0 else { return CompressError.CodeLengthsOverSubscribed, r.pos; }
+            guard res_lit == 0 else {
+                return if res_lit < 0 { CompressError.CodeLengthsOverSubscribed } else { CompressError.CodeLengthsIncomplete }, r.pos;
+            }
 
             var dyn_dist = HuffmanTable { .. };
             let res_dist = construct_huffman_table(lit_dist_lens[nlen..nlen + ndist], ndist, dyn_dist);
-            guard res_dist >= 0 else { return CompressError.CodeLengthsOverSubscribed, r.pos; }
+            if res_dist < 0 {
+                return CompressError.CodeLengthsOverSubscribed, r.pos;
+            } else if res_dist > 0 {
+                var dist_non_zero: i32 = 0;
+                var max_dist_len: i32 = 0;
+                for d in ndist {
+                    let dl = lit_dist_lens[(nlen + d) as i64];
+                    if dl > 0 {
+                        dist_non_zero++;
+                        if dl > max_dist_len { max_dist_len = dl; }
+                    }
+                }
+                guard dist_non_zero == 0 || (dist_non_zero == 1 && max_dist_len == 1) else {
+                    return CompressError.CodeLengthsIncomplete, r.pos;
+                }
+            }
 
             let err = decode_block_codes(r, dyn_lit, dyn_dist, out, dict, out_start_pos, max_output_bytes);
             guard err == CompressError.None else { return err, r.pos; }
@@ -606,6 +635,12 @@ fn inflate_with_dict<B>(src: const u8[:], out: B&, dict: const u8[:]) -> bool, C
 // Inflates RFC 1951 raw deflate stream with an output quota limit.
 fn inflate_with_limit<B>(src: const u8[:], out: B&, max_output_bytes: i64) -> bool, CompressError {
     let err, _ = inflate_ex(src, out, "", max_output_bytes);
+    return err == CompressError.None, err;
+}
+
+// Inflates RFC 1951 raw deflate stream from src into out with a preset dictionary and an output quota limit.
+fn inflate_with_dict_limit<B>(src: const u8[:], out: B&, dict: const u8[:], max_output_bytes: i64) -> bool, CompressError {
+    let err, _ = inflate_ex(src, out, dict, max_output_bytes);
     return err == CompressError.None, err;
 }
 

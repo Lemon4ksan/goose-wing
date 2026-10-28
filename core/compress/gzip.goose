@@ -124,14 +124,21 @@ fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError 
 fn gzip_decompress_with_limit_impl<B>(src: const u8[:], out: B&, max_output_bytes: i64 = 0) -> CompressError {
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var offset: i64 = 0;
+    let overall_out_start = out.len;
 
     while offset < src.len {
         let member_start = offset;
         let payload_offset, hdr_err = parse_gzip_header_offset(src, member_start);
         guard hdr_err == CompressError.None else { return hdr_err; }
 
+        let member_quota = if max_output_bytes > 0 {
+            let total_produced = out.len - overall_out_start;
+            if total_produced >= max_output_bytes { return CompressError.OutputBufferOverflow; }
+            max_output_bytes - total_produced
+        } else { 0 };
+
         let member_out_start = out.len;
-        let err, consumed = inflate_ex(src[payload_offset..], out, "", max_output_bytes);
+        let err, consumed = inflate_ex(src[payload_offset..], out, "", member_quota);
         guard err == CompressError.None else { return err; }
 
         let trailer_offset = payload_offset + consumed;

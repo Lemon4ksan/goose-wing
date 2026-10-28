@@ -374,7 +374,12 @@ fn zstream_decompress_write_limit<B>(
     if !d.deflate_finished {
         let hist = if d.window_len > 0 { d.window[..d.window_len] } else { d.dict };
         var temp_out: u8[>..] = [];
-        let err, consumed = inflate_ex(d.in_buf[..], temp_out, hist, max_output_bytes);
+        let stream_limit = if max_output_bytes > 0 {
+            let produced = d.total_out as i64;
+            if produced >= max_output_bytes { return CompressError.OutputBufferOverflow; }
+            max_output_bytes - produced
+        } else { 0 };
+        let err, consumed = inflate_ex(d.in_buf[..], temp_out, hist, stream_limit);
         if err == CompressError.InputBufferTruncated {
             return CompressError.None; // Partial block: wait for more bytes
         }
