@@ -2099,6 +2099,167 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 36. Circular RingBuffer Wraparound & Zero-Copy Slicing Invariants
+// ----------------------------------------------------------------------------
+fn test_ring_buffer_wraparound_zero_copy_and_fragmentation_defenses(t: core::T&) {
+    t.run("Case 1: Drain auto-reset eliminates artificial edge wraparound and restores full contiguous span") { sub =>
+        var rb = core::new_ring_buffer();
+        var chunk: u8[4000] = [0x5A; 4000];
+        let n_w, err_w = rb.write(chunk[..]);
+        sub.assert_eq(n_w, 4000, "Wrote 4000 bytes");
+        sub.assert_eq(err_w, core::IoError.None, "Write ok");
+        sub.assert_eq(rb.tail, 4000, "Tail is at 4000");
+
+        var read_buf: u8[4000] = [0; 4000];
+        let n_r, err_r = rb.read(read_buf[..]);
+        sub.assert_eq(n_r, 4000, "Read 4000 bytes");
+        sub.assert_eq(err_r, core::IoError.None, "Read ok");
+        sub.assert_true(rb.is_empty(), "Buffer is empty");
+
+        sub.assert_eq(rb.head, 0, "Head auto-reset to 0 on empty");
+        sub.assert_eq(rb.tail, 0, "Tail auto-reset to 0 on empty");
+
+        let n_w2, _ = rb.write(chunk[..2000]);
+        sub.assert_eq(n_w2, 2000, "Wrote 2000 bytes");
+        let s1, s2 = core::read_slices(rb);
+        sub.assert_eq(s1.len, 2000, "Contiguous slice has full 2000 bytes without edge fragmentation");
+        sub.assert_eq(s2.len, 0, "No wrapped second slice");
+
+        let d_n = rb.discard(2000);
+        sub.assert_eq(d_n, 2000, "Discarded 2000 bytes");
+        sub.assert_true(rb.is_empty(), "Buffer is empty after discard");
+        sub.assert_eq(rb.head, 0, "Head auto-reset to 0 on discard drain");
+        sub.assert_eq(rb.tail, 0, "Tail auto-reset to 0 on discard drain");
+    };
+
+    t.run("Case 2: Zero-copy dual-slice projection across ring buffer wraparound boundary") { sub =>
+        var rb = core::new_ring_buffer();
+        var filler: u8[3000] = [0xAA; 3000];
+        rb.write(filler[..]);
+        rb.discard(2999);
+        sub.assert_eq(rb.head, 2999, "Head at 2999");
+        sub.assert_eq(rb.count, 1, "Count is 1");
+
+        var pattern: u8[2000] = [0; 2000];
+        for i in 2000 {
+            pattern[i] = ((i * 7 + 13) % 251) as u8;
+        }
+        let w_n, _ = rb.write(pattern[..]);
+        sub.assert_eq(w_n, 2000, "Wrote 2000 bytes");
+        sub.assert_eq(rb.count, 2001, "Total count is 2001");
+
+        let s1, s2 = core::read_slices(rb);
+        sub.assert_eq(s1.len, 1097, "First slice spans from head (2999) to end of buffer (4096)");
+        sub.assert_eq(s2.len, 904, "Second slice spans from 0 to 904");
+        sub.assert_eq(s1.len + s2.len, rb.count, "Dual slices account for entire count");
+
+        let contig = core::contiguous_readable(rb);
+        sub.assert_eq(contig.len, s1.len, "contiguous_readable matches first slice");
+
+        sub.assert_eq(s1[0], 0xAA, "First byte in s1 is surviving byte");
+        for i in 1096 {
+            sub.assert_eq(s1[1 + i], pattern[i], "s1 payload matches");
+        }
+        for i in 904 {
+            sub.assert_eq(s2[i], pattern[1096 + i], "s2 wrapped payload matches");
+        }
+
+        let consumed = core::commit_read(rb, s1.len);
+        sub.assert_eq(consumed, 1097, "commit_read consumed first slice");
+        sub.assert_eq(rb.head, 0, "Head wrapped around to 0");
+        sub.assert_eq(rb.count, 904, "Remaining count is 904");
+
+        let s1_post, s2_post = core::read_slices(rb);
+        sub.assert_eq(s1_post.len, 904, "Remaining data is contiguous from index 0");
+        sub.assert_eq(s2_post.len, 0, "No second slice after head wrap");
+    };
+
+    t.run("Case 3: Zero-copy write spans and commit_written bounds invariant enforcement") { sub =>
+        var rb = core::new_ring_buffer();
+        let w1_init, w2_init = core::write_slices(rb);
+        sub.assert_eq(w1_init.len, 4096, "Initial write span has full buffer capacity");
+        sub.assert_eq(w2_init.len, 0, "Initial second span is empty");
+
+        sub.assert_eq(core::commit_written(rb, -5), core::IoError.InvalidArgument, "Negative commit rejected");
+        sub.assert_eq(core::commit_written(rb, 4097), core::IoError.BufferFull, "Commit exceeding capacity rejected");
+        sub.assert_eq(core::commit_written(rb, 0), core::IoError.None, "Zero commit is no-op");
+
+        for i in 100 {
+            w1_init[i] = (i + 1) as u8;
+        }
+        let c_err = core::commit_written(rb, 100);
+        sub.assert_eq(c_err, core::IoError.None, "commit_written 100 succeeded");
+        sub.assert_eq(rb.len(), 100, "rb.len reflects committed bytes");
+        sub.assert_eq(rb.tail, 100, "rb.tail advanced by 100");
+
+        rb.clear();
+        var padding_buf: u8[3900] = [0; 3900];
+        rb.write(padding_buf[..]);
+        rb.discard(3500);
+
+        let span1, span2 = core::write_slices(rb);
+        sub.assert_eq(span1.len, 196, "First write span is 196 bytes to buffer end");
+        sub.assert_eq(span2.len, 3500, "Second write span is 3500 bytes wrapped at beginning");
+        sub.assert_eq(span1.len + span2.len, core::available(rb), "Write spans equal total available capacity");
+
+        for i in 196 {
+            span1[i] = 0x11;
+        }
+        for i in 50 {
+            span2[i] = 0x22;
+        }
+        let commit_err = core::commit_written(rb, 246);
+        sub.assert_eq(commit_err, core::IoError.None, "Committed 246 bytes across boundary");
+        sub.assert_eq(rb.tail, 50, "Tail wrapped to 50");
+        sub.assert_eq(rb.count, 646, "Count updated to 646 (400 + 246)");
+    };
+
+    t.run("Case 4: Block copy bulk write, peek and read boundary equivalence") { sub =>
+        var rb = core::new_ring_buffer();
+        var dummy: u8[4080] = [0; 4080];
+        rb.write(dummy[..]);
+        rb.discard(4070);
+
+        var data: u8[30] = [0; 30];
+        for i in 30 {
+            data[i] = (i + 100) as u8;
+        }
+        let wn, werr = rb.write(data[..]);
+        sub.assert_eq(wn, 30, "Wrote 30 bytes wrapping across boundary");
+        sub.assert_eq(werr, core::IoError.None, "Write succeeded");
+        sub.assert_eq(rb.len(), 40, "Len is 40 (10 + 30)");
+
+        rb.discard(10);
+        sub.assert_eq(rb.head, 4080, "Head at 4080");
+        sub.assert_eq(rb.len(), 30, "Remaining len is 30");
+
+        var peeked: u8[30] = [0; 30];
+        let pn = rb.peek(peeked[..]);
+        sub.assert_eq(pn, 30, "Peeked 30 bytes");
+        sub.assert_eq(rb.len(), 30, "Peek does not consume");
+        for i in 30 {
+            sub.assert_eq(peeked[i], (i + 100) as u8, "Peeked byte matches");
+        }
+
+        var read_out: u8[30] = [0; 30];
+        let rn, rerr = rb.read(read_out[..]);
+        sub.assert_eq(rn, 30, "Read 30 bytes");
+        sub.assert_eq(rerr, core::IoError.None, "Read succeeded");
+        sub.assert_true(rb.is_empty(), "Buffer is now empty");
+        sub.assert_eq(rb.head, 0, "Head reset to 0 on empty");
+        sub.assert_eq(rb.tail, 0, "Tail reset to 0 on empty");
+        for i in 30 {
+            sub.assert_eq(read_out[i], (i + 100) as u8, "Read byte matches");
+        }
+
+        var empty_buf: u8[10] = [0; 10];
+        let r_empty_n, r_empty_err = rb.read(empty_buf[..]);
+        sub.assert_eq(r_empty_n, 0, "Read from empty returns 0");
+        sub.assert_eq(r_empty_err, core::IoError.Eof, "Read from empty returns Eof");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -2137,6 +2298,7 @@ fn main() {
     core::run_case(runner, "33. RFC 9293 §3.5 & RFC 1122: Half-Closed Teardown & Drain Deadlock Defenses", test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses);
     core::run_case(runner, "34. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation", test_rfc9112_chunk_fsm_split_crlf_terminator_validation);
     core::run_case(runner, "35. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants", test_rfc9449_dpop_proof_validation_and_uri_normalization);
+    core::run_case(runner, "36. Circular RingBuffer Wraparound & Zero-Copy Slicing Invariants", test_ring_buffer_wraparound_zero_copy_and_fragmentation_defenses);
 
     let ok = core::finish(runner);
     assert(ok);

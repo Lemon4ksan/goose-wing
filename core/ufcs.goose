@@ -302,6 +302,11 @@ fn ::read(rb: core::RingBuffer&, dst: u8[:]) -> i64, core::IoError { return core
 fn ::peek(rb: const core::RingBuffer&, dst: u8[:]) -> i64 { return core::peek(rb, dst); }
 fn ::discard(rb: core::RingBuffer&, count: i64) -> i64 { return core::discard(rb, count); }
 fn ::clear(rb: core::RingBuffer&) { core::clear(rb); }
+fn ::read_slices(rb: const core::RingBuffer&) -> const u8[:], const u8[:] { return core::read_slices(rb); }
+fn ::write_slices(rb: core::RingBuffer&) -> u8[:], u8[:] { return core::write_slices(rb); }
+fn ::commit_written(rb: core::RingBuffer&, n: i64) -> core::IoError { return core::commit_written(rb, n); }
+fn ::commit_read(rb: core::RingBuffer&, n: i64) -> i64 { return core::commit_read(rb, n); }
+fn ::contiguous_readable(rb: const core::RingBuffer&) -> const u8[:] { return core::contiguous_readable(rb); }
 
 // ---- pipe & cork buffer ufcs bridges ---------------------------------------
 

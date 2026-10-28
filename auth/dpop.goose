@@ -80,9 +80,7 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     }
 
     // RFC 3986 §3.2.1: Reject userinfo in authority
-    for k in scheme_host_end {
-        if raw_uri[k] == '@' { return false; }
-    }
+    guard !raw_uri[..scheme_host_end].contains('@') else { return false; }
 
     var sh_buf: u8[..256] = [];
     // Lowercase scheme and host
