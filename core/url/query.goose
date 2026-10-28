@@ -76,10 +76,16 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
             if eq_pos >= 0 {
                 let k = pair[..eq_pos];
                 let v = pair[eq_pos + 1..];
-                percent_decode_query(k, item.key);
-                percent_decode_query(v, item.val);
+                let ok_k = percent_decode_query(k, item.key);
+                let ok_v = percent_decode_query(v, item.val);
+                if !ok_k || !ok_v {
+                    list.overflow = true;
+                }
             } else {
-                percent_decode_query(pair, item.key);
+                let ok_k = percent_decode_query(pair, item.key);
+                if !ok_k {
+                    list.overflow = true;
+                }
             }
             list.items.push(item);
         }

@@ -523,6 +523,37 @@ fn test_rfc4648_base64_canonical_and_malleability_defenses(t: core::T&) {
     };
 }
 
+// 17. Core Codec Overflow, Malleability & Truncation Defenses
+fn test_core_codecs_boundary_and_overflow_defenses(t: core::T&) {
+    t.run("Hex integer parsing with leading zeros and boundary limits") { sub =>
+        // Hex with leading zeros MUST succeed
+        let val_1, ok_1 = core::parse_u64_hex("0x00000000000000000001");
+        sub.assert_true(ok_1, "Hex with leading zeros MUST succeed");
+        sub.assert_eq(val_1, 1, "Parsed value must equal 1");
+
+        let val_zero, ok_zero = core::parse_u64_hex("00000000000000000000");
+        sub.assert_true(ok_zero, "Hex with 20 leading zeros MUST succeed");
+        sub.assert_eq(val_zero, 0, "Parsed value must equal 0");
+
+        // Hex overflow (> 16 significant digits) MUST be rejected
+        let _, ok_overflow = core::parse_u64_hex("0x10000000000000000");
+        sub.assert_false(ok_overflow, "Hex with 17 significant digits MUST be rejected as overflow");
+    };
+
+    t.run("Query parameter capacity overflow MUST be flagged") { sub =>
+        // Key exceeding 64 bytes capacity must set list.overflow = true
+        let long_key = "?0123456789012345678901234567890123456789012345678901234567890123456789=value";
+        let list = core::parse_query_params(long_key);
+        sub.assert_true(list.overflow, "Oversized query param key MUST mark list.overflow = true");
+    };
+
+    t.run("Path percent decode capacity safety") { sub =>
+        var out_small: u8[..4] = [];
+        let ok_dec = core::percent_decode("hello_world_too_long", out_small);
+        sub.assert_false(ok_dec, "Percent decode into undersized buffer MUST return false without panic");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -542,6 +573,7 @@ fn main() {
     core::run_case(runner, "14. RFC 8446 Section 4: TLS 1.3 Handshake State Machine Invariants", test_openssl_handshake_state_machine_transition_invariants);
     core::run_case(runner, "15. RFC 9113 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity", test_rfc9113_goaway_last_stream_id_parity);
     core::run_case(runner, "16. RFC 4648 §3.5: Base64 Canonical & Malleability Defenses", test_rfc4648_base64_canonical_and_malleability_defenses);
+    core::run_case(runner, "17. Core Codec Overflow, Malleability & Truncation Defenses", test_core_codecs_boundary_and_overflow_defenses);
 
     let ok = core::finish(runner);
     assert(ok);

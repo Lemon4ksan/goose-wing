@@ -120,12 +120,19 @@ fn parse_u64_hex(s: const u8[:]) -> u64, bool {
         raw = raw[2..];
     }
     guard raw.len > 0 else { return 0, false; }
-    guard raw.len <= 16 else { return 0, false; }
+    for b in raw {
+        guard hex_digit_to_val(b) >= 0 else { return 0, false; }
+    }
+    var sig = raw;
+    while sig.len > 0 && sig[0] == '0' {
+        sig = sig[1..];
+    }
+    guard sig.len > 0 else { return 0, true; }
+    guard sig.len <= 16 else { return 0, false; }
 
     var val: u64 = 0;
-    for b in raw {
+    for b in sig {
         let d = hex_digit_to_val(b);
-        guard d >= 0 else { return 0, false; }
         val = (val << 4) | (d as! u64);
     }
     return val, true;

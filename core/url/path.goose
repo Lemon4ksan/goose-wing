@@ -8,10 +8,11 @@ import std;
 
 // ---- file urls and swift-like path manipulation ----------------------------
 
-fn percent_decode<B>(input_bytes: const u8[:], out: B&) {
+fn percent_decode<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
     var scan_idx = 0;
     while scan_idx < input_bytes.len {
+        guard out.len < out.cap else { return false; }
         if input_bytes[scan_idx] == '%' && scan_idx + 2 < input_bytes.len {
             let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);
             let low_nibble = hex_digit_to_val(input_bytes[scan_idx + 2]);
@@ -25,6 +26,7 @@ fn percent_decode<B>(input_bytes: const u8[:], out: B&) {
         out.push(input_bytes[scan_idx]);
         scan_idx++;
     }
+    return true;
 }
 
 fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) {
@@ -137,7 +139,7 @@ fn file_path<B>(url_val: const Url&, out: B&) -> bool {
     guard raw_pathname.len > 0 else { return false; }
 
     var decoded: u8[..2048] = [];
-    percent_decode(raw_pathname, decoded);
+    guard percent_decode(raw_pathname, decoded) else { return false; }
 
     // Windows UNC network path (\\server\share\file.txt)
     if host_str.len > 0 && host_str != "localhost" {
