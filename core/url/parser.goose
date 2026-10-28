@@ -418,6 +418,29 @@ fn is_alphanumeric_byte(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
 }
 
+// RFC 6874 §2 & RFC 4007 §5: A ZoneID MUST NOT be attached to an address with global scope.
+// Permitted scoped IPv6 addresses include link-local unicast (fe80::/10), site-local unicast (fec0::/10),
+// and non-global scoped multicast addresses (ff01..ff05, ff08, etc.).
+fn is_scoped_ipv6_for_zone_id(comp_ipv6: const u8[:]) -> bool {
+    if starts_with(comp_ipv6, "fe8") || starts_with(comp_ipv6, "fe9") ||
+       starts_with(comp_ipv6, "fea") || starts_with(comp_ipv6, "feb") {
+        return true; // Link-local unicast (fe80::/10)
+    }
+    if starts_with(comp_ipv6, "fec") || starts_with(comp_ipv6, "fed") ||
+       starts_with(comp_ipv6, "fee") || starts_with(comp_ipv6, "fef") {
+        return true; // Site-local unicast (fec0::/10)
+    }
+    if comp_ipv6.len >= 4 && comp_ipv6[0] == 'f' && comp_ipv6[1] == 'f' {
+        let scope_ch = comp_ipv6[3];
+        // Scoped multicast: 1 (interface-local), 2 (link-local), 3 (realm-local), 4 (admin-local), 5 (site-local), 8 (org-local)
+        // Global scope (e/E) and reserved (0, f/F) are NOT scoped for zone IDs
+        if scope_ch == '1' || scope_ch == '2' || scope_ch == '3' || scope_ch == '4' || scope_ch == '5' || scope_ch == '8' {
+            return true;
+        }
+    }
+    return false;
+}
+
 // parse_url_view parses a URL of arbitrary length into a non-owning UrlView with zero heap allocations.
 //
 // Key Characteristics & Lifetimes:
@@ -532,8 +555,7 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
                                             b == '-' || b == '_';
                         guard is_unreserved else { return view, UrlParseError.InvalidIpv6; }
                     }
-                    guard starts_with(dummy_comp[..], "fe8") || starts_with(dummy_comp[..], "fe9") ||
-                          starts_with(dummy_comp[..], "fea") || starts_with(dummy_comp[..], "feb") else {
+                    guard is_scoped_ipv6_for_zone_id(dummy_comp[..]) else {
                         return view, UrlParseError.InvalidIpv6;
                     }
                 }
@@ -699,9 +721,8 @@ fn extract_host_and_port_canonical<B>(
             guard ipv6_ok else {
                 return UrlParseError.InvalidIpv6;
             }
-            // RFC 6874 §2: Zone ID is only permitted on scoped link-local addresses (fe80::/10)
-            guard starts_with(compressed_ipv6[..], "fe8") || starts_with(compressed_ipv6[..], "fe9") ||
-                  starts_with(compressed_ipv6[..], "fea") || starts_with(compressed_ipv6[..], "feb") else {
+            // RFC 6874 §2 & RFC 4007 §5: Zone ID is only permitted on scoped addresses
+            guard is_scoped_ipv6_for_zone_id(compressed_ipv6[..]) else {
                 return UrlParseError.InvalidIpv6;
             }
 
@@ -1097,6 +1118,14 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) -
     }
     if last_was_dot {
         has_trailing_slash = true;
+    }
+    // WHATWG URL § 4.4: In a file URL, if path has a single Windows drive letter, it must serialize with a trailing slash
+    if is_file && seg_starts.len == 1 {
+        let first_start = seg_starts[0] as i64;
+        let first_seg = out_url.href[first_start..];
+        if is_windows_drive_segment(first_seg) {
+            has_trailing_slash = true;
+        }
     }
 
     if has_trailing_slash {

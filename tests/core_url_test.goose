@@ -1206,6 +1206,130 @@ fn test_dynamic_and_large_urls(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// Case 7: RFC 3986 §5.2.4 & WHATWG §4.4 Standards Verification (Trailing Dots, Slashes, Windows Drives, Multicast Zone IDs)
+// ----------------------------------------------------------------------------
+fn test_rfc3986_whatwg_standards_edge_cases(t: core::T&) {
+    t.run("Case 7.1: WHATWG §4.4 Bare Windows Drive Trailing Slash & Boundary Normalization") { sub =>
+        // Bare drive letters on file: URL MUST normalize with trailing slash
+        let u_c = core::new_url("file:///C:");
+        sub.assert_true(u_c.valid, "file:///C: is valid");
+        sub.assert_bytes_eq(core::href(u_c), "file:///C:/", "file:///C: serializes with trailing slash");
+        sub.assert_bytes_eq(core::pathname(u_c), "/C:/", "pathname has trailing slash");
+
+        let u_pipe = core::new_url("file:///C|");
+        sub.assert_true(u_pipe.valid, "file:///C| is valid");
+        sub.assert_bytes_eq(core::href(u_pipe), "file:///C:/", "file:///C| normalizes pipe to colon and appends trailing slash");
+        sub.assert_bytes_eq(core::pathname(u_pipe), "/C:/", "pathname has trailing slash");
+
+        let u_lower = core::new_url("file:///c:");
+        sub.assert_true(u_lower.valid, "file:///c: is valid");
+        sub.assert_bytes_eq(core::href(u_lower), "file:///c:/", "file:///c: serializes with trailing slash");
+
+        let u_dpipe = core::new_url("file:///d|");
+        sub.assert_true(u_dpipe.valid, "file:///d| is valid");
+        sub.assert_bytes_eq(core::href(u_dpipe), "file:///d:/", "file:///d| normalizes to d:/");
+
+        // Windows drive segment cannot be popped by ..
+        let u_dotdot = core::new_url("file:///C:/..");
+        sub.assert_true(u_dotdot.valid, "file:///C:/.. is valid");
+        sub.assert_bytes_eq(core::href(u_dotdot), "file:///C:/", "file:///C:/.. preserves drive letter and trailing slash");
+
+        let u_pipedotdot = core::new_url("file:///C|/..");
+        sub.assert_true(u_pipedotdot.valid, "file:///C|/.. is valid");
+        sub.assert_bytes_eq(core::href(u_pipedotdot), "file:///C:/", "file:///C|/.. preserves drive letter and trailing slash");
+
+        let u_subdotdot = core::new_url("file:///C:/foo/..");
+        sub.assert_true(u_subdotdot.valid, "file:///C:/foo/.. is valid");
+        sub.assert_bytes_eq(core::href(u_subdotdot), "file:///C:/", "file:///C:/foo/.. pops foo to C:/");
+
+        let u_deepdotdot = core::new_url("file:///C:/foo/../..");
+        sub.assert_true(u_deepdotdot.valid, "file:///C:/foo/../.. is valid");
+        sub.assert_bytes_eq(core::href(u_deepdotdot), "file:///C:/", "file:///C:/foo/../.. pops only to C:/");
+
+        // file_path extraction produces native Windows root drive
+        var fp_buf: u8[..256] = [];
+        let ok_fp = core::file_path(u_c, fp_buf);
+        sub.assert_true(ok_fp, "file_path succeeded");
+        sub.assert_bytes_eq(fp_buf[..], "C:\\", "file_path outputs C:\\");
+
+        // Non-file special scheme does not force trailing slash on drive-like path
+        let u_http = core::new_url("http://example.com/C:");
+        sub.assert_true(u_http.valid, "http URL is valid");
+        sub.assert_bytes_eq(core::href(u_http), "http://example.com/C:", "HTTP URL does not append slash to C:");
+    };
+
+    t.run("Case 7.2: RFC 3986 §5.2.4 Dot Segments, Slashes, and Encoded Dots") { sub =>
+        // Trailing single and double dots
+        let u1 = core::new_url("http://example.com/a/b/.");
+        sub.assert_bytes_eq(core::pathname(u1), "/a/b/", "Trailing . leaves trailing slash");
+
+        let u2 = core::new_url("http://example.com/a/b/..");
+        sub.assert_bytes_eq(core::pathname(u2), "/a/", "Trailing .. pops segment and leaves trailing slash");
+
+        let u3 = core::new_url("http://example.com/..");
+        sub.assert_bytes_eq(core::pathname(u3), "/", "Double dot at root normalizes to /");
+
+        // Consecutive slashes with dot segment
+        let u4 = core::new_url("http://example.com/a///..");
+        sub.assert_bytes_eq(core::pathname(u4), "/a/", "Trailing .. after consecutive slashes pops empty segment to /a/");
+
+        // Encoded dot segment variations (%2e and %2E)
+        let u5 = core::new_url("http://example.com/a/%2e");
+        sub.assert_bytes_eq(core::pathname(u5), "/a/", "%2e treated as . segment");
+
+        let u6 = core::new_url("http://example.com/a/%2E");
+        sub.assert_bytes_eq(core::pathname(u6), "/a/", "%2E treated as . segment");
+
+        let u7 = core::new_url("http://example.com/a/%2e%2e");
+        sub.assert_bytes_eq(core::pathname(u7), "/", "%2e%2e treated as .. segment");
+
+        let u_dot8 = core::new_url("http://example.com/a/.%2e");
+        sub.assert_bytes_eq(core::pathname(u_dot8), "/", ".%2e treated as .. segment");
+
+        let u_dot9 = core::new_url("http://example.com/a/%2e.");
+        sub.assert_bytes_eq(core::pathname(u_dot9), "/", "%2e. treated as .. segment");
+    };
+
+    t.run("Case 7.3: RFC 6874 §2 & RFC 4007 §5 Scoped Multicast & Zone ID Conformance") { sub =>
+        // Node-Local multicast (ff01::/16) with Zone ID
+        let u_ff01 = core::new_url("http://[ff01::1%25eth0]/status");
+        sub.assert_true(u_ff01.valid, "ff01::/16 node-local multicast allows Zone ID");
+        sub.assert_bytes_eq(core::hostname(u_ff01), "[ff01::1%25eth0]", "Host includes compressed IPv6 and zone ID");
+
+        // Link-Local multicast (ff02::/16) with Zone ID
+        let u_ff02 = core::new_url("http://[ff02::1%25eth0]:8080/data");
+        sub.assert_true(u_ff02.valid, "ff02::/16 link-local multicast allows Zone ID");
+        sub.assert_bytes_eq(core::hostname(u_ff02), "[ff02::1%25eth0]", "Host includes compressed IPv6 and zone ID");
+        sub.assert_eq(core::effective_port(u_ff02), 8080, "Port parsed correctly");
+
+        // Site-Local multicast (ff05::/16) with Zone ID
+        let u_ff05 = core::new_url("http://[ff05::1%25eth0]/");
+        sub.assert_true(u_ff05.valid, "ff05::/16 site-local multicast allows Zone ID");
+
+        // Link-Local unicast (fe80::/10) with Zone ID
+        let u_fe80 = core::new_url("http://[fe80::1%25eth0]/");
+        sub.assert_true(u_fe80.valid, "fe80::/10 link-local unicast allows Zone ID");
+
+        // Global multicast (ff0e::/16) MUST NOT allow Zone ID (RFC 6874 §2)
+        let u_ff0e = core::new_url("http://[ff0e::1%25eth0]/");
+        sub.assert_false(u_ff0e.valid, "ff0e::/16 global multicast MUST NOT allow Zone ID");
+
+        // Global unicast (2001:db8::) MUST NOT allow Zone ID (RFC 6874 §2)
+        let u_2001 = core::new_url("http://[2001:db8::1%25eth0]/");
+        sub.assert_false(u_2001.valid, "Global unicast MUST NOT allow Zone ID");
+
+        // UrlView zero-copy verification
+        let v_good = core::new_url_view("http://[ff02::1%25eth0]:9000/metrics");
+        sub.assert_true(v_good.valid, "UrlView parses scoped multicast with Zone ID");
+        sub.assert_bytes_eq(core::host(v_good), "[ff02::1%25eth0]", "UrlView host matches");
+        sub.assert_eq(core::port(v_good) as i64, 9000, "UrlView port is 9000");
+
+        let v_bad = core::new_url_view("http://[ff0e::1%25eth0]:9000/metrics");
+        sub.assert_false(v_bad.valid, "UrlView rejects global multicast with Zone ID");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -1217,6 +1341,7 @@ fn main() {
     core::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
     core::run_case(runner, "5. Dual-Mode Resolution: RFC 3986 Reference vs Backend Endpoint", test_dual_mode_resolution_rfc_vs_endpoint);
     core::run_case(runner, "6. Large & Dynamic URLs (UrlView and 2048-Byte Buffer)", test_dynamic_and_large_urls);
+    core::run_case(runner, "7. RFC 3986 & WHATWG Standards Edge Cases", test_rfc3986_whatwg_standards_edge_cases);
 
     let ok = core::finish(runner);
     assert(ok);

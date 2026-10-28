@@ -175,6 +175,50 @@ fn test_ssrf_filter_bypasses(t: core::T&) {
         let u2 = core::new_url("http://[::1%eth0]:80/api");
         sub.assert_false(u2.valid, "URL parser must invalidate [::1%eth0]");
     };
+
+    t.run("SSRF-07: RFC 5737 / RFC 2544 / RFC 6890 Reserved Test & Benchmarking Networks") { sub =>
+        // TEST-NET-1 (192.0.2.0/24)
+        sub.assert_true(wing::is_private_or_reserved_ip("192.0.2.1"), "TEST-NET-1 must be blocked");
+        sub.assert_true(wing::is_private_or_reserved_ip("192.0.2.254"), "TEST-NET-1 must be blocked");
+
+        // TEST-NET-2 (198.51.100.0/24)
+        sub.assert_true(wing::is_private_or_reserved_ip("198.51.100.1"), "TEST-NET-2 must be blocked");
+        sub.assert_true(wing::is_private_or_reserved_ip("198.51.100.254"), "TEST-NET-2 must be blocked");
+
+        // TEST-NET-3 (203.0.113.0/24)
+        sub.assert_true(wing::is_private_or_reserved_ip("203.0.113.1"), "TEST-NET-3 must be blocked");
+        sub.assert_true(wing::is_private_or_reserved_ip("203.0.113.254"), "TEST-NET-3 must be blocked");
+
+        // Benchmarking (198.18.0.0/15)
+        sub.assert_true(wing::is_private_or_reserved_ip("198.18.0.1"), "198.18.0.0/15 benchmarking must be blocked");
+        sub.assert_true(wing::is_private_or_reserved_ip("198.19.255.254"), "198.19.255.254 benchmarking must be blocked");
+
+        // 6to4 Relay Anycast (192.88.99.0/24)
+        sub.assert_true(wing::is_private_or_reserved_ip("192.88.99.1"), "192.88.99.0/24 must be blocked");
+
+        // Legitimate public IPs must not be blocked:
+        sub.assert_false(wing::is_private_or_reserved_ip("198.50.1.1"), "198.50.1.1 must not be blocked");
+        sub.assert_false(wing::is_private_or_reserved_ip("203.1.1.1"), "203.1.1.1 must not be blocked");
+    };
+
+    t.run("SSRF-08: Flexible IPv4 Integer Overflow & Scoped Multicast SSRF Guard") { sub =>
+        // Integer overflow defense: > 0xFFFFFFFF must not wrap around or be parsed as 0
+        sub.assert_false(wing::is_private_or_reserved_ip("4294967296"), "4294967296 (2^32) must not wrap around");
+        sub.assert_false(wing::is_private_or_reserved_ip("127.0.0.0x10000000000000001"), "u64 overflow must not parse as valid IPv4");
+        sub.assert_false(wing::is_private_or_reserved_ip("127..0.1"), "Empty double-dot segment must not parse as valid IPv4");
+
+        // IPv6 Scoped Multicast with Zone ID must be blocked by SSRF guard policy
+        var policy = wing::SsrfGuardPolicy { enabled: true, .. };
+        let u_multi = core::new_url("http://[ff02::1%25eth0]/status");
+        sub.assert_true(u_multi.valid, "Scoped multicast URL is syntactically valid per RFC 6874");
+        let err_multi = wing::validate_url_against_ssrf(u_multi, policy);
+        sub.assert_ne(err_multi, wing::RedirectError.None, "Scoped multicast URL must be blocked by SSRF guard");
+
+        let u_node = core::new_url("http://[ff01::1%25eth0]/admin");
+        sub.assert_true(u_node.valid, "Node-local multicast URL is syntactically valid per RFC 6874");
+        let err_node = wing::validate_url_against_ssrf(u_node, policy);
+        sub.assert_ne(err_node, wing::RedirectError.None, "Node-local multicast URL must be blocked by SSRF guard");
+    };
 }
 
 // ----------------------------------------------------------------------------

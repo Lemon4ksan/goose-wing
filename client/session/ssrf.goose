@@ -34,8 +34,20 @@ fn is_private_ipv4_octets(octet0: i32, octet1: i32) -> bool {
     if octet0 == 169 && octet1 == 254 { return true; }                   // 169.254.0.0/16 Link-Local / Cloud Metadata
     if octet0 == 172 && (octet1 >= 16 && octet1 <= 31) { return true; }  // 172.16.0.0/12
     if octet0 == 192 && octet1 == 168 { return true; }                   // 192.168.0.0/16
+    if octet0 == 198 && (octet1 == 18 || octet1 == 19) { return true; }  // 198.18.0.0/15 Benchmarking (RFC 2544 / RFC 6890)
     if octet0 == 100 && (octet1 >= 64 && octet1 <= 127) { return true; } // 100.64.0.0/10 CGNAT
     if octet0 >= 224 { return true; }                                    // 224.0.0.0/4 Multicast & Reserved
+
+    return false;
+}
+
+fn is_private_ipv4_4octets(octet0: i32, octet1: i32, octet2: i32, octet3: i32) -> bool {
+    if is_private_ipv4_octets(octet0, octet1) { return true; }
+    if octet0 == 192 && octet1 == 0 && octet2 == 0 { return true; }      // 192.0.0.0/24 (RFC 6890 §2.1)
+    if octet0 == 192 && octet1 == 0 && octet2 == 2 { return true; }      // 192.0.2.0/24 TEST-NET-1 (RFC 5737)
+    if octet0 == 192 && octet1 == 88 && octet2 == 99 { return true; }    // 192.88.99.0/24 6to4 Relay Anycast (RFC 7526)
+    if octet0 == 198 && octet1 == 51 && octet2 == 100 { return true; }   // 198.51.100.0/24 TEST-NET-2 (RFC 5737)
+    if octet0 == 203 && octet1 == 0 && octet2 == 113 { return true; }    // 203.0.113.0/24 TEST-NET-3 (RFC 5737)
 
     return false;
 }
@@ -60,6 +72,7 @@ fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
         guard hex >= 0 else { return 0, false; }
         let digit = hex as u64;
         if digit >= base { return 0, false; }
+        guard val <= 0xFFFFFFFF / base else { return 0, false; }
         val = val * base + digit;
         if val > 0xFFFFFFFF { return 0, false; }
     }
@@ -74,14 +87,14 @@ fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
     var cur: u8[..32] = [];
     for b in clean_ip {
         if b == '.' {
-            guard parts.len < 4 else { return false; }
+            guard parts.len < 4 && cur.len > 0 else { return false; }
             parts.push(copy(cur));
             cur.clear();
         } else {
             if cur.len < 32 { cur.push(b); } else { return false; }
         }
     }
-    guard parts.len < 4 else { return false; }
+    guard parts.len < 4 && cur.len > 0 else { return false; }
     parts.push(copy(cur));
 
     let n = parts.len;
@@ -119,7 +132,7 @@ fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
 fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
     var octets: u8[4] = [0, 0, 0, 0];
     guard parse_flexible_ipv4(clean_ip, octets) else { return false; }
-    return is_private_ipv4_octets(octets[0], octets[1]);
+    return is_private_ipv4_4octets(octets[0], octets[1], octets[2], octets[3]);
 }
 
 fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
@@ -136,7 +149,9 @@ fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
 
     let octet0 = (val1 >> 8) & 0xFF;
     let octet1 = val1 & 0xFF;
-    return is_private_ipv4_octets(octet0, octet1);
+    let octet2 = (val2 >> 8) & 0xFF;
+    let octet3 = val2 & 0xFF;
+    return is_private_ipv4_4octets(octet0, octet1, octet2, octet3);
 }
 
 // Whether host is localhost or a subdomain of localhost (RFC 6761 Section 6.3).
