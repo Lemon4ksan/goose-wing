@@ -1296,6 +1296,135 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses
+// ----------------------------------------------------------------------------
+fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
+    t.run("RFC 8446 §4.2: Duplicate early_data extension in NewSessionTicket MUST be rejected") { sub =>
+        // Wire NewSessionTicket with two early_data extensions (ext_type = 42)
+        let dup_early_data_wire: u8[33] = [
+            0x00, 0x00, 0x0E, 0x10, // lifetime = 3600
+            0x00, 0x00, 0x00, 0x01, // age_add = 1
+            0x00,                   // nonce_len = 0
+            0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD, // ticket_len = 4, ticket
+            0x00, 0x10,             // extensions_len = 16
+            0x00, 0x2A,             // ext_type = 42 (early_data)
+            0x00, 0x04,             // ext_len = 4
+            0x00, 0x00, 0x04, 0x00, // max_early_data_size = 1024
+            0x00, 0x2A,             // ext_type = 42 (DUPLICATE early_data)
+            0x00, 0x04,             // ext_len = 4
+            0x00, 0x00, 0x08, 0x00, // max_early_data_size = 2048
+        ];
+
+        var nst = wing::NewSessionTicketMsg { .. };
+        let ok = wing::parse_new_session_ticket(dup_early_data_wire[..], nst);
+        sub.assert_false(ok, "duplicate early_data extension in NewSessionTicket MUST be rejected");
+    };
+
+    t.run("RFC 8446 §4.2 Table 2: Non-permitted extension in NewSessionTicket MUST be rejected") { sub =>
+        // Wire NewSessionTicket with supported_versions (ext_type = 43), which is forbidden in NST
+        let forbidden_ext_wire: u8[23] = [
+            0x00, 0x00, 0x0E, 0x10, // lifetime = 3600
+            0x00, 0x00, 0x00, 0x01, // age_add = 1
+            0x00,                   // nonce_len = 0
+            0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD, // ticket_len = 4, ticket
+            0x00, 0x06,             // extensions_len = 6
+            0x00, 0x2B,             // ext_type = 43 (supported_versions - FORBIDDEN in NST)
+            0x00, 0x02,             // ext_len = 2
+            0x03, 0x04,             // TLS 1.3
+        ];
+
+        var nst = wing::NewSessionTicketMsg { .. };
+        let ok = wing::parse_new_session_ticket(forbidden_ext_wire[..], nst);
+        sub.assert_false(ok, "supported_versions extension in NewSessionTicket MUST be rejected");
+    };
+
+    t.run("RFC 8446 §4.2.10 & §4.6.1: early_data with ticket_lifetime == 0 MUST be rejected") { sub =>
+        // Wire NewSessionTicket with ticket_lifetime = 0 and early_data extension
+        let zero_life_early_data_wire: u8[25] = [
+            0x00, 0x00, 0x00, 0x00, // lifetime = 0 (MUST NOT offer early_data)
+            0x00, 0x00, 0x00, 0x01, // age_add = 1
+            0x00,                   // nonce_len = 0
+            0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD, // ticket_len = 4, ticket
+            0x00, 0x08,             // extensions_len = 8
+            0x00, 0x2A,             // ext_type = 42 (early_data)
+            0x00, 0x04,             // ext_len = 4
+            0x00, 0x00, 0x40, 0x00, // max_early_data_size = 16384
+        ];
+
+        var nst = wing::NewSessionTicketMsg { .. };
+        let ok = wing::parse_new_session_ticket(zero_life_early_data_wire[..], nst);
+        sub.assert_false(ok, "early_data with ticket_lifetime == 0 MUST be rejected");
+    };
+
+    t.run("RFC 8446 §4.6.1: Duplicate ticket_nonce on same connection rejected (ticket confusion defense)") { sub =>
+        var cache = wing::SessionTicketCache { .. };
+
+        var t1 = wing::NewSessionTicketMsg {
+            ticket_lifetime: 3600,
+            ticket_age_add: 100,
+            ..
+        };
+        t1.ticket_nonce.append([0x01, 0x02, 0x03]);
+        t1.ticket.append([0xAA, 0xBB, 0xCC]);
+
+        let ok1 = wing::cache_session_ticket(cache, t1);
+        sub.assert_true(ok1, "First ticket with nonce [1,2,3] cached successfully");
+        sub.assert_eq(cache.tickets.len, 1, "Cache length is 1");
+
+        // Duplicate ticket_nonce with different ticket payload MUST be rejected
+        var t2 = wing::NewSessionTicketMsg {
+            ticket_lifetime: 3600,
+            ticket_age_add: 200,
+            ..
+        };
+        t2.ticket_nonce.append([0x01, 0x02, 0x03]); // DUPLICATE NONCE
+        t2.ticket.append([0xDD, 0xEE, 0xFF]);
+
+        let ok2 = wing::cache_session_ticket(cache, t2);
+        sub.assert_false(ok2, "Ticket with duplicate ticket_nonce on same connection MUST be rejected");
+        sub.assert_eq(cache.tickets.len, 1, "Cache length remains 1 after duplicate nonce rejection");
+    };
+
+    t.run("RFC 8446 §4.6.1: Duplicate ticket payload on same connection rejected") { sub =>
+        var cache = wing::SessionTicketCache { .. };
+
+        var t1 = wing::NewSessionTicketMsg {
+            ticket_lifetime: 3600,
+            ticket_age_add: 100,
+            ..
+        };
+        t1.ticket_nonce.append([0x01, 0x01]);
+        t1.ticket.append([0xCA, 0xFE, 0xBA, 0xBE]);
+        let ok1 = wing::cache_session_ticket(cache, t1);
+        sub.assert_true(ok1, "Initial ticket cached successfully");
+
+        // Duplicate ticket payload with different nonce MUST be rejected
+        var t2 = wing::NewSessionTicketMsg {
+            ticket_lifetime: 3600,
+            ticket_age_add: 300,
+            ..
+        };
+        t2.ticket_nonce.append([0x02, 0x02]);
+        t2.ticket.append([0xCA, 0xFE, 0xBA, 0xBE]); // DUPLICATE TICKET PAYLOAD
+        let ok2 = wing::cache_session_ticket(cache, t2);
+        sub.assert_false(ok2, "Ticket with duplicate ticket payload on same connection MUST be rejected");
+        sub.assert_eq(cache.tickets.len, 1, "Cache length remains 1 after duplicate ticket rejection");
+
+        // Distinct ticket with unique nonce and payload succeeds
+        var t3 = wing::NewSessionTicketMsg {
+            ticket_lifetime: 3600,
+            ticket_age_add: 400,
+            ..
+        };
+        t3.ticket_nonce.append([0x03, 0x03]);
+        t3.ticket.append([0xDE, 0xAD, 0xBE, 0xEF]);
+        let ok3 = wing::cache_session_ticket(cache, t3);
+        sub.assert_true(ok3, "Distinct ticket with unique nonce and payload cached successfully");
+        sub.assert_eq(cache.tickets.len, 2, "Cache length incremented to 2");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1327,6 +1456,7 @@ fn main() {
     core::run_case(runner, "26. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
     core::run_case(runner, "27. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);
     core::run_case(runner, "28. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants", test_h2_rst_stream_data_flow_control_invariants);
+    core::run_case(runner, "29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses", test_rfc8446_nst_extension_validation_and_ticket_confusion);
 
     let ok = core::finish(runner);
     assert(ok);

@@ -883,6 +883,31 @@ struct SessionTicketCache {
     total_received: u32 = 0,
 }
 
+fn is_forbidden_nst_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        EXT_SERVER_NAME => true,
+        EXT_STATUS_REQUEST => true,
+        EXT_SUPPORTED_GROUPS => true,
+        EXT_SIGNATURE_ALGORITHMS => true,
+        EXT_ALPN => true,
+        EXT_COMPRESS_CERTIFICATE => true,
+        EXT_PRE_SHARED_KEY => true,
+        EXT_SUPPORTED_VERSIONS => true,
+        EXT_COOKIE => true,
+        EXT_PSK_KEY_EXCHANGE_MODES => true,
+        EXT_KEY_SHARE => true,
+        EXT_QUIC_TRANSPORT_PARAMETERS => true,
+        _ => false,
+    };
+}
+
+fn has_extension_type(seen: const u16[:], ext_type: u16) -> bool {
+    for x in seen {
+        if x == ext_type { return true; }
+    }
+    return false;
+}
+
 fn parse_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
     // RFC 8446 Section 4.2.10: In NewSessionTicket, early_data MUST be uint32 max_early_data_size
     guard cursor_len(ext_data) == 4 else { return false; }
@@ -891,18 +916,29 @@ fn parse_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> 
     // RFC 8446 Section 4.2.10: Servers MUST NOT offer early_data with max_early_data_size = 0.
     // Client receiving this MUST terminate connection with illegal_parameter.
     guard max_size > 0 else { return false; }
+    guard !out.has_early_data else { return false; }
     out.has_early_data = true;
     out.max_early_data_size = max_size;
     return true;
 }
 
 fn parse_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: NewSessionTicketMsg&) -> bool {
+    var seen_types: u16[..16] = [];
     while cursor_len(ext_cursor) > 0 {
         var ext_type: u16 = 0;
         guard get_u16(ext_cursor, ext_type) else { return false; }
 
         var ext_data = cursor_from(payload[..0]);
         guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
+
+        // RFC 8446 Section 4.2: Extensions MUST NOT contain duplicates
+        guard !has_extension_type(seen_types[..], ext_type) else { return false; }
+        if seen_types.len < seen_types.cap {
+            seen_types.push(ext_type);
+        }
+
+        // RFC 8446 Section 4.2 Table 2: Extensions not permitted in NST MUST be rejected
+        guard !is_forbidden_nst_extension(ext_type) else { return false; }
 
         if ext_type == EXT_EARLY_DATA {
             guard parse_ticket_early_data(ext_data, out) else { return false; }
@@ -954,7 +990,29 @@ fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> 
     guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
     guard cursor_len(c) == 0 else { return false; }
 
-    return parse_ticket_extensions(ext_cursor, payload, out);
+    guard parse_ticket_extensions(ext_cursor, payload, out) else { return false; }
+
+    // RFC 8446 Section 4.2.10 & 4.6.1: early_data MUST NOT be offered when ticket_lifetime is 0
+    guard !(out.ticket_lifetime == 0 && out.has_early_data) else { return false; }
+
+    return true;
+}
+
+fn has_conflicting_ticket(cache: const SessionTicketCache&, ticket: const NewSessionTicketMsg&) -> bool {
+    for i in cache.tickets.len {
+        let existing = cache.tickets[i];
+        if ticket.ticket_nonce.len > 0 && existing.ticket_nonce.len == ticket.ticket_nonce.len {
+            if core::ct_eq_bytes(existing.ticket_nonce[..], ticket.ticket_nonce[..]) {
+                return true;
+            }
+        }
+        if ticket.ticket.len > 0 && existing.ticket.len == ticket.ticket.len {
+            if core::ct_eq_bytes(existing.ticket[..], ticket.ticket[..]) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // Stores a validated NewSessionTicket into bounded SessionTicketCache using circular eviction.
@@ -962,6 +1020,12 @@ fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> 
 fn cache_session_ticket(cache: SessionTicketCache&, ticket: const NewSessionTicketMsg&) -> bool {
     // RFC 8446 Section 4.6.1: ticket_lifetime == 0 indicates ticket should be discarded immediately
     guard ticket.ticket_lifetime > 0 else { return true; }
+    guard ticket.ticket_lifetime <= MAX_TICKET_LIFETIME_SECS else { return false; }
+
+    // RFC 8446 Section 4.6.1: Each ticket MUST have a unique ticket_nonce on this connection.
+    // Reject duplicate nonce or duplicate ticket bytes to prevent post-handshake ticket confusion
+    // and resumption PSK collisions in ks_derive_resumption_psk.
+    guard !has_conflicting_ticket(cache, ticket) else { return false; }
 
     cache.total_received++;
     if cache.tickets.len < cache.tickets.cap {
