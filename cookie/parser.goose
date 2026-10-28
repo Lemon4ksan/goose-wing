@@ -318,22 +318,20 @@ fn normalize_cookie_year(year: i64) -> i64 {
 
 fn parse_cookie_month_name(token: const u8[:]) -> i64 {
     guard token.len >= 3 else { return 0; }
-    var char0 = if token[0] >= 'A' && token[0] <= 'Z' { token[0] + 32 } else { token[0] };
-    var char1 = if token[1] >= 'A' && token[1] <= 'Z' { token[1] + 32 } else { token[1] };
-    var char2 = if token[2] >= 'A' && token[2] <= 'Z' { token[2] + 32 } else { token[2] };
 
-    if char0 == 'j' && char1 == 'a' && char2 == 'n' { return 1; }
-    if char0 == 'f' && char1 == 'e' && char2 == 'b' { return 2; }
-    if char0 == 'm' && char1 == 'a' && char2 == 'r' { return 3; }
-    if char0 == 'a' && char1 == 'p' && char2 == 'r' { return 4; }
-    if char0 == 'm' && char1 == 'a' && char2 == 'y' { return 5; }
-    if char0 == 'j' && char1 == 'u' && char2 == 'n' { return 6; }
-    if char0 == 'j' && char1 == 'u' && char2 == 'l' { return 7; }
-    if char0 == 'a' && char1 == 'u' && char2 == 'g' { return 8; }
-    if char0 == 's' && char1 == 'e' && char2 == 'p' { return 9; }
-    if char0 == 'o' && char1 == 'c' && char2 == 't' { return 10; }
-    if char0 == 'n' && char1 == 'o' && char2 == 'v' { return 11; }
-    if char0 == 'd' && char1 == 'e' && char2 == 'c' { return 12; }
+    if eq_ascii_fold(token, "jan") || eq_ascii_fold(token, "january") { return 1; }
+    if eq_ascii_fold(token, "feb") || eq_ascii_fold(token, "february") { return 2; }
+    if eq_ascii_fold(token, "mar") || eq_ascii_fold(token, "march") { return 3; }
+    if eq_ascii_fold(token, "apr") || eq_ascii_fold(token, "april") { return 4; }
+    if eq_ascii_fold(token, "may") { return 5; }
+    if eq_ascii_fold(token, "jun") || eq_ascii_fold(token, "june") { return 6; }
+    if eq_ascii_fold(token, "jul") || eq_ascii_fold(token, "july") { return 7; }
+    if eq_ascii_fold(token, "aug") || eq_ascii_fold(token, "august") { return 8; }
+    if eq_ascii_fold(token, "sep") || eq_ascii_fold(token, "september") { return 9; }
+    if eq_ascii_fold(token, "oct") || eq_ascii_fold(token, "october") { return 10; }
+    if eq_ascii_fold(token, "nov") || eq_ascii_fold(token, "november") { return 11; }
+    if eq_ascii_fold(token, "dec") || eq_ascii_fold(token, "december") { return 12; }
+
     return 0;
 }
 

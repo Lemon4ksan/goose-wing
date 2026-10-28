@@ -629,12 +629,12 @@ fn matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus
 fn find_canonical_cookie_collision_index(jar: const CanonicalCookieJar&, new_cookie: const CanonicalCookie&) -> i64 {
     for &existing, cookie_idx in jar.cookies {
         if existing.name[..] == new_cookie.name[..] &&
-           existing.domain[..] == new_cookie.domain[..] &&
+           eq_ascii_fold(existing.domain[..], new_cookie.domain[..]) &&
            existing.path[..] == new_cookie.path[..] &&
            existing.host_only == new_cookie.host_only &&
            existing.partition_key[..] == new_cookie.partition_key[..] &&
-           existing.source_port == new_cookie.source_port &&
-           existing.source_scheme == new_cookie.source_scheme {
+           (existing.source_port == -1 || new_cookie.source_port == -1 || existing.source_port == new_cookie.source_port) &&
+           (existing.source_scheme == CookieSourceScheme.Unset || new_cookie.source_scheme == CookieSourceScheme.Unset || existing.source_scheme == new_cookie.source_scheme) {
             return cookie_idx;
         }
     }

@@ -432,7 +432,11 @@ fn coalesce_store_mutation(
 ) -> bool {
     let existing_op = batcher.ops[op_idx].op_type;
     if existing_op == StoreOpType.InsertOrUpdate && operation_type == StoreOpType.InsertOrUpdate {
+        let orig_creation = batcher.ops[op_idx].cookie.creation_utc;
+        let orig_seq = batcher.ops[op_idx].cookie.creation_seq;
         batcher.ops[op_idx].cookie = cookie_val;
+        batcher.ops[op_idx].cookie.creation_utc = orig_creation;
+        batcher.ops[op_idx].cookie.creation_seq = orig_seq;
         batcher.total_coalesced_ops += 1;
         return true;
     }
@@ -485,7 +489,7 @@ fn constant_time_eq(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
 
 fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const CanonicalCookie&) -> bool {
     return cookie_a.name[..] == cookie_b.name[..] &&
-           cookie_a.domain[..] == cookie_b.domain[..] &&
+           eq_ascii_fold(cookie_a.domain[..], cookie_b.domain[..]) &&
            cookie_a.path[..] == cookie_b.path[..] &&
            cookie_a.host_only == cookie_b.host_only &&
            cookie_a.partition_key[..] == cookie_b.partition_key[..] &&

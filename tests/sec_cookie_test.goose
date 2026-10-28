@@ -238,6 +238,118 @@ fn test_rfc6265bis_samesite_and_domain_ip_rules(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// Round 6: RFC 6265 §5.3 Step 11.3 Creation-Time Preservation & §5.1.1 Date Lexer
+// ----------------------------------------------------------------------------
+fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
+    var clock = core::new_mock_clock();
+    let t1 = clock.now_us;
+    let t2 = clock.now_us + 10000000; // 10s later
+
+    t.run("CREATION-01: Updating cookie with unset source_port preserves original creation_utc (RFC 6265 §5.3 Step 11.3)") { sub =>
+        var jar = wing::new_canonical_cookie_jar();
+        // 1. Initial cookie set via HTTP at t1 (source_port = 443)
+        let ok1 = wing::set_cookie_header(jar, "https://example.com/", "session=initial_val; Secure; Path=/", t1);
+        sub.require_true(ok1, "Initial cookie set must succeed");
+        sub.assert_eq(jar.cookies.len, 1);
+        sub.assert_eq(jar.cookies[0].creation_utc, t1);
+
+        // 2. Cookie updated at t2 with new value and unset port (source_port = -1)
+        var update_cookie = wing::new_canonical_cookie("session", "updated_val");
+        update_cookie.with_domain("example.com", true).with_path("/").with_secure(true);
+        let ok2 = wing::set_canonical_cookie(jar, update_cookie, true, true, t2);
+
+        sub.assert_true(ok2, "Update must succeed");
+        sub.assert_eq(jar.cookies.len, 1, "Cookie store must contain exactly 1 cookie after update");
+        if jar.cookies.len > 0 {
+            sub.assert_bytes_eq(jar.cookies[0].value[..], "updated_val", "Cookie value must be updated");
+            sub.assert_eq(jar.cookies[0].creation_utc, t1, "RFC 6265 §5.3 Step 11.3: creation_utc MUST be preserved across updates");
+            sub.assert_eq(jar.cookies[0].last_access_utc, t2, "last_access_utc must be updated to current time");
+        }
+    };
+
+    t.run("CREATION-02: Updating cookie with case-different domain preserves creation_utc (RFC 6265 §5.3 Step 11.3)") { sub =>
+        var jar = wing::new_canonical_cookie_jar();
+        let ok1 = wing::set_cookie_header(jar, "https://example.com/", "auth=val1; Secure; Path=/", t1);
+        sub.require_true(ok1);
+        sub.assert_eq(jar.cookies[0].creation_utc, t1);
+
+        var update_cookie = wing::new_canonical_cookie("auth", "val2");
+        update_cookie.with_domain("EXAMPLE.COM", true).with_path("/").with_secure(true);
+        let ok2 = wing::set_canonical_cookie(jar, update_cookie, true, true, t2);
+
+        sub.assert_true(ok2);
+        sub.assert_eq(jar.cookies.len, 1, "Must recognize collision across case-different domain");
+        if jar.cookies.len > 0 {
+            sub.assert_bytes_eq(jar.cookies[0].value[..], "val2");
+            sub.assert_eq(jar.cookies[0].creation_utc, t1, "creation_utc must be preserved");
+        }
+    };
+
+    t.run("LEX-MONTH-01: Date lexer rejects invalid month tokens like 'junk' or 'decay' (RFC 6265bis §5.1.1)") { sub =>
+        let cookie1, cause1, ok1 = wing::parse_canonical_set_cookie(
+            "test=1; Expires=Wed, 09 junk 2021 10:18:14 GMT",
+            "example.com",
+            "/",
+            t1,
+        );
+        sub.assert_true(ok1);
+        // Invalid month token causes Expires parsing to fail, so cookie remains non-persistent (session)
+        sub.assert_false(cookie1.persistent, "Cookie with invalid month token must not be persistent");
+
+        let cookie2, cause2, ok2 = wing::parse_canonical_set_cookie(
+            "test=2; Expires=Wed, 09 decay 2021 10:18:14 GMT",
+            "example.com",
+            "/",
+            t1,
+        );
+        sub.assert_true(ok2);
+        sub.assert_false(cookie2.persistent, "Cookie with 'decay' month token must not be persistent");
+    };
+
+    t.run("LEX-MONTH-02: Date lexer accepts valid 3-letter and full month names (RFC 6265bis §5.1.1)") { sub =>
+        let cookie_jun, _, ok_jun = wing::parse_canonical_set_cookie(
+            "test=1; Expires=Wed, 09 Jun 2021 10:18:14 GMT",
+            "example.com",
+            "/",
+            t1,
+        );
+        sub.assert_true(ok_jun);
+        sub.assert_true(cookie_jun.persistent);
+
+        let cookie_dec, _, ok_dec = wing::parse_canonical_set_cookie(
+            "test=2; Expires=Wed, 09 December 2021 10:18:14 GMT",
+            "example.com",
+            "/",
+            t1,
+        );
+        sub.assert_true(ok_dec);
+        sub.assert_true(cookie_dec.persistent);
+    };
+
+    t.run("LEX-YEAR-01: 2-digit years map correctly: 70..99 -> 1970..1999, 00..69 -> 2000..2069 (RFC 6265 §5.1.1)") { sub =>
+        let exp_94, ok_94 = wing::parse_cookie_date_us("Sunday, 06-Nov-94 08:49:37 GMT");
+        sub.assert_true(ok_94);
+        sub.assert_eq(exp_94, 784111777000000, "Year 94 must map to 1994");
+
+        let exp_25, ok_25 = wing::parse_cookie_date_us("Sunday, 06-Nov-25 08:49:37 GMT");
+        sub.assert_true(ok_25);
+        sub.assert_eq(exp_25, 1762418977000000, "Year 25 must map to 2025");
+
+        let exp_00, ok_00 = wing::parse_cookie_date_us("Sunday, 06-Nov-00 08:49:37 GMT");
+        sub.assert_true(ok_00);
+        sub.assert_eq(exp_00, 973500577000000, "Year 00 must map to 2000");
+
+        let exp_69, ok_69 = wing::parse_cookie_date_us("Sunday, 06-Nov-69 08:49:37 GMT");
+        sub.assert_true(ok_69);
+        sub.assert_eq(exp_69, 3150953377000000, "Year 69 must map to 2069");
+
+        let exp_70, ok_70 = wing::parse_cookie_date_us("Sunday, 06-Nov-70 08:49:37 GMT");
+        sub.assert_true(ok_70);
+        sub.assert_eq(exp_70, 26729377000000, "Year 70 must map to 1970");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -248,6 +360,7 @@ fn main() {
     core::run_case(runner, "3. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
     core::run_case(runner, "4. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection", test_httponly_script_overwrite_protection);
     core::run_case(runner, "5. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants", test_rfc6265bis_samesite_and_domain_ip_rules);
+    core::run_case(runner, "6. RFC 6265 §5.3 Step 11.3 Creation-Time & §5.1.1 Date Lexer", test_rfc6265_creation_time_and_date_lexing);
 
     let ok = core::finish(runner);
     assert(ok);
