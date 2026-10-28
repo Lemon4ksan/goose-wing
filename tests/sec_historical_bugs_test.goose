@@ -1581,6 +1581,116 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding
+// ----------------------------------------------------------------------------
+fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
+    let now_sec: i64 = 1770000000;
+    let ed_seed: u8[32] = [
+        0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+        0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x00,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x11,
+    ];
+    let ed_pub = core::ed25519_public_key(ed_seed);
+
+    t.run("RFC 8725 §3.2: Asymmetric OKP key cannot verify symmetric HS256 token (Key Confusion Defense)") { sub =>
+        var jwks = wing::new_jwks();
+        wing::add_ed25519_key(jwks, "ed25519-pub-key-1", ed_pub);
+
+        // Attacker creates HS256 token signed with ed_pub as HMAC secret
+        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "ed25519-pub-key-1");
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "attacker");
+        wing::set_expiry(clm, now_sec + 300);
+
+        var token: u8[>..] = [];
+        wing::sign_jwt_hmac(hdr, clm, ed_pub[..], token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+
+        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Asymmetric OKP key must reject HS256 verification");
+
+        // Verify direct compatibility check fails closed
+        let compat = wing::validate_jwks_key_compatibility(jwks.keys[0], wing::JwtAlg.HS256, false);
+        sub.assert_eq(compat, wing::JwtError.AlgorithmMismatch, "OKP key incompatible with HS256 alg");
+    };
+
+    t.run("RFC 8725 §3.2: Symmetric oct key with EdDSA token or EdDSA algorithm binding rejected") { sub =>
+        // Oct key in JWKS claiming EdDSA algorithm MUST be rejected during JWKS finalization
+        let jwk_bad = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"EdDSA\",\"k\":\"c2VjcmV0LWtleS0xNmJ5dGVzCg\",\"kid\":\"bad-oct-eddsa\"}]}";
+        var jwks_bad = wing::new_jwks();
+        let ok_parse = wing::parse_jwks_json(jwk_bad, jwks_bad);
+        sub.assert_false(ok_parse, "JWKS containing exclusively invalid oct-EdDSA key returns false");
+        sub.assert_eq(jwks_bad.keys.len, 0, "Oct key binding EdDSA algorithm MUST be rejected");
+
+        // Direct check: Oct key cannot be used to verify EdDSA
+        var oct_key = wing::JwksKey { kty: wing::JwkKeyType.Oct, valid: true, .. };
+        let compat = wing::validate_jwks_key_compatibility(oct_key, wing::JwtAlg.EdDSA, false);
+        sub.assert_eq(compat, wing::JwtError.AlgorithmMismatch, "Oct key incompatible with EdDSA alg");
+    };
+
+    t.run("RFC 8037 §2 & §3.1: OKP key with non-Ed25519 curve or omitted curve rejected") { sub =>
+        // X25519 curve (ECDH key, invalid for EdDSA signing)
+        let jwk_x25519 = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"X25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"x25519-key\"}]}";
+        var jwks_x = wing::new_jwks();
+        let ok_x = wing::parse_jwks_json(jwk_x25519, jwks_x);
+        sub.assert_false(ok_x, "JWKS containing only non-Ed25519 curve returns false");
+        sub.assert_eq(jwks_x.keys.len, 0, "OKP key with X25519 curve MUST be rejected");
+
+        // Omitted curve
+        let jwk_no_crv = "{\"keys\":[{\"kty\":\"OKP\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"no-crv-key\"}]}";
+        var jwks_nc = wing::new_jwks();
+        let ok_nc = wing::parse_jwks_json(jwk_no_crv, jwks_nc);
+        sub.assert_false(ok_nc, "JWKS containing OKP key with omitted crv returns false");
+        sub.assert_eq(jwks_nc.keys.len, 0, "OKP key omitting crv MUST be rejected");
+    };
+
+    t.run("RFC 7517 §4.4: Oct key in JWKS omitting optional alg parameter verifies HS256 token") { sub =>
+        let jwk_sym = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\",\"kid\":\"sym-no-alg\"}]}";
+        var jwks_sym = wing::new_jwks();
+        let ok_sym = wing::parse_jwks_json(jwk_sym, jwks_sym);
+        sub.assert_true(ok_sym, "JWKS parsed");
+        sub.assert_eq(jwks_sym.keys.len, 1, "Oct key without alg parsed into key set");
+        sub.assert_eq(jwks_sym.keys[0].alg, wing::JwtAlg.None, "Default alg is None (compatible with HS256/384/512)");
+
+        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "sym-no-alg");
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "user_bob");
+        wing::set_expiry(clm, now_sec + 300);
+
+        var token: u8[>..] = [];
+        wing::sign_jwt_hmac(hdr, clm, "secret-sym-key-16bytes", token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+
+        let err = wing::verify(token[..], jwks_sym, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "Token verified successfully with oct key lacking alg");
+        sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "user_bob", "Subject matches");
+    };
+
+    t.run("RFC 8725 §3.6 & RFC 7518 §3.2: Weak symmetric key under 128 bits rejected") { sub =>
+        let jwk_weak = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2hvcnQ\",\"kid\":\"weak-sym-key\"}]}";
+        var jwks_weak = wing::new_jwks();
+        let ok_w = wing::parse_jwks_json(jwk_weak, jwks_weak);
+        sub.assert_false(ok_w, "JWKS containing weak key returns false");
+        sub.assert_eq(jwks_weak.keys.len, 0, "Weak symmetric key < 16 bytes MUST be rejected");
+
+        // Mixed JWKS: 1 valid Ed25519 key + 1 weak oct key -> only valid key is preserved
+        let jwk_mixed = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"valid-ed\"},{\"kty\":\"oct\",\"k\":\"c2hvcnQ\",\"kid\":\"weak-oct\"}]}";
+        var jwks_mixed = wing::new_jwks();
+        let ok_m = wing::parse_jwks_json(jwk_mixed, jwks_mixed);
+        sub.assert_true(ok_m, "Mixed JWKS parses successfully because valid key is present");
+        sub.assert_eq(jwks_mixed.keys.len, 1, "Only 1 valid key retained");
+        sub.assert_bytes_eq(jwks_mixed.keys[0].kid[..], "valid-ed", "Valid Ed25519 key retained");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1615,6 +1725,7 @@ fn main() {
     core::run_case(runner, "29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses", test_rfc8446_nst_extension_validation_and_ticket_confusion);
     core::run_case(runner, "30. RFC 9110 & RFC 9293: Connection Pool Starvation & Slot Reclamation", test_rfc9110_connection_pool_starvation_and_slot_reclamation);
     core::run_case(runner, "31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds", test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound);
+    core::run_case(runner, "32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding", test_rfc8725_jwks_key_confusion_and_algorithm_binding);
 
     let ok = core::finish(runner);
     assert(ok);

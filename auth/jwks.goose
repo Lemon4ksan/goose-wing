@@ -33,8 +33,8 @@ fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
 
 struct JwksKey {
     kty: JwkKeyType = JwkKeyType.OKP,
-    crv: u8[..32] = "Ed25519",
-    alg: JwtAlg = JwtAlg.EdDSA,
+    crv: u8[..32] = "",
+    alg: JwtAlg = JwtAlg.None,
     use: u8[..16] = "sig",
     kid: u8[..64] = [],
     symmetric_key: u8[..64] = [],
@@ -308,33 +308,43 @@ fn parse_jwk_key_fields(
     };
 }
 
+fn finalize_okp_key(raw_x: const u8[:], key_item: JwksKey&) -> bool {
+    // RFC 8037 §2 & §3.1: OKP curve MUST be Ed25519 for EdDSA signatures
+    guard key_item.crv[..] == "Ed25519" else { return false; }
+    guard key_item.alg == JwtAlg.None || key_item.alg == JwtAlg.EdDSA else { return false; }
+    guard raw_x.len > 0 else { return false; }
+    var decoded_x: u8[>..] = [];
+    guard core::base64url_decode(raw_x, decoded_x) else { return false; }
+    guard decoded_x.len == ED25519_KEY_LEN else { return false; }
+    for i in ED25519_KEY_LEN {
+        key_item.public_key[i] = decoded_x[i];
+    }
+    key_item.valid = true;
+    return true;
+}
+
+fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
+    guard key_item.alg != JwtAlg.EdDSA else { return false; }
+    guard raw_k.len > 0 else { return false; }
+    var decoded_k: u8[>..] = [];
+    guard core::base64url_decode(raw_k, decoded_k) else { return false; }
+    // RFC 8725 §3.6 & RFC 7518 §3.2: Reject weak symmetric keys (< 128 bits / 16 bytes)
+    guard decoded_k.len >= 16 && decoded_k.len <= HMAC_SHA512_MAC_LEN else { return false; }
+    key_item.symmetric_key.clear();
+    key_item.symmetric_key.append(decoded_k[..]);
+    key_item.valid = true;
+    return true;
+}
+
 fn finalize_jwk_key(
     raw_x: const u8[:],
     raw_k: const u8[:],
     key_item: JwksKey&,
 ) -> bool {
-    if key_item.kty == JwkKeyType.OKP {
-        guard raw_x.len > 0 else { return false; }
-        var decoded_x: u8[>..] = [];
-        guard core::base64url_decode(raw_x, decoded_x) else { return false; }
-        guard decoded_x.len == ED25519_KEY_LEN else { return false; }
-        for i in ED25519_KEY_LEN {
-            key_item.public_key[i] = decoded_x[i];
-        }
-        key_item.valid = true;
-        return true;
-    }
-    if key_item.kty == JwkKeyType.Oct {
-        guard raw_k.len > 0 else { return false; }
-        var decoded_k: u8[>..] = [];
-        guard core::base64url_decode(raw_k, decoded_k) else { return false; }
-        guard decoded_k.len <= HMAC_SHA512_MAC_LEN else { return false; }
-        key_item.symmetric_key.clear();
-        key_item.symmetric_key.append(decoded_k[..]);
-        key_item.valid = true;
-        return true;
-    }
-    return false;
+    return match key_item.kty {
+        OKP => finalize_okp_key(raw_x, key_item),
+        Oct => finalize_oct_key(raw_k, key_item),
+    };
 }
 
 fn parse_single_jwk_element(
@@ -388,16 +398,31 @@ fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
     return -1;
 }
 
+fn is_kty_alg_compatible(kty: JwkKeyType, alg: JwtAlg) -> bool {
+    return match kty {
+        OKP => alg == JwtAlg.EdDSA,
+        Oct => alg != JwtAlg.EdDSA && alg != JwtAlg.None,
+    };
+}
+
+fn is_valid_key_use(use: const u8[:]) -> bool {
+    return use.len == 0 || use == "sig";
+}
+
 fn validate_jwks_key_compatibility(
     key: const JwksKey&,
     header_alg: JwtAlg,
     allow_none: bool,
 ) -> JwtError {
-    if key.use.len > 0 && key.use[..] != "sig" {
+    guard is_valid_key_use(key.use[..]) else {
         return JwtError.UnsupportedAlgorithm;
     }
     if header_alg == JwtAlg.None && !allow_none {
         return JwtError.UnsupportedAlgorithm;
+    }
+    // RFC 8725 §3.2: Key Confusion Defense (Asymmetric vs Symmetric)
+    guard is_kty_alg_compatible(key.kty, header_alg) else {
+        return JwtError.AlgorithmMismatch;
     }
     if key.alg != JwtAlg.None && key.alg != header_alg {
         return JwtError.AlgorithmMismatch;
