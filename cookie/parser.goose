@@ -62,6 +62,16 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
+    // RFC 6265bis Section 5.5.7: SameSite=None strictly requires Secure
+    if parsed_cookie.same_site == CookieSameSite.None && !parsed_cookie.secure {
+        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+    }
+
+    // RFC 6265bis / CHIPS: Partitioned cookies strictly require Secure
+    if parsed_cookie.partitioned && !parsed_cookie.secure {
+        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+    }
+
     return parsed_cookie, CookieDeleteCause.UNKNOWN, true;
 }
 
@@ -236,7 +246,7 @@ fn is_valid_cookie_calendar_date(year: i64, month: i64, day: i64, hour: i64, min
     guard month >= 1 && month <= 12 else { return false; }
     guard day >= 1 && day <= days_in_month(year, month) else { return false; }
     guard year >= 1601 else { return false; }
-    guard hour <= 23 && minute <= 59 && second <= 59 else { return false; }
+    guard hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59 else { return false; }
     return true;
 }
 

@@ -178,19 +178,28 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
 
 // Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3 & RFC 6055).
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
-    var clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
-    if clean_host.len > 0 && clean_host[clean_host.len - 1] == '.' {
-        clean_host = clean_host[..clean_host.len - 1];
+    let clean_host = core::trim_byte(host, '.');
+    let clean_domain = core::trim_byte(cookie_val.domain[..], '.');
+
+    var h_norm = clean_host;
+    if h_norm.len > 2 && h_norm[0] == '[' && h_norm[h_norm.len - 1] == ']' {
+        h_norm = h_norm[1..h_norm.len - 1];
     }
-    var clean_domain = if cookie_val.domain.len > 0 && cookie_val.domain[0] == '.' { cookie_val.domain[1..] } else { cookie_val.domain[..] };
-    if clean_domain.len > 0 && clean_domain[clean_domain.len - 1] == '.' {
-        clean_domain = clean_domain[..clean_domain.len - 1];
+    var d_norm = clean_domain;
+    if d_norm.len > 2 && d_norm[0] == '[' && d_norm[d_norm.len - 1] == ']' {
+        d_norm = d_norm[1..d_norm.len - 1];
+    }
+
+    // RFC 6265 Section 5.1.3: If either host or cookie domain is an IP address,
+    // domain-matching cannot be used; exact equality is required.
+    if core::is_ip_address_literal(h_norm) || core::is_ip_address_literal(d_norm) {
+        return eq_ascii_fold(d_norm, h_norm);
     }
 
     if cookie_val.host_only {
-        return eq_ascii_fold(clean_domain, clean_host);
+        return eq_ascii_fold(d_norm, h_norm);
     }
-    return cookie_domain_match(clean_host, clean_domain);
+    return cookie_domain_match(h_norm, d_norm);
 }
 
 // Whether req_path matches the cookie's Path attribute (RFC 6265 Section 5.1.4).

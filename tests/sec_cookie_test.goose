@@ -190,6 +190,54 @@ fn test_httponly_script_overwrite_protection(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// Round 5: RFC 6265bis §5.5.7 SameSite=None and §5.1.3 Domain IP Invariants
+// ----------------------------------------------------------------------------
+fn test_rfc6265bis_samesite_and_domain_ip_rules(t: core::T&) {
+    var clock = core::new_mock_clock();
+
+    t.run("SAMESITE-01: parse_canonical_set_cookie rejects SameSite=None without Secure (RFC 6265bis §5.5.7)") { sub =>
+        let cookie, cause, ok = wing::parse_canonical_set_cookie(
+            "session=abc12345; SameSite=None; Path=/",
+            "example.com",
+            "/",
+            clock.now_us,
+        );
+        sub.assert_false(ok, "SameSite=None without Secure must be rejected by parse_canonical_set_cookie");
+    };
+
+    t.run("SAMESITE-02: parse_canonical_set_cookie accepts SameSite=None with Secure (RFC 6265bis §5.5.7)") { sub =>
+        let cookie, cause, ok = wing::parse_canonical_set_cookie(
+            "session=abc12345; SameSite=None; Secure; Path=/",
+            "example.com",
+            "/",
+            clock.now_us,
+        );
+        sub.assert_true(ok, "SameSite=None with Secure must be accepted");
+        sub.assert_eq(cookie.same_site, wing::CookieSameSite.None);
+        sub.assert_true(cookie.secure);
+    };
+
+    t.run("DOMAIN-IP-01: Domain matching cannot match subdomains against IP literal (RFC 6265 §5.1.3)") { sub =>
+        var c = wing::new_canonical_cookie("test_ip", "val1");
+        c.with_domain("192.168.1.1", false); // non-host-only domain cookie
+        sub.assert_false(c.matches_domain("sub.192.168.1.1"), "Subdomain must not match IP address domain per RFC 6265 §5.1.3");
+        sub.assert_true(c.matches_domain("192.168.1.1"), "Exact IP match must succeed");
+    };
+
+    t.run("DOMAIN-IP-02: IPv6 host with brackets matches unbracketed cookie domain") { sub =>
+        var c = wing::new_canonical_cookie("test_ipv6", "val2");
+        c.with_domain("2001:db8::1", true);
+        sub.assert_true(c.matches_domain("[2001:db8::1]"), "IPv6 with brackets must match unbracketed cookie domain");
+    };
+
+    t.run("DOMAIN-DOT-01: FQDN multiple trailing dots normalize correctly") { sub =>
+        var c = wing::new_canonical_cookie("test_dot", "val3");
+        c.with_domain("example.com", false);
+        sub.assert_true(c.matches_domain("example.com.."), "Host with multiple trailing dots must match");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -199,6 +247,7 @@ fn main() {
     core::run_case(runner, "2. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
     core::run_case(runner, "3. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
     core::run_case(runner, "4. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection", test_httponly_script_overwrite_protection);
+    core::run_case(runner, "5. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants", test_rfc6265bis_samesite_and_domain_ip_rules);
 
     let ok = core::finish(runner);
     assert(ok);
