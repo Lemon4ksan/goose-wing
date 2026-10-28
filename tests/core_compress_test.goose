@@ -1059,7 +1059,7 @@ fn test_zstandard_rfc8878(t: core::T&) {
         let b_4s_payload: u8[12] = [
             0x87, 0x00, 0x02,
             0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
-            0x80, 0x80, 0x00
+            0x80, 0x80, 0x00,
         ];
         frame_4s_zero.append(b_4s_payload[..]);
 
@@ -1068,7 +1068,7 @@ fn test_zstandard_rfc8878(t: core::T&) {
         sub.assert_false(ok_4s, "4-stream Huffman with invalid size or zero-length stream must be rejected");
         sub.assert_eq(err_4s, core::CompressError.CorruptedBitstream, "Must return CorruptedBitstream for malformed 4-stream jump table");
     };
- }
+}
 
 fn test_rfc1951_bounds_and_error_handling(t: core::T&) {
     t.run("Stored Block LEN/NLEN Mismatch Rejection") { sub =>

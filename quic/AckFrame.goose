@@ -126,6 +126,9 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     guard ok4 else { return AckFrame {}, offset, false; }
     cur = next_cur4;
 
+    // RFC 9000 §19.3.1: Largest Acknowledged MUST be >= First ACK Range
+    guard largest_acked >= first_range else { return AckFrame {}, offset, false; }
+
     var ack = AckFrame {
         is_ecn: (ftype == QUIC_FRAME_ACK_ECN),
         largest_acked: largest_acked,
@@ -135,6 +138,7 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     };
 
     guard range_cnt <= (ack.ranges.cap as u64) else { return AckFrame {}, offset, false; }
+    var cur_smallest = largest_acked - first_range;
     var r_idx: u64 = 0;
     while r_idx < range_cnt {
         let gap, next_cur_g, okg = quic_decode_varint(src, cur);
@@ -143,6 +147,13 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
         let rlen, next_cur_r, okr = quic_decode_varint(src, cur);
         guard okr else { return AckFrame {}, offset, false; }
         cur = next_cur_r;
+
+        // RFC 9000 §19.3.1: Enforce descending bounds and avoid underflow
+        guard cur_smallest >= 2 && (cur_smallest - 2) >= gap else { return AckFrame {}, offset, false; }
+        let cur_largest = cur_smallest - gap - 2;
+        guard cur_largest >= rlen else { return AckFrame {}, offset, false; }
+        cur_smallest = cur_largest - rlen;
+
         ack.ranges.push(AckRange { gap: gap, ack_range: rlen });
         r_idx++;
     }
@@ -181,7 +192,7 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
     var prev_smallest = ranges[0].smallest;
     for i in 1..ranges.len {
         let cur_range = ranges[i];
-        guard prev_smallest >= cur_range.largest + 2 else { return AckFrame {}, false; }
+        guard prev_smallest >= 2 && (prev_smallest - 2) >= cur_range.largest else { return AckFrame {}, false; }
         let gap = prev_smallest - cur_range.largest - 2;
         guard cur_range.largest >= cur_range.smallest else { return AckFrame {}, false; }
         let rlen = cur_range.largest - cur_range.smallest;

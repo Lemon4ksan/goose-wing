@@ -49,8 +49,9 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
     let clen, off2, ok2 = quic_decode_varint(src, off1);
     guard ok2 else { return c, false; }
 
+    // Prevent u64 addition overflow
+    guard clen <= (src.len as u64) && (off2 + clen) <= (src.len as u64) else { return c, false; }
     let total_len = off2 + clen;
-    guard src.len >= (total_len as i64) else { return c, false; }
 
     let start_idx = off2 as i64;
     let end_idx = total_len as i64;
@@ -138,16 +139,24 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
     let host_part, rem_after_host, host_ok = core::split_once_byte(rem, '/');
     guard host_ok && host_part.len > 0 else { return out_host, 0, false; }
     guard host_part.len <= out_host.cap else { return out_host, 0, false; }
+
+    // Host cannot contain whitespace, control characters, or URI delimiters
+    for b in host_part {
+        if b <= 0x20 || b == 0x7F || b == '?' || b == '#' || b == '@' {
+            return out_host, 0, false;
+        }
+    }
     out_host.append(host_part);
 
     var port_part = rem_after_host;
     if port_part.len > 0 && port_part[port_part.len - 1] == '/' {
         port_part = port_part[..port_part.len - 1];
     }
-    guard port_part.len > 0 else { return out_host, 0, false; }
+    guard port_part.len > 0 && core::index_of_byte(port_part, '/') < 0 else { return out_host, 0, false; }
 
     let p_val, parse_ok = core::parse_u32_dec(port_part);
-    guard parse_ok && p_val <= 65535 else { return out_host, 0, false; }
+    // RFC 9298 §3: target_port MUST be an integer between 1 and 65535 (port 0 strictly forbidden)
+    guard parse_ok && p_val >= 1 && p_val <= 65535 else { return out_host, 0, false; }
     out_port = p_val as u16;
     return out_host, out_port, true;
 }
@@ -155,7 +164,7 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
 // Encodes a UDP payload into a DATAGRAM capsule (RFC 9297 / RFC 9298 Section 5):
 // Format: Context ID (VarInt = 0) || UDP Payload
 fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: const u8[:]) -> bool {
-    var datagram_body: u8[>..] = [];
+    var datagram_body: u8[..2048] = [];
     guard quic_encode_varint(datagram_body, context_id) else { return false; }
     datagram_body.append(udp_packet);
     return encode_http_capsule(out, CAPSULE_DATAGRAM, datagram_body[..]);
@@ -196,7 +205,7 @@ struct RouteAdvertisement {
 // Encodes an ADDRESS_REQUEST Capsule (RFC 9484 Section 4.2):
 // Format: Request ID (VarInt) || IP Version (u8) || Prefix Len (u8) || IP bytes (optional)
 fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> bool {
-    var body: u8[>..] = [];
+    var body: u8[..128] = [];
     guard quic_encode_varint(body, req.request_id) else { return false; }
     body.push(req.ip_version);
     body.push(req.prefix_len);
@@ -216,6 +225,18 @@ fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, boo
     req.prefix_len = payload[(off + 1) as i64];
     let ip_bytes = payload[((off + 2) as i64)..];
     guard ip_bytes.len <= req.requested_ip.cap else { return req, false; }
+
+    // RFC 9484: Validate IP version and bounds
+    if req.ip_version == 4 {
+        guard req.prefix_len <= 32 && (ip_bytes.len == 0 || ip_bytes.len == 4) else { return req, false; }
+    } else if req.ip_version == 6 {
+        guard req.prefix_len <= 128 && (ip_bytes.len == 0 || ip_bytes.len == 16) else { return req, false; }
+    } else if req.ip_version == 0 {
+        guard ip_bytes.len == 0 else { return req, false; }
+    } else {
+        return req, false;
+    }
+
     req.requested_ip.append(ip_bytes);
     return req, true;
 }
@@ -223,7 +244,7 @@ fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, boo
 // Encodes an ADDRESS_ASSIGN Capsule (RFC 9484 Section 4.1):
 // Format: Request ID (VarInt) || IP Version (u8) || Prefix Len (u8) || Assigned IP (4 or 16 bytes)
 fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> bool {
-    var body: u8[>..] = [];
+    var body: u8[..128] = [];
     guard quic_encode_varint(body, assign.request_id) else { return false; }
     body.push(assign.ip_version);
     body.push(assign.prefix_len);
@@ -243,13 +264,23 @@ fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool 
     assign.prefix_len = payload[(off + 1) as i64];
     let ip_bytes = payload[((off + 2) as i64)..];
     guard ip_bytes.len <= assign.assigned_ip.cap else { return assign, false; }
+
+    // RFC 9484 §4.1: Assigned IP address must match version size
+    if assign.ip_version == 4 {
+        guard assign.prefix_len <= 32 && ip_bytes.len == 4 else { return assign, false; }
+    } else if assign.ip_version == 6 {
+        guard assign.prefix_len <= 128 && ip_bytes.len == 16 else { return assign, false; }
+    } else {
+        return assign, false;
+    }
+
     assign.assigned_ip.append(ip_bytes);
     return assign, true;
 }
 
 // Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.3)
 fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisement&) -> bool {
-    var body: u8[>..] = [];
+    var body: u8[..128] = [];
     body.push(route.ip_version);
     body.push(route.prefix_len);
     body.append(route.ip_prefix[..]);
@@ -264,6 +295,16 @@ fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisemen
     route.prefix_len = payload[1];
     let p_bytes = payload[2..];
     guard p_bytes.len <= route.ip_prefix.cap else { return route, false; }
+
+    // RFC 9484 §4.3: Validate prefix length and version
+    if route.ip_version == 4 {
+        guard route.prefix_len <= 32 && p_bytes.len == 4 else { return route, false; }
+    } else if route.ip_version == 6 {
+        guard route.prefix_len <= 128 && p_bytes.len == 16 else { return route, false; }
+    } else {
+        return route, false;
+    }
+
     route.ip_prefix.append(p_bytes);
     return route, true;
 }
@@ -376,7 +417,7 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
 
     var ok = false;
     if tunnel.config.use_quic_datagrams {
-        var dgram_body: u8[>..] = [];
+        var dgram_body: u8[..2048] = [];
         guard encode_http_datagram(dgram_body, tunnel.quarter_stream_id, 0, packet) else { return false; }
         ok = encode_quic_datagram_frame(out_wire, dgram_body[..], true);
     } else {

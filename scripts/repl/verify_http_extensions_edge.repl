@@ -1,0 +1,93 @@
+# scripts/repl/verify_http_extensions_edge.repl
+# HTTP Extensions: Resumable Upload (draft-14) & Early Hints (RFC 8288 / RFC 8297)
+# tested flush at the 64 KB Wasm page boundary.
+
+# 1. Valid Link Header at Page Edge
+# Injects `<https://example.com/style.css>` (31 bytes)
+:pkt_edge 3C68747470733A2F2F6578616D706C652E636F6D2F7374796C652E6373733E
+
+:assert EDGE_ADDR == 65505
+:assert EDGE_LEN == 31
+
+# Memory safety: reading 1 byte past link header must trap
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation Link header wire validator
+fn validate_link_header_wire(addr: i32, len: i32) -> i32 {
+    if len < 2 { return -1; }
+    if load_u8(addr) != 60 { return -2; } // must start with '<'
+
+    var i: i32 = 1;
+    while i < len && load_u8(addr + i) != 62 { // find '>'
+        i += 1;
+    }
+    if i >= len { return -1; } // incomplete URI
+    let uri_len = i - 1;
+    if uri_len <= 0 { return -3; } // empty '<>' rejected
+
+    i += 1; // skip '>'
+    // Skip spaces
+    while i < len && (load_u8(addr + i) == 32 || load_u8(addr + i) == 9) { i += 1; }
+    if i >= len { return uri_len; } // valid link without params
+
+    // If params present, must begin with ';'
+    if load_u8(addr + i) != 59 { return -4; } // missing ';'
+    return uri_len;
+}
+
+# Streaming split check across all prefix fragments at page edge
+# Prefixes 1..30 return -1 without trap; full 31 bytes returns 29 (URI len)
+:split_check validate_link_header_wire EDGE_ADDR EDGE_LEN -1 29
+
+# Wire mutation fuzzing: 256 random bit flips and boundary mutations at page edge
+:mutate validate_link_header_wire EDGE_ADDR EDGE_LEN 256
+
+# 2. Link Header Syntax Invariants
+# Empty URI `<>` must be rejected (-3)
+:pkt 2048 3C3E
+:assert validate_link_header_wire(2048, 2) == -3
+
+# Characters between `>` and `;` must be rejected (-4)
+# `<foo>bar; rel=preload`
+:pkt 2060 3C666F6F3E6261723B2072656C3D7072656C6F6164
+:assert validate_link_header_wire(2060, 20) == -4
+
+# 3. Resumable Upload Structured Field Boolean Wire Validator (RFC 8941)
+fn validate_upload_boolean_wire(addr: i32, len: i32) -> i32 {
+    if len < 2 { return -1; } // incomplete
+    if load_u8(addr) != 63 { return -2; } // must start with '?'
+    let val_b = load_u8(addr + 1);
+    if val_b != 48 && val_b != 49 { return -2; } // must be '0' or '1'
+
+    if len == 2 {
+        return if val_b == 49 { 1 } else { 0 };
+    }
+
+    // Byte 2 can only be whitespace, ';', or ','
+    let next_b = load_u8(addr + 2);
+    if next_b != 59 && next_b != 44 && next_b != 32 && next_b != 9 {
+        return -2; // invalid trailing characters (e.g. "?1true")
+    }
+
+    return if val_b == 49 { 1 } else { 0 };
+}
+
+# Valid "?1"
+:pkt 2100 3F31
+:assert validate_upload_boolean_wire(2100, 2) == 1
+
+# Valid "?0"
+:pkt 2110 3F30
+:assert validate_upload_boolean_wire(2110, 2) == 0
+
+# Valid "?1; param=value"
+:pkt 2120 3F313B20666F6F
+:assert validate_upload_boolean_wire(2120, 7) == 1
+
+# Invalid "?1garbage"
+:pkt 2130 3F31616263
+:assert validate_upload_boolean_wire(2130, 5) == -2
+
+# Invalid "?2"
+:pkt 2140 3F32
+:assert validate_upload_boolean_wire(2140, 2) == -2

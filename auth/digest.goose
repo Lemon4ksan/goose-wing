@@ -66,7 +66,9 @@ fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool {
 }
 
 fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
-    let rem = raw[idx..].trim_start_bytes(" \t=");
+    let rem_pre = raw[idx..].trim_start_bytes(" \t");
+    guard rem_pre.len > 0 && rem_pre[0] == '=' else { return false; }
+    let rem = rem_pre[1..].trim_start_bytes(" \t");
     guard rem.len > 0 else { return false; }
     let new_idx = raw.len - rem.len;
 
@@ -92,16 +94,16 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
 }
 
 fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
-    if eq_ascii_fold(key, "realm") { chal.realm.clear(); chal.realm.append(val); return true; }
-    if eq_ascii_fold(key, "nonce") { chal.nonce.clear(); chal.nonce.append(val); return true; }
-    if eq_ascii_fold(key, "algorithm") { chal.algorithm.clear(); chal.algorithm.append(val); return true; }
-    if eq_ascii_fold(key, "qop") { chal.qop.clear(); chal.qop.append(val); return true; }
+    if eq_ascii_fold(key, "realm") { guard val.len <= chal.realm.cap else { return false; }; chal.realm.clear(); chal.realm.append(val); return true; }
+    if eq_ascii_fold(key, "nonce") { guard val.len <= chal.nonce.cap else { return false; }; chal.nonce.clear(); chal.nonce.append(val); return true; }
+    if eq_ascii_fold(key, "algorithm") { guard val.len <= chal.algorithm.cap else { return false; }; chal.algorithm.clear(); chal.algorithm.append(val); return true; }
+    if eq_ascii_fold(key, "qop") { guard val.len <= chal.qop.cap else { return false; }; chal.qop.clear(); chal.qop.append(val); return true; }
     return false;
 }
 
 fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
-    if eq_ascii_fold(key, "opaque") { chal.opaque.clear(); chal.opaque.append(val); return; }
-    if eq_ascii_fold(key, "domain") { chal.domain.clear(); chal.domain.append(val); return; }
+    if eq_ascii_fold(key, "opaque") { guard val.len <= chal.opaque.cap else { return; }; chal.opaque.clear(); chal.opaque.append(val); return; }
+    if eq_ascii_fold(key, "domain") { guard val.len <= chal.domain.cap else { return; }; chal.domain.clear(); chal.domain.append(val); return; }
     if eq_ascii_fold(key, "stale") { chal.stale = eq_ascii_fold(val, "true"); return; }
     if eq_ascii_fold(key, "userhash") { chal.userhash = eq_ascii_fold(val, "true"); return; }
 }
@@ -243,6 +245,21 @@ fn calculate_digest_response(
     digest_hash_hex(algo, a3[..], out_response_hex);
 }
 
+fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
+    for b in val {
+        if b == '\r' || b == '\n' || b == 0 {
+            return false;
+        }
+        if b == '"' || b == '\\' {
+            guard out.len < out.cap else { return false; }
+            out.push('\\');
+        }
+        guard out.len < out.cap else { return false; }
+        out.push(b);
+    }
+    return true;
+}
+
 fn serialize_digest_auth<B>(
     effective_user: const u8[:],
     realm: const u8[:],
@@ -257,21 +274,20 @@ fn serialize_digest_auth<B>(
     userhash: bool,
     out_header: B&,
 ) -> bool {
-    let base_len = 17 + effective_user.len + 10 + realm.len + 10 + nonce.len + 8 + uri.len + 13 + algo.len + 13 + response_hex.len + 1;
-    let qop_len = if active_qop.len > 0 { 6 + active_qop.len + 5 + nc_str.len + 10 + cnonce.len + 1 } else { 0 };
-    let op_len = if opaque.len > 0 { 10 + opaque.len + 1 } else { 0 };
-    let uh_len = if userhash { 16 } else { 0 };
-    guard base_len + qop_len + op_len + uh_len <= out_header.cap else { return false; }
-
     out_header.clear();
+    guard out_header.len + 17 <= out_header.cap else { return false; }
     out_header.append("Digest username=\"");
-    out_header.append(effective_user);
+    guard append_escaped_digest_param(out_header, effective_user) else { return false; }
+    guard out_header.len + 10 <= out_header.cap else { return false; }
     out_header.append("\", realm=\"");
-    out_header.append(realm);
+    guard append_escaped_digest_param(out_header, realm) else { return false; }
+    guard out_header.len + 10 <= out_header.cap else { return false; }
     out_header.append("\", nonce=\"");
-    out_header.append(nonce);
+    guard append_escaped_digest_param(out_header, nonce) else { return false; }
+    guard out_header.len + 8 <= out_header.cap else { return false; }
     out_header.append("\", uri=\"");
-    out_header.append(uri);
+    guard append_escaped_digest_param(out_header, uri) else { return false; }
+    guard out_header.len + 13 + algo.len + 13 + response_hex.len + 1 <= out_header.cap else { return false; }
     out_header.append("\", algorithm=");
     out_header.append(algo);
     out_header.append(", response=\"");
@@ -279,22 +295,27 @@ fn serialize_digest_auth<B>(
     out_header.append("\"");
 
     if active_qop.len > 0 {
+        guard out_header.len + 6 + active_qop.len + 5 + nc_str.len + 10 <= out_header.cap else { return false; }
         out_header.append(", qop=");
         out_header.append(active_qop);
         out_header.append(", nc=");
         out_header.append(nc_str);
         out_header.append(", cnonce=\"");
-        out_header.append(cnonce);
+        guard append_escaped_digest_param(out_header, cnonce) else { return false; }
+        guard out_header.len + 1 <= out_header.cap else { return false; }
         out_header.append("\"");
     }
 
     if opaque.len > 0 {
+        guard out_header.len + 10 <= out_header.cap else { return false; }
         out_header.append(", opaque=\"");
-        out_header.append(opaque);
+        guard append_escaped_digest_param(out_header, opaque) else { return false; }
+        guard out_header.len + 1 <= out_header.cap else { return false; }
         out_header.append("\"");
     }
 
     if userhash {
+        guard out_header.len + 16 <= out_header.cap else { return false; }
         out_header.append(", userhash=true");
     }
 

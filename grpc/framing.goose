@@ -33,12 +33,12 @@ fn decode_grpc_lpm_slice(wire: const u8[:], offset: u32) -> const u8[:], bool, u
     guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return "", false, 0, false; }
     let is_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val = core::read_be_u32(wire, off + 1);
-    guard wire.len - off - GRPC_LPM_HEADER_LEN >= len_val else { return "", false, 0, false; }
+    let len_val_i64 = (core::read_be_u32(wire, off + 1)) as i64;
+    guard (wire.len - off - GRPC_LPM_HEADER_LEN) >= len_val_i64 else { return "", false, 0, false; }
 
     let p_start = off + GRPC_LPM_HEADER_LEN;
-    let p_len = len_val as i64;
-    return wire[p_start..p_start + p_len], is_compressed, (GRPC_LPM_HEADER_LEN + len_val), true;
+    let total_consumed = (GRPC_LPM_HEADER_LEN + len_val_i64) as u32;
+    return wire[p_start..p_start + len_val_i64], is_compressed, total_consumed, true;
 }
 
 // Decodes a single LPM frame starting at offset in wire bytes.
@@ -81,12 +81,13 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
     guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val = core::read_be_u32(p.buf[..], 1);
-    let total_len = (GRPC_LPM_HEADER_LEN + len_val) as i64;
+    let len_val_i64 = (core::read_be_u32(p.buf[..], 1)) as i64;
+    let total_len = GRPC_LPM_HEADER_LEN + len_val_i64;
     guard p.buf.len >= total_len else { return false; }
 
     out_payload.clear();
-    out_payload.append(p.buf[(GRPC_LPM_HEADER_LEN as i64)..total_len]);
+    let hdr_len_i64: i64 = GRPC_LPM_HEADER_LEN;
+    out_payload.append(p.buf[hdr_len_i64..total_len]);
 
     let remaining_bytes = p.buf.len - total_len;
     if remaining_bytes == 0 {
@@ -144,16 +145,16 @@ fn decode_grpc_web_frame<B>(
     out_is_trailers = (flag & GRPC_WEB_FLAG_TRAILERS) != 0;
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val = core::read_be_u32(wire, off + 1);
-    let total_len = 5 + len_val;
-    guard (wire.len - off) >= (total_len as i64) else { return false, 0; }
+    let len_val_i64 = (core::read_be_u32(wire, off + 1)) as i64;
+    let total_len = 5 + len_val_i64;
+    guard (wire.len - off) >= total_len else { return false, 0; }
 
     out_payload.clear();
     let start_idx = off + 5;
-    let end_idx = off + (total_len as i64);
+    let end_idx = off + total_len;
     out_payload.append(wire[start_idx..end_idx]);
 
-    return true, total_len;
+    return true, total_len as u32;
 }
 
 // Parses a single gRPC-Web trailer header line ("name: value").

@@ -34,7 +34,7 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
     let p_name_raw, p_val_raw, has_eq = param_str.split_once_byte('=');
     if !has_eq {
         let p_name = param_str.trim_lws();
-        if p_name == "crossorigin" {
+        if eq_ascii_fold(p_name, "crossorigin") {
             link.crossorigin = true;
         }
         return;
@@ -43,26 +43,31 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
     let p_name = p_name_raw.trim_lws();
     var p_val = p_val_raw.trim_lws().trim_byte('"');
 
-    if p_name == "rel" {
+    if eq_ascii_fold(p_name, "rel") {
         guard p_val.len <= link.rel.cap else { return; }
         link.rel.clear();
         link.rel.append(p_val);
-    } else if p_name == "as" {
+    } else if eq_ascii_fold(p_name, "as") {
         guard p_val.len <= link.as_type.cap else { return; }
         link.as_type.clear();
         link.as_type.append(p_val);
-    } else if p_name == "crossorigin" {
+    } else if eq_ascii_fold(p_name, "crossorigin") {
         link.crossorigin = true;
     }
 }
 
 fn find_link_entry_end(s: const u8[:]) -> i64 {
     var in_quotes = false;
+    var in_angle = false;
     for i in s.len {
         let b = s[i];
-        if b == '"' {
+        if b == '"' && !in_angle {
             in_quotes = !in_quotes;
-        } else if !in_quotes && b == ',' {
+        } else if b == '<' && !in_quotes {
+            in_angle = true;
+        } else if b == '>' && !in_quotes {
+            in_angle = false;
+        } else if !in_quotes && !in_angle && b == ',' {
             return i;
         }
     }
@@ -75,11 +80,16 @@ fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
     guard rel_close >= 0 else { return false; }
     let close_idx = 1 + rel_close;
     let uri_slice = entry_str[1..close_idx];
-    guard uri_slice.len <= link.uri.cap else { return false; }
+    // Reject empty URI (<>) and enforce capacity
+    guard uri_slice.len > 0 && uri_slice.len <= link.uri.cap else { return false; }
     link.uri.append(uri_slice);
 
-    let params_part = entry_str[close_idx + 1..];
-    var p_tok = make_byte_tokenizer(params_part, ';');
+    let after_uri = entry_str[close_idx + 1..].trim_lws_start();
+    if after_uri.len > 0 {
+        guard after_uri[0] == ';' else { return false; }
+    }
+
+    var p_tok = make_byte_tokenizer(after_uri, ';');
     while true {
         let param_token, tok_ok = p_tok.token_next();
         guard tok_ok else { break; }

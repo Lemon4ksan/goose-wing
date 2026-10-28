@@ -160,7 +160,8 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
         if (b & 0xC0) == 0xC0 {
             guard current_off + 1 < raw.len else { return false; }
             let ptr_off = (((b & 0x3F) as i64) << 8) | (raw[current_off + 1] as i64);
-            guard ptr_off < raw.len else { return false; }
+            // RFC 1035 §4.1.4: pointers must point backwards and cannot point into the 12-byte header
+            guard ptr_off < current_off && ptr_off >= 12 else { return false; }
 
             if !advanced_original {
                 offset = current_off + 2;
@@ -200,9 +201,41 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
     return false;
 }
 
+// RFC 9460 §2.5.1 & RFC 3597 §4: TargetName in HTTPS/SVCB records MUST NOT use compression pointers (0xC0).
+fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i64, out: B&) -> bool {
+    var current_off = offset;
+    while current_off < max_offset {
+        let b = raw[current_off];
+        if b == 0 {
+            offset = current_off + 1;
+            return true;
+        }
+
+        // Pointers (0xC0) are strictly forbidden in TargetName
+        guard (b & 0xC0) == 0 && b <= 63 else { return false; }
+
+        let label_len = b as i64;
+        current_off += 1;
+        guard current_off + label_len <= max_offset else { return false; }
+
+        if out.len > 0 {
+            guard out.len + 1 + label_len <= 253 else { return false; }
+            out.push('.');
+        } else {
+            guard label_len <= 253 else { return false; }
+        }
+        for i in current_off..current_off + label_len {
+            guard out.len < 253 else { return false; }
+            out.push(raw[i]);
+        }
+        current_off += label_len;
+    }
+    return false;
+}
+
 // ---- 4. Query Builder ------------------------------------------------------
 
-fn serialize_dns_header(tx_id: u16, qd_count: u16, flags: u16, out: u8[>..]&) {
+fn serialize_dns_header<B>(tx_id: u16, qd_count: u16, flags: u16, out: B&) {
     out.push(((tx_id >> 8) & 0xFF) as u8);
     out.push((tx_id & 0xFF) as u8);
     out.push(((flags >> 8) & 0xFF) as u8);
@@ -214,7 +247,7 @@ fn serialize_dns_header(tx_id: u16, qd_count: u16, flags: u16, out: u8[>..]&) {
     out.push(0x00); out.push(0x00); // ARCOUNT = 0
 }
 
-fn serialize_dns_question(domain: const u8[:], qtype: u16, qclass: u16, out: u8[>..]&) -> bool {
+fn serialize_dns_question<B>(domain: const u8[:], qtype: u16, qclass: u16, out: B&) -> bool {
     guard dns_encode_name(domain, out) else { return false; }
     out.push(((qtype >> 8) & 0xFF) as u8);
     out.push((qtype & 0xFF) as u8);
@@ -224,7 +257,7 @@ fn serialize_dns_question(domain: const u8[:], qtype: u16, qclass: u16, out: u8[
 }
 
 // Builds a standard 12-byte header + question DNS query.
-fn build_dns_query(domain: const u8[:], qtype: u16, tx_id: u16, out: u8[>..]&) -> bool {
+fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool {
     serialize_dns_header(tx_id, 1, 0x0100, out);
     return serialize_dns_question(domain, qtype, 1, out);
 }
@@ -328,7 +361,7 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
 
     // Skip question section
     for q in out.question_count {
-        var qname: u8[>..] = [];
+        var qname: u8[..255] = [];
         guard dns_decode_name(raw, off, qname) else { return false; }
         guard off + 4 <= raw.len else { return false; }
         off += 4; // Skip QTYPE and QCLASS
@@ -336,7 +369,7 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
 
     // Parse answer section
     for a in out.answer_count {
-        var aname: u8[>..] = [];
+        var aname: u8[..255] = [];
         guard dns_decode_name(raw, off, aname) else { return false; }
         guard off + 10 <= raw.len else { return false; }
 
@@ -352,27 +385,28 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
         let rdata = raw[off..off + rdlength];
         off += rdlength;
 
-        if rtype == DNS_QTYPE_A && rdlength == 4 {
+        if rtype == DNS_QTYPE_A {
+            guard rdlength == 4 else { return false; }
             if out.a_records.len < out.a_records.cap {
                 let ip4 = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16) |
                           ((rdata[2] as u32) << 8) | rdata[3];
                 out.a_records.push(ip4);
             }
-        } else if rtype == DNS_QTYPE_AAAA && rdlength == 16 {
+        } else if rtype == DNS_QTYPE_AAAA {
+            guard rdlength == 16 else { return false; }
             if out.aaaa_records.len < out.aaaa_records.cap {
                 var ip6: u8[16] = [0; 16];
                 for i in 16 { ip6[i] = rdata[i]; }
                 out.aaaa_records.push(ip6);
             }
         } else if rtype == DNS_QTYPE_HTTPS || rtype == DNS_QTYPE_SVCB {
-            guard rdlength >= 3 else { continue; }
+            guard rdlength >= 3 else { return false; }
             if out.https_records.len < out.https_records.cap {
                 var rec = HttpsRecord { .. };
                 rec.priority = ((rdata[0] as u16) << 8) | rdata[1];
                 var target_off = rdata_start + 2;
-                guard dns_decode_name(raw, target_off, rec.target_name) else { return false; }
-
                 let rdata_end = rdata_start + rdlength;
+                guard dns_decode_uncompressed_name(raw, target_off, rdata_end, rec.target_name) else { return false; }
                 guard target_off <= rdata_end else { return false; }
                 if target_off < rdata_end {
                     let svc_params = raw[target_off..rdata_end];
@@ -395,7 +429,7 @@ fn build_doh_post_body<B>(domain: const u8[:], qtype: u16, tx_id: u16, out_body:
 
 // Formats base64url query parameter for DoH GET request (RFC 8484 Section 4.1).
 fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16, out_url: B&) -> bool {
-    var raw_query: u8[>..] = [];
+    var raw_query: u8[..512] = [];
     guard build_dns_query(domain, qtype, 0, raw_query) else { return false; }
 
     out_url.append(server_url);

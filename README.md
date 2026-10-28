@@ -149,10 +149,10 @@ Comparison against [`aoni/fast`](https://github.com/lemon4ksan/aoni), a zero-all
 
 ## Tests
 
-The test suite validates RFC compliance, Chromium edge cases, cryptographic vectors, and CVE defenses across 95 test suites:
+The test suite validates RFC compliance, Chromium edge cases, cryptographic vectors, and CVE defenses:
 
 ```powershell
-# Typecheck the entire library and all 95 test suites
+# Typecheck the entire library and all test suites
 powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
 
 # Run all test suites in parallel with native execution
@@ -165,8 +165,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1
 ============================================================
 [1/3] Typechecking core and wing libraries...
   OK: core, wing & examples typechecked cleanly in 1168ms.
-[2/2] Running typecheck on 95 suites...
-  OK: All 95 suites typechecked cleanly in 104.70s.
+[2/2] Running typecheck on test suites...
+  OK: All test suites typechecked cleanly in 104.70s.
 ============================================================
  Typecheck Complete: 100% Valid, 0 Errors, 0 Warnings
 ============================================================

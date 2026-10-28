@@ -40,7 +40,7 @@ goose-wing/
 ├── security/         # CryptoJar, Fetch Metadata CSRF, CORS, GCRA rate limiter, and Privacy Pass
 ├── server/           # Radix router, Tako v2 pool, HTTP/1.1 pipeline, and H2 multiplexer
 ├── shim/             # C11 shims for Windows RIO, Linux io_uring, kqueue, AF_XDP, and SIMD
-├── tests/            # 84 verification test suites
+├── tests/            # Protocol verification test suites
 ├── tls/              # TLS 1.3 record and handshake, X.509, HPKE, ECH, and ML-KEM-768
 └── tools/            # Python parallel test runner, SPDX check, and Docker protocol harnesses
 ```
@@ -49,7 +49,7 @@ goose-wing/
 
 ### 1. Parallel typechecking
 
-Verify that `core.goose`, `wing.goose`, examples, and all 84 test suites pass typechecking without compiling native binaries:
+Verify that `core.goose`, `wing.goose`, examples, and all test suites pass typechecking without compiling native binaries:
 
 ```bash
 python tools/test_runner.py --check-only
@@ -122,7 +122,7 @@ Register new C source files across Windows, Linux, and macOS in [`wing.build`](w
 
 ## Pull request checklist
 
-- [ ] All 84 test suites pass `python tools/test_runner.py --check-only`.
+- [ ] All test suites pass `python tools/test_runner.py --check-only`.
 - [ ] All modified `.goose` files are formatted with `goose format`.
 - [ ] No heap allocations (`[>..]`) are introduced on wire parsing or serialization paths.
 - [ ] C shims compile without warnings under `-Wall -Wextra -Werror`.

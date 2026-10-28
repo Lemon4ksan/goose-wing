@@ -1,0 +1,139 @@
+# scripts/repl/verify_masque_dns_edge.repl
+# MASQUE HTTP Capsule (RFC 9297/9484) and DNS Pointer Security (RFC 1035/9460)
+# tested flush at the 64 KB Wasm page boundary.
+
+# 1. Valid MASQUE DATAGRAM Capsule at Page Edge
+# Capsule: type 0 (DATAGRAM, VarInt 0x00), len 5 (VarInt 0x05), payload "hello" (0x68656C6C6F)
+# Total = 7 bytes
+:pkt_edge 000568656C6C6F
+
+:assert EDGE_ADDR == 65529
+:assert EDGE_LEN == 7
+
+# Memory safety: reading 1 byte past capsule payload must trap
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation MASQUE Capsule wire validator
+fn validate_masque_capsule_wire(addr: i32, len: i32) -> i32 {
+    if len <= 0 { return -1; }
+    var idx: i32 = 0;
+
+    // Decode Capsule Type (QUIC VarInt)
+    if idx >= len { return -1; }
+    let t0 = load_u8(addr + idx);
+    let tag_t = (t0 >> 6) & 3;
+    var ctype_len: i32 = 1;
+    if tag_t == 1 { ctype_len = 2; }
+    else if tag_t == 2 { ctype_len = 4; }
+    else if tag_t == 3 { ctype_len = 8; }
+    if idx + ctype_len > len { return -1; }
+    idx += ctype_len;
+
+    // Decode Capsule Length (QUIC VarInt)
+    if idx >= len { return -1; }
+    let l0 = load_u8(addr + idx);
+    let tag_l = (l0 >> 6) & 3;
+    var clen: i64 = (l0 & 63) as i64;
+    var len_bytes: i32 = 1;
+    if tag_l == 1 {
+        len_bytes = 2;
+        if idx + len_bytes > len { return -1; }
+        clen = (clen << 8) | (load_u8(addr + idx + 1) as i64);
+    } else if tag_l == 2 {
+        len_bytes = 4;
+        if idx + len_bytes > len { return -1; }
+        clen = (clen << 24) | ((load_u8(addr + idx + 1) as i64) << 16) | ((load_u8(addr + idx + 2) as i64) << 8) | (load_u8(addr + idx + 3) as i64);
+    } else if tag_l == 3 {
+        len_bytes = 8;
+        if idx + len_bytes > len { return -1; }
+        var j: i32 = 1;
+        while j < 8 {
+            clen = (clen << 8) | (load_u8(addr + idx + j) as i64);
+            j += 1;
+        }
+    }
+    idx += len_bytes;
+
+    let total: i64 = (idx as i64) + clen;
+    if (len as i64) < total {
+        return -1; // incomplete payload
+    }
+    return clen as i32;
+}
+
+# Streaming split check across all prefix fragments at page edge
+# Prefixes 1..6 return -1 (incomplete) without trap; full 7 bytes returns 5
+:split_check validate_masque_capsule_wire EDGE_ADDR EDGE_LEN -1 5
+
+# Wire mutation fuzzing: 256 random bit flips and boundary mutations at page edge
+:mutate validate_masque_capsule_wire EDGE_ADDR EDGE_LEN 256
+
+# 2. VarInt Length Overflow Invariant
+# Capsule with 64-bit length 0xFFFFFFFFFFFFFF00 must not wrap when added to offset
+:pkt 2048 00C0000000FFFFFFFF
+:assert validate_masque_capsule_wire(2048, 8) == -1
+
+# 3. DNS Name Compression Pointer Rules (RFC 1035 Section 4.1.4)
+fn validate_dns_pointer_wire(addr: i32, len: i32, start_off: i32) -> i32 {
+    var cur = start_off;
+    var jumps: i32 = 0;
+    while cur < len {
+        let b = load_u8(addr + cur);
+        if b == 0 { return 0; } // root label reached
+        if (b & 192) == 192 {
+            if cur + 1 >= len { return -1; }
+            let ptr_off = (((b & 63) as i32) << 8) | (load_u8(addr + cur + 1) as i32);
+            // RFC 1035 §4.1.4: Pointer must point backwards and not into 12-byte header
+            if ptr_off >= cur || ptr_off < 12 { return -2; }
+            cur = ptr_off;
+            jumps += 1;
+            if jumps > 16 { return -3; } // pointer loop detected
+            continue;
+        }
+        if (b & 192) != 0 || b > 63 { return -4; }
+        let l_len = b as i32;
+        cur += 1 + l_len;
+        if cur > len { return -1; }
+    }
+    return -1;
+}
+
+# DNS Message with valid backward pointer
+# Header: 12B, Question "example.com" at off 12 (13B), pointer at off 29 -> 12 (0xC00C)
+:pkt 3000 123481800001000100000000076578616d706c6503636f6d0000010001c00c
+:assert validate_dns_pointer_wire(3000, 31, 29) == 0
+
+# Pointer pointing forward (current = 29, target = 35) -> -2
+:pkt 3040 123481800001000100000000076578616d706c6503636f6d0000010001c023
+:assert validate_dns_pointer_wire(3040, 31, 29) == -2
+
+# Pointer pointing into header (current = 29, target = 4 < 12) -> -2
+:pkt 3080 123481800001000100000000076578616d706c6503636f6d0000010001c004
+:assert validate_dns_pointer_wire(3080, 31, 29) == -2
+
+# Pointer self-loop (offset 21 points to 21: ptr_off >= cur) -> -2
+:pkt 3120 123481800001000100000000076578616d706c6500c015
+:assert validate_dns_pointer_wire(3120, 23, 21) == -2
+
+# 4. HTTPS/SVCB TargetName Compression Ban (RFC 9460 Section 2.5.1)
+fn validate_svcb_target_wire(addr: i32, len: i32, start_off: i32) -> i32 {
+    var cur = start_off;
+    while cur < len {
+        let b = load_u8(addr + cur);
+        if b == 0 { return 1; }
+        // Compression pointers strictly forbidden in TargetName
+        if (b & 192) != 0 { return -2; }
+        if b > 63 { return -3; }
+        cur += 1 + (b as i32);
+        if cur > len { return -1; }
+    }
+    return -1;
+}
+
+# Valid uncompressed target name: "\x03foo\x03bar\x00"
+:pkt 3200 03666f6f0362617200
+:assert validate_svcb_target_wire(3200, 9, 0) == 1
+
+# Invalid: TargetName using compression pointer 0xC00C -> -2
+:pkt 3220 c00c
+:assert validate_svcb_target_wire(3220, 2, 0) == -2

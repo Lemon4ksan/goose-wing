@@ -1,0 +1,85 @@
+# scripts/repl/verify_auth_digest_edge.repl
+# HTTP Digest Authentication (RFC 7616) wire parsing and delimiter invariants
+# tested flush at the 64 KB Wasm page boundary.
+
+# 1. Valid Digest Challenge Header at Page Edge
+# Injects `realm="test@example.com", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093"` (74 bytes)
+:pkt_edge 7265616C6D3D2274657374406578616D706C652E636F6D222C206E6F6E63653D226463643938623731303264643266306538623131643066363030626662306330393322
+
+:assert EDGE_ADDR == 65468
+:assert EDGE_LEN == 68
+
+# Memory safety: reading 1 byte past challenge must trap
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation Digest challenge wire validator
+fn validate_digest_challenge_wire(addr: i32, len: i32) -> i32 {
+    if len <= 0 { return -1; }
+    var i: i32 = 0;
+    var found_realm = 0;
+    var found_nonce = 0;
+
+    while i < len {
+        // Skip spaces and commas
+        while i < len && (load_u8(addr + i) == 32 || load_u8(addr + i) == 9 || load_u8(addr + i) == 44) {
+            i += 1;
+        }
+        if i >= len { break; }
+
+        let k_start = i;
+        while i < len && load_u8(addr + i) != 61 && load_u8(addr + i) != 32 && load_u8(addr + i) != 9 {
+            i += 1;
+        }
+        let k_len = i - k_start;
+        if k_len == 0 { return -2; }
+
+        // Must have '=' separator
+        while i < len && (load_u8(addr + i) == 32 || load_u8(addr + i) == 9) { i += 1; }
+        if i >= len { return -1; } // incomplete before '='
+        if load_u8(addr + i) != 61 { return -2; } // missing '='
+        i += 1; // skip '='
+
+        while i < len && (load_u8(addr + i) == 32 || load_u8(addr + i) == 9) { i += 1; }
+        if i >= len { return -1; } // incomplete value
+
+        // Value parsing
+        if load_u8(addr + i) == 34 {
+            // Quoted string
+            i += 1;
+            var closed = 0;
+            while i < len {
+                let b = load_u8(addr + i);
+                if b == 34 { closed = 1; i += 1; break; }
+                if b == 92 && i + 1 < len { i += 1; }
+                i += 1;
+            }
+            if closed == 0 { return -1; } // unclosed quote / incomplete
+        } else {
+            // Token
+            while i < len && load_u8(addr + i) != 32 && load_u8(addr + i) != 9 && load_u8(addr + i) != 44 {
+                i += 1;
+            }
+        }
+
+        if k_len == 5 {
+            // Check "realm"
+            if load_u8(addr + k_start) == 114 && load_u8(addr + k_start + 1) == 101 { found_realm = 1; }
+            // Check "nonce"
+            if load_u8(addr + k_start) == 110 && load_u8(addr + k_start + 1) == 111 { found_nonce = 1; }
+        }
+    }
+
+    if found_realm == 1 && found_nonce == 1 { return 1; }
+    return -1; // Incomplete challenge
+}
+
+# Streaming split check across prefix fragments at page edge
+:split_check validate_digest_challenge_wire EDGE_ADDR EDGE_LEN -1 1
+
+# Wire mutation fuzzing: 256 random mutations at page edge without memory traps
+:mutate validate_digest_challenge_wire EDGE_ADDR EDGE_LEN 256
+
+# 2. RFC 7616 Missing '=' Invariant Assertion
+# `realm "test"` without '=' must be rejected with -2
+:pkt 2048 "realm \"test\", nonce=\"abc\""
+:assert validate_digest_challenge_wire(2048, 26) == -2

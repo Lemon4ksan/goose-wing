@@ -40,16 +40,29 @@ fn init_resumable_upload(total_size: i64, chunk_size: i64 = 65536) -> ResumableU
 
 // ---- 3. Header Formatting and Parsing Helpers -------------------------------
 
-// Parses an integer from header value
-fn parse_upload_int(val: const u8[:]) -> i64 {
+// Parses an integer from header value (returns 0 and false if invalid or negative)
+fn parse_upload_int(val: const u8[:]) -> i64, bool {
     let num, ok = val.trim_lws().parse_i64_dec();
-    return if ok { num } else { 0 };
+    guard ok && num >= 0 else { return 0, false; }
+    return num, true;
 }
 
 // Parses RFC 8941 Structured Field boolean: ?1 = true, ?0 = false
-fn parse_upload_boolean(val: const u8[:]) -> bool {
-    let trimmed = val.trim_lws_start();
-    return trimmed.len >= 2 && trimmed[0] == '?' && trimmed[1] == '1';
+fn parse_upload_boolean(val: const u8[:]) -> bool, bool {
+    let trimmed = val.trim_lws();
+    if trimmed == "?1" {
+        return true, true;
+    }
+    if trimmed == "?0" {
+        return false, true;
+    }
+    if starts_with(trimmed, "?1;") || starts_with(trimmed, "?1,") {
+        return true, true;
+    }
+    if starts_with(trimmed, "?0;") || starts_with(trimmed, "?0,") {
+        return false, true;
+    }
+    return false, false;
 }
 
 // ---- 4. Request Formatting (draft-ietf-httpbis-resumable-upload-14) ---------
@@ -85,13 +98,16 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
         let name = res.headers[idx].name[..];
         let val = res.headers[idx].value[..];
         if eq_ascii_fold(name, "location") {
+            guard val.len <= state.upload_url.cap else { return false; }
             state.upload_url.clear();
             state.upload_url.append(val);
             has_loc = true;
         } else if eq_ascii_fold(name, HEADER_UPLOAD_OFFSET) {
-            state.offset = parse_upload_int(val);
+            let off_val, off_ok = parse_upload_int(val);
+            if off_ok { state.offset = off_val; }
         } else if eq_ascii_fold(name, HEADER_UPLOAD_COMPLETE) {
-            state.complete = parse_upload_boolean(val);
+            let comp_val, comp_ok = parse_upload_boolean(val);
+            if comp_ok { state.complete = comp_val; }
         }
     }
     return has_loc;
@@ -132,9 +148,11 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
         let name = res.headers[idx].name[..];
         let val = res.headers[idx].value[..];
         if eq_ascii_fold(name, HEADER_UPLOAD_OFFSET) {
-            state.offset = parse_upload_int(val);
+            let off_val, off_ok = parse_upload_int(val);
+            if off_ok { state.offset = off_val; }
         } else if eq_ascii_fold(name, HEADER_UPLOAD_COMPLETE) {
-            state.complete = parse_upload_boolean(val);
+            let comp_val, comp_ok = parse_upload_boolean(val);
+            if comp_ok { state.complete = comp_val; }
         }
     }
     return true;
@@ -157,10 +175,14 @@ fn handle_offset_query_response(res: const Response&, state: ResumableUploadStat
         let name = res.headers[idx].name[..];
         let val = res.headers[idx].value[..];
         if eq_ascii_fold(name, HEADER_UPLOAD_OFFSET) {
-            state.offset = parse_upload_int(val);
-            found_offset = true;
+            let off_val, off_ok = parse_upload_int(val);
+            if off_ok {
+                state.offset = off_val;
+                found_offset = true;
+            }
         } else if eq_ascii_fold(name, HEADER_UPLOAD_COMPLETE) {
-            state.complete = parse_upload_boolean(val);
+            let comp_val, comp_ok = parse_upload_boolean(val);
+            if comp_ok { state.complete = comp_val; }
         }
     }
     return found_offset;

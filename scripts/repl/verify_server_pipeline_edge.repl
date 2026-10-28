@@ -1,0 +1,87 @@
+# scripts/repl/verify_server_pipeline_edge.repl
+# HTTP/1.1 Server Pipelining (RFC 9112) & Wire Boundary Invariants
+# tested flush at the 64 KB Wasm page boundary.
+
+# 1. Valid HTTP/1.1 GET Request at Page Edge
+# `GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n` (44 bytes)
+:pkt_edge 474554202F696E6465782E68746D6C20485454502F312E310D0A486F73743A206578616D706C652E636F6D0D0A0D0A
+
+:assert EDGE_ADDR == 65489
+:assert EDGE_LEN == 47
+
+# Memory safety: reading 1 byte past headers must trap
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation HTTP/1.1 request wire validator
+fn validate_http1_request_wire(addr: i32, len: i32) -> i32 {
+    if len < 4 { return -1; }
+    // RFC 9112 §3.1: No whitespace allowed before method name
+    let b0 = load_u8(addr);
+    if b0 == 32 || b0 == 9 { return -2; }
+
+    // Scan for CRLFCRLF (\r\n\r\n: 13 10 13 10)
+    var i: i32 = 0;
+    var hdr_end: i32 = -1;
+    while i + 3 < len {
+        if load_u8(addr + i) == 13 && load_u8(addr + i + 1) == 10 &&
+           load_u8(addr + i + 2) == 13 && load_u8(addr + i + 3) == 10 {
+            hdr_end = i + 4;
+            break;
+        }
+        i += 1;
+    }
+    if hdr_end < 0 { return -1; } // incomplete headers
+
+    // First line must be Method SP Request-Target SP HTTP-Version CRLF
+    var sp1: i32 = -1;
+    var j: i32 = 0;
+    while j < hdr_end {
+        if load_u8(addr + j) == 32 {
+            sp1 = j;
+            break;
+        }
+        j += 1;
+    }
+    if sp1 <= 0 { return -3; }
+
+    var sp2: i32 = -1;
+    j = sp1 + 1;
+    while j < hdr_end {
+        if load_u8(addr + j) == 32 {
+            sp2 = j;
+            break;
+        }
+        j += 1;
+    }
+    if sp2 <= sp1 + 1 { return -3; }
+
+    // Target (sp1 + 1 .. sp2) must consist only of visible ASCII (0x21..0x7E)
+    var k = sp1 + 1;
+    while k < sp2 {
+        let tb = load_u8(addr + k);
+        if tb < 33 || tb > 126 { return -4; } // invalid target byte
+        k += 1;
+    }
+
+    return hdr_end;
+}
+
+# Streaming split check across all prefix fragments at page edge
+# Prefixes 1..46 return -1 without trap; full 47 bytes returns 47
+:split_check validate_http1_request_wire EDGE_ADDR EDGE_LEN -1 47
+
+# Wire mutation fuzzing: 256 random bit flips and boundary mutations at page edge
+:mutate validate_http1_request_wire EDGE_ADDR EDGE_LEN 256
+
+# 2. RFC 9112 Section 3.1: Reject whitespace before method name (-2)
+:pkt 2048 20474554202F20485454502F312E310D0A0D0A
+:assert validate_http1_request_wire(2048, 17) == -2
+
+# 3. Reject CTL or non-ASCII characters in request target (-4)
+# `GET /\x00 HTTP/1.1\r\n\r\n` (19 bytes)
+:pkt 2070 474554202F0020485454502F312E310D0A0D0A
+:assert validate_http1_request_wire(2070, 19) == -4
+
+# `GET /\xFF HTTP/1.1\r\n\r\n` (19 bytes)
+:pkt 2090 474554202FFF20485454502F312E310D0A0D0A
+:assert validate_http1_request_wire(2090, 19) == -4

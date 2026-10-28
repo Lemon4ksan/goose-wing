@@ -625,7 +625,6 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
     SOCKET s = (SOCKET)sock_fd;
     const char *ptr = (const char *)data.data;
     size_t remaining = (size_t)data.len;
-    int retries = 0;
 
     while (remaining > 0) {
 #ifdef _WIN32
