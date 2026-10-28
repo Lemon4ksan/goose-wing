@@ -465,6 +465,11 @@ fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 
         return ERR_PROTOCOL_ERROR;
     }
 
+    // RFC 9113 Section 5.1: Endpoints MUST ignore WINDOW_UPDATE on closed streams
+    if s.streams[s_idx].state == H2StreamState.Closed {
+        return ERR_NO_ERROR;
+    }
+
     let next_stream = s.streams[s_idx].send_window + inc;
     if next_stream > MAX_INITIAL_WINDOW_SIZE {
         return ERR_FLOW_CONTROL_ERROR;

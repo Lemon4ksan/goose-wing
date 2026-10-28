@@ -390,7 +390,7 @@ fn apply_decoded_trailers_to_stream(st: H2ServerStream&, dec_list: const Decoded
     st.body_received = true;
 }
 
-inline fn is_stream_cancelled_in_batch(cancelled: const u32[..16]&, stream_id: u32) -> bool {
+inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) -> bool {
     for id in cancelled {
         if id == stream_id {
             return true;
@@ -430,7 +430,7 @@ fn handle_h2_server_ingress<B>(
     // Pre-scan ingress batch for Rapid Reset cancellations (CVE-2023-44487).
     // If a stream in this batch is cancelled via RST_STREAM, we skip full H2ServerStream allocation
     // and route dispatch while still passing the header block through HPACK to keep table state in sync.
-    var cancelled_streams: u32[..16] = [];
+    var cancelled_streams: u32[..128] = [];
     var p_scan = offset;
     while p_scan + 9 <= wire.len {
         let sc_hdr, sc_err = parse_frame_header(wire[p_scan..p_scan + 9], sess.conn.local_max_frame_size);
@@ -541,7 +541,12 @@ fn handle_h2_server_ingress<B>(
                     } else if param_id == SETTING_MAX_FRAME_SIZE {
                         sess.conn.local_max_frame_size = param_val;
                     } else if param_id == SETTING_HEADER_TABLE_SIZE {
-                        update_dynamic_table_max_size(sess.hpack_enc, param_val as u64);
+                        let allowed_max: u64 = if (param_val as u64) < HPACK_MAX_ARENA_BYTES { param_val as u64 } else { HPACK_MAX_ARENA_BYTES };
+                        sess.hpack_enc.max_allowed_size = allowed_max;
+                        if sess.hpack_enc.current_max_size > allowed_max {
+                            sess.hpack_enc.current_max_size = allowed_max;
+                            evict_until(sess.hpack_enc, allowed_max);
+                        }
                     }
                 }
                 // Send SETTINGS ACK back to client
@@ -565,6 +570,14 @@ fn handle_h2_server_ingress<B>(
                     emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
                 }
             }
+        } else if hdr.frame_type == FRAME_PRIORITY_UPDATE {
+            let prio_stream_id, prio_param, prio_err = parse_priority_update_payload(frame_payload, false);
+            if prio_err != ERR_NO_ERROR || (prio_stream_id % 2) == 0 {
+                let final_err = if prio_err != ERR_NO_ERROR { prio_err } else { ERR_PROTOCOL_ERROR };
+                emit_goaway(sess.conn.last_peer_stream_id, final_err, out_wire);
+                return offset + total_frame_len, false;
+            }
+            apply_priority_update(sess.conn, prio_stream_id, prio_param);
         } else if hdr.frame_type == FRAME_WINDOW_UPDATE {
             if frame_payload.len == 4 {
                 var wu_r = core::new_slice_reader(frame_payload);

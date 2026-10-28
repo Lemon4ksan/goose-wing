@@ -240,9 +240,9 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         hdr.payload_length = plen;
         hdr.pn_offset = next_plen as u32;
         hdr.pn_length = (first & 0x03) + 1;
-        guard plen >= (hdr.pn_length as u64) else { return hdr, false; }
-        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= (hdr.pn_length as u64) && (next_plen + (hdr.pn_length as u64)) <= (src.len as u64) else { return hdr, false; }
-        hdr.header_len = (next_plen + (hdr.pn_length as u64)) as u32;
+        guard plen >= hdr.pn_length else { return hdr, false; }
+        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= hdr.pn_length && (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
+        hdr.header_len = (next_plen + hdr.pn_length) as u32;
         return hdr, true;
     }
 

@@ -926,6 +926,237 @@ fn test_h2_protocol_invariants(t: core::T&) {
         }
         sub.assert_true(found_calm, "GOAWAY with ENHANCE_YOUR_CALM emitted for control frame flood");
     };
+
+    t.run("H2-23: HPACK Dynamic Table Size Update Mid-Block Rejected with COMPRESSION_ERROR (RFC 7541 §4.2)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        let h_hdr = wing::FrameHeader {
+            length: 2,
+            frame_type: wing::FRAME_HEADERS,
+            flags: wing::FLAG_END_HEADERS | wing::FLAG_END_STREAM,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(h_hdr, wire);
+        wire.push(0x82); // Indexed header: :method: GET (sets updates_allowed = false)
+        wire.push(0x20); // Dynamic Table Size Update: size 0 (ILLEGAL after regular header field)
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Ingress rejected mid-block dynamic table size update");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire[46..50]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
+    };
+
+    t.run("H2-24: HPACK Out-of-Bounds Dynamic Table Index Lookup Rejected with COMPRESSION_ERROR (RFC 7541 §2.3.3)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        let h_hdr = wing::FrameHeader {
+            length: 1,
+            frame_type: wing::FRAME_HEADERS,
+            flags: wing::FLAG_END_HEADERS | wing::FLAG_END_STREAM,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(h_hdr, wire);
+        wire.push(0xBE); // 0x80 | 62: Indexed header lookup for index 62 when dynamic table is empty
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Ingress rejected out-of-bounds dynamic table index lookup");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire[46..50]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
+    };
+
+    t.run("H2-25: PRIORITY_UPDATE on Stream 0 and Server-Initiated Stream Rejection (RFC 9218 §7.1)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        // Sub-test A: Prioritized Stream ID 0 must be rejected with PROTOCOL_ERROR
+        var wireA: u8[>..] = [];
+        wireA.append(wing::H2_CLIENT_PREFACE[..]);
+        let pu_hdrA = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_PRIORITY_UPDATE,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(pu_hdrA, wireA);
+        let zeros: u8[4] = [0, 0, 0, 0]; // Prioritized stream 0
+        for b in zeros { wireA.push(b); }
+
+        var out_wireA: u8[>..] = [];
+        let _, okA = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wireA[..], 1000, out_wireA);
+        sub.assert_false(okA, "PRIORITY_UPDATE identifying stream 0 rejected");
+        let g_rA = core::new_slice_reader(out_wireA[46..50]);
+        let err_codeA, _ = g_rA.read_u32_be();
+        sub.assert_eq(err_codeA, wing::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+
+        // Sub-test B: Prioritized Stream ID 2 (server-initiated / even) must be rejected with PROTOCOL_ERROR
+        var sessB = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var wireB: u8[>..] = [];
+        wireB.append(wing::H2_CLIENT_PREFACE[..]);
+        let pu_hdrB = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_PRIORITY_UPDATE,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(pu_hdrB, wireB);
+        let stream2: u8[4] = [0, 0, 0, 2]; // Even stream ID
+        for b in stream2 { wireB.push(b); }
+
+        var out_wireB: u8[>..] = [];
+        let _, okB = wing::handle_h2_server_ingress(sessB, pipeline, timer, "127.0.0.1", wireB[..], 1000, out_wireB);
+        sub.assert_false(okB, "PRIORITY_UPDATE identifying server-initiated stream rejected");
+        let g_rB = core::new_slice_reader(out_wireB[46..50]);
+        let err_codeB, _ = g_rB.read_u32_be();
+        sub.assert_eq(err_codeB, wing::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+
+        // Sub-test C: Valid PRIORITY_UPDATE for stream 1 applies priority update
+        var sessC = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var wireC: u8[>..] = [];
+        wireC.append(wing::H2_CLIENT_PREFACE[..]);
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", false, wireC);
+
+        let pu_val: const u8[:] = "u=0, i";
+        let pu_hdrC = wing::FrameHeader {
+            length: (4 + pu_val.len) as u32,
+            frame_type: wing::FRAME_PRIORITY_UPDATE,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(pu_hdrC, wireC);
+        let stream1: u8[4] = [0, 0, 0, 1];
+        for b in stream1 { wireC.push(b); }
+        for b in pu_val { wireC.push(b); }
+
+        var out_wireC: u8[>..] = [];
+        let _, okC = wing::handle_h2_server_ingress(sessC, pipeline, timer, "127.0.0.1", wireC[..], 1000, out_wireC);
+        sub.assert_true(okC, "Valid PRIORITY_UPDATE accepted");
+        let s_idx, found = wing::find_session_stream_idx(sessC.conn, 1);
+        sub.assert_true(found, "Stream 1 found in connection");
+        sub.assert_eq(sessC.conn.streams[s_idx].priority.urgency, 0, "Priority urgency updated to 0");
+        sub.assert_true(sessC.conn.streams[s_idx].priority.incremental, "Priority incremental updated to true");
+    };
+
+    t.run("H2-26: Rapid Reset Large Batch Defense (>16 Cancellations) Handled Without Dispatch (CVE-2023-44487)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Send 25 pairs of HEADERS + RST_STREAM in a single batch (exceeding old 16-element limit)
+        for i in 25 {
+            let s_id: u32 = ((i * 2) + 1) as u32;
+            encode_client_headers(client_hpack, s_id, "GET", "/fast/reset", "localhost", true, wire);
+            let rst_hdr = wing::FrameHeader {
+                length: 4,
+                frame_type: wing::FRAME_RST_STREAM,
+                flags: 0,
+                stream_id: s_id,
+            };
+            wing::encode_frame_header_to(rst_hdr, wire);
+            let err_code: u8[4] = [0x00, 0x00, 0x00, 0x08]; // CANCEL (0x8)
+            for b in err_code { wire.push(b); }
+        }
+
+        var out_wire: u8[>..] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Ingress safely handled 25 rapid resets in batch");
+        sub.assert_eq(consumed, wire.len, "Consumed entire large rapid reset batch");
+        // Output wire must ONLY contain server initial settings (33 bytes), NO response HEADERS for any of the 25 cancelled streams!
+        sub.assert_eq(out_wire.len, 33, "No response pipeline dispatch occurred for any of the 25 cancelled streams");
+    };
+
+    t.run("H2-27: WINDOW_UPDATE on Closed Stream Ignored Without Error (RFC 9113 §5.1)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/test", 27);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", true, wire);
+
+        var out_wire1: u8[>..] = [];
+        let _, ok1 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire1);
+        sub.assert_true(ok1, "Stream 1 completed normally");
+
+        // Now stream 1 is closed. Send WINDOW_UPDATE on stream 1
+        var wire2: u8[>..] = [];
+        let wu_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_WINDOW_UPDATE,
+            flags: 0,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(wu_hdr, wire2);
+        core::append_u32_be(wire2, 1024);
+
+        var out_wire2: u8[>..] = [];
+        let _, ok2 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire2[..], 1000, out_wire2);
+        sub.assert_true(ok2, "WINDOW_UPDATE on closed stream ignored cleanly");
+        sub.assert_eq(out_wire2.len, 0, "No frames emitted for WINDOW_UPDATE on closed stream");
+    };
+
+    t.run("H2-28: Connection Flow Control Window Exceeding 2^31-1 Emits GOAWAY(FLOW_CONTROL_ERROR) (RFC 9113 §6.9)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Connection send window starts at 65535.
+        // Send WINDOW_UPDATE on stream 0 with increment 0x7FFFFFFF (2^31 - 1)
+        // 65535 + 2147483647 exceeds 2^31 - 1 -> FLOW_CONTROL_ERROR
+        let wu_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_WINDOW_UPDATE,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(wu_hdr, wire);
+        core::append_u32_be(wire, 0x7FFFFFFF);
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Window overflow rejected");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire[46..50]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_FLOW_CONTROL_ERROR, "GOAWAY code is FLOW_CONTROL_ERROR");
+    };
 }
 
 fn main() {
