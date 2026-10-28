@@ -522,6 +522,40 @@ fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
     return -1;
 }
 
+// Scans for a closed connection slot that can be reclaimed.
+fn find_closed_connection_slot(pool: const StreamPool&) -> i32 {
+    for &c, idx in pool.conns {
+        if c.closed {
+            return idx as i32;
+        }
+    }
+    return -1;
+}
+
+// Reclaims an available or evicted connection slot, preventing capacity starvation (RFC 9110 §9.3.1).
+fn acquire_connection_slot(pool: StreamPool&, now_ns: i64) -> i32 {
+    guard pool.conns.len >= 64 else { return -1; }
+    let closed_idx = find_closed_connection_slot(pool);
+    if closed_idx >= 0 {
+        return closed_idx;
+    }
+    guard pool.evict_oldest_idle_connection(now_ns) else { return -2; }
+    return find_closed_connection_slot(pool);
+}
+
+// Marks a pooled connection as closed, freeing it for slot reclamation.
+fn close_pooled_connection(pool: StreamPool&, conn_id: i32) -> bool {
+    for &c in pool.conns {
+        if c.conn_id == conn_id {
+            c.closed = true;
+            c.no_new_exchanges = true;
+            c.active_allocations = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Evicts the oldest idle connection in the pool when soft cap is reached.
 fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
     var oldest_idx = -1;
@@ -595,6 +629,7 @@ fn acquire_pooled_connection(
 }
 
 // Inserts a newly dialed connection into the pool after quota and soft-cap checks.
+// Reclaims closed or evicted slots when pool reaches capacity, preventing starvation (RFC 9110 §9.3.1).
 fn register_connection(
     pool: StreamPool&,
     key: const PoolKey&,
@@ -604,14 +639,12 @@ fn register_connection(
     now_ns: i64,
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> i32 {
-    if respect_limits == RespectLimits.Enabled {
-        let total_active_conns = pool.conns.len;
-        if total_active_conns >= pool.socket_soft_cap {
-            pool.evict_oldest_idle_connection(now_ns);
-        }
+    if respect_limits == RespectLimits.Enabled && pool.conns.len >= pool.socket_soft_cap {
+        pool.evict_oldest_idle_connection(now_ns);
     }
 
-    guard pool.conns.len < 64 else { return -1; }
+    let slot_idx = acquire_connection_slot(pool, now_ns);
+    guard slot_idx != -2 else { return -1; }
 
     let cid = pool.next_conn_id;
     pool.next_conn_id++;
@@ -630,7 +663,11 @@ fn register_connection(
     };
     conn.resolved_ip.append(resolved_ip);
 
-    pool.conns.push(conn);
+    if slot_idx >= 0 {
+        pool.conns[slot_idx] = conn;
+    } else {
+        pool.conns.push(conn);
+    }
 
     let grp_idx = pool.find_or_create_group(key);
     if grp_idx >= 0 {

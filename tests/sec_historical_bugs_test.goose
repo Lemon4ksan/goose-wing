@@ -1425,6 +1425,78 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 30. RFC 9110 §9.3.1 & RFC 9293: Connection Pool Starvation & Slot Reclamation
+// ----------------------------------------------------------------------------
+fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: core::T&) {
+    t.run("Pool saturation at 64 connections reclaims idle/evicted slots without starvation") { sub =>
+        var pool = wing::new_stream_pool(64, 64, 64);
+        let nak = wing::new_network_anonymization_key("https://pool-test.org");
+        let key = wing::new_pool_key(wing::PoolScheme.Https, "pool-test.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+
+        // Register 64 connections saturating pool capacity
+        var c_ids: i32[64] = [0; 64];
+        for i in 64 {
+            let cid = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.1", 1, (i + 1) as i64 * 1000);
+            sub.assert_gt(cid, 0, "Initial 64 connections successfully registered");
+            c_ids[i] = cid;
+        }
+        sub.assert_eq(pool.conns.len, 64, "Pool reached maximum capacity (64)");
+
+        // Release the first connection making it idle
+        wing::release_connection(pool, c_ids[0], 1000000);
+        sub.assert_eq(pool.conns[0].active_allocations, 0, "Connection 0 is idle");
+
+        // In unpatched code, registering a 65th connection returns -1 (pool starvation).
+        // With slot reclamation, the idle connection is evicted and its slot reused.
+        let c65 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.1", 1, 2000000);
+        sub.assert_gt(c65, 0, "65th connection registered successfully by reclaiming evicted slot");
+        sub.assert_eq(c65, 65, "Connection ID incremented monotonically");
+        sub.assert_eq(pool.conns.len, 64, "Connection pool storage remains bounded at 64");
+        sub.assert_eq(pool.conns[0].conn_id, 65, "Reclaimed slot 0 contains new connection 65");
+        sub.assert_eq(pool.conns[0].active_allocations, 1, "Reclaimed slot is active");
+    };
+
+    t.run("Explicitly closed connection slot is reclaimed immediately") { sub =>
+        var pool = wing::new_stream_pool(64, 64, 64);
+        let nak = wing::new_network_anonymization_key("https://reclaim.org");
+        let key = wing::new_pool_key(wing::PoolScheme.Https, "reclaim.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+
+        var c_ids: i32[64] = [0; 64];
+        for i in 64 {
+            c_ids[i] = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.2", 1, (i + 1) as i64 * 1000);
+        }
+        sub.assert_eq(pool.conns.len, 64, "Pool saturated at 64");
+
+        // Explicitly close slot 5
+        let ok_close = wing::close_pooled_connection(pool, c_ids[5]);
+        sub.assert_true(ok_close, "Connection c_ids[5] closed successfully");
+        sub.assert_true(pool.conns[5].closed, "Slot 5 marked closed");
+
+        // Register 65th connection: must reclaim slot 5 immediately without evicting other slots
+        let c65 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.2", 1, 5000000);
+        sub.assert_gt(c65, 0, "New connection successfully registered");
+        sub.assert_eq(pool.conns[5].conn_id, c65, "Slot 5 reclaimed by connection 65");
+        sub.assert_false(pool.conns[5].closed, "Reclaimed slot is open and active");
+    };
+
+    t.run("Registering when all 64 slots are active fails closed without panic") { sub =>
+        var pool = wing::new_stream_pool(64, 64, 64);
+        let nak = wing::new_network_anonymization_key("https://busy-pool.org");
+        let key = wing::new_pool_key(wing::PoolScheme.Https, "busy-pool.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+
+        for i in 64 {
+            let cid = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.3", 1, (i + 1) as i64 * 1000);
+            sub.assert_gt(cid, 0, "Registered active connection");
+        }
+
+        // None are released, so all 64 have active_allocations = 1.
+        // Eviction cannot evict any active connection, so registering returns -1 cleanly.
+        let c_fail = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.3", 1, 9000000);
+        sub.assert_eq(c_fail, -1, "Fully active saturated pool returns -1 without crash or corruption");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1457,6 +1529,7 @@ fn main() {
     core::run_case(runner, "27. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);
     core::run_case(runner, "28. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants", test_h2_rst_stream_data_flow_control_invariants);
     core::run_case(runner, "29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses", test_rfc8446_nst_extension_validation_and_ticket_confusion);
+    core::run_case(runner, "30. RFC 9110 & RFC 9293: Connection Pool Starvation & Slot Reclamation", test_rfc9110_connection_pool_starvation_and_slot_reclamation);
 
     let ok = core::finish(runner);
     assert(ok);
