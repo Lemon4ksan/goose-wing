@@ -365,6 +365,109 @@ fn test_h2_window_update_and_settings_cpu_limits(t: core::T&) {
     };
 }
 
+// 14. RFC 8446 Section 4: TLS 1.3 Handshake State Machine Transition Invariants
+fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
+    t.run("Strict client handshake transition table enforcement (RFC 8446)") { sub =>
+        // In full handshake (is_psk = false), Finished received prematurely before Cert/CV MUST be rejected
+        let st_bad_fin, ok_bad_fin = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCertCr,
+            wing::HS_MSG_FINISHED,
+            false,
+            false,
+        );
+        sub.assert_false(ok_bad_fin, "Finished before Certificate/CV in full handshake MUST be rejected");
+        sub.assert_true(st_bad_fin == wing::HsState.Closed, "Illegal transition transitions to Closed");
+
+        // In PSK mode (is_psk = true), Finished is accepted directly after ServerHello/EncryptedExtensions
+        let st_psk_fin, ok_psk_fin = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCertCr,
+            wing::HS_MSG_FINISHED,
+            true,
+            false,
+        );
+        sub.assert_true(ok_psk_fin, "Finished accepted in PSK mode");
+        sub.assert_true(st_psk_fin == wing::HsState.Connected, "PSK Finished transitions to Connected");
+
+        // Certificate received when expecting Certificate transitions to CV
+        let st_cert, ok_cert = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCert,
+            wing::HS_MSG_CERTIFICATE,
+            false,
+            false,
+        );
+        sub.assert_true(ok_cert, "Certificate accepted in ClientWaitCert");
+        sub.assert_true(st_cert == wing::HsState.ClientWaitCV, "Transitions to ClientWaitCV");
+
+        // Synthetic message_hash (254) MUST NEVER appear on wire
+        let st_hash, ok_hash = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitSH,
+            wing::HS_MSG_MESSAGE_HASH,
+            false,
+            false,
+        );
+        sub.assert_false(ok_hash, "Synthetic message_hash on wire MUST be rejected");
+
+        // Post-handshake: only NewSessionTicket and KeyUpdate permitted
+        let st_ticket, ok_ticket = wing::validate_client_handshake_transition(
+            wing::HsState.Connected,
+            wing::HS_MSG_NEW_SESSION_TICKET,
+            false,
+            false,
+        );
+        sub.assert_true(ok_ticket, "NewSessionTicket accepted post-handshake");
+        sub.assert_true(st_ticket == wing::HsState.Connected, "Remains Connected");
+
+        let st_rehandshake, ok_rehandshake = wing::validate_client_handshake_transition(
+            wing::HsState.Connected,
+            wing::HS_MSG_SERVER_HELLO,
+            false,
+            false,
+        );
+        sub.assert_false(ok_rehandshake, "ServerHello received while Connected MUST be rejected (renegotiation banned)");
+    };
+
+    t.run("Strict server handshake transition table enforcement (RFC 8446)") { sub =>
+        // Finished accepted in ServerWaitFinished
+        let st_srv_fin, ok_srv_fin = wing::validate_server_handshake_transition(
+            wing::HsState.ServerWaitFinished,
+            wing::HS_MSG_FINISHED,
+            false,
+        );
+        sub.assert_true(ok_srv_fin, "Finished accepted by server in ServerWaitFinished");
+        sub.assert_true(st_srv_fin == wing::HsState.Connected, "Server transitions to Connected");
+
+        // Out-of-order ClientHello in ServerWaitFinished rejected
+        let st_srv_bad, ok_srv_bad = wing::validate_server_handshake_transition(
+            wing::HsState.ServerWaitFinished,
+            wing::HS_MSG_CLIENT_HELLO,
+            false,
+        );
+        sub.assert_false(ok_srv_bad, "Duplicate ClientHello while waiting for Finished rejected");
+    };
+}
+
+// 15. RFC 9113 Section 6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity Invariants
+fn test_rfc9113_goaway_last_stream_id_parity(t: core::T&) {
+    t.run("Client GOAWAY peer stream parity (can only acknowledge server streams: even or 0)") { sub =>
+        sub.assert_true(wing::validate_goaway_last_stream_id(0, true), "Client GOAWAY with 0 is valid");
+        sub.assert_true(wing::validate_goaway_last_stream_id(2, true), "Client GOAWAY with even stream 2 is valid");
+        sub.assert_true(wing::validate_goaway_last_stream_id(100, true), "Client GOAWAY with even stream 100 is valid");
+        sub.assert_false(wing::validate_goaway_last_stream_id(1, true), "Client GOAWAY with client-initiated stream 1 MUST be rejected");
+        sub.assert_false(wing::validate_goaway_last_stream_id(3, true), "Client GOAWAY with client-initiated stream 3 MUST be rejected");
+        sub.assert_false(wing::validate_goaway_last_stream_id(99, true), "Client GOAWAY with client-initiated stream 99 MUST be rejected");
+    };
+
+    t.run("Server GOAWAY peer stream parity (can only acknowledge client streams: odd, 0, or max)") { sub =>
+        sub.assert_true(wing::validate_goaway_last_stream_id(0, false), "Server GOAWAY with 0 is valid");
+        sub.assert_true(wing::validate_goaway_last_stream_id(1, false), "Server GOAWAY with odd stream 1 is valid");
+        sub.assert_true(wing::validate_goaway_last_stream_id(101, false), "Server GOAWAY with odd stream 101 is valid");
+        sub.assert_true(wing::validate_goaway_last_stream_id(0x7FFFFFFF, false), "Server GOAWAY with 2^31 - 1 is valid");
+        sub.assert_false(wing::validate_goaway_last_stream_id(2, false), "Server GOAWAY with server-initiated stream 2 MUST be rejected");
+        sub.assert_false(wing::validate_goaway_last_stream_id(4, false), "Server GOAWAY with server-initiated stream 4 MUST be rejected");
+        sub.assert_false(wing::validate_goaway_last_stream_id(102, false), "Server GOAWAY with server-initiated stream 102 MUST be rejected");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -381,6 +484,8 @@ fn main() {
     core::run_case(runner, "11. uWS #1941: Chained Transfer-Encoding List & Chunked Finality", test_uweb_1941_chained_transfer_encoding_validation);
     core::run_case(runner, "12. CVE-2026-42507: Diagnostic Log CRLF & Control Escaping", test_cve_2026_42507_diagnostic_log_injection_defense);
     core::run_case(runner, "13. RFC 9113 & CVE-2026-78669: H2 Window Bounds & Throttling", test_h2_window_update_and_settings_cpu_limits);
+    core::run_case(runner, "14. RFC 8446 Section 4: TLS 1.3 Handshake State Machine Invariants", test_openssl_handshake_state_machine_transition_invariants);
+    core::run_case(runner, "15. RFC 9113 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity", test_rfc9113_goaway_last_stream_id_parity);
 
     let ok = core::finish(runner);
     assert(ok);
