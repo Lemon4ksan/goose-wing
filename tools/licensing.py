@@ -7,13 +7,10 @@
 tools/licensing.py
 Automated license header enforcement and validation tool for goose-wing.
 
-SPDX-License-Identifier: Apache-2.0
-Copyright (c) 2026 Lemon4ksan
-
 Usage:
-    python tools/licensing.py            # Apply license headers to all tracked source files
-    python tools/licensing.py --check    # Verify that all files have valid headers (CI mode)
-    python tools/licensing.py --dry-run  # Preview changes without modifying files
+    python tools/licensing.py              # Apply license headers to all tracked source files
+    python tools/licensing.py --check      # Verify that all files have valid headers (CI mode)
+    python tools/licensing.py --dry-run    # Preview changes without modifying files
     python tools/licensing.py --ext .goose # Process only .goose files
 """
 
@@ -52,6 +49,17 @@ HEADER_LINES = [
     "SPDX-License-Identifier: Apache-2.0",
     "Copyright (c) 2026 Lemon4ksan",
 ]
+
+COMMENT_MARKERS = ("//", "#", "::", "--")
+
+
+def is_header_comment(line: str) -> bool:
+    """Checks whether a line is a license header comment (including legacy REM)."""
+    s = line.strip()
+    s_lower = s.lower()
+    return (
+        s_lower.startswith(("rem ", "rem\t")) or any(s.startswith(m) for m in COMMENT_MARKERS)
+    ) and any(h in s for h in HEADER_LINES)
 
 
 def get_tracked_files(repo_root: Path) -> list[Path]:
@@ -92,11 +100,90 @@ def build_license_header(prefix: str, newline: str) -> str:
     return newline.join(lines) + newline + newline
 
 
-def has_license_header(content: str, prefix: str) -> bool:
-    """Checks whether the file already has a valid SPDX and Copyright header."""
-    expected_spdx = f"{prefix} SPDX-License-Identifier: Apache-2.0"
-    expected_cr = f"{prefix} Copyright (c) 2026 Lemon4ksan"
-    return expected_spdx in content and expected_cr in content
+def has_license_header(file_path: Path, content: str, prefix: str) -> bool:
+    """Checks whether the file already has a valid, properly placed SPDX and Copyright header."""
+    lines = content.splitlines()
+    if not lines:
+        return False
+
+    is_licensing_tool = file_path.name == "licensing.py"
+
+    if lines[0].startswith("#!"):
+        if len(lines) < 4:
+            return False
+        if lines[1].strip() != "":
+            return False
+        if lines[2].rstrip() != f"{prefix} {HEADER_LINES[0]}":
+            return False
+        if lines[3].rstrip() != f"{prefix} {HEADER_LINES[1]}":
+            return False
+        if len(lines) > 4 and lines[4].strip() != "":
+            return False
+        header_end = 4
+    else:
+        if len(lines) < 2:
+            return False
+        if lines[0].rstrip() != f"{prefix} {HEADER_LINES[0]}":
+            return False
+        if lines[1].rstrip() != f"{prefix} {HEADER_LINES[1]}":
+            return False
+        if len(lines) > 2 and lines[2].strip() != "":
+            return False
+        header_end = 2
+
+    if not is_licensing_tool:
+        for line in lines[header_end:]:
+            if is_header_comment(line):
+                return False
+
+    return True
+
+
+def format_file_content(content: str, prefix: str, newline: str) -> str:
+    """Formats file content with canonical license header placement and clean spacing."""
+    raw_lines = content.splitlines()
+    shebang = ""
+    if raw_lines and raw_lines[0].startswith("#!"):
+        shebang = raw_lines[0]
+        raw_lines = raw_lines[1:]
+
+    filtered: list[str] = []
+    i = 0
+    n = len(raw_lines)
+    while i < n:
+        line = raw_lines[i]
+        if is_header_comment(line):
+            i += 1
+            while i < n and is_header_comment(raw_lines[i]):
+                i += 1
+            if i < n and raw_lines[i].strip() == "":
+                i += 1
+            continue
+        filtered.append(line)
+        i += 1
+
+    # Strip leading blank lines
+    while filtered and filtered[0].strip() == "":
+        filtered.pop(0)
+
+    # Strip trailing blank lines
+    while filtered and filtered[-1].strip() == "":
+        filtered.pop()
+
+    header_block = [f"{prefix} {h}" for h in HEADER_LINES]
+
+    result_lines: list[str] = []
+    if shebang:
+        result_lines.append(shebang)
+        result_lines.append("")
+
+    result_lines.extend(header_block)
+
+    if filtered:
+        result_lines.append("")
+        result_lines.extend(filtered)
+
+    return newline.join(result_lines) + newline
 
 
 def detect_newline(content: str) -> str:
@@ -112,7 +199,7 @@ def process_file(
     """
     Processes a single file.
     Returns (ok, message).
-    ok is False if header is missing in check_only mode.
+    ok is False if header is missing or malformed in check_only mode.
     """
     ext = file_path.suffix.lower()
     prefix = COMMENT_STYLES.get(ext)
@@ -125,32 +212,22 @@ def process_file(
     except Exception as e:
         return False, f"error reading file: {e}"
 
-    if has_license_header(content, prefix):
+    if has_license_header(file_path, content, prefix):
         return True, "already licensed"
 
     if check_only:
-        return False, "missing license header"
+        return False, "missing or malformed license header"
 
     newline = detect_newline(content)
-    header = build_license_header(prefix, newline)
-
-    # Check for shebang on first line
-    new_content = ""
-    if content.startswith("#!"):
-        parts = content.split(newline, 1)
-        shebang = parts[0]
-        rest = parts[1] if len(parts) > 1 else ""
-        new_content = shebang + newline + newline + header + rest
-    else:
-        new_content = header + content
+    new_content = format_file_content(content, prefix, newline)
 
     if dry_run:
-        return True, "would add license header"
+        return True, "would update license header"
 
     try:
         with open(file_path, "w", encoding="utf-8", newline="") as f:
             f.write(new_content)
-        return True, "added license header"
+        return True, "updated license header"
     except Exception as e:
         return False, f"error writing file: {e}"
 
@@ -163,6 +240,11 @@ def main() -> int:
         "--check",
         action="store_true",
         help="Check headers without modifying files (returns 1 on violation).",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Apply or fix license headers across target files (default behavior).",
     )
     parser.add_argument(
         "--dry-run",
@@ -233,7 +315,7 @@ def main() -> int:
             already_licensed_count += 1
             if args.verbose:
                 print(f"[OK]   {rel_path}: {msg}")
-        elif "added" in msg or "would add" in msg:
+        elif "added" in msg or "would add" in msg or "updated" in msg or "would update" in msg:
             updated_count += 1
             print(f"[APPLY] {rel_path}: {msg}")
         else:

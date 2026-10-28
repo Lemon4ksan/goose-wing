@@ -17,6 +17,7 @@
 [CmdletBinding()]
 param(
     [switch]$Check,
+    [switch]$Fix,
     [switch]$DryRun,
     [string]$Ext
 )
@@ -33,6 +34,7 @@ if (-not $pythonCmd) {
 
 $argsList = @()
 if ($Check) { $argsList += "--check" }
+if ($Fix) { $argsList += "--fix" }
 if ($DryRun) { $argsList += "--dry-run" }
 if ($Ext) { $argsList += "--ext", $Ext }
 
