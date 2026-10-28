@@ -554,6 +554,61 @@ fn test_core_codecs_boundary_and_overflow_defenses(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 18. RFC 7541 / RFC 9113: HTTP/2 HPACK Inbound Capacity & Overflow Defenses
+// ----------------------------------------------------------------------------
+fn test_http2_hpack_boundary_and_capacity_defenses(t: core::T&) {
+    t.run("HPACK string literal exceeding buffer capacity fails closed") { sub =>
+        // Construct raw uncompressed HPACK string literal of 300 bytes: prefix 0x00, length 300
+        var raw_lit: u8[..320] = [];
+        raw_lit.push(0x7F); // 7-bit prefix all 1s (127)
+        raw_lit.push((300 - 127) as u8); // 173 -> total length 300
+        for i in 300 {
+            raw_lit.push('a');
+        }
+
+        var out_small: u8[..256] = [];
+        let _, ok = wing::decode_hpack_string(raw_lit[..], 0, out_small);
+        sub.assert_false(ok, "Literal HPACK string of 300 bytes into 256-cap buffer MUST return false without abort");
+    };
+
+    t.run("HPACK Huffman decode into undersized buffer fails closed") { sub =>
+        // Huffman-encode "www.example.com" repeated 25 times (~350 bytes)
+        var uncomp: u8[..400] = [];
+        for i in 25 {
+            uncomp.append("www.example.com/");
+        }
+
+        var huff_encoded: u8[..400] = [];
+        wing::huff_encode_bytes(uncomp[..], huff_encoded);
+
+        var out_small: u8[..64] = [];
+        let ok = wing::huff_decode_bytes(huff_encoded[..], out_small);
+        sub.assert_false(ok, "Huffman decode exceeding buffer capacity MUST return false without abort");
+    };
+
+    t.run("HPACK header block with oversized literal name rejected safely") { sub =>
+        // Literal header with incremental indexing: 0x40 (name_idx = 0)
+        // followed by 300-byte name string literal and 5-byte value
+        var raw_block: u8[..400] = [];
+        raw_block.push(0x40);
+        // Name string length: 300 (0x7F + 173)
+        raw_block.push(0x7F);
+        raw_block.push(173);
+        for i in 300 {
+            raw_block.push('x');
+        }
+        // Value string length: 5 ("value")
+        raw_block.push(5);
+        raw_block.append("value");
+
+        var dt = wing::new_dynamic_table(4096);
+        var out_list = wing::DecodedH2HeaderList { .. };
+        let err = wing::decode_hpack_header_block(dt, raw_block[..], out_list, 8192, false);
+        sub.assert_ne(err, wing::ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -574,6 +629,7 @@ fn main() {
     core::run_case(runner, "15. RFC 9113 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity", test_rfc9113_goaway_last_stream_id_parity);
     core::run_case(runner, "16. RFC 4648 §3.5: Base64 Canonical & Malleability Defenses", test_rfc4648_base64_canonical_and_malleability_defenses);
     core::run_case(runner, "17. Core Codec Overflow, Malleability & Truncation Defenses", test_core_codecs_boundary_and_overflow_defenses);
+    core::run_case(runner, "18. RFC 7541 & RFC 9113: HTTP/2 HPACK Inbound Capacity & Overflow Defenses", test_http2_hpack_boundary_and_capacity_defenses);
 
     let ok = core::finish(runner);
     assert(ok);

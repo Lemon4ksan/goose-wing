@@ -704,6 +704,7 @@ fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     var tmp: u8[4096] = [0; 4096];
     let written, ok = huff_decode_step(ctx, tmp[..], 0, src, true);
     guard ok else { return false; }
+    guard out.len + (written as i64) <= out.cap else { return false; }
     out.append(tmp[..written as i64]);
     return true;
 }
@@ -1186,6 +1187,7 @@ fn get_indexed_header_slices(dt: const DynamicTable&, idx: u64) -> const u8[:], 
 fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, out_val: B2&) -> bool {
     let name_slice, val_slice, ok = get_indexed_header_slices(dt, idx);
     guard ok else { return false; }
+    guard name_slice.len <= out_name.cap && val_slice.len <= out_val.cap else { return false; }
     out_name.clear();
     out_val.clear();
     out_name.append(name_slice);
@@ -1214,6 +1216,7 @@ fn get_indexed_header_name_slice(dt: const DynamicTable&, idx: u64) -> const u8[
 fn get_indexed_header_name<B>(dt: const DynamicTable&, idx: u64, out_name: B&) -> bool {
     let name_slice, ok = get_indexed_header_name_slice(dt, idx);
     guard ok else { return false; }
+    guard name_slice.len <= out_name.cap else { return false; }
     out_name.clear();
     out_name.append(name_slice);
     return true;
@@ -1296,6 +1299,7 @@ fn decode_hpack_string<B>(src: const u8[:], offset: u64, out: B&) -> u64, bool {
         let ok_huff = huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
     } else {
+        guard out.len + raw_slice.len <= out.cap else { return offset, false; }
         out.append(raw_slice);
     }
 
