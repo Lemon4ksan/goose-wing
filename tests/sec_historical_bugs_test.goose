@@ -857,6 +857,100 @@ fn test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse(t: core::T&
     };
 }
 
+fn test_rfc7748_x25519_constant_time_montgomery_ladder(t: core::T&) {
+    t.run("fe_cswap branchless conditional swap correctness") { sub =>
+        var a = core::Fe10 { v: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] };
+        var b = core::Fe10 { v: [101, 102, 103, 104, 105, 106, 107, 108, 109, 110] };
+
+        // swap = 0 -> no change
+        core::fe_cswap(0, a, b);
+        for i in 10 {
+            sub.assert_eq(a.v[i], (i + 1) as i64, "fe_cswap(0) preserves a");
+            sub.assert_eq(b.v[i], (i + 101) as i64, "fe_cswap(0) preserves b");
+        }
+
+        // swap = 1 -> swapped
+        core::fe_cswap(1, a, b);
+        for i in 10 {
+            sub.assert_eq(a.v[i], (i + 101) as i64, "fe_cswap(1) swaps b into a");
+            sub.assert_eq(b.v[i], (i + 1) as i64, "fe_cswap(1) swaps a into b");
+        }
+
+        // swap = 0xFF -> swapped (odd bit 0)
+        core::fe_cswap(0xFF, a, b);
+        for i in 10 {
+            sub.assert_eq(a.v[i], (i + 1) as i64, "fe_cswap(0xFF) swaps a back");
+            sub.assert_eq(b.v[i], (i + 101) as i64, "fe_cswap(0xFF) swaps b back");
+        }
+    };
+
+    t.run("RFC 7748 В§6.1 Vector 2 non-basepoint & non-canonical point masking") { sub =>
+        let scalar: u8[32] = [
+            0xa5, 0x46, 0xe3, 0x6b, 0xf0, 0x52, 0x7c, 0x9d,
+            0x3b, 0x16, 0x15, 0x4b, 0x82, 0x46, 0x5e, 0xdd,
+            0x62, 0x14, 0x4c, 0x0a, 0xc1, 0xfc, 0x5a, 0x18,
+            0x50, 0x6a, 0x22, 0x44, 0xba, 0x44, 0x9a, 0xc4,
+        ];
+        var u_coord: u8[32] = [
+            0xe6, 0xdb, 0x68, 0x67, 0x58, 0x30, 0x30, 0xdb,
+            0x35, 0x94, 0xc1, 0xa4, 0x24, 0xb1, 0x5f, 0x7c,
+            0x72, 0x66, 0x24, 0xec, 0x26, 0xb3, 0x35, 0x3b,
+            0x10, 0xa9, 0x03, 0xa6, 0xd0, 0xab, 0x1c, 0x4c,
+        ];
+        let out = core::x25519_scalarmult(scalar, u_coord);
+        let expected: u8[32] = [
+            0xc3, 0xda, 0x55, 0x37, 0x9d, 0xe9, 0xc6, 0x90,
+            0x8e, 0x94, 0xea, 0x4d, 0xf2, 0x8d, 0x08, 0x4f,
+            0x32, 0xec, 0xcf, 0x03, 0x49, 0x1c, 0x71, 0xf7,
+            0x54, 0xb4, 0x07, 0x55, 0x77, 0xa2, 0x85, 0x52,
+        ];
+        for i in 32 {
+            sub.assert_eq(out[i], expected[i], "X25519 RFC 7748 В§6.1 Vector 2 shared secret matches");
+        }
+
+        // RFC 7748 В§5: Non-canonical u-coordinate with MSB set must be masked and yield identical secret
+        u_coord[31] |= 0x80;
+        let out_masked = core::x25519_scalarmult(scalar, u_coord);
+        for i in 32 {
+            sub.assert_eq(out_masked[i], expected[i], "X25519 non-canonical MSB masking yields identical output");
+        }
+    };
+
+    t.run("X25519 Montgomery Ladder Constant-Time Execution via Dudect") { sub =>
+        var ctx = core::new_dudect_context(5000000.0); // 5ms crop threshold
+        let u9: u8[32] = [9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        // Class 0: all-zero scalar (no swaps in ladder)
+        let scalar_0: u8[32] = [0; 32];
+        // Class 1: alternating bit scalar (maximum swaps in ladder)
+        let scalar_1: u8[32] = [0x55; 32];
+
+        // Warmup
+        for w in 10 {
+            let _ = core::x25519_scalarmult(scalar_0, u9);
+            let _ = core::x25519_scalarmult(scalar_1, u9);
+        }
+
+        for iter in 50 {
+            let sw0 = core::stopwatch();
+            let _ = core::x25519_scalarmult(scalar_0, u9);
+            let d0 = core::elapsed(sw0);
+            core::dudect_push_sample(ctx, 0, d0.nanos as f64);
+
+            let sw1 = core::stopwatch();
+            let _ = core::x25519_scalarmult(scalar_1, u9);
+            let d1 = core::elapsed(sw1);
+            core::dudect_push_sample(ctx, 1, d1.nanos as f64);
+        }
+
+        // In unpatched code with branching `if do_swap == 1`, Class 1 does 254 conditional branches/copies
+        // while Class 0 does 0, resulting in statistically significant timing difference.
+        sub.assert_true(core::dudect_is_constant_time(ctx, 3.0), "Montgomery ladder must pass Welch t-test (|t| <= 3.0)");
+    };
+}
+// ----------------------------------------------------------------------------
+// 19. LimitReader EOF vs LimitExceeded Boundary Underflow Defenses
+// ----------------------------------------------------------------------------
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -883,6 +977,7 @@ fn main() {
     core::run_case(runner, "21. RFC 3986 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses", test_url_query_delimiter_and_decoding_defenses);
     core::run_case(runner, "22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity", test_rfc8439_poly1305_block_boundary_padding_overflow);
     core::run_case(runner, "23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses", test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse);
+    core::run_case(runner, "24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants", test_rfc7748_x25519_constant_time_montgomery_ladder);
     let ok = core::finish(runner);
     assert(ok);
 }

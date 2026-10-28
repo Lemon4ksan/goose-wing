@@ -293,10 +293,8 @@ fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
 
         let do_swap = swap ^ k_t;
         swap = k_t;
-        if do_swap == 1 {
-            let tmp_x = x_2; x_2 = x_3; x_3 = tmp_x;
-            let tmp_z = z_2; z_2 = z_3; z_3 = tmp_z;
-        }
+        fe_cswap(do_swap, x_2, x_3);
+        fe_cswap(do_swap, z_2, z_3);
 
         let a = fe_add(x_2, z_2);
         let aa = fe_sq(a);
@@ -314,10 +312,8 @@ fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
         z_2 = fe_mul(e, fe_add(aa, fe_mul121665(e)));
     }
 
-    if swap == 1 {
-        let tmp_x = x_2; x_2 = x_3; x_3 = tmp_x;
-        let tmp_z = z_2; z_2 = z_3; z_3 = tmp_z;
-    }
+    fe_cswap(swap, x_2, x_3);
+    fe_cswap(swap, z_2, z_3);
 
     let res = fe_mul(x_2, fe_inv(z_2));
     return fe_to_bytes(res);
