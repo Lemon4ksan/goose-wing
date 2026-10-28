@@ -85,6 +85,11 @@ fn test_grpc_lpm_framing(t: core::T&) {
         // Truncate payload
         let ok_pay, _ = wing::decode_grpc_lpm(wire[..(wire.len - 2)], 0, decoded, is_comp);
         sub.assert_false(ok_pay, "Truncated payload rejected");
+
+        // Reserved flag bits rejected per gRPC Wire Protocol
+        var bad_flag_wire: u8[5] = [0x02, 0, 0, 0, 0];
+        let ok_bad_flag, _ = wing::decode_grpc_lpm(bad_flag_wire[..], 0, decoded, is_comp);
+        sub.assert_false(ok_bad_flag, "Reserved flag bit 0x02 rejected");
     };
 
     t.run("5. Concatenated Multi-LPM Sequential Extraction") { sub =>

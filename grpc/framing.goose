@@ -31,6 +31,7 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
     guard wire.len - off >= (GRPC_LPM_HEADER_LEN as i64) else { return false, 0; }
 
     let flag = wire[off];
+    guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false, 0; }
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val = core::read_be_u32(wire, off + 1);
@@ -69,6 +70,7 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
     guard p.buf.len >= (GRPC_LPM_HEADER_LEN as i64) else { return false; }
 
     let flag = p.buf[0];
+    guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val = core::read_be_u32(p.buf[..], 1);
@@ -82,7 +84,7 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
     if remaining_bytes == 0 {
         p.buf.clear();
     } else {
-        var temp: u8[>..] = [];
+        var temp: u8[..65536] = [];
         temp.append(p.buf[total_len..]);
         p.buf.clear();
         p.buf.append(temp[..]);
@@ -130,6 +132,7 @@ fn decode_grpc_web_frame<B>(
     guard off >= 0 && (wire.len - off) >= 5 else { return false, 0; }
 
     let flag = wire[off];
+    guard (flag & ~(GRPC_FLAG_COMPRESSED | GRPC_WEB_FLAG_TRAILERS)) == 0 else { return false, 0; }
     out_is_trailers = (flag & GRPC_WEB_FLAG_TRAILERS) != 0;
     out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
@@ -180,10 +183,7 @@ fn parse_grpc_web_trailers(
                     }
                 } else if core::eq_ascii_fold(name, "grpc-message") {
                     out_message.clear();
-                    var dec: u8[>..] = [];
-                    decode_grpc_message(val, dec);
-                    let take_len = if dec.len > out_message.cap { out_message.cap } else { dec.len };
-                    out_message.append(dec[..take_len]);
+                    decode_grpc_message(val, out_message);
                 }
             }
         }
