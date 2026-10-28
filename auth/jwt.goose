@@ -123,6 +123,10 @@ fn serialize_jwt_header<B>(header: const JwtHeader&, out: B&) {
     out.push('}');
 }
 
+struct SeenHeaderKey {
+    name: u8[..64] = [],
+}
+
 fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> bool {
     var reader = json::reader(json_bytes);
     var scratch: u8[>..] = [];
@@ -131,13 +135,26 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
     out_header.typ.clear();
     out_header.typ.append("JWT");
     var had_error = false;
+    var seen_alg = false;
+    var seen_typ = false;
+    var seen_kid = false;
+    var seen_cty = false;
+    var seen_others: SeenHeaderKey[..8] = [];
 
     json::each_member(reader) { key =>
         scratch.clear();
         if key == "alg" {
+            if seen_alg {
+                had_error = true;
+            }
+            seen_alg = true;
             let alg_str = json::read_string(reader, scratch);
             out_header.alg = parse_jwt_alg(alg_str);
         } else if key == "typ" {
+            if seen_typ {
+                had_error = true;
+            }
+            seen_typ = true;
             let typ_str = json::read_string(reader, scratch);
             if typ_str.len <= out_header.typ.cap {
                 out_header.typ.clear();
@@ -146,6 +163,10 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
                 had_error = true;
             }
         } else if key == "kid" {
+            if seen_kid {
+                had_error = true;
+            }
+            seen_kid = true;
             let kid_str = json::read_string(reader, scratch);
             if kid_str.len <= out_header.kid.cap {
                 out_header.kid.clear();
@@ -154,6 +175,10 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
                 had_error = true;
             }
         } else if key == "cty" {
+            if seen_cty {
+                had_error = true;
+            }
+            seen_cty = true;
             let cty_str = json::read_string(reader, scratch);
             if cty_str.len <= out_header.cty.cap {
                 out_header.cty.clear();
@@ -162,6 +187,16 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
                 had_error = true;
             }
         } else {
+            for &o in seen_others {
+                if o.name[..] == key {
+                    had_error = true;
+                }
+            }
+            if seen_others.len < seen_others.cap && key.len <= 64 {
+                var item = SeenHeaderKey { .. };
+                item.name.append(key);
+                seen_others.push(item);
+            }
             json::skip(reader);
         }
     };
@@ -413,27 +448,50 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     out_claims.custom_claims.clear();
     var had_error = false;
 
+    var seen_iss = false;
+    var seen_sub = false;
+    var seen_aud = false;
+    var seen_jti = false;
+    var seen_exp = false;
+    var seen_nbf = false;
+    var seen_iat = false;
+
     json::each_member(reader) { key =>
         scratch.clear();
         if key == "iss" {
+            if seen_iss {
+                had_error = true;
+            }
+            seen_iss = true;
             let s = json::read_string(reader, scratch);
             if s.len <= out_claims.iss.cap {
+                out_claims.iss.clear();
                 out_claims.iss.append(s);
             } else {
                 had_error = true;
             }
         } else if key == "sub" {
+            if seen_sub {
+                had_error = true;
+            }
+            seen_sub = true;
             let s = json::read_string(reader, scratch);
             if s.len <= out_claims.sub.cap {
+                out_claims.sub.clear();
                 out_claims.sub.append(s);
             } else {
                 had_error = true;
             }
         } else if key == "aud" {
+            if seen_aud {
+                had_error = true;
+            }
+            seen_aud = true;
             let p = json::peek(reader);
             if p == '"' {
                 let s = json::read_string(reader, scratch);
                 if s.len <= out_claims.aud.cap {
+                    out_claims.aud.clear();
                     out_claims.aud.append(s);
                 } else {
                     had_error = true;
@@ -442,19 +500,56 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
                 json::skip(reader);
             }
         } else if key == "jti" {
+            if seen_jti {
+                had_error = true;
+            }
+            seen_jti = true;
             let s = json::read_string(reader, scratch);
             if s.len <= out_claims.jti.cap {
+                out_claims.jti.clear();
                 out_claims.jti.append(s);
             } else {
                 had_error = true;
             }
         } else if key == "exp" {
-            out_claims.exp = json::read_int(reader);
+            if seen_exp {
+                had_error = true;
+            }
+            seen_exp = true;
+            let val = json::read_int(reader);
+            if val < 0 {
+                had_error = true;
+            } else {
+                out_claims.exp = val;
+            }
         } else if key == "nbf" {
-            out_claims.nbf = json::read_int(reader);
+            if seen_nbf {
+                had_error = true;
+            }
+            seen_nbf = true;
+            let val = json::read_int(reader);
+            if val < 0 {
+                had_error = true;
+            } else {
+                out_claims.nbf = val;
+            }
         } else if key == "iat" {
-            out_claims.iat = json::read_int(reader);
+            if seen_iat {
+                had_error = true;
+            }
+            seen_iat = true;
+            let val = json::read_int(reader);
+            if val < 0 {
+                had_error = true;
+            } else {
+                out_claims.iat = val;
+            }
         } else {
+            for &c in out_claims.custom_claims {
+                if c.key[..] == key {
+                    had_error = true;
+                }
+            }
             let p = json::peek(reader);
             if p == '"' {
                 let s = json::read_string(reader, scratch);
@@ -628,6 +723,8 @@ fn split_jwt_parts(
 }
 
 fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_sec: i64) -> bool {
+    guard leeway >= 0 else { return false; }
+    guard now_unix_sec >= 0 else { return false; }
     if exp >= 0 {
         let max_exp_cutoff = if exp > 9223372036854775807 - leeway {
             9223372036854775807
@@ -640,6 +737,8 @@ fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_se
 }
 
 fn validate_jwt_not_before(nbf: i64, require_nbf: bool, leeway: i64, now_unix_sec: i64) -> bool {
+    guard leeway >= 0 else { return false; }
+    guard now_unix_sec >= 0 else { return false; }
     if nbf >= 0 {
         let min_nbf_cutoff = if nbf < leeway {
             0

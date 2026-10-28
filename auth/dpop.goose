@@ -369,7 +369,29 @@ fn verify_dpop_nonce(claims_json: const u8[:], expected_nonce: const u8[:]) -> b
     return nonce_val == expected_nonce;
 }
 
-// Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, and time window.
+// RFC 9449 Section 6.1 / RFC 7638: Verifies JWK Thumbprint ('jkt') confirmation claim.
+fn verify_dpop_jkt(claims_json: const u8[:], expected_jkt: const u8[:]) -> bool {
+    guard expected_jkt.len > 0 else { return false; }
+    let jkt_idx = core::index_of_slice(claims_json, "\"jkt\":");
+    guard jkt_idx >= 0 else { return false; }
+
+    var pos = jkt_idx + 6;
+    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+        pos += 1;
+    }
+    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
+    pos += 1;
+    let val_start = pos;
+    while pos < claims_json.len && claims_json[pos] != '"' {
+        pos += 1;
+    }
+    guard pos < claims_json.len else { return false; }
+    let jkt_val = claims_json[val_start..pos];
+    guard jkt_val.len == expected_jkt.len else { return false; }
+    return core::ct_eq_bytes(jkt_val, expected_jkt);
+}
+
+// Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, jkt, and time window.
 fn verify_dpop_proof(
     jwt: const u8[:],
     key: const u8[:],
@@ -380,6 +402,7 @@ fn verify_dpop_proof(
     now_sec: i64 = 0,
     max_age_sec: i64 = 300,
     max_skew_sec: i64 = 60,
+    expected_jkt: const u8[:] = "",
 ) -> bool {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
@@ -409,6 +432,10 @@ fn verify_dpop_proof(
 
     if expected_nonce.len > 0 {
         guard verify_dpop_nonce(claims_json[..], expected_nonce) else { return false; }
+    }
+
+    if expected_jkt.len > 0 {
+        guard verify_dpop_jkt(claims_json[..], expected_jkt) else { return false; }
     }
 
     return verify_dpop_iat(claims_json[..], now_sec, max_age_sec, max_skew_sec);

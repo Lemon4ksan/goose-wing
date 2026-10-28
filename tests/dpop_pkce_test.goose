@@ -50,6 +50,21 @@ fn test_pkce_rfc7636(t: core::T&) {
         // Validate API
         sub.assert_true(wing::validate_code_challenge(rfc_verifier, challenge_s256[..], "S256"), "Validation succeeds for valid S256");
         sub.assert_false(wing::validate_code_challenge(rfc_verifier, "invalid_challenge_hash_123456789012345678901", "S256"), "Validation fails for wrong challenge");
+
+        // RFC 7636 §4.2: S256 challenge MUST be unpadded base64url (no '=' padding)
+        let padded_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM=";
+        sub.assert_false(wing::is_valid_code_challenge(padded_challenge, "S256"), "Padded S256 challenge rejected by is_valid_code_challenge");
+        sub.assert_false(wing::validate_code_challenge(rfc_verifier, padded_challenge, "S256"), "Padded S256 challenge rejected by validate_code_challenge");
+
+        // RFC 7636 §4.3: code_challenge_method is case-sensitive
+        sub.assert_false(wing::compute_code_challenge(rfc_verifier, "s256", challenge_s256), "Lowercase method s256 rejected");
+        sub.assert_false(wing::validate_code_challenge(rfc_verifier, challenge_s256[..], "s256"), "Validation rejects lowercase s256 method");
+        sub.assert_false(wing::validate_code_challenge(rfc_verifier, challenge_plain[..], "Plain"), "Validation rejects capitalized Plain method");
+
+        // Invalid challenge length and charset
+        sub.assert_false(wing::is_valid_code_challenge("too_short", "S256"), "Short S256 challenge rejected");
+        let illegal_char_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw+cM"; // '+' instead of '-'
+        sub.assert_false(wing::is_valid_code_challenge(illegal_char_challenge, "S256"), "Illegal char in S256 challenge rejected");
     };
 
     t.run("PKCE Create Challenge Pair Helper") { sub =>
@@ -250,6 +265,42 @@ fn test_dpop_rfc9449(t: core::T&) {
 
         let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", access_tok, "", 1714000000);
         sub.assert_false(ok, "Proof with ath in jti instead of ath claim MUST be rejected");
+    };
+
+    t.run("DPoP Proof JWK Thumbprint Confirmation (jkt / RFC 9449 §6.1)") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let expected_jkt = "0ZcOCORZTXDEZytrEBBlSz2bTHTNVrQSnXDtfSTXvt8";
+
+        var c_json: u8[..512] = [];
+        c_json.append("{\"jti\":\"jti-jkt-01\",\"htm\":\"POST\",\"htu\":\"https://api.example.com/token\",\"iat\":1714000000,\"jkt\":\"");
+        c_json.append(expected_jkt);
+        c_json.append("\"}");
+
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+        var c_b64: u8[..256] = [];
+        core::base64url_encode(c_json[..], c_b64);
+        var signing_input: u8[..512] = [];
+        signing_input.append(h_b64);
+        signing_input.push('.' as u8);
+        signing_input.append(c_b64[..]);
+        let sig = core::hmac_sha256(key, signing_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(signing_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        // Direct claim verification
+        sub.assert_true(wing::verify_dpop_jkt(c_json[..], expected_jkt), "verify_dpop_jkt succeeds on matching thumbprint");
+        sub.assert_false(wing::verify_dpop_jkt(c_json[..], "wrong_thumbprint_value_12345678901234567890"), "verify_dpop_jkt fails on wrong thumbprint");
+
+        // Proof verification with expected_jkt
+        let ok_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, expected_jkt);
+        sub.assert_true(ok_proof, "verify_dpop_proof succeeds when jkt matches");
+
+        let fail_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");
+        sub.assert_false(fail_proof, "verify_dpop_proof fails when jkt does not match");
     };
 }
 

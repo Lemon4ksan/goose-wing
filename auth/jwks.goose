@@ -107,7 +107,50 @@ fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
     return -1;
 }
 
-// ---- 2. JWKS Serialization & Parsing (RFC 7517) ------------------------------
+// ---- 2. JWK Canonicalization & Thumbprint (RFC 7638 / RFC 8037) -------------
+
+// Computes RFC 7638 / RFC 8037 Canonical JSON representation of a JWK:
+// - Lexicographically sorted required members only
+// - No whitespace
+// - OKP (RFC 8037 §4): "crv", "kty", "x"
+// - oct (RFC 7638 §3.2): "k", "kty"
+// - Ignores optional members (alg, use, kid)
+fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
+    out.clear();
+    if key.kty == JwkKeyType.OKP {
+        guard key.crv.len > 0 else { return false; }
+        out.append("{\"crv\":\"");
+        out.append(key.crv[..]);
+        out.append("\",\"kty\":\"OKP\",\"x\":\"");
+        var x_b64: u8[..64] = [];
+        core::base64url_encode(key.public_key[..], x_b64);
+        out.append(x_b64[..]);
+        out.append("\"}");
+        return true;
+    } else if key.kty == JwkKeyType.Oct {
+        guard key.symmetric_key.len > 0 else { return false; }
+        out.append("{\"k\":\"");
+        var k_b64: u8[..128] = [];
+        core::base64url_encode(key.symmetric_key[..], k_b64);
+        out.append(k_b64[..]);
+        out.append("\",\"kty\":\"oct\"}");
+        return true;
+    }
+    return false;
+}
+
+// Computes the RFC 7638 JWK Thumbprint:
+// SHA-256 hash of canonical JSON, base64url-encoded without padding.
+fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool {
+    out.clear();
+    var canonical: u8[..256] = [];
+    guard compute_canonical_jwk(key, canonical) else { return false; }
+    let digest = core::sha256(canonical[..]);
+    core::base64url_encode(digest[..], out);
+    return true;
+}
+
+// ---- 3. JWKS Serialization & Parsing (RFC 7517) ------------------------------
 
 // Serializes a JWKS struct into RFC 7517 JSON format: `{"keys": [ {...}, ... ]}`
 fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {

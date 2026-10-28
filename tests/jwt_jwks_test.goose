@@ -504,6 +504,166 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 6. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints
+// ----------------------------------------------------------------------------
+fn craft_raw_jwt<B>(header_json: const u8[:], claims_json: const u8[:], secret: const u8[:], out_token: B&) {
+    out_token.clear();
+    var h_b64: u8[..256] = [];
+    core::base64url_encode(header_json, h_b64);
+    var c_b64: u8[..512] = [];
+    core::base64url_encode(claims_json, c_b64);
+    out_token.append(h_b64[..]);
+    out_token.push('.');
+    out_token.append(c_b64[..]);
+    let sig = core::hmac_sha256(secret, out_token[..]);
+    var sig_b64: u8[..64] = [];
+    core::base64url_encode(sig[..], sig_b64);
+    out_token.push('.');
+    out_token.append(sig_b64[..]);
+}
+
+fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
+    let secret = "audit-rfc7519-secret-key-32bytes";
+    let now_sec: i64 = 1770000000;
+
+    t.run("Duplicate exp claim rejected with InvalidClaimsJson (RFC 7519 §4 / RFC 8725 §2.2)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+        // First exp is expired (1000), duplicate exp is future (9999999999)
+        let clm_json = "{\"sub\":\"user1\",\"exp\":1000,\"exp\":9999999999}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate exp claim MUST be rejected");
+    };
+
+    t.run("Duplicate sub claim rejected with InvalidClaimsJson (RFC 7519 §4)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+        let clm_json = "{\"sub\":\"alice\",\"sub\":\"bob\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate sub claim MUST be rejected");
+    };
+
+    t.run("Duplicate custom claim rejected with InvalidClaimsJson (RFC 7519 §4)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+        let clm_json = "{\"sub\":\"alice\",\"role\":\"user\",\"role\":\"admin\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate custom claim MUST be rejected");
+    };
+
+    t.run("Duplicate header alg rejected with InvalidHeaderJson (RFC 7515 §4 / RFC 8725 §2.2)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"alg\":\"HS512\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Header with duplicate alg MUST be rejected");
+    };
+
+    t.run("Negative timestamp in exp rejected with InvalidClaimsJson (RFC 7519 §2 NumericDate)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":-10}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        opts.require_exp = false; // Even if exp not required, invalid negative timestamp must be rejected
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Negative timestamp MUST be rejected during claims parsing");
+    };
+
+    t.run("Negative leeway rejected in expiration validation (RFC 8725 §2.5)") { sub =>
+        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "alice");
+        wing::set_expiry(clm, 1000);
+
+        var token: u8[..1024] = [];
+        wing::sign_jwt_hmac(hdr, clm, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        opts.leeway_seconds = -1; // Negative leeway must not trigger signed overflow
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, 1005, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.TokenExpired, "Negative leeway triggers TokenExpired, preventing signed overflow bypass");
+    };
+
+    t.run("RFC 7638 JWK Thumbprint calculation canonical JSON ordering (OKP / Ed25519 & Oct)") { sub =>
+        // OKP Key (RFC 8037 §4): canonical order "crv", "kty", "x"
+        var okp_key = wing::JwksKey {
+            kty: wing::JwkKeyType.OKP,
+            crv: "Ed25519",
+            alg: wing::JwtAlg.EdDSA, // optional member - must be excluded from canonical JSON
+            use: "sig",             // optional member - must be excluded from canonical JSON
+            valid: true,
+            ..
+        };
+        okp_key.kid.append("test-key-id-ignored");
+        for i in 32 {
+            okp_key.public_key[i] = (i + 1) as u8;
+        }
+
+        var okp_canonical: u8[..256] = [];
+        let ok1 = wing::compute_canonical_jwk(okp_key, okp_canonical);
+        sub.assert_true(ok1, "OKP canonical JSON computed");
+        // Lexicographical ordering: "crv", then "kty", then "x"
+        sub.assert_true(core::starts_with(okp_canonical[..], "{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\""), "OKP canonical members ordered crv, kty, x");
+        sub.assert_false(core::contains(okp_canonical[..], "alg"), "Canonical JSON excludes alg");
+        sub.assert_false(core::contains(okp_canonical[..], "use"), "Canonical JSON excludes use");
+        sub.assert_false(core::contains(okp_canonical[..], "kid"), "Canonical JSON excludes kid");
+
+        var okp_thumbprint: u8[..64] = [];
+        let ok_tp1 = wing::compute_jwk_thumbprint(okp_key, okp_thumbprint);
+        sub.assert_true(ok_tp1, "OKP thumbprint computed");
+        sub.assert_eq(okp_thumbprint.len, 43, "Thumbprint is 43 chars (unpadded base64url of SHA-256)");
+
+        // Oct Key (RFC 7638 §3.2): canonical order "k", "kty"
+        var oct_key = wing::JwksKey {
+            kty: wing::JwkKeyType.Oct,
+            alg: wing::JwtAlg.HS256,
+            valid: true,
+            ..
+        };
+        oct_key.symmetric_key.append("test-secret-oct-32bytes-padding!");
+
+        var oct_canonical: u8[..256] = [];
+        let ok2 = wing::compute_canonical_jwk(oct_key, oct_canonical);
+        sub.assert_true(ok2, "Oct canonical JSON computed");
+        // Lexicographical ordering: "k" before "kty"
+        sub.assert_true(core::starts_with(oct_canonical[..], "{\"k\":\""), "Oct canonical members start with k");
+        sub.assert_true(core::ends_with(oct_canonical[..], "\",\"kty\":\"oct\"}"), "Oct canonical members end with kty");
+        sub.assert_false(core::contains(oct_canonical[..], "alg"), "Oct canonical JSON excludes alg");
+
+        var oct_thumbprint: u8[..64] = [];
+        let ok_tp2 = wing::compute_jwk_thumbprint(oct_key, oct_thumbprint);
+        sub.assert_true(ok_tp2, "Oct thumbprint computed");
+        sub.assert_eq(oct_thumbprint.len, 43, "Oct thumbprint is 43 chars");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
@@ -514,6 +674,7 @@ fn main() {
     core::run_case(runner, "3. RFC 8725 BCP Security Defenses", test_jwt_security_defenses);
     core::run_case(runner, "4. RFC 7517 JWKS Serialization, Parsing & Key Rotation", test_jwks_serialization_and_parsing);
     core::run_case(runner, "5. Integrated JWT Verification against JWKS Key Set", test_jwt_verification_against_jwks);
+    core::run_case(runner, "6. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints", test_jwt_rfc7519_claims_and_thumbprint);
 
     let ok = core::finish(runner);
     assert(ok);
