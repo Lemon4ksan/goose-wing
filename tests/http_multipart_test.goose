@@ -310,6 +310,144 @@ fn test_boundary_delimiter_and_disposition_invariants(t: core::T&) {
     };
 }
 
+fn test_rfc9110_coalescing_and_nested_boundaries(t: core::T&) {
+    t.run("Out-of-Order and Overlapping Range Coalescing (RFC 9110 Section 14.1.2)") { sub =>
+        let file_len: i64 = 10000;
+
+        // 1. Out-of-order disjoint: bytes=100-200, 0-50 -> sorted [0, 50], [100, 200]
+        let rs_ord, err_ord = wing::parse_range_header("bytes=100-200, 0-50", file_len, true);
+        sub.assert_eq(err_ord, wing::RangeError.None, "Out-of-order ranges parsed");
+        sub.assert_true(rs_ord.coalesced, "Coalescing triggered");
+        sub.assert_eq(rs_ord.ranges.len, 2, "Maintains 2 sorted disjoint ranges");
+        sub.assert_eq(rs_ord.ranges[0].start, 0, "First range start is 0");
+        sub.assert_eq(rs_ord.ranges[0].end_pos, 50, "First range end is 50");
+        sub.assert_eq(rs_ord.ranges[1].start, 100, "Second range start is 100");
+        sub.assert_eq(rs_ord.ranges[1].end_pos, 200, "Second range end is 200");
+
+        // 2. Out-of-order overlapping: bytes=100-200, 0-150 -> merged [0, 200]
+        let rs_over, err_over = wing::parse_range_header("bytes=100-200, 0-150", file_len, true);
+        sub.assert_eq(err_over, wing::RangeError.None, "Out-of-order overlapping parsed");
+        sub.assert_true(rs_over.coalesced, "Coalesced");
+        sub.assert_eq(rs_over.ranges.len, 1, "Merged to 1 range");
+        sub.assert_eq(rs_over.ranges[0].start, 0, "Merged start 0");
+        sub.assert_eq(rs_over.ranges[0].end_pos, 200, "Merged end 200");
+
+        // 3. Duplicate identical ranges: bytes=0-50, 0-50 -> single range [0, 50]
+        let rs_dup, err_dup = wing::parse_range_header("bytes=0-50, 0-50", file_len, true);
+        sub.assert_eq(err_dup, wing::RangeError.None, "Duplicate ranges parsed");
+        sub.assert_true(rs_dup.coalesced, "Coalesced");
+        sub.assert_eq(rs_dup.ranges.len, 1, "Duplicate coalesced to 1 range");
+        sub.assert_eq(rs_dup.ranges[0].start, 0, "Range start 0");
+        sub.assert_eq(rs_dup.ranges[0].end_pos, 50, "Range end 50");
+
+        // 4. Identical start, out-of-order end: bytes=0-100, 0-50 -> merged [0, 100]
+        let rs_same_s, err_same_s = wing::parse_range_header("bytes=0-100, 0-50", file_len, true);
+        sub.assert_eq(err_same_s, wing::RangeError.None, "Same start parsed");
+        sub.assert_true(rs_same_s.coalesced, "Coalesced");
+        sub.assert_eq(rs_same_s.ranges.len, 1, "Merged into 1 range");
+        sub.assert_eq(rs_same_s.ranges[0].start, 0, "Merged start 0");
+        sub.assert_eq(rs_same_s.ranges[0].end_pos, 100, "Merged end 100");
+    };
+
+    t.run("Negative Suffix Range Math (RFC 9110 Section 14.1.2)") { sub =>
+        let file_len: i64 = 10000;
+
+        // bytes=-0 must be rejected with MalformedRange
+        let rs_zero, err_zero = wing::parse_range_header("bytes=-0", file_len);
+        sub.assert_eq(err_zero, wing::RangeError.MalformedRange, "bytes=-0 rejected as MalformedRange");
+
+        // Suffix length exceeding resource length clamps to full resource [0, file_len - 1]
+        let rs_clamp, err_clamp = wing::parse_range_header("bytes=-20000", file_len);
+        sub.assert_eq(err_clamp, wing::RangeError.None, "Large suffix parsed");
+        sub.assert_eq(rs_clamp.ranges.len, 1, "1 range");
+        sub.assert_eq(rs_clamp.ranges[0].start, 0, "Start clamped to 0");
+        sub.assert_eq(rs_clamp.ranges[0].end_pos, 9999, "End clamped to resource_len - 1");
+    };
+
+    t.run("64-Bit Integer Overflow Guard in Range Serving") { sub =>
+        // Construct a synthetic RangeSet where end_pos - start + 1 would overflow signed 64-bit int
+        var rs = wing::RangeSet {
+            resource_length: 9223372036854775807,
+            is_satisfiable: true,
+            coalesced: false,
+            ..
+        };
+        rs.ranges.push(wing::NormalizedRange {
+            start: 0,
+            end_pos: 9223372036854775807,
+        });
+
+        var status: i32 = 0;
+        var headers = wing::new_header_map();
+        var body_out: u8[>..] = [];
+
+        wing::serve_range_set(
+            rs,
+            9223372036854775807,
+            "application/octet-stream",
+            status,
+            headers,
+            body_out,
+        ) { offset, len, out =>
+            // Callback should never be invoked for overflowing range
+            out.append("overflow");
+        };
+
+        sub.assert_eq(status, 416, "Status 416 Range Not Satisfiable on i64 overflow");
+        sub.assert_bytes_eq(wing::get_header(headers, "content-range"), "bytes */9223372036854775807", "416 Content-Range with resource length");
+        sub.assert_bytes_eq(wing::get_header(headers, "content-length"), "0", "Content-Length is 0");
+        sub.assert_eq(body_out.len, 0, "Body empty");
+    };
+
+    t.run("Nested Multipart MIME and Boundary Prefix Isolation (RFC 2046 Section 5.1)") { sub =>
+        // Outer boundary is a strict prefix of inner boundary: 'Outer' and 'Outer_Inner'
+        let outer_boundary = "Outer";
+        let inner_boundary = "Outer_Inner";
+
+        var body: u8[>..] = [];
+        body.append("--Outer\r\n");
+        body.append("Content-Disposition: form-data; name=\"upload_batch\"\r\n");
+        body.append("Content-Type: multipart/form-data; boundary=Outer_Inner\r\n\r\n");
+
+        // Inner nested payload
+        body.append("--Outer_Inner\r\n");
+        body.append("Content-Disposition: form-data; name=\"doc1\"; filename=\"notes.txt\"\r\n");
+        body.append("Content-Type: text/plain\r\n\r\n");
+        body.append("meeting notes\r\n");
+        body.append("--Outer_Inner\r\n");
+        body.append("Content-Disposition: form-data; name=\"doc2\"; filename=\"summary.md\"\r\n");
+        body.append("Content-Type: text/markdown\r\n\r\n");
+        body.append("# Project Plan\r\n");
+        body.append("--Outer_Inner--\r\n");
+
+        // Outer closing boundary
+        body.append("--Outer--\r\n");
+
+        // 1. Outer parse: should NOT prematurely terminate at --Outer_Inner
+        let outer_msg, outer_err = wing::parse_multipart(body[..], outer_boundary);
+        sub.assert_eq(outer_err, wing::MultipartError.None, "Outer multipart parsed cleanly");
+        sub.assert_true(outer_msg.valid, "Outer message valid");
+        sub.assert_eq(outer_msg.parts.len, 1, "Exactly 1 outer part extracted");
+        sub.assert_bytes_eq(outer_msg.parts[0].name[..], "upload_batch", "Outer part name matched");
+
+        // 2. Inner parse: parse outer part's data with inner boundary
+        let inner_msg, inner_err = wing::parse_multipart(outer_msg.parts[0].data, inner_boundary);
+        sub.assert_eq(inner_err, wing::MultipartError.None, "Inner nested multipart parsed cleanly");
+        sub.assert_true(inner_msg.valid, "Inner message valid");
+        sub.assert_eq(inner_msg.parts.len, 2, "Both nested parts extracted");
+
+        let p1 = inner_msg.parts[0];
+        sub.assert_bytes_eq(p1.name[..], "doc1", "Nested part 1 name");
+        sub.assert_bytes_eq(p1.filename[..], "notes.txt", "Nested part 1 filename");
+        sub.assert_bytes_eq(p1.data, "meeting notes", "Nested part 1 data intact");
+
+        let p2 = inner_msg.parts[1];
+        sub.assert_bytes_eq(p2.name[..], "doc2", "Nested part 2 name");
+        sub.assert_bytes_eq(p2.filename[..], "summary.md", "Nested part 2 filename");
+        sub.assert_bytes_eq(p2.data, "# Project Plan", "Nested part 2 data intact");
+    };
+}
+
 // ---- consolidated suite entry point ---------------------------------------
 
 fn main() {
@@ -322,6 +460,7 @@ fn main() {
     core::run_case(runner, "5. If-Range & Seconds Truncation", test_if_range_and_seconds_truncation);
     core::run_case(runner, "6. Window Reader serve_range & Byte-Range PATCH", test_serve_range_and_patch_validation);
     core::run_case(runner, "7. Boundary Delimiters & RFC 7578 Disposition Enforcement", test_boundary_delimiter_and_disposition_invariants);
+    core::run_case(runner, "8. RFC 9110 Coalescing, Overflow Guard & Nested Boundaries", test_rfc9110_coalescing_and_nested_boundaries);
 
     let ok = core::finish(runner);
     assert(ok);

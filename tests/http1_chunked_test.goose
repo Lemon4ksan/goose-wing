@@ -111,19 +111,31 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
         sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInTrailer, "Bare LF ending trailers rejected");
     };
 
-    t.run("Disallowed framing headers in trailers (RFC 9112 Section 7.1.2)") { sub =>
+    t.run("RFC 9110 Section 6.5.1: Comprehensive Forbidden Trailer Fields Enforcement") { sub =>
         var out_body: u8[>..] = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
-        let disallowed_cases: const u8[:][8] = [
+        let disallowed_cases: const u8[:][20] = [
             "Transfer-Encoding: chunked",
             "Content-Length: 42",
             "Trailer: X-Foo",
             "Host: evil.com",
             "Authorization: Bearer secret",
+            "Proxy-Authorization: Basic abc",
             "Set-Cookie: session=hijack",
             "Cookie: secret=leak",
             "Content-Range: bytes 0-10/100",
+            "Content-Type: text/plain",
+            "Content-Encoding: gzip",
+            "Connection: close",
+            "Keep-Alive: timeout=5",
+            "Upgrade: websocket",
+            "Proxy-Connection: keep-alive",
+            "TE: trailers",
+            "If-Match: \"xyz\"",
+            "If-None-Match: \"xyz\"",
+            "If-Modified-Since: Wed, 21 Oct 2026 07:28:00 GMT",
+            "Range: bytes=0-10",
         ];
 
         for dc in disallowed_cases {
@@ -135,6 +147,40 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
             let err, _ = wing::decode_chunked_body_with_trailers(raw[..], out_body, out_trailers);
             sub.assert_eq(err, wing::ChunkedDecodeError.DisallowedTrailer, "Disallowed header in trailer rejected");
         }
+
+        // Direct is_disallowed_trailer_field verification including pseudo-headers and whitespace
+        sub.assert_true(wing::is_disallowed_trailer_field("connection"), "connection is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("Connection"), "Connection (cased) is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("  connection  "), "whitespace padded connection is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("keep-alive"), "keep-alive is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("upgrade"), "upgrade is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("proxy-connection"), "proxy-connection is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("if-match"), "if-match is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("if-none-match"), "if-none-match is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("if-modified-since"), "if-modified-since is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("if-unmodified-since"), "if-unmodified-since is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("if-range"), "if-range is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field("range"), "range is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field(":method"), "pseudo-header :method is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field(":path"), "pseudo-header :path is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field(":status"), "pseudo-header :status is forbidden");
+        sub.assert_true(wing::is_disallowed_trailer_field(":authority"), "pseudo-header :authority is forbidden");
+
+        // Allowed custom trailers
+        sub.assert_false(wing::is_disallowed_trailer_field("x-checksum"), "x-checksum is allowed");
+        sub.assert_false(wing::is_disallowed_trailer_field("expires"), "expires is allowed");
+    };
+
+    t.run("RFC 9112 Section 7.1.2: Chunked FSM trailer syntax & colon enforcement") { sub =>
+        // Missing colon in trailer line MUST be rejected by FSM
+        var dec1 = internal::new_chunk_fsm_decoder();
+        let st1, _, _ = internal::chunk_fsm_feed(dec1, "0\r\nTrailerWithoutColon\r\n\r\n");
+        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "Trailer line without colon must return Error");
+
+        // Whitespace before colon in trailer line MUST be rejected (RFC 9112 §5.1 / CVE-2019-16276)
+        var dec2 = internal::new_chunk_fsm_decoder();
+        let st2, _, _ = internal::chunk_fsm_feed(dec2, "0\r\nX-Trailer : val\r\n\r\n");
+        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Whitespace before colon in trailer must return Error");
     };
 
     t.run("Trailer flood protection (> 16 fields or > 4096 bytes)") { sub =>

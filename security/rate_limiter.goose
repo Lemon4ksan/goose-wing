@@ -22,8 +22,9 @@ struct GcraQuota {
 fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> GcraQuota {
     let p_ns = if period_dur.nanos > 0 { period_dur.nanos as u64 } else { 1000000000 as u64 };
     let l = if limit > 0 { limit } else { 1 as u64 };
-    let t_ns = p_ns / l;
-    let tau_ns = t_ns * burst;
+    let t_raw = p_ns / l;
+    let t_ns = if t_raw > 0 { t_raw } else { 1 as u64 };
+    let tau_ns = core::mul_sat_u64(t_ns, burst);
 
     return GcraQuota {
         emission_interval_ns: t_ns,
@@ -60,11 +61,10 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
 
+    let limit_window = core::add_sat_u64(tau, t);
     let tat_old = cell.tat_ns;
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     let tat_new = core::add_sat_u64(tat_base, delta);
-
-    let limit_window = tau + t;
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
     if now_ns < t_allow {
@@ -77,10 +77,11 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
 
     cell.tat_ns = tat_new;
 
-    // Remaining burst calculation
+    // Remaining burst calculation without u64 overflow
     var rem: u64 = 0;
-    if (tat_new + tau) >= (now_ns + limit_window) {
-        let diff = (tat_new + tau) - (now_ns + limit_window);
+    let baseline = core::add_sat_u64(now_ns, t);
+    if tat_new > baseline {
+        let diff = tat_new - baseline;
         rem = if tau > diff { (tau - diff) / t } else { 0 };
     } else {
         rem = quota.burst;
@@ -108,18 +109,27 @@ fn gcra_reserve_n(
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
 
+    let limit_window = core::add_sat_u64(tau, t);
     let tat_old = cell.tat_ns;
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     let tat_new = core::add_sat_u64(tat_base, delta);
-
-    let limit_window = tau + t;
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
     if now_ns >= t_allow {
         cell.tat_ns = tat_new;
         let reset_after = core::sub_sat_u64(tat_new, now_ns);
+
+        var rem: u64 = 0;
+        let baseline = core::add_sat_u64(now_ns, t);
+        if tat_new > baseline {
+            let diff = tat_new - baseline;
+            rem = if tau > diff { (tau - diff) / t } else { 0 };
+        } else {
+            rem = quota.burst;
+        }
+
         return RateLimitDecision.Allowed {
-            remaining_burst: quota.burst,
+            remaining_burst: rem,
             new_tat_ns: tat_new,
             reset_after_ns: reset_after,
         };
@@ -276,20 +286,20 @@ fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: c
             res.headers.set_header("RateLimit-Remaining", rem_str[..]);
 
             var reset_str: u8[..32] = [];
-            let reset_sec = (a.reset_after_ns + 999999999) / 1000000000;
+            let reset_sec = core::add_sat_u64(a.reset_after_ns, 999999999) / 1000000000;
             core::format_i64_dec(reset_sec as i64, reset_str);
             res.headers.set_header("RateLimit-Reset", reset_str[..]);
         },
         Reserved r => {
             res.headers.set_header("RateLimit-Remaining", "0");
             var reset_str: u8[..32] = [];
-            let reset_sec = (r.wait_ns + 999999999) / 1000000000;
+            let reset_sec = core::add_sat_u64(r.wait_ns, 999999999) / 1000000000;
             core::format_i64_dec(reset_sec as i64, reset_str);
             res.headers.set_header("RateLimit-Reset", reset_str[..]);
         },
         Rejected rej => {
             res.headers.set_header("RateLimit-Remaining", "0");
-            let retry_sec = (rej.retry_after_ns + 999999999) / 1000000000;
+            let retry_sec = core::add_sat_u64(rej.retry_after_ns, 999999999) / 1000000000;
             var retry_str: u8[..32] = [];
             core::format_i64_dec(retry_sec as i64, retry_str);
             res.headers.set_header("RateLimit-Reset", retry_str[..]);

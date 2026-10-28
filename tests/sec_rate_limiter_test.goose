@@ -212,6 +212,55 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 6. GCRA Arithmetic, Overflow & Zero Emission Invariants
+// ----------------------------------------------------------------------------
+fn test_gcra_arithmetic_and_overflow(t: core::T&) {
+    t.run("Zero Emission Interval Handling & Division by Zero") { sub =>
+        // Limit 2,000,000 req per 1 ms (p_ns = 1,000,000, l = 2,000,000 -> p_ns / l = 0)
+        let quota = wing::new_gcra_quota(2000000, core::Duration { nanos: 1000000 }, 10);
+        sub.assert_true(quota.emission_interval_ns >= 1, "emission interval floored to >= 1ns to prevent division by zero");
+
+        var cell = wing::GcraCell { tat_ns: 0 };
+        let dec = wing::gcra_check_n(quota, cell, 1, 1000000);
+        sub.assert_true(wing::is_allowed(dec), "admission succeeds without divide-by-zero panic");
+    };
+
+    t.run("Accurate Burst Remaining Calculation in Reservation") { sub =>
+        // Limit: 1 req/s (T = 1s), Burst: 5 (tau = 5s)
+        let quota = wing::new_gcra_quota(1, core::secs(1), 5);
+        var cell = wing::GcraCell { tat_ns: 0 };
+        let now: u64 = 1000000000;
+
+        // Immediate reservation consuming 3 tokens
+        let dec = wing::gcra_reserve_n(quota, cell, 3, now, 10000000000);
+        sub.assert_true(wing::is_allowed(dec), "reservation allowed immediately");
+        let remaining = match dec {
+            Allowed a => a.remaining_burst,
+            _ => 999,
+        };
+        // After consuming 3 tokens from initial burst capacity of 5, remaining burst must decrement
+        sub.assert_true(remaining < 5, "remaining_burst must decrement, not report static quota.burst");
+        sub.assert_eq(remaining, 3, "remaining_burst decrements to 3 after cost 3");
+    };
+
+    t.run("U64 Nanosecond Overflow In Burst Calculation") { sub =>
+        let quota = wing::new_gcra_quota(1, core::secs(1), 5); // T = 1s, tau = 5s
+        let now: u64 = 18446744073709551615 - 30000000000; // 30s before u64::MAX
+        var cell = wing::GcraCell { tat_ns: now };
+
+        // Consuming 3 tokens near u64 limit:
+        let dec = wing::gcra_check_n(quota, cell, 3, now);
+        sub.assert_true(wing::is_allowed(dec), "admission succeeds near u64 boundaries");
+        let remaining = match dec {
+            Allowed a => a.remaining_burst,
+            _ => 999,
+        };
+        // After cost 3 from burst 5, remaining burst must decrement to 3
+        sub.assert_eq(remaining, 3, "burst correctly decrements without u64 wrap-around");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
@@ -222,6 +271,7 @@ fn main() {
     core::run_case(runner, "3. 256-Micro-Shard Table & Per-Key Isolation", test_sharded_gcra_limiter);
     core::run_case(runner, "4. Extreme DDoS Probabilistic Sampling (5%)", test_probabilistic_ddos_mitigation);
     core::run_case(runner, "5. IETF RateLimit-* Header Synthesis", test_ietf_rate_limit_headers);
+    core::run_case(runner, "6. GCRA Arithmetic, Overflow & Zero Emission Invariants", test_gcra_arithmetic_and_overflow);
 
     let ok = core::finish(runner);
     assert(ok);

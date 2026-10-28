@@ -101,6 +101,14 @@ fn chunk_fsm_feed(
                     dec.state = CHUNK_STATE_IS_ERROR;
                     return ChunkFsmStatus.Error, offset, data[..0];
                 } else if sub_st == 2 {
+                    if c == ':' {
+                        dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 4;
+                    } else if !is_chunk_token_char(c) {
+                        // RFC 9112 §5.1: Colon required, whitespace before colon forbidden
+                        dec.state = CHUNK_STATE_IS_ERROR;
+                        return ChunkFsmStatus.Error, offset, data[..0];
+                    }
+                } else if sub_st == 4 {
                     if c == '\r' {
                         dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 3;
                     } else if c == '\n' || c == 0x00 || (c < 0x20 && c != '\t') || c == 0x7F {

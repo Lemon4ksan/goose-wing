@@ -8,21 +8,40 @@ import std;
 import core from "../..";
 import http.headers;
 
-// RFC 9112 Section 7.1.2: Disallowed trailer fields threatening message framing or routing
+// RFC 9112 Section 7.1.2 & RFC 9110 Section 6.5.1:
+// Disallowed trailer fields threatening message framing, routing, caching, or connection state.
 fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
+    let name = trim_lws(hname);
+    guard name.len > 0 else { return true; }
+
+    // RFC 9110 §6.5.1 & RFC 9113 §8.1: Pseudo-header fields are strictly forbidden in trailers
+    if name[0] == ':' {
+        return true;
+    }
+
     // RFC 9110 §6.5.1 & Go #81143: Forbidden trailer fields
-    return eq_ascii_fold(hname, "content-length") ||
-           eq_ascii_fold(hname, "transfer-encoding") ||
-           eq_ascii_fold(hname, "trailer") ||
-           eq_ascii_fold(hname, "host") ||
-           eq_ascii_fold(hname, "authorization") ||
-           eq_ascii_fold(hname, "proxy-authorization") ||
-           eq_ascii_fold(hname, "set-cookie") ||
-           eq_ascii_fold(hname, "cookie") ||
-           eq_ascii_fold(hname, "content-range") ||
-           eq_ascii_fold(hname, "content-type") ||
-           eq_ascii_fold(hname, "content-encoding") ||
-           eq_ascii_fold(hname, "te");
+    return eq_ascii_fold(name, "content-length") ||
+           eq_ascii_fold(name, "transfer-encoding") ||
+           eq_ascii_fold(name, "trailer") ||
+           eq_ascii_fold(name, "host") ||
+           eq_ascii_fold(name, "connection") ||
+           eq_ascii_fold(name, "keep-alive") ||
+           eq_ascii_fold(name, "te") ||
+           eq_ascii_fold(name, "upgrade") ||
+           eq_ascii_fold(name, "proxy-connection") ||
+           eq_ascii_fold(name, "authorization") ||
+           eq_ascii_fold(name, "proxy-authorization") ||
+           eq_ascii_fold(name, "set-cookie") ||
+           eq_ascii_fold(name, "cookie") ||
+           eq_ascii_fold(name, "content-range") ||
+           eq_ascii_fold(name, "content-type") ||
+           eq_ascii_fold(name, "content-encoding") ||
+           eq_ascii_fold(name, "if-match") ||
+           eq_ascii_fold(name, "if-none-match") ||
+           eq_ascii_fold(name, "if-modified-since") ||
+           eq_ascii_fold(name, "if-unmodified-since") ||
+           eq_ascii_fold(name, "if-range") ||
+           eq_ascii_fold(name, "range");
 }
 
 // RFC 9112 Section 7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics

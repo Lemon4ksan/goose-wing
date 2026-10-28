@@ -471,9 +471,10 @@ fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: Normali
 }
 
 fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: NormalizedRange[..16]&) {
+    guard raw_ranges.len > 0 else { return; }
     for i in 1..raw_ranges.len {
         var j = i;
-        while j > 0 && raw_ranges[j].start < raw_ranges[j - 1].start {
+        while j > 0 && (raw_ranges[j].start < raw_ranges[j - 1].start || (raw_ranges[j].start == raw_ranges[j - 1].start && raw_ranges[j].end_pos < raw_ranges[j - 1].end_pos)) {
             let temp = raw_ranges[j];
             raw_ranges[j] = raw_ranges[j - 1];
             raw_ranges[j - 1] = temp;
@@ -712,6 +713,40 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
         insert_header(out_headers, "content-range", cr_val[..]);
         insert_header(out_headers, "content-length", "0");
         return;
+    }
+
+    serve_range_set(rs, resource_len, content_type, out_status, out_headers, out_body) { off, len, out =>
+        OpenFn(off, len, out);
+    };
+}
+
+// Handles a pre-parsed RangeSet, validating 64-bit integer overflow and writing status, headers, and body slices.
+fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
+    rs: const RangeSet&,
+    resource_len: i64,
+    content_type: const u8[:],
+    out_status: i32&,
+    out_headers: HeaderMap&,
+    out_body: u8[>..]&,
+) {
+    if !rs.is_satisfiable || rs.ranges.len == 0 {
+        out_status = 416;
+        var cr_val: u8[>..] = [];
+        format_content_range(-1, -1, resource_len, cr_val);
+        insert_header(out_headers, "content-range", cr_val[..]);
+        insert_header(out_headers, "content-length", "0");
+        return;
+    }
+
+    for r in rs.ranges {
+        if r.end_pos < r.start || r.start < 0 || r.end_pos - r.start >= 9223372036854775807 {
+            out_status = 416;
+            var cr_val: u8[>..] = [];
+            format_content_range(-1, -1, resource_len, cr_val);
+            insert_header(out_headers, "content-range", cr_val[..]);
+            insert_header(out_headers, "content-length", "0");
+            return;
+        }
     }
 
     if rs.ranges.len == 1 {
