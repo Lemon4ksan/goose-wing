@@ -1138,6 +1138,1134 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         let alert_ok = wing::verify_certificate_chain(chain, raw_chain, store, 2000);
         sub.assert_eq(wing::tls_alert_to_u8(alert_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid certificate chain verified");
     };
+
+    t.run("TLS-25: CS-01 ASN.1 DER Length 4-Byte Bounds, Signed Overflow & Reserved Octet Defense") { sub =>
+        // 1. 4-byte overflow (bit 31 set: 0x80000000 = 2147483648)
+        let of_4byte: u8[5] = [0x84, 0x80, 0x00, 0x00, 0x00];
+        var c_of = wing::cursor_from(of_4byte[..]);
+        var len_of: i64 = 0;
+        sub.assert_false(wing::get_asn1_length(c_of, len_of), "reject 4-byte length with signed bit set (overflow)");
+
+        // 2. Initial octet 0xFF strictly forbidden per X.690 Section 8.1.3.5(c)
+        let ff_len: u8[3] = [0xFF, 0x01, 0x01];
+        var c_ff = wing::cursor_from(ff_len[..]);
+        var len_ff: i64 = 0;
+        sub.assert_false(wing::get_asn1_length(c_ff, len_ff), "reject initial octet 0xFF");
+
+        // 3. Length > 4 bytes (e.g. 5 bytes) forbidden
+        let five_byte_len: u8[6] = [0x85, 0x01, 0x00, 0x00, 0x00, 0x00];
+        var c_5 = wing::cursor_from(five_byte_len[..]);
+        var len_5: i64 = 0;
+        sub.assert_false(wing::get_asn1_length(c_5, len_5), "reject 5-byte length");
+
+        // 4. make_span target longer than base must safely return zero span without underflow
+        let empty_span = wing::make_span("abc", "abcdef");
+        sub.assert_eq(empty_span.offset, 0, "make_span target > base offset 0");
+        sub.assert_eq(empty_span.length, 0, "make_span target > base len 0");
+    };
+
+    t.run("TLS-26: CS-02 ASN.1 DER Integer Parsing & Positive Serial Invariants") { sub =>
+        // 1. Valid integers decoded by get_asn1_integer
+        // 0 -> [0x02, 0x01, 0x00]
+        let zero_int: u8[3] = [0x02, 0x01, 0x00];
+        var c0 = wing::cursor_from(zero_int[..]);
+        var v0: i64 = -999;
+        sub.assert_true(wing::get_asn1_integer(c0, v0), "decode integer 0");
+        sub.assert_eq(v0, 0, "v0 == 0");
+
+        // 127 -> [0x02, 0x01, 0x7F]
+        let int_127: u8[3] = [0x02, 0x01, 0x7F];
+        var c127 = wing::cursor_from(int_127[..]);
+        var v127: i64 = 0;
+        sub.assert_true(wing::get_asn1_integer(c127, v127), "decode integer 127");
+        sub.assert_eq(v127, 127, "v127 == 127");
+
+        // 128 -> [0x02, 0x02, 0x00, 0x80] (requires 0x00 prefix to stay positive)
+        let int_128: u8[4] = [0x02, 0x02, 0x00, 0x80];
+        var c128 = wing::cursor_from(int_128[..]);
+        var v128: i64 = 0;
+        sub.assert_true(wing::get_asn1_integer(c128, v128), "decode integer 128");
+        sub.assert_eq(v128, 128, "v128 == 128");
+
+        // Negative integer -1 -> [0x02, 0x01, 0xFF]
+        let neg_one: u8[3] = [0x02, 0x01, 0xFF];
+        var cn1 = wing::cursor_from(neg_one[..]);
+        var vn1: i64 = 0;
+        sub.assert_true(wing::get_asn1_integer(cn1, vn1), "decode integer -1");
+        sub.assert_eq(vn1, -1, "vn1 == -1");
+
+        // Negative integer -128 -> [0x02, 0x01, 0x80]
+        let neg_128: u8[3] = [0x02, 0x01, 0x80];
+        var cn128 = wing::cursor_from(neg_128[..]);
+        var vn128: i64 = 0;
+        sub.assert_true(wing::get_asn1_integer(cn128, vn128), "decode integer -128");
+        sub.assert_eq(vn128, -128, "vn128 == -128");
+
+        // 2. Reject zero-length integer [0x02, 0x00]
+        let zero_len: u8[2] = [0x02, 0x00];
+        var cz = wing::cursor_from(zero_len[..]);
+        var vz: i64 = 0;
+        sub.assert_false(wing::get_asn1_integer(cz, vz), "reject zero-length integer");
+
+        // 3. Reject redundant leading zeros [0x02, 0x02, 0x00, 0x7F]
+        let red_zero: u8[4] = [0x02, 0x02, 0x00, 0x7F];
+        var crz = wing::cursor_from(red_zero[..]);
+        var vrz: i64 = 0;
+        sub.assert_false(wing::get_asn1_integer(crz, vrz), "reject redundant leading zero");
+
+        // 4. Reject redundant negative sign extension [0x02, 0x02, 0xFF, 0x80]
+        let red_sign: u8[4] = [0x02, 0x02, 0xFF, 0x80];
+        var crs = wing::cursor_from(red_sign[..]);
+        var vrs: i64 = 0;
+        sub.assert_false(wing::get_asn1_integer(crs, vrs), "reject redundant negative sign");
+
+        // 5. RFC 5280 §4.1.2.2: Serial number zero [0x00] is strictly forbidden (must be positive)
+        let zero_serial: u8[1] = [0x00];
+        sub.assert_false(wing::validate_asn1_integer(zero_serial[..], true), "reject serial number zero in X.509");
+        sub.assert_true(wing::validate_asn1_integer(zero_serial[..], false), "allow integer zero in general ASN.1");
+    };
+
+    t.run("TLS-27: CS-03 ASN.1 BIT STRING Unused Bits & Trailing Padding Validation") { sub =>
+        // 1. Valid empty BIT STRING: 1 byte [0x00] (0 unused bits, 0 data)
+        let empty_bs: u8[1] = [0x00];
+        sub.assert_true(wing::validate_asn1_bit_string(empty_bs[..]), "empty bit string with 0 unused bits valid");
+
+        // 2. Invalid empty BIT STRING with non-zero unused bits: [0x01]
+        let bad_empty_bs: u8[1] = [0x01];
+        sub.assert_false(wing::validate_asn1_bit_string(bad_empty_bs[..]), "empty bit string with unused bits > 0 rejected");
+
+        // 3. Unused bits > 7 is strictly forbidden
+        let bad_unused: u8[2] = [0x08, 0xAA];
+        sub.assert_false(wing::validate_asn1_bit_string(bad_unused[..]), "unused bits == 8 rejected");
+        let bad_unused_ff: u8[2] = [0xFF, 0xAA];
+        sub.assert_false(wing::validate_asn1_bit_string(bad_unused_ff[..]), "unused bits == 0xFF rejected");
+
+        // 4. Zero length (missing unused bits octet) rejected
+        let empty_slice: u8[0] = [];
+        sub.assert_false(wing::validate_asn1_bit_string(empty_slice[..]), "zero length bit string rejected");
+
+        // 5. Canonical DER: trailing unused bits must be zero
+        // 3 unused bits, byte is 0b10100000 (0xA0) -> lower 3 bits are 0 -> valid
+        let valid_padding: u8[2] = [0x03, 0xA0];
+        sub.assert_true(wing::validate_asn1_bit_string(valid_padding[..]), "trailing unused bits all zero is valid");
+
+        // 3 unused bits, byte is 0b10100101 (0xA5) -> lower 3 bits are non-zero (5) -> rejected
+        let non_zero_padding: u8[2] = [0x03, 0xA5];
+        sub.assert_false(wing::validate_asn1_bit_string(non_zero_padding[..]), "non-zero trailing unused bits strictly rejected");
+
+        // 6. get_asn1_bit_string element parser
+        let full_der_bs: u8[4] = [0x03, 0x02, 0x00, 0x55];
+        var c_bs = wing::cursor_from(full_der_bs[..]);
+        var out_bits = wing::cursor_from(full_der_bs[..0]);
+        var out_unused: u8 = 0xFF;
+        sub.assert_true(wing::get_asn1_bit_string(c_bs, out_bits, out_unused), "parse DER bit string");
+        sub.assert_eq(out_unused, 0, "unused bits is 0");
+        sub.assert_eq(out_bits.buf.len, 1, "bit payload len is 1");
+        sub.assert_eq(out_bits.buf[0], 0x55, "bit payload is 0x55");
+    };
+
+    t.run("TLS-28: CS-04 X.509 UTCTime & GeneralizedTime Leap Year, Date & Cutoff Validation") { sub =>
+        // 1. Leap year Feb 29 tests
+        // 2024 is leap year: Feb 29 valid
+        let _, ok_leap24 = wing::parse_utc_time("240229120000Z");
+        sub.assert_true(ok_leap24, "2024-02-29 valid leap year date in UTCTime");
+
+        // 2023 is not leap year: Feb 29 invalid
+        let _, ok_non_leap23 = wing::parse_utc_time("230229120000Z");
+        sub.assert_false(ok_non_leap23, "2023-02-29 rejected (not leap year)");
+
+        // 2000 is leap year: Feb 29 valid
+        let _, ok_leap2000 = wing::parse_generalized_time("20000229120000Z");
+        sub.assert_true(ok_leap2000, "2000-02-29 valid leap year date in GeneralizedTime");
+
+        // 1900 is not leap year: Feb 29 invalid
+        let _, ok_non_leap1900 = wing::parse_generalized_time("19000229120000Z");
+        sub.assert_false(ok_non_leap1900, "1900-02-29 rejected (not leap year)");
+
+        // 2. Invalid month days
+        let _, ok_apr31 = wing::parse_utc_time("240431120000Z");
+        sub.assert_false(ok_apr31, "April 31 rejected");
+        let _, ok_jun31 = wing::parse_utc_time("240631120000Z");
+        sub.assert_false(ok_jun31, "June 31 rejected");
+        let _, ok_feb30 = wing::parse_utc_time("240230120000Z");
+        sub.assert_false(ok_feb30, "February 30 rejected");
+
+        // 3. Out-of-bounds fields
+        let _, ok_m0 = wing::parse_utc_time("240001120000Z");
+        sub.assert_false(ok_m0, "Month 00 rejected");
+        let _, ok_m13 = wing::parse_utc_time("241301120000Z");
+        sub.assert_false(ok_m13, "Month 13 rejected");
+        let _, ok_d0 = wing::parse_utc_time("240100120000Z");
+        sub.assert_false(ok_d0, "Day 00 rejected");
+        let _, ok_h24 = wing::parse_utc_time("240101240000Z");
+        sub.assert_false(ok_h24, "Hour 24 rejected");
+        let _, ok_min60 = wing::parse_utc_time("240101126000Z");
+        sub.assert_false(ok_min60, "Minute 60 rejected");
+        let _, ok_sec60 = wing::parse_utc_time("240101120060Z");
+        sub.assert_false(ok_sec60, "Second 60 rejected");
+
+        // 4. Missing or invalid 'Z' suffix
+        let _, ok_no_z = wing::parse_utc_time("240101120000X");
+        sub.assert_false(ok_no_z, "Missing 'Z' in UTCTime rejected");
+        let _, ok_gen_no_z = wing::parse_generalized_time("20240101120000X");
+        sub.assert_false(ok_gen_no_z, "Missing 'Z' in GeneralizedTime rejected");
+
+        // 5. Length mismatches & fractional seconds
+        let _, ok_trunc = wing::parse_utc_time("240101120000");
+        sub.assert_false(ok_trunc, "Truncated UTCTime rejected");
+        let _, ok_frac = wing::parse_generalized_time("20240101120000.5Z");
+        sub.assert_false(ok_frac, "Fractional seconds in GeneralizedTime rejected");
+
+        // 6. RFC 5280 §4.1.2.5.1: YY >= 50 is 19YY, YY < 50 is 20YY
+        let t_50, ok_50 = wing::parse_utc_time("500101000000Z");
+        sub.assert_true(ok_50, "YY=50 parsed as 1950");
+        let t_49, ok_49 = wing::parse_utc_time("490101000000Z");
+        sub.assert_true(ok_49, "YY=49 parsed as 2049");
+        sub.assert_true(t_49 > t_50, "year 2049 is after year 1950");
+    };
+
+    t.run("TLS-29: CS-05 SAN Extension Parsing, Empty SAN Rejection & IP/DNS Conformance") { sub =>
+        // 1. Empty SAN sequence strictly rejected (RFC 5280 §4.2.1.6 SIZE (1..MAX))
+        let empty_san: u8[2] = [0x30, 0x00];
+        var out_sans_empty: wing::SanEntry[..16] = [];
+        sub.assert_false(wing::parse_san_extension(empty_san[..], out_sans_empty), "empty SAN sequence rejected");
+
+        // 2. Invalid IP address length in SAN rejected
+        let bad_ip_san: u8[5] = [0x30, 0x03, 0x87, 0x01, 0x0A]; // len 1
+        var out_bad_ip: wing::SanEntry[..16] = [];
+        sub.assert_false(wing::parse_san_extension(bad_ip_san[..], out_bad_ip), "IP SAN with 1 byte rejected");
+
+        let bad_ip3_san: u8[7] = [0x30, 0x05, 0x87, 0x03, 0x0A, 0x00, 0x01]; // len 3
+        sub.assert_false(wing::parse_san_extension(bad_ip3_san[..], out_bad_ip), "IP SAN with 3 bytes rejected");
+
+        let bad_ip5_san: u8[9] = [0x30, 0x07, 0x87, 0x05, 0x0A, 0x00, 0x00, 0x01, 0x02]; // len 5
+        sub.assert_false(wing::parse_san_extension(bad_ip5_san[..], out_bad_ip), "IP SAN with 5 bytes rejected");
+
+        // 3. Valid IPv4 SAN (4 bytes)
+        let valid_ip4_san: u8[8] = [0x30, 0x06, 0x87, 0x04, 192, 168, 1, 100];
+        var out_ip4: wing::SanEntry[..16] = [];
+        sub.assert_true(wing::parse_san_extension(valid_ip4_san[..], out_ip4), "valid IPv4 SAN parsed");
+        sub.assert_eq(out_ip4.len, 1, "1 SAN parsed");
+        sub.assert_true(out_ip4[0].san_type == wing::SanType.Ip, "type is IP");
+        sub.assert_true(wing::match_san(out_ip4[0], "192.168.1.100"), "matches decimal IPv4 string");
+        sub.assert_false(wing::match_san(out_ip4[0], "192.168.1.101"), "rejects mismatched IPv4");
+
+        // Direct binary match
+        let raw_ip: u8[4] = [192, 168, 1, 100];
+        sub.assert_true(wing::match_ip_san(out_ip4[0].val, raw_ip[..]), "matches raw binary IPv4");
+
+        // 4. DNS syntax validation in SAN
+        sub.assert_true(wing::validate_san_dns_name("example.com"), "valid DNS name");
+        sub.assert_true(wing::validate_san_dns_name("*.example.com"), "valid wildcard DNS name");
+        sub.assert_true(wing::validate_san_dns_name("sub.api.example.com"), "valid multi-level DNS name");
+
+        // Malformed DNS names
+        sub.assert_false(wing::validate_san_dns_name(""), "empty DNS name rejected");
+        sub.assert_false(wing::validate_san_dns_name(".example.com"), "leading dot rejected");
+        sub.assert_false(wing::validate_san_dns_name("example.com."), "trailing dot rejected");
+        sub.assert_false(wing::validate_san_dns_name("example..com"), "double dot rejected");
+        sub.assert_false(wing::validate_san_dns_name("-bad.com"), "leading hyphen rejected");
+        sub.assert_false(wing::validate_san_dns_name("bad-.com"), "trailing hyphen rejected");
+        sub.assert_false(wing::validate_san_dns_name("foo.*.com"), "wildcard in non-leftmost label rejected");
+        sub.assert_false(wing::validate_san_dns_name("bad space.com"), "space in DNS name rejected");
+
+        // 5. Valid SAN extension with mixed DNS and IP entries
+        // SEQUENCE { [2] "api.example.com" (15 bytes), [7] 10.0.0.1 (4 bytes) }
+        var b = wing::builder_init();
+        wing::put_u8(b, 0x30); // outer SEQUENCE tag
+        wing::start_u8_prefix(b);
+        wing::put_u8(b, 0x82); // dNSName
+        wing::put_u8(b, 15);
+        wing::put_bytes(b, "api.example.com");
+        wing::put_u8(b, 0x87); // iPAddress
+        wing::put_u8(b, 4);
+        wing::put_u8(b, 10);
+        wing::put_u8(b, 0);
+        wing::put_u8(b, 0);
+        wing::put_u8(b, 1);
+        sub.assert_true(wing::finish_u8_prefix(b), "finish sequence prefix");
+
+        var multi_sans: wing::SanEntry[..16] = [];
+        sub.assert_true(wing::parse_san_extension(b.buf[..], multi_sans), "parse multi-entry SAN extension");
+        sub.assert_eq(multi_sans.len, 2, "2 SAN entries parsed");
+        sub.assert_true(wing::match_any_san(multi_sans, "api.example.com"), "match DNS in multi-SAN");
+        sub.assert_true(wing::match_any_san(multi_sans, "10.0.0.1"), "match IP in multi-SAN");
+        sub.assert_false(wing::match_any_san(multi_sans, "other.com"), "reject unmatched host in multi-SAN");
+    };
+
+    t.run("TLS-30: CS-06 Validity Period Inversion & Expiration Validation") { sub =>
+        // 1. Inverted validity in ParsedCert (notBefore > notAfter)
+        var cert_inv = wing::ParsedCert {
+            validity_not_before: 5000,
+            validity_not_after: 1000,
+        };
+        let alert_inv = wing::validate_chain_cert_validity(cert_inv, 3000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_inv), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "inverted validity returns BadCertificate");
+
+        // 2. parse_tbs_validity rejects DER sequence with notBefore > notAfter
+        // SEQUENCE { UTCTime "261028000000Z", UTCTime "251028000000Z" }
+        // 261028000000Z (2026-10-28) > 251028000000Z (2025-10-28)
+        var b_inv = wing::builder_init();
+        wing::put_u8(b_inv, 0x30); // outer SEQUENCE
+        wing::start_u8_prefix(b_inv);
+        // notBefore: 2026-10-28 00:00:00Z
+        wing::put_u8(b_inv, 0x17);
+        wing::put_u8(b_inv, 13);
+        wing::put_bytes(b_inv, "261028000000Z");
+        // notAfter: 2025-10-28 00:00:00Z
+        wing::put_u8(b_inv, 0x17);
+        wing::put_u8(b_inv, 13);
+        wing::put_bytes(b_inv, "251028000000Z");
+        sub.assert_true(wing::finish_u8_prefix(b_inv), "finish inverted validity DER");
+
+        var c_inv = wing::cursor_from(b_inv.buf[..]);
+        var dummy_cert = wing::ParsedCert {};
+        sub.assert_false(wing::parse_tbs_validity(b_inv.buf[..], c_inv, dummy_cert), "parse_tbs_validity rejects inverted time");
+
+        // 3. Valid validity sequence parses correctly
+        var b_val = wing::builder_init();
+        wing::put_u8(b_val, 0x30);
+        wing::start_u8_prefix(b_val);
+        // notBefore: 2025-10-28 00:00:00Z
+        wing::put_u8(b_val, 0x17);
+        wing::put_u8(b_val, 13);
+        wing::put_bytes(b_val, "251028000000Z");
+        // notAfter: 2026-10-28 00:00:00Z
+        wing::put_u8(b_val, 0x17);
+        wing::put_u8(b_val, 13);
+        wing::put_bytes(b_val, "261028000000Z");
+        sub.assert_true(wing::finish_u8_prefix(b_val), "finish valid validity DER");
+
+        var c_val = wing::cursor_from(b_val.buf[..]);
+        var out_cert = wing::ParsedCert {};
+        sub.assert_true(wing::parse_tbs_validity(b_val.buf[..], c_val, out_cert), "parse_tbs_validity accepts valid time");
+        sub.assert_true(out_cert.validity_not_before < out_cert.validity_not_after, "notBefore < notAfter");
+
+        // 4. Temporal expiration & not-yet-valid alerts
+        var cert_exp = wing::ParsedCert {
+            validity_not_before: 1000,
+            validity_not_after: 2000,
+        };
+        let alert_expired = wing::validate_chain_cert_validity(cert_exp, 2500);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_expired), wing::tls_alert_to_u8(wing::TlsAlert.CertificateExpired), "now > notAfter returns CertificateExpired");
+
+        let alert_not_yet = wing::validate_chain_cert_validity(cert_exp, 500);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_not_yet), wing::tls_alert_to_u8(wing::TlsAlert.CertificateExpired), "now < notBefore returns CertificateExpired");
+
+        let alert_ok = wing::validate_chain_cert_validity(cert_exp, 1500);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid time returns CloseNotify");
+    };
+
+    t.run("TLS-31: CS-07 End-Entity vs Intermediate CA KeyUsage & CA Flag Enforcement") { sub =>
+        // 1. End-entity MUST NOT assert CA: TRUE
+        var ee_ca = wing::ParsedCert {
+            is_ca: true,
+            has_basic_constraints: true,
+        };
+        let alert_ee_ca = wing::validate_end_entity_constraints(ee_ca);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ee_ca), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "EE with is_ca returns BadCertificate");
+
+        // 2. End-entity MUST NOT assert keyCertSign
+        var ee_sign = wing::ParsedCert {
+            is_ca: false,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        let alert_ee_sign = wing::validate_end_entity_constraints(ee_sign);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ee_sign), wing::tls_alert_to_u8(wing::TlsAlert.UnsupportedCertificate), "EE with keyCertSign returns UnsupportedCertificate");
+
+        // 3. Valid end-entity (digitalSignature, not CA)
+        var ee_valid = wing::ParsedCert {
+            is_ca: false,
+            key_usage: wing::KEY_USAGE_DIGITAL_SIGNATURE,
+            has_key_usage: true,
+        };
+        let alert_ee_ok = wing::validate_end_entity_constraints(ee_valid);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ee_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid EE returns CloseNotify");
+
+        // 4. Intermediate CA MUST assert BasicConstraints with is_ca: TRUE
+        var ca_no_bc = wing::ParsedCert {
+            is_ca: false,
+            has_basic_constraints: false,
+        };
+        let alert_ca_no_bc = wing::validate_intermediate_ca_constraints(ca_no_bc, 1);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ca_no_bc), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "intermediate without BC returns BadCertificate");
+
+        var ca_false = wing::ParsedCert {
+            is_ca: false,
+            has_basic_constraints: true,
+        };
+        let alert_ca_false = wing::validate_intermediate_ca_constraints(ca_false, 1);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ca_false), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "intermediate with is_ca=false returns BadCertificate");
+
+        // 5. Intermediate CA MUST assert keyCertSign if KeyUsage is present
+        var ca_no_sign = wing::ParsedCert {
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_DIGITAL_SIGNATURE, // Missing keyCertSign
+            has_key_usage: true,
+        };
+        let alert_ca_no_sign = wing::validate_intermediate_ca_constraints(ca_no_sign, 1);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ca_no_sign), wing::tls_alert_to_u8(wing::TlsAlert.UnsupportedCertificate), "intermediate without keyCertSign returns UnsupportedCertificate");
+
+        // 6. Valid Intermediate CA
+        var ca_valid = wing::ParsedCert {
+            is_ca: true,
+            has_basic_constraints: true,
+            path_len_constraint: -1,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        let alert_ca_ok = wing::validate_intermediate_ca_constraints(ca_valid, 1);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ca_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid intermediate CA returns CloseNotify");
+    };
+
+    t.run("TLS-32: CS-08 BasicConstraints pathLenConstraint Invariants & Decrementation") { sub =>
+        // 1. parse_cert_extensions DER parsing:
+        // BasicConstraints SEQUENCE { cA: FALSE (omitted), pathLenConstraint: 2 }
+        // RFC 5280 §4.2.1.9: pathLenConstraint is meaningful ONLY if cA is TRUE.
+        var b_bc_ee = wing::builder_init();
+        wing::put_u8(b_bc_ee, 0x30); // outer Extension SEQUENCE
+        wing::start_u8_prefix(b_bc_ee);
+        wing::put_u8(b_bc_ee, 0x06); // OID tag
+        wing::put_u8(b_bc_ee, 3);
+        wing::put_bytes(b_bc_ee, "\x55\x1D\x13"); // 2.5.29.19
+        wing::put_u8(b_bc_ee, 0x04); // OCTET STRING tag
+        wing::start_u8_prefix(b_bc_ee);
+        wing::put_u8(b_bc_ee, 0x30); // BasicConstraints SEQUENCE
+        wing::start_u8_prefix(b_bc_ee);
+        wing::put_u8(b_bc_ee, 0x02); // INTEGER tag
+        wing::put_u8(b_bc_ee, 1);
+        wing::put_u8(b_bc_ee, 2);    // pathLen = 2
+        sub.assert_true(wing::finish_u8_prefix(b_bc_ee), "finish BC seq");
+        sub.assert_true(wing::finish_u8_prefix(b_bc_ee), "finish octet str");
+        sub.assert_true(wing::finish_u8_prefix(b_bc_ee), "finish ext seq");
+
+        var c_bc_ee = wing::cursor_from(b_bc_ee.buf[..]);
+        var cert_parsed_ee = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_bc_ee.buf[..], c_bc_ee, cert_parsed_ee);
+        sub.assert_true(cert_parsed_ee.has_basic_constraints, "has BC");
+        sub.assert_false(cert_parsed_ee.is_ca, "is_ca is false");
+        sub.assert_eq(cert_parsed_ee.path_len_constraint, -1, "pathLen ignored when is_ca is false");
+
+        // 2. BasicConstraints with cA: TRUE and pathLen: 2
+        var b_bc_ca = wing::builder_init();
+        wing::put_u8(b_bc_ca, 0x30); // outer Extension SEQUENCE
+        wing::start_u8_prefix(b_bc_ca);
+        wing::put_u8(b_bc_ca, 0x06); // OID tag
+        wing::put_u8(b_bc_ca, 3);
+        wing::put_bytes(b_bc_ca, "\x55\x1D\x13"); // 2.5.29.19
+        wing::put_u8(b_bc_ca, 0x04); // OCTET STRING tag
+        wing::start_u8_prefix(b_bc_ca);
+        wing::put_u8(b_bc_ca, 0x30); // BasicConstraints SEQUENCE
+        wing::start_u8_prefix(b_bc_ca);
+        wing::put_u8(b_bc_ca, 0x01); // BOOLEAN tag
+        wing::put_u8(b_bc_ca, 1);
+        wing::put_u8(b_bc_ca, 0xFF); // TRUE
+        wing::put_u8(b_bc_ca, 0x02); // INTEGER tag
+        wing::put_u8(b_bc_ca, 1);
+        wing::put_u8(b_bc_ca, 2);    // pathLen = 2
+        sub.assert_true(wing::finish_u8_prefix(b_bc_ca), "finish BC ca seq");
+        sub.assert_true(wing::finish_u8_prefix(b_bc_ca), "finish octet str");
+        sub.assert_true(wing::finish_u8_prefix(b_bc_ca), "finish ext seq");
+
+        var c_bc_ca = wing::cursor_from(b_bc_ca.buf[..]);
+        var cert_parsed_ca = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_bc_ca.buf[..], c_bc_ca, cert_parsed_ca);
+        sub.assert_true(cert_parsed_ca.has_basic_constraints, "has BC");
+        sub.assert_true(cert_parsed_ca.is_ca, "is_ca is true");
+        sub.assert_eq(cert_parsed_ca.path_len_constraint, 2, "pathLen parsed as 2 when is_ca is true");
+
+        // 3. Path length decrementation and enforcement across chain depth:
+        // Intermediate CA at depth 1 with pathLen = 0 (issuing EE at depth 0) -> allowed (0 intermediate certs follow)
+        var ca_depth1 = wing::ParsedCert {
+            is_ca: true,
+            has_basic_constraints: true,
+            path_len_constraint: 0,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        let alert_d1 = wing::validate_intermediate_ca_constraints(ca_depth1, 1);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_d1), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "intermediate at depth 1 with pathLen=0 succeeds");
+
+        // Intermediate CA at depth 2 with pathLen = 0 (1 intermediate cert follows it) -> violated!
+        var ca_depth2 = wing::ParsedCert {
+            is_ca: true,
+            has_basic_constraints: true,
+            path_len_constraint: 0,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        let alert_d2 = wing::validate_intermediate_ca_constraints(ca_depth2, 2);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_d2), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "intermediate at depth 2 with pathLen=0 returns BadCertificate");
+
+        // Intermediate CA at depth 2 with pathLen = 1 -> allowed (1 <= 1)
+        var ca_depth2_ok = wing::ParsedCert {
+            is_ca: true,
+            has_basic_constraints: true,
+            path_len_constraint: 1,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        let alert_d2_ok = wing::validate_intermediate_ca_constraints(ca_depth2_ok, 2);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_d2_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "intermediate at depth 2 with pathLen=1 succeeds");
+    };
+
+    t.run("TLS-33: CS-09 Forbidden TLS 1.3 Signature Schemes & Certificate Signature Algorithms") { sub =>
+        // 1. Forbidden TLS 1.3 signature schemes (RFC 8446 §4.2.3)
+        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0401), "RSA-PKCS1-SHA256 (0x0401) is forbidden");
+        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0501), "RSA-PKCS1-SHA384 (0x0501) is forbidden");
+        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0601), "RSA-PKCS1-SHA512 (0x0601) is forbidden");
+        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0201), "RSA-PKCS1-SHA1 (0x0201) is forbidden");
+        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0203), "ECDSA-SHA1 (0x0203) is forbidden");
+        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0101), "RSA-PKCS1-MD5 (0x0101) is forbidden");
+
+        // Permitted TLS 1.3 schemes
+        sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0403), "ECDSA-SECP256R1-SHA256 (0x0403) is permitted");
+        sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0804), "RSA-PSS-RSAE-SHA256 (0x0804) is permitted");
+        sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0807), "ED25519 (0x0807) is permitted");
+
+        // 2. verify_signature_scheme_curve_binding enforces rejection of forbidden schemes
+        sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0401, wing::OID_RSA_ENCRYPTION[..]), "reject 0x0401 in curve binding");
+        sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0501, wing::OID_RSA_ENCRYPTION[..]), "reject 0x0501 in curve binding");
+        sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0804, wing::OID_RSA_ENCRYPTION[..]), "accept 0x0804 in curve binding");
+        sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0403, wing::OID_SECP256R1[..]), "accept 0x0403 in curve binding");
+
+        // 3. Forbidden Certificate Signature Algorithm OIDs (MD5 & SHA-1)
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_MD5_RSA[..]), "MD5-RSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_SHA1_RSA[..]), "SHA1-RSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_SHA1_ECDSA[..]), "SHA1-ECDSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_SHA1_DSA[..]), "SHA1-DSA is forbidden");
+
+        // Valid SHA-256 RSA OID (1.2.840.113549.1.1.11)
+        let oid_sha256_rsa: u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
+        sub.assert_false(wing::is_forbidden_cert_signature_algorithm(oid_sha256_rsa[..]), "SHA256-RSA is permitted");
+
+        // 4. verify_certificate_chain rejects cert signed with forbidden algorithm
+        var store = wing::TrustAnchorStore { anchors: [] };
+        let root_sub: u8[4] = [1, 2, 3, 4];
+        let root_spki: u8[4] = [5, 6, 7, 8];
+        sub.assert_true(wing::add_trust_anchor(store, root_sub[..], root_spki[..]), "add anchor");
+
+        var bad_sig_raw: u8[20] = [0; 20];
+        // Put OID_SIG_SHA1_RSA at offset 10 (length 9)
+        for i in 9 { bad_sig_raw[10 + i] = wing::OID_SIG_SHA1_RSA[i]; }
+
+        var bad_cert = wing::ParsedCert {
+            sig_alg_oid: wing::Span16 { offset: 10, length: 9 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 0, length: 4 },
+            spki_raw: wing::Span16 { offset: 4, length: 4 },
+        };
+        var chain_bad: wing::ParsedCert[..8] = [];
+        chain_bad.push(bad_cert);
+        var raw_bad: const u8[:][..8] = [];
+        raw_bad.push(bad_sig_raw[..]);
+
+        let alert_sig = wing::verify_certificate_chain(chain_bad, raw_bad, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_sig), wing::tls_alert_to_u8(wing::TlsAlert.UnsupportedCertificate), "forbidden cert sig returns UnsupportedCertificate");
+    };
+
+    t.run("TLS-34: CS-10 Certificate Chain Cycle Detection & Depth Limits") { sub =>
+        var store = wing::TrustAnchorStore { anchors: [] };
+        let root_dn: u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
+        let root_spki: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "anchor added");
+
+        // Raw buffer with shared components
+        var raw_buf: u8[64] = [0; 64];
+        for i in 4 { raw_buf[0 + i] = root_dn[i]; }     // offset 0: ROOT DN
+        for i in 4 { raw_buf[4 + i] = root_spki[i]; }   // offset 4: ROOT SPKI
+        raw_buf[8] = 0xEE; raw_buf[9] = 0x01;           // offset 8: EE DN
+        raw_buf[10] = 0xEE; raw_buf[11] = 0x02;         // offset 10: EE SPKI
+        raw_buf[12] = 0xCA; raw_buf[13] = 0x01;         // offset 12: CA DN
+        raw_buf[14] = 0xCA; raw_buf[15] = 0x02;         // offset 14: CA SPKI
+
+        // 1. Cycle detection: Duplicate Subject DN between two certs in chain
+        var cert_ee_dup_sub = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 8, length: 2 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 8, length: 2 },  // EE DN
+            spki_raw: wing::Span16 { offset: 10, length: 2 },
+        };
+        var cert_ca_dup_sub = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 0, length: 4 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 8, length: 2 },  // DUPLICATE EE DN!
+            spki_raw: wing::Span16 { offset: 14, length: 2 },
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        var chain_dup_sub: wing::ParsedCert[..8] = [];
+        chain_dup_sub.push(cert_ee_dup_sub);
+        chain_dup_sub.push(cert_ca_dup_sub);
+        var raw_dup_sub: const u8[:][..8] = [];
+        raw_dup_sub.push(raw_buf[..]);
+        raw_dup_sub.push(raw_buf[..]);
+
+        let alert_dup_sub = wing::verify_certificate_chain(chain_dup_sub, raw_dup_sub, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_dup_sub), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "duplicate subject DN returns BadCertificate");
+
+        // 2. Cycle detection: Duplicate SPKI (public key reuse loop)
+        var cert_ee_dup_spki = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 12, length: 2 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 8, length: 2 },
+            spki_raw: wing::Span16 { offset: 10, length: 2 },    // EE SPKI
+        };
+        var cert_ca_dup_spki = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 0, length: 4 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 12, length: 2 },
+            spki_raw: wing::Span16 { offset: 10, length: 2 },   // DUPLICATE EE SPKI!
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        var chain_dup_spki: wing::ParsedCert[..8] = [];
+        chain_dup_spki.push(cert_ee_dup_spki);
+        chain_dup_spki.push(cert_ca_dup_spki);
+        var raw_dup_spki: const u8[:][..8] = [];
+        raw_dup_spki.push(raw_buf[..]);
+        raw_dup_spki.push(raw_buf[..]);
+
+        let alert_dup_spki = wing::verify_certificate_chain(chain_dup_spki, raw_dup_spki, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_dup_spki), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "duplicate SPKI returns BadCertificate");
+
+        // 3. Valid multi-cert chain (EE -> Intermediate -> Root Anchor)
+        var cert_ee_good = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 12, length: 2 }, // Issued by CA
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 8, length: 2 },
+            spki_raw: wing::Span16 { offset: 10, length: 2 },
+        };
+        var cert_ca_good = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 0, length: 4 },  // Issued by Root
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 12, length: 2 },
+            spki_raw: wing::Span16 { offset: 14, length: 2 },
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+        var cert_root_good = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 0, length: 4 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 0, length: 4 },
+            spki_raw: wing::Span16 { offset: 4, length: 4 },
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+
+        var chain_3: wing::ParsedCert[..8] = [];
+        chain_3.push(cert_ee_good);
+        chain_3.push(cert_ca_good);
+        chain_3.push(cert_root_good);
+        var raw_3: const u8[:][..8] = [];
+        raw_3.push(raw_buf[..]);
+        raw_3.push(raw_buf[..]);
+        raw_3.push(raw_buf[..]);
+
+        let alert_chain3 = wing::verify_certificate_chain(chain_3, raw_3, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_chain3), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid 3-cert chain verified successfully");
+
+        // 4. Empty chain rejection
+        var chain_empty: wing::ParsedCert[..8] = [];
+        var raw_empty: const u8[:][..8] = [];
+        let alert_empty = wing::verify_certificate_chain(chain_empty, raw_empty, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_empty), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "empty chain returns BadCertificate");
+    };
+
+    t.run("TLS-35: CS-11 Name Constraints Subtree Enforcement & CIDR Subnet Mask Validation") { sub =>
+        // 1. Contiguous CIDR subnet mask validation (RFC 5280 §4.2.1.10)
+        let mask_24: u8[4] = [255, 255, 255, 0];
+        sub.assert_true(wing::validate_cidr_mask(mask_24[..]), "valid /24 mask");
+        let mask_17: u8[4] = [255, 255, 128, 0];
+        sub.assert_true(wing::validate_cidr_mask(mask_17[..]), "valid /17 mask");
+        let mask_32: u8[4] = [255, 255, 255, 255];
+        sub.assert_true(wing::validate_cidr_mask(mask_32[..]), "valid /32 mask");
+        let mask_0: u8[4] = [0, 0, 0, 0];
+        sub.assert_true(wing::validate_cidr_mask(mask_0[..]), "valid /0 mask");
+
+        // Non-contiguous subnet masks
+        let mask_bad1: u8[4] = [255, 255, 0, 255];
+        sub.assert_false(wing::validate_cidr_mask(mask_bad1[..]), "reject non-contiguous 255.255.0.255");
+        let mask_bad2: u8[4] = [255, 255, 129, 0];
+        sub.assert_false(wing::validate_cidr_mask(mask_bad2[..]), "reject non-contiguous 255.255.129.0");
+
+        // Invalid mask length (e.g. 3 bytes or 5 bytes)
+        let mask_bad_len: u8[3] = [255, 255, 255];
+        sub.assert_false(wing::validate_cidr_mask(mask_bad_len[..]), "reject 3-byte mask");
+
+        // 2. DNS Name Constraint matching (RFC 5280 §4.2.1.10)
+        // Without leading dot: "example.com"
+        sub.assert_true(wing::match_dns_name_constraint("example.com", "example.com"), "matches exact domain");
+        sub.assert_true(wing::match_dns_name_constraint("sub.example.com", "example.com"), "matches subdomain");
+        sub.assert_true(wing::match_dns_name_constraint("a.b.example.com", "example.com"), "matches multi-level subdomain");
+        sub.assert_false(wing::match_dns_name_constraint("otherexample.com", "example.com"), "rejects prefix without dot boundary");
+        sub.assert_false(wing::match_dns_name_constraint("notexample.com", "example.com"), "rejects notexample.com");
+
+        // With leading dot: ".example.com"
+        sub.assert_true(wing::match_dns_name_constraint("sub.example.com", ".example.com"), "matches subdomain under .example.com");
+        sub.assert_true(wing::match_dns_name_constraint("a.b.example.com", ".example.com"), "matches deep subdomain");
+        sub.assert_false(wing::match_dns_name_constraint("example.com", ".example.com"), "rejects apex for .example.com");
+        sub.assert_false(wing::match_dns_name_constraint("otherexample.com", ".example.com"), "rejects non-subdomain");
+
+        // 3. IP Name Constraint matching (RFC 5280 §4.2.1.10)
+        // Subnet 192.168.1.0/24 (8 octets: 192.168.1.0 || 255.255.255.0)
+        let ip_constraint: u8[8] = [192, 168, 1, 0, 255, 255, 255, 0];
+        let cand_in_sub: u8[4] = [192, 168, 1, 100];
+        sub.assert_true(wing::match_ip_name_constraint(cand_in_sub[..], ip_constraint[..]), "matches IPv4 in subnet");
+        let cand_out_sub: u8[4] = [192, 168, 2, 100];
+        sub.assert_false(wing::match_ip_name_constraint(cand_out_sub[..], ip_constraint[..]), "rejects IPv4 outside subnet");
+        let cand_diff_net: u8[4] = [10, 0, 0, 1];
+        sub.assert_false(wing::match_ip_name_constraint(cand_diff_net[..], ip_constraint[..]), "rejects 10.0.0.1 outside subnet");
+
+        // 4. Empty NameConstraints SEQUENCE rejection (RFC 5280 §4.2.1.10)
+        let empty_nc: u8[2] = [0x30, 0x00];
+        var out_nc_empty: wing::NameConstraintEntry[..16] = [];
+        sub.assert_false(wing::parse_name_constraints(empty_nc[..], out_nc_empty), "reject empty NameConstraints sequence");
+
+        // 5. End-entity asserting Name Constraints rejection (RFC 5280 §4.2.1.10)
+        var ee_with_nc = wing::ParsedCert {
+            has_name_constraints: true,
+        };
+        let alert_ee_nc = wing::validate_end_entity_constraints(ee_with_nc);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ee_nc), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "EE with name constraints returns BadCertificate");
+    };
+
+    t.run("TLS-36: CS-12 Unrecognized Critical Extension Rejection") { sub =>
+        // 1. Extension with unrecognized OID marked critical: TRUE
+        // Extension SEQUENCE { OID 1.3.153 (2B 06 99), critical BOOLEAN TRUE (0xFF), extnValue OCTET STRING "val" }
+        var b_crit = wing::builder_init();
+        wing::put_u8(b_crit, 0x30); // Extension SEQUENCE
+        wing::start_u8_prefix(b_crit);
+        wing::put_u8(b_crit, 0x06); // OID
+        wing::put_u8(b_crit, 3);
+        wing::put_bytes(b_crit, "\x2B\x06\x99"); // Unrecognized OID
+        wing::put_u8(b_crit, 0x01); // BOOLEAN (critical)
+        wing::put_u8(b_crit, 1);
+        wing::put_u8(b_crit, 0xFF); // TRUE
+        wing::put_u8(b_crit, 0x04); // OCTET STRING
+        wing::put_u8(b_crit, 3);
+        wing::put_bytes(b_crit, "val");
+        sub.assert_true(wing::finish_u8_prefix(b_crit), "finish crit ext");
+
+        var c_crit = wing::cursor_from(b_crit.buf[..]);
+        var cert_crit = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_crit.buf[..], c_crit, cert_crit);
+        sub.assert_true(cert_crit.has_unsupported_critical, "unrecognized critical extension detected");
+
+        // 2. Chain verification rejects cert with unrecognized critical extension
+        var store = wing::TrustAnchorStore { anchors: [] };
+        let root_dn: u8[4] = [1, 2, 3, 4];
+        let root_spki: u8[4] = [5, 6, 7, 8];
+        sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
+
+        var raw_cert_buf: u8[20] = [0; 20];
+        var cert_chain_crit: wing::ParsedCert[..8] = [];
+        cert_chain_crit.push(cert_crit);
+        var raw_chain_crit: const u8[:][..8] = [];
+        raw_chain_crit.push(raw_cert_buf[..]);
+
+        let alert_crit = wing::verify_certificate_chain(cert_chain_crit, raw_chain_crit, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_crit), wing::tls_alert_to_u8(wing::TlsAlert.UnsupportedExtension), "unrecognized critical extension returns UnsupportedExtension");
+
+        // 3. Extension with unrecognized OID marked critical: FALSE (allowed to be ignored per RFC 5280 §4.2)
+        var b_noncrit = wing::builder_init();
+        wing::put_u8(b_noncrit, 0x30); // Extension SEQUENCE
+        wing::start_u8_prefix(b_noncrit);
+        wing::put_u8(b_noncrit, 0x06); // OID
+        wing::put_u8(b_noncrit, 3);
+        wing::put_bytes(b_noncrit, "\x2B\x06\x99");
+        wing::put_u8(b_noncrit, 0x01); // BOOLEAN (critical)
+        wing::put_u8(b_noncrit, 1);
+        wing::put_u8(b_noncrit, 0x00); // FALSE
+        wing::put_u8(b_noncrit, 0x04); // OCTET STRING
+        wing::put_u8(b_noncrit, 3);
+        wing::put_bytes(b_noncrit, "val");
+        sub.assert_true(wing::finish_u8_prefix(b_noncrit), "finish noncrit ext");
+
+        var c_noncrit = wing::cursor_from(b_noncrit.buf[..]);
+        var cert_noncrit = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_noncrit.buf[..], c_noncrit, cert_noncrit);
+        sub.assert_false(cert_noncrit.has_unsupported_critical, "unrecognized non-critical extension ignored");
+    };
+
+    t.run("TLS-37: CS-13 AKID and SKID Chain Linking & KeyID Invariants") { sub =>
+        // 1. SubjectKeyIdentifier (2.5.29.14) DER extraction
+        var b_skid = wing::builder_init();
+        wing::put_u8(b_skid, 0x30); // Extension SEQUENCE
+        wing::start_u8_prefix(b_skid);
+        wing::put_u8(b_skid, 0x06); // OID
+        wing::put_u8(b_skid, 3);
+        wing::put_bytes(b_skid, "\x55\x1D\x0E"); // 2.5.29.14
+        wing::put_u8(b_skid, 0x04); // OCTET STRING extnValue
+        wing::start_u8_prefix(b_skid);
+        wing::put_u8(b_skid, 0x04); // KeyIdentifier OCTET STRING
+        wing::put_u8(b_skid, 4);
+        wing::put_bytes(b_skid, "\x11\x22\x33\x44");
+        sub.assert_true(wing::finish_u8_prefix(b_skid), "finish skid val");
+        sub.assert_true(wing::finish_u8_prefix(b_skid), "finish skid ext");
+
+        var c_skid = wing::cursor_from(b_skid.buf[..]);
+        var cert_parsed_skid = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_skid.buf[..], c_skid, cert_parsed_skid);
+        sub.assert_true(cert_parsed_skid.has_skid, "has SKID");
+        let skid_slice = wing::span_slice(b_skid.buf[..], cert_parsed_skid.skid_key_id);
+        sub.assert_eq(skid_slice, "\x11\x22\x33\x44", "SKID key ID matches");
+
+        // 2. AuthorityKeyIdentifier (2.5.29.35) DER extraction
+        var b_akid = wing::builder_init();
+        wing::put_u8(b_akid, 0x30); // Extension SEQUENCE
+        wing::start_u8_prefix(b_akid);
+        wing::put_u8(b_akid, 0x06); // OID
+        wing::put_u8(b_akid, 3);
+        wing::put_bytes(b_akid, "\x55\x1D\x23"); // 2.5.29.35
+        wing::put_u8(b_akid, 0x04); // OCTET STRING extnValue
+        wing::start_u8_prefix(b_akid);
+        wing::put_u8(b_akid, 0x30); // AuthorityKeyIdentifier SEQUENCE
+        wing::start_u8_prefix(b_akid);
+        wing::put_u8(b_akid, 0x80); // keyIdentifier [0] IMPLICIT
+        wing::put_u8(b_akid, 4);
+        wing::put_bytes(b_akid, "\x11\x22\x33\x44");
+        sub.assert_true(wing::finish_u8_prefix(b_akid), "finish akid seq");
+        sub.assert_true(wing::finish_u8_prefix(b_akid), "finish akid val");
+        sub.assert_true(wing::finish_u8_prefix(b_akid), "finish akid ext");
+
+        var c_akid = wing::cursor_from(b_akid.buf[..]);
+        var cert_parsed_akid = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_akid.buf[..], c_akid, cert_parsed_akid);
+        sub.assert_true(cert_parsed_akid.has_akid, "has AKID");
+        let akid_slice = wing::span_slice(b_akid.buf[..], cert_parsed_akid.akid_key_id);
+        sub.assert_eq(akid_slice, "\x11\x22\x33\x44", "AKID key ID matches");
+
+        // 3. Chain Linking with AKID / SKID: Matching key IDs
+        var store = wing::TrustAnchorStore { anchors: [] };
+        let root_dn: u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
+        let root_spki: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
+
+        var raw_buf: u8[64] = [0; 64];
+        for i in 4 { raw_buf[0 + i] = root_dn[i]; }     // offset 0: ROOT DN
+        for i in 4 { raw_buf[4 + i] = root_spki[i]; }   // offset 4: ROOT SPKI
+        raw_buf[8] = 0xEE; raw_buf[9] = 0x01;           // offset 8: EE DN
+        raw_buf[10] = 0xEE; raw_buf[11] = 0x02;         // offset 10: EE SPKI
+        raw_buf[12] = 0xCA; raw_buf[13] = 0x01;         // offset 12: CA DN
+        raw_buf[14] = 0xCA; raw_buf[15] = 0x02;         // offset 14: CA SPKI
+        // Key IDs:
+        // offset 20..24: "KID1"
+        raw_buf[20] = 0x4B; raw_buf[21] = 0x49; raw_buf[22] = 0x44; raw_buf[23] = 0x31;
+        // offset 24..28: "KID2"
+        raw_buf[24] = 0x4B; raw_buf[25] = 0x49; raw_buf[26] = 0x44; raw_buf[27] = 0x32;
+
+        var cert_ee_match = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 12, length: 2 }, // Issued by CA
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 8, length: 2 },
+            spki_raw: wing::Span16 { offset: 10, length: 2 },
+            akid_key_id: wing::Span16 { offset: 20, length: 4 }, // AKID = KID1
+            has_akid: true,
+        };
+        var cert_ca_match = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 0, length: 4 },  // Issued by Root
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 12, length: 2 },
+            spki_raw: wing::Span16 { offset: 14, length: 2 },
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+            skid_key_id: wing::Span16 { offset: 20, length: 4 }, // SKID = KID1
+            has_skid: true,
+        };
+        var cert_root = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 0, length: 4 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 0, length: 4 },
+            spki_raw: wing::Span16 { offset: 4, length: 4 },
+            is_ca: true,
+            has_basic_constraints: true,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+
+        var chain_match: wing::ParsedCert[..8] = [];
+        chain_match.push(cert_ee_match);
+        chain_match.push(cert_ca_match);
+        chain_match.push(cert_root);
+        var raw_chain: const u8[:][..8] = [];
+        raw_chain.push(raw_buf[..]);
+        raw_chain.push(raw_buf[..]);
+        raw_chain.push(raw_buf[..]);
+
+        let alert_match = wing::verify_certificate_chain(chain_match, raw_chain, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_match), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "matching AKID->SKID succeeds");
+
+        // 4. Chain Linking with AKID / SKID: Mismatched key IDs
+        var cert_ee_mismatch = wing::ParsedCert {
+            issuer_raw: wing::Span16 { offset: 12, length: 2 },
+            validity_not_before: 1000,
+            validity_not_after: 5000,
+            subject_raw: wing::Span16 { offset: 8, length: 2 },
+            spki_raw: wing::Span16 { offset: 10, length: 2 },
+            akid_key_id: wing::Span16 { offset: 24, length: 4 }, // AKID = KID2 != KID1
+            has_akid: true,
+        };
+        var chain_mismatch: wing::ParsedCert[..8] = [];
+        chain_mismatch.push(cert_ee_mismatch);
+        chain_mismatch.push(cert_ca_match);
+        chain_mismatch.push(cert_root);
+
+        let alert_mismatch = wing::verify_certificate_chain(chain_mismatch, raw_chain, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_mismatch), wing::tls_alert_to_u8(wing::TlsAlert.UnknownCa), "mismatched AKID->SKID returns UnknownCa");
+    };
+
+    t.run("TLS-38: CS-14 Policy Constraints & InhibitAnyPolicy Negative Bounds & Empty Sequence Defense") { sub =>
+        // 1. PolicyConstraints (2.5.29.36) empty sequence rejection (RFC 5280 §4.2.1.11)
+        var b_pc_empty = wing::builder_init();
+        wing::put_u8(b_pc_empty, 0x30); // Extension SEQUENCE
+        wing::start_u8_prefix(b_pc_empty);
+        wing::put_u8(b_pc_empty, 0x06); // OID
+        wing::put_u8(b_pc_empty, 3);
+        wing::put_bytes(b_pc_empty, "\x55\x1D\x24"); // 2.5.29.36
+        wing::put_u8(b_pc_empty, 0x04); // OCTET STRING
+        wing::start_u8_prefix(b_pc_empty);
+        wing::put_u8(b_pc_empty, 0x30); // Empty SEQUENCE
+        wing::put_u8(b_pc_empty, 0);
+        sub.assert_true(wing::finish_u8_prefix(b_pc_empty), "finish octet str");
+        sub.assert_true(wing::finish_u8_prefix(b_pc_empty), "finish ext seq");
+
+        var c_pc_empty = wing::cursor_from(b_pc_empty.buf[..]);
+        var cert_pc_empty = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_pc_empty.buf[..], c_pc_empty, cert_pc_empty);
+        sub.assert_true(cert_pc_empty.has_malformed_policy_constraints, "empty PolicyConstraints flagged as malformed");
+
+        // 2. PolicyConstraints with negative SkipCerts integer
+        var b_pc_neg = wing::builder_init();
+        wing::put_u8(b_pc_neg, 0x30);
+        wing::start_u8_prefix(b_pc_neg);
+        wing::put_u8(b_pc_neg, 0x06);
+        wing::put_u8(b_pc_neg, 3);
+        wing::put_bytes(b_pc_neg, "\x55\x1D\x24");
+        wing::put_u8(b_pc_neg, 0x04);
+        wing::start_u8_prefix(b_pc_neg);
+        wing::put_u8(b_pc_neg, 0x30);
+        wing::start_u8_prefix(b_pc_neg);
+        wing::put_u8(b_pc_neg, 0x80); // [0] requireExplicitPolicy
+        wing::put_u8(b_pc_neg, 1);
+        wing::put_u8(b_pc_neg, 0xFF); // Negative integer in DER!
+        sub.assert_true(wing::finish_u8_prefix(b_pc_neg), "finish pc seq");
+        sub.assert_true(wing::finish_u8_prefix(b_pc_neg), "finish octet str");
+        sub.assert_true(wing::finish_u8_prefix(b_pc_neg), "finish ext seq");
+
+        var c_pc_neg = wing::cursor_from(b_pc_neg.buf[..]);
+        var cert_pc_neg = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_pc_neg.buf[..], c_pc_neg, cert_pc_neg);
+        sub.assert_true(cert_pc_neg.has_malformed_policy_constraints, "negative SkipCerts flagged as malformed");
+
+        // 3. InhibitAnyPolicy (2.5.29.54) with negative integer
+        var b_iap_neg = wing::builder_init();
+        wing::put_u8(b_iap_neg, 0x30);
+        wing::start_u8_prefix(b_iap_neg);
+        wing::put_u8(b_iap_neg, 0x06);
+        wing::put_u8(b_iap_neg, 3);
+        wing::put_bytes(b_iap_neg, "\x55\x1D\x36"); // 2.5.29.54
+        wing::put_u8(b_iap_neg, 0x04);
+        wing::start_u8_prefix(b_iap_neg);
+        wing::put_u8(b_iap_neg, 0x02); // INTEGER
+        wing::put_u8(b_iap_neg, 1);
+        wing::put_u8(b_iap_neg, 0x80); // Negative integer
+        sub.assert_true(wing::finish_u8_prefix(b_iap_neg), "finish octet str");
+        sub.assert_true(wing::finish_u8_prefix(b_iap_neg), "finish ext seq");
+
+        var c_iap_neg = wing::cursor_from(b_iap_neg.buf[..]);
+        var cert_iap_neg = wing::ParsedCert {};
+        wing::parse_cert_extensions(b_iap_neg.buf[..], c_iap_neg, cert_iap_neg);
+        sub.assert_true(cert_iap_neg.has_malformed_policy_constraints, "negative InhibitAnyPolicy flagged as malformed");
+
+        // 4. Chain verification rejects cert with malformed policy constraints
+        var store = wing::TrustAnchorStore { anchors: [] };
+        let root_dn: u8[4] = [1, 2, 3, 4];
+        let root_spki: u8[4] = [5, 6, 7, 8];
+        sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
+
+        var raw_buf: u8[20] = [0; 20];
+        var cert_chain_pc: wing::ParsedCert[..8] = [];
+        cert_chain_pc.push(cert_pc_neg);
+        var raw_chain_pc: const u8[:][..8] = [];
+        raw_chain_pc.push(raw_buf[..]);
+
+        let alert_pc = wing::verify_certificate_chain(cert_chain_pc, raw_chain_pc, store, 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_pc), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "malformed policy constraints returns BadCertificate");
+    };
+
+    t.run("TLS-39: CS-15 OCSP Stapling Wire Framing, ResponseStatus, Temporal Inversion & CertID Matching") { sub =>
+        // 1. Wire unwrapping (unwrap_tls_ocsp_response)
+        var b_wire = wing::builder_init();
+        wing::put_u8(b_wire, 0); // uint24 high
+        wing::put_u8(b_wire, 0); // uint24 mid
+        wing::put_u8(b_wire, 4); // uint24 low = 4 bytes
+        wing::put_bytes(b_wire, "OCSP");
+        let unwrapped, ok_unwrap = wing::unwrap_tls_ocsp_response(b_wire.buf[..]);
+        sub.assert_true(ok_unwrap, "unwrap valid wire response");
+        sub.assert_eq(unwrapped, "OCSP", "unwrapped content matches");
+
+        // Truncated wire response
+        let trunc_wire: u8[5] = [0, 0, 10, 0xAA, 0xBB]; // Declares 10, only 2 provided
+        let _, ok_trunc = wing::unwrap_tls_ocsp_response(trunc_wire[..]);
+        sub.assert_false(ok_trunc, "reject truncated wire response");
+
+        // Trailing wire response
+        let trail_wire: u8[6] = [0, 0, 2, 0xAA, 0xBB, 0xCC]; // Declares 2, 3 provided
+        let _, ok_trail = wing::unwrap_tls_ocsp_response(trail_wire[..]);
+        sub.assert_false(ok_trail, "reject trailing bytes wire response");
+
+        // 2. OCSP Response with error status (e.g. TryLater = 3)
+        // SEQUENCE { ENUMERATED 3 }
+        let ocsp_try_later: u8[5] = [0x30, 0x03, 0x0A, 0x01, 0x03];
+        var parsed_later = wing::ParsedOcspResponse {};
+        sub.assert_true(wing::parse_ocsp_response(ocsp_try_later[..], parsed_later), "parse TryLater status");
+        sub.assert_true(parsed_later.status == wing::OcspResponseStatus.TryLater, "status is TryLater");
+
+        var dummy_leaf = wing::ParsedCert {};
+        let alert_later = wing::validate_ocsp_stapling(ocsp_try_later[..], dummy_leaf, "dummy", 2000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_later), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificateStatusResponse), "non-successful status returns BadCertificateStatusResponse");
+
+        // 3. Construct a full valid OCSP Response
+        // Serial number: 0x42 (1 byte)
+        // CertStatus: good [0] NULL
+        // thisUpdate: 2026-10-28 00:00:00Z ("20261028000000Z")
+        // nextUpdate: 2026-10-29 00:00:00Z ("20261029000000Z")
+        var b_tbs = wing::builder_init();
+        wing::put_u8(b_tbs, 0x30); // tbsResponseData SEQUENCE
+        wing::start_u8_prefix(b_tbs);
+
+        // responderID [1] EXPLICIT byName (empty sequence for mock)
+        wing::put_u8(b_tbs, 0xA1);
+        wing::put_u8(b_tbs, 2);
+        wing::put_u8(b_tbs, 0x30);
+        wing::put_u8(b_tbs, 0);
+
+        // producedAt GeneralizedTime
+        wing::put_u8(b_tbs, 0x18);
+        wing::put_u8(b_tbs, 15);
+        wing::put_bytes(b_tbs, "20261028000000Z");
+
+        // responses SEQUENCE OF SingleResponse
+        wing::put_u8(b_tbs, 0x30);
+        wing::start_u8_prefix(b_tbs);
+        wing::put_u8(b_tbs, 0x30); // SingleResponse SEQUENCE
+        wing::start_u8_prefix(b_tbs);
+
+        // certID SEQUENCE
+        wing::put_u8(b_tbs, 0x30);
+        wing::put_u8(b_tbs, 9);
+        // hashAlgorithm SEQUENCE (empty)
+        wing::put_u8(b_tbs, 0x30);
+        wing::put_u8(b_tbs, 0);
+        // issuerNameHash OCTET STRING (empty)
+        wing::put_u8(b_tbs, 0x04);
+        wing::put_u8(b_tbs, 0);
+        // issuerKeyHash OCTET STRING (empty)
+        wing::put_u8(b_tbs, 0x04);
+        wing::put_u8(b_tbs, 0);
+        // serialNumber INTEGER 0x42
+        wing::put_u8(b_tbs, 0x02);
+        wing::put_u8(b_tbs, 1);
+        wing::put_u8(b_tbs, 0x42);
+
+        // certStatus [0] IMPLICIT NULL (Good)
+        wing::put_u8(b_tbs, 0x80);
+        wing::put_u8(b_tbs, 0);
+
+        // thisUpdate GeneralizedTime: 2026-10-28 00:00:00Z
+        wing::put_u8(b_tbs, 0x18);
+        wing::put_u8(b_tbs, 15);
+        wing::put_bytes(b_tbs, "20261028000000Z");
+
+        // nextUpdate [0] EXPLICIT GeneralizedTime: 2026-10-29 00:00:00Z
+        wing::put_u8(b_tbs, 0xA0);
+        wing::put_u8(b_tbs, 17);
+        wing::put_u8(b_tbs, 0x18);
+        wing::put_u8(b_tbs, 15);
+        wing::put_bytes(b_tbs, "20261029000000Z");
+
+        sub.assert_true(wing::finish_u8_prefix(b_tbs), "finish single_resp");
+        sub.assert_true(wing::finish_u8_prefix(b_tbs), "finish responses");
+        sub.assert_true(wing::finish_u8_prefix(b_tbs), "finish tbsResponseData");
+
+        var b_basic = wing::builder_init();
+        wing::put_u8(b_basic, 0x30); // BasicOCSPResponse SEQUENCE
+        wing::start_u8_prefix(b_basic);
+        wing::put_bytes(b_basic, b_tbs.buf[..]);
+        sub.assert_true(wing::finish_u8_prefix(b_basic), "finish BasicOCSPResponse");
+
+        var b_ocsp = wing::builder_init();
+        wing::put_u8(b_ocsp, 0x30); // outer OCSPResponse SEQUENCE
+        wing::start_u8_prefix(b_ocsp);
+        wing::put_u8(b_ocsp, 0x0A); // ENUMERATED responseStatus
+        wing::put_u8(b_ocsp, 1);
+        wing::put_u8(b_ocsp, 0);    // 0 = Successful
+
+        wing::put_u8(b_ocsp, 0xA0); // [0] EXPLICIT ResponseBytes
+        wing::start_u8_prefix(b_ocsp);
+        wing::put_u8(b_ocsp, 0x30); // ResponseBytes SEQUENCE
+        wing::start_u8_prefix(b_ocsp);
+        wing::put_u8(b_ocsp, 0x06); // OID id-pkix-ocsp-basic
+        wing::put_u8(b_ocsp, 9);
+        wing::put_bytes(b_ocsp, "\x2B\x06\x01\x05\x05\x07\x30\x01\x01");
+        wing::put_u8(b_ocsp, 0x04); // response OCTET STRING
+        wing::start_u8_prefix(b_ocsp);
+        wing::put_bytes(b_ocsp, b_basic.buf[..]);
+        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish response OCTET STRING");
+        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish ResponseBytes SEQUENCE");
+        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish [0] ResponseBytes");
+        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish OCSPResponse");
+
+        var parsed_ok = wing::ParsedOcspResponse {};
+        sub.assert_true(wing::parse_ocsp_response(b_ocsp.buf[..], parsed_ok), "parse full OCSP response");
+        sub.assert_true(parsed_ok.status == wing::OcspResponseStatus.Successful, "status is Successful");
+        sub.assert_true(parsed_ok.cert_status == wing::OcspCertStatus.Good, "cert status is Good");
+        sub.assert_true(parsed_ok.has_next_update, "has nextUpdate");
+        sub.assert_true(parsed_ok.this_update < parsed_ok.next_update, "thisUpdate < nextUpdate");
+
+        // Mock leaf cert with serialNumber 0x42
+        let raw_leaf_serial: u8[1] = [0x42];
+        var leaf_matching = wing::ParsedCert {
+            serial_number: wing::Span16 { offset: 0, length: 1 },
+        };
+        // Verify with valid timestamp (halfway between 2026-10-28 and 2026-10-29)
+        let mid_time = (parsed_ok.this_update + parsed_ok.next_update) / 2;
+        let alert_ocsp_ok = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ocsp_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid OCSP stapling succeeds");
+
+        // Serial number mismatch defense: leaf cert with serial 0x99
+        let raw_mismatch_serial: u8[1] = [0x99];
+        let alert_mismatch = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_mismatch_serial[..], mid_time);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_mismatch), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificateStatusResponse), "serial mismatch returns BadCertificateStatusResponse");
+
+        // Temporal expiration defense: now > nextUpdate
+        let alert_expired = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], parsed_ok.next_update + 1000);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_expired), wing::tls_alert_to_u8(wing::TlsAlert.CertificateExpired), "expired OCSP returns CertificateExpired");
+    };
 }
 
 // ============================================================================
