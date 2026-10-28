@@ -346,8 +346,11 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
         var in_quotes = false;
         while token_end < len {
             let b = raw[token_end];
-            if b == '"' { in_quotes = !in_quotes; }
-            else if b == ',' && !in_quotes { break; }
+            if b == '"' && (token_end == cursor || raw[token_end - 1] != '\\') {
+                in_quotes = !in_quotes;
+            } else if b == ',' && !in_quotes {
+                break;
+            }
             token_end++;
         }
 

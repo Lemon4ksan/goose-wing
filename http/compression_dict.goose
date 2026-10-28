@@ -65,9 +65,10 @@ fn new_dictionary_cache() -> DictionaryCache {
 
 // ---- 3. URL Pattern Matching (draft Section 2.1) ---------------------------
 
-// Matches path against pattern (e.g. `/assets/*` or `/api/*`)
+// Matches path against pattern (e.g. `/assets/*` or `/api/*`) per RFC 9842 Section 2.1
 fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
     guard pattern.len > 0 else { return true; }
+    guard pattern[0] == '/' else { return false; }
 
     if pattern[pattern.len - 1] == '*' {
         let prefix = pattern[..pattern.len - 1];
@@ -113,17 +114,17 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
             let k = k_raw.trim_lws();
             let v = v_raw.trim_lws().trim_byte('"');
 
-            if k == "match" {
+            if core::eq_ascii_fold(k, "match") {
                 p.match_pattern.clear();
                 p.match_pattern.append(v);
-                p.valid = true;
-            } else if k == "id" {
+                p.valid = (v.len > 0 && v[0] == '/');
+            } else if core::eq_ascii_fold(k, "id") {
                 p.id.clear();
                 p.id.append(v);
-            } else if k == "ttl" {
+            } else if core::eq_ascii_fold(k, "ttl") {
                 let ttl_val, ttl_ok = v.parse_u32_dec();
                 if ttl_ok { p.ttl_sec = ttl_val; }
-            } else if k == "type" {
+            } else if core::eq_ascii_fold(k, "type") {
                 p.dict_type.clear();
                 p.dict_type.append(v);
             }
@@ -297,7 +298,7 @@ fn dictionary_lookup_for_request(
     for &entry in cache.entries {
         if entry.valid && entry.origin[..] == origin {
             let elapsed = now_sec - entry.inserted_at_sec;
-            if elapsed < entry.ttl_sec {
+            if elapsed >= 0 && elapsed < (entry.ttl_sec as i64) {
                 if url_path_matches_pattern(url_path, entry.match_pattern[..]) {
                     out_base64_hash.clear();
                     out_base64_hash.append(entry.sha256_base64[..]);
