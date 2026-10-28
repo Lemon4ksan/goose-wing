@@ -7,9 +7,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================
 // 1. Frame Header Encoding, Decoding & GREASE Conformance
-// ============================================================================
 fn test_h3_framing_and_grease(t: core::T&) {
     t.run("H3-01: Frame Header VarInt Encoding & Decoding") { sub =>
         var buf: u8[..64] = [];
@@ -59,9 +57,7 @@ fn test_h3_framing_and_grease(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. SETTINGS Frame Conformance & Protocol Defenses
-// ============================================================================
 fn test_h3_settings_conformance(t: core::T&) {
     t.run("H3-03: SETTINGS Frame Encoding & Parsing") { sub =>
         var set_out = wing::H3Settings {
@@ -122,9 +118,7 @@ fn test_h3_settings_conformance(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. Unidirectional Control and QPACK Streams
-// ============================================================================
 fn test_h3_unidirectional_streams(t: core::T&) {
     t.run("H3-06: Client Preambles for Control and QPACK Streams") { sub =>
         let settings = wing::H3Settings {
@@ -243,9 +237,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 4. Request Stream Lifecycle & Full Request-Response Multiplexing
-// ============================================================================
 fn test_h3_request_streams(t: core::T&) {
     t.run("H3-09: Client Request Header & Data Frame Generation") { sub =>
         let settings = wing::H3Settings { .. };
@@ -370,9 +362,7 @@ fn test_h3_request_streams(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 5. QPACK Table Lifecycle, String Decoding & Stream Instructions (RFC 9204)
-// ============================================================================
 fn test_qpack_table_and_codec(t: core::T&) {
     t.run("QPACK-01: Table Capacity and Entry Management") { sub =>
         var tbl = wing::new_qpack_table(4096, 16);
@@ -542,9 +532,7 @@ fn test_qpack_table_and_codec(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 6. HTTP/3 Extended Frames & Stream Edge-Cases
-// ============================================================================
 fn test_h3_extended_frames(t: core::T&) {
     t.run("H3-13: Extended Frame Encoding & Inbound Ingestion") { sub =>
         let settings = wing::H3Settings { .. };
@@ -629,9 +617,7 @@ fn test_h3_extended_frames(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 7. Team QPackStrike Protocol Hardening Suite (RFC 9114, RFC 9204, RFC 9000)
-// ============================================================================
 fn test_round1_qpackstrike_suite(t: core::T&) {
     t.run("QPACK-R1-01: 62-bit Integer Decoding and Overflow Rejection (RFC 9204 Section 4.1.1)") { sub =>
         // 62-bit integer: 0x3FFFFFFFFFFFFFFF
@@ -753,9 +739,7 @@ fn test_round1_qpackstrike_suite(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 8. Team QPackStrike Round 2 Protocol Audit Suite (RFC 9114, RFC 9204, RFC 9000)
-// ============================================================================
 fn test_round2_qpackstrike_suite(t: core::T&) {
     t.run("H3-R2-01: Control Stream Frame Sequence & Missing SETTINGS Precedence (RFC 9114 §6.2.1, §7.2.4)") { sub =>
         let settings = wing::H3Settings { .. };
@@ -971,9 +955,7 @@ fn test_round2_qpackstrike_suite(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 9. Team QPackStrike Round 3 Championship Audit Suite (RFC 9204, RFC 9000, RFC 9114)
-// ============================================================================
 fn test_round3_qpackstrike_suite(t: core::T&) {
     t.run("QPACK-R3-01: Huffman Padding Bounds and All-1s Validation (RFC 9204 §4.1.2, RFC 7541 §5.2)") { sub =>
         // Test A: Non-empty input with only padding (0xFF) MUST fail (8 bits of padding > 7 bits)
@@ -1128,9 +1110,7 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
     };
 }
 
-// ============================================================================
 // Main HTTP/3 Conformance Runner
-// ============================================================================
 fn main() {
     var runner = core::new_runner("HTTP/3 (RFC 9114) Zero-Allocation Conformance Suite", core::Verbosity.Verbose);
 

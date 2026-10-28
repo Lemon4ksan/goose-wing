@@ -140,8 +140,9 @@ static void *client_worker(void *arg) {
                     // Matches "HTTP/1.1 200" across any server response length
                     size_t pos = 0;
                     while (pos + 12 <= (size_t)recvd) {
-                        if (recv_buf[pos] == 'H' && recv_buf[pos+1] == 'T' && recv_buf[pos+2] == 'T' && recv_buf[pos+3] == 'P' &&
-                            recv_buf[pos+9] == '2' && recv_buf[pos+10] == '0' && recv_buf[pos+11] == '0') {
+                        if (recv_buf[pos] == 'H' && recv_buf[pos + 1] == 'T' && recv_buf[pos + 2] == 'T' &&
+                            recv_buf[pos + 3] == 'P' && recv_buf[pos + 9] == '2' && recv_buf[pos + 10] == '0' &&
+                            recv_buf[pos + 11] == '0') {
                             req_count++;
                             pos += 12;
                         } else {

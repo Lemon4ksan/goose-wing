@@ -93,18 +93,14 @@ int32_t wing_smartnic_enable_ktls(int64_t fd) {
 }
 
 #pragma pack(push, 1)
-typedef struct { const uint8_t *data; int64_t len; } wing_bytes_ro;
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
 #pragma pack(pop)
 
-int32_t wing_smartnic_set_hardware_tls_tx(
-    int64_t fd,
-    uint16_t version,
-    uint16_t cipher_type,
-    wing_bytes_ro key,
-    wing_bytes_ro iv,
-    wing_bytes_ro salt,
-    wing_bytes_ro rec_seq
-) {
+int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
+                                          wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
     if (cipher_type == TLS_CIPHER_AES_GCM_128 && key.len >= 16) {
         struct wing_tls_crypto_info_aes_gcm_128 info;
         __builtin_memset(&info, 0, sizeof(info));
@@ -137,15 +133,8 @@ int32_t wing_smartnic_set_hardware_tls_tx(
     return -EINVAL;
 }
 
-int32_t wing_smartnic_set_hardware_tls_rx(
-    int64_t fd,
-    uint16_t version,
-    uint16_t cipher_type,
-    wing_bytes_ro key,
-    wing_bytes_ro iv,
-    wing_bytes_ro salt,
-    wing_bytes_ro rec_seq
-) {
+int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
+                                          wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
     if (cipher_type == TLS_CIPHER_AES_GCM_128 && key.len >= 16) {
         struct wing_tls_crypto_info_aes_gcm_128 info;
         __builtin_memset(&info, 0, sizeof(info));
@@ -183,7 +172,10 @@ int32_t wing_smartnic_set_hardware_tls_rx(
 #include <windows.h>
 
 #pragma pack(push, 1)
-typedef struct { const uint8_t *data; int64_t len; } wing_bytes_ro;
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
 #pragma pack(pop)
 
 // Windows SmartNIC & Hardware Chimney Offload probing
@@ -202,23 +194,27 @@ int32_t wing_smartnic_enable_ktls(int64_t fd) {
     return 0;
 }
 
-int32_t wing_smartnic_set_hardware_tls_tx(
-    int64_t fd, uint16_t version, uint16_t cipher_type,
-    wing_bytes_ro key, wing_bytes_ro iv,
-    wing_bytes_ro salt, wing_bytes_ro rec_seq
-) {
-    (void)fd; (void)version; (void)cipher_type;
-    (void)key; (void)iv; (void)salt; (void)rec_seq;
+int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
+                                          wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
+    (void)fd;
+    (void)version;
+    (void)cipher_type;
+    (void)key;
+    (void)iv;
+    (void)salt;
+    (void)rec_seq;
     return 0;
 }
 
-int32_t wing_smartnic_set_hardware_tls_rx(
-    int64_t fd, uint16_t version, uint16_t cipher_type,
-    wing_bytes_ro key, wing_bytes_ro iv,
-    wing_bytes_ro salt, wing_bytes_ro rec_seq
-) {
-    (void)fd; (void)version; (void)cipher_type;
-    (void)key; (void)iv; (void)salt; (void)rec_seq;
+int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
+                                          wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
+    (void)fd;
+    (void)version;
+    (void)cipher_type;
+    (void)key;
+    (void)iv;
+    (void)salt;
+    (void)rec_seq;
     return 0;
 }
 
@@ -229,27 +225,37 @@ int32_t wing_smartnic_set_hardware_tls_rx(
 #endif
 
 #pragma pack(push, 1)
-typedef struct { const uint8_t *data; int64_t len; } wing_bytes_ro;
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
 #pragma pack(pop)
 
 int32_t wing_smartnic_probe(void) { return -ENOSYS; }
-int32_t wing_smartnic_enable_ktls(int64_t fd) { (void)fd; return -ENOSYS; }
-int32_t wing_smartnic_set_hardware_tls_tx(
-    int64_t fd, uint16_t version, uint16_t cipher_type,
-    wing_bytes_ro key, wing_bytes_ro iv,
-    wing_bytes_ro salt, wing_bytes_ro rec_seq
-) {
-    (void)fd; (void)version; (void)cipher_type;
-    (void)key; (void)iv; (void)salt; (void)rec_seq;
+int32_t wing_smartnic_enable_ktls(int64_t fd) {
+    (void)fd;
     return -ENOSYS;
 }
-int32_t wing_smartnic_set_hardware_tls_rx(
-    int64_t fd, uint16_t version, uint16_t cipher_type,
-    wing_bytes_ro key, wing_bytes_ro iv,
-    wing_bytes_ro salt, wing_bytes_ro rec_seq
-) {
-    (void)fd; (void)version; (void)cipher_type;
-    (void)key; (void)iv; (void)salt; (void)rec_seq;
+int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
+                                          wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
+    (void)fd;
+    (void)version;
+    (void)cipher_type;
+    (void)key;
+    (void)iv;
+    (void)salt;
+    (void)rec_seq;
+    return -ENOSYS;
+}
+int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
+                                          wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
+    (void)fd;
+    (void)version;
+    (void)cipher_type;
+    (void)key;
+    (void)iv;
+    (void)salt;
+    (void)rec_seq;
     return -ENOSYS;
 }
 

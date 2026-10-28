@@ -31,50 +31,85 @@ struct DigestCredentials {
 // ---- 2. Challenge Parsing (RFC 7616 Section 3.3) -----------------------------
 
 fn skip_whitespace_and_commas(raw: const u8[:], idx: i64&) {
-    while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t' || raw[idx] == ',' || raw[idx] == '\r' || raw[idx] == '\n') {
-        idx += 1;
-    }
+    let rem = raw[idx..].trim_start_bytes(" \t,\r\n");
+    idx = raw.len - rem.len;
 }
 
-fn parse_digest_param_key(raw: const u8[:], idx: i64&, out_key: u8[..32]&) -> bool {
-    out_key.clear();
-    while idx < raw.len && raw[idx] != '=' && raw[idx] != ' ' && raw[idx] != '\t' {
-        guard out_key.try_push(raw[idx]) else { return false; }
-        idx += 1;
+fn parse_digest_param_key(raw: const u8[:], idx: i64&) -> const u8[:], bool {
+    let rem = raw[idx..];
+    var k_len: i64 = 0;
+    while k_len < rem.len && rem[k_len] != '=' && rem[k_len] != ' ' && rem[k_len] != '\t' {
+        k_len += 1;
     }
-    return out_key.len > 0;
+    guard k_len > 0 else { return "", false; }
+    idx += k_len;
+    return rem[..k_len], true;
+}
+
+fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool {
+    var pos: i64 = 1;
+    while pos < s.len {
+        let b = s[pos];
+        if b == '"' {
+            return pos + 1, true;
+        }
+        if b == '\\' && pos + 1 < s.len {
+            pos += 1;
+            guard out_val.try_push(s[pos]) else { return 0, false; }
+            pos += 1;
+            continue;
+        }
+        guard out_val.try_push(b) else { return 0, false; }
+        pos += 1;
+    }
+    return 0, false;
 }
 
 fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
-    out_val.clear();
-    while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t' || raw[idx] == '=') {
-        idx += 1;
-    }
-    guard idx < raw.len else { return false; }
+    let rem = raw[idx..].trim_start_bytes(" \t=");
+    guard rem.len > 0 else { return false; }
+    let new_idx = raw.len - rem.len;
 
-    if raw[idx] == '"' {
-        // Quoted string
-        idx += 1; // skip opening quote
-        while idx < raw.len && raw[idx] != '"' {
-            if raw[idx] == '\\' && idx + 1 < raw.len {
-                idx += 1;
-            }
-            guard out_val.len < out_val.cap else { return false; }
-            out_val.push(raw[idx]);
-            idx += 1;
-        }
-        guard idx < raw.len && raw[idx] == '"' else { return false; }
-        idx += 1; // skip closing quote
+    if rem[0] == '"' {
+        var tmp: u8[..128] = [];
+        let consumed, ok = parse_quoted_param(rem, tmp);
+        guard ok else { return false; }
+        out_val.clear();
+        out_val.append(tmp[..]);
+        idx = new_idx + consumed;
         return true;
     }
 
-    // Token
-    while idx < raw.len && raw[idx] != ',' && raw[idx] != ' ' && raw[idx] != '\t' && raw[idx] != '\r' && raw[idx] != '\n' {
-        guard out_val.len < out_val.cap else { return false; }
-        out_val.push(raw[idx]);
-        idx += 1;
+    var token_len: i64 = 0;
+    while token_len < rem.len && !core::contains_byte(" \t,\r\n", rem[token_len]) {
+        token_len += 1;
     }
+    guard token_len <= out_val.cap else { return false; }
+    out_val.clear();
+    out_val.append(rem[..token_len]);
+    idx = new_idx + token_len;
     return true;
+}
+
+fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
+    if eq_ascii_fold(key, "realm") { chal.realm.clear(); chal.realm.append(val); return true; }
+    if eq_ascii_fold(key, "nonce") { chal.nonce.clear(); chal.nonce.append(val); return true; }
+    if eq_ascii_fold(key, "algorithm") { chal.algorithm.clear(); chal.algorithm.append(val); return true; }
+    if eq_ascii_fold(key, "qop") { chal.qop.clear(); chal.qop.append(val); return true; }
+    return false;
+}
+
+fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
+    if eq_ascii_fold(key, "opaque") { chal.opaque.clear(); chal.opaque.append(val); return; }
+    if eq_ascii_fold(key, "domain") { chal.domain.clear(); chal.domain.append(val); return; }
+    if eq_ascii_fold(key, "stale") { chal.stale = eq_ascii_fold(val, "true"); return; }
+    if eq_ascii_fold(key, "userhash") { chal.userhash = eq_ascii_fold(val, "true"); return; }
+}
+
+fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
+    if !apply_digest_core_param(chal, key, val) {
+        apply_digest_opt_param(chal, key, val);
+    }
 }
 
 // Parses a `WWW-Authenticate: Digest ...` challenge header into structured fields
@@ -84,46 +119,22 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
 
     // Optional leading scheme "Digest "
     skip_whitespace_and_commas(raw_header, idx);
-    if idx + 7 <= raw_header.len {
-        let scheme = raw_header[idx..idx + 6];
-        if eq_ascii_fold(scheme, "digest") && (raw_header[idx + 6] == ' ' || raw_header[idx + 6] == '\t') {
-            idx += 7;
-        }
+    let rem_scheme = raw_header[idx..];
+    if rem_scheme.len >= 7 && eq_ascii_fold(rem_scheme[..6], "digest") && (rem_scheme[6] == ' ' || rem_scheme[6] == '\t') {
+        idx += 7;
     }
 
     while idx < raw_header.len {
         skip_whitespace_and_commas(raw_header, idx);
         guard idx < raw_header.len else { break; }
 
-        var key: u8[..32] = [];
-        guard parse_digest_param_key(raw_header, idx, key) else { return chal, false; }
+        let key, key_ok = parse_digest_param_key(raw_header, idx);
+        guard key_ok else { return chal, false; }
 
         var val: u8[..128] = [];
         guard parse_digest_param_val(raw_header, idx, val) else { return chal, false; }
 
-        if eq_ascii_fold(key[..], "realm") {
-            chal.realm.clear();
-            chal.realm.append(val[..]);
-        } else if eq_ascii_fold(key[..], "nonce") {
-            chal.nonce.clear();
-            chal.nonce.append(val[..]);
-        } else if eq_ascii_fold(key[..], "algorithm") {
-            chal.algorithm.clear();
-            chal.algorithm.append(val[..]);
-        } else if eq_ascii_fold(key[..], "qop") {
-            chal.qop.clear();
-            chal.qop.append(val[..]);
-        } else if eq_ascii_fold(key[..], "opaque") {
-            chal.opaque.clear();
-            chal.opaque.append(val[..]);
-        } else if eq_ascii_fold(key[..], "domain") {
-            chal.domain.clear();
-            chal.domain.append(val[..]);
-        } else if eq_ascii_fold(key[..], "stale") {
-            chal.stale = eq_ascii_fold(val[..], "true");
-        } else if eq_ascii_fold(key[..], "userhash") {
-            chal.userhash = eq_ascii_fold(val[..], "true");
-        }
+        apply_digest_param(chal, key, val[..]);
     }
 
     chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0);
@@ -232,6 +243,64 @@ fn calculate_digest_response(
     digest_hash_hex(algo, a3[..], out_response_hex);
 }
 
+fn serialize_digest_auth<B>(
+    effective_user: const u8[:],
+    realm: const u8[:],
+    nonce: const u8[:],
+    uri: const u8[:],
+    algo: const u8[:],
+    response_hex: const u8[:],
+    active_qop: const u8[:],
+    nc_str: const u8[:],
+    cnonce: const u8[:],
+    opaque: const u8[:],
+    userhash: bool,
+    out_header: B&,
+) -> bool {
+    let base_len = 17 + effective_user.len + 10 + realm.len + 10 + nonce.len + 8 + uri.len + 13 + algo.len + 13 + response_hex.len + 1;
+    let qop_len = if active_qop.len > 0 { 6 + active_qop.len + 5 + nc_str.len + 10 + cnonce.len + 1 } else { 0 };
+    let op_len = if opaque.len > 0 { 10 + opaque.len + 1 } else { 0 };
+    let uh_len = if userhash { 16 } else { 0 };
+    guard base_len + qop_len + op_len + uh_len <= out_header.cap else { return false; }
+
+    out_header.clear();
+    out_header.append("Digest username=\"");
+    out_header.append(effective_user);
+    out_header.append("\", realm=\"");
+    out_header.append(realm);
+    out_header.append("\", nonce=\"");
+    out_header.append(nonce);
+    out_header.append("\", uri=\"");
+    out_header.append(uri);
+    out_header.append("\", algorithm=");
+    out_header.append(algo);
+    out_header.append(", response=\"");
+    out_header.append(response_hex);
+    out_header.append("\"");
+
+    if active_qop.len > 0 {
+        out_header.append(", qop=");
+        out_header.append(active_qop);
+        out_header.append(", nc=");
+        out_header.append(nc_str);
+        out_header.append(", cnonce=\"");
+        out_header.append(cnonce);
+        out_header.append("\"");
+    }
+
+    if opaque.len > 0 {
+        out_header.append(", opaque=\"");
+        out_header.append(opaque);
+        out_header.append("\"");
+    }
+
+    if userhash {
+        out_header.append(", userhash=true");
+    }
+
+    return true;
+}
+
 // Computes RFC 7616 Digest response and outputs the full Authorization header
 fn compute_digest_response(
     challenge: const DigestChallenge&,
@@ -272,54 +341,24 @@ fn compute_digest_response(
     var response_hex: u8[..64] = [];
     calculate_digest_response(algo, ha1_hex[..], challenge.nonce[..], nc_str[..], cnonce, has_qop, is_auth_int, ha2_hex[..], response_hex);
 
-    var total_len: i64 = 17 + effective_user.len + 10 + challenge.realm.len + 10 + challenge.nonce.len + 8 + uri.len + 13 + algo.len + 13 + response_hex.len + 1;
-    if has_qop {
-        let active_qop_len: i64 = if is_auth_int { 8 } else { 4 };
-        total_len += 6 + active_qop_len + 5 + nc_str.len + 10 + cnonce.len + 1;
-    }
-    if challenge.opaque.len > 0 {
-        total_len += 10 + challenge.opaque.len + 1;
-    }
-    if challenge.userhash {
-        total_len += 16;
-    }
-    guard total_len <= out_header.cap else { return false; }
+    let active_qop: const u8[:] = if has_qop {
+        if is_auth_int { "auth-int" } else { "auth" }
+    } else {
+        ""
+    };
 
-    out_header.clear();
-    out_header.append("Digest username=\"");
-    out_header.append(effective_user[..]);
-    out_header.append("\", realm=\"");
-    out_header.append(challenge.realm[..]);
-    out_header.append("\", nonce=\"");
-    out_header.append(challenge.nonce[..]);
-    out_header.append("\", uri=\"");
-    out_header.append(uri);
-    out_header.append("\", algorithm=");
-    out_header.append(algo);
-    out_header.append(", response=\"");
-    out_header.append(response_hex[..]);
-    out_header.append("\"");
-
-    if has_qop {
-        let active_qop = if is_auth_int { "auth-int" } else { "auth" };
-        out_header.append(", qop=");
-        out_header.append(active_qop);
-        out_header.append(", nc=");
-        out_header.append(nc_str[..]);
-        out_header.append(", cnonce=\"");
-        out_header.append(cnonce);
-        out_header.append("\"");
-    }
-
-    if challenge.opaque.len > 0 {
-        out_header.append(", opaque=\"");
-        out_header.append(challenge.opaque[..]);
-        out_header.append("\"");
-    }
-
-    if challenge.userhash {
-        out_header.append(", userhash=true");
-    }
-
-    return true;
+    return serialize_digest_auth(
+        effective_user[..],
+        challenge.realm[..],
+        challenge.nonce[..],
+        uri,
+        algo,
+        response_hex[..],
+        active_qop,
+        nc_str[..],
+        cnonce,
+        challenge.opaque[..],
+        challenge.userhash,
+        out_header,
+    );
 }

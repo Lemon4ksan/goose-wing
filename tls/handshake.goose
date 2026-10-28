@@ -411,7 +411,6 @@ fn validate_server_cipher_suite(
 // - IPv4 and IPv6 address literals strictly forbidden in host_name (RFC 6066 Section 3)
 // - Normalized to ASCII lowercase
 fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
-    out_sni.clear();
     var cursor = cursor_from(ext_bytes);
 
     var list_cursor = cursor_from(ext_bytes[..0]);
@@ -424,6 +423,7 @@ fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
     guard cursor_len(cursor) == 0 else { return false; }
 
     var found_host_name = false;
+    var found_raw = ext_bytes[..0];
 
     while cursor_len(list_cursor) > 0 {
         var name_type: u8 = 0;
@@ -467,20 +467,18 @@ fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
                 return false;
             }
 
-            // Copy and normalize to lowercase
-            for b in raw {
-                var ch = b;
-                if ch >= 'A' && ch <= 'Z' {
-                    ch += 32;
-                }
-                out_sni.push(ch);
-            }
+            found_raw = raw;
             found_host_name = true;
         }
     }
     // Entire list must have been cleanly consumed and host_name must have been found
-    guard cursor_len(list_cursor) == 0 else { return false; }
-    return found_host_name;
+    guard cursor_len(list_cursor) == 0 && found_host_name else { return false; }
+
+    out_sni.clear();
+    for b in found_raw {
+        out_sni.push(core::to_lower_ascii_byte(b));
+    }
+    return true;
 }
 
 // ---- 7. ALPN Negotiation (RFC 7301) -----------------------------------------

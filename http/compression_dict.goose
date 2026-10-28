@@ -11,7 +11,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import http.headers;
 
 // ---- 1. Normative Constants & Wire Magics -----------------------------------
 
@@ -79,56 +78,56 @@ fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
 
 // ---- 4. Header Parsers & Serializers ---------------------------------------
 
+fn find_dict_item_end(s: const u8[:]) -> i64 {
+    var in_quotes = false;
+    for i in s.len {
+        let b = s[i];
+        if b == '"' {
+            in_quotes = !in_quotes;
+        } else if !in_quotes && (b == ',' || b == ';') {
+            return i;
+        }
+    }
+    return s.len;
+}
+
+fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) {
+    let k_raw, v_raw, has_eq = item.split_once_byte('=');
+    guard has_eq else { return; }
+    let k = k_raw.trim_lws();
+    let v = v_raw.trim_lws().trim_byte('"');
+
+    if core::eq_ascii_fold(k, "match") {
+        p.match_pattern.clear();
+        p.match_pattern.append(v);
+        p.valid = (v.len > 0 && v[0] == '/');
+    } else if core::eq_ascii_fold(k, "id") {
+        p.id.clear();
+        p.id.append(v);
+    } else if core::eq_ascii_fold(k, "ttl") {
+        let ttl_val, ttl_ok = v.parse_u32_dec();
+        if ttl_ok { p.ttl_sec = ttl_val; }
+    } else if core::eq_ascii_fold(k, "type") {
+        p.dict_type.clear();
+        p.dict_type.append(v);
+    }
+}
+
 // Parses `Use-As-Dictionary` header value (e.g. `match="/assets/*", id="v1", ttl=86400, type=raw`)
 fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, bool {
     var p = DictionaryParams { .. };
-    let trimmed = trim_lws(header_val);
-    guard trimmed.len > 0 else { return p, false; }
+    var rem = header_val.trim_lws();
+    guard rem.len > 0 else { return p, false; }
 
-    var cursor: i64 = 0;
-    while cursor < trimmed.len {
-        while cursor < trimmed.len && (trimmed[cursor] == ' ' || trimmed[cursor] == '\t' || trimmed[cursor] == ',' || trimmed[cursor] == ';') {
-            cursor++;
-        }
-        if cursor == trimmed.len { break; }
+    while rem.len > 0 {
+        rem = rem.trim_start_bytes(" \t,;");
+        guard rem.len > 0 else { break; }
 
-        var item_end = trimmed.len;
-        var in_quotes = false;
-        var i = cursor;
-        while i < trimmed.len {
-            let b = trimmed[i];
-            if b == '"' {
-                in_quotes = !in_quotes;
-            } else if !in_quotes && (b == ',' || b == ';') {
-                item_end = i;
-                break;
-            }
-            i++;
-        }
+        let item_len = find_dict_item_end(rem);
+        let item = rem[..item_len].trim_lws();
+        rem = rem[item_len..];
 
-        let item = trim_lws(trimmed[cursor..item_end]);
-        cursor = item_end;
-
-        let k_raw, v_raw, has_eq = item.split_once_byte('=');
-        if has_eq {
-            let k = k_raw.trim_lws();
-            let v = v_raw.trim_lws().trim_byte('"');
-
-            if core::eq_ascii_fold(k, "match") {
-                p.match_pattern.clear();
-                p.match_pattern.append(v);
-                p.valid = (v.len > 0 && v[0] == '/');
-            } else if core::eq_ascii_fold(k, "id") {
-                p.id.clear();
-                p.id.append(v);
-            } else if core::eq_ascii_fold(k, "ttl") {
-                let ttl_val, ttl_ok = v.parse_u32_dec();
-                if ttl_ok { p.ttl_sec = ttl_val; }
-            } else if core::eq_ascii_fold(k, "type") {
-                p.dict_type.clear();
-                p.dict_type.append(v);
-            }
-        }
+        apply_dictionary_param(p, item);
     }
 
     return p, p.valid;
@@ -218,6 +217,66 @@ fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool 
 
 // ---- 6. Dictionary Cache Operations -----------------------------------------
 
+fn find_matching_dict_entry_index(
+    cache: const DictionaryCache&,
+    origin: const u8[:],
+    id_str: const u8[:],
+    match_pattern: const u8[:],
+) -> i64 {
+    for i in cache.entries.len {
+        let entry = &cache.entries[i];
+        if entry.valid && entry.origin[..] == origin &&
+           (entry.id[..] == id_str || entry.match_pattern[..] == match_pattern) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+fn find_oldest_dict_entry_index(cache: const DictionaryCache&) -> i64 {
+    var oldest_idx: i64 = 0;
+    guard cache.entries.len > 0 else { return 0; }
+    var oldest_time = cache.entries[0].inserted_at_sec;
+    for i in cache.entries.len {
+        let entry = &cache.entries[i];
+        if !entry.valid {
+            return i;
+        }
+        if entry.inserted_at_sec < oldest_time {
+            oldest_time = entry.inserted_at_sec;
+            oldest_idx = i;
+        }
+    }
+    return oldest_idx;
+}
+
+fn populate_dict_entry(
+    entry: DictionaryEntry&,
+    origin: const u8[:],
+    match_pattern: const u8[:],
+    id_str: const u8[:],
+    body: const u8[:],
+    hash: const u8[32]&,
+    b64_hash: const u8[:],
+    ttl_sec: u32,
+    now_sec: i64,
+) {
+    entry.valid = true;
+    entry.origin.clear();
+    entry.origin.append(origin);
+    entry.match_pattern.clear();
+    entry.match_pattern.append(match_pattern);
+    entry.id.clear();
+    entry.id.append(id_str);
+    entry.sha256_hash = hash;
+    entry.sha256_base64.clear();
+    entry.sha256_base64.append(b64_hash);
+    entry.content.clear();
+    entry.content.append(body);
+    entry.inserted_at_sec = now_sec;
+    entry.ttl_sec = ttl_sec;
+}
+
 // Inserts a new dictionary into the cache
 fn dictionary_cache_insert(
     cache: DictionaryCache&,
@@ -234,57 +293,31 @@ fn dictionary_cache_insert(
     var b64_hash: u8[..64] = [];
     format_available_dictionary_header(b64_hash, hash);
 
-    // Update existing if origin + id or origin + match_pattern exists
-    for i in cache.entries.len {
-        if cache.entries[i].valid && cache.entries[i].origin[..] == origin &&
-           (cache.entries[i].id[..] == id_str || cache.entries[i].match_pattern[..] == match_pattern) {
-            cache.entries[i].match_pattern.clear();
-            cache.entries[i].match_pattern.append(match_pattern);
-            cache.entries[i].id.clear();
-            cache.entries[i].id.append(id_str);
-            cache.entries[i].sha256_hash = hash;
-            cache.entries[i].sha256_base64.clear();
-            cache.entries[i].sha256_base64.append(b64_hash[..]);
-            cache.entries[i].content.clear();
-            cache.entries[i].content.append(body);
-            cache.entries[i].inserted_at_sec = now_sec;
-            cache.entries[i].ttl_sec = ttl_sec;
-            return true;
-        }
+    let match_idx = find_matching_dict_entry_index(cache, origin, id_str, match_pattern);
+    if match_idx >= 0 && match_idx < cache.entries.len {
+        populate_dict_entry(cache.entries[match_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec);
+        return true;
     }
-
-    var entry = DictionaryEntry {
-        sha256_hash: hash,
-        inserted_at_sec: now_sec,
-        ttl_sec: ttl_sec,
-        valid: true,
-        ..
-    };
-    entry.origin.append(origin);
-    entry.match_pattern.append(match_pattern);
-    entry.id.append(id_str);
-    entry.sha256_base64.append(b64_hash[..]);
-    entry.content.append(body);
 
     if cache.entries.len < 8 {
+        var entry = DictionaryEntry { .. };
+        populate_dict_entry(entry, origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec);
         cache.entries.push(entry);
-    } else {
-        // Evict oldest
-        var oldest_idx: i64 = 0;
-        var oldest_time = cache.entries[0].inserted_at_sec;
-        for i in cache.entries.len {
-            if !cache.entries[i].valid {
-                oldest_idx = i;
-                break;
-            }
-            if cache.entries[i].inserted_at_sec < oldest_time {
-                oldest_time = cache.entries[i].inserted_at_sec;
-                oldest_idx = i;
-            }
-        }
-        cache.entries[oldest_idx] = entry;
+        return true;
+    }
+
+    let oldest_idx = find_oldest_dict_entry_index(cache);
+    if oldest_idx >= 0 && oldest_idx < cache.entries.len {
+        populate_dict_entry(cache.entries[oldest_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec);
     }
     return true;
+}
+
+fn dict_entry_matches_request(entry: const DictionaryEntry&, origin: const u8[:], url_path: const u8[:], now_sec: i64) -> bool {
+    guard entry.valid && entry.origin[..] == origin else { return false; }
+    let elapsed = now_sec - entry.inserted_at_sec;
+    guard elapsed >= 0 && elapsed < entry.ttl_sec else { return false; }
+    return url_path_matches_pattern(url_path, entry.match_pattern[..]);
 }
 
 // Queries dictionary cache for a matching entry for outgoing request
@@ -296,15 +329,10 @@ fn dictionary_lookup_for_request(
     out_base64_hash: u8[..64]&,
 ) -> bool {
     for &entry in cache.entries {
-        if entry.valid && entry.origin[..] == origin {
-            let elapsed = now_sec - entry.inserted_at_sec;
-            if elapsed >= 0 && elapsed < entry.ttl_sec {
-                if url_path_matches_pattern(url_path, entry.match_pattern[..]) {
-                    out_base64_hash.clear();
-                    out_base64_hash.append(entry.sha256_base64[..]);
-                    return true;
-                }
-            }
+        if dict_entry_matches_request(entry, origin, url_path, now_sec) {
+            out_base64_hash.clear();
+            out_base64_hash.append(entry.sha256_base64[..]);
+            return true;
         }
     }
     return false;

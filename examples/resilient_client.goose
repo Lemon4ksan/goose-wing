@@ -12,9 +12,7 @@ import core from "..";
 import wing from "..";
 
 fn main() {
-    print("============================================================");
-    print(" goose-wing Resilient Networking & SRE Fault-Tolerance Demo");
-    print("============================================================");
+    print("goose-wing Resilient Networking & SRE Fault-Tolerance Demo");
 
     // 1. Build an authenticated, idempotent request with distributed tracing
     var req = wing::new_request("POST", "/v1/payments/settle") { r =>
@@ -94,7 +92,5 @@ fn main() {
     let recovered_status = wing::is_host_circuit_broken(breaker, target_host, future_mono_ns);
     print("    After 30s Expiry -> Host Automatically Recovered: ", !recovered_status);
 
-    print("\n============================================================");
-    print(" Fault-Tolerance Demo Complete (100% Zero-Allocation)");
-    print("============================================================");
+    print("\nFault-Tolerance Demo Complete (100% Zero-Allocation)\n");
 }

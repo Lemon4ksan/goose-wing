@@ -6,9 +6,7 @@ import core from "..";
 import wing from "..";
 
 fn main() {
-    print("====================================================\n");
-    print("  goose-wing WebAssembly Production Scenarios\n");
-    print("====================================================\n");
+    print("goose-wing WebAssembly Production Scenarios\n");
 
     // ------------------------------------------------------------------------
     // Scenario 1: WHATWG URL Decomposition & PSL Tenant Isolation
@@ -300,7 +298,5 @@ fn main() {
     print("  QUIC Version:                0x", parsed_qhdr.version, "\n");
     print("  QUIC Payload Length:         ", parsed_qhdr.payload_length, " bytes\n");
 
-    print("\n====================================================\n");
-    print("  ALL 11 COMPLEX WING SCENARIOS PASSED ON WASM!\n");
-    print("====================================================\n");
+    print("All wing scenarios passed on wasm!\n");
 }

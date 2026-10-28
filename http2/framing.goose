@@ -297,65 +297,51 @@ struct PriorityParam {
     incremental: bool = false, // false by default, true for round-robin progressive loading
 }
 
+fn apply_priority_urgency(p: PriorityParam&, key: const u8[:], val: const u8[:], has_val: bool) -> bool {
+    guard key == "u" && has_val && val.len == 1 else { return false; }
+    let b = val[0];
+    guard b >= '0' && b <= '7' else { return false; }
+    p.urgency = b - '0';
+    return true;
+}
+
+fn apply_priority_incremental(p: PriorityParam&, key: const u8[:], val: const u8[:], has_val: bool) -> bool {
+    guard key == "i" else { return false; }
+    if !has_val || val == "?1" {
+        p.incremental = true;
+        return true;
+    }
+    if val == "?0" {
+        p.incremental = false;
+        return true;
+    }
+    return false;
+}
+
+fn apply_priority_item(p: PriorityParam&, key: const u8[:], val: const u8[:], has_val: bool) -> bool {
+    return apply_priority_urgency(p, key, val, has_val) || apply_priority_incremental(p, key, val, has_val);
+}
+
 // Parses RFC 9218 Structured Field dictionary: e.g. "u=0, i", "u=5", "i=?0, u=2".
 // Ignores unknown parameters per RFC 9218 Section 4.
 fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
     var p = PriorityParam { urgency: 3, incremental: default_incremental };
-    var i: i64 = 0;
-    let n = raw.len;
     var found_any = false;
-
-    while i < n {
-        // Skip whitespace and commas
-        while i < n && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == ',') {
-            i++;
-        }
-        guard i < n else { break; }
-
-        let key_start = i;
-        while i < n && raw[i] != '=' && raw[i] != ',' && raw[i] != ' ' && raw[i] != '\t' {
-            i++;
-        }
-        let key = raw[key_start..i];
-
-        // Skip whitespace before '='
-        while i < n && (raw[i] == ' ' || raw[i] == '\t') { i++; }
-
-        var has_val = false;
-        var val_start: i64 = 0;
-        var val_end: i64 = 0;
-
-        if i < n && raw[i] == '=' {
-            i++; // consume '='
-            while i < n && (raw[i] == ' ' || raw[i] == '\t') { i++; }
-            val_start = i;
-            while i < n && raw[i] != ',' && raw[i] != ' ' && raw[i] != '\t' {
-                i++;
-            }
-            val_end = i;
-            has_val = true;
+    var tok = core::make_byte_tokenizer(raw, ',');
+    while true {
+        let item, ok = tok.token_next();
+        guard ok else { break; }
+        let trimmed = core::trim_lws(item);
+        if trimmed.len == 0 {
+            continue;
         }
 
-        if key.len == 1 && key[0] == 'u' && has_val {
-            let val_slice = raw[val_start..val_end];
-            if val_slice.len == 1 && val_slice[0] >= '0' && val_slice[0] <= '7' {
-                p.urgency = val_slice[0] - '0';
-                found_any = true;
-            }
-        } else if key.len == 1 && key[0] == 'i' {
-            if !has_val {
-                p.incremental = true;
-                found_any = true;
-            } else {
-                let val_slice = raw[val_start..val_end];
-                if val_slice.len == 2 && val_slice[0] == '?' && val_slice[1] == '1' {
-                    p.incremental = true;
-                    found_any = true;
-                } else if val_slice.len == 2 && val_slice[0] == '?' && val_slice[1] == '0' {
-                    p.incremental = false;
-                    found_any = true;
-                }
-            }
+        let key_part, val_part, has_val = core::split_once_byte(trimmed, '=');
+        let key = core::trim_lws(key_part);
+        let val = core::trim_lws(val_part);
+
+        if apply_priority_item(p, key, val, has_val) {
+            found_any = true;
         }
     }
 

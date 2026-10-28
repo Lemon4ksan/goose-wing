@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. RFC 9211 Cache-Status Model -----------------------------------------
 
@@ -32,143 +33,166 @@ struct ProxyStatusEntry {
     received_status: i32 = 0,
 }
 
-// ---- 3. Helper Parsing Routines ---------------------------------------------
+// ---- 3. Diagnostics Parser Helpers ------------------------------------------
 
-fn status_format_int<B>(out: B&, val: i64) {
-    if val == 0 {
-        out.push('0' as u8);
-        return;
-    }
-    var v = val;
-    var digits: u8[..32] = [];
-    while v > 0 {
-        let d = (v % 10) as u8;
-        digits.push(('0' as u8) + d);
-        v /= 10;
-    }
-    var i = digits.len;
-    while i > 0 {
-        i -= 1;
-        out.push(digits[i]);
-    }
+fn skip_status_list_delims(raw: const u8[:], idx: i64&) {
+    let rem = raw[idx..];
+    let trimmed = core::trim_start_bytes(rem, " \t,");
+    idx += rem.len - trimmed.len;
 }
 
-fn status_parse_int(val: const u8[:]) -> i64 {
-    var num: i64 = 0;
-    var started = false;
-    for b in val {
-        if b >= '0' && b <= '9' {
-            num = num * 10 + (b - '0');
-            started = true;
-        } else if started {
+fn skip_status_param_delims(raw: const u8[:], idx: i64&) {
+    let rem = raw[idx..];
+    let trimmed = core::trim_start_bytes(rem, "; \t");
+    idx += rem.len - trimmed.len;
+}
+
+fn skip_lws_at(raw: const u8[:], idx: i64&) {
+    let rem = raw[idx..];
+    let trimmed = core::trim_lws_start(rem);
+    idx += rem.len - trimmed.len;
+}
+
+fn read_status_target_name(raw: const u8[:], idx: i64&) -> const u8[:] {
+    let start = idx;
+    while idx < raw.len {
+        let b = raw[idx];
+        if b == ';' || b == ',' || b == ' ' || b == '\t' {
             break;
         }
+        idx += 1;
     }
-    return num;
+    return raw[start..idx];
+}
+
+fn read_status_param_name(raw: const u8[:], idx: i64&) -> const u8[:] {
+    let start = idx;
+    while idx < raw.len {
+        let b = raw[idx];
+        if b == '=' || b == ';' || b == ',' || b == ' ' || b == '\t' {
+            break;
+        }
+        idx += 1;
+    }
+    return raw[start..idx];
+}
+
+fn read_quoted_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
+    idx += 1; // skip opening quote
+    let v_start = idx;
+    let rel_quote = core::index_of_byte(raw[idx..], '"');
+    if rel_quote >= 0 {
+        let val = raw[v_start..idx + rel_quote];
+        idx += rel_quote + 1; // skip closing quote
+        return val;
+    }
+    let val = raw[v_start..];
+    idx = raw.len;
+    return val;
+}
+
+fn read_token_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
+    let v_start = idx;
+    while idx < raw.len {
+        let b = raw[idx];
+        if b == ';' || b == ',' || b == ' ' || b == '\t' {
+            break;
+        }
+        idx += 1;
+    }
+    return raw[v_start..idx];
+}
+
+fn read_status_param(raw: const u8[:], idx: i64&) -> const u8[:], const u8[:], bool {
+    skip_status_param_delims(raw, idx);
+    guard idx < raw.len && raw[idx] != ',' else { return raw[..0], raw[..0], false; }
+
+    let param_name = read_status_param_name(raw, idx);
+    skip_lws_at(raw, idx);
+
+    var param_val = raw[..0];
+    if idx < raw.len && raw[idx] == '=' {
+        idx += 1; // skip '='
+        skip_lws_at(raw, idx);
+        if idx < raw.len && raw[idx] == '"' {
+            param_val = read_quoted_status_val(raw, idx);
+        } else {
+            param_val = read_token_status_val(raw, idx);
+        }
+    }
+    return param_name, param_val, true;
 }
 
 // ---- 4. RFC 9211 Cache-Status Parser and Formatter --------------------------
+
+fn apply_cache_status_flags(entry: CacheStatusEntry&, name: const u8[:]) -> bool {
+    if core::eq_ascii_fold(name, "hit") {
+        entry.hit = true;
+        return true;
+    }
+    if core::eq_ascii_fold(name, "stored") {
+        entry.stored = true;
+        return true;
+    }
+    if core::eq_ascii_fold(name, "collapsed") {
+        entry.collapsed = true;
+        return true;
+    }
+    return false;
+}
+
+fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: const u8[:]) {
+    guard !apply_cache_status_flags(entry, name) else { return; }
+
+    if core::eq_ascii_fold(name, "ttl") {
+        let ttl_v, _ = core::parse_i64_dec(val);
+        entry.ttl = ttl_v;
+    } else if core::eq_ascii_fold(name, "fwd") {
+        entry.fwd.clear();
+        entry.fwd.append(val);
+    } else if core::eq_ascii_fold(name, "fwd-status") {
+        let fwd_v, _ = core::parse_i64_dec(val);
+        entry.fwd_status = fwd_v as! i32;
+    } else if core::eq_ascii_fold(name, "key") {
+        entry.key.clear();
+        entry.key.append(val);
+    } else if core::eq_ascii_fold(name, "detail") {
+        entry.detail.clear();
+        entry.detail.append(val);
+    }
+}
+
+fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: CacheStatusEntry&) -> bool {
+    skip_status_list_delims(raw, idx);
+    guard idx < raw.len else { return false; }
+
+    out_entry = CacheStatusEntry { .. };
+    let name = read_status_target_name(raw, idx);
+    out_entry.cache_name.append(name);
+
+    while idx < raw.len && raw[idx] != ',' {
+        let p_name, p_val, ok = read_status_param(raw, idx);
+        guard ok else { break; }
+        apply_cache_status_param(out_entry, p_name, p_val);
+    }
+    return true;
+}
 
 // Parses a `Cache-Status: OriginCache; hit; ttl=120; key="xyz"` header
 fn parse_cache_status_header(
     raw: const u8[:],
     out_entries: CacheStatusEntry[..8]&,
 ) -> i64 {
-    out_entries.clear();
     var idx = 0;
-
     while idx < raw.len && out_entries.len < out_entries.cap {
-        // Skip whitespace
-        while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t' || raw[idx] == ',') {
-            idx += 1;
-        }
-        guard idx < raw.len else { break; }
-
         var entry = CacheStatusEntry { .. };
-
-        // Parse cache identifier (up to ';' or ',' or end)
-        var name_start = idx;
-        while idx < raw.len && raw[idx] != ';' && raw[idx] != ',' && raw[idx] != ' ' {
-            idx += 1;
-        }
-        entry.cache_name.append(raw[name_start..idx]);
-
-        // Parse parameters separated by ';'
-        while idx < raw.len && raw[idx] != ',' {
-            if raw[idx] == ';' || raw[idx] == ' ' || raw[idx] == '\t' {
-                idx += 1;
-                continue;
-            }
-
-            var p_name_start = idx;
-            while idx < raw.len && raw[idx] != '=' && raw[idx] != ';' && raw[idx] != ',' && raw[idx] != ' ' {
-                idx += 1;
-            }
-            let param_name = raw[p_name_start..idx];
-
-            var has_eq = false;
-            while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t') {
-                idx += 1;
-            }
-            if idx < raw.len && raw[idx] == '=' {
-                has_eq = true;
-                idx += 1;
-            }
-
-            var param_val: const u8[:] = "";
-            if has_eq {
-                while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t') {
-                    idx += 1;
-                }
-                var v_start = idx;
-                if idx < raw.len && raw[idx] == '"' {
-                    idx += 1;
-                    v_start = idx;
-                    while idx < raw.len && raw[idx] != '"' {
-                        idx += 1;
-                    }
-                    param_val = raw[v_start..idx];
-                    if idx < raw.len && raw[idx] == '"' { idx += 1; }
-                } else {
-                    while idx < raw.len && raw[idx] != ';' && raw[idx] != ',' && raw[idx] != ' ' {
-                        idx += 1;
-                    }
-                    param_val = raw[v_start..idx];
-                }
-            }
-
-            // Assign standard RFC 9211 parameters
-            if eq_ascii_fold(param_name, "hit") {
-                entry.hit = true;
-            } else if eq_ascii_fold(param_name, "stored") {
-                entry.stored = true;
-            } else if eq_ascii_fold(param_name, "collapsed") {
-                entry.collapsed = true;
-            } else if eq_ascii_fold(param_name, "ttl") {
-                entry.ttl = status_parse_int(param_val);
-            } else if eq_ascii_fold(param_name, "fwd") {
-                entry.fwd.clear();
-                entry.fwd.append(param_val);
-            } else if eq_ascii_fold(param_name, "fwd-status") {
-                entry.fwd_status = status_parse_int(param_val) as! i32;
-            } else if eq_ascii_fold(param_name, "key") {
-                entry.key.clear();
-                entry.key.append(param_val);
-            } else if eq_ascii_fold(param_name, "detail") {
-                entry.detail.clear();
-                entry.detail.append(param_val);
-            }
-        }
-
+        guard parse_single_cache_status_entry(raw, idx, entry) else { break; }
         out_entries.push(entry);
     }
-
     return out_entries.len;
 }
 
-// Formats a CacheStatusEntry into an RFC 9211 header string
-fn format_cache_status<B>(entry: const CacheStatusEntry&, out: B&) {
-    out.append(entry.cache_name[..]);
+fn format_cache_status_flags<B>(entry: const CacheStatusEntry&, out: B&) {
     if entry.hit {
         out.append("; hit");
     }
@@ -180,15 +204,18 @@ fn format_cache_status<B>(entry: const CacheStatusEntry&, out: B&) {
     }
     if entry.ttl > 0 {
         out.append("; ttl=");
-        status_format_int(out, entry.ttl);
+        core::format_i64_dec(entry.ttl, out);
     }
+}
+
+fn format_cache_status_meta<B>(entry: const CacheStatusEntry&, out: B&) {
     if entry.fwd.len > 0 {
         out.append("; fwd=");
         out.append(entry.fwd[..]);
     }
     if entry.fwd_status > 0 {
         out.append("; fwd-status=");
-        status_format_int(out, entry.fwd_status as i64);
+        core::format_i64_dec(entry.fwd_status as i64, out);
     }
     if entry.key.len > 0 {
         out.append("; key=\"");
@@ -202,91 +229,58 @@ fn format_cache_status<B>(entry: const CacheStatusEntry&, out: B&) {
     }
 }
 
+// Formats a CacheStatusEntry into an RFC 9211 header string
+fn format_cache_status<B>(entry: const CacheStatusEntry&, out: B&) {
+    out.append(entry.cache_name[..]);
+    format_cache_status_flags(entry, out);
+    format_cache_status_meta(entry, out);
+}
+
 // ---- 5. RFC 9209 Proxy-Status Parser and Formatter --------------------------
+
+fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: const u8[:]) {
+    if core::eq_ascii_fold(name, "error") {
+        entry.error_type.clear();
+        entry.error_type.append(val);
+    } else if core::eq_ascii_fold(name, "next-hop") {
+        entry.next_hop.clear();
+        entry.next_hop.append(val);
+    } else if core::eq_ascii_fold(name, "details") {
+        entry.details.clear();
+        entry.details.append(val);
+    } else if core::eq_ascii_fold(name, "received-status") {
+        let rec_v, _ = core::parse_i64_dec(val);
+        entry.received_status = rec_v as! i32;
+    }
+}
+
+fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: ProxyStatusEntry&) -> bool {
+    skip_status_list_delims(raw, idx);
+    guard idx < raw.len else { return false; }
+
+    out_entry = ProxyStatusEntry { .. };
+    let name = read_status_target_name(raw, idx);
+    out_entry.proxy_name.append(name);
+
+    while idx < raw.len && raw[idx] != ',' {
+        let p_name, p_val, ok = read_status_param(raw, idx);
+        guard ok else { break; }
+        apply_proxy_status_param(out_entry, p_name, p_val);
+    }
+    return true;
+}
 
 // Parses a `Proxy-Status: edge1; error=connection_refused; details="upstream tcp rst"` header
 fn parse_proxy_status_header(
     raw: const u8[:],
     out_entries: ProxyStatusEntry[..8]&,
 ) -> i64 {
-    out_entries.clear();
     var idx = 0;
-
     while idx < raw.len && out_entries.len < out_entries.cap {
-        while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t' || raw[idx] == ',') {
-            idx += 1;
-        }
-        guard idx < raw.len else { break; }
-
         var entry = ProxyStatusEntry { .. };
-
-        var name_start = idx;
-        while idx < raw.len && raw[idx] != ';' && raw[idx] != ',' && raw[idx] != ' ' {
-            idx += 1;
-        }
-        entry.proxy_name.append(raw[name_start..idx]);
-
-        while idx < raw.len && raw[idx] != ',' {
-            if raw[idx] == ';' || raw[idx] == ' ' || raw[idx] == '\t' {
-                idx += 1;
-                continue;
-            }
-
-            var p_name_start = idx;
-            while idx < raw.len && raw[idx] != '=' && raw[idx] != ';' && raw[idx] != ',' && raw[idx] != ' ' {
-                idx += 1;
-            }
-            let param_name = raw[p_name_start..idx];
-
-            var has_eq = false;
-            while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t') {
-                idx += 1;
-            }
-            if idx < raw.len && raw[idx] == '=' {
-                has_eq = true;
-                idx += 1;
-            }
-
-            var param_val: const u8[:] = "";
-            if has_eq {
-                while idx < raw.len && (raw[idx] == ' ' || raw[idx] == '\t') {
-                    idx += 1;
-                }
-                var v_start = idx;
-                if idx < raw.len && raw[idx] == '"' {
-                    idx += 1;
-                    v_start = idx;
-                    while idx < raw.len && raw[idx] != '"' {
-                        idx += 1;
-                    }
-                    param_val = raw[v_start..idx];
-                    if idx < raw.len && raw[idx] == '"' { idx += 1; }
-                } else {
-                    while idx < raw.len && raw[idx] != ';' && raw[idx] != ',' && raw[idx] != ' ' {
-                        idx += 1;
-                    }
-                    param_val = raw[v_start..idx];
-                }
-            }
-
-            // Assign standard RFC 9209 parameters
-            if eq_ascii_fold(param_name, "error") {
-                entry.error_type.clear();
-                entry.error_type.append(param_val);
-            } else if eq_ascii_fold(param_name, "next-hop") {
-                entry.next_hop.clear();
-                entry.next_hop.append(param_val);
-            } else if eq_ascii_fold(param_name, "details") {
-                entry.details.clear();
-                entry.details.append(param_val);
-            } else if eq_ascii_fold(param_name, "received-status") {
-                entry.received_status = status_parse_int(param_val) as! i32;
-            }
-        }
-
+        guard parse_single_proxy_status_entry(raw, idx, entry) else { break; }
         out_entries.push(entry);
     }
-
     return out_entries.len;
 }
 
@@ -309,6 +303,6 @@ fn format_proxy_status<B>(entry: const ProxyStatusEntry&, out: B&) {
     }
     if entry.received_status > 0 {
         out.append("; received-status=");
-        status_format_int(out, entry.received_status as i64);
+        core::format_i64_dec(entry.received_status as i64, out);
     }
 }

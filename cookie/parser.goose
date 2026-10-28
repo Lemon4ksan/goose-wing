@@ -203,27 +203,36 @@ fn split_url_host_and_path(rest_url: const u8[:]) -> const u8[:], const u8[:] {
     return host_part, path_part;
 }
 
-fn extract_url_host_and_port<B>(host_part: const u8[:], bare_host_out: B&, port_out: i32&) {
-    bare_host_out.clear();
-    guard host_part.len > 0 else { return; }
-
-    if extract_ipv6_host_and_port(host_part, bare_host_out, port_out) {
-        return;
+fn extract_url_host_and_port_slice(host_part: const u8[:], port_out: i32&) -> const u8[:] {
+    guard host_part.len > 0 else { return ""; }
+    if host_part[0] == '[' {
+        let close_bracket = core::index_of_byte(host_part, ']');
+        if close_bracket > 0 {
+            if close_bracket + 1 < host_part.len && host_part[close_bracket + 1] == ':' {
+                let port_val, port_ok = parse_int(host_part[close_bracket + 2..]);
+                if port_ok && port_val > 0 && port_val <= 65535 {
+                    port_out = port_val as i32;
+                }
+            }
+            return host_part[1..close_bracket];
+        }
     }
-
-    var colon_idx = -1;
-    for char_idx in host_part.len {
-        if host_part[char_idx] == ':' { colon_idx = char_idx; break; }
-    }
+    let colon_idx = core::index_of_byte(host_part, ':');
     if colon_idx < 0 {
-        bare_host_out.append(host_part);
-        return;
+        return host_part;
     }
-
-    bare_host_out.append(host_part[..colon_idx]);
     let port_val, port_ok = parse_int(host_part[colon_idx + 1..]);
     if port_ok && port_val > 0 && port_val <= 65535 {
         port_out = port_val as i32;
+    }
+    return host_part[..colon_idx];
+}
+
+fn extract_url_host_and_port<B>(host_part: const u8[:], bare_host_out: B&, port_out: i32&) {
+    bare_host_out.clear();
+    let host = extract_url_host_and_port_slice(host_part, port_out);
+    if host.len <= bare_host_out.cap {
+        bare_host_out.append(host);
     }
 }
 
@@ -524,10 +533,7 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
 
 fn extract_ipv6_host_and_port<B>(host_part: const u8[:], bare_host_out: B&, port_out: i32&) -> bool {
     guard host_part.len > 0 && host_part[0] == '[' else { return false; }
-    var close_bracket = -1;
-    for char_idx in host_part.len {
-        if host_part[char_idx] == ']' { close_bracket = char_idx; break; }
-    }
+    let close_bracket = core::index_of_byte(host_part, ']');
     guard close_bracket > 0 else { return false; }
 
     bare_host_out.append(host_part[1..close_bracket]);

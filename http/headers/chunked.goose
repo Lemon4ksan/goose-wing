@@ -6,20 +6,10 @@ namespace wing;
 
 import std;
 import core from "../..";
-import http.headers;
 
 // RFC 9112 Section 7.1.2 & RFC 9110 Section 6.5.1:
 // Disallowed trailer fields threatening message framing, routing, caching, or connection state.
-fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
-    let name = trim_lws(hname);
-    guard name.len > 0 else { return true; }
-
-    // RFC 9110 §6.5.1 & RFC 9113 §8.1: Pseudo-header fields are strictly forbidden in trailers
-    if name[0] == ':' {
-        return true;
-    }
-
-    // RFC 9110 §6.5.1 & Go #81143: Forbidden trailer fields
+fn is_disallowed_control_trailer(name: const u8[:]) -> bool {
     return eq_ascii_fold(name, "content-length") ||
            eq_ascii_fold(name, "transfer-encoding") ||
            eq_ascii_fold(name, "trailer") ||
@@ -30,8 +20,11 @@ fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
            eq_ascii_fold(name, "upgrade") ||
            eq_ascii_fold(name, "proxy-connection") ||
            eq_ascii_fold(name, "authorization") ||
-           eq_ascii_fold(name, "proxy-authorization") ||
-           eq_ascii_fold(name, "set-cookie") ||
+           eq_ascii_fold(name, "proxy-authorization");
+}
+
+fn is_disallowed_content_or_cond_trailer(name: const u8[:]) -> bool {
+    return eq_ascii_fold(name, "set-cookie") ||
            eq_ascii_fold(name, "cookie") ||
            eq_ascii_fold(name, "content-range") ||
            eq_ascii_fold(name, "content-type") ||
@@ -42,6 +35,18 @@ fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
            eq_ascii_fold(name, "if-unmodified-since") ||
            eq_ascii_fold(name, "if-range") ||
            eq_ascii_fold(name, "range");
+}
+
+fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
+    let name = trim_lws(hname);
+    guard name.len > 0 else { return true; }
+
+    // RFC 9110 §6.5.1 & RFC 9113 §8.1: Pseudo-header fields are strictly forbidden in trailers
+    if name[0] == ':' {
+        return true;
+    }
+
+    return is_disallowed_control_trailer(name) || is_disallowed_content_or_cond_trailer(name);
 }
 
 // RFC 9112 Section 7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics
@@ -59,173 +64,197 @@ enum ChunkedDecodeError {
     DisallowedTrailer,
 }
 
-fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError {
-    guard chunk_size_line.len > 0 else {
-        return ChunkedDecodeError.InvalidChunkSizeHex;
+fn skip_bws(s: const u8[:], cursor: i64&) {
+    while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t') {
+        cursor++;
     }
-    // RFC 9112 Section 7.1.1 & Go #64433 / CVE-2023-39326: Chunk line / extension length bound
-    guard chunk_size_line.len <= 1024 else {
-        return ChunkedDecodeError.InvalidChunkExtension;
-    }
+}
 
-    // RFC 9112 Section 7.1.1: Reject bare CR, non-HTAB control characters, and DEL in chunk extensions
-    for b in chunk_size_line {
-        if b == '\r' || (b < 0x20 && b != 0x09) || b == 0x7F {
+fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
+    cursor++; // skip opening quote
+    while cursor < s.len {
+        let qc = s[cursor];
+        if qc == '\\' {
+            guard cursor + 1 < s.len else { return false; }
+            let esc = s[cursor + 1];
+            guard esc == '\t' || (esc >= 0x20 && esc <= 0x7E) || esc >= 0x80 else { return false; }
+            cursor += 2;
+            continue;
+        }
+        if qc == '"' {
+            cursor++;
+            return true;
+        }
+        cursor++;
+    }
+    return false;
+}
+
+fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
+    let name_start = cursor;
+    while cursor < s.len && is_tchar(s[cursor]) {
+        cursor++;
+    }
+    return cursor > name_start;
+}
+
+fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    guard cursor < s.len else { return ChunkedDecodeError.InvalidChunkExtension; }
+    if s[cursor] == '"' {
+        guard parse_chunk_ext_quoted_val(s, cursor) else {
             return ChunkedDecodeError.InvalidChunkExtension;
         }
+        return ChunkedDecodeError.None;
     }
+    let val_start = cursor;
+    while cursor < s.len && is_tchar(s[cursor]) {
+        cursor++;
+    }
+    guard cursor > val_start else {
+        return ChunkedDecodeError.InvalidChunkExtension;
+    }
+    return ChunkedDecodeError.None;
+}
 
-    // RFC 9112 Section 7.1.1: chunk-size = 1*HEXDIG.
-    // Leading whitespace before chunk-size is strictly forbidden (smuggling vector)
-    if chunk_size_line[0] == ' ' || chunk_size_line[0] == '\t' {
+fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    guard cursor < s.len && s[cursor] == ';' else {
+        return ChunkedDecodeError.InvalidChunkExtension;
+    }
+    cursor++; // skip ';'
+    skip_bws(s, cursor);
+
+    guard parse_chunk_ext_name(s, cursor) else {
+        return ChunkedDecodeError.InvalidChunkExtension;
+    }
+    skip_bws(s, cursor);
+
+    if cursor < s.len && s[cursor] == '=' {
+        cursor++; // skip '='
+        skip_bws(s, cursor);
+        let val_err = parse_chunk_ext_param_val(s, cursor);
+        guard val_err == ChunkedDecodeError.None else { return val_err; }
+        skip_bws(s, cursor);
+    }
+    return ChunkedDecodeError.None;
+}
+
+fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    skip_bws(s, cursor);
+    guard cursor < s.len && s[cursor] == ';' else {
         return ChunkedDecodeError.InvalidChunkSizeHex;
     }
-
-    var cursor: i64 = 0;
-    // Scan hex digits of chunk-size
-    while cursor < chunk_size_line.len {
-        let b = chunk_size_line[cursor];
-        if (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F') {
-            cursor++;
-        } else {
-            break;
-        }
+    while cursor < s.len {
+        let err = parse_chunk_ext_param(s, cursor);
+        guard err == ChunkedDecodeError.None else { return err; }
     }
+    return ChunkedDecodeError.None;
+}
 
-    let hex_len = cursor;
-    guard hex_len > 0 else {
-        return ChunkedDecodeError.InvalidChunkSizeHex;
-    }
-
-    // RFC 9112 Section 7.1: Strip leading zeros (chunk-size = 1*HEXDIG)
-    var sig_start: i64 = 0;
-    while sig_start < hex_len && chunk_size_line[sig_start] == '0' {
-        sig_start++;
-    }
-
-    let sig_len = hex_len - sig_start;
-    // If significant hex digits exceed 16, chunk size strictly exceeds 64-bit integer range
-    if sig_len > 16 {
-        return ChunkedDecodeError.ChunkSizeOverflow;
-    }
-
+fn parse_hex_chunk_value(chunk_size_line: const u8[:], sig_start: i64, hex_len: i64, out_size: u64&) -> ChunkedDecodeError {
     var chunk_size: u64 = 0;
     for b in chunk_size_line[sig_start..hex_len] {
         let val = core::hex_digit_to_val(b);
         guard val >= 0 else {
             return ChunkedDecodeError.InvalidChunkSizeHex;
         }
-        // RFC 9112 §7.1: Reject chunks larger than internal representation (signed 63-bit / 0x7FFFFFFFFFFFFFFF)
         if chunk_size > 0x07FFFFFFFFFFFFFF {
             return ChunkedDecodeError.ChunkSizeOverflow;
         }
         chunk_size = (chunk_size << 4) | (val as! u64);
     }
+    out_size = chunk_size;
+    return ChunkedDecodeError.None;
+}
 
-    // If no extension, line must end immediately (no trailing whitespace permitted per RFC 9112 §7.1.1)
-    if cursor == chunk_size_line.len {
-        out_size = chunk_size;
-        return ChunkedDecodeError.None;
+fn validate_chunk_size_line_chars(chunk_size_line: const u8[:]) -> ChunkedDecodeError {
+    guard chunk_size_line.len > 0 else {
+        return ChunkedDecodeError.InvalidChunkSizeHex;
     }
+    guard chunk_size_line.len <= 1024 else {
+        return ChunkedDecodeError.InvalidChunkExtension;
+    }
+    for b in chunk_size_line {
+        if b == '\r' || (b < 0x20 && b != 0x09) || b == 0x7F {
+            return ChunkedDecodeError.InvalidChunkExtension;
+        }
+    }
+    if chunk_size_line[0] == ' ' || chunk_size_line[0] == '\t' {
+        return ChunkedDecodeError.InvalidChunkSizeHex;
+    }
+    return ChunkedDecodeError.None;
+}
 
-    // Skip optional BWS before semicolon
-    while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
+fn is_hex_char(b: u8) -> bool {
+    return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F');
+}
+
+fn scan_hex_digits(s: const u8[:], cursor: i64&) -> i64 {
+    while cursor < s.len && is_hex_char(s[cursor]) {
         cursor++;
     }
+    return cursor;
+}
 
-    // If something remains, it MUST start with ';'
-    guard cursor < chunk_size_line.len && chunk_size_line[cursor] == ';' else {
+fn find_significant_hex_start(s: const u8[:], hex_len: i64) -> i64 {
+    var sig_start: i64 = 0;
+    while sig_start < hex_len && s[sig_start] == '0' {
+        sig_start++;
+    }
+    return sig_start;
+}
+
+fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError {
+    let char_err = validate_chunk_size_line_chars(chunk_size_line);
+    guard char_err == ChunkedDecodeError.None else { return char_err; }
+
+    var cursor: i64 = 0;
+    let hex_len = scan_hex_digits(chunk_size_line, cursor);
+    guard hex_len > 0 else {
         return ChunkedDecodeError.InvalidChunkSizeHex;
     }
 
-    // RFC 9112 §7.1.1: Parse chunk extensions
-    // chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
-    while cursor < chunk_size_line.len {
-        guard chunk_size_line[cursor] == ';' else {
-            return ChunkedDecodeError.InvalidChunkExtension;
-        }
-        cursor++; // skip ';'
+    let sig_start = find_significant_hex_start(chunk_size_line, hex_len);
+    if hex_len - sig_start > 16 {
+        return ChunkedDecodeError.ChunkSizeOverflow;
+    }
 
-        // Skip BWS
-        while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
-            cursor++;
-        }
+    var chunk_size: u64 = 0;
+    let hex_err = parse_hex_chunk_value(chunk_size_line, sig_start, hex_len, chunk_size);
+    guard hex_err == ChunkedDecodeError.None else { return hex_err; }
 
-        // chunk-ext-name = token (1*tchar)
-        let name_start = cursor;
-        while cursor < chunk_size_line.len && is_tchar(chunk_size_line[cursor]) {
-            cursor++;
-        }
-        guard cursor > name_start else {
-            // Missing or empty extension name (e.g. "5;" or "5;=val" or "5;;")
-            return ChunkedDecodeError.InvalidChunkExtension;
-        }
-
-        // Skip BWS after name
-        while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
-            cursor++;
-        }
-
-        // Optional value: [ BWS "=" BWS chunk-ext-val ]
-        if cursor < chunk_size_line.len && chunk_size_line[cursor] == '=' {
-            cursor++; // skip '='
-
-            // Skip BWS
-            while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
-                cursor++;
-            }
-
-            guard cursor < chunk_size_line.len else {
-                return ChunkedDecodeError.InvalidChunkExtension;
-            }
-
-            if chunk_size_line[cursor] == '"' {
-                // Quoted-string
-                cursor++; // skip opening quote
-                var closed = false;
-                while cursor < chunk_size_line.len {
-                    let qc = chunk_size_line[cursor];
-                    if qc == '\\' {
-                        // quoted-pair escape: skip '\' and escaped char per RFC 9112 Section 7.1.1
-                        guard cursor + 1 < chunk_size_line.len else {
-                            return ChunkedDecodeError.InvalidChunkExtension;
-                        }
-                        let esc = chunk_size_line[cursor + 1];
-                        guard esc == '\t' || (esc >= 0x20 && esc <= 0x7E) || esc >= 0x80 else {
-                            return ChunkedDecodeError.InvalidChunkExtension;
-                        }
-                        cursor += 2;
-                        continue;
-                    }
-                    if qc == '"' {
-                        closed = true;
-                        cursor++; // skip closing quote
-                        break;
-                    }
-                    cursor++;
-                }
-                guard closed else {
-                    return ChunkedDecodeError.InvalidChunkExtension;
-                }
-            } else {
-                // Token value
-                let val_start = cursor;
-                while cursor < chunk_size_line.len && is_tchar(chunk_size_line[cursor]) {
-                    cursor++;
-                }
-                guard cursor > val_start else {
-                    return ChunkedDecodeError.InvalidChunkExtension;
-                }
-            }
-
-            // Skip BWS after val
-            while cursor < chunk_size_line.len && (chunk_size_line[cursor] == ' ' || chunk_size_line[cursor] == '\t') {
-                cursor++;
-            }
-        }
+    if cursor < chunk_size_line.len {
+        let ext_err = parse_chunk_extensions(chunk_size_line, cursor);
+        guard ext_err == ChunkedDecodeError.None else { return ext_err; }
     }
 
     out_size = chunk_size;
+    return ChunkedDecodeError.None;
+}
+
+fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..16]&) -> ChunkedDecodeError {
+    let col_idx = core::index_of_byte(tr_line, ':');
+    guard col_idx > 0 else {
+        return ChunkedDecodeError.DisallowedTrailer;
+    }
+
+    let hname = tr_line[..col_idx];
+    guard is_valid_header_name(hname) && !is_disallowed_trailer_field(hname) else {
+        return ChunkedDecodeError.DisallowedTrailer;
+    }
+
+    let val_slice = tr_line[(col_idx + 1)..];
+    let trimmed_val = trim_lws(val_slice);
+    guard is_valid_header_value(trimmed_val) && out_trailers.len < out_trailers.cap else {
+        return ChunkedDecodeError.DisallowedTrailer;
+    }
+
+    var item = HeaderItem { .. };
+    guard hname.len <= item.name.cap && trimmed_val.len <= item.value.cap else {
+        return ChunkedDecodeError.DisallowedTrailer;
+    }
+    item.name.append(hname);
+    item.value.append(trimmed_val);
+    out_trailers.push(item);
     return ChunkedDecodeError.None;
 }
 
@@ -233,8 +262,6 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
 fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers: HeaderItem[..16]&) -> ChunkedDecodeError {
     var trailer_count: i32 = 0;
     var total_trailer_bytes: i64 = 0;
-    let max_trailers: i32 = 16;
-    let max_trailer_bytes: i64 = 4096;
 
     while cursor < raw.len {
         let rel_nl = core::index_of_byte(raw[cursor..], '\n');
@@ -254,45 +281,13 @@ fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers:
         }
 
         trailer_count++;
-        guard trailer_count <= max_trailers else {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
         total_trailer_bytes += tr_line.len;
-        guard total_trailer_bytes <= max_trailer_bytes else {
+        guard trailer_count <= 16 && total_trailer_bytes <= 4096 else {
             return ChunkedDecodeError.DisallowedTrailer;
         }
 
-        let col_idx = core::index_of_byte(tr_line, ':');
-        guard col_idx > 0 else {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
-
-        // RFC 9112 Section 5.1 & Go #81143 / CVE-2019-16276:
-        // Reject whitespace before colon or non-tchar bytes in trailer field-name (no normalization).
-        let hname = tr_line[..col_idx];
-        guard is_valid_header_name(hname) else {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
-        if is_disallowed_trailer_field(hname) {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
-
-        let val_slice = tr_line[(col_idx + 1)..];
-        let trimmed_val = trim_lws(val_slice);
-        guard is_valid_header_value(trimmed_val) else {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
-        guard out_trailers.len < out_trailers.cap else {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
-
-        var item = HeaderItem { .. };
-        guard hname.len <= item.name.cap && trimmed_val.len <= item.value.cap else {
-            return ChunkedDecodeError.DisallowedTrailer;
-        }
-        item.name.append(hname);
-        item.value.append(trimmed_val);
-        out_trailers.push(item);
+        let field_err = parse_single_trailer_field(tr_line, out_trailers);
+        guard field_err == ChunkedDecodeError.None else { return field_err; }
     }
     return ChunkedDecodeError.UnexpectedEof;
 }
@@ -300,6 +295,48 @@ fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers:
 fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     var dummy: HeaderItem[..16] = [];
     return parse_chunked_trailers_with_out(raw, cursor, dummy);
+}
+
+fn consume_chunk_data(raw: const u8[:], cursor: i64&, chunk_size: u64, out_body: u8[>..]&) -> ChunkedDecodeError {
+    guard chunk_size <= (raw.len as u64) else {
+        return ChunkedDecodeError.UnexpectedEof;
+    }
+    let csize = chunk_size as! i64;
+    guard csize <= raw.len - cursor - 2 else {
+        return ChunkedDecodeError.UnexpectedEof;
+    }
+
+    let chunk_data = raw[cursor..cursor + csize];
+    out_body.append(chunk_data);
+    cursor += csize;
+
+    if raw[cursor] == '\n' {
+        return ChunkedDecodeError.BareLfInChunkData;
+    }
+    guard raw[cursor] == '\r' && raw[cursor + 1] == '\n' else {
+        return ChunkedDecodeError.MalformedChunkEnding;
+    }
+    cursor += 2;
+    return ChunkedDecodeError.None;
+}
+
+fn read_chunk_size_line(raw: const u8[:], cursor: i64&, out_size: u64&) -> ChunkedDecodeError {
+    let rel_nl = core::index_of_byte(raw[cursor..], '\n');
+    guard rel_nl >= 0 else { return ChunkedDecodeError.UnexpectedEof; }
+    let line_end = cursor + rel_nl;
+
+    if line_end == cursor || raw[line_end - 1] != '\r' {
+        return ChunkedDecodeError.BareLfInChunkSize;
+    }
+
+    let chunk_size_line = raw[cursor..line_end - 1];
+    var chunk_size: u64 = 0;
+    let size_err = parse_chunk_size_hex(chunk_size_line, chunk_size);
+    guard size_err == ChunkedDecodeError.None else { return size_err; }
+
+    cursor = line_end + 1;
+    out_size = chunk_size;
+    return ChunkedDecodeError.None;
 }
 
 // Decodes a chunked transfer-encoded payload into out_body and extracts trailers (RFC 9112 Section 7.1).
@@ -313,20 +350,9 @@ fn decode_chunked_body_with_trailers(
 
     var cursor: i64 = 0;
     while cursor < raw.len {
-        let rel_nl = core::index_of_byte(raw[cursor..], '\n');
-        guard rel_nl >= 0 else { return ChunkedDecodeError.UnexpectedEof, 0; }
-        let line_end = cursor + rel_nl;
-
-        if line_end == cursor || raw[line_end - 1] != '\r' {
-            return ChunkedDecodeError.BareLfInChunkSize, 0;
-        }
-
-        let chunk_size_line = raw[cursor..line_end - 1];
         var chunk_size: u64 = 0;
-        let size_err = parse_chunk_size_hex(chunk_size_line, chunk_size);
-        guard size_err == ChunkedDecodeError.None else { return size_err, 0; }
-
-        cursor = line_end + 1;
+        let line_err = read_chunk_size_line(raw, cursor, chunk_size);
+        guard line_err == ChunkedDecodeError.None else { return line_err, 0; }
 
         if chunk_size == 0 {
             let tr_err = parse_chunked_trailers_with_out(raw, cursor, out_trailers);
@@ -336,26 +362,8 @@ fn decode_chunked_body_with_trailers(
             return tr_err, 0;
         }
 
-        // Chunk size must fit within raw input buffer
-        guard chunk_size <= (raw.len as u64) else {
-            return ChunkedDecodeError.UnexpectedEof, 0;
-        }
-        let csize = chunk_size as! i64;
-        guard csize <= raw.len - cursor - 2 else {
-            return ChunkedDecodeError.UnexpectedEof, 0;
-        }
-
-        let chunk_data = raw[cursor..cursor + csize];
-        out_body.append(chunk_data);
-        cursor += csize;
-
-        if raw[cursor] == '\n' {
-            return ChunkedDecodeError.BareLfInChunkData, 0;
-        }
-        guard raw[cursor] == '\r' && raw[cursor + 1] == '\n' else {
-            return ChunkedDecodeError.MalformedChunkEnding, 0;
-        }
-        cursor += 2;
+        let data_err = consume_chunk_data(raw, cursor, chunk_size, out_body);
+        guard data_err == ChunkedDecodeError.None else { return data_err, 0; }
     }
 
     return ChunkedDecodeError.UnexpectedEof, 0;

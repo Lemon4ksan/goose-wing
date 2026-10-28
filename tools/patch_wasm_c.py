@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Lemon4ksan
 
+import re
 import sys
 
+
 def patch_file(path: str):
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         content = f.read()
 
     # 0. stack reserve & budget for 32-bit wasm memory
@@ -277,7 +279,7 @@ GS_API void gs_qinit(gs_queue *q) {
         elif t_lf in text:
             return text.replace(t_lf, repl.replace("\r\n", "\n"))
         else:
-            print(f"Warning: pattern not found in target: {repr(target[:30])}")
+            print(f"Warning: pattern not found in target: {target[:30]!r}")
             return text
 
     content = rep(content, t0, r0)
@@ -293,9 +295,22 @@ GS_API void gs_qinit(gs_queue *q) {
     content = rep(content, t8, r8)
     content = rep(content, t9, r9)
 
+    # Sanitize absolute local development paths in gs_file strings
+    content = re.sub(
+        r'static const char (gs_file\d+\[\]) = ".*?[/\\]stdlib[/\\]std\.goose";',
+        r'static const char \1 = "stdlib/std.goose";',
+        content,
+    )
+    content = re.sub(
+        r'static const char (gs_file\d+\[\]) = "[A-Za-z]:[/\\][^"]*?[/\\]goose-wing[/\\]([^"]+)";',
+        r'static const char \1 = "\2";',
+        content,
+    )
+
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     print("Patched successfully for WebAssembly target.")
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

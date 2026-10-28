@@ -1592,6 +1592,14 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
     let ok = receive_view(ws, wire, view, out_reply);
     guard ok else { return false; }
 
+    if view.payload.len > out_msg.data.cap {
+        close(ws, WS_STATUS_MESSAGE_TOO_BIG, "message exceeds buffer capacity", out_reply);
+        ws.is_closed = true;
+        ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+        out_msg.is_valid = false;
+        return false;
+    }
+
     out_msg.is_valid = view.is_valid;
     out_msg.opcode = view.opcode;
     out_msg.close_code = view.close_code;
@@ -1600,13 +1608,6 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
         out_msg.close_reason.append(view.close_reason);
     }
     out_msg.data.clear();
-    if view.payload.len > out_msg.data.cap {
-        close(ws, WS_STATUS_MESSAGE_TOO_BIG, "message exceeds buffer capacity", out_reply);
-        ws.is_closed = true;
-        ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
-        out_msg.is_valid = false;
-        return false;
-    }
     if view.payload.len > 0 {
         out_msg.data.append(view.payload);
     }
@@ -1615,23 +1616,12 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
 
 // Checks if a requested token is present in the comma-separated header value list (RFC 6455 §4.2.1).
 fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
-    var i: u64 = 0;
-    let n = list.len as u64;
-    while i < n {
-        while i < n && (list[i] == ' ' || list[i] == '\t' || list[i] == ',') {
-            i++;
-        }
-        if i >= n { break; }
-        let start = i;
-        while i < n && list[i] != ',' {
-            i++;
-        }
-        var end = i;
-        while end > start && (list[end - 1] == ' ' || list[end - 1] == '\t') {
-            end--;
-        }
-        let tok = list[start..end];
-        if core::eq_ascii_fold(tok, target) {
+    guard list.len > 0 && target.len > 0 else { return false; }
+    var tok = make_byte_tokenizer(list, ',');
+    while true {
+        let part, ok = tok.token_next();
+        guard ok else { break; }
+        if core::eq_ascii_fold(part.trim_lws(), target) {
             return true;
         }
     }
@@ -1640,23 +1630,12 @@ fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
 
 // Checks if a requested subprotocol is present in the comma-separated Sec-WebSocket-Protocol header list (RFC 6455 §4.2.2).
 fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
-    var i: u64 = 0;
-    let n = list.len as u64;
-    while i < n {
-        while i < n && (list[i] == ' ' || list[i] == '\t' || list[i] == ',') {
-            i++;
-        }
-        if i >= n { break; }
-        let start = i;
-        while i < n && list[i] != ',' {
-            i++;
-        }
-        var end = i;
-        while end > start && (list[end - 1] == ' ' || list[end - 1] == '\t') {
-            end--;
-        }
-        let tok = list[start..end];
-        if tok == target {
+    guard list.len > 0 && target.len > 0 else { return false; }
+    var tok = make_byte_tokenizer(list, ',');
+    while true {
+        let part, ok = tok.token_next();
+        guard ok else { break; }
+        if part.trim_lws() == target {
             return true;
         }
     }

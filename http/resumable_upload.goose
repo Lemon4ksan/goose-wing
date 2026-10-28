@@ -40,51 +40,16 @@ fn init_resumable_upload(total_size: i64, chunk_size: i64 = 65536) -> ResumableU
 
 // ---- 3. Header Formatting and Parsing Helpers -------------------------------
 
-// Formats an integer to string buffer
-fn upload_format_int<B>(out: B&, val: i64) {
-    if val == 0 {
-        out.push('0' as u8);
-        return;
-    }
-    var v = val;
-    var digits: u8[..32] = [];
-    while v > 0 {
-        let d = (v % 10) as u8;
-        digits.push(('0' as u8) + d);
-        v /= 10;
-    }
-    var i = digits.len;
-    while i > 0 {
-        i -= 1;
-        out.push(digits[i]);
-    }
-}
-
 // Parses an integer from header value
 fn parse_upload_int(val: const u8[:]) -> i64 {
-    var num: i64 = 0;
-    var started = false;
-    for b in val {
-        if b >= '0' && b <= '9' {
-            num = num * 10 + (b - '0');
-            started = true;
-        } else if started {
-            break;
-        }
-    }
-    return num;
+    let num, ok = val.trim_lws().parse_i64_dec();
+    return if ok { num } else { 0 };
 }
 
 // Parses RFC 8941 Structured Field boolean: ?1 = true, ?0 = false
 fn parse_upload_boolean(val: const u8[:]) -> bool {
-    var i = 0;
-    while i < val.len && (val[i] == ' ' || val[i] == '\t') {
-        i += 1;
-    }
-    if i + 1 < val.len && val[i] == '?' {
-        return val[i + 1] == '1';
-    }
-    return false;
+    let trimmed = val.trim_lws_start();
+    return trimmed.len >= 2 && trimmed[0] == '?' && trimmed[1] == '1';
 }
 
 // ---- 4. Request Formatting (draft-ietf-httpbis-resumable-upload-14) ---------
@@ -148,7 +113,7 @@ fn format_upload_chunk_request(
 
     // Upload-Offset: <offset>
     var offset_str: u8[..32] = [];
-    upload_format_int(offset_str, state.offset);
+    core::format_i64_dec(state.offset, offset_str);
     set_header(req, HEADER_UPLOAD_OFFSET, offset_str[..]);
 
     // Upload-Complete: ?0 or ?1

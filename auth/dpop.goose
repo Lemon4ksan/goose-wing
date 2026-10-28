@@ -137,26 +137,6 @@ fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") {
 
 // ---- 4. DPoP Proof JWT Generation -------------------------------------------
 
-// Formats an integer to string buffer
-fn dpop_format_int<B>(out: B&, val: i64) {
-    if val == 0 {
-        out.push('0' as u8);
-        return;
-    }
-    var v = val;
-    var digits: u8[..32] = [];
-    while v > 0 {
-        let d = (v % 10) as u8;
-        digits.push(('0' as u8) + d);
-        v /= 10;
-    }
-    var i = digits.len;
-    while i > 0 {
-        i -= 1;
-        out.push(digits[i]);
-    }
-}
-
 // Creates an RFC 9449 signed DPoP Proof JWT:
 // `header_b64.claims_b64.signature_b64`
 fn create_dpop_proof<B>(
@@ -203,7 +183,7 @@ fn create_dpop_proof<B>(
     claims_json.append("\",\"htu\":\"");
     claims_json.append(norm_uri[..]);
     claims_json.append("\",\"iat\":");
-    dpop_format_int(claims_json, now_sec);
+    core::format_i64_dec(now_sec, claims_json);
 
     if nonce.len > 0 {
         claims_json.append(",\"nonce\":\"");
@@ -280,23 +260,36 @@ fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: 
     return diff == 0;
 }
 
+fn extract_json_string_claim(json: const u8[:], claim_name: const u8[:]) -> const u8[:], bool {
+    let key_idx = core::index_of_slice(json, claim_name);
+    guard key_idx >= 0 else { return "", false; }
+    let after_key = json[key_idx + claim_name.len..].trim_lws();
+    guard after_key.len >= 2 && after_key[0] == ':' else { return "", false; }
+    let after_colon = after_key[1..].trim_lws();
+    guard after_colon.len >= 2 && after_colon[0] == '"' else { return "", false; }
+    let rel_q = core::index_of_byte(after_colon[1..], '"');
+    guard rel_q >= 0 else { return "", false; }
+    return after_colon[1..1 + rel_q], true;
+}
+
+fn extract_json_int_claim(json: const u8[:], claim_name: const u8[:]) -> i64, bool {
+    let key_idx = core::index_of_slice(json, claim_name);
+    guard key_idx >= 0 else { return 0, false; }
+    let after_key = json[key_idx + claim_name.len..].trim_lws();
+    guard after_key.len >= 2 && after_key[0] == ':' else { return 0, false; }
+    let after_colon = after_key[1..].trim_lws();
+    var num_len: i64 = 0;
+    while num_len < after_colon.len && after_colon[num_len] >= '0' && after_colon[num_len] <= '9' {
+        num_len++;
+    }
+    guard num_len > 0 else { return 0, false; }
+    return after_colon[..num_len].parse_i64_dec();
+}
+
 fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) -> bool {
     guard expected_method.len > 0 else { return false; }
-    let htm_idx = core::index_of_slice(claims_json, "\"htm\":");
-    guard htm_idx >= 0 else { return false; }
-
-    var pos = htm_idx + 6;
-    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-        pos += 1;
-    }
-    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
-    pos += 1;
-    let val_start = pos;
-    while pos < claims_json.len && claims_json[pos] != '"' {
-        pos += 1;
-    }
-    guard pos < claims_json.len else { return false; }
-    let htm_val = claims_json[val_start..pos];
+    let htm_val, ok = extract_json_string_claim(claims_json, "\"htm\"");
+    guard ok else { return false; }
 
     // RFC 9449 §4.2: htm MUST be uppercase String
     for b in htm_val {
@@ -313,23 +306,8 @@ fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool 
     var norm_expected_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(expected_uri, norm_expected_uri) else { return false; }
 
-    // RFC 9449 Section 4.3: Extract and validate the 'htu' claim exactly.
-    // The 'htu' claim MUST NOT contain a query ('?') or fragment ('#').
-    let htu_idx = core::index_of_slice(claims_json, "\"htu\":");
-    guard htu_idx >= 0 else { return false; }
-
-    var pos = htu_idx + 6;
-    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-        pos += 1;
-    }
-    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
-    pos += 1; // skip opening quote
-    let val_start = pos;
-    while pos < claims_json.len && claims_json[pos] != '"' {
-        pos += 1;
-    }
-    guard pos < claims_json.len else { return false; }
-    let htu_val = claims_json[val_start..pos];
+    let htu_val, ok = extract_json_string_claim(claims_json, "\"htu\"");
+    guard ok else { return false; }
 
     // RFC 9449 Section 4.3: Reject if 'htu' contains query or fragment
     for b in htu_val {
@@ -343,82 +321,29 @@ fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool 
 
 fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
     guard now_sec > 0 else { return true; }
-    let iat_idx = core::index_of_slice(claims_json, "\"iat\":");
-    guard iat_idx != -1 else { return false; }
-
-    var iat_val: i64 = 0;
-    var pos = iat_idx + 6;
-    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-        pos += 1;
-    }
-    var has_digits = false;
-    while pos < claims_json.len && claims_json[pos] >= '0' && claims_json[pos] <= '9' {
-        iat_val = iat_val * 10 + (claims_json[pos] - '0');
-        pos += 1;
-        has_digits = true;
-    }
-    guard has_digits else { return false; }
+    let iat_val, ok = extract_json_int_claim(claims_json, "\"iat\"");
+    guard ok else { return false; }
     guard iat_val <= (now_sec + max_skew_sec) else { return false; }
     return (now_sec - iat_val) <= (max_age_sec + max_skew_sec);
 }
 
 fn verify_dpop_ath(claims_json: const u8[:], expected_ath: const u8[:]) -> bool {
-    let ath_idx = core::index_of_slice(claims_json, "\"ath\":");
-    guard ath_idx >= 0 else { return false; }
-
-    var pos = ath_idx + 6;
-    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-        pos += 1;
-    }
-    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
-    pos += 1;
-    let val_start = pos;
-    while pos < claims_json.len && claims_json[pos] != '"' {
-        pos += 1;
-    }
-    guard pos < claims_json.len else { return false; }
-    let ath_val = claims_json[val_start..pos];
+    let ath_val, ok = extract_json_string_claim(claims_json, "\"ath\"");
+    guard ok else { return false; }
     return ath_val == expected_ath;
 }
 
 fn verify_dpop_nonce(claims_json: const u8[:], expected_nonce: const u8[:]) -> bool {
-    let nonce_idx = core::index_of_slice(claims_json, "\"nonce\":");
-    guard nonce_idx >= 0 else { return false; }
-
-    var pos = nonce_idx + 8;
-    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-        pos += 1;
-    }
-    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
-    pos += 1;
-    let val_start = pos;
-    while pos < claims_json.len && claims_json[pos] != '"' {
-        pos += 1;
-    }
-    guard pos < claims_json.len else { return false; }
-    let nonce_val = claims_json[val_start..pos];
+    let nonce_val, ok = extract_json_string_claim(claims_json, "\"nonce\"");
+    guard ok else { return false; }
     return nonce_val == expected_nonce;
 }
 
 // RFC 9449 Section 6.1 / RFC 7638: Verifies JWK Thumbprint ('jkt') confirmation claim.
 fn verify_dpop_jkt(claims_json: const u8[:], expected_jkt: const u8[:]) -> bool {
     guard expected_jkt.len > 0 else { return false; }
-    let jkt_idx = core::index_of_slice(claims_json, "\"jkt\":");
-    guard jkt_idx >= 0 else { return false; }
-
-    var pos = jkt_idx + 6;
-    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
-        pos += 1;
-    }
-    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
-    pos += 1;
-    let val_start = pos;
-    while pos < claims_json.len && claims_json[pos] != '"' {
-        pos += 1;
-    }
-    guard pos < claims_json.len else { return false; }
-    let jkt_val = claims_json[val_start..pos];
-    guard jkt_val.len == expected_jkt.len else { return false; }
+    let jkt_val, ok = extract_json_string_claim(claims_json, "\"jkt\"");
+    guard ok && jkt_val.len == expected_jkt.len else { return false; }
     return core::ct_eq_bytes(jkt_val, expected_jkt);
 }
 
@@ -485,14 +410,20 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
     }
 }
 
-// Extracts DPoP-Nonce from response headers.
-fn extract_dpop_nonce<H>(headers: const H[:], out_nonce: u8[..128]&) -> bool {
-    out_nonce.clear();
+// Extracts DPoP-Nonce from response headers as a zero-copy slice.
+fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
     for idx in headers.len {
         if core::eq_ascii_fold(headers[idx].name[..], DPOP_NONCE_HEADER) {
-            out_nonce.append(headers[idx].value[..]);
-            return true;
+            return headers[idx].value[..], true;
         }
     }
-    return false;
+    return "", false;
+}
+
+// Extracts DPoP-Nonce into a target buffer (cleared only on success).
+fn extract_dpop_nonce<H, B>(headers: const H[:], out_nonce: B&) -> bool {
+    let nonce, ok = extract_dpop_nonce(headers);
+    guard ok else { return false; }
+    out_nonce.clear();
+    return out_nonce.try_append(nonce);
 }

@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- 1. traceparent model & invariants -------------------------------------
 
@@ -199,10 +200,9 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
     var cursor: i64 = 0;
 
     while cursor < raw.len {
-        // Skip leading whitespace / OWS
-        while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') {
-            cursor++;
-        }
+        let rem = raw[cursor..];
+        let trimmed_lead = core::trim_lws_start(rem);
+        cursor += rem.len - trimmed_lead.len;
         if cursor == raw.len { break; }
 
         // Find end of entry or next comma

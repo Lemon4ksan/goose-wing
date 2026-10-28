@@ -97,7 +97,10 @@ struct wing_uring_buf_reg {
     uint64_t resv[3];
 };
 
-typedef struct { const void *data; int64_t len; } wing_iovecs_ro;
+typedef struct {
+    const void *data;
+    int64_t len;
+} wing_iovecs_ro;
 
 int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
     if (iovecs.data == NULL || iovecs.len <= 0) return -EINVAL;
@@ -145,24 +148,54 @@ void wing_uring_close(int64_t ring_fd) {
 
 // Non-Linux platform stubs
 int32_t wing_uring_probe(void) { return -ENOSYS; }
-int64_t wing_uring_create(uint32_t entries, uint32_t flags) { (void)entries; (void)flags; return -ENOSYS; }
+int64_t wing_uring_create(uint32_t entries, uint32_t flags) {
+    (void)entries;
+    (void)flags;
+    return -ENOSYS;
+}
 int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_complete, uint32_t flags) {
-    (void)ring_fd; (void)to_submit; (void)min_complete; (void)flags; return -ENOSYS;
+    (void)ring_fd;
+    (void)to_submit;
+    (void)min_complete;
+    (void)flags;
+    return -ENOSYS;
 }
 int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
-    (void)ring_fd; (void)opcode; (void)arg; (void)nr_args; return -ENOSYS;
+    (void)ring_fd;
+    (void)opcode;
+    (void)arg;
+    (void)nr_args;
+    return -ENOSYS;
 }
-typedef struct { const void *data; int64_t len; } wing_iovecs_ro;
+typedef struct {
+    const void *data;
+    int64_t len;
+} wing_iovecs_ro;
 int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
-    (void)ring_fd; (void)iovecs; return -ENOSYS;
+    (void)ring_fd;
+    (void)iovecs;
+    return -ENOSYS;
 }
-int32_t wing_uring_unregister_buffers(int64_t ring_fd) { (void)ring_fd; return -ENOSYS; }
-int32_t wing_uring_has_fast_poll(int64_t ring_fd) { (void)ring_fd; return 0; }
+int32_t wing_uring_unregister_buffers(int64_t ring_fd) {
+    (void)ring_fd;
+    return -ENOSYS;
+}
+int32_t wing_uring_has_fast_poll(int64_t ring_fd) {
+    (void)ring_fd;
+    return 0;
+}
 int32_t wing_uring_register_pbuf_ring(int64_t ring_fd, uint64_t ring_addr, uint32_t ring_entries, uint16_t bgid) {
-    (void)ring_fd; (void)ring_addr; (void)ring_entries; (void)bgid; return -ENOSYS;
+    (void)ring_fd;
+    (void)ring_addr;
+    (void)ring_entries;
+    (void)bgid;
+    return -ENOSYS;
 }
 int32_t wing_uring_register_files(int64_t ring_fd, const int32_t *fds, uint32_t nr_files) {
-    (void)ring_fd; (void)fds; (void)nr_files; return -ENOSYS;
+    (void)ring_fd;
+    (void)fds;
+    (void)nr_files;
+    return -ENOSYS;
 }
 void wing_uring_close(int64_t ring_fd) { (void)ring_fd; }
 

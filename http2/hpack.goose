@@ -1160,50 +1160,62 @@ fn lookup_dynamic_index(dt: const DynamicTable&, external_idx: u64) -> HpackHead
     return dt.entries[pos], true;
 }
 
-// Fetches an indexed header from Static Table (1..61) or Dynamic Table (>= 62).
-fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, out_val: B2&) -> bool {
-    out_name.clear();
-    out_val.clear();
-    guard idx >= 1 else { return false; } // Index 0 is invalid (RFC 7541 Section 6.1)
+// Fetches indexed header name and value slices directly without buffer copying.
+fn get_indexed_header_slices(dt: const DynamicTable&, idx: u64) -> const u8[:], const u8[:], bool {
+    guard idx >= 1 else { return "", "", false; } // Index 0 is invalid (RFC 7541 Section 6.1)
 
     if idx <= HPACK_STATIC_TABLE_ENTRIES {
         let s, ok = get_hpack_static_field(idx);
-        guard ok else { return false; }
-        out_name.append(s.name);
-        out_val.append(s.val);
-        return true;
+        guard ok else { return "", "", false; }
+        return s.name, s.val, true;
     }
 
     let entry, ok = lookup_dynamic_index(dt, idx);
-    guard ok else { return false; }
+    guard ok else { return "", "", false; }
 
     let n_off = entry.name_off;
     let n_len = entry.name_len as u32;
     let v_off = entry.val_off;
     let v_len = entry.val_len as u32;
 
-    out_name.append(dt.arena[n_off..n_off + n_len]);
-    out_val.append(dt.arena[v_off..v_off + v_len]);
+    return dt.arena[n_off..n_off + n_len], dt.arena[v_off..v_off + v_len], true;
+}
+
+// Fetches an indexed header from Static Table (1..61) or Dynamic Table (>= 62).
+// Buffers are cleared only if the entry is successfully resolved.
+fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, out_val: B2&) -> bool {
+    let name_slice, val_slice, ok = get_indexed_header_slices(dt, idx);
+    guard ok else { return false; }
+    out_name.clear();
+    out_val.clear();
+    out_name.append(name_slice);
+    out_val.append(val_slice);
     return true;
 }
 
-fn get_indexed_header_name<B>(dt: const DynamicTable&, idx: u64, out_name: B&) -> bool {
-    out_name.clear();
-    guard idx >= 1 else { return false; }
+// Fetches indexed header name slice directly without buffer copying.
+fn get_indexed_header_name_slice(dt: const DynamicTable&, idx: u64) -> const u8[:], bool {
+    guard idx >= 1 else { return "", false; }
 
     if idx <= HPACK_STATIC_TABLE_ENTRIES {
         let s, ok = get_hpack_static_field(idx);
-        guard ok else { return false; }
-        out_name.append(s.name);
-        return true;
+        guard ok else { return "", false; }
+        return s.name, true;
     }
 
     let entry, ok = lookup_dynamic_index(dt, idx);
-    guard ok else { return false; }
+    guard ok else { return "", false; }
 
     let n_off = entry.name_off;
     let n_len = entry.name_len as u32;
-    out_name.append(dt.arena[n_off..n_off + n_len]);
+    return dt.arena[n_off..n_off + n_len], true;
+}
+
+fn get_indexed_header_name<B>(dt: const DynamicTable&, idx: u64, out_name: B&) -> bool {
+    let name_slice, ok = get_indexed_header_name_slice(dt, idx);
+    guard ok else { return false; }
+    out_name.clear();
+    out_name.append(name_slice);
     return true;
 }
 

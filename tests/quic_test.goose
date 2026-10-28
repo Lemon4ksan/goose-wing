@@ -9,9 +9,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================
 // 1. QPACK Static Table, Dynamic Table & Codecs (RFC 9204)
-// ============================================================================
 fn test_qpack_table_and_codecs(t: core::T&) {
     t.run("QPACK-01: RFC 9204 Appendix A Static Table Lookups") { sub =>
         // Index 0: :authority
@@ -94,9 +92,7 @@ fn test_qpack_table_and_codecs(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. QPACK Header Accordion DoS Defense & Post-Decode RIC Validation
-// ============================================================================
 fn test_qpack_security_defenses(t: core::T&) {
     t.run("QPACK-DOS-01: Header Accordion 32-Byte Overhead Enforcement") { sub =>
         var fields: wing::HeaderField[>..] = [];
@@ -136,9 +132,7 @@ fn test_qpack_security_defenses(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. QUIC VarInt Codec & Packet Framing (RFC 9000, RFC 9001)
-// ============================================================================
 fn test_quic_varint_and_framing(t: core::T&) {
     t.run("VARINT-01: 1, 2, 4, 8-Byte Boundary Roundtrips") { sub =>
         // 1-byte boundary: 0, 63
@@ -234,9 +228,7 @@ fn test_quic_varint_and_framing(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 4. Header Protection & Packet Number Reconstruction (RFC 9001, RFC 9000)
-// ============================================================================
 fn test_header_protection_and_pn(t: core::T&) {
     t.run("HP-01: RFC 9001 Appendix A.2 Header Protection Vector") { sub =>
         let hp_key: u8[16] = [
@@ -390,9 +382,7 @@ fn test_header_protection_and_pn(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 5. Anti-Amplification 3x Limit & Zero-Heap Reassembly (RFC 9000)
-// ============================================================================
 fn test_anti_amplification_and_reassembly(t: core::T&) {
     t.run("PATH-01: Server Anti-Amplification 3x Credit Tracking") { sub =>
         let ip: u8[16] = [0; 16];
@@ -457,9 +447,7 @@ fn test_anti_amplification_and_reassembly(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 6. ACK Framing, OACK Defense & 5-Priority PTO (RFC 9000, RFC 9002, ANRW 2025)
-// ============================================================================
 fn test_ack_and_pto_engine(t: core::T&) {
     t.run("ACK-01: ACK & ACK_ECN Encode / Decode Roundtrip") { sub =>
         var orig_ack = wing::AckFrame {
@@ -641,9 +629,7 @@ fn test_ack_and_pto_engine(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 7. BBRv2/v3, CUBIC & Pacing Engine (draft-ietf-ccwg-bbr-06, RFC 9438)
-// ============================================================================
 fn test_bbr_cubic_and_pacing(t: core::T&) {
     t.run("PACER-01: User-Space Leaky Bucket Token Tracking") { sub =>
         var pacer = wing::new_pacer(8000000); // 8 Mbps -> 1 byte per microsecond
@@ -733,9 +719,7 @@ fn test_bbr_cubic_and_pacing(t: core::T&) {
     };
 }
 
-// ============================================================================
 // Main Conformance Runner
-// ============================================================================
 fn main() {
     var runner = core::new_runner("QUIC & HTTP/3 Echelon 7 Conformance Suite", core::Verbosity.Verbose);
 

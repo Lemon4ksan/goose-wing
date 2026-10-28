@@ -6,8 +6,7 @@
 namespace wing;
 
 import std;
-import http.headers;
-import http.mime;
+import core from "..";
 
 // ---- multipart errors & options --------------------------------------------
 
@@ -136,21 +135,27 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
 // The boundary must be between 1 and 70 ASCII characters (RFC 2046 Section 5.1.1).
 // Validates delimiter line endings and closing dashes per RFC 2046 Section 5.1.1.
 fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
-    var pad_idx = pos;
-    while pad_idx < body.len && (body[pad_idx] == ' ' || body[pad_idx] == '\t') {
-        pad_idx++;
+    let rem = body[pos..];
+    let after_pad = core::trim_lws_start(rem);
+    if after_pad.len >= 2 && after_pad[0] == '-' && after_pad[1] == '-' {
+        let after_close = core::trim_lws_start(after_pad[2..]);
+        return after_close.len == 0 ||
+               (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
+               (after_close.len >= 1 && after_close[0] == '\n');
     }
-    if pad_idx + 2 <= body.len && body[pad_idx] == '-' && body[pad_idx + 1] == '-' {
-        var close_idx = pad_idx + 2;
-        while close_idx < body.len && (body[close_idx] == ' ' || body[close_idx] == '\t') {
-            close_idx++;
-        }
-        return close_idx == body.len ||
-               (close_idx + 2 <= body.len && body[close_idx] == '\r' && body[close_idx + 1] == '\n') ||
-               (close_idx < body.len && body[close_idx] == '\n');
+    return (after_pad.len >= 2 && after_pad[0] == '\r' && after_pad[1] == '\n') ||
+           (after_pad.len >= 1 && after_pad[0] == '\n');
+}
+
+fn is_closing_boundary_at(body: const u8[:], cursor: i64) -> bool {
+    let rem = body[cursor..];
+    if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
+        let after_close = core::trim_lws_start(rem[2..]);
+        return after_close.len == 0 ||
+               (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
+               (after_close.len >= 1 && after_close[0] == '\n');
     }
-    return (pad_idx + 2 <= body.len && body[pad_idx] == '\r' && body[pad_idx + 1] == '\n') ||
-           (pad_idx < body.len && body[pad_idx] == '\n');
+    return false;
 }
 
 fn find_initial_boundary(body: const u8[:], init_delim: const u8[:]) -> i64 {
@@ -276,21 +281,13 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
     var has_closing_delimiter = false;
 
     while cursor < body.len {
-        while cursor < body.len && (body[cursor] == ' ' || body[cursor] == '\t') {
-            cursor++;
-        }
+        let rem = body[cursor..];
+        let after_pad = core::trim_lws_start(rem);
+        cursor += rem.len - after_pad.len;
 
-        if cursor + 2 <= body.len && body[cursor] == '-' && body[cursor + 1] == '-' {
-            var check_pos = cursor + 2;
-            while check_pos < body.len && (body[check_pos] == ' ' || body[check_pos] == '\t') {
-                check_pos++;
-            }
-            if check_pos == body.len ||
-               (check_pos + 2 <= body.len && body[check_pos] == '\r' && body[check_pos + 1] == '\n') ||
-               (check_pos < body.len && body[check_pos] == '\n') {
-                has_closing_delimiter = true;
-                break; // Valid closing boundary reached
-            }
+        if is_closing_boundary_at(body, cursor) {
+            has_closing_delimiter = true;
+            break; // Valid closing boundary reached
         }
 
         if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {

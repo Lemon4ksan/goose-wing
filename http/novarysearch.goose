@@ -9,7 +9,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import http.headers;
 
 // ---- 1. No-Vary-Search Model -----------------------------------------------
 
@@ -28,76 +27,110 @@ struct QueryParam {
 
 // ---- 2. Header Parser ------------------------------------------------------
 
+fn read_nvs_value(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+    while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
+    guard cursor < raw.len else { return "", false; }
+
+    if raw[cursor] == '(' {
+        let rel_close = core::index_of_byte(raw[cursor..], ')');
+        guard rel_close >= 0 else { return "", false; }
+        let list_end = cursor + rel_close + 1;
+        let val_slice = raw[cursor..list_end];
+        cursor = list_end;
+        return val_slice, true;
+    }
+    if cursor + 2 <= raw.len && raw[cursor] == '?' {
+        let val_slice = raw[cursor..cursor + 2];
+        cursor += 2;
+        return val_slice, true;
+    }
+    return "", false;
+}
+
+fn apply_nvs_params(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
+    if !has_val {
+        nvs.ignore_all_params = true;
+        return true;
+    }
+    if val.len >= 2 && val[0] == '(' {
+        return parse_inner_string_list(val, nvs.params);
+    }
+    if val == "?0" {
+        nvs.ignore_all_params = false;
+        return true;
+    }
+    return false;
+}
+
+fn apply_nvs_except(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
+    guard has_val && val.len >= 2 && val[0] == '(' else { return false; }
+    return parse_inner_string_list(val, nvs.except_params);
+}
+
+fn apply_nvs_key_order(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
+    if has_val && val == "?0" {
+        nvs.key_order_matters = true;
+    } else {
+        nvs.key_order_matters = false;
+    }
+    return true;
+}
+
+fn apply_nvs_item(nvs: NoVarySearch&, token: const u8[:], has_val: bool, val: const u8[:]) -> bool {
+    if token == "params" {
+        return apply_nvs_params(nvs, has_val, val);
+    }
+    if token == "except" {
+        return apply_nvs_except(nvs, has_val, val);
+    }
+    if token == "key-order" {
+        return apply_nvs_key_order(nvs, has_val, val);
+    }
+    return false;
+}
+
+fn read_nvs_token(raw: const u8[:], cursor: i64&) -> const u8[:] {
+    let rem = raw[cursor..].trim_start_bytes(" \t,");
+    cursor = raw.len - rem.len;
+    guard rem.len > 0 else { return ""; }
+
+    var tok_len: i64 = 0;
+    while tok_len < rem.len && rem[tok_len] != '=' && rem[tok_len] != ',' && rem[tok_len] != ' ' && rem[tok_len] != '\t' {
+        tok_len++;
+    }
+    let token = rem[..tok_len];
+    let post = rem[tok_len..].trim_start_bytes(" \t");
+    cursor = raw.len - post.len;
+    return token;
+}
+
+fn read_next_nvs_directive(raw: const u8[:], cursor: i64&) -> const u8[:], bool, const u8[:], bool {
+    let token = read_nvs_token(raw, cursor);
+    guard token.len > 0 else { return "", false, "", true; }
+
+    var has_val = false;
+    var val_slice: const u8[:] = raw[..0];
+    if cursor < raw.len && raw[cursor] == '=' {
+        cursor++;
+        let v, ok_v = read_nvs_value(raw, cursor);
+        guard ok_v else { return "", false, "", false; }
+        val_slice = v;
+        has_val = true;
+    }
+    return token, has_val, val_slice, true;
+}
+
 // Parses `No-Vary-Search: params, except=("id"), key-order`
 fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
     var nvs = NoVarySearch { is_valid: true, .. };
     var cursor: i64 = 0;
 
     while cursor < raw.len {
-        while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t' || raw[cursor] == ',') {
-            cursor++;
-        }
-        guard cursor < raw.len else { break; }
+        let token, has_val, val_slice, ok = read_next_nvs_directive(raw, cursor);
+        guard ok else { return NoVarySearch { .. }, false; }
+        guard token.len > 0 else { break; }
 
-        let token_start = cursor;
-        while cursor < raw.len && raw[cursor] != '=' && raw[cursor] != ',' && raw[cursor] != ' ' && raw[cursor] != '\t' {
-            cursor++;
-        }
-        let token = raw[token_start..cursor];
-
-        while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
-
-        var has_val = false;
-        var val_slice: const u8[:] = raw[..0];
-        if cursor < raw.len && raw[cursor] == '=' {
-            cursor++; // skip '='
-            while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
-
-            if cursor < raw.len && raw[cursor] == '(' {
-                // Inner list: e.g. ("id" "page")
-                let rel_close = core::index_of_byte(raw[cursor..], ')');
-                guard rel_close >= 0 else { return NoVarySearch { .. }, false; }
-                let list_end = cursor + rel_close + 1;
-                val_slice = raw[cursor..list_end];
-                cursor = list_end;
-                has_val = true;
-            } else if cursor + 2 <= raw.len && raw[cursor] == '?' {
-                // Boolean: ?0 or ?1
-                val_slice = raw[cursor..cursor + 2];
-                cursor += 2;
-                has_val = true;
-            } else {
-                return NoVarySearch { .. }, false;
-            }
-        }
-
-        if token == "params" {
-            if !has_val {
-                nvs.ignore_all_params = true;
-            } else if val_slice.len >= 2 && val_slice[0] == '(' {
-                // Parse strings inside inner list
-                guard parse_inner_string_list(val_slice, nvs.params) else {
-                    return NoVarySearch { .. }, false;
-                }
-            } else if val_slice == "?0" {
-                nvs.ignore_all_params = false;
-            } else {
-                return NoVarySearch { .. }, false;
-            }
-        } else if token == "except" {
-            guard has_val && val_slice.len >= 2 && val_slice[0] == '(' else {
-                return NoVarySearch { .. }, false;
-            }
-            guard parse_inner_string_list(val_slice, nvs.except_params) else {
-                return NoVarySearch { .. }, false;
-            }
-        } else if token == "key-order" {
-            if has_val && val_slice == "?0" {
-                nvs.key_order_matters = true;
-            } else {
-                nvs.key_order_matters = false;
-            }
-        } else {
+        guard apply_nvs_item(nvs, token, has_val, val_slice) else {
             return NoVarySearch { .. }, false;
         }
     }
@@ -105,26 +138,33 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
     return nvs, true;
 }
 
+fn read_next_quoted_string(s: const u8[:], cursor: i64&) -> const u8[:], bool, bool {
+    while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t' || s[cursor] == '(') {
+        cursor++;
+    }
+    if cursor >= s.len || s[cursor] == ')' {
+        return "", false, true;
+    }
+    guard s[cursor] == '"' else { return "", false, false; }
+    let start = cursor + 1;
+    let rel_q = core::index_of_byte(s[start..], '"');
+    guard rel_q >= 0 else { return "", false, false; }
+    let end = start + rel_q;
+    cursor = end + 1;
+    return s[start..end], true, true;
+}
+
 fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) -> bool {
     var cursor: i64 = 0;
     while cursor < inner_list.len {
-        while cursor < inner_list.len && (inner_list[cursor] == ' ' || inner_list[cursor] == '\t' || inner_list[cursor] == '(') {
-            cursor++;
-        }
-        if cursor == inner_list.len || inner_list[cursor] == ')' { break; }
-        guard inner_list[cursor] == '"' else { return false; }
-        let start = cursor + 1;
-
-        let rel_q2 = core::index_of_byte(inner_list[start..], '"');
-        guard rel_q2 >= 0 else { return false; }
-        let end = start + rel_q2;
-        let item_len = end - start;
-        guard item_len <= 64 && out.len < out.cap else { return false; }
+        let str, has_item, ok = read_next_quoted_string(inner_list, cursor);
+        guard ok else { return false; }
+        guard has_item else { break; }
+        guard str.len <= 64 && out.len < out.cap else { return false; }
 
         var item: u8[..64] = [];
-        item.append(inner_list[start..end]);
+        item.append(str);
         out.push(item);
-        cursor = end + 1;
     }
     return true;
 }
@@ -163,66 +203,38 @@ fn bytes_less_than(a: const u8[:], b: const u8[:]) -> bool {
     return a.len < b.len;
 }
 
-// Normalizes a raw query string (e.g. `utm_source=tw&id=10&utm_medium=web`)
-// into a canonical sorted string without ignored parameters (`id=10`)
-fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&, out: B&) {
-    var params: QueryParam[..128] = [];
-
-    var cursor: i64 = 0;
-    // Skip leading '?' if present
-    if raw_query.len > 0 && raw_query[0] == '?' {
-        cursor = 1;
+fn parse_single_query_param(pair: const u8[:], p: QueryParam&) -> bool {
+    let k, v, has_eq = pair.split_once_byte('=');
+    guard k.len <= p.key.cap else { return false; }
+    p.key.append(k);
+    if has_eq {
+        guard v.len <= p.val.cap else { return false; }
+        p.val.append(v);
     }
+    return true;
+}
 
-    while cursor < raw_query.len {
-        let rel_amp = core::index_of_byte(raw_query[cursor..], '&');
-        let amp_pos = if rel_amp >= 0 { cursor + rel_amp } else { raw_query.len };
+fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch&, params: QueryParam[..128]&) -> bool {
+    let trimmed = if raw_query.len > 0 && raw_query[0] == '?' { raw_query[1..] } else { raw_query };
+    var tok = make_byte_tokenizer(trimmed, '&');
 
-        let pair = raw_query[cursor..amp_pos];
-        cursor = if amp_pos < raw_query.len { amp_pos + 1 } else { raw_query.len };
+    while true {
+        let pair, ok = tok.token_next();
+        guard ok else { break; }
         if pair.len == 0 { continue; }
 
-        let k, v, has_eq = pair.split_once_byte('=');
         var p = QueryParam { .. };
-        guard k.len <= p.key.cap else {
-            out.clear();
-            return;
-        }
-        if has_eq {
-            guard v.len <= p.val.cap else {
-                out.clear();
-                return;
-            }
-            p.key.append(k);
-            p.val.append(v);
-        } else {
-            p.key.append(pair[..k.len]);
-        }
+        guard parse_single_query_param(pair, p) else { return false; }
 
-        // Only keep if not ignored by No-Vary-Search rules
         if !is_param_ignored(nvs, p.key[..]) {
-            guard params.len < params.cap else {
-                out.clear();
-                return;
-            }
+            guard params.len < params.cap else { return false; }
             params.push(p);
         }
     }
+    return true;
+}
 
-    // If key-order does not matter (default), sort parameters alphabetically by key
-    if !nvs.key_order_matters && params.len > 1 {
-        for i in params.len {
-            for j in (i + 1)..params.len {
-                if bytes_less_than(params[j].key[..], params[i].key[..]) {
-                    let tmp = params[i];
-                    params[i] = params[j];
-                    params[j] = tmp;
-                }
-            }
-        }
-    }
-
-    // Serialize normalized query
+fn serialize_normalized_query<B>(params: const QueryParam[:], out: B&) {
     for &p, i in params {
         if i > 0 {
             out.push('&');
@@ -233,4 +245,19 @@ fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&
             out.append(p.val[..]);
         }
     }
+}
+
+// Normalizes a raw query string (e.g. `utm_source=tw&id=10&utm_medium=web`)
+// into a canonical sorted string without ignored parameters (`id=10`)
+fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&, out: B&) {
+    out.clear();
+    var params: QueryParam[..128] = [];
+    guard parse_and_filter_query_params(raw_query, nvs, params) else { return; }
+
+    // If key-order does not matter (default), sort parameters alphabetically by key
+    if !nvs.key_order_matters && params.len > 1 {
+        sort(params) { a, b => bytes_less_than(a.key[..], b.key[..]) };
+    }
+
+    serialize_normalized_query(params[..], out);
 }

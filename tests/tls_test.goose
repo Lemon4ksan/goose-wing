@@ -8,9 +8,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================
 // 1. ByteCursor, ByteBuilder, and Serialization Conformance
-// ============================================================================
 fn test_byte_cursor_and_builder(t: core::T&) {
     t.run("TLS-01: Zero-Copy ByteCursor Reading & Primitive Extraction") { sub =>
         let raw: u8[10] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0xAA, 0xBB];
@@ -87,9 +85,7 @@ fn test_byte_cursor_and_builder(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. TLS Record Layer Framing, Nonce & DoS Defenses
-// ============================================================================
 fn test_record_layer_and_dos(t: core::T&) {
     t.run("TLS-04: Record Header Parsing & Overflow Defense") { sub =>
         // Valid Handshake record (0x16, TLS 1.2 legacy version 0x0303, len 100)
@@ -395,9 +391,7 @@ fn test_record_layer_and_dos(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. QUIC Crypto Gateway & Header Protection (RFC 9001)
-// ============================================================================
 fn test_quic_crypto_gateway(t: core::T&) {
     t.run("TLS-08: QUIC ChangeCipherSpec Rejection & Level Checking") { sub =>
         var conn = wing::new_quic_crypto_conn();
@@ -478,9 +472,7 @@ fn test_quic_crypto_gateway(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 4. HKDF-Expand-Label & Key Schedule Derivations (RFC 8446 §7.1)
-// ============================================================================
 fn test_key_schedule_and_derivations(t: core::T&) {
     t.run("TLS-10: HKDF-Expand-Label Formatting & Derivation") { sub =>
         let prk: u8[32] = [
@@ -721,9 +713,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 5. Anti-Replay Strike Register & PSK Binders
-// ============================================================================
 fn test_anti_replay_and_psk(t: core::T&) {
     t.run("TLS-13: ZeroRttStrikeRegister Anti-Replay Detection & Epoch Rotation") { sub =>
         var reg = internal::strike_register_init(10000, 2000); // 10s epoch, 2s tolerance
@@ -844,9 +834,7 @@ fn test_anti_replay_and_psk(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 6. Handshake State Machine, HRR & Extension Parsers
-// ============================================================================
 fn test_handshake_state_machine(t: core::T&) {
     t.run("TLS-16: Client & Server State Machine Transitions") { sub =>
         // Client transitions
@@ -969,9 +957,7 @@ fn test_handshake_state_machine(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify
-// ============================================================================
 fn test_asn1_x509_and_verify(t: core::T&) {
     t.run("TLS-20: Canonical ASN.1 DER Length & Integer Validation") { sub =>
         // Short form: tag 0x02, len 3, [0x01, 0x02, 0x03]
@@ -2268,9 +2254,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)
-// ============================================================================
 fn test_post_quantum_hybrid_exchange(t: core::T&) {
     t.run("TLS-25: Hybrid Key Share Entry Framing & Smuggling Defense") { sub =>
         var client_share = wing::PostQuantumKeyShare {
@@ -2405,9 +2389,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 8. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance
-// ============================================================================
 fn test_handshake_and_ech_security(t: core::T&) {
     t.run("TLS-25: RFC 8446 §4.2 Duplicate Extension Rejection & Block Bounds") { sub =>
         // 1. Construct valid extensions block with distinct extension IDs
@@ -2793,9 +2775,7 @@ fn test_handshake_and_ech_security(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 9. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM
-// ============================================================================
 fn test_handshake_r2_invariants(t: core::T&) {
     t.run("TLS-31: RFC 8446 §4 State Machine Transition Desync & Finished Bypass Prevention") { sub =>
         // 1. Finished before Certificate/CertificateVerify in full handshake MUST BE REJECTED
@@ -3473,9 +3453,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
     };
 }
 
-// ============================================================================
 // Main TLS 1.3 & X.509 Conformance Runner
-// ============================================================================
 fn main() {
     var runner = core::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", core::Verbosity.Verbose);
 

@@ -21,6 +21,7 @@ vendor/
 # Benchmarks and e2e
 reports/
 tools/bench-vs-uwebsockets/server_goose_wing.c
+tests/wasm_runner.c
 
 # goose-crap build artifacts and test binaries
 *.gcrap-cov

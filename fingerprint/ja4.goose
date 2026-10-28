@@ -251,12 +251,6 @@ fn append_ja4h_language<B>(accept_lang: const u8[:], out: B&) {
     }
 }
 
-fn append_lowercase<B>(src: const u8[:], out: B&) {
-    for b in src {
-        out.push(if b >= 'A' && b <= 'Z' { b + 32 } else { b });
-    }
-}
-
 // Computes the FoxIO JA4H HTTP client fingerprint in format:
 // {method}{version}{cookie}{referer}{header_count}{lang}_{headers_hash}_{cookie_names}_{cookie_values}
 // E.g.: "ge20cn04enus_1c8f3b0e29d1_000000000000_000000000000"
@@ -320,7 +314,7 @@ fn compute_ja4h<B>(
         var hbuf: u8[>..] = [];
         for i in filtered_headers.len {
             if i > 0 { hbuf.push(','); }
-            append_lowercase(filtered_headers[i], hbuf);
+            core::to_lower_ascii(filtered_headers[i], hbuf);
         }
         hash_12_hex(hbuf[..], out);
     }

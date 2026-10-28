@@ -9,7 +9,7 @@
 namespace wing;
 
 import std;
-import http.headers;
+import core from "..";
 
 // ---- 1. Early Hints Models -------------------------------------------------
 
@@ -56,62 +56,54 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
     }
 }
 
+fn find_link_entry_end(s: const u8[:]) -> i64 {
+    var in_quotes = false;
+    for i in s.len {
+        let b = s[i];
+        if b == '"' {
+            in_quotes = !in_quotes;
+        } else if !in_quotes && b == ',' {
+            return i;
+        }
+    }
+    return s.len;
+}
+
+fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
+    guard entry_str.len > 2 && entry_str[0] == '<' else { return false; }
+    let rel_close = core::index_of_byte(entry_str[1..], '>');
+    guard rel_close >= 0 else { return false; }
+    let close_idx = 1 + rel_close;
+    let uri_slice = entry_str[1..close_idx];
+    guard uri_slice.len <= link.uri.cap else { return false; }
+    link.uri.append(uri_slice);
+
+    let params_part = entry_str[close_idx + 1..];
+    var p_tok = make_byte_tokenizer(params_part, ';');
+    while true {
+        let param_token, tok_ok = p_tok.token_next();
+        guard tok_ok else { break; }
+        let p_trim = param_token.trim_lws();
+        if p_trim.len > 0 {
+            parse_link_param(p_trim, link);
+        }
+    }
+    return true;
+}
+
 // Parses RFC 8288 `Link` header: `<uri>; rel=...; as=...`
 fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
-    var cursor: i64 = 0;
-    while cursor < raw.len {
-        while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t' || raw[cursor] == ',') {
-            cursor++;
-        }
-        if cursor == raw.len { break; }
+    var rem = raw;
+    while rem.len > 0 {
+        rem = rem.trim_start_bytes(" \t,");
+        guard rem.len > 0 else { break; }
 
-        guard raw[cursor] == '<' else { return false; }
-        cursor++; // skip '<'
+        let entry_len = find_link_entry_end(rem);
+        let entry_str = rem[..entry_len].trim_lws();
+        rem = if entry_len < rem.len { rem[entry_len + 1..] } else { rem[entry_len..] };
 
-        var close_angle: i64 = -1;
-        for i in cursor..raw.len {
-            if raw[i] == '>' {
-                close_angle = i;
-                break;
-            }
-        }
-        guard close_angle > cursor else { return false; }
-
-        let uri_slice = raw[cursor..close_angle];
-        cursor = close_angle + 1;
-
-        guard uri_slice.len <= 256 else { return false; }
         var link = EarlyHintLink { .. };
-        link.uri.append(uri_slice);
-
-        // Find parameters until next comma or end of header
-        var in_quotes = false;
-        var end_entry = raw.len;
-        var i = cursor;
-        while i < raw.len {
-            let b = raw[i];
-            if b == '"' {
-                in_quotes = !in_quotes;
-            } else if b == ',' && !in_quotes {
-                end_entry = i;
-                break;
-            }
-            i++;
-        }
-
-        let params_part = raw[cursor..end_entry];
-        cursor = if end_entry < raw.len { end_entry + 1 } else { raw.len };
-
-        var p_tok = make_byte_tokenizer(params_part, ';');
-        while true {
-            let param_token, tok_ok = p_tok.token_next();
-            guard tok_ok else { break; }
-            let p_trim = param_token.trim_lws();
-            if p_trim.len > 0 {
-                parse_link_param(p_trim, link);
-            }
-        }
-
+        guard parse_single_link(entry_str, link) else { return false; }
         guard out_links.len < out_links.cap else { return false; }
         out_links.push(link);
     }

@@ -43,9 +43,7 @@ fn service_unary_handler(
 }
 
 fn main() {
-    print("============================================================");
-    print(" goose-wing High-Performance gRPC Microservices Demo");
-    print("============================================================");
+    print("goose-wing High-Performance gRPC Microservices Demo\n");
 
     // 1. Initialize gRPC Server Dispatcher
     var dispatcher = wing::new_grpc_server_dispatcher();
@@ -109,7 +107,5 @@ fn main() {
     print("    Header grpc-status: ", err_status, " (Code 16: Unauthenticated)");
     print("    Header grpc-message: ", err_msg);
 
-    print("\n============================================================");
-    print(" gRPC Microservices Demo Complete (100% Zero-Allocation)");
-    print("============================================================");
+    print("\ngRPC Microservices Demo Complete (100% Zero-Allocation)\n");
 }

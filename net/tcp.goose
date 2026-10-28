@@ -500,7 +500,7 @@ fn epoll_wait_direct(epfd: i64, raw_fds: i64[:], raw_udata: u64[:], timeout_ms: 
 }
 
 // Waits for I/O events on the epoll multiplexer.
-// Appends ready event descriptors and udata tags to out_fds and out_udata.
+// Clears and populates out_fds and out_udata with ready event descriptors and udata tags.
 fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1) -> i32 {
     guard epfd >= 0 else { return 0; }
     out_fds.clear();

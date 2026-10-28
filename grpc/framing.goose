@@ -22,26 +22,34 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
     out.append(payload);
 }
 
-// Decodes a single LPM frame starting at offset in wire bytes.
-// Returns (ok, bytes_consumed). When true, out_payload contains the message bytes.
-fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compressed: bool&) -> bool, u32 {
-    out_payload.clear();
+// Decodes a single LPM frame starting at offset in wire bytes without buffer copying.
+// Returns (payload_slice, is_compressed, bytes_consumed, ok).
+fn decode_grpc_lpm_slice(wire: const u8[:], offset: u32) -> const u8[:], bool, u32, bool {
     let off = offset as i64;
-    guard off >= 0 && off <= wire.len else { return false, 0; }
-    guard wire.len - off >= (GRPC_LPM_HEADER_LEN as i64) else { return false, 0; }
+    guard off >= 0 && off <= wire.len else { return "", false, 0, false; }
+    guard wire.len - off >= GRPC_LPM_HEADER_LEN else { return "", false, 0, false; }
 
     let flag = wire[off];
-    guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false, 0; }
-    out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
+    guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return "", false, 0, false; }
+    let is_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val = core::read_be_u32(wire, off + 1);
-    guard wire.len - off - (GRPC_LPM_HEADER_LEN as i64) >= (len_val as i64) else { return false, 0; }
+    guard wire.len - off - GRPC_LPM_HEADER_LEN >= len_val else { return "", false, 0, false; }
 
-    let p_start = off + (GRPC_LPM_HEADER_LEN as i64);
-    let p_end = p_start + (len_val as i64);
-    out_payload.append(wire[p_start..p_end]);
+    let p_start = off + GRPC_LPM_HEADER_LEN;
+    let p_len = len_val as i64;
+    return wire[p_start..p_start + p_len], is_compressed, (GRPC_LPM_HEADER_LEN + len_val), true;
+}
 
-    return true, (GRPC_LPM_HEADER_LEN + len_val);
+// Decodes a single LPM frame starting at offset in wire bytes.
+// Target buffer is cleared only after wire format validation succeeds.
+fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compressed: bool&) -> bool, u32 {
+    let payload_slice, is_comp, consumed, ok = decode_grpc_lpm_slice(wire, offset);
+    guard ok else { return false, 0; }
+    out_payload.clear();
+    out_payload.append(payload_slice);
+    out_compressed = is_comp;
+    return true, consumed;
 }
 
 // ---- 2. Incremental Streaming LPM Parser -----------------------------------

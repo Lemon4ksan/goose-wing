@@ -442,9 +442,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
     };
 }
 
-// ============================================================================
 // Main Runner
-// ============================================================================
 fn main() {
     var runner = core::new_runner("Phase 15: HTTP/3 & QUIC RFC Invariants & Defenses Suite", core::Verbosity.Verbose);
 

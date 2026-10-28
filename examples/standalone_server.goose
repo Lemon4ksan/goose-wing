@@ -7,9 +7,7 @@ import core from "..";
 import wing from "..";
 
 fn main() {
-    print("============================================================");
-    print(" goose-wing Standalone HTTP & Protocol Detection Server");
-    print("============================================================");
+    print("goose-wing Standalone HTTP & Protocol Detection Server\n");
 
     // 1. Initialize server with 127.0.0.1:8080 and 1000 req/sec GCRA quota
     var server = wing::new_http_server("127.0.0.1", 8080);

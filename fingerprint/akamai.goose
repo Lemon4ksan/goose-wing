@@ -59,37 +59,6 @@ enum AkamaiAnomaly {
 
 // ---- 2. Formatting & Serialization ------------------------------------------
 
-// Formats an unsigned 32-bit integer as ASCII decimal characters into out.
-fn format_u32_dec<B>(val: u32, out: B&) {
-    guard val > 0 else {
-        out.push('0');
-        return;
-    }
-    var digits: u8[16] = [0; 16];
-    var count = 0;
-    var v = val;
-    while v > 0 {
-        digits[count] = ('0' as u8) + ((v % 10) as u8);
-        v = v / 10;
-        count += 1;
-    }
-    for i in count {
-        out.push(digits[count - 1 - i]);
-    }
-}
-
-// Parses an ASCII decimal string into an unsigned 32-bit integer.
-fn parse_u32_dec(str: const u8[:]) -> u32, bool {
-    guard str.len > 0 else { return 0, false; }
-    var result: u64 = 0;
-    for b in str {
-        if b < '0' || b > '9' { return 0, false; }
-        result = result * 10 + (b - '0');
-        if result > 0xFFFFFFFF { return 0, false; }
-    }
-    return (result as u32), true;
-}
-
 // Formats SETTINGS section: `ID:Value;ID:Value;...`
 fn format_akamai_settings<B>(settings: const AkamaiSetting[:], out: B&) {
     for i in settings.len {

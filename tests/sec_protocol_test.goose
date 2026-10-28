@@ -205,8 +205,8 @@ fn test_file_url_windows_drive_compliance(t: core::T&) {
         sub.assert_bytes_eq(path_bs[..], "C:\\styles\\app.css", "extracted Windows path from backslash retains drive letter");
 
         // 3. Explicit alternative drive letter in reference overrides base drive letter
-        let rel_other = core::new_url("/D:/data/store.db", base_file);
-        sub.assert_bytes_eq(core::href(rel_other), "file:///D:/data/store.db", "explicit drive D: overrides base drive C:");
+        let rel_other = core::new_url("/E:/data/store.db", base_file);
+        sub.assert_bytes_eq(core::href(rel_other), "file:///E:/data/store.db", "explicit drive E: overrides base drive C:");
     };
 }
 

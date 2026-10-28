@@ -977,14 +977,9 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             let name_begin_off = cursor as u16;
             let name_end_off = (cursor + colon_pos) as u16;
 
-            var val_start_off = (cursor + colon_pos + 1) as u16;
-            while val_start_off < (cursor + line.len) && (map.raw_buf[val_start_off as i64] == ' ' || map.raw_buf[val_start_off as i64] == '\t') {
-                val_start_off++;
-            }
-            var val_end_off = (cursor + line.len) as u16;
-            while (val_end_off as i64) > val_start_off && (map.raw_buf[(val_end_off - 1) as i64] == ' ' || map.raw_buf[(val_end_off - 1) as i64] == '\t') {
-                val_end_off--;
-            }
+            let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
+            let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
+            let val_end_off = (val_start_off + val_trimmed.len) as u16;
 
             let flags = well_known_header_flags(wk_id, raw_name);
             let hname = hash_header_name(raw_name);

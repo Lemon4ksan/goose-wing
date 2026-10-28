@@ -191,11 +191,11 @@ fn test_url_parser_and_origin(t: core::T&) {
 fn test_swift_style_file_and_path_api(t: core::T&) {
     t.run("new_file_url Cross-Platform Normalization") { sub =>
         // 1. Windows path with backslashes
-        let url_win = core::new_file_url("C:\\Users\\senya\\Documents\\report.pdf");
+        let url_win = core::new_file_url("C:\\Users\\admin\\Documents\\report.pdf");
         sub.assert_true(url_win.valid, "valid windows file url");
         sub.assert_true(core::is_file_url(url_win), "is_file_url is true");
         sub.assert_bytes_eq(core::scheme(url_win), "file", "scheme is file");
-        sub.assert_bytes_eq(core::pathname(url_win), "/C:/Users/senya/Documents/report.pdf", "normalized to file:///C:/...");
+        sub.assert_bytes_eq(core::pathname(url_win), "/C:/Users/admin/Documents/report.pdf", "normalized to file:///C:/...");
 
         // 2. Windows path with spaces
         let url_spaces = core::new_file_url("C:\\Program Files\\My App\\app.exe");

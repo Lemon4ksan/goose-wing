@@ -7,9 +7,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================
 // 1. DNS Wire Format & RFC 9460 HTTPS/SVCB Resource Records (Type 65)
-// ============================================================================
 fn test_dns_and_https_rr(t: core::T&) {
     t.run("DNS-01: Query Encoding and Name Compression Decoding") { sub =>
         var query: u8[>..] = [];
@@ -111,9 +109,7 @@ fn test_dns_and_https_rr(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. Encrypted Client Hello (ECH) Wire Formats & HPKE Privacy Handshake
-// ============================================================================
 fn test_ech_protocol(t: core::T&) {
     t.run("ECH-01: ECHConfig & ECHConfigList Parsing") { sub =>
         // Construct a realistic synthetic ECHConfig wire buffer:
@@ -294,9 +290,7 @@ fn test_ech_protocol(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. DNS-over-HTTPS (RFC 8484) & Automated ECH Discovery (RFC 9460)
-// ============================================================================
 fn test_doh_and_automated_ech_discovery(t: core::T&) {
     t.run("DoH-01: Wire Format Query Construction & URL Formatter") { sub =>
         // POST body
@@ -392,9 +386,7 @@ fn test_doh_and_automated_ech_discovery(t: core::T&) {
     };
 }
 
-// ============================================================================
 // Main ECH & DNS Verification Runner
-// ============================================================================
 fn main() {
     var runner = core::new_runner("DNS Engine (RFC 1035), HTTPS RR (RFC 9460) & ECH Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. DNS Wire Format & RFC 9460 HTTPS Resource Records", test_dns_and_https_rr);

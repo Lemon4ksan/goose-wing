@@ -16,9 +16,7 @@ fn assert(cond: bool, msg: const u8[:]) {
 }
 
 fn main() {
-    print("==================================================================");
-    print("      goose-wing Cookie Jar Example (UFCS)                        ");
-    print("==================================================================\n");
+    print("goose-wing Cookie Jar Example (UFCS)\n");
 
     var jar = wing::new_canonical_cookie_jar();
     let now_us: i64 = 1700000000 * 1000000;

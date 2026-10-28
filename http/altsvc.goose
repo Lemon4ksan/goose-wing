@@ -10,7 +10,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import http.headers;
 
 // ---- 1. Alt-Svc Models & Constants -----------------------------------------
 
@@ -69,6 +68,78 @@ fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
     }
 }
 
+fn find_altsvc_entry_end(s: const u8[:]) -> i64 {
+    var in_quotes = false;
+    for i in s.len {
+        let b = s[i];
+        if b == '"' {
+            in_quotes = !in_quotes;
+        } else if b == ',' && !in_quotes {
+            return i;
+        }
+    }
+    return s.len;
+}
+
+fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
+    var p_tok = make_byte_tokenizer(params_part, ';');
+    while true {
+        let param_token, tok_ok = p_tok.token_next();
+        guard tok_ok else { break; }
+        let p_trim = param_token.trim_lws();
+        if p_trim.len > 0 {
+            parse_altsvc_param(p_trim, ep);
+        }
+    }
+}
+
+fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
+    let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
+    guard has_colon else { return false; }
+
+    if host_part.len > 0 {
+        guard host_part.len <= ep.host.cap else { return false; }
+        ep.host.append(host_part);
+    }
+
+    let port_num, port_ok = port_part.parse_u32_dec();
+    guard port_ok && port_num > 0 && port_num <= 65535 else { return false; }
+    ep.port = port_num as! u16;
+    return true;
+}
+
+fn parse_single_altsvc_entry(entry_str: const u8[:], ep: AltSvcEndpoint&) -> bool {
+    let proto_token_raw, rem_entry_raw, has_eq = entry_str.split_once_byte('=');
+    guard has_eq && proto_token_raw.len > 0 else { return false; }
+
+    let proto_token = proto_token_raw.trim_lws();
+    let rem_entry = rem_entry_raw.trim_lws();
+
+    guard proto_token.len <= ep.proto.cap else { return false; }
+    ep.proto.append(proto_token);
+
+    // Find authority inside quotes: "host:port"
+    guard rem_entry.len >= 2 && rem_entry[0] == '"' else { return false; }
+    let rel_q = rem_entry[1..].index_of_byte('"');
+    guard rel_q >= 0 else { return false; }
+
+    let authority = rem_entry[1..rel_q + 1];
+    guard parse_altsvc_authority(authority, ep) else { return false; }
+
+    let params_part = rem_entry[rel_q + 2..];
+    parse_altsvc_params(params_part, ep);
+    return true;
+}
+
+fn read_next_altsvc_entry(rem: const u8[:]) -> const u8[:], const u8[:] {
+    let s = rem.trim_start_bytes(" \t,");
+    guard s.len > 0 else { return "", ""; }
+    let entry_len = find_altsvc_entry_end(s);
+    let entry_str = s[..entry_len].trim_lws();
+    let next_rem = if entry_len < s.len { s[entry_len + 1..] } else { s[entry_len..] };
+    return entry_str, next_rem;
+}
+
 // Parses `Alt-Svc` header value (RFC 7838 Section 3):
 // e.g. `h3=":443"; ma=86400; persist=1, h2="alt.example.com:8443"`
 // or `clear`
@@ -78,73 +149,14 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         return true, true; // is_clear = true
     }
 
-    var cursor: i64 = 0;
-    while cursor < trimmed.len {
-        while cursor < trimmed.len && (trimmed[cursor] == ' ' || trimmed[cursor] == '\t' || trimmed[cursor] == ',') {
-            cursor++;
-        }
-        guard cursor < trimmed.len else { break; }
-
-        // Find end of current alternative service (next unquoted comma or end of string)
-        var entry_end = trimmed.len;
-        var in_quotes = false;
-        for i in cursor..trimmed.len {
-            let b = trimmed[i];
-            if b == '"' {
-                in_quotes = !in_quotes;
-            } else if b == ',' && !in_quotes {
-                entry_end = i;
-                break;
-            }
-        }
-
-        let entry_str = trim_lws(trimmed[cursor..entry_end]);
-        cursor = if entry_end < trimmed.len { entry_end + 1 } else { trimmed.len };
-        if entry_str.len == 0 { continue; }
-
-        let proto_token_raw, rem_entry_raw, has_eq = entry_str.split_once_byte('=');
-        guard has_eq && proto_token_raw.len > 0 else { continue; }
-
-        let proto_token = proto_token_raw.trim_lws();
-        let rem_entry = rem_entry_raw.trim_lws();
+    var rem = trimmed;
+    while rem.len > 0 {
+        let entry_str, next_rem = read_next_altsvc_entry(rem);
+        rem = next_rem;
+        guard entry_str.len > 0 else { break; }
 
         var ep = AltSvcEndpoint { .. };
-        guard proto_token.len <= ep.proto.cap else { continue; }
-        ep.proto.append(proto_token);
-
-        // Find authority inside quotes: "host:port"
-        guard rem_entry.len >= 2 && rem_entry[0] == '"' else { continue; }
-        let quote_end = rem_entry[1..].index_of_byte('"');
-        guard quote_end >= 0 else { continue; }
-
-        let authority = rem_entry[1..quote_end + 1];
-        let params_part = rem_entry[quote_end + 2..];
-
-        // Parse host:port in authority
-        let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
-        guard has_colon else { continue; }
-
-        if host_part.len > 0 {
-            guard host_part.len <= ep.host.cap else { continue; }
-            ep.host.append(host_part);
-        }
-
-        let port_num, port_ok = port_part.parse_u32_dec();
-        guard port_ok && port_num > 0 && port_num <= 65535 else { continue; }
-        ep.port = port_num as! u16;
-
-        // Parse parameters: ; ma=...; persist=...
-        var p_tok = make_byte_tokenizer(params_part, ';');
-        while true {
-            let param_token, tok_ok = p_tok.token_next();
-            guard tok_ok else { break; }
-            let p_trim = param_token.trim_lws();
-            if p_trim.len > 0 {
-                parse_altsvc_param(p_trim, ep);
-            }
-        }
-
-        if out_endpoints.len < out_endpoints.cap {
+        if parse_single_altsvc_entry(entry_str, ep) && out_endpoints.len < out_endpoints.cap {
             out_endpoints.push(ep);
         }
     }
@@ -153,6 +165,59 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
 }
 
 // ---- 3. Alt-Svc Cache Operations -------------------------------------------
+
+fn update_altsvc_entry(
+    entry: AltSvcOriginEntry&,
+    endpoints: const AltSvcEndpoint[:],
+    now_sec: i64,
+) {
+    entry.endpoints.clear();
+    for &ep in endpoints { entry.endpoints.push(ep); }
+    entry.inserted_at_sec = now_sec;
+    if now_sec >= entry.broken_until_sec {
+        entry.failed_attempts = 0;
+        entry.broken_until_sec = 0;
+    }
+}
+
+fn find_oldest_altsvc_idx(cache: const AltSvcCache&) -> i64 {
+    var oldest_idx: i64 = 0;
+    guard cache.entries.len > 0 else { return 0; }
+    var oldest_time = cache.entries[0].inserted_at_sec;
+    for &e, i in cache.entries {
+        if !e.valid { return i; }
+        if e.inserted_at_sec < oldest_time {
+            oldest_time = e.inserted_at_sec;
+            oldest_idx = i;
+        }
+    }
+    return oldest_idx;
+}
+
+fn insert_new_altsvc_entry(
+    cache: AltSvcCache&,
+    origin: const u8[:],
+    endpoints: const AltSvcEndpoint[:],
+    now_sec: i64,
+) {
+    var entry = AltSvcOriginEntry {
+        inserted_at_sec: now_sec,
+        valid: true,
+        ..
+    };
+    guard origin.len <= entry.origin.cap else { return; }
+    entry.origin.append(origin);
+    for &ep in endpoints { entry.endpoints.push(ep); }
+
+    if cache.entries.len < cache.entries.cap {
+        cache.entries.push(entry);
+        return;
+    }
+    let oldest_idx = find_oldest_altsvc_idx(cache);
+    if oldest_idx >= 0 && oldest_idx < cache.entries.len {
+        cache.entries[oldest_idx] = entry;
+    }
+}
 
 // Inserts or updates an Alt-Svc mapping for an origin (RFC 7838 Section 3)
 fn update(
@@ -165,60 +230,24 @@ fn update(
     let ok, is_clear = parse_altsvc_header(raw_altsvc, endpoints);
     guard ok else { return; }
 
+    let existing_idx = find_origin_entry_idx(cache, origin);
+
     // If "clear", invalidate origin entry
     if is_clear {
-        let idx = find_origin_entry_idx(cache, origin);
-        if idx >= 0 {
-            cache.entries[idx].valid = false;
+        if existing_idx >= 0 && existing_idx < cache.entries.len {
+            cache.entries[existing_idx].valid = false;
         }
         return;
     }
 
     guard endpoints.len > 0 else { return; }
 
-    // Update existing origin
-    let existing_idx = find_origin_entry_idx(cache, origin);
-    if existing_idx >= 0 {
-        cache.entries[existing_idx].endpoints.clear();
-        for &ep in endpoints { cache.entries[existing_idx].endpoints.push(ep); }
-        cache.entries[existing_idx].inserted_at_sec = now_sec;
-        // RFC 7838 Section 2.4 & Chromium HttpServerProperties:
-        // Receiving an Alt-Svc header advertisement MUST NOT clear an active broken-backoff state!
-        if now_sec >= cache.entries[existing_idx].broken_until_sec {
-            cache.entries[existing_idx].failed_attempts = 0;
-            cache.entries[existing_idx].broken_until_sec = 0;
-        }
+    if existing_idx >= 0 && existing_idx < cache.entries.len {
+        update_altsvc_entry(cache.entries[existing_idx], endpoints[..], now_sec);
         return;
     }
 
-    // Insert new origin
-    var entry = AltSvcOriginEntry {
-        inserted_at_sec: now_sec,
-        valid: true,
-        ..
-    };
-    guard origin.len <= entry.origin.cap else { return; }
-    entry.origin.append(origin);
-    for &ep in endpoints { entry.endpoints.push(ep); }
-
-    if cache.entries.len < cache.entries.cap {
-        cache.entries.push(entry);
-    } else {
-        // Evict oldest or invalid entry
-        var oldest_idx: i64 = 0;
-        var oldest_time = cache.entries[0].inserted_at_sec;
-        for &e, i in cache.entries {
-            if !e.valid {
-                oldest_idx = i;
-                break;
-            }
-            if e.inserted_at_sec < oldest_time {
-                oldest_time = e.inserted_at_sec;
-                oldest_idx = i;
-            }
-        }
-        cache.entries[oldest_idx] = entry;
-    }
+    insert_new_altsvc_entry(cache, origin, endpoints[..], now_sec);
 }
 
 // Queries Alt-Svc cache for HTTP/3 ("h3") endpoint promotion

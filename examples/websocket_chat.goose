@@ -8,9 +8,7 @@ import core from "..";
 import wing from "..";
 
 fn main() {
-    print("============================================================");
-    print(" goose-wing Realtime WebSocket & Pub/Sub Engine Demo");
-    print("============================================================");
+    print("goose-wing Realtime WebSocket & Pub/Sub Engine Demo\n");
 
     // 1. Initialize Zero-Heap TopicTree (OASIS MQTT / uWebSockets architecture)
     var tree = wing::new_topic_tree();
@@ -79,7 +77,5 @@ fn main() {
 
     print("    Recovered Text: ", unmasked_payload[..]);
 
-    print("\n============================================================");
-    print(" Realtime Demo Complete (100% Zero-Allocation / Bounded Stack)");
-    print("============================================================");
+    print("\nRealtime Demo Complete (100% Zero-Allocation / Bounded Stack)\n");
 }

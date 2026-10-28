@@ -71,33 +71,41 @@ fn strong_eq(a: EntityTag, b: EntityTag) -> bool {
     return true;
 }
 
+fn read_next_etag_token(s: const u8[:], cursor: i64&) -> const u8[:] {
+    let rem = s[cursor..].trim_start_bytes(" \t,");
+    cursor = s.len - rem.len;
+    guard rem.len > 0 else { return ""; }
+
+    var in_quotes = false;
+    var end_idx: i64 = 0;
+    while end_idx < rem.len {
+        let b = rem[end_idx];
+        if b == '"' {
+            in_quotes = !in_quotes;
+        } else if b == ',' && !in_quotes {
+            break;
+        }
+        end_idx++;
+    }
+    let tag = rem[..end_idx].trim_lws();
+    cursor += if end_idx < rem.len { end_idx + 1 } else { end_idx };
+    return tag;
+}
+
 // Checks if cached ETag matches an incoming If-None-Match header (RFC 9110 §13.1.2).
 // Supports wildcard "*" and comma-separated lists of ETags using weak_eq.
 fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const EntityTag&) -> bool {
     guard cached_etag.valid else { return false; }
-    var s = trim_lws(raw_if_none_match);
+    let s = trim_lws(raw_if_none_match);
     if s == "*" { return true; }
 
     var cursor: i64 = 0;
     while cursor < s.len {
-        while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t' || s[cursor] == ',') {
-            cursor++;
+        let tag = read_next_etag_token(s, cursor);
+        guard tag.len > 0 else { break; }
+        if tag == "*" || weak_eq(parse_etag(tag), cached_etag) {
+            return true;
         }
-        guard cursor < s.len else { break; }
-
-        var end_idx = cursor;
-        var in_quotes = false;
-        while end_idx < s.len {
-            let b = s[end_idx];
-            if b == '"' { in_quotes = !in_quotes; }
-            else if b == ',' && !in_quotes { break; }
-            end_idx++;
-        }
-
-        let tag_slice = trim_lws(s[cursor..end_idx]);
-        cursor = end_idx + 1;
-        if tag_slice == "*" { return true; }
-        if weak_eq(parse_etag(tag_slice), cached_etag) { return true; }
     }
     return false;
 }
@@ -105,29 +113,16 @@ fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const Entity
 // Checks if cached ETag matches an incoming If-Match header using strong_eq (RFC 9110 §13.1.1).
 fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> bool {
     guard cached_etag.valid else { return false; }
-    var s = trim_lws(raw_if_match);
+    let s = trim_lws(raw_if_match);
     if s == "*" { return true; }
 
     var cursor: i64 = 0;
     while cursor < s.len {
-        while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t' || s[cursor] == ',') {
-            cursor++;
+        let tag = read_next_etag_token(s, cursor);
+        guard tag.len > 0 else { break; }
+        if tag == "*" || strong_eq(parse_etag(tag), cached_etag) {
+            return true;
         }
-        guard cursor < s.len else { break; }
-
-        var end_idx = cursor;
-        var in_quotes = false;
-        while end_idx < s.len {
-            let b = s[end_idx];
-            if b == '"' { in_quotes = !in_quotes; }
-            else if b == ',' && !in_quotes { break; }
-            end_idx++;
-        }
-
-        let tag_slice = trim_lws(s[cursor..end_idx]);
-        cursor = end_idx + 1;
-        if tag_slice == "*" { return true; }
-        if strong_eq(parse_etag(tag_slice), cached_etag) { return true; }
     }
     return false;
 }

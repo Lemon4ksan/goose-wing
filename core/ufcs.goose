@@ -383,6 +383,7 @@ fn ::to_lower_ascii<B>(src: const u8[:], out: B&) { core::to_lower_ascii(src, ou
 fn ::to_upper_ascii<B>(src: const u8[:], out: B&) { core::to_upper_ascii(src, out); }
 fn ::format_u64_dec<B>(val: u64, out: B&) { core::format_u64_dec(val, out); }
 fn ::format_i64_dec<B>(val: i64, out: B&) { core::format_i64_dec(val, out); }
+fn ::format_u32_dec<B>(val: u32, out: B&) { core::format_u32_dec(val, out); }
 fn ::format_u64_hex<B>(val: u64, out: B&, uppercase: bool = false) { core::format_u64_hex(val, out, uppercase); }
 fn ::format_u32_hex<B>(val: u32, out: B&, uppercase: bool = false) { core::format_u32_hex(val, out, uppercase); }
 fn ::format_u8_hex<B>(val: u8, out: B&, uppercase: bool = false) { core::format_u8_hex(val, out, uppercase); }

@@ -7,9 +7,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================
 // 1. PROXY Protocol v1 (Text) Conformance
-// ============================================================================
 fn test_proxy_v1_conformance(t: core::T&) {
     t.run("PROXY-v1-01: Valid TCP4 line parsing") { sub =>
         let raw = "PROXY TCP4 192.168.0.1 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
@@ -105,9 +103,7 @@ fn test_proxy_v1_conformance(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. PROXY Protocol v2 (Binary) Conformance
-// ============================================================================
 fn test_proxy_v2_conformance(t: core::T&) {
     t.run("PROXY-v2-01: IPv4 TCP binary header parsing") { sub =>
         // Preamble (12) + 0x21 (v2, PROXY) + 0x11 (INET4, STREAM) + len 12 (0x000C)
@@ -197,9 +193,7 @@ fn test_proxy_v2_conformance(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. PROXY Protocol v2 TLV (Type-Length-Value) Metadata
-// ============================================================================
 fn test_proxy_v2_tlvs(t: core::T&) {
     t.run("PROXY-v2-TLV-01: ALPN, Authority, and Unique ID") { sub =>
         var hdr = wing::ProxyHeader {
@@ -266,9 +260,7 @@ fn test_proxy_v2_tlvs(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 4. Stream Stripping & Server Pipeline Integration
-// ============================================================================
 fn test_proxy_server_integration(t: core::T&) {
     t.run("Auto-Detection and Stream Stripping") { sub =>
         let stream = "PROXY TCP4 203.0.113.195 10.0.0.1 54321 80\r\nGET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";

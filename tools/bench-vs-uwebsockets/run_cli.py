@@ -706,9 +706,7 @@ def main():
             )
         return
 
-    # =========================================================================
     # PHASE 1: Single-Worker (1 Core Baseline)
-    # =========================================================================
     gw_pipe_6, uws_pipe_6 = None, None
     print(">>> PHASE 1: Single-Worker Engine Baseline (1 Worker Thread per Engine) <<<\n")
     if can_restart:
@@ -772,9 +770,7 @@ def main():
         pipeline_depth=1,
     )
 
-    # =========================================================================
     # PHASE 2: Multi-Worker Scale-Out (4 Workers / SO_REUSEPORT)
-    # =========================================================================
     if can_restart:
         print("\n" + "=" * 84)
         print(">>> PHASE 2: Multi-Worker Scale-Out (4 Workers per Engine / SO_REUSEPORT) <<<")
@@ -811,9 +807,7 @@ def main():
             pipeline_depth=1,
         )
 
-        # =========================================================================
         # PHASE 3: Dedicated 6-Worker Balanced Scale-Out (6 Workers + 6 wrk Threads = 12 Cores)
-        # =========================================================================
         print("\n" + "=" * 84)
         print(">>> PHASE 3: Dedicated 6-Worker Balanced Scale-Out (6 Workers / SO_REUSEPORT) <<<")
         print("=" * 84 + "\n")
@@ -907,9 +901,7 @@ def main():
                 duration=4,
             )
 
-        # =========================================================================
         # PHASE 4: High-Concurrency 8-Worker Scale-Out (8 Workers / SO_REUSEPORT)
-        # =========================================================================
         print("\n" + "=" * 84)
         print(">>> PHASE 4: High-Concurrency Scale-Out (8 Workers per Engine / SO_REUSEPORT) <<<")
         print("=" * 84 + "\n")

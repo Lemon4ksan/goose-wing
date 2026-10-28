@@ -21,8 +21,14 @@
 #include <arm_neon.h>
 #endif
 
-typedef struct { uint8_t *data; int64_t len; } wing_bytes_rw;
-typedef struct { const uint8_t *data; int64_t len; } wing_bytes_ro;
+typedef struct {
+    uint8_t *data;
+    int64_t len;
+} wing_bytes_rw;
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
 
 // Forward declaration from shim/tcp.c
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
@@ -39,7 +45,7 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
         size_t rem = (size_t)clen;
         int attempts = 0;
         while (rem > 0 && attempts++ < 16) {
-            wing_bytes_ro to_send = { p, (int64_t)rem };
+            wing_bytes_ro to_send = {p, (int64_t)rem};
             int32_t sent = wing_tcp_send(conn, to_send);
             if (sent <= 0) return -1;
             p += sent;
@@ -124,7 +130,7 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
 // Vectorized WebSocket payload XOR masking / unmasking (RFC 6455 §5.3)
 // Replicates 4-byte mask across 128-bit/256-bit SIMD registers.
 void wing_simd_mask_websocket(wing_bytes_rw slice, const uint8_t mask[4]) {
-    uint8_t* data = slice.data;
+    uint8_t *data = slice.data;
     size_t len = (size_t)slice.len;
     if (!data || len == 0 || !mask) return;
 
@@ -142,22 +148,22 @@ void wing_simd_mask_websocket(wing_bytes_rw slice, const uint8_t mask[4]) {
     __m128i mask128 = _mm_set1_epi32((int)mask32);
 
     while (i + 64 <= len) {
-        __m128i v0 = _mm_loadu_si128((const __m128i*)(data + i));
-        __m128i v1 = _mm_loadu_si128((const __m128i*)(data + i + 16));
-        __m128i v2 = _mm_loadu_si128((const __m128i*)(data + i + 32));
-        __m128i v3 = _mm_loadu_si128((const __m128i*)(data + i + 48));
+        __m128i v0 = _mm_loadu_si128((const __m128i *)(data + i));
+        __m128i v1 = _mm_loadu_si128((const __m128i *)(data + i + 16));
+        __m128i v2 = _mm_loadu_si128((const __m128i *)(data + i + 32));
+        __m128i v3 = _mm_loadu_si128((const __m128i *)(data + i + 48));
 
-        _mm_storeu_si128((__m128i*)(data + i),      _mm_xor_si128(v0, mask128));
-        _mm_storeu_si128((__m128i*)(data + i + 16), _mm_xor_si128(v1, mask128));
-        _mm_storeu_si128((__m128i*)(data + i + 32), _mm_xor_si128(v2, mask128));
-        _mm_storeu_si128((__m128i*)(data + i + 48), _mm_xor_si128(v3, mask128));
+        _mm_storeu_si128((__m128i *)(data + i), _mm_xor_si128(v0, mask128));
+        _mm_storeu_si128((__m128i *)(data + i + 16), _mm_xor_si128(v1, mask128));
+        _mm_storeu_si128((__m128i *)(data + i + 32), _mm_xor_si128(v2, mask128));
+        _mm_storeu_si128((__m128i *)(data + i + 48), _mm_xor_si128(v3, mask128));
 
         i += 64;
     }
 
     while (i + 16 <= len) {
-        __m128i v = _mm_loadu_si128((const __m128i*)(data + i));
-        _mm_storeu_si128((__m128i*)(data + i), _mm_xor_si128(v, mask128));
+        __m128i v = _mm_loadu_si128((const __m128i *)(data + i));
+        _mm_storeu_si128((__m128i *)(data + i), _mm_xor_si128(v, mask128));
         i += 16;
     }
 #elif defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
@@ -188,7 +194,7 @@ void wing_simd_mask_websocket(wing_bytes_rw slice, const uint8_t mask[4]) {
 // Fast SIMD check if buffer contains pure ASCII (0x00..0x7F)
 // Returns 1 if all bytes < 0x80 (pure ASCII / valid 1-byte UTF-8), 0 otherwise.
 int32_t wing_simd_is_pure_ascii(wing_bytes_ro slice) {
-    const uint8_t* data = slice.data;
+    const uint8_t *data = slice.data;
     size_t len = (size_t)slice.len;
     if (!data || len == 0) return 1;
 
@@ -196,7 +202,7 @@ int32_t wing_simd_is_pure_ascii(wing_bytes_ro slice) {
 
 #if (defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
     while (i + 16 <= len) {
-        __m128i v = _mm_loadu_si128((const __m128i*)(data + i));
+        __m128i v = _mm_loadu_si128((const __m128i *)(data + i));
         int mask = _mm_movemask_epi8(v);
         if (mask != 0) return 0;
         i += 16;
@@ -222,7 +228,7 @@ int32_t wing_simd_is_pure_ascii(wing_bytes_ro slice) {
 // Scans for CRLF (\r\n) in HTTP wire data using vectorization
 // Returns offset of '\r' if found, or -1 if not found.
 int64_t wing_simd_find_crlf(wing_bytes_ro slice) {
-    const uint8_t* data = slice.data;
+    const uint8_t *data = slice.data;
     size_t len = (size_t)slice.len;
     if (!data || len < 2) return -1;
 
@@ -231,7 +237,7 @@ int64_t wing_simd_find_crlf(wing_bytes_ro slice) {
 #if (defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
     __m128i cr = _mm_set1_epi8('\r');
     while (i + 16 <= len) {
-        __m128i v = _mm_loadu_si128((const __m128i*)(data + i));
+        __m128i v = _mm_loadu_si128((const __m128i *)(data + i));
         __m128i cmp = _mm_cmpeq_epi8(v, cr);
         int mask = _mm_movemask_epi8(cmp);
         if (mask != 0) {
@@ -277,8 +283,8 @@ void wing_simd_unmask_shifted(wing_bytes_rw slice, int64_t header_len, int64_t p
 #if defined(__AVX2__)
     __m256i mask256 = _mm256_set1_epi32((int)mask32);
     while (i + 32 <= len) {
-        __m256i v = _mm256_loadu_si256((const __m256i*)(src + i));
-        _mm256_storeu_si256((__m256i*)(dst + i), _mm256_xor_si256(v, mask256));
+        __m256i v = _mm256_loadu_si256((const __m256i *)(src + i));
+        _mm256_storeu_si256((__m256i *)(dst + i), _mm256_xor_si256(v, mask256));
         i += 32;
     }
 #elif (defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
@@ -286,8 +292,8 @@ void wing_simd_unmask_shifted(wing_bytes_rw slice, int64_t header_len, int64_t p
     // Because dst lags src by header_len >= 6, load occurs before store, safe from clobbering.
     __m128i mask128 = _mm_set1_epi32((int)mask32);
     while (i + 16 <= len) {
-        __m128i v = _mm_loadu_si128((const __m128i*)(src + i));
-        _mm_storeu_si128((__m128i*)(dst + i), _mm_xor_si128(v, mask128));
+        __m128i v = _mm_loadu_si128((const __m128i *)(src + i));
+        _mm_storeu_si128((__m128i *)(dst + i), _mm_xor_si128(v, mask128));
         i += 16;
     }
 #elif defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
@@ -343,7 +349,8 @@ int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice) {
             _BitScanForward(&offset, match);
 #else
             int offset = 0;
-            while ((match & (1u << offset)) == 0) offset++;
+            while ((match & (1u << offset)) == 0)
+                offset++;
 #endif
             return (int64_t)(i + offset);
         }
@@ -364,7 +371,8 @@ int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice) {
             _BitScanForward(&offset, match);
 #else
             int offset = 0;
-            while ((match & (1u << offset)) == 0) offset++;
+            while ((match & (1u << offset)) == 0)
+                offset++;
 #endif
             return (int64_t)(len - 32 + offset);
         }
@@ -388,7 +396,8 @@ int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice) {
             _BitScanForward(&offset, match);
 #else
             int offset = 0;
-            while ((match & (1u << offset)) == 0) offset++;
+            while ((match & (1u << offset)) == 0)
+                offset++;
 #endif
             return (int64_t)(i + offset);
         }
@@ -409,7 +418,8 @@ int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice) {
             _BitScanForward(&offset, match);
 #else
             int offset = 0;
-            while ((match & (1u << offset)) == 0) offset++;
+            while ((match & (1u << offset)) == 0)
+                offset++;
 #endif
             return (int64_t)(len - 16 + offset);
         }
@@ -433,7 +443,7 @@ int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice) {
 // 64-bit SWAR (SIMD Within A Register) character scanner (uWebSockets HttpParser.h)
 // Evaluates 8 bytes in parallel in 1 CPU cycle for characters < n (e.g. n=32 detects control characters, CRLF, NUL)
 static inline uint64_t wing_swar_has_less(uint64_t x, uint64_t n) {
-    return (((x) - 0x0101010101010101ULL * (n)) & ~(x) & 0x8080808080808080ULL);
+    return (((x)-0x0101010101010101ULL * (n)) & ~(x) & 0x8080808080808080ULL);
 }
 
 // Scans slice 8 bytes at a time for any control character (< 32, including \r, \n, \t, \0)
@@ -448,7 +458,8 @@ int64_t wing_swar_find_ctl(wing_bytes_ro slice) {
         uint64_t word;
         memcpy(&word, data + i, 8);
         if (wing_swar_has_less(word, 32)) {
-            while (i < len && data[i] >= 32) i++;
+            while (i < len && data[i] >= 32)
+                i++;
             return (int64_t)i;
         }
         i += 8;
@@ -575,5 +586,3 @@ int32_t wing_swar_eq_ascii_fold(wing_bytes_ro a, wing_bytes_ro b) {
     }
     return 1;
 }
-
-

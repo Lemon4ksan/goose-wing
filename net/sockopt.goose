@@ -113,32 +113,13 @@ fn format_socket_p0f_summary<B>(cfg: const SocketP0fProfile&, out: B&) {
     out.append("OS: ");
     out.append(cfg.os_name[..]);
     out.append(" | TTL=");
-    format_int(out, cfg.ttl as i64);
+    core::format_i64_dec(cfg.ttl as i64, out);
     out.append(" | Window=");
-    format_int(out, cfg.window_size as i64);
+    core::format_i64_dec(cfg.window_size as i64, out);
     out.append(" | DF=");
     out.append(if cfg.has_dont_fragment { "1" } else { "0" });
     out.append(" | WScale=");
-    format_int(out, cfg.wscale as i64);
+    core::format_i64_dec(cfg.wscale as i64, out);
     out.append(" | TCP_NODELAY=");
     out.append(if cfg.tcp_nodelay { "1" } else { "0" });
-}
-
-fn format_int<B>(out: B&, val: i64) {
-    if val == 0 {
-        out.push('0' as u8);
-        return;
-    }
-    var v = val;
-    var digits: u8[..32] = [];
-    while v > 0 {
-        let d = (v % 10) as u8;
-        digits.push(('0' as u8) + d);
-        v /= 10;
-    }
-    var i = digits.len;
-    while i > 0 {
-        i -= 1;
-        out.push(digits[i]);
-    }
 }

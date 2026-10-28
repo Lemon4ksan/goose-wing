@@ -7,7 +7,7 @@
 namespace wing;
 
 import std;
-import http.headers;
+import core from "..";
 
 // ---- string unquoting ------------------------------------------------------
 
@@ -291,36 +291,45 @@ struct SfvDict {
 
 // Helper: skips optional ASCII whitespace SP and HTAB
 fn sfv_skip_ows(raw: const u8[:], cursor: i64&) {
-    while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') {
-        cursor++;
+    let rem = raw[cursor..];
+    let trimmed = core::trim_lws_start(rem);
+    cursor += rem.len - trimmed.len;
+}
+
+fn is_sfv_key_char(b: u8) -> bool {
+    return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.' || b == '*';
+}
+
+fn scan_sfv_key_len(rem: const u8[:]) -> i64, bool {
+    var k_len: i64 = 1;
+    while k_len < rem.len {
+        let b = rem[k_len];
+        if is_sfv_key_char(b) {
+            k_len++;
+        } else if b >= 'A' && b <= 'Z' {
+            return 0, false;
+        } else {
+            break;
+        }
     }
+    return k_len, true;
 }
 
 // RFC 8941 Section 3.1.2: Dictionary key parser
 // key = ( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )
 fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     guard cursor < raw.len else { return false; }
-    let first = raw[cursor];
+    let rem = raw[cursor..];
+    let first = rem[0];
     // First char MUST be lowercase ASCII 'a'..'z' or '*'
     guard (first >= 'a' && first <= 'z') || first == '*' else { return false; }
 
-    out_key.clear();
-    out_key.push(first);
-    cursor++;
+    let k_len, ok = scan_sfv_key_len(rem);
+    guard ok && k_len <= out_key.cap else { return false; }
 
-    while cursor < raw.len {
-        let b = raw[cursor];
-        if (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.' || b == '*' {
-            guard out_key.len < out_key.cap else { return false; }
-            out_key.push(b);
-            cursor++;
-        } else if b >= 'A' && b <= 'Z' {
-            // Uppercase in key is a STRICT SYNTAX ERROR per RFC 8941 Section 3.1.2
-            return false;
-        } else {
-            break;
-        }
-    }
+    out_key.clear();
+    out_key.append(rem[..k_len]);
+    cursor += k_len;
     return true;
 }
 

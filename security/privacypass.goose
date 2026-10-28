@@ -94,43 +94,35 @@ fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&) {
 
 // Unmarshals TokenChallenge from RFC 9577 §2.1.1 binary wire representation.
 fn unmarshal_token_challenge(data: const u8[:], out: TokenChallenge&) -> bool {
-    out.issuer_name.clear();
-    out.redemption_context.clear();
-    out.origin_info.clear();
-
     guard data.len >= 7 else { return false; } // 2 + 2 + 0 + 1 + 0 + 2 + 0
 
-    let tt = ((data[0] << 8) | data[1]) as u16;
-    out.token_type = tt;
-
-    let iss_len = (((data[2] << 8) | data[3]) as i64);
+    let iss_len = (data[2] as i64 << 8) | data[3];
     guard iss_len <= out.issuer_name.cap else { return false; }
-    guard data.len >= 4 + iss_len + 1 else { return false; }
+    guard data.len >= 4 + iss_len + 3 else { return false; }
 
-    for i in iss_len {
-        out.issuer_name.push(data[4 + i]);
-    }
-
-    var offset = 4 + iss_len;
-    let ctx_len = data[offset] as i64;
-    offset += 1;
-
+    let offset1 = 4 + iss_len;
+    let ctx_len = data[offset1] as i64;
     guard ctx_len == 0 || ctx_len == 32 else { return false; }
     guard ctx_len <= out.redemption_context.cap else { return false; }
-    guard data.len >= offset + ctx_len + 2 else { return false; }
 
-    for i in ctx_len {
-        out.redemption_context.push(data[offset + i]);
-    }
-    offset += ctx_len;
-
-    let orig_len = (((data[offset] << 8) | data[offset + 1]) as i64);
-    offset += 2;
-
+    let offset2 = offset1 + 1 + ctx_len;
+    guard data.len >= offset2 + 2 else { return false; }
+    let orig_len = (data[offset2] as i64 << 8) | data[offset2 + 1];
     guard orig_len <= out.origin_info.cap else { return false; }
-    guard data.len >= offset + orig_len else { return false; }
-    for i in orig_len {
-        out.origin_info.push(data[offset + i]);
+    guard data.len >= offset2 + 2 + orig_len else { return false; }
+
+    out.token_type = ((data[0] as u16) << 8) | data[1];
+    out.issuer_name.clear();
+    out.issuer_name.append(data[4..4 + iss_len]);
+
+    out.redemption_context.clear();
+    if ctx_len > 0 {
+        out.redemption_context.append(data[offset1 + 1..offset1 + 1 + ctx_len]);
+    }
+
+    out.origin_info.clear();
+    if orig_len > 0 {
+        out.origin_info.append(data[offset2 + 2..offset2 + 2 + orig_len]);
     }
 
     return true;
@@ -190,6 +182,96 @@ fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token
 
 // ---- 4. HTTP Authentication Header Parsing & Formatting (RFC 9577 §2.1 & §2.2)
 
+fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
+    while idx < rem.len && (rem[idx] == ' ' || rem[idx] == '=') {
+        idx += 1;
+    }
+    guard idx < rem.len else { return "", false; }
+    if rem[idx] == '"' {
+        idx += 1;
+        let v_start = idx;
+        let rel_q = core::index_of_byte(rem[v_start..], '"');
+        guard rel_q >= 0 else { return "", false; }
+        let val = rem[v_start..v_start + rel_q];
+        idx = v_start + rel_q + 1;
+        return val, true;
+    }
+    let v_start = idx;
+    while idx < rem.len && rem[idx] != ',' && rem[idx] != ' ' && rem[idx] != '\t' {
+        idx += 1;
+    }
+    return rem[v_start..idx], true;
+}
+
+fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..128]&) -> bool {
+    var raw_key: u8[>..] = [];
+    guard core::base64url_decode(val, raw_key) else { return false; }
+    guard raw_key.len <= temp_token_key.cap else { return false; }
+    temp_token_key.clear();
+    for b in raw_key {
+        temp_token_key.push(b);
+    }
+    return true;
+}
+
+fn apply_challenge_param(
+    key: const u8[:],
+    val: const u8[:],
+    temp_token_key: u8[..128]&,
+    temp_max_age: i64&,
+) -> const u8[:], bool {
+    if eq_ascii_fold(key, "challenge") {
+        return val, true;
+    }
+    if eq_ascii_fold(key, "token-key") {
+        guard decode_token_key_param(val, temp_token_key) else { return "", false; }
+        return "", true;
+    }
+    if eq_ascii_fold(key, "max-age") {
+        let secs, ok_sec = val.parse_i64_dec();
+        if ok_sec && secs >= 0 {
+            temp_max_age = secs;
+        }
+        return "", true;
+    }
+    return "", true;
+}
+
+fn read_param_key(rem: const u8[:]) -> const u8[:] {
+    var k_len: i64 = 0;
+    while k_len < rem.len && rem[k_len] != '=' && rem[k_len] != ',' && rem[k_len] != ' ' && rem[k_len] != '\t' {
+        k_len += 1;
+    }
+    return rem[..k_len];
+}
+
+fn parse_challenge_params(
+    params_str: const u8[:],
+    temp_token_key: u8[..128]&,
+    temp_max_age: i64&,
+) -> const u8[:], bool {
+    var challenge_slice = params_str[..0];
+    var idx: i64 = 0;
+    while idx < params_str.len {
+        let rem = params_str[idx..].trim_start_bytes(" \t,");
+        idx = params_str.len - rem.len;
+        guard idx < params_str.len else { break; }
+
+        let key = read_param_key(rem);
+        idx += key.len;
+
+        let val, ok_v = parse_param_val(params_str, idx);
+        guard ok_v else { return "", false; }
+
+        let chal, ok_param = apply_challenge_param(key, val, temp_token_key, temp_max_age);
+        guard ok_param else { return "", false; }
+        if chal.len > 0 {
+            challenge_slice = chal;
+        }
+    }
+    return challenge_slice, challenge_slice.len > 0;
+}
+
 // Parses `WWW-Authenticate: PrivateToken challenge="<base64url>", ...` header.
 fn parse_private_token_challenge(
     header_val: const u8[:],
@@ -197,88 +279,32 @@ fn parse_private_token_challenge(
     out_token_key: u8[..128]&,
     out_max_age_sec: i64&,
 ) -> bool {
-    out_token_key.clear();
-    out_max_age_sec = 0;
-
-    // Must start with "PrivateToken"
     guard header_val.len > SCHEME_PRIVATE_TOKEN.len else { return false; }
     guard eq_ascii_fold(header_val[..SCHEME_PRIVATE_TOKEN.len], SCHEME_PRIVATE_TOKEN) else { return false; }
 
-    var params_str = header_val[SCHEME_PRIVATE_TOKEN.len..];
-    while params_str.len > 0 && (params_str[0] == ' ' || params_str[0] == '\t') {
-        params_str = params_str[1..];
-    }
+    var temp_token_key: u8[..128] = [];
+    var temp_max_age: i64 = 0;
+    let challenge_slice, ok_params = parse_challenge_params(
+        header_val[SCHEME_PRIVATE_TOKEN.len..].trim_lws(),
+        temp_token_key,
+        temp_max_age,
+    );
+    guard ok_params else { return false; }
 
-    var challenge_b64: u8[..512] = [];
-
-    // Parse comma-separated key=value pairs
-    var idx = 0;
-    while idx < params_str.len {
-        while idx < params_str.len && (params_str[idx] == ' ' || params_str[idx] == '\t' || params_str[idx] == ',') {
-            idx += 1;
-        }
-        guard idx < params_str.len else { break; }
-
-        var k_start = idx;
-        while idx < params_str.len && params_str[idx] != '=' && params_str[idx] != ',' && params_str[idx] != ' ' {
-            idx += 1;
-        }
-        let key = params_str[k_start..idx];
-
-        while idx < params_str.len && (params_str[idx] == ' ' || params_str[idx] == '=') {
-            idx += 1;
-        }
-
-        var val_start = idx;
-        var in_quotes = false;
-        if idx < params_str.len && params_str[idx] == '"' {
-            in_quotes = true;
-            idx += 1;
-            val_start = idx;
-            while idx < params_str.len && params_str[idx] != '"' {
-                idx += 1;
-            }
-            guard idx < params_str.len && params_str[idx] == '"' else { return false; }
-        } else {
-            while idx < params_str.len && params_str[idx] != ',' && params_str[idx] != ' ' {
-                idx += 1;
-            }
-        }
-        let val = params_str[val_start..idx];
-        if in_quotes {
-            idx += 1; // skip closing quote
-        }
-
-        if eq_ascii_fold(key, "challenge") {
-            guard val.len <= challenge_b64.cap else { return false; }
-            challenge_b64.clear();
-            challenge_b64.append(val);
-        } else if eq_ascii_fold(key, "token-key") {
-            var raw_key: u8[>..] = [];
-            if core::base64url_decode(val, raw_key) {
-                guard raw_key.len <= out_token_key.cap else { return false; }
-                for b in raw_key {
-                    out_token_key.push(b);
-                }
-            } else {
-                return false;
-            }
-        } else if eq_ascii_fold(key, "max-age") {
-            var secs: i64 = 0;
-            for b in val {
-                if b >= '0' && b <= '9' {
-                    secs = secs * 10 + (b - '0');
-                }
-            }
-            out_max_age_sec = secs;
-        }
-    }
-
-    guard challenge_b64.len > 0 else { return false; }
     var raw_challenge: u8[>..] = [];
-    guard core::base64url_decode(challenge_b64[..], raw_challenge) else { return false; }
+    guard core::base64url_decode(challenge_slice, raw_challenge) else { return false; }
 
-    return unmarshal_token_challenge(raw_challenge[..], out_challenge);
+    var temp_chal = TokenChallenge { .. };
+    guard unmarshal_token_challenge(raw_challenge[..], temp_chal) else { return false; }
+
+    // Commit only on complete success
+    out_token_key.clear();
+    for b in temp_token_key {
+        out_token_key.push(b);
+    }
+    out_max_age_sec = temp_max_age;
+    out_challenge = temp_chal;
+    return true;
 }
 
 // Formats `Authorization: PrivateToken token="..."` header (RFC 9577 §2.2.2).
@@ -297,6 +323,16 @@ fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) {
 
 // ---- 5. Private Token Cache & Redemption Management -------------------------
 
+fn find_free_token_slot(cache: const PrivateTokenCache&, now_sec: i64) -> i64 {
+    for i in cache.entries.len {
+        let entry = &cache.entries[i];
+        if entry.used || (entry.expires_at_sec > 0 && now_sec > entry.expires_at_sec) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 // Puts a pre-issued or blinded token into cache for a challenge.
 fn put_private_token(
     cache: PrivateTokenCache&,
@@ -307,32 +343,34 @@ fn put_private_token(
     now_sec: i64,
 ) -> bool {
     let digest = compute_challenge_digest(challenge);
-
-    // Look for existing or free slot
-    var target_idx = -1;
-    for i in cache.entries.len {
-        if cache.entries[i].used || (cache.entries[i].expires_at_sec > 0 && now_sec > cache.entries[i].expires_at_sec) {
-            target_idx = i;
-            break;
-        }
-    }
+    var target_idx = find_free_token_slot(cache, now_sec);
 
     if target_idx == -1 {
         if cache.entries.len < cache.entries.cap {
             target_idx = cache.entries.len;
             cache.entries.push(CachedToken { .. });
         } else {
-            target_idx = 0; // Evict slot 0
+            target_idx = 0;
         }
     }
 
-    cache.entries[target_idx].challenge_digest = digest;
-    cache.entries[target_idx].token = token;
-    cache.entries[target_idx].raw_token.clear();
-    cache.entries[target_idx].raw_token.append(raw_token);
-    cache.entries[target_idx].expires_at_sec = if ttl_sec > 0 { now_sec + ttl_sec } else { 0 };
-    cache.entries[target_idx].used = false;
+    let entry = &cache.entries[target_idx];
+    entry.challenge_digest = digest;
+    entry.token = token;
+    entry.raw_token.clear();
+    entry.raw_token.append(raw_token);
+    entry.expires_at_sec = if ttl_sec > 0 { now_sec + ttl_sec } else { 0 };
+    entry.used = false;
 
+    return true;
+}
+
+fn entry_matches_challenge(entry: const CachedToken&, digest: const u8[32]&, now_sec: i64) -> bool {
+    guard !entry.used else { return false; }
+    guard entry.expires_at_sec == 0 || now_sec <= entry.expires_at_sec else { return false; }
+    for k in 32 {
+        guard entry.challenge_digest[k] == digest[k] else { return false; }
+    }
     return true;
 }
 
@@ -347,24 +385,13 @@ fn get_private_token(
     let digest = compute_challenge_digest(challenge);
 
     for i in cache.entries.len {
-        if !cache.entries[i].used {
-            if cache.entries[i].expires_at_sec == 0 || now_sec <= cache.entries[i].expires_at_sec {
-                // Check if digest matches
-                var match_digest = true;
-                for k in 32 {
-                    if cache.entries[i].challenge_digest[k] != digest[k] {
-                        match_digest = false;
-                        break;
-                    }
-                }
-                if match_digest {
-                    out_token = cache.entries[i].token;
-                    out_raw.clear();
-                    out_raw.append(cache.entries[i].raw_token[..]);
-                    cache.entries[i].used = true; // Single-use spend
-                    return true;
-                }
-            }
+        let entry = &cache.entries[i];
+        if entry_matches_challenge(entry, digest, now_sec) {
+            out_token = entry.token;
+            out_raw.clear();
+            out_raw.append(entry.raw_token[..]);
+            cache.entries[i].used = true;
+            return true;
         }
     }
 

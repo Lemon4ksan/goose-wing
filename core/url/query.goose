@@ -153,9 +153,8 @@ fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUE
 
 // Fast zero-allocation query parameter lookup directly from raw query slice.
 // Scans raw_query for key without allocating a QueryParamsList or parsing unrelated parameters.
-// Returns (found, is_valueless). If found and has a value, the decoded value is written into out.
+// Returns (found, is_valueless). If found and has a value, out is cleared and the decoded value is written into out.
 fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> bool, bool {
-    out.clear();
     guard key.len > 0 && raw_query.len > 0 else { return false, false; }
 
     var q = raw_query;
@@ -190,6 +189,7 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
                 return true, true;
             }
             let stmt_val = statement[eq_pos + 1..];
+            out.clear();
             percent_decode_query(stmt_val, out);
             return true, false;
         }

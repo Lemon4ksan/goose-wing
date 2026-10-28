@@ -31,8 +31,8 @@ int64_t wing_kqueue_create(void) {
     return (int64_t)kq;
 }
 
-int32_t wing_kqueue_kevent(int64_t kq_fd, const void *changelist, int32_t nchanges,
-                           void *eventlist, int32_t nevents, int64_t timeout_ns) {
+int32_t wing_kqueue_kevent(int64_t kq_fd, const void *changelist, int32_t nchanges, void *eventlist, int32_t nevents,
+                           int64_t timeout_ns) {
     struct timespec ts;
     struct timespec *pts = NULL;
     if (timeout_ns >= 0) {
@@ -40,8 +40,7 @@ int32_t wing_kqueue_kevent(int64_t kq_fd, const void *changelist, int32_t nchang
         ts.tv_nsec = timeout_ns % 1000000000LL;
         pts = &ts;
     }
-    int ret = kevent((int)kq_fd, (const struct kevent*)changelist, nchanges,
-                     (struct kevent*)eventlist, nevents, pts);
+    int ret = kevent((int)kq_fd, (const struct kevent *)changelist, nchanges, (struct kevent *)eventlist, nevents, pts);
     if (ret < 0) {
         return -errno;
     }
@@ -63,9 +62,14 @@ void wing_kqueue_close(int64_t kq_fd) {
 // Non-Darwin platform stubs
 int32_t wing_kqueue_probe(void) { return -ENOSYS; }
 int64_t wing_kqueue_create(void) { return -ENOSYS; }
-int32_t wing_kqueue_kevent(int64_t kq_fd, const void *changelist, int32_t nchanges,
-                           void *eventlist, int32_t nevents, int64_t timeout_ns) {
-    (void)kq_fd; (void)changelist; (void)nchanges; (void)eventlist; (void)nevents; (void)timeout_ns;
+int32_t wing_kqueue_kevent(int64_t kq_fd, const void *changelist, int32_t nchanges, void *eventlist, int32_t nevents,
+                           int64_t timeout_ns) {
+    (void)kq_fd;
+    (void)changelist;
+    (void)nchanges;
+    (void)eventlist;
+    (void)nevents;
+    (void)timeout_ns;
     return -ENOSYS;
 }
 void wing_kqueue_close(int64_t kq_fd) { (void)kq_fd; }

@@ -71,9 +71,7 @@ fn encode_client_trailers<B>(
     out.append(hdr_block[..]);
 }
 
-// ============================================================================
 // 1. Connection Preface, Handshake & Settings Negotiation
-// ============================================================================
 fn test_h2_handshake_and_settings(t: core::T&) {
     t.run("H2-01: Preface & Initial Server SETTINGS emission") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
@@ -190,9 +188,7 @@ fn test_h2_handshake_and_settings(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. Stream Multiplexing, Request Dispatching & HPACK Response Generation
-// ============================================================================
 fn test_h2_request_dispatch(t: core::T&) {
     t.run("H2-03: Single GET Request through Server Pipeline") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
@@ -306,9 +302,7 @@ fn test_h2_request_dispatch(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. End-to-End HttpServer Integration with HTTP/2 Preface Detection
-// ============================================================================
 fn test_h2_server_wire_integration(t: core::T&) {
     t.run("HttpServer.handle_connection_wire auto-detects H2 and serves requests") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
@@ -330,9 +324,7 @@ fn test_h2_server_wire_integration(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 4. CONTINUATION Assembly, Anti-DoS & Rapid Reset Defense
-// ============================================================================
 fn test_h2_continuation_and_anti_dos(t: core::T&) {
     t.run("H2-06: Multi-Frame CONTINUATION Header Assembly") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
@@ -466,9 +458,7 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 5. RFC 9113 Protocol Invariants & Zero-Allocation Ingress
-// ============================================================================
 fn test_h2_protocol_invariants(t: core::T&) {
     t.run("H2-09: Client Request Trailers Accepted (RFC 9113 §8.1.2)") { sub =>
         var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);

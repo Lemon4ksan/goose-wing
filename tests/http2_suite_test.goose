@@ -8,9 +8,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================
 // 1. HPACK Huffman FSM & RFC 7541 Integer Codec Tests
-// ============================================================================
 fn test_hpack_huffman_and_integer_codec(t: core::T&) {
     t.run("HPACK-01: RFC 7541 Appendix C.2 Huffman Decode Vectors") { sub =>
         // Vector 1: "www.example.com"
@@ -101,9 +99,7 @@ fn test_hpack_huffman_and_integer_codec(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 2. HPACK Dynamic Table & Header Block Conformance Tests
-// ============================================================================
 fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
     t.run("DYN-01: Insertion, LIFO Indexing & FIFO Eviction") { sub =>
         var dt = wing::new_dynamic_table(256); // small capacity for quick eviction
@@ -246,9 +242,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 3. Binary Framing & RFC 9218 Structured Field Prioritization Tests
-// ============================================================================
 fn test_binary_framing_and_rfc9218(t: core::T&) {
     t.run("FRAME-01: 9-Byte Frame Header Codec Roundtrip") { sub =>
         let orig_hdr = wing::FrameHeader {
@@ -349,9 +343,7 @@ fn test_binary_framing_and_rfc9218(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 4. Two-Level Signed Flow Control & Negative Window Invariant Tests
-// ============================================================================
 fn test_flow_control_and_session_state(t: core::T&) {
     t.run("FLOW-01: Signed Window Deltas & Negative Window State (RFC 9113 Section 6.9.2)") { sub =>
         var sess = wing::new_session_state();
@@ -404,9 +396,7 @@ fn test_flow_control_and_session_state(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 5. RFC 9218 Extensible Write Scheduler Tests
-// ============================================================================
 fn test_rfc9218_write_scheduler(t: core::T&) {
     t.run("SCHED-01: Urgency 0..7 Priority Ordering") { sub =>
         var sess = wing::new_session_state();
@@ -511,9 +501,7 @@ fn test_rfc9218_write_scheduler(t: core::T&) {
     };
 }
 
-// ============================================================================
 // 6. Anti-DoS Engine & Resource Quota Tests
-// ============================================================================
 fn test_anti_dos_mitigations(t: core::T&) {
     t.run("DOS-01: Rapid Reset Token Bucket Defense (CVE-2023-44487)") { sub =>
         // Session with small reset burst = 5

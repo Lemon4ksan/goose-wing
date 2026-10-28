@@ -127,18 +127,11 @@ fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -
         // Values must be stripped of leading/trailing whitespace and internal whitespace collapsed.
         let val = req.header(comp);
         guard val.len > 0 else { return false; }
-        var start: i64 = 0;
-        while start < val.len && (val[start] == ' ' || val[start] == '\t') {
-            start += 1;
-        }
-        var end: i64 = val.len;
-        while end > start && (val[end - 1] == ' ' || val[end - 1] == '\t' || val[end - 1] == '\r' || val[end - 1] == '\n') {
-            end -= 1;
-        }
-        guard end > start else { return false; }
+        let trimmed = val.trim_lws_start().trim_end_bytes(" \t\r\n");
+        guard trimmed.len > 0 else { return false; }
         var prev_space = false;
-        for i in (end - start) {
-            let ch = val[start + i];
+        for i in trimmed.len {
+            let ch = trimmed[i];
             if ch == ' ' || ch == '\t' {
                 if !prev_space {
                     out.push(' ' as u8);
@@ -153,26 +146,6 @@ fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -
     }
 
     return false;
-}
-
-// Formats an integer to buffer
-fn sig_format_int<B>(out: B&, val: i64) {
-    if val == 0 {
-        out.push('0' as u8);
-        return;
-    }
-    var v = val;
-    var digits: u8[..32] = [];
-    while v > 0 {
-        let d = (v % 10) as u8;
-        digits.push(('0' as u8) + d);
-        v /= 10;
-    }
-    var i = digits.len;
-    while i > 0 {
-        i -= 1;
-        out.push(digits[i]);
-    }
 }
 
 // Formats the "@signature-params" inner-list and parameters (RFC 9421 Section 2.5)
@@ -190,11 +163,11 @@ fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
 
     if params.created > 0 {
         out.append(";created=");
-        sig_format_int(out, params.created);
+        core::format_i64_dec(params.created, out);
     }
     if params.expires > 0 {
         out.append(";expires=");
-        sig_format_int(out, params.expires);
+        core::format_i64_dec(params.expires, out);
     }
     if params.key_id.len > 0 {
         out.append(";keyid=\"");
@@ -284,44 +257,44 @@ fn sign_http_request(
 
 // Parses an RFC 8941 Structured Fields Dictionary for Signature header
 // and extracts the sf-binary (:base64:) corresponding to the given label.
-fn extract_signature_value(header_val: const u8[:], label: const u8[:], out_sig_b64: u8[..256]&) -> bool {
-    out_sig_b64.clear();
+fn extract_signature_value(header_val: const u8[:], label: const u8[:]) -> const u8[:], bool {
     var idx: i64 = 0;
     while idx < header_val.len {
-        while idx < header_val.len && (header_val[idx] == ' ' || header_val[idx] == '\t' || header_val[idx] == ',') {
-            idx += 1;
-        }
+        let rem = header_val[idx..].trim_start_bytes(" \t,");
+        idx = header_val.len - rem.len;
         guard idx < header_val.len else { break; }
-        let key_start = idx;
-        while idx < header_val.len && header_val[idx] != '=' && header_val[idx] != ' ' && header_val[idx] != '\t' {
-            idx += 1;
+
+        let rem_k = header_val[idx..];
+        var k_len: i64 = 0;
+        while k_len < rem_k.len && rem_k[k_len] != '=' && rem_k[k_len] != ' ' && rem_k[k_len] != '\t' {
+            k_len += 1;
         }
-        let item_key = header_val[key_start..idx];
-        while idx < header_val.len && (header_val[idx] == ' ' || header_val[idx] == '\t') {
-            idx += 1;
-        }
-        guard idx < header_val.len && header_val[idx] == '=' else { return false; }
+        let item_key = rem_k[..k_len];
+        idx += k_len;
+
+        let rem_eq = header_val[idx..].trim_start_bytes(" \t");
+        idx = header_val.len - rem_eq.len;
+        guard idx < header_val.len && header_val[idx] == '=' else { return "", false; }
         idx += 1; // skip '='
-        while idx < header_val.len && (header_val[idx] == ' ' || header_val[idx] == '\t') {
-            idx += 1;
-        }
-        guard idx < header_val.len && header_val[idx] == ':' else { return false; }
+
+        let rem_colon = header_val[idx..].trim_start_bytes(" \t");
+        idx = header_val.len - rem_colon.len;
+        guard idx < header_val.len && header_val[idx] == ':' else { return "", false; }
         idx += 1; // skip opening ':'
+
         let b64_start = idx;
         while idx < header_val.len && header_val[idx] != ':' {
             idx += 1;
         }
-        guard idx < header_val.len && header_val[idx] == ':' else { return false; }
+        guard idx < header_val.len && header_val[idx] == ':' else { return "", false; }
         let b64_val = header_val[b64_start..idx];
         idx += 1; // skip closing ':'
 
         if item_key == label {
-            guard b64_val.len <= out_sig_b64.cap else { return false; }
-            out_sig_b64.append(b64_val);
-            return true;
+            return b64_val, true;
         }
     }
-    return false;
+    return "", false;
 }
 
 // Verifies an RFC 9421 signature on a Request using HMAC-SHA256
@@ -356,11 +329,11 @@ fn verify_http_signature(
     let sig_header_val = req.header(HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
-    var received_b64: u8[..256] = [];
-    guard extract_signature_value(sig_header_val, label, received_b64) else { return false; }
+    let received_b64, ok = extract_signature_value(sig_header_val, label);
+    guard ok else { return false; }
 
     var received_sig: u8[>..] = [];
-    guard core::base64_decode(received_b64[..], received_sig) else { return false; }
+    guard core::base64_decode(received_b64, received_sig) else { return false; }
     guard received_sig.len == expected_sig.len else { return false; }
 
     return core::ct_eq_bytes(received_sig[..], expected_sig[..]);

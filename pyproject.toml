@@ -47,19 +47,4 @@ extraPaths = [
     "tools/toxiproxy",
 ]
 
-[tool.pyright]
-include = ["tools"]
-exclude = ["vendor", "build", "scratch", ".git", ".venv"]
-pythonVersion = "3.12"
-pythonPlatform = "Windows"
-typeCheckingMode = "standard"
-reportMissingTypeStubs = false
-extraPaths = [
-    "tools/autobahn",
-    "tools/chaos",
-    "tools/grpc",
-    "tools/h2spec",
-    "tools/http3",
-    "tools/tls",
-    "tools/toxiproxy",
-]
+

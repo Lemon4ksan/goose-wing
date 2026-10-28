@@ -67,6 +67,11 @@ fn format_i64_dec<B>(val: i64, out: B&) {
     format_u64_dec(val as! u64, out);
 }
 
+// Formats an unsigned 32-bit integer in decimal notation into appendable buffer out.
+fn format_u32_dec<B>(val: u32, out: B&) {
+    format_u64_dec(val as! u64, out);
+}
+
 // Formats an unsigned 64-bit integer in hexadecimal notation into appendable buffer out.
 // If uppercase is true, uses '0'..'9','A'..'F'; otherwise '0'..'9','a'..'f'.
 fn format_u64_hex<B>(val: u64, out: B&, uppercase: bool = false) {

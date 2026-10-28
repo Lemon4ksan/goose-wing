@@ -133,13 +133,25 @@ void wing_af_xdp_close(int64_t xsk_fd) {
 int32_t wing_af_xdp_probe(void) { return -ENOSYS; }
 int64_t wing_af_xdp_create_socket(void) { return -ENOSYS; }
 int32_t wing_af_xdp_register_umem(int64_t xsk_fd, uint64_t addr, uint64_t len, uint32_t chunk_size, uint32_t headroom) {
-    (void)xsk_fd; (void)addr; (void)len; (void)chunk_size; (void)headroom; return -ENOSYS;
+    (void)xsk_fd;
+    (void)addr;
+    (void)len;
+    (void)chunk_size;
+    (void)headroom;
+    return -ENOSYS;
 }
 int32_t wing_af_xdp_set_ring_size(int64_t xsk_fd, int32_t ring_opt, uint32_t entries) {
-    (void)xsk_fd; (void)ring_opt; (void)entries; return -ENOSYS;
+    (void)xsk_fd;
+    (void)ring_opt;
+    (void)entries;
+    return -ENOSYS;
 }
 int32_t wing_af_xdp_bind(int64_t xsk_fd, uint32_t ifindex, uint32_t queue_id, uint32_t flags) {
-    (void)xsk_fd; (void)ifindex; (void)queue_id; (void)flags; return -ENOSYS;
+    (void)xsk_fd;
+    (void)ifindex;
+    (void)queue_id;
+    (void)flags;
+    return -ENOSYS;
 }
 void wing_af_xdp_close(int64_t xsk_fd) { (void)xsk_fd; }
 

@@ -337,9 +337,9 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
     let len = raw.len;
 
     while cursor < len {
-        while cursor < len && (raw[cursor] == ' ' || raw[cursor] == '\t' || raw[cursor] == ',') {
-            cursor++;
-        }
+        let rem = raw[cursor..];
+        let trimmed_lead = core::trim_start_bytes(rem, " \t,");
+        cursor += rem.len - trimmed_lead.len;
         guard cursor < len else { break; }
 
         var token_end = cursor;

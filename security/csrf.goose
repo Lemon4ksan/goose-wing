@@ -213,6 +213,7 @@ fn validate_csrf_token(cookie_token: const u8[:], request_token: const u8[:]) ->
 // Masks a CSRF token using a one-time pad XOR mask into out: [mask (N bytes) | masked_secret (N bytes)].
 fn mask_csrf_token<B>(mask: const u8[:], raw_secret: const u8[:], out: B&) -> bool {
     guard mask.len > 0 && mask.len == raw_secret.len else { return false; }
+    guard (mask.len * 2) <= out.cap else { return false; }
     out.clear();
     for b in mask { out.push(b); }
     for i in mask.len { out.push(raw_secret[i] ^ mask[i]); }
