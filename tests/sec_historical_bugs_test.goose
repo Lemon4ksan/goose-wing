@@ -724,6 +724,52 @@ fn test_url_path_and_file_capacity_defenses(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 21. RFC 3986 §3 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses
+// ----------------------------------------------------------------------------
+fn test_url_query_delimiter_and_decoding_defenses(t: core::T&) {
+    t.run("Fragment delimiter terminates query parameters preventing injection") { sub =>
+        let poisoned_query = "?auth=token123#frag&admin=true&role=root";
+
+        // 1. get_query_param_fast must not leak fragment parameters
+        var out_val: u8[..64] = [];
+        let found_admin, _ = core::get_query_param_fast(poisoned_query, "admin", out_val);
+        sub.assert_false(found_admin, "Injected fragment param 'admin' must not be found by get_query_param_fast");
+
+        let found_role, _ = core::get_query_param_fast(poisoned_query, "role", out_val);
+        sub.assert_false(found_role, "Injected fragment param 'role' must not be found by get_query_param_fast");
+
+        // 2. has_query_param_fast must not report existence of fragment parameters
+        sub.assert_false(core::has_query_param_fast(poisoned_query, "admin"), "has_query_param_fast must return false for fragment params");
+        sub.assert_false(core::has_query_param_fast(poisoned_query, "role"), "has_query_param_fast must return false for fragment params");
+
+        // 3. parse_query_params must terminate at '#' and preserve clean valid param
+        let list = core::parse_query_params(poisoned_query);
+        sub.assert_false(core::has_query_param(list, "admin"), "parse_query_params must not include fragment 'admin'");
+        sub.assert_false(core::has_query_param(list, "role"), "parse_query_params must not include fragment 'role'");
+        sub.assert_bytes_eq(core::get_query_param(list, "auth"), "token123", "Query param 'auth' before fragment must equal 'token123'");
+
+        // 4. validate_query_param_count must not count tokens in fragment
+        sub.assert_true(core::validate_query_param_count("?a=1#&b=2&c=3&d=4", 1), "validate_query_param_count must only count pre-fragment parameters");
+    };
+
+    t.run("Plus-as-space decoding in fast query key lookup") { sub =>
+        let query_str = "?user+name=Alice&order+by=desc";
+        var out_name: u8[..64] = [];
+        let found_name, _ = core::get_query_param_fast(query_str, "user name", out_name);
+        sub.assert_true(found_name, "get_query_param_fast must decode '+' as space in key");
+        sub.assert_bytes_eq(out_name[..], "Alice", "Matched param value must be 'Alice'");
+        sub.assert_true(core::has_query_param_fast(query_str, "user name"), "has_query_param_fast must find plus-encoded key");
+    };
+
+    t.run("Query parameter lookup into undersized buffer fails safely without truncation") { sub =>
+        let query_str = "?token=012345678901234567890123456789";
+        var small_buf: u8[..8] = [];
+        let found_tok, _ = core::get_query_param_fast(query_str, "token", small_buf);
+        sub.assert_false(found_tok, "get_query_param_fast into undersized buffer must fail closed without silent truncation");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -747,6 +793,7 @@ fn main() {
     core::run_case(runner, "18. RFC 7541 & RFC 9113: HTTP/2 HPACK Inbound Capacity & Overflow Defenses", test_http2_hpack_boundary_and_capacity_defenses);
     core::run_case(runner, "19. RFC 3986 & WHATWG: Relative URL Resolution Capacity Defense", test_url_relative_resolution_capacity_defense);
     core::run_case(runner, "20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses", test_url_path_and_file_capacity_defenses);
+    core::run_case(runner, "21. RFC 3986 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses", test_url_query_delimiter_and_decoding_defenses);
 
     let ok = core::finish(runner);
     assert(ok);

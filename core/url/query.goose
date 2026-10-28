@@ -52,6 +52,10 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
     if input.len > 0 && input[0] == '?' {
         input = input[1..];
     }
+    let hash_idx = core::index_of_byte(input, '#');
+    if hash_idx >= 0 {
+        input = input[..hash_idx];
+    }
     guard input.len > 0 else { return list; }
 
     var start = 0;
@@ -129,6 +133,10 @@ fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUE
     if q[0] == '?' {
         q = q[1..];
     }
+    let hash_idx = core::index_of_byte(q, '#');
+    if hash_idx >= 0 {
+        q = q[..hash_idx];
+    }
     guard q.len > 0 else { return true; }
     var count: i64 = 1;
     var token_len: i64 = 0;
@@ -167,6 +175,10 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
     if q[0] == '?' {
         q = q[1..];
     }
+    let hash_idx = core::index_of_byte(q, '#');
+    if hash_idx >= 0 {
+        q = q[..hash_idx];
+    }
 
     var cursor: i64 = 0;
     while cursor < q.len {
@@ -184,7 +196,7 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
         let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
 
         var matches = (raw_stmt_key == key);
-        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
+        if !matches && (core::index_of_byte(raw_stmt_key, '%') >= 0 || core::index_of_byte(raw_stmt_key, '+') >= 0) {
             var decoded_stmt_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
             matches = dec_ok && (decoded_stmt_key[..] == key);
@@ -196,7 +208,11 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
             }
             let stmt_val = statement[eq_pos + 1..];
             out.clear();
-            percent_decode_query(stmt_val, out);
+            let dec_ok = percent_decode_query(stmt_val, out);
+            guard dec_ok else {
+                out.clear();
+                return false, false;
+            }
             return true, false;
         }
     }
@@ -211,6 +227,10 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
     if q[0] == '?' {
         q = q[1..];
     }
+    let hash_idx = core::index_of_byte(q, '#');
+    if hash_idx >= 0 {
+        q = q[..hash_idx];
+    }
 
     var cursor: i64 = 0;
     while cursor < q.len {
@@ -228,7 +248,7 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
         let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
 
         var matches = (raw_stmt_key == key);
-        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
+        if !matches && (core::index_of_byte(raw_stmt_key, '%') >= 0 || core::index_of_byte(raw_stmt_key, '+') >= 0) {
             var decoded_stmt_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
             matches = dec_ok && (decoded_stmt_key[..] == key);
