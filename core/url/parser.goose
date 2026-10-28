@@ -105,7 +105,9 @@ fn resolve_fragment_on_opaque_base(
 ) -> Url, UrlParseError {
     let base_href = href(base_url);
     let base_no_hash = if base_url.hash_start >= 0 { base_href[..base_url.hash_start] } else { base_href };
-    out_url.href.append(base_no_hash);
+    guard out_url.href.try_append(base_no_hash) else {
+        return out_url, UrlParseError.InputTooLong;
+    }
     out_url.has_opaque_path = true;
     out_url.is_special = base_url.is_special;
     out_url.scheme_end = base_url.scheme_end;
@@ -115,7 +117,10 @@ fn resolve_fragment_on_opaque_base(
     out_url.search_end = base_url.search_end;
 
     out_url.hash_start = out_url.href.len as i32;
-    out_url.href.append(frag_input);
+    guard out_url.href.try_append(frag_input) else {
+        out_url.valid = false;
+        return out_url, UrlParseError.InputTooLong;
+    }
     out_url.hash_end = out_url.href.len as i32;
 
     out_url.valid = true;
@@ -1213,7 +1218,9 @@ fn resolve_relative_path_against_base(
         // Empty relative input copies base URL with fragment stripped per WHATWG URL Section 4.4
         let base_href = href(base_url);
         let base_no_hash = if base_url.hash_start >= 0 { base_href[..base_url.hash_start] } else { base_href };
-        out_url.href.append(base_no_hash);
+        guard out_url.href.try_append(base_no_hash) else {
+            return out_url, UrlParseError.InputTooLong;
+        }
         copy_base_authority_offsets(out_url, base_url);
         out_url.pathname_start = base_url.pathname_start;
         out_url.pathname_end = base_url.pathname_end;
@@ -1234,7 +1241,9 @@ fn resolve_relative_path_against_base(
         // Hash only: keep everything except hash from base
         let base_href = href(base_url);
         let base_no_hash = if base_url.hash_start >= 0 { base_href[..base_url.hash_start] } else { base_href };
-        out_url.href.append(base_no_hash);
+        guard out_url.href.try_append(base_no_hash) else {
+            return out_url, UrlParseError.InputTooLong;
+        }
         copy_base_authority_offsets(out_url, base_url);
         out_url.pathname_start = base_url.pathname_start;
         out_url.pathname_end = base_url.pathname_end;
@@ -1242,7 +1251,10 @@ fn resolve_relative_path_against_base(
         out_url.search_end = base_url.search_end;
 
         out_url.hash_start = out_url.href.len as i32;
-        out_url.href.append(rel_input);
+        guard out_url.href.try_append(rel_input) else {
+            out_url.valid = false;
+            return out_url, UrlParseError.InputTooLong;
+        }
         out_url.hash_end = out_url.href.len as i32;
         out_url.valid = true;
         return out_url, UrlParseError.None;
@@ -1252,7 +1264,9 @@ fn resolve_relative_path_against_base(
         // Query and hash only: keep scheme, authority, and path from base
         let base_href = href(base_url);
         let base_path_end = if base_url.pathname_end >= 0 { base_url.pathname_end } else if base_url.host_end >= 0 { base_url.host_end } else { base_url.scheme_end + 1 };
-        out_url.href.append(base_href[..base_path_end]);
+        guard out_url.href.try_append(base_href[..base_path_end]) else {
+            return out_url, UrlParseError.InputTooLong;
+        }
         copy_base_authority_offsets(out_url, base_url);
         out_url.pathname_start = base_url.pathname_start;
         out_url.pathname_end = base_url.pathname_end;
@@ -1264,12 +1278,18 @@ fn resolve_relative_path_against_base(
 
         out_url.search_start = out_url.href.len as i32;
         let q_end = if hash_pos >= 0 { hash_pos } else { rel_input.len };
-        out_url.href.append(rel_input[..q_end]);
+        guard out_url.href.try_append(rel_input[..q_end]) else {
+            out_url.valid = false;
+            return out_url, UrlParseError.InputTooLong;
+        }
         out_url.search_end = out_url.href.len as i32;
 
         if hash_pos >= 0 {
             out_url.hash_start = out_url.href.len as i32;
-            out_url.href.append(rel_input[hash_pos..]);
+            guard out_url.href.try_append(rel_input[hash_pos..]) else {
+                out_url.valid = false;
+                return out_url, UrlParseError.InputTooLong;
+            }
             out_url.hash_end = out_url.href.len as i32;
         }
 
@@ -1283,7 +1303,9 @@ fn resolve_relative_path_against_base(
     if auth_end < 0 {
         auth_end = base_url.scheme_end + 1;
     }
-    out_url.href.append(base_href[..auth_end]);
+    guard out_url.href.try_append(base_href[..auth_end]) else {
+        return out_url, UrlParseError.InputTooLong;
+    }
     copy_base_authority_offsets(out_url, base_url);
 
     var combined_path: u8[..2048] = [];
@@ -1299,12 +1321,16 @@ fn resolve_relative_path_against_base(
                 rel_has_drive = true;
             }
             if has_base_drive && !rel_has_drive {
-                combined_path.push('/');
-                combined_path.push(base_path[1]);
-                combined_path.push(':');
+                guard combined_path.try_push('/') &&
+                      combined_path.try_push(base_path[1]) &&
+                      combined_path.try_push(':') else {
+                    return out_url, UrlParseError.InputTooLong;
+                }
             }
         }
-        combined_path.append(rel_input);
+        guard combined_path.try_append(rel_input) else {
+            return out_url, UrlParseError.InputTooLong;
+        }
     } else {
         // Directory relative path
         let base_path = pathname(base_url);
@@ -1313,15 +1339,22 @@ fn resolve_relative_path_against_base(
             if base_path[scan_idx] == '/' { last_slash = scan_idx; }
         }
         if last_slash >= 0 {
-            combined_path.append(base_path[..last_slash + 1]);
+            guard combined_path.try_append(base_path[..last_slash + 1]) else {
+                return out_url, UrlParseError.InputTooLong;
+            }
         } else {
-            combined_path.push('/');
+            guard combined_path.try_push('/') else {
+                return out_url, UrlParseError.InputTooLong;
+            }
         }
-        combined_path.append(rel_input);
+        guard combined_path.try_append(rel_input) else {
+            return out_url, UrlParseError.InputTooLong;
+        }
     }
 
     let path_err = append_canonical_path_and_query(out_url, is_spec, combined_path[..]);
     guard path_err == UrlParseError.None else {
+        out_url.valid = false;
         return out_url, path_err;
     }
     out_url.valid = true;

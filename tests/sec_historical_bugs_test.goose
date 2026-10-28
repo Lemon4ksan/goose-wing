@@ -609,6 +609,79 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. RFC 3986 & WHATWG: Relative URL Resolution Buffer Capacity Defenses
+// ----------------------------------------------------------------------------
+fn test_url_relative_resolution_capacity_defense(t: core::T&) {
+    t.run("Relative reference exceeding 2048-byte URL buffer MUST return InputTooLong without abort") { sub =>
+        // Construct a valid base URL near the 2048-byte capacity limit (1927 bytes)
+        var long_base: u8[..2048] = [];
+        long_base.append("https://example.com/prefix/");
+        for i in 1900 {
+            long_base.push('a');
+        }
+        let base_url = core::new_url(long_base[..]);
+        sub.assert_true(base_url.valid, "Base URL within 2048 bytes must be valid");
+
+        // 1. Fragment-only relative reference causing overflow (> 2048 bytes total)
+        var long_frag: u8[..256] = [];
+        long_frag.push('#');
+        for i in 200 {
+            long_frag.push('b');
+        }
+        let url_frag, err_frag = core::parse_url_with_base(long_frag[..], base_url);
+        sub.assert_false(url_frag.valid, "Oversized relative fragment reference must fail");
+        sub.assert_true(err_frag == core::UrlParseError.InputTooLong, "Must return InputTooLong instead of aborting");
+
+        // 2. Query-only relative reference causing overflow
+        var long_query: u8[..256] = [];
+        long_query.push('?');
+        for i in 200 {
+            long_query.push('c');
+        }
+        let url_query, err_query = core::parse_url_with_base(long_query[..], base_url);
+        sub.assert_false(url_query.valid, "Oversized relative query reference must fail");
+        sub.assert_true(err_query == core::UrlParseError.InputTooLong, "Must return InputTooLong instead of aborting");
+
+        // 3. Directory-relative path reference with base trailing slash causing combined path overflow
+        var long_dir_base: u8[..2048] = [];
+        long_dir_base.append("https://example.com/dir/");
+        for i in 1900 {
+            long_dir_base.push('a');
+        }
+        long_dir_base.push('/');
+        let dir_base_url = core::new_url(long_dir_base[..]);
+        sub.assert_true(dir_base_url.valid, "Base URL with trailing slash must be valid");
+
+        var long_rel_path: u8[..256] = [];
+        for i in 200 {
+            long_rel_path.push('d');
+        }
+        let url_path, err_path = core::parse_url_with_base(long_rel_path[..], dir_base_url);
+        sub.assert_false(url_path.valid, "Oversized relative directory path reference must fail");
+        sub.assert_true(err_path == core::UrlParseError.InputTooLong, "Must return InputTooLong instead of aborting");
+
+        // 4. Opaque base URL fragment resolution causing overflow
+        var long_opaque_base: u8[..2048] = [];
+        long_opaque_base.append("mailto:user");
+        for i in 1900 {
+            long_opaque_base.push('u');
+        }
+        long_opaque_base.append("@example.com");
+        let opaque_base = core::new_url(long_opaque_base[..]);
+        sub.assert_true(opaque_base.valid, "Opaque base URL must be valid");
+
+        var long_frag_opaque: u8[..256] = [];
+        long_frag_opaque.push('#');
+        for i in 200 {
+            long_frag_opaque.push('f');
+        }
+        let url_opaque, err_opaque = core::parse_url_with_base(long_frag_opaque[..], opaque_base);
+        sub.assert_false(url_opaque.valid, "Oversized fragment on opaque base must fail");
+        sub.assert_true(err_opaque == core::UrlParseError.InputTooLong, "Opaque fragment overflow returns InputTooLong");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -630,6 +703,7 @@ fn main() {
     core::run_case(runner, "16. RFC 4648 §3.5: Base64 Canonical & Malleability Defenses", test_rfc4648_base64_canonical_and_malleability_defenses);
     core::run_case(runner, "17. Core Codec Overflow, Malleability & Truncation Defenses", test_core_codecs_boundary_and_overflow_defenses);
     core::run_case(runner, "18. RFC 7541 & RFC 9113: HTTP/2 HPACK Inbound Capacity & Overflow Defenses", test_http2_hpack_boundary_and_capacity_defenses);
+    core::run_case(runner, "19. RFC 3986 & WHATWG: Relative URL Resolution Capacity Defense", test_url_relative_resolution_capacity_defense);
 
     let ok = core::finish(runner);
     assert(ok);
