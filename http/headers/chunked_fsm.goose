@@ -350,6 +350,12 @@ fn chunk_fsm_feed(
                 } else {
                     chunk_slice = data[offset..];
                 }
+            } else if size == 2 {
+                // RFC 9112 §7.1 & §2.2: Body already consumed; first byte of split CRLF terminator MUST be CR
+                if data[offset] != '\r' {
+                    dec.state = CHUNK_STATE_IS_ERROR;
+                    return ChunkFsmStatus.Error, offset, data[..0];
+                }
             }
 
             let consumed_bytes = rem_data as u64;

@@ -1881,6 +1881,101 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: core:
     };
 }
 
+// ----------------------------------------------------------------------------
+// 34. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation
+// ----------------------------------------------------------------------------
+fn test_rfc9112_chunk_fsm_split_crlf_terminator_validation(t: core::T&) {
+    t.run("RFC 9112 §7.1: Valid split CRLF after chunk body succeeds across packet boundaries") { sub =>
+        var dec = internal::new_chunk_fsm_decoder();
+
+        // Packet 1: chunk size 5 and body "hello" (no trailing CRLF in this packet)
+        let st1, cons1, slice1 = internal::chunk_fsm_feed(dec, "5\r\nhello");
+        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Emits chunk payload slice");
+        sub.assert_bytes_eq(slice1, "hello", "Payload matches 'hello'");
+
+        // Packet 2: split CR ('\r')
+        let st2, cons2, _ = internal::chunk_fsm_feed(dec, "\r");
+        sub.assert_eq(st2, internal::ChunkFsmStatus.NeedMore, "Consumes CR and expects LF");
+
+        // Packet 3: split LF ('\n')
+        let st3, cons3, _ = internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st3, internal::ChunkFsmStatus.NeedMore, "Completes chunk and expects next chunk");
+
+        // Packet 4: final chunk 0
+        let st4, cons4, _ = internal::chunk_fsm_feed(dec, "0\r\n\r\n");
+        sub.assert_eq(st4, internal::ChunkFsmStatus.Complete, "Stream terminates cleanly with Complete");
+    };
+
+    t.run("RFC 9112 §7.1 & §2.2: Malformed non-CR character 'X' in split terminator rejected") { sub =>
+        var dec = internal::new_chunk_fsm_decoder();
+
+        // Packet 1: chunk size 5 and body "hello"
+        let st1, _, slice1 = internal::chunk_fsm_feed(dec, "5\r\nhello");
+        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Emits body slice");
+
+        // Packet 2: Malicious non-CR character 'X' instead of '\r'
+        let st2, _, _ = internal::chunk_fsm_feed(dec, "X");
+        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Non-CR byte in split chunk terminator MUST return Error");
+
+        // Packet 3: Subsequent feed persists in sticky error state
+        let st3, _, _ = internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st3, internal::ChunkFsmStatus.Error, "Sticky error persists on following bytes");
+    };
+
+    t.run("RFC 9112 §2.2: Bare LF in place of CR in split terminator rejected") { sub =>
+        var dec = internal::new_chunk_fsm_decoder();
+
+        // Packet 1: chunk size 5 and body "hello"
+        let st1, _, _ = internal::chunk_fsm_feed(dec, "5\r\nhello");
+        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Emits body slice");
+
+        // Packet 2: Bare LF '\n' instead of '\r' (bare LF attack)
+        let st2, _, _ = internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Bare LF in split terminator MUST return Error");
+    };
+
+    t.run("RFC 9112 §7.1: NUL, whitespace, and control bytes in split terminator rejected") { sub =>
+        // NUL byte attack
+        var dec_nul = internal::new_chunk_fsm_decoder();
+        internal::chunk_fsm_feed(dec_nul, "4\r\ntest");
+        let raw_nul: u8[1] = [0x00];
+        let st_nul, _, _ = internal::chunk_fsm_feed(dec_nul, raw_nul[..]);
+        sub.assert_eq(st_nul, internal::ChunkFsmStatus.Error, "NUL byte in split terminator MUST return Error");
+
+        // Horizontal tab attack
+        var dec_tab = internal::new_chunk_fsm_decoder();
+        internal::chunk_fsm_feed(dec_tab, "4\r\ntest");
+        let st_tab, _, _ = internal::chunk_fsm_feed(dec_tab, "\t");
+        sub.assert_eq(st_tab, internal::ChunkFsmStatus.Error, "Tab character in split terminator MUST return Error");
+    };
+
+    t.run("RFC 9112 §7.1: Multi-chunk streaming pipeline with split CRLFs on each chunk") { sub =>
+        var dec = internal::new_chunk_fsm_decoder();
+
+        // Chunk 1: "3\r\nfoo" split across \r and \n
+        let st1, _, s1 = internal::chunk_fsm_feed(dec, "3\r\nfoo");
+        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Chunk 1 yielded");
+        sub.assert_bytes_eq(s1, "foo", "Chunk 1 is 'foo'");
+        let st1_cr, _, _ = internal::chunk_fsm_feed(dec, "\r");
+        sub.assert_eq(st1_cr, internal::ChunkFsmStatus.NeedMore, "Chunk 1 CR");
+        let st1_lf, _, _ = internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st1_lf, internal::ChunkFsmStatus.NeedMore, "Chunk 1 LF");
+
+        // Chunk 2: "3\r\nbar" split across \r and \n
+        let st2, _, s2 = internal::chunk_fsm_feed(dec, "3\r\nbar");
+        sub.assert_eq(st2, internal::ChunkFsmStatus.YieldChunk, "Chunk 2 yielded");
+        sub.assert_bytes_eq(s2, "bar", "Chunk 2 is 'bar'");
+        let st2_cr, _, _ = internal::chunk_fsm_feed(dec, "\r");
+        sub.assert_eq(st2_cr, internal::ChunkFsmStatus.NeedMore, "Chunk 2 CR");
+        let st2_lf, _, _ = internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st2_lf, internal::ChunkFsmStatus.NeedMore, "Chunk 2 LF");
+
+        // Final chunk 0
+        let st_end, _, _ = internal::chunk_fsm_feed(dec, "0\r\n\r\n");
+        sub.assert_eq(st_end, internal::ChunkFsmStatus.Complete, "Pipeline completed cleanly");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1917,6 +2012,7 @@ fn main() {
     core::run_case(runner, "31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds", test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound);
     core::run_case(runner, "32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding", test_rfc8725_jwks_key_confusion_and_algorithm_binding);
     core::run_case(runner, "33. RFC 9293 §3.5 & RFC 1122: Half-Closed Teardown & Drain Deadlock Defenses", test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses);
+    core::run_case(runner, "34. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation", test_rfc9112_chunk_fsm_split_crlf_terminator_validation);
 
     let ok = core::finish(runner);
     assert(ok);
