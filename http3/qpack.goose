@@ -266,7 +266,7 @@ fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64,
     var val = (src[offset] & mask) as u64;
     var idx = offset + 1;
 
-    if val < (mask as u64) {
+    if val < mask {
         return val, idx, true;
     }
 
@@ -380,21 +380,27 @@ fn new_qpack_table(max_capacity: u64 = 4096, max_blocked: u32 = 16) -> QpackTabl
 }
 
 // Evicts entries from the dynamic table until used_bytes <= target_bytes.
-fn qpack_evict_until(tbl: QpackTable&, target_bytes: u64) {
+// Returns false if an eviction barrier (referenced entry) prevents eviction.
+fn qpack_evict_until(tbl: QpackTable&, target_bytes: u64) -> bool {
     while tbl.entries.len > 0 && tbl.used_bytes > target_bytes {
         let oldest = tbl.entries[0];
+        if oldest.ref_count > 0 {
+            return false;
+        }
         let cost = qpack_entry_cost(oldest.name.len as u64, oldest.value.len as u64);
         tbl.used_bytes = if tbl.used_bytes >= cost { tbl.used_bytes - cost } else { 0 };
         tbl.entries.remove_at(0);
     }
     tbl.draining_index = if tbl.entries.len > 0 { tbl.entries[0].abs_index } else { tbl.insert_count };
+    return tbl.used_bytes <= target_bytes;
 }
 
 // Updates dynamic table capacity via Set Dynamic Table Capacity instruction.
 fn qpack_set_capacity(tbl: QpackTable&, new_cap: u64) -> bool {
     guard new_cap <= tbl.max_capacity_bytes else { return false; }
+    let ok = qpack_evict_until(tbl, new_cap);
+    guard ok else { return false; }
     tbl.capacity_bytes = new_cap;
-    qpack_evict_until(tbl, new_cap);
     return true;
 }
 
@@ -409,11 +415,11 @@ fn qpack_insert_literal(tbl: QpackTable&, name: const u8[:], val: const u8[:]) -
 
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
     if cost > tbl.capacity_bytes {
-        qpack_evict_until(tbl, 0);
+        guard qpack_evict_until(tbl, 0) else { return false; }
         tbl.insert_count++;
         return true;
     }
-    qpack_evict_until(tbl, tbl.capacity_bytes - cost);
+    guard qpack_evict_until(tbl, tbl.capacity_bytes - cost) else { return false; }
 
     var ent = DynamicEntry {
         abs_index: tbl.insert_count,
@@ -524,6 +530,78 @@ fn qpack_cancel_stream(tbl: QpackTable&, stream_id: u64) {
 // Insert Count Increment instruction handler (Decoder -> Encoder).
 fn qpack_increment_received(tbl: QpackTable&, inc: u64) {
     tbl.known_rcvd_count += inc;
+}
+
+// Checks if a new stream can be blocked according to SETTINGS_QPACK_BLOCKED_STREAMS (RFC 9204 §2.1.2).
+fn qpack_can_block_stream(tbl: const QpackTable&) -> bool {
+    return tbl.blocked_streams.len < tbl.max_blocked;
+}
+
+// Records a blocked stream waiting for TotalNumberOfInserts to reach req_insert_count (RFC 9204 §2.1.2).
+fn qpack_block_stream(tbl: QpackTable&, stream_id: u64, ric: u64, data: const u8[:]) -> bool {
+    guard tbl.blocked_streams.len < tbl.max_blocked else { return false; }
+    guard tbl.blocked_streams.len < tbl.blocked_streams.cap else { return false; }
+    for &b in tbl.blocked_streams {
+        if b.stream_id == stream_id {
+            return false;
+        }
+    }
+    var entry = BlockedStreamEntry {
+        stream_id: stream_id,
+        req_insert_count: ric,
+        ..
+    };
+    guard data.len <= entry.encoded_data.cap else { return false; }
+    entry.encoded_data.append(data);
+    tbl.blocked_streams.push(entry);
+    return true;
+}
+
+// Checks if a stream is currently recorded as blocked.
+fn qpack_is_stream_blocked(tbl: const QpackTable&, stream_id: u64) -> bool {
+    for &b in tbl.blocked_streams {
+        if b.stream_id == stream_id {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Unblocks and removes a blocked stream entry once required insert count is satisfied.
+fn qpack_unblock_stream(tbl: QpackTable&, stream_id: u64) -> bool {
+    var i = 0;
+    while i < tbl.blocked_streams.len {
+        if tbl.blocked_streams[i].stream_id == stream_id {
+            tbl.blocked_streams.remove_at(i);
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+// Pins an entry in the dynamic table to prevent eviction while in active use (RFC 9204 §2.1.1).
+fn qpack_pin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
+    for &e in tbl.entries {
+        if e.abs_index == abs_idx {
+            e.ref_count++;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Unpins an entry in the dynamic table after active reference is released.
+fn qpack_unpin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
+    for &e in tbl.entries {
+        if e.abs_index == abs_idx {
+            if e.ref_count > 0 {
+                e.ref_count--;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---- 5. encoder / decoder instruction dispatch ------------------------------
@@ -712,6 +790,11 @@ fn decode_qpack_section(
 
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.capacity_bytes);
     guard ric_err == QpackError.None else { return ric_err; }
+
+    // Blocked Streams constraint (RFC 9204 §2.1.2)
+    if ric > tbl.insert_count && (tbl.max_blocked == 0 || tbl.blocked_streams.len >= tbl.max_blocked) {
+        return QpackError.BlockedStreamsExhausted;
+    }
 
     // 2. Decode Sign bit and DeltaBase (7-bit prefix)
     guard base_off < (src.len as u64) else { return QpackError.DecompressionFailed; }

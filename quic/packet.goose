@@ -202,6 +202,12 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
             QuicHeaderType.Retry
         };
 
+        // Reserved bits check (RFC 9000 §17.2): For Initial, 0-RTT, and Handshake,
+        // bits 2 and 3 of byte 0 (mask 0x0C) are reserved and MUST be 0.
+        if hdr.header_type != QuicHeaderType.Retry {
+            guard (first & 0x0C) == 0 else { return hdr, false; }
+        }
+
         var off: u64 = 5;
         guard off < (src.len as u64) else { return hdr, false; }
         let dlen = src[off]; off++;
@@ -234,15 +240,17 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         hdr.payload_length = plen;
         hdr.pn_offset = next_plen as u32;
         hdr.pn_length = (first & 0x03) + 1;
-        guard plen >= (hdr.pn_length as u64) else { return hdr, false; }
-        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= (hdr.pn_length as u64) && (next_plen + (hdr.pn_length as u64)) <= (src.len as u64) else { return hdr, false; }
-        hdr.header_len = (next_plen + (hdr.pn_length as u64)) as u32;
+        guard plen >= hdr.pn_length else { return hdr, false; }
+        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= hdr.pn_length && (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
+        hdr.header_len = (next_plen + hdr.pn_length) as u32;
         return hdr, true;
     }
 
     // Short Header (1-RTT)
     // Fixed bit (0x40) MUST be set (RFC 9000 §17.3)
     guard (first & 0x40) != 0 else { return hdr, false; }
+    // Reserved bits check (RFC 9000 §17.3): Bits 3 and 4 of byte 0 (mask 0x18) MUST be 0
+    guard (first & 0x18) == 0 else { return hdr, false; }
     guard dcid_len_short <= QUIC_MAX_CID_LEN else { return hdr, false; }
     hdr.header_type = QuicHeaderType.OneRtt;
     hdr.spin_bit = (first & 0x20) != 0;

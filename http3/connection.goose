@@ -335,14 +335,7 @@ fn handle_stream_data(
                 let payload = data[p_start..p_end];
                 offset += hdr.payload_len;
 
-                // Control stream invariants (RFC 9114 Section 7.2)
-                if !is_allowed_on_control_stream(hdr.frame_type) {
-                    conn.state = H3ConnState.Closed;
-                    conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-                    return H3_ERR_FRAME_UNEXPECTED;
-                }
-
-                // First frame on Control Stream MUST be SETTINGS (RFC 9114 Section 7.2.4)
+                // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
                 if !conn.peer_settings_received {
                     if hdr.frame_type != H3_FRAME_SETTINGS {
                         conn.state = H3ConnState.Closed;
@@ -358,6 +351,13 @@ fn handle_stream_data(
                     conn.peer_settings_received = true;
                     conn.state = H3ConnState.Active;
                 } else {
+                    // Control stream invariants for subsequent frames (RFC 9114 Section 7.2)
+                    if !is_allowed_on_control_stream(hdr.frame_type) {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+                        return H3_ERR_FRAME_UNEXPECTED;
+                    }
+
                     // Second SETTINGS frame is strictly forbidden
                     if hdr.frame_type == H3_FRAME_SETTINGS {
                         conn.state = H3ConnState.Closed;
@@ -365,14 +365,31 @@ fn handle_stream_data(
                         return H3_ERR_FRAME_UNEXPECTED;
                     }
 
-                    // Process GOAWAY frame
+                    // Process GOAWAY frame (RFC 9114 §5.2 & §7.2.6)
                     if hdr.frame_type == H3_FRAME_GOAWAY {
                         let max_sid, ok_ga = parse_h3_goaway_frame(payload);
-                        if ok_ga {
-                            conn.goaway_received = true;
-                            conn.goaway_max_stream_id = max_sid;
-                            conn.state = H3ConnState.Draining;
+                        if !ok_ga {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_FRAME_ERROR;
+                            return H3_ERR_FRAME_ERROR;
                         }
+                        // RFC 9114 §5.2: Stream ID MUST identify a client-initiated bidirectional stream ((id & 0x03) == 0)
+                        if (max_sid & 0x03) != 0 {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_ID_ERROR;
+                            return H3_ERR_ID_ERROR;
+                        }
+                        // RFC 9114 §5.2: Monotonicity - subsequent GOAWAY Stream ID must not be greater than previous
+                        if conn.goaway_received {
+                            if max_sid > conn.goaway_max_stream_id {
+                                conn.state = H3ConnState.Closed;
+                                conn.error_code = H3_ERR_ID_ERROR;
+                                return H3_ERR_ID_ERROR;
+                            }
+                        }
+                        conn.goaway_received = true;
+                        conn.goaway_max_stream_id = max_sid;
+                        conn.state = H3ConnState.Draining;
                     }
                 }
             }
@@ -466,6 +483,8 @@ fn handle_stream_data(
             var decoded_fields: HeaderField[>..] = [];
             let q_err = decode_qpack_section(conn.qpack_table, payload, decoded_fields);
             if q_err != QpackError.None {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_QPACK_DECOMPRESSION_FAILED;
                 return H3_ERR_QPACK_DECOMPRESSION_FAILED;
             }
 

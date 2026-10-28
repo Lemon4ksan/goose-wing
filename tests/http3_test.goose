@@ -754,6 +754,224 @@ fn test_round1_qpackstrike_suite(t: core::T&) {
 }
 
 // ============================================================================
+// 8. Team QPackStrike Round 2 Protocol Audit Suite (RFC 9114, RFC 9204, RFC 9000)
+// ============================================================================
+fn test_round2_qpackstrike_suite(t: core::T&) {
+    t.run("H3-R2-01: Control Stream Frame Sequence & Missing SETTINGS Precedence (RFC 9114 §6.2.1, §7.2.4)") { sub =>
+        let settings = wing::H3Settings { .. };
+
+        // Test A: DATA frame (0x00) sent as first frame on control stream MUST trigger H3_ERR_MISSING_SETTINGS (0x010A)
+        var conn1 = wing::new_h3_client_connection(settings);
+        var bad_ctrl1: u8[..64] = [];
+        wing::quic_encode_varint(bad_ctrl1, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_frame_header(bad_ctrl1, wing::H3_FRAME_DATA, 4);
+        bad_ctrl1.append([1, 2, 3, 4]);
+
+        let err1 = conn1.handle_stream_data(3, false, bad_ctrl1[..], false);
+        sub.assert_eq(err1, wing::H3_ERR_MISSING_SETTINGS, "initial DATA frame on control stream MUST return H3_MISSING_SETTINGS (0x010A)");
+        sub.assert_eq(conn1.state, wing::H3ConnState.Closed, "connection closed");
+        sub.assert_eq(conn1.error_code, wing::H3_ERR_MISSING_SETTINGS, "error code is H3_MISSING_SETTINGS");
+
+        // Test B: HEADERS frame (0x01) sent as first frame on control stream MUST trigger H3_ERR_MISSING_SETTINGS (0x010A)
+        var conn2 = wing::new_h3_client_connection(settings);
+        var bad_ctrl2: u8[..64] = [];
+        wing::quic_encode_varint(bad_ctrl2, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_frame_header(bad_ctrl2, wing::H3_FRAME_HEADERS, 2);
+        bad_ctrl2.append([0x00, 0x00]);
+
+        let err2 = conn2.handle_stream_data(3, false, bad_ctrl2[..], false);
+        sub.assert_eq(err2, wing::H3_ERR_MISSING_SETTINGS, "initial HEADERS frame on control stream MUST return H3_MISSING_SETTINGS (0x010A)");
+        sub.assert_eq(conn2.state, wing::H3ConnState.Closed, "connection closed");
+
+        // Test C: Valid SETTINGS as first frame succeeds
+        var conn3 = wing::new_h3_client_connection(settings);
+        var good_ctrl: u8[..64] = [];
+        wing::quic_encode_varint(good_ctrl, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(good_ctrl, settings);
+        let err3 = conn3.handle_stream_data(3, false, good_ctrl[..], false);
+        sub.assert_eq(err3, wing::H3_ERR_NO_ERROR, "initial SETTINGS succeeds");
+        sub.assert_eq(conn3.state, wing::H3ConnState.Active, "connection active");
+
+        // Test D: Subsequent DATA frame after SETTINGS triggers H3_FRAME_UNEXPECTED (0x0105)
+        var bad_post_settings: u8[..64] = [];
+        wing::encode_h3_frame_header(bad_post_settings, wing::H3_FRAME_DATA, 4);
+        bad_post_settings.append([1, 2, 3, 4]);
+        let err4 = conn3.handle_stream_data(3, false, bad_post_settings[..], false);
+        sub.assert_eq(err4, wing::H3_ERR_FRAME_UNEXPECTED, "subsequent DATA frame triggers H3_FRAME_UNEXPECTED (0x0105)");
+        sub.assert_eq(conn3.state, wing::H3ConnState.Closed, "connection closed");
+    };
+
+    t.run("H3-R2-02: GOAWAY Stream ID Monotonicity and Client-Bidi Validation (RFC 9114 §5.2, §7.2.6)") { sub =>
+        let settings = wing::H3Settings { .. };
+
+        // Test A: Initial GOAWAY with non-client-bidi stream ID triggers H3_ERR_ID_ERROR (0x0108)
+        // Stream ID 1: server-initiated bidirectional ((1 & 0x03) == 1)
+        var conn1 = wing::new_h3_client_connection(settings);
+        var init_ctrl: u8[..64] = [];
+        wing::quic_encode_varint(init_ctrl, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(init_ctrl, settings);
+        conn1.handle_stream_data(3, false, init_ctrl[..], false);
+
+        var bad_ga1: u8[..32] = [];
+        wing::encode_h3_goaway_frame(bad_ga1, 1); // Server-bidi ID 1
+        let err1 = conn1.handle_stream_data(3, false, bad_ga1[..], false);
+        sub.assert_eq(err1, wing::H3_ERR_ID_ERROR, "GOAWAY with server-bidi stream ID MUST trigger H3_ERR_ID_ERROR");
+        sub.assert_eq(conn1.state, wing::H3ConnState.Closed, "connection closed");
+
+        // Test B: Initial GOAWAY with client-uni stream ID triggers H3_ERR_ID_ERROR
+        // Stream ID 2: client-initiated unidirectional ((2 & 0x03) == 2)
+        var conn2 = wing::new_h3_client_connection(settings);
+        conn2.handle_stream_data(3, false, init_ctrl[..], false);
+        var bad_ga2: u8[..32] = [];
+        wing::encode_h3_goaway_frame(bad_ga2, 2); // Client-uni ID 2
+        let err2 = conn2.handle_stream_data(3, false, bad_ga2[..], false);
+        sub.assert_eq(err2, wing::H3_ERR_ID_ERROR, "GOAWAY with client-uni stream ID MUST trigger H3_ERR_ID_ERROR");
+
+        // Test C: Valid GOAWAY with client-bidi stream ID 8 succeeds
+        var conn3 = wing::new_h3_client_connection(settings);
+        conn3.handle_stream_data(3, false, init_ctrl[..], false);
+        var good_ga: u8[..32] = [];
+        wing::encode_h3_goaway_frame(good_ga, 8); // Client-bidi ID 8 ((8 & 0x03) == 0)
+        let err3 = conn3.handle_stream_data(3, false, good_ga[..], false);
+        sub.assert_eq(err3, wing::H3_ERR_NO_ERROR, "valid GOAWAY accepted");
+        sub.assert_eq(conn3.state, wing::H3ConnState.Draining, "connection state is Draining");
+        sub.assert_eq(conn3.goaway_max_stream_id, 8, "max stream id is 8");
+
+        // Test D: Subsequent GOAWAY with increased stream ID triggers H3_ERR_ID_ERROR
+        var bad_seq_ga: u8[..32] = [];
+        wing::encode_h3_goaway_frame(bad_seq_ga, 12); // 12 > 8: non-monotonic increase!
+        let err4 = conn3.handle_stream_data(3, false, bad_seq_ga[..], false);
+        sub.assert_eq(err4, wing::H3_ERR_ID_ERROR, "increasing GOAWAY stream ID MUST trigger H3_ERR_ID_ERROR");
+        sub.assert_eq(conn3.state, wing::H3ConnState.Closed, "connection closed");
+
+        // Test E: Subsequent GOAWAY with decreased stream ID succeeds
+        var conn4 = wing::new_h3_client_connection(settings);
+        conn4.handle_stream_data(3, false, init_ctrl[..], false);
+        conn4.handle_stream_data(3, false, good_ga[..], false); // first GOAWAY with 8
+        var good_seq_ga: u8[..32] = [];
+        wing::encode_h3_goaway_frame(good_seq_ga, 4); // 4 <= 8: monotonic decrease
+        let err5 = conn4.handle_stream_data(3, false, good_seq_ga[..], false);
+        sub.assert_eq(err5, wing::H3_ERR_NO_ERROR, "decreasing GOAWAY accepted");
+        sub.assert_eq(conn4.goaway_max_stream_id, 4, "max stream id updated to 4");
+
+        // Test F: GOAWAY with malformed payload (extra trailing bytes) triggers H3_ERR_FRAME_ERROR (RFC 9114 §7.2.6)
+        var conn5 = wing::new_h3_client_connection(settings);
+        conn5.handle_stream_data(3, false, init_ctrl[..], false);
+        var bad_pl_ga: u8[..32] = [];
+        wing::encode_h3_frame_header(bad_pl_ga, wing::H3_FRAME_GOAWAY, 2);
+        bad_pl_ga.push(0x00); // stream ID 0
+        bad_pl_ga.push(0xFF); // trailing extra garbage byte
+        let err6 = conn5.handle_stream_data(3, false, bad_pl_ga[..], false);
+        sub.assert_eq(err6, wing::H3_ERR_FRAME_ERROR, "malformed GOAWAY payload MUST return H3_ERR_FRAME_ERROR");
+    };
+
+    t.run("QPACK-R2-01: Eviction Barrier and Blocked Streams Constraints (RFC 9204 §2.1.1, §2.1.2)") { sub =>
+        // Test A: Pinned entry prevents eviction flooding
+        var tbl = wing::new_qpack_table(128, 4);
+        wing::qpack_insert_literal(tbl, "x-pinned", "val1"); // ~46 bytes, abs_idx 0
+        wing::qpack_pin_entry(tbl, 0); // Pin entry 0
+
+        wing::qpack_insert_literal(tbl, "x-second", "val2"); // ~46 bytes, abs_idx 1 (total ~92 <= 128)
+        // Inserting 3rd entry (~46 bytes, total 138 > 128) requires evicting entry 0
+        // Because entry 0 is pinned, eviction MUST fail and insertion returns false
+        let ok_blocked = wing::qpack_insert_literal(tbl, "x-third", "val3");
+        sub.assert_false(ok_blocked, "insertion requiring eviction of pinned entry fails");
+
+        // After unpinning, eviction succeeds
+        wing::qpack_unpin_entry(tbl, 0);
+        let ok_unpinned = wing::qpack_insert_literal(tbl, "x-third", "val3");
+        sub.assert_true(ok_unpinned, "insertion succeeds after unpinning");
+
+        // Test B: Blocked streams manager helpers
+        var tbl_b = wing::new_qpack_table(512, 2);
+        sub.assert_true(wing::qpack_can_block_stream(tbl_b), "can block stream when under max_blocked");
+        sub.assert_true(wing::qpack_block_stream(tbl_b, 0, 5, "payload0"), "block stream 0");
+        sub.assert_true(wing::qpack_is_stream_blocked(tbl_b, 0), "stream 0 is blocked");
+        sub.assert_true(wing::qpack_block_stream(tbl_b, 4, 6, "payload4"), "block stream 4");
+        sub.assert_false(wing::qpack_can_block_stream(tbl_b), "cannot block stream when at max_blocked (2)");
+        sub.assert_false(wing::qpack_block_stream(tbl_b, 8, 7, "payload8"), "blocking stream 8 fails when max_blocked exceeded");
+
+        sub.assert_true(wing::qpack_unblock_stream(tbl_b, 0), "unblock stream 0");
+        sub.assert_false(wing::qpack_is_stream_blocked(tbl_b, 0), "stream 0 no longer blocked");
+        sub.assert_true(wing::qpack_can_block_stream(tbl_b), "can block stream again after unblocking");
+
+        // Test C: decode_qpack_section with ric > tbl.insert_count triggers BlockedStreamsExhausted
+        var tbl_c = wing::new_qpack_table(4096, 0); // max_blocked = 0
+        // Header block requesting RIC = 1 (encoded as enc_ric = 2) when insert_count = 0
+        var qpack_block: u8[..32] = [0x02, 0x00, 0xD1];
+        var out_fields: wing::HeaderField[>..] = [];
+        let dec_err = wing::decode_qpack_section(tbl_c, qpack_block[..], out_fields);
+        sub.assert_eq(dec_err, wing::QpackError.BlockedStreamsExhausted, "ric > insert_count with max_blocked 0 returns BlockedStreamsExhausted");
+    };
+
+    t.run("QUIC-R2-01: Header Reserved Bits Zeroing Validation (RFC 9000 §17.2, §17.3)") { sub =>
+        // Test A: Long Header Initial packet with non-zero reserved bits (0x0C mask) MUST fail
+        var bad_init: u8[..64] = [];
+        bad_init.push(0xC8); // Long header Initial (0xC0), but bit 3 is set (0x08)! Reserved bits = 0x08 != 0
+        core::append_u32_be(bad_init, wing::QUIC_VERSION_1);
+        bad_init.push(0); // DCID len
+        bad_init.push(0); // SCID len
+        wing::quic_encode_varint(bad_init, 0); // token len 0
+        wing::quic_encode_varint(bad_init, 4); // plen
+        bad_init.append([0x00, 0x01, 0x02, 0x03]); // PN + payload
+        let _, ok_bad_init = wing::parse_quic_header(bad_init[..], 0);
+        sub.assert_false(ok_bad_init, "Initial packet with non-zero reserved bits rejected per RFC 9000 §17.2");
+
+        // Test B: Long Header Handshake packet with non-zero reserved bits (bit 2 is set, 0x04)
+        var bad_hs: u8[..64] = [];
+        bad_hs.push(0xE4); // Handshake (0xE0) with bit 2 set (0x04)
+        core::append_u32_be(bad_hs, wing::QUIC_VERSION_1);
+        bad_hs.push(0); // DCID len
+        bad_hs.push(0); // SCID len
+        wing::quic_encode_varint(bad_hs, 4); // plen
+        bad_hs.append([0x00, 0x01, 0x02, 0x03]);
+        let _, ok_bad_hs = wing::parse_quic_header(bad_hs[..], 0);
+        sub.assert_false(ok_bad_hs, "Handshake packet with non-zero reserved bits rejected per RFC 9000 §17.2");
+
+        // Test C: Valid Long Header Initial packet with reserved bits == 0 succeeds
+        var good_init: u8[..64] = [];
+        good_init.push(0xC0); // Long header Initial, reserved bits = 0
+        core::append_u32_be(good_init, wing::QUIC_VERSION_1);
+        good_init.push(0);
+        good_init.push(0);
+        wing::quic_encode_varint(good_init, 0);
+        wing::quic_encode_varint(good_init, 4);
+        good_init.append([0x00, 0x01, 0x02, 0x03]);
+        let _, ok_good_init = wing::parse_quic_header(good_init[..], 0);
+        sub.assert_true(ok_good_init, "Initial packet with zero reserved bits accepted");
+
+        // Test D: Short Header (1-RTT) packet with non-zero reserved bits (0x18 mask) MUST fail
+        let bad_short1: u8[16] = [
+            0x50, // Short header (0x40) with bit 4 set (0x10)! Reserved bits != 0
+            0x01, 0x02, 0x03, 0x04,
+            0x2A, // PN
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let _, ok_bs1 = wing::parse_quic_header(bad_short1[..], 4);
+        sub.assert_false(ok_bs1, "Short header with reserved bit 4 set rejected per RFC 9000 §17.3");
+
+        let bad_short2: u8[16] = [
+            0x48, // Short header (0x40) with bit 3 set (0x08)! Reserved bits != 0
+            0x01, 0x02, 0x03, 0x04,
+            0x2A, // PN
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let _, ok_bs2 = wing::parse_quic_header(bad_short2[..], 4);
+        sub.assert_false(ok_bs2, "Short header with reserved bit 3 set rejected per RFC 9000 §17.3");
+
+        // Test E: Valid Short Header with reserved bits == 0 succeeds
+        let good_short: u8[16] = [
+            0x40, // Short header, reserved bits 0
+            0x01, 0x02, 0x03, 0x04,
+            0x2A, // PN
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let _, ok_good_short = wing::parse_quic_header(good_short[..], 4);
+        sub.assert_true(ok_good_short, "Short header with zero reserved bits accepted");
+    };
+}
+
+// ============================================================================
 // Main HTTP/3 Conformance Runner
 // ============================================================================
 fn main() {
@@ -766,6 +984,7 @@ fn main() {
     core::run_case(runner, "5. QPACK Table Lifecycle, String Decoding & Stream Instructions", test_qpack_table_and_codec);
     core::run_case(runner, "6. HTTP/3 Extended Frames & Stream Edge-Cases", test_h3_extended_frames);
     core::run_case(runner, "7. Team QPackStrike Protocol Hardening Suite", test_round1_qpackstrike_suite);
+    core::run_case(runner, "8. Team QPackStrike Round 2 Hardening Suite", test_round2_qpackstrike_suite);
 
     let ok = core::finish(runner);
     assert(ok);
