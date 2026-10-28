@@ -1146,6 +1146,27 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
     if slash_idx >= 0 {
         host_part = host_part[..slash_idx];
     }
+
+    // RFC 5280 & CVE-2024-45341 / Go #71208: Handle bracketed IPv6 host literals
+    // and strip IPv6 Zone IDs (%eth0 or %25eth0) to prevent Name Constraints bypass.
+    if host_part.len > 0 && host_part[0] == '[' {
+        let close_bracket = core::index_of_byte(host_part, ']');
+        guard close_bracket > 1 else { return false; }
+        var inner_ip = host_part[1..close_bracket];
+
+        let pct_idx = core::index_of_byte(inner_ip, '%');
+        if pct_idx >= 0 {
+            inner_ip = inner_ip[..pct_idx];
+        }
+        guard inner_ip.len > 0 else { return false; }
+
+        var cons_cmp = constraint;
+        if cons_cmp.len > 2 && cons_cmp[0] == '[' && cons_cmp[cons_cmp.len - 1] == ']' {
+            cons_cmp = cons_cmp[1..cons_cmp.len - 1];
+        }
+        return eq_ascii_fold(inner_ip, cons_cmp);
+    }
+
     let colon_idx = core::index_of_byte(host_part, ':');
     if colon_idx >= 0 {
         host_part = host_part[..colon_idx];

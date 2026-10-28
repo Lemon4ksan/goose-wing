@@ -64,3 +64,59 @@ fn scan_tls_inner_type(addr: i32, len: i32) -> i32 {
 :pkt_edge 0000000000000000
 
 :assert scan_tls_inner_type(EDGE_ADDR, EDGE_LEN) == -2
+
+# 4. Injects IPv6 host with Zone ID at page edge
+# "[2001:db8::1%25eth0]"
+:pkt_edge 5b323030313a6462383a3a31253235657468305d
+
+:assert EDGE_LEN == 20
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Extracts and validates bracketed IPv6 host, returning length of pure IP without Zone ID
+fn scan_ipv6_bracket_zone(addr: i32, len: i32) -> i32 {
+    if len < 3 { return -1; }
+    if load_u8(addr) != 91 { return -1; } // '['
+    var end_bracket: i32 = -1;
+    var pct_idx: i32 = -1;
+    var i: i32 = 1;
+    while i < len {
+        let b = load_u8(addr + i);
+        if b == 93 && end_bracket < 0 { end_bracket = i; } // ']'
+        if b == 37 && pct_idx < 0 { pct_idx = i; }         // '%'
+        i += 1;
+    }
+    if end_bracket <= 1 { return -1; }
+    if pct_idx > 1 && pct_idx < end_bracket {
+        return pct_idx - 1; // Pure IP length before Zone ID
+    }
+    return end_bracket - 1;
+}
+
+# Pure IP "2001:db8::1" is 11 bytes
+:assert scan_ipv6_bracket_zone(EDGE_ADDR, EDGE_LEN) == 11
+
+# 5. Injects multipart part header with deprecated Content-Transfer-Encoding at page edge
+# "Content-Transfer-Encoding: base64\r\n"
+:pkt_edge 436f6e74656e742d5472616e736665722d456e636f64696e673a206261736536340d0a
+
+:assert EDGE_LEN == 35
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Scanner for deprecated Content-Transfer-Encoding header (RFC 7578 §4.7 / Go #66434)
+fn scan_is_cte_header(addr: i32, len: i32) -> i32 {
+    let prefix_len = 25; // "content-transfer-encoding" length
+    if len < prefix_len { return 0; }
+    var i: i32 = 0;
+    while i < prefix_len {
+        var b = load_u8(addr + i);
+        if b >= 65 && b <= 90 { b = b + 32; }
+        let exp = load_u8(2048 + i);
+        if b != exp { return 0; }
+        i += 1;
+    }
+    return 1;
+}
+
+# Pre-load lowercase "content-transfer-encoding" at 2048
+:pkt 2048 "content-transfer-encoding"
+:assert scan_is_cte_header(EDGE_ADDR, EDGE_LEN) == 1

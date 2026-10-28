@@ -111,6 +111,25 @@ fn test_openssl_31392_uri_name_constraints_nul(t: core::T&) {
         ];
         sub.assert_false(wing::match_uri_name_constraint(nul_uri[..], "example.com"), "NUL byte in URI must be rejected");
     };
+
+    t.run("CVE-2024-45341 / Go #71208: IPv6 Zone ID URI Name Constraints Bypass Defense") { sub =>
+        sub.assert_true(
+            wing::match_uri_name_constraint("https://[2001:db8::1%25eth0]:8443/api", "2001:db8::1"),
+            "IPv6 URI with encoded zone ID matches IP constraint",
+        );
+        sub.assert_true(
+            wing::match_uri_name_constraint("https://[2001:db8::1%eth0]/status", "[2001:db8::1]"),
+            "IPv6 URI with raw zone ID matches bracketed constraint",
+        );
+        sub.assert_false(
+            wing::match_uri_name_constraint("https://[2001:db8::2%eth0]/api", "2001:db8::1"),
+            "Non-matching IPv6 URI must be rejected",
+        );
+        sub.assert_false(
+            wing::match_uri_name_constraint("https://[malformed-ipv6/api", "2001:db8::1"),
+            "Unclosed bracket in IPv6 URI must be rejected",
+        );
+    };
 }
 
 fn test_uwebsockets_1876_control_priority_under_backpressure(t: core::T&) {
@@ -166,15 +185,98 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: core::T&) {
     };
 }
 
+fn test_go_66434_content_transfer_encoding_rejection(t: core::T&) {
+    t.run("Go #66434 & RFC 7578 §4.7: Content-Transfer-Encoding in multipart part MUST be rejected") { sub =>
+        let body = "--sep\r\nContent-Disposition: form-data; name=\"msg\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--sep--\r\n";
+        let msg, err = wing::parse_multipart(body, "sep");
+        sub.assert_true(err == wing::MultipartError.InvalidPartHeaders, "Deprecated Content-Transfer-Encoding must be rejected");
+        sub.assert_false(msg.valid, "Message marked invalid");
+    };
+
+    t.run("Standard multipart without Content-Transfer-Encoding must succeed") { sub =>
+        let body = "--sep\r\nContent-Disposition: form-data; name=\"msg\"\r\n\r\nHello World\r\n--sep--\r\n";
+        let msg, err = wing::parse_multipart(body, "sep");
+        sub.assert_true(wing::is_ok(err), "Standard multipart must parse successfully");
+        sub.assert_true(msg.valid, "Message marked valid");
+        sub.assert_eq(msg.parts.len, 1, "1 part parsed");
+    };
+}
+
+fn test_uwebsockets_1662_streaming_utf8_continuation(t: core::T&) {
+    t.run("uWS #1662 / Autobahn 6.x: Incomplete multi-byte codepoint split across frame chunks") { sub =>
+        // Euro sign € is 3 bytes: 0xE2, 0x82, 0xAC
+        let chunk1: u8[2] = [0xE2, 0x82];
+        let off1_non_final, ok1_non_final = core::validate_utf8_streaming(chunk1[..], false);
+        sub.assert_true(ok1_non_final, "Valid prefix of incomplete 3-byte codepoint accepted when non-final");
+        sub.assert_eq(off1_non_final, 0, "0 complete codepoints in chunk1");
+
+        let off1_final, ok1_final = core::validate_utf8_streaming(chunk1[..], true);
+        sub.assert_false(ok1_final, "Incomplete codepoint at final boundary MUST be rejected");
+
+        // Complete sequence in assembled buffer
+        let full: u8[3] = [0xE2, 0x82, 0xAC];
+        let off_full, ok_full = core::validate_utf8_streaming(full[..], true);
+        sub.assert_true(ok_full, "Complete 3-byte codepoint accepted");
+        sub.assert_eq(off_full, 3, "All 3 bytes verified as complete codepoint");
+    };
+
+    t.run("uWS #1662 / Autobahn 6.x: Overlong UTF-8 prefix rejected immediately") { sub =>
+        // Overlong 2-byte: 0xC0 0x80 (ASCII NUL encoded as 2 bytes)
+        let overlong: u8[2] = [0xC0, 0x80];
+        let _, ok_overlong = core::validate_utf8_streaming(overlong[..], false);
+        sub.assert_false(ok_overlong, "Overlong prefix must be rejected immediately even on non-final chunk");
+    };
+
+    t.run("uWS #1662 / Autobahn 6.x: UTF-16 surrogate prefix rejected immediately") { sub =>
+        // High surrogate U+D800: 0xED 0xA0 0x80
+        let surrogate: u8[2] = [0xED, 0xA0];
+        let _, ok_surrogate = core::validate_utf8_streaming(surrogate[..], false);
+        sub.assert_false(ok_surrogate, "Surrogate prefix must be rejected immediately");
+    };
+}
+
+fn test_openssl_33428_ech_alpn_isolation(t: core::T&) {
+    t.run("OpenSSL #33428: ECH accepted MUST only permit inner ALPN negotiation") { sub =>
+        let inner_alpn = "h2";
+        let outer_alpn = "http/1.1";
+
+        sub.assert_true(
+            wing::validate_ech_alpn_negotiation(true, "h2", inner_alpn, outer_alpn),
+            "Selected inner ALPN accepted when ECH accepted",
+        );
+        sub.assert_false(
+            wing::validate_ech_alpn_negotiation(true, "http/1.1", inner_alpn, outer_alpn),
+            "Outer ALPN rejected when ECH accepted",
+        );
+    };
+
+    t.run("OpenSSL #33428: ECH rejected/bypassed MUST only permit outer ALPN negotiation") { sub =>
+        let inner_alpn = "h2";
+        let outer_alpn = "http/1.1";
+
+        sub.assert_true(
+            wing::validate_ech_alpn_negotiation(false, "http/1.1", inner_alpn, outer_alpn),
+            "Selected outer ALPN accepted when ECH rejected",
+        );
+        sub.assert_false(
+            wing::validate_ech_alpn_negotiation(false, "h2", inner_alpn, outer_alpn),
+            "Inner ALPN MUST NOT leak into unencrypted outer connection",
+        );
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
     core::run_case(runner, "1. Go CVE-2026-78667: Range Header Overflow Defense", test_cve_2026_78667_range_header_overflow);
     core::run_case(runner, "2. Go #75557: Content-Disposition CRLF Injection Defenses", test_go_75557_content_disposition_crlf_injection);
     core::run_case(runner, "3. RFC 9113 & Go #81115: HTTP/2 Content-Length Overflow Defense", test_http2_content_length_overflow_defense);
-    core::run_case(runner, "4. OpenSSL #31392 / RFC 5280 §4.2.1.10: URI NameConstraints & NUL", test_openssl_31392_uri_name_constraints_nul);
+    core::run_case(runner, "4. OpenSSL #31392 & Go #71208: URI NameConstraints & IPv6 Zone", test_openssl_31392_uri_name_constraints_nul);
     core::run_case(runner, "5. uWebSockets #1876: Control Frame Priority Under Backpressure", test_uwebsockets_1876_control_priority_under_backpressure);
     core::run_case(runner, "6. RFC 8446 §5.4: TLS 1.3 InnerPlaintext Zero-Length Invariants", test_openssl_tls13_zero_length_plaintext_invariants);
+    core::run_case(runner, "7. Go #66434 / RFC 7578 §4.7: Content-Transfer-Encoding Rejection", test_go_66434_content_transfer_encoding_rejection);
+    core::run_case(runner, "8. uWS #1662 / Autobahn 6.x: Streaming UTF-8 Chunk Boundaries", test_uwebsockets_1662_streaming_utf8_continuation);
+    core::run_case(runner, "9. OpenSSL #33428: ECH Outer vs Inner ALPN Strict Isolation", test_openssl_33428_ech_alpn_isolation);
 
     let ok = core::finish(runner);
     assert(ok);
