@@ -94,6 +94,7 @@ static void slice_to_cstr(wing_bytes_ro s, char *out, size_t max_out) {
 typedef struct {
     int active;
     int is_listener;
+    int backlog;
     uint16_t port;
     char host[64];
     uint8_t rx_buf[WASM_SOCK_BUF_SIZE];
@@ -136,13 +137,13 @@ int64_t wing_get_env_workers(int64_t default_workers) {
 }
 
 int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
-    (void)backlog;
     wing_tcp_init();
     for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
         if (!g_wasm_sockets[i].active) {
             g_wasm_sockets[i].active = 1;
             g_wasm_sockets[i].is_listener = 1;
             g_wasm_sockets[i].port = (port == 0) ? (uint16_t)(10000 + i) : port;
+            g_wasm_sockets[i].backlog = (backlog > 0 && backlog < WASM_MAX_SOCKETS) ? backlog : (WASM_MAX_SOCKETS - 1);
             g_wasm_sockets[i].peer_slot = -1;
             g_wasm_sockets[i].pending_head = 0;
             g_wasm_sockets[i].pending_tail = 0;
@@ -191,6 +192,13 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
     }
     if (listener_idx < 0) return -1; // Connection refused
 
+    wasm_virtual_socket_t *lis = &g_wasm_sockets[listener_idx];
+    int pending_count = (int)(lis->pending_tail - lis->pending_head);
+    int max_backlog = lis->backlog > 0 && lis->backlog < WASM_MAX_SOCKETS ? lis->backlog : (WASM_MAX_SOCKETS - 1);
+    if (pending_count >= max_backlog || pending_count >= WASM_MAX_SOCKETS) {
+        return -1; // Connection refused: listener backlog saturated
+    }
+
     int client_slot = -1;
     int server_slot = -1;
     for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
@@ -199,12 +207,12 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
             else if (server_slot < 0) { server_slot = i; break; }
         }
     }
-    if (client_slot < 0 || server_slot < 0) return -1;
+    if (client_slot < 0 || server_slot < 0) return -1; // Out of virtual sockets
 
     // Set up client socket
     g_wasm_sockets[client_slot].active = 1;
     g_wasm_sockets[client_slot].is_listener = 0;
-    g_wasm_sockets[client_slot].port = port;
+    g_wasm_sockets[client_slot].port = (uint16_t)(20000 + client_slot);
     g_wasm_sockets[client_slot].peer_slot = server_slot;
     g_wasm_sockets[client_slot].rx_head = 0;
     g_wasm_sockets[client_slot].rx_tail = 0;
@@ -220,7 +228,6 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
     slice_to_cstr(host, g_wasm_sockets[server_slot].host, sizeof(g_wasm_sockets[server_slot].host));
 
     // Enqueue server_slot onto listener FIFO
-    wasm_virtual_socket_t *lis = &g_wasm_sockets[listener_idx];
     lis->pending_conns[lis->pending_tail % WASM_MAX_SOCKETS] = server_slot;
     lis->pending_tail++;
 
@@ -260,16 +267,20 @@ int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
     int64_t readable = s->rx_tail - s->rx_head;
     if (readable <= 0) {
         if (s->peer_slot < 0) return 0; // Peer closed connection cleanly (EOF)
-        return 0;
+        return -2; // WouldBlock / Timeout (peer connected, no data ready)
     }
     int64_t to_read = buf.len < readable ? buf.len : readable;
     for (int64_t i = 0; i < to_read; i++) {
         buf.data[i] = s->rx_buf[(s->rx_head + i) % WASM_SOCK_BUF_SIZE];
     }
     s->rx_head += to_read;
-    if (s->rx_head >= WASM_SOCK_BUF_SIZE) {
-        s->rx_head -= WASM_SOCK_BUF_SIZE;
-        s->rx_tail -= WASM_SOCK_BUF_SIZE;
+    if (s->rx_head == s->rx_tail) {
+        s->rx_head = 0;
+        s->rx_tail = 0;
+    } else if (s->rx_head >= WASM_SOCK_BUF_SIZE) {
+        s->rx_head %= WASM_SOCK_BUF_SIZE;
+        s->rx_tail %= WASM_SOCK_BUF_SIZE;
+        if (s->rx_tail < s->rx_head) s->rx_tail += WASM_SOCK_BUF_SIZE;
     }
     return (int32_t)to_read;
 }
@@ -279,7 +290,22 @@ int32_t wing_tcp_recv_nonblocking(int64_t sock_fd, wing_bytes_rw buf) {
 }
 
 void wing_tcp_close(int64_t sock_fd) {
-    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS) {
+    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
+        if (g_wasm_sockets[sock_fd].is_listener) {
+            // Drain and close any unaccepted server sockets queued in pending_conns
+            wasm_virtual_socket_t *lis = &g_wasm_sockets[sock_fd];
+            while (lis->pending_head < lis->pending_tail) {
+                int server_slot = lis->pending_conns[lis->pending_head % WASM_MAX_SOCKETS];
+                lis->pending_head++;
+                if (server_slot > 0 && server_slot < WASM_MAX_SOCKETS && g_wasm_sockets[server_slot].active) {
+                    int peer = g_wasm_sockets[server_slot].peer_slot;
+                    if (peer > 0 && peer < WASM_MAX_SOCKETS) {
+                        g_wasm_sockets[peer].peer_slot = -1;
+                    }
+                    memset(&g_wasm_sockets[server_slot], 0, sizeof(wasm_virtual_socket_t));
+                }
+            }
+        }
         int peer = g_wasm_sockets[sock_fd].peer_slot;
         if (peer > 0 && peer < WASM_MAX_SOCKETS) {
             g_wasm_sockets[peer].peer_slot = -1;
@@ -306,7 +332,7 @@ int32_t wing_tcp_set_cork(int64_t sock_fd, int32_t enable) { (void)sock_fd; (voi
 int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork_len, wing_bytes_ro resp) {
     (void)conn;
     if (!cork_buf.data || !resp.data || resp.len <= 0) return cork_len;
-    if (cork_len + resp.len > cork_buf.len) return -1;
+    if (cork_len < 0 || cork_len + resp.len > cork_buf.len) return -1;
     memcpy(cork_buf.data + cork_len, resp.data, (size_t)resp.len);
     return cork_len + resp.len;
 }
@@ -327,7 +353,13 @@ int32_t wing_udp_send(int64_t sock_fd, wing_bytes_ro data) { return wing_tcp_sen
 int32_t wing_udp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) { return wing_tcp_recv(sock_fd, buf, timeout_ms); }
 int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms, uint32_t *peer_ip4, uint16_t *peer_port) {
     if (peer_ip4) *peer_ip4 = 0x0100007F;
-    if (peer_port) *peer_port = 8080;
+    if (peer_port) {
+        if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].peer_slot > 0) {
+            *peer_port = g_wasm_sockets[g_wasm_sockets[sock_fd].peer_slot].port;
+        } else {
+            *peer_port = 8080;
+        }
+    }
     return wing_tcp_recv(sock_fd, buf, timeout_ms);
 }
 int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_ip4, uint16_t peer_port) {

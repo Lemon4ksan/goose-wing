@@ -298,7 +298,7 @@ fn dictionary_lookup_for_request(
     for &entry in cache.entries {
         if entry.valid && entry.origin[..] == origin {
             let elapsed = now_sec - entry.inserted_at_sec;
-            if elapsed >= 0 && elapsed < (entry.ttl_sec as i64) {
+            if elapsed >= 0 && elapsed < entry.ttl_sec {
                 if url_path_matches_pattern(url_path, entry.match_pattern[..]) {
                     out_base64_hash.clear();
                     out_base64_hash.append(entry.sha256_base64[..]);
