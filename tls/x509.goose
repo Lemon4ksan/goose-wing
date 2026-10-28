@@ -136,6 +136,19 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
 // - Redundant leading zeros in long form (e.g. 0x82 0x00 0x80) are strictly FORBIDDEN.
 // - Reserved initial octet 0xFF (11111111_2) is strictly FORBIDDEN (X.690 §8.1.3.5(c)).
 // - Enforces non-negative 31-bit bounds (0..0x7FFFFFFF) to prevent integer overflows.
+fn parse_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
+    var length: i64 = 0;
+    for i in num_bytes {
+        var b: u8 = 0;
+        if !get_u8(c, b) { return false; }
+        if i == 0 && b == 0x00 { return false; }
+        length = (length << 8) | b;
+    }
+    guard length >= 128 && length <= 0x7FFFFFFF else { return false; }
+    out_len = length;
+    return true;
+}
+
 fn get_asn1_length(c: ByteCursor&, out_len: i64&) -> bool {
     var b0: u8 = 0;
     if !get_u8(c, b0) { return false; }
@@ -145,31 +158,11 @@ fn get_asn1_length(c: ByteCursor&, out_len: i64&) -> bool {
         return true;
     }
 
-    // Reject BER indefinite form (0x80)
-    if b0 == 0x80 { return false; }
-    // Reject 0xFF (X.690 Section 8.1.3.5(c))
-    if b0 == 0xFF { return false; }
-
-    let num_bytes = (b0 & 0x7F);
-    // Maximum supported length is 4 bytes (up to 2GB in signed 32/64-bit integer)
+    guard b0 != 0x80 && b0 != 0xFF else { return false; }
+    let num_bytes = (b0 & 0x7F) as i64;
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     guard cursor_len(c) >= num_bytes else { return false; }
-
-    var length: i64 = 0;
-    for i in num_bytes {
-        var b: u8 = 0;
-        if !get_u8(c, b) { return false; }
-        // First byte of long form length MUST NOT be 0x00 (redundant leading zero rule)
-        if i == 0 && b == 0x00 { return false; }
-        length = (length << 8) | b;
-    }
-
-    // Canonical DER rule: length must not be encodable in short form (< 128)
-    if length < 128 { return false; }
-    // Bounds guard: length must be non-negative and <= 0x7FFFFFFF
-    guard length >= 0 && length <= 0x7FFFFFFF else { return false; }
-    out_len = length;
-    return true;
+    return parse_asn1_long_length(c, num_bytes, out_len);
 }
 
 // Consumes any ASN.1 TLV element, returning tag and value cursor.
@@ -187,33 +180,32 @@ fn get_asn1_element(c: ByteCursor&, expected_tag: u8, out_val: ByteCursor&) -> b
     return tag == expected_tag;
 }
 
+fn asn1_check_der_integer_padding(val: const u8[:]) -> bool {
+    guard val.len >= 1 else { return false; }
+    if val[0] == 0x00 && val.len > 1 {
+        if (val[1] & 0x80) == 0 { return false; }
+    } else if val[0] == 0xFF && val.len > 1 {
+        if (val[1] & 0x80) != 0 { return false; }
+    }
+    return true;
+}
+
+fn asn1_check_serial_number_rules(val: const u8[:]) -> bool {
+    guard (val[0] & 0x80) == 0 else { return false; }
+    guard val.len != 1 || val[0] != 0x00 else { return false; }
+    let max_len = if val[0] == 0x00 { 21 } else { 20 };
+    return val.len <= max_len;
+}
+
 // Validates canonical DER rules for ASN.1 INTEGER (X.690 Section 8.3):
 // - Length must be >= 1 (zero-length integer is forbidden).
 // - No redundant leading zero padding (if first byte is 0x00 and len > 1, next byte must have bit 7 set).
 // - No redundant negative sign extension (if first byte is 0xFF and len > 1, next byte must have bit 7 clear).
 // - For X.509 serial numbers (RFC 5280 §4.1.2.2): MUST be positive (strictly > 0), max 20 octets.
 fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
-    guard val.len >= 1 else { return false; }
-
-    if val[0] == 0x00 && val.len > 1 {
-        // Redundant leading zero if next byte's highest bit is 0
-        if (val[1] & 0x80) == 0 { return false; }
-    } else if val[0] == 0xFF && val.len > 1 {
-        // Redundant negative sign if next byte's highest bit is 1
-        if (val[1] & 0x80) != 0 { return false; }
-    }
-
+    guard asn1_check_der_integer_padding(val) else { return false; }
     if is_serial_number {
-        // Serial numbers in RFC 5280 MUST be positive (> 0)
-        if (val[0] & 0x80) != 0 { return false; }
-        // Single byte 0x00 represents 0, which is non-positive
-        if val.len == 1 && val[0] == 0x00 { return false; }
-        // RFC 5280 §4.1.2.2: MUST NOT be longer than 20 octets (allow 21 if leading 0x00 padding)
-        if val[0] == 0x00 {
-            guard val.len <= 21 else { return false; }
-        } else {
-            guard val.len <= 20 else { return false; }
-        }
+        return asn1_check_serial_number_rules(val);
     }
     return true;
 }
@@ -229,16 +221,10 @@ fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
     var raw = cursor_from(c.buf[..0]);
     if !get_asn1_element(c, ASN1_TAG_INTEGER, raw) { return false; }
     guard raw.buf.len >= 1 && raw.buf.len <= 8 else { return false; }
+    guard asn1_check_der_integer_padding(raw.buf) else { return false; }
 
-    let bytes = raw.buf;
-    if bytes[0] == 0x00 && bytes.len > 1 {
-        if (bytes[1] & 0x80) == 0 { return false; }
-    } else if bytes[0] == 0xFF && bytes.len > 1 {
-        if (bytes[1] & 0x80) != 0 { return false; }
-    }
-
-    var val: i64 = if (bytes[0] & 0x80) != 0 { -1 } else { 0 };
-    for b in bytes {
+    var val: i64 = if (raw.buf[0] & 0x80) != 0 { -1 } else { 0 };
+    for b in raw.buf {
         val = (val << 8) | b;
     }
     out_val = val;
@@ -506,15 +492,23 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     if !get_asn1_element(cert_seq, ASN1_TAG_SEQUENCE, tbs_seq) { return false; }
     out.tbs_cert = make_span(raw_cert, tbs_seq.buf);
 
-    var maybe_version = cursor_from(raw_cert[..0]);
-    var tag: u8 = 0;
-    if tbs_seq.buf.len > 0 && tbs_seq.buf[0] == 0xA0 {
-        if !get_any_asn1_element(tbs_seq, tag, maybe_version) { return false; }
-    }
+    guard x509_skip_tbs_version(tbs_seq) else { return false; }
 
     if !parse_tbs_serial(raw_cert, tbs_seq, out) { return false; }
     if !parse_tbs_sig_alg(raw_cert, tbs_seq, out) { return false; }
+    return parse_tbs_identity(raw_cert, tbs_seq, out);
+}
 
+fn x509_skip_tbs_version(tbs_seq: ByteCursor&) -> bool {
+    if cursor_len(tbs_seq) > 0 && tbs_seq.buf[0] == 0xA0 {
+        var maybe_version = cursor_from(tbs_seq.buf[..0]);
+        var tag: u8 = 0;
+        return get_any_asn1_element(tbs_seq, tag, maybe_version);
+    }
+    return true;
+}
+
+fn parse_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     var issuer = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, issuer) { return false; }
     out.issuer_raw = make_span(raw_cert, issuer.buf);
@@ -527,8 +521,152 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
 
     if !parse_tbs_spki(raw_cert, tbs_seq, out) { return false; }
     parse_tbs_extensions(raw_cert, tbs_seq, out);
-
     return true;
+}
+
+fn x509_parse_bc_ca_bool(bc_seq: ByteCursor&, cert: ParsedCert&) {
+    guard cursor_len(bc_seq) > 0 && bc_seq.buf[0] == ASN1_TAG_BOOLEAN else { return; }
+    var ca_bool = cursor_from(bc_seq.buf[..0]);
+    guard get_asn1_element(bc_seq, ASN1_TAG_BOOLEAN, ca_bool) else { return; }
+    if ca_bool.buf.len > 0 && ca_bool.buf[0] != 0 {
+        cert.is_ca = true;
+    }
+}
+
+fn x509_parse_bc_path_len(bc_seq: ByteCursor&, cert: ParsedCert&) {
+    guard cursor_len(bc_seq) > 0 && bc_seq.buf[0] == ASN1_TAG_INTEGER else { return; }
+    var path_len: i64 = 0;
+    guard get_asn1_integer(bc_seq, path_len) else { return; }
+    if cert.is_ca && path_len >= 0 && path_len <= 255 {
+        cert.path_len_constraint = path_len as i32;
+    }
+}
+
+fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
+    cert.has_basic_constraints = true;
+    var bc_seq = cursor_from(ext_val.buf[..0]);
+    guard get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, bc_seq) else { return; }
+    x509_parse_bc_ca_bool(bc_seq, cert);
+    x509_parse_bc_path_len(bc_seq, cert);
+}
+
+fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
+    cert.has_key_usage = true;
+    var ku_bits = cursor_from(ext_val.buf[..0]);
+    guard get_asn1_element(ext_val, ASN1_TAG_BIT_STRING, ku_bits) else { return; }
+    guard validate_asn1_bit_string(ku_bits.buf) else { return; }
+
+    if ku_bits.buf.len >= 2 {
+        var ku: u16 = (ku_bits.buf[1] as u16) << 8;
+        if ku_bits.buf.len >= 3 {
+            ku = ku | ku_bits.buf[2];
+        }
+        cert.key_usage = ku;
+    }
+}
+
+fn x509_parse_akid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
+    var akid_seq = cursor_from(ext_val.buf[..0]);
+    guard get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, akid_seq) else { return; }
+    guard cursor_len(akid_seq) > 0 && akid_seq.buf[0] == 0x80 else { return; }
+    var akid_key = cursor_from(akid_seq.buf[..0]);
+    guard get_asn1_element(akid_seq, 0x80, akid_key) else { return; }
+    guard akid_key.buf.len > 0 && akid_key.buf.len <= 64 else { return; }
+    cert.has_akid = true;
+    cert.akid_key_id = make_span(raw_cert, akid_key.buf);
+}
+
+fn x509_parse_skid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
+    var skid_oct = cursor_from(ext_val.buf[..0]);
+    guard get_asn1_element(ext_val, ASN1_TAG_OCTET_STRING, skid_oct) else { return; }
+    guard skid_oct.buf.len > 0 && skid_oct.buf.len <= 64 else { return; }
+    cert.has_skid = true;
+    cert.skid_key_id = make_span(raw_cert, skid_oct.buf);
+}
+
+fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
+    return elem_buf.len > 0 && (elem_buf[0] & 0x80) == 0;
+}
+
+fn x509_parse_policy_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
+    var pc_seq = cursor_from(ext_val.buf[..0]);
+    if !get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, pc_seq) || cursor_len(pc_seq) == 0 {
+        cert.has_malformed_policy_constraints = true;
+        return;
+    }
+
+    while cursor_len(pc_seq) > 0 {
+        var pc_tag: u8 = 0;
+        var pc_elem = cursor_from(pc_seq.buf[..0]);
+        if !get_any_asn1_element(pc_seq, pc_tag, pc_elem) {
+            cert.has_malformed_policy_constraints = true;
+            return;
+        }
+        let tag_num = pc_tag & 0x1F;
+        guard (tag_num == 0 || tag_num == 1) && x509_check_policy_skip_certs(pc_elem.buf) else {
+            cert.has_malformed_policy_constraints = true;
+            return;
+        }
+    }
+}
+
+fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
+    if oid == OID_POLICY_CONSTRAINTS[..] {
+        x509_parse_policy_constraints_ext(ext_val, cert);
+    } else if oid == OID_INHIBIT_ANY_POLICY[..] {
+        var val: i64 = 0;
+        if !get_asn1_integer(ext_val, val) || val < 0 {
+            cert.has_malformed_policy_constraints = true;
+        }
+    }
+}
+
+fn x509_dispatch_extension(raw_cert: const u8[:], oid: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
+    if oid == OID_BASIC_CONSTRAINTS[..] {
+        x509_parse_basic_constraints_ext(ext_val, cert);
+    } else if oid == OID_KEY_USAGE[..] {
+        x509_parse_key_usage_ext(ext_val, cert);
+    } else if oid == OID_SUBJECT_ALT_NAME[..] {
+        cert.has_san = true;
+        cert.san_raw = make_span(raw_cert, ext_val.buf);
+    } else if oid == OID_NAME_CONSTRAINTS[..] {
+        cert.has_name_constraints = true;
+        cert.name_constraints_raw = make_span(raw_cert, ext_val.buf);
+    } else if oid == OID_AUTH_KEY_IDENTIFIER[..] {
+        x509_parse_akid_ext(raw_cert, ext_val, cert);
+    } else if oid == OID_SUBJECT_KEY_IDENTIFIER[..] {
+        x509_parse_skid_ext(raw_cert, ext_val, cert);
+    } else {
+        x509_dispatch_policy_extension(oid, ext_val, cert);
+    }
+}
+
+fn x509_check_ext_critical(single_ext: ByteCursor&) -> bool {
+    guard cursor_len(single_ext) > 0 && single_ext.buf[0] == ASN1_TAG_BOOLEAN else { return false; }
+    var maybe_crit = cursor_from(single_ext.buf[..0]);
+    if get_asn1_element(single_ext, ASN1_TAG_BOOLEAN, maybe_crit) {
+        return maybe_crit.buf.len > 0 && maybe_crit.buf[0] != 0;
+    }
+    return false;
+}
+
+fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCursor&, cert: ParsedCert&) {
+    var oid = cursor_from(single_ext.buf[..0]);
+    if !get_asn1_element(single_ext, ASN1_TAG_OID, oid) { return; }
+
+    let is_critical = x509_check_ext_critical(single_ext);
+
+    var ext_val = cursor_from(single_ext.buf[..0]);
+    if !get_asn1_element(single_ext, ASN1_TAG_OCTET_STRING, ext_val) { return; }
+
+    if !is_known_extension_oid(oid.buf) {
+        if is_critical {
+            cert.has_unsupported_critical = true;
+        }
+        return;
+    }
+
+    x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert);
 }
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
@@ -536,152 +674,7 @@ fn parse_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: Pars
     while cursor_len(ext_seq) > 0 {
         var single_ext = cursor_from(ext_seq.buf[..0]);
         if !get_asn1_element(ext_seq, ASN1_TAG_SEQUENCE, single_ext) { break; }
-
-        var oid = cursor_from(ext_seq.buf[..0]);
-        if !get_asn1_element(single_ext, ASN1_TAG_OID, oid) { continue; }
-
-        var is_critical = false;
-        var maybe_critical = cursor_from(ext_seq.buf[..0]);
-        if single_ext.buf.len > 0 && single_ext.buf[0] == ASN1_TAG_BOOLEAN {
-            if get_asn1_element(single_ext, ASN1_TAG_BOOLEAN, maybe_critical) {
-                if maybe_critical.buf.len > 0 && maybe_critical.buf[0] != 0 {
-                    is_critical = true;
-                }
-            }
-        }
-
-        var ext_val = cursor_from(ext_seq.buf[..0]);
-        if !get_asn1_element(single_ext, ASN1_TAG_OCTET_STRING, ext_val) { continue; }
-
-        // RFC 5280 §4.2: Unrecognized critical extensions MUST cause certificate validation failure
-        if !is_known_extension_oid(oid.buf) {
-            if is_critical {
-                cert.has_unsupported_critical = true;
-            }
-            continue;
-        }
-
-        // Check for BasicConstraints (2.5.29.19)
-        if oid.buf == OID_BASIC_CONSTRAINTS[..] {
-            cert.has_basic_constraints = true;
-            var bc_seq = cursor_from(ext_val.buf[..0]);
-            if get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, bc_seq) {
-                if cursor_len(bc_seq) > 0 && bc_seq.buf[0] == ASN1_TAG_BOOLEAN {
-                    var ca_bool = cursor_from(ext_val.buf[..0]);
-                    if get_asn1_element(bc_seq, ASN1_TAG_BOOLEAN, ca_bool) {
-                        if ca_bool.buf.len > 0 && ca_bool.buf[0] != 0 {
-                            cert.is_ca = true;
-                        }
-                    }
-                }
-                if cursor_len(bc_seq) > 0 && bc_seq.buf[0] == ASN1_TAG_INTEGER {
-                    var path_len: i64 = 0;
-                    if get_asn1_integer(bc_seq, path_len) {
-                        // RFC 5280 §4.2.1.9: pathLenConstraint is meaningful ONLY if cA is TRUE and non-negative
-                        if cert.is_ca && path_len >= 0 && path_len <= 255 {
-                            cert.path_len_constraint = path_len as i32;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check for KeyUsage (2.5.29.15)
-        if oid.buf == OID_KEY_USAGE[..] {
-            cert.has_key_usage = true;
-            var ku_bits = cursor_from(ext_val.buf[..0]);
-            if get_asn1_element(ext_val, ASN1_TAG_BIT_STRING, ku_bits) {
-                if validate_asn1_bit_string(ku_bits.buf) {
-                    if ku_bits.buf.len >= 2 {
-                        var ku: u16 = (ku_bits.buf[1] as u16) << 8;
-                        if ku_bits.buf.len >= 3 {
-                            ku = ku | ku_bits.buf[2];
-                        }
-                        cert.key_usage = ku;
-                    }
-                }
-            }
-        }
-
-        // Check for SubjectAltName (2.5.29.17)
-        if oid.buf == OID_SUBJECT_ALT_NAME[..] {
-            cert.has_san = true;
-            cert.san_raw = make_span(raw_cert, ext_val.buf);
-        }
-
-        // Check for NameConstraints (2.5.29.30)
-        if oid.buf == OID_NAME_CONSTRAINTS[..] {
-            cert.has_name_constraints = true;
-            cert.name_constraints_raw = make_span(raw_cert, ext_val.buf);
-        }
-
-        // Check for AuthorityKeyIdentifier (2.5.29.35)
-        if oid.buf == OID_AUTH_KEY_IDENTIFIER[..] {
-            var akid_seq = cursor_from(ext_val.buf[..0]);
-            if get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, akid_seq) {
-                if cursor_len(akid_seq) > 0 && akid_seq.buf[0] == 0x80 {
-                    var akid_key = cursor_from(akid_seq.buf[..0]);
-                    if get_asn1_element(akid_seq, 0x80, akid_key) {
-                        if akid_key.buf.len > 0 && akid_key.buf.len <= 64 {
-                            cert.has_akid = true;
-                            cert.akid_key_id = make_span(raw_cert, akid_key.buf);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check for SubjectKeyIdentifier (2.5.29.14)
-        if oid.buf == OID_SUBJECT_KEY_IDENTIFIER[..] {
-            var skid_oct = cursor_from(ext_val.buf[..0]);
-            if get_asn1_element(ext_val, ASN1_TAG_OCTET_STRING, skid_oct) {
-                if skid_oct.buf.len > 0 && skid_oct.buf.len <= 64 {
-                    cert.has_skid = true;
-                    cert.skid_key_id = make_span(raw_cert, skid_oct.buf);
-                }
-            }
-        }
-
-        // Check for PolicyConstraints (2.5.29.36)
-        if oid.buf == OID_POLICY_CONSTRAINTS[..] {
-            var pc_seq = cursor_from(ext_val.buf[..0]);
-            if !get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, pc_seq) {
-                cert.has_malformed_policy_constraints = true;
-            } else {
-                // RFC 5280 §4.2.1.11: Must NOT be an empty sequence
-                if cursor_len(pc_seq) == 0 {
-                    cert.has_malformed_policy_constraints = true;
-                } else {
-                    while cursor_len(pc_seq) > 0 {
-                        var pc_tag: u8 = 0;
-                        var pc_elem = cursor_from(pc_seq.buf[..0]);
-                        if !get_any_asn1_element(pc_seq, pc_tag, pc_elem) {
-                            cert.has_malformed_policy_constraints = true;
-                            break;
-                        }
-                        let tag_num = pc_tag & 0x1F;
-                        if tag_num == 0 || tag_num == 1 {
-                            // SkipCerts is INTEGER (0..MAX)
-                            if pc_elem.buf.len == 0 || (pc_elem.buf[0] & 0x80) != 0 {
-                                cert.has_malformed_policy_constraints = true;
-                                break;
-                            }
-                        } else {
-                            cert.has_malformed_policy_constraints = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check for InhibitAnyPolicy (2.5.29.54)
-        if oid.buf == OID_INHIBIT_ANY_POLICY[..] {
-            var val: i64 = 0;
-            if !get_asn1_integer(ext_val, val) || val < 0 {
-                cert.has_malformed_policy_constraints = true;
-            }
-        }
+        x509_parse_single_cert_extension(raw_cert, single_ext, cert);
     }
 }
 
@@ -776,29 +769,14 @@ fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> 
 // - Must NOT match apex domain (e.g. *.example.com does not match example.com).
 // - Must NOT match multi-level subdomains (e.g. *.example.com does not match a.b.example.com).
 // - Case-insensitive comparison.
-fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
-    guard san_pattern.len > 0 && host.len > 0 else { return false; }
-
-    // Exact match (case-insensitive)
-    if eq_ascii_fold(san_pattern, host) {
-        return true;
+fn x509_strip_trailing_dot(s: const u8[:]) -> const u8[:] {
+    if s.len > 1 && s[s.len - 1] == '.' {
+        return s[..s.len - 1];
     }
+    return s;
+}
 
-    // Check for wildcard pattern: must start with "*."
-    guard san_pattern.len >= 3 && san_pattern[0] == '*' && san_pattern[1] == '.' else {
-        return false;
-    }
-
-    let suffix = san_pattern[2..]; // e.g. "example.com"
-    // Suffix must not contain another wildcard
-    for b in suffix {
-        if b == '*' { return false; }
-    }
-
-    // Wildcards MUST NOT be issued for TLDs (e.g. *.com is forbidden per RFC 6125 §6.4.3)
-    guard core::contains_byte(suffix, '.') else { return false; }
-
-    // Wildcards MUST NOT match IPv4 or IPv6 literals (RFC 6125 §6.4.3)
+fn x509_is_ip_literal(host: const u8[:]) -> bool {
     var is_ip = true;
     for b in host {
         if (b < '0' || b > '9') && b != '.' {
@@ -806,9 +784,15 @@ fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
             break;
         }
     }
-    if is_ip && core::contains_byte(host, '.') { return false; }
+    return is_ip && core::contains_byte(host, '.');
+}
 
-    // Host must contain at least one dot separating leftmost label
+fn x509_match_wildcard_san(pat: const u8[:], host: const u8[:]) -> bool {
+    guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { return false; }
+    let suffix = pat[2..];
+    guard !core::contains_byte(suffix, '*') && core::contains_byte(suffix, '.') else { return false; }
+    guard !x509_is_ip_literal(host) else { return false; }
+
     var dot_idx = -1;
     for i in host.len {
         if host[i] == '.' {
@@ -816,25 +800,41 @@ fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
             break;
         }
     }
-
-    // If host has no dot, it's an apex/single-label, no wildcard match
     guard dot_idx > 0 else { return false; }
-
-    let host_label = host[..dot_idx];
     let host_remainder = host[dot_idx + 1..];
-
-    // Leftmost label must not be empty
-    guard host_label.len > 0 else { return false; }
-
-    // Remaining labels must match suffix exactly
     return eq_ascii_fold(host_remainder, suffix);
 }
 
-// Matches URI SAN and enforces RFC 5280 / CVE-2024-45341 defense:
-// IPv6 zone IDs (%zone) inside URIs MUST NOT bypass URI name constraints and must be rejected.
+// Matches a single DNS hostname against a SAN entry (RFC 6125 Section 6.4.3).
+// - Trailing dots in presented and reference identifiers are normalized/stripped.
+// - Embedded NUL bytes rejected (CVE-2009-3555 / CVE-2021-3712).
+// - Wildcard '*' is only permitted in the leftmost label.
+// - Must NOT match apex domain (e.g. *.example.com does not match example.com).
+// - Must NOT match multi-level subdomains (e.g. *.example.com does not match a.b.example.com).
+// - Case-insensitive comparison.
+fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
+    guard san_pattern.len > 0 && host.len > 0 else { return false; }
+    guard !core::contains_byte(san_pattern, 0) && !core::contains_byte(host, 0) else { return false; }
+
+    let pat = x509_strip_trailing_dot(san_pattern);
+    let h = x509_strip_trailing_dot(host);
+    guard pat.len > 0 && h.len > 0 else { return false; }
+
+    if eq_ascii_fold(pat, h) {
+        return true;
+    }
+
+    return x509_match_wildcard_san(pat, h);
+}
+
+// Matches URI SAN and enforces RFC 5280 / CVE-2024-45341 / CVE-2021-3712 defense:
+// - IPv6 zone IDs (%zone) inside URIs MUST NOT bypass URI name constraints and must be rejected.
+// - Embedded NUL bytes MUST be rejected.
 fn match_uri_san(san_uri_host: const u8[:], request_host: const u8[:]) -> bool {
-    // If either contains '%', reject per CVE-2024-45341
     if core::contains_byte(san_uri_host, '%') || core::contains_byte(request_host, '%') {
+        return false;
+    }
+    if core::contains_byte(san_uri_host, 0) || core::contains_byte(request_host, 0) {
         return false;
     }
     return eq_ascii_fold(san_uri_host, request_host);
@@ -852,6 +852,21 @@ struct SanEntry {
     val: const u8[:] = [],
 }
 
+fn x509_process_ipv4_char(b: u8, octet_idx: i64&, current: u32&, digits: i64&, out_ip: u8[4]&) -> bool {
+    if b == '.' {
+        guard digits > 0 && current <= 255 && octet_idx < 3 else { return false; }
+        out_ip[octet_idx] = current as u8;
+        octet_idx++;
+        current = 0;
+        digits = 0;
+        return true;
+    }
+    guard b >= '0' && b <= '9' else { return false; }
+    current = current * 10 + (b - '0');
+    digits++;
+    return digits <= 3 && current <= 255;
+}
+
 // Parses decimal IPv4 octets into u8[4]
 fn parse_ipv4_literal(str: const u8[:], out_ip: u8[4]&) -> bool {
     var octet_idx: i64 = 0;
@@ -859,24 +874,30 @@ fn parse_ipv4_literal(str: const u8[:], out_ip: u8[4]&) -> bool {
     var digits: i64 = 0;
 
     for i in str.len {
-        let b = str[i];
-        if b == '.' {
-            guard digits > 0 && current <= 255 && octet_idx < 3 else { return false; }
-            out_ip[octet_idx] = current as u8;
-            octet_idx++;
-            current = 0;
-            digits = 0;
-        } else if b >= '0' && b <= '9' {
-            current = current * 10 + (b - '0');
-            digits++;
-            guard digits <= 3 && current <= 255 else { return false; }
-        } else {
+        if !x509_process_ipv4_char(str[i], octet_idx, current, digits, out_ip) {
             return false;
         }
     }
 
     guard digits > 0 && current <= 255 && octet_idx == 3 else { return false; }
     out_ip[3] = current as u8;
+    return true;
+}
+
+fn x509_is_dns_label_char(b: u8) -> bool {
+    let is_alnum = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
+    return is_alnum || b == '-';
+}
+
+fn x509_validate_dns_label(label: const u8[:], label_idx: i64) -> bool {
+    guard label.len >= 1 && label.len <= 63 else { return false; }
+    if label_idx == 0 && label.len == 1 && label[0] == '*' {
+        return true;
+    }
+    guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
+    for b in label {
+        guard x509_is_dns_label_char(b) else { return false; }
+    }
     return true;
 }
 
@@ -889,7 +910,6 @@ fn parse_ipv4_literal(str: const u8[:], out_ip: u8[4]&) -> bool {
 // - Hyphen must not be leading or trailing character in any label.
 fn validate_san_dns_name(dns: const u8[:]) -> bool {
     guard dns.len >= 1 && dns.len <= 253 else { return false; }
-    // Must not start or end with '.'
     guard dns[0] != '.' && dns[dns.len - 1] != '.' else { return false; }
 
     var label_start: i64 = 0;
@@ -898,31 +918,35 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
     for i in dns.len + 1 {
         let is_end = (i == dns.len);
         let is_dot = !is_end && (dns[i] == '.');
-
         if is_end || is_dot {
-            let label_len = i - label_start;
-            // No empty label (e.g. '..') and label length <= 63
-            guard label_len >= 1 && label_len <= 63 else { return false; }
             let label = dns[label_start..i];
-
-            // Leftmost label can be wildcard "*"
-            if label_idx == 0 && label.len == 1 && label[0] == '*' {
-                // Wildcard label is valid
-            } else {
-                // Hyphen cannot be first or last character of a label
-                guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
-
-                for b in label {
-                    let is_alnum = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
-                    let is_hyphen = (b == '-');
-                    guard is_alnum || is_hyphen else { return false; }
-                }
-            }
-
+            guard x509_validate_dns_label(label, label_idx) else { return false; }
             label_start = i + 1;
             label_idx++;
         }
     }
+    return true;
+}
+
+fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
+    if tag_num == 2 { // dNSName [2] IA5String
+        guard validate_san_dns_name(elem_buf) else { return false; }
+        out_type = SanType.Dns;
+        return true;
+    }
+    if tag_num == 7 { // iPAddress [7] OCTET STRING
+        guard elem_buf.len == 4 || elem_buf.len == 16 else { return false; }
+        out_type = SanType.Ip;
+        return true;
+    }
+    if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
+        guard elem_buf.len > 0 else { return false; }
+        guard !core::contains_byte(elem_buf, '%') && !core::contains_byte(elem_buf, 0) else { return false; }
+        out_type = SanType.Uri;
+        return true;
+    }
+    guard tag_num <= 8 else { return false; }
+    out_type = SanType.Other;
     return true;
 }
 
@@ -936,10 +960,7 @@ fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool 
     var c = cursor_from(san_der);
     var names_seq = cursor_from(san_der[..0]);
     if !get_asn1_element(c, ASN1_TAG_SEQUENCE, names_seq) { return false; }
-    // No trailing bytes allowed in DER
     guard cursor_len(c) == 0 else { return false; }
-
-    // RFC 5280 Section 4.2.1.6: Sequence must contain at least one entry
     guard cursor_len(names_seq) > 0 else { return false; }
 
     var count: i64 = 0;
@@ -950,23 +971,7 @@ fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool 
 
         let tag_num = tag & 0x1F;
         var st = SanType.Other;
-
-        if tag_num == 2 { // dNSName [2] IA5String
-            st = SanType.Dns;
-            guard validate_san_dns_name(elem.buf) else { return false; }
-        } else if tag_num == 7 { // iPAddress [7] OCTET STRING
-            st = SanType.Ip;
-            // RFC 5280 Section 4.2.1.6: iPAddress MUST be 4 or 16 octets
-            guard elem.buf.len == 4 || elem.buf.len == 16 else { return false; }
-        } else if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
-            st = SanType.Uri;
-            guard elem.buf.len > 0 else { return false; }
-            guard !core::contains_byte(elem.buf, '%') else { return false; }
-        } else if tag_num <= 8 {
-            st = SanType.Other;
-        } else {
-            return false;
-        }
+        guard x509_classify_san_element(tag_num, elem.buf, st) else { return false; }
 
         if out_sans.len < out_sans.cap {
             out_sans.push(SanEntry {
@@ -1037,59 +1042,71 @@ struct NameConstraintEntry {
 
 // Validates that an IPv4 (4-byte) or IPv6 (16-byte) subnet mask is contiguous CIDR.
 // In network byte order, once a 0 bit appears, no 1 bit may follow.
+fn x509_check_mask_byte(b: u8, seen_zero_bit: bool&) -> bool {
+    for bit_idx in 8 {
+        let bit = ((b as u32) >> (7 - bit_idx)) & 1;
+        if bit == 0 {
+            seen_zero_bit = true;
+        } else if seen_zero_bit {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Validates that an IPv4 (4-byte) or IPv6 (16-byte) subnet mask is contiguous CIDR.
+// In network byte order, once a 0 bit appears, no 1 bit may follow.
 fn validate_cidr_mask(mask: const u8[:]) -> bool {
     guard mask.len == 4 || mask.len == 16 else { return false; }
     var seen_zero_bit = false;
     for b in mask {
-        for bit_idx in 8 {
-            let bit = ((b as u32) >> (7 - bit_idx)) & 1;
-            if bit == 0 {
-                seen_zero_bit = true;
-            } else {
-                if seen_zero_bit {
-                    return false; // Non-contiguous subnet mask
-                }
-            }
-        }
+        guard x509_check_mask_byte(b, seen_zero_bit) else { return false; }
     }
     return true;
 }
 
 // RFC 5280 §4.2.1.10: DNS name constraint matching
 // DNS name restrictions may be indicated as "example.com" or ".example.com".
+// Normalizes trailing dots in candidate and constraint to prevent ExcludedSubtree bypass.
+// Rejects embedded NUL bytes (CVE-2021-3712 / OpenSSL #31686).
 fn match_dns_name_constraint(candidate_dns: const u8[:], constraint: const u8[:]) -> bool {
     guard candidate_dns.len > 0 && constraint.len > 0 else { return false; }
+    guard !core::contains_byte(candidate_dns, 0) && !core::contains_byte(constraint, 0) else { return false; }
+
+    let cand = x509_strip_trailing_dot(candidate_dns);
+    let cons = x509_strip_trailing_dot(constraint);
+    guard cand.len > 0 && cons.len > 0 else { return false; }
 
     // If constraint has a leading dot: ".example.com"
-    if constraint[0] == '.' {
-        let domain = constraint[1..];
+    if cons[0] == '.' {
+        let domain = cons[1..];
         guard domain.len > 0 else { return false; }
         // Candidate must be a subdomain ending with constraint (e.g. "sub.example.com")
-        guard candidate_dns.len > constraint.len else { return false; }
-        let suffix = candidate_dns[candidate_dns.len - constraint.len..];
-        return eq_ascii_fold(suffix, constraint);
+        guard cand.len > cons.len else { return false; }
+        let suffix = cand[cand.len - cons.len..];
+        return eq_ascii_fold(suffix, cons);
     }
 
     // Constraint without leading dot: "example.com"
     // Matches exact domain
-    if eq_ascii_fold(candidate_dns, constraint) {
+    if eq_ascii_fold(cand, cons) {
         return true;
     }
 
     // Matches subdomains of "example.com", e.g. "sub.example.com"
-    guard candidate_dns.len > constraint.len + 1 else { return false; }
-    let dot_pos = candidate_dns.len - constraint.len - 1;
-    guard candidate_dns[dot_pos] == '.' else { return false; }
-    let suffix = candidate_dns[candidate_dns.len - constraint.len..];
-    return eq_ascii_fold(suffix, constraint);
+    guard cand.len > cons.len + 1 else { return false; }
+    let dot_pos = cand.len - cons.len - 1;
+    guard cand[dot_pos] == '.' else { return false; }
+    let suffix = cand[cand.len - cons.len..];
+    return eq_ascii_fold(suffix, cons);
 }
 
 // RFC 5280 §4.2.1.10: IP address name constraint matching
 // Candidate IP is 4 octets (IPv4) or 16 octets (IPv6).
-// Constraint is 8 octets (IPv4) or 32 octets (IPv6): IP || Subnet Mask.
+// Constraint MUST be 8 octets (IPv4) or 32 octets (IPv6): IP || Subnet Mask.
 fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) -> bool {
-    let half = constraint.len / 2;
-    guard candidate_ip.len == half else { return false; }
+    guard (candidate_ip.len == 4 && constraint.len == 8) || (candidate_ip.len == 16 && constraint.len == 32) else { return false; }
+    let half = candidate_ip.len;
     let subnet_ip = constraint[..half];
     let mask = constraint[half..];
 
@@ -1099,6 +1116,89 @@ fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) 
         if cand_masked != sub_masked {
             return false;
         }
+    }
+    return true;
+}
+
+fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out_val: ByteCursor&) -> bool {
+    var base_tag: u8 = 0;
+    if !get_any_asn1_element(subtree, base_tag, out_val) { return false; }
+    let tag_num = base_tag & 0x1F;
+    if tag_num == 2 { // dNSName
+        out_type = SanType.Dns;
+        guard out_val.buf.len > 0 else { return false; }
+    } else if tag_num == 7 { // iPAddress
+        out_type = SanType.Ip;
+        guard out_val.buf.len == 8 || out_val.buf.len == 32 else { return false; }
+        let half = out_val.buf.len / 2;
+        guard validate_cidr_mask(out_val.buf[half..]) else { return false; }
+    } else {
+        out_type = SanType.Other;
+    }
+    return true;
+}
+
+fn x509_validate_subtree_bound_opt(opt_tag: u8, opt_elem: ByteCursor&) -> bool {
+    let opt_num = opt_tag & 0x1F;
+    if opt_num == 0 { // minimum MUST be zero
+        var min_val: i64 = 0;
+        return get_asn1_integer(opt_elem, min_val) && min_val == 0;
+    }
+    return false; // maximum (opt_num == 1) or other tags forbidden
+}
+
+fn x509_parse_general_subtree_bounds(subtree: ByteCursor&) -> bool {
+    while cursor_len(subtree) > 0 {
+        var opt_tag: u8 = 0;
+        var opt_elem = cursor_from(subtree.buf[..0]);
+        if !get_any_asn1_element(subtree, opt_tag, opt_elem) { return false; }
+        guard x509_validate_subtree_bound_opt(opt_tag, opt_elem) else { return false; }
+    }
+    return true;
+}
+
+fn x509_parse_general_subtree(
+    nc_der: const u8[:],
+    subtree: ByteCursor&,
+    is_excluded: bool,
+    out_constraints: NameConstraintEntry[..16]&,
+) -> bool {
+    var st = SanType.Other;
+    var base_elem = cursor_from(nc_der[..0]);
+    guard x509_parse_general_subtree_base(subtree, st, base_elem) else { return false; }
+    guard x509_parse_general_subtree_bounds(subtree) else { return false; }
+
+    if out_constraints.len < out_constraints.cap {
+        let span = make_span(nc_der, base_elem.buf);
+        out_constraints.push(NameConstraintEntry {
+            san_type: st,
+            is_excluded: is_excluded,
+            val: span_slice(nc_der, span),
+        });
+    }
+    return true;
+}
+
+fn x509_parse_subtrees_sequence(
+    nc_der: const u8[:],
+    subtrees_elem: ByteCursor&,
+    is_excluded: bool,
+    out_constraints: NameConstraintEntry[..16]&,
+    count: i64&,
+) -> bool {
+    var subtrees_seq = cursor_from(subtrees_elem.buf[..0]);
+    if cursor_len(subtrees_elem) > 0 && subtrees_elem.buf[0] == ASN1_TAG_SEQUENCE {
+        if !get_asn1_element(subtrees_elem, ASN1_TAG_SEQUENCE, subtrees_seq) { return false; }
+    } else {
+        subtrees_seq = subtrees_elem;
+    }
+    guard cursor_len(subtrees_seq) > 0 else { return false; }
+
+    while cursor_len(subtrees_seq) > 0 {
+        var subtree = cursor_from(subtrees_seq.buf[..0]);
+        if !get_asn1_element(subtrees_seq, ASN1_TAG_SEQUENCE, subtree) { return false; }
+        guard x509_parse_general_subtree(nc_der, subtree, is_excluded, out_constraints) else { return false; }
+        count++;
     }
     return true;
 }
@@ -1122,65 +1222,39 @@ fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEn
         let is_permitted = (tag == 0xA0);
         guard is_excluded || is_permitted else { return false; }
 
-        var subtrees_seq = cursor_from(subtrees_elem.buf[..0]);
-        if cursor_len(subtrees_elem) > 0 && subtrees_elem.buf[0] == ASN1_TAG_SEQUENCE {
-            if !get_asn1_element(subtrees_elem, ASN1_TAG_SEQUENCE, subtrees_seq) { return false; }
-        } else {
-            subtrees_seq = subtrees_elem;
-        }
-
-        guard cursor_len(subtrees_seq) > 0 else { return false; }
-
-        while cursor_len(subtrees_seq) > 0 {
-            var subtree = cursor_from(subtrees_seq.buf[..0]);
-            if !get_asn1_element(subtrees_seq, ASN1_TAG_SEQUENCE, subtree) { return false; }
-
-            // base GeneralName
-            var base_tag: u8 = 0;
-            var base_elem = cursor_from(subtree.buf[..0]);
-            if !get_any_asn1_element(subtree, base_tag, base_elem) { return false; }
-
-            let tag_num = base_tag & 0x1F;
-            var st = SanType.Other;
-            if tag_num == 2 { // dNSName
-                st = SanType.Dns;
-                guard base_elem.buf.len > 0 else { return false; }
-            } else if tag_num == 7 { // iPAddress
-                st = SanType.Ip;
-                guard base_elem.buf.len == 8 || base_elem.buf.len == 32 else { return false; }
-                let half = base_elem.buf.len / 2;
-                guard validate_cidr_mask(base_elem.buf[half..]) else { return false; }
-            } else {
-                st = SanType.Other;
-            }
-
-            // minimum MUST be zero, maximum MUST be absent (RFC 5280 §4.2.1.10)
-            while cursor_len(subtree) > 0 {
-                var opt_tag: u8 = 0;
-                var opt_elem = cursor_from(subtree.buf[..0]);
-                if !get_any_asn1_element(subtree, opt_tag, opt_elem) { return false; }
-                let opt_num = opt_tag & 0x1F;
-                if opt_num == 0 { // minimum
-                    var min_val: i64 = 0;
-                    if !get_asn1_integer(opt_elem, min_val) || min_val != 0 {
-                        return false;
-                    }
-                } else if opt_num == 1 { // maximum
-                    return false;
-                }
-            }
-
-            if out_constraints.len < out_constraints.cap {
-                out_constraints.push(NameConstraintEntry {
-                    san_type: st,
-                    is_excluded: is_excluded,
-                    val: base_elem.buf,
-                });
-            }
-            count++;
-        }
+        guard x509_parse_subtrees_sequence(nc_der, subtrees_elem, is_excluded, out_constraints, count) else { return false; }
     }
     return count > 0;
+}
+
+fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEntry&) -> bool {
+    if nc.san_type == SanType.Dns {
+        return match_dns_name_constraint(san.val, nc.val);
+    }
+    if nc.san_type == SanType.Ip {
+        return match_ip_name_constraint(san.val, nc.val);
+    }
+    return false;
+}
+
+fn x509_eval_single_nc(
+    nc: const NameConstraintEntry&,
+    san: const SanEntry&,
+    has_permitted: bool&,
+    matched_permitted: bool&,
+) -> bool {
+    if nc.san_type != san.san_type {
+        return true;
+    }
+    let matched = x509_match_constraint_entry(nc, san);
+    if nc.is_excluded {
+        return !matched;
+    }
+    has_permitted = true;
+    if matched {
+        matched_permitted = true;
+    }
+    return true;
 }
 
 // Matches a single SAN against parsed Name Constraints.
@@ -1192,35 +1266,132 @@ fn check_name_constraints(
     var matched_permitted = false;
 
     for i in constraints.len {
-        let nc = constraints[i];
-        if nc.san_type != san.san_type {
-            continue;
-        }
-
-        var matched = false;
-        if nc.san_type == SanType.Dns {
-            matched = match_dns_name_constraint(san.val, nc.val);
-        } else if nc.san_type == SanType.Ip {
-            matched = match_ip_name_constraint(san.val, nc.val);
-        }
-
-        if nc.is_excluded {
-            if matched {
-                return false; // Excluded subtree matched -> forbidden!
-            }
-        } else {
-            has_permitted = true;
-            if matched {
-                matched_permitted = true;
-            }
+        guard x509_eval_single_nc(constraints[i], san, has_permitted, matched_permitted) else {
+            return false;
         }
     }
 
-    if has_permitted && !matched_permitted {
-        return false;
+    return !has_permitted || matched_permitted;
+}
+
+fn x509_is_cert_duplicate(raw_j: const u8[:], cert_j: const ParsedCert&, raw_k: const u8[:], cert_k: const ParsedCert&) -> bool {
+    let s_j = span_slice(raw_j, cert_j.subject_raw);
+    let spki_j = span_slice(raw_j, cert_j.spki_raw);
+    let s_k = span_slice(raw_k, cert_k.subject_raw);
+    let spki_k = span_slice(raw_k, cert_k.spki_raw);
+    return (s_j.len > 0 && s_j == s_k) || (spki_j.len > 0 && spki_j == spki_k);
+}
+
+// RFC 5280 Certificate Chain Validation.
+// Returns TlsAlert.CloseNotify (0) on success, or appropriate fatal alert.
+fn x509_detect_chain_cycles(chain_certs: const ParsedCert[..8]&, raw_certs: const u8[:][..8]&) -> bool {
+    for j in chain_certs.len {
+        for k in chain_certs.len {
+            if j < k && x509_is_cert_duplicate(raw_certs[j], chain_certs[j], raw_certs[k], chain_certs[k]) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn x509_validate_single_chain_cert(
+    cert: const ParsedCert&,
+    raw_cert: const u8[:],
+    i: i64,
+    is_direct_trust_anchor: bool,
+    now_unix: i64,
+) -> TlsAlert {
+    if cert.has_unsupported_critical {
+        return TlsAlert.UnsupportedExtension;
+    }
+    if cert.has_malformed_policy_constraints {
+        return TlsAlert.BadCertificate;
     }
 
+    let val_alert = validate_chain_cert_validity(cert, now_unix);
+    guard val_alert == TlsAlert.CloseNotify else { return val_alert; }
+
+    let sig_oid = span_slice(raw_cert, cert.sig_alg_oid);
+    if is_forbidden_cert_signature_algorithm(sig_oid) {
+        return TlsAlert.UnsupportedCertificate;
+    }
+
+    if i == 0 && !is_direct_trust_anchor {
+        return validate_end_entity_constraints(cert);
+    } else if i > 0 {
+        return validate_intermediate_ca_constraints(cert, i);
+    }
+    return TlsAlert.CloseNotify;
+}
+
+fn x509_validate_chain_linkage(
+    chain_certs: const ParsedCert[..8]&,
+    raw_certs: const u8[:][..8]&,
+    i: i64,
+) -> TlsAlert {
+    if i + 1 < chain_certs.len {
+        let cert = chain_certs[i];
+        let issuer_slice = span_slice(raw_certs[i], cert.issuer_raw);
+        let next_subject_slice = span_slice(raw_certs[i + 1], chain_certs[i + 1].subject_raw);
+        if issuer_slice != next_subject_slice {
+            return TlsAlert.UnknownCa;
+        }
+
+        if cert.has_akid && chain_certs[i + 1].has_skid {
+            let child_akid = span_slice(raw_certs[i], cert.akid_key_id);
+            let parent_skid = span_slice(raw_certs[i + 1], chain_certs[i + 1].skid_key_id);
+            if child_akid != parent_skid {
+                return TlsAlert.UnknownCa;
+            }
+        }
+    }
+    return TlsAlert.CloseNotify;
+}
+
+fn x509_check_child_sans_against_nc(
+    nc_entries: const NameConstraintEntry[..16]&,
+    child_cert: const ParsedCert&,
+    child_raw: const u8[:],
+) -> bool {
+    guard child_cert.has_san else { return true; }
+    var child_sans: SanEntry[..16] = [];
+    guard get_cert_san_extension(child_cert, child_raw, child_sans) else { return true; }
+    for s_idx in child_sans.len {
+        if !check_name_constraints(nc_entries, child_sans[s_idx]) {
+            return false;
+        }
+    }
     return true;
+}
+
+fn x509_enforce_single_cert_nc(
+    chain_certs: const ParsedCert[..8]&,
+    raw_certs: const u8[:][..8]&,
+    k: i64,
+) -> bool {
+    guard chain_certs[k].has_name_constraints else { return true; }
+    var nc_entries: NameConstraintEntry[..16] = [];
+    let nc_bytes = span_slice(raw_certs[k], chain_certs[k].name_constraints_raw);
+    guard parse_name_constraints(nc_bytes, nc_entries) else { return false; }
+    for j in k {
+        guard x509_check_child_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn x509_enforce_chain_name_constraints(
+    chain_certs: const ParsedCert[..8]&,
+    raw_certs: const u8[:][..8]&,
+) -> TlsAlert {
+    for k in chain_certs.len {
+        guard x509_enforce_single_cert_nc(chain_certs, raw_certs, k) else {
+            return TlsAlert.BadCertificate;
+        }
+    }
+    return TlsAlert.CloseNotify;
 }
 
 // RFC 5280 Certificate Chain Validation.
@@ -1234,97 +1405,22 @@ fn verify_certificate_chain(
     guard chain_certs.len > 0 && chain_certs.len <= MAX_CHAIN_DEPTH else { return TlsAlert.BadCertificate; }
     guard raw_certs.len == chain_certs.len else { return TlsAlert.BadCertificate; }
 
-    // Cycle & loop detection: verify that no two certificates share the same subject DN or public key
-    for j in chain_certs.len {
-        let s_j = span_slice(raw_certs[j], chain_certs[j].subject_raw);
-        let spki_j = span_slice(raw_certs[j], chain_certs[j].spki_raw);
-
-        for k in chain_certs.len {
-            if j < k {
-                let s_k = span_slice(raw_certs[k], chain_certs[k].subject_raw);
-                let spki_k = span_slice(raw_certs[k], chain_certs[k].spki_raw);
-                if (s_j.len > 0 && s_j == s_k) || (spki_j.len > 0 && spki_j == spki_k) {
-                    return TlsAlert.BadCertificate; // Loop or circular reference detected
-                }
-            }
-        }
+    if x509_detect_chain_cycles(chain_certs, raw_certs) {
+        return TlsAlert.BadCertificate;
     }
 
     let is_direct_trust_anchor = (chain_certs.len == 1 && matches_trust_anchor(trust_store, chain_certs[0], raw_certs[0]));
 
     for i in chain_certs.len {
-        let cert = chain_certs[i];
+        let cert_alert = x509_validate_single_chain_cert(chain_certs[i], raw_certs[i], i, is_direct_trust_anchor, now_unix);
+        guard cert_alert == TlsAlert.CloseNotify else { return cert_alert; }
 
-        // 0. Unrecognized critical extensions (RFC 5280 §4.2)
-        if cert.has_unsupported_critical {
-            return TlsAlert.UnsupportedExtension;
-        }
-
-        // 0b. Policy constraints syntax / bounds check (RFC 5280 §4.2.1.11, §4.2.1.14)
-        if cert.has_malformed_policy_constraints {
-            return TlsAlert.BadCertificate;
-        }
-
-        // 1. Validity period & inversion check
-        let val_alert = validate_chain_cert_validity(cert, now_unix);
-        guard val_alert == TlsAlert.CloseNotify else { return val_alert; }
-
-        // 2. Forbidden certificate signature algorithms (RFC 8446 §4.4.2.3: no MD5 or SHA-1)
-        let sig_oid = span_slice(raw_certs[i], cert.sig_alg_oid);
-        if is_forbidden_cert_signature_algorithm(sig_oid) {
-            return TlsAlert.UnsupportedCertificate;
-        }
-
-        // 3. End-entity vs Intermediate CA constraints
-        if i == 0 && !is_direct_trust_anchor {
-            let ee_alert = validate_end_entity_constraints(cert);
-            guard ee_alert == TlsAlert.CloseNotify else { return ee_alert; }
-        } else if i > 0 {
-            let ca_alert = validate_intermediate_ca_constraints(cert, i);
-            guard ca_alert == TlsAlert.CloseNotify else { return ca_alert; }
-        }
-
-        // 4. Issuer -> Next Subject linkage & AKID -> SKID matching (RFC 5280 §4.2.1.1 / §4.2.1.2)
-        if i + 1 < chain_certs.len {
-            let issuer_slice = span_slice(raw_certs[i], cert.issuer_raw);
-            let next_subject_slice = span_slice(raw_certs[i + 1], chain_certs[i + 1].subject_raw);
-            if issuer_slice != next_subject_slice {
-                return TlsAlert.UnknownCa;
-            }
-
-            if cert.has_akid && chain_certs[i + 1].has_skid {
-                let child_akid = span_slice(raw_certs[i], cert.akid_key_id);
-                let parent_skid = span_slice(raw_certs[i + 1], chain_certs[i + 1].skid_key_id);
-                if child_akid != parent_skid {
-                    return TlsAlert.UnknownCa; // Key identifier mismatch
-                }
-            }
-        }
+        let link_alert = x509_validate_chain_linkage(chain_certs, raw_certs, i);
+        guard link_alert == TlsAlert.CloseNotify else { return link_alert; }
     }
 
-    // 5. Name Constraints enforcement down the chain (RFC 5280 §4.2.1.10)
-    for k in chain_certs.len {
-        if chain_certs[k].has_name_constraints {
-            var nc_entries: NameConstraintEntry[..16] = [];
-            let nc_bytes = span_slice(raw_certs[k], chain_certs[k].name_constraints_raw);
-            if !parse_name_constraints(nc_bytes, nc_entries) {
-                return TlsAlert.BadCertificate;
-            }
-
-            for j in k {
-                if chain_certs[j].has_san {
-                    var child_sans: SanEntry[..16] = [];
-                    if get_cert_san_extension(chain_certs[j], raw_certs[j], child_sans) {
-                        for s_idx in child_sans.len {
-                            if !check_name_constraints(nc_entries, child_sans[s_idx]) {
-                                return TlsAlert.BadCertificate; // Name constraint violation
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let nc_alert = x509_enforce_chain_name_constraints(chain_certs, raw_certs);
+    guard nc_alert == TlsAlert.CloseNotify else { return nc_alert; }
 
     let top_idx = chain_certs.len - 1;
     if !matches_trust_anchor(trust_store, chain_certs[top_idx], raw_certs[top_idx]) {
@@ -1361,123 +1457,103 @@ struct ParsedOcspResponse {
     has_next_update: bool = false,
 }
 
-// Parses an OCSPResponse (RFC 6960 §4.2.1) with zero dynamic allocation.
-fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
-    var c = cursor_from(raw_ocsp);
-    var ocsp_seq = cursor_from(raw_ocsp[..0]);
-    if !get_asn1_element(c, ASN1_TAG_SEQUENCE, ocsp_seq) { return false; }
-    guard cursor_len(c) == 0 else { return false; }
-
-    // 1. responseStatus ENUMERATED (RFC 6960 §4.2.1)
-    var status_oct = cursor_from(ocsp_seq.buf[..0]);
-    if !get_asn1_element(ocsp_seq, ASN1_TAG_ENUMERATED, status_oct) { return false; }
-    guard status_oct.buf.len == 1 else { return false; }
-    let s_val = status_oct.buf[0];
-
+fn x509_parse_ocsp_status(s_val: u8, out_status: OcspResponseStatus&) -> bool {
     if s_val == 0 {
-        out.status = OcspResponseStatus.Successful;
-    } else if s_val == 1 {
-        out.status = OcspResponseStatus.MalformedRequest;
+        out_status = OcspResponseStatus.Successful;
         return true;
-    } else if s_val == 2 {
-        out.status = OcspResponseStatus.InternalError;
-        return true;
-    } else if s_val == 3 {
-        out.status = OcspResponseStatus.TryLater;
-        return true;
-    } else if s_val == 5 {
-        out.status = OcspResponseStatus.SigRequired;
-        return true;
-    } else if s_val == 6 {
-        out.status = OcspResponseStatus.Unauthorized;
-        return true;
-    } else {
-        out.status = OcspResponseStatus.Unknown;
-        return false; // Out-of-bounds ENUMERATED value
     }
-
-    // 2. responseBytes [0] EXPLICIT ResponseBytes OPTIONAL
-    guard cursor_len(ocsp_seq) > 0 else { return false; }
-    var resp_bytes_ctx = cursor_from(ocsp_seq.buf[..0]);
-    if !get_asn1_element(ocsp_seq, 0xA0, resp_bytes_ctx) { return false; }
-
-    var resp_bytes_seq = cursor_from(resp_bytes_ctx.buf[..0]);
-    if !get_asn1_element(resp_bytes_ctx, ASN1_TAG_SEQUENCE, resp_bytes_seq) { return false; }
-
-    var resp_type_oid = cursor_from(resp_bytes_seq.buf[..0]);
-    if !get_asn1_element(resp_bytes_seq, ASN1_TAG_OID, resp_type_oid) { return false; }
-    guard resp_type_oid.buf == OID_OCSP_BASIC[..] else { return false; }
-
-    var resp_oct = cursor_from(resp_bytes_seq.buf[..0]);
-    if !get_asn1_element(resp_bytes_seq, ASN1_TAG_OCTET_STRING, resp_oct) { return false; }
-
-    // Inside response OCTET STRING is BasicOCSPResponse SEQUENCE
-    var basic_seq = cursor_from(resp_oct.buf[..0]);
-    if !get_asn1_element(resp_oct, ASN1_TAG_SEQUENCE, basic_seq) { return false; }
-
-    // tbsResponseData ResponseData SEQUENCE
-    var tbs_resp_data = cursor_from(basic_seq.buf[..0]);
-    if !get_asn1_element(basic_seq, ASN1_TAG_SEQUENCE, tbs_resp_data) { return false; }
-
-    // Skip optional version [0] if present
-    if cursor_len(tbs_resp_data) > 0 && tbs_resp_data.buf[0] == 0xA0 {
-        var ver_elem = cursor_from(tbs_resp_data.buf[..0]);
-        get_asn1_element(tbs_resp_data, 0xA0, ver_elem);
+    if s_val == 1 {
+        out_status = OcspResponseStatus.MalformedRequest;
+        return true;
     }
+    if s_val == 2 {
+        out_status = OcspResponseStatus.InternalError;
+        return true;
+    }
+    if s_val == 3 {
+        out_status = OcspResponseStatus.TryLater;
+        return true;
+    }
+    if s_val == 5 {
+        out_status = OcspResponseStatus.SigRequired;
+        return true;
+    }
+    if s_val == 6 {
+        out_status = OcspResponseStatus.Unauthorized;
+        return true;
+    }
+    out_status = OcspResponseStatus.Unknown;
+    return false;
+}
 
-    // responderID (CHOICE of [1] byName or [2] byKey)
-    var resp_id_tag: u8 = 0;
-    var resp_id = cursor_from(tbs_resp_data.buf[..0]);
-    if !get_any_asn1_element(tbs_resp_data, resp_id_tag, resp_id) { return false; }
-
-    // producedAt GeneralizedTime
-    var prod_time = cursor_from(tbs_resp_data.buf[..0]);
-    if !get_asn1_element(tbs_resp_data, ASN1_TAG_GENERALIZED_TIME, prod_time) { return false; }
-
-    // responses SEQUENCE OF SingleResponse
-    var responses_seq = cursor_from(tbs_resp_data.buf[..0]);
-    if !get_asn1_element(tbs_resp_data, ASN1_TAG_SEQUENCE, responses_seq) { return false; }
-    guard cursor_len(responses_seq) > 0 else { return false; }
-
-    // First SingleResponse
-    var single_resp = cursor_from(responses_seq.buf[..0]);
-    if !get_asn1_element(responses_seq, ASN1_TAG_SEQUENCE, single_resp) { return false; }
-
-    // certID CertID SEQUENCE
+fn x509_parse_ocsp_cert_id(
+    single_resp: ByteCursor&,
+    raw_ocsp: const u8[:],
+    out: ParsedOcspResponse&,
+) -> bool {
     var cert_id_seq = cursor_from(single_resp.buf[..0]);
     if !get_asn1_element(single_resp, ASN1_TAG_SEQUENCE, cert_id_seq) { return false; }
 
-    // hashAlgorithm
     var hash_alg = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, ASN1_TAG_SEQUENCE, hash_alg) { return false; }
-    // issuerNameHash
     var name_hash = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, ASN1_TAG_OCTET_STRING, name_hash) { return false; }
-    // issuerKeyHash
     var key_hash = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, ASN1_TAG_OCTET_STRING, key_hash) { return false; }
-    // serialNumber INTEGER
+
     var serial = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, ASN1_TAG_INTEGER, serial) { return false; }
     if !validate_asn1_integer(serial.buf, true) { return false; }
     out.serial_number = make_span(raw_ocsp, serial.buf);
+    return true;
+}
 
-    // certStatus CertStatus CHOICE
+fn x509_parse_ocsp_cert_status(single_resp: ByteCursor&, out_status: OcspCertStatus&) -> bool {
     var cert_status_tag: u8 = 0;
     var cert_status_elem = cursor_from(single_resp.buf[..0]);
     if !get_any_asn1_element(single_resp, cert_status_tag, cert_status_elem) { return false; }
     let cs_num = cert_status_tag & 0x1F;
     if cs_num == 0 {
-        out.cert_status = OcspCertStatus.Good;
-    } else if cs_num == 1 {
-        out.cert_status = OcspCertStatus.Revoked;
-    } else if cs_num == 2 {
-        out.cert_status = OcspCertStatus.Unknown;
-    } else {
-        return false;
+        out_status = OcspCertStatus.Good;
+        return true;
     }
+    if cs_num == 1 {
+        out_status = OcspCertStatus.Revoked;
+        return true;
+    }
+    if cs_num == 2 {
+        out_status = OcspCertStatus.Unknown;
+        return true;
+    }
+    return false;
+}
 
-    // thisUpdate GeneralizedTime or UTCTime
+fn x509_parse_ocsp_next_update(single_resp: ByteCursor&, out: ParsedOcspResponse&) {
+    guard cursor_len(single_resp) > 0 && single_resp.buf[0] == 0xA0 else { return; }
+    var next_up_ctx = cursor_from(single_resp.buf[..0]);
+    guard get_asn1_element(single_resp, 0xA0, next_up_ctx) else { return; }
+    var next_up_tag: u8 = 0;
+    var next_up_elem = cursor_from(next_up_ctx.buf[..0]);
+    guard get_any_asn1_element(next_up_ctx, next_up_tag, next_up_elem) else { return; }
+    let next_time, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
+    if ok_next {
+        out.next_update = next_time;
+        out.has_next_update = true;
+    }
+}
+
+fn x509_parse_ocsp_single_response(
+    responses_seq: ByteCursor&,
+    raw_ocsp: const u8[:],
+    out: ParsedOcspResponse&,
+) -> bool {
+    guard cursor_len(responses_seq) > 0 else { return false; }
+    var single_resp = cursor_from(responses_seq.buf[..0]);
+    if !get_asn1_element(responses_seq, ASN1_TAG_SEQUENCE, single_resp) { return false; }
+
+    guard x509_parse_ocsp_cert_id(single_resp, raw_ocsp, out) else { return false; }
+    guard x509_parse_ocsp_cert_status(single_resp, out.cert_status) else { return false; }
+
     var this_up_tag: u8 = 0;
     var this_up_elem = cursor_from(single_resp.buf[..0]);
     if !get_any_asn1_element(single_resp, this_up_tag, this_up_elem) { return false; }
@@ -1485,23 +1561,86 @@ fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool 
     guard ok_this else { return false; }
     out.this_update = this_time;
 
-    // Optional nextUpdate [0] EXPLICIT
-    if cursor_len(single_resp) > 0 && single_resp.buf[0] == 0xA0 {
-        var next_up_ctx = cursor_from(single_resp.buf[..0]);
-        if get_asn1_element(single_resp, 0xA0, next_up_ctx) {
-            var next_up_tag: u8 = 0;
-            var next_up_elem = cursor_from(next_up_ctx.buf[..0]);
-            if get_any_asn1_element(next_up_ctx, next_up_tag, next_up_elem) {
-                let next_time, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
-                if ok_next {
-                    out.next_update = next_time;
-                    out.has_next_update = true;
-                }
-            }
-        }
+    x509_parse_ocsp_next_update(single_resp, out);
+    return true;
+}
+
+fn x509_skip_ocsp_version_and_id(tbs_resp_data: ByteCursor&) -> bool {
+    if cursor_len(tbs_resp_data) > 0 && tbs_resp_data.buf[0] == 0xA0 {
+        var ver_elem = cursor_from(tbs_resp_data.buf[..0]);
+        get_asn1_element(tbs_resp_data, 0xA0, ver_elem);
+    }
+    var resp_id_tag: u8 = 0;
+    var resp_id = cursor_from(tbs_resp_data.buf[..0]);
+    return get_any_asn1_element(tbs_resp_data, resp_id_tag, resp_id);
+}
+
+fn x509_parse_ocsp_basic_response(
+    resp_bytes_seq: ByteCursor&,
+    raw_ocsp: const u8[:],
+    out: ParsedOcspResponse&,
+) -> bool {
+    var resp_type_oid = cursor_from(resp_bytes_seq.buf[..0]);
+    if !get_asn1_element(resp_bytes_seq, ASN1_TAG_OID, resp_type_oid) { return false; }
+    guard resp_type_oid.buf == OID_OCSP_BASIC[..] else { return false; }
+
+    var resp_oct = cursor_from(resp_bytes_seq.buf[..0]);
+    if !get_asn1_element(resp_bytes_seq, ASN1_TAG_OCTET_STRING, resp_oct) { return false; }
+
+    var basic_seq = cursor_from(resp_oct.buf[..0]);
+    if !get_asn1_element(resp_oct, ASN1_TAG_SEQUENCE, basic_seq) { return false; }
+
+    var tbs_resp_data = cursor_from(basic_seq.buf[..0]);
+    if !get_asn1_element(basic_seq, ASN1_TAG_SEQUENCE, tbs_resp_data) { return false; }
+
+    guard x509_skip_ocsp_version_and_id(tbs_resp_data) else { return false; }
+
+    var prod_time = cursor_from(tbs_resp_data.buf[..0]);
+    if !get_asn1_element(tbs_resp_data, ASN1_TAG_GENERALIZED_TIME, prod_time) { return false; }
+
+    var responses_seq = cursor_from(tbs_resp_data.buf[..0]);
+    if !get_asn1_element(tbs_resp_data, ASN1_TAG_SEQUENCE, responses_seq) { return false; }
+
+    return x509_parse_ocsp_single_response(responses_seq, raw_ocsp, out);
+}
+
+// Parses an OCSPResponse (RFC 6960 §4.2.1) with zero dynamic allocation.
+fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
+    var c = cursor_from(raw_ocsp);
+    var ocsp_seq = cursor_from(raw_ocsp[..0]);
+    if !get_asn1_element(c, ASN1_TAG_SEQUENCE, ocsp_seq) { return false; }
+    guard cursor_len(c) == 0 else { return false; }
+
+    var status_oct = cursor_from(ocsp_seq.buf[..0]);
+    if !get_asn1_element(ocsp_seq, ASN1_TAG_ENUMERATED, status_oct) { return false; }
+    guard status_oct.buf.len == 1 else { return false; }
+
+    guard x509_parse_ocsp_status(status_oct.buf[0], out.status) else { return false; }
+    if out.status != OcspResponseStatus.Successful {
+        return true;
     }
 
-    return true;
+    guard cursor_len(ocsp_seq) > 0 else { return false; }
+    var resp_bytes_ctx = cursor_from(ocsp_seq.buf[..0]);
+    if !get_asn1_element(ocsp_seq, 0xA0, resp_bytes_ctx) { return false; }
+
+    var resp_bytes_seq = cursor_from(resp_bytes_ctx.buf[..0]);
+    if !get_asn1_element(resp_bytes_ctx, ASN1_TAG_SEQUENCE, resp_bytes_seq) { return false; }
+
+    return x509_parse_ocsp_basic_response(resp_bytes_seq, raw_ocsp, out);
+}
+
+fn x509_validate_ocsp_temporal(resp: const ParsedOcspResponse&, now_unix: i64) -> TlsAlert {
+    if resp.has_next_update && resp.this_update > resp.next_update {
+        return TlsAlert.BadCertificateStatusResponse;
+    }
+    if now_unix < resp.this_update {
+        return TlsAlert.CertificateExpired;
+    }
+    if resp.has_next_update && now_unix > resp.next_update {
+        return TlsAlert.CertificateExpired;
+    }
+    return TlsAlert.CloseNotify;
 }
 
 // Validates an OCSP stapled response against the leaf certificate (RFC 6066 §8, RFC 6960).
@@ -1516,40 +1655,24 @@ fn validate_ocsp_stapling(
         return TlsAlert.BadCertificateStatusResponse;
     }
 
-    // 1. Response status must be Successful (0)
     if resp.status != OcspResponseStatus.Successful {
         return TlsAlert.BadCertificateStatusResponse;
     }
 
-    // 2. Cert status must be Good
     if resp.cert_status == OcspCertStatus.Revoked {
-        return TlsAlert.BadCertificate; // Certificate revoked
+        return TlsAlert.BadCertificate;
     }
     if resp.cert_status != OcspCertStatus.Good {
         return TlsAlert.BadCertificateStatusResponse;
     }
 
-    // 3. CertID Serial Number must match leaf certificate serial number
     let ocsp_serial = span_slice(raw_ocsp, resp.serial_number);
     let leaf_serial = span_slice(leaf_raw, leaf_cert.serial_number);
     if ocsp_serial.len == 0 || ocsp_serial != leaf_serial {
         return TlsAlert.BadCertificateStatusResponse;
     }
 
-    // 4. Temporal inversion check: thisUpdate <= nextUpdate
-    if resp.has_next_update && resp.this_update > resp.next_update {
-        return TlsAlert.BadCertificateStatusResponse;
-    }
-
-    // 5. Expiration check: thisUpdate <= now <= nextUpdate
-    if now_unix < resp.this_update {
-        return TlsAlert.CertificateExpired; // Not yet valid
-    }
-    if resp.has_next_update && now_unix > resp.next_update {
-        return TlsAlert.CertificateExpired; // Expired
-    }
-
-    return TlsAlert.CloseNotify;
+    return x509_validate_ocsp_temporal(resp, now_unix);
 }
 
 // Unwraps TLS 1.3 / TLS 1.2 status_request extension wire framing (opaque OCSPResponse<1..2^24-1>).

@@ -20,6 +20,11 @@ extern fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_se
 extern fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 = "wing_tcp_send2";
 extern fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32 = "wing_tcp_recv";
 extern fn native_tcp_close(sock_fd: i64) = "wing_tcp_close";
+extern fn native_tcp_shutdown(sock_fd: i64, how: i32) -> i32 = "wing_tcp_shutdown";
+extern fn native_tcp_set_linger(sock_fd: i64, onoff: i32, linger_sec: i32) -> i32 = "wing_tcp_set_linger";
+extern fn native_tcp_set_nodelay(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_nodelay";
+extern fn native_tcp_set_reuseaddr(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_reuseaddr";
+extern fn native_tcp_set_reuseport(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_reuseport";
 extern fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32 = "wing_tcp_set_defer_accept";
 extern fn native_tcp_set_user_timeout(sock_fd: i64, timeout_ms: u32) -> i32 = "wing_tcp_set_user_timeout";
 extern fn native_tcp_set_keepalive_params(sock_fd: i64, idle_sec: i32, intvl_sec: i32, cnt: i32) -> i32 = "wing_tcp_set_keepalive_params";
@@ -168,6 +173,50 @@ fn tcp_close(fd: i64) {
     }
 }
 
+// Abruptly terminates the TCP connection with an immediate TCP RST segment (RFC 1122 Section 4.2.2.13).
+// Discards all unsent/unreceived data and bypasses TIME_WAIT state.
+fn tcp_abort(fd: i64) -> bool {
+    guard fd > 0 else { return false; }
+    tcp_set_linger(fd, true, 0);
+    tcp_close(fd);
+    return true;
+}
+
+// Channel shutdown modes
+const SHUT_RD: i32 = 0;
+const SHUT_WR: i32 = 1;
+const SHUT_RDWR: i32 = 2;
+
+// Shuts down socket send/receive channels.
+fn tcp_shutdown(fd: i64, how: i32 = SHUT_WR) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_shutdown(fd, how) == 0;
+}
+
+// Configures SO_LINGER on socket (RFC 1122 Section 4.2.2.13).
+fn tcp_set_linger(fd: i64, onoff: bool, linger_sec: i32 = 0) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_linger(fd, if onoff { 1 } else { 0 }, linger_sec) == 0;
+}
+
+// Configures TCP_NODELAY (Nagle algorithm bypass) on socket.
+fn tcp_set_nodelay(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_nodelay(fd, if enable { 1 } else { 0 }) == 0;
+}
+
+// Configures SO_REUSEADDR on socket.
+fn tcp_set_reuseaddr(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_reuseaddr(fd, if enable { 1 } else { 0 }) == 0;
+}
+
+// Configures SO_REUSEPORT on socket (Linux / FreeBSD).
+fn tcp_set_reuseport(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_reuseport(fd, if enable { 1 } else { 0 }) == 0;
+}
+
 // Configures TCP_DEFER_ACCEPT to eliminate context switches on empty connections.
 fn tcp_set_defer_accept(fd: i64, timeout_sec: i32 = 1) -> bool {
     guard fd > 0 else { return false; }
@@ -180,9 +229,13 @@ fn tcp_set_user_timeout(fd: i64, timeout_ms: u32 = 5000) -> bool {
     return native_tcp_set_user_timeout(fd, timeout_ms) == 0;
 }
 
-// Configures aggressive SO_KEEPALIVE profile.
+// Configures aggressive SO_KEEPALIVE profile with strict boundary validation (RFC 1122 Section 4.2.3.6).
+// Limits: idle_sec in 1..7200, intvl_sec in 1..300, cnt in 1..127.
 fn tcp_set_keepalive(fd: i64, idle_sec: i32 = 1, intvl_sec: i32 = 11, cnt: i32 = 3) -> bool {
     guard fd > 0 else { return false; }
+    guard idle_sec >= 1 && idle_sec <= 7200 else { return false; }
+    guard intvl_sec >= 1 && intvl_sec <= 300 else { return false; }
+    guard cnt >= 1 && cnt <= 127 else { return false; }
     return native_tcp_set_keepalive_params(fd, idle_sec, intvl_sec, cnt) == 0;
 }
 
@@ -226,6 +279,9 @@ struct BackPressure {
     total_buffered: u64 = 0,
     total_drained: u64 = 0,
     drop_count: u64 = 0,
+    shutdown_pending: bool = false,
+    write_shut: bool = false,
+    peer_fin_received: bool = false,
 }
 
 fn new_backpressure() -> BackPressure {
@@ -234,6 +290,11 @@ fn new_backpressure() -> BackPressure {
 
 fn backpressure_len(bp: const BackPressure&) -> i64 {
     return bp.data.len - bp.pending_removal;
+}
+
+// Queries whether outbound flow control is active (unsent data buffered in backpressure).
+fn tcp_is_flow_controlled(bp: const BackPressure&) -> bool {
+    return backpressure_len(bp) > 0;
 }
 
 fn backpressure_data(bp: const BackPressure&) -> const u8[:] {
@@ -246,22 +307,24 @@ fn backpressure_clear(bp: BackPressure&) {
     bp.pending_removal = 0;
 }
 
+fn backpressure_compact(bp: BackPressure&) {
+    guard bp.pending_removal > 0 else { return; }
+    let active_len = bp.data.len - bp.pending_removal;
+    for i in active_len {
+        bp.data[i] = bp.data[bp.pending_removal + i];
+    }
+    while bp.data.len > active_len {
+        bp.data.pop();
+    }
+    bp.pending_removal = 0;
+}
+
 // Appends data to the backpressure buffer, performing compaction if pending_removal > 0
 fn backpressure_append(bp: BackPressure&, bytes: const u8[:]) -> bool {
     guard bytes.len > 0 else { return true; }
 
-    // If remaining space at tail is insufficient, compact unremoved data to index 0
     if bp.data.len + bytes.len > bp.data.cap {
-        if bp.pending_removal > 0 {
-            let active_len = bp.data.len - bp.pending_removal;
-            for i in active_len {
-                bp.data[i] = bp.data[bp.pending_removal + i];
-            }
-            while bp.data.len > active_len {
-                bp.data.pop();
-            }
-            bp.pending_removal = 0;
-        }
+        backpressure_compact(bp);
     }
 
     guard bp.data.len + bytes.len <= bp.data.cap else {
@@ -285,16 +348,69 @@ fn backpressure_erase(bp: BackPressure&, n: i64) {
         bp.data.clear();
         bp.pending_removal = 0;
     } else if bp.pending_removal > (bp.data.len >> 5) {
-        // Amortized compaction (minimum 1/32nd of buffer)
-        let active_len = bp.data.len - bp.pending_removal;
-        for i in active_len {
-            bp.data[i] = bp.data[bp.pending_removal + i];
-        }
-        while bp.data.len > active_len {
-            bp.data.pop();
-        }
-        bp.pending_removal = 0;
+        backpressure_compact(bp);
     }
+}
+
+// Attempts to drain active backpressure during write. Returns (handled, bytes_written, needs_poll).
+fn async_write_drain_existing(
+    fd: i64,
+    bp: BackPressure&,
+    data: const u8[:],
+    optionally: bool,
+) -> bool, i32, bool {
+    guard backpressure_len(bp) > 0 else { return false, 0, false; }
+    let sent = tcp_send(fd, backpressure_data(bp));
+    if sent > 0 {
+        backpressure_erase(bp, sent);
+    }
+    guard backpressure_len(bp) > 0 else { return false, 0, false; }
+    if optionally {
+        return true, 0, true;
+    }
+    backpressure_append(bp, data);
+    return true, data.len as i32, true;
+}
+
+// Flushes cork buffer during write. If cork cannot be fully sent, spills cork and optional data to backpressure.
+fn async_write_spill_cork(
+    fd: i64,
+    cork: core::CorkBuffer&,
+    bp: BackPressure&,
+    data: const u8[:],
+    optionally: bool,
+) -> bool, i32, bool {
+    guard core::cork_pending(cork) > 0 else { return false, 0, false; }
+    let cork_sent = tcp_send(fd, core::cork_as_slice(cork));
+    if cork_sent > 0 {
+        core::cork_consume(cork, cork_sent);
+    }
+    guard core::cork_pending(cork) > 0 else { return false, 0, false; }
+    backpressure_append(bp, core::cork_as_slice(cork));
+    core::cork_reset(cork);
+    if !optionally && data.len > 0 {
+        backpressure_append(bp, data);
+        return true, data.len as i32, true;
+    }
+    return true, 0, true;
+}
+
+// Writes unsent wire remainder directly to socket or queues to backpressure.
+fn async_write_direct(
+    fd: i64,
+    bp: BackPressure&,
+    data: const u8[:],
+    optionally: bool,
+) -> i32, bool {
+    let sent = tcp_send(fd, data);
+    guard sent < (data.len as i32) else { return sent, false; }
+    if optionally {
+        let sent_clamped = if sent > 0 { sent } else { 0 };
+        return sent_clamped, true;
+    }
+    let unsent_offset = if sent > 0 { sent as i64 } else { 0 };
+    backpressure_append(bp, data[unsent_offset..]);
+    return data.len as i32, true;
 }
 
 // Three-level prioritized async write matching uWebSockets AsyncSocket::write:
@@ -310,93 +426,95 @@ fn async_socket_write(
     optionally: bool = false,
 ) -> i32, bool {
     guard fd > 0 else { return 0, false; }
-
-    // 1. If we have existing backpressure, write from backpressure first
-    let bp_active = backpressure_len(bp);
-    if bp_active > 0 {
-        let sent = tcp_send(fd, backpressure_data(bp));
-        if sent > 0 {
-            backpressure_erase(bp, sent);
-        }
-
-        // If backpressure is still not fully drained
-        if backpressure_len(bp) > 0 {
-            if optionally {
-                return 0, true;
-            } else {
-                backpressure_append(bp, data);
-                return data.len as i32, true;
-            }
-        }
+    guard !bp.write_shut && !bp.shutdown_pending else {
+        bp.drop_count += 1;
+        return 0, false;
     }
+
+    let handled_bp, written_bp, poll_bp = async_write_drain_existing(fd, bp, data, optionally);
+    guard !handled_bp else { return written_bp, poll_bp; }
 
     guard data.len > 0 else { return 0, false; }
 
-    // 2. No backpressure. Check if data fits into CorkBuffer
     if data.len <= core::cork_available(cork) {
         core::cork_write_exact(cork, data);
         return data.len as i32, false;
     }
 
-    // 3. CorkBuffer is full or payload exceeds it. Flush existing cork first
-    if core::cork_pending(cork) > 0 {
-        let cork_slice = core::cork_as_slice(cork);
-        let cork_sent = tcp_send(fd, cork_slice);
-        if cork_sent > 0 {
-            core::cork_consume(cork, cork_sent);
-        }
-        if core::cork_pending(cork) > 0 {
-            // Corked data couldn't be completely flushed, transition remaining cork to backpressure!
-            backpressure_append(bp, core::cork_as_slice(cork));
-            core::cork_reset(cork);
-            if !optionally && data.len > 0 {
-                backpressure_append(bp, data);
-                return data.len as i32, true;
-            }
-            return 0, true;
-        }
-    }
+    let handled_cork, written_cork, poll_cork = async_write_spill_cork(fd, cork, bp, data, optionally);
+    guard !handled_cork else { return written_cork, poll_cork; }
 
-    // 4. Send directly to socket
-    let sent = tcp_send(fd, data);
-    if sent < (data.len as i32) {
-        let unsent_offset = if sent > 0 { sent as i64 } else { 0 };
-        backpressure_append(bp, data[unsent_offset..]);
-        return data.len as i32, true; // Queued to backpressure, socket needs writable poll
-    }
-
-    return sent, false;
+    return async_write_direct(fd, bp, data, optionally);
 }
 
-// Uncorks the socket and flushes cork buffer. If send is partial, spills remaining cork into backpressure.
+// Spills remaining cork buffer into backpressure.
+fn uncork_spill_to_bp(cork: core::CorkBuffer&, bp: BackPressure&) {
+    guard core::cork_pending(cork) > 0 else { return; }
+    backpressure_append(bp, core::cork_as_slice(cork));
+    core::cork_reset(cork);
+}
+
+// Directly flushes cork buffer to wire, spilling to backpressure if partially sent.
+fn uncork_flush_direct(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i32, bool {
+    guard core::cork_pending(cork) > 0 else { return 0, false; }
+    let sent_cork = tcp_send(fd, core::cork_as_slice(cork));
+    if sent_cork > 0 {
+        core::cork_consume(cork, sent_cork);
+    }
+    guard core::cork_pending(cork) > 0 else {
+        return sent_cork, false;
+    }
+    backpressure_append(bp, core::cork_as_slice(cork));
+    core::cork_reset(cork);
+    return sent_cork, true;
+}
+
+// Uncorks the socket and flushes cork buffer while strictly preserving FIFO stream order.
+// If backpressure is already active, cork data is appended behind backpressure without out-of-order sending.
 // Returns (bytes_written, needs_writable_poll).
 fn async_socket_uncork(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i32, bool {
     guard fd > 0 else { return 0, false; }
-    let pending = core::cork_pending(cork);
-    guard pending > 0 else { return 0, false; }
 
-    let cork_slice = core::cork_as_slice(cork);
-    let sent = tcp_send(fd, cork_slice);
-    if sent > 0 {
-        core::cork_consume(cork, sent);
+    var total_sent: i32 = 0;
+
+    // 1. Drain existing backpressure first to maintain strict TCP FIFO stream ordering
+    if backpressure_len(bp) > 0 {
+        let sent_bp = tcp_send(fd, backpressure_data(bp));
+        if sent_bp > 0 {
+            backpressure_erase(bp, sent_bp);
+            total_sent += sent_bp;
+        }
     }
 
-    if core::cork_pending(cork) > 0 {
-        // Spill remaining cork into per-socket backpressure
-        backpressure_append(bp, core::cork_as_slice(cork));
-        core::cork_reset(cork);
-        return sent, true;
+    // 2. If backpressure is still active, append cork to backpressure without sending ahead of it
+    if backpressure_len(bp) > 0 {
+        uncork_spill_to_bp(cork, bp);
+        return total_sent, true;
     }
 
-    return sent, false;
+    // 3. Backpressure is clear; flush cork buffer directly to socket
+    let sent_cork, needs_poll = uncork_flush_direct(fd, cork, bp);
+    return total_sent + sent_cork, needs_poll;
+}
+
+// Executes deferred shutdown if backpressure is clear and shutdown was requested.
+fn check_execute_deferred_shutdown(fd: i64, bp: BackPressure&) {
+    guard bp.shutdown_pending else { return; }
+    tcp_shutdown(fd, SHUT_WR);
+    bp.write_shut = true;
+    bp.shutdown_pending = false;
 }
 
 // Drains backpressure queue upon writable event (POLL_WRITE).
+// If a shutdown was deferred, executes tcp_shutdown(SHUT_WR) once the queue is fully drained.
 // Returns (bytes_drained, is_fully_empty).
 fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     guard fd > 0 else { return 0, true; }
     let bp_active = backpressure_len(bp);
-    guard bp_active > 0 else { return 0, true; }
+    guard bp_active > 0 else {
+        check_execute_deferred_shutdown(fd, bp);
+        return 0, true;
+    }
 
     let sent = tcp_send(fd, backpressure_data(bp));
     if sent > 0 {
@@ -404,7 +522,62 @@ fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     }
 
     let is_empty = backpressure_len(bp) == 0;
+    if is_empty {
+        check_execute_deferred_shutdown(fd, bp);
+    }
     return sent, is_empty;
+}
+
+// Initiates graceful shutdown of socket write side (SHUT_WR / SD_SEND).
+// If backpressure is active, defers shutdown until queue is completely drained (uSockets #148 / Go #82375).
+// Returns (did_shutdown_now, is_deferred).
+fn async_socket_shutdown(fd: i64, bp: BackPressure&, cork: core::CorkBuffer&) -> bool, bool {
+    guard fd > 0 else { return false, false; }
+    guard !bp.write_shut else { return true, false; }
+
+    if core::cork_pending(cork) > 0 {
+        async_socket_uncork(fd, cork, bp);
+    }
+
+    guard backpressure_len(bp) == 0 else {
+        bp.shutdown_pending = true;
+        return false, true;
+    }
+
+    let ok = tcp_shutdown(fd, SHUT_WR);
+    bp.write_shut = true;
+    bp.shutdown_pending = false;
+    return ok, false;
+}
+
+// Records peer half-close (FIN received) in socket state (Go #18527, RFC 9293 Section 3.5).
+fn async_socket_on_peer_fin(fd: i64, bp: BackPressure&) {
+    bp.peer_fin_received = true;
+}
+
+// Discards all queued backpressure and abruptly terminates socket with a TCP RST (RFC 1122 Section 4.2.2.13).
+fn async_socket_abort(fd: i64, bp: BackPressure&) -> bool {
+    guard fd > 0 else { return false; }
+    backpressure_clear(bp);
+    bp.shutdown_pending = false;
+    bp.write_shut = true;
+    return tcp_abort(fd);
+}
+
+// Closes the socket conforming strictly to RFC 1122 Section 4.2.2.13.
+// If unread bytes remain in the receive queue, triggers an abortive RST close to signal data loss.
+// Otherwise performs clean socket close.
+fn async_socket_close(fd: i64, bp: BackPressure&) -> bool {
+    guard fd > 0 else { return false; }
+    let unread = tcp_get_readable_bytes(fd);
+    if unread > 0 {
+        return async_socket_abort(fd, bp);
+    }
+    backpressure_clear(bp);
+    bp.shutdown_pending = false;
+    bp.write_shut = true;
+    tcp_close(fd);
+    return true;
 }
 
 // Receives data directly into a PipeBuffer without intermediate scratch copies.

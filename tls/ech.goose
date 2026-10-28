@@ -55,42 +55,8 @@ struct EchClientState {
 
 // ---- 3. ECHConfig Parser (RFC 9460 Section 4) ------------------------------
 
-// Parses a single ECHConfig from raw wire bytes.
-fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
-    guard raw.len >= 4 else { return false; }
-    var c = cursor_from(raw);
-
-    guard get_u16(c, out.version) else { return false; }
-    // Only draft-13 / RFC 9460 (0xFE0D) format is supported by this parser
-    guard out.version == ECH_VERSION_DRAFT13 else { return false; }
-
-    guard get_u16(c, out.length) else { return false; }
-    guard out.length <= cursor_len(c) else { return false; }
-
-    // Preserve raw bytes of this ECHConfig for HPKE info binding
-    let total_len = 4 + (out.length as i64);
-    guard total_len <= raw.len else { return false; }
-    // Guard against silent truncation in raw_bytes buffer
-    guard total_len <= out.raw_bytes.cap else { return false; }
-
-    out.raw_bytes.clear();
-    for i in total_len {
-        out.raw_bytes.push(raw[i]);
-    }
-
-    var contents = ByteCursor { buf: raw[..0] };
-    guard get_bytes(c, contents, out.length) else { return false; }
-
-    // KeyConfig: config_id (u8) || kem_id (u16) || public_key<1..2^16-1> || cipher_suites
-    guard get_u8(contents, out.config_id) else { return false; }
-    guard get_u16(contents, out.kem_id) else { return false; }
-
-    var pk_cursor = ByteCursor { buf: raw[..0] };
-    guard get_u16_length_prefixed(contents, pk_cursor) else { return false; }
-    guard cursor_len(pk_cursor) == 32 else { return false; }
-    for i in 32 { out.public_key[i] = pk_cursor.buf[i]; }
-
-    var cs_cursor = ByteCursor { buf: raw[..0] };
+fn parse_ech_cipher_suites(contents: ByteCursor&, out: EchConfig&) -> bool {
+    var cs_cursor = ByteCursor { buf: contents.buf[..0] };
     guard get_u16_length_prefixed(contents, cs_cursor) else { return false; }
     guard cursor_len(cs_cursor) >= 4 && (cursor_len(cs_cursor) % 4) == 0 else { return false; }
 
@@ -104,43 +70,99 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
         }
     }
     guard cursor_len(cs_cursor) == 0 else { return false; }
-    guard out.cipher_suites.len > 0 else { return false; }
+    return out.cipher_suites.len > 0;
+}
 
-    // maximum_name_length (u8)
-    guard get_u8(contents, out.maximum_name_length) else { return false; }
+fn is_digit_or_dot(b: u8) -> bool {
+    return (b >= '0' && b <= '9') || b == '.';
+}
 
-    // public_name: opaque<1..255> (RFC 9460: MUST NOT be empty or an IP literal)
-    var pub_cursor = ByteCursor { buf: raw[..0] };
+fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
+    var has_colon = false;
+    var all_digits_dots = true;
+    for b in pub_raw {
+        guard b != 0 else { return false; }
+        if b == ':' { has_colon = true; }
+        if !is_digit_or_dot(b) { all_digits_dots = false; }
+    }
+    guard !has_colon else { return false; }
+    guard !all_digits_dots || pub_raw.len == 0 else { return false; }
+    return true;
+}
+
+fn parse_ech_public_name(contents: ByteCursor&, out: EchConfig&) -> bool {
+    var pub_cursor = ByteCursor { buf: contents.buf[..0] };
     guard get_u8_length_prefixed(contents, pub_cursor) else { return false; }
     let pub_len = cursor_len(pub_cursor);
     guard pub_len >= 1 && pub_len <= 255 && pub_len <= out.public_name.cap else { return false; }
 
-    let pub_raw = pub_cursor.buf;
-    var has_colon = false;
-    var is_all_digits_and_dots = true;
-    for b in pub_raw {
-        guard b != 0 else { return false; }
-        if b == ':' { has_colon = true; }
-        if !(b >= '0' && b <= '9') && b != '.' {
-            is_all_digits_and_dots = false;
-        }
-    }
-    if has_colon || (is_all_digits_and_dots && pub_raw.len > 0) {
-        return false;
-    }
+    guard validate_ech_public_name_bytes(pub_cursor.buf) else { return false; }
 
     out.public_name.clear();
     for i in pub_len {
         out.public_name.push(pub_cursor.buf[i]);
     }
+    return true;
+}
 
-    // extensions: Extension<0..2^16-1>
+fn parse_ech_key_config(contents: ByteCursor&, out: EchConfig&) -> bool {
+    guard get_u8(contents, out.config_id) && get_u16(contents, out.kem_id) else { return false; }
+    var pk_cursor = ByteCursor { buf: contents.buf[..0] };
+    guard get_u16_length_prefixed(contents, pk_cursor) && cursor_len(pk_cursor) == 32 else { return false; }
+    for i in 32 { out.public_key[i] = pk_cursor.buf[i]; }
+    return parse_ech_cipher_suites(contents, out);
+}
+
+fn copy_ech_raw_bytes(raw: const u8[:], total_len: i64, out: EchConfig&) {
+    out.raw_bytes.clear();
+    for i in total_len {
+        out.raw_bytes.push(raw[i]);
+    }
+}
+
+// Parses a single ECHConfig from raw wire bytes.
+fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
+    guard raw.len >= 4 else { return false; }
+    var c = cursor_from(raw);
+
+    guard get_u16(c, out.version) && out.version == ECH_VERSION_DRAFT13 else { return false; }
+    guard get_u16(c, out.length) && out.length <= cursor_len(c) else { return false; }
+
+    let total_len = 4 + (out.length as i64);
+    guard total_len <= raw.len && total_len <= out.raw_bytes.cap else { return false; }
+
+    copy_ech_raw_bytes(raw, total_len, out);
+
+    var contents = ByteCursor { buf: raw[..0] };
+    guard get_bytes(c, contents, out.length) else { return false; }
+
+    guard parse_ech_key_config(contents, out) else { return false; }
+    guard get_u8(contents, out.maximum_name_length) else { return false; }
+    guard parse_ech_public_name(contents, out) else { return false; }
+
     var ext_cursor = ByteCursor { buf: raw[..0] };
-    guard get_u16_length_prefixed(contents, ext_cursor) else { return false; }
+    guard get_u16_length_prefixed(contents, ext_cursor) && cursor_len(contents) == 0 else { return false; }
+    return true;
+}
 
-    // Trailing unparsed bytes inside contents are strictly rejected
-    guard cursor_len(contents) == 0 else { return false; }
+fn parse_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool {
+    let entry_start = list_cursor.buf;
+    var probe = cursor_from(entry_start);
+    var ver: u16 = 0;
+    var elen: u16 = 0;
+    guard get_u16(probe, ver) && get_u16(probe, elen) else { return false; }
 
+    let total_entry = 4 + (elen as i64);
+    guard total_entry <= cursor_len(list_cursor) else { return false; }
+
+    if ver == ECH_VERSION_DRAFT13 {
+        var cfg = EchConfig { .. };
+        guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
+        if out.configs.len < out.configs.cap {
+            out.configs.push(cfg);
+        }
+    }
+    list_cursor.buf = list_cursor.buf[total_entry..];
     return true;
 }
 
@@ -153,53 +175,37 @@ fn parse_ech_config_list(raw: const u8[:], out: EchConfigList&) -> bool {
 
     var list_cursor = ByteCursor { buf: raw[..0] };
     guard get_u16_length_prefixed(c, list_cursor) else { return false; }
-    guard cursor_len(c) == 0 else { return false; }
-    guard cursor_len(list_cursor) >= 4 else { return false; }
+    guard cursor_len(c) == 0 && cursor_len(list_cursor) >= 4 else { return false; }
 
     out.configs.clear();
     while cursor_len(list_cursor) >= 4 {
-        let entry_start = list_cursor.buf;
-        var probe = cursor_from(entry_start);
-        var ver: u16 = 0;
-        var elen: u16 = 0;
-        guard get_u16(probe, ver) && get_u16(probe, elen) else { return false; }
-
-        let total_entry = 4 + (elen as i64);
-        guard total_entry <= cursor_len(list_cursor) else { return false; }
-
-        if ver != ECH_VERSION_DRAFT13 {
-            // RFC 9460 Section 4: Ignore unsupported versions and advance to next entry
-            list_cursor.buf = list_cursor.buf[total_entry..];
-            continue;
-        }
-
-        var cfg = EchConfig { .. };
-        guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
-
-        if out.configs.len < out.configs.cap {
-            out.configs.push(cfg);
-        }
-        list_cursor.buf = list_cursor.buf[total_entry..];
+        guard parse_ech_config_entry(list_cursor, out) else { return false; }
     }
 
-    // Must have fully consumed list_cursor without trailing fragments
     guard cursor_len(list_cursor) == 0 else { return false; }
     return out.configs.len > 0;
+}
+
+fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
+    guard cs.kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
+    return cs.aead_id == HPKE_AEAD_AES_128_GCM || cs.aead_id == HPKE_AEAD_CHACHA20_POLY1305;
 }
 
 // ---- 4. Selection and Matching ----------------------------------------------
 
 // Selects the first compatible ECHConfig and cipher suite supporting X25519 & HKDF-SHA256.
 fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: EchCipherSuite&) -> bool {
-    for i in list.configs.len {
+    let cfg_count = list.configs.len;
+    for i in cfg_count {
+        guard i < list.configs.len else { break; }
         let cfg = list.configs[i];
-        if cfg.version != ECH_VERSION_DRAFT13 { continue; }
-        if cfg.kem_id != HPKE_KEM_DHKEM_X25519_HKDF_SHA256 { continue; }
+        guard cfg.version == ECH_VERSION_DRAFT13 && cfg.kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { continue; }
 
-        for j in cfg.cipher_suites.len {
+        let cs_count = cfg.cipher_suites.len;
+        for j in cs_count {
+            guard j < cfg.cipher_suites.len else { break; }
             let cs = cfg.cipher_suites[j];
-            if cs.kdf_id == HPKE_KDF_HKDF_SHA256 &&
-               (cs.aead_id == HPKE_AEAD_AES_128_GCM || cs.aead_id == HPKE_AEAD_CHACHA20_POLY1305) {
+            if is_supported_ech_cipher(cs) {
                 out_cfg = cfg;
                 out_cs = cs;
                 return true;
@@ -388,6 +394,9 @@ fn ech_fsm_on_server_hello(
             return true;
         } else {
             // ECH rejected / bypassed by server
+            // RFC 9460 Section 7.2: If ECH was accepted in HRR, server MUST confirm ECH acceptance in ServerHello.
+            // ServerHello omitting ECH extension when fsm.has_hrr is true is a fatal protocol violation!
+            guard !fsm.has_hrr else { return false; }
             fsm.mode = EchHandshakeMode.Bypassed;
             return true;
         }
@@ -402,4 +411,23 @@ fn validate_ech_early_data_placement(is_inner: bool, has_early_data: bool) -> bo
         return false;
     }
     return true;
+}
+
+// RFC 9460 Section 6.1 & OpenSSL #33428: ECH Outer ALPN Separation
+// When ECH is accepted, the selected ALPN must match the inner ALPN offer.
+// When ECH is bypassed or rejected, the selected ALPN must match the outer ALPN offer.
+// An outer connection MUST NOT accept a negotiated ALPN that was only offered in the inner list.
+fn validate_ech_alpn_negotiation(
+    is_ech_accepted: bool,
+    selected_alpn: const u8[:],
+    inner_alpn: const u8[:],
+    outer_alpn: const u8[:],
+) -> bool {
+    guard selected_alpn.len > 0 else { return false; }
+    if is_ech_accepted {
+        return selected_alpn == inner_alpn;
+    } else {
+        guard outer_alpn.len > 0 else { return false; }
+        return selected_alpn == outer_alpn;
+    }
 }

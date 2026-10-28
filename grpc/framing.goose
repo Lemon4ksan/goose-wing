@@ -156,6 +156,28 @@ fn decode_grpc_web_frame<B>(
     return true, total_len;
 }
 
+// Parses a single gRPC-Web trailer header line ("name: value").
+fn parse_grpc_web_trailer_line(
+    line: const u8[:],
+    out_status: GrpcStatusCode&,
+    out_message: u8[..256]&,
+) -> bool {
+    let name, raw_val, ok_split = core::split_once_byte(line, ':');
+    guard ok_split && name.len > 0 else { return false; }
+    let val = core::trim_lws(raw_val);
+    if core::eq_ascii_fold(name, "grpc-status") {
+        let status_int, ok_code = core::parse_u32_dec(val);
+        guard ok_code else { return false; }
+        out_status = grpc_status_from_code(status_int);
+        return true;
+    }
+    if core::eq_ascii_fold(name, "grpc-message") {
+        out_message.clear();
+        decode_grpc_message(val, out_message);
+    }
+    return false;
+}
+
 // Parses gRPC-Web body trailers block (HTTP/1-style headers) to extract status and message.
 fn parse_grpc_web_trailers(
     trailer_bytes: const u8[:],
@@ -169,31 +191,16 @@ fn parse_grpc_web_trailers(
     var found_status = false;
 
     while cursor < trailer_bytes.len {
-        var line_end = cursor;
-        while line_end < trailer_bytes.len && trailer_bytes[line_end] != '\n' {
-            line_end++;
-        }
+        let rel_nl = core::index_of_byte(trailer_bytes[cursor..], '\n');
+        let line_end = if rel_nl >= 0 { cursor + rel_nl } else { trailer_bytes.len };
 
         var line = trailer_bytes[cursor..line_end];
-        if line.len > 0 && line[line.len - 1] == '\r' {
+        if core::ends_with(line, "\r") {
             line = line[..(line.len - 1)];
         }
 
-        if line.len > 0 {
-            let name, raw_val, ok_split = core::split_once_byte(line, ':');
-            if ok_split && name.len > 0 {
-                let val = core::trim_lws(raw_val);
-                if core::eq_ascii_fold(name, "grpc-status") {
-                    let status_int, ok_code = core::parse_u32_dec(val);
-                    if ok_code {
-                        out_status = grpc_status_from_code(status_int);
-                        found_status = true;
-                    }
-                } else if core::eq_ascii_fold(name, "grpc-message") {
-                    out_message.clear();
-                    decode_grpc_message(val, out_message);
-                }
-            }
+        if parse_grpc_web_trailer_line(line, out_status, out_message) {
+            found_status = true;
         }
 
         cursor = line_end + 1;

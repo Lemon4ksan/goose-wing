@@ -78,8 +78,10 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     var s = trim_lws(origin_or_url);
     if starts_with(s, "https://") { s = s[8..]; }
     else if starts_with(s, "http://") { s = s[7..]; }
+    guard s.len > 0 else { return s; }
     for i in s.len {
-        if s[i] == '/' || s[i] == '?' || s[i] == '#' || s[i] == ':' {
+        let b = s[i];
+        if b == '/' || b == '?' || b == '#' || b == ':' {
             return s[..i];
         }
     }
@@ -137,40 +139,21 @@ fn is_subresource_allowed(
     subresource_corp_header: const u8[:],
 ) -> bool {
     let is_same_origin = eq_ascii_fold(ctx.document_origin[..], subresource_origin);
-    if is_same_origin {
-        // Same-origin subresources are always allowed
-        return true;
-    }
+    guard !is_same_origin else { return true; }
 
     let corp = parse_corp(subresource_corp_header);
+    guard corp != CorpPolicy.SameOrigin else { return false; }
 
-    // If parent context requires CORP (COEP: require-corp)
-    if ctx.coep == CoepPolicy.RequireCorp {
-        // Under require-corp: cross-origin MUST explicitly opt-in with Cross-Origin-Resource-Policy: cross-origin.
-        // If it sends same-site, check whether document and subresource actually share the same eTLD+1!
-        if corp == CorpPolicy.SameSite {
-            var doc_etld: u8[..128] = [];
-            var sub_etld: u8[..128] = [];
-            core::extract_etld_plus_one(extract_hostname_from_origin(ctx.document_origin[..]), doc_etld);
-            core::extract_etld_plus_one(extract_hostname_from_origin(subresource_origin), sub_etld);
-            return doc_etld.len > 0 && sub_etld.len > 0 && eq_ascii_fold(doc_etld[..], sub_etld[..]);
-        }
-        return corp == CorpPolicy.CrossOrigin;
-    }
-
-    // Default browser behavior without require-corp:
-    // If subresource declared CORP: same-origin, reject cross-origin embedding
-    if corp == CorpPolicy.SameOrigin {
-        return false;
-    }
-
-    // If subresource declared CORP: same-site, allow only if same-site with document
     if corp == CorpPolicy.SameSite {
         var doc_etld: u8[..128] = [];
         var sub_etld: u8[..128] = [];
         core::extract_etld_plus_one(extract_hostname_from_origin(ctx.document_origin[..]), doc_etld);
         core::extract_etld_plus_one(extract_hostname_from_origin(subresource_origin), sub_etld);
         return doc_etld.len > 0 && sub_etld.len > 0 && eq_ascii_fold(doc_etld[..], sub_etld[..]);
+    }
+
+    if ctx.coep == CoepPolicy.RequireCorp {
+        return corp == CorpPolicy.CrossOrigin;
     }
 
     return true;

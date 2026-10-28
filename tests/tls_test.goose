@@ -1025,6 +1025,20 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         // Invalid wildcard placements
         sub.assert_false(wing::match_dns_san("foo.*.com", "foo.bar.com"), "middle wildcard rejected");
         sub.assert_false(wing::match_dns_san("*bar.com", "foobar.com"), "partial wildcard rejected");
+
+        // RFC 6125 §6.4.3: Trailing dot normalization (both presented and reference identifiers)
+        sub.assert_true(wing::match_dns_san("example.com", "example.com."), "exact match with trailing dot in host");
+        sub.assert_true(wing::match_dns_san("example.com.", "example.com"), "exact match with trailing dot in SAN pattern");
+        sub.assert_true(wing::match_dns_san("example.com.", "example.com."), "exact match with trailing dots in both");
+        sub.assert_true(wing::match_dns_san("*.example.com", "sub.example.com."), "wildcard match with trailing dot in host");
+        sub.assert_true(wing::match_dns_san("*.example.com.", "sub.example.com"), "wildcard match with trailing dot in SAN pattern");
+        sub.assert_true(wing::match_dns_san("*.example.com.", "sub.example.com."), "wildcard match with trailing dots in both");
+
+        // CVE-2009-3555 / CVE-2021-3712: Embedded NUL-byte injection rejection
+        sub.assert_false(wing::match_dns_san("example.com\0.evil.com", "example.com"), "reject embedded NUL in SAN pattern");
+        sub.assert_false(wing::match_dns_san("example.com", "example.com\0.evil.com"), "reject embedded NUL in host");
+        sub.assert_false(wing::match_uri_san("http://example.com\0.evil.com", "example.com"), "reject embedded NUL in URI SAN host");
+        sub.assert_false(wing::match_uri_san("example.com", "example.com\0.evil.com"), "reject embedded NUL in URI request host");
     };
 
     t.run("TLS-23: CertificateVerify Context Formatting & Signature Scheme Binding") { sub =>
@@ -1811,6 +1825,16 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         sub.assert_false(wing::match_dns_name_constraint("example.com", ".example.com"), "rejects apex for .example.com");
         sub.assert_false(wing::match_dns_name_constraint("otherexample.com", ".example.com"), "rejects non-subdomain");
 
+        // RFC 5280 §4.2.1.10: Trailing dot in DNS name constraints & candidates (prevent ExcludedSubtree bypass)
+        sub.assert_true(wing::match_dns_name_constraint("sub.example.com.", ".example.com"), "candidate with trailing dot matches leading dot constraint");
+        sub.assert_true(wing::match_dns_name_constraint("sub.example.com.", "example.com"), "candidate with trailing dot matches subdomain constraint");
+        sub.assert_true(wing::match_dns_name_constraint("example.com.", "example.com"), "candidate with trailing dot matches exact domain constraint");
+        sub.assert_true(wing::match_dns_name_constraint("sub.example.com", ".example.com."), "constraint with trailing dot matches candidate");
+
+        // CVE-2021-3712 / OpenSSL #31686: Embedded NUL rejection in NameConstraints
+        sub.assert_false(wing::match_dns_name_constraint("sub.example.com\0.evil.com", "example.com"), "reject embedded NUL in candidate DNS");
+        sub.assert_false(wing::match_dns_name_constraint("sub.example.com", "example.com\0.evil.com"), "reject embedded NUL in constraint");
+
         // 3. IP Name Constraint matching (RFC 5280 §4.2.1.10)
         // Subnet 192.168.1.0/24 (8 octets: 192.168.1.0 || 255.255.255.0)
         let ip_constraint: u8[8] = [192, 168, 1, 0, 255, 255, 255, 0];
@@ -1820,6 +1844,13 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         sub.assert_false(wing::match_ip_name_constraint(cand_out_sub[..], ip_constraint[..]), "rejects IPv4 outside subnet");
         let cand_diff_net: u8[4] = [10, 0, 0, 1];
         sub.assert_false(wing::match_ip_name_constraint(cand_diff_net[..], ip_constraint[..]), "rejects 10.0.0.1 outside subnet");
+
+        // RFC 5280 §4.2.1.10: IP name constraint length validation (4/8 octets IPv4, 16/32 octets IPv6)
+        let empty_ip: u8[0] = [];
+        sub.assert_false(wing::match_ip_name_constraint(empty_ip[..], empty_ip[..]), "reject empty IP and empty constraint");
+        let bad_len_cons: u8[4] = [192, 168, 1, 0]; // 4 octets instead of 8
+        sub.assert_false(wing::match_ip_name_constraint(cand_in_sub[..], bad_len_cons[..]), "reject 4-octet IPv4 constraint (must be 8 octets)");
+        sub.assert_false(wing::match_ip_name_constraint(cand_in_sub[..], empty_ip[..]), "reject empty constraint with IPv4 candidate");
 
         // 4. Empty NameConstraints SEQUENCE rejection (RFC 5280 §4.2.1.10)
         let empty_nc: u8[2] = [0x30, 0x00];
@@ -2641,6 +2672,18 @@ fn test_handshake_and_ech_security(t: core::T&) {
         sub.assert_false(wing::fragment_client_hello(dummy_ch, 2, recs), "splitting handshake header (< 4 bytes) strictly rejected");
         // Valid split at byte 10 (>= 4 bytes)
         sub.assert_true(wing::fragment_client_hello(dummy_ch, 10, recs), "valid fragmentation >= 4 bytes succeeds");
+
+        // 6. RFC 8446 Section 4: Synthetic message_hash (254 / 0xFE) MUST NEVER appear on wire
+        let hs_synth: u8[36] = [
+            0xFE, 0x00, 0x00, 0x20, // msg_type 254 (HS_MSG_MESSAGE_HASH), len 32
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let _, _, ok_wire_synth = wing::parse_handshake_header(hs_synth[..]);
+        sub.assert_false(ok_wire_synth, "synthetic message_hash (254) on wire strictly rejected in parse_handshake_header");
+
+        let _, _, ok_bnd_synth = wing::validate_handshake_record_boundary(hs_synth[..], 36);
+        sub.assert_false(ok_bnd_synth, "synthetic message_hash (254) strictly rejected in validate_handshake_record_boundary");
     };
 
     t.run("TLS-30: RFC 9460 & draft-13 ECHConfig Parsing, Downgrade Protection & Skipped Versions") { sub =>
@@ -2851,6 +2894,12 @@ fn test_handshake_r2_invariants(t: core::T&) {
 
         let expected_hash = core::sha256(mock_ch1);
         sub.assert_bytes_eq(out_synth[4..36], expected_hash[..], "synthetic message_hash contains SHA-256(ClientHello1)");
+
+        // 4. RFC 8446 Section 4.4.1: compress_hrr_transcript MUST reject non-TLS 1.3 hash algorithms
+        let dummy_md5: u8[16] = [0; 16];
+        var out_md5: u8[20] = [0; 20];
+        let _, ok_md5 = wing::compress_hrr_transcript(16, dummy_md5[..], out_md5[..]);
+        sub.assert_false(ok_md5, "compress_hrr_transcript strictly rejects non-TLS 1.3 hash length (16)");
     };
 
     t.run("TLS-33: RFC 8446 §4.1.4 HRR Cipher Suite & Selected Group Matching Rules") { sub =>
@@ -3059,6 +3108,69 @@ fn test_handshake_r2_invariants(t: core::T&) {
         );
         sub.assert_true(ok_fsm_sh, "fsm handles SH with valid confirmation");
         sub.assert_true(fsm_accept.mode == wing::EchHandshakeMode.Accepted, "mode is Accepted");
+
+        // 5. Post-HRR ECH Acceptance Downgrade / Stripping Attack Defense (RFC 9460 §7.2)
+        // If HRR accepted ECH (has_ech_ext == false), ServerHello MUST confirm acceptance.
+        // ServerHello omitting ECH extension MUST NOT silently downgrade to Bypassed; it MUST be rejected!
+        var fsm_hrr_accept = wing::EchFsm {
+            mode: wing::EchHandshakeMode.Offered,
+            has_hrr: false,
+            offered_config_id: 1,
+        };
+        // HRR accepts ECH
+        let ok_hrr_acc = wing::ech_fsm_on_server_hello(
+            fsm_hrr_accept,
+            true,  // is_hrr
+            false, // has_ech_ext == false -> ECH accepted for HRR flight
+            corrupted_rc[..0],
+            expected_confirm,
+            dummy_rc,
+        );
+        sub.assert_true(ok_hrr_acc, "HRR accepts ECH");
+        sub.assert_true(fsm_hrr_accept.has_hrr, "has_hrr is true");
+        sub.assert_true(fsm_hrr_accept.mode == wing::EchHandshakeMode.Offered, "mode remains Offered for ClientHello2");
+
+        // Attacker strips ECH confirmation from ServerHello2 (has_ech_ext == false)
+        let ok_sh_strip = wing::ech_fsm_on_server_hello(
+            fsm_hrr_accept,
+            false, // regular ServerHello
+            false, // ECH extension missing / stripped!
+            corrupted_rc[..0],
+            expected_confirm,
+            dummy_rc,
+        );
+        sub.assert_false(ok_sh_strip, "RFC 9460 §7.2: ServerHello omitting ECH confirmation after HRR acceptance MUST abort");
+
+        // 6. ECH Outer ALPN Separation (RFC 9460 §6.1, OpenSSL Issue #33428)
+        let inner_alpn = "h2";
+        let outer_alpn = "http/1.1";
+
+        // When ECH is accepted: selected ALPN MUST match inner ALPN offer
+        sub.assert_true(
+            wing::validate_ech_alpn_negotiation(true, "h2", inner_alpn, outer_alpn),
+            "ECH accepted: inner ALPN 'h2' negotiated successfully",
+        );
+        sub.assert_false(
+            wing::validate_ech_alpn_negotiation(true, "http/1.1", inner_alpn, outer_alpn),
+            "ECH accepted: outer ALPN 'http/1.1' strictly rejected",
+        );
+
+        // When ECH is rejected/bypassed: selected ALPN MUST match outer ALPN offer
+        sub.assert_true(
+            wing::validate_ech_alpn_negotiation(false, "http/1.1", inner_alpn, outer_alpn),
+            "ECH bypassed: outer ALPN 'http/1.1' negotiated successfully",
+        );
+        sub.assert_false(
+            wing::validate_ech_alpn_negotiation(false, "h2", inner_alpn, outer_alpn),
+            "ECH bypassed: inner ALPN 'h2' strictly rejected per OpenSSL #33428",
+        );
+
+        // Empty selected ALPN strictly rejected
+        let empty_alpn = "";
+        sub.assert_false(
+            wing::validate_ech_alpn_negotiation(false, empty_alpn, inner_alpn, outer_alpn),
+            "empty selected ALPN rejected",
+        );
     };
 }
 
@@ -3388,6 +3500,35 @@ fn test_handshake_r3_invariants(t: core::T&) {
             wing::validate_ech_early_data_placement(false, false),
             "no early_data in ClientHelloOuter permitted",
         );
+
+        // 5. OpenSSL Bug #31406 & RFC 8446 §4.2.10: 0-RTT PSK cipher suite mismatch handling
+        // Case A: server validator strictly rejects mismatched cipher suite
+        sub.assert_true(
+            wing::validate_server_early_data_cipher(wing::TLS_CIPHER_AES_128_CCM_SHA256, wing::TLS_CIPHER_AES_128_CCM_SHA256),
+            "identical cipher suites permit early data acceptance",
+        );
+        sub.assert_false(
+            wing::validate_server_early_data_cipher(wing::TLS_CIPHER_AES_128_CCM_SHA256, wing::TLS_CIPHER_AES_128_CCM_8_SHA256),
+            "mismatched PSK vs negotiated cipher suite strictly rejected on server (OpenSSL #31406)",
+        );
+        sub.assert_false(
+            wing::validate_server_early_data_cipher(0, wing::TLS_CIPHER_AES_128_GCM_SHA256),
+            "uninitialized PSK cipher rejected",
+        );
+
+        // Case B: client controller aborts early data when server sends ee_has_early_data on cipher mismatch
+        var ctrl_mismatch = wing::EarlyDataController {
+            state: wing::EarlyDataState.Offered,
+            max_early_data_size: 16384,
+            psk_cipher_suite: wing::TLS_CIPHER_AES_128_CCM_SHA256,
+            negotiated_cipher_suite: wing::TLS_CIPHER_AES_128_CCM_8_SHA256,
+            ..
+        };
+        let ok_ee_mismatch = wing::early_data_on_encrypted_extensions(ctrl_mismatch, true);
+        sub.assert_false(ok_ee_mismatch, "client aborts early data when EE accepts despite cipher mismatch");
+        sub.assert_true(ctrl_mismatch.state == wing::EarlyDataState.Rejected, "state transitions to Rejected");
+        sub.assert_true(ctrl_mismatch.keys_discarded, "0-RTT keys discarded on mismatch");
+        sub.assert_false(wing::early_data_can_send_eoed(ctrl_mismatch), "client cannot send EOED on mismatch");
     };
 
     // ------------------------------------------------------------------------

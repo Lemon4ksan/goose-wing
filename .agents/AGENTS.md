@@ -46,7 +46,35 @@ Releases are automated via Google's `release-please` workflow on `main`.
     ```powershell
     powershell -ExecutionPolicy Bypass -File .\scripts\verify_wing_gate.ps1 -TargetFile "<path\to\file.goose>" -MaxGCrap 25
     ```
+  - Pass `-ReplScript "<path\to\checks.repl>"` and `-TestSuite "<path\to\test.goose>"` to combine static complexity gating with in-memory packet assertions and unit tests in a single run.
   - If the script exits with code 1 (`GATE REJECTED`), functions must be flattened with `guard` clauses, bounds checks proved, and cyclomatic depth reduced until all functions pass.
+
+## Gosling REPL and wire verification workflow
+
+Use `..\gosling\bin\gosling-repl.exe` (`..\gosling\compiler\repl.goose`) to compile, fuzz, and benchmark `goose-wing` protocol parsers, SIMD scanners, and L4 socket state machines in memory without starting external network servers:
+
+```powershell
+# Run a one-liner packet injection and assertion check
+..\gosling\bin\gosling-repl.exe -e ":load http\parser.goose`n:pkt 2048 `"GET /index.html HTTP/1.1\r\n\r\n`"`n:simd 2048 47`n:assert scan_uri(2048, 28) == 1"
+
+# Execute a batch .repl verification script
+..\gosling\bin\gosling-repl.exe "<path\to\verify_parser.repl>"
+```
+
+| REPL command | Purpose in `goose-wing` workflows |
+| :--- | :--- |
+| `:load <file.goose>` | Strips `namespace`/`import` headers, hot-reloads declarations into the session, and compiles them to Wasm in memory. |
+| `:decls` / `:undef <sym>` | Lists active session functions/types or removes a symbol before redefining it. |
+| `:pkt <addr> <hex\|"str">` | Injects raw wire bytes or escaped HTTP/TLS/gRPC payloads directly into persistent linear memory (`2048..65535`). |
+| `:simd <addr> [byte]` | Displays a 16-byte `v128` memory window at `<addr>`, lane-by-lane matches against `[byte]` (default `'/'`, `47`), and the computed `i8x16.bitmask`. |
+| `:mem [addr] [len]` | Dumps linear memory in hex and ASCII to inspect zero-copy parser state or serialized frames. |
+| `:sockets` | Inspects the 8 virtual in-memory L4 socket slots (`wing_tcp_listen`, `wing_tcp_connect`, `wing_tcp_accept`, `wing_tcp_send`, `wing_tcp_recv`, `wing_tcp_close`) pre-bound in every session. |
+| `:assert <lhs> == <rhs>` | Evaluates both expressions in the Wasm VM and fails with exit code 1 on trap (`OutOfBoundsMemoryAccess`, `IntegerOverflow`) or value mismatch. |
+| `:crap [fn] [cov]` | Computes cyclomatic complexity (`CC`), nesting-weighted `EffCC`, unproven bounds checks (`BCE`), overflow ops (`OVF`), and `G-CRAP` archetype (`SAFE_PRIMITIVE`, `VERIFIED_DISPATCH`, `FUZZ_PRIORITY`, `PANIC_HAZARD`). |
+| `:gate [max_gcrap] [cov]` | Rejects the session (exit code 1) if any function exceeds `max_gcrap`, `EffCC > 15`, or contains unproven `BCE` at `< 80%` simulated coverage. |
+| `:wasm <fn\|expr>` | Disassembles generated W3C WebAssembly bytecode, including `0xFC` bulk memory and `0xFD` 128-bit SIMD opcodes. |
+| `:jit <fn(args)>` | Compiles Wasm bytecode to native x86_64 machine code, executes it on the CPU, and verifies `BIT-EXACT MATCH` against the Wasm VM. |
+| `:bench <fn(args)> [iters]` | Benchmarks execution time (`ns/op`) and speedup between the Wasm interpreter and native x86_64 JIT. |
 
 ## Pragmatic systems engineering principles
 

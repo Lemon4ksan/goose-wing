@@ -33,6 +33,7 @@ fn contains_byte(s: const u8[:], b: u8) -> bool {
 
 // Returns the 0-based index of the first occurrence of byte b in s, or -1 if not found.
 fn index_of_byte(s: const u8[:], b: u8) -> i64 {
+    guard s.len > 0 else { return -1; }
     for i in s.len {
         if s[i] == b { return i; }
     }
@@ -41,6 +42,7 @@ fn index_of_byte(s: const u8[:], b: u8) -> i64 {
 
 // Returns the 0-based index of the last occurrence of byte b in s, or -1 if not found.
 fn last_index_of_byte(s: const u8[:], b: u8) -> i64 {
+    guard s.len > 0 else { return -1; }
     var idx: i64 = s.len - 1;
     while idx >= 0 {
         if s[idx] == b { return idx; }
@@ -78,9 +80,10 @@ fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
     let limit = s.len - 4;
     var i: i64 = 0;
     while i <= limit {
-        if s[i] == '\r' && s[i + 1] == '\n' && s[i + 2] == '\r' && s[i + 3] == '\n' {
+        if s[i..i + 4] == "\r\n\r\n" {
             return i;
         }
+        guard i + 1 < s.len else { break; }
         if s[i + 1] != '\r' {
             i += 2;
         } else {
@@ -93,7 +96,8 @@ fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
 // Places sentinel fence bytes '\r' and 'a' at offset length and length+1 in wire buffer (uWebSockets HttpParser.h).
 // Allows SWAR and vectorized parsers to scan safely without bounds checks in the inner loop.
 fn fence_wire_slice(buf: u8[:], length: i64) -> bool {
-    guard length >= 0 && length + 2 <= buf.len else { return false; }
+    guard length >= 0 else { return false; }
+    guard length + 2 <= buf.len else { return false; }
     buf[length] = '\r';
     buf[length + 1] = 'a';
     return true;

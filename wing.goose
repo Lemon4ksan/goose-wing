@@ -120,6 +120,7 @@ import tls.post_quantum;
 import server.router;
 import server.pool;
 import server.pipeline;
+import server.wasm_filter;
 import server.cache;
 import server.server;
 import server.h2_multiplexer;

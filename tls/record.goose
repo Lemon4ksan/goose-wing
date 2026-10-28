@@ -18,18 +18,24 @@ enum TlsAlert {
     HandshakeFailure,
     BadCertificate,
     UnsupportedCertificate,
+    CertificateRevoked,
     CertificateExpired,
+    CertificateUnknown,
+    IllegalParameter,
     UnknownCa,
+    AccessDenied,
     DecodeError,
     DecryptError,
     ProtocolVersion,
     InsufficientSecurity,
     InternalError,
+    InappropriateFallback,
     UserCanceled,
     MissingExtension,
     UnsupportedExtension,
     UnrecognizedName,
     BadCertificateStatusResponse,
+    UnknownPskIdentity,
     CertificateRequired,
     NoApplicationProtocol,
 }
@@ -43,46 +49,64 @@ fn tls_alert_to_u8(alert: TlsAlert) -> u8 {
         HandshakeFailure => 40,
         BadCertificate => 42,
         UnsupportedCertificate => 43,
+        CertificateRevoked => 44,
         CertificateExpired => 45,
+        CertificateUnknown => 46,
+        IllegalParameter => 47,
         UnknownCa => 48,
+        AccessDenied => 49,
         DecodeError => 50,
         DecryptError => 51,
         ProtocolVersion => 70,
         InsufficientSecurity => 71,
         InternalError => 80,
+        InappropriateFallback => 86,
         UserCanceled => 90,
         MissingExtension => 109,
         UnsupportedExtension => 110,
         UnrecognizedName => 112,
         BadCertificateStatusResponse => 113,
+        UnknownPskIdentity => 115,
         CertificateRequired => 116,
         NoApplicationProtocol => 120,
     };
 }
 
 fn u8_to_tls_alert(code: u8) -> TlsAlert, bool {
-    if code == 0 { return TlsAlert.CloseNotify, true; }
-    if code == 10 { return TlsAlert.UnexpectedMessage, true; }
-    if code == 20 { return TlsAlert.BadRecordMac, true; }
-    if code == 22 { return TlsAlert.RecordOverflow, true; }
-    if code == 40 { return TlsAlert.HandshakeFailure, true; }
-    if code == 42 { return TlsAlert.BadCertificate, true; }
-    if code == 43 { return TlsAlert.UnsupportedCertificate, true; }
-    if code == 45 { return TlsAlert.CertificateExpired, true; }
-    if code == 48 { return TlsAlert.UnknownCa, true; }
-    if code == 50 { return TlsAlert.DecodeError, true; }
-    if code == 51 { return TlsAlert.DecryptError, true; }
-    if code == 70 { return TlsAlert.ProtocolVersion, true; }
-    if code == 71 { return TlsAlert.InsufficientSecurity, true; }
-    if code == 80 { return TlsAlert.InternalError, true; }
-    if code == 90 { return TlsAlert.UserCanceled, true; }
-    if code == 109 { return TlsAlert.MissingExtension, true; }
-    if code == 110 { return TlsAlert.UnsupportedExtension, true; }
-    if code == 112 { return TlsAlert.UnrecognizedName, true; }
-    if code == 113 { return TlsAlert.BadCertificateStatusResponse, true; }
-    if code == 116 { return TlsAlert.CertificateRequired, true; }
-    if code == 120 { return TlsAlert.NoApplicationProtocol, true; }
-    return TlsAlert.DecodeError, false;
+    let alert = match code {
+        0 => TlsAlert.CloseNotify,
+        10 => TlsAlert.UnexpectedMessage,
+        20 => TlsAlert.BadRecordMac,
+        22 => TlsAlert.RecordOverflow,
+        40 => TlsAlert.HandshakeFailure,
+        42 => TlsAlert.BadCertificate,
+        43 => TlsAlert.UnsupportedCertificate,
+        44 => TlsAlert.CertificateRevoked,
+        45 => TlsAlert.CertificateExpired,
+        46 => TlsAlert.CertificateUnknown,
+        47 => TlsAlert.IllegalParameter,
+        48 => TlsAlert.UnknownCa,
+        49 => TlsAlert.AccessDenied,
+        50 => TlsAlert.DecodeError,
+        51 => TlsAlert.DecryptError,
+        70 => TlsAlert.ProtocolVersion,
+        71 => TlsAlert.InsufficientSecurity,
+        80 => TlsAlert.InternalError,
+        86 => TlsAlert.InappropriateFallback,
+        90 => TlsAlert.UserCanceled,
+        109 => TlsAlert.MissingExtension,
+        110 => TlsAlert.UnsupportedExtension,
+        112 => TlsAlert.UnrecognizedName,
+        113 => TlsAlert.BadCertificateStatusResponse,
+        115 => TlsAlert.UnknownPskIdentity,
+        116 => TlsAlert.CertificateRequired,
+        120 => TlsAlert.NoApplicationProtocol,
+        _ => TlsAlert.DecodeError,
+    };
+    if alert == TlsAlert.DecodeError && code != 50 {
+        return TlsAlert.DecodeError, false;
+    }
+    return alert, true;
 }
 
 // Parses and validates a 2-byte TLS alert message according to RFC 8446 Section 6 & 6.1.
@@ -165,21 +189,36 @@ fn get_bytes(c: ByteCursor&, out: ByteCursor&, count: i64) -> bool {
 }
 
 fn get_u8_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
+    let saved = c.buf;
     var length: u8 = 0;
     if !get_u8(c, length) { return false; }
-    return get_bytes(c, out, length);
+    if !get_bytes(c, out, length) {
+        c.buf = saved;
+        return false;
+    }
+    return true;
 }
 
 fn get_u16_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
+    let saved = c.buf;
     var length: u16 = 0;
     if !get_u16(c, length) { return false; }
-    return get_bytes(c, out, length);
+    if !get_bytes(c, out, length) {
+        c.buf = saved;
+        return false;
+    }
+    return true;
 }
 
 fn get_u24_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
+    let saved = c.buf;
     var length: u32 = 0;
     if !get_u24(c, length) { return false; }
-    return get_bytes(c, out, length);
+    if !get_bytes(c, out, length) {
+        c.buf = saved;
+        return false;
+    }
+    return true;
 }
 
 fn get_last_u8(c: ByteCursor&, out: u8&) -> bool {
@@ -233,10 +272,17 @@ fn start_u8_prefix(b: ByteBuilder&) -> bool {
 }
 
 fn finish_u8_prefix(b: ByteBuilder&) -> bool {
-    if b.offsets.len == 0 { return false; }
-    let start = b.offsets.pop();
+    guard b.offsets.len > 0 else { return false; }
+    let start = b.offsets[b.offsets.len - 1];
+    guard start >= 0 && start < b.buf.len else {
+        b.offsets.pop();
+        return false;
+    }
     let body_len = b.buf.len - start - 1;
-    if body_len > 255 { return false; }
+    guard body_len >= 0 && body_len <= 255 else {
+        return false;
+    }
+    b.offsets.pop();
     b.buf[start] = body_len as u8;
     return true;
 }
@@ -250,10 +296,17 @@ fn start_u16_prefix(b: ByteBuilder&) -> bool {
 }
 
 fn finish_u16_prefix(b: ByteBuilder&) -> bool {
-    if b.offsets.len == 0 { return false; }
-    let start = b.offsets.pop();
+    guard b.offsets.len > 0 else { return false; }
+    let start = b.offsets[b.offsets.len - 1];
+    guard start >= 0 && start + 1 < b.buf.len else {
+        b.offsets.pop();
+        return false;
+    }
     let body_len = b.buf.len - start - 2;
-    if body_len > 65535 { return false; }
+    guard body_len >= 0 && body_len <= 65535 else {
+        return false;
+    }
+    b.offsets.pop();
     b.buf[start] = ((body_len >> 8) & 0xFF) as u8;
     b.buf[start + 1] = (body_len & 0xFF) as u8;
     return true;
@@ -269,10 +322,17 @@ fn start_u24_prefix(b: ByteBuilder&) -> bool {
 }
 
 fn finish_u24_prefix(b: ByteBuilder&) -> bool {
-    if b.offsets.len == 0 { return false; }
-    let start = b.offsets.pop();
+    guard b.offsets.len > 0 else { return false; }
+    let start = b.offsets[b.offsets.len - 1];
+    guard start >= 0 && start + 2 < b.buf.len else {
+        b.offsets.pop();
+        return false;
+    }
     let body_len = b.buf.len - start - 3;
-    if body_len > 16777215 { return false; }
+    guard body_len >= 0 && body_len <= 16777215 else {
+        return false;
+    }
+    b.offsets.pop();
     b.buf[start] = ((body_len >> 16) & 0xFF) as u8;
     b.buf[start + 1] = ((body_len >> 8) & 0xFF) as u8;
     b.buf[start + 2] = (body_len & 0xFF) as u8;
@@ -285,6 +345,7 @@ const RECORD_BUFSIZE_IN: i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INP
 const RECORD_BUFSIZE_OUT: i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
 const MAX_RECORD_PLAINTEXT_LEN: i64 = 16384;
 const MAX_RECORD_CIPHERTEXT_LEN: i64 = 16640; // 2^14 + 256
+const MAX_INNER_PLAINTEXT_LEN: i64 = 16624; // 16640 - 16 (AEAD tag) per RFC 8446 §5.1 & §5.4
 const TLS_RECORD_HEADER_LEN: i64 = 5;
 
 const MAX_EMPTY_RECORDS: i32 = 32; // BoringSSL kMaxEmptyRecords DoS defense
@@ -328,17 +389,22 @@ fn increment_record_seq_num(seq_num: u64&) -> bool {
 // 2. Trailing zero-padding stripping is performed without early breaks to eliminate timing side-channels.
 // 3. Inner ContentType must be a valid TLS 1.3 type (0x14..0x17), otherwise unexpected_message.
 // 4. Plaintext length after removing padding must not exceed 2^14 (16384) bytes, otherwise record_overflow.
-// 5. Handles arbitrary zero-padding up to maximum record length without buffer underflow or overflow.
+// 5. Total inner plaintext cannot exceed 16624 bytes (16640 max ciphertext - 16 bytes tag), otherwise record_overflow.
+// 6. Non-application_data records MUST NOT be empty (content_len == 0), otherwise unexpected_message.
+// 7. Handles arbitrary zero-padding up to maximum record length without buffer underflow or overflow.
 fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAlert {
     guard decrypted.len > 0 else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
+    }
+    guard decrypted.len <= MAX_INNER_PLAINTEXT_LEN else {
+        return decrypted[..0], 0, TlsAlert.RecordOverflow;
     }
 
     var inner_type: u8 = 0;
     var content_len: i64 = 0;
     var found = false;
 
-    // Constant-time backward scan over all decrypted bytes without early break
+    // Backward scan to find the last non-zero byte (inner ContentType)
     for i in decrypted.len {
         let idx = decrypted.len - 1 - i;
         let b = decrypted[idx];
@@ -349,16 +415,17 @@ fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAle
         }
     }
 
-    if !found || inner_type == 0 {
+    guard found else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-
-    if inner_type < CONTENT_TYPE_CHANGE_CIPHER_SPEC || inner_type > CONTENT_TYPE_APPLICATION_DATA {
+    guard inner_type >= CONTENT_TYPE_ALERT && inner_type <= CONTENT_TYPE_APPLICATION_DATA else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-
-    if content_len > MAX_RECORD_PLAINTEXT_LEN {
+    guard content_len <= MAX_RECORD_PLAINTEXT_LEN else {
         return decrypted[..0], 0, TlsAlert.RecordOverflow;
+    }
+    guard content_len > 0 || inner_type == CONTENT_TYPE_APPLICATION_DATA else {
+        return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
 
     return decrypted[..content_len], inner_type, TlsAlert.CloseNotify;
@@ -386,10 +453,10 @@ fn secure_wipe_buffer(buf: u8[:]) {
 // Invariants enforced:
 // 1. Strict alert separation:
 //    - Payload length > MAX_RECORD_CIPHERTEXT_LEN -> RecordOverflow.
-//    - Payload length < AEAD_TAG_LEN (16) -> DecodeError.
+//    - Payload length < AEAD_TAG_LEN + 1 (17) -> DecodeError.
+//    - Sequence number 2^64 - 1 -> UnexpectedMessage (RFC 8446 §5.3).
 //    - Tag verification failure -> BadRecordMac.
-// 2. Constant-time tag comparison to prevent timing oracles.
-// 3. Absolute zero-leakage guarantee: destination buffer is completely wiped on failure.
+// 2. Absolute zero-leakage guarantee: destination buffer is completely wiped on failure.
 fn tls_record_decrypt_aes128_gcm(
     key: const u8[16]&,
     iv: const u8[12]&,
@@ -398,63 +465,63 @@ fn tls_record_decrypt_aes128_gcm(
     record_payload: const u8[:],
     out_plaintext: u8[>..]&,
 ) -> u8, TlsAlert {
+    out_plaintext.clear();
     guard record_header.len == 5 else {
         return 0, TlsAlert.DecodeError;
     }
-    if record_payload.len > MAX_RECORD_CIPHERTEXT_LEN {
+    guard record_payload.len <= MAX_RECORD_CIPHERTEXT_LEN else {
         return 0, TlsAlert.RecordOverflow;
     }
-    if record_payload.len < AEAD_TAG_LEN {
+    guard record_payload.len >= AEAD_TAG_LEN + 1 else {
         return 0, TlsAlert.DecodeError;
     }
 
     let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
     guard ok_nonce else {
-        return 0, TlsAlert.InternalError;
+        return 0, TlsAlert.UnexpectedMessage;
     }
 
     let ct_len = record_payload.len - AEAD_TAG_LEN;
     let ciphertext = record_payload[..ct_len];
+    let tag_slice = record_payload[ct_len..];
     var tag: u8[16] = [0; 16];
+    guard tag_slice.len == 16 else { return 0, TlsAlert.DecodeError; }
     for i in 16 {
-        tag[i] = record_payload[ct_len + i];
+        tag[i] = tag_slice[i];
     }
 
     var temp_dec: u8[>..] = [];
     let ok_open = core::aes128_gcm_open(key, nonce, ciphertext, record_header, tag, temp_dec);
-    if !ok_open {
-        out_plaintext.clear();
+    guard ok_open else {
         return 0, TlsAlert.BadRecordMac;
     }
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..]);
-    if alert != TlsAlert.CloseNotify {
-        out_plaintext.clear();
-        for i in temp_dec.len { temp_dec[i] = 0; }
+    guard alert == TlsAlert.CloseNotify else {
+        secure_wipe_buffer(temp_dec[..]);
         return 0, alert;
     }
 
-    out_plaintext.clear();
     out_plaintext.append(plain);
-
-    for i in temp_dec.len { temp_dec[i] = 0; }
+    secure_wipe_buffer(temp_dec[..]);
     return inner_type, TlsAlert.CloseNotify;
 }
 
-// DoS filter tracking consecutive empty records and early data skipped volume.
+// DoS filter tracking consecutive empty records, early data skipped volume, and CCS records.
 struct RecordFilterState {
     empty_records_count: i32 = 0,
     early_data_skipped_bytes: i64 = 0,
+    ccs_count: i32 = 0,
 }
 
 fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert {
-    if payload_len < 0 || payload_len > MAX_RECORD_PLAINTEXT_LEN {
+    guard payload_len >= 0 && payload_len <= MAX_RECORD_PLAINTEXT_LEN else {
         return TlsAlert.RecordOverflow;
     }
 
     if payload_len == 0 {
         state.empty_records_count++;
-        if state.empty_records_count > MAX_EMPTY_RECORDS {
+        guard state.empty_records_count <= MAX_EMPTY_RECORDS else {
             return TlsAlert.UnexpectedMessage;
         }
     } else {
@@ -462,20 +529,27 @@ fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_e
     }
 
     if is_early_data {
-        state.early_data_skipped_bytes += payload_len;
-        if state.early_data_skipped_bytes > MAX_EARLY_DATA_SKIPPED {
+        guard state.early_data_skipped_bytes >= 0 && state.early_data_skipped_bytes <= MAX_EARLY_DATA_SKIPPED else {
             return TlsAlert.UnexpectedMessage;
         }
+        guard payload_len <= MAX_EARLY_DATA_SKIPPED - state.early_data_skipped_bytes else {
+            return TlsAlert.UnexpectedMessage;
+        }
+        state.early_data_skipped_bytes += payload_len;
     }
     return TlsAlert.CloseNotify;
 }
 
-// Encodes the 5-byte TLSCiphertext record header.
+// Encodes the 5-byte TLSCiphertext record header (RFC 8446 §5.2).
+// In TLS 1.3, TLSCiphertext outer content type MUST be application_data (0x17)
+// or change_cipher_spec (0x14) for middlebox compatibility.
+// Length MUST be at least 17 bytes (1 byte inner content type + 16 bytes AEAD tag)
+// and at most MAX_RECORD_CIPHERTEXT_LEN (16640 bytes).
 fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u16) -> bool {
-    if (ciphertext_len as i64) > MAX_RECORD_CIPHERTEXT_LEN {
+    guard ciphertext_len >= 17 && (ciphertext_len as i64) <= MAX_RECORD_CIPHERTEXT_LEN else {
         return false;
     }
-    if content_type < CONTENT_TYPE_CHANGE_CIPHER_SPEC || content_type > CONTENT_TYPE_APPLICATION_DATA {
+    guard content_type == CONTENT_TYPE_APPLICATION_DATA || content_type == CONTENT_TYPE_CHANGE_CIPHER_SPEC else {
         return false;
     }
     out.push(content_type);
@@ -520,6 +594,32 @@ fn validate_change_cipher_spec_record(payload: const u8[:]) -> TlsAlert {
     return TlsAlert.CloseNotify;
 }
 
+const MAX_CCS_RECORDS: i32 = 1;
+
+// Validates RFC 8446 Appendix D.4 Middlebox Compatibility ChangeCipherSpec record with state & flood protection:
+// 1. Must occur during active handshake (after ClientHello, before Finished). If not, UnexpectedMessage.
+// 2. Flood protection (OpenSSL #10065 / CVE-2020-1967): at most 1 CCS record allowed during handshake.
+//    Any subsequent CCS record triggers UnexpectedMessage.
+// 3. Payload must be exactly 1 byte of value 0x01. If wrong length -> DecodeError; wrong value -> UnexpectedMessage.
+fn check_change_cipher_spec_record(
+    state: RecordFilterState&,
+    payload: const u8[:],
+    handshake_active: bool,
+) -> TlsAlert {
+    guard handshake_active else {
+        return TlsAlert.UnexpectedMessage;
+    }
+    guard state.ccs_count < MAX_CCS_RECORDS else {
+        return TlsAlert.UnexpectedMessage;
+    }
+    let alert = validate_change_cipher_spec_record(payload);
+    guard alert == TlsAlert.CloseNotify else {
+        return alert;
+    }
+    state.ccs_count++;
+    return TlsAlert.CloseNotify;
+}
+
 // ---- 4. QUIC Crypto Gateway & Header Protection (RFC 9001) ------------------
 
 enum QuicEncryptionLevel {
@@ -549,6 +649,9 @@ enum QuicOutputEvent {
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
 fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
+    guard pn_offset > 0 else {
+        return pkt[..0], false;
+    }
     let sample_offset = (pn_offset as i64) + 4;
     guard sample_offset + 16 <= pkt.len else {
         return pkt[..0], false;
@@ -574,9 +677,16 @@ fn new_quic_crypto_conn() -> QuicCryptoConn {
 // Validates RFC 9001 invariants on incoming QUIC handshake bytes:
 // 1. Encryption level must match current read_level.
 // 2. ChangeCipherSpec is strictly forbidden in QUIC streams.
+// 3. CRYPTO frames cannot be empty (DecodeError) or exceed quota (RecordOverflow).
 fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: const u8[:]) -> TlsAlert {
-    if quic_encryption_level_to_u8(level) != quic_encryption_level_to_u8(conn.read_level) {
+    guard quic_encryption_level_to_u8(level) == quic_encryption_level_to_u8(conn.read_level) else {
         return TlsAlert.UnexpectedMessage;
+    }
+    guard data.len > 0 else {
+        return TlsAlert.DecodeError;
+    }
+    guard data.len <= MAX_QUIC_CRYPTO_BUFFER_LEN else {
+        return TlsAlert.RecordOverflow;
     }
     for b in data {
         if b == CONTENT_TYPE_CHANGE_CIPHER_SPEC {
@@ -600,9 +710,11 @@ fn new_quic_crypto_stream() -> QuicCryptoStream {
     };
 }
 
+const MAX_QUIC_VARINT: u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 §16 & §19.6)
+
 // Ingests a QUIC CRYPTO frame (RFC 9000 §19.6 / RFC 9001 §4).
 // Handles:
-// - Offset + Length 64-bit integer overflow protection
+// - Offset + Length 64-bit integer overflow and 2^62 - 1 varint maximum bounds protection
 // - Total buffer size quota (MAX_QUIC_CRYPTO_BUFFER_LEN)
 // - Out-of-order offset gap detection (returns false if offset > consumed_offset)
 // - Redundant duplicate frame detection (safely dropped if offset + len <= consumed_offset)
@@ -612,9 +724,10 @@ fn quic_crypto_stream_ingest(
     offset: u64,
     data: const u8[:],
 ) -> bool, i64 {
-    // 1. Integer overflow check: offset + data.len must not wrap around u64
+    // 1. Integer overflow check: offset + data.len must not wrap around u64 or exceed 2^62 - 1
+    guard offset <= MAX_QUIC_VARINT else { return false, 0; }
     let end_offset = offset + (data.len as u64);
-    guard end_offset >= offset else { return false, 0; }
+    guard end_offset >= offset && end_offset <= MAX_QUIC_VARINT else { return false, 0; }
 
     // 2. If end_offset <= stream.consumed_offset, entirely duplicate data; safely drop 0 new bytes
     if end_offset <= stream.consumed_offset {

@@ -60,18 +60,7 @@ enum HsState {
     Closed,
 }
 
-// Context-aware client state transition validator (RFC 8446 Section 4).
-// Enforces:
-// - Unexpected messages in wrong state (e.g. Finished before Certificate/CertificateVerify rejected in full handshake).
-// - EncryptedExtensions strictly rejected outside ClientWaitEE.
-// - Post-handshake: only NewSessionTicket and KeyUpdate accepted from server.
-// - HelloRetryRequest: client transitions to ClientWaitSH waiting for ServerHello2 (not ClientWaitEE).
-fn validate_client_handshake_transition(
-    current: HsState,
-    incoming_msg_type: u8,
-    is_psk: bool,
-    is_hrr: bool,
-) -> HsState, bool {
+fn client_wait_pre_transition(current: HsState, incoming_msg_type: u8, is_hrr: bool) -> HsState, bool {
     if current == HsState.ClientWaitSH {
         if incoming_msg_type == HS_MSG_SERVER_HELLO {
             if is_hrr {
@@ -84,25 +73,30 @@ fn validate_client_handshake_transition(
         if incoming_msg_type == HS_MSG_ENCRYPTED_EXTENSIONS {
             return HsState.ClientWaitCertCr, true;
         }
-    } else if current == HsState.ClientWaitCertCr {
-        if is_psk {
-            // In PSK mode: Certificate and CertificateVerify are omitted; Finished transitions directly to Connected
-            if incoming_msg_type == HS_MSG_FINISHED {
-                return HsState.Connected, true;
-            }
-        } else {
-            if incoming_msg_type == HS_MSG_CERTIFICATE_REQUEST {
-                return HsState.ClientWaitCert, true;
-            }
-            if incoming_msg_type == HS_MSG_CERTIFICATE || incoming_msg_type == HS_MSG_COMPRESSED_CERTIFICATE {
-                return HsState.ClientWaitCV, true;
-            }
-            // Strict RFC 8446 Invariant: Finished received before Certificate/CertificateVerify MUST be rejected
-            if incoming_msg_type == HS_MSG_FINISHED {
-                return HsState.Closed, false;
-            }
+    }
+    return HsState.Closed, false;
+}
+
+fn client_wait_cert_cr_transition(incoming_msg_type: u8, is_psk: bool) -> HsState, bool {
+    if is_psk {
+        // In PSK mode: Certificate and CertificateVerify are omitted; Finished transitions directly to Connected
+        if incoming_msg_type == HS_MSG_FINISHED {
+            return HsState.Connected, true;
         }
-    } else if current == HsState.ClientWaitCert {
+        return HsState.Closed, false;
+    }
+    if incoming_msg_type == HS_MSG_CERTIFICATE_REQUEST {
+        return HsState.ClientWaitCert, true;
+    }
+    if incoming_msg_type == HS_MSG_CERTIFICATE || incoming_msg_type == HS_MSG_COMPRESSED_CERTIFICATE {
+        return HsState.ClientWaitCV, true;
+    }
+    // Strict RFC 8446 Invariant: Finished received before Certificate/CertificateVerify MUST be rejected
+    return HsState.Closed, false;
+}
+
+fn client_wait_cert_or_cv_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
+    if current == HsState.ClientWaitCert {
         if incoming_msg_type == HS_MSG_CERTIFICATE || incoming_msg_type == HS_MSG_COMPRESSED_CERTIFICATE {
             return HsState.ClientWaitCV, true;
         }
@@ -110,13 +104,92 @@ fn validate_client_handshake_transition(
         if incoming_msg_type == HS_MSG_CERTIFICATE_VERIFY {
             return HsState.ClientWaitFinished, true;
         }
-    } else if current == HsState.ClientWaitFinished {
+    }
+    return HsState.Closed, false;
+}
+
+fn client_wait_post_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
+    if current == HsState.ClientWaitFinished {
         if incoming_msg_type == HS_MSG_FINISHED {
             return HsState.Connected, true;
         }
     } else if current == HsState.Connected {
         // RFC 8446 Section 4.6: Post-handshake messages from server
         if incoming_msg_type == HS_MSG_NEW_SESSION_TICKET || incoming_msg_type == HS_MSG_KEY_UPDATE {
+            return HsState.Connected, true;
+        }
+    }
+    return HsState.Closed, false;
+}
+
+// Context-aware client state transition validator (RFC 8446 Section 4).
+// Enforces:
+// - Unexpected messages in wrong state (e.g. Finished before Certificate/CertificateVerify rejected in full handshake).
+// - EncryptedExtensions strictly rejected outside ClientWaitEE.
+// - Post-handshake: only NewSessionTicket and KeyUpdate accepted from server.
+// - HelloRetryRequest: client transitions to ClientWaitSH waiting for ServerHello2 (not ClientWaitEE).
+// - Synthetic message_hash (254) strictly rejected from wire.
+fn validate_client_handshake_transition(
+    current: HsState,
+    incoming_msg_type: u8,
+    is_psk: bool,
+    is_hrr: bool,
+) -> HsState, bool {
+    guard incoming_msg_type != HS_MSG_MESSAGE_HASH else { return HsState.Closed, false; }
+    if current == HsState.ClientWaitSH || current == HsState.ClientWaitEE {
+        return client_wait_pre_transition(current, incoming_msg_type, is_hrr);
+    }
+    if current == HsState.ClientWaitCertCr {
+        return client_wait_cert_cr_transition(incoming_msg_type, is_psk);
+    }
+    if current == HsState.ClientWaitCert || current == HsState.ClientWaitCV {
+        return client_wait_cert_or_cv_transition(current, incoming_msg_type);
+    }
+    return client_wait_post_transition(current, incoming_msg_type);
+}
+
+fn server_wait_initial_transition(current: HsState, incoming_msg_type: u8, client_auth_requested: bool) -> HsState, bool {
+    if current == HsState.ServerWaitCH && incoming_msg_type == HS_MSG_CLIENT_HELLO {
+        if client_auth_requested { return HsState.ServerWaitCert, true; }
+        return HsState.ServerWaitFinished, true;
+    }
+    if current == HsState.ServerWaitEOED && incoming_msg_type == HS_MSG_END_OF_EARLY_DATA {
+        if client_auth_requested { return HsState.ServerWaitCert, true; }
+        return HsState.ServerWaitFinished, true;
+    }
+    return HsState.Closed, false;
+}
+
+fn server_wait_cert_step(incoming_msg_type: u8, client_cert_is_empty: bool) -> HsState, bool {
+    if incoming_msg_type == HS_MSG_CERTIFICATE || incoming_msg_type == HS_MSG_COMPRESSED_CERTIFICATE {
+        if client_cert_is_empty {
+            // RFC 8446 Section 4.4.2: If client has no certificates, CertificateVerify is omitted
+            return HsState.ServerWaitFinished, true;
+        }
+        return HsState.ServerWaitCV, true;
+    }
+    return HsState.Closed, false;
+}
+
+fn server_wait_cv_step(incoming_msg_type: u8, client_cert_is_empty: bool) -> HsState, bool {
+    if client_cert_is_empty {
+        // RFC 8446 Section 4.4.2: Client MUST NOT send CertificateVerify if certificate was empty
+        return HsState.Closed, false;
+    }
+    if incoming_msg_type == HS_MSG_CERTIFICATE_VERIFY {
+        return HsState.ServerWaitFinished, true;
+    }
+    return HsState.Closed, false;
+}
+
+fn server_wait_done_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
+    if current == HsState.ServerWaitFinished {
+        if incoming_msg_type == HS_MSG_FINISHED {
+            return HsState.Connected, true;
+        }
+    } else if current == HsState.Connected {
+        // Post-handshake: client MUST NOT send Finished, Certificate, etc. Only KeyUpdate permitted.
+        if incoming_msg_type == HS_MSG_KEY_UPDATE {
             return HsState.Connected, true;
         }
     }
@@ -130,48 +203,17 @@ fn validate_server_handshake_transition_auth(
     client_auth_requested: bool,
     client_cert_is_empty: bool,
 ) -> HsState, bool {
-    if current == HsState.ServerWaitCH {
-        if incoming_msg_type == HS_MSG_CLIENT_HELLO {
-            if client_auth_requested {
-                return HsState.ServerWaitCert, true;
-            }
-            return HsState.ServerWaitFinished, true;
-        }
-    } else if current == HsState.ServerWaitEOED {
-        if incoming_msg_type == HS_MSG_END_OF_EARLY_DATA {
-            if client_auth_requested {
-                return HsState.ServerWaitCert, true;
-            }
-            return HsState.ServerWaitFinished, true;
-        }
-    } else if current == HsState.ServerWaitCert {
-        if incoming_msg_type == HS_MSG_CERTIFICATE || incoming_msg_type == HS_MSG_COMPRESSED_CERTIFICATE {
-            if client_cert_is_empty {
-                // RFC 8446 Section 4.4.2: If client has no certificates, CertificateVerify is omitted
-                // and client transitions directly to Finished
-                return HsState.ServerWaitFinished, true;
-            }
-            return HsState.ServerWaitCV, true;
-        }
-    } else if current == HsState.ServerWaitCV {
-        if client_cert_is_empty {
-            // RFC 8446 Section 4.4.2: Client MUST NOT send CertificateVerify if certificate was empty
-            return HsState.Closed, false;
-        }
-        if incoming_msg_type == HS_MSG_CERTIFICATE_VERIFY {
-            return HsState.ServerWaitFinished, true;
-        }
-    } else if current == HsState.ServerWaitFinished {
-        if incoming_msg_type == HS_MSG_FINISHED {
-            return HsState.Connected, true;
-        }
-    } else if current == HsState.Connected {
-        // Post-handshake: client MUST NOT send Finished, Certificate, etc. Only KeyUpdate permitted.
-        if incoming_msg_type == HS_MSG_KEY_UPDATE {
-            return HsState.Connected, true;
-        }
+    guard incoming_msg_type != HS_MSG_MESSAGE_HASH else { return HsState.Closed, false; }
+    if current == HsState.ServerWaitCH || current == HsState.ServerWaitEOED {
+        return server_wait_initial_transition(current, incoming_msg_type, client_auth_requested);
     }
-    return HsState.Closed, false;
+    if current == HsState.ServerWaitCert {
+        return server_wait_cert_step(incoming_msg_type, client_cert_is_empty);
+    }
+    if current == HsState.ServerWaitCV {
+        return server_wait_cv_step(incoming_msg_type, client_cert_is_empty);
+    }
+    return server_wait_done_transition(current, incoming_msg_type);
 }
 
 fn validate_server_handshake_transition(
@@ -196,9 +238,11 @@ fn can_server_transition(current: HsState, incoming_msg_type: u8) -> HsState, bo
 const MAX_HANDSHAKE_MSG_LEN: u32 = 16777215; // 2^24 - 1 (RFC 8446 Section 5.1)
 
 // Validates that fragment length <= 2^24-1 and fits within data buffer.
+// RFC 8446 Section 4: message_hash (254 / 0xFE) is synthetic and MUST NOT appear on wire.
 fn parse_handshake_header(data: const u8[:]) -> u8, u32, bool {
     guard data.len >= 4 else { return 0, 0, false; }
     let msg_type = data[0];
+    guard msg_type != HS_MSG_MESSAGE_HASH else { return 0, 0, false; }
     let msg_len = ((data[1] as u32) << 16) | ((data[2] as u32) << 8) | data[3];
     guard msg_len <= MAX_HANDSHAKE_MSG_LEN else { return 0, 0, false; }
     guard (data.len - 4) as u32 >= msg_len else { return 0, 0, false; }
@@ -207,9 +251,11 @@ fn parse_handshake_header(data: const u8[:]) -> u8, u32, bool {
 
 // Validates a handshake message header against an explicit record boundary.
 // RFC 8446 Section 5.1: Handshake fragment length <= 2^24 - 1 and must match the record payload length.
+// RFC 8446 Section 4: message_hash (254 / 0xFE) is synthetic and MUST NOT appear on wire.
 fn validate_handshake_record_boundary(data: const u8[:], record_payload_len: i64) -> u8, u32, bool {
     guard data.len >= 4 else { return 0, 0, false; }
     let msg_type = data[0];
+    guard msg_type != HS_MSG_MESSAGE_HASH else { return 0, 0, false; }
     let msg_len = ((data[1] as u32) << 16) | ((data[2] as u32) << 8) | data[3];
     guard msg_len <= MAX_HANDSHAKE_MSG_LEN else { return 0, 0, false; }
     guard record_payload_len >= 4 else { return 0, 0, false; }
@@ -254,6 +300,8 @@ fn compress_hrr_transcript(
     ch1_hash: const u8[:],
     out: u8[:],
 ) -> i64, bool {
+    // RFC 8446 Section 4.4.1: TLS 1.3 only permits SHA-256 (32) and SHA-384 (48) transcript hashes
+    guard hash_len == 32 || hash_len == 48 else { return 0, false; }
     guard ch1_hash.len == hash_len else { return 0, false; }
     let total_len = 4 + (hash_len as i64);
     guard out.len >= total_len else { return 0, false; }
@@ -410,75 +458,69 @@ fn validate_server_cipher_suite(
 // - no NUL bytes permitted
 // - IPv4 and IPv6 address literals strictly forbidden in host_name (RFC 6066 Section 3)
 // - Normalized to ASCII lowercase
-fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
-    var cursor = cursor_from(ext_bytes);
-
-    var list_cursor = cursor_from(ext_bytes[..0]);
-    if !get_u16_length_prefixed(cursor, list_cursor) {
-        return false;
+fn has_consecutive_dots(raw: const u8[:]) -> bool {
+    for i in raw.len - 1 {
+        if raw[i] == '.' && raw[i + 1] == '.' { return true; }
     }
-    // RFC 6066 Section 3: server_name_list<1..2^16-1>, cannot be empty
-    guard cursor_len(list_cursor) > 0 else { return false; }
-    // No trailing data permitted in extension_data after server_name_list
-    guard cursor_len(cursor) == 0 else { return false; }
+    return false;
+}
 
-    var found_host_name = false;
-    var found_raw = ext_bytes[..0];
+fn is_sni_digit_or_dot(b: u8) -> bool {
+    return (b >= '0' && b <= '9') || b == '.';
+}
 
-    while cursor_len(list_cursor) > 0 {
-        var name_type: u8 = 0;
-        if !get_u8(list_cursor, name_type) { return false; }
-
-        var name_bytes = cursor_from(ext_bytes[..0]);
-        if !get_u16_length_prefixed(list_cursor, name_bytes) { return false; }
-
-        if name_type == 0 { // host_name
-            // RFC 6066 Section 3: ServerNameList MUST NOT contain more than one name of a given name_type
-            guard !found_host_name else { return false; }
-
-            let raw = name_bytes.buf;
-            guard raw.len >= 1 && raw.len <= 255 else { return false; }
-
-            // RFC 6066: The hostname is represented as a byte string without a trailing dot
-            // Also reject leading dot
-            guard raw[0] != '.' && raw[raw.len - 1] != '.' else { return false; }
-
-            // Reject consecutive dots
-            for i in raw.len - 1 {
-                if raw[i] == '.' && raw[i + 1] == '.' {
-                    return false;
-                }
-            }
-
-            // Reject NUL bytes and check for IP address format
-            var has_colon = false;
-            var is_all_digits_and_dots = true;
-
-            for b in raw {
-                if b == 0 { return false; }
-                if b == ':' { has_colon = true; }
-                if !(b >= '0' && b <= '9') && b != '.' {
-                    is_all_digits_and_dots = false;
-                }
-            }
-
-            // Reject literal IPv6 (has colon) or IPv4 (only digits and dots)
-            if has_colon || (is_all_digits_and_dots && raw.len > 0) {
-                return false;
-            }
-
-            found_raw = raw;
-            found_host_name = true;
+fn is_ip_literal_or_invalid(raw: const u8[:]) -> bool {
+    guard raw.len > 0 else { return false; }
+    var has_colon = false;
+    var is_digits_dots = true;
+    for b in raw {
+        if b == 0 { return true; }
+        if b == ':' { has_colon = true; }
+        if !is_sni_digit_or_dot(b) {
+            is_digits_dots = false;
         }
     }
-    // Entire list must have been cleanly consumed and host_name must have been found
-    guard cursor_len(list_cursor) == 0 && found_host_name else { return false; }
+    return has_colon || is_digits_dots;
+}
 
-    out_sni.clear();
-    for b in found_raw {
-        out_sni.push(core::to_lower_ascii_byte(b));
+fn validate_sni_host_bytes(raw: const u8[:]) -> bool {
+    guard raw.len >= 1 && raw.len <= 255 else { return false; }
+    guard raw[0] != '.' && raw[raw.len - 1] != '.' else { return false; }
+    guard !has_consecutive_dots(raw) else { return false; }
+    return !is_ip_literal_or_invalid(raw);
+}
+
+fn parse_sni_entry(list_cursor: ByteCursor&, found_host_name: bool&, out_sni: u8[..255]&) -> bool {
+    var name_type: u8 = 0;
+    guard get_u8(list_cursor, name_type) else { return false; }
+
+    var name_bytes = cursor_from(list_cursor.buf[..0]);
+    guard get_u16_length_prefixed(list_cursor, name_bytes) else { return false; }
+
+    if name_type == 0 { // host_name
+        guard !found_host_name else { return false; }
+        guard validate_sni_host_bytes(name_bytes.buf) else { return false; }
+        out_sni.clear();
+        for b in name_bytes.buf {
+            out_sni.push(core::to_lower_ascii_byte(b));
+        }
+        found_host_name = true;
     }
     return true;
+}
+
+fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
+    var cursor = cursor_from(ext_bytes);
+    var list_cursor = cursor_from(ext_bytes[..0]);
+    guard get_u16_length_prefixed(cursor, list_cursor) else { return false; }
+    guard cursor_len(list_cursor) > 0 && cursor_len(cursor) == 0 else { return false; }
+
+    var found_host_name = false;
+
+    while cursor_len(list_cursor) > 0 {
+        guard parse_sni_entry(list_cursor, found_host_name, out_sni) else { return false; }
+    }
+    return found_host_name;
 }
 
 // ---- 7. ALPN Negotiation (RFC 7301) -----------------------------------------
@@ -516,6 +558,43 @@ fn validate_alpn_extension(alpn_ext_bytes: const u8[:]) -> bool {
     return count > 0 && cursor_len(list_cursor) == 0;
 }
 
+fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
+    guard proto.len >= 1 && proto.len <= 255 else { return false; }
+    for b in proto {
+        guard b != 0 else { return false; }
+    }
+    return true;
+}
+
+fn is_http11_name(proto: const u8[:]) -> bool {
+    guard proto.len == 8 else { return false; }
+    return proto[0] == 'h' && proto[1] == 't' && proto[2] == 't' && proto[3] == 'p' &&
+           proto[4] == '/' && proto[5] == '1' && proto[6] == '.' && proto[7] == '1';
+}
+
+fn match_alpn_protocol(proto: const u8[:], has_h3: bool&, has_h2: bool&, has_http11: bool&) -> bool {
+    guard is_valid_alpn_proto(proto) else { return false; }
+    if proto.len == 2 && proto[0] == 'h' {
+        if proto[1] == '3' { has_h3 = true; return true; }
+        if proto[1] == '2' { has_h2 = true; return true; }
+    }
+    if is_http11_name(proto) {
+        has_http11 = true;
+    }
+    return true;
+}
+
+fn select_alpn_result(is_quic: bool, has_h3: bool, has_h2: bool, has_http11: bool, has_any: bool) -> NegotiatedAlpn {
+    if is_quic {
+        if has_h3 { return NegotiatedAlpn.H3; }
+        return NegotiatedAlpn.None;
+    }
+    if has_h2 { return NegotiatedAlpn.H2; }
+    if has_http11 { return NegotiatedAlpn.Http11; }
+    if has_any { return NegotiatedAlpn.Other; }
+    return NegotiatedAlpn.None;
+}
+
 // Parses ALPN ProtocolNameList and negotiates best matching protocol.
 // For QUIC (is_quic == true): strictly requires "h3" (RFC 9001 Section 8.1).
 // For TCP (is_quic == false): prefers "h2", then "http/1.1".
@@ -540,48 +619,14 @@ fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn 
         if !get_u8_length_prefixed(list_cursor, proto_cursor) {
             return NegotiatedAlpn.None;
         }
-        let proto = proto_cursor.buf;
-        // RFC 7301 Section 3.1: Empty strings MUST NOT be included
-        if proto.len == 0 || proto.len > 255 { return NegotiatedAlpn.None; }
-
-        // RFC 7301 Section 3.1 & Go #40928: Protocol names MUST NOT contain NUL bytes
-        for b in proto {
-            if b == 0 {
-                return NegotiatedAlpn.None;
-            }
+        if !match_alpn_protocol(proto_cursor.buf, has_h3, has_h2, has_http11) {
+            return NegotiatedAlpn.None;
         }
-
         has_any = true;
-        if proto.len == 2 && proto[0] == 'h' && proto[1] == '3' {
-            has_h3 = true;
-        } else if proto.len == 2 && proto[0] == 'h' && proto[1] == '2' {
-            has_h2 = true;
-        } else if proto.len == 8 &&
-                  proto[0] == 'h' && proto[1] == 't' && proto[2] == 't' && proto[3] == 'p' &&
-                  proto[4] == '/' && proto[5] == '1' && proto[6] == '.' && proto[7] == '1' {
-            has_http11 = true;
-        }
     }
 
     guard cursor_len(list_cursor) == 0 else { return NegotiatedAlpn.None; }
-
-    if is_quic {
-        if has_h3 {
-            return NegotiatedAlpn.H3;
-        }
-        return NegotiatedAlpn.None;
-    } else {
-        if has_h2 {
-            return NegotiatedAlpn.H2;
-        }
-        if has_http11 {
-            return NegotiatedAlpn.Http11;
-        }
-        if has_any {
-            return NegotiatedAlpn.Other;
-        }
-    }
-    return NegotiatedAlpn.None;
+    return select_alpn_result(is_quic, has_h3, has_h2, has_http11, has_any);
 }
 
 // ---- 8. Extensions Parser Combinator ----------------------------------------
@@ -589,6 +634,20 @@ fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn 
 struct TlsExtensionEntry {
     ext_type: u16 = 0,
     data: const u8[:] = [],
+}
+
+fn check_and_add_extension(entries: TlsExtensionEntry[..32]&, ext_type: u16, data: const u8[:]) -> bool {
+    for i in entries.len {
+        if entries[i].ext_type == ext_type {
+            return false;
+        }
+    }
+    guard entries.len < entries.cap else { return false; }
+    entries.push(TlsExtensionEntry {
+        ext_type: ext_type,
+        data: data,
+    });
+    return true;
 }
 
 // Parses extension block into static array of entries without heap allocation.
@@ -615,18 +674,7 @@ fn parse_extensions_block(
         var ext_data = cursor_from(ext_block_bytes[..0]);
         if !get_u16_length_prefixed(extensions_cursor, ext_data) { return false; }
 
-        // RFC 8446 Section 4.2: Duplicate extensions strictly forbidden
-        for i in entries.len {
-            if entries[i].ext_type == ext_type {
-                return false;
-            }
-        }
-
-        guard entries.len < entries.cap else { return false; }
-        entries.push(TlsExtensionEntry {
-            ext_type: ext_type,
-            data: ext_data.buf,
-        });
+        guard check_and_add_extension(entries, ext_type, ext_data.buf) else { return false; }
     }
     guard cursor_len(extensions_cursor) == 0 else { return false; }
     return true;
@@ -643,6 +691,18 @@ fn find_extension(entries: const TlsExtensionEntry[..32]&, ext_type: u16) -> con
 }
 
 // ---- Supported Versions Extension (RFC 8446 Section 4.2.1) -------------------
+
+fn check_and_add_version(seen_versions: u16[..127]&, ver: u16) -> bool {
+    for i in seen_versions.len {
+        if seen_versions[i] == ver {
+            return false;
+        }
+    }
+    if seen_versions.len < seen_versions.cap {
+        seen_versions.push(ver);
+    }
+    return true;
+}
 
 // Parses and validates the ClientHello supported_versions extension (RFC 8446 Section 4.2.1).
 // Returns (supports_tls13: bool, ok: bool).
@@ -664,16 +724,7 @@ fn parse_client_supported_versions(ext_bytes: const u8[:]) -> bool, bool {
     while cursor_len(list_cursor) > 0 {
         var ver: u16 = 0;
         guard get_u16(list_cursor, ver) else { return false, false; }
-
-        // Reject duplicate versions in ClientHello supported_versions
-        for i in seen_versions.len {
-            if seen_versions[i] == ver {
-                return false, false;
-            }
-        }
-        if seen_versions.len < seen_versions.cap {
-            seen_versions.push(ver);
-        }
+        guard check_and_add_version(seen_versions, ver) else { return false, false; }
 
         if ver == TLS13_VERSION {
             has_tls13 = true;
@@ -832,6 +883,56 @@ struct SessionTicketCache {
     total_received: u32 = 0,
 }
 
+fn parse_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
+    // RFC 8446 Section 4.2.10: In NewSessionTicket, early_data MUST be uint32 max_early_data_size
+    guard cursor_len(ext_data) == 4 else { return false; }
+    var max_size: u32 = 0;
+    guard get_u32(ext_data, max_size) else { return false; }
+    // RFC 8446 Section 4.2.10: Servers MUST NOT offer early_data with max_early_data_size = 0.
+    // Client receiving this MUST terminate connection with illegal_parameter.
+    guard max_size > 0 else { return false; }
+    out.has_early_data = true;
+    out.max_early_data_size = max_size;
+    return true;
+}
+
+fn parse_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: NewSessionTicketMsg&) -> bool {
+    while cursor_len(ext_cursor) > 0 {
+        var ext_type: u16 = 0;
+        guard get_u16(ext_cursor, ext_type) else { return false; }
+
+        var ext_data = cursor_from(payload[..0]);
+        guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
+
+        if ext_type == EXT_EARLY_DATA {
+            guard parse_ticket_early_data(ext_data, out) else { return false; }
+        }
+    }
+    return cursor_len(ext_cursor) == 0;
+}
+
+fn parse_ticket_nonce(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
+    var nonce_cursor = cursor_from(c.buf[..0]);
+    guard get_u8_length_prefixed(c, nonce_cursor) else { return false; }
+    let nonce_len = cursor_len(nonce_cursor);
+    guard nonce_len <= 255 && nonce_len <= out.ticket_nonce.cap else { return false; }
+    for i in nonce_len {
+        out.ticket_nonce.push(nonce_cursor.buf[i]);
+    }
+    return true;
+}
+
+fn parse_ticket_bytes(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
+    var ticket_cursor = cursor_from(c.buf[..0]);
+    guard get_u16_length_prefixed(c, ticket_cursor) else { return false; }
+    let ticket_len = cursor_len(ticket_cursor);
+    guard ticket_len > 0 && ticket_len <= out.ticket.cap else { return false; }
+    for i in ticket_len {
+        out.ticket.push(ticket_cursor.buf[i]);
+    }
+    return true;
+}
+
 // Parses and validates a NewSessionTicket handshake message payload (RFC 8446 Section 4.6.1).
 // Rejects ticket_lifetime > 604800s, empty tickets, nonce length overflow, and malformed early_data.
 fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> bool {
@@ -846,49 +947,14 @@ fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> 
     guard out.ticket_lifetime <= MAX_TICKET_LIFETIME_SECS else { return false; }
 
     guard get_u32(c, out.ticket_age_add) else { return false; }
-
-    var nonce_cursor = cursor_from(payload[..0]);
-    guard get_u8_length_prefixed(c, nonce_cursor) else { return false; }
-    let nonce_len = cursor_len(nonce_cursor);
-    guard nonce_len <= 255 && nonce_len <= out.ticket_nonce.cap else { return false; }
-    for i in nonce_len {
-        out.ticket_nonce.push(nonce_cursor.buf[i]);
-    }
-
-    var ticket_cursor = cursor_from(payload[..0]);
-    guard get_u16_length_prefixed(c, ticket_cursor) else { return false; }
-    // RFC 8446 Section 4.6.1: ticket<1..2^16-1>, ticket cannot be empty (0 bytes)
-    let ticket_len = cursor_len(ticket_cursor);
-    guard ticket_len > 0 && ticket_len <= out.ticket.cap else { return false; }
-    for i in ticket_len {
-        out.ticket.push(ticket_cursor.buf[i]);
-    }
+    guard parse_ticket_nonce(c, out) else { return false; }
+    guard parse_ticket_bytes(c, out) else { return false; }
 
     var ext_cursor = cursor_from(payload[..0]);
     guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
     guard cursor_len(c) == 0 else { return false; }
 
-    // Parse extensions in NewSessionTicket
-    while cursor_len(ext_cursor) > 0 {
-        var ext_type: u16 = 0;
-        guard get_u16(ext_cursor, ext_type) else { return false; }
-
-        var ext_data = cursor_from(payload[..0]);
-        guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
-
-        if ext_type == EXT_EARLY_DATA {
-            // RFC 8446 Section 4.2.10: In NewSessionTicket, early_data MUST be uint32 max_early_data_size
-            guard cursor_len(ext_data) == 4 else { return false; }
-            var max_size: u32 = 0;
-            guard get_u32(ext_data, max_size) else { return false; }
-            // RFC 8446 Section 4.2.10: Servers MUST NOT offer early_data with max_early_data_size = 0.
-            // Client receiving this MUST terminate connection with illegal_parameter.
-            guard max_size > 0 else { return false; }
-            out.has_early_data = true;
-            out.max_early_data_size = max_size;
-        }
-    }
-    return cursor_len(ext_cursor) == 0;
+    return parse_ticket_extensions(ext_cursor, payload, out);
 }
 
 // Stores a validated NewSessionTicket into bounded SessionTicketCache using circular eviction.
@@ -1032,6 +1098,57 @@ struct CertificateRequestMsg {
     sig_algorithms: u16[..16] = [],
 }
 
+fn parse_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) -> bool {
+    out.has_signature_algorithms = true;
+    var alg_cursor = cursor_from(ext_data.buf[..0]);
+    guard get_u16_length_prefixed(ext_data, alg_cursor) else { return false; }
+    let bytes_len = cursor_len(alg_cursor);
+    guard bytes_len >= 2 && (bytes_len % 2) == 0 else { return false; }
+    while cursor_len(alg_cursor) > 0 {
+        var alg: u16 = 0;
+        guard get_u16(alg_cursor, alg) else { return false; }
+        if out.sig_algorithms.len < out.sig_algorithms.cap {
+            out.sig_algorithms.push(alg);
+        }
+    }
+    return true;
+}
+
+// Parses and validates CertificateRequest message (RFC 8446 Section 4.3.2).
+// In initial handshake: context MUST be 0 length. In post-handshake: context MUST be <= 32 bytes.
+// signature_algorithms extension is mandatory; absence MUST cause rejection.
+fn parse_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: CertificateRequestMsg&) -> bool {
+    var ctx_cursor = cursor_from(c.buf[..0]);
+    guard get_u8_length_prefixed(c, ctx_cursor) else { return false; }
+
+    let ctx_len = cursor_len(ctx_cursor);
+    // RFC 8446 Section 4.3.2: context MUST be <= 32 bytes
+    guard ctx_len <= 32 && ctx_len <= out.context.cap else { return false; }
+    if !is_post_handshake {
+        // RFC 8446 Section 4.3.2: In initial handshake, context MUST be 0 length
+        guard ctx_len == 0 else { return false; }
+    }
+    for i in ctx_len {
+        out.context.push(ctx_cursor.buf[i]);
+    }
+    return true;
+}
+
+fn parse_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: CertificateRequestMsg&) -> bool {
+    while cursor_len(ext_cursor) > 0 {
+        var ext_type: u16 = 0;
+        guard get_u16(ext_cursor, ext_type) else { return false; }
+
+        var ext_data = cursor_from(payload[..0]);
+        guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
+
+        if ext_type == EXT_SIGNATURE_ALGORITHMS {
+            guard parse_cert_req_sig_algs(ext_data, out) else { return false; }
+        }
+    }
+    return cursor_len(ext_cursor) == 0;
+}
+
 // Parses and validates CertificateRequest message (RFC 8446 Section 4.3.2).
 // In initial handshake: context MUST be 0 length. In post-handshake: context MUST be <= 32 bytes.
 // signature_algorithms extension is mandatory; absence MUST cause rejection.
@@ -1045,48 +1162,14 @@ fn parse_certificate_request(
     out.sig_algorithms.clear();
 
     var c = cursor_from(payload);
-    var ctx_cursor = cursor_from(payload[..0]);
-    guard get_u8_length_prefixed(c, ctx_cursor) else { return false; }
-
-    let ctx_len = cursor_len(ctx_cursor);
-    // RFC 8446 Section 4.3.2: context MUST be <= 32 bytes
-    guard ctx_len <= 32 && ctx_len <= out.context.cap else { return false; }
-    if !is_post_handshake {
-        // RFC 8446 Section 4.3.2: In initial handshake, context MUST be 0 length
-        guard ctx_len == 0 else { return false; }
-    }
-    for i in ctx_len {
-        out.context.push(ctx_cursor.buf[i]);
-    }
+    guard parse_cert_req_context(c, is_post_handshake, out) else { return false; }
 
     var ext_cursor = cursor_from(payload[..0]);
     guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
     // RFC 8446 Section 4.3.2: extensions<2..2^16-1>
-    guard cursor_len(ext_cursor) >= 2 else { return false; }
-    guard cursor_len(c) == 0 else { return false; }
+    guard cursor_len(ext_cursor) >= 2 && cursor_len(c) == 0 else { return false; }
 
-    while cursor_len(ext_cursor) > 0 {
-        var ext_type: u16 = 0;
-        guard get_u16(ext_cursor, ext_type) else { return false; }
-
-        var ext_data = cursor_from(payload[..0]);
-        guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
-
-        if ext_type == EXT_SIGNATURE_ALGORITHMS {
-            out.has_signature_algorithms = true;
-            var alg_cursor = cursor_from(payload[..0]);
-            guard get_u16_length_prefixed(ext_data, alg_cursor) else { return false; }
-            let bytes_len = cursor_len(alg_cursor);
-            guard bytes_len >= 2 && (bytes_len % 2) == 0 else { return false; }
-            while cursor_len(alg_cursor) > 0 {
-                var alg: u16 = 0;
-                guard get_u16(alg_cursor, alg) else { return false; }
-                if out.sig_algorithms.len < out.sig_algorithms.cap {
-                    out.sig_algorithms.push(alg);
-                }
-            }
-        }
-    }
+    guard parse_cert_req_extensions(ext_cursor, payload, out) else { return false; }
 
     // RFC 8446 Section 4.3.2: signature_algorithms MUST be present
     guard out.has_signature_algorithms && out.sig_algorithms.len > 0 else { return false; }
@@ -1123,6 +1206,14 @@ struct EarlyDataController {
     keys_discarded: bool = false,
     bytes_sent: u32 = 0,
     max_early_data_size: u32 = 0,
+    psk_cipher_suite: u16 = 0,
+    negotiated_cipher_suite: u16 = 0,
+}
+
+// RFC 8446 Section 4.2.10 & OpenSSL Bug #31406:
+// Server MUST verify that the negotiated cipher suite exactly matches the PSK cipher suite before accepting early data.
+fn validate_server_early_data_cipher(psk_cipher: u16, negotiated_cipher: u16) -> bool {
+    return psk_cipher != 0 && negotiated_cipher != 0 && psk_cipher == negotiated_cipher;
 }
 
 // Evaluates server EncryptedExtensions for early_data acceptance or rejection (RFC 8446 Section 4.2.10).
@@ -1133,6 +1224,13 @@ fn early_data_on_encrypted_extensions(
 ) -> bool {
     guard ctrl.state == EarlyDataState.Offered else { return false; }
     if ee_has_early_data {
+        if ctrl.psk_cipher_suite != 0 && ctrl.negotiated_cipher_suite != 0 && ctrl.psk_cipher_suite != ctrl.negotiated_cipher_suite {
+            // OpenSSL Bug #31406 & RFC 8446 §4.2.10: Mismatched cipher suite between PSK and server selection
+            // strictly invalidates early_data; client MUST reject and abort.
+            ctrl.state = EarlyDataState.Rejected;
+            ctrl.keys_discarded = true;
+            return false;
+        }
         ctrl.state = EarlyDataState.Accepted;
         return true;
     } else {

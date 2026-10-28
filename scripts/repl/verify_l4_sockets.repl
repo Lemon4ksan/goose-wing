@@ -1,0 +1,48 @@
+# scripts/repl/verify_l4_sockets.repl
+# In-memory virtual L4 socket state machine verification (wing_tcp_*)
+
+let lis = tcp_listen(9001)
+:assert lis > 0
+
+let cli = tcp_connect(9001)
+:assert cli > 0
+
+let srv = tcp_accept(lis)
+:assert srv > 0
+
+:sockets
+
+# Client transmits frame over virtual L4 socket
+let sent = tcp_send(cli, "PING-PONG-TEST", 14)
+:assert sent == 14
+
+# Server receives into linear memory at [0x1388] (5000)
+let rcvd = tcp_recv(srv, 5000, 14)
+:assert rcvd == 14
+
+# Verify payload bytes in memory
+:assert load_u8(5000) == 80
+:assert load_u8(5001) == 73
+:assert load_u8(5002) == 78
+:assert load_u8(5003) == 71
+:assert load_u8(5013) == 84
+
+:mem 5000 16
+
+# Server echoes reply back
+let reply_sent = tcp_send(srv, "PONG-REPLY-OK!", 14)
+:assert reply_sent == 14
+
+let reply_rcvd = tcp_recv(cli, 5100, 14)
+:assert reply_rcvd == 14
+:assert load_u8(5100) == 80
+:assert load_u8(5101) == 79
+:assert load_u8(5102) == 78
+:assert load_u8(5103) == 71
+
+# Close sockets cleanly
+tcp_close(cli)
+tcp_close(srv)
+tcp_close(lis)
+
+:sockets

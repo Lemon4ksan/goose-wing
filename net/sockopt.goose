@@ -24,6 +24,14 @@ const SO_RCVBUF_OPT: i32 = 0x1002;    // Windows SO_RCVBUF (or 8 on Linux)
 const SO_SNDBUF_OPT: i32 = 0x1001;    // Windows SO_SNDBUF (or 7 on Linux)
 const SO_KEEPALIVE_OPT: i32 = 0x0008; // SO_KEEPALIVE
 const TCP_NODELAY_OPT: i32 = 0x0001;  // TCP_NODELAY
+const SO_LINGER_OPT: i32 = 0x0080;    // SO_LINGER
+const SO_REUSEADDR_OPT: i32 = 0x0004; // SO_REUSEADDR
+const SO_REUSEPORT_OPT: i32 = 0x0200; // SO_REUSEPORT
+
+// Channel shutdown modes
+const SHUT_RD: i32 = 0;
+const SHUT_WR: i32 = 1;
+const SHUT_RDWR: i32 = 2;
 
 // IP Level Option Names
 const IP_TTL_OPT: i32 = 4;             // IP_TTL
@@ -122,4 +130,34 @@ fn format_socket_p0f_summary<B>(cfg: const SocketP0fProfile&, out: B&) {
     core::format_i64_dec(cfg.wscale as i64, out);
     out.append(" | TCP_NODELAY=");
     out.append(if cfg.tcp_nodelay { "1" } else { "0" });
+}
+
+// Configures SO_LINGER on socket (RFC 1122 Section 4.2.2.13).
+fn tcp_set_linger(fd: i64, onoff: bool, timeout_sec: i32 = 0) -> bool {
+    guard fd > 0 else { return false; }
+    return wing::tcp_set_linger(fd, onoff, timeout_sec);
+}
+
+// Configures TCP_NODELAY (Nagle algorithm bypass) on socket.
+fn tcp_set_nodelay(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return wing::tcp_set_nodelay(fd, enable);
+}
+
+// Configures SO_REUSEADDR on socket.
+fn tcp_set_reuseaddr(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return wing::tcp_set_reuseaddr(fd, enable);
+}
+
+// Configures SO_REUSEPORT on socket (Linux / FreeBSD).
+fn tcp_set_reuseport(fd: i64, enable: bool = true) -> bool {
+    guard fd > 0 else { return false; }
+    return wing::tcp_set_reuseport(fd, enable);
+}
+
+// Abruptly terminates socket with TCP RST (RFC 1122 Section 4.2.2.13).
+fn tcp_abort(fd: i64) -> bool {
+    guard fd > 0 else { return false; }
+    return wing::tcp_abort(fd);
 }
