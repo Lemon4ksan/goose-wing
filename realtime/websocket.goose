@@ -81,11 +81,52 @@ struct WsFrameHeader {
     header_len: u16 = 0,
 }
 
+// In-place SWAR 64-bit/32-bit XOR masking loop (RFC 6455 Section 5.3)
+// Vectorizes payload masking in pure Goose using 64-bit word iterations without heap allocations or out-of-bounds reads.
+fn apply_mask_in_place(data: u8[:], mask_key: const u8[4]&) {
+    let n = data.len;
+    guard n > 0 else { return; }
+
+    let m0 = mask_key[0] as u64;
+    let m1 = mask_key[1] as u64;
+    let m2 = mask_key[2] as u64;
+    let m3 = mask_key[3] as u64;
+
+    let m32_be = (m0 << 24) | (m1 << 16) | (m2 << 8) | m3;
+    let m64_be = (m32_be << 32) | m32_be;
+
+    var i: i64 = 0;
+
+    // 64-bit SWAR loop: process 8 bytes per iteration
+    while i + 8 <= n {
+        let w = core::read_be_u64(data, i);
+        core::write_be_u64_at(data, i, w ^ m64_be);
+        i += 8;
+    }
+
+    // 32-bit SWAR tail: process remaining 4 bytes if present
+    if i + 4 <= n {
+        let w = core::read_be_u32(data, i);
+        core::write_be_u32_at(data, i, w ^ (m32_be as u32));
+        i += 4;
+    }
+
+    // Scalar byte-by-byte tail (0..3 bytes)
+    while i < n {
+        data[i] = data[i] ^ mask_key[i % 4];
+        i++;
+    }
+}
+
 // In-place masking / unmasking using vectorized SIMD acceleration with 64-bit unrolled fallback (RFC 6455 Section 5.3)
 fn mask_websocket_payload(data: u8[:], mask_key: const u8[4]&) {
     let n = data.len;
     guard n > 0 else { return; }
-    native_simd_mask_websocket(data, mask_key);
+    if n >= 64 {
+        native_simd_mask_websocket(data, mask_key);
+    } else {
+        apply_mask_in_place(data, mask_key);
+    }
 }
 
 // Parses RFC 6455 Frame Header with strict protocol validation
@@ -358,6 +399,7 @@ fn deflate_message_dedicated<B>(
     dedicated: DedicatedWsCompressor&,
     raw: const u8[:],
     out_wire: B&,
+    reset_window: bool = false,
 ) -> bool {
     guard raw.len > 0 else { return false; }
     dedicated.compress_buf.clear();
@@ -384,9 +426,14 @@ fn deflate_message_dedicated<B>(
     dedicated.total_compressed += eff_len as u64;
     dedicated.total_uncompressed += raw.len as u64;
 
-    if raw.len <= dedicated.history.cap {
+    if reset_window {
         dedicated.history.clear();
-        dedicated.history.append(raw);
+        dedicated.compress_buf.clear();
+    } else {
+        if raw.len <= dedicated.history.cap {
+            dedicated.history.clear();
+            dedicated.history.append(raw);
+        }
     }
     return true;
 }
@@ -396,6 +443,7 @@ fn inflate_message_dedicated<B>(
     compressed: const u8[:],
     out_plain: B&,
     max_payload: i64 = 65536,
+    reset_window: bool = false,
 ) -> bool {
     guard compressed.len > 0 else { return false; }
     dedicated.decompress_buf.clear();
@@ -420,6 +468,9 @@ fn inflate_message_dedicated<B>(
     }
 
     dedicated.total_decompressed += out_plain.len as u64;
+    if reset_window {
+        dedicated.decompress_buf.clear();
+    }
     return true;
 }
 
@@ -641,6 +692,7 @@ struct WebSocketSession {
     compress_mode: u16 = WS_COMPRESS_DISABLED,
     permessage_deflate: bool = false,
     server_no_context_takeover: bool = true,
+    client_no_context_takeover: bool = true,
 
     // Per-socket UserData / Typed User Context (uWebSockets getUserData pattern)
     user_tag: u64 = 0,
@@ -677,6 +729,30 @@ fn get_max_payload_length(ws: const WebSocketSession&) -> u64 {
 
 fn is_close_received(ws: const WebSocketSession&) -> bool {
     return ws.close_received;
+}
+
+// RFC 7692 §7.1.1: Configures sliding window context takeover boundaries
+fn set_context_takeover(ws: WebSocketSession&, server_no_context: bool, client_no_context: bool) {
+    ws.server_no_context_takeover = server_no_context;
+    ws.client_no_context_takeover = client_no_context;
+}
+
+// RFC 7692 §7.1.1: Determines if outbound compressor sliding window must be reset after sending
+fn ws_should_reset_compressor(ws: const WebSocketSession&) -> bool {
+    if ws.is_client {
+        return ws.client_no_context_takeover;
+    } else {
+        return ws.server_no_context_takeover;
+    }
+}
+
+// RFC 7692 §7.1.1: Determines if inbound decompressor sliding window must be reset after receiving
+fn ws_should_reset_decompressor(ws: const WebSocketSession&) -> bool {
+    if ws.is_client {
+        return ws.server_no_context_takeover;
+    } else {
+        return ws.client_no_context_takeover;
+    }
 }
 
 // Heartbeat action result for WebSocket keep-alive / auto-ping daemon
@@ -881,10 +957,16 @@ fn notify_drained(ws: WebSocketSession&, bytes_drained: u64) -> bool {
 }
 
 // Configures PerMessageDeflate (RFC 7692) on the WebSocket session
-fn enable_permessage_deflate(ws: WebSocketSession&, mode: u16 = WS_COMPRESS_SHARED_COMPRESSOR) {
+fn enable_permessage_deflate(
+    ws: WebSocketSession&,
+    mode: u16 = WS_COMPRESS_SHARED_COMPRESSOR,
+    server_no_context: bool = true,
+    client_no_context: bool = true,
+) {
     ws.permessage_deflate = true;
     ws.compress_mode = mode;
-    ws.server_no_context_takeover = true;
+    ws.server_no_context_takeover = server_no_context;
+    ws.client_no_context_takeover = client_no_context;
 }
 
 // Generates cryptographically secure 4-byte masking key for client frames per RFC 6455 Section 5.3.
@@ -960,7 +1042,8 @@ fn send_text_compressed_with_status<B>(
 
     if compress && ws.permessage_deflate && text.len > 0 {
         var comp_wire: u8[..16384] = [];
-        let ok_comp = ws_deflate_message(shared_comp, text, comp_wire, true);
+        let reset_win = ws_should_reset_compressor(ws);
+        let ok_comp = ws_deflate_message(shared_comp, text, comp_wire, reset_win);
         if ok_comp && comp_wire.len < text.len {
             let frame_len = (comp_wire.len + 10) as u64;
             let status = notify_buffered(ws, frame_len, out);
@@ -1020,7 +1103,8 @@ fn send_binary_compressed_with_status<B>(
 
     if compress && ws.permessage_deflate && data.len > 0 {
         var comp_wire: u8[..16384] = [];
-        let ok_comp = ws_deflate_message(shared_comp, data, comp_wire, true);
+        let reset_win = ws_should_reset_compressor(ws);
+        let ok_comp = ws_deflate_message(shared_comp, data, comp_wire, reset_win);
         if ok_comp && comp_wire.len < data.len {
             let frame_len = (comp_wire.len + 10) as u64;
             let status = notify_buffered(ws, frame_len, out);
