@@ -249,8 +249,19 @@ fn compute_digest_response(
     let is_auth_int = eq_ascii_fold(challenge.qop[..], "auth-int");
     let has_qop = (challenge.qop.len > 0);
 
+    var effective_user: u8[..128] = [];
+    if challenge.userhash {
+        var user_realm: u8[>..] = [];
+        user_realm.append(creds.username[..]);
+        user_realm.push(':');
+        user_realm.append(challenge.realm[..]);
+        digest_hash_hex(algo, user_realm[..], effective_user);
+    } else {
+        effective_user.append(creds.username[..]);
+    }
+
     var ha1_hex: u8[..64] = [];
-    calculate_digest_ha1(algo, creds.username[..], challenge.realm[..], creds.password[..], challenge.nonce[..], cnonce, ha1_hex);
+    calculate_digest_ha1(algo, effective_user[..], challenge.realm[..], creds.password[..], challenge.nonce[..], cnonce, ha1_hex);
 
     var ha2_hex: u8[..64] = [];
     calculate_digest_ha2(algo, method, uri, is_auth_int, body, ha2_hex);
@@ -261,7 +272,7 @@ fn compute_digest_response(
     var response_hex: u8[..64] = [];
     calculate_digest_response(algo, ha1_hex[..], challenge.nonce[..], nc_str[..], cnonce, has_qop, is_auth_int, ha2_hex[..], response_hex);
 
-    var total_len: i64 = 17 + creds.username.len + 10 + challenge.realm.len + 10 + challenge.nonce.len + 8 + uri.len + 13 + algo.len + 13 + response_hex.len + 1;
+    var total_len: i64 = 17 + effective_user.len + 10 + challenge.realm.len + 10 + challenge.nonce.len + 8 + uri.len + 13 + algo.len + 13 + response_hex.len + 1;
     if has_qop {
         let active_qop_len: i64 = if is_auth_int { 8 } else { 4 };
         total_len += 6 + active_qop_len + 5 + nc_str.len + 10 + cnonce.len + 1;
@@ -269,11 +280,14 @@ fn compute_digest_response(
     if challenge.opaque.len > 0 {
         total_len += 10 + challenge.opaque.len + 1;
     }
+    if challenge.userhash {
+        total_len += 16;
+    }
     guard total_len <= out_header.cap else { return false; }
 
     out_header.clear();
     out_header.append("Digest username=\"");
-    out_header.append(creds.username[..]);
+    out_header.append(effective_user[..]);
     out_header.append("\", realm=\"");
     out_header.append(challenge.realm[..]);
     out_header.append("\", nonce=\"");
@@ -301,6 +315,10 @@ fn compute_digest_response(
         out_header.append(", opaque=\"");
         out_header.append(challenge.opaque[..]);
         out_header.append("\"");
+    }
+
+    if challenge.userhash {
+        out_header.append(", userhash=true");
     }
 
     return true;

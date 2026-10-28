@@ -339,6 +339,24 @@ fn test_dpop_rfc9449(t: core::T&) {
 
         let fail_lc = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(fail_lc, "Proof with lowercase htm MUST be rejected");
+
+        // Header with alg:none or fake typ must be rejected (RFC 9449 §4.2)
+        let h_bad = "{\"typ\":\"jwt\",\"alg\":\"HS256\",\"p\":\"dpop+jwt\"}";
+        var h_bad_b64: u8[..256] = [];
+        core::base64url_encode(h_bad, h_bad_b64);
+        var signing_bad: u8[..512] = [];
+        signing_bad.append(h_bad_b64[..]);
+        signing_bad.push('.' as u8);
+        signing_bad.append(c_b64[..]);
+        let sig_bad = core::hmac_sha256(key, signing_bad[..]);
+        var sig_bad_b64: u8[..64] = [];
+        core::base64url_encode(sig_bad[..], sig_bad_b64);
+        var tok_bad: u8[..1024] = [];
+        tok_bad.append(signing_bad[..]);
+        tok_bad.push('.' as u8);
+        tok_bad.append(sig_bad_b64[..]);
+        let ok_fake_typ = wing::verify_dpop_proof(tok_bad[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        sub.assert_false(ok_fake_typ, "Proof with fake typ must be rejected even if dpop+jwt is in extra property");
     };
 }
 

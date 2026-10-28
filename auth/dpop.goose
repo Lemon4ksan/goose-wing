@@ -242,6 +242,31 @@ fn create_dpop_proof<B>(
 
 // ---- 5. DPoP Proof Verification ---------------------------------------------
 
+fn verify_dpop_header(header_json: const u8[:]) -> bool {
+    var reader = json::reader(header_json);
+    var valid_typ = false;
+    var valid_alg = false;
+    var scratch: u8[>..] = [];
+
+    json::each_member(reader) { key =>
+        scratch.clear();
+        if key == "typ" {
+            let typ_val = json::read_string(reader, scratch);
+            if core::eq_ascii_fold(typ_val, "dpop+jwt") || core::eq_ascii_fold(typ_val, "application/dpop+jwt") {
+                valid_typ = true;
+            }
+        } else if key == "alg" {
+            let alg_val = json::read_string(reader, scratch);
+            if !core::eq_ascii_fold(alg_val, "none") && alg_val.len > 0 {
+                valid_alg = true;
+            }
+        } else {
+            json::skip(reader);
+        }
+    };
+    return json::finish(reader) && valid_typ && valid_alg;
+}
+
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: const u8[:]) -> bool {
     let expected_sig = core::hmac_sha256(key, signing_input);
     var expected_sig_b64: u8[..64] = [];
@@ -423,7 +448,7 @@ fn verify_dpop_proof(
 
     var header_json: u8[>..] = [];
     guard core::base64url_decode(header_b64, header_json) else { return false; }
-    guard core::contains(header_json[..], "dpop+jwt") else { return false; }
+    guard verify_dpop_header(header_json[..]) else { return false; }
 
     var claims_json: u8[>..] = [];
     guard core::base64url_decode(claims_b64, claims_json) else { return false; }

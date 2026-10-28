@@ -167,11 +167,49 @@ fn test_aws_sigv4_signing(t: core::T&) {
     };
 }
 
+fn test_rfc7616_userhash_and_sigv4_session_token(t: core::T&) {
+    t.run("RFC 7616 userhash=true and AWS SigV4 STS Session Token") { sub =>
+        // 1. RFC 7616 Section 3.4.4 userhash=true
+        let raw_chal = "Digest realm=\"secure@example.com\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", userhash=true";
+        let chal, ok_chal = wing::parse_digest_challenge(raw_chal);
+        sub.assert_true(ok_chal, "Challenge with userhash parsed");
+        sub.assert_true(chal.userhash, "Challenge userhash flag set");
+
+        var creds = wing::DigestCredentials { .. };
+        creds.username.append("alice");
+        creds.password.append("Secret123");
+
+        var out_hdr: u8[..512] = [];
+        let ok_resp = wing::compute_digest_response(chal, creds, "GET", "/api/data", 1, "0a4f113b", "", out_hdr);
+        sub.assert_true(ok_resp, "Digest response computed with userhash");
+        sub.assert_true(core::contains(out_hdr[..], "userhash=true"), "Authorization contains userhash=true");
+
+        // Verify username is hex hash, not plain "alice"
+        sub.assert_false(core::contains(out_hdr[..], "username=\"alice\""), "Plain username is hidden by userhash");
+
+        // 2. AWS SigV4 with STS session token
+        var aws_creds = wing::new_aws_credentials("ASIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "us-east-1", "s3");
+        aws_creds.session_token.append("AQoDYXdzEJr1EXAMPLETOKEN");
+
+        var req = wing::new_get("https://examplebucket.s3.amazonaws.com/test.txt");
+        let dt = "20130524T000000Z";
+        let signed = wing::sign_aws_sigv4(req, aws_creds, dt);
+        sub.assert_true(signed, "AWS SigV4 with session token signed");
+
+        let sec_tok = wing::header(req, "x-amz-security-token");
+        sub.assert_bytes_eq(sec_tok, "AQoDYXdzEJr1EXAMPLETOKEN", "x-amz-security-token header present");
+
+        let auth = wing::header(req, "Authorization");
+        sub.assert_true(core::contains(auth, "x-amz-security-token"), "SignedHeaders includes x-amz-security-token");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("RFC 7616 Digest Access Authentication & AWS SigV4 Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. RFC 7616 Official IETF Test Vector & MD5 Fallback", test_rfc7616_official_ietf_vector);
     core::run_case(runner, "2. 401 Authenticator Replay Loop (Digest & Basic)", test_401_authenticator_loop);
     core::run_case(runner, "3. AWS SigV4 Request Signing", test_aws_sigv4_signing);
+    core::run_case(runner, "4. RFC 7616 Userhash & AWS SigV4 Session Token", test_rfc7616_userhash_and_sigv4_session_token);
     let ok = core::finish(runner);
     assert(ok);
 }

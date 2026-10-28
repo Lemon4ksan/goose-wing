@@ -102,16 +102,16 @@ fn sign_aws_sigv4<R>(
     }
 
     if !req.has_header("x-amz-date") {
-        req.headers.push(make_header("x-amz-date", datetime_iso));
+        set_header(req, "x-amz-date", datetime_iso);
     }
     if !req.has_header("x-amz-content-sha256") {
-        req.headers.push(make_header("x-amz-content-sha256", payload_sha_hex[..]));
+        set_header(req, "x-amz-content-sha256", payload_sha_hex[..]);
     }
     if creds.session_token.len > 0 {
-        req.headers.push(make_header("x-amz-security-token", creds.session_token[..]));
+        set_header(req, "x-amz-security-token", creds.session_token[..]);
     }
 
-    var canon_uri: u8[..256] = [];
+    var canon_uri: u8[..2048] = [];
     let parsed, err = core::parse_url(req.url[..]);
     if parsed.valid {
         let p = core::pathname(parsed);
@@ -155,6 +155,14 @@ fn sign_aws_sigv4<R>(
     if signed_headers.len > 0 { signed_headers.push(';'); }
     signed_headers.append("x-amz-date");
 
+    if creds.session_token.len > 0 {
+        canon_headers.append("x-amz-security-token:");
+        canon_headers.append(creds.session_token[..]);
+        canon_headers.push('\n');
+        if signed_headers.len > 0 { signed_headers.push(';'); }
+        signed_headers.append("x-amz-security-token");
+    }
+
     var canon_req: u8[>..] = [];
     canon_req.append(req.method[..]);
     canon_req.push('\n');
@@ -195,6 +203,6 @@ fn sign_aws_sigv4<R>(
     var auth_val: u8[..512] = [];
     format_aws_authorization(creds.access_key_id[..], credential_scope[..], signed_headers[..], sig_hex[..], auth_val);
 
-    req.headers.push(make_header("Authorization", auth_val[..]));
+    set_header(req, "Authorization", auth_val[..]);
     return true;
 }
