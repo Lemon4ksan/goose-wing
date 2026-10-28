@@ -307,6 +307,9 @@ fn build_simple_prefix_code(
     for i in nsym {
         let s = brotli_read_bits(r, alphabet_bits) as i32;
         guard s < alphabet_size else { return false; }
+        for j in i {
+            guard symbols[j] != s else { return false; }
+        }
         symbols[i] = s;
     }
 
@@ -449,6 +452,8 @@ fn read_complex_prefix_code(
         }
     }
 
+    guard space_symbols == 0 else { return false; }
+
     let m_err = construct_brotli_huffman_table(main_lengths[..alphabet_size], alphabet_size, table);
     return m_err == 0;
 }
@@ -487,18 +492,22 @@ fn decode_brotli_distance(
         else if dcode == 1 { dist = d1; }
         else if dcode == 2 { dist = d2; }
         else if dcode == 3 { dist = d3; }
-        else if dcode == 4 { dist = if d0 > 1 { d0 - 1 } else { 1 }; }
+        else if dcode == 4 { dist = if d0 > 1 { d0 - 1 } else { 0 }; }
         else if dcode == 5 { dist = d0 + 1; }
-        else if dcode == 6 { dist = if d0 > 2 { d0 - 2 } else { 1 }; }
+        else if dcode == 6 { dist = if d0 > 2 { d0 - 2 } else { 0 }; }
         else if dcode == 7 { dist = d0 + 2; }
-        else if dcode == 8 { dist = if d0 > 3 { d0 - 3 } else { 1 }; }
+        else if dcode == 8 { dist = if d0 > 3 { d0 - 3 } else { 0 }; }
         else if dcode == 9 { dist = d0 + 3; }
-        else if dcode == 10 { dist = if d1 > 1 { d1 - 1 } else { 1 }; }
+        else if dcode == 10 { dist = if d1 > 1 { d1 - 1 } else { 0 }; }
         else if dcode == 11 { dist = d1 + 1; }
-        else if dcode == 12 { dist = if d1 > 2 { d1 - 2 } else { 1 }; }
+        else if dcode == 12 { dist = if d1 > 2 { d1 - 2 } else { 0 }; }
         else if dcode == 13 { dist = d1 + 2; }
-        else if dcode == 14 { dist = if d1 > 3 { d1 - 3 } else { 1 }; }
+        else if dcode == 14 { dist = if d1 > 3 { d1 - 3 } else { 0 }; }
         else if dcode == 15 { dist = d1 + 3; }
+
+        if dist == 0 {
+            return 0;
+        }
 
         if dcode > 0 {
             dist_ring[3] = dist_ring[2];
@@ -677,7 +686,7 @@ fn brotli_decompress_with_limit_impl<B>(
     let header_err = decode_brotli_window_bits(r, wbits);
     guard header_err == CompressError.None else { return header_err; }
 
-    let max_window_distance = (1 as u32) << wbits;
+    let max_window_distance = ((1 as u32) << wbits) - 16;
     var dist_ring: u32[4] = [4, 11, 15, 16];
     var prev_p1: u8 = 0;
     var prev_p2: u8 = 0;
@@ -696,11 +705,37 @@ fn brotli_decompress_with_limit_impl<B>(
         // MNIBBLES (2 bits)
         let mnibbles = brotli_read_bits(r, 2);
         if mnibbles == 3 {
-            // Metadata meta-block (Section 9.2)
+            // Empty / Metadata meta-block (RFC 7932 Section 9.2)
             let reserved = brotli_read_bits(r, 1);
             guard reserved == 0 else { return CompressError.CorruptedBitstream; }
+
             let mskipbytes = brotli_read_bits(r, 2);
-            for i in mskipbytes {
+            var mskiplen: u32 = 0;
+            if mskipbytes > 0 {
+                var last_byte: u32 = 0;
+                for i in mskipbytes {
+                    let b = brotli_read_bits(r, 8);
+                    mskiplen |= b << (8 * i);
+                    last_byte = b;
+                }
+                guard mskipbytes == 1 || last_byte != 0 else {
+                    return CompressError.CorruptedBitstream;
+                }
+                mskiplen += 1;
+            }
+
+            // Fill bits until next byte boundary must be all zeros (RFC 7932 Section 9.2)
+            let rem_bits = r.bit_count & 7;
+            if rem_bits > 0 {
+                let fill = brotli_read_bits(r, rem_bits);
+                guard fill == 0 else { return CompressError.CorruptedBitstream; }
+            }
+
+            // Discard MSKIPLEN metadata bytes
+            for i in mskiplen {
+                if r.bit_count < 8 && r.pos >= r.src.len {
+                    return CompressError.InputBufferTruncated;
+                }
                 let _ = brotli_read_bits(r, 8);
             }
             continue;
@@ -708,9 +743,14 @@ fn brotli_decompress_with_limit_impl<B>(
 
         let num_nibbles = if mnibbles == 0 { 4 } else if mnibbles == 1 { 5 } else { 6 };
         var mlen: u32 = 0;
+        var last_nib: u32 = 0;
         for i in num_nibbles {
             let nib = brotli_read_bits(r, 4);
             mlen |= nib << (4 * i);
+            last_nib = nib;
+        }
+        guard num_nibbles <= 4 || last_nib != 0 else {
+            return CompressError.CorruptedBitstream;
         }
         mlen += 1;
 
@@ -728,8 +768,15 @@ fn brotli_decompress_with_limit_impl<B>(
         }
 
         if is_uncompressed {
-            brotli_byte_align(r);
+            let align_bits = r.bit_count & 7;
+            if align_bits > 0 {
+                let align_pad = brotli_read_bits(r, align_bits);
+                guard align_pad == 0 else { return CompressError.CorruptedBitstream; }
+            }
             for i in mlen {
+                if r.bit_count < 8 && r.pos >= r.src.len {
+                    return CompressError.InputBufferTruncated;
+                }
                 let b = brotli_read_bits(r, 8) as u8;
                 out.push(b);
                 prev_p2 = prev_p1;
@@ -799,7 +846,14 @@ fn brotli_decompress_with_limit_impl<B>(
             let copy_extra = COPY_LENGTH_EXTRA_BITS[copy_code as i64] as u32;
             let copy_len = COPY_LENGTH_BASE[copy_code as i64] + (if copy_extra > 0 { brotli_read_bits(r, copy_extra) } else { 0 });
 
-            // Read literals
+            // Read literals: enforce MLEN and max_output_bytes quota bounds prior to insertion
+            guard meta_block_remaining >= ins_len else {
+                return CompressError.CorruptedBitstream;
+            }
+            if max_output_bytes >= 0 && (out.len + (ins_len as i64)) > max_output_bytes {
+                return CompressError.OutputBufferOverflow;
+            }
+
             for i in ins_len {
                 let lit, ok_l = decode_brotli_symbol(r, lit_table);
                 guard ok_l && lit >= 0 else { return CompressError.CorruptedBitstream; }
@@ -809,15 +863,13 @@ fn brotli_decompress_with_limit_impl<B>(
                 prev_p1 = lit_byte;
             }
 
-            guard meta_block_remaining >= ins_len else {
-                return CompressError.CorruptedBitstream;
-            }
             meta_block_remaining -= ins_len;
             if meta_block_remaining == 0 {
                 break;
             }
 
             // Decode backward distance
+            var dist_ring_prev = dist_ring;
             var distance: u32 = 0;
             if dist_zero {
                 distance = dist_ring[0];
@@ -834,6 +886,12 @@ fn brotli_decompress_with_limit_impl<B>(
 
             if distance <= max_allowed_backward {
                 // Sliding window backward copy
+                guard meta_block_remaining >= copy_len else {
+                    return CompressError.CorruptedBitstream;
+                }
+                if max_output_bytes >= 0 && (out.len + (copy_len as i64)) > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
                 let dist_offset = distance as i64;
                 guard dist_offset <= out.len else { return CompressError.DistanceOutOfBounds; }
                 var copy_pos = out.len - dist_offset;
@@ -845,20 +903,33 @@ fn brotli_decompress_with_limit_impl<B>(
                     prev_p2 = prev_p1;
                     prev_p1 = b;
                 }
+                meta_block_remaining -= copy_len;
             } else {
                 // Static built-in dictionary copy (RFC 7932 Section 8)
+                // Distances that represent static dictionary words are not pushed to dist_ring (Section 4)
+                dist_ring = dist_ring_prev;
+
+                let len_before = out.len;
                 let ok_dict = brotli_lookup_dictionary_word(distance, max_allowed_backward, copy_len, out);
                 guard ok_dict else { return CompressError.DistanceOutOfBounds; }
+                let dict_len = (out.len - len_before) as u32;
+
+                // RFC 7932 Section 8 & Section 9.2:
+                // "if the number of literals to insert, the copy length, or the resulting
+                // dictionary word length would cause MLEN to be exceeded, then the stream should be rejected as invalid."
+                guard meta_block_remaining >= dict_len else {
+                    return CompressError.CorruptedBitstream;
+                }
+                if max_output_bytes >= 0 && out.len > max_output_bytes {
+                    return CompressError.OutputBufferOverflow;
+                }
+                meta_block_remaining -= dict_len;
+
                 if out.len > 0 {
                     prev_p1 = out[out.len - 1];
                     prev_p2 = if out.len > 1 { out[out.len - 2] } else { 0 };
                 }
             }
-
-            guard meta_block_remaining >= copy_len else {
-                return CompressError.CorruptedBitstream;
-            }
-            meta_block_remaining -= copy_len;
         }
     }
 

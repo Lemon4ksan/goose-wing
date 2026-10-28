@@ -184,6 +184,32 @@ fn test_brotli_quota_and_error_handling(t: core::T&) {
         var out_bad: u8[>..] = [];
         let ok_bad, _ = core::brotli_decompress(bad_bytes[..], out_bad);
         sub.assert_false(ok_bad, "Corrupted header is rejected");
+
+        // 4. RFC 7932 Section 3.4: Duplicate symbols in simple prefix code must be rejected
+        var dup_simple_bytes: u8[10] = [2, 0, 0, 0, 84, 80, 80, 32, 16, 0];
+        var out_dup: u8[>..] = [];
+        let ok_dup, err_dup = core::brotli_decompress(dup_simple_bytes[..], out_dup);
+        sub.assert_false(ok_dup, "Simple prefix code with duplicate symbols is rejected");
+        sub.assert_true(err_dup == core::CompressError.InvalidHuffmanCode, "Returns InvalidHuffmanCode");
+
+        // 5. RFC 7932 Section 8 & Section 9.2: Static dictionary transformed word length exceeding MLEN must be rejected
+        var dict_overflow_bytes: u8[10] = [98, 0, 0, 0, 4, 64, 8, 18, 32, 1];
+        var out_dict_overflow: u8[>..] = [];
+        let ok_do, err_do = core::brotli_decompress(dict_overflow_bytes[..], out_dict_overflow);
+        sub.assert_false(ok_do, "Dictionary transformed word exceeding MLEN is rejected");
+        sub.assert_true(err_do == core::CompressError.CorruptedBitstream, "Returns CorruptedBitstream on MLEN overflow");
+
+        // 6. Decompression bomb quota: dictionary transform expansion exceeding max_output_bytes must be rejected
+        var out_quota_dict: u8[>..] = [];
+        let ok_qd, _ = core::brotli_decompress_with_limit(dict_overflow_bytes[..], out_quota_dict, 4);
+        sub.assert_false(ok_qd, "Decompression quota defense rejects dictionary word exceeding limit");
+
+        // 7. RFC 7932 Section 9.2: Metadata meta-blocks must be parsed and skipped cleanly without corrupting stream
+        var metadata_stream: u8[15] = [172, 1, 77, 69, 84, 65, 32, 0, 8, 71, 111, 111, 115, 101, 3];
+        var out_meta: u8[>..] = [];
+        let ok_meta, err_meta = core::brotli_decompress(metadata_stream[..], out_meta);
+        sub.assert_true(ok_meta, "Metadata meta-block decompress succeeded");
+        sub.assert_eq(out_meta[..], "Goose", "Payload decompressed matches 'Goose'");
     };
 }
 
