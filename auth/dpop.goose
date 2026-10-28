@@ -47,6 +47,10 @@ struct DPoPConfig {
 fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     out.clear();
     guard raw_uri.len > 0 else { return false; }
+    // RFC 9449 §4.3: Target URI scheme MUST be http or https
+    guard core::starts_with(raw_uri, "http://") || core::starts_with(raw_uri, "https://") else {
+        return false;
+    }
 
     var i = 0;
     // Find query '?' or fragment '#' to truncate
@@ -56,6 +60,7 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
             end_idx = i;
             break;
         }
+        guard raw_uri[i] != '\\' else { return false; }
         i += 1;
     }
 
@@ -72,6 +77,11 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
                 break;
             }
         }
+    }
+
+    // RFC 3986 §3.2.1: Reject userinfo in authority
+    for k in scheme_host_end {
+        if raw_uri[k] == '@' { return false; }
     }
 
     var sh_buf: u8[..256] = [];
@@ -222,29 +232,41 @@ fn create_dpop_proof<B>(
 
 // ---- 5. DPoP Proof Verification ---------------------------------------------
 
-fn verify_dpop_header(header_json: const u8[:]) -> bool {
+fn is_matching_dpop_alg(alg_val: const u8[:], expected_alg: const u8[:]) -> bool {
+    guard !core::eq_ascii_fold(alg_val, "none") && alg_val.len > 0 else { return false; }
+    return expected_alg.len == 0 || alg_val == expected_alg;
+}
+
+fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "HS256") -> bool {
     var reader = json::reader(header_json);
     var valid_typ = false;
     var valid_alg = false;
+    var seen_typ = false;
+    var seen_alg = false;
+    var had_dup = false;
     var scratch: u8[>..] = [];
 
     json::each_member(reader) { key =>
         scratch.clear();
         if key == "typ" {
+            if seen_typ { had_dup = true; }
+            seen_typ = true;
             let typ_val = json::read_string(reader, scratch);
             if core::eq_ascii_fold(typ_val, "dpop+jwt") || core::eq_ascii_fold(typ_val, "application/dpop+jwt") {
                 valid_typ = true;
             }
         } else if key == "alg" {
+            if seen_alg { had_dup = true; }
+            seen_alg = true;
             let alg_val = json::read_string(reader, scratch);
-            if !core::eq_ascii_fold(alg_val, "none") && alg_val.len > 0 {
+            if is_matching_dpop_alg(alg_val, expected_alg) {
                 valid_alg = true;
             }
         } else {
             json::skip(reader);
         }
     };
-    return json::finish(reader) && valid_typ && valid_alg;
+    return json::finish(reader) && !had_dup && valid_typ && valid_alg;
 }
 
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: const u8[:]) -> bool {
@@ -286,6 +308,13 @@ fn extract_json_int_claim(json: const u8[:], claim_name: const u8[:]) -> i64, bo
     return after_colon[..num_len].parse_i64_dec();
 }
 
+// RFC 9449 Section 4.3 Rule 4: Mandatory unique jti claim validation.
+fn verify_dpop_jti(claims_json: const u8[:]) -> bool {
+    let jti_val, ok = extract_json_string_claim(claims_json, "\"jti\"");
+    guard ok else { return false; }
+    return jti_val.len > 0 && jti_val.len <= 128;
+}
+
 fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) -> bool {
     guard expected_method.len > 0 else { return false; }
     let htm_val, ok = extract_json_string_claim(claims_json, "\"htm\"");
@@ -321,8 +350,9 @@ fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool 
 
 fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
     guard now_sec > 0 else { return true; }
+    guard max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
     let iat_val, ok = extract_json_int_claim(claims_json, "\"iat\"");
-    guard ok else { return false; }
+    guard ok && iat_val > 0 else { return false; }
     guard iat_val <= (now_sec + max_skew_sec) else { return false; }
     return (now_sec - iat_val) <= (max_age_sec + max_skew_sec);
 }
@@ -359,6 +389,7 @@ fn verify_dpop_proof(
     max_age_sec: i64 = 300,
     max_skew_sec: i64 = 60,
     expected_jkt: const u8[:] = "",
+    expected_alg: const u8[:] = "HS256",
 ) -> bool {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
@@ -373,10 +404,14 @@ fn verify_dpop_proof(
 
     var header_json: u8[>..] = [];
     guard core::base64url_decode(header_b64, header_json) else { return false; }
-    guard verify_dpop_header(header_json[..]) else { return false; }
+    guard verify_dpop_header(header_json[..], expected_alg) else { return false; }
 
     var claims_json: u8[>..] = [];
     guard core::base64url_decode(claims_b64, claims_json) else { return false; }
+
+    // RFC 9449 §4.3 Rule 4: Mandatory unique jti
+    guard verify_dpop_jti(claims_json[..]) else { return false; }
+
     guard verify_dpop_method(claims_json[..], expected_method) else { return false; }
     guard verify_dpop_uri(claims_json[..], expected_uri) else { return false; }
 

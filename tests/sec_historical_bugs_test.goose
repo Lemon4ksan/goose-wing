@@ -1976,6 +1976,129 @@ fn test_rfc9112_chunk_fsm_split_crlf_terminator_validation(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 35. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants
+// ----------------------------------------------------------------------------
+fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: core::T&) {
+    let key = "dpop_secret_test_key_32_bytes!!";
+    let now_sec: i64 = 1714000000;
+
+    t.run("RFC 9449 §4.3 Rule 4: Proof omitting jti or containing empty jti MUST be rejected") { sub =>
+        // Proof omitting jti claim
+        let c_no_jti = "{\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        var c_no_jti_b64: u8[..256] = [];
+        core::base64url_encode(c_no_jti, c_no_jti_b64);
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+        var sign_input: u8[..512] = [];
+        sign_input.append(h_b64);
+        sign_input.push('.' as u8);
+        sign_input.append(c_no_jti_b64[..]);
+        let sig = core::hmac_sha256(key, sign_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(sign_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        let ok_no_jti = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
+        sub.assert_false(ok_no_jti, "DPoP proof omitting jti claim MUST be rejected");
+        sub.assert_false(wing::verify_dpop_jti(c_no_jti), "verify_dpop_jti fails when jti missing");
+
+        // Proof with empty jti string
+        let c_empty_jti = "{\"jti\":\"\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        sub.assert_false(wing::verify_dpop_jti(c_empty_jti), "verify_dpop_jti fails when jti is empty string");
+    };
+
+    t.run("RFC 9449 §4.3 Rule 2 & RFC 8725 §3.1: Algorithm confusion defense rejects mismatched alg in header") { sub =>
+        // Header specifies alg: "EdDSA" while server verifies with HMAC key
+        let h_bad_alg = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\"}";
+        var h_bad_b64: u8[..256] = [];
+        core::base64url_encode(h_bad_alg, h_bad_b64);
+        let c_json = "{\"jti\":\"jti-alg-conf-01\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        var c_b64: u8[..256] = [];
+        core::base64url_encode(c_json, c_b64);
+        var sign_input: u8[..512] = [];
+        sign_input.append(h_bad_b64[..]);
+        sign_input.push('.' as u8);
+        sign_input.append(c_b64[..]);
+        let sig = core::hmac_sha256(key, sign_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(sign_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        let ok_conf = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
+        sub.assert_false(ok_conf, "DPoP proof specifying EdDSA alg rejected when HS256 expected");
+
+        // Direct header check: mismatched alg rejected
+        sub.assert_false(wing::verify_dpop_header(h_bad_alg, "HS256"), "verify_dpop_header rejects alg mismatch");
+        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"none\"}", "HS256"), "none alg rejected");
+        sub.assert_true(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}", "HS256"), "matching HS256 alg accepted");
+    };
+
+    t.run("RFC 3986 §6.2.3 & RFC 9449 §4.3: URI Scheme & Userinfo Rejection in Target Normalization") { sub =>
+        var norm: u8[..256] = [];
+
+        // Non-http/https schemes MUST be rejected
+        sub.assert_false(wing::normalize_dpop_target_uri("ftp://api.example.com/resource", norm), "ftp scheme rejected");
+        sub.assert_false(wing::normalize_dpop_target_uri("javascript://evil.com/alert(1)", norm), "javascript scheme rejected");
+        sub.assert_false(wing::normalize_dpop_target_uri("file:///etc/passwd", norm), "file scheme rejected");
+
+        // Userinfo in authority MUST be rejected (RFC 3986 §3.2.1 / RFC 9449 §4.3)
+        sub.assert_false(wing::normalize_dpop_target_uri("https://admin:secret@api.example.com/data", norm), "Userinfo in authority rejected");
+
+        // Backslashes in path/authority MUST be rejected
+        sub.assert_false(wing::normalize_dpop_target_uri("https://api.example.com\\evil", norm), "Backslash in URI rejected");
+
+        // Legitimate alternative ports ending in 443 (e.g. 8443) preserved, default ports normalized
+        var norm_alt: u8[..256] = [];
+        sub.assert_true(wing::normalize_dpop_target_uri("https://api.example.com:8443/data", norm_alt), "Alternative port 8443 normalized");
+        sub.assert_bytes_eq(norm_alt[..], "https://api.example.com:8443/data", "Alternative port 8443 is preserved without mutation");
+
+        var norm_def: u8[..256] = [];
+        sub.assert_true(wing::normalize_dpop_target_uri("https://api.example.com:443/data", norm_def), "Default port 443 normalized");
+        sub.assert_bytes_eq(norm_def[..], "https://api.example.com/data", "Default port 443 removed");
+    };
+
+    t.run("RFC 9449 §4.3 Rule 8 & §4.2: Non-positive iat (0 or negative) MUST be rejected") { sub =>
+        let c_zero_iat = "{\"jti\":\"jti-zero-01\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":0}";
+        sub.assert_false(wing::verify_dpop_iat(c_zero_iat, now_sec, 300, 60), "iat: 0 rejected");
+
+        // Negative max_age or max_skew rejected
+        sub.assert_false(wing::verify_dpop_iat(c_zero_iat, now_sec, -1, 60), "Negative max_age rejected");
+        sub.assert_false(wing::verify_dpop_iat(c_zero_iat, now_sec, 300, -5), "Negative max_skew rejected");
+    };
+
+    t.run("Valid RFC 9449 DPoP proof with mandatory jti, valid alg, and normalized URI verified") { sub =>
+        var proof_jwt: u8[>..] = [];
+        let ok_gen = wing::create_dpop_proof(
+            key,
+            "GET",
+            "https://api.example.com:443/items?page=1#top",
+            "token_sec_123",
+            "server_nonce_777",
+            now_sec,
+            "custom-jti-valid-007",
+            proof_jwt,
+        );
+        sub.assert_true(ok_gen, "Valid DPoP proof generated");
+
+        let ok_ver = wing::verify_dpop_proof(
+            proof_jwt[..],
+            key,
+            "GET",
+            "https://api.example.com/items",
+            "token_sec_123",
+            "server_nonce_777",
+            now_sec,
+        );
+        sub.assert_true(ok_ver, "Valid DPoP proof successfully verified end-to-end");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -2013,6 +2136,7 @@ fn main() {
     core::run_case(runner, "32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding", test_rfc8725_jwks_key_confusion_and_algorithm_binding);
     core::run_case(runner, "33. RFC 9293 §3.5 & RFC 1122: Half-Closed Teardown & Drain Deadlock Defenses", test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses);
     core::run_case(runner, "34. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation", test_rfc9112_chunk_fsm_split_crlf_terminator_validation);
+    core::run_case(runner, "35. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants", test_rfc9449_dpop_proof_validation_and_uri_normalization);
 
     let ok = core::finish(runner);
     assert(ok);
