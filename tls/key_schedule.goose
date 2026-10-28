@@ -31,6 +31,13 @@ const KS_STAGE_RESUMPTION: u8 = 4;
 //     opaque label<7..255> = "tls13 " + Label;
 //     opaque context<0..255> = Context;
 // } HkdfLabel;
+fn is_all_zero_slice(data: const u8[:]) -> bool {
+    for b in data {
+        if b != 0 { return false; }
+    }
+    return true;
+}
+
 fn hkdf_expand_label(
     hash_id: u8,
     secret: const u8[:],
@@ -42,8 +49,23 @@ fn hkdf_expand_label(
     let full_label_len = 6 + label.len;
     guard full_label_len >= 7 && full_label_len <= 255 else { return false; }
     guard context.len <= 255 else { return false; }
+    guard length > 0 else { return false; }
+    guard out.len >= length else { return false; }
 
-    var info: u8[..128] = [];
+    if hash_id == HASH_SHA256 {
+        guard secret.len >= 32 else { return false; }
+        guard (length as i64) <= 255 * 32 else { return false; }
+    } else if hash_id == HASH_SHA384 {
+        guard secret.len >= 48 else { return false; }
+        guard (length as i64) <= 255 * 48 else { return false; }
+    } else {
+        return false;
+    }
+
+    let total_info_len = 2 + 1 + full_label_len + 1 + context.len;
+    guard total_info_len <= 516 else { return false; }
+
+    var info: u8[..516] = [];
     // uint16 length
     info.push(((length >> 8) & 0xFF) as u8);
     info.push((length & 0xFF) as u8);
@@ -74,6 +96,8 @@ fn derive_secret(
     out: u8[:],
 ) -> bool {
     guard out.len >= hash_len else { return false; }
+    guard secret.len >= hash_len else { return false; }
+    guard transcript_hash.len == 0 || transcript_hash.len == hash_len else { return false; }
 
     if transcript_hash.len == 0 {
         if hash_id == HASH_SHA256 {
@@ -121,8 +145,10 @@ fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
     return ks, false;
 }
 
-// Early Secret = HKDF-Extract(0, PSK)
-fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
+// Initializes Early Secret from either zero-filled secret (no PSK) or external/resumption PSK (RFC 8446 §7.1).
+// For external PSK: derives "ext binder"
+// For resumption PSK / no PSK: derives "res binder"
+fn ks_init_early_secret_with_mode(ks: KeySchedule&, psk: const u8[:], is_external: bool) -> bool {
     let zeros: u8[48] = [0; 48];
     let zero_salt = zeros[..ks.hash_len];
     let ikm = if psk.len > 0 { psk } else { zero_salt };
@@ -139,20 +165,26 @@ fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
 
     ks.stage = KS_STAGE_EARLY;
 
-    // binder_key = Derive-Secret(Early Secret, "res binder", "")
+    let binder_label = if is_external { "ext binder" } else { "res binder" };
     return derive_secret(
         ks.hash_id,
         ks.hash_len,
         ks.current_secret[..ks.hash_len],
-        "res binder",
+        binder_label,
         [],
         ks.binder_key[..ks.hash_len],
     );
 }
 
+// Early Secret = HKDF-Extract(0, PSK) defaulting to resumption PSK or 0-filled secret
+fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
+    return ks_init_early_secret_with_mode(ks, psk, false);
+}
+
 // client_early_traffic_secret = Derive-Secret(Early Secret, "c e traffic", ClientHello)
 fn ks_derive_early_traffic(ks: KeySchedule&, client_hello_hash: const u8[:]) -> bool {
     guard ks.stage == KS_STAGE_EARLY else { return false; }
+    guard client_hello_hash.len == ks.hash_len else { return false; }
     return derive_secret(
         ks.hash_id,
         ks.hash_len,
@@ -166,6 +198,8 @@ fn ks_derive_early_traffic(ks: KeySchedule&, client_hello_hash: const u8[:]) -> 
 // Handshake Secret = HKDF-Extract(Derive-Secret(Early Secret, "derived", ""), (EC)DHE)
 fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -> bool {
     guard ks.stage == KS_STAGE_EARLY else { return false; }
+    guard ecdhe_shared_secret.len > 0 else { return false; }
+    guard !is_all_zero_slice(ecdhe_shared_secret) else { return false; }
 
     var derived: u8[48] = [0; 48];
     if !derive_secret(
@@ -198,6 +232,7 @@ fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -
 // s hs traffic = Derive-Secret(Handshake Secret, "s hs traffic", CH...SH)
 fn ks_derive_handshake_traffic(ks: KeySchedule&, ch_sh_hash: const u8[:]) -> bool {
     guard ks.stage == KS_STAGE_HANDSHAKE else { return false; }
+    guard ch_sh_hash.len == ks.hash_len else { return false; }
 
     let ok_c = derive_secret(
         ks.hash_id,
@@ -224,6 +259,7 @@ fn ks_derive_handshake_traffic(ks: KeySchedule&, ch_sh_hash: const u8[:]) -> boo
 // exp master = Derive-Secret(Master Secret, "exp master", Transcript)
 fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool {
     guard ks.stage == KS_STAGE_HANDSHAKE else { return false; }
+    guard transcript_hash.len == ks.hash_len else { return false; }
 
     var derived: u8[48] = [0; 48];
     if !derive_secret(
@@ -282,6 +318,7 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
 // Resumption Master Secret = Derive-Secret(Master Secret, "res master", ClientHello...server Finished)
 fn ks_advance_to_resumption(ks: KeySchedule&, finished_transcript_hash: const u8[:]) -> bool {
     guard ks.stage == KS_STAGE_MASTER else { return false; }
+    guard finished_transcript_hash.len == ks.hash_len else { return false; }
 
     let ok = derive_secret(
         ks.hash_id,
@@ -295,6 +332,82 @@ fn ks_advance_to_resumption(ks: KeySchedule&, finished_transcript_hash: const u8
         ks.stage = KS_STAGE_RESUMPTION;
     }
     return ok;
+}
+
+// Exports key material according to RFC 8446 Section 7.5 (TLS-Exporter).
+// TLS-Exporter(label, context_value, key_length) =
+//     HKDF-Expand-Label(Derive-Secret(Secret, label, ""),
+//                       "exporter", Hash(context_value), key_length)
+// Context value is bounded to <= 255 bytes (RFC 8446 §7.5).
+// When context is empty (""), Hash("") is used.
+fn ks_export_keying_material(
+    ks: const KeySchedule&,
+    label: const u8[:],
+    context: const u8[:],
+    key_length: u16,
+    out: u8[:],
+) -> bool {
+    guard ks.stage >= KS_STAGE_MASTER else { return false; }
+    guard label.len > 0 && label.len <= 245 else { return false; }
+    guard context.len <= 255 else { return false; }
+    guard key_length > 0 else { return false; }
+    guard out.len >= key_length else { return false; }
+
+    var intermediate: u8[48] = [0; 48];
+    if !derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.exporter_secret[..ks.hash_len],
+        label,
+        [],
+        intermediate[..ks.hash_len],
+    ) {
+        return false;
+    }
+
+    var ctx_hash: u8[48] = [0; 48];
+    if ks.hash_id == HASH_SHA256 {
+        let h = core::sha256(context);
+        for i in 32 { ctx_hash[i] = h[i]; }
+    } else if ks.hash_id == HASH_SHA384 {
+        let h = core::sha384(context);
+        for i in 48 { ctx_hash[i] = h[i]; }
+    } else {
+        core::secure_zeroize_48(intermediate);
+        return false;
+    }
+
+    let ok = hkdf_expand_label(
+        ks.hash_id,
+        intermediate[..ks.hash_len],
+        "exporter",
+        ctx_hash[..ks.hash_len],
+        key_length,
+        out,
+    );
+
+    core::secure_zeroize_48(intermediate);
+    return ok;
+}
+
+// Derives the resumption PSK for a NewSessionTicket from the resumption_master_secret and ticket_nonce (RFC 8446 §4.6.1).
+// PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
+fn ks_derive_resumption_psk(
+    ks: const KeySchedule&,
+    ticket_nonce: const u8[:],
+    out_psk: u8[:],
+) -> bool {
+    guard ks.stage == KS_STAGE_RESUMPTION else { return false; }
+    guard ticket_nonce.len <= 255 else { return false; }
+    guard out_psk.len >= ks.hash_len else { return false; }
+    return hkdf_expand_label(
+        ks.hash_id,
+        ks.resumption_secret[..ks.hash_len],
+        "resumption",
+        ticket_nonce,
+        ks.hash_len,
+        out_psk,
+    );
 }
 
 // Derives symmetric AEAD key and 12-byte IV from traffic secret (RFC 8446 Section 7.3).
@@ -329,6 +442,8 @@ fn ks_compute_finished_verify_data(
     out_verify_data: u8[:],
 ) -> bool {
     guard out_verify_data.len >= hash_len else { return false; }
+    guard base_key.len >= hash_len else { return false; }
+    guard transcript_hash.len == hash_len else { return false; }
 
     var finished_key: u8[48] = [0; 48];
     if !hkdf_expand_label(hash_id, base_key, "finished", [], hash_len, finished_key[..hash_len]) {
@@ -393,6 +508,8 @@ fn verify_psk_binder(
     expected_binder: const u8[:],
 ) -> bool {
     guard expected_binder.len == hash_len else { return false; }
+    guard binder_key.len >= hash_len else { return false; }
+    guard truncated_ch.len > 0 else { return false; }
 
     var finished_key: u8[48] = [0; 48];
     if !hkdf_expand_label(hash_id, binder_key, "finished", [], hash_len, finished_key[..hash_len]) {
@@ -465,8 +582,15 @@ fn strike_register_rotate(reg: ZeroRttStrikeRegister&, now_ms: i64) {
 }
 
 // Checks if ticket_id was already accepted; if not, registers it and returns true.
-// Returns false on replay detection.
+// Returns false on replay detection, invalid arguments, or backward clock skew.
 fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: const u8[:], now_ms: i64) -> bool {
+    guard now_ms >= 0 else { return false; }
+    guard ticket_id.len > 0 else { return false; }
+    guard reg.epoch_window_ms > 0 else { return false; }
+
+    let epoch = now_ms / reg.epoch_window_ms;
+    guard epoch >= reg.current_epoch - 1 else { return false; }
+
     strike_register_rotate(reg, now_ms);
 
     let seeds: u32[4] = [0x12345678, 0x87654321, 0xdeadbeef, 0xcafebabe];
@@ -502,18 +626,45 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
     return true;
 }
 
-// Validates ticket age freshness according to RFC 8446 Section 4.2.10.
+const MAX_TICKET_LIFETIME_MS: i64 = 604800000; // 7 days (RFC 8446 §4.6.1)
+
+// Validates ticket age freshness according to RFC 8446 Section 4.2.10 and 4.6.1.
 fn validate_ticket_age(
     obfuscated_ticket_age: u32,
     ticket_age_add: u32,
     expected_age_ms: i64,
     tolerance_ms: i64,
 ) -> bool {
+    guard expected_age_ms >= 0 && tolerance_ms >= 0 else { return false; }
+    guard expected_age_ms <= MAX_TICKET_LIFETIME_MS else { return false; }
+
     let raw_age = (obfuscated_ticket_age - ticket_age_add) as i64;
+    guard raw_age <= MAX_TICKET_LIFETIME_MS else { return false; }
+
     let diff = if raw_age > expected_age_ms {
         raw_age - expected_age_ms
     } else {
         expected_age_ms - raw_age
     };
     return diff <= tolerance_ms;
+}
+
+// Truncates ClientHello to exclude the PSK binders list for binder computation (RFC 8446 §4.2.11.2).
+// The PSK extension is the last extension in ClientHello. The binders list starts with a 2-byte
+// vector length field followed by binders_len bytes.
+// Returns the truncated ClientHello slice and true on success, or empty slice and false on error.
+fn truncate_client_hello_for_binder(client_hello: const u8[:], binders_len: u16) -> const u8[:], bool {
+    let binders_overhead = 2 + binders_len;
+    guard binders_len > 0 else { return client_hello[..0], false; }
+    guard client_hello.len >= binders_overhead else { return client_hello[..0], false; }
+    let truncated_len = client_hello.len - binders_overhead;
+    return client_hello[..truncated_len], true;
+}
+
+// Validates that the number of PSK identities equals the number of PSK binders (RFC 8446 §4.2.11).
+// "The identities and binders lists MUST have the same number of elements;
+// if they do not, the server MUST terminate the handshake with an illegal_parameter alert."
+fn validate_psk_identities_and_binders_count(identities_count: i64, binders_count: i64) -> bool {
+    guard identities_count > 0 && binders_count > 0 else { return false; }
+    return identities_count == binders_count;
 }

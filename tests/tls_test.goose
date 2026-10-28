@@ -106,22 +106,59 @@ fn test_record_layer_and_dos(t: core::T&) {
         let _, _, _, alert_of, ok_of = wing::parse_tls_record_header(overflow_hdr[..]);
         sub.assert_false(ok_of, "overflow header rejected");
         sub.assert_eq(wing::tls_alert_to_u8(alert_of), wing::tls_alert_to_u8(wing::TlsAlert.RecordOverflow), "record overflow alert");
+
+        // Non-compliant version: 0x0304 (TLS 1.3 in legacy_record_version forbidden by RFC 8446 §5.1)
+        let v13_hdr: u8[5] = [0x17, 0x03, 0x04, 0x00, 0x10];
+        let _, _, _, alert_ver, ok_ver = wing::parse_tls_record_header(v13_hdr[..]);
+        sub.assert_false(ok_ver, "legacy version 0x0304 rejected");
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ver), wing::tls_alert_to_u8(wing::TlsAlert.ProtocolVersion), "protocol version alert");
+
+        // Non-compliant version: 0x0300 (SSL 3.0)
+        let v30_hdr: u8[5] = [0x17, 0x03, 0x00, 0x00, 0x10];
+        let _, _, _, alert_v30, ok_v30 = wing::parse_tls_record_header(v30_hdr[..]);
+        sub.assert_false(ok_v30, "legacy version 0x0300 rejected");
+        sub.assert_eq(wing::tls_alert_to_u8(alert_v30), wing::tls_alert_to_u8(wing::TlsAlert.ProtocolVersion), "protocol version alert");
+
+        // Invalid record content type (0x42 not in 0x14..0x17)
+        let bad_ct_hdr: u8[5] = [0x42, 0x03, 0x03, 0x00, 0x10];
+        let _, _, _, alert_ct, ok_ct = wing::parse_tls_record_header(bad_ct_hdr[..]);
+        sub.assert_false(ok_ct, "unknown content type rejected");
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ct), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "unexpected message alert");
+
+        // Header encoder bounds: rejecting ciphertext > 16640 and bad content type
+        var enc_out: u8[>..] = [];
+        sub.assert_false(wing::encode_tls_ciphertext_header(enc_out, 0x17, 16641), "encoder rejects oversized ciphertext");
+        sub.assert_false(wing::encode_tls_ciphertext_header(enc_out, 0x99, 100), "encoder rejects invalid content type");
     };
 
-    t.run("TLS-05: Nonce XOR Derivation") { sub =>
+    t.run("TLS-05: Nonce XOR Derivation & Sequence Overflow Defense") { sub =>
         var iv: u8[12] = [
             0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
         ];
         // Seq num = 1 -> nonce[11] ^= 1 -> 0x33 ^ 1 = 0x32
-        let nonce1 = wing::compute_record_nonce(iv, 1);
+        let nonce1, ok_n1 = wing::compute_record_nonce(iv, 1);
+        sub.assert_true(ok_n1, "nonce 1 derivation succeeds");
         sub.assert_eq(nonce1[0], 0x10, "nonce[0] unchanged");
         sub.assert_eq(nonce1[3], 0x13, "nonce[3] unchanged");
         sub.assert_eq(nonce1[11], 0x32, "nonce[11] XORed with 1");
 
         // Seq num = 0x0102 -> nonce[10] ^= 0x01, nonce[11] ^= 0x02
-        let nonce2 = wing::compute_record_nonce(iv, 0x0102);
+        let nonce2, ok_n2 = wing::compute_record_nonce(iv, 0x0102);
+        sub.assert_true(ok_n2, "nonce 2 derivation succeeds");
         sub.assert_eq(nonce2[10], 0x32 ^ 0x01, "nonce[10] XORed with 0x01");
         sub.assert_eq(nonce2[11], 0x33 ^ 0x02, "nonce[11] XORed with 0x02");
+
+        // Sequence number overflow protection (RFC 8446 Section 5.3):
+        // 2^64 - 1 must not be used for nonce computation
+        let _, ok_overflow = wing::compute_record_nonce(iv, 0xFFFFFFFFFFFFFFFF);
+        sub.assert_false(ok_overflow, "rejects sequence number 2^64 - 1");
+
+        // Counter wraparound protection
+        var seq: u64 = 0xFFFFFFFFFFFFFFFE;
+        sub.assert_true(wing::increment_record_seq_num(seq), "increment to 2^64 - 1 succeeds");
+        sub.assert_eq(seq, 0xFFFFFFFFFFFFFFFF, "seq is 2^64 - 1");
+        sub.assert_false(wing::increment_record_seq_num(seq), "refuses wraparound past 2^64 - 1");
+        sub.assert_eq(seq, 0xFFFFFFFFFFFFFFFF, "counter preserved at 2^64 - 1 without wrapping");
     };
 
     t.run("TLS-06: TLSInnerPlaintext Unpacking & Trailing Padding Removal") { sub =>
@@ -143,6 +180,17 @@ fn test_record_layer_and_dos(t: core::T&) {
         let all_zeros: u8[8] = [0, 0, 0, 0, 0, 0, 0, 0];
         let _, _, alert_bad = wing::unpack_tls_inner_plaintext(all_zeros[..]);
         sub.assert_eq(wing::tls_alert_to_u8(alert_bad), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "rejects all-zero record");
+
+        // Plaintext length overflow (> 16384 bytes, RFC 8446 Section 5.4)
+        var oversized: u8[16386] = [0xAA; 16386];
+        oversized[16385] = 0x17; // valid inner content type, but plaintext len is 16385 > 16384
+        let _, _, alert_overflow = wing::unpack_tls_inner_plaintext(oversized[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_overflow), wing::tls_alert_to_u8(wing::TlsAlert.RecordOverflow), "record overflow alert for inner plaintext > 16384");
+
+        // Invalid inner ContentType (e.g. 0x42)
+        let bad_inner: u8[4] = [0xAA, 0xBB, 0x42, 0x00];
+        let _, _, alert_inner = wing::unpack_tls_inner_plaintext(bad_inner[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_inner), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "rejects invalid inner ContentType");
     };
 
     t.run("TLS-07: DoS Guard: Empty Records & Early Data Skipped Volume") { sub =>
@@ -170,6 +218,180 @@ fn test_record_layer_and_dos(t: core::T&) {
         // Exceeding 16384 bytes triggers DoS defense
         let fail_early = wing::check_record_payload_length(filter, 1, true);
         sub.assert_eq(wing::tls_alert_to_u8(fail_early), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "exceeding early data limit rejected");
+    };
+
+    t.run("TLS-27: Dummy ChangeCipherSpec Strict Validation (RFC 8446 Appendix D.4)") { sub =>
+        // 1. Exactly 1 byte of value 0x01 is valid
+        let valid_ccs: u8[1] = [0x01];
+        let alert_ok = wing::validate_change_cipher_spec_record(valid_ccs[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid CCS record [0x01] accepted");
+
+        // 2. Empty payload is rejected with DecodeError
+        let empty_ccs: u8[0] = [];
+        let alert_empty = wing::validate_change_cipher_spec_record(empty_ccs[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_empty), wing::tls_alert_to_u8(wing::TlsAlert.DecodeError), "empty CCS record rejected with DecodeError");
+
+        // 3. Multi-byte payload is rejected with DecodeError
+        let multi_ccs: u8[2] = [0x01, 0x01];
+        let alert_multi = wing::validate_change_cipher_spec_record(multi_ccs[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_multi), wing::tls_alert_to_u8(wing::TlsAlert.DecodeError), "multi-byte CCS record rejected with DecodeError");
+
+        // 4. Invalid byte value (e.g. 0x02) rejected with UnexpectedMessage
+        let bad_val_ccs: u8[1] = [0x02];
+        let alert_bad_val = wing::validate_change_cipher_spec_record(bad_val_ccs[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_bad_val), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "invalid CCS value 0x02 rejected with UnexpectedMessage");
+    };
+
+    t.run("TLS-28: TLS 1.3 Alert Framing & Warning-to-Fatal Promotion (RFC 8446 §6)") { sub =>
+        // 1. Valid warning CloseNotify (level 1, desc 0) -> not fatal
+        let warn_cn: u8[2] = [1, 0];
+        let lvl1, alt1, fatal1, ok1 = wing::parse_tls_alert_message(warn_cn[..]);
+        sub.assert_true(ok1, "warning close_notify parses ok");
+        sub.assert_eq(lvl1, 1, "level is warning");
+        sub.assert_eq(wing::tls_alert_to_u8(alt1), 0, "alert is close_notify");
+        sub.assert_false(fatal1, "close_notify is not fatal");
+
+        // 2. Valid warning UserCanceled (level 1, desc 90) -> not fatal
+        let warn_uc: u8[2] = [1, 90];
+        let lvl2, alt2, fatal2, ok2 = wing::parse_tls_alert_message(warn_uc[..]);
+        sub.assert_true(ok2, "warning user_canceled parses ok");
+        sub.assert_eq(lvl2, 1, "level is warning");
+        sub.assert_eq(wing::tls_alert_to_u8(alt2), 90, "alert is user_canceled");
+        sub.assert_false(fatal2, "user_canceled is not fatal");
+
+        // 3. Warning HandshakeFailure (level 1, desc 40) -> promoted to fatal in TLS 1.3
+        let warn_hf: u8[2] = [1, 40];
+        let lvl3, alt3, fatal3, ok3 = wing::parse_tls_alert_message(warn_hf[..]);
+        sub.assert_true(ok3, "warning handshake_failure parses ok");
+        sub.assert_eq(lvl3, 1, "level is warning");
+        sub.assert_eq(wing::tls_alert_to_u8(alt3), 40, "alert is handshake_failure");
+        sub.assert_true(fatal3, "warning handshake_failure promoted to fatal in TLS 1.3");
+
+        // 4. Fatal DecodeError (level 2, desc 50)
+        let fatal_de: u8[2] = [2, 50];
+        let lvl4, alt4, fatal4, ok4 = wing::parse_tls_alert_message(fatal_de[..]);
+        sub.assert_true(ok4, "fatal decode_error parses ok");
+        sub.assert_eq(lvl4, 2, "level is fatal");
+        sub.assert_eq(wing::tls_alert_to_u8(alt4), 50, "alert is decode_error");
+        sub.assert_true(fatal4, "fatal alert is fatal");
+
+        // 5. Invalid length (1 byte or 3 bytes)
+        let short_alert: u8[1] = [1];
+        let _, _, _, ok_short = wing::parse_tls_alert_message(short_alert[..]);
+        sub.assert_false(ok_short, "1-byte alert rejected");
+
+        let long_alert: u8[3] = [1, 0, 0];
+        let _, _, _, ok_long = wing::parse_tls_alert_message(long_alert[..]);
+        sub.assert_false(ok_long, "3-byte alert rejected");
+
+        // 6. Invalid alert level (3)
+        let invalid_lvl: u8[2] = [3, 0];
+        let _, _, _, ok_inv = wing::parse_tls_alert_message(invalid_lvl[..]);
+        sub.assert_false(ok_inv, "invalid alert level 3 rejected");
+    };
+
+    t.run("TLS-31: Constant-Time Record Padding Oracle Defense & All-Zero InnerPlaintext (RFC 8446 §5.4)") { sub =>
+        // 1. All-zero decrypted record of 10 bytes -> unexpected_message
+        let all_zeros_10: u8[10] = [0; 10];
+        let _, _, alert_z10 = wing::unpack_tls_inner_plaintext(all_zeros_10[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_z10), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "all-zero 10-byte record yields unexpected_message");
+
+        // 2. All-zero record of 1 byte -> unexpected_message
+        let all_zeros_1: u8[1] = [0];
+        let _, _, alert_z1 = wing::unpack_tls_inner_plaintext(all_zeros_1[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_z1), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "all-zero 1-byte record yields unexpected_message");
+
+        // 3. Empty slice -> unexpected_message
+        let empty_slice: u8[0] = [];
+        let _, _, alert_empty = wing::unpack_tls_inner_plaintext(empty_slice[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_empty), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "empty decrypted record yields unexpected_message");
+
+        // 4. Record with maximum 16384 zero padding bytes + 1 ContentType byte (0x17)
+        // Inner plaintext is empty, but inner type is ApplicationData (0x17)
+        var max_padded: u8[16385] = [0; 16385];
+        max_padded[0] = 0x17; // ContentType at offset 0, followed by 16384 zero padding bytes
+        let pt, inner_type, alert_max = wing::unpack_tls_inner_plaintext(max_padded[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_max), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "max-padded record unpacks ok");
+        sub.assert_eq(inner_type, 0x17, "inner type is application data (0x17)");
+        sub.assert_eq(pt.len, 0, "empty inner plaintext with 16384 padding bytes has length 0");
+
+        // 5. Normal record with 5 bytes payload + ContentType (0x16 Handshake) + 10 zeroes padding
+        var padded_msg: u8[16] = [0; 16];
+        padded_msg[0] = 0x01; padded_msg[1] = 0x02; padded_msg[2] = 0x03; padded_msg[3] = 0x04; padded_msg[4] = 0x05;
+        padded_msg[5] = 0x16; // Handshake type
+        // remaining 10 bytes are 0x00 padding
+        let pt_msg, type_msg, alert_msg = wing::unpack_tls_inner_plaintext(padded_msg[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_msg), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "padded handshake record unpacks ok");
+        sub.assert_eq(type_msg, 0x16, "inner type is handshake (0x16)");
+        sub.assert_eq(pt_msg.len, 5, "plaintext len is 5");
+        sub.assert_eq(pt_msg[0], 0x01, "pt[0] matches");
+        sub.assert_eq(pt_msg[4], 0x05, "pt[4] matches");
+    };
+
+    t.run("TLS-32: AEAD Record Decryption Isolation, Tag Verification & Zero-Leakage (RFC 8446 §5.2)") { sub =>
+        // 1. Constant-time tag comparison
+        let tag1: u8[16] = [0xAA; 16];
+        let tag2: u8[16] = [0xAA; 16];
+        var tag_diff = tag1;
+        tag_diff[15] ^= 0x01;
+        sub.assert_true(wing::ct_compare_tag16(tag1, tag2), "identical tags match");
+        sub.assert_false(wing::ct_compare_tag16(tag1, tag_diff), "differing tags reject");
+
+        // 2. Encrypt authentic record payload with AES-128-GCM
+        let key: u8[16] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00];
+        let iv: u8[12] = [0x01; 12];
+        let seq_num: u64 = 42;
+        let nonce, _ = wing::compute_record_nonce(iv, seq_num);
+
+        // Header: ContentType ApplicationData (0x17), TLS 1.2 legacy version (0x0303), length = 8 + 1 (type) + 16 (tag) = 25
+        let hdr: u8[5] = [0x17, 0x03, 0x03, 0x00, 25];
+        // Plaintext: "TopSecrt" (8 bytes) + ContentType (0x17)
+        let inner_pt: u8[9] = [0x54, 0x6F, 0x70, 0x53, 0x65, 0x63, 0x72, 0x74, 0x17];
+
+        var ct: u8[>..] = [];
+        let tag = core::aes128_gcm_seal(key, nonce, inner_pt[..], hdr[..], ct);
+        var payload: u8[>..] = [];
+        payload.append(ct[..]);
+        payload.append(tag[..]);
+
+        // Decrypt authentic record
+        var out_dec: u8[>..] = [];
+        let dec_type, alert_dec = wing::tls_record_decrypt_aes128_gcm(key, iv, seq_num, hdr[..], payload[..], out_dec);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_dec), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "authentic record decrypts ok");
+        sub.assert_eq(dec_type, 0x17, "decrypted inner type is application data");
+        sub.assert_eq(out_dec.len, 8, "decrypted plaintext len is 8");
+        sub.assert_eq(out_dec[0], 0x54, "first byte is 'T'");
+        sub.assert_eq(out_dec[7], 0x74, "last byte is 't'");
+
+        // 3. Tag mismatch / forgery attack: must return BadRecordMac and ZEROIZE destination
+        var bad_payload: u8[>..] = [];
+        bad_payload.append(payload[..]);
+        bad_payload[bad_payload.len - 1] ^= 0x55; // corrupt tag byte
+        var out_forged: u8[>..] = [];
+        let _, alert_forged = wing::tls_record_decrypt_aes128_gcm(key, iv, seq_num, hdr[..], bad_payload[..], out_forged);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_forged), wing::tls_alert_to_u8(wing::TlsAlert.BadRecordMac), "tag corruption yields bad_record_mac");
+        sub.assert_eq(out_forged.len, 0, "destination buffer cleared on authentication failure (zero leakage)");
+
+        // 4. Ciphertext corruption: must return BadRecordMac and zeroize destination
+        var ct_corrupt: u8[>..] = [];
+        ct_corrupt.append(payload[..]);
+        ct_corrupt[0] ^= 0xFF; // corrupt ciphertext byte
+        var out_ct_bad: u8[>..] = [];
+        let _, alert_ct = wing::tls_record_decrypt_aes128_gcm(key, iv, seq_num, hdr[..], ct_corrupt[..], out_ct_bad);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ct), wing::tls_alert_to_u8(wing::TlsAlert.BadRecordMac), "ciphertext corruption yields bad_record_mac");
+        sub.assert_eq(out_ct_bad.len, 0, "destination cleared on ciphertext corruption");
+
+        // 5. Short payload (< 16 bytes tag) returns DecodeError
+        let short_pay: u8[10] = [0; 10];
+        var out_short: u8[>..] = [];
+        let _, alert_short = wing::tls_record_decrypt_aes128_gcm(key, iv, seq_num, hdr[..], short_pay[..], out_short);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_short), wing::tls_alert_to_u8(wing::TlsAlert.DecodeError), "short payload (< 16B tag) yields decode_error");
+
+        // 6. Bad header length (!= 5 bytes) returns DecodeError
+        let bad_hdr: u8[4] = [0; 4];
+        var out_bad_hdr: u8[>..] = [];
+        let _, alert_bhdr = wing::tls_record_decrypt_aes128_gcm(key, iv, seq_num, bad_hdr[..], payload[..], out_bad_hdr);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_bhdr), wing::tls_alert_to_u8(wing::TlsAlert.DecodeError), "bad header length yields decode_error");
     };
 }
 
@@ -212,6 +434,48 @@ fn test_quic_crypto_gateway(t: core::T&) {
         let _, ok_short = wing::quic_extract_hp_sample(pkt[..], 10);
         sub.assert_false(ok_short, "short packet sample extraction fails safely");
     };
+
+    t.run("TLS-29: QUIC CRYPTO Stream Zero-Allocation Reassembly (RFC 9001 §4)") { sub =>
+        var stream = wing::new_quic_crypto_stream();
+        sub.assert_eq(stream.consumed_offset, 0, "stream starts at offset 0");
+        sub.assert_eq(stream.buf.len, 0, "stream buffer starts empty");
+
+        // 1. In-order frame at offset 0, len 4
+        let frame1: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        let ok1, n1 = wing::quic_crypto_stream_ingest(stream, 0, frame1[..]);
+        sub.assert_true(ok1, "frame 1 ingested");
+        sub.assert_eq(n1, 4, "4 bytes ingested");
+        sub.assert_eq(stream.consumed_offset, 4, "consumed offset is 4");
+        sub.assert_eq(stream.buf.len, 4, "buffer len is 4");
+
+        // 2. Duplicate frame at offset 0, len 4 (entirely duplicate)
+        let ok_dup, n_dup = wing::quic_crypto_stream_ingest(stream, 0, frame1[..]);
+        sub.assert_true(ok_dup, "duplicate frame handled successfully");
+        sub.assert_eq(n_dup, 0, "0 new bytes ingested from duplicate");
+        sub.assert_eq(stream.consumed_offset, 4, "consumed offset unchanged at 4");
+
+        // 3. Overlapping frame at offset 2, len 4: [0xCC, 0xDD, 0xEE, 0xFF]
+        // 2 bytes overlap, 2 new bytes
+        let frame2: u8[4] = [0xCC, 0xDD, 0xEE, 0xFF];
+        let ok_ovl, n_ovl = wing::quic_crypto_stream_ingest(stream, 2, frame2[..]);
+        sub.assert_true(ok_ovl, "overlapping frame ingested");
+        sub.assert_eq(n_ovl, 2, "2 new bytes ingested after prefix trim");
+        sub.assert_eq(stream.consumed_offset, 6, "consumed offset advanced to 6");
+        sub.assert_eq(stream.buf.len, 6, "buffer len is 6");
+        sub.assert_eq(stream.buf[4], 0xEE, "stream byte 4 matches");
+        sub.assert_eq(stream.buf[5], 0xFF, "stream byte 5 matches");
+
+        // 4. Out-of-order frame creating a gap at offset 10 (consumed is 6)
+        let frame_gap: u8[2] = [0x11, 0x22];
+        let ok_gap, n_gap = wing::quic_crypto_stream_ingest(stream, 10, frame_gap[..]);
+        sub.assert_false(ok_gap, "frame gap rejected");
+        sub.assert_eq(n_gap, 0, "0 bytes ingested on gap");
+        sub.assert_eq(stream.consumed_offset, 6, "consumed offset unchanged on gap");
+
+        // 5. Overflow attack: offset close to 2^64 - 1
+        let ok_ovf, _ = wing::quic_crypto_stream_ingest(stream, 0xFFFFFFFFFFFFFFFE, frame1[..]);
+        sub.assert_false(ok_ovf, "u64 offset overflow rejected");
+    };
 }
 
 // ============================================================================
@@ -235,6 +499,21 @@ fn test_key_schedule_and_derivations(t: core::T&) {
             if b != 0 { all_zero = false; }
         }
         sub.assert_false(all_zero, "derived key is non-zero");
+
+        // Info capacity test with large context (exceeding original 128-byte buffer limit)
+        var large_ctx: u8[200] = [0x5A; 200];
+        var out_expanded: u8[32] = [0; 32];
+        let ok_large = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "large_test", large_ctx[..], 32, out_expanded[..]);
+        sub.assert_true(ok_large, "hkdf_expand_label handles large context (> 128 bytes) safely");
+
+        // Secret length bound rejection
+        let short_prk: u8[16] = [0x42; 16];
+        let ok_short = internal::hkdf_expand_label(internal::HASH_SHA256, short_prk[..], "key", [], 16, out_key[..]);
+        sub.assert_false(ok_short, "hkdf_expand_label rejects secret shorter than hash length (32 bytes)");
+
+        // Empty label rejected
+        let ok_empty_lbl = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "", [], 16, out_key[..]);
+        sub.assert_false(ok_empty_lbl, "empty label rejected");
     };
 
     t.run("TLS-11: Full Key Schedule Lifecycle: Early -> Handshake -> Master -> Resumption") { sub =>
@@ -250,11 +529,26 @@ fn test_key_schedule_and_derivations(t: core::T&) {
         sub.assert_true(ok_early, "init early secret ok");
         sub.assert_eq(sched.stage, internal::KS_STAGE_EARLY, "stage is early");
 
+        // All-zero ECDHE shared secret rejection (RFC 7748 §6.1 / RFC 8446 §4.2.8.2)
+        let zero_ecdhe: u8[32] = [0x00; 32];
+        var sched_fail = sched;
+        let ok_zero_hs = internal::ks_advance_to_handshake(sched_fail, zero_ecdhe[..]);
+        sub.assert_false(ok_zero_hs, "rejects all-zero (EC)DHE shared secret");
+
+        // Empty ECDHE secret rejected
+        let ok_empty_hs = internal::ks_advance_to_handshake(sched_fail, []);
+        sub.assert_false(ok_empty_hs, "rejects empty (EC)DHE shared secret");
+
         // 2. Advance to Handshake with mock ECDHE secret (32 bytes)
         let ecdhe_secret: u8[32] = [0x42; 32];
         let ok_hs = internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
         sub.assert_true(ok_hs, "advance to handshake ok");
         sub.assert_eq(sched.stage, internal::KS_STAGE_HANDSHAKE, "stage is handshake");
+
+        // Transcript hash length bound validation
+        let bad_hash: u8[16] = [0x55; 16];
+        let ok_bad_hash = internal::ks_derive_handshake_traffic(sched, bad_hash[..]);
+        sub.assert_false(ok_bad_hash, "rejects mismatched handshake transcript hash length");
 
         // Derives handshake traffic secrets
         let ch_sh_hash: u8[32] = [0x55; 32];
@@ -315,6 +609,116 @@ fn test_key_schedule_and_derivations(t: core::T&) {
         sub.assert_true(ok_upd, "traffic secret update succeeds");
         sub.assert_false(traffic_secret[0] == orig_b0, "traffic secret successfully mutated");
     };
+
+    t.run("TLS-33: TLS 1.3 Key Schedule Exporter Master Secret Derivation (RFC 8446 §7.5)") { sub =>
+        let ks, ok_init = internal::ks_init(internal::TLS_AES_128_GCM_SHA256);
+        sub.assert_true(ok_init, "ks_init succeeds");
+
+        var sched = ks;
+        internal::ks_init_early_secret(sched, []);
+        let ecdhe_secret: u8[32] = [0x42; 32];
+        internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
+        let ch_sh_hash: u8[32] = [0x55; 32];
+        internal::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
+
+        // Exporter cannot be called before Master Secret stage
+        var out_exp: u8[32] = [0; 32];
+        let ok_early_exp = internal::ks_export_keying_material(sched, "test-label", [], 32, out_exp[..]);
+        sub.assert_false(ok_early_exp, "calling exporter before master secret fails");
+
+        // Advance to Master stage
+        let transcript_hash: u8[32] = [0xAA; 32];
+        internal::ks_advance_to_master(sched, transcript_hash[..]);
+        sub.assert_eq(sched.stage, internal::KS_STAGE_MASTER, "stage is master");
+
+        // 1. Export with empty context ("") -> uses Hash("")
+        var out_exp_empty: u8[32] = [0; 32];
+        let ok_empty = internal::ks_export_keying_material(sched, "test-label", [], 32, out_exp_empty[..]);
+        sub.assert_true(ok_empty, "exporter with empty context succeeds");
+
+        // 2. Export with non-empty context
+        var out_exp_ctx: u8[32] = [0; 32];
+        let ok_ctx = internal::ks_export_keying_material(sched, "test-label", "channel-binding-context", 32, out_exp_ctx[..]);
+        sub.assert_true(ok_ctx, "exporter with custom context succeeds");
+
+        // Different context MUST produce different exporter key material
+        var is_diff = false;
+        for i in 32 {
+            if out_exp_empty[i] != out_exp_ctx[i] { is_diff = true; break; }
+        }
+        sub.assert_true(is_diff, "empty context vs custom context produce distinct exporter outputs");
+
+        // 3. Exporter context length bound (> 255 bytes, RFC 8446 §7.5) MUST be rejected
+        var long_ctx: u8[256] = [0x77; 256];
+        let ok_long_ctx = internal::ks_export_keying_material(sched, "test-label", long_ctx[..], 32, out_exp[..]);
+        sub.assert_false(ok_long_ctx, "context > 255 bytes rejected");
+
+        // 4. Empty label MUST be rejected
+        let ok_no_lbl = internal::ks_export_keying_material(sched, "", [], 32, out_exp[..]);
+        sub.assert_false(ok_no_lbl, "empty exporter label rejected");
+    };
+
+    t.run("TLS-34: External PSK Early Secret & Resumption Ticket Nonce Derivation (RFC 8446 §7.1 & §4.6.1)") { sub =>
+        let ks, ok_init = internal::ks_init(internal::TLS_AES_128_GCM_SHA256);
+        sub.assert_true(ok_init, "ks_init succeeds");
+
+        // 1. External PSK generates "ext binder"
+        var sched_ext = ks;
+        let ext_psk: u8[32] = [0x88; 32];
+        let ok_ext = internal::ks_init_early_secret_with_mode(sched_ext, ext_psk[..], true);
+        sub.assert_true(ok_ext, "external PSK early secret initialized");
+        sub.assert_eq(sched_ext.stage, internal::KS_STAGE_EARLY, "stage is early");
+
+        // Resumption PSK with same key generates "res binder"
+        var sched_res = ks;
+        let ok_res = internal::ks_init_early_secret_with_mode(sched_res, ext_psk[..], false);
+        sub.assert_true(ok_res, "resumption PSK early secret initialized");
+
+        // External binder key MUST differ from resumption binder key
+        var binders_differ = false;
+        for i in 32 {
+            if sched_ext.binder_key[i] != sched_res.binder_key[i] {
+                binders_differ = true;
+                break;
+            }
+        }
+        sub.assert_true(binders_differ, "external binder key differs from resumption binder key");
+
+        // 2. Advance to Resumption stage
+        let ecdhe_secret: u8[32] = [0x42; 32];
+        internal::ks_advance_to_handshake(sched_res, ecdhe_secret[..]);
+        let ch_sh_hash: u8[32] = [0x55; 32];
+        internal::ks_derive_handshake_traffic(sched_res, ch_sh_hash[..]);
+        let transcript_hash: u8[32] = [0xAA; 32];
+        internal::ks_advance_to_master(sched_res, transcript_hash[..]);
+        let fin_hash: u8[32] = [0xBB; 32];
+        internal::ks_advance_to_resumption(sched_res, fin_hash[..]);
+        sub.assert_eq(sched_res.stage, internal::KS_STAGE_RESUMPTION, "stage is resumption");
+
+        // 3. Derive resumption PSK from ticket nonce (RFC 8446 §4.6.1)
+        let ticket_nonce_1: u8[8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ticket_nonce_2: u8[8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02];
+        var psk_out_1: u8[32] = [0; 32];
+        var psk_out_2: u8[32] = [0; 32];
+
+        let ok_psk1 = internal::ks_derive_resumption_psk(sched_res, ticket_nonce_1[..], psk_out_1[..]);
+        sub.assert_true(ok_psk1, "resumption psk 1 derived");
+        let ok_psk2 = internal::ks_derive_resumption_psk(sched_res, ticket_nonce_2[..], psk_out_2[..]);
+        sub.assert_true(ok_psk2, "resumption psk 2 derived");
+
+        // Distinct ticket nonces derive distinct resumption PSKs
+        var psks_differ = false;
+        for i in 32 {
+            if psk_out_1[i] != psk_out_2[i] { psks_differ = true; break; }
+        }
+        sub.assert_true(psks_differ, "different ticket nonces yield distinct resumption PSKs");
+
+        // Ticket nonce > 255 bytes rejected
+        var long_nonce: u8[256] = [0x01; 256];
+        var psk_fail: u8[32] = [0; 32];
+        let ok_long_nonce = internal::ks_derive_resumption_psk(sched_res, long_nonce[..], psk_fail[..]);
+        sub.assert_false(ok_long_nonce, "ticket nonce > 255 bytes rejected");
+    };
 }
 
 // ============================================================================
@@ -345,6 +749,20 @@ fn test_anti_replay_and_psk(t: core::T&) {
         // 5. Advance time by 2 epochs (> 25000ms): old epochs cleared, ticket A is accepted again
         let ok_a_ep3 = internal::strike_register_check_and_insert(reg, ticket_a[..], 25000);
         sub.assert_true(ok_a_ep3, "ticket A accepted after full 2-epoch retirement");
+
+        // 6. Negative timestamp rejected
+        sub.assert_false(internal::strike_register_check_and_insert(reg, ticket_a[..], -1), "negative now_ms rejected");
+
+        // 7. Empty ticket identifier rejected
+        let empty_ticket: u8[0] = [];
+        sub.assert_false(internal::strike_register_check_and_insert(reg, empty_ticket[..], 26000), "empty ticket_id rejected");
+
+        // 8. Backward clock skew / ancient epoch rejected
+        var reg_skew = internal::strike_register_init(10000, 2000);
+        let ok_fwd = internal::strike_register_check_and_insert(reg_skew, ticket_a[..], 50000);
+        sub.assert_true(ok_fwd, "advance to epoch 5");
+        let ok_skew = internal::strike_register_check_and_insert(reg_skew, ticket_b[..], 10000);
+        sub.assert_false(ok_skew, "ancient epoch rejected as clock skew / out of window");
     };
 
     t.run("TLS-14: Obfuscated Ticket Age Validation") { sub =>
@@ -363,6 +781,18 @@ fn test_anti_replay_and_psk(t: core::T&) {
         // Out of tolerance: 7000ms (diff = 2000ms > 1000ms)
         let ok3 = internal::validate_ticket_age(107000, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_false(ok3, "ticket age out of tolerance rejected");
+
+        // Negative expected age rejected
+        let ok_neg_age = internal::validate_ticket_age(105000, ticket_age_add, -1, tolerance_ms);
+        sub.assert_false(ok_neg_age, "negative expected age rejected");
+
+        // Negative tolerance rejected
+        let ok_neg_tol = internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, -1);
+        sub.assert_false(ok_neg_tol, "negative tolerance rejected");
+
+        // Exceeding 7-day maximum ticket lifetime (604800000 ms, RFC 8446 §4.6.1)
+        let ok_exp_max = internal::validate_ticket_age(ticket_age_add + 604800001, ticket_age_add, 604800001, tolerance_ms);
+        sub.assert_false(ok_exp_max, "age exceeding 7 days rejected");
     };
 
     t.run("TLS-15: PSK Binder Constant-Time Verification") { sub =>
@@ -384,6 +814,33 @@ fn test_anti_replay_and_psk(t: core::T&) {
         tampered_binder[0] ^= 0xFF;
         let ok_bad = internal::verify_psk_binder(internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], tampered_binder[..]);
         sub.assert_false(ok_bad, "tampered PSK binder rejected");
+    };
+
+    t.run("TLS-30: PSK Binder Truncation & Identity Count Validation (RFC 8446 §4.2.11)") { sub =>
+        // 1. Truncate ClientHello for binder
+        // Mock ClientHello of 60 bytes, binders_len 33 (1 binder: 1 byte len + 32 bytes hmac)
+        // binders overhead = 2 (binders vector len) + 33 = 35 bytes
+        // Expected truncated length = 60 - 35 = 25 bytes
+        var ch_mock: u8[60] = [0x42; 60];
+        let trunc_ch, ok_trunc = internal::truncate_client_hello_for_binder(ch_mock[..], 33);
+        sub.assert_true(ok_trunc, "ClientHello truncated for binder");
+        sub.assert_eq(trunc_ch.len, 25, "truncated length is 25 bytes");
+
+        // 2. Underflow: binders length larger than ClientHello
+        let _, ok_underflow = internal::truncate_client_hello_for_binder(ch_mock[..], 60);
+        sub.assert_false(ok_underflow, "binders longer than ClientHello rejected");
+
+        // 3. Zero binders length rejected
+        let _, ok_zero = internal::truncate_client_hello_for_binder(ch_mock[..], 0);
+        sub.assert_false(ok_zero, "zero binders length rejected");
+
+        // 4. Validate PSK identities and binders count (must match and be > 0)
+        sub.assert_true(internal::validate_psk_identities_and_binders_count(1, 1), "matching 1 identity and 1 binder valid");
+        sub.assert_true(internal::validate_psk_identities_and_binders_count(3, 3), "matching 3 identities and 3 binders valid");
+        sub.assert_false(internal::validate_psk_identities_and_binders_count(2, 1), "mismatched identities > binders rejected");
+        sub.assert_false(internal::validate_psk_identities_and_binders_count(1, 2), "mismatched identities < binders rejected");
+        sub.assert_false(internal::validate_psk_identities_and_binders_count(0, 0), "zero identities/binders rejected");
+        sub.assert_false(internal::validate_psk_identities_and_binders_count(-1, -1), "negative counts rejected");
     };
 }
 
@@ -684,6 +1141,143 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 }
 
 // ============================================================================
+// 8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)
+// ============================================================================
+fn test_post_quantum_hybrid_exchange(t: core::T&) {
+    t.run("TLS-25: Hybrid Key Share Entry Framing & Smuggling Defense") { sub =>
+        var client_share = wing::PostQuantumKeyShare {
+            group: wing::GROUP_X25519_MLKEM768,
+            ..
+        };
+        for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
+        for i in 1152 { client_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
+
+        var wire: u8[>..] = [];
+        client_share.format_hybrid_key_share(wire);
+        sub.assert_eq(wire.len, 1188, "Client KeyShareEntry wire length is 1188 bytes");
+
+        var parsed = wing::PostQuantumKeyShare { .. };
+        let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
+        sub.assert_true(ok_parse, "Client hybrid key share parsed");
+
+        // Smuggling attempt: Appending trailing unparsed bytes to KeyShareEntry must fail
+        var smuggled_wire: u8[>..] = [];
+        smuggled_wire.append(wire[..]);
+        smuggled_wire.push(0xCC); // 1 extra byte
+        var bad_client = wing::PostQuantumKeyShare { .. };
+        sub.assert_false(bad_client.parse_hybrid_key_share(smuggled_wire[..]), "rejects KeyShareEntry with trailing smuggled bytes");
+
+        // Server Share framing test
+        var server_share = wing::PostQuantumServerShare {
+            group: wing::GROUP_X25519_MLKEM768,
+            ..
+        };
+        for i in 32 { server_share.x25519_public[i] = (i + 7) as u8; }
+        for i in 1088 { server_share.mlkem768_ciphertext[i] = ((i * 5 + 3) & 0xFF) as u8; }
+
+        var server_wire: u8[>..] = [];
+        server_share.format_hybrid_server_key_share(server_wire);
+        sub.assert_eq(server_wire.len, 1124, "Server KeyShareEntry wire length is 1124 bytes");
+
+        var parsed_server = wing::PostQuantumServerShare { .. };
+        sub.assert_true(parsed_server.parse_hybrid_server_key_share(server_wire[..]), "Server share parsed");
+
+        var smuggled_server: u8[>..] = [];
+        smuggled_server.append(server_wire[..]);
+        smuggled_server.push(0xDD);
+        var bad_server = wing::PostQuantumServerShare { .. };
+        sub.assert_false(bad_server.parse_hybrid_server_key_share(smuggled_server[..]), "rejects server share with trailing smuggled bytes");
+    };
+
+    t.run("TLS-26: Hybrid Shared Secret Combiner & All-Zero Contributory Defense") { sub =>
+        let classical_ss: u8[32] = [0x11; 32];
+        let pq_ss: u8[32] = [0x22; 32];
+        var out_secret: u8[32] = [0; 32];
+
+        // Valid derivation succeeds
+        let ok_comb = wing::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
+        sub.assert_true(ok_comb, "valid hybrid shared secret derived");
+
+        // Contributory attack defense: all-zero classical X25519 secret rejected (RFC 7748 §6.1)
+        let zero_classical: u8[32] = [0x00; 32];
+        let ok_bad_classical = wing::derive_hybrid_shared_secret_checked(zero_classical[..], pq_ss[..], out_secret[..]);
+        sub.assert_false(ok_bad_classical, "rejects all-zero classical ECDH shared secret");
+
+        // Degenerate ML-KEM secret: all-zero PQ secret rejected
+        let zero_pq: u8[32] = [0x00; 32];
+        let ok_bad_pq = wing::derive_hybrid_shared_secret_checked(classical_ss[..], zero_pq[..], out_secret[..]);
+        sub.assert_false(ok_bad_pq, "rejects all-zero post-quantum shared secret");
+
+        // Short classical or PQ slice rejected
+        let ok_short = wing::derive_hybrid_shared_secret_checked(classical_ss[..16], pq_ss[..], out_secret[..]);
+        sub.assert_false(ok_short, "rejects truncated classical shared secret slice");
+    };
+
+    t.run("TLS-35: Post-Quantum ML-KEM-768 Decapsulation & FIPS 203 Implicit Rejection") { sub =>
+        var sk = wing::MLKEM768PrivateKey { .. };
+        // Implicit rejection seed z (32 bytes)
+        for i in 32 { sk.z[i] = (i + 0x41) as u8; }
+        // Private key (mock 1152 bytes)
+        for i in 1152 { sk.private_key[i] = ((i * 13 + 5) & 0xFF) as u8; }
+        for i in 1152 { sk.public_key[i] = ((i * 7 + 1) & 0xFF) as u8; }
+
+        // 1. Valid ciphertext decapsulation
+        var valid_ct: u8[1088] = [0xAA; 1088];
+        var ss_valid: u8[32] = [0; 32];
+        let is_rej_valid, ok_valid = wing::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
+        sub.assert_true(ok_valid, "valid ciphertext decapsulation succeeds");
+        sub.assert_false(is_rej_valid, "valid ciphertext does NOT trigger implicit rejection");
+
+        // Verify derived secret is non-zero
+        var ss_has_nonzero = false;
+        for b in ss_valid {
+            if b != 0 { ss_has_nonzero = true; break; }
+        }
+        sub.assert_true(ss_has_nonzero, "derived shared secret has non-zero entropy");
+
+        // 2. All-zero ciphertext (1088 bytes) MUST trigger deterministic implicit rejection (FIPS 203 §7.2)
+        var zero_ct: u8[1088] = [0x00; 1088];
+        var ss_zero: u8[32] = [0; 32];
+        let is_rej_zero, ok_zero = wing::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
+        sub.assert_true(ok_zero, "all-zero ciphertext decapsulation succeeds via implicit rejection");
+        sub.assert_true(is_rej_zero, "all-zero ciphertext triggers implicit rejection");
+
+        // Verify that the implicit rejection key matches K_bar = HMAC-SHA256(z, c)
+        var expected_k_bar: u8[32] = [0; 32];
+        let ok_k_bar = wing::mlkem768_compute_implicit_rejection(sk.z, zero_ct[..], expected_k_bar[..]);
+        sub.assert_true(ok_k_bar, "expected k_bar computed");
+        sub.assert_bytes_eq(ss_zero[..], expected_k_bar[..], "implicit rejection key matches FIPS 203 derivation from seed z");
+
+        // Determinism: decapsulating with same corrupt ciphertext produces identical shared key
+        var ss_zero_again: u8[32] = [0; 32];
+        wing::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero_again[..]);
+        sub.assert_bytes_eq(ss_zero[..], ss_zero_again[..], "implicit rejection is deterministic");
+
+        // 3. Different rejection seed z produces different implicit rejection key
+        var sk2 = sk;
+        sk2.z[0] ^= 0xFF;
+        var ss_diff_z: u8[32] = [0; 32];
+        wing::mlkem768_decapsulate_with_implicit_rejection(sk2, zero_ct[..], ss_diff_z[..]);
+        var diff_z_matches = true;
+        for i in 32 {
+            if ss_diff_z[i] != ss_zero[i] { diff_z_matches = false; break; }
+        }
+        sub.assert_false(diff_z_matches, "different seed z produces distinct implicit rejection key");
+
+        // 4. Truncated ciphertext (< 1088 bytes) rejected safely without panic or hang
+        let short_ct: u8[500] = [0xAA; 500];
+        var ss_short: u8[32] = [0; 32];
+        let _, ok_short = wing::mlkem768_decapsulate_with_implicit_rejection(sk, short_ct[..], ss_short[..]);
+        sub.assert_false(ok_short, "truncated ciphertext fails safely");
+
+        // 5. Short destination buffer (< 32 bytes) rejected safely
+        var ss_tiny: u8[16] = [0; 16];
+        let _, ok_tiny = wing::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
+        sub.assert_false(ok_tiny, "short output buffer fails safely");
+    };
+}
+
+// ============================================================================
 // Main TLS 1.3 & X.509 Conformance Runner
 // ============================================================================
 fn main() {
@@ -696,6 +1290,7 @@ fn main() {
     core::run_case(runner, "5. Anti-Replay Strike Register & PSK Binders", test_anti_replay_and_psk);
     core::run_case(runner, "6. Handshake State Machine, HRR & Extension Parsers", test_handshake_state_machine);
     core::run_case(runner, "7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify", test_asn1_x509_and_verify);
+    core::run_case(runner, "8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)", test_post_quantum_hybrid_exchange);
 
     let ok = core::finish(runner);
     assert(ok);
