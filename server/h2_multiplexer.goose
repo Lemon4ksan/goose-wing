@@ -55,11 +55,18 @@ struct H2ServerSession {
     preface_handled: bool = false,
     server_settings_sent: bool = false,
     client_settings_acked: bool = false,
+    pending_settings_ack: bool = false,
     server_name: u8[..64] = "goose-wing/1.0",
     header_accumulator: u8[..16384] = [],
     header_accum_stream_id: u32 = 0,
     header_accum_end_stream: bool = false,
     header_accum_is_trailer: bool = false,
+}
+
+fn flush_server_control_frames(sess: H2ServerSession&) {
+    while sess.conn.pending_control_frames > 0 {
+        ack_control_frame_flushed(sess.conn);
+    }
 }
 
 fn new_h2_server_session(
@@ -72,6 +79,7 @@ fn new_h2_server_session(
         preface_handled: false,
         server_settings_sent: false,
         client_settings_acked: false,
+        pending_settings_ack: false,
         server_name: [],
         ..
     };
@@ -413,6 +421,7 @@ fn handle_h2_server_ingress<B>(
 
             emit_server_settings(out_wire);
             sess.server_settings_sent = true;
+            sess.pending_settings_ack = true;
         } else {
             return 0, false; // Missing or invalid preface
         }
@@ -453,18 +462,53 @@ fn handle_h2_server_ingress<B>(
 
         let frame_payload = wire[offset + 9..offset + total_frame_len];
 
+        // RFC 9113 §6.10: Continuous header block boundaries
+        if sess.header_accum_stream_id != 0 {
+            if hdr.frame_type != FRAME_CONTINUATION || hdr.stream_id != sess.header_accum_stream_id {
+                emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                return offset + total_frame_len, false;
+            }
+        } else if hdr.frame_type == FRAME_CONTINUATION {
+            // Unprompted CONTINUATION frame received outside open header block
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            return offset + total_frame_len, false;
+        }
+
         // Validate Anti-DoS barriers and protocol invariants
         let err = on_ingress_frame_header(sess.conn, hdr, now_ms);
         if err != ERR_NO_ERROR {
+            if err == ERR_STREAM_CLOSED || err == ERR_REFUSED_STREAM {
+                // RFC 9113 §5.1 & §5.4.2: Stream error must not terminate connection
+                emit_rst_stream(hdr.stream_id, err, out_wire);
+                offset += total_frame_len;
+                continue;
+            }
             emit_goaway(sess.conn.last_peer_stream_id, err, out_wire);
+            return offset + total_frame_len, false;
+        }
+
+        // RFC 9113 §6.6: Servers MUST NOT receive PUSH_PROMISE frames
+        if hdr.frame_type == FRAME_PUSH_PROMISE {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
             return offset + total_frame_len, false;
         }
 
         // Handle Frame Types
         if hdr.frame_type == FRAME_SETTINGS {
             if (hdr.flags & FLAG_ACK) != 0 {
-                // Client ACKed our server settings
+                // RFC 9113 §6.5: SETTINGS with ACK and length != 0 MUST trigger FRAME_SIZE_ERROR
+                if hdr.length != 0 {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
+                // RFC 9113 §6.5 & §10.5: Reject unexpected or duplicate SETTINGS ACK
+                if !sess.pending_settings_ack {
+                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                    return offset + total_frame_len, false;
+                }
+                sess.pending_settings_ack = false;
                 sess.client_settings_acked = true;
+                ack_control_frame_flushed(sess.conn);
             } else {
                 // Parse client settings (pairs of u16 identifier + u32 value)
                 guard (frame_payload.len % 6) == 0 else {
@@ -951,5 +995,6 @@ fn handle_h2_server_ingress<B>(
         }
     }
 
+    flush_server_control_frames(sess);
     return offset, true;
 }

@@ -319,7 +319,7 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     if !found {
         if hdr.stream_id <= s.last_peer_stream_id {
-            return ERR_PROTOCOL_ERROR;
+            return ERR_STREAM_CLOSED;
         }
 
         // RFC 9113 Section 6.8 & Go #82365:
@@ -340,6 +340,11 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
         s.concurrency_violations = 0;
         open_new_session_stream(s, hdr.stream_id, (hdr.flags & FLAG_END_STREAM) != 0);
     } else {
+        // RFC 9113 Section 5.1: Extra HEADERS after END_STREAM is STREAM_CLOSED error
+        if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
+           s.streams[s_idx].state == H2StreamState.Closed {
+            return ERR_STREAM_CLOSED;
+        }
         if (hdr.flags & FLAG_END_STREAM) != 0 {
             s.streams[s_idx].trailers_received = true;
             s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
@@ -356,8 +361,7 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
 }
 
 fn check_h2_control_frame_flood(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
-    if (hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS) &&
-       (hdr.flags & FLAG_ACK) == 0 {
+    if hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS {
         s.pending_control_frames++;
         if s.pending_control_frames > MAX_PENDING_CTRL_FRAMES {
             return ERR_ENHANCE_YOUR_CALM;
@@ -494,6 +498,11 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
             return ERR_STREAM_CLOSED;
         }
         return ERR_PROTOCOL_ERROR;
+    }
+
+    if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
+       s.streams[s_idx].state == H2StreamState.Closed {
+        return ERR_STREAM_CLOSED;
     }
 
     let total_consumed = hdr.length as i64;

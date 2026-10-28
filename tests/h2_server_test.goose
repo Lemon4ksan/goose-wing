@@ -692,6 +692,240 @@ fn test_h2_protocol_invariants(t: core::T&) {
         sub.assert_eq(rst_hdr.frame_type, wing::FRAME_RST_STREAM, "Frame is RST_STREAM");
         sub.assert_eq(rst_hdr.stream_id, 3, "RST_STREAM on stream 3");
     };
+
+    t.run("H2-17: HEADERS on Closed Stream Triggers RST_STREAM(STREAM_CLOSED) Not GOAWAY (RFC 9113 §5.1)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        wing::add_route(pipeline.router, "GET", "/test", 17);
+
+        var client_hpack = wing::new_dynamic_table(wing::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+        // Complete stream 1
+        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", true, wire);
+
+        var out_wire: u8[>..] = [];
+        let _, ok1 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+        sub.assert_true(ok1, "Stream 1 completed normally");
+
+        // Send second HEADERS frame on now-closed stream 1
+        var wire2: u8[>..] = [];
+        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", true, wire2);
+
+        var out_wire2: u8[>..] = [];
+        let _, ok2 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire2[..], 1000, out_wire2);
+        sub.assert_true(ok2, "Connection remains open after HEADERS on closed stream");
+
+        // Verify RST_STREAM was emitted for stream 1
+        var found_rst = false;
+        var off: i64 = 0;
+        while off + 9 <= out_wire2.len {
+            let f_hdr, _ = wing::parse_frame_header(out_wire2[off..off + 9]);
+            if f_hdr.frame_type == wing::FRAME_RST_STREAM && f_hdr.stream_id == 1 {
+                found_rst = true;
+                let code_r = core::new_slice_reader(out_wire2[off + 9..off + 13]);
+                let err_code, _ = code_r.read_u32_be();
+                sub.assert_eq(err_code, wing::ERR_STREAM_CLOSED, "RST_STREAM error code is STREAM_CLOSED");
+                break;
+            }
+            off += 9 + (f_hdr.length as i64);
+        }
+        sub.assert_true(found_rst, "Server emitted RST_STREAM on closed stream 1");
+
+        // Verify stream 3 still works over the same connection
+        var wire3: u8[>..] = [];
+        encode_client_headers(client_hpack, 3, "GET", "/test", "localhost", true, wire3);
+        var out_wire3: u8[>..] = [];
+        let _, ok3 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire3[..], 1000, out_wire3);
+        sub.assert_true(ok3, "Subsequent stream 3 succeeds over open connection");
+    };
+
+    t.run("H2-18: Interleaved Non-CONTINUATION Frame During Header Accumulation Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Frame 1: HEADERS stream 1 WITHOUT FLAG_END_HEADERS
+        let h_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_HEADERS,
+            flags: 0, // No END_HEADERS!
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(h_hdr, wire);
+        let dummy: u8[4] = [0x82, 0x84, 0x86, 0x87];
+        for b in dummy { wire.push(b); }
+
+        // Frame 2: Interleaved PING frame before END_HEADERS
+        let ping_hdr = wing::FrameHeader {
+            length: 8,
+            frame_type: wing::FRAME_PING,
+            flags: 0,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(ping_hdr, wire);
+        let ping_opaque: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        for b in ping_opaque { wire.push(b); }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Ingress rejected interleaved frame before END_HEADERS");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire[46..50]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+    };
+
+    t.run("H2-19: Unprompted CONTINUATION Frame Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Unprompted CONTINUATION frame without preceding HEADERS
+        let c_hdr = wing::FrameHeader {
+            length: 4,
+            frame_type: wing::FRAME_CONTINUATION,
+            flags: wing::FLAG_END_HEADERS,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(c_hdr, wire);
+        let dummy: u8[4] = [0x82, 0x84, 0x86, 0x87];
+        for b in dummy { wire.push(b); }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Ingress rejected unprompted CONTINUATION");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire[46..50]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+    };
+
+    t.run("H2-20: Client PUSH_PROMISE Frame Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.6)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Client sends PUSH_PROMISE (promised stream id = 2, dummy header fragment)
+        let pp_hdr = wing::FrameHeader {
+            length: 5,
+            frame_type: wing::FRAME_PUSH_PROMISE,
+            flags: wing::FLAG_END_HEADERS,
+            stream_id: 1,
+        };
+        wing::encode_frame_header_to(pp_hdr, wire);
+        let pp_payload: u8[5] = [0x00, 0x00, 0x00, 0x02, 0x82];
+        for b in pp_payload { wire.push(b); }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Server rejected client PUSH_PROMISE");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire[46..50]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+    };
+
+    t.run("H2-21: Duplicate / Unsolicited SETTINGS ACK Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.5 & §10.5)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Frame 1: Valid SETTINGS ACK for server initial settings
+        let ack_hdr1 = wing::FrameHeader {
+            length: 0,
+            frame_type: wing::FRAME_SETTINGS,
+            flags: wing::FLAG_ACK,
+            stream_id: 0,
+        };
+        wing::encode_frame_header_to(ack_hdr1, wire);
+
+        var out_wire1: u8[>..] = [];
+        let _, ok1 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire1);
+        sub.assert_true(ok1, "First SETTINGS ACK accepted");
+        sub.assert_true(sess.client_settings_acked, "client_settings_acked is true");
+        sub.assert_false(sess.pending_settings_ack, "pending_settings_ack is false");
+
+        // Frame 2: Duplicate / unsolicited SETTINGS ACK
+        var wire2: u8[>..] = [];
+        wing::encode_frame_header_to(ack_hdr1, wire2);
+
+        var out_wire2: u8[>..] = [];
+        let _, ok2 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire2[..], 1000, out_wire2);
+        sub.assert_false(ok2, "Duplicate SETTINGS ACK rejected");
+        sub.assert_gt(out_wire2.len, 0, "GOAWAY emitted");
+        let g_hdr, _ = wing::parse_frame_header(out_wire2[0..9]);
+        sub.assert_eq(g_hdr.frame_type, wing::FRAME_GOAWAY, "Frame is GOAWAY");
+        let g_r = core::new_slice_reader(out_wire2[13..17]);
+        let err_code, _ = g_r.read_u32_be();
+        sub.assert_eq(err_code, wing::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+    };
+
+    t.run("H2-22: Control Frame Flood (Excess PINGs/ACKs > 64) Triggers GOAWAY(ENHANCE_YOUR_CALM) (RFC 9113 §10.5)") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        // Send 65 PING frames in a single batch (exceeding MAX_PENDING_CTRL_FRAMES = 64)
+        for i in 65 {
+            let ping_hdr = wing::FrameHeader {
+                length: 8,
+                frame_type: wing::FRAME_PING,
+                flags: 0,
+                stream_id: 0,
+            };
+            wing::encode_frame_header_to(ping_hdr, wire);
+            let ping_payload: u8[8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, (i & 0xFF) as u8];
+            for b in ping_payload { wire.push(b); }
+        }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_false(ok, "Control frame flood rejected");
+        sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
+        // Locate GOAWAY frame
+        var found_calm = false;
+        var off: i64 = 33;
+        while off + 9 <= out_wire.len {
+            let f_hdr, _ = wing::parse_frame_header(out_wire[off..off + 9]);
+            if f_hdr.frame_type == wing::FRAME_GOAWAY {
+                let g_r = core::new_slice_reader(out_wire[off + 13..off + 17]);
+                let err_code, _ = g_r.read_u32_be();
+                if err_code == wing::ERR_ENHANCE_YOUR_CALM {
+                    found_calm = true;
+                    break;
+                }
+            }
+            off += 9 + (f_hdr.length as i64);
+        }
+        sub.assert_true(found_calm, "GOAWAY with ENHANCE_YOUR_CALM emitted for control frame flood");
+    };
 }
 
 fn main() {
