@@ -61,17 +61,21 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     var c = cursor_from(raw);
 
     guard get_u16(c, out.version) else { return false; }
+    // Only draft-13 / RFC 9460 (0xFE0D) format is supported by this parser
+    guard out.version == ECH_VERSION_DRAFT13 else { return false; }
+
     guard get_u16(c, out.length) else { return false; }
     guard out.length <= cursor_len(c) else { return false; }
 
     // Preserve raw bytes of this ECHConfig for HPKE info binding
     let total_len = 4 + (out.length as i64);
     guard total_len <= raw.len else { return false; }
+    // Guard against silent truncation in raw_bytes buffer
+    guard total_len <= out.raw_bytes.cap else { return false; }
+
     out.raw_bytes.clear();
     for i in total_len {
-        if out.raw_bytes.len < out.raw_bytes.cap {
-            out.raw_bytes.push(raw[i]);
-        }
+        out.raw_bytes.push(raw[i]);
     }
 
     var contents = ByteCursor { buf: raw[..0] };
@@ -91,54 +95,95 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     guard cursor_len(cs_cursor) >= 4 && (cursor_len(cs_cursor) % 4) == 0 else { return false; }
 
     out.cipher_suites.clear();
-    while cursor_len(cs_cursor) >= 4 && out.cipher_suites.len < out.cipher_suites.cap {
+    while cursor_len(cs_cursor) >= 4 {
         var kdf: u16 = 0;
         var aead: u16 = 0;
         guard get_u16(cs_cursor, kdf) && get_u16(cs_cursor, aead) else { return false; }
-        out.cipher_suites.push(EchCipherSuite { kdf_id: kdf, aead_id: aead });
+        if out.cipher_suites.len < out.cipher_suites.cap {
+            out.cipher_suites.push(EchCipherSuite { kdf_id: kdf, aead_id: aead });
+        }
     }
+    guard cursor_len(cs_cursor) == 0 else { return false; }
+    guard out.cipher_suites.len > 0 else { return false; }
 
     // maximum_name_length (u8)
     guard get_u8(contents, out.maximum_name_length) else { return false; }
 
-    // public_name: opaque<1..255>
+    // public_name: opaque<1..255> (RFC 9460: MUST NOT be empty or an IP literal)
     var pub_cursor = ByteCursor { buf: raw[..0] };
     guard get_u8_length_prefixed(contents, pub_cursor) else { return false; }
-    out.public_name.clear();
-    for i in cursor_len(pub_cursor) {
-        if out.public_name.len < out.public_name.cap {
-            out.public_name.push(pub_cursor.buf[i]);
+    let pub_len = cursor_len(pub_cursor);
+    guard pub_len >= 1 && pub_len <= 255 && pub_len <= out.public_name.cap else { return false; }
+
+    let pub_raw = pub_cursor.buf;
+    var has_colon = false;
+    var is_all_digits_and_dots = true;
+    for b in pub_raw {
+        guard b != 0 else { return false; }
+        if b == ':' { has_colon = true; }
+        if !(b >= '0' && b <= '9') && b != '.' {
+            is_all_digits_and_dots = false;
         }
+    }
+    if has_colon || (is_all_digits_and_dots && pub_raw.len > 0) {
+        return false;
+    }
+
+    out.public_name.clear();
+    for i in pub_len {
+        out.public_name.push(pub_cursor.buf[i]);
     }
 
     // extensions: Extension<0..2^16-1>
     var ext_cursor = ByteCursor { buf: raw[..0] };
     guard get_u16_length_prefixed(contents, ext_cursor) else { return false; }
 
+    // Trailing unparsed bytes inside contents are strictly rejected
+    guard cursor_len(contents) == 0 else { return false; }
+
     return true;
 }
 
 // Parses an ECHConfigList: opaque<2..2^16-1> sequence of ECHConfig.
+// RFC 9460 Section 4: Clients MUST ignore any ECHConfig with an unsupported version.
+// Rejects trailing unparsed bytes, empty lists, and truncated records.
 fn parse_ech_config_list(raw: const u8[:], out: EchConfigList&) -> bool {
-    guard raw.len >= 2 else { return false; }
+    guard raw.len >= 4 else { return false; }
     var c = cursor_from(raw);
 
     var list_cursor = ByteCursor { buf: raw[..0] };
     guard get_u16_length_prefixed(c, list_cursor) else { return false; }
+    guard cursor_len(c) == 0 else { return false; }
+    guard cursor_len(list_cursor) >= 4 else { return false; }
 
     out.configs.clear();
-    while cursor_len(list_cursor) >= 4 && out.configs.len < out.configs.cap {
+    while cursor_len(list_cursor) >= 4 {
         let entry_start = list_cursor.buf;
+        var probe = cursor_from(entry_start);
+        var ver: u16 = 0;
+        var elen: u16 = 0;
+        guard get_u16(probe, ver) && get_u16(probe, elen) else { return false; }
+
+        let total_entry = 4 + (elen as i64);
+        guard total_entry <= cursor_len(list_cursor) else { return false; }
+
+        if ver != ECH_VERSION_DRAFT13 {
+            // RFC 9460 Section 4: Ignore unsupported versions and advance to next entry
+            list_cursor.buf = list_cursor.buf[total_entry..];
+            continue;
+        }
+
         var cfg = EchConfig { .. };
-        guard parse_ech_config(entry_start, cfg) else { return false; }
+        guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
 
-        let entry_len = 4 + (cfg.length as i64);
-        guard entry_len <= cursor_len(list_cursor) else { return false; }
-
-        out.configs.push(cfg);
-        list_cursor.buf = list_cursor.buf[entry_len..];
+        if out.configs.len < out.configs.cap {
+            out.configs.push(cfg);
+        }
+        list_cursor.buf = list_cursor.buf[total_entry..];
     }
 
+    // Must have fully consumed list_cursor without trailing fragments
+    guard cursor_len(list_cursor) == 0 else { return false; }
     return out.configs.len > 0;
 }
 
@@ -169,6 +214,8 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
 // Computes RFC 9460 / ECH draft-13 padding for ClientHelloInner.
 // Pads inner ClientHello to hide exact length of real SNI and extensions.
 fn pad_ech_inner<B>(inner_bytes: const u8[:], max_name_len: u8, real_sni_len: i64, out_padded: B&) -> bool {
+    guard inner_bytes.len > 0 else { return false; }
+    guard real_sni_len >= 0 else { return false; }
     out_padded.append(inner_bytes);
 
     let max_len = max_name_len as i64;
@@ -256,10 +303,103 @@ fn seal_ech_inner(
     );
 }
 
+// Parses and validates retry_configs from Server HelloRetryRequest ECH extension (RFC 9460 Section 5).
+// Must contain a valid, parseable ECHConfigList.
+fn parse_and_validate_ech_retry_configs(
+    ext_data: const u8[:],
+    out_config_list: EchConfigList&,
+) -> bool {
+    guard ext_data.len >= 4 else { return false; }
+    return parse_ech_config_list(ext_data, out_config_list);
+}
+
 // Parses retry_configs from Server HelloRetryRequest ECH extension.
+// Enforces that the payload is a valid RFC 9460 ECHConfigList before copying.
 fn parse_ech_hrr_retry_configs(ext_data: const u8[:], out_configs: u8[>..]&) -> bool {
-    guard ext_data.len >= 2 else { return false; }
+    guard ext_data.len >= 4 else { return false; }
+    var parsed_list = EchConfigList { .. };
+    guard parse_ech_config_list(ext_data, parsed_list) else { return false; }
     out_configs.clear();
     out_configs.append(ext_data);
+    return true;
+}
+
+// Verifies the 8-byte ECH acceptance confirmation in ServerHello (RFC 9460 Section 7.2).
+// Constant-time comparison against expected confirmation derived from transcript.
+fn verify_ech_acceptance_confirmation(
+    ext_data: const u8[:],
+    expected_confirmation: const u8[8]&,
+) -> bool {
+    guard ext_data.len == 8 else { return false; }
+    var diff: u8 = 0;
+    for i in 8 {
+        diff |= ext_data[i] ^ expected_confirmation[i];
+    }
+    return diff == 0;
+}
+
+enum EchHandshakeMode {
+    Disabled,
+    Offered,
+    Accepted,
+    RejectedWithRetry,
+    Bypassed,
+}
+
+struct EchFsm {
+    mode: EchHandshakeMode = EchHandshakeMode.Disabled,
+    has_hrr: bool = false,
+    offered_config_id: u8 = 0,
+}
+
+// Handles ECH state machine progression on receiving ServerHello or HRR (RFC 9460 Section 6 & 7).
+fn ech_fsm_on_server_hello(
+    fsm: EchFsm&,
+    is_hrr: bool,
+    has_ech_ext: bool,
+    ech_ext_data: const u8[:],
+    expected_confirm: const u8[8]&,
+    out_retry_configs: EchConfigList&,
+) -> bool {
+    if fsm.mode != EchHandshakeMode.Offered {
+        // If ECH was not offered, server MUST NOT send ECH extension
+        return !has_ech_ext;
+    }
+
+    if is_hrr {
+        guard !fsm.has_hrr else { return false; } // Strictly only ONE HRR allowed
+        fsm.has_hrr = true;
+        if has_ech_ext {
+            // ECH rejected with retry_configs
+            guard parse_and_validate_ech_retry_configs(ech_ext_data, out_retry_configs) else { return false; }
+            fsm.mode = EchHandshakeMode.RejectedWithRetry;
+            return true;
+        } else {
+            // ECH accepted in HRR; client continues ECH with ClientHello2
+            fsm.mode = EchHandshakeMode.Offered;
+            return true;
+        }
+    } else {
+        // Regular ServerHello
+        if has_ech_ext {
+            // Must verify acceptance confirmation
+            guard verify_ech_acceptance_confirmation(ech_ext_data, expected_confirm) else { return false; }
+            fsm.mode = EchHandshakeMode.Accepted;
+            return true;
+        } else {
+            // ECH rejected / bypassed by server
+            fsm.mode = EchHandshakeMode.Bypassed;
+            return true;
+        }
+    }
+}
+
+// RFC 9460 Section 6.1: When ECH is used with 0-RTT, early_data MUST be in ClientHelloInner,
+// and MUST NOT appear in ClientHelloOuter.
+// A server observing early_data in ClientHelloOuter MUST reject it with illegal_parameter.
+fn validate_ech_early_data_placement(is_inner: bool, has_early_data: bool) -> bool {
+    if !is_inner && has_early_data {
+        return false;
+    }
     return true;
 }

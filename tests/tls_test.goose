@@ -1278,6 +1278,1074 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
 }
 
 // ============================================================================
+// 8. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance
+// ============================================================================
+fn test_handshake_and_ech_security(t: core::T&) {
+    t.run("TLS-25: RFC 8446 §4.2 Duplicate Extension Rejection & Block Bounds") { sub =>
+        // 1. Construct valid extensions block with distinct extension IDs
+        var b_valid = wing::builder_init();
+        wing::start_u16_prefix(b_valid); // block len
+
+        // Extension 1: EXT_SERVER_NAME (0)
+        wing::put_u16(b_valid, wing::EXT_SERVER_NAME);
+        wing::start_u16_prefix(b_valid);
+        wing::put_bytes(b_valid, "mock_sni");
+        wing::finish_u16_prefix(b_valid);
+
+        // Extension 2: EXT_SUPPORTED_VERSIONS (43)
+        wing::put_u16(b_valid, wing::EXT_SUPPORTED_VERSIONS);
+        wing::start_u16_prefix(b_valid);
+        wing::put_bytes(b_valid, "mock_ver");
+        wing::finish_u16_prefix(b_valid);
+
+        wing::finish_u16_prefix(b_valid);
+
+        var entries: wing::TlsExtensionEntry[..32] = [];
+        let ok_val = wing::parse_extensions_block(b_valid.buf[..], entries);
+        sub.assert_true(ok_val, "distinct extensions parsed successfully");
+        sub.assert_eq(entries.len, 2, "2 extensions parsed");
+
+        // 2. Duplicate extension attack (RFC 8446 §4.2 violation)
+        var b_dup = wing::builder_init();
+        wing::start_u16_prefix(b_dup);
+
+        wing::put_u16(b_dup, wing::EXT_SERVER_NAME);
+        wing::start_u16_prefix(b_dup);
+        wing::put_bytes(b_dup, "mock_sni_1");
+        wing::finish_u16_prefix(b_dup);
+
+        wing::put_u16(b_dup, wing::EXT_SERVER_NAME); // DUPLICATE!
+        wing::start_u16_prefix(b_dup);
+        wing::put_bytes(b_dup, "mock_sni_2");
+        wing::finish_u16_prefix(b_dup);
+
+        wing::finish_u16_prefix(b_dup);
+
+        var entries_dup: wing::TlsExtensionEntry[..32] = [];
+        let ok_dup = wing::parse_extensions_block(b_dup.buf[..], entries_dup);
+        sub.assert_false(ok_dup, "duplicate extension MUST be strictly rejected per RFC 8446 Section 4.2");
+
+        // 3. Trailing garbage after extensions block
+        var b_trail = wing::builder_init();
+        wing::put_bytes(b_trail, b_valid.buf[..]);
+        wing::put_u8(b_trail, 0xFF); // trailing unparsed byte
+        var entries_trail: wing::TlsExtensionEntry[..32] = [];
+        let ok_trail = wing::parse_extensions_block(b_trail.buf[..], entries_trail);
+        sub.assert_false(ok_trail, "trailing garbage after extensions block rejected");
+    };
+
+    t.run("TLS-26: RFC 6066 SNI Strict Boundary, Duplicate HostName & Dot Format Invariants") { sub =>
+        // 1. Duplicate host_name in single ServerNameList (RFC 6066 §3 violation)
+        var b_dup = wing::builder_init();
+        wing::start_u16_prefix(b_dup); // list
+        // Name 1
+        wing::put_u8(b_dup, 0); // host_name
+        wing::start_u16_prefix(b_dup);
+        wing::put_bytes(b_dup, "a.example.com");
+        wing::finish_u16_prefix(b_dup);
+        // Name 2 (duplicate host_name!)
+        wing::put_u8(b_dup, 0); // host_name
+        wing::start_u16_prefix(b_dup);
+        wing::put_bytes(b_dup, "b.example.com");
+        wing::finish_u16_prefix(b_dup);
+        wing::finish_u16_prefix(b_dup);
+
+        var sni_out: u8[..255] = [];
+        let ok_dup = wing::parse_sni_extension(b_dup.buf[..], sni_out);
+        sub.assert_false(ok_dup, "duplicate host_name in ServerNameList strictly rejected");
+
+        // 2. Empty ServerNameList (RFC 6066 §3 server_name_list<1..2^16-1>)
+        var b_empty = wing::builder_init();
+        wing::start_u16_prefix(b_empty);
+        wing::finish_u16_prefix(b_empty); // length 0
+        let ok_empty = wing::parse_sni_extension(b_empty.buf[..], sni_out);
+        sub.assert_false(ok_empty, "empty ServerNameList strictly rejected");
+
+        // 3. Trailing dot in host_name ("example.com.")
+        var b_dot = wing::builder_init();
+        wing::start_u16_prefix(b_dot);
+        wing::put_u8(b_dot, 0);
+        wing::start_u16_prefix(b_dot);
+        wing::put_bytes(b_dot, "example.com.");
+        wing::finish_u16_prefix(b_dot);
+        wing::finish_u16_prefix(b_dot);
+        let ok_dot = wing::parse_sni_extension(b_dot.buf[..], sni_out);
+        sub.assert_false(ok_dot, "trailing dot in SNI rejected per RFC 6066");
+
+        // 4. Leading dot in host_name (".example.com")
+        var b_ldot = wing::builder_init();
+        wing::start_u16_prefix(b_ldot);
+        wing::put_u8(b_ldot, 0);
+        wing::start_u16_prefix(b_ldot);
+        wing::put_bytes(b_ldot, ".example.com");
+        wing::finish_u16_prefix(b_ldot);
+        wing::finish_u16_prefix(b_ldot);
+        let ok_ldot = wing::parse_sni_extension(b_ldot.buf[..], sni_out);
+        sub.assert_false(ok_ldot, "leading dot in SNI rejected");
+
+        // 5. Consecutive dots in host_name ("foo..bar.com")
+        var b_cdots = wing::builder_init();
+        wing::start_u16_prefix(b_cdots);
+        wing::put_u8(b_cdots, 0);
+        wing::start_u16_prefix(b_cdots);
+        wing::put_bytes(b_cdots, "foo..bar.com");
+        wing::finish_u16_prefix(b_cdots);
+        wing::finish_u16_prefix(b_cdots);
+        let ok_cdots = wing::parse_sni_extension(b_cdots.buf[..], sni_out);
+        sub.assert_false(ok_cdots, "consecutive dots in SNI rejected");
+
+        // 6. Trailing garbage in extension_data after server_name_list
+        var b_trail = wing::builder_init();
+        wing::start_u16_prefix(b_trail);
+        wing::put_u8(b_trail, 0);
+        wing::start_u16_prefix(b_trail);
+        wing::put_bytes(b_trail, "example.com");
+        wing::finish_u16_prefix(b_trail);
+        wing::finish_u16_prefix(b_trail);
+        wing::put_u8(b_trail, 0xEE); // trailing unparsed byte
+        let ok_trail = wing::parse_sni_extension(b_trail.buf[..], sni_out);
+        sub.assert_false(ok_trail, "trailing garbage in SNI extension rejected");
+    };
+
+    t.run("TLS-27: RFC 7301 ALPN Empty List, Zero-Length Name & Trailing Garbage Defenses") { sub =>
+        // 1. Empty ProtocolNameList (length 0, RFC 7301 §3.1 violation)
+        var b_empty = wing::builder_init();
+        wing::start_u16_prefix(b_empty);
+        wing::finish_u16_prefix(b_empty); // len 0
+        sub.assert_false(wing::validate_alpn_extension(b_empty.buf[..]), "empty ALPN list rejected by validator");
+        let neg_empty = wing::negotiate_alpn(b_empty.buf[..], false);
+        sub.assert_true(neg_empty == wing::NegotiatedAlpn.None, "empty ALPN list negotiates None");
+
+        // 2. Protocol name with 0-length (empty string "")
+        var b_zlen = wing::builder_init();
+        wing::start_u16_prefix(b_zlen);
+        wing::start_u8_prefix(b_zlen);
+        // 0-length name
+        wing::finish_u8_prefix(b_zlen);
+        wing::finish_u16_prefix(b_zlen);
+        sub.assert_false(wing::validate_alpn_extension(b_zlen.buf[..]), "0-length protocol name rejected");
+        let neg_zlen = wing::negotiate_alpn(b_zlen.buf[..], false);
+        sub.assert_true(neg_zlen == wing::NegotiatedAlpn.None, "0-length protocol name negotiates None");
+
+        // 3. Trailing garbage in ALPN extension
+        var b_valid = wing::builder_init();
+        wing::start_u16_prefix(b_valid);
+        wing::start_u8_prefix(b_valid);
+        wing::put_bytes(b_valid, "h2");
+        wing::finish_u8_prefix(b_valid);
+        wing::finish_u16_prefix(b_valid);
+        wing::put_u8(b_valid, 0x99); // trailing garbage
+        sub.assert_false(wing::validate_alpn_extension(b_valid.buf[..]), "trailing bytes in ALPN rejected");
+        let neg_trail = wing::negotiate_alpn(b_valid.buf[..], false);
+        sub.assert_true(neg_trail == wing::NegotiatedAlpn.None, "trailing bytes in ALPN negotiates None");
+    };
+
+    t.run("TLS-28: RFC 8446 Supported Versions Validation & Strict TLS 1.3 Negotiation") { sub =>
+        // 1. ClientHello offering TLS 1.3 (0x0304) and TLS 1.2 (0x0303)
+        var b_ch = wing::builder_init();
+        wing::start_u8_prefix(b_ch); // 1-byte length prefix
+        wing::put_u16(b_ch, 0x0304); // TLS 1.3
+        wing::put_u16(b_ch, 0x0303); // TLS 1.2
+        wing::finish_u8_prefix(b_ch);
+
+        let has_tls13, ok_ch = wing::parse_client_supported_versions(b_ch.buf[..]);
+        sub.assert_true(ok_ch, "ClientHello supported_versions parsed");
+        sub.assert_true(has_tls13, "TLS 1.3 supported");
+
+        // 2. ClientHello offering only legacy versions (0x0303 TLS 1.2, 0x0301 TLS 1.0)
+        var b_legacy = wing::builder_init();
+        wing::start_u8_prefix(b_legacy);
+        wing::put_u16(b_legacy, 0x0303);
+        wing::put_u16(b_legacy, 0x0301);
+        wing::finish_u8_prefix(b_legacy);
+
+        let has_tls13_leg, ok_leg = wing::parse_client_supported_versions(b_legacy.buf[..]);
+        sub.assert_true(ok_leg, "legacy list parses");
+        sub.assert_false(has_tls13_leg, "TLS 1.3 NOT supported in legacy-only ClientHello");
+
+        // 3. ClientHello odd length (RFC 8446 §4.2.1 violation: each version is 2 bytes)
+        var b_odd = wing::builder_init();
+        wing::put_u8(b_odd, 3); // odd length 3
+        wing::put_u8(b_odd, 0x03);
+        wing::put_u8(b_odd, 0x04);
+        wing::put_u8(b_odd, 0x03);
+        let _, ok_odd = wing::parse_client_supported_versions(b_odd.buf[..]);
+        sub.assert_false(ok_odd, "odd length supported_versions rejected");
+
+        // 4. ClientHello duplicate versions rejected
+        var b_dup = wing::builder_init();
+        wing::start_u8_prefix(b_dup);
+        wing::put_u16(b_dup, 0x0304);
+        wing::put_u16(b_dup, 0x0304); // duplicate!
+        wing::finish_u8_prefix(b_dup);
+        let _, ok_dup = wing::parse_client_supported_versions(b_dup.buf[..]);
+        sub.assert_false(ok_dup, "duplicate version in ClientHello supported_versions rejected");
+
+        // 5. ServerHello valid selection (0x0304 TLS 1.3)
+        let sh_valid: u8[2] = [0x03, 0x04];
+        let sel_ver, ok_sh = wing::parse_server_supported_versions(sh_valid[..]);
+        sub.assert_true(ok_sh, "ServerHello TLS 1.3 accepted");
+        sub.assert_eq(sel_ver, 0x0304, "selected version is 0x0304");
+
+        // 6. ServerHello selecting legacy TLS 1.2 (0x0303 downgrade attempt)
+        let sh_downgrade: u8[2] = [0x03, 0x03];
+        let _, ok_dg = wing::parse_server_supported_versions(sh_downgrade[..]);
+        sub.assert_false(ok_dg, "ServerHello TLS 1.2 downgrade strictly rejected");
+
+        // 7. ServerHello length != 2 bytes
+        let sh_badlen: u8[3] = [0x03, 0x04, 0x00];
+        let _, ok_bl = wing::parse_server_supported_versions(sh_badlen[..]);
+        sub.assert_false(ok_bl, "ServerHello supported_versions length != 2 rejected");
+    };
+
+    t.run("TLS-29: RFC 8446 §5.1 Handshake Header Length & Record Boundary Verification") { sub =>
+        // 1. Handshake header parsing and buffer overflow prevention
+        let hs_hdr: u8[4] = [0x01, 0x00, 0x00, 0x05]; // type 1 (CH), len 5
+        let _, _, ok_trunc = wing::parse_handshake_header(hs_hdr[..]);
+        sub.assert_false(ok_trunc, "handshake header where payload is truncated rejected");
+
+        // 2. Valid handshake message with complete payload
+        let hs_msg: u8[9] = [0x01, 0x00, 0x00, 0x05, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let m_type, m_len, ok_msg = wing::parse_handshake_header(hs_msg[..]);
+        sub.assert_true(ok_msg, "complete handshake message header accepted");
+        sub.assert_eq(m_type, 1, "msg_type is 1");
+        sub.assert_eq(m_len, 5, "msg_len is 5");
+
+        // 3. Record boundary validation: record payload len == 9 (4 header + 5 payload)
+        let _, _, ok_bnd = wing::validate_handshake_record_boundary(hs_msg[..], 9);
+        sub.assert_true(ok_bnd, "record boundary exactly matches message length");
+
+        // Record boundary mismatch (declared 9, record is 8)
+        let _, _, ok_mismatch = wing::validate_handshake_record_boundary(hs_msg[..], 8);
+        sub.assert_false(ok_mismatch, "record boundary mismatch rejected");
+
+        // 4. Handshake header encoding length check (cannot exceed 2^24 - 1)
+        var out_hdr: u8[4] = [0; 4];
+        sub.assert_true(wing::encode_handshake_header(1, 1000, out_hdr), "encode valid header length");
+        sub.assert_false(wing::encode_handshake_header(1, 16777216, out_hdr), "overflow > 2^24-1 rejected");
+
+        // 5. RFC 8446 Section 5.1: Handshake headers MUST NOT be split across records
+        let dummy_ch = "ClientHelloWirePayloadForTestingFragmentationRules1234567890";
+        var recs: u8[>..] = [];
+        // Attempting to split at byte 2 (splitting 4-byte handshake header)
+        sub.assert_false(wing::fragment_client_hello(dummy_ch, 2, recs), "splitting handshake header (< 4 bytes) strictly rejected");
+        // Valid split at byte 10 (>= 4 bytes)
+        sub.assert_true(wing::fragment_client_hello(dummy_ch, 10, recs), "valid fragmentation >= 4 bytes succeeds");
+    };
+
+    t.run("TLS-30: RFC 9460 & draft-13 ECHConfig Parsing, Downgrade Protection & Skipped Versions") { sub =>
+        // Helper to build a valid draft-13 ECHConfig wire payload
+        var b_cfg = wing::builder_init();
+        wing::put_u16(b_cfg, wing::ECH_VERSION_DRAFT13); // version 0xFE0D
+        wing::start_u16_prefix(b_cfg); // length prefix for contents
+
+        wing::put_u8(b_cfg, 0x01); // config_id
+        wing::put_u16(b_cfg, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256); // kem_id (0x0020)
+
+        // public_key<1..2^16-1>: 32 bytes
+        wing::start_u16_prefix(b_cfg);
+        for i in 32 { wing::put_u8(b_cfg, (i + 1) as u8); }
+        wing::finish_u16_prefix(b_cfg);
+
+        // cipher_suites<4..2^16-1>: KDF HKDF-SHA256 (0x0001), AEAD AES-128-GCM (0x0001)
+        wing::start_u16_prefix(b_cfg);
+        wing::put_u16(b_cfg, wing::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_cfg, wing::HPKE_AEAD_AES_128_GCM);
+        wing::finish_u16_prefix(b_cfg);
+
+        wing::put_u8(b_cfg, 64); // maximum_name_length
+
+        // public_name: "public.cloudflare.com"
+        wing::start_u8_prefix(b_cfg);
+        wing::put_bytes(b_cfg, "public.cloudflare.com");
+        wing::finish_u8_prefix(b_cfg);
+
+        // extensions: 0 length
+        wing::start_u16_prefix(b_cfg);
+        wing::finish_u16_prefix(b_cfg);
+
+        wing::finish_u16_prefix(b_cfg); // end contents
+
+        // 1. Parsing genuine ECHConfig succeeds
+        var cfg = wing::EchConfig { .. };
+        let ok_cfg = wing::parse_ech_config(b_cfg.buf[..], cfg);
+        sub.assert_true(ok_cfg, "valid draft-13 ECHConfig parsed");
+        sub.assert_eq(cfg.version, wing::ECH_VERSION_DRAFT13, "version is 0xFE0D");
+        sub.assert_eq(cfg.config_id, 0x01, "config_id is 1");
+        sub.assert_eq(cfg.cipher_suites.len, 1, "1 cipher suite parsed");
+        sub.assert_bytes_eq(cfg.public_name[..], "public.cloudflare.com", "public_name matches");
+
+        // 2. Unsupported ECH version (e.g. 0xFE0C or 0x0001) in parse_ech_config rejected
+        var b_badver = wing::builder_init();
+        wing::put_bytes(b_badver, b_cfg.buf[..]);
+        b_badver.buf[0] = 0xFE;
+        b_badver.buf[1] = 0x0C; // unsupported version
+        var cfg_bad = wing::EchConfig { .. };
+        let ok_badver = wing::parse_ech_config(b_badver.buf[..], cfg_bad);
+        sub.assert_false(ok_badver, "unsupported ECHConfig version strictly rejected in parse_ech_config");
+
+        // 3. ECHConfig with empty public_name (RFC 9460 public_name<1..255>) rejected
+        var b_emptypub = wing::builder_init();
+        wing::put_u16(b_emptypub, wing::ECH_VERSION_DRAFT13);
+        wing::start_u16_prefix(b_emptypub);
+        wing::put_u8(b_emptypub, 0x01);
+        wing::put_u16(b_emptypub, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        wing::start_u16_prefix(b_emptypub);
+        for i in 32 { wing::put_u8(b_emptypub, 0x11); }
+        wing::finish_u16_prefix(b_emptypub);
+        wing::start_u16_prefix(b_emptypub);
+        wing::put_u16(b_emptypub, wing::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_emptypub, wing::HPKE_AEAD_AES_128_GCM);
+        wing::finish_u16_prefix(b_emptypub);
+        wing::put_u8(b_emptypub, 64);
+        wing::put_u8(b_emptypub, 0); // 0-length public_name!
+        wing::start_u16_prefix(b_emptypub);
+        wing::finish_u16_prefix(b_emptypub);
+        wing::finish_u16_prefix(b_emptypub);
+
+        let ok_emptypub = wing::parse_ech_config(b_emptypub.buf[..], cfg_bad);
+        sub.assert_false(ok_emptypub, "empty public_name in ECHConfig rejected");
+
+        // 4. ECHConfig with IP literal public_name rejected
+        var b_ippub = wing::builder_init();
+        wing::put_u16(b_ippub, wing::ECH_VERSION_DRAFT13);
+        wing::start_u16_prefix(b_ippub);
+        wing::put_u8(b_ippub, 0x01);
+        wing::put_u16(b_ippub, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        wing::start_u16_prefix(b_ippub);
+        for i in 32 { wing::put_u8(b_ippub, 0x11); }
+        wing::finish_u16_prefix(b_ippub);
+        wing::start_u16_prefix(b_ippub);
+        wing::put_u16(b_ippub, wing::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_ippub, wing::HPKE_AEAD_AES_128_GCM);
+        wing::finish_u16_prefix(b_ippub);
+        wing::put_u8(b_ippub, 64);
+        wing::start_u8_prefix(b_ippub);
+        wing::put_bytes(b_ippub, "192.168.1.1"); // IP literal!
+        wing::finish_u8_prefix(b_ippub);
+        wing::start_u16_prefix(b_ippub);
+        wing::finish_u16_prefix(b_ippub);
+        wing::finish_u16_prefix(b_ippub);
+
+        let ok_ippub = wing::parse_ech_config(b_ippub.buf[..], cfg_bad);
+        sub.assert_false(ok_ippub, "IP literal in ECHConfig public_name rejected");
+
+        // 5. ECHConfigList containing an unsupported version entry before a draft-13 entry:
+        // RFC 9460 §4: Client MUST ignore unsupported versions and successfully parse supported versions.
+        var b_list = wing::builder_init();
+        wing::start_u16_prefix(b_list); // list length
+        // Entry 1: unsupported version 0x9999 (len 6)
+        wing::put_u16(b_list, 0x9999);
+        wing::put_u16(b_list, 6);
+        wing::put_bytes(b_list, "ignore");
+        // Entry 2: valid draft-13 config
+        wing::put_bytes(b_list, b_cfg.buf[..]);
+        wing::finish_u16_prefix(b_list);
+
+        var cfg_list = wing::EchConfigList { .. };
+        let ok_list = wing::parse_ech_config_list(b_list.buf[..], cfg_list);
+        sub.assert_true(ok_list, "ECHConfigList with unsupported version skipped and valid entry parsed");
+        sub.assert_eq(cfg_list.configs.len, 1, "1 valid config in list");
+        sub.assert_eq(cfg_list.configs[0].version, wing::ECH_VERSION_DRAFT13, "parsed entry is draft-13");
+
+        // 6. ECHConfigList with truncated trailing bytes rejected
+        var b_trunc = wing::builder_init();
+        wing::put_bytes(b_trunc, b_list.buf[..]);
+        wing::put_u8(b_trunc, 0xAA); // trailing byte after list
+        var cfg_list_bad = wing::EchConfigList { .. };
+        let ok_trunc_list = wing::parse_ech_config_list(b_trunc.buf[..], cfg_list_bad);
+        sub.assert_false(ok_trunc_list, "ECHConfigList with trailing garbage rejected");
+
+        // 7. ECH inner padding bounds
+        var padded: u8[>..] = [];
+        sub.assert_false(wing::pad_ech_inner("", 64, 10, padded), "empty inner_bytes rejected");
+        sub.assert_false(wing::pad_ech_inner("inner", 64, -1, padded), "negative real_sni_len rejected");
+        sub.assert_true(wing::pad_ech_inner("inner", 64, 10, padded), "valid padding succeeds");
+        sub.assert_eq(padded.len % 32, 0, "padded output is aligned to 32 bytes");
+    };
+}
+
+// ============================================================================
+// 9. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM
+// ============================================================================
+fn test_handshake_r2_invariants(t: core::T&) {
+    t.run("TLS-31: RFC 8446 §4 State Machine Transition Desync & Finished Bypass Prevention") { sub =>
+        // 1. Finished before Certificate/CertificateVerify in full handshake MUST BE REJECTED
+        let st_bad, ok_bad = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCertCr,
+            wing::HS_MSG_FINISHED,
+            false, // non-PSK (Certificate required!)
+            false,
+        );
+        sub.assert_false(ok_bad, "Finished received before Certificate/CertificateVerify strictly rejected");
+        sub.assert_true(st_bad == wing::HsState.Closed, "state is Closed");
+
+        // can_client_transition also rejects Finished before Certificate
+        let _, ok_c_fin = wing::can_client_transition(wing::HsState.ClientWaitCertCr, wing::HS_MSG_FINISHED);
+        sub.assert_false(ok_c_fin, "can_client_transition rejects Finished in ClientWaitCertCr");
+
+        // 2. PSK mode allows Finished directly in ClientWaitCertCr -> transitions to Connected
+        let st_psk, ok_psk = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCertCr,
+            wing::HS_MSG_FINISHED,
+            true, // PSK mode
+            false,
+        );
+        sub.assert_true(ok_psk, "PSK mode accepts Finished after EncryptedExtensions");
+        sub.assert_true(st_psk == wing::HsState.Connected, "PSK handshake transitions to Connected");
+
+        // 3. EncryptedExtensions outside slot rejected
+        let _, ok_ee_sh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_ENCRYPTED_EXTENSIONS, false, false);
+        sub.assert_false(ok_ee_sh, "EE in ClientWaitSH rejected");
+        let _, ok_ee_cert = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCert, wing::HS_MSG_ENCRYPTED_EXTENSIONS, false, false);
+        sub.assert_false(ok_ee_cert, "EE in ClientWaitCert rejected");
+
+        // 4. Post-handshake: client sending messages other than KeyUpdate rejected by server
+        let _, ok_srv_fin = wing::validate_server_handshake_transition(wing::HsState.Connected, wing::HS_MSG_FINISHED, false);
+        sub.assert_false(ok_srv_fin, "post-handshake Finished rejected by server");
+        let _, ok_srv_ch = wing::validate_server_handshake_transition(wing::HsState.Connected, wing::HS_MSG_CLIENT_HELLO, false);
+        sub.assert_false(ok_srv_ch, "post-handshake ClientHello rejected by server");
+        let _, ok_srv_ku = wing::validate_server_handshake_transition(wing::HsState.Connected, wing::HS_MSG_KEY_UPDATE, false);
+        sub.assert_true(ok_srv_ku, "post-handshake KeyUpdate accepted by server");
+
+        // 5. Server state machine: client authentication enforcement
+        let st_auth, ok_auth = wing::validate_server_handshake_transition(wing::HsState.ServerWaitCH, wing::HS_MSG_CLIENT_HELLO, true);
+        sub.assert_true(ok_auth, "server accepts CH with client auth");
+        sub.assert_true(st_auth == wing::HsState.ServerWaitCert, "server transitions to ServerWaitCert when client auth requested");
+    };
+
+    t.run("TLS-32: RFC 8446 §4.1.4 HelloRetryRequest Single HRR Limit & Transcript message_hash") { sub =>
+        // 1. Single HRR limit: first HRR valid, second HRR rejected
+        sub.assert_true(wing::validate_hrr_count(0), "first HRR permitted");
+        sub.assert_false(wing::validate_hrr_count(1), "second HRR strictly rejected per RFC 8446 Section 4.1.4");
+        sub.assert_false(wing::validate_hrr_count(2), "third HRR rejected");
+
+        // 2. Client state transition on HRR: remains waiting for ServerHello2
+        let st_hrr, ok_hrr = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitSH,
+            wing::HS_MSG_SERVER_HELLO,
+            false,
+            true, // is_hrr
+        );
+        sub.assert_true(ok_hrr, "HRR transition valid");
+        sub.assert_true(st_hrr == wing::HsState.ClientWaitSH, "client transitions back to ClientWaitSH waiting for ServerHello2");
+
+        // 3. Transcript synthetic message_hash generation
+        let mock_ch1 = "ClientHello1DataForTranscriptCompression123456789";
+        var out_synth: u8[36] = [0; 36];
+        let synth_len, ok_synth = wing::build_synthetic_message_hash(mock_ch1, 32, out_synth[..]);
+        sub.assert_true(ok_synth, "build synthetic message_hash succeeds");
+        sub.assert_eq(synth_len, 36, "message_hash length is 36 bytes (4 hdr + 32 sha256)");
+        sub.assert_eq(out_synth[0], wing::HS_MSG_MESSAGE_HASH, "type is 254 (message_hash)");
+        sub.assert_eq(out_synth[1], 0x00, "len byte 1 is 0");
+        sub.assert_eq(out_synth[2], 0x00, "len byte 2 is 0");
+        sub.assert_eq(out_synth[3], 32, "len byte 3 is 32");
+
+        let expected_hash = core::sha256(mock_ch1);
+        sub.assert_bytes_eq(out_synth[4..36], expected_hash[..], "synthetic message_hash contains SHA-256(ClientHello1)");
+    };
+
+    t.run("TLS-33: RFC 8446 §4.1.4 HRR Cipher Suite & Selected Group Matching Rules") { sub =>
+        // 1. HRR cipher suite matching ServerHello
+        sub.assert_true(wing::validate_hrr_cipher_suite(0x1301, 0x1301), "identical cipher suite accepted");
+        sub.assert_false(wing::validate_hrr_cipher_suite(0x1301, 0x1302), "cipher suite mismatch strictly rejected");
+        sub.assert_false(wing::validate_hrr_cipher_suite(0, 0x1301), "uninitialized HRR cipher suite rejected");
+
+        // 2. HRR selected_group validation:
+        // Client supported: X25519 (0x001D), SecP256r1 (0x0017)
+        // Client initial key_shares: X25519 (0x001D)
+        let supp_groups: u16[2] = [0x001D, 0x0017];
+        let initial_shares: u16[1] = [0x001D];
+
+        // Server requests SecP256r1 (0x0017) -> supported and NOT in initial shares -> VALID!
+        sub.assert_true(
+            wing::validate_hrr_selected_group(0x0017, supp_groups[..], initial_shares[..]),
+            "HRR selecting supported group not in initial shares accepted",
+        );
+
+        // Server requests group NOT in client supported_groups (e.g. SecP384r1 0x0018) -> REJECTED!
+        sub.assert_false(
+            wing::validate_hrr_selected_group(0x0018, supp_groups[..], initial_shares[..]),
+            "HRR selecting unsupported group strictly rejected",
+        );
+
+        // Server requests group that client ALREADY sent key_share for (X25519 0x001D) -> REJECTED!
+        sub.assert_false(
+            wing::validate_hrr_selected_group(0x001D, supp_groups[..], initial_shares[..]),
+            "HRR selecting group already present in initial key_shares strictly rejected per RFC 8446 Section 4.1.4",
+        );
+    };
+
+    t.run("TLS-34: RFC 8446 §4.1.3 Downgrade Sentinel Detection in ServerHello.random") { sub =>
+        // 1. Legitimate ServerRandom for TLS 1.3
+        var s_rand: u8[32] = [0; 32];
+        for i in 32 { s_rand[i] = (i + 1) as u8; }
+        sub.assert_false(wing::has_downgrade_sentinel(s_rand), "clean random has no sentinel");
+        sub.assert_true(
+            wing::validate_server_random_downgrade(s_rand, wing::TLS13_VERSION, true),
+            "TLS 1.3 negotiation with clean random valid",
+        );
+
+        // 2. Active downgrade attack on TLS 1.3: ServerHello negotiated version is TLS 1.3 but contains sentinel
+        var s_rand_dg12 = s_rand;
+        for i in 8 { s_rand_dg12[24 + i] = wing::DOWNGRADE_SENTINEL_TLS12[i]; }
+        sub.assert_true(wing::has_downgrade_sentinel(s_rand_dg12), "sentinel TLS 1.2 detected");
+        sub.assert_false(
+            wing::validate_server_random_downgrade(s_rand_dg12, wing::TLS13_VERSION, true),
+            "downgrade sentinel in TLS 1.3 ServerHello strictly rejected",
+        );
+
+        var s_rand_dg11 = s_rand;
+        for i in 8 { s_rand_dg11[24 + i] = wing::DOWNGRADE_SENTINEL_TLS11[i]; }
+        sub.assert_true(wing::has_downgrade_sentinel(s_rand_dg11), "sentinel TLS 1.1 detected");
+        sub.assert_false(
+            wing::validate_server_random_downgrade(s_rand_dg11, wing::TLS13_VERSION, true),
+            "downgrade sentinel 1.1 in TLS 1.3 ServerHello strictly rejected",
+        );
+
+        // 3. Downgrade attack detection: TLS 1.3-capable client negotiating TLS 1.2 (0x0303)
+        // when server sends downgrade sentinel
+        sub.assert_false(
+            wing::validate_server_random_downgrade(s_rand_dg12, 0x0303, true),
+            "TLS 1.3 client detects active MITM downgrade to TLS 1.2 and aborts",
+        );
+
+        // 4. Legitimate TLS 1.2 server (no sentinel) accepted when downgrading
+        sub.assert_true(
+            wing::validate_server_random_downgrade(s_rand, 0x0303, true),
+            "TLS 1.2 server without sentinel accepted",
+        );
+    };
+
+    t.run("TLS-35: RFC 8446 §4.1.2 & Appendix B.4 TLS 1.3 Cipher Suite Restrictions") { sub =>
+        // 1. Supported TLS 1.3 suites
+        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1301), "TLS_AES_128_GCM_SHA256 supported");
+        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1302), "TLS_AES_256_GCM_SHA384 supported");
+        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1303), "TLS_CHACHA20_POLY1305_SHA256 supported");
+
+        // 2. Legacy TLS 1.2 suites strictly rejected in TLS 1.3
+        sub.assert_false(wing::is_supported_tls13_cipher_suite(0xC02F), "ECDHE-RSA-AES128-GCM-SHA256 forbidden in TLS 1.3");
+        sub.assert_false(wing::is_supported_tls13_cipher_suite(0xC030), "ECDHE-RSA-AES256-GCM-SHA384 forbidden in TLS 1.3");
+        sub.assert_false(wing::is_supported_tls13_cipher_suite(0x009C), "RSA-AES128-GCM forbidden");
+
+        // 3. Negotiation against client-offered list
+        let client_ciphers: u16[2] = [0x1301, 0x1303];
+        sub.assert_true(wing::validate_server_cipher_suite(0x1301, client_ciphers[..]), "offered suite 0x1301 accepted");
+        sub.assert_false(wing::validate_server_cipher_suite(0x1302, client_ciphers[..]), "unoffered suite 0x1302 rejected");
+        sub.assert_false(wing::validate_server_cipher_suite(0xC02F, client_ciphers[..]), "legacy suite 0xC02F rejected");
+    };
+
+    t.run("TLS-36: RFC 9460 §§5-7 ECH HRR Handling, RetryConfigs & Acceptance Confirmation") { sub =>
+        // 1. Acceptance confirmation verification in ServerHello (8 bytes)
+        let expected_confirm: u8[8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        sub.assert_true(
+            wing::verify_ech_acceptance_confirmation(expected_confirm[..], expected_confirm),
+            "genuine 8-byte confirmation matches",
+        );
+
+        var bad_confirm = expected_confirm;
+        bad_confirm[7] ^= 0x01;
+        sub.assert_false(
+            wing::verify_ech_acceptance_confirmation(bad_confirm[..], expected_confirm),
+            "tampered confirmation strictly rejected",
+        );
+
+        let short_confirm: u8[4] = [0x11, 0x22, 0x33, 0x44];
+        sub.assert_false(
+            wing::verify_ech_acceptance_confirmation(short_confirm[..], expected_confirm),
+            "truncated confirmation rejected",
+        );
+
+        // 2. Validate parse_and_validate_ech_retry_configs
+        var b_cfg = wing::builder_init();
+        wing::put_u16(b_cfg, wing::ECH_VERSION_DRAFT13);
+        wing::start_u16_prefix(b_cfg);
+        wing::put_u8(b_cfg, 0x02); // config_id
+        wing::put_u16(b_cfg, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        wing::start_u16_prefix(b_cfg);
+        for i in 32 { wing::put_u8(b_cfg, 0x22); }
+        wing::finish_u16_prefix(b_cfg);
+        wing::start_u16_prefix(b_cfg);
+        wing::put_u16(b_cfg, wing::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_cfg, wing::HPKE_AEAD_AES_128_GCM);
+        wing::finish_u16_prefix(b_cfg);
+        wing::put_u8(b_cfg, 64);
+        wing::start_u8_prefix(b_cfg);
+        wing::put_bytes(b_cfg, "retry.cloudflare.com");
+        wing::finish_u8_prefix(b_cfg);
+        wing::start_u16_prefix(b_cfg);
+        wing::finish_u16_prefix(b_cfg);
+        wing::finish_u16_prefix(b_cfg);
+
+        // Wrap into ECHConfigList
+        var b_list = wing::builder_init();
+        wing::start_u16_prefix(b_list);
+        wing::put_bytes(b_list, b_cfg.buf[..]);
+        wing::finish_u16_prefix(b_list);
+
+        var out_rc = wing::EchConfigList { .. };
+        sub.assert_true(
+            wing::parse_and_validate_ech_retry_configs(b_list.buf[..], out_rc),
+            "valid ECHConfigList retry_configs parsed",
+        );
+        sub.assert_eq(out_rc.configs.len, 1, "1 retry config parsed");
+
+        // Corrupted retry_configs rejected
+        let corrupted_rc: u8[6] = [0x00, 0x04, 0xFE, 0x0D, 0xAA, 0xBB];
+        sub.assert_false(
+            wing::parse_and_validate_ech_retry_configs(corrupted_rc[..], out_rc),
+            "corrupted retry_configs rejected",
+        );
+
+        // 3. parse_ech_hrr_retry_configs rejection on malformed wire
+        var hrr_wire: u8[>..] = [];
+        sub.assert_false(
+            wing::parse_ech_hrr_retry_configs(corrupted_rc[..], hrr_wire),
+            "parse_ech_hrr_retry_configs rejects malformed wire payload",
+        );
+
+        // 4. ECH FSM progression on HRR and ServerHello
+        var fsm = wing::EchFsm {
+            mode: wing::EchHandshakeMode.Offered,
+            has_hrr: false,
+            offered_config_id: 1,
+        };
+
+        // HRR with retry_configs
+        var dummy_rc = wing::EchConfigList { .. };
+        let ok_fsm_hrr = wing::ech_fsm_on_server_hello(
+            fsm,
+            true, // is_hrr
+            true, // has_ech_ext
+            b_list.buf[..],
+            expected_confirm,
+            dummy_rc,
+        );
+        sub.assert_true(ok_fsm_hrr, "fsm handles HRR with retry configs");
+        sub.assert_true(fsm.mode == wing::EchHandshakeMode.RejectedWithRetry, "mode is RejectedWithRetry");
+
+        // Second HRR strictly rejected!
+        let ok_fsm_hrr2 = wing::ech_fsm_on_server_hello(
+            fsm,
+            true,
+            true,
+            b_list.buf[..],
+            expected_confirm,
+            dummy_rc,
+        );
+        sub.assert_false(ok_fsm_hrr2, "second HRR in ECH FSM strictly rejected");
+
+        // Fresh FSM: ECH accepted in ServerHello
+        var fsm_accept = wing::EchFsm {
+            mode: wing::EchHandshakeMode.Offered,
+            has_hrr: false,
+            offered_config_id: 1,
+        };
+        let ok_fsm_sh = wing::ech_fsm_on_server_hello(
+            fsm_accept,
+            false, // is_hrr == false
+            true,  // has_ech_ext
+            expected_confirm[..],
+            expected_confirm,
+            dummy_rc,
+        );
+        sub.assert_true(ok_fsm_sh, "fsm handles SH with valid confirmation");
+        sub.assert_true(fsm_accept.mode == wing::EchHandshakeMode.Accepted, "mode is Accepted");
+    };
+}
+
+fn test_handshake_r3_invariants(t: core::T&) {
+    // ------------------------------------------------------------------------
+    // TLS-37: Post-Handshake NewSessionTicket (RFC 8446 §4.6.1 & §4.2.10)
+    // ------------------------------------------------------------------------
+    t.run("TLS-37: Post-Handshake NewSessionTicket Lifetime, Nonce & EarlyData Bounds") { sub =>
+        // 1. Valid NewSessionTicket
+        var b_ticket: u8[>..] = [];
+        let valid_nonce: u8[4] = [0x01, 0x02, 0x03, 0x04];
+        let valid_ticket_data = "encrypted_session_ticket_sample";
+        sub.assert_true(
+            wing::encode_new_session_ticket(
+                b_ticket,
+                3600, // lifetime: 1 hour <= 604800
+                0x12345678, // age_add
+                valid_nonce[..],
+                valid_ticket_data,
+                16384, // max_early_data_size
+            ),
+            "encode valid NewSessionTicket succeeds",
+        );
+
+        var nst = wing::NewSessionTicketMsg { .. };
+        sub.assert_true(
+            wing::parse_new_session_ticket(b_ticket[..], nst),
+            "parse valid NewSessionTicket succeeds",
+        );
+        sub.assert_eq(nst.ticket_lifetime as i64, 3600, "ticket_lifetime matches");
+        sub.assert_eq(nst.ticket_age_add as i64, 0x12345678, "ticket_age_add matches");
+        sub.assert_eq(nst.ticket_nonce.len, 4, "ticket_nonce length is 4");
+        sub.assert_eq(nst.ticket.len, valid_ticket_data.len, "ticket length matches");
+        sub.assert_true(nst.has_early_data, "ticket has early_data extension");
+        sub.assert_eq(nst.max_early_data_size as i64, 16384, "max_early_data_size is 16384");
+
+        // 2. Reject ticket_lifetime > 604800 (7 days)
+        var b_bad_life: u8[>..] = [];
+        wing::encode_new_session_ticket(b_bad_life, 604801, 0, valid_nonce[..], valid_ticket_data, 0);
+        var nst_bad = wing::NewSessionTicketMsg { .. };
+        sub.assert_false(
+            wing::parse_new_session_ticket(b_bad_life[..], nst_bad),
+            "ticket_lifetime > 604800 rejected",
+        );
+
+        // 3. Reject empty ticket data (length 0)
+        let empty_ticket_wire: u8[13] = [
+            0x00, 0x00, 0x0E, 0x10, // lifetime = 3600
+            0x00, 0x00, 0x00, 0x01, // age_add = 1
+            0x00,                   // nonce_len = 0
+            0x00, 0x00,             // ticket_len = 0 (FORBIDDEN: ticket<1..2^16-1>)
+            0x00, 0x00,             // ext_len = 0
+        ];
+        sub.assert_false(
+            wing::parse_new_session_ticket(empty_ticket_wire[..], nst_bad),
+            "empty ticket payload strictly rejected",
+        );
+
+        // 4. Reject max_early_data_size == 0 (RFC 8446 §4.2.10)
+        let zero_early_data_wire: u8[25] = [
+            0x00, 0x00, 0x0E, 0x10, // lifetime = 3600
+            0x00, 0x00, 0x00, 0x01, // age_add = 1
+            0x00,                   // nonce_len = 0
+            0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD, // ticket_len = 4
+            0x00, 0x08,             // ext_len = 8
+            0x00, 0x2A,             // ext_type = 42 (early_data)
+            0x00, 0x04,             // ext_data_len = 4
+            0x00, 0x00, 0x00, 0x00, // max_early_data_size = 0 (FORBIDDEN)
+        ];
+        sub.assert_false(
+            wing::parse_new_session_ticket(zero_early_data_wire[..], nst_bad),
+            "early_data with max_early_data_size == 0 strictly rejected",
+        );
+
+        // 5. Multiple tickets caching & circular eviction
+        var cache = wing::SessionTicketCache { .. };
+        for i in 10 {
+            var t_item = wing::NewSessionTicketMsg {
+                ticket_lifetime: (1000 + i * 100) as u32,
+                ticket_age_add: i as u32,
+                ..
+            };
+            sub.assert_true(
+                wing::cache_session_ticket(cache, t_item),
+                "cache_session_ticket succeeds",
+            );
+        }
+        sub.assert_eq(cache.total_received as i64, 10, "total_received is 10");
+        sub.assert_eq(cache.tickets.len, 8, "cache bounded to capacity 8");
+        // Oldest (index 0) was evicted; last entry (index 7) has lifetime of ticket 9 (1900)
+        sub.assert_eq(cache.tickets[7].ticket_lifetime as i64, 1900, "latest ticket preserved");
+
+        // Lifetime 0 ticket is discarded immediately without taking cache slot
+        var t_zero = wing::NewSessionTicketMsg { ticket_lifetime: 0, .. };
+        let len_before = cache.tickets.len;
+        sub.assert_true(wing::cache_session_ticket(cache, t_zero), "lifetime 0 ticket handled");
+        sub.assert_eq(cache.tickets.len, len_before, "lifetime 0 ticket not cached");
+    };
+
+    // ------------------------------------------------------------------------
+    // TLS-38: KeyUpdate Protocol & Ping-Pong DoS Rate Limiting (RFC 8446 §4.6.3)
+    // ------------------------------------------------------------------------
+    t.run("TLS-38: KeyUpdate Transitions, Byte Validation & DoS Rate Limiting") { sub =>
+        // 1. KeyUpdate rejected prior to Connected state
+        sub.assert_false(
+            wing::validate_key_update_state(wing::HsState.ClientStart),
+            "KeyUpdate rejected in ClientStart",
+        );
+        sub.assert_false(
+            wing::validate_key_update_state(wing::HsState.ClientWaitSH),
+            "KeyUpdate rejected in ClientWaitSH",
+        );
+        sub.assert_false(
+            wing::validate_key_update_state(wing::HsState.ClientWaitFinished),
+            "KeyUpdate rejected in ClientWaitFinished",
+        );
+        sub.assert_true(
+            wing::validate_key_update_state(wing::HsState.Connected),
+            "KeyUpdate accepted in Connected",
+        );
+
+        // 2. parse_key_update byte validation
+        let ku_not_req: u8[1] = [0];
+        let req0, ok0 = wing::parse_key_update(ku_not_req[..]);
+        sub.assert_true(ok0, "parse update_not_requested succeeds");
+        sub.assert_eq(req0, wing::KEY_UPDATE_NOT_REQUESTED, "request_update is 0");
+
+        let ku_req: u8[1] = [1];
+        let req1, ok1 = wing::parse_key_update(ku_req[..]);
+        sub.assert_true(ok1, "parse update_requested succeeds");
+        sub.assert_eq(req1, wing::KEY_UPDATE_REQUESTED, "request_update is 1");
+
+        let ku_bad: u8[1] = [2]; // 2..255 forbidden
+        let _, ok_bad = wing::parse_key_update(ku_bad[..]);
+        sub.assert_false(ok_bad, "parse request_update=2 rejected");
+
+        let ku_empty: u8[0] = [];
+        let _, ok_empty = wing::parse_key_update(ku_empty[..]);
+        sub.assert_false(ok_empty, "parse empty KeyUpdate rejected");
+
+        let ku_multi: u8[2] = [0, 0];
+        let _, ok_multi = wing::parse_key_update(ku_multi[..]);
+        sub.assert_false(ok_multi, "parse 2-byte KeyUpdate rejected");
+
+        // 3. DoS Rate Limiting / Ping-Pong defense
+        var tracker = wing::KeyUpdateTracker { .. };
+        for i in 32 {
+            let needs_resp, ok_tr = wing::track_received_key_update(tracker, wing::HsState.Connected, ku_req[..]);
+            sub.assert_true(ok_tr, "track KeyUpdate within limit succeeds");
+            sub.assert_true(needs_resp, "update_requested signals response required");
+        }
+        sub.assert_eq(tracker.consecutive_updates as i64, 32, "consecutive_updates is 32");
+
+        // 33rd consecutive update without application data MUST be rejected!
+        let _, ok_overflow = wing::track_received_key_update(tracker, wing::HsState.Connected, ku_req[..]);
+        sub.assert_false(ok_overflow, "33rd consecutive KeyUpdate rejected (DoS defense)");
+
+        // Intervening application data resets consecutive counter
+        wing::on_key_update_app_data(tracker);
+        sub.assert_eq(tracker.consecutive_updates as i64, 0, "consecutive_updates reset after app data");
+        let _, ok_after_reset = wing::track_received_key_update(tracker, wing::HsState.Connected, ku_not_req[..]);
+        sub.assert_true(ok_after_reset, "KeyUpdate accepted after app data reset");
+    };
+
+    // ------------------------------------------------------------------------
+    // TLS-39: CertificateRequest Context & Mandatory Signature Algorithms (RFC 8446 §4.3.2)
+    // ------------------------------------------------------------------------
+    t.run("TLS-39: CertificateRequest Context Bounds & Signature Algorithms Invariants") { sub =>
+        // 1. Valid initial handshake CertificateRequest (context length MUST be 0)
+        let valid_cr_wire: u8[11] = [
+            0x00,                   // ctx_len = 0
+            0x00, 0x08,             // ext_len = 8
+            0x00, 0x0D,             // ext_type = 13 (signature_algorithms)
+            0x00, 0x04,             // ext_data_len = 4
+            0x00, 0x02,             // supported_signature_algorithms list len = 2
+            0x04, 0x03,             // ecdsa_secp256r1_sha256
+        ];
+        var cr = wing::CertificateRequestMsg { .. };
+        sub.assert_true(
+            wing::parse_certificate_request(valid_cr_wire[..], false, cr),
+            "parse valid initial CertificateRequest succeeds",
+        );
+        sub.assert_eq(cr.context.len, 0, "initial context length is 0");
+        sub.assert_true(cr.has_signature_algorithms, "signature_algorithms extension present");
+        sub.assert_eq(cr.sig_algorithms.len, 1, "1 signature algorithm parsed");
+        sub.assert_eq(cr.sig_algorithms[0], 0x0403, "algorithm is 0x0403");
+
+        // 2. Reject non-zero context in initial handshake
+        let bad_initial_ctx: u8[12] = [
+            0x01, 0xFF,             // ctx_len = 1 (FORBIDDEN in initial handshake!)
+            0x00, 0x08,             // ext_len = 8
+            0x00, 0x0D,             // ext_type = 13
+            0x00, 0x04,             // ext_data_len = 4
+            0x00, 0x02,             // list_len = 2
+            0x04, 0x03,             // ecdsa_secp256r1_sha256
+        ];
+        sub.assert_false(
+            wing::parse_certificate_request(bad_initial_ctx[..], false, cr),
+            "non-zero context in initial CertificateRequest rejected",
+        );
+
+        // 3. Post-handshake CertificateRequest allows context <= 32 bytes
+        sub.assert_true(
+            wing::parse_certificate_request(bad_initial_ctx[..], true, cr),
+            "non-zero context in post-handshake CertificateRequest accepted",
+        );
+
+        // 4. Missing signature_algorithms extension strictly rejected (RFC 8446 §4.3.2)
+        let missing_sig_wire: u8[7] = [
+            0x00,                   // ctx_len = 0
+            0x00, 0x04,             // ext_len = 4
+            0x00, 0x05,             // ext_type = 5 (status_request, NOT signature_algorithms)
+            0x00, 0x00,             // data_len = 0
+        ];
+        sub.assert_false(
+            wing::parse_certificate_request(missing_sig_wire[..], false, cr),
+            "CertificateRequest lacking signature_algorithms extension strictly rejected",
+        );
+    };
+
+    // ------------------------------------------------------------------------
+    // TLS-40: Client Authentication with Empty Certificate Flight (RFC 8446 §4.4.2)
+    // ------------------------------------------------------------------------
+    t.run("TLS-40: Client Auth with Empty Certificate & CertificateVerify Omission") { sub =>
+        // 1. Certificate message with empty certificate_list (no client cert)
+        let empty_cert_wire: u8[4] = [
+            0x00,                   // context len = 0
+            0x00, 0x00, 0x00,       // certificate_list len = 0
+        ];
+        let is_empty, ok_cert = wing::parse_certificate_header_is_empty(empty_cert_wire[..]);
+        sub.assert_true(ok_cert, "parse Certificate header succeeds");
+        sub.assert_true(is_empty, "certificate_list is recognized as empty");
+
+        // 2. Server transition when client sends empty certificate:
+        // Skips CertificateVerify and expects Finished directly
+        var st = wing::HsState.ServerWaitCert;
+        let next_st, ok_tr = wing::validate_server_handshake_transition_auth(
+            st,
+            wing::HS_MSG_CERTIFICATE,
+            true, // client_auth_requested
+            true, // client_cert_is_empty
+        );
+        sub.assert_true(ok_tr, "empty certificate accepted in ServerWaitCert");
+        sub.assert_true(next_st == wing::HsState.ServerWaitFinished, "server skips ServerWaitCV and transitions to ServerWaitFinished");
+
+        // In ServerWaitFinished, Finished transitions to Connected
+        let final_st, ok_fin = wing::validate_server_handshake_transition_auth(
+            next_st,
+            wing::HS_MSG_FINISHED,
+            true,
+            true,
+        );
+        sub.assert_true(ok_fin, "Finished accepted after empty certificate");
+        sub.assert_true(final_st == wing::HsState.Connected, "server reaches Connected state");
+
+        // 3. Client sending CertificateVerify when certificate was empty MUST be rejected (RFC 8446 §4.4.2)
+        let _, ok_bad_cv = wing::validate_server_handshake_transition_auth(
+            wing::HsState.ServerWaitCV,
+            wing::HS_MSG_CERTIFICATE_VERIFY,
+            true,
+            true, // client_cert_is_empty = true
+        );
+        sub.assert_false(ok_bad_cv, "CertificateVerify strictly rejected when client cert is empty");
+
+        // 4. Normal client auth with cert: proceeds through ServerWaitCV
+        let next_full, ok_full = wing::validate_server_handshake_transition_auth(
+            wing::HsState.ServerWaitCert,
+            wing::HS_MSG_CERTIFICATE,
+            true,
+            false, // client_cert_is_empty = false
+        );
+        sub.assert_true(ok_full, "full certificate accepted");
+        sub.assert_true(next_full == wing::HsState.ServerWaitCV, "server transitions to ServerWaitCV");
+    };
+
+    // ------------------------------------------------------------------------
+    // TLS-41: 0-RTT Early Data State Machine & Recovery (RFC 8446 §4.2.10, RFC 9460 §6.1)
+    // ------------------------------------------------------------------------
+    t.run("TLS-41: 0-RTT Early Data Acceptance, Rejection Recovery & ECH Placement") { sub =>
+        // 1. Early data accepted by server
+        var ctrl_accept = wing::EarlyDataController {
+            state: wing::EarlyDataState.Offered,
+            max_early_data_size: 16384,
+            ..
+        };
+        sub.assert_true(
+            wing::early_data_on_encrypted_extensions(ctrl_accept, true),
+            "early_data accepted in EncryptedExtensions",
+        );
+        sub.assert_true(ctrl_accept.state == wing::EarlyDataState.Accepted, "state is Accepted");
+        sub.assert_true(wing::early_data_can_send_eoed(ctrl_accept), "client permitted to send EndOfEarlyData");
+
+        // 2. Early data rejected by server (recovery mode)
+        var ctrl_reject = wing::EarlyDataController {
+            state: wing::EarlyDataState.Offered,
+            max_early_data_size: 16384,
+            ..
+        };
+        sub.assert_true(
+            wing::early_data_on_encrypted_extensions(ctrl_reject, false),
+            "early_data rejected in EncryptedExtensions handled cleanly",
+        );
+        sub.assert_true(ctrl_reject.state == wing::EarlyDataState.Rejected, "state is Rejected");
+        sub.assert_true(ctrl_reject.keys_discarded, "0-RTT traffic keys discarded immediately");
+        sub.assert_false(wing::early_data_can_send_eoed(ctrl_reject), "client MUST NOT send EndOfEarlyData when rejected");
+
+        // 3. Early data record size bounds
+        var ctrl_send = wing::EarlyDataController {
+            state: wing::EarlyDataState.Offered,
+            max_early_data_size: 100,
+            ..
+        };
+        sub.assert_true(wing::early_data_record_sent(ctrl_send, 50), "send 50 bytes within limit succeeds");
+        sub.assert_true(wing::early_data_record_sent(ctrl_send, 50), "send another 50 bytes reaching limit succeeds");
+        sub.assert_false(wing::early_data_record_sent(ctrl_send, 1), "send exceeding max_early_data_size rejected");
+
+        // 4. RFC 9460 §6.1 ECH early_data placement rules
+        sub.assert_true(
+            wing::validate_ech_early_data_placement(true, true),
+            "early_data in ClientHelloInner permitted",
+        );
+        sub.assert_false(
+            wing::validate_ech_early_data_placement(false, true),
+            "early_data in ClientHelloOuter strictly forbidden",
+        );
+        sub.assert_true(
+            wing::validate_ech_early_data_placement(false, false),
+            "no early_data in ClientHelloOuter permitted",
+        );
+    };
+
+    // ------------------------------------------------------------------------
+    // TLS-42: RFC 8879 CompressedCertificate Parser Sanity Bounds & Decompression Bomb Protection
+    // ------------------------------------------------------------------------
+    t.run("TLS-42: CompressedCertificate Bounds, Decompression Bomb Defense & Transitions") { sub =>
+        // 1. Valid CompressedCertificate payload
+        let valid_comp_payload: u8[10] = [
+            0x00, 0x03,             // algorithm = 3 (zstd)
+            0x00, 0x00, 0x10,       // uncompressed_length = 16
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, // compressed_data (5 bytes)
+        ];
+        let parsed, ok_parse = wing::parse_compressed_certificate(valid_comp_payload[..]);
+        sub.assert_true(ok_parse, "parse valid CompressedCertificate succeeds");
+        sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESS_ZSTD, "algorithm is zstd");
+        sub.assert_eq(parsed.uncompressed_len as i64, 16, "uncompressed_len is 16");
+
+        // 2. Reject unknown algorithm ID (e.g. 0 or 4)
+        let unknown_algo: u8[10] = [
+            0x00, 0x04,             // algorithm = 4 (unknown)
+            0x00, 0x00, 0x10,
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        ];
+        let _, ok_unknown = wing::parse_compressed_certificate(unknown_algo[..]);
+        sub.assert_false(ok_unknown, "unknown compression algorithm rejected");
+
+        // 3. Reject uncompressed_length == 0
+        let zero_ulen: u8[10] = [
+            0x00, 0x03,
+            0x00, 0x00, 0x00,       // uncompressed_length = 0
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        ];
+        let _, ok_zero_ulen = wing::parse_compressed_certificate(zero_ulen[..]);
+        sub.assert_false(ok_zero_ulen, "uncompressed_length == 0 rejected");
+
+        // 4. Reject uncompressed_length > MAX_UNCOMPRESSED_CERT_LEN (65536)
+        let bomb_payload: u8[10] = [
+            0x00, 0x03,
+            0x01, 0x00, 0x00,       // uncompressed_length = 65,536 + 1 = 65537+
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        ];
+        let _, ok_bomb = wing::parse_compressed_certificate(bomb_payload[..]);
+        sub.assert_false(ok_bomb, "decompression bomb exceeding MAX_UNCOMPRESSED_CERT_LEN rejected");
+
+        // 5. Client transition accepts CompressedCertificate in place of Certificate
+        let next_cc_cr, ok_cc_cr = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCertCr,
+            wing::HS_MSG_COMPRESSED_CERTIFICATE,
+            false,
+            false,
+        );
+        sub.assert_true(ok_cc_cr, "CompressedCertificate accepted in ClientWaitCertCr");
+        sub.assert_true(next_cc_cr == wing::HsState.ClientWaitCV, "transitions to ClientWaitCV");
+
+        let next_cc, ok_cc = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCert,
+            wing::HS_MSG_COMPRESSED_CERTIFICATE,
+            false,
+            false,
+        );
+        sub.assert_true(ok_cc, "CompressedCertificate accepted in ClientWaitCert");
+        sub.assert_true(next_cc == wing::HsState.ClientWaitCV, "transitions to ClientWaitCV");
+    };
+}
+
+// ============================================================================
 // Main TLS 1.3 & X.509 Conformance Runner
 // ============================================================================
 fn main() {
@@ -1291,6 +2359,9 @@ fn main() {
     core::run_case(runner, "6. Handshake State Machine, HRR & Extension Parsers", test_handshake_state_machine);
     core::run_case(runner, "7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify", test_asn1_x509_and_verify);
     core::run_case(runner, "8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)", test_post_quantum_hybrid_exchange);
+    core::run_case(runner, "9. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance", test_handshake_and_ech_security);
+    core::run_case(runner, "10. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM", test_handshake_r2_invariants);
+    core::run_case(runner, "11. Round 3: NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp", test_handshake_r3_invariants);
 
     let ok = core::finish(runner);
     assert(ok);
