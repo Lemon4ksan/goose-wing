@@ -58,8 +58,27 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    if (starts_with_fold(parsed_cookie.name[..], "__host-") || starts_with_fold(parsed_cookie.name[..], "__host-http-")) && parsed_cookie.has_domain_attr {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+    // RFC 6265bis Section 5.6: Cookie security prefixes
+    if starts_with_fold(parsed_cookie.name[..], "__secure-") {
+        if !parsed_cookie.secure {
+            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        }
+    } else if starts_with_fold(parsed_cookie.name[..], "__host-http-") {
+        if !parsed_cookie.secure || parsed_cookie.has_domain_attr || parsed_cookie.path[..] != "/" || !parsed_cookie.httponly {
+            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        }
+    } else if starts_with_fold(parsed_cookie.name[..], "__host-") {
+        if !parsed_cookie.secure || parsed_cookie.has_domain_attr || parsed_cookie.path[..] != "/" {
+            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        }
+    }
+
+    // Nameless cookies with security prefixes in value (RFC 6265bis §5.6.1)
+    if parsed_cookie.name.len == 0 {
+        let val = parsed_cookie.value[..];
+        if starts_with_fold(val, "__host-") || starts_with_fold(val, "__secure-") || starts_with_fold(val, "__http-") || starts_with_fold(val, "__host-http-") {
+            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        }
     }
 
     // RFC 6265bis Section 5.5.7: SameSite=None strictly requires Secure

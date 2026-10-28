@@ -347,6 +347,30 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
         sub.assert_true(ok_70);
         sub.assert_eq(exp_70, 26729377000000, "Year 70 must map to 1970");
     };
+
+    t.run("PREFIX-PARSER: RFC 6265bis §5.6 Direct parser enforcement of __Secure-, __Host-, and nameless prefixes") { sub =>
+        let now_us: i64 = 1700000000000000;
+
+        // 1. __Secure- without Secure rejected
+        let c1, _, ok1 = wing::parse_canonical_set_cookie("__Secure-id=123", "example.com", "/", now_us);
+        sub.assert_false(ok1, "__Secure- without Secure rejected");
+
+        // 2. __Secure- with Secure accepted
+        let c2, _, ok2 = wing::parse_canonical_set_cookie("__Secure-id=123; Secure", "example.com", "/", now_us);
+        sub.assert_true(ok2, "__Secure- with Secure accepted");
+
+        // 3. __Host- without Secure rejected
+        let c3, _, ok3 = wing::parse_canonical_set_cookie("__Host-id=123; Path=/", "example.com", "/", now_us);
+        sub.assert_false(ok3, "__Host- without Secure rejected");
+
+        // 4. __Host- with non-root Path rejected
+        let c4, _, ok4 = wing::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/sub", "example.com", "/sub", now_us);
+        sub.assert_false(ok4, "__Host- with non-root Path rejected");
+
+        // 5. Nameless cookie with __Host- value rejected
+        let c5, _, ok5 = wing::parse_canonical_set_cookie("=__Host-bad", "example.com", "/", now_us);
+        sub.assert_false(ok5, "Nameless cookie with __Host- value rejected");
+    };
 }
 
 // ----------------------------------------------------------------------------
