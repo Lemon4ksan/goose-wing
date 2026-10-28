@@ -343,7 +343,17 @@ fn encode_ric(ric: u64, max_cap: u64) -> u64 {
 }
 
 // Decodes Base index from sign bit S and DeltaBase (RFC 9204 Section 4.5.1.2).
+// RFC 9204 §4.5.1.2: If Required Insert Count is 0, the Base is 0. If Sign is 1, or Delta Base is non-zero, this is an error.
 fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
+    guard sign_bit == 0 || sign_bit == 1 else {
+        return 0, QpackError.DecompressionFailed;
+    }
+    if ric == 0 {
+        guard sign_bit == 0 && delta_base == 0 else {
+            return 0, QpackError.DecompressionFailed;
+        }
+        return 0, QpackError.None;
+    }
     if sign_bit == 0 {
         guard (0xFFFFFFFFFFFFFFFF - ric) >= delta_base else {
             return 0, QpackError.DecompressionFailed;
@@ -362,6 +372,9 @@ fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
 
 // Encodes Base index relative to RIC into sign bit and DeltaBase.
 fn encode_base(base: u64, ric: u64) -> u8, u64 {
+    if ric == 0 {
+        return 0, 0;
+    }
     if base >= ric {
         return 0, base - ric;
     }
@@ -788,7 +801,8 @@ fn decode_qpack_section(
     let enc_ric, base_off, ok_ric = qpack_decode_int(src, offset, 8);
     guard ok_ric else { return QpackError.DecompressionFailed; }
 
-    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.capacity_bytes);
+    // RFC 9204 §4.5.1.1: MaxEntries is computed from MaxTableCapacity (set by decoder), NOT current capacity_bytes.
+    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
     guard ric_err == QpackError.None else { return ric_err; }
 
     // Blocked Streams constraint (RFC 9204 §2.1.2)

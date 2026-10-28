@@ -1497,6 +1497,90 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds
+// ----------------------------------------------------------------------------
+fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: core::T&) {
+    t.run("RFC 9204 §4.5.1.2: decode_base strictly enforces Base == 0 when RIC == 0") { sub =>
+        // 1. Valid: ric == 0, sign == 0, delta_base == 0 => Base == 0
+        let base0, err0 = wing::decode_base(0, 0, 0);
+        sub.assert_eq(err0, wing::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
+        sub.assert_eq(base0, 0, "Base must be 0 when RIC is 0");
+
+        // 2. Invalid: ric == 0 with delta_base > 0 MUST fail with DecompressionFailed
+        let _, err_delta = wing::decode_base(0, 1, 0);
+        sub.assert_eq(err_delta, wing::QpackError.DecompressionFailed, "ric=0 with delta_base=1 MUST fail");
+
+        let _, err_delta5 = wing::decode_base(0, 5, 0);
+        sub.assert_eq(err_delta5, wing::QpackError.DecompressionFailed, "ric=0 with delta_base=5 MUST fail");
+
+        // 3. Invalid: ric == 0 with sign == 1 MUST fail with DecompressionFailed
+        let _, err_sign = wing::decode_base(1, 0, 0);
+        sub.assert_eq(err_sign, wing::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
+
+        let _, err_sign_delta = wing::decode_base(1, 10, 0);
+        sub.assert_eq(err_sign_delta, wing::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
+
+        // 4. Invalid: sign_bit > 1 MUST fail with DecompressionFailed
+        let _, err_bad_sign = wing::decode_base(2, 0, 0);
+        sub.assert_eq(err_bad_sign, wing::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
+    };
+
+    t.run("RFC 9204 §4.5.1.2: decode_qpack_section rejects wire header blocks with RIC == 0 and DeltaBase > 0") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+        var out_fields: wing::HeaderField[>..] = [];
+
+        // Malicious header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 5 (0x05), Static :path="/" (0xC1)
+        let malformed_block: u8[3] = [0x00, 0x05, 0xC1];
+        let err_mal = wing::decode_qpack_section(tbl, malformed_block[..], out_fields, 4096);
+        sub.assert_eq(err_mal, wing::QpackError.DecompressionFailed, "Header block with RIC=0 and DeltaBase=5 MUST trigger DecompressionFailed");
+
+        // Malicious header block: enc_ric = 0 (0x00), Sign = 1 & DeltaBase = 0 (0x80), Static :path="/" (0xC1)
+        let malformed_sign_block: u8[3] = [0x00, 0x80, 0xC1];
+        let err_sign = wing::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
+        sub.assert_eq(err_sign, wing::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
+
+        // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 0 (0x00), Static :path="/" (0xC1)
+        let valid_block: u8[3] = [0x00, 0x00, 0xC1];
+        let err_val = wing::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
+        sub.assert_eq(err_val, wing::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
+        sub.assert_eq(out_fields.len, 1, "One field decoded");
+        sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
+        sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
+    };
+
+    t.run("RFC 9204 §4.5.1.1: decode_qpack_section uses MaxTableCapacity for RIC calculation after capacity shrinkage") { sub =>
+        var tbl = wing::new_qpack_table(4096, 16);
+        // Insert a dynamic table entry (abs_idx = 0, cost = 51 bytes)
+        let ok_ins = wing::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
+        sub.assert_true(ok_ins, "Inserted dynamic entry into QPACK table");
+        sub.assert_eq(tbl.insert_count, 1, "insert_count is 1");
+
+        // Encoder shrinks current capacity to 2048 via Set Dynamic Table Capacity instruction.
+        // Entry remains cached (51 <= 2048), but capacity_bytes (2048) != max_capacity_bytes (4096).
+        let ok_cap = wing::qpack_set_capacity(tbl, 2048);
+        sub.assert_true(ok_cap, "Set capacity to 2048 succeeds");
+        sub.assert_eq(tbl.capacity_bytes, 2048, "Current capacity_bytes is 2048");
+        sub.assert_eq(tbl.max_capacity_bytes, 4096, "Decoder max_capacity_bytes remains 4096");
+
+        // Construct section referencing dynamic entry 0:
+        // FullRange based on max_capacity_bytes (4096) = 2 * (4096 / 32) = 256.
+        // RIC = 1 => enc_ric = (1 % 256) + 1 = 2 (0x02).
+        // Base = 1 => Sign = 0, DeltaBase = 0 (0x00).
+        // Indexed field line, dynamic (T=0): 10xxxxxx => 0x80 | 0 = 0x80.
+        let sec_wire: u8[3] = [0x02, 0x00, 0x80];
+
+        var out_fields: wing::HeaderField[>..] = [];
+        let err_dec = wing::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
+        sub.assert_eq(err_dec, wing::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
+        sub.assert_eq(out_fields.len, 1, "One dynamic field decoded");
+        if out_fields.len > 0 {
+            sub.assert_eq(out_fields[0].name[..], "x-trace-id", "Dynamic field name matches");
+            sub.assert_eq(out_fields[0].value[..], "trace-777", "Dynamic field value matches");
+        }
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1530,6 +1614,7 @@ fn main() {
     core::run_case(runner, "28. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants", test_h2_rst_stream_data_flow_control_invariants);
     core::run_case(runner, "29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses", test_rfc8446_nst_extension_validation_and_ticket_confusion);
     core::run_case(runner, "30. RFC 9110 & RFC 9293: Connection Pool Starvation & Slot Reclamation", test_rfc9110_connection_pool_starvation_and_slot_reclamation);
+    core::run_case(runner, "31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds", test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound);
 
     let ok = core::finish(runner);
     assert(ok);
