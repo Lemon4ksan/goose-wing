@@ -18,12 +18,14 @@ fn origin_from_url(url_val: const Url&) -> Origin {
     }
 
     if scheme_str == "blob" {
-        // WHATWG URL Section 4.7: blob: URLs inherit the origin of the embedded URL in their path
+        // WHATWG URL Section 7.1: blob: URLs inherit the origin of the embedded URL in their path
         let inner_path = pathname(url_val);
         let inner_url, parse_err = parse_url(inner_path);
-        if inner_url.valid && (scheme(inner_url) == "http" || scheme(inner_url) == "https") {
+        guard inner_url.valid else { return new_opaque_origin(); }
+        let inner_scheme = scheme(inner_url);
+        if inner_scheme == "http" || inner_scheme == "https" || inner_scheme == "ws" || inner_scheme == "wss" || inner_scheme == "ftp" {
             let eff_port = effective_port(inner_url);
-            return new_origin_tuple(scheme(inner_url), hostname(inner_url), eff_port);
+            return new_origin_tuple(inner_scheme, hostname(inner_url), eff_port);
         }
         return new_opaque_origin();
     }
@@ -322,13 +324,20 @@ fn registrable_site_from_url(url_val: const Url&) -> RegistrableSite {
     return site;
 }
 
+fn effective_origin_port(scheme_str: const u8[:], port: i32) -> i32 {
+    if port >= 0 { return port; }
+    return default_port_for_scheme(scheme_str);
+}
+
 fn is_same_origin(origin_a: Origin, origin_b: Origin) -> bool {
     if origin_a.kind == OriginKind.Opaque || origin_b.kind == OriginKind.Opaque {
         return origin_a.nonce != 0 && origin_a.nonce == origin_b.nonce;
     }
+    let port_a = effective_origin_port(origin_a.scheme[..], origin_a.port);
+    let port_b = effective_origin_port(origin_b.scheme[..], origin_b.port);
     return eq_ascii_fold(origin_a.scheme[..], origin_b.scheme[..]) &&
            eq_ascii_fold(origin_a.host[..], origin_b.host[..]) &&
-           origin_a.port == origin_b.port;
+           port_a == port_b;
 }
 
 fn is_same_origin_url(url_a: const Url&, url_b: const Url&) -> bool {
@@ -345,16 +354,20 @@ fn serialize_origin<B>(origin_val: Origin, out: B&) {
     }
     out.append(origin_val.scheme[..]);
     out.append("://");
-    out.append(origin_val.host[..]);
+
+    let host_str = origin_val.host[..];
+    if contains_byte(host_str, ':') && (host_str.len < 2 || host_str[0] != '[' || host_str[host_str.len - 1] != ']') {
+        out.push('[');
+        out.append(host_str);
+        out.push(']');
+    } else {
+        out.append(host_str);
+    }
 
     let scheme_str = origin_val.scheme[..];
-    let is_def_port = (scheme_str == "http" && origin_val.port == 80) ||
-                      (scheme_str == "https" && origin_val.port == 443) ||
-                      (scheme_str == "ws" && origin_val.port == 80) ||
-                      (scheme_str == "wss" && origin_val.port == 443) ||
-                      (scheme_str == "ftp" && origin_val.port == 21) ||
-                      (origin_val.port <= 0);
-    if !is_def_port {
+    let def_port = default_port_for_scheme(scheme_str);
+    let is_def_port = (origin_val.port < 0) || (def_port >= 0 && origin_val.port == def_port);
+    if !is_def_port && origin_val.port >= 0 {
         out.push(':');
         format_i64_dec(origin_val.port as i64, out);
     }

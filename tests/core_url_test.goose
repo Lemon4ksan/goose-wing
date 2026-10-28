@@ -107,6 +107,82 @@ fn test_url_parser_and_origin(t: core::T&) {
         core::serialize_origin(opaque_a, opaque_str);
         sub.assert_bytes_eq(opaque_str[..], "null", "opaque origin serializes to 'null'");
     };
+
+    t.run("Origin Model: RFC 6454 / WHATWG §7.1 Standards Conformance") { sub =>
+        // 1. Port 0 Serialization (RFC 6454 §6.2: port 0 is NOT default port 80/443 and MUST be serialized)
+        let url_p0_http = core::new_url("http://example.com:0/path");
+        let orig_p0_http = core::origin_from_url(url_p0_http);
+        var str_p0_http: u8[..64] = [];
+        core::serialize_origin(orig_p0_http, str_p0_http);
+        sub.assert_bytes_eq(str_p0_http[..], "http://example.com:0", "port 0 is preserved in http origin serialization");
+
+        let url_p0_https = core::new_url("https://example.com:0/path");
+        let orig_p0_https = core::origin_from_url(url_p0_https);
+        var str_p0_https: u8[..64] = [];
+        core::serialize_origin(orig_p0_https, str_p0_https);
+        sub.assert_bytes_eq(str_p0_https[..], "https://example.com:0", "port 0 is preserved in https origin serialization");
+
+        let tuple_p0 = core::new_origin_tuple("http", "example.com", 0);
+        var str_tuple_p0: u8[..64] = [];
+        core::serialize_origin(tuple_p0, str_tuple_p0);
+        sub.assert_bytes_eq(str_tuple_p0[..], "http://example.com:0", "tuple with explicit port 0 serializes :0");
+
+        // 2. Default Port Equivalence (RFC 6454 §4 & §5: omitted port -1 equals default port 80/443)
+        let orig_http_80 = core::new_origin_tuple("http", "example.com", 80);
+        let orig_http_omit = core::new_origin_tuple("http", "example.com", -1);
+        sub.assert_true(core::is_same_origin(orig_http_80, orig_http_omit), "http port 80 and omitted port -1 are same origin");
+
+        let orig_https_443 = core::new_origin_tuple("https", "example.com", 443);
+        let orig_https_omit = core::new_origin_tuple("https", "example.com", -1);
+        sub.assert_true(core::is_same_origin(orig_https_443, orig_https_omit), "https port 443 and omitted port -1 are same origin");
+
+        let url_http_std = core::new_url("http://example.com/");
+        let orig_http_std = core::origin_from_url(url_http_std);
+        sub.assert_true(core::is_same_origin(orig_http_std, orig_http_omit), "URL origin matches omitted-port origin tuple");
+        sub.assert_false(core::is_same_origin(orig_http_std, orig_p0_http), "port 0 is cross-origin to default port 80");
+
+        // 3. IPv6 Host Bracket Normalization and Serialization (RFC 6454 §6.2 step 3 & RFC 3986 §3.2.2)
+        let orig_ipv6_raw = core::new_origin_tuple("http", "::1", 80);
+        let orig_ipv6_bracket = core::new_origin_tuple("http", "[::1]", -1);
+        sub.assert_true(core::is_same_origin(orig_ipv6_raw, orig_ipv6_bracket), "IPv6 raw and bracketed hosts normalize to same origin");
+
+        var str_ipv6: u8[..64] = [];
+        core::serialize_origin(orig_ipv6_raw, str_ipv6);
+        sub.assert_bytes_eq(str_ipv6[..], "http://[::1]", "IPv6 origin serialization encloses host in square brackets");
+
+        let orig_ipv6_port = core::new_origin_tuple("https", "2001:db8::1", 8443);
+        var str_ipv6_port: u8[..64] = [];
+        core::serialize_origin(orig_ipv6_port, str_ipv6_port);
+        sub.assert_bytes_eq(str_ipv6_port[..], "https://[2001:db8::1]:8443", "IPv6 custom port origin serialized with brackets");
+
+        // 4. WHATWG §7.1 Blob URL Origin Inheritance across schemes
+        let blob_ws = core::new_url("blob:ws://example.com:8080/uuid-ws");
+        let orig_blob_ws = core::origin_from_url(blob_ws);
+        var str_blob_ws: u8[..64] = [];
+        core::serialize_origin(orig_blob_ws, str_blob_ws);
+        sub.assert_bytes_eq(str_blob_ws[..], "ws://example.com:8080", "blob URL inherits ws: origin");
+
+        let blob_ftp = core::new_url("blob:ftp://ftp.example.org/uuid-ftp");
+        let orig_blob_ftp = core::origin_from_url(blob_ftp);
+        var str_blob_ftp: u8[..64] = [];
+        core::serialize_origin(orig_blob_ftp, str_blob_ftp);
+        sub.assert_bytes_eq(str_blob_ftp[..], "ftp://ftp.example.org", "blob URL inherits ftp: origin");
+
+        // 5. UrlView RFC 3986 §3.2.2 & WHATWG §4.4 Edge Cases: IPv6 Brackets and Empty Port
+        let view_ipv6, err_v1 = core::parse_url_view("http://[::1]:8080/path");
+        sub.assert_true(view_ipv6.valid, "UrlView parses IPv6 with port");
+        sub.assert_bytes_eq(core::host(view_ipv6), "[::1]", "UrlView host includes square brackets");
+        sub.assert_bytes_eq(core::hostname(view_ipv6), "[::1]", "UrlView hostname includes square brackets");
+
+        let view_empty_port, err_v2 = core::parse_url_view("http://example.com:/path");
+        sub.assert_true(view_empty_port.valid, "UrlView accepts trailing colon with empty port");
+        sub.assert_eq(core::port(view_empty_port) as i64, -1, "UrlView empty port normalizes to -1");
+
+        let view_ipv6_empty_port, err_v3 = core::parse_url_view("http://[::1]:/path");
+        sub.assert_true(view_ipv6_empty_port.valid, "UrlView accepts IPv6 with empty port");
+        sub.assert_bytes_eq(core::hostname(view_ipv6_empty_port), "[::1]", "UrlView IPv6 hostname intact with empty port");
+        sub.assert_eq(core::port(view_ipv6_empty_port) as i64, -1, "UrlView IPv6 empty port normalizes to -1");
+    };
 }
 
 // ----------------------------------------------------------------------------

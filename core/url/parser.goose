@@ -17,13 +17,6 @@ fn is_special_scheme(scheme_str: const u8[:]) -> bool {
            scheme_str == "ftp";
 }
 
-fn default_port_for_scheme(scheme_str: const u8[:]) -> i32 {
-    if scheme_str == "http" || scheme_str == "ws" { return 80; }
-    if scheme_str == "https" || scheme_str == "wss" { return 443; }
-    if scheme_str == "ftp" { return 21; }
-    return -1;
-}
-
 // Fast-path pre-cleaner: trims C0 controls and spaces (<= 0x20) and strips 0x09, 0x0A, 0x0D
 fn clean_input_string<B>(raw: const u8[:], out: B&) -> bool {
     out.clear();
@@ -544,15 +537,19 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
                         return view, UrlParseError.InvalidIpv6;
                     }
                 }
-                view.host = inside_brackets;
+                view.host = host_port_slice[..close_bracket + 1];
                 if close_bracket + 1 < host_port_slice.len {
                     // RFC 3986 §3.2.2 & Go #78569: Any character following ']' MUST be ':' introducing port number
                     guard host_port_slice[close_bracket + 1] == ':' else {
                         return view, UrlParseError.InvalidHost;
                     }
                     let port_str = host_port_slice[close_bracket + 2..];
-                    let port_num, port_ok = parse_port_number(port_str);
-                    if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }
+                    if port_str.len > 0 {
+                        let port_num, port_ok = parse_port_number(port_str);
+                        if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }
+                    } else {
+                        view.port = -1;
+                    }
                 }
             } else {
                 return view, UrlParseError.InvalidIpv6;
@@ -565,8 +562,12 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
             if host_colon >= 0 {
                 view.host = host_port_slice[..host_colon];
                 let port_str = host_port_slice[host_colon + 1..];
-                let port_num, port_ok = parse_port_number(port_str);
-                if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }
+                if port_str.len > 0 {
+                    let port_num, port_ok = parse_port_number(port_str);
+                    if port_ok { view.port = port_num; } else { return view, UrlParseError.InvalidPort; }
+                } else {
+                    view.port = -1;
+                }
             } else {
                 view.host = host_port_slice;
             }

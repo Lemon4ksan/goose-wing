@@ -65,6 +65,12 @@ fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) {
             out.append("%3F");
         } else if char_byte == '%' {
             out.append("%25");
+        } else if char_byte < 0x20 || char_byte == 0x7F {
+            out.push('%');
+            let high_val = (char_byte >> 4) & 0x0F;
+            let low_val = char_byte & 0x0F;
+            out.push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 });
+            out.push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 });
         } else {
             out.push(char_byte);
         }

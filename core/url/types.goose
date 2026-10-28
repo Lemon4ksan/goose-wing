@@ -140,11 +140,29 @@ fn new_opaque_origin() -> Origin {
     return orig;
 }
 
+fn default_port_for_scheme(scheme_str: const u8[:]) -> i32 {
+    if scheme_str == "http" || scheme_str == "ws" { return 80; }
+    if scheme_str == "https" || scheme_str == "wss" { return 443; }
+    if scheme_str == "ftp" { return 21; }
+    return -1;
+}
+
 fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin {
-    var orig = Origin { kind: OriginKind.Tuple, port: port, .. };
+    var eff_port = port;
+    if eff_port < 0 {
+        eff_port = default_port_for_scheme(scheme);
+    }
+    var orig = Origin { kind: OriginKind.Tuple, port: eff_port, .. };
     orig.scheme.append(scheme);
     to_lower(orig.scheme[..]);
-    orig.host.append(host);
+
+    if contains_byte(host, ':') && (host.len < 2 || host[0] != '[' || host[host.len - 1] != ']') {
+        orig.host.push('[');
+        orig.host.append(host);
+        orig.host.push(']');
+    } else {
+        orig.host.append(host);
+    }
     to_lower(orig.host[..]);
     return orig;
 }
