@@ -889,8 +889,9 @@ fn handle_h2_server_ingress<B>(
                 d_end -= pad_len;
             }
 
+            var d_len: i64 = 0;
             if d_start <= d_end && d_end <= frame_payload.len {
-                let d_len = d_end - d_start;
+                d_len = d_end - d_start;
                 if sess.streams[s_idx].body.len + d_len <= sess.streams[s_idx].body.cap {
                     sess.streams[s_idx].body.append(frame_payload[d_start..d_end]);
                 } else {
@@ -899,10 +900,13 @@ fn handle_h2_server_ingress<B>(
                 }
             }
 
-            let flow_err = on_data_frame_received(sess.conn, hdr, frame_payload.len as u32);
+            // RFC 9113 §8.1.1 & §8.1.2: Pass application data length (d_len) for Content-Length validation,
+            // while connection and stream flow-control windows account for the full frame payload (hdr.length).
+            let flow_err = on_data_frame_received(sess.conn, hdr, d_len as u32);
             if flow_err != ERR_NO_ERROR {
-                if flow_err == ERR_STREAM_CLOSED {
-                    emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
+                if flow_err == ERR_STREAM_CLOSED || flow_err == ERR_PROTOCOL_ERROR {
+                    // RFC 9113 §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
+                    emit_rst_stream(hdr.stream_id, flow_err, out_wire);
                     sess.streams[s_idx].active = false;
                     offset += total_frame_len;
                     continue;

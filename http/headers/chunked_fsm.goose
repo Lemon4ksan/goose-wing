@@ -19,6 +19,7 @@ const CHUNK_STATE_EXTENSION_QUOTED: u64 = 0x0400000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_LF: u64 = 0x0200000000000000;
 const CHUNK_STATE_EXTENSION_IN_NAME: u64 = 0x0100000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_VAL: u64 = 0x0020000000000000;
+const CHUNK_STATE_EXTENSION_ESCAPED: u64 = 0x0010000000000000;
 const CHUNK_STATE_SEEN_HEX: u64 = 0x0080000000000000;
 const CHUNK_STATE_SEEN_BWS: u64 = 0x0040000000000000;
 
@@ -208,7 +209,7 @@ fn chunk_fsm_feed(
                         offset++;
                         dec.state += 2;
                         dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
-                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_EXPECTS_LF | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
+                        dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_ESCAPED | CHUNK_STATE_EXTENSION_EXPECTS_LF | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
                         break;
                     }
 
@@ -218,7 +219,7 @@ fn chunk_fsm_feed(
                     }
 
                     if c == '\r' {
-                        if (dec.state & (CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED)) != 0 {
+                        if (dec.state & (CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_ESCAPED)) != 0 {
                             dec.state = CHUNK_STATE_IS_ERROR;
                             return ChunkFsmStatus.Error, offset, data[..0];
                         }
@@ -265,7 +266,12 @@ fn chunk_fsm_feed(
                         }
                     } else {
                         if (dec.state & CHUNK_STATE_EXTENSION_QUOTED) != 0 {
-                            if c == '"' {
+                            if (dec.state & CHUNK_STATE_EXTENSION_ESCAPED) != 0 {
+                                // RFC 9110 §5.6.4: Consumed escaped char in quoted-pair (e.g. \" or \\)
+                                dec.state &= ~CHUNK_STATE_EXTENSION_ESCAPED;
+                            } else if c == '\\' {
+                                dec.state |= CHUNK_STATE_EXTENSION_ESCAPED;
+                            } else if c == '"' {
                                 dec.state &= ~CHUNK_STATE_EXTENSION_QUOTED;
                             }
                         } else {

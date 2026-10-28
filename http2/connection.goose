@@ -526,11 +526,16 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
 
     s.streams[s_idx].received_data_bytes += payload_len;
 
+    // RFC 9113 §8.1.2: Check if incoming DATA causes total data to exceed declared Content-Length
+    let dec_len = s.streams[s_idx].declared_content_length;
+    if dec_len >= 0 && s.streams[s_idx].received_data_bytes > dec_len {
+        return ERR_PROTOCOL_ERROR;
+    }
+
     if (hdr.flags & FLAG_END_STREAM) != 0 {
         s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
 
         // Verify Content-Length match if declared (Go #32728 / #46071)
-        let dec_len = s.streams[s_idx].declared_content_length;
         if dec_len >= 0 && dec_len != s.streams[s_idx].received_data_bytes {
             return ERR_PROTOCOL_ERROR;
         }
