@@ -95,6 +95,61 @@ fn test_http_signatures(t: core::T&) {
         let ver_tampered = wing::verify_http_signature(req, "sig-bank", params, key, 1700000100);
         sub.assert_false(ver_tampered, "Tampered header rejected");
     };
+
+    t.run("RFC 9421 Timing Defense, Created/Expires Bounds & @query") { sub =>
+        var req = wing::Request {
+            method: "GET",
+            url: "https://api.example.com/items?filter=active&sort=desc",
+            ..
+        };
+        wing::set_header(req, "X-Custom", "  spaced   value  ");
+
+        var params = wing::HttpSignatureParams {
+            label: "sig1",
+            created: 1700000000,
+            expires: 1700000300,
+            ..
+        };
+        params.components.push("@query");
+        params.components.push("x-custom");
+
+        var sig_base: u8[>..] = [];
+        let ok_base = wing::build_signature_base(req, params, sig_base);
+        sub.assert_true(ok_base, "Signature base with @query built");
+        sub.assert_contains(sig_base[..], "\"@query\": ?filter=active&sort=desc\n", "Contains @query");
+        sub.assert_contains(sig_base[..], "\"x-custom\": spaced value\n", "Whitespace trimmed and collapsed");
+
+        let key = "hmac_key_test_secret_32_bytes!!";
+        let sign_ok = wing::sign_http_request(req, params, key);
+        sub.assert_true(sign_ok, "Request signed");
+
+        // 1. Valid signature verifies
+        let v_ok = wing::verify_http_signature(req, "sig1", params, key, 1700000100);
+        sub.assert_true(v_ok, "Signature verified");
+
+        // 2. Reject if created in future beyond clock skew
+        let v_future = wing::verify_http_signature(req, "sig1", params, key, 1699999000);
+        sub.assert_false(v_future, "Future creation rejected");
+
+        // 3. Reject if created >= expires
+        var bad_params = params;
+        bad_params.created = 1700000500;
+        bad_params.expires = 1700000400;
+        let v_bad_exp = wing::verify_http_signature(req, "sig1", bad_params, key, 1700000450);
+        sub.assert_false(v_bad_exp, "created >= expires rejected");
+
+        // 4. Multiple signatures in dictionary & prefix isolation
+        var multi_req = req;
+        var multi_sig: u8[..512] = "sig1_prefix=:aW52YWxpZA==:, ";
+        multi_sig.append(req.header("Signature"));
+        wing::set_header(multi_req, "Signature", multi_sig[..]);
+
+        let v_multi = wing::verify_http_signature(multi_req, "sig1", params, key, 1700000100);
+        sub.assert_true(v_multi, "Dictionary member sig1 isolated from sig1_prefix");
+
+        let v_prefix = wing::verify_http_signature(multi_req, "sig1_prefix", params, key, 1700000100);
+        sub.assert_false(v_prefix, "Fake prefix signature rejected");
+    };
 }
 
 fn main() {

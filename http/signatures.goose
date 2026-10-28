@@ -99,11 +99,56 @@ fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -
         }
         out.append(url[path_start..path_end]);
         return true;
+    } else if eq_ascii_fold(comp, "@query") {
+        // RFC 9421 Section 2.2.7: Query component beginning with '?'
+        let url = req.url[..];
+        var q_start = -1;
+        for i in url.len {
+            if url[i] == '?' {
+                q_start = i;
+                break;
+            }
+        }
+        if q_start == -1 {
+            out.append("?");
+            return true;
+        }
+        var q_end = url.len;
+        for i in (url.len - q_start) {
+            if url[q_start + i] == '#' {
+                q_end = q_start + i;
+                break;
+            }
+        }
+        out.append(url[q_start..q_end]);
+        return true;
     } else if comp.len > 0 && comp[0] != '@' {
         // Standard HTTP header field (RFC 9421 Section 2.1)
+        // Values must be stripped of leading/trailing whitespace and internal whitespace collapsed.
         let val = req.header(comp);
         guard val.len > 0 else { return false; }
-        out.append(val);
+        var start: i64 = 0;
+        while start < val.len && (val[start] == ' ' || val[start] == '\t') {
+            start += 1;
+        }
+        var end: i64 = val.len;
+        while end > start && (val[end - 1] == ' ' || val[end - 1] == '\t' || val[end - 1] == '\r' || val[end - 1] == '\n') {
+            end -= 1;
+        }
+        guard end > start else { return false; }
+        var prev_space = false;
+        for i in (end - start) {
+            let ch = val[start + i];
+            if ch == ' ' || ch == '\t' {
+                if !prev_space {
+                    out.push(' ' as u8);
+                    prev_space = true;
+                }
+            } else {
+                out.push(ch);
+                prev_space = false;
+            }
+        }
         return true;
     }
 
@@ -237,6 +282,48 @@ fn sign_http_request(
     return true;
 }
 
+// Parses an RFC 8941 Structured Fields Dictionary for Signature header
+// and extracts the sf-binary (:base64:) corresponding to the given label.
+fn extract_signature_value(header_val: const u8[:], label: const u8[:], out_sig_b64: u8[..256]&) -> bool {
+    out_sig_b64.clear();
+    var idx: i64 = 0;
+    while idx < header_val.len {
+        while idx < header_val.len && (header_val[idx] == ' ' || header_val[idx] == '\t' || header_val[idx] == ',') {
+            idx += 1;
+        }
+        guard idx < header_val.len else { break; }
+        let key_start = idx;
+        while idx < header_val.len && header_val[idx] != '=' && header_val[idx] != ' ' && header_val[idx] != '\t' {
+            idx += 1;
+        }
+        let item_key = header_val[key_start..idx];
+        while idx < header_val.len && (header_val[idx] == ' ' || header_val[idx] == '\t') {
+            idx += 1;
+        }
+        guard idx < header_val.len && header_val[idx] == '=' else { return false; }
+        idx += 1; // skip '='
+        while idx < header_val.len && (header_val[idx] == ' ' || header_val[idx] == '\t') {
+            idx += 1;
+        }
+        guard idx < header_val.len && header_val[idx] == ':' else { return false; }
+        idx += 1; // skip opening ':'
+        let b64_start = idx;
+        while idx < header_val.len && header_val[idx] != ':' {
+            idx += 1;
+        }
+        guard idx < header_val.len && header_val[idx] == ':' else { return false; }
+        let b64_val = header_val[b64_start..idx];
+        idx += 1; // skip closing ':'
+
+        if item_key == label {
+            guard b64_val.len <= out_sig_b64.cap else { return false; }
+            out_sig_b64.append(b64_val);
+            return true;
+        }
+    }
+    return false;
+}
+
 // Verifies an RFC 9421 signature on a Request using HMAC-SHA256
 fn verify_http_signature(
     req: const Request&,
@@ -245,9 +332,15 @@ fn verify_http_signature(
     secret_key: const u8[:],
     now_sec: i64 = 0,
 ) -> bool {
-    // 1. Check expiration if defined
+    // 1. RFC 9421 Section 3.2.1: Timestamp & expiration checks
+    if params.created > 0 && params.expires > 0 {
+        guard params.created < params.expires else { return false; }
+    }
+    if params.created > 0 && now_sec > 0 {
+        guard (now_sec + 60) >= params.created else { return false; }
+    }
     if params.expires > 0 && now_sec > 0 {
-        guard now_sec <= params.expires else { return false; }
+        guard (now_sec - 60) <= params.expires else { return false; }
     }
 
     // 2. Rebuild canonical signature base
@@ -258,23 +351,17 @@ fn verify_http_signature(
 
     // 3. Compute expected signature
     let expected_sig = core::hmac_sha256(secret_key, sig_base[..]);
-    var expected_b64: u8[..128] = [];
-    core::base64_encode(expected_sig[..], expected_b64);
 
-    // 4. Find Signature header matching label
+    // 4. Find Signature header matching label and compare in constant-time
     let sig_header_val = req.header(HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
-    // Must match label: e.g. label=:<base64>:
-    var expected_labeled: u8[..256] = [];
-    expected_labeled.append(label);
-    expected_labeled.append("=:");
-    expected_labeled.append(expected_b64[..]);
-    expected_labeled.push(':');
+    var received_b64: u8[..256] = [];
+    guard extract_signature_value(sig_header_val, label, received_b64) else { return false; }
 
-    guard core::contains(sig_header_val, expected_labeled[..]) else {
-        return false;
-    }
+    var received_sig: u8[>..] = [];
+    guard core::base64_decode(received_b64[..], received_sig) else { return false; }
+    guard received_sig.len == expected_sig.len else { return false; }
 
-    return true;
+    return core::ct_eq_bytes(received_sig[..], expected_sig[..]);
 }
