@@ -826,6 +826,37 @@ fn test_rfc8439_poly1305_block_boundary_padding_overflow(t: core::T&) {
     };
 }
 
+fn test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse(t: core::T&) {
+    t.run("Full Jitter backoff with U64_MAX cap must not collapse entropy to zero") { sub =>
+        var rng = core::new_wyrand(12345);
+        let base_ms: u64 = 100;
+        let cap_ms: u64 = core::U64_MAX;
+
+        // When attempt >= 64, target = U64_MAX. In unpatched code, target + 1 wraps around to 0,
+        // fast_range_biased_u64 returns 0, collapsing backoff entropy to 0 and triggering retry storms.
+        var zero_count = 0;
+        for attempt in 20 {
+            let sleep = core::backoff_full_jitter_ms(rng, base_ms, cap_ms, (64 + attempt) as u32);
+            if sleep == 0 {
+                zero_count += 1;
+            }
+        }
+        sub.assert_lt(zero_count, 5, "Full jitter backoff with U64_MAX cap must not collapse to 0 on saturated attempts");
+    };
+
+    t.run("Decorrelated Jitter backoff with U64_MAX span must not collapse entropy to zero") { sub =>
+        var rng = core::new_wyrand(54321);
+        var zero_count = 0;
+        for i in 20 {
+            let sleep = core::backoff_decorrelated_jitter_ms(rng, 0, core::U64_MAX, core::U64_MAX);
+            if sleep == 0 {
+                zero_count += 1;
+            }
+        }
+        sub.assert_lt(zero_count, 5, "Decorrelated jitter backoff with U64_MAX cap and base 0 must not collapse to 0");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -851,6 +882,7 @@ fn main() {
     core::run_case(runner, "20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses", test_url_path_and_file_capacity_defenses);
     core::run_case(runner, "21. RFC 3986 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses", test_url_query_delimiter_and_decoding_defenses);
     core::run_case(runner, "22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity", test_rfc8439_poly1305_block_boundary_padding_overflow);
+    core::run_case(runner, "23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses", test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse);
     let ok = core::finish(runner);
     assert(ok);
 }

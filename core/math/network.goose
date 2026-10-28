@@ -41,6 +41,9 @@ inline fn backoff_full_jitter_ms(rng: WyRand&, base_ms: u64, cap_ms: u64, attemp
     if target == 0 {
         return 0;
     }
+    if target == U64_MAX {
+        return next_u64(rng);
+    }
     return fast_range_biased_u64(next_u64(rng), target + 1);
 }
 
@@ -60,7 +63,13 @@ inline fn backoff_decorrelated_jitter_ms(rng: WyRand&, base_ms: u64, cap_ms: u64
     let upper = ct_min_u64(cap_ms, mult);
 
     let span = sub_sat_u64(upper, base_ms);
-    let rnd = if span > 0 { fast_range_biased_u64(next_u64(rng), span + 1) } else { 0 };
+    let rnd = if span == U64_MAX {
+        next_u64(rng)
+    } else if span > 0 {
+        fast_range_biased_u64(next_u64(rng), span + 1)
+    } else {
+        0
+    };
     return add_sat_u64(base_ms, rnd);
 }
 
