@@ -41,6 +41,12 @@ Releases are automated via Google's `release-please` workflow on `main`.
     powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
     ```
   - Core libraries (`core.goose`, `wing.goose`) and all test suites must pass without errors or warnings.
+- **Hardware enforcement gate (`goose-crap` + `gosling`)**:
+  - Every modified or refactored `.goose` file must pass the hardware complexity gate before finalizing changes:
+    ```powershell
+    powershell -ExecutionPolicy Bypass -File .\scripts\verify_wing_gate.ps1 -TargetFile "<path\to\file.goose>" -MaxGCrap 25
+    ```
+  - If the script exits with code 1 (`GATE REJECTED`), functions must be flattened with `guard` clauses, bounds checks proved, and cyclomatic depth reduced until all functions pass.
 
 ## Pragmatic systems engineering principles
 
