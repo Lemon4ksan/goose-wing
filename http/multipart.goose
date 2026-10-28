@@ -227,6 +227,42 @@ fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) 
     return true;
 }
 
+// Go #75557 & RFC 7578 §4.2: Formats a Content-Disposition header value with strict CRLF injection protection.
+// Rejects names or filenames containing raw CR, LF, or NUL bytes.
+// Escapes quotes and backslashes per RFC 7578 Section 4.2.
+fn format_content_disposition<B>(name: const u8[:], filename: const u8[:], out: B&) -> bool {
+    guard name.len > 0 else { return false; }
+    // Check for CRLF / NUL injection in name
+    for b in name {
+        guard b != '\r' && b != '\n' && b != 0 else { return false; }
+    }
+    // Check for CRLF / NUL injection in filename
+    for b in filename {
+        guard b != '\r' && b != '\n' && b != 0 else { return false; }
+    }
+
+    out.append("form-data; name=\"");
+    for b in name {
+        if b == '"' || b == '\\' {
+            out.push('\\');
+        }
+        out.push(b);
+    }
+    out.push('"');
+
+    if filename.len > 0 {
+        out.append("; filename=\"");
+        for b in filename {
+            if b == '"' || b == '\\' {
+                out.push('\\');
+            }
+            out.push(b);
+        }
+        out.push('"');
+    }
+    return true;
+}
+
 // Delimiters are matched using a 16-bit Boyer-Moore-Horspool shift table,
 // requiring CRLF, LF, or '--' immediately after the boundary to avoid prefix
 // collisions. Total memory and part counts are bounded by options.
@@ -533,6 +569,8 @@ fn parse_range_header(
     var rs = RangeSet { resource_length: resource_len, is_satisfiable: true, coalesced: false, .. };
     let trimmed = trim_lws(header_val);
     guard trimmed.len > 0 else { return rs, RangeError.EmptyRange; }
+    // CVE-2026-78667: Limit maximum size of parsed Range header to prevent CPU exhaustion DoS
+    guard trimmed.len <= 1024 else { return rs, RangeError.ExceededMaxRanges; }
 
     guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes=") else {
         return rs, RangeError.InvalidUnit;

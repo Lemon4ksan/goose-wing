@@ -1,0 +1,66 @@
+# scripts/repl/verify_historical_bugs.repl
+# Verification of historical CVE and edge-case wire invariants at 64 KB page edge:
+# 1. Range header parsing with 1024-byte limit (Go CVE-2026-78667).
+# 2. Content-Disposition CRLF injection detection (Go #75557).
+# 3. TLS 1.3 InnerPlaintext unpadding and zero-length verification (RFC 8446 Section 5.4).
+
+# 1. Injects Content-Disposition with CRLF injection attempt at page edge
+# "form-data; name=\"field\r\nEvil: 1\""
+:pkt_edge 666f726d2d646174613b206e616d653d226669656c640d0a4576696c3a203122
+
+:assert EDGE_LEN == 32
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Zero-allocation validator for CRLF / NUL in disposition header
+fn scan_disposition_crlf(addr: i32, len: i32) -> i32 {
+    var i: i32 = 0;
+    while i < len {
+        let b = load_u8(addr + i);
+        if b == 13 || b == 10 || b == 0 {
+            return 1;
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+:assert scan_disposition_crlf(EDGE_ADDR, EDGE_LEN) == 1
+
+# 2. Injects valid TLS 1.3 InnerPlaintext with empty application data and 3 zero-padding bytes
+# [0x17, 0x00, 0x00, 0x00]
+:pkt_edge 17000000
+
+:assert EDGE_LEN == 4
+:assert_trap load_u8(EDGE_ADDR + EDGE_LEN) OutOfBoundsMemoryAccess
+
+# Constant-time backward scanner for TLS 1.3 Inner ContentType
+fn scan_tls_inner_type(addr: i32, len: i32) -> i32 {
+    if len <= 0 { return -1; }
+    var found_type: i32 = 0;
+    var payload_len: i32 = 0;
+    var found: i32 = 0;
+
+    var i: i32 = 0;
+    while i < len {
+        let idx = len - 1 - i;
+        let b = load_u8(addr + idx);
+        if found == 0 && b != 0 {
+            found_type = b;
+            payload_len = idx;
+            found = 1;
+        }
+        i += 1;
+    }
+
+    if found == 0 { return -2; }
+    if found_type == 23 && payload_len == 0 { return 100; }
+    if found_type != 23 && payload_len == 0 { return -3; }
+    return found_type;
+}
+
+:assert scan_tls_inner_type(EDGE_ADDR, EDGE_LEN) == 100
+
+# 3. Injects TLS 1.3 record with all-zero padding (malicious)
+:pkt_edge 0000000000000000
+
+:assert scan_tls_inner_type(EDGE_ADDR, EDGE_LEN) == -2

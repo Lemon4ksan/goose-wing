@@ -1120,6 +1120,41 @@ fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) 
     return true;
 }
 
+// RFC 5280 §4.2.1.10 & OpenSSL #31392 / CVE-2009-2408: URI name constraint matching
+// Extracts the host component from candidate URI and matches it against the constraint.
+// Rejects candidate URIs or constraints containing embedded NUL bytes.
+fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]) -> bool {
+    guard candidate_uri.len > 0 && constraint.len > 0 else { return false; }
+    guard !core::contains_byte(candidate_uri, 0) && !core::contains_byte(constraint, 0) else { return false; }
+
+    var host_part = candidate_uri[..0];
+    if core::starts_with(candidate_uri, "http://") {
+        host_part = candidate_uri[7..];
+    } else if core::starts_with(candidate_uri, "https://") {
+        host_part = candidate_uri[8..];
+    } else {
+        let scheme_end = core::index_of_slice(candidate_uri, "://");
+        guard scheme_end >= 0 else { return false; }
+        host_part = candidate_uri[scheme_end + 3..];
+    }
+
+    let at_idx = core::index_of_byte(host_part, '@');
+    if at_idx >= 0 {
+        host_part = host_part[at_idx + 1..];
+    }
+    let slash_idx = core::index_of_byte(host_part, '/');
+    if slash_idx >= 0 {
+        host_part = host_part[..slash_idx];
+    }
+    let colon_idx = core::index_of_byte(host_part, ':');
+    if colon_idx >= 0 {
+        host_part = host_part[..colon_idx];
+    }
+
+    guard host_part.len > 0 else { return false; }
+    return match_dns_name_constraint(host_part, constraint);
+}
+
 fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out_val: ByteCursor&) -> bool {
     var base_tag: u8 = 0;
     if !get_any_asn1_element(subtree, base_tag, out_val) { return false; }
@@ -1132,6 +1167,9 @@ fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out
         guard out_val.buf.len == 8 || out_val.buf.len == 32 else { return false; }
         let half = out_val.buf.len / 2;
         guard validate_cidr_mask(out_val.buf[half..]) else { return false; }
+    } else if tag_num == 6 { // uniformResourceIdentifier [6]
+        out_type = SanType.Uri;
+        guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
     } else {
         out_type = SanType.Other;
     }
@@ -1233,6 +1271,9 @@ fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEnt
     }
     if nc.san_type == SanType.Ip {
         return match_ip_name_constraint(san.val, nc.val);
+    }
+    if nc.san_type == SanType.Uri {
+        return match_uri_name_constraint(san.val, nc.val);
     }
     return false;
 }

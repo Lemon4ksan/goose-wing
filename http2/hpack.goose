@@ -1628,11 +1628,13 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
 
     // Check Content-Length consistency (CVE-2026-78660 / Go #81115)
     if name == "content-length" {
-        guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
+        guard val.len > 0 && val.len <= 19 else { return ERR_PROTOCOL_ERROR; }
         var parsed_len: i64 = 0;
         for c in val {
             guard c >= '0' && c <= '9' else { return ERR_PROTOCOL_ERROR; }
-            parsed_len = parsed_len * 10 + (c - '0');
+            let digit = (c - '0') as i64;
+            guard parsed_len <= (9223372036854775807 - digit) / 10 else { return ERR_PROTOCOL_ERROR; }
+            parsed_len = parsed_len * 10 + digit;
         }
         if out.has_content_length {
             // Multiple Content-Length headers must match identically
