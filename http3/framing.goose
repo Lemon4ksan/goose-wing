@@ -92,6 +92,17 @@ fn encode_h3_headers_frame<B>(out: B&, qpack_field_section: const u8[:]) -> bool
     return true;
 }
 
+// Encodes a PUSH_PROMISE frame (Type 0x05, RFC 9114 Section 7.2.5).
+fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u8[:]) -> bool {
+    var pid_buf: u8[..8] = [];
+    guard quic_encode_varint(pid_buf, push_id) else { return false; }
+    let plen = (pid_buf.len as u64) + (qpack_field_section.len as u64);
+    guard encode_h3_frame_header(out, H3_FRAME_PUSH_PROMISE, plen) else { return false; }
+    out.append(pid_buf[..]);
+    out.append(qpack_field_section);
+    return true;
+}
+
 // ---- 4. SETTINGS Frame (RFC 9114 Section 7.2.4 & RFC 9204 Section 5) --------
 
 // Encodes a SETTINGS frame (Type 0x04).

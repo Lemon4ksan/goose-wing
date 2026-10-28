@@ -77,6 +77,9 @@ struct H3Connection {
     ignored_uni_streams: u64[..16] = [],
     goaway_received: bool = false,
     goaway_max_stream_id: u64 = 0xFFFFFFFFFFFFFFFF,
+    max_push_id_sent: bool = false,
+    max_push_id_advertised: u64 = 0,
+    max_push_id_received: u64 = 0,
     error_code: u64 = H3_ERR_NO_ERROR,
     local_settings: H3Settings = H3Settings { .. },
     peer_settings: H3Settings = H3Settings { .. },
@@ -90,6 +93,15 @@ fn new_h3_client_connection(settings: const H3Settings&) -> H3Connection {
         qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32),
         ..
     };
+}
+
+// Advertises MAX_PUSH_ID frame from client to server (RFC 9114 Section 7.2.7).
+fn send_max_push_id<B>(conn: H3Connection&, max_push_id: u64, out: B&) -> bool {
+    guard conn.role == H3ConnRole.Client else { return false; }
+    guard encode_h3_max_push_id(out, max_push_id) else { return false; }
+    conn.max_push_id_sent = true;
+    conn.max_push_id_advertised = max_push_id;
+    return true;
 }
 
 // ---- 2. Preamble & Unidirectional Stream Creation ---------------------------
@@ -391,6 +403,39 @@ fn handle_stream_data(
                         conn.goaway_max_stream_id = max_sid;
                         conn.state = H3ConnState.Draining;
                     }
+
+                    // Process CANCEL_PUSH frame (RFC 9114 §7.2.7)
+                    if hdr.frame_type == H3_FRAME_CANCEL_PUSH {
+                        let push_id, ok_cp = parse_h3_cancel_push(payload);
+                        if !ok_cp {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_FRAME_ERROR;
+                            return H3_ERR_FRAME_ERROR;
+                        }
+                        // RFC 9114 §7.2.7: push_id cannot exceed advertised max push ID
+                        if conn.max_push_id_sent && push_id > conn.max_push_id_advertised {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_ID_ERROR;
+                            return H3_ERR_ID_ERROR;
+                        }
+                    }
+
+                    // Process MAX_PUSH_ID frame (RFC 9114 §7.2.7)
+                    if hdr.frame_type == H3_FRAME_MAX_PUSH_ID {
+                        let max_pid, ok_mp = parse_h3_max_push_id(payload);
+                        if !ok_mp {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_FRAME_ERROR;
+                            return H3_ERR_FRAME_ERROR;
+                        }
+                        // Monotonicity: subsequent MAX_PUSH_ID MUST NOT decrease
+                        if conn.max_push_id_received > 0 && max_pid < conn.max_push_id_received {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_ID_ERROR;
+                            return H3_ERR_ID_ERROR;
+                        }
+                        conn.max_push_id_received = max_pid;
+                    }
                 }
             }
         }
@@ -476,6 +521,34 @@ fn handle_stream_data(
             conn.state = H3ConnState.Closed;
             conn.error_code = H3_ERR_FRAME_UNEXPECTED;
             return H3_ERR_FRAME_UNEXPECTED;
+        }
+
+        // PUSH_PROMISE Frame (RFC 9114 §7.2.5)
+        if hdr.frame_type == H3_FRAME_PUSH_PROMISE {
+            // Clients MUST NOT send PUSH_PROMISE frames to servers
+            if conn.role == H3ConnRole.Server {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+                return H3_ERR_FRAME_UNEXPECTED;
+            }
+            guard payload.len > 0 else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_FRAME_ERROR;
+                return H3_ERR_FRAME_ERROR;
+            }
+            let push_id, off_p, ok_p = quic_decode_varint(payload, 0);
+            if !ok_p {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_FRAME_ERROR;
+                return H3_ERR_FRAME_ERROR;
+            }
+            // Push ID MUST NOT exceed advertised MAX_PUSH_ID (or any push if never advertised)
+            if !conn.max_push_id_sent || push_id > conn.max_push_id_advertised {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_ID_ERROR;
+                return H3_ERR_ID_ERROR;
+            }
+            continue;
         }
 
         // 1. HEADERS Frame

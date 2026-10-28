@@ -972,6 +972,163 @@ fn test_round2_qpackstrike_suite(t: core::T&) {
 }
 
 // ============================================================================
+// 9. Team QPackStrike Round 3 Championship Audit Suite (RFC 9204, RFC 9000, RFC 9114)
+// ============================================================================
+fn test_round3_qpackstrike_suite(t: core::T&) {
+    t.run("QPACK-R3-01: Huffman Padding Bounds and All-1s Validation (RFC 9204 §4.1.2, RFC 7541 §5.2)") { sub =>
+        // Test A: Non-empty input with only padding (0xFF) MUST fail (8 bits of padding > 7 bits)
+        var bad_huff1: u8[..4] = [0xFF];
+        var out1: u8[..64] = [];
+        let ok1 = wing::huff_decode_bytes(bad_huff1[..], out1);
+        sub.assert_false(ok1, "Huffman string of pure 0xFF (8 bits padding) MUST fail per RFC 9204 §4.1.2");
+
+        // Test B: 16 bits of pure padding (0xFF, 0xFF) MUST fail
+        var bad_huff2: u8[..4] = [0xFF, 0xFF];
+        var out2: u8[..64] = [];
+        let ok2 = wing::huff_decode_bytes(bad_huff2[..], out2);
+        sub.assert_false(ok2, "Huffman string of 0xFFFF (16 bits padding) MUST fail");
+
+        // Test C: Valid Huffman string ("custom-key") with extra trailing 0xFF (8 bits padding) MUST fail
+        var valid_encoded: u8[..64] = [];
+        sub.assert_true(wing::huff_encode_bytes("custom-key", valid_encoded), "encode custom-key");
+        valid_encoded.push(0xFF); // Append extra 8 bits of padding
+        var out3: u8[..64] = [];
+        let ok3 = wing::huff_decode_bytes(valid_encoded[..], out3);
+        sub.assert_false(ok3, "Huffman string with trailing full byte padding MUST fail per RFC 9204 §4.1.2");
+
+        // Test D: Valid Huffman string ("custom-key") decodes cleanly
+        var valid_clean: u8[..64] = [];
+        sub.assert_true(wing::huff_encode_bytes("custom-key", valid_clean), "encode custom-key clean");
+        var out4: u8[..64] = [];
+        let ok4 = wing::huff_decode_bytes(valid_clean[..], out4);
+        sub.assert_true(ok4, "Valid Huffman string decodes cleanly");
+        sub.assert_eq(out4[..], "custom-key", "decoded content matches");
+
+        // Test E: decode_qpack_string rejects string literal with invalid Huffman padding
+        var raw_str_wire: u8[..64] = [];
+        // Length 2, Huffman bit set (0x80 | 2 = 0x82), followed by [0xFF, 0xFF]
+        raw_str_wire.push(0x82);
+        raw_str_wire.push(0xFF);
+        raw_str_wire.push(0xFF);
+        var q_out: u8[..64] = [];
+        let _, ok_str = wing::decode_qpack_string(raw_str_wire[..], 0, 7, q_out);
+        sub.assert_false(ok_str, "decode_qpack_string rejects Huffman with padding > 7 bits");
+    };
+
+    t.run("QUIC-R3-01: Packet Number Reconstruction 62-Bit Arithmetic Safety (RFC 9000 §17.1, Appendix A.3)") { sub =>
+        // Test A: Standard packet number reconstruction
+        let pn1, ok_pn1 = wing::decode_packet_number_checked(0, 1, 1);
+        sub.assert_true(ok_pn1, "decode standard pn 1 ok");
+        sub.assert_eq(pn1, 1, "reconstructed pn is 1");
+
+        let pn256, ok_pn256 = wing::decode_packet_number_checked(255, 0, 1);
+        sub.assert_true(ok_pn256, "decode wrap-around pn ok");
+        sub.assert_eq(pn256, 256, "reconstructed pn is 256");
+
+        // Test B: Invalid pn_len (0 or > 4) MUST fail
+        let _, ok_bad_len0 = wing::decode_packet_number_checked(100, 42, 0);
+        sub.assert_false(ok_bad_len0, "pn_len 0 rejected");
+        let _, ok_bad_len5 = wing::decode_packet_number_checked(100, 42, 5);
+        sub.assert_false(ok_bad_len5, "pn_len 5 rejected");
+
+        // Test C: Packet number exceeding 2^62 - 1 MUST fail per RFC 9000 §17.1
+        let _, ok_exceed = wing::decode_packet_number_checked(0x3FFFFFFFFFFFFFFF, 1, 1);
+        // Largest acked is already at 2^62 - 1, candidate next pn would exceed 2^62 - 1
+        sub.assert_false(ok_exceed, "reconstructed PN exceeding 2^62 - 1 rejected");
+
+        // Test D: Input truncated_pn exceeding 2^62 - 1 MUST fail
+        let _, ok_bad_trunc = wing::decode_packet_number_checked(100, 0x4000000000000000, 4);
+        sub.assert_false(ok_bad_trunc, "truncated_pn >= 2^62 rejected");
+
+        // Test E: Boundary at 2^62 - 2 reconstructed cleanly
+        let near_max: u64 = 0x3FFFFFFFFFFFFFFE;
+        let pn_near, ok_near = wing::decode_packet_number_checked(near_max - 1, (near_max & 0xFF), 1);
+        sub.assert_true(ok_near, "reconstructed PN near 2^62 - 1 accepted");
+        sub.assert_eq(pn_near, near_max, "reconstructed value matches");
+    };
+
+    t.run("H3-R3-01: PUSH_PROMISE, CANCEL_PUSH, and MAX_PUSH_ID Invariants (RFC 9114 §7.2.5, §7.2.7)") { sub =>
+        let settings = wing::H3Settings { .. };
+
+        // Test A: Server receiving PUSH_PROMISE frame on request stream MUST fail with H3_FRAME_UNEXPECTED
+        var srv_conn = wing::H3Connection {
+            role: wing::H3ConnRole.Server,
+            state: wing::H3ConnState.Active,
+            ..
+        };
+        // Add open request stream 0
+        srv_conn.streams.push(wing::H3StreamEntry {
+            stream_id: 0,
+            kind: wing::H3StreamKind.Request,
+            state: wing::H3StreamState.Open,
+            is_bidi: true,
+            ..
+        });
+
+        var push_wire: u8[..64] = [];
+        sub.assert_true(wing::encode_h3_push_promise(push_wire, 1, [0x00, 0x00]), "encode PUSH_PROMISE");
+        let err_srv = srv_conn.handle_stream_data(0, true, push_wire[..], false);
+        sub.assert_eq(err_srv, wing::H3_ERR_FRAME_UNEXPECTED, "Server receiving PUSH_PROMISE MUST return H3_FRAME_UNEXPECTED");
+        sub.assert_eq(srv_conn.state, wing::H3ConnState.Closed, "server connection closed");
+
+        // Test B: Client receiving PUSH_PROMISE when client never sent MAX_PUSH_ID MUST fail with H3_ERR_ID_ERROR
+        var cli_conn = wing::new_h3_client_connection(settings);
+        let sid, _ = cli_conn.open_request_stream();
+        let err_no_max = cli_conn.handle_stream_data(sid, true, push_wire[..], false);
+        sub.assert_eq(err_no_max, wing::H3_ERR_ID_ERROR, "PUSH_PROMISE without MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
+
+        // Test C: Client receiving PUSH_PROMISE with Push ID > max_push_id_advertised MUST fail with H3_ERR_ID_ERROR
+        var cli_conn2 = wing::new_h3_client_connection(settings);
+        let sid2, _ = cli_conn2.open_request_stream();
+        var max_p_buf: u8[..32] = [];
+        sub.assert_true(wing::send_max_push_id(cli_conn2, 5, max_p_buf), "client advertises MAX_PUSH_ID = 5");
+
+        var bad_push_wire: u8[..64] = [];
+        sub.assert_true(wing::encode_h3_push_promise(bad_push_wire, 10, [0x00, 0x00]), "encode PUSH_PROMISE with push_id 10 > 5");
+        let err_exceed = cli_conn2.handle_stream_data(sid2, true, bad_push_wire[..], false);
+        sub.assert_eq(err_exceed, wing::H3_ERR_ID_ERROR, "PUSH_PROMISE with push_id > advertised limit MUST return H3_ERR_ID_ERROR");
+
+        // Test D: Client receiving PUSH_PROMISE with push_id <= max_push_id_advertised succeeds
+        var good_push_wire: u8[..64] = [];
+        sub.assert_true(wing::encode_h3_push_promise(good_push_wire, 3, [0x00, 0x00]), "encode PUSH_PROMISE with push_id 3 <= 5");
+        let err_good_push = cli_conn2.handle_stream_data(sid2, true, good_push_wire[..], false);
+        sub.assert_eq(err_good_push, wing::H3_ERR_NO_ERROR, "PUSH_PROMISE with valid push_id accepted");
+
+        // Test E: CANCEL_PUSH with Push ID > advertised max limit on control stream returns H3_ERR_ID_ERROR
+        var init_ctrl: u8[..64] = [];
+        wing::quic_encode_varint(init_ctrl, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(init_ctrl, settings);
+        cli_conn2.handle_stream_data(3, false, init_ctrl[..], false);
+
+        var bad_cp_wire: u8[..32] = [];
+        sub.assert_true(wing::encode_h3_cancel_push(bad_cp_wire, 20), "encode CANCEL_PUSH with push_id 20 > 5");
+        let err_cp_exceed = cli_conn2.handle_stream_data(3, false, bad_cp_wire[..], false);
+        sub.assert_eq(err_cp_exceed, wing::H3_ERR_ID_ERROR, "CANCEL_PUSH with push_id > advertised limit returns H3_ERR_ID_ERROR");
+
+        // Test F: MAX_PUSH_ID monotonicity violation (decreasing max_push_id) returns H3_ERR_ID_ERROR
+        var srv_ctrl_conn = wing::H3Connection {
+            role: wing::H3ConnRole.Server,
+            state: wing::H3ConnState.Active,
+            ..
+        };
+        var srv_init_ctrl: u8[..64] = [];
+        wing::quic_encode_varint(srv_init_ctrl, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(srv_init_ctrl, settings);
+        srv_ctrl_conn.handle_stream_data(2, false, srv_init_ctrl[..], false);
+
+        var mp1_wire: u8[..32] = [];
+        sub.assert_true(wing::encode_h3_max_push_id(mp1_wire, 50), "first MAX_PUSH_ID = 50");
+        let err_mp1 = srv_ctrl_conn.handle_stream_data(2, false, mp1_wire[..], false);
+        sub.assert_eq(err_mp1, wing::H3_ERR_NO_ERROR, "first MAX_PUSH_ID accepted");
+
+        var mp2_wire: u8[..32] = [];
+        sub.assert_true(wing::encode_h3_max_push_id(mp2_wire, 30), "decreasing MAX_PUSH_ID = 30 < 50");
+        let err_mp2 = srv_ctrl_conn.handle_stream_data(2, false, mp2_wire[..], false);
+        sub.assert_eq(err_mp2, wing::H3_ERR_ID_ERROR, "decreasing MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
+    };
+}
+
+// ============================================================================
 // Main HTTP/3 Conformance Runner
 // ============================================================================
 fn main() {
@@ -985,6 +1142,7 @@ fn main() {
     core::run_case(runner, "6. HTTP/3 Extended Frames & Stream Edge-Cases", test_h3_extended_frames);
     core::run_case(runner, "7. Team QPackStrike Protocol Hardening Suite", test_round1_qpackstrike_suite);
     core::run_case(runner, "8. Team QPackStrike Round 2 Hardening Suite", test_round2_qpackstrike_suite);
+    core::run_case(runner, "9. Team QPackStrike Round 3 Championship Suite", test_round3_qpackstrike_suite);
 
     let ok = core::finish(runner);
     assert(ok);

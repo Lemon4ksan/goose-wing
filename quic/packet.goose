@@ -240,9 +240,9 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
         hdr.payload_length = plen;
         hdr.pn_offset = next_plen as u32;
         hdr.pn_length = (first & 0x03) + 1;
-        guard plen >= hdr.pn_length else { return hdr, false; }
-        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= hdr.pn_length && (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
-        hdr.header_len = (next_plen + hdr.pn_length) as u32;
+        guard plen >= (hdr.pn_length as u64) else { return hdr, false; }
+        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= (hdr.pn_length as u64) && (next_plen + (hdr.pn_length as u64)) <= (src.len as u64) else { return hdr, false; }
+        hdr.header_len = (next_plen + (hdr.pn_length as u64)) as u32;
         return hdr, true;
     }
 
@@ -414,10 +414,18 @@ fn encode_packet_number<B>(out: B&, pn: u64, pn_len: u8) -> bool {
     return true;
 }
 
+const QUIC_MAX_PN: u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 Section 17.1)
+const QUIC_PN_LIMIT: u64 = (1 as u64) << 62; // 2^62
+
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
-fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
-    guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn; }
+// Returns (reconstructed_pn, ok). If reconstructed PN exceeds 2^62 - 1 or pn_len is invalid, ok is false.
+fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64, bool {
+    guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn, false; }
+    guard largest_acked_pn <= QUIC_MAX_PN else { return 0, false; }
+    guard truncated_pn <= QUIC_MAX_PN else { return 0, false; }
+
     let pn_nbits: u64 = (pn_len as u64) * 8;
+    guard (0xFFFFFFFFFFFFFFFF - largest_acked_pn) >= 1 else { return 0, false; }
     let expected_pn: u64 = largest_acked_pn + 1;
     let pn_win: u64 = (1 as u64) << pn_nbits;
     let pnhwin: u64 = pn_win / 2;
@@ -425,13 +433,22 @@ fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) ->
 
     let candidate_pn = (expected_pn & ~pn_mask) | truncated_pn;
 
-    if candidate_pn + pnhwin <= expected_pn && candidate_pn + pn_win < ((1 as u64) << 62) {
-        return candidate_pn + pn_win;
+    if expected_pn >= pnhwin && candidate_pn <= (expected_pn - pnhwin) && candidate_pn < (QUIC_PN_LIMIT - pn_win) {
+        let res = candidate_pn + pn_win;
+        return res, res <= QUIC_MAX_PN;
     }
-    if candidate_pn > expected_pn + pnhwin && candidate_pn >= pn_win {
-        return candidate_pn - pn_win;
+    if (0xFFFFFFFFFFFFFFFF - expected_pn) >= pnhwin && candidate_pn > (expected_pn + pnhwin) && candidate_pn >= pn_win {
+        let res = candidate_pn - pn_win;
+        return res, res <= QUIC_MAX_PN;
     }
-    return candidate_pn;
+    return candidate_pn, candidate_pn <= QUIC_MAX_PN;
+}
+
+// Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
+fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
+    guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn; }
+    let pn, _ = decode_packet_number_checked(largest_acked_pn, truncated_pn, pn_len);
+    return pn;
 }
 
 // ---- 5. path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---

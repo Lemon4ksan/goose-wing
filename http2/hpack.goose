@@ -643,6 +643,7 @@ fn huff_decode_step(
     var out_idx = dst_len;
     var i: u64 = 0;
     let src_len = src.len as u64;
+    var last_sym_byte: i64 = -1;
 
     while i < src_len {
         let c = src[i];
@@ -658,6 +659,7 @@ fn huff_decode_step(
             }
             dst[out_idx] = t1.sym;
             out_idx++;
+            last_sym_byte = i as i64;
         }
 
         // Step 2: Low nibble (bits 3..0)
@@ -671,6 +673,7 @@ fn huff_decode_step(
             }
             dst[out_idx] = t2.sym;
             out_idx++;
+            last_sym_byte = i as i64;
         }
 
         state = t2.fstate;
@@ -681,10 +684,16 @@ fn huff_decode_step(
     ctx.fstate = state;
     ctx.flags = flags;
 
-    // EOS & Padding check (RFC 7541 Section 5.2):
-    // If final, state must be one of 8 accepted states (0..7 '1' padding bits)
-    if is_final && (flags & HUFF_ACCEPTED) == 0 {
-        return out_idx, false;
+    // EOS & Padding check (RFC 7541 Section 5.2 & RFC 9204 Section 4.1.2):
+    // If final, state must be one of the accepted states (all '1' padding bits)
+    // and padding MUST NOT exceed 7 bits (cannot consume a full byte after last symbol).
+    if is_final {
+        if (flags & HUFF_ACCEPTED) == 0 {
+            return out_idx, false;
+        }
+        if src_len > 0 && last_sym_byte != ((src_len as i64) - 1) {
+            return out_idx, false;
+        }
     }
     return out_idx, true;
 }
