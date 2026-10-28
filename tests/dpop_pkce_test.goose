@@ -177,6 +177,80 @@ fn test_dpop_rfc9449(t: core::T&) {
         sub.assert_true(ok_nonce, "DPoP-Nonce extracted");
         sub.assert_bytes_eq(extracted_nonce[..], "server_nonce_retry_456", "Extracted nonce matches header");
     };
+
+    t.run("DPoP Proof Replay: missing iat claim must be rejected (RFC 9449 §4.2)") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+        let c_json = "{\"jti\":\"jti-no-iat-01\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\"}";
+        var c_b64: u8[..256] = [];
+        core::base64url_encode(c_json, c_b64);
+        var signing_input: u8[..512] = [];
+        signing_input.append(h_b64);
+        signing_input.push('.' as u8);
+        signing_input.append(c_b64[..]);
+        let sig = core::hmac_sha256(key, signing_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(signing_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
+        sub.assert_false(ok, "Proof without iat MUST be rejected when now_sec > 0");
+    };
+
+    t.run("DPoP Nonce Substring Injection: expected nonce in jti must not bypass missing nonce claim (RFC 9449 §4.3)") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+        let c_json = "{\"jti\":\"expected_srv_nonce_999\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        var c_b64: u8[..256] = [];
+        core::base64url_encode(c_json, c_b64);
+        var signing_input: u8[..512] = [];
+        signing_input.append(h_b64);
+        signing_input.push('.' as u8);
+        signing_input.append(c_b64[..]);
+        let sig = core::hmac_sha256(key, signing_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(signing_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "expected_srv_nonce_999", 1714000000);
+        sub.assert_false(ok, "Proof with nonce in jti instead of nonce claim MUST be rejected");
+    };
+
+    t.run("DPoP ATH Substring Injection: expected ATH in jti must not bypass missing ath claim (RFC 9449 §4.3)") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let access_tok = "tok_victim_12345";
+        var exp_ath: u8[..64] = [];
+        wing::compute_dpop_ath(access_tok, exp_ath);
+
+        var c_json: u8[..512] = [];
+        c_json.append("{\"jti\":\"");
+        c_json.append(exp_ath[..]);
+        c_json.append("\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}");
+
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+        var c_b64: u8[..256] = [];
+        core::base64url_encode(c_json[..], c_b64);
+        var signing_input: u8[..512] = [];
+        signing_input.append(h_b64);
+        signing_input.push('.' as u8);
+        signing_input.append(c_b64[..]);
+        let sig = core::hmac_sha256(key, signing_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(signing_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", access_tok, "", 1714000000);
+        sub.assert_false(ok, "Proof with ath in jti instead of ath claim MUST be rejected");
+    };
 }
 
 fn main() {

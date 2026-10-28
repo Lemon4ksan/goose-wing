@@ -819,6 +819,9 @@ fn verify_jwt_eddsa(
     let hdr_err = decode_jwt_header(token[..dot1], out_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
+    let alg_err = verify_jwt_algorithm(out_header.alg, options.expected_alg, options.allow_none_alg);
+    guard alg_err == JwtError.None else { return alg_err; }
+
     if out_header.alg != JwtAlg.EdDSA {
         return JwtError.AlgorithmMismatch;
     }

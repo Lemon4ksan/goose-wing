@@ -37,6 +37,10 @@ fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) {
             out.append("%3F");
         } else if char_byte == '%' {
             out.append("%25");
+        } else if char_byte == '/' {
+            out.append("%2F");
+        } else if char_byte == '\\' {
+            out.append("%5C");
         } else if char_byte < 0x20 || char_byte == 0x7F {
             out.push('%');
             let high_val = (char_byte >> 4) & 0x0F;

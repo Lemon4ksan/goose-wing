@@ -177,8 +177,10 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
     }
 
     // IPv4-mapped IPv6 (RFC 4291 ::ffff:x.x.x.x or ::ffff:hhhh:hhhh, CVE-2024-24790)
+    // and SIIT IPv4-translated IPv6 (RFC 2765 / RFC 6052 / RFC 7915 ::ffff:0:x.x.x.x or ::ffff:0:hhhh:hhhh)
     if starts_with(eff_ip, "::ffff:") || starts_with(eff_ip, "0:0:0:0:0:ffff:") {
-        let suffix = if starts_with(eff_ip, "::ffff:") { eff_ip[7..] } else { eff_ip[15..] };
+        let raw_suffix = if starts_with(eff_ip, "::ffff:") { eff_ip[7..] } else { eff_ip[15..] };
+        let suffix = if starts_with(raw_suffix, "0:") { raw_suffix[2..] } else { raw_suffix };
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
     }
 
@@ -199,10 +201,10 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
     }
 
-    // NAT64 well-known prefix 64:ff9b::/96
-    if starts_with(eff_ip, "64:ff9b::") {
-        let suffix = eff_ip[9..];
-        if suffix.len == 0 { return true; } // 64:ff9b:: maps to 0.0.0.0
+    // NAT64 well-known prefix 64:ff9b::/96 and local prefix 64:ff9b:1::/48 (RFC 6052 & RFC 8215)
+    if starts_with(eff_ip, "64:ff9b::") || starts_with(eff_ip, "64:ff9b:1::") {
+        let suffix = if starts_with(eff_ip, "64:ff9b::") { eff_ip[9..] } else { eff_ip[11..] };
+        if suffix.len == 0 { return true; } // maps to 0.0.0.0
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
     }
 

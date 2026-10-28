@@ -207,6 +207,10 @@ fn test_swift_style_file_and_path_api(t: core::T&) {
         let img_url = core::appending_path_component(assets_url, "app logo.svg");
         sub.assert_bytes_eq(core::pathname(img_url), "/C:/Projects/my_app/assets/app%20logo.svg", "spaces encoded in appended component");
 
+        // Append component with slashes (must be escaped as %2F to prevent path traversal)
+        let slash_comp_url = core::appending_path_component(assets_url, "sub/component");
+        sub.assert_bytes_eq(core::pathname(slash_comp_url), "/C:/Projects/my_app/assets/sub%2Fcomponent", "slashes escaped in single appended component");
+
         // Append multi-segment subpath
         let deep_url = core::appending_path(base_url, "src/components/button.goose");
         sub.assert_bytes_eq(core::pathname(deep_url), "/C:/Projects/my_app/src/components/button.goose", "appended multi-segment subpath");

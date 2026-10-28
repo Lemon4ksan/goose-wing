@@ -61,9 +61,11 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: core::T&) {
     let _, err = wing::execute_request(session, req);
     t.assert_false(wing::ok(err), "DNS rebinding with 0:0:0:0:0:0:0:1 must be blocked");
 
-    let tunnel_targets: const u8[..64][..3] = [
+    let tunnel_targets: const u8[..64][..5] = [
         "http://[::127.0.0.1]/status",
         "http://[64:ff9b::127.0.0.1]/status",
+        "http://[64:ff9b:1::127.0.0.1]/status",
+        "http://[::ffff:0:127.0.0.1]/status",
         "http://[2002:7f00:1::]/status",
     ];
     for &url in tunnel_targets {

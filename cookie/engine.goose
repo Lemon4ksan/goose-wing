@@ -213,6 +213,11 @@ fn set_canonical_cookie(
         return false;
     }
 
+    if !is_http_api && jar.has_httponly_shadowing_collision(new_cookie) {
+        jar.rejected_security_count += 1;
+        return false;
+    }
+
     let collision_idx = jar.find_canonical_cookie_collision_index(new_cookie);
     if collision_idx >= 0 {
         return jar.handle_cookie_collision(new_cookie, collision_idx, url_is_secure, now_us);
@@ -568,6 +573,22 @@ fn has_secure_shadowing_collision(
     url_is_secure: bool,
 ) -> bool {
     return jar.cookies.any() { it.would_insecure_overwrite_secure(new_cookie, url_is_secure) };
+}
+
+fn has_httponly_shadowing_collision(
+    jar: const CanonicalCookieJar&,
+    new_cookie: const CanonicalCookie&,
+) -> bool {
+    for &existing in jar.cookies {
+        if existing.httponly &&
+           existing.name[..] == new_cookie.name[..] &&
+           eq_ascii_fold(existing.domain[..], new_cookie.domain[..]) &&
+           existing.path[..] == new_cookie.path[..] &&
+           existing.partition_key[..] == new_cookie.partition_key[..] {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn gather_chips_candidates<B>(

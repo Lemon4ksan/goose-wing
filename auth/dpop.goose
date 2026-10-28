@@ -313,7 +313,7 @@ fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool 
 fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
     guard now_sec > 0 else { return true; }
     let iat_idx = core::index_of_slice(claims_json, "\"iat\":");
-    guard iat_idx != -1 else { return true; }
+    guard iat_idx != -1 else { return false; }
 
     var iat_val: i64 = 0;
     var pos = iat_idx + 6;
@@ -326,9 +326,47 @@ fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max
         pos += 1;
         has_digits = true;
     }
-    guard has_digits else { return true; }
+    guard has_digits else { return false; }
     guard iat_val <= (now_sec + max_skew_sec) else { return false; }
     return (now_sec - iat_val) <= (max_age_sec + max_skew_sec);
+}
+
+fn verify_dpop_ath(claims_json: const u8[:], expected_ath: const u8[:]) -> bool {
+    let ath_idx = core::index_of_slice(claims_json, "\"ath\":");
+    guard ath_idx >= 0 else { return false; }
+
+    var pos = ath_idx + 6;
+    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+        pos += 1;
+    }
+    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
+    pos += 1;
+    let val_start = pos;
+    while pos < claims_json.len && claims_json[pos] != '"' {
+        pos += 1;
+    }
+    guard pos < claims_json.len else { return false; }
+    let ath_val = claims_json[val_start..pos];
+    return ath_val == expected_ath;
+}
+
+fn verify_dpop_nonce(claims_json: const u8[:], expected_nonce: const u8[:]) -> bool {
+    let nonce_idx = core::index_of_slice(claims_json, "\"nonce\":");
+    guard nonce_idx >= 0 else { return false; }
+
+    var pos = nonce_idx + 8;
+    while pos < claims_json.len && (claims_json[pos] == ' ' || claims_json[pos] == '\t') {
+        pos += 1;
+    }
+    guard pos < claims_json.len && claims_json[pos] == '"' else { return false; }
+    pos += 1;
+    let val_start = pos;
+    while pos < claims_json.len && claims_json[pos] != '"' {
+        pos += 1;
+    }
+    guard pos < claims_json.len else { return false; }
+    let nonce_val = claims_json[val_start..pos];
+    return nonce_val == expected_nonce;
 }
 
 // Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, and time window.
@@ -366,11 +404,11 @@ fn verify_dpop_proof(
     if access_token.len > 0 {
         var expected_ath: u8[..64] = [];
         compute_dpop_ath(access_token, expected_ath);
-        guard expected_ath.len > 0 && core::contains(claims_json[..], expected_ath[..]) else { return false; }
+        guard expected_ath.len > 0 && verify_dpop_ath(claims_json[..], expected_ath[..]) else { return false; }
     }
 
     if expected_nonce.len > 0 {
-        guard core::contains(claims_json[..], expected_nonce) else { return false; }
+        guard verify_dpop_nonce(claims_json[..], expected_nonce) else { return false; }
     }
 
     return verify_dpop_iat(claims_json[..], now_sec, max_age_sec, max_skew_sec);

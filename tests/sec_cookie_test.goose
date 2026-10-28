@@ -143,6 +143,53 @@ fn test_max_age_overflow_and_capping(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// Round 4: RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection
+// ----------------------------------------------------------------------------
+fn test_httponly_script_overwrite_protection(t: core::T&) {
+    var clock = core::new_mock_clock();
+
+    t.run("HTTPONLY-01: Non-HTTP script API must not overwrite existing HttpOnly cookie (RFC 6265 Sec 5.3 Step 11.2)") { sub =>
+        var jar = wing::new_canonical_cookie_jar();
+        // 1. HTTP API sets a sensitive HttpOnly session cookie
+        sub.require_true(
+            wing::set_cookie_header(jar, "https://example.com/", "session=super_secret_token; HttpOnly; Secure; Path=/", clock.now_us, true),
+            "HTTP API must successfully store HttpOnly cookie",
+        );
+        sub.assert_eq(jar.cookies.len, 1);
+        sub.assert_true(jar.cookies[0].httponly);
+        sub.assert_bytes_eq(jar.cookies[0].value[..], "super_secret_token");
+
+        // 2. Non-HTTP script API attempts to overwrite the HttpOnly cookie (e.g. via document.cookie)
+        var script_cookie = wing::new_canonical_cookie("session", "attacker_controlled_value");
+        script_cookie.with_domain("example.com", true).with_path("/").with_secure(true);
+        let accepted = wing::set_canonical_cookie(jar, script_cookie, false, true, clock.now_us);
+
+        sub.assert_false(accepted, "Non-HTTP API must NOT be allowed to overwrite an existing HttpOnly cookie");
+        sub.assert_eq(jar.cookies.len, 1, "Cookie store must retain exactly 1 cookie");
+        sub.assert_true(jar.cookies[0].httponly, "Existing cookie must retain HttpOnly flag");
+        sub.assert_bytes_eq(jar.cookies[0].value[..], "super_secret_token", "HttpOnly cookie value must NOT be modified by script");
+        sub.assert_gt(jar.rejected_security_count, 0, "rejected_security_count must be incremented");
+    };
+
+    t.run("HTTPONLY-02: Non-HTTP script API must not delete HttpOnly cookie via Max-Age=0 (RFC 6265 Sec 5.3 Step 11.2)") { sub =>
+        var jar = wing::new_canonical_cookie_jar();
+        sub.require_true(
+            wing::set_cookie_header(jar, "https://example.com/", "auth=token123; HttpOnly; Secure; Path=/", clock.now_us, true),
+        );
+        sub.assert_eq(jar.cookies.len, 1);
+
+        // Script attempts to purge the HttpOnly cookie using Max-Age=0
+        var purge_cookie = wing::new_canonical_cookie("auth", "deleted");
+        purge_cookie.with_domain("example.com", true).with_path("/").with_secure(true).with_max_age_seconds(0, clock.now_us);
+        let accepted = wing::set_canonical_cookie(jar, purge_cookie, false, true, clock.now_us);
+
+        sub.assert_false(accepted, "Non-HTTP API must NOT be allowed to delete an HttpOnly cookie via expired overwrite");
+        sub.assert_eq(jar.cookies.len, 1, "HttpOnly cookie must not be deleted by script API");
+        sub.assert_bytes_eq(jar.cookies[0].value[..], "token123");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -151,6 +198,7 @@ fn main() {
     core::run_case(runner, "1. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
     core::run_case(runner, "2. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
     core::run_case(runner, "3. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
+    core::run_case(runner, "4. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection", test_httponly_script_overwrite_protection);
 
     let ok = core::finish(runner);
     assert(ok);

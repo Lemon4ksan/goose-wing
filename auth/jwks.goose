@@ -259,9 +259,21 @@ fn dispatch_jwks_verification(
     out_header: JwtHeader&,
     out_claims: JwtClaims&,
 ) -> JwtError {
+    if key.use.len > 0 && key.use[..] != "sig" {
+        return JwtError.UnsupportedAlgorithm;
+    }
+    if key.alg != JwtAlg.None && key.alg != out_header.alg {
+        return JwtError.AlgorithmMismatch;
+    }
     if key.kty == JwkKeyType.OKP {
+        if out_header.alg != JwtAlg.EdDSA {
+            return JwtError.AlgorithmMismatch;
+        }
         return verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims);
     } else if key.kty == JwkKeyType.Oct {
+        if out_header.alg == JwtAlg.EdDSA {
+            return JwtError.AlgorithmMismatch;
+        }
         return verify_jwt_hmac(token, key.symmetric_key[..], options, now_unix_sec, out_header, out_claims);
     }
     return JwtError.UnsupportedAlgorithm;

@@ -201,6 +201,29 @@ fn test_jwt_security_defenses(t: core::T&) {
         sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Algorithm confusion rejected");
     };
 
+    t.run("Algorithm Confusion: EdDSA token rejected when HS256 expected (RFC 8725 Section 3.1)") { sub =>
+        let seed: u8[32] = [
+            0x9d, 0x61, 0xb1, 0x9c, 0xfa, 0xd6, 0x47, 0xba,
+            0xaa, 0x3e, 0x9d, 0x10, 0xc6, 0x03, 0xac, 0x41,
+            0xce, 0xb5, 0xd7, 0x2c, 0x2e, 0x8b, 0x4e, 0x43,
+            0xf3, 0x8f, 0x3c, 0xeb, 0x17, 0x1a, 0x8e, 0x1e,
+        ];
+        let public_key = core::ed25519_public_key(seed);
+        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "victim");
+        wing::set_expiry(clm, now_sec + 300);
+
+        var token: u8[>..] = [];
+        wing::sign_jwt_eddsa(hdr, clm, seed, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts_conf = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_eddsa(token[..], public_key, opts_conf, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "EdDSA token rejected when HS256 expected");
+    };
+
     t.run("none Algorithm Rejection (CVE-2015-9235 Defense)") { sub =>
         // Attacker sends token with alg: "none" and empty signature: "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9."
         let none_token = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.";
@@ -413,6 +436,70 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
 
         let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.KeyNotFound, "Unknown kid returned KeyNotFound");
+    };
+
+    t.run("JWKS Algorithm Confusion: EdDSA token rejected when HS256 expected (RFC 8725 §3.1)") { sub =>
+        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "victim");
+        wing::set_expiry(clm, now_sec + 300);
+
+        var token: u8[>..] = [];
+        wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "JWKS verify rejects EdDSA when HS256 expected");
+    };
+
+    t.run("JWKS Key Usage Constraint: enc key rejected for verification (RFC 7517 §4.2)") { sub =>
+        var jwks_enc = wing::new_jwks();
+        var key = wing::JwksKey {
+            kty: wing::JwkKeyType.OKP,
+            crv: "Ed25519",
+            alg: wing::JwtAlg.EdDSA,
+            use: "enc",
+            public_key: ed_pub,
+            valid: true,
+            ..
+        };
+        key.kid.append("enc-key-1");
+        jwks_enc.keys.push(key);
+
+        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "enc-key-1");
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "victim");
+        wing::set_expiry(clm, now_sec + 300);
+
+        var token: u8[>..] = [];
+        wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
+        let err = wing::verify(token[..], jwks_enc, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.UnsupportedAlgorithm, "enc key rejected for signature verification");
+    };
+
+    t.run("JWKS Key Algorithm Constraint: mismatched alg rejected (RFC 7517 §4.4)") { sub =>
+        var jwks_alg = wing::new_jwks();
+        wing::add_symmetric_key(jwks_alg, "hs256-only-key", wing::JwtAlg.HS256, hmac_sec);
+
+        var hdr = wing::new_jwt_header(wing::JwtAlg.HS512, "hs256-only-key");
+        var clm = wing::new_jwt_claims();
+        wing::set_subject(clm, "victim");
+        wing::set_expiry(clm, now_sec + 300);
+
+        var token: u8[>..] = [];
+        wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS512);
+        let err = wing::verify(token[..], jwks_alg, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Mismatched key alg rejected");
     };
 }
 

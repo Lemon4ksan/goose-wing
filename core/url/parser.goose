@@ -524,8 +524,25 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
                 // Bracketed host MUST be a valid IPv6 literal (or IPvFuture).
                 // Hostnames and IPv4 addresses MUST NOT be enclosed in brackets.
                 var dummy_comp: u8[..64] = [];
-                guard parse_and_compress_ipv6(inside_brackets, dummy_comp) else {
+                let pct_pos = index_of_slice(inside_brackets, "%25");
+                let addr_to_check = if pct_pos >= 0 { inside_brackets[..pct_pos] } else { inside_brackets };
+                guard parse_and_compress_ipv6(addr_to_check, dummy_comp) else {
                     return view, UrlParseError.InvalidIpv6;
+                }
+                if pct_pos >= 0 {
+                    let zone_id = inside_brackets[pct_pos + 3..];
+                    guard zone_id.len > 0 && zone_id.len <= 32 else {
+                        return view, UrlParseError.InvalidIpv6;
+                    }
+                    for b in zone_id {
+                        let is_unreserved = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') ||
+                                            b == '-' || b == '_';
+                        guard is_unreserved else { return view, UrlParseError.InvalidIpv6; }
+                    }
+                    guard starts_with(dummy_comp[..], "fe8") || starts_with(dummy_comp[..], "fe9") ||
+                          starts_with(dummy_comp[..], "fea") || starts_with(dummy_comp[..], "feb") else {
+                        return view, UrlParseError.InvalidIpv6;
+                    }
                 }
                 view.host = inside_brackets;
                 if close_bracket + 1 < host_port_slice.len {
@@ -674,11 +691,16 @@ fn extract_host_and_port_canonical<B>(
             }
             for b in zone_id {
                 let is_unreserved = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') ||
-                                    b == '-' || b == '.' || b == '_' || b == '~';
+                                    b == '-' || b == '_';
                 guard is_unreserved else { return UrlParseError.InvalidIpv6; }
             }
             let ipv6_ok = parse_and_compress_ipv6(addr_to_parse, compressed_ipv6);
             guard ipv6_ok else {
+                return UrlParseError.InvalidIpv6;
+            }
+            // RFC 6874 §2: Zone ID is only permitted on scoped link-local addresses (fe80::/10)
+            guard starts_with(compressed_ipv6[..], "fe8") || starts_with(compressed_ipv6[..], "fe9") ||
+                  starts_with(compressed_ipv6[..], "fea") || starts_with(compressed_ipv6[..], "feb") else {
                 return UrlParseError.InvalidIpv6;
             }
 
