@@ -29,54 +29,56 @@ fn percent_decode<B>(input_bytes: const u8[:], out: B&) -> bool {
     return true;
 }
 
-fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) {
+fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) -> bool {
     for char_byte in raw_segment {
         if char_byte == ' ' {
-            out.append("%20");
+            guard out.try_append("%20") else { return false; }
         } else if char_byte == '#' {
-            out.append("%23");
+            guard out.try_append("%23") else { return false; }
         } else if char_byte == '?' {
-            out.append("%3F");
+            guard out.try_append("%3F") else { return false; }
         } else if char_byte == '%' {
-            out.append("%25");
+            guard out.try_append("%25") else { return false; }
         } else if char_byte == '/' {
-            out.append("%2F");
+            guard out.try_append("%2F") else { return false; }
         } else if char_byte == '\\' {
-            out.append("%5C");
+            guard out.try_append("%5C") else { return false; }
         } else if char_byte < 0x20 || char_byte == 0x7F {
-            out.push('%');
+            guard out.try_push('%') else { return false; }
             let high_val = (char_byte >> 4) & 0x0F;
             let low_val = char_byte & 0x0F;
-            out.push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 });
-            out.push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 });
+            guard out.try_push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 }) else { return false; }
+            guard out.try_push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 }) else { return false; }
         } else {
-            out.push(char_byte);
+            guard out.try_push(char_byte) else { return false; }
         }
     }
+    return true;
 }
 
-fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) {
+fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) -> bool {
     for char_byte in raw_subpath {
         if char_byte == '\\' {
-            out.push('/');
+            guard out.try_push('/') else { return false; }
         } else if char_byte == ' ' {
-            out.append("%20");
+            guard out.try_append("%20") else { return false; }
         } else if char_byte == '#' {
-            out.append("%23");
+            guard out.try_append("%23") else { return false; }
         } else if char_byte == '?' {
-            out.append("%3F");
+            guard out.try_append("%3F") else { return false; }
         } else if char_byte == '%' {
-            out.append("%25");
+            guard out.try_append("%25") else { return false; }
         } else if char_byte < 0x20 || char_byte == 0x7F {
-            out.push('%');
+            guard out.try_push('%') else { return false; }
             let high_val = (char_byte >> 4) & 0x0F;
             let low_val = char_byte & 0x0F;
-            out.push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 });
-            out.push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 });
+            guard out.try_push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 }) else { return false; }
+            guard out.try_push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 }) else { return false; }
         } else {
-            out.push(char_byte);
+            guard out.try_push(char_byte) else { return false; }
         }
     }
+    return true;
 }
 
 // Constructs a file: URL from a native operating system file path (Windows or POSIX).
@@ -84,16 +86,22 @@ fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) {
 // and percent-encodes spaces and special characters.
 fn new_file_url(file_path: const u8[:]) -> Url {
     var raw_href: u8[..2048] = [];
-    raw_href.append("file://");
+    guard raw_href.try_append("file://") else {
+        return Url { valid: false, .. };
+    }
 
     guard file_path.len > 0 else {
-        raw_href.push('/');
+        guard raw_href.try_push('/') else {
+            return Url { valid: false, .. };
+        }
         return new_url(raw_href[..]);
     }
 
     // Windows UNC path (e.g. \\server\share\file.txt or //server/share/file.txt)
     if file_path.len >= 2 && (file_path[0] == '\\' || file_path[0] == '/') && (file_path[1] == '\\' || file_path[1] == '/') {
-        append_encoded_subpath(file_path[2..], raw_href);
+        guard append_encoded_subpath(file_path[2..], raw_href) else {
+            return Url { valid: false, .. };
+        }
         return new_url(raw_href[..]);
     }
 
@@ -103,22 +111,30 @@ fn new_file_url(file_path: const u8[:]) -> Url {
         (file_path[1] == ':' || file_path[1] == '|');
 
     if is_windows_drive {
-        raw_href.push('/');
-        raw_href.push(file_path[0]);
-        raw_href.push(':');
-        raw_href.push('/');
+        guard raw_href.try_push('/') &&
+              raw_href.try_push(file_path[0]) &&
+              raw_href.try_push(':') &&
+              raw_href.try_push('/') else {
+            return Url { valid: false, .. };
+        }
         let rest_start = if file_path.len > 2 && (file_path[2] == '/' || file_path[2] == '\\') { 3 } else { 2 };
         if rest_start < file_path.len {
-            append_encoded_subpath(file_path[rest_start..], raw_href);
+            guard append_encoded_subpath(file_path[rest_start..], raw_href) else {
+                return Url { valid: false, .. };
+            }
         }
         return new_url(raw_href[..]);
     }
 
     // POSIX absolute or relative path
     if file_path[0] != '/' && file_path[0] != '\\' {
-        raw_href.push('/');
+        guard raw_href.try_push('/') else {
+            return Url { valid: false, .. };
+        }
     }
-    append_encoded_subpath(file_path, raw_href);
+    guard append_encoded_subpath(file_path, raw_href) else {
+        return Url { valid: false, .. };
+    }
     return new_url(raw_href[..]);
 }
 
@@ -143,14 +159,9 @@ fn file_path<B>(url_val: const Url&, out: B&) -> bool {
 
     // Windows UNC network path (\\server\share\file.txt)
     if host_str.len > 0 && host_str != "localhost" {
-        out.append("\\\\");
-        out.append(host_str);
+        guard out.try_append("\\\\") && out.try_append(host_str) else { return false; }
         for char_byte in decoded {
-            if char_byte == '/' {
-                out.push('\\');
-            } else {
-                out.push(char_byte);
-            }
+            guard out.try_push(if char_byte == '/' { '\\' } else { char_byte }) else { return false; }
         }
         return true;
     }
@@ -165,17 +176,13 @@ fn file_path<B>(url_val: const Url&, out: B&) -> bool {
         // Drop leading '/' before drive letter: C:\Users\...
         for scan_idx in 1..decoded.len {
             let char_byte = decoded[scan_idx];
-            if char_byte == '/' {
-                out.push('\\');
-            } else {
-                out.push(char_byte);
-            }
+            guard out.try_push(if char_byte == '/' { '\\' } else { char_byte }) else { return false; }
         }
         return true;
     }
 
     // POSIX path: preserve leading '/' and forward slashes
-    out.append(decoded[..]);
+    guard out.try_append(decoded[..]) else { return false; }
     return true;
 }
 
@@ -250,13 +257,15 @@ fn deleting_path_extension(url_val: Url) -> Url {
     let path_end = url_val.pathname_end as i64;
 
     var new_href: u8[..2048] = [];
-    new_href.append(url_val.href[..path_start]);
-    new_href.append(raw_path[..eff_path_len - dot_and_ext_len]);
+    guard new_href.try_append(url_val.href[..path_start]) &&
+          new_href.try_append(raw_path[..eff_path_len - dot_and_ext_len]) else {
+        return url_val;
+    }
     if has_slash {
-        new_href.push('/');
+        guard new_href.try_push('/') else { return url_val; }
     }
     if path_end < url_val.href.len {
-        new_href.append(url_val.href[path_end..]);
+        guard new_href.try_append(url_val.href[path_end..]) else { return url_val; }
     }
 
     return new_url(new_href[..]);
@@ -297,10 +306,12 @@ fn deleting_last_path_component(url_val: Url) -> Url {
     let path_end = url_val.pathname_end as i64;
 
     var new_href: u8[..2048] = [];
-    new_href.append(url_val.href[..path_start]);
-    new_href.append(raw_path[..new_path_end]);
+    guard new_href.try_append(url_val.href[..path_start]) &&
+          new_href.try_append(raw_path[..new_path_end]) else {
+        return url_val;
+    }
     if path_end < url_val.href.len {
-        new_href.append(url_val.href[path_end..]);
+        guard new_href.try_append(url_val.href[path_end..]) else { return url_val; }
     }
 
     return new_url(new_href[..]);
@@ -315,16 +326,24 @@ fn appending_path_component(url_val: Url, component: const u8[:]) -> Url {
     var new_href: u8[..2048] = [];
     let cur_path = pathname(url_val);
 
-    new_href.append(url_val.href[..path_end]);
+    guard new_href.try_append(url_val.href[..path_end]) else {
+        return Url { valid: false, .. };
+    }
     if cur_path.len == 0 || cur_path[cur_path.len - 1] != '/' {
-        new_href.push('/');
+        guard new_href.try_push('/') else {
+            return Url { valid: false, .. };
+        }
     }
 
     let clean_comp = if component[0] == '/' || component[0] == '\\' { component[1..] } else { component };
-    percent_encode_path_segment(clean_comp, new_href);
+    guard percent_encode_path_segment(clean_comp, new_href) else {
+        return Url { valid: false, .. };
+    }
 
     if path_end < url_val.href.len {
-        new_href.append(url_val.href[path_end..]);
+        guard new_href.try_append(url_val.href[path_end..]) else {
+            return Url { valid: false, .. };
+        }
     }
 
     return new_url(new_href[..]);
@@ -338,16 +357,24 @@ fn appending_path(url_val: Url, subpath: const u8[:]) -> Url {
     var new_href: u8[..2048] = [];
     let cur_path = pathname(url_val);
 
-    new_href.append(url_val.href[..path_end]);
+    guard new_href.try_append(url_val.href[..path_end]) else {
+        return Url { valid: false, .. };
+    }
     if cur_path.len == 0 || cur_path[cur_path.len - 1] != '/' {
-        new_href.push('/');
+        guard new_href.try_push('/') else {
+            return Url { valid: false, .. };
+        }
     }
 
     let clean_sub = if subpath[0] == '/' || subpath[0] == '\\' { subpath[1..] } else { subpath };
-    append_encoded_subpath(clean_sub, new_href);
+    guard append_encoded_subpath(clean_sub, new_href) else {
+        return Url { valid: false, .. };
+    }
 
     if path_end < url_val.href.len {
-        new_href.append(url_val.href[path_end..]);
+        guard new_href.try_append(url_val.href[path_end..]) else {
+            return Url { valid: false, .. };
+        }
     }
 
     return new_url(new_href[..]);
@@ -373,15 +400,23 @@ fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
     let path_end = url_val.pathname_end as i64;
 
     var new_href: u8[..2048] = [];
-    new_href.append(url_val.href[..path_start]);
-    new_href.append(raw_path[..eff_path_len]);
-    new_href.push('.');
-    percent_encode_path_segment(clean_ext, new_href);
+    guard new_href.try_append(url_val.href[..path_start]) &&
+          new_href.try_append(raw_path[..eff_path_len]) &&
+          new_href.try_push('.') else {
+        return Url { valid: false, .. };
+    }
+    guard percent_encode_path_segment(clean_ext, new_href) else {
+        return Url { valid: false, .. };
+    }
     if has_slash {
-        new_href.push('/');
+        guard new_href.try_push('/') else {
+            return Url { valid: false, .. };
+        }
     }
     if path_end < url_val.href.len {
-        new_href.append(url_val.href[path_end..]);
+        guard new_href.try_append(url_val.href[path_end..]) else {
+            return Url { valid: false, .. };
+        }
     }
 
     return new_url(new_href[..]);

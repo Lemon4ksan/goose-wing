@@ -682,6 +682,48 @@ fn test_url_relative_resolution_capacity_defense(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses
+// ----------------------------------------------------------------------------
+fn test_url_path_and_file_capacity_defenses(t: core::T&) {
+    t.run("Path manipulation and file URL exceeding 2048 bytes fail safely without abort") { sub =>
+        // 1. new_file_url with path expanding beyond 2048 bytes via percent-encoding
+        var long_path: u8[..2048] = [];
+        long_path.append("/path/with/spaces/");
+        for i in 800 {
+            long_path.push(' ');
+        }
+        let file_url = core::new_file_url(long_path[..]);
+        sub.assert_false(file_url.valid, "Oversized file URL must fail gracefully with valid=false");
+
+        // 2. appending_path_component exceeding 2048 bytes
+        let base_url = core::new_url("https://example.com/base/");
+        sub.assert_true(base_url.valid, "Base URL is valid");
+
+        var long_comp: u8[..2048] = [];
+        for i in 800 {
+            long_comp.push(' ');
+        }
+        let res_comp = core::appending_path_component(base_url, long_comp[..]);
+        sub.assert_false(res_comp.valid, "appending_path_component exceeding 2048 bytes must return invalid URL");
+
+        // 3. appending_path exceeding 2048 bytes
+        let res_path = core::appending_path(base_url, long_comp[..]);
+        sub.assert_false(res_path.valid, "appending_path exceeding 2048 bytes must return invalid URL");
+
+        // 4. appending_path_extension exceeding 2048 bytes
+        let res_ext = core::appending_path_extension(base_url, long_comp[..]);
+        sub.assert_false(res_ext.valid, "appending_path_extension exceeding 2048 bytes must return invalid URL");
+
+        // 5. file_path into undersized output buffer returns false without abort
+        let short_file_url = core::new_file_url("/usr/local/bin/my_app_executable_name");
+        sub.assert_true(short_file_url.valid, "Short file URL is valid");
+        var small_buf: u8[..8] = [];
+        let ok_fp = core::file_path(short_file_url, small_buf);
+        sub.assert_false(ok_fp, "file_path into undersized buffer must return false without abort");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -704,6 +746,7 @@ fn main() {
     core::run_case(runner, "17. Core Codec Overflow, Malleability & Truncation Defenses", test_core_codecs_boundary_and_overflow_defenses);
     core::run_case(runner, "18. RFC 7541 & RFC 9113: HTTP/2 HPACK Inbound Capacity & Overflow Defenses", test_http2_hpack_boundary_and_capacity_defenses);
     core::run_case(runner, "19. RFC 3986 & WHATWG: Relative URL Resolution Capacity Defense", test_url_relative_resolution_capacity_defense);
+    core::run_case(runner, "20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses", test_url_path_and_file_capacity_defenses);
 
     let ok = core::finish(runner);
     assert(ok);
