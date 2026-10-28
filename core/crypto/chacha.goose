@@ -112,7 +112,7 @@ fn poly1305_process_block(
     let m1: u64 = (core::read_le_u32(m[..], 3) >> 2) & 0x3FFFFFF;
     let m2: u64 = (core::read_le_u32(m[..], 6) >> 4) & 0x3FFFFFF;
     let m3: u64 = (core::read_le_u32(m[..], 9) >> 6) & 0x3FFFFFF;
-    let m4: u64 = core::read_le_u32(m[..], 12) >> 8;
+    let m4: u64 = (core::read_le_u32(m[..], 12) >> 8) | ((m[16] as! u64) << 24);
 
     h0 += m0; h1 += m1; h2 += m2; h3 += m3; h4 += m4;
 

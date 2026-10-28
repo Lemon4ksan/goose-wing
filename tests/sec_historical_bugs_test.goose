@@ -3,11 +3,11 @@
 
 // Verification suite for historical bugs and CVEs across Go stdlib, uWebSockets, and OpenSSL:
 // 1. Go CVE-2026-78667: Range Header Flood / Length Limit Enforcement (1024-byte ceiling).
-// 2. Go #75557 / RFC 7578 §4.2: Content-Disposition CRLF and NUL Injection Defenses.
+// 2. Go #75557 / RFC 7578 В§4.2: Content-Disposition CRLF and NUL Injection Defenses.
 // 3. RFC 9113 / Go #81115 / CVE-2026-78660: HTTP/2 HPACK Content-Length Integer Overflow Prevention.
 // 4. OpenSSL #31392 / CVE-2009-2408: X.509 URI NameConstraints Matching & NUL Byte Injection Rejection.
 // 5. uWebSockets #1876 & #1009: Control Frame Priority Under Backpressure and Heartbeat Reset.
-// 6. RFC 8446 §5.4: TLS 1.3 InnerPlaintext Zero-Length Application Data vs Malicious All-Padding.
+// 6. RFC 8446 В§5.4: TLS 1.3 InnerPlaintext Zero-Length Application Data vs Malicious All-Padding.
 import std;
 import core from "..";
 import wing from "..";
@@ -96,7 +96,7 @@ fn test_http2_content_length_overflow_defense(t: core::T&) {
 }
 
 fn test_openssl_31392_uri_name_constraints_nul(t: core::T&) {
-    t.run("OpenSSL #31392 / RFC 5280 §4.2.1.10: URI matching against DNS name constraint") { sub =>
+    t.run("OpenSSL #31392 / RFC 5280 В§4.2.1.10: URI matching against DNS name constraint") { sub =>
         sub.assert_true(wing::match_uri_name_constraint("https://api.example.com/v1", "example.com"), "Subdomain matches constraint");
         sub.assert_true(wing::match_uri_name_constraint("https://example.com/login", "example.com"), "Exact domain matches constraint");
         sub.assert_false(wing::match_uri_name_constraint("https://evil.com/login", "example.com"), "Foreign domain must be rejected");
@@ -162,7 +162,7 @@ fn test_uwebsockets_1876_control_priority_under_backpressure(t: core::T&) {
 }
 
 fn test_openssl_tls13_zero_length_plaintext_invariants(t: core::T&) {
-    t.run("RFC 8446 §5.4: Empty Application Data record with padding is permitted") { sub =>
+    t.run("RFC 8446 В§5.4: Empty Application Data record with padding is permitted") { sub =>
         // Record with inner ContentType = 0x17 (Application Data) followed by zero padding
         let plain_wire: u8[4] = [0x17, 0x00, 0x00, 0x00];
         let content, inner_type, alert = wing::unpack_tls_inner_plaintext(plain_wire[..]);
@@ -171,14 +171,14 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: core::T&) {
         sub.assert_eq(content.len, 0, "Payload length is 0");
     };
 
-    t.run("RFC 8446 §5.4: Empty Handshake record MUST be rejected with unexpected_message") { sub =>
+    t.run("RFC 8446 В§5.4: Empty Handshake record MUST be rejected with unexpected_message") { sub =>
         // Record with inner ContentType = 0x16 (Handshake) and 0 payload bytes followed by padding
         let plain_hs: u8[3] = [0x16, 0x00, 0x00];
         let _, _, alert = wing::unpack_tls_inner_plaintext(plain_hs[..]);
         sub.assert_eq(alert, wing::TlsAlert.UnexpectedMessage, "Empty Handshake record must return unexpected_message");
     };
 
-    t.run("RFC 8446 §5.4: All-zero padding record MUST be rejected with unexpected_message") { sub =>
+    t.run("RFC 8446 В§5.4: All-zero padding record MUST be rejected with unexpected_message") { sub =>
         let all_zero: u8[16] = [0; 16];
         let _, _, alert = wing::unpack_tls_inner_plaintext(all_zero[..]);
         sub.assert_eq(alert, wing::TlsAlert.UnexpectedMessage, "All-zero record missing inner ContentType must be rejected");
@@ -186,7 +186,7 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: core::T&) {
 }
 
 fn test_go_66434_content_transfer_encoding_rejection(t: core::T&) {
-    t.run("Go #66434 & RFC 7578 §4.7: Content-Transfer-Encoding in multipart part MUST be rejected") { sub =>
+    t.run("Go #66434 & RFC 7578 В§4.7: Content-Transfer-Encoding in multipart part MUST be rejected") { sub =>
         let body = "--sep\r\nContent-Disposition: form-data; name=\"msg\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--sep--\r\n";
         let msg, err = wing::parse_multipart(body, "sep");
         sub.assert_true(err == wing::MultipartError.InvalidPartHeaders, "Deprecated Content-Transfer-Encoding must be rejected");
@@ -204,7 +204,7 @@ fn test_go_66434_content_transfer_encoding_rejection(t: core::T&) {
 
 fn test_uwebsockets_1662_streaming_utf8_continuation(t: core::T&) {
     t.run("uWS #1662 / Autobahn 6.x: Incomplete multi-byte codepoint split across frame chunks") { sub =>
-        // Euro sign € is 3 bytes: 0xE2, 0x82, 0xAC
+        // Euro sign в‚¬ is 3 bytes: 0xE2, 0x82, 0xAC
         let chunk1: u8[2] = [0xE2, 0x82];
         let off1_non_final, ok1_non_final = core::validate_utf8_streaming(chunk1[..], false);
         sub.assert_true(ok1_non_final, "Valid prefix of incomplete 3-byte codepoint accepted when non-final");
@@ -311,7 +311,7 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: core::T&) {
 }
 
 fn test_uweb_1941_chained_transfer_encoding_validation(t: core::T&) {
-    t.run("uWS #1941 / #1943 & RFC 9112 §6.1: Valid chained transfer codings ending in chunked") { sub =>
+    t.run("uWS #1941 / #1943 & RFC 9112 В§6.1: Valid chained transfer codings ending in chunked") { sub =>
         sub.assert_true(wing::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
         sub.assert_true(wing::validate_transfer_encoding_value("gzip, chunked"), "gzip, chunked is valid");
         sub.assert_true(wing::validate_transfer_encoding_value("identity, chunked"), "identity, chunked is valid");
@@ -339,7 +339,7 @@ fn test_cve_2026_42507_diagnostic_log_injection_defense(t: core::T&) {
 }
 
 fn test_h2_window_update_and_settings_cpu_limits(t: core::T&) {
-    t.run("RFC 9113 §6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
+    t.run("RFC 9113 В§6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
         var conn = wing::new_h2_connection(0, 8192, false);
 
         // Increment > 2^31 - 1 is a PROTOCOL_ERROR
@@ -468,7 +468,7 @@ fn test_rfc9113_goaway_last_stream_id_parity(t: core::T&) {
     };
 }
 
-// 16. RFC 4648 §3.5 & RFC 7515 §2: Base64 & Base64URL Canonical Decoding & Malleability Defenses
+// 16. RFC 4648 В§3.5 & RFC 7515 В§2: Base64 & Base64URL Canonical Decoding & Malleability Defenses
 fn test_rfc4648_base64_canonical_and_malleability_defenses(t: core::T&) {
     t.run("Canonical Base64 round-trips succeed") { sub =>
         var out_a: u8[>..] = [];
@@ -494,7 +494,7 @@ fn test_rfc4648_base64_canonical_and_malleability_defenses(t: core::T&) {
         sub.assert_bytes_eq(out_u_fo[..], "fo", "Value matches 'fo'");
     };
 
-    t.run("RFC 4648 §3.5 Malleability: Non-zero padding bits MUST be rejected") { sub =>
+    t.run("RFC 4648 В§3.5 Malleability: Non-zero padding bits MUST be rejected") { sub =>
         var out_bad: u8[>..] = [];
         // 'YR==' has the 4 unused bits set to 0001 instead of 0000 ('YQ==')
         sub.assert_false(core::base64_decode("YR==", out_bad), "Non-zero padding bits in base64 MUST be rejected");
@@ -725,7 +725,7 @@ fn test_url_path_and_file_capacity_defenses(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 21. RFC 3986 §3 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses
+// 21. RFC 3986 В§3 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses
 // ----------------------------------------------------------------------------
 fn test_url_query_delimiter_and_decoding_defenses(t: core::T&) {
     t.run("Fragment delimiter terminates query parameters preventing injection") { sub =>
@@ -770,6 +770,62 @@ fn test_url_query_delimiter_and_decoding_defenses(t: core::T&) {
     };
 }
 
+fn test_rfc8439_poly1305_block_boundary_padding_overflow(t: core::T&) {
+    t.run("RFC 8439 В§2.5.2: Multi-block Poly1305 2^128 padding integrity across 16-byte boundaries") { sub =>
+        let key: u8[32] = [
+            0x85, 0xd6, 0xbe, 0x78, 0x57, 0x55, 0x6d, 0x33,
+            0x7f, 0x44, 0x52, 0xfe, 0x42, 0xd5, 0x06, 0xa8,
+            0x01, 0x03, 0x80, 0x8a, 0xfb, 0x0d, 0xb2, 0xfd,
+            0x4a, 0xbf, 0xf6, 0xaf, 0x41, 0x49, 0xf5, 0x1b,
+        ];
+        let msg = "Cryptographic Forum Research Group";
+        let tag = core::poly1305_mac(key, msg);
+        let expected: u8[16] = [
+            0xa8, 0x06, 0x1d, 0xc1, 0x30, 0x51, 0x36, 0xc6,
+            0xc2, 0x2b, 0x8b, 0xaf, 0x0c, 0x01, 0x27, 0xa9,
+        ];
+        for i in 16 {
+            sub.assert_eq(tag[i], expected[i], "Multi-block Poly1305 tag byte matches RFC 8439 В§2.5.2");
+        }
+    };
+
+    t.run("RFC 8439 В§2.8.2: ChaCha20-Poly1305 AEAD exact block boundary & AAD binding") { sub =>
+        let key: u8[32] = [
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+            0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+            0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+        ];
+        let nonce: u8[12] = [
+            0x07, 0x00, 0x00, 0x00,
+            0x40, 0x41, 0x42, 0x43,
+            0x44, 0x45, 0x46, 0x47,
+        ];
+        let aad: u8[12] = [
+            0x50, 0x51, 0x52, 0x53,
+            0xc0, 0xc1, 0xc2, 0xc3,
+            0xc4, 0xc5, 0xc6, 0xc7,
+        ];
+        let plaintext = "Ladies and Gentlemen of the class of \x2799: If I could offer you only one tip for the future, sunscreen would be it.";
+
+        var ciphertext: u8[>..] = [];
+        let tag = core::chacha20_poly1305_seal(key, nonce, plaintext, aad[..], ciphertext);
+
+        let expected_tag: u8[16] = [
+            0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09, 0xe2, 0x6a,
+            0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60, 0x06, 0x91,
+        ];
+        for i in 16 {
+            sub.assert_eq(tag[i], expected_tag[i], "AEAD Tag byte matches RFC 8439 В§2.8.2");
+        }
+
+        var decrypted: u8[>..] = [];
+        let ok = core::chacha20_poly1305_open(key, nonce, ciphertext[..], aad[..], tag, decrypted);
+        sub.assert_true(ok, "AEAD Open succeeds with valid tag");
+        sub.assert_eq(decrypted.len, plaintext.len, "Decrypted length matches plaintext");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -794,7 +850,7 @@ fn main() {
     core::run_case(runner, "19. RFC 3986 & WHATWG: Relative URL Resolution Capacity Defense", test_url_relative_resolution_capacity_defense);
     core::run_case(runner, "20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses", test_url_path_and_file_capacity_defenses);
     core::run_case(runner, "21. RFC 3986 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses", test_url_query_delimiter_and_decoding_defenses);
-
+    core::run_case(runner, "22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity", test_rfc8439_poly1305_block_boundary_padding_overflow);
     let ok = core::finish(runner);
     assert(ok);
 }
