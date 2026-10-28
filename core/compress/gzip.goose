@@ -75,6 +75,7 @@ fn gzip_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
 
 // Advances offset past a null-terminated header string in src.
 fn skip_gzip_cstring(src: const u8[:], offset: i64) -> i64, bool {
+    guard offset >= 0 else { return offset, false; }
     var pos = offset;
     while pos < src.len && src[pos] != 0 {
         pos++;
@@ -86,17 +87,20 @@ fn skip_gzip_cstring(src: const u8[:], offset: i64) -> i64, bool {
 // Validates the RFC 1952 Gzip header and returns the payload start offset.
 // Supports FEXTRA, FNAME, FCOMMENT, and FHCRC (validating the 16-bit header CRC32).
 fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError {
-    guard start + 10 <= src.len else { return start, CompressError.InputBufferTruncated; }
+    guard start >= 0 && start + 10 <= src.len else { return start, CompressError.InputBufferTruncated; }
     guard src[start] == GZIP_ID1 && src[start + 1] == GZIP_ID2 && src[start + 2] == GZIP_CM_DEFLATE else {
         return start, CompressError.InvalidHeader;
     }
 
     let flg = src[start + 3];
+    // RFC 1952 §2.3.1: reserved FLG bits 5, 6, 7 must be zero
+    guard (flg & 0xE0) == 0 else { return start, CompressError.InvalidHeader; }
+
     var offset: i64 = start + 10;
 
     if (flg & GZIP_FLG_FEXTRA) != 0 {
         guard offset + 2 <= src.len else { return start, CompressError.InputBufferTruncated; }
-        let xlen = src[offset] | ((src[offset + 1] as i64) << 8);
+        let xlen: i64 = src[offset] | ((src[offset + 1] as! i64) << 8);
         offset += 2 + xlen;
         guard offset <= src.len else { return start, CompressError.InputBufferTruncated; }
     }
@@ -112,7 +116,7 @@ fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError 
     }
     if (flg & GZIP_FLG_FHCRC) != 0 {
         guard offset + 2 <= src.len else { return start, CompressError.InputBufferTruncated; }
-        let expected_crc16 = src[offset] | ((src[offset + 1] as u32) << 8);
+        let expected_crc16: u32 = src[offset] | ((src[offset + 1] as! u32) << 8);
         let actual_crc16 = crc32(src[start..offset]) & 0xFFFF;
         guard expected_crc16 == actual_crc16 else { return start, CompressError.ChecksumMismatch; }
         offset += 2;

@@ -1025,6 +1025,100 @@ fn test_limit_reader_boundary_eof_and_underflow_defenses(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 20. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries
 // ----------------------------------------------------------------------------
+fn test_compression_header_flags_window_and_stream_boundaries(t: core::T&) {
+    t.run("RFC 1952 Gzip Header with reserved FLG bits rejected") { sub =>
+        let payload = "Hello, Gzip Header Security!";
+        var gz: u8[>..] = [];
+        core::gzip_compress(payload, gz, 6);
+
+        // Set reserved bit 5 in FLG byte (offset 3)
+        gz[3] = gz[3] | 0x20;
+
+        var restored: u8[>..] = [];
+        let ok, err = core::gzip_decompress(gz[..], restored);
+        sub.assert_false(ok, "Gzip header with reserved bit 5 MUST fail decompression");
+        sub.assert_eq(err, core::CompressError.InvalidHeader, "Error MUST be InvalidHeader for reserved flag bits");
+    };
+
+    t.run("RFC 1952 Gzip Header with all reserved FLG bits 0xE0 rejected") { sub =>
+        let payload = "Hello, Gzip Header Security!";
+        var gz: u8[>..] = [];
+        core::gzip_compress(payload, gz, 6);
+
+        // Set all reserved bits 5, 6, 7 (0xE0) in FLG byte (offset 3)
+        gz[3] = gz[3] | 0xE0;
+
+        var restored: u8[>..] = [];
+        let ok, err = core::gzip_decompress(gz[..], restored);
+        sub.assert_false(ok, "Gzip header with reserved bits 0xE0 MUST fail decompression");
+        sub.assert_eq(err, core::CompressError.InvalidHeader, "Error MUST be InvalidHeader for reserved flags 0xE0");
+    };
+
+    t.run("RFC 1950 Zlib Header with CINFO > 7 rejected") { sub =>
+        let payload = "Hello, Zlib Window Security!";
+        var zb: u8[>..] = [];
+        core::zlib_compress(payload, zb, 6);
+
+        // Replace CMF with CINFO=8 (0x88, 64KB window), CM=8 (deflate)
+        // FLG must satisfy (CMF * 256 + FLG) % 31 == 0.
+        // 0x88 * 256 = 34816. 34816 + 0x98 (152) = 34968 = 31 * 1128.
+        zb[0] = 0x88;
+        zb[1] = 0x98;
+
+        var restored: u8[>..] = [];
+        let ok, err = core::zlib_decompress(zb[..], restored);
+        sub.assert_false(ok, "Zlib header with illegal CINFO=8 MUST fail decompression");
+        sub.assert_eq(err, core::CompressError.InvalidHeader, "Error MUST be InvalidHeader for CINFO > 7");
+    };
+
+    t.run("RFC 1950 Zlib stream with extraneous trailing garbage rejected") { sub =>
+        let payload = "Exact finality payload.";
+        var zb: u8[>..] = [];
+        core::zlib_compress(payload, zb, 6);
+
+        // Append 4 bytes of trailing extraneous garbage
+        var corrupted: u8[>..] = [];
+        corrupted.append(zb[..]);
+        corrupted.push(0xDE);
+        corrupted.push(0xAD);
+        corrupted.push(0xBE);
+        corrupted.push(0xEF);
+
+        var restored: u8[>..] = [];
+        let ok, err = core::zlib_decompress(corrupted[..], restored);
+        sub.assert_false(ok, "Zlib stream with extraneous trailing bytes MUST fail decompression");
+        sub.assert_eq(err, core::CompressError.CorruptedBitstream, "Trailing garbage MUST return CorruptedBitstream");
+    };
+
+    t.run("RingBuffer 0-byte write on full buffer returns None without BufferFull") { sub =>
+        var rb = core::new_ring_buffer();
+        var full_chunk: u8[4096] = ['X' as u8; 4096];
+        let w_n, w_err = rb.write(full_chunk[..]);
+        sub.assert_eq(w_n, 4096, "Wrote 4096 bytes");
+        sub.assert_eq(w_err, core::IoError.None, "Write succeeds");
+        sub.assert_true(rb.is_full(), "RingBuffer is full");
+
+        // 0-byte write attempt on full buffer
+        var empty_src: u8[0] = [];
+        let z_n, z_err = rb.write(empty_src[..]);
+        sub.assert_eq(z_n, 0, "0 bytes written");
+        sub.assert_eq(z_err, core::IoError.None, "0-byte write on full buffer MUST return None, NOT BufferFull");
+    };
+
+    t.run("RingBuffer 0-byte read on empty buffer returns None without Eof") { sub =>
+        var rb = core::new_ring_buffer();
+        sub.assert_true(rb.is_empty(), "RingBuffer is empty");
+
+        var empty_dst: u8[0] = [];
+        let r_n, r_err = rb.read(empty_dst[..]);
+        sub.assert_eq(r_n, 0, "0 bytes read");
+        sub.assert_eq(r_err, core::IoError.None, "0-byte read on empty buffer MUST return None, NOT Eof");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 21. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality
+// ----------------------------------------------------------------------------
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1053,6 +1147,7 @@ fn main() {
     core::run_case(runner, "23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses", test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse);
     core::run_case(runner, "24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants", test_rfc7748_x25519_constant_time_montgomery_ladder);
     core::run_case(runner, "25. LimitReader EOF vs LimitExceeded Boundary Underflow Defenses", test_limit_reader_boundary_eof_and_underflow_defenses);
+    core::run_case(runner, "26. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
     let ok = core::finish(runner);
     assert(ok);
 }

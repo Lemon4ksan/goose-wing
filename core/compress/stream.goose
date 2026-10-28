@@ -328,7 +328,7 @@ fn zstream_decompress_write_limit<B>(
             }
             let cmf: u32 = d.in_buf[0];
             let flg: u32 = d.in_buf[1];
-            guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 else {
+            guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 && (cmf >> 4) <= 7 else {
                 return CompressError.InvalidHeader;
             }
             var hdr_len: i64 = 2;

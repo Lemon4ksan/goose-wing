@@ -56,7 +56,7 @@ fn zlib_decompress_with_dict_limit<B>(
 
     let cmf: u32 = src[0];
     let flg: u32 = src[1];
-    guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 else {
+    guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 && (cmf >> 4) <= 7 else {
         return CompressError.InvalidHeader;
     }
 
@@ -81,6 +81,10 @@ fn zlib_decompress_with_dict_limit<B>(
 
     guard adler32(out[out_start..]) == read_be_u32(src, adler_offset) else {
         return CompressError.ChecksumMismatch;
+    }
+    // RFC 1950 exact finality: Zlib streams do not concatenate; trailing data indicates bitstream corruption
+    guard adler_offset + 4 == src.len else {
+        return CompressError.CorruptedBitstream;
     }
     return CompressError.None;
 }

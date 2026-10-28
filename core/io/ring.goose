@@ -53,6 +53,7 @@ fn clear(rb: RingBuffer&) {
 // Writes bytes into the ring buffer up to available space.
 // Returns (bytes_written, IoError).
 fn write(rb: RingBuffer&, src: const u8[:]) -> i64, IoError {
+    guard src.len > 0 else { return 0, IoError.None; }
     let avail = available(rb);
     if avail == 0 {
         return 0, IoError.BufferFull;
@@ -69,6 +70,7 @@ fn write(rb: RingBuffer&, src: const u8[:]) -> i64, IoError {
 // Reads and consumes bytes from the ring buffer into dst.
 // Returns (bytes_read, IoError).
 fn read(rb: RingBuffer&, dst: u8[:]) -> i64, IoError {
+    guard dst.len > 0 else { return 0, IoError.None; }
     if is_empty(rb) {
         return 0, IoError.Eof;
     }
@@ -83,6 +85,7 @@ fn read(rb: RingBuffer&, dst: u8[:]) -> i64, IoError {
 
 // Peeks at bytes without advancing head.
 fn peek(rb: const RingBuffer&, dst: u8[:]) -> i64 {
+    guard dst.len > 0 else { return 0; }
     if is_empty(rb) {
         return 0;
     }
