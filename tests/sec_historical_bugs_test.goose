@@ -1691,6 +1691,196 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 33. RFC 9293 §3.5 & RFC 1122 §4.2.2.13 TCP Half-Closed Teardown & Drain Deadlock
+// ----------------------------------------------------------------------------
+fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: core::T&) {
+    t.run("Case 1: Peer FIN followed by local shutdown completes full socket teardown") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        sub.assert_gt(listener, 0, "Listener created");
+        defer wing::tcp_close(listener);
+
+        let port = wing::tcp_getsockname_port(listener);
+        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client, 0, "Client connected");
+        defer wing::tcp_close(client);
+
+        let server_conn = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(server_conn, 0, "Server accepted");
+        defer wing::tcp_close(server_conn);
+
+        // Client sends payload and immediately closes its write side (sends FIN)
+        let req: const u8[:] = "PING_REQUEST";
+        wing::tcp_send(client, req);
+        wing::tcp_shutdown(client, wing::SHUT_WR);
+
+        // Server reads payload and then detects EOF (peer FIN)
+        var srv_req: u8[..64] = [];
+        let r1 = wing::tcp_recv(server_conn, srv_req, 64, 2000);
+        sub.assert_eq(r1, req.len as i32, "Server received request");
+
+        var eof_probe: u8[..16] = [];
+        let eof = wing::tcp_recv(server_conn, eof_probe, 16, 500);
+        sub.assert_eq(eof, 0, "Server detected peer FIN (EOF)");
+
+        var server_bp = wing::new_backpressure();
+        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        sub.assert_true(server_bp.peer_fin_received, "Server recorded peer FIN");
+        sub.assert_false(server_bp.write_shut, "Server write half is still open for response");
+
+        // Server can still send response back
+        var server_cork = core::new_cork_buffer();
+        let resp: const u8[:] = "PONG_RESPONSE";
+        let wr_bytes, _ = wing::async_socket_write(server_conn, server_cork, server_bp, resp);
+        sub.assert_gt(wr_bytes, 0, "Server wrote response");
+        wing::async_socket_uncork(server_conn, server_cork, server_bp);
+
+        // Client receives response
+        var cli_resp: u8[..64] = [];
+        let r2 = wing::tcp_recv(client, cli_resp, 64, 2000);
+        sub.assert_eq(r2, resp.len as i32, "Client received response");
+
+        // Now server shuts down its write direction.
+        // Because peer_fin_received is true, both directions are now closed!
+        // async_socket_shutdown must cleanly execute tcp_close(server_conn).
+        let did_shut, is_def = wing::async_socket_shutdown(server_conn, server_bp, server_cork);
+        sub.assert_true(did_shut, "Immediate shutdown executed");
+        sub.assert_false(is_def, "Shutdown was not deferred");
+        sub.assert_true(server_bp.write_shut, "Server write direction shut");
+
+        // Verify socket is closed (further reads or writes fail)
+        var post_buf: u8[..16] = [];
+        let post_recv = wing::tcp_recv(server_conn, post_buf, 16, 100);
+        sub.assert_lt(post_recv, 0, "Server socket closed after both halves shut down");
+    };
+
+    t.run("Case 2: Local shutdown followed by peer FIN completes full socket teardown") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        sub.assert_gt(listener, 0, "Listener created");
+        defer wing::tcp_close(listener);
+
+        let port = wing::tcp_getsockname_port(listener);
+        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client, 0, "Client connected");
+        defer wing::tcp_close(client);
+
+        let server_conn = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(server_conn, 0, "Server accepted");
+        defer wing::tcp_close(server_conn);
+
+        var server_bp = wing::new_backpressure();
+        var server_cork = core::new_cork_buffer();
+
+        // Server initiates write shutdown first (sends FIN to client)
+        let did_shut, is_def = wing::async_socket_shutdown(server_conn, server_bp, server_cork);
+        sub.assert_true(did_shut, "Server shut write side");
+        sub.assert_false(is_def, "Shutdown was not deferred");
+        sub.assert_true(server_bp.write_shut, "Server write_shut is true");
+        sub.assert_false(server_bp.peer_fin_received, "Peer FIN not received yet");
+
+        // Client detects EOF from server
+        var cli_buf: u8[..16] = [];
+        let eof = wing::tcp_recv(client, cli_buf, 16, 500);
+        sub.assert_eq(eof, 0, "Client saw server EOF (FIN)");
+
+        // Client can still send its final data before closing
+        let final_data: const u8[:] = "FINAL_DATA";
+        wing::tcp_send(client, final_data);
+        wing::tcp_shutdown(client, wing::SHUT_WR);
+
+        // Server reads remaining data from client
+        var srv_final: u8[..64] = [];
+        let r = wing::tcp_recv(server_conn, srv_final, 64, 1000);
+        sub.assert_eq(r, final_data.len as i32, "Server read client final data");
+
+        // Server detects client EOF
+        var cli_eof_buf: u8[..16] = [];
+        let cli_eof = wing::tcp_recv(server_conn, cli_eof_buf, 16, 500);
+        sub.assert_eq(cli_eof, 0, "Server detected client FIN (EOF)");
+
+        // When server records peer FIN with write_shut already true,
+        // async_socket_on_peer_fin must automatically complete socket teardown (tcp_close)
+        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        sub.assert_true(server_bp.peer_fin_received, "Peer FIN recorded");
+
+        // Socket handle must now be closed
+        var closed_probe: u8[..16] = [];
+        let closed_res = wing::tcp_recv(server_conn, closed_probe, 16, 100);
+        sub.assert_lt(closed_res, 0, "Server socket closed when second FIN received");
+    };
+
+    t.run("Case 3: Deferred shutdown with pending backpressure tears down socket when drain completes") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        sub.assert_gt(listener, 0, "Listener created");
+        defer wing::tcp_close(listener);
+
+        let port = wing::tcp_getsockname_port(listener);
+        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client, 0, "Client connected");
+        defer wing::tcp_close(client);
+
+        let server_conn = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(server_conn, 0, "Server accepted");
+        defer wing::tcp_close(server_conn);
+
+        var server_bp = wing::new_backpressure();
+        var server_cork = core::new_cork_buffer();
+
+        // Client shuts down its write side (sends FIN)
+        wing::tcp_shutdown(client, wing::SHUT_WR);
+        var probe: u8[..16] = [];
+        let eof = wing::tcp_recv(server_conn, probe, 16, 500);
+        sub.assert_eq(eof, 0, "Server received peer FIN");
+        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        sub.assert_true(server_bp.peer_fin_received, "Peer FIN recorded in backpressure");
+
+        // Server queues backpressure
+        let payload: const u8[:] = "QUEUED_DEFERRED_DATA";
+        wing::backpressure_append(server_bp, payload);
+        sub.assert_gt(wing::backpressure_len(server_bp), 0, "Backpressure contains payload");
+
+        // Server initiates shutdown: must defer because backpressure is non-empty
+        let did_shut, is_def = wing::async_socket_shutdown(server_conn, server_bp, server_cork);
+        sub.assert_false(did_shut, "Shutdown deferred");
+        sub.assert_true(is_def, "Shutdown marked deferred");
+        sub.assert_true(server_bp.shutdown_pending, "Shutdown pending");
+        sub.assert_false(server_bp.write_shut, "write_shut is false while draining");
+
+        // Drain backpressure completely
+        let drained, empty = wing::async_socket_drain(server_conn, server_bp);
+        sub.assert_gt(drained, 0, "Backpressure drained to wire");
+        sub.assert_true(empty, "Backpressure now fully empty");
+        sub.assert_true(server_bp.write_shut, "Deferred shutdown executed write_shut");
+        sub.assert_false(server_bp.shutdown_pending, "Shutdown is no longer pending");
+
+        // Client reads all drained payload
+        var cli_buf: u8[..64] = [];
+        let recvd = wing::tcp_recv(client, cli_buf, 64, 1000);
+        sub.assert_eq(recvd, payload.len as i32, "Client received all deferred payload");
+
+        // Because peer_fin_received was true, check_execute_deferred_shutdown closed the socket
+        var post_probe: u8[..16] = [];
+        let post_res = wing::tcp_recv(server_conn, post_probe, 16, 100);
+        sub.assert_lt(post_res, 0, "Server socket closed upon deferred shutdown completion");
+    };
+
+    t.run("Case 4: Drain failure on broken socket triggers abort and clears backpressure to prevent deadlock") { sub =>
+        var bp = wing::new_backpressure();
+        wing::backpressure_append(bp, "STALLED_PAYLOAD_FOR_DEAD_SOCKET");
+        sub.assert_gt(wing::backpressure_len(bp), 0, "Backpressure has buffered data");
+
+        // Use an invalid / closed socket descriptor to simulate write error (sent < 0)
+        let dead_fd: i64 = 99999;
+        let sent, empty = wing::async_socket_drain(dead_fd, bp);
+
+        sub.assert_lt(sent, 0, "Drain on dead socket returns error < 0");
+        sub.assert_true(empty, "Drain returns empty=true to prevent infinite event loop polling spin");
+        sub.assert_eq(wing::backpressure_len(bp), 0, "Backpressure cleared by abortive teardown");
+        sub.assert_true(bp.write_shut, "Write side marked shut after error abort");
+        sub.assert_false(bp.shutdown_pending, "Pending shutdown cleared");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -1726,6 +1916,7 @@ fn main() {
     core::run_case(runner, "30. RFC 9110 & RFC 9293: Connection Pool Starvation & Slot Reclamation", test_rfc9110_connection_pool_starvation_and_slot_reclamation);
     core::run_case(runner, "31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds", test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound);
     core::run_case(runner, "32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding", test_rfc8725_jwks_key_confusion_and_algorithm_binding);
+    core::run_case(runner, "33. RFC 9293 §3.5 & RFC 1122: Half-Closed Teardown & Drain Deadlock Defenses", test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses);
 
     let ok = core::finish(runner);
     assert(ok);

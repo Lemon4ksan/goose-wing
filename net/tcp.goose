@@ -498,15 +498,20 @@ fn async_socket_uncork(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i
 }
 
 // Executes deferred shutdown if backpressure is clear and shutdown was requested.
+// If peer FIN was already received, both directions are terminated; completes full socket teardown (RFC 9293 §3.5).
 fn check_execute_deferred_shutdown(fd: i64, bp: BackPressure&) {
     guard bp.shutdown_pending else { return; }
     tcp_shutdown(fd, SHUT_WR);
     bp.write_shut = true;
     bp.shutdown_pending = false;
+    if bp.peer_fin_received && fd > 0 {
+        tcp_close(fd);
+    }
 }
 
 // Drains backpressure queue upon writable event (POLL_WRITE).
 // If a shutdown was deferred, executes tcp_shutdown(SHUT_WR) once the queue is fully drained.
+// If an I/O error occurs (sent < 0), aborts socket and clears backpressure to prevent poll deadlock (RFC 1122 §4.2.2.13).
 // Returns (bytes_drained, is_fully_empty).
 fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     guard fd > 0 else { return 0, true; }
@@ -517,6 +522,10 @@ fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     }
 
     let sent = tcp_send(fd, backpressure_data(bp));
+    if sent < 0 {
+        async_socket_abort(fd, bp);
+        return sent, true;
+    }
     if sent > 0 {
         backpressure_erase(bp, sent);
     }
@@ -530,6 +539,7 @@ fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
 
 // Initiates graceful shutdown of socket write side (SHUT_WR / SD_SEND).
 // If backpressure is active, defers shutdown until queue is completely drained (uSockets #148 / Go #82375).
+// If peer FIN was already received, both directions are terminated; completes full socket teardown (RFC 9293 §3.5).
 // Returns (did_shutdown_now, is_deferred).
 fn async_socket_shutdown(fd: i64, bp: BackPressure&, cork: core::CorkBuffer&) -> bool, bool {
     guard fd > 0 else { return false, false; }
@@ -547,12 +557,19 @@ fn async_socket_shutdown(fd: i64, bp: BackPressure&, cork: core::CorkBuffer&) ->
     let ok = tcp_shutdown(fd, SHUT_WR);
     bp.write_shut = true;
     bp.shutdown_pending = false;
+    if bp.peer_fin_received {
+        tcp_close(fd);
+    }
     return ok, false;
 }
 
 // Records peer half-close (FIN received) in socket state (Go #18527, RFC 9293 Section 3.5).
+// If local write direction is already shut down, the connection is fully closed; tears down socket FD.
 fn async_socket_on_peer_fin(fd: i64, bp: BackPressure&) {
     bp.peer_fin_received = true;
+    if bp.write_shut && fd > 0 {
+        tcp_close(fd);
+    }
 }
 
 // Discards all queued backpressure and abruptly terminates socket with a TCP RST (RFC 1122 Section 4.2.2.13).
