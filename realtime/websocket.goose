@@ -104,15 +104,15 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
 
     guard is_valid_ws_opcode(opcode) else { return hdr, false; }
 
-    // Control frame invariants (RFC 6455 Section 5.5):
-    // 1. MUST NOT be fragmented (FIN MUST be 1)
-    // 2. Payload length MUST be <= 125
-    if is_ws_control_opcode(opcode) {
-        guard fin else { return hdr, false; }
-    }
-
     let masked = (b1 & 0x80) != 0;
     let raw_len = (b1 & 0x7F) as u64;
+
+    // Control frame invariants (RFC 6455 Section 5.5):
+    // 1. MUST NOT be fragmented (FIN MUST be 1)
+    // 2. Payload length MUST be <= 125 (extended length encodings 126/127 are forbidden)
+    if is_ws_control_opcode(opcode) {
+        guard fin && raw_len <= 125 else { return hdr, false; }
+    }
 
     var offset: i64 = 2;
     var payload_len: u64 = 0;
@@ -406,9 +406,11 @@ fn encode_ws_frame_compressed<B>(
     mask_key: const u8[4]& = [0, 0, 0, 0],
     fin: bool = true,
 ) {
+    // RFC 7692 §5.1: RSV1 MUST NOT be set on control frames or continuation frames
+    let eff_rsv1 = !is_ws_control_opcode(opcode) && opcode != WS_OPCODE_CONTINUATION;
     let hdr = WsFrameHeader {
         fin: fin,
-        rsv1: true, // Signals compressed frame
+        rsv1: eff_rsv1, // Signals compressed frame only for initial data frames
         opcode: opcode,
         masked: masked,
         mask_key: mask_key,
@@ -535,6 +537,23 @@ fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
     out.append(reason[..eff_len]);
 }
 
+// Validates whether a WebSocket close status code is permitted on the wire per RFC 6455 §7.4
+fn is_valid_ws_close_code(code: u16) -> bool {
+    // RFC 6455 §7.4.2: Range 1000..4999
+    if code < 1000 || code >= 5000 {
+        return false;
+    }
+    // RFC 6455 §7.4.1 & §7.4.2: Reserved / forbidden status codes that MUST NOT be sent on the wire
+    if code == 1004 || code == 1005 || code == 1006 || code == 1015 {
+        return false;
+    }
+    // RFC 6455 §7.4.2: Codes 1016..2999 are reserved and unassigned
+    if code >= 1016 && code < 3000 {
+        return false;
+    }
+    return true;
+}
+
 // Parses a Close frame payload into (status_code, reason_slice, ok)
 fn parse_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     if payload.len == 0 {
@@ -545,14 +564,8 @@ fn parse_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     let status_code = core::read_be_u16(payload, 0);
     let reason = payload[2..];
 
-    // RFC 6455 Section 7.4.2: Reserved / forbidden status codes
-    guard status_code >= 1000 && status_code < 5000 else { return 0, "", false; }
-    guard status_code != 1004 && status_code != 1005 &&
-          status_code != 1006 && status_code != 1015 else {
-        return 0, "", false;
-    }
-    // Status codes 1016..2999 are reserved
-    guard status_code < 1016 || status_code >= 3000 else { return 0, "", false; }
+    // RFC 6455 Section 7.4.1 & 7.4.2: Validate permitted status codes on wire
+    guard is_valid_ws_close_code(status_code) else { return 0, "", false; }
 
     return status_code, reason, true;
 }
@@ -591,8 +604,9 @@ struct WebSocketSession {
     close_code: u16 = 0,
     mask_rng_state: u32 = 0x9E3779B9, // Fast linear congruential PRNG for 4-byte client masking keys
 
-    // Multi-frame fragmented message assembly (RFC 6455 §5.4)
+    // Multi-frame fragmented message assembly (RFC 6455 §5.4 & RFC 7692 §5.1)
     frag_opcode: u8 = 0,               // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
+    frag_compressed: bool = false,     // RFC 7692: remembers if initial fragment had RSV1 set
     frag_buffer: u8[..16384] = [],     // Assembly buffer for fragmented messages
 
     // RFC 7692 PerMessageDeflate configuration (uWebSockets pattern)
@@ -1008,9 +1022,13 @@ fn send_pong<B>(ws: WebSocketSession&, pong_payload: const u8[:], out: B&) {
 fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B&) {
     guard !ws.is_closed else { return; }
     var payload: u8[..128] = [];
-    // RFC 6455 §7.4.1 / Autobahn 7.1.x: Status code 1005 (No Status) is internal and MUST NOT be set on wire.
-    if status_code != WS_STATUS_NO_STATUS && status_code != 0 {
-        encode_close_payload(payload, status_code, reason);
+    // RFC 6455 §7.4.1 / Autobahn 7.1.x:
+    // Status codes 1005 (No Status), 1006 (Abnormal), and 0 are internal and MUST NOT be sent on the wire.
+    // Invalid codes (<1000, >=5000, 1016..2999, 1004, 1015) MUST NOT be sent on the wire.
+    if is_valid_ws_close_code(status_code) {
+        // RFC 6455 §5.5.1: Close reason MUST be valid UTF-8
+        let eff_reason = if reason.len > 0 && core::validate_utf8(reason) { reason } else { "" };
+        encode_close_payload(payload, status_code, eff_reason);
     }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
@@ -1088,6 +1106,28 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             return true;
         }
 
+        // RFC 6455 §5.1: Masking enforcement - check immediately upon receiving header
+        let masked = (b1 & 0x80) != 0;
+        if !is_ws_masking_valid(ws.is_client, masked) {
+            let reason = if ws.is_client { "masked frame received by client" } else { "unmasked frame received by server" };
+            close(ws, WS_STATUS_PROTOCOL_ERROR, reason, out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
+
+        // RFC 6455 §5.2 & RFC 7692 §5.1: RSV bit enforcement - check immediately upon receiving header
+        let rsv1_bit = (b0 & 0x40) != 0;
+        let rsv2_bit = (b0 & 0x20) != 0;
+        let rsv3_bit = (b0 & 0x10) != 0;
+        let rsv1_allowed = ws.permessage_deflate && (opcode == WS_OPCODE_TEXT || opcode == WS_OPCODE_BINARY);
+        if (rsv1_bit && !rsv1_allowed) || rsv2_bit || rsv3_bit {
+            close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension or on non-initial data frame", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_PROTOCOL_ERROR;
+            return true;
+        }
+
         // RFC 6455 §5.2 & Autobahn Cases 3.1..3.4:
         // Fail connection with 1002 on non-minimal length representations or high bit set in 64-bit length
         if raw_len == 126 && wire.len >= 4 {
@@ -1124,23 +1164,6 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
     let p_start = hdr.header_len as i64;
     let p_len = hdr.payload_len as i64;
     let payload = wire[p_start..(p_start + p_len)];
-
-    // RFC 7692 §5.1 & uWS #1164: RSV1 is only valid on initial data frame (Text/Binary), NEVER on Continuation or Control frames
-    let rsv1_allowed = ws.permessage_deflate && (hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY);
-    if (hdr.rsv1 && !rsv1_allowed) || hdr.rsv2 || hdr.rsv3 {
-        close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension or on non-initial data frame", out_reply);
-        ws.is_closed = true;
-        ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-        return true;
-    }
-
-    if !is_ws_masking_valid(ws.is_client, hdr.masked) {
-        let reason = if ws.is_client { "masked frame received by client" } else { "unmasked frame received by server" };
-        close(ws, WS_STATUS_PROTOCOL_ERROR, reason, out_reply);
-        ws.is_closed = true;
-        ws.close_code = WS_STATUS_PROTOCOL_ERROR;
-        return true;
-    }
 
     if hdr.masked {
         mask_websocket_payload(payload, hdr.mask_key);
@@ -1180,7 +1203,8 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             out_view.close_reason = reason;
             out_view.is_valid = true;
             if !ws.is_closed {
-                let reply_code = if code == WS_STATUS_NO_STATUS { WS_STATUS_NORMAL } else { code };
+                // RFC 6455 §7.1.5: If received close contains no body (code 1005), response contains no body
+                let reply_code = if code == WS_STATUS_NO_STATUS { WS_STATUS_NO_STATUS } else { code };
                 close(ws, reply_code, reason, out_reply);
             }
             ws.is_closed = true;
@@ -1207,7 +1231,8 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
                 out_view.is_valid = false;
                 return true;
             }
-            if hdr.opcode == WS_OPCODE_TEXT {
+            // RFC 7692 §8.1: UTF-8 validation ONLY applies to uncompressed plaintext payload
+            if hdr.opcode == WS_OPCODE_TEXT && !hdr.rsv1 {
                 if !core::validate_utf8(payload) {
                     close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
                     ws.is_closed = true;
@@ -1223,6 +1248,7 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
         } else {
             // Initial fragment of a multi-frame message
             ws.frag_opcode = hdr.opcode;
+            ws.frag_compressed = hdr.rsv1;
             ws.frag_buffer.clear();
             if payload.len > ws.frag_buffer.cap {
                 close(ws, WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
@@ -1247,18 +1273,22 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             ws.is_closed = true;
             ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
             ws.frag_opcode = 0;
+            ws.frag_compressed = false;
             ws.frag_buffer.clear();
             return true;
         }
         ws.frag_buffer.append(payload);
 
         if hdr.fin {
-            if ws.frag_opcode == WS_OPCODE_TEXT {
+            let was_compressed = ws.frag_compressed;
+            // RFC 7692 §8.1: UTF-8 validation ONLY applies to uncompressed plaintext messages
+            if ws.frag_opcode == WS_OPCODE_TEXT && !was_compressed {
                 if !core::validate_utf8(ws.frag_buffer[..]) {
                     close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in assembled message", out_reply);
                     ws.is_closed = true;
                     ws.close_code = WS_STATUS_INVALID_PAYLOAD;
                     ws.frag_opcode = 0;
+                    ws.frag_compressed = false;
                     ws.frag_buffer.clear();
                     return true;
                 }
@@ -1266,8 +1296,10 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
             out_view.opcode = ws.frag_opcode;
             out_view.payload = ws.frag_buffer[..];
             out_view.is_valid = true;
+            out_view.is_compressed = was_compressed;
 
             ws.frag_opcode = 0;
+            ws.frag_compressed = false;
             return true;
         } else {
             out_view.is_valid = false;
