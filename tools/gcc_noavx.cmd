@@ -2,4 +2,4 @@
 :: Copyright (c) 2026 Lemon4ksan
 
 @echo off
-gcc %* -mno-avx -Wl,--stack,33554432
+gcc %* -O2 -mno-avx --param ggc-min-expand=20 --param ggc-min-heapsize=32768 -Wl,--stack,33554432

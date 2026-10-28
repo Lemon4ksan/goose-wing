@@ -468,6 +468,61 @@ fn test_rfc9113_goaway_last_stream_id_parity(t: core::T&) {
     };
 }
 
+// 16. RFC 4648 §3.5 & RFC 7515 §2: Base64 & Base64URL Canonical Decoding & Malleability Defenses
+fn test_rfc4648_base64_canonical_and_malleability_defenses(t: core::T&) {
+    t.run("Canonical Base64 round-trips succeed") { sub =>
+        var out_a: u8[>..] = [];
+        sub.assert_true(core::base64_decode("YQ==", out_a), "Decode canonical 'YQ==' to 'a'");
+        sub.assert_bytes_eq(out_a[..], "a", "Value matches 'a'");
+
+        var out_fo: u8[>..] = [];
+        sub.assert_true(core::base64_decode("Zm8=", out_fo), "Decode canonical 'Zm8=' to 'fo'");
+        sub.assert_bytes_eq(out_fo[..], "fo", "Value matches 'fo'");
+
+        var out_foobar: u8[>..] = [];
+        sub.assert_true(core::base64_decode("Zm9vYmFy", out_foobar), "Decode canonical 'Zm9vYmFy'");
+        sub.assert_bytes_eq(out_foobar[..], "foobar", "Value matches 'foobar'");
+    };
+
+    t.run("Canonical Base64URL round-trips succeed") { sub =>
+        var out_u_a: u8[>..] = [];
+        sub.assert_true(core::base64url_decode("YQ", out_u_a), "Decode unpadded base64url 'YQ'");
+        sub.assert_bytes_eq(out_u_a[..], "a", "Value matches 'a'");
+
+        var out_u_fo: u8[>..] = [];
+        sub.assert_true(core::base64url_decode("Zm8", out_u_fo), "Decode unpadded base64url 'Zm8'");
+        sub.assert_bytes_eq(out_u_fo[..], "fo", "Value matches 'fo'");
+    };
+
+    t.run("RFC 4648 §3.5 Malleability: Non-zero padding bits MUST be rejected") { sub =>
+        var out_bad: u8[>..] = [];
+        // 'YR==' has the 4 unused bits set to 0001 instead of 0000 ('YQ==')
+        sub.assert_false(core::base64_decode("YR==", out_bad), "Non-zero padding bits in base64 MUST be rejected");
+        sub.assert_false(core::base64url_decode("YR", out_bad), "Non-zero padding bits in unpadded base64url MUST be rejected");
+        sub.assert_false(core::base64url_decode("YR==", out_bad), "Non-zero padding bits in padded base64url MUST be rejected");
+    };
+
+    t.run("Truncated 1-character quantum (len % 4 == 1) MUST be rejected") { sub =>
+        var out_bad: u8[>..] = [];
+        sub.assert_false(core::base64_decode("A", out_bad), "1-character base64 MUST be rejected");
+        sub.assert_false(core::base64_decode("Zm9vYmFyA", out_bad), "9-character base64 (rem 1) MUST be rejected");
+        sub.assert_false(core::base64url_decode("A", out_bad), "1-character base64url MUST be rejected");
+        sub.assert_false(core::base64url_decode("Zm9vYmFyA", out_bad), "9-character base64url (rem 1) MUST be rejected");
+    };
+
+    t.run("Garbage after padding and invalid padding structure MUST be rejected") { sub =>
+        var out_bad: u8[>..] = [];
+        sub.assert_false(core::base64_decode("====", out_bad), "Bare padding '====' MUST be rejected");
+        sub.assert_false(core::base64_decode("=", out_bad), "Bare padding '=' MUST be rejected");
+        sub.assert_false(core::base64_decode("Y===", out_bad), "Padding after 1 char 'Y===' MUST be rejected");
+        sub.assert_false(core::base64_decode("YQ=", out_bad), "1 pad char when 2 expected MUST be rejected");
+        sub.assert_false(core::base64_decode("Zm8==", out_bad), "2 pad chars when 1 expected MUST be rejected");
+        sub.assert_false(core::base64_decode("YQ==EXTRA", out_bad), "Garbage after valid padding MUST be rejected");
+        sub.assert_false(core::base64_decode("YQ== ", out_bad), "Trailing whitespace after padding MUST be rejected");
+        sub.assert_false(core::base64url_decode("YQ==EXTRA", out_bad), "Garbage after base64url padding MUST be rejected");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Historical Vulnerabilities & Protocol Edge-Case Suite", core::Verbosity.Verbose);
 
@@ -486,6 +541,7 @@ fn main() {
     core::run_case(runner, "13. RFC 9113 & CVE-2026-78669: H2 Window Bounds & Throttling", test_h2_window_update_and_settings_cpu_limits);
     core::run_case(runner, "14. RFC 8446 Section 4: TLS 1.3 Handshake State Machine Invariants", test_openssl_handshake_state_machine_transition_invariants);
     core::run_case(runner, "15. RFC 9113 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity", test_rfc9113_goaway_last_stream_id_parity);
+    core::run_case(runner, "16. RFC 4648 §3.5: Base64 Canonical & Malleability Defenses", test_rfc4648_base64_canonical_and_malleability_defenses);
 
     let ok = core::finish(runner);
     assert(ok);
