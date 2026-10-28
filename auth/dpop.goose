@@ -74,14 +74,27 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
         }
     }
 
+    var sh_buf: u8[..256] = [];
     // Lowercase scheme and host
     for k in scheme_host_end {
         let ch = raw_uri[k];
         if ch >= 'A' && ch <= 'Z' {
-            out.push(ch + 32);
+            sh_buf.push(ch + 32);
         } else {
-            out.push(ch);
+            sh_buf.push(ch);
         }
+    }
+
+    // RFC 3986 §6.2.3 / RFC 9449 §4.3: Scheme-based default port normalization
+    var emit_len = sh_buf.len;
+    if core::starts_with(sh_buf[..], "http://") && core::ends_with(sh_buf[..], ":80") {
+        emit_len = sh_buf.len - 3;
+    } else if core::starts_with(sh_buf[..], "https://") && core::ends_with(sh_buf[..], ":443") {
+        emit_len = sh_buf.len - 4;
+    }
+
+    for k in emit_len {
+        out.push(sh_buf[k]);
     }
 
     // Append path
@@ -243,14 +256,7 @@ fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: 
 }
 
 fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) -> bool {
-    var method_upper: u8[..16] = [];
-    for b in expected_method {
-        if b >= 'a' && b <= 'z' {
-            method_upper.push(b - 32);
-        } else {
-            method_upper.push(b);
-        }
-    }
+    guard expected_method.len > 0 else { return false; }
     let htm_idx = core::index_of_slice(claims_json, "\"htm\":");
     guard htm_idx >= 0 else { return false; }
 
@@ -267,15 +273,15 @@ fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) ->
     guard pos < claims_json.len else { return false; }
     let htm_val = claims_json[val_start..pos];
 
-    var htm_upper: u8[..16] = [];
+    // RFC 9449 §4.2: htm MUST be uppercase String
     for b in htm_val {
         if b >= 'a' && b <= 'z' {
-            htm_upper.push(b - 32);
-        } else {
-            htm_upper.push(b);
+            return false;
         }
     }
-    return htm_upper[..] == method_upper[..];
+
+    // RFC 9449 §4.3: Exact case-sensitive match with HTTP method
+    return htm_val == expected_method;
 }
 
 fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool {

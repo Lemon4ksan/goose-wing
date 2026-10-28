@@ -84,6 +84,14 @@ fn test_dpop_rfc9449(t: core::T&) {
         var norm2: u8[..256] = [];
         wing::normalize_dpop_target_uri("http://myhost:8080/data", norm2);
         sub.assert_bytes_eq(norm2[..], "http://myhost:8080/data", "Preserves port in authority");
+
+        var norm3: u8[..256] = [];
+        wing::normalize_dpop_target_uri("https://api.example.com:443/resource", norm3);
+        sub.assert_bytes_eq(norm3[..], "https://api.example.com/resource", "Removes default HTTPS port 443 per RFC 3986 §6.2.3");
+
+        var norm4: u8[..256] = [];
+        wing::normalize_dpop_target_uri("http://api.example.com:80/resource", norm4);
+        sub.assert_bytes_eq(norm4[..], "http://api.example.com/resource", "Removes default HTTP port 80 per RFC 3986 §6.2.3");
     };
 
     t.run("DPoP ATH Access Token Hash") { sub =>
@@ -301,6 +309,36 @@ fn test_dpop_rfc9449(t: core::T&) {
 
         let fail_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");
         sub.assert_false(fail_proof, "verify_dpop_proof fails when jkt does not match");
+    };
+
+    t.run("DPoP Method Validation: exact uppercase String required (RFC 9449 §4.2 & §4.3)") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+
+        // Direct claims json method checks
+        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"post\"}", "POST"), "Lowercase htm in proof rejected");
+        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"POST\"}", "post"), "Lowercase expected method rejected");
+        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"GET\"}", "POST"), "Method mismatch rejected");
+        sub.assert_true(wing::verify_dpop_method("{\"htm\":\"POST\"}", "POST"), "Uppercase matching method accepted");
+
+        // Proof with lowercase method MUST be rejected
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+        let c_json = "{\"jti\":\"jti-lc-method\",\"htm\":\"post\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        var c_b64: u8[..256] = [];
+        core::base64url_encode(c_json, c_b64);
+        var signing_input: u8[..512] = [];
+        signing_input.append(h_b64);
+        signing_input.push('.' as u8);
+        signing_input.append(c_b64[..]);
+        let sig = core::hmac_sha256(key, signing_input[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(sig[..], sig_b64);
+        var token: u8[..1024] = [];
+        token.append(signing_input[..]);
+        token.push('.' as u8);
+        token.append(sig_b64[..]);
+
+        let fail_lc = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        sub.assert_false(fail_lc, "Proof with lowercase htm MUST be rejected");
     };
 }
 

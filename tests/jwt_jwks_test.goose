@@ -664,6 +664,137 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 7. RFC 7515 §4.1.11 / RFC 8725 §3.8 Critical Headers & RFC 8725 §3.11 Explicit Typ
+// ----------------------------------------------------------------------------
+fn test_jwt_crit_and_typ_validation(t: core::T&) {
+    let secret = "audit-crit-typ-secret-key-32byte";
+    let now_sec: i64 = 1770000000;
+
+    t.run("Critical Header (crit) rejected when unsupported (RFC 7515 §4.1.11 / RFC 8725 §3.8)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"crit\":[\"custom_ext\"],\"custom_ext\":\"confidential\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.CriticalHeaderUnsupported, "Unsupported crit parameter MUST fail verification");
+    };
+
+    t.run("Critical Header (crit) accepted when explicitly supported (RFC 7515 §4.1.11)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"crit\":[\"custom_ext\"],\"custom_ext\":\"confidential\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        sub.assert_true(wing::add_supported_crit(opts, "custom_ext"), "Added supported crit parameter");
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "Supported crit parameter passes verification");
+        sub.assert_eq(out_h.crit.len, 1, "Parsed crit header length is 1");
+        sub.assert_bytes_eq(out_h.crit[0].name[..], "custom_ext", "Parsed crit name matches");
+    };
+
+    t.run("Standard header parameter in crit rejected with InvalidHeaderJson (RFC 7515 §4.1.11)") { sub =>
+        // RFC 7515 §4.1.11 forbids 'alg', 'typ', 'kid', 'crit', etc. inside 'crit'
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"crit\":[\"alg\"]}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Standard parameter 'alg' in crit array MUST be rejected");
+    };
+
+    t.run("Parameter listed in crit but missing from header rejected with InvalidHeaderJson (RFC 7515 §4.1.11)") { sub =>
+        // 'ext_missing' is listed in crit, but not present as a member in the header
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"crit\":[\"ext_missing\"]}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Missing crit member in header MUST be rejected");
+    };
+
+    t.run("Empty crit array rejected with InvalidHeaderJson (RFC 7515 §4.1.11)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"crit\":[]}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Empty crit array MUST be rejected");
+    };
+
+    t.run("Explicit JWT typ verification succeeds on exact match (RFC 8725 §3.11 & RFC 9068)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"at+jwt\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        wing::set_expected_type(opts, "at+jwt");
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "Expected typ 'at+jwt' matches token typ");
+        sub.assert_bytes_eq(out_h.typ[..], "at+jwt", "Parsed typ matches");
+    };
+
+    t.run("Explicit JWT typ verification succeeds with application/ prefix equivalence (RFC 8725 §3.11)") { sub =>
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"application/at+jwt\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        wing::set_expected_type(opts, "at+jwt"); // expected without prefix, header has prefix
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "'application/at+jwt' equivalent to 'at+jwt'");
+
+        // Inverse: expected with prefix, header without prefix
+        var opts2 = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        wing::set_expected_type(opts2, "application/at+jwt");
+        let hdr_json2 = "{\"alg\":\"HS256\",\"typ\":\"at+jwt\"}";
+        var token2: u8[..1024] = [];
+        craft_raw_jwt(hdr_json2, clm_json, secret, token2);
+        let err2 = wing::verify_jwt_hmac(token2[..], secret, opts2, now_sec, out_h, out_c);
+        sub.assert_eq(err2, wing::JwtError.None, "'at+jwt' equivalent to 'application/at+jwt'");
+    };
+
+    t.run("Token type confusion attack rejected (RFC 8725 §3.11)") { sub =>
+        // ID token presented to an endpoint expecting an access token (at+jwt)
+        let hdr_json = "{\"alg\":\"HS256\",\"typ\":\"id+jwt\"}";
+        let clm_json = "{\"sub\":\"alice\",\"exp\":2000000000}";
+        var token: u8[..1024] = [];
+        craft_raw_jwt(hdr_json, clm_json, secret, token);
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::new_jwt_claims();
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        wing::set_expected_type(opts, "at+jwt"); // expecting access token
+        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.TypeMismatch, "Type confusion between id+jwt and at+jwt rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
@@ -675,6 +806,7 @@ fn main() {
     core::run_case(runner, "4. RFC 7517 JWKS Serialization, Parsing & Key Rotation", test_jwks_serialization_and_parsing);
     core::run_case(runner, "5. Integrated JWT Verification against JWKS Key Set", test_jwt_verification_against_jwks);
     core::run_case(runner, "6. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints", test_jwt_rfc7519_claims_and_thumbprint);
+    core::run_case(runner, "7. RFC 7515 Crit Headers & RFC 8725 Explicit Typ Verification", test_jwt_crit_and_typ_validation);
 
     let ok = core::finish(runner);
     assert(ok);

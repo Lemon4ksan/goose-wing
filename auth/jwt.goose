@@ -64,6 +64,8 @@ enum JwtError {
     AudienceMismatch,      // aud claim does not match expected audience
     SubjectMismatch,       // sub claim does not match expected subject
     KeyNotFound,           // kid requested by token not found in JWKS
+    CriticalHeaderUnsupported, // crit header contains unsupported/unrecognized parameter (RFC 7515 §4.1.11 / RFC 8725 §3.8)
+    TypeMismatch,          // typ header does not match expected type (RFC 8725 §3.11 / RFC 9068)
 }
 
 fn jwt_error_to_string(err: JwtError) -> const u8[:] {
@@ -82,16 +84,23 @@ fn jwt_error_to_string(err: JwtError) -> const u8[:] {
         AudienceMismatch => "audience mismatch (aud)",
         SubjectMismatch => "subject mismatch (sub)",
         KeyNotFound => "key id (kid) not found in jwks",
+        CriticalHeaderUnsupported => "unsupported critical header parameter (crit)",
+        TypeMismatch => "token type mismatch (typ confusion defense)",
     };
 }
 
 // ---- 2. JWT Header Model & Parser -------------------------------------------
+
+struct CritParam {
+    name: u8[..32] = [],
+}
 
 struct JwtHeader {
     alg: JwtAlg = JwtAlg.HS256,
     typ: u8[..32] = "JWT",
     kid: u8[..64] = [],
     cty: u8[..32] = [],
+    crit: CritParam[..8] = [],
 }
 
 fn new_jwt_header(alg: JwtAlg = JwtAlg.HS256, kid: const u8[:] = "") -> JwtHeader {
@@ -103,6 +112,14 @@ fn new_jwt_header(alg: JwtAlg = JwtAlg.HS256, kid: const u8[:] = "") -> JwtHeade
         hdr.kid.append(kid);
     }
     return hdr;
+}
+
+fn add_header_crit(header: JwtHeader&, name: const u8[:]) -> bool {
+    guard header.crit.len < header.crit.cap && name.len <= 32 else { return false; }
+    var item = CritParam { .. };
+    item.name.append(name);
+    header.crit.push(item);
+    return true;
 }
 
 fn serialize_jwt_header<B>(header: const JwtHeader&, out: B&) {
@@ -120,7 +137,29 @@ fn serialize_jwt_header<B>(header: const JwtHeader&, out: B&) {
         out.append(",\"cty\":");
         json::format_string(out, header.cty[..]);
     }
+    if header.crit.len > 0 {
+        out.append(",\"crit\":[");
+        for i in header.crit.len {
+            if i > 0 { out.push(','); }
+            json::format_string(out, header.crit[i].name[..]);
+        }
+        out.push(']');
+    }
     out.push('}');
+}
+
+fn is_standard_jws_header_param(name: const u8[:]) -> bool {
+    return name == "alg" ||
+           name == "jku" ||
+           name == "jwk" ||
+           name == "kid" ||
+           name == "x5u" ||
+           name == "x5c" ||
+           name == "x5t" ||
+           name == "x5t#S256" ||
+           name == "typ" ||
+           name == "cty" ||
+           name == "crit";
 }
 
 struct SeenHeaderKey {
@@ -133,12 +172,13 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
     out_header.kid.clear();
     out_header.cty.clear();
     out_header.typ.clear();
-    out_header.typ.append("JWT");
+    out_header.crit.clear();
     var had_error = false;
     var seen_alg = false;
     var seen_typ = false;
     var seen_kid = false;
     var seen_cty = false;
+    var seen_crit = false;
     var seen_others: SeenHeaderKey[..8] = [];
 
     json::each_member(reader) { key =>
@@ -186,6 +226,34 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
             } else {
                 had_error = true;
             }
+        } else if key == "crit" {
+            if seen_crit {
+                had_error = true;
+            }
+            seen_crit = true;
+            let p = json::peek(reader);
+            if p == '[' {
+                json::each_element(reader) {
+                    scratch.clear();
+                    let crit_name = json::read_string(reader, scratch);
+                    if is_standard_jws_header_param(crit_name) {
+                        had_error = true; // RFC 7515 §4.1.11: standard names forbidden in crit
+                    }
+                    if out_header.crit.len < out_header.crit.cap && crit_name.len <= 32 {
+                        var cp = CritParam { .. };
+                        cp.name.append(crit_name);
+                        out_header.crit.push(cp);
+                    } else {
+                        had_error = true;
+                    }
+                };
+                if out_header.crit.len == 0 {
+                    had_error = true; // RFC 7515 §4.1.11: crit MUST NOT be empty
+                }
+            } else {
+                json::skip(reader);
+                had_error = true;
+            }
         } else {
             for &o in seen_others {
                 if o.name[..] == key {
@@ -200,6 +268,23 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
             json::skip(reader);
         }
     };
+
+    // RFC 7515 §4.1.11: Every parameter listed in crit MUST be present in the header
+    if out_header.crit.len > 0 {
+        for &cp in out_header.crit {
+            var present = false;
+            for &o in seen_others {
+                if o.name[..] == cp.name[..] {
+                    present = true;
+                    break;
+                }
+            }
+            if !present {
+                had_error = true;
+            }
+        }
+    }
+
     return json::finish(reader) && !had_error;
 }
 
@@ -598,6 +683,8 @@ struct JwtValidationOptions {
     expected_issuer: u8[..128] = [],
     expected_audience: u8[..128] = [],
     expected_subject: u8[..128] = [],
+    expected_typ: u8[..32] = [], // RFC 8725 §3.11 & RFC 9068: Explicit type verification
+    supported_crit: CritParam[..8] = [], // RFC 7515 §4.1.11 / RFC 8725 §3.8: Supported critical parameters
     leeway_seconds: i64 = DEFAULT_JWT_LEEWAY_SECONDS,
     require_exp: bool = true,
     require_nbf: bool = false,
@@ -613,6 +700,21 @@ fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtVal
         allow_none_alg: false,
         ..
     };
+}
+
+fn set_expected_type(opts: JwtValidationOptions&, typ: const u8[:]) {
+    opts.expected_typ.clear();
+    if typ.len <= opts.expected_typ.cap {
+        opts.expected_typ.append(typ);
+    }
+}
+
+fn add_supported_crit(opts: JwtValidationOptions&, name: const u8[:]) -> bool {
+    guard opts.supported_crit.len < opts.supported_crit.cap && name.len <= 32 else { return false; }
+    var item = CritParam { .. };
+    item.name.append(name);
+    opts.supported_crit.push(item);
+    return true;
 }
 
 // ---- 5. JWS Signing Pipeline (HMAC & Ed25519) -------------------------------
@@ -828,6 +930,54 @@ fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bo
     return JwtError.None;
 }
 
+fn is_matching_jwt_typ(header_typ: const u8[:], expected_typ: const u8[:]) -> bool {
+    if header_typ == expected_typ {
+        return true;
+    }
+    // Handle "application/" media type prefix equivalence per RFC 8725 §3.11
+    if core::starts_with(expected_typ, "application/") {
+        if header_typ == expected_typ[12..] {
+            return true;
+        }
+    }
+    if core::starts_with(header_typ, "application/") {
+        if header_typ[12..] == expected_typ {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn verify_jwt_header_rules(header: const JwtHeader&, options: const JwtValidationOptions&) -> JwtError {
+    let alg_err = verify_jwt_algorithm(header.alg, options.expected_alg, options.allow_none_alg);
+    guard alg_err == JwtError.None else { return alg_err; }
+
+    // RFC 8725 §3.11 & RFC 9068: Explicit JWT typ verification
+    if options.expected_typ.len > 0 {
+        if !is_matching_jwt_typ(header.typ[..], options.expected_typ[..]) {
+            return JwtError.TypeMismatch;
+        }
+    }
+
+    // RFC 7515 §4.1.11 / RFC 8725 §3.8: Critical Header Parameters (crit)
+    if header.crit.len > 0 {
+        for &cp in header.crit {
+            var found = false;
+            for &sc in options.supported_crit {
+                if sc.name[..] == cp.name[..] {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return JwtError.CriticalHeaderUnsupported;
+            }
+        }
+    }
+
+    return JwtError.None;
+}
+
 fn verify_jwt_hmac_signature(
     alg: JwtAlg,
     secret_key: const u8[:],
@@ -868,8 +1018,8 @@ fn verify_jwt_hmac(
     let hdr_err = decode_jwt_header(token[..dot1], out_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
-    let alg_err = verify_jwt_algorithm(out_header.alg, options.expected_alg, options.allow_none_alg);
-    guard alg_err == JwtError.None else { return alg_err; }
+    let hdr_rule_err = verify_jwt_header_rules(out_header, options);
+    guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
     var sig_bytes: u8[>..] = [];
     guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
@@ -918,8 +1068,8 @@ fn verify_jwt_eddsa(
     let hdr_err = decode_jwt_header(token[..dot1], out_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
-    let alg_err = verify_jwt_algorithm(out_header.alg, options.expected_alg, options.allow_none_alg);
-    guard alg_err == JwtError.None else { return alg_err; }
+    let hdr_rule_err = verify_jwt_header_rules(out_header, options);
+    guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
     if out_header.alg != JwtAlg.EdDSA {
         return JwtError.AlgorithmMismatch;
