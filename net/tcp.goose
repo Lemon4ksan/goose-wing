@@ -126,6 +126,51 @@ fn tcp_send2(fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 {
     return native_tcp_send2(fd, hdr, payload);
 }
 
+fn tcp_sendv_one(fd: i64, arr: core::IoVecArray&) -> i32 {
+    let chunk = core::iovec_get(arr, 0);
+    let sent = tcp_send(fd, chunk);
+    if sent > 0 {
+        core::iovec_consume(arr, sent);
+    }
+    return sent;
+}
+
+fn tcp_sendv_two(fd: i64, arr: core::IoVecArray&) -> i32 {
+    let c0 = core::iovec_get(arr, 0);
+    let c1 = core::iovec_get(arr, 1);
+    let sent = tcp_send2(fd, c0, c1);
+    if sent > 0 {
+        core::iovec_consume(arr, sent);
+    }
+    return sent;
+}
+
+fn tcp_sendv_multi(fd: i64, arr: core::IoVecArray&) -> i32 {
+    var total_sent: i32 = 0;
+    while !core::iovec_is_empty(arr) {
+        let c = core::iovec_get(arr, 0);
+        let sent = tcp_send(fd, c);
+        guard sent > 0 else {
+            return if total_sent > 0 { total_sent } else { sent };
+        }
+        core::iovec_consume(arr, sent);
+        total_sent = total_sent + sent;
+    }
+    return total_sent;
+}
+
+// Sends an IoVecArray of up to 16 chunks over TCP socket using zero-allocation scatter/gather.
+// Dispatches to native tcp_send2 and tcp_send, updating arr with iovec_consume on partial writes.
+// Returns total bytes sent, 0 if empty/no-op, or -1 on error.
+fn tcp_sendv(fd: i64, arr: core::IoVecArray&) -> i32 {
+    guard fd > 0 else { return 0; }
+    let count = core::iovec_count(arr);
+    guard count > 0 else { return 0; }
+    if count == 1 { return tcp_sendv_one(fd, arr); }
+    if count == 2 { return tcp_sendv_two(fd, arr); }
+    return tcp_sendv_multi(fd, arr);
+}
+
 // Global shared 64 KB receive loop buffer (LIBUS_RECV_BUFFER_LENGTH = 65536) in .bss
 // Eliminates the 4 KB stack memset [0; 4096] on every single recv call.
 const RECV_BUFFER_CAP: i64 = 65536;

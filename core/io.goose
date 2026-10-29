@@ -21,6 +21,7 @@ import core.io.tee;
 import core.io.ring;
 import core.io.pipe;
 import core.io.cork;
+import core.io.vec;
 
 // Copies bytes from reader to writer up to capacity or EOF.
 fn copy_reader_to_writer(r: SliceReader&, w: SliceWriter&) -> i64, IoError {
