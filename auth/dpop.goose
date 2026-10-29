@@ -559,6 +559,8 @@ fn verify_dpop_claims(
     return true;
 }
 
+const MAX_DPOP_PROOF_LEN: i64 = 4096;
+
 // Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, jkt, and time window.
 fn verify_dpop_proof(
     jwt: const u8[:],
@@ -573,6 +575,7 @@ fn verify_dpop_proof(
     expected_jkt: const u8[:] = "",
     expected_alg: const u8[:] = "HS256",
 ) -> bool {
+    guard jwt.len > 0 && jwt.len <= MAX_DPOP_PROOF_LEN else { return false; }
     var dot1: i64 = 0;
     var dot2: i64 = 0;
     guard split_jwt_parts(jwt, dot1, dot2) else { return false; }
@@ -644,4 +647,104 @@ fn extract_dpop_nonce<H, B>(headers: const H[:], out_nonce: B&) -> bool {
     guard ok else { return false; }
     out_nonce.clear();
     return out_nonce.try_append(nonce);
+}
+
+// ---- 7. DPoP Replay Cache (RFC 9449 §4.3 Rule 4) ---------------------------
+
+struct DPoPJtiEntry {
+    jti: u8[..64] = [],
+    expires_at_sec: i64 = 0,
+}
+
+struct DPoPReplayCache {
+    entries: DPoPJtiEntry[..128] = [],
+    head: i64 = 0,
+}
+
+// Checks whether a DPoP jti has been seen before; if not, records it until now_sec + ttl_sec.
+// Returns true if jti is unique and recorded; returns false if replay detected or input invalid.
+fn check_and_record_dpop_jti(
+    cache: DPoPReplayCache&,
+    jti: const u8[:],
+    now_sec: i64,
+    ttl_sec: i64 = 300,
+) -> bool {
+    guard jti.len > 0 && jti.len <= 64 else { return false; }
+    guard now_sec >= 0 && ttl_sec > 0 else { return false; }
+
+    var free_idx: i64 = -1;
+    for i in cache.entries.len {
+        let entry = cache.entries[i];
+        if entry.expires_at_sec > now_sec {
+            if core::ct_eq_bytes(entry.jti[..], jti) {
+                return false; // Replay attack detected!
+            }
+        } else if free_idx == -1 {
+            free_idx = i;
+        }
+    }
+
+    let exp = if now_sec > 9223372036854775807 - ttl_sec {
+        9223372036854775807
+    } else {
+        now_sec + ttl_sec
+    };
+
+    if free_idx >= 0 {
+        var slot = cache.entries[free_idx];
+        slot.jti.clear();
+        slot.jti.append(jti);
+        slot.expires_at_sec = exp;
+        cache.entries[free_idx] = slot;
+        return true;
+    }
+
+    if cache.entries.len < cache.entries.cap {
+        var new_entry = DPoPJtiEntry { .. };
+        new_entry.jti.append(jti);
+        new_entry.expires_at_sec = exp;
+        cache.entries.push(new_entry);
+        return true;
+    }
+
+    let overwrite_idx = cache.head;
+    cache.head = (cache.head + 1) % cache.entries.len;
+    var slot = cache.entries[overwrite_idx];
+    slot.jti.clear();
+    slot.jti.append(jti);
+    slot.expires_at_sec = exp;
+    cache.entries[overwrite_idx] = slot;
+    return true;
+}
+
+// Verifies a DPoP Proof JWT and rejects replayed proofs via DPoPReplayCache.
+fn verify_dpop_proof_with_replay_cache(
+    jwt: const u8[:],
+    key: const u8[:],
+    expected_method: const u8[:],
+    expected_uri: const u8[:],
+    now_sec: i64,
+    cache: DPoPReplayCache&,
+    access_token: const u8[:] = "",
+    expected_nonce: const u8[:] = "",
+    max_age_sec: i64 = 300,
+    max_skew_sec: i64 = 60,
+    expected_jkt: const u8[:] = "",
+    expected_alg: const u8[:] = "HS256",
+) -> bool {
+    var claims = DPoPClaims { .. };
+    var dot1: i64 = 0;
+    var dot2: i64 = 0;
+    guard split_jwt_parts(jwt, dot1, dot2) else { return false; }
+    var claims_json: u8[>..] = [];
+    guard core::base64url_decode(jwt[(dot1 + 1)..dot2], claims_json) else { return false; }
+    guard parse_dpop_claims(claims_json[..], claims) else { return false; }
+
+    guard verify_dpop_proof(
+        jwt, key, expected_method, expected_uri,
+        access_token, expected_nonce, now_sec,
+        max_age_sec, max_skew_sec, expected_jkt, expected_alg,
+    ) else { return false; }
+
+    return check_and_record_dpop_jti(cache, claims.jti[..], now_sec, max_age_sec);
 }

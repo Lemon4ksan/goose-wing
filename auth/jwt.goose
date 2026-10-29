@@ -991,11 +991,17 @@ fn sign_jwt_eddsa<B>(
 
 // ---- 6. JWT Verification & Claim Validation ---------------------------------
 
+// Hard bounds on raw token and component sizes to prevent parser DoS and memory exhaustion
+const MAX_JWT_TOKEN_LEN: i64 = 8192;
+const MAX_JWT_HEADER_PART_LEN: i64 = 2048;
+const MAX_JWT_CLAIMS_PART_LEN: i64 = 4096;
+
 fn split_jwt_parts(
     token: const u8[:],
     dot1: i64&,
     dot2: i64&,
 ) -> bool {
+    guard token.len > 0 && token.len <= MAX_JWT_TOKEN_LEN else { return false; }
     dot1 = -1;
     dot2 = -1;
     for i in token.len {
@@ -1009,7 +1015,9 @@ fn split_jwt_parts(
             }
         }
     }
-    return dot1 > 0 && dot2 > (dot1 + 1);
+    guard dot1 > 0 && dot1 <= MAX_JWT_HEADER_PART_LEN else { return false; }
+    guard dot2 > (dot1 + 1) && (dot2 - dot1) <= MAX_JWT_CLAIMS_PART_LEN else { return false; }
+    return true;
 }
 
 fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_sec: i64) -> bool {

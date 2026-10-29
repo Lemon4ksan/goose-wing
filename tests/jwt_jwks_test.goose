@@ -938,6 +938,69 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         sub.assert_true(wing::parse_jwt_claims_json(clm_float_json, clm_float), "Float NumericDate claims parsed successfully");
         sub.assert_eq(clm_float.iat, 1770000000, "iat parsed and truncated to whole seconds");
         sub.assert_eq(clm_float.exp, 1770003600, "exp parsed and truncated to whole seconds");
+
+        // 8. SSRF Protection on Remote JWKS URLs (RFC 8725 §3.12)
+        sub.assert_true(
+            wing::is_safe_remote_jwks_url("https://auth.example.com/.well-known/jwks.json"),
+            "Valid public HTTPS JWKS URL accepted",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("http://auth.example.com/jwks.json"),
+            "Insecure HTTP scheme rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://127.0.0.1/jwks.json"),
+            "Loopback 127.0.0.1 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://localhost/jwks.json"),
+            "Localhost rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://169.254.169.254/latest/meta-data/"),
+            "Cloud metadata IP 169.254.169.254 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://metadata.google.internal/computeMetadata/v1/"),
+            "Cloud metadata hostname rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://10.0.0.1/jwks.json"),
+            "RFC 1918 10.0.0.0/8 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://192.168.1.1/jwks.json"),
+            "RFC 1918 192.168.0.0/16 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://user:pass@example.com/jwks.json"),
+            "Embedded credentials in URL rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://example.com:8080/jwks.json"),
+            "Non-standard port 8080 rejected",
+        );
+
+        // 9. Oversized token DoS bounds
+        var huge_token: u8[>..] = [];
+        for i in 8200 { huge_token.push('a' as u8); }
+        var dot1: i64 = 0;
+        var dot2: i64 = 0;
+        sub.assert_false(
+            wing::split_jwt_parts(huge_token[..], dot1, dot2),
+            "Token exceeding MAX_JWT_TOKEN_LEN (8192) rejected immediately",
+        );
+
+        // 10. Zeroization of secret keys in JWKS
+        var test_jwks = wing::Jwks { .. };
+        let sym_sec = "test_zeroize_secret_32bytes_long";
+        wing::add_symmetric_key(test_jwks, "zero-key", wing::JwtAlg.HS256, sym_sec);
+        sub.assert_eq(test_jwks.keys.len, 1, "Key added to JWKS");
+        sub.assert_true(test_jwks.keys[0].valid, "Key is initially valid");
+        sub.assert_eq(test_jwks.keys[0].symmetric_key.len, 32, "Symmetric key has 32 bytes");
+
+        wing::zeroize_jwks(test_jwks);
+        sub.assert_eq(test_jwks.keys.len, 0, "Keys cleared from JWKS after zeroize");
     };
 }
 

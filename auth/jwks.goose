@@ -565,3 +565,73 @@ fn verify(
 
     return dispatch_jwks_verification(token, matched_key, options, now_unix_sec, out_header, out_claims);
 }
+
+// Securely wipes cryptographic keys and invalidates a JWK key entry.
+fn zeroize_jwks_key(key: JwksKey&) {
+    core::secure_zeroize_slice(key.symmetric_key[..]);
+    key.symmetric_key.clear();
+    core::secure_zeroize_32(key.public_key);
+    key.valid = false;
+}
+
+// Securely wipes all cryptographic keys in the JWKS set.
+fn zeroize_jwks(jwks: Jwks&) {
+    for i in jwks.keys.len {
+        zeroize_jwks_key(jwks.keys[i]);
+    }
+    jwks.keys.clear();
+}
+
+// ---- 6. SSRF Protection for Remote JWKS & OIDC Discovery (RFC 8725 §3.12) --
+
+inline fn is_private_or_loopback_ipv4(host: const u8[:]) -> bool {
+    if core::starts_with(host, "127.") { return true; }
+    if core::starts_with(host, "10.") { return true; }
+    if core::starts_with(host, "192.168.") { return true; }
+    if core::starts_with(host, "169.254.") { return true; }
+    if core::starts_with(host, "0.") { return true; }
+    if core::starts_with(host, "172.") && host.len >= 7 {
+        if host[4] == '1' && (host[5] >= '6' && host[5] <= '9') && host[6] == '.' { return true; }
+        if host[4] == '2' && (host[5] >= '0' && host[5] <= '9') && host[6] == '.' { return true; }
+        if host[4] == '3' && (host[5] == '0' || host[5] == '1') && host[6] == '.' { return true; }
+    }
+    if core::starts_with(host, "100.") && host.len >= 7 {
+        let b4 = host[4];
+        let b5 = host[5];
+        if (b4 >= '6' && b4 <= '9') && (b5 >= '0' && b5 <= '9') && host[6] == '.' {
+            return true;
+        }
+        if b4 == '1' && (b5 >= '0' && b5 <= '2') && host[6] >= '0' && host[6] <= '7' {
+            if host.len >= 8 && host[7] == '.' { return true; }
+        }
+    }
+    return false;
+}
+
+inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
+    if host == "localhost" || host == "::1" || host == "[::1]" { return true; }
+    if host == "metadata.google.internal" || host == "instance-data" { return true; }
+    if core::ends_with(host, ".localhost") || core::ends_with(host, ".local") { return true; }
+    if core::ends_with(host, ".internal") || core::ends_with(host, ".lan") { return true; }
+    if core::ends_with(host, ".corp") { return true; }
+    if core::starts_with(host, "[fe80:") || core::starts_with(host, "[fc00:") { return true; }
+    if core::starts_with(host, "[fd00:") { return true; }
+    return is_private_or_loopback_ipv4(host);
+}
+
+// Evaluates whether a remote JWKS URL is safe for network retrieval (RFC 8725 §3.12).
+// Defends against SSRF, internal network scanning, cloud metadata exfiltration, and credential leaks.
+//
+// Example:
+//   raw_url = "https://auth.example.com/.well-known/jwks.json"
+//   returns: true
+fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool {
+    guard raw_url.len > 0 && raw_url.len <= 2048 else { return false; }
+    let view, err = core::parse_url_view(raw_url);
+    guard err == core::UrlParseError.None && view.valid else { return false; }
+    guard view.scheme == "https" else { return false; }
+    guard view.username.len == 0 && view.password.len == 0 else { return false; }
+    guard view.port == -1 || view.port == 443 else { return false; }
+    guard view.host.len > 0 else { return false; }
+    return !is_forbidden_internal_host(view.host);
+}

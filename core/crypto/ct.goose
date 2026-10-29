@@ -98,6 +98,12 @@ fn secure_zeroize_64(buf: u8[64]&) {
     for idx in 64 { buf[idx] = 0; }
 }
 
+fn secure_zeroize_slice(buf: u8[:]) {
+    for idx in buf.len {
+        buf[idx] = 0;
+    }
+}
+
 fn secure_zeroize_vec(buf: u8[>..]&) {
     for idx in buf.len {
         buf[idx] = 0;

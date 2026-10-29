@@ -476,6 +476,68 @@ fn test_dpop_rfc9449(t: core::T&) {
         sub.assert_true(req.has_header("Authorization"), "Authorization header attached with access token");
         sub.assert_ge(req.header("Authorization").len, 300, "Access token preserved without truncation");
     };
+
+    t.run("DPoP Replay Cache & DoS Bounds (RFC 9449 §4.3 Rule 4)") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let now_sec: i64 = 1714000000;
+        var cache = wing::DPoPReplayCache { .. };
+
+        var proof_valid: u8[..1024] = [];
+        let ok_create = wing::create_dpop_proof(
+            key,
+            "POST",
+            "https://api.example.com/data",
+            "",
+            "",
+            now_sec,
+            "jti_test_1",
+            proof_valid,
+        );
+        sub.assert_true(ok_create, "DPoP proof generated");
+
+        // First verification with replay cache succeeds and records jti
+        let ok_first = wing::verify_dpop_proof_with_replay_cache(
+            proof_valid[..],
+            key,
+            "POST",
+            "https://api.example.com/data",
+            now_sec,
+            cache,
+        );
+        sub.assert_true(ok_first, "First verification succeeds and registers JTI");
+
+        // Replay of the identical proof MUST be rejected
+        let ok_replay = wing::verify_dpop_proof_with_replay_cache(
+            proof_valid[..],
+            key,
+            "POST",
+            "https://api.example.com/data",
+            now_sec + 5,
+            cache,
+        );
+        sub.assert_false(ok_replay, "Replayed DPoP proof MUST be rejected by replay cache");
+
+        // Different JTI succeeds
+        var proof_diff: u8[..1024] = [];
+        wing::create_dpop_proof(key, "POST", "https://api.example.com/data", "", "", now_sec, "jti_test_2", proof_diff);
+        let ok_diff = wing::verify_dpop_proof_with_replay_cache(
+            proof_diff[..],
+            key,
+            "POST",
+            "https://api.example.com/data",
+            now_sec + 6,
+            cache,
+        );
+        sub.assert_true(ok_diff, "Distinct JTI succeeds cleanly");
+
+        // Oversized proof (> 4096 bytes) rejected immediately before decoding
+        var huge_proof: u8[>..] = [];
+        for i in 4100 { huge_proof.push('A' as u8); }
+        sub.assert_false(
+            wing::verify_dpop_proof(huge_proof[..], key, "POST", "https://api.example.com/data"),
+            "Oversized DPoP proof (> 4096) rejected without decoding",
+        );
+    };
 }
 
 fn main() {
