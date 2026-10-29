@@ -139,6 +139,7 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
     return true;
 }
 
+// Matches and stores core challenge attributes (realm, nonce, algorithm, qop).
 fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
     if eq_ascii_fold(key, "realm") {
         guard val.len <= chal.realm.cap else { return false; }
@@ -167,6 +168,7 @@ fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const 
     return false;
 }
 
+// Matches and stores optional challenge attributes (opaque, domain, stale, userhash).
 fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
     if eq_ascii_fold(key, "opaque") {
         guard val.len <= chal.opaque.cap else { return; }
@@ -190,6 +192,7 @@ fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u
     }
 }
 
+// Dispatches a challenge parameter key-value pair to core or optional field storage.
 fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
     if !apply_digest_core_param(chal, key, val) {
         apply_digest_opt_param(chal, key, val);
@@ -239,6 +242,11 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
 
 // ---- 3. Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
 
+// Computes MD5 or SHA-256 digest and returns formatted hexadecimal string.
+//
+// Example:
+//   algorithm = "SHA-256", data = "hello"
+//   returns: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
     var out_hex: u8[..64] = [];
     if eq_ascii_fold(algorithm, "md5") || eq_ascii_fold(algorithm, "md5-sess") {
@@ -350,6 +358,12 @@ fn calculate_digest_response(
     return digest_hash_hex(algo, a3[..]);
 }
 
+// Appends a parameter value while escaping quotes and backslashes (RFC 7616 §3.4).
+// Rejects control characters (\r, \n, \0).
+//
+// Example:
+//   val = "hello \"world\""
+//   appends: "hello \\\"world\\\"" to `out`, returns: true
 fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
     for b in val {
         if b == '\r' || b == '\n' || b == 0 {
@@ -365,6 +379,7 @@ fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
     return true;
 }
 
+// Appends mandatory RFC 7616 Digest key-value pairs (username, realm, nonce, uri, response).
 fn serialize_digest_core_kv<B>(
     out: B&,
     effective_user: const u8[:],
@@ -395,6 +410,7 @@ fn serialize_digest_core_kv<B>(
     return true;
 }
 
+// Appends optional RFC 7616 Digest key-value pairs (qop, nc, cnonce, opaque, userhash).
 fn serialize_digest_opt_kv<B>(
     out: B&,
     active_qop: const u8[:],
