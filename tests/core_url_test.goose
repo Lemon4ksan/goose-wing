@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: core_url ---
+// --- Component: core_url ---
 // Tests for URL parsing, IPv6 formatting, and path resolution.
 
 // ----------------------------------------------------------------------------

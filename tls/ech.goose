@@ -273,7 +273,7 @@ fn build_ech_outer_extension<B>(
     return true;
 }
 
-// Builds the ECH extension wire bytes for ClientHelloInner (RFC 9460 Section 6.1).
+// RFC 9460 Section 6: SVCB-Compatible RR Types - Builds the ECH extension wire bytes for ClientHelloInner.
 // Type = 0x01 (inner), empty payload.
 fn build_ech_inner_extension<B>(out: B&) {
     out.push(ECH_CLIENT_INNER);
@@ -403,7 +403,7 @@ fn ech_fsm_on_server_hello(
     }
 }
 
-// RFC 9460 Section 6.1: When ECH is used with 0-RTT, early_data MUST be in ClientHelloInner,
+// RFC 9460 Section 6: SVCB-Compatible RR Types - When ECH is used with 0-RTT, early_data MUST be in ClientHelloInner,
 // and MUST NOT appear in ClientHelloOuter.
 // A server observing early_data in ClientHelloOuter MUST reject it with illegal_parameter.
 fn validate_ech_early_data_placement(is_inner: bool, has_early_data: bool) -> bool {
@@ -413,7 +413,7 @@ fn validate_ech_early_data_placement(is_inner: bool, has_early_data: bool) -> bo
     return true;
 }
 
-// RFC 9460 Section 6.1 & OpenSSL #33428: ECH Outer ALPN Separation
+// RFC 9460 Section 6: SVCB-Compatible RR Types - ECH Outer ALPN Separation (OpenSSL #33428)
 // When ECH is accepted, the selected ALPN must match the inner ALPN offer.
 // When ECH is bypassed or rejected, the selected ALPN must match the outer ALPN offer.
 // An outer connection MUST NOT accept a negotiated ALPN that was only offered in the inner list.

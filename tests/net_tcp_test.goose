@@ -6,8 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: net_tcp_live ---
-// Live TCP loopback verification suite using native OS sockets
+// --- Component: net_tcp_live ---
 
 fn test_tcp_loopback_echo(t: core::T&) {
     // 1. Listen on ephemeral port
@@ -1082,6 +1081,52 @@ fn test_tcp_sendv_socket(t: core::T&) {
     };
 }
 
+// RFC 7413 Section 5: TCP Fast Open Configuration
+// RFC 3168 Section 5: The ECN Field in IP
+fn test_tcp_fastopen_and_ecn(t: core::T&) {
+    t.run("TCP-01: TCP Fast Open constants and option flags") { sub =>
+        sub.assert_eq(wing::TCP_FASTOPEN_DEFAULT_QLEN, 512, "default TFO queue length is 512");
+        sub.assert_eq(wing::MSG_FASTOPEN, 0x20000000, "MSG_FASTOPEN flag is 0x20000000");
+
+        // Invalid fd (-1) must fail safely
+        sub.assert_false(wing::tcp_set_fastopen(-1), "set_fastopen on -1 returns false");
+        sub.assert_eq(wing::tcp_send_fastopen(-1, "test"), 0, "send_fastopen on -1 returns 0");
+    };
+
+    t.run("TCP-02: ECN codepoint decoding and classification (RFC 3168)") { sub =>
+        sub.assert_eq(wing::ECN_NOT_ECT, 0x00 as u8, "ECN_NOT_ECT is 0");
+        sub.assert_eq(wing::ECN_ECT_1, 0x01 as u8, "ECN_ECT_1 is 1");
+        sub.assert_eq(wing::ECN_ECT_0, 0x02 as u8, "ECN_ECT_0 is 2");
+        sub.assert_eq(wing::ECN_CE, 0x03 as u8, "ECN_CE is 3");
+
+        // Pure ECN bytes
+        sub.assert_eq(wing::ecn_from_tos(0x00 as u8), wing::ECN_NOT_ECT, "tos 0 is NOT_ECT");
+        sub.assert_eq(wing::ecn_from_tos(0x01 as u8), wing::ECN_ECT_1, "tos 1 is ECT_1");
+        sub.assert_eq(wing::ecn_from_tos(0x02 as u8), wing::ECN_ECT_0, "tos 2 is ECT_0");
+        sub.assert_eq(wing::ecn_from_tos(0x03 as u8), wing::ECN_CE, "tos 3 is CE");
+
+        // TOS with DSCP bits (e.g. DSCP CS5 = 0x28, shifted = 0xA0)
+        let dscp_base: u8 = 0xA0;
+        sub.assert_eq(wing::ecn_from_tos(dscp_base | wing::ECN_ECT_0), wing::ECN_ECT_0, "masked ECT_0 with DSCP");
+        sub.assert_eq(wing::ecn_from_tos(dscp_base | wing::ECN_CE), wing::ECN_CE, "masked CE with DSCP");
+
+        // ECN capabilities
+        sub.assert_false(wing::ecn_is_capable(wing::ECN_NOT_ECT), "NOT_ECT is not capable");
+        sub.assert_true(wing::ecn_is_capable(wing::ECN_ECT_0), "ECT_0 is capable");
+        sub.assert_true(wing::ecn_is_capable(wing::ECN_ECT_1), "ECT_1 is capable");
+        sub.assert_false(wing::ecn_is_capable(wing::ECN_CE), "CE is not capable alone");
+
+        // Congestion experienced
+        sub.assert_true(wing::ecn_is_congestion_experienced(wing::ECN_CE), "CE flagged");
+        sub.assert_false(wing::ecn_is_congestion_experienced(wing::ECN_ECT_0), "ECT_0 not CE");
+
+        // Invalid fd (-1) safe handling
+        sub.assert_false(wing::tcp_set_tos(-1, 0x02 as u8), "set_tos on -1 returns false");
+        sub.assert_false(wing::tcp_set_ecn(-1, wing::ECN_ECT_0), "set_ecn on -1 returns false");
+        sub.assert_false(wing::tcp_set_ipv6_tclass(-1, 0x02 as u8), "set_ipv6_tclass on -1 returns false");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("TCP Socket IO, Corking, Abort, and Half-Close Verification Suite", core::Verbosity.Verbose);
 
@@ -1114,6 +1159,7 @@ fn main() {
     core::run_case(runner, "27. IoVec Flatten & Copy", test_iovec_flatten_and_copy);
     core::run_case(runner, "28. IoVec Consumption & Compact", test_iovec_consumption_and_compact);
     core::run_case(runner, "29. Kernel TCP tcp_sendv", test_tcp_sendv_socket);
+    core::run_case(runner, "30. TCP Fast Open (RFC 7413) & ECN Options (RFC 3168)", test_tcp_fastopen_and_ecn);
 
     let ok = core::finish(runner);
     assert(ok);

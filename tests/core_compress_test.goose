@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: core_compress ---
+// --- Component: core_compress ---
 // Test suite for Goose compression (`core::compress`).
 //
 // Verification Coverage:

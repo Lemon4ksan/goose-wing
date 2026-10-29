@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: http_headers ---
+// --- Component: http_headers ---
 // Tests for HeaderMap, header parsing, validation, and iteration.
 
 fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {

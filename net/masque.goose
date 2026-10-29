@@ -9,8 +9,8 @@ import std;
 
 // ---- 1. Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
-const CAPSULE_DATAGRAM: u64 = 0x00;                   // RFC 9297 Section 3.5
-const CAPSULE_PADDING: u64 = 0x01;                    // RFC 9297 Section 3.6
+const CAPSULE_DATAGRAM: u64 = 0x00;                   // RFC 9297 Section 3.5 (DATAGRAM Capsule)
+const CAPSULE_PADDING: u64 = 0x01;                    // RFC 9297 Section 3.2 (Capsule padding)
 const CAPSULE_ADDRESS_ASSIGN: u64 = 0x1E;             // RFC 9484 CONNECT-IP Section 4.1
 const CAPSULE_ADDRESS_REQUEST: u64 = 0x1F;            // RFC 9484 CONNECT-IP Section 4.2
 const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x20;        // RFC 9484 CONNECT-IP Section 4.3

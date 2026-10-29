@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: regress_issues_batch11 ---
+// --- Component: regress_issues_batch11 ---
 // Phase 11 RED test suite: Fixed-Capacity Truncation Smuggling, Protocol Limits & Defer Lifecycle
 // Tests bounds aborts, silent drops, and RFC protocol non-conformances:
 //

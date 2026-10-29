@@ -44,7 +44,7 @@ fn jwt_alg_to_string(alg: JwtAlg) -> const u8[:] {
     };
 }
 
-// Parses a JWS algorithm token into a typed JwtAlg (RFC 7518 §3.1).
+// RFC 7518 Section 3: Cryptographic Algorithms for Digital Signatures and MACs - Parses a JWS algorithm token into a typed JwtAlg.
 //
 // Example:
 //   s = "HS256"
@@ -280,6 +280,8 @@ inline fn parse_jwt_header_member(
             var item = SeenHeaderKey { .. };
             item.name.append(key);
             seen_others.push(item);
+        } else {
+            had_error = true;
         }
         json::skip(reader);
     }
@@ -857,6 +859,8 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
                 var item = SeenCustomKey { .. };
                 item.name.append(key);
                 seen_custom.push(item);
+            } else {
+                had_error = true;
             }
             parse_custom_claim_entry(key, reader, scratch, out_claims, had_error);
         }

@@ -36,10 +36,18 @@ enum QuicFrameType {
     StreamDataBlocked,
     StreamsBlockedBidi,
     StreamsBlockedUni,
+    PathChallenge,
+    PathResponse,
     HandshakeDone,
     ConnectionClose,
     ConnectionCloseApp,
     Unknown,
+}
+
+// RFC 9000 Section 19.17: PATH_CHALLENGE Frames - 8-byte payload structure
+// RFC 9000 Section 19.18: PATH_RESPONSE Frames - 8-byte payload structure
+struct QuicPathFrame {
+    data: u8[8] = [0; 8],
 }
 
 struct QuicStreamFrame {
@@ -281,6 +289,34 @@ fn encode_streams_blocked_frame<B>(out: B&, stream_limit: u64, is_bidi: bool) ->
     return true;
 }
 
+// RFC 9000 Section 19.17: PATH_CHALLENGE Frames - PATH_CHALLENGE frame format
+// Encodes a PATH_CHALLENGE frame (0x1A) containing 8-byte payload.
+//
+// Example:
+//   data = [1, 2, 3, 4, 5, 6, 7, 8]
+//   out: appends 0x1A followed by 8 data bytes
+fn encode_path_challenge_frame<B>(out: B&, data: const u8[8]&) -> bool {
+    guard quic_encode_varint(out, QUIC_FRAME_PATH_CHALLENGE) else { return false; }
+    for i in 8 {
+        out.push(data[i]);
+    }
+    return true;
+}
+
+// RFC 9000 Section 19.18: PATH_RESPONSE Frames - PATH_RESPONSE frame format
+// Encodes a PATH_RESPONSE frame (0x1B) containing 8-byte payload.
+//
+// Example:
+//   data = [1, 2, 3, 4, 5, 6, 7, 8]
+//   out: appends 0x1B followed by 8 data bytes
+fn encode_path_response_frame<B>(out: B&, data: const u8[8]&) -> bool {
+    guard quic_encode_varint(out, QUIC_FRAME_PATH_RESPONSE) else { return false; }
+    for i in 8 {
+        out.push(data[i]);
+    }
+    return true;
+}
+
 // Encodes a HANDSHAKE_DONE frame (0x1E) (RFC 9000 Section 19.20).
 fn encode_handshake_done_frame<B>(out: B&) -> bool {
     guard quic_encode_varint(out, QUIC_FRAME_HANDSHAKE_DONE) else { return false; }
@@ -467,6 +503,38 @@ inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxSt
     }, true;
 }
 
+// RFC 9000 Section 19.17: PATH_CHALLENGE Frames - 8-byte payload decoding
+// Decodes a PATH_CHALLENGE frame payload (8 bytes) directly from slice with cursor.
+//
+// Example:
+//   src = [1, 2, 3, 4, 5, 6, 7, 8], idx = 0
+//   returns: QuicPathFrame { data: [1, 2, 3, 4, 5, 6, 7, 8] }, ok = true, idx = 8
+inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> QuicPathFrame, bool {
+    guard idx + 8 <= src.len else { return QuicPathFrame { .. }, false; }
+    var frame = QuicPathFrame { .. };
+    for i in 8 {
+        frame.data[i] = src[idx + i];
+    }
+    idx += 8;
+    return frame, true;
+}
+
+// RFC 9000 Section 19.18: PATH_RESPONSE Frames - 8-byte payload decoding
+// Decodes a PATH_RESPONSE frame payload (8 bytes) directly from slice with cursor.
+//
+// Example:
+//   src = [1, 2, 3, 4, 5, 6, 7, 8], idx = 0
+//   returns: QuicPathFrame { data: [1, 2, 3, 4, 5, 6, 7, 8] }, ok = true, idx = 8
+inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> QuicPathFrame, bool {
+    guard idx + 8 <= src.len else { return QuicPathFrame { .. }, false; }
+    var frame = QuicPathFrame { .. };
+    for i in 8 {
+        frame.data[i] = src[idx + i];
+    }
+    idx += 8;
+    return frame, true;
+}
+
 // ---- 6. Frame Demuxer Dispatch Subroutines ----------------------------------
 
 // Dispatches core QUIC frame types (0x00 - 0x11) directly from slice with cursor.
@@ -648,7 +716,26 @@ inline fn decode_connection_close_frame(
     }, true;
 }
 
-// Dispatches connection management frames (0x1C - 0x1E).
+// Decodes a PATH_CHALLENGE (0x1A) or PATH_RESPONSE (0x1B) frame into QuicFrame.
+//
+// Example:
+//   src = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], idx = 0, ftype = 0x1A
+//   returns: QuicFrame { length: 8 }, ok = true, idx = 8
+inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    let cur = idx;
+    let end = cur + 8;
+    guard src.len >= end else { return QuicFrame { .. }, false; }
+    idx = end;
+    let k = if ftype == QUIC_FRAME_PATH_CHALLENGE { QuicFrameType.PathChallenge } else { QuicFrameType.PathResponse };
+    return QuicFrame {
+        frame_type: k,
+        raw_type: ftype,
+        length: 8,
+        payload: src[cur..end],
+    }, true;
+}
+
+// Dispatches connection management frames (0x1A - 0x1E).
 //
 // Example:
 //   src = [], idx = 0, ftype = QUIC_FRAME_HANDSHAKE_DONE (0x1E)
@@ -656,6 +743,9 @@ inline fn decode_connection_close_frame(
 fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == QUIC_FRAME_HANDSHAKE_DONE {
         return QuicFrame { frame_type: QuicFrameType.HandshakeDone, raw_type: ftype }, true;
+    }
+    if ftype == QUIC_FRAME_PATH_CHALLENGE || ftype == QUIC_FRAME_PATH_RESPONSE {
+        return demux_path_frame(src, idx, ftype);
     }
     if ftype == QUIC_FRAME_CONNECTION_CLOSE || ftype == QUIC_FRAME_CONNECTION_CLOSE_APP {
         return decode_connection_close_frame(src, idx, ftype);

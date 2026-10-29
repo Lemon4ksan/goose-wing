@@ -76,6 +76,7 @@ import http.early_hints;
 import http.novarysearch;
 import http.h2_framer;
 import http2.framing;
+import http2.frames;
 import http2.hpack;
 import http2.connection;
 import http3.qpack;
@@ -83,6 +84,8 @@ import http3.framing;
 import http3.connection;
 import quic.packet;
 import quic.frames;
+import quic.migration;
+import quic.dplpmtud;
 import quic.stream;
 import quic.flow_control;
 import quic.AckFrame;
@@ -122,6 +125,7 @@ import tls.x509;
 import tls.hpke;
 import tls.ech;
 import tls.post_quantum;
+import tls.cert_compression;
 
 // ---- server primitives -----------------------------------------------------
 

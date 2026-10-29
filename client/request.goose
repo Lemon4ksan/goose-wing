@@ -152,17 +152,17 @@ fn set_bearer(req: Request&, token: const u8[:]) {
     bearer(req, token);
 }
 
-fn query(req: Request&, key: const u8[:], value: const u8[:]) {
-    if req.query_params.len < 16 {
-        var param_item = QueryItem { .. };
-        param_item.key.append(key);
-        param_item.value.append(value);
-        req.query_params.push(param_item);
+// Invariant 13: Strict capacity overflow error propagation.
+// Rejects when query parameters capacity is reached or key/value length exceeds bounds.
+fn query(req: Request&, key: const u8[:], value: const u8[:]) -> bool {
+    guard req.query_params.len < req.query_params.cap && key.len <= 64 && value.len <= 256 else {
+        return false;
     }
-}
-
-fn set_query(req: Request&, key: const u8[:], value: const u8[:]) {
-    query(req, key, value);
+    var param_item = QueryItem { .. };
+    param_item.key.append(key);
+    param_item.value.append(value);
+    req.query_params.push(param_item);
+    return true;
 }
 
 fn timeout_ms(req: Request&, ms: i64) {
@@ -257,11 +257,15 @@ fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
     set_header(req, "X-B3-Sampled", "1");
 }
 
+// RFC 2104 Section 2: Definition of HMAC - Computes cryptographic HMAC-SHA256 signature
+// over the request body and sets the X-Signature-256 header as a 64-character lowercase hex string.
+// If the body is empty, signs an empty slice. Zero heap allocations on hot path.
 fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
-    // Lightweight deterministic signature stub for the shell skeleton
-    var sig: u8[>..] = "hmac-sha256:";
-    sig.append(secret_key);
-    sig.append(":len=");
-    format(sig, req.body.len);
-    set_header(req, "X-Signature-256", sig[..]);
+    let body_bytes: const u8[:] = if req.body.len > 0 { req.body[..] } else { "" };
+    let mac = core::hmac_sha256(secret_key, body_bytes);
+    var sig_hex: u8[..64] = [];
+    for b in mac {
+        core::format_u8_hex(b, sig_hex);
+    }
+    set_header(req, "X-Signature-256", sig_hex[..]);
 }

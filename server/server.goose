@@ -291,7 +291,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     guard line_end > 0 else { return false, 0; }
 
     let status_line = header_bytes[..line_end];
-    // RFC 9112 §3.1.2 & uWS #1949: Exactly SP between HTTP-version and 3-digit status code
+    // RFC 9112 Section 4: Status Line - Exactly SP between HTTP-version and 3-digit status code (uWS #1949)
     guard status_line.len >= 12 && status_line[..7] == "HTTP/1." && status_line[8] == ' ' else { return false, 0; }
     if status_line.len > 12 {
         guard status_line[12] == ' ' else { return false, 0; }
@@ -918,11 +918,18 @@ fn complete_ws_upgrade<B>(
     session.send_pings_automatically = route_behavior.send_pings_automatically;
     session.reset_idle_timeout_on_send = route_behavior.reset_idle_timeout_on_send;
 
-    if subproto.len > 0 && subproto.len <= session.subprotocol.cap {
+    guard subproto.len <= session.subprotocol.cap else {
+        return WebSocketSession { .. }, false;
+    }
+    guard pending.user_data.len <= session.user_data.cap else {
+        return WebSocketSession { .. }, false;
+    }
+
+    if subproto.len > 0 {
         session.subprotocol.append(subproto);
     }
     session.user_tag = pending.user_tag;
-    if pending.user_data.len > 0 && pending.user_data.len <= session.user_data.cap {
+    if pending.user_data.len > 0 {
         session.user_data.append(pending.user_data[..]);
     }
 

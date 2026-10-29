@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: regress_issues_batch06 ---
+// --- Component: regress_issues_batch06 ---
 // Phase 6 RED test suite based on .gemini issue trackers and RFC specifications.
 // Verifies protocol flaws, RFC non-conformances, and edge cases that are CURRENTLY UNFIXED in goose-wing.
 //

@@ -20,6 +20,8 @@ const FRAME_PING: u8 = 0x06;
 const FRAME_GOAWAY: u8 = 0x07;
 const FRAME_WINDOW_UPDATE: u8 = 0x08;
 const FRAME_CONTINUATION: u8 = 0x09;
+const FRAME_ALTSVC: u8 = 0x0A;          // RFC 7838 Section 4
+const FRAME_ORIGIN: u8 = 0x0C;          // RFC 8336 Section 2
 const FRAME_PRIORITY_UPDATE: u8 = 0x10; // RFC 9218 Section 7.1
 
 // ---- 2. frame flags (rfc 9113 section 4.1) ----------------------------------
@@ -133,11 +135,12 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
             return ERR_PROTOCOL_ERROR;
         }
     } else {
-        // Stream ID > 0 rules (RFC 9113 §6.5, §6.7, §6.8, §6.10)
+        // Stream ID > 0 rules (RFC 9113 §6.5, §6.7, §6.8, §6.10 & RFC 8336 Section 2.1)
         if hdr.frame_type == FRAME_SETTINGS ||
            hdr.frame_type == FRAME_PING ||
            hdr.frame_type == FRAME_GOAWAY ||
-           hdr.frame_type == FRAME_PRIORITY_UPDATE {
+           hdr.frame_type == FRAME_PRIORITY_UPDATE ||
+           hdr.frame_type == FRAME_ORIGIN {
             return ERR_PROTOCOL_ERROR;
         }
     }
@@ -166,6 +169,9 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
         return ERR_FRAME_SIZE_ERROR;
     }
     if hdr.frame_type == FRAME_PRIORITY_UPDATE && hdr.length < 4 {
+        return ERR_FRAME_SIZE_ERROR;
+    }
+    if hdr.frame_type == FRAME_ALTSVC && hdr.length < 2 {
         return ERR_FRAME_SIZE_ERROR;
     }
     if hdr.frame_type == FRAME_PUSH_PROMISE {
@@ -246,10 +252,10 @@ fn extract_headers_frame_payload(
             return raw, ERR_FRAME_SIZE_ERROR;
         }
         if !no_rfc7540_priorities {
-            let stream_dep = (((raw[0] & 0x7F) as u32) << 24) |
-                             ((raw[1] as u32) << 16) |
-                             ((raw[2] as u32) << 8) |
-                             raw[3];
+            let s0 = ((raw[0] & 0x7F) as u32) << 24;
+            let s1 = (raw[1] as u32) << 16;
+            let s2 = (raw[2] as u32) << 8;
+            let stream_dep = s0 | s1 | s2 | raw[3];
             // RFC 7540 / RFC 9113: stream cannot depend on itself
             if stream_dep == hdr.stream_id {
                 return raw, ERR_PROTOCOL_ERROR;
@@ -303,10 +309,10 @@ fn parse_priority_update_payload(
         return 0, p, ERR_FRAME_SIZE_ERROR;
     }
 
-    let prioritized_stream_id = (((payload[0] & 0x7F) as u32) << 24) |
-                                ((payload[1] as u32) << 16) |
-                                ((payload[2] as u32) << 8) |
-                                payload[3];
+    let p0 = ((payload[0] & 0x7F) as u32) << 24;
+    let p1 = (payload[1] as u32) << 16;
+    let p2 = (payload[2] as u32) << 8;
+    let prioritized_stream_id = p0 | p1 | p2 | payload[3];
 
     guard prioritized_stream_id != 0 else {
         return 0, p, ERR_PROTOCOL_ERROR;

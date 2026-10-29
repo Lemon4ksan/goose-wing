@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: regress_issues_batch01 ---
+// --- Component: regress_issues_batch01 ---
 // Red test suite verifying uncovered edge cases and vulnerabilities from:
 //   1. Go #78948 (CVE-2026-39825): Query parameter count truncation & smuggling in parse_query_params.
 //   2. Go #82350: Preserving stale Request.Host across cross-origin / scheme-relative redirects.
@@ -323,7 +323,7 @@ fn test_scoped_ipv6_link_local_url_acceptance(t: core::T&) {
 // 4. RFC 7692 §5.1 / uWS #1164: RSV1 Set on WebSocket Continuation Frame Must Fail with 1002
 // 5. Go #76635 & RFC 6455 §4.1: Empty Path in WebSocket Handshake Must Default to '/'
 // 6. Go #78569 & CVE-2026-25679 follow-up: parse_url_view Trailing Garbage on IPv6 Brackets [::1]evil.com
-// 7. RFC 9112 §3.1.2 & uWS #1949: HTTP Wire Response Status Line Whitespace & 4-Digit Smuggling
+// 7. RFC 9112 Section 4: Status Line - HTTP Wire Response Status Line Whitespace & 4-Digit Smuggling (uWS #1949)
 
 // ----------------------------------------------------------------------------
 // 1. Go #81508 & RFC 9110 §14.1.2: Unsupported Range Unit Must Return 200 OK
@@ -475,7 +475,7 @@ fn test_parse_url_view_ipv6_bracket_trailing_garbage(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 7. RFC 9112 §3.1.2 & uWS #1949: HTTP Wire Response Status Line Whitespace & 4-Digit Smuggling
+// 7. RFC 9112 Section 4: Status Line - HTTP Wire Response Status Line Whitespace & 4-Digit Smuggling (uWS #1949)
 // ----------------------------------------------------------------------------
 fn test_http1_wire_response_status_line_validation(t: core::T&) {
     t.run("parse_http1_wire_response must reject 4-digit status code 'HTTP/1.1 2000 OK'") { sub =>
@@ -871,7 +871,7 @@ fn main() {
     core::run_case(runner, "16. RFC 7692 §5.1 / uWS #1164: RSV1 on Continuation Frame Rejection", test_continuation_rsv1_rejected);
     core::run_case(runner, "17. Go #76635 & RFC 6455 §4.1: Empty Path in WS Handshake Defaults to '/'", test_ws_handshake_empty_path_defaults_to_slash);
     core::run_case(runner, "18. Go #78569 & CVE-2026-25679 follow-up: parse_url_view [::1]evil.com Rejection", test_parse_url_view_ipv6_bracket_trailing_garbage);
-    core::run_case(runner, "19. RFC 9112 §3.1.2 & uWS #1949: HTTP Wire Response Status Line Validation", test_http1_wire_response_status_line_validation);
+    core::run_case(runner, "19. RFC 9112 Section 4: Status Line - HTTP Wire Response Status Line Validation (uWS #1949)", test_http1_wire_response_status_line_validation);
     core::run_case(runner, "20. RFC 9110 §6.5.1 & Go #81143: Disallow Content-Type and Content-Encoding in Trailers", test_forbidden_trailer_fields);
     core::run_case(runner, "21. RFC 9110 §14.1.2 & Go #81858: Range Requests Exceeding Max Ranges Return 200 OK", test_exceeded_max_ranges_returns_200);
     core::run_case(runner, "22. RFC 9112 §6.1 & RFC 7230 §3.3.3: Invalid Response Transfer-Encoding Rejection", test_response_invalid_transfer_encoding_rejected);

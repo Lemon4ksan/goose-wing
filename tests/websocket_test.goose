@@ -6,15 +6,15 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: websocket_framing_handshake ---
+// --- Component: websocket_framing_handshake ---
 // Team FrameForge Protocol Audit Suite - Round 1
 // Focus: RFC 6455 & RFC 7692 WebSocket Framing, Deflate Compression, RSV Spoofing, Masking, and Close Codes.
 
 fn test_frameforge_r1_websocket(t: core::T&) {
     // ------------------------------------------------------------------------
-    // Bug 1: RFC 7692 §8.1: Premature UTF-8 validation on raw compressed text wire bytes
+    // Bug 1: RFC 7692 Section 6.1: Compression - Premature UTF-8 validation on raw compressed text wire bytes
     // ------------------------------------------------------------------------
-    t.run("1. RFC 7692 §8.1 Compressed Text Frame UTF-8 Validation Boundary") { sub =>
+    t.run("1. RFC 7692 Section 6.1 Compressed Text Frame UTF-8 Validation Boundary") { sub =>
         var ws = wing::new_websocket_session(true); // client session
         wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
 
@@ -43,7 +43,7 @@ fn test_frameforge_r1_websocket(t: core::T&) {
         var decomp_text: u8[..2048] = [];
         let ok_d = wing::ws_inflate_message(comp, view.payload, decomp_text, 65536, true);
         sub.assert_true(ok_d, "Inflate succeeds on received compressed payload");
-        sub.assert_true(core::validate_utf8(decomp_text[..]), "Decompressed payload is valid UTF-8 per RFC 7692 §8.1");
+        sub.assert_true(core::validate_utf8(decomp_text[..]), "Decompressed payload is valid UTF-8 per RFC 7692 Section 6.1: Compression");
         sub.assert_bytes_eq(decomp_text[..], original_text, "Decompressed payload matches original plaintext");
     };
 

@@ -317,6 +317,10 @@ int32_t wing_tcp_set_defer_accept(int64_t sock_fd, int32_t timeout_sec) { (void)
 int32_t wing_tcp_set_user_timeout(int64_t sock_fd, uint32_t timeout_ms) { (void)sock_fd; (void)timeout_ms; return 0; }
 int32_t wing_tcp_set_keepalive_params(int64_t sock_fd, int32_t idle_sec, int32_t intvl_sec, int32_t cnt) { (void)sock_fd; (void)idle_sec; (void)intvl_sec; (void)cnt; return 0; }
 int32_t wing_tcp_set_syn_retries(int64_t sock_fd, int32_t count) { (void)sock_fd; (void)count; return 0; }
+int32_t wing_tcp_set_fastopen(int64_t sock_fd, int32_t qlen) { (void)sock_fd; (void)qlen; return 0; }
+int32_t wing_tcp_send_fastopen(int64_t sock_fd, wing_bytes_ro data) { return wing_tcp_send(sock_fd, data); }
+int32_t wing_tcp_set_tos(int64_t sock_fd, int32_t tos) { (void)sock_fd; (void)tos; return 0; }
+int32_t wing_tcp_set_tclass(int64_t sock_fd, int32_t tclass) { (void)sock_fd; (void)tclass; return 0; }
 int64_t wing_tcp_get_notsent_bytes(int64_t sock_fd) { (void)sock_fd; return 0; }
 int64_t wing_tcp_get_readable_bytes(int64_t sock_fd) {
     if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
@@ -867,6 +871,71 @@ int32_t wing_tcp_set_syn_retries(int64_t sock_fd, int32_t count) {
     return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_SYNCNT, (const void *)&count, sizeof(count));
 #else
     (void)count;
+    return 0;
+#endif
+}
+
+// Configures TCP Fast Open (TCP_FASTOPEN, RFC 7413).
+int32_t wing_tcp_set_fastopen(int64_t sock_fd, int32_t qlen) {
+    if (sock_fd <= 0) return -1;
+#if defined(_WIN32)
+#ifdef TCP_FASTOPEN
+    int val = qlen > 0 ? qlen : 512;
+    setsockopt((SOCKET)sock_fd, IPPROTO_TCP, TCP_FASTOPEN, (const char *)&val, sizeof(val));
+#endif
+    return 0;
+#elif defined(TCP_FASTOPEN)
+    int val = qlen > 0 ? qlen : 512;
+    return setsockopt((SOCKET)sock_fd, IPPROTO_TCP, TCP_FASTOPEN, (const void *)&val, sizeof(val)) == 0 ? 0 : -1;
+#else
+    (void)qlen;
+    return 0;
+#endif
+}
+
+// Sends initial data with SYN under TCP Fast Open (RFC 7413).
+int32_t wing_tcp_send_fastopen(int64_t sock_fd, wing_bytes_ro data) {
+    if (sock_fd <= 0 || data.data == NULL || data.len <= 0) return 0;
+#if defined(__linux__) && defined(MSG_FASTOPEN)
+    ssize_t res = send((SOCKET)sock_fd, (const void *)data.data, (size_t)data.len, MSG_FASTOPEN | MSG_NOSIGNAL);
+    return res >= 0 ? (int32_t)res : -1;
+#else
+    return wing_tcp_send(sock_fd, data);
+#endif
+}
+
+// Configures IP_TOS octet (RFC 3168 Section 6.1.1).
+int32_t wing_tcp_set_tos(int64_t sock_fd, int32_t tos) {
+    if (sock_fd <= 0) return -1;
+#if defined(_WIN32)
+#ifdef IP_TOS
+    int val = tos;
+    setsockopt((SOCKET)sock_fd, IPPROTO_IP, IP_TOS, (const char *)&val, sizeof(val));
+#endif
+    return 0;
+#elif defined(IP_TOS)
+    int val = tos;
+    return setsockopt((SOCKET)sock_fd, IPPROTO_IP, IP_TOS, (const void *)&val, sizeof(val)) == 0 ? 0 : -1;
+#else
+    (void)tos;
+    return 0;
+#endif
+}
+
+// Configures IPV6_TCLASS octet (RFC 3168 Section 6.1.1).
+int32_t wing_tcp_set_tclass(int64_t sock_fd, int32_t tclass) {
+    if (sock_fd <= 0) return -1;
+#if defined(_WIN32)
+#ifdef IPV6_TCLASS
+    int val = tclass;
+    setsockopt((SOCKET)sock_fd, IPPROTO_IPV6, IPV6_TCLASS, (const char *)&val, sizeof(val));
+#endif
+    return 0;
+#elif defined(IPV6_TCLASS)
+    int val = tclass;
+    return setsockopt((SOCKET)sock_fd, IPPROTO_IPV6, IPV6_TCLASS, (const void *)&val, sizeof(val)) == 0 ? 0 : -1;
+#else
+    (void)tclass;
     return 0;
 #endif
 }

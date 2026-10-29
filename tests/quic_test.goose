@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: quic ---
+// --- Component: quic ---
 // QUIC Transport & HTTP/3 Echelon 7 Conformance Suite (RFC 9000, RFC 9001, RFC 9002, RFC 9114, RFC 9204).
 // Tests QPACK Static/Dynamic tables, Header Accordion DoS Defenses, VarInt codec,
 // AES/ChaCha Header Protection, Packet Number Reconstruction, Anti-Amplification 3x,
@@ -1443,6 +1443,269 @@ fn test_quic_header_security_bits(t: core::T&) {
     t.assert_false(ok_short_res, "short header with reserved bits set must be rejected");
 }
 
+// RFC 9000 Section 19.17: PATH_CHALLENGE Frames - 8-byte payload test
+// RFC 9000 Section 19.18: PATH_RESPONSE Frames - 8-byte payload test
+fn test_quic_path_frames(t: core::T&) {
+    t.run("PATH-01: PATH_CHALLENGE frame serialization and parsing") { sub =>
+        let challenge_token: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        var out_wire: u8[>..] = [];
+        let enc_ok = wing::encode_path_challenge_frame(out_wire, challenge_token);
+        sub.assert_true(enc_ok, "encode_path_challenge_frame succeeded");
+        sub.assert_eq(out_wire.len, 9, "wire buffer has 9 bytes (1 type + 8 payload)");
+        sub.assert_eq(out_wire[0], 0x1A as u8, "frame type byte is 0x1A");
+
+        var idx: i64 = 1;
+        let decoded, dec_ok = wing::decode_path_challenge_frame(out_wire[..], idx);
+        sub.assert_true(dec_ok, "decode_path_challenge_frame succeeded");
+        sub.assert_eq(idx, 9, "cursor advanced to end of frame (9)");
+        for i in 8 {
+            sub.assert_eq(decoded.data[i], challenge_token[i], "challenge data byte matched");
+        }
+    };
+
+    t.run("PATH-02: PATH_RESPONSE frame serialization and parsing") { sub =>
+        let response_token: u8[8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
+        var out_wire: u8[>..] = [];
+        let enc_ok = wing::encode_path_response_frame(out_wire, response_token);
+        sub.assert_true(enc_ok, "encode_path_response_frame succeeded");
+        sub.assert_eq(out_wire.len, 9, "wire buffer has 9 bytes (1 type + 8 payload)");
+        sub.assert_eq(out_wire[0], 0x1B as u8, "frame type byte is 0x1B");
+
+        var idx: i64 = 1;
+        let decoded, dec_ok = wing::decode_path_response_frame(out_wire[..], idx);
+        sub.assert_true(dec_ok, "decode_path_response_frame succeeded");
+        sub.assert_eq(idx, 9, "cursor advanced to end of frame (9)");
+        for i in 8 {
+            sub.assert_eq(decoded.data[i], response_token[i], "response data byte matched");
+        }
+    };
+
+    t.run("PATH-03: Unified QUIC frame demuxer dispatches PATH frames") { sub =>
+        let token: u8[8] = [10, 20, 30, 40, 50, 60, 70, 80];
+        var wire: u8[>..] = [];
+        wing::encode_path_challenge_frame(wire, token);
+        wing::encode_path_response_frame(wire, token);
+
+        let f1, next_off1, ok1 = wing::decode_quic_frame(wire[..], 0);
+        sub.assert_true(ok1, "demuxed PATH_CHALLENGE frame");
+        sub.assert_true(f1.frame_type == wing::QuicFrameType.PathChallenge, "type is PathChallenge");
+        sub.assert_eq(f1.length, 8, "length is 8");
+        sub.assert_eq(next_off1, 9, "next offset is 9");
+
+        let f2, next_off2, ok2 = wing::decode_quic_frame(wire[..], next_off1);
+        sub.assert_true(ok2, "demuxed PATH_RESPONSE frame");
+        sub.assert_true(f2.frame_type == wing::QuicFrameType.PathResponse, "type is PathResponse");
+        sub.assert_eq(f2.length, 8, "length is 8");
+        sub.assert_eq(next_off2, 18, "next offset is 18");
+    };
+
+    t.run("PATH-04: Truncated PATH payload rejection") { sub =>
+        let truncated: u8[5] = [0x1A, 1, 2, 3, 4];
+        var idx: i64 = 1;
+        let _, ok = wing::decode_path_challenge_frame(truncated[..], idx);
+        sub.assert_false(ok, "truncated PATH_CHALLENGE payload rejected");
+    };
+}
+
+// RFC 9000 Section 9: Connection Migration - State machine test
+// RFC 9000 Section 8.2: Path Validation - Token verification and anti-amplification
+fn test_connection_migration(t: core::T&) {
+    t.run("MIG-01: Path validation lifecycle (Initiated -> Validating -> Validated)") { sub =>
+        let initial_addr = wing::new_quic_endpoint_addr("198.51.100.1", 4433);
+        var mgr = wing::new_quic_migration_manager(initial_addr);
+
+        let active_addr = mgr.active_path.remote_addr;
+        sub.assert_eq(active_addr.port, 4433, "initial port is 4433");
+        sub.assert_true(wing::quic_endpoint_addr_eq(active_addr, initial_addr), "initial addr matched");
+
+        var seed: u64 = 0xDEADBEEFCAFE;
+        let token = wing::generate_path_challenge_token(seed);
+
+        let new_addr = wing::new_quic_endpoint_addr("203.0.113.50", 9000);
+        wing::quic_migration_start_probing(mgr, new_addr, token);
+        sub.assert_true(mgr.has_probing_path, "probing path active");
+        sub.assert_true(mgr.probing_path.state == wing::PathValidationState.Validating, "state is Validating");
+
+        // Response mismatch: must reject and stay Validating
+        let wrong_token: u8[8] = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8];
+        let rej_ok = wing::quic_migration_on_path_response(mgr, wrong_token[..]);
+        sub.assert_false(rej_ok, "mismatched response token rejected");
+        sub.assert_true(mgr.probing_path.state == wing::PathValidationState.Validating, "still Validating");
+
+        // Response match: succeeds and transitions to Validated
+        let match_ok = wing::quic_migration_on_path_response(mgr, token[..]);
+        sub.assert_true(match_ok, "matching response token accepted");
+        sub.assert_true(mgr.probing_path.state == wing::PathValidationState.Validated, "state is Validated");
+
+        // Migration completion: moves active path to new address
+        let mig_ok = wing::quic_migration_complete(mgr);
+        sub.assert_true(mig_ok, "migration completed successfully");
+        sub.assert_false(mgr.has_probing_path, "probing path cleared");
+
+        let current_addr = mgr.active_path.remote_addr;
+        sub.assert_true(wing::quic_endpoint_addr_eq(current_addr, new_addr), "active address updated to new endpoint");
+    };
+
+    t.run("MIG-02: Anti-amplification 3x limit on unvalidated paths") { sub =>
+        let addr = wing::new_quic_endpoint_addr("192.0.2.1", 443);
+        var mgr = wing::new_quic_migration_manager(addr);
+
+        let token: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        let candidate_addr = wing::new_quic_endpoint_addr("192.0.2.200", 5000);
+        wing::quic_migration_start_probing(mgr, candidate_addr, token);
+
+        // Before receiving any bytes on candidate path: limit = 0
+        sub.assert_false(wing::path_can_send(mgr.probing_path, 1), "cannot send before receiving bytes");
+
+        // Receive 1200 bytes -> limit is 3600 bytes (3x)
+        mgr.probing_path.bytes_received += 1200;
+        sub.assert_true(wing::path_can_send(mgr.probing_path, 3600), "can send up to 3600 bytes");
+        sub.assert_false(wing::path_can_send(mgr.probing_path, 3601), "cannot exceed 3x budget");
+
+        // Send 2000 bytes
+        mgr.probing_path.bytes_sent += 2000;
+        sub.assert_true(wing::path_can_send(mgr.probing_path, 1600), "can send remaining 1600 bytes");
+        sub.assert_false(wing::path_can_send(mgr.probing_path, 1601), "budget exceeded after partial send");
+
+        // Validate path: limit is lifted completely
+        let ok = wing::quic_migration_on_path_response(mgr, token[..]);
+        sub.assert_true(ok, "path validated");
+        sub.assert_true(wing::path_can_send(mgr.probing_path, 100000), "unlimited sending once path validated");
+    };
+
+    t.run("MIG-03: Probe retry counter exhaustion transitions to Failed") { sub =>
+        let addr = wing::new_quic_endpoint_addr("192.0.2.1", 443);
+        var mgr = wing::new_quic_migration_manager(addr);
+
+        let token: u8[8] = [9, 8, 7, 6, 5, 4, 3, 2];
+        let candidate = wing::new_quic_endpoint_addr("192.0.2.99", 6000);
+        wing::quic_migration_start_probing(mgr, candidate, token);
+
+        sub.assert_true(wing::quic_migration_retry_probe(mgr), "retry 1 succeeded");
+        sub.assert_true(wing::quic_migration_retry_probe(mgr), "retry 2 succeeded");
+        sub.assert_false(wing::quic_migration_retry_probe(mgr), "retry 3 exhausted (max 3)");
+        sub.assert_false(mgr.has_probing_path, "probing path removed after failure");
+    };
+
+    t.run("MIG-04: Constant-time token verification") { sub =>
+        let tok_a: u8[8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let tok_b: u8[8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let tok_c: u8[8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x89];
+
+        sub.assert_true(wing::verify_path_response_token(tok_a, tok_b[..]), "identical tokens match");
+        sub.assert_false(wing::verify_path_response_token(tok_a, tok_c[..]), "1-bit differing tokens mismatch");
+        sub.assert_false(wing::verify_path_response_token(tok_a, tok_a[..7]), "truncated token rejected");
+    };
+
+    t.run("MIG-05: QuicConnection integrated migration and DPLPMTUD") { sub =>
+        let scid: u8[4] = [0x01, 0x02, 0x03, 0x04];
+        var conn = wing::new_quic_server_connection(scid[..]);
+        let cand_addr = wing::new_quic_endpoint_addr("198.51.100.99", 8443);
+        let token: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+        wing::quic_conn_migrate(conn, cand_addr, token);
+        sub.assert_true(conn.migration.has_probing_path, "conn migration probing path initiated");
+
+        // Simulate incoming PathResponse frame dispatch
+        let resp_frame = wing::QuicFrame {
+            frame_type: wing::QuicFrameType.PathResponse,
+            length: 8,
+            payload: token[..],
+            ..
+        };
+        let ok_disp, _ = wing::dispatch_inbound_frame(conn, resp_frame);
+        sub.assert_true(ok_disp, "PathResponse dispatched to connection migration");
+        sub.assert_true(conn.validated_address, "connection address marked validated after migration");
+
+        // DPLPMTUD integration on connection
+        sub.assert_eq(conn.dplpmtud.current_pmtu, 1200, "initial connection PMTU is 1200");
+        sub.assert_true(wing::quic_conn_on_probe_acked(conn, 1200), "conn probe 1200 acked");
+        sub.assert_eq(conn.dplpmtud.current_pmtu, 1200, "PMTU verified after ack");
+        sub.assert_eq(conn.dplpmtud.probed_size, 1280, "target probe size progressed to 1280");
+    };
+}
+
+// RFC 8899 Section 3: Probe Packets - Padded probe generation
+// RFC 8899 Section 5.1: State Machine - DPLPMTUD state transitions
+fn test_dplpmtud(t: core::T&) {
+    t.run("DPL-01: Padded PING probe generation across target sizes") { sub =>
+        let sizes: u32[4] = [1200, 1280, 1420, 1500];
+        for sz in sizes {
+            var buf: u8[>..] = [];
+            let ok = wing::generate_ping_probe(buf, sz);
+            sub.assert_true(ok, "generate_ping_probe succeeded");
+            sub.assert_eq(buf.len as u32, sz, "probe buffer length matches target size exactly");
+            sub.assert_eq(buf[0], 0x01 as u8, "first byte is PING frame (0x01)");
+            sub.assert_eq(buf[buf.len - 1], 0x00 as u8, "trailing byte is PADDING frame (0x00)");
+        }
+    };
+
+    t.run("DPL-02: Padded PATH_CHALLENGE probe generation across target sizes") { sub =>
+        let challenge: u8[8] = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03, 0x04];
+        let sizes: u32[4] = [1200, 1280, 1420, 1500];
+        for sz in sizes {
+            var buf: u8[>..] = [];
+            let ok = wing::generate_path_challenge_probe(buf, challenge, sz);
+            sub.assert_true(ok, "generate_path_challenge_probe succeeded");
+            sub.assert_eq(buf.len as u32, sz, "probe buffer length matches target size exactly");
+            sub.assert_eq(buf[0], 0x1A as u8, "first byte is PATH_CHALLENGE frame (0x1A)");
+            for i in 8 {
+                sub.assert_eq(buf[1 + i], challenge[i], "challenge byte in probe matched");
+            }
+            sub.assert_eq(buf[buf.len - 1], 0x00 as u8, "trailing byte is PADDING frame (0x00)");
+        }
+    };
+
+    t.run("DPL-03: DPLPMTUD State Transitions (Base -> Search -> SearchComplete)") { sub =>
+        var d = wing::Dplpmtud { .. };
+        sub.assert_true(d.state == wing::DplpmtudState.Base, "initial state is Base");
+        sub.assert_eq(d.current_pmtu, 1200, "initial confirmed PMTU is 1200");
+        sub.assert_eq(d.probed_size, 1200, "initial target probe size is 1200");
+
+        // Base probe 1200 acknowledged -> Transitions to Search, probes 1280
+        sub.assert_true(wing::dplpmtud_on_probe_acked(d, 1200), "ack 1200 ok");
+        sub.assert_true(d.state == wing::DplpmtudState.Search, "state is Search");
+        sub.assert_eq(d.probed_size, 1280, "probing 1280");
+
+        // Probe 1280 acknowledged -> probes 1420
+        sub.assert_true(wing::dplpmtud_on_probe_acked(d, 1280), "ack 1280 ok");
+        sub.assert_eq(d.current_pmtu, 1280, "confirmed PMTU is 1280");
+        sub.assert_eq(d.probed_size, 1420, "probing 1420");
+
+        // Probe 1420 acknowledged -> probes 1500
+        sub.assert_true(wing::dplpmtud_on_probe_acked(d, 1420), "ack 1420 ok");
+        sub.assert_eq(d.current_pmtu, 1420, "confirmed PMTU is 1420");
+        sub.assert_eq(d.probed_size, 1500, "probing 1500");
+
+        // Probe 1500 acknowledged -> SearchComplete (ceiling reached)
+        sub.assert_true(wing::dplpmtud_on_probe_acked(d, 1500), "ack 1500 ok");
+        sub.assert_true(d.state == wing::DplpmtudState.SearchComplete, "state is SearchComplete");
+        sub.assert_eq(d.current_pmtu, 1500, "final confirmed PMTU is 1500");
+    };
+
+    t.run("DPL-04: Probe loss and search ceiling discovery") { sub =>
+        var d = wing::Dplpmtud { .. };
+        wing::dplpmtud_on_probe_acked(d, 1200); // Now in Search, probing 1280
+        wing::dplpmtud_on_probe_acked(d, 1280); // Now probing 1420
+
+        // Lose 1420 probe 3 times -> stops search, remains SearchComplete with 1280 PMTU
+        sub.assert_true(wing::dplpmtud_on_probe_lost(d, 1420), "loss 1 recorded");
+        sub.assert_true(wing::dplpmtud_on_probe_lost(d, 1420), "loss 2 recorded");
+        sub.assert_false(wing::dplpmtud_on_probe_lost(d, 1420), "loss 3 reaches max probes");
+
+        sub.assert_true(d.state == wing::DplpmtudState.SearchComplete, "search completed on loss");
+        sub.assert_eq(d.current_pmtu, 1280, "PMTU established at last confirmed size (1280)");
+    };
+
+    t.run("DPL-05: Base probe failure leads to Error state") { sub =>
+        var d = wing::Dplpmtud { .. };
+        wing::dplpmtud_on_probe_lost(d, 1200);
+        wing::dplpmtud_on_probe_lost(d, 1200);
+        wing::dplpmtud_on_probe_lost(d, 1200);
+        sub.assert_true(d.state == wing::DplpmtudState.Error, "state transitioned to Error");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("QUIC Protocol, Framing, Flow Control & ACK Verification Suite", core::Verbosity.Verbose);
 
@@ -1471,6 +1734,9 @@ fn main() {
     core::run_case(runner, "23. QUIC ACK Frame Decoding Invariants", test_quic_ack_frame_decoding_invariants);
     core::run_case(runner, "24. QUIC OACK Attack Prevention", test_quic_oack_defense);
     core::run_case(runner, "25. QUIC Header Security Bits", test_quic_header_security_bits);
+    core::run_case(runner, "26. QUIC PATH_CHALLENGE & PATH_RESPONSE Codecs (RFC 9000)", test_quic_path_frames);
+    core::run_case(runner, "27. Connection Migration FSM & Anti-Amplification (RFC 9000)", test_connection_migration);
+    core::run_case(runner, "28. DPLPMTUD Probe Generator & State Machine (RFC 8899)", test_dplpmtud);
 
     let ok = core::finish(runner);
     assert(ok);

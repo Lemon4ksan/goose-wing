@@ -328,13 +328,24 @@ def main() -> int:
 
             # Rule 2: No primitive or slice type aliases
             m_type = re.match(
-                r"^\s*type\s+([A-Za-z0-9_]+)\s*=\s*(?:const\s+)?(u8|u16|u32|u64|i8|i16|i32|i64|bool|f32|f64|usize|isize)(\[.*\])?",
+                r"^\s*type\s+([A-Za-z0-9_]+)\s*=\s*(?:const\s+)?(u8|u16|u32|u64|i8|i16|i32|i64|bool|f32|f64)(\[.*\])?",
                 line,
             )
             if m_type:
                 record_violation(
                     f"[LINT] {rel_path}:{line_num} -> Redundant primitive/slice type alias '{m_type.group(1)}'. "
                     f"Use canonical Goose types directly.",
+                    "red",
+                )
+
+            # Rule 2b: Zero usize/isize types (Goose language hallucination trap)
+            code_no_comment = re.sub(r"//.*$", "", line)
+            m_usize = re.search(r"\b(usize|isize)\b", code_no_comment)
+            if m_usize:
+                record_violation(
+                    f"[LINT] {rel_path}:{line_num} -> Prohibited non-existent type '{m_usize.group(1)}'. "
+                    f"Goose does not have usize/isize. Slices use i64 for .len, indexing uses i64/u64, "
+                    f"and 'as' cannot convert to usize. Use canonical fixed-width types: u64, i64, u32, i32.",
                     "red",
                 )
 
@@ -461,7 +472,7 @@ def main() -> int:
 
                     # Category A: Advances a wire cursor or SliceReader
                     if re.search(
-                        r"\b(idx|pos|offset)\s*:\s*(i64|u64|usize|i32|u32)&",
+                        r"\b(idx|pos|offset)\s*:\s*(i64|u64|i32|u32)&",
                         sig_params,
                     ) or re.search(
                         r"\b(r|rd|reader|sr)\s*:\s*(?:core::)?(?:SliceReader|WireReader)&",
@@ -474,7 +485,7 @@ def main() -> int:
                         r"\b(s|raw|buf|src|input)\s*:\s*(?:const\s+)?u8\[:\]",
                         sig_params,
                     ) and (
-                        re.search(r"\b(i64|u64|usize|i32|u32)\s*,\s*bool", sig_ret)
+                        re.search(r"\b(i64|u64|i32|u32)\s*,\s*bool", sig_ret)
                         or re.search(r"(?:const\s+)?u8\[:\]\s*,\s*bool", sig_ret)
                     ):
                         needs_example = True
@@ -739,7 +750,7 @@ def main() -> int:
                         fn_name,
                     )
                     and re.match(
-                        r"^\s*var\s+(?:state|seed|rng|prng|lcg_state)[A-Za-z0-9_]*\s*:\s*(?:u64|u32|i64|usize)\s*=\s*(?:0x[0-9a-fA-F_]+|\d+)\s*;",
+                        r"^\s*var\s+(?:state|seed|rng|prng|lcg_state)[A-Za-z0-9_]*\s*:\s*(?:u64|u32|i64)\s*=\s*(?:0x[0-9a-fA-F_]+|\d+)\s*;",
                         re.sub(r"//.*$", "", line),
                     )
                 ):

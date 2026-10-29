@@ -9,6 +9,9 @@ import std;
 import core from "..";
 import .record;
 import .key_schedule;
+import .x509;
+import .post_quantum;
+import .cert_compression;
 
 // ---- 1. Handshake Message Types (RFC 8446 Section 4) ------------------------
 
@@ -854,6 +857,107 @@ fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len
     let ok, _ = core::zstd_decompress(compressed_data, out_cert);
     guard ok else { return false; }
     guard (out_cert.len as u32) == uncompressed_len else { return false; }
+    return true;
+}
+
+// RFC 8879 Section 4: Compressed Certificate Handshake Message - Unified decompressor
+fn decompress_incoming_certificate<B>(payload: const u8[:], out_cert: B&) -> bool {
+    var comp_msg = CompressedCertificate { .. };
+    guard parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
+    return decompress_certificate_message(comp_msg, MAX_UNCOMPRESSED_CERT_LEN, out_cert);
+}
+
+// RFC 8446 Section 4.2.7: Supported Groups - Encodes supported_groups extension (type 10)
+fn encode_supported_groups_extension<B>(out: B&, groups: const u16[:]) {
+    guard groups.len >= 1 && groups.len <= 127 else { return; }
+    core::write_be_u16(out, EXT_SUPPORTED_GROUPS);
+    let list_len = (groups.len as u16) << 1;
+    core::write_be_u16(out, list_len + 2);
+    core::write_be_u16(out, list_len);
+    for g in groups {
+        core::write_be_u16(out, g);
+    }
+}
+
+// RFC 8446 Section 4.2.7: Supported Groups - Parses supported_groups extension payload
+//
+// Example:
+//   data = [0x00, 0x04, 0x11, 0xEB, 0x11, 0xED]
+//   returns: ok = true, out_groups[0..2] = [0x11EB, 0x11ED]
+fn parse_supported_groups_extension(
+    data: const u8[:],
+    out_groups: u16[..32]&,
+) -> bool {
+    guard data.len >= 4 else { return false; }
+    let list_len = core::read_be_u16(data, 0) as i64;
+    guard (list_len & 1) == 0 && data.len == 2 + list_len else { return false; }
+    let count = list_len >> 1;
+    guard count <= out_groups.cap else { return false; }
+    out_groups.clear();
+    var offset: i64 = 2;
+    for i in count {
+        out_groups.push(core::read_be_u16(data, offset));
+        offset += 2;
+    }
+    return true;
+}
+
+// RFC 8446 Section 4.2.8: Key Share - Encodes ClientHello key_share extension (type 51)
+fn encode_key_share_client_extension<B>(out: B&, client_shares_raw: const u8[:]) {
+    guard client_shares_raw.len >= 4 && client_shares_raw.len <= 65535 else { return; }
+    core::write_be_u16(out, EXT_KEY_SHARE);
+    let list_len = client_shares_raw.len as u16;
+    core::write_be_u16(out, list_len + 2);
+    core::write_be_u16(out, list_len);
+    out.append(client_shares_raw);
+}
+
+// RFC 8446 Section 4.2.8: Key Share - Parses ClientHello key_share extension payload
+//
+// Example:
+//   data = [0x04, 0xC5, 0x11, 0xEB, 0x04, 0xC1, ... (1221 bytes)]
+//   returns: ok = true, out_shares = [0x11, 0xEB, 0x04, 0xC1, ...]
+fn parse_key_share_client_extension(
+    data: const u8[:],
+    out_shares: u8[..4096]&,
+) -> bool {
+    guard data.len >= 6 else { return false; }
+    let list_len = core::read_be_u16(data, 0) as i64;
+    guard list_len >= 4 && data.len == 2 + list_len else { return false; }
+    guard list_len <= out_shares.cap else { return false; }
+    out_shares.clear();
+    out_shares.append(data[2..]);
+    return true;
+}
+
+// RFC 8446 Section 4.2.8: Key Share - Encodes ServerHello key_share extension (type 51)
+fn encode_key_share_server_extension<B>(out: B&, group: u16, key_exchange: const u8[:]) {
+    guard key_exchange.len >= 1 && key_exchange.len <= 65535 else { return; }
+    core::write_be_u16(out, EXT_KEY_SHARE);
+    let kex_len = key_exchange.len as u16;
+    core::write_be_u16(out, kex_len + 4);
+    core::write_be_u16(out, group);
+    core::write_be_u16(out, kex_len);
+    out.append(key_exchange);
+}
+
+// RFC 8446 Section 4.2.8: Key Share - Parses ServerHello key_share extension payload
+//
+// Example:
+//   data = [0x11, 0xEB, 0x04, 0x81, 0x04, ... (1153 bytes)]
+//   returns: ok = true, out_group = 0x11EB, out_key_exchange = slice
+fn parse_key_share_server_extension(
+    data: const u8[:],
+    out_group: u16&,
+    out_key_exchange: u8[..2048]&,
+) -> bool {
+    guard data.len >= 5 else { return false; }
+    out_group = core::read_be_u16(data, 0);
+    let kex_len = core::read_be_u16(data, 2) as i64;
+    guard kex_len >= 1 && data.len == 4 + kex_len else { return false; }
+    guard kex_len <= out_key_exchange.cap else { return false; }
+    out_key_exchange.clear();
+    out_key_exchange.append(data[4..]);
     return true;
 }
 

@@ -91,9 +91,9 @@ fn main() {
                 break;
             }
 
-            // If it starts with "PRI " but is not valid preface -> RFC 9113 §3.5 invalid preface error
+            // If it starts with "PRI " but is not valid preface -> RFC 9113 Section 3.4: HTTP/2 Connection Preface - Invalid preface error
             if in_buf.len >= 4 && in_buf[..4] == "PRI " {
-                // Terminate TCP connection immediately per RFC 9113 §3.5
+                // Terminate TCP connection immediately per RFC 9113 Section 3.4: HTTP/2 Connection Preface - Connection termination
                 break;
             }
 

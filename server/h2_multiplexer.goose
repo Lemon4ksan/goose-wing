@@ -567,6 +567,25 @@ fn handle_h2_server_ingress<B>(
                 return offset + total_frame_len, false;
             }
             apply_priority_update(sess.conn, prio_stream_id, prio_param);
+        } else if hdr.frame_type == FRAME_ORIGIN {
+            // RFC 8336 Section 2: ORIGIN frame MUST be on stream 0
+            if hdr.stream_id != 0 {
+                emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+                return offset + total_frame_len, false;
+            }
+            var origins: const u8[:][..16] = [];
+            let _, p_err = parse_origin_frame(frame_payload, hdr.stream_id, origins);
+            if p_err != ERR_NO_ERROR {
+                emit_goaway(sess.conn.last_peer_stream_id, p_err, out_wire);
+                return offset + total_frame_len, false;
+            }
+        } else if hdr.frame_type == FRAME_ALTSVC {
+            // RFC 7838 Section 4: The ALTSVC HTTP/2 Frame
+            let _, p_err = parse_altsvc_frame(frame_payload, hdr.stream_id);
+            if p_err != ERR_NO_ERROR {
+                emit_goaway(sess.conn.last_peer_stream_id, p_err, out_wire);
+                return offset + total_frame_len, false;
+            }
         } else if hdr.frame_type == FRAME_WINDOW_UPDATE {
             if frame_payload.len == 4 {
                 var wu_r = core::new_slice_reader(frame_payload);

@@ -19,7 +19,7 @@ const CC_MUST_UNDERSTAND: u32 = 0x0010;         // must-understand (RFC 9111 Sec
 const CC_PRIVATE: u32 = 0x0020;                 // private (unqualified or qualified)
 const CC_PUBLIC: u32 = 0x0040;                  // public
 const CC_IMMUTABLE: u32 = 0x0080;               // immutable (RFC 8246)
-const CC_ONLY_IF_CACHED: u32 = 0x0100;          // only-if-cached (RFC 9111 Section 5.2.1.7)
+const CC_ONLY_IF_CACHED: u32 = 0x0100;          // only-if-cached (RFC 9111 Section 5.2.1)
 const CC_NO_TRANSFORM: u32 = 0x0200;            // no-transform
 const CC_INVALID_FRESHNESS: u32 = 0x0400;       // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
 const CC_HAS_MAX_AGE: u32 = 0x0800;             // max-age=delta-seconds
@@ -100,7 +100,7 @@ fn is_immutable(cc: const CacheControl&) -> bool {
     return (cc.flags & CC_IMMUTABLE) != 0;
 }
 
-// Returns true if only-if-cached directive is set (RFC 9111 Section 5.2.1.7).
+// RFC 9111 Section 5.2.1: Request Directives - Returns true if only-if-cached directive is set.
 fn is_only_if_cached(cc: const CacheControl&) -> bool {
     return (cc.flags & CC_ONLY_IF_CACHED) != 0;
 }

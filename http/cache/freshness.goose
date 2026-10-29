@@ -246,7 +246,7 @@ fn evaluate_stale_allowance(
 
     let stale_sec = current_age - lifetime;
 
-    // 1. Client max-stale (RFC 9111 Section 5.2.1.2)
+    // 1. Client max-stale (RFC 9111 Section 5.2.1: Request Directives - Client max-stale directive)
     if has_max_stale(req_cc) {
         if req_cc.max_stale < 0 || stale_sec <= req_cc.max_stale {
             return true;

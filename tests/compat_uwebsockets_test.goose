@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: compat_uweb_features_phase1 ---
+// --- Component: compat_uweb_features_phase1 ---
 // Verification suite for uWebSockets Phase 1 features in goose-wing:
 // 1. Declarative WebSocket Route Registration in HttpServer (app.ws pattern)
 // 2. Per-Socket Typed UserData / Inline State (getUserData pattern)

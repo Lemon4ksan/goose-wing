@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: http3 ---
+// --- Component: http3 ---
 // tests/http3_test.goose
 // Conformance and Security Defense Suite for HTTP/3 (RFC 9114) and QPACK (RFC 9204).
 
@@ -1353,6 +1353,124 @@ fn test_webtransport_session_lifecycle(t: core::T&) {
     };
 }
 
+fn test_webtransport_stream_demuxing(t: core::T&) {
+    t.run("1. Bidirectional Stream Wire Demuxing (Signal 0x41 & Direct Session ID)") { sub =>
+        // Case A: draft-ietf-webtrans-http3 Section 4.2 with 0x41 signal
+        // Wire: 0x40, 0x41 (signal 65) || 0x1A (session ID 26) || payload "TELEMETRY"
+        let bidi_wire_sig: u8[12] = [
+            0x40, 0x41, 0x1A,
+            'T', 'E', 'L', 'E', 'M', 'E', 'T', 'R', 'Y',
+        ];
+        let sid_a, payload_a, ok_a = wing::demux_webtransport_bidi_stream(bidi_wire_sig[..]);
+        sub.assert_true(ok_a, "Demuxed bidi stream with 0x41 signal");
+        sub.assert_eq(sid_a, 26, "Session ID is 26");
+        sub.assert_bytes_eq(payload_a, "TELEMETRY", "Extracted payload matches");
+
+        // Case B: draft-ietf-webtrans-overview Section 4.2 with direct Session ID varint
+        // Wire: 0x1A (session ID 26) || payload "DIRECT_DATA"
+        let bidi_wire_direct: u8[12] = [
+            0x1A,
+            'D', 'I', 'R', 'E', 'C', 'T', '_', 'D', 'A', 'T', 'A',
+        ];
+        let sid_b, payload_b, ok_b = wing::demux_webtransport_bidi_stream(bidi_wire_direct[..]);
+        sub.assert_true(ok_b, "Demuxed bidi stream with direct session ID");
+        sub.assert_eq(sid_b, 26, "Session ID is 26");
+        sub.assert_bytes_eq(payload_b, "DIRECT_DATA", "Payload matches");
+
+        // Negative check: empty wire
+        let empty_wire: u8[0] = [];
+        let _, _, ok_c_empty = wing::demux_webtransport_bidi_stream(empty_wire[..]);
+        sub.assert_false(ok_c_empty, "Empty wire fails");
+    };
+
+    t.run("2. Unidirectional Stream Wire Demuxing (Type 0x54 + Session ID)") { sub =>
+        // Wire: 0x40, 0x54 (type 84) || 0x2A (session ID 42) || payload "UNI_PAYLOAD"
+        let uni_wire: u8[14] = [
+            0x40, 0x54, 0x2A,
+            'U', 'N', 'I', '_', 'P', 'A', 'Y', 'L', 'O', 'A', 'D',
+        ];
+        let sid, payload, ok = wing::demux_webtransport_uni_stream(uni_wire[..]);
+        sub.assert_true(ok, "Demuxed uni stream with type 0x54");
+        sub.assert_eq(sid, 42, "Session ID is 42");
+        sub.assert_bytes_eq(payload, "UNI_PAYLOAD", "Payload matches");
+
+        // Wrong stream type (0x55 instead of 0x54)
+        let bad_uni_wire: u8[4] = [0x40, 0x55, 0x2A, 'X'];
+        let _, _, bad_ok = wing::demux_webtransport_uni_stream(bad_uni_wire[..]);
+        sub.assert_false(bad_ok, "Wrong stream type rejected");
+    };
+
+    t.run("3. WebTransportDemuxer Session Lifecycle and Routing State Machine") { sub =>
+        var demuxer = wing::WebTransportDemuxer { .. };
+
+        // 1. Register Session 100
+        sub.assert_true(wing::register_webtransport_session(demuxer, 100), "Registered session 100");
+        let st1, ok_st1 = wing::get_webtransport_session_state(demuxer, 100);
+        sub.assert_true(ok_st1, "Queried session 100 state");
+        sub.assert_eq(st1, wing::WebTransportSessionState.Active, "Session 100 is Active");
+
+        // 2. Dispatch bidirectional initial stream on QUIC Stream 4 (client bidi: stream_id & 0x02 == 0)
+        // Wire: direct session ID (100 is encoded as 0x40, 0x64 in 2-byte varint) || payload "FRAME_1"
+        var bidi_pkt1: u8[9] = [
+            0x40, 0x64,
+            'F', 'R', 'A', 'M', 'E', '_', '1',
+        ];
+        var out_p1 = wing::WebTransportStreamPayload { .. };
+        let ok_d1 = wing::demux_webtransport_stream(demuxer, 4, bidi_pkt1[..], false, out_p1);
+        sub.assert_true(ok_d1, "Dispatched initial bidi frame on stream 4");
+        sub.assert_eq(out_p1.session_id, 100, "Session ID is 100");
+        sub.assert_bytes_eq(out_p1.payload, "FRAME_1", "Payload is FRAME_1");
+        sub.assert_eq(out_p1.kind, wing::WebTransportStreamKind.Bidirectional, "Kind is Bidirectional");
+        sub.assert_false(out_p1.fin, "FIN is false");
+
+        // 3. Dispatch continuation chunk on the same open stream 4 (no header!)
+        let chunk2: const u8[:] = "_CONT";
+        var out_p2 = wing::WebTransportStreamPayload { .. };
+        let ok_d2 = wing::demux_webtransport_stream(demuxer, 4, chunk2, true, out_p2);
+        sub.assert_true(ok_d2, "Dispatched continuation chunk on stream 4");
+        sub.assert_eq(out_p2.session_id, 100, "Session ID is 100");
+        sub.assert_bytes_eq(out_p2.payload, "_CONT", "Payload is _CONT");
+        sub.assert_true(out_p2.fin, "FIN is true (stream closed)");
+
+        // 4. Dispatch unidirectional stream on QUIC Stream 3 (client uni: stream_id & 0x02 != 0)
+        // Wire: 0x40, 0x54 (type 0x54) || 0x40, 0x64 (session 100) || payload "UNI_STREAM"
+        var uni_pkt: u8[14] = [
+            0x40, 0x54, 0x40, 0x64,
+            'U', 'N', 'I', '_', 'S', 'T', 'R', 'E', 'A', 'M',
+        ];
+        var out_p3 = wing::WebTransportStreamPayload { .. };
+        let ok_d3 = wing::demux_webtransport_stream(demuxer, 3, uni_pkt[..], true, out_p3);
+        sub.assert_true(ok_d3, "Dispatched unidirectional stream 3");
+        sub.assert_eq(out_p3.session_id, 100, "Session ID is 100");
+        sub.assert_bytes_eq(out_p3.payload, "UNI_STREAM", "Payload is UNI_STREAM");
+        sub.assert_eq(out_p3.kind, wing::WebTransportStreamKind.Unidirectional, "Kind is Unidirectional");
+
+        // Verify session accounting
+        sub.assert_eq(demuxer.total_dispatched, 3, "Total dispatched frames is 3");
+        sub.assert_eq(demuxer.sessions[0].streams_count, 2, "2 streams initiated for session 100");
+        sub.assert_eq(demuxer.sessions[0].frames_received, 3, "3 frames received for session 100");
+
+        // 5. Drain session 100 (draft Section 8.2: new streams rejected)
+        sub.assert_true(wing::drain_webtransport_demuxer_session(demuxer, 100), "Drained session 100");
+        let st2, _ = wing::get_webtransport_session_state(demuxer, 100);
+        sub.assert_eq(st2, wing::WebTransportSessionState.Draining, "Session 100 is Draining");
+
+        // Attempting to open a NEW stream on draining session MUST be rejected
+        var new_bidi: u8[8] = [0x40, 0x64, 'N', 'E', 'W', '!', '!', '!'];
+        var out_reject = wing::WebTransportStreamPayload { .. };
+        let ok_reject = wing::demux_webtransport_stream(demuxer, 8, new_bidi[..], false, out_reject);
+        sub.assert_false(ok_reject, "New stream rejected on draining session");
+        sub.assert_gt(demuxer.dropped_frames, 0, "Dropped frames incremented");
+
+        // 6. Close session 100
+        sub.assert_true(wing::close_webtransport_demuxer_session(demuxer, 100, 200, "NORMAL_CLOSURE"), "Closed session 100");
+        let st3, _ = wing::get_webtransport_session_state(demuxer, 100);
+        sub.assert_eq(st3, wing::WebTransportSessionState.Closed, "Session 100 is Closed");
+        sub.assert_eq(demuxer.sessions[0].close_code, 200, "Close code 200");
+        sub.assert_bytes_eq(demuxer.sessions[0].close_reason[..], "NORMAL_CLOSURE", "Close reason recorded");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("HTTP/3 Framing, QPACK, and WebTransport Verification Suite", core::Verbosity.Verbose);
 
@@ -1370,6 +1488,7 @@ fn main() {
     core::run_case(runner, "12. WebTransport Error Code Mapping", test_webtransport_error_mapping);
     core::run_case(runner, "13. WebTransport Capsule Codecs", test_webtransport_capsules);
     core::run_case(runner, "14. WebTransport Session Lifecycle", test_webtransport_session_lifecycle);
+    core::run_case(runner, "15. WebTransport Stream Demuxing & Session Routing", test_webtransport_stream_demuxing);
 
     let ok = core::finish(runner);
     assert(ok);

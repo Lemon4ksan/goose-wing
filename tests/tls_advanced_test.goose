@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: tls_record_framing ---
+// --- Component: tls_record_framing ---
 // tests/wireframer_round1_record_test.goose
 // Red Test Suite for Audit Swarm lowlevel-redteam-01 (Round 1: WireFramer).
 // Reproduces wire framing vulnerabilities in ByteCursor, ByteBuilder, and TLS 1.3 Record Layer:

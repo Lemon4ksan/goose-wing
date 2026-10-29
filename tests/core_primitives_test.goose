@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import os;
 
-// ============================================================================// --- Component: core_time ---
+// --- Component: core_time ---
 // Tests for core/time: duration arithmetic, calendar math, and RFC 3339 codecs.
 
 struct StringVector {

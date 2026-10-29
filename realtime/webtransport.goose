@@ -473,3 +473,379 @@ fn drain_webtransport_session(session: WebTransportSession&) {
 fn is_webtransport_session_open(session: const WebTransportSession&) -> bool {
     return session.is_active && !session.is_draining;
 }
+
+// ---- 10. WebTransport Stream Demuxing & Session Routing ---------------------
+
+enum WebTransportStreamKind {
+    Bidirectional,
+    Unidirectional,
+    Unknown,
+}
+
+enum WebTransportSessionState {
+    Closed,
+    Connecting,
+    Active,
+    Draining,
+}
+
+struct WebTransportDemuxHeader {
+    kind: WebTransportStreamKind = WebTransportStreamKind.Unknown,
+    session_id: u64 = 0,
+    header_len: i64 = 0,
+}
+
+struct WebTransportStreamPayload {
+    kind: WebTransportStreamKind = WebTransportStreamKind.Unknown,
+    stream_id: u64 = 0,
+    session_id: u64 = 0,
+    payload: const u8[:] = "",
+    fin: bool = false,
+}
+
+struct WebTransportStreamRoute {
+    stream_id: u64 = 0,
+    session_id: u64 = 0,
+    kind: WebTransportStreamKind = WebTransportStreamKind.Unknown,
+    is_open: bool = false,
+    bytes_delivered: u64 = 0,
+}
+
+struct WebTransportSessionEntry {
+    session_id: u64 = 0,
+    state: WebTransportSessionState = WebTransportSessionState.Closed,
+    close_code: u32 = 0,
+    close_reason: u8[..256] = [],
+    bytes_received: u64 = 0,
+    frames_received: u64 = 0,
+    streams_count: u32 = 0,
+}
+
+struct WebTransportDemuxer {
+    sessions: WebTransportSessionEntry[..16] = [],
+    streams: WebTransportStreamRoute[..64] = [],
+    total_dispatched: u64 = 0,
+    dropped_frames: u64 = 0,
+}
+
+// draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - WebTransport Bidirectional Stream Header Demux
+// Demuxes a WebTransport bidirectional stream opening frame.
+// Supports both direct Session ID varint (draft-overview) and 0x41 signal + Session ID varint (draft-http3).
+//
+// Example:
+//   wire = [0x40, 0x41, 0x05, 'd', 'a', 't', 'a']
+//   returns: session_id = 5, payload = "data", ok = true
+fn demux_webtransport_bidi_stream(
+    wire: const u8[:],
+) -> u64, const u8[:], bool {
+    guard wire.len > 0 else { return 0, wire[..0], false; }
+    var idx: i64 = 0;
+    let first, ok1 = read_varint(wire, idx);
+    guard ok1 else { return 0, wire[..0], false; }
+
+    if first == WEBTRANSPORT_BIDI_SIGNAL {
+        let sid, ok2 = read_varint(wire, idx);
+        guard ok2 else { return 0, wire[..0], false; }
+        return sid, wire[idx..], true;
+    }
+
+    return first, wire[idx..], true;
+}
+
+// draft-ietf-webtrans-http3 Section 4.1: Unidirectional Streams - WebTransport Stream Type and Session ID Demux
+// Demuxes a WebTransport unidirectional stream opening frame.
+// Validates 0x54 (STREAM_TYPE_WEBTRANSPORT) stream type prefix followed by Session ID varint.
+//
+// Example:
+//   wire = [0x40, 0x54, 0x05, 'u', 'n', 'i']
+//   returns: session_id = 5, payload = "uni", ok = true
+fn demux_webtransport_uni_stream(
+    wire: const u8[:],
+) -> u64, const u8[:], bool {
+    guard wire.len > 0 else { return 0, wire[..0], false; }
+    var idx: i64 = 0;
+    let stype, ok1 = read_varint(wire, idx);
+    guard ok1 && stype == STREAM_TYPE_WEBTRANSPORT else { return 0, wire[..0], false; }
+
+    let sid, ok2 = read_varint(wire, idx);
+    guard ok2 else { return 0, wire[..0], false; }
+
+    return sid, wire[idx..], true;
+}
+
+// draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - WebTransport Stream Header Demux
+// Demuxes a WebTransport stream header from incoming QUIC stream wire bytes.
+//
+// Example:
+//   wire = [0x40, 0x54, 0x10], is_bidi = false
+//   returns: ok = true, out.kind = Unidirectional, out.session_id = 16, out.header_len = 3
+fn demux_webtransport_stream_header(
+    wire: const u8[:],
+    is_bidi: bool,
+    out: WebTransportDemuxHeader&,
+) -> bool {
+    out.kind = WebTransportStreamKind.Unknown;
+    out.session_id = 0;
+    out.header_len = 0;
+    guard wire.len > 0 else { return false; }
+
+    if is_bidi {
+        var idx: i64 = 0;
+        let first, ok1 = read_varint(wire, idx);
+        guard ok1 else { return false; }
+
+        if first == WEBTRANSPORT_BIDI_SIGNAL {
+            let sid, ok2 = read_varint(wire, idx);
+            guard ok2 else { return false; }
+            out.kind = WebTransportStreamKind.Bidirectional;
+            out.session_id = sid;
+            out.header_len = idx;
+            return true;
+        }
+
+        out.kind = WebTransportStreamKind.Bidirectional;
+        out.session_id = first;
+        out.header_len = idx;
+        return true;
+    }
+
+    var idx: i64 = 0;
+    let stype, ok1 = read_varint(wire, idx);
+    guard ok1 && stype == STREAM_TYPE_WEBTRANSPORT else { return false; }
+
+    let sid, ok2 = read_varint(wire, idx);
+    guard ok2 else { return false; }
+
+    out.kind = WebTransportStreamKind.Unidirectional;
+    out.session_id = sid;
+    out.header_len = idx;
+    return true;
+}
+
+fn find_stream_route_index(demuxer: const WebTransportDemuxer&, stream_id: u64) -> i64, bool {
+    for i in demuxer.streams.len {
+        if demuxer.streams[i].stream_id == stream_id && demuxer.streams[i].is_open {
+            return i, true;
+        }
+    }
+    return -1, false;
+}
+
+fn find_session_entry_index(demuxer: const WebTransportDemuxer&, session_id: u64) -> i64, bool {
+    for i in demuxer.sessions.len {
+        if demuxer.sessions[i].session_id == session_id {
+            return i, true;
+        }
+    }
+    return -1, false;
+}
+
+// Registers a new active session into the demuxer
+fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
+    for i in demuxer.sessions.len {
+        if demuxer.sessions[i].session_id == session_id {
+            demuxer.sessions[i].state = WebTransportSessionState.Active;
+            return true;
+        }
+    }
+    guard demuxer.sessions.len < demuxer.sessions.cap else { return false; }
+    var entry = WebTransportSessionEntry {
+        session_id: session_id,
+        state: WebTransportSessionState.Active,
+        ..
+    };
+    demuxer.sessions.push(entry);
+    return true;
+}
+
+// Updates session state (Connecting, Active, Draining, Closed)
+fn set_webtransport_session_state(
+    demuxer: WebTransportDemuxer&,
+    session_id: u64,
+    state: WebTransportSessionState,
+) -> bool {
+    let s_idx, has_s = find_session_entry_index(demuxer, session_id);
+    guard has_s else { return false; }
+    demuxer.sessions[s_idx].state = state;
+    return true;
+}
+
+// Queries current session state
+fn get_webtransport_session_state(
+    demuxer: const WebTransportDemuxer&,
+    session_id: u64,
+) -> WebTransportSessionState, bool {
+    let s_idx, has_s = find_session_entry_index(demuxer, session_id);
+    guard has_s else { return WebTransportSessionState.Closed, false; }
+    return demuxer.sessions[s_idx].state, true;
+}
+
+// Drains an active session (rejects new streams, drains existing)
+fn drain_webtransport_demuxer_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
+    return set_webtransport_session_state(demuxer, session_id, WebTransportSessionState.Draining);
+}
+
+// Closes a session with error code and reason
+fn close_webtransport_demuxer_session(
+    demuxer: WebTransportDemuxer&,
+    session_id: u64,
+    code: u32,
+    reason: const u8[:],
+) -> bool {
+    let s_idx, has_s = find_session_entry_index(demuxer, session_id);
+    guard has_s else { return false; }
+    demuxer.sessions[s_idx].state = WebTransportSessionState.Closed;
+    demuxer.sessions[s_idx].close_code = code;
+    demuxer.sessions[s_idx].close_reason.clear();
+    let copy_len = if reason.len <= demuxer.sessions[s_idx].close_reason.cap {
+        reason.len
+    } else {
+        demuxer.sessions[s_idx].close_reason.cap
+    };
+    demuxer.sessions[s_idx].close_reason.append(reason[..copy_len]);
+    return true;
+}
+
+inline fn is_session_routable(state: WebTransportSessionState) -> bool {
+    return state == WebTransportSessionState.Active || state == WebTransportSessionState.Draining;
+}
+
+inline fn record_new_stream_route(
+    demuxer: WebTransportDemuxer&,
+    stream_id: u64,
+    session_id: u64,
+    kind: WebTransportStreamKind,
+) {
+    guard demuxer.streams.len < demuxer.streams.cap else { return; }
+    var route = WebTransportStreamRoute {
+        stream_id: stream_id,
+        session_id: session_id,
+        kind: kind,
+        is_open: true,
+    };
+    demuxer.streams.push(route);
+}
+
+inline fn record_dropped_frame(demuxer: WebTransportDemuxer&) {
+    demuxer.dropped_frames += 1;
+}
+
+inline fn record_dispatched_frame(demuxer: WebTransportDemuxer&) {
+    demuxer.total_dispatched += 1;
+}
+
+inline fn record_session_frame(entry: WebTransportSessionEntry&) {
+    entry.frames_received += 1;
+}
+
+inline fn record_session_stream(entry: WebTransportSessionEntry&) {
+    entry.streams_count += 1;
+    entry.frames_received += 1;
+}
+
+fn route_existing_stream(
+    demuxer: WebTransportDemuxer&,
+    route_idx: i64,
+    wire: const u8[:],
+    fin: bool,
+    out: WebTransportStreamPayload&,
+) -> bool {
+    guard route_idx >= 0 && route_idx < demuxer.streams.len else { return false; }
+    let sid = demuxer.streams[route_idx].session_id;
+
+    let s_idx, has_session = find_session_entry_index(demuxer, sid);
+    guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
+        record_dropped_frame(demuxer);
+        return false;
+    }
+
+    guard is_session_routable(demuxer.sessions[s_idx].state) else {
+        record_dropped_frame(demuxer);
+        return false;
+    }
+
+    record_session_frame(demuxer.sessions[s_idx]);
+    if fin {
+        demuxer.streams[route_idx].is_open = false;
+    }
+
+    out.kind = demuxer.streams[route_idx].kind;
+    out.stream_id = demuxer.streams[route_idx].stream_id;
+    out.session_id = sid;
+    out.payload = wire;
+    out.fin = fin;
+
+    record_dispatched_frame(demuxer);
+    return true;
+}
+
+fn route_new_stream(
+    demuxer: WebTransportDemuxer&,
+    stream_id: u64,
+    wire: const u8[:],
+    fin: bool,
+    out: WebTransportStreamPayload&,
+) -> bool {
+    let is_bidi = (stream_id & 0x02) == 0;
+    var hdr = WebTransportDemuxHeader { .. };
+    guard demux_webtransport_stream_header(wire, is_bidi, hdr) else {
+        record_dropped_frame(demuxer);
+        return false;
+    }
+
+    let s_idx, has_session = find_session_entry_index(demuxer, hdr.session_id);
+    guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
+        record_dropped_frame(demuxer);
+        return false;
+    }
+
+    guard demuxer.sessions[s_idx].state == WebTransportSessionState.Active else {
+        record_dropped_frame(demuxer);
+        return false;
+    }
+
+    guard hdr.header_len >= 0 && hdr.header_len <= wire.len else { return false; }
+    let payload = wire[hdr.header_len..];
+
+    record_session_stream(demuxer.sessions[s_idx]);
+
+    if !fin {
+        record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind);
+    }
+
+    out.kind = hdr.kind;
+    out.stream_id = stream_id;
+    out.session_id = hdr.session_id;
+    out.payload = payload;
+    out.fin = fin;
+
+    record_dispatched_frame(demuxer);
+    return true;
+}
+
+// draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - Demuxes stream wire bytes and dispatches to session
+// Zero-heap demuxer for QUIC streams. Handles both stream initiation and continuous streaming chunks.
+//
+// Example:
+//   stream_id = 0, wire = [0x04, 'p', 'i', 'n', 'g'], fin = true
+//   returns: ok = true, out.session_id = 4, out.payload = "ping", out.fin = true
+fn demux_webtransport_stream(
+    demuxer: WebTransportDemuxer&,
+    stream_id: u64,
+    wire: const u8[:],
+    fin: bool,
+    out: WebTransportStreamPayload&,
+) -> bool {
+    out.kind = WebTransportStreamKind.Unknown;
+    out.stream_id = stream_id;
+    out.session_id = 0;
+    out.payload = wire[..0];
+    out.fin = fin;
+
+    let route_idx, has_route = find_stream_route_index(demuxer, stream_id);
+    if has_route {
+        return route_existing_stream(demuxer, route_idx, wire, fin, out);
+    }
+
+    return route_new_stream(demuxer, stream_id, wire, fin, out);
+}

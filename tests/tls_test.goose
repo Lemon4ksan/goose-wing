@@ -2418,6 +2418,92 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         let _, ok_tiny = wing::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
         sub.assert_false(ok_tiny, "short output buffer fails safely");
     };
+
+    t.run("TLS-42: RFC 10024 Traditional Post-Quantum Hybrids (SecP256r1MLKEM768 & SecP384r1MLKEM1024)") { sub =>
+        // RFC 10024 Section 4: Negotiated Groups - Post-Quantum Traditional Hybrid NamedGroup Identifiers
+        sub.assert_eq(wing::GROUP_SECP256R1_MLKEM768, 0x11EB, "SecP256r1MLKEM768 is 0x11EB");
+        sub.assert_eq(wing::GROUP_X25519_MLKEM768, 0x11EC, "X25519MLKEM768 is 0x11EC");
+        sub.assert_eq(wing::GROUP_SECP384R1_MLKEM1024, 0x11ED, "SecP384r1MLKEM1024 is 0x11ED");
+
+        // NamedGroup recognition
+        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
+        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
+        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
+        sub.assert_false(wing::is_post_quantum_group(0x0017), "0x0017 (secp256r1 classical) is not PQ");
+        sub.assert_false(wing::is_post_quantum_group(0x0018), "0x0018 (secp384r1 classical) is not PQ");
+        sub.assert_false(wing::is_post_quantum_group(0x001D), "0x001D (x25519 classical) is not PQ");
+
+        // Key share wire lengths (RFC 10024 Section 3)
+        sub.assert_eq(wing::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
+        sub.assert_eq(wing::SECP384R1_POINT_LEN, 97, "P-384 uncompressed point is 97 bytes");
+        sub.assert_eq(wing::MLKEM768_PUBLIC_LEN, 1152, "ML-KEM-768 public key is 1152 bytes");
+        sub.assert_eq(wing::MLKEM768_CIPHERTEXT_LEN, 1088, "ML-KEM-768 ciphertext is 1088 bytes");
+        sub.assert_eq(wing::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
+        sub.assert_eq(wing::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
+
+        sub.assert_eq(wing::pq_hybrid_client_share_len(0x11EB), 1217, "SecP256r1+ML-KEM-768 client share 1217B");
+        sub.assert_eq(wing::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
+        sub.assert_eq(wing::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
+        sub.assert_eq(wing::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
+
+        // SecP256r1MLKEM768 (0x11EB) Codecs
+        var client_share = wing::SecP256r1MLKEM768KeyShare { .. };
+        client_share.secp256r1_public[0] = 0x04;
+        for i in 64 { client_share.secp256r1_public[1 + i] = ((i * 5 + 3) & 0xFF) as u8; }
+        for i in 1152 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0xFF) as u8; }
+
+        var wire: u8[>..] = [];
+        wing::format_secp256r1_mlkem768_key_share(client_share, wire);
+        sub.assert_eq(wire.len, 4 + 1217, "Client key share wire length is exactly 1221 bytes");
+
+        var parsed_client = wing::SecP256r1MLKEM768KeyShare { .. };
+        let ok_parse = wing::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
+        sub.assert_true(ok_parse, "Client key share parsed successfully");
+        sub.assert_eq(parsed_client.group, wing::GROUP_SECP256R1_MLKEM768, "Group is 0x11EB");
+        sub.assert_bytes_eq(parsed_client.secp256r1_public[..], client_share.secp256r1_public[..], "P-256 point matches");
+
+        var bad_client = wing::SecP256r1MLKEM768KeyShare { .. };
+        sub.assert_false(wing::parse_secp256r1_mlkem768_key_share(bad_client, wire[..1000]), "Truncated client share fails");
+
+        // SecP384r1MLKEM1024 (0x11ED) Codecs
+        var client_384 = wing::SecP384r1MLKEM1024KeyShare { .. };
+        client_384.secp384r1_public[0] = 0x04;
+        for i in 96 { client_384.secp384r1_public[1 + i] = ((i * 3 + 7) & 0xFF) as u8; }
+        for i in 1568 { client_384.mlkem1024_public[i] = ((i * 11 + 3) & 0xFF) as u8; }
+
+        var wire_384: u8[>..] = [];
+        wing::format_secp384r1_mlkem1024_key_share(client_384, wire_384);
+        sub.assert_eq(wire_384.len, 4 + 1665, "SecP384r1 client wire length is 1669 bytes");
+
+        var parsed_384 = wing::SecP384r1MLKEM1024KeyShare { .. };
+        let ok_p384 = wing::parse_secp384r1_mlkem1024_key_share(parsed_384, wire_384[..]);
+        sub.assert_true(ok_p384, "SecP384r1 client share parsed");
+        sub.assert_eq(parsed_384.group, wing::GROUP_SECP384R1_MLKEM1024, "Group is 0x11ED");
+
+        // Extension wiring & secret combiners
+        let groups: u16[3] = [
+            wing::GROUP_SECP256R1_MLKEM768,
+            wing::GROUP_X25519_MLKEM768,
+            wing::GROUP_SECP384R1_MLKEM1024,
+        ];
+        var ext_wire: u8[>..] = [];
+        wing::encode_supported_groups_extension(ext_wire, groups[..]);
+        sub.assert_eq(ext_wire.len, 2 + 2 + 2 + 6, "Supported groups wire length");
+
+        var parsed_groups: u16[..32] = [];
+        let ok_sg = wing::parse_supported_groups_extension(ext_wire[4..], parsed_groups);
+        sub.assert_true(ok_sg, "Parsed supported groups");
+        sub.assert_eq(parsed_groups.len, 3, "Parsed 3 groups");
+
+        var ecdh256: u8[32] = [0; 32];
+        for i in 32 { ecdh256[i] = (i + 1) as u8; }
+        var pq_ss: u8[32] = [0; 32];
+        for i in 32 { pq_ss[i] = (i + 33) as u8; }
+        let ss256 = wing::derive_secp256r1_mlkem768_shared_secret(ecdh256, pq_ss);
+        var nz_cnt = 0;
+        for b in ss256 { if b != 0 { nz_cnt += 1; } }
+        sub.assert_gt(nz_cnt, 28, "Combined SecP256r1 shared secret has high entropy");
+    };
 }
 
 // 8. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance
@@ -3141,7 +3227,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         );
         sub.assert_false(ok_sh_strip, "RFC 9460 §7.2: ServerHello omitting ECH confirmation after HRR acceptance MUST abort");
 
-        // 6. ECH Outer ALPN Separation (RFC 9460 §6.1, OpenSSL Issue #33428)
+        // 6. ECH Outer ALPN Separation (RFC 9460 Section 6: SVCB-Compatible RR Types - OpenSSL Issue #33428 ALPN separation)
         let inner_alpn = "h2";
         let outer_alpn = "http/1.1";
 
@@ -3447,7 +3533,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
     };
 
     // ------------------------------------------------------------------------
-    // TLS-41: 0-RTT Early Data State Machine & Recovery (RFC 8446 §4.2.10, RFC 9460 §6.1)
+    // TLS-41: 0-RTT Early Data State Machine & Recovery (RFC 8446 §4.2.10, RFC 9460 Section 6: SVCB-Compatible RR Types)
     // ------------------------------------------------------------------------
     t.run("TLS-41: 0-RTT Early Data Acceptance, Rejection Recovery & ECH Placement") { sub =>
         // 1. Early data accepted by server
@@ -3487,7 +3573,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         sub.assert_true(wing::early_data_record_sent(ctrl_send, 50), "send another 50 bytes reaching limit succeeds");
         sub.assert_false(wing::early_data_record_sent(ctrl_send, 1), "send exceeding max_early_data_size rejected");
 
-        // 4. RFC 9460 §6.1 ECH early_data placement rules
+        // 4. RFC 9460 Section 6: SVCB-Compatible RR Types - ECH early_data placement rules
         sub.assert_true(
             wing::validate_ech_early_data_placement(true, true),
             "early_data in ClientHelloInner permitted",
@@ -3594,6 +3680,109 @@ fn test_handshake_r3_invariants(t: core::T&) {
     };
 }
 
+// RFC 8879 Section 3: Negotiating Certificate Compression - Brotli certificate decompression
+fn test_rfc8879_brotli_cert_compression(t: core::T&) {
+    t.run("1. RFC 8879 Algorithm Identifiers & Models") { sub =>
+        sub.assert_eq(wing::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
+        sub.assert_eq(wing::CERT_COMPRESSION_ZSTD, 1, "Zstandard ID is 1 in specification");
+        sub.assert_eq(wing::CERT_COMPRESSION_ZSTD_IANA, 3, "Zstandard IANA official ID is 3");
+        sub.assert_eq(wing::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
+
+        sub.assert_true(wing::is_valid_compression_algorithm(wing::CERT_COMPRESSION_BROTLI), "Brotli valid");
+        sub.assert_true(wing::is_valid_compression_algorithm(wing::CERT_COMPRESSION_ZSTD), "Zstd 1 valid");
+        sub.assert_true(wing::is_valid_compression_algorithm(wing::CERT_COMPRESSION_ZSTD_IANA), "Zstd 3 valid");
+        sub.assert_false(wing::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
+        sub.assert_false(wing::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
+    };
+
+    t.run("2. Brotli CompressedCertificate Serialization and Roundtrip") { sub =>
+        let cert_plaintext = "MIIB...X509_CERTIFICATE_PAYLOAD_TEST_VECTOR_REPETITIVE_METADATA_HEADER_AND_EXTENSIONS...";
+        var compressed_data: u8[>..] = [];
+        let ok_c = core::brotli_compress(cert_plaintext, compressed_data, 0);
+        sub.assert_true(ok_c, "Brotli level 0 compression of certificate succeeds");
+
+        var test_cert_msg = wing::CompressedCertificate {
+            algorithm: wing::CERT_COMPRESSION_BROTLI,
+            uncompressed_length: cert_plaintext.len as u32,
+            compressed_certificate_message: compressed_data[..],
+        };
+
+        var decompressed: u8[>..] = [];
+        var wire: u8[>..] = [];
+        let ok_enc = wing::encode_compressed_certificate(test_cert_msg, wire);
+        sub.assert_true(ok_enc, "CompressedCertificate encoded");
+        sub.assert_eq(wire.len, 5 + compressed_data.len, "Wire length matches 5 + compressed len");
+        sub.assert_eq(wire[0], 0, "Algorithm high byte is 0");
+        sub.assert_eq(wire[1], 2, "Algorithm low byte is 2 (Brotli)");
+
+        var parsed = wing::CompressedCertificate { .. };
+        let ok_dec = wing::parse_compressed_certificate_msg(wire[..], parsed);
+        sub.assert_true(ok_dec, "CompressedCertificate parsed");
+        sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
+        sub.assert_eq(parsed.uncompressed_length, cert_plaintext.len as u32, "Parsed length matches plaintext");
+        sub.assert_true(parsed.compressed_certificate_message == compressed_data[..], "Compressed bytes match");
+
+        // Safe decompression via handler interface
+        let ok_decomp = wing::decompress_certificate_message(parsed, 10000, decompressed);
+        sub.assert_true(ok_decomp, "Safe decompression succeeds");
+        sub.assert_bytes_eq(decompressed[..], cert_plaintext, "Decompressed certificate matches original exactly");
+
+        var decomp2: u8[>..] = [];
+        let ok_brotli = wing::decompress_certificate_brotli(compressed_data[..], cert_plaintext.len as u32, decomp2);
+        sub.assert_true(ok_brotli, "decompress_certificate_brotli succeeds");
+        sub.assert_bytes_eq(decomp2[..], cert_plaintext, "decomp2 matches original exactly");
+
+        var decomp3: u8[>..] = [];
+        let ok_incoming = wing::decompress_incoming_certificate(wire[..], decomp3);
+        sub.assert_true(ok_incoming, "decompress_incoming_certificate succeeds on handshake wire payload");
+        sub.assert_bytes_eq(decomp3[..], cert_plaintext, "decomp3 matches original plaintext");
+    };
+
+    t.run("3. Enterprise Decompression Bomb and Boundary Protection") { sub =>
+        // 1. Decompression bomb: uncompressed_length exceeds caller's max buffer ceiling
+        var bomb_msg = wing::CompressedCertificate {
+            algorithm: wing::CERT_COMPRESSION_BROTLI,
+            uncompressed_length: 50000,
+            compressed_certificate_message: "abc",
+        };
+        var out_sink: u8[>..] = [];
+        let ok_b1 = wing::decompress_certificate_message(bomb_msg, 1024, out_sink);
+        sub.assert_false(ok_b1, "Decompression bomb exceeding max_allowed_len rejected");
+
+        // 2. Uncompressed length exceeding global MAX_UNCOMPRESSED_CERT_SIZE (65536)
+        bomb_msg.uncompressed_length = 70000;
+        let ok_b2 = wing::decompress_certificate_message(bomb_msg, 100000, out_sink);
+        sub.assert_false(ok_b2, "Length exceeding 64KB ceiling rejected");
+
+        // 3. Zero uncompressed length rejected
+        bomb_msg.uncompressed_length = 0;
+        let ok_b3 = wing::decompress_certificate_message(bomb_msg, 100000, out_sink);
+        sub.assert_false(ok_b3, "Zero uncompressed length rejected");
+
+        // 4. Decompression bomb ratio sanity check (> 1024x expansion ratio)
+        let tiny_comp: u8[2] = [0x5B, 0x00];
+        var bad_ratio_wire: u8[7] = [
+            0x00, 0x02,             // algo: 2
+            0x00, 0xFA, 0x00,       // uncompressed_length: 64000 (ratio = 32000x > 1024x)
+            tiny_comp[0], tiny_comp[1],
+        ];
+        var parsed_bad = wing::CompressedCertificate { .. };
+        let ok_ratio = wing::parse_compressed_certificate_msg(bad_ratio_wire[..], parsed_bad);
+        sub.assert_false(ok_ratio, "Insane expansion ratio (>1024x) rejected by wire parser");
+
+        // 5. Corrupted compressed payload
+        let corrupt_payload: u8[10] = [0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66];
+        var corrupt_msg = wing::CompressedCertificate {
+            algorithm: wing::CERT_COMPRESSION_BROTLI,
+            uncompressed_length: 10,
+            compressed_certificate_message: corrupt_payload[..],
+        };
+        var out_corrupt: u8[>..] = [];
+        let ok_c_fail = wing::decompress_certificate_message(corrupt_msg, 1024, out_corrupt);
+        sub.assert_false(ok_c_fail, "Corrupted Brotli payload fails gracefully without crash");
+    };
+}
+
 // Main TLS 1.3 & X.509 Conformance Runner
 fn main() {
     var runner = core::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", core::Verbosity.Verbose);
@@ -3607,8 +3796,9 @@ fn main() {
     core::run_case(runner, "7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify", test_asn1_x509_and_verify);
     core::run_case(runner, "8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)", test_post_quantum_hybrid_exchange);
     core::run_case(runner, "9. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance", test_handshake_and_ech_security);
-    core::run_case(runner, "10. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM", test_handshake_r2_invariants);
-    core::run_case(runner, "11. Round 3: NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp", test_handshake_r3_invariants);
+    core::run_case(runner, "10. State Machine Transitions, HRR Invariants, Downgrade & ECH FSM", test_handshake_r2_invariants);
+    core::run_case(runner, "11. NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp", test_handshake_r3_invariants);
+    core::run_case(runner, "12. RFC 8879 Brotli Certificate Decompression & Bomb Defenses", test_rfc8879_brotli_cert_compression);
 
     let ok = core::finish(runner);
     assert(ok);

@@ -1425,7 +1425,7 @@ fn receive_view_into<B, F>(
                 out_view.is_valid = false;
                 return true, out_view;
             }
-            // RFC 7692 §8.1: UTF-8 validation ONLY applies to uncompressed plaintext payload
+            // RFC 7692 Section 6.1: Compression - UTF-8 validation only applies to uncompressed plaintext payload
             if hdr.opcode == WS_OPCODE_TEXT && !hdr.rsv1 {
                 if !core::validate_utf8(payload) {
                     close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);

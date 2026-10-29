@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: auth ---
+// --- Component: auth ---
 // Verification suite for RFC 7616 Digest Access Authentication, RFC 7617 Basic Authentication,
 // and 401 Authenticator Replay Loop.
 
@@ -2416,6 +2416,16 @@ fn test_digest_auth_serialization_security(t: core::T&) {
     };
 }
 
+// Invariant 13: Zero silent buffer drops - JWT header unknown keys capacity overflow
+fn test_jwt_header_capacity_rejection(t: core::T&) {
+    t.run("JWT header unknown key overflow triggers parsing error") { sub =>
+        var bad_jwt: u8[>..] = "{\"alg\":\"none\",\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9}";
+        var hdr = wing::JwtHeader { .. };
+        let err = wing::decode_jwt_header(bad_jwt[..], hdr);
+        sub.assert_true(err != wing::JwtError.None, "JWT header exceeding seen_others capacity MUST fail");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", core::Verbosity.Verbose);
 
@@ -2440,6 +2450,7 @@ fn main() {
     core::run_case(runner, "19. HPKE (RFC 9180) SetupBase, Seal & Open Vectors", test_hpke_rfc9180);
     core::run_case(runner, "20. Digest Challenge Buffer Bounds & Syntax", test_digest_challenge_buffer_bounds);
     core::run_case(runner, "21. Digest Authorization Serialization Defenses", test_digest_auth_serialization_security);
+    core::run_case(runner, "22. Invariant 13 JWT Header Capacity Rejection", test_jwt_header_capacity_rejection);
 
     let ok = core::finish(runner);
     assert(ok);

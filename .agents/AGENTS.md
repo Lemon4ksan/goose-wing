@@ -157,6 +157,10 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
   - **Zero dynamic arrays (`u8[>..]`) in mid-struct definitions**: Struct fields of growable array type
     (`u8[>..]`) may only appear as the final field of a struct, never followed by other fields. Prefer
     bounded arrays (`u8[..N]`).
+  - **Zero `usize` or `isize` types (No pointer-sized integer keywords)**: Goose does not have `usize`
+    or `isize` (attempting `let x: usize` produces `unknown type: usize`; casting `x as usize` fails with
+    `as can only convert between numeric types, not to usize`). Slice and buffer `.len` is strictly `i64`,
+    and indexing uses `i64` or `u64`. Always use canonical fixed-width types: `u64`, `i64`, `u32`, `i32`.
 
 ## Strict code clarity and anti-bloat invariants
 
@@ -171,7 +175,7 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
 2. **Input/output examples (`// Example:`) where genuinely useful**:
    - **Compulsory function archetypes**:
      - *Cursor mutators*: Any function advancing an in-out wire cursor (`idx: i64&`, `pos: i64&`, `offset: u64&`, `r: SliceReader&`, `rd: WireReader&`).
-     - *Stream/slice-consuming parsers*: Any function consuming wire bytes and returning consumed byte length or parsed tokens (`-> (i64|u64|usize|i32), bool` or `-> const u8[:], bool`), e.g. `fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool`.
+     - *Stream/slice-consuming parsers*: Any function consuming wire bytes and returning consumed byte length or parsed tokens (`-> (i64|u64|i32), bool` or `-> const u8[:], bool`), e.g. `fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool`.
      - *Prefix-assumption parsers*: Any routine assuming a non-zero start or expecting leading delimiters (`"` or `[`).
      - *RFC grammar parsers and decoders*: Functions named `parse_*`, `decode_*`, `extract_*`, or `scan_*` handling wire frames or header tokens.
      - *Wire bitmask builders and transformers*: Functions named `build_*_type`, `pack_*`, `unpack_*`, `escape_*`, `unescape_*`, or `sanitize_*`.
@@ -236,7 +240,7 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
    - Generators must either accept a mutable RNG state by reference (`rng: Rng&`), take an external entropy buffer, or mix high-resolution hardware/OS clocks (`clock_ns()`).
 17. **Enterprise-scale buffer limits over toy RFC examples**:
    - Never allocate miniature stack buffers (`u8[..384]`, `u8[..512]`) for external bearer tokens, access tokens, certificates, or authorization headers based on brief RFC examples.
-   - Use canonical enterprise constants: `const MAX_AUTH_TOKEN_LEN: usize = 4096;`, `const MAX_HEADER_FIELD_LEN: usize = 8192;`.
+   - Use canonical enterprise constants: `const MAX_AUTH_TOKEN_LEN: u64 = 4096;`, `const MAX_HEADER_FIELD_LEN: u64 = 8192;`.
 
 ## Protocol specification fidelity and adversarial testing
 

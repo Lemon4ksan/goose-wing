@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: client ---
+// --- Component: client ---
 // Tests for ClientSession, redirect policies, and cookie handling.
 
 // ----------------------------------------------------------------------------
@@ -913,6 +913,59 @@ fn test_send_http1_response_iov_helper(t: core::T&) {
     };
 }
 
+// RFC 2104 Section 2: Definition of HMAC - HMAC-SHA256 request body signing verification
+fn test_hmac_signing(t: core::T&) {
+    t.run("Empty body signs empty slice with HMAC-SHA256") { sub =>
+        var req = wing::new_post("https://api.example.com/empty");
+        wing::sign_hmac_sha256(req, "my_secret_key");
+        let sig = wing::header(req, "X-Signature-256");
+        sub.assert_bytes_eq(sig, "9915a19fb787e5936fbc9b2365405c2d977cea60242b9af60f5a4a5a72a9b846", "HMAC empty body matches");
+    };
+
+    t.run("RFC 4231 Section 4.3: Test Case 2 - Non-empty request body matches official test vector") { sub =>
+        var req = wing::new_post("https://api.example.com/vector2");
+        wing::text(req, "what do ya want for nothing?");
+        wing::sign_hmac_sha256(req, "Jefe");
+        let sig = wing::header(req, "X-Signature-256");
+        sub.assert_bytes_eq(sig, "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", "HMAC Case 2 matches");
+    };
+}
+
+// Invariant 13: Zero silent buffer drops and strict capacity overflow rejection
+fn test_client_query_capacity_rejections(t: core::T&) {
+    t.run("Query parameter capacity overflow returns false") { sub =>
+        var req = wing::new_get("https://example.com/search");
+        // Push 16 items up to capacity
+        for i in 16 {
+            var k: u8[..16] = "k";
+            format(k, i);
+            var v: u8[..16] = "v";
+            format(v, i);
+            let ok = req.query(k[..], v[..]);
+            sub.assert_true(ok, "within query_params capacity");
+        }
+        // 17th item MUST fail with false (never silently dropped)
+        let ok_overflow = req.query("k16", "v16");
+        sub.assert_false(ok_overflow, "17th query parameter MUST return false on capacity overflow");
+    };
+
+    t.run("Query parameter key length exceeding 64 bytes returns false") { sub =>
+        var req = wing::new_get("https://example.com/search");
+        var oversized_key: u8[..80] = [];
+        for _ in 65 { oversized_key.push('a'); }
+        let ok = req.query(oversized_key[..], "valid_val");
+        sub.assert_false(ok, "oversized key MUST be rejected");
+    };
+
+    t.run("Query parameter value length exceeding 256 bytes returns false") { sub =>
+        var req = wing::new_get("https://example.com/search");
+        var oversized_val: u8[>..] = [];
+        for _ in 257 { oversized_val.push('b'); }
+        let ok = req.query("valid_key", oversized_val[..]);
+        sub.assert_false(ok, "oversized value MUST be rejected");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", core::Verbosity.Verbose);
 
@@ -935,6 +988,8 @@ fn main() {
     core::run_case(runner, "17. Request.set_priority helper", test_request_priority_helper);
     core::run_case(runner, "18. RFC 9421 Ed25519 Request & Response helpers", test_ed25519_signatures_helpers);
     core::run_case(runner, "19. send_http1_response_iov helper", test_send_http1_response_iov_helper);
+    core::run_case(runner, "20. RFC 2104 / RFC 4231 HMAC-SHA256 Request Signing", test_hmac_signing);
+    core::run_case(runner, "21. Invariant 13 Query Parameter Capacity & Bounds", test_client_query_capacity_rejections);
 
     let ok = core::finish(runner);
     assert(ok);

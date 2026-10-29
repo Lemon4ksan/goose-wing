@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: http_mime ---
+// --- Component: http_mime ---
 // Tests for MIME media types, parameter parsing, unquoting, and structured fields.
 
 fn test_strict_unquote_invariants(t: core::T&) {

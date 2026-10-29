@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: http_cache_engine ---
+// --- Component: http_cache_engine ---
 // Verification suite for RFC 9111 HTTP caching engine.
 // Verifies Cache-Control parsing, freshness calculations, ETag validators,
 // Vary matching, CVE-2026-93750 & CVE-2026-93748 defenses, 304 header merge,
@@ -1292,7 +1292,7 @@ fn test_http_signatures(t: core::T&) {
 }
 
 fn test_ed25519_signatures(t: core::T&) {
-    t.run("Ed25519 Asymmetric HTTP Signatures (RFC 9421 §3.2.2)") { sub =>
+    t.run("Ed25519 Asymmetric HTTP Signatures (RFC 9421 Section 3.3.6: EdDSA Using Curve edwards25519 - Signature verification)") { sub =>
         var seed: u8[32] = [0; 32];
         for i in 32 { seed[i] = (i + 17) as u8; }
         let pub_key = core::ed25519_public_key(seed);

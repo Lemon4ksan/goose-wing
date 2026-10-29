@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: server_router ---
+// --- Component: server_router ---
 // Tests for radix tree routing, buffer pools, and server execution pipeline.
 
 // ----------------------------------------------------------------------------

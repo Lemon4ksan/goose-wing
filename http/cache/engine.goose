@@ -69,7 +69,11 @@ fn hash_fnv1a(s: const u8[:]) -> u32 {
 }
 
 // Converts a CachedEntry to an application Response, attaching calculated Age header (RFC 9111 §5.1).
-fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: Response&) {
+// Returns false if buffer capacities are exceeded (Invariant 13).
+fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: Response&) -> bool {
+    guard entry.url.len <= out_resp.effective_url.cap && entry.method.len <= out_resp.final_method.cap else {
+        return false;
+    }
     out_resp.status_code = entry.status_code;
     out_resp.effective_url.clear();
     out_resp.effective_url.append(entry.url[..]);
@@ -80,7 +84,8 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: R
     for &h_entry in entry.headers.entries {
         let h_name = entry.headers.raw_buf[h_entry.name_begin..h_entry.name_end];
         let h_val = entry.headers.raw_buf[h_entry.values_begin..h_entry.values_end];
-        if !eq_ascii_fold(h_name, "age") && out_resp.headers.len < 32 {
+        if !eq_ascii_fold(h_name, "age") {
+            guard out_resp.headers.len < out_resp.headers.cap else { return false; }
             out_resp.headers.push(make_header(h_name, h_val));
         }
     }
@@ -99,12 +104,12 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: R
 
     var age_str: u8[..64] = [];
     format(age_str, cur_age);
-    if out_resp.headers.len < 32 {
-        out_resp.headers.push(make_header("Age", age_str[..]));
-    }
+    guard out_resp.headers.len < out_resp.headers.cap else { return false; }
+    out_resp.headers.push(make_header("Age", age_str[..]));
 
     out_resp.body.clear();
     out_resp.body.append(entry.body[..]);
+    return true;
 }
 
 // ---- lookup and response decisions -----------------------------------------

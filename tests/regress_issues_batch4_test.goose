@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: regress_issues_batch16 ---
+// --- Component: regress_issues_batch16 ---
 // Phase 16 RED test suite: RFC Protocol Invariants, Authority/Host Smuggling Defenses,
 // Name Constraint Bounds, Frame State Sequences, and Empty-Status Bodyless Wire Formats.
 //

@@ -13,6 +13,8 @@ import .bbr;
 import .frames;
 import .stream;
 import .flow_control;
+import .migration;
+import .dplpmtud;
 
 enum QuicRole {
     Client,
@@ -46,6 +48,8 @@ struct QuicConnection {
     packets_rx: u64 = 0,
     packets_tx: u64 = 0,
     close_code: u64 = 0,
+    migration: QuicMigrationManager = QuicMigrationManager { .. },
+    dplpmtud: Dplpmtud = Dplpmtud { .. },
 }
 
 fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
@@ -83,10 +87,10 @@ inline fn is_within_amplification_budget(sent: u64, extra: u64, limit: u64) -> b
     return (sent + extra) <= limit;
 }
 
-// RFC 9000 §8.1: Server anti-amplification limit (3x bytes received)
+// RFC 9000 §8.1: Server anti-amplification limit (3x bytes received) and path capacity
 fn quic_conn_can_send(conn: const QuicConnection&, bytes: u64) -> bool {
     guard !conn.validated_address && conn.role == QuicRole.Server else {
-        return true;
+        return path_can_send(conn.migration.active_path, bytes);
     }
     let limit = calc_amplification_limit(conn.bytes_received);
     return is_within_amplification_budget(conn.bytes_sent, bytes, limit);
@@ -374,8 +378,35 @@ fn dispatch_inbound_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
         }
         return true, true;
     }
+    if frame.frame_type == QuicFrameType.PathChallenge {
+        conn.bytes_received += frame.length;
+        return true, true;
+    }
+    if frame.frame_type == QuicFrameType.PathResponse {
+        let ok = quic_migration_on_path_response(conn.migration, frame.payload);
+        if ok {
+            quic_migration_complete(conn.migration);
+            conn.validated_address = true;
+        }
+        return true, true;
+    }
 
     return true, true;
+}
+
+// RFC 9000 Section 9.1: Initiates connection migration toward new remote endpoint
+fn quic_conn_migrate(conn: QuicConnection&, new_addr: const QuicEndpointAddr&, token: const u8[8]&) {
+    quic_migration_start_probing(conn.migration, new_addr, token);
+}
+
+// RFC 8899 Section 5.1: Handles acknowledgement of DPLPMTUD probe packet
+fn quic_conn_on_probe_acked(conn: QuicConnection&, acked_size: u32) -> bool {
+    return dplpmtud_on_probe_acked(conn.dplpmtud, acked_size);
+}
+
+// RFC 8899 Section 5.1: Handles loss / timeout of DPLPMTUD probe packet
+fn quic_conn_on_probe_lost(conn: QuicConnection&, lost_size: u32) -> bool {
+    return dplpmtud_on_probe_lost(conn.dplpmtud, lost_size);
 }
 
 fn quic_conn_process_payload(conn: QuicConnection&, payload: const u8[:]) -> bool, bool {

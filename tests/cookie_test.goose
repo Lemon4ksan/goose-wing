@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: cookie_engine ---
+// --- Component: cookie_engine ---
 // Tests for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 
 struct PrefixVector {

@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: net_transport_driver ---
+// --- Component: net_transport_driver ---
 // Verification suite for Layer 4 Transport Driver Architecture (net/driver.goose):
 // - Platform probing across Windows, Linux, and macOS
 // - Driver capability bitmasks (KernelBypass, ZeroCopy, RingCompletion, BatchIO, ExactBufMetrics)

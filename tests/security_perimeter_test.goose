@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: security_cross_origin ---
+// --- Component: security_cross_origin ---
 // Verification suite for W3C Cross-Origin Isolation (COOP, COEP, CORP):
 // - Header parsing for Cross-Origin-Opener-Policy, Cross-Origin-Embedder-Policy, Cross-Origin-Resource-Policy
 // - W3C HTML5 §7.2 crossOriginIsolated state computation

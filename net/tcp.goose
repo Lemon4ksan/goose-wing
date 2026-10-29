@@ -47,6 +47,10 @@ extern fn native_epoll_close(epfd: i64) = "wing_epoll_close";
 extern fn native_fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64 = "wing_fast_cork_append";
 extern fn native_set_cpu_affinity(cpu_id: i64) -> i32 = "wing_set_cpu_affinity";
 extern fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32 = "wing_tcp_set_incoming_cpu";
+extern fn native_tcp_set_fastopen(sock_fd: i64, qlen: i32) -> i32 = "wing_tcp_set_fastopen";
+extern fn native_tcp_send_fastopen(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send_fastopen";
+extern fn native_tcp_set_tos(sock_fd: i64, tos: i32) -> i32 = "wing_tcp_set_tos";
+extern fn native_tcp_set_tclass(sock_fd: i64, tclass: i32) -> i32 = "wing_tcp_set_tclass";
 
 // Event flags for epoll multiplexer
 const EPOLL_READ: u32 = 1;
@@ -288,6 +292,68 @@ fn tcp_set_keepalive(fd: i64, idle_sec: i32 = 1, intvl_sec: i32 = 11, cnt: i32 =
 fn tcp_set_syn_retries(fd: i64, count: i32 = 3) -> bool {
     guard fd > 0 else { return false; }
     return native_tcp_set_syn_retries(fd, count) == 0;
+}
+
+// RFC 7413 Section 5.1: TCP Fast Open Server Configuration - Default TFO queue length
+const TCP_FASTOPEN_DEFAULT_QLEN: i32 = 512;
+// RFC 7413 Section 5.2: TCP Fast Open Client Operation - MSG_FASTOPEN flag for sendto
+const MSG_FASTOPEN: i32 = 0x20000000;
+
+// RFC 3168 Section 5: The ECN Field in IP - Explicit Congestion Notification codepoints
+const ECN_NOT_ECT: u8 = 0x00; // Not ECN-Capable Transport
+const ECN_ECT_1: u8 = 0x01;   // ECN-Capable Transport (1)
+const ECN_ECT_0: u8 = 0x02;   // ECN-Capable Transport (0)
+const ECN_CE: u8 = 0x03;      // Congestion Experienced
+const ECN_MASK: u8 = 0x03;    // Bitmask for ECN field in IP TOS / TCLASS
+
+// RFC 7413 Section 5.1: TCP Fast Open Server Configuration - Enables TFO on listening socket
+fn tcp_set_fastopen(fd: i64, qlen: i32 = TCP_FASTOPEN_DEFAULT_QLEN) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_fastopen(fd, qlen) == 0;
+}
+
+// RFC 7413 Section 5.2: TCP Fast Open Client Operation - Sends initial data payload with SYN
+fn tcp_send_fastopen(fd: i64, data: const u8[:]) -> i32 {
+    guard fd > 0 && data.len > 0 else { return 0; }
+    return native_tcp_send_fastopen(fd, data);
+}
+
+// RFC 3168 Section 5: The ECN Field in IP - Extracts 2-bit ECN codepoint from IP TOS octet
+//
+// Example:
+//   tos = 0x02
+//   returns: ECN_ECT_0 (0x02)
+inline fn ecn_from_tos(tos: u8) -> u8 {
+    return tos & ECN_MASK;
+}
+
+// RFC 3168 Section 5: The ECN Field in IP - Checks whether IP TOS indicates ECN capability (ECT(0) or ECT(1))
+inline fn ecn_is_capable(tos: u8) -> bool {
+    let cp = tos & ECN_MASK;
+    return cp == ECN_ECT_0 || cp == ECN_ECT_1;
+}
+
+// RFC 3168 Section 5: The ECN Field in IP - Checks whether IP TOS indicates Congestion Experienced (CE)
+inline fn ecn_is_congestion_experienced(tos: u8) -> bool {
+    return (tos & ECN_MASK) == ECN_CE;
+}
+
+// RFC 3168 Section 6.1.1: ECN-Capable TCP - Configures IP_TOS octet on IPv4 socket
+fn tcp_set_tos(fd: i64, tos: u8) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_tos(fd, tos) == 0;
+}
+
+// RFC 3168 Section 6.1.1: ECN-Capable TCP - Configures IPV6_TCLASS octet on IPv6 socket
+fn tcp_set_ipv6_tclass(fd: i64, tclass: u8) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_set_tclass(fd, tclass) == 0;
+}
+
+// RFC 3168 Section 6.1.1: ECN-Capable TCP - Configures ECN codepoint on IPv4 socket
+fn tcp_set_ecn(fd: i64, codepoint: u8) -> bool {
+    guard fd > 0 && codepoint <= ECN_MASK else { return false; }
+    return native_tcp_set_tos(fd, codepoint) == 0;
 }
 
 // Retrieves number of unsent / unacknowledged bytes in socket write queue (tcpi_notsent_bytes).

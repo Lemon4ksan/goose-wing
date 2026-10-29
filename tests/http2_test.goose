@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// --- Component: http2_suite ---
+// --- Component: http2_suite ---
 // HTTP/2 Echelon 6 Conformance & Reference Suite (RFC 7541, RFC 9113, RFC 9218).
 // Tests HPACK Huffman FSM, Zero-Allocation Dynamic Table, Binary Framing,
 // Two-Level Signed Flow Control, RFC 9218 Write Scheduler, and Anti-DoS Defenses.
@@ -447,7 +447,7 @@ fn test_rfc9218_write_scheduler(t: core::T&) {
         sub.assert_true((id1 == 1 && id2 == 3) || (id1 == 3 && id2 == 1), "both streams get scheduled in turn");
     };
 
-    t.run("SCHED-03: Round-Robin Multiplexing Among Concurrent Incremental Streams (RFC 9218 §2.2)") { sub =>
+    t.run("SCHED-03: Round-Robin Multiplexing Among Concurrent Incremental Streams (RFC 9218 Section 4.2: Incremental - Concurrent stream processing)") { sub =>
         var sess = wing::new_session_state();
 
         // Stream 1: urgency 2, incremental, 1000 bytes
@@ -2665,6 +2665,111 @@ fn test_h3_priority_update_integration(t: core::T&) {
     };
 }
 
+// RFC 8336 Section 2: The ORIGIN HTTP/2 Frame
+// RFC 7838 Section 4: The ALTSVC HTTP/2 Frame
+fn test_h2_extension_frames(t: core::T&) {
+    t.run("ORIGIN-01: FRAME_ORIGIN serialization and multi-origin parsing") { sub =>
+        var origins: const u8[:][..16] = [];
+        origins.push("https://example.com");
+        origins.push("https://api.example.com");
+
+        var wire: u8[>..] = [];
+        let enc_ok = wing::encode_origin_frame(wire, origins);
+        sub.assert_true(enc_ok, "encode_origin_frame succeeded");
+
+        // Parse 9-byte header
+        let hdr, hdr_err = wing::parse_frame_header(wire[..9]);
+        sub.assert_eq(hdr_err, wing::ERR_NO_ERROR, "frame header parsed without error");
+        sub.assert_eq(hdr.frame_type, wing::FRAME_ORIGIN, "frame type is FRAME_ORIGIN (0x0C)");
+        sub.assert_eq(hdr.stream_id, 0, "stream id is 0");
+
+        // Parse payload
+        var parsed_origins: const u8[:][..16] = [];
+        let count, parse_err = wing::parse_origin_frame(wire[9..9 + hdr.length], hdr.stream_id, parsed_origins);
+        sub.assert_eq(parse_err, wing::ERR_NO_ERROR, "payload parsed without error");
+        sub.assert_eq(count, 2, "parsed 2 origins");
+        sub.assert_eq(parsed_origins[0], "https://example.com", "origin 0 matched");
+        sub.assert_eq(parsed_origins[1], "https://api.example.com", "origin 1 matched");
+    };
+
+    t.run("ORIGIN-02: Stream ID != 0 violation triggers PROTOCOL_ERROR") { sub =>
+        let dummy_payload: u8[10] = [0x00, 0x08, 'h', 't', 't', 'p', 's', ':', '/', '/'];
+        var parsed: const u8[:][..16] = [];
+        let _, err = wing::parse_origin_frame(dummy_payload[..], 1, parsed);
+        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "ORIGIN frame on stream 1 returns PROTOCOL_ERROR");
+
+        let bad_hdr = wing::FrameHeader {
+            length: 10,
+            frame_type: wing::FRAME_ORIGIN,
+            flags: 0,
+            stream_id: 3,
+        };
+        let rule_err = wing::validate_frame_header_rules(bad_hdr);
+        sub.assert_eq(rule_err, wing::ERR_PROTOCOL_ERROR, "validate_frame_header_rules rejects ORIGIN on stream 3");
+    };
+
+    t.run("ALTSVC-01: FRAME_ALTSVC on stream 0 with origin") { sub =>
+        var wire: u8[>..] = [];
+        let enc_ok = wing::encode_altsvc_frame(wire, "example.com", "h3=\":443\"; ma=86400", 0);
+        sub.assert_true(enc_ok, "encode_altsvc_frame succeeded");
+
+        let hdr, hdr_err = wing::parse_frame_header(wire[..9]);
+        sub.assert_eq(hdr_err, wing::ERR_NO_ERROR, "header parsed ok");
+        sub.assert_eq(hdr.frame_type, wing::FRAME_ALTSVC, "frame type is FRAME_ALTSVC (0x0A)");
+        sub.assert_eq(hdr.stream_id, 0, "stream id is 0");
+
+        let altsvc, parse_err = wing::parse_altsvc_frame(wire[9..9 + hdr.length], hdr.stream_id);
+        sub.assert_eq(parse_err, wing::ERR_NO_ERROR, "parsed without error");
+        sub.assert_eq(altsvc.origin, "example.com", "origin matched");
+        sub.assert_eq(altsvc.alt_svc_value, "h3=\":443\"; ma=86400", "alt_svc_value matched");
+    };
+
+    t.run("ALTSVC-02: FRAME_ALTSVC on stream > 0 with implicit origin") { sub =>
+        var wire: u8[>..] = [];
+        let enc_ok = wing::encode_altsvc_frame(wire, "", "h3=\":443\"", 5);
+        sub.assert_true(enc_ok, "encode_altsvc_frame succeeded on stream 5");
+
+        let hdr, _ = wing::parse_frame_header(wire[..9]);
+        sub.assert_eq(hdr.stream_id, 5, "stream id is 5");
+
+        let altsvc, parse_err = wing::parse_altsvc_frame(wire[9..9 + hdr.length], hdr.stream_id);
+        sub.assert_eq(parse_err, wing::ERR_NO_ERROR, "parsed without error");
+        sub.assert_eq(altsvc.origin.len, 0, "origin is empty on stream > 0");
+        sub.assert_eq(altsvc.alt_svc_value, "h3=\":443\"", "alt_svc_value matched");
+    };
+
+    t.run("ALTSVC-03: Empty origin on stream 0 triggers PROTOCOL_ERROR") { sub =>
+        let payload: u8[6] = [0x00, 0x00, 'h', '3', '=', '1'];
+        let _, err = wing::parse_altsvc_frame(payload[..], 0);
+        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "empty origin on stream 0 is PROTOCOL_ERROR");
+    };
+
+    t.run("ALTSVC-04: Non-zero origin on stream > 0 triggers PROTOCOL_ERROR") { sub =>
+        let payload: u8[8] = [0x00, 0x02, 'o', 'k', 'h', '3', '=', '1'];
+        let _, err = wing::parse_altsvc_frame(payload[..], 1);
+        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "non-empty origin on stream 1 is PROTOCOL_ERROR");
+    };
+
+    t.run("ALTSVC-05: Server Ingress handles ORIGIN and ALTSVC extension frames") { sub =>
+        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(wing::H2_CLIENT_PREFACE[..]);
+
+        var origins: const u8[:][..16] = [];
+        origins.push("https://example.com");
+        wing::encode_origin_frame(wire, origins);
+        wing::encode_altsvc_frame(wire, "example.com", "h3=\":443\"", 0);
+
+        var out_wire: u8[>..] = [];
+        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+        sub.assert_true(ok, "handle_h2_server_ingress processed ORIGIN and ALTSVC extension frames");
+        sub.assert_eq(consumed, wire.len, "Consumed entire client stream with extensions");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("HTTP/2 Protocol, Multiplexing, HPACK, and RFC Invariants Suite", core::Verbosity.Verbose);
 
@@ -2697,6 +2802,7 @@ fn main() {
     core::run_case(runner, "27. Priority Serialization", test_priority_serialization);
     core::run_case(runner, "28. H2 Priority Update Frame", test_h2_priority_update_frame);
     core::run_case(runner, "29. H3 Priority Update Integration", test_h3_priority_update_integration);
+    core::run_case(runner, "30. HTTP/2 FRAME_ORIGIN & FRAME_ALTSVC (RFC 8336 & RFC 7838)", test_h2_extension_frames);
 
     let ok = core::finish(runner);
     assert(ok);
