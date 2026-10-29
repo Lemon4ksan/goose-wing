@@ -1,57 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// tests/lit/verify_historical_bugs.goose
+// Verification of regressions and security defenses (Go #75557, TLS inner padding, IPv6 Zone IDs) via wing.
+//
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 
 fn scan_disposition_crlf(buf: const u8[:]) -> i32 {
-    for b in buf {
-        if b == 13 || b == 10 || b == 0 {
-            return 1;
-        }
+    var out_disp: u8[>..] = [];
+    if !wing::format_content_disposition(buf, "", out_disp) {
+        return 1; // Rejected CRLF injection
     }
     return 0;
 }
 
 fn scan_tls_inner_type(buf: const u8[:]) -> i32 {
-    let len = buf.len;
-    if len <= 0 { return -1; }
-    var found_type: i32 = 0;
-    var payload_len: i64 = 0;
-    var found = false;
-
-    var i: i64 = 0;
-    while i < len {
-        let idx = len - 1 - i;
-        let b = buf[idx];
-        if !found && b != 0 {
-            found_type = b;
-            payload_len = idx;
-            found = true;
-        }
-        i += 1;
+    let _, inner_type, alert = wing::unpack_tls_inner_plaintext(buf);
+    if alert == wing::TlsAlert.UnexpectedMessage {
+        return -2;
     }
-
-    if !found { return -2; }
-    if found_type == 23 && payload_len == 0 { return 100; }
-    if found_type != 23 && payload_len == 0 { return -3; }
-    return found_type;
+    if inner_type == 23 {
+        return 100;
+    }
+    return inner_type as! i32;
 }
 
 fn scan_ipv6_bracket_zone(buf: const u8[:]) -> i64 {
     let len = buf.len;
-    if len < 3 { return -1; }
-    if buf[0] != 91 { return -1; } // '['
+    guard len >= 3 && buf[0] == '[' else { return -1; }
     var end_bracket: i64 = -1;
     var pct_idx: i64 = -1;
     var i: i64 = 1;
     while i < len {
         let b = buf[i];
-        if b == 93 && end_bracket < 0 { end_bracket = i; } // ']'
-        if b == 37 && pct_idx < 0 { pct_idx = i; }         // '%'
+        if b == ']' && end_bracket < 0 { end_bracket = i; }
+        if b == '%' && pct_idx < 0 { pct_idx = i; }
         i += 1;
     }
-    if end_bracket <= 1 { return -1; }
+    guard end_bracket > 1 else { return -1; }
     if pct_idx > 1 && pct_idx < end_bracket {
         return pct_idx - 1;
     }
@@ -60,43 +51,40 @@ fn scan_ipv6_bracket_zone(buf: const u8[:]) -> i64 {
 
 fn scan_is_cte_header(buf: const u8[:]) -> i32 {
     let target = "content-transfer-encoding";
-    if buf.len < target.len { return 0; }
-    for i in target.len {
-        var b = buf[i];
-        if b >= 65 && b <= 90 { b += 32; }
-        if b != target[i] { return 0; }
+    guard buf.len >= target.len else { return 0; }
+    if core::eq_ascii_fold(buf[..target.len], target) {
+        return 1;
     }
-    return 1;
+    return 0;
 }
 
 fn scan_final_coding_is_chunked(buf: const u8[:]) -> i32 {
     let len = buf.len;
-    if len < 7 { return 0; }
+    guard len >= 7 else { return 0; }
     var last_comma: i64 = -1;
     var i: i64 = 0;
     while i < len {
-        if buf[i] == 44 { last_comma = i; }
+        if buf[i] == ',' { last_comma = i; }
         i += 1;
     }
     var start = if last_comma >= 0 { last_comma + 1 } else { 0 };
-    while start < len && (buf[start] == 32 || buf[start] == 9) {
+    while start < len && (buf[start] == ' ' || buf[start] == '\t') {
         start += 1;
     }
     var end = len;
-    while end > start && (buf[end - 1] == 32 || buf[end - 1] == 9) {
+    while end > start && (buf[end - 1] == ' ' || buf[end - 1] == '\t') {
         end -= 1;
     }
     let piece_len = end - start;
-    if piece_len != 7 { return 0; }
-    let chunked = "chunked";
-    for j in 7 {
-        if buf[start + j] != chunked[j] { return 0; }
+    guard piece_len == 7 else { return 0; }
+    if core::eq_ascii_fold(buf[start..end], "chunked") {
+        return 1;
     }
-    return 1;
+    return 0;
 }
 
 fn main() {
-    let disp_evil = "form-data; name=\"field\r\nEvil: 1\"";
+    let disp_evil = "field\r\nEvil: 1";
     assert(scan_disposition_crlf(disp_evil) == 1);
     print("HIST_DISP_CRLF: OK");
 

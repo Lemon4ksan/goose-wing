@@ -1,76 +1,92 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 
-struct Socket {
-    buffer: u8[..512] = [],
-    is_open: bool = false,
-}
+fn test_slice_stream_reassembly() {
+    var out_buf: u8[64] = [0; 64];
+    var w = core::new_slice_writer(out_buf[..]);
 
-struct SocketPool {
-    sockets: Socket[8] = [
-        Socket {}, Socket {}, Socket {}, Socket {},
-        Socket {}, Socket {}, Socket {}, Socket {},
-    ],
-}
+    let chunks: const u8[:][5] = [
+        "GET ",
+        "/a",
+        "pi/v1/",
+        "stream",
+        " HTTP/1",
+    ];
 
-fn sock_send(pool: SocketPool&, id: i32, data: const u8[:]) -> i32 {
-    for b in data {
-        pool.sockets[id].buffer.push(b);
+    for c in chunks {
+        let n, err = core::write(w, c);
+        assert(err == core::IoError.None);
+        assert(n == c.len);
     }
-    return data.len as! i32;
+
+    assert(core::written(w) == 25);
+    let reassembled = core::as_written_slice(w);
+    assert(reassembled.len == 25);
+    assert(reassembled == "GET /api/v1/stream HTTP/1");
+
+    var r = core::new_slice_reader(reassembled);
+    let m, err_m = core::read_slice(r, 4);
+    assert(err_m == core::IoError.None);
+    assert(m == "GET ");
+
+    let p, err_p = core::read_slice(r, 14);
+    assert(err_p == core::IoError.None);
+    assert(p == "/api/v1/stream");
+
+    let v, err_v = core::read_slice(r, 7);
+    assert(err_v == core::IoError.None);
+    assert(v == " HTTP/1");
+    assert(core::is_eof(r));
 }
 
-fn sock_recv(pool: SocketPool&, id: i32, out: u8[:], off: i64) -> i32 {
-    let avail = pool.sockets[id].buffer.len - off;
-    if avail <= 0 { return 0; }
-    let count = if out.len < avail { out.len } else { avail };
-    for i in count {
-        out[i] = pool.sockets[id].buffer[off + i];
-    }
-    return count as! i32;
+fn test_limit_reader_bounds() {
+    let wire_data = "GET /api/v1/stream HTTP/1.1\r\n";
+    var lr = core::new_limit_reader(wire_data, 14);
+    var tmp: u8[14] = [0; 14];
+    let n, err = core::read(lr, tmp[..]);
+    assert(err == core::IoError.None);
+    assert(n == 14);
+    assert(tmp[..] == "GET /api/v1/st");
+
+    var extra: u8[1] = [0; 1];
+    let n2, err2 = core::read(lr, extra[..]);
+    assert(n2 == 0);
+    assert(err2 == core::IoError.LimitExceeded);
+}
+
+fn test_ring_buffer_streaming() {
+    var rb = core::new_ring_buffer();
+    assert(core::is_empty(rb));
+
+    let w1, err1 = core::write(rb, "GET /api/v1/");
+    assert(err1 == core::IoError.None && w1 == 12);
+
+    var tmp1: u8[12] = [0; 12];
+    let r1, err_r1 = core::read(rb, tmp1[..]);
+    assert(err_r1 == core::IoError.None && r1 == 12);
+    assert(tmp1[..] == "GET /api/v1/");
+
+    let w2, err2 = core::write(rb, "stream HTTP/1");
+    assert(err2 == core::IoError.None && w2 == 13);
+
+    var tmp2: u8[13] = [0; 13];
+    let r2, err_r2 = core::read(rb, tmp2[..]);
+    assert(err_r2 == core::IoError.None && r2 == 13);
+    assert(tmp2[..] == "stream HTTP/1");
+    assert(core::is_empty(rb));
 }
 
 fn main() {
-    var pool = SocketPool {};
-    let cli: i32 = 1;
-    let srv: i32 = 2;
-    pool.sockets[cli].is_open = true;
-    pool.sockets[srv].is_open = true;
-
-    // Send chunks: "GET ", "/a", "pi/v1/", "stream", " HTTP/1"
-    let s1 = sock_send(pool, srv, "GET ");
-    assert(s1 == 4);
-    let s2 = sock_send(pool, srv, "/a");
-    assert(s2 == 2);
-    let s3 = sock_send(pool, srv, "pi/v1/");
-    assert(s3 == 6);
-    let s4 = sock_send(pool, srv, "stream");
-    assert(s4 == 6);
-    let s5 = sock_send(pool, srv, " HTTP/1");
-    assert(s5 == 7);
-
-    var reassembled: u8[25] = [0; 25];
-    var offset: i64 = 0;
-    while offset < 25 {
-        let chunk_len = 25 - offset;
-        var tmp: u8[25] = [0; 25];
-        let r = sock_recv(pool, srv, tmp[..chunk_len], offset);
-        assert(r > 0);
-        for i in r {
-            reassembled[offset + i] = tmp[i];
-        }
-        offset += r;
-    }
-
-    assert(offset == 25);
-    // "GET /api/v1/stream HTTP/1"
-    assert(reassembled[0] == 71 && reassembled[1] == 69 && reassembled[2] == 84 && reassembled[3] == 32);
-    assert(reassembled[4] == 47 && reassembled[5] == 97 && reassembled[6] == 112 && reassembled[7] == 105);
-    assert(reassembled[23] == 47 && reassembled[24] == 49);
-
+    test_slice_stream_reassembly();
+    test_limit_reader_bounds();
+    test_ring_buffer_streaming();
     print("CHAOS_SLICER: DRAINED 25 BYTES OK");
 }
 

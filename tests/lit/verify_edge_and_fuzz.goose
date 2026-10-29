@@ -1,58 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 import wire_kit from ".";
 
-// HTTP/2 9-byte header parser with strict bounds guard
+// Wire bridge to HTTP/2 frame header decoder and rule validator
 fn decode_h2_header(buf: const u8[:]) -> i64 {
     if buf.len < 9 { return -1; }
-    let l0 = (buf[0] as i64) << 16;
-    let l1 = (buf[1] as i64) << 8;
-    let l2 = buf[2] as i64;
-    let ftype = buf[3];
-    let sid_b0 = buf[5] as i64;
-    let sid_b1 = buf[6] as i64;
-    let sid_b2 = buf[7] as i64;
-    let sid_b3 = buf[8] as i64;
-    let sid = ((sid_b0 & 0x7F) << 24) | (sid_b1 << 16) | (sid_b2 << 8) | sid_b3;
-    if sid == 0 && ftype == 1 { return -2; }
-    return l0 | l1 | l2;
+    let hdr, err = wing::parse_frame_header(buf, 16384);
+    if err != wing::ERR_NO_ERROR { return -2; }
+    if wing::validate_frame_header_rules(hdr) != wing::ERR_NO_ERROR { return -2; }
+    return hdr.length;
 }
 
-// Bounded WebSocket frame validator
+// Wire bridge to WebSocket frame parser with RFC 6455 bounds checking
 fn validate_ws_frame(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 2 { return -1; }
-    let b1 = buf[1];
-    let masked = (b1 & 0x80) != 0;
-    var payload_len: i64 = b1 & 127;
-    var hdr_len: i64 = 2;
-    if payload_len == 126 {
-        hdr_len += 2;
-        if len < hdr_len { return -1; }
-        payload_len = ((buf[2] as i64) << 8) | buf[3];
-    } else if payload_len == 127 {
-        hdr_len += 8;
-        if len < hdr_len { return -1; }
-        payload_len = ((buf[6] as i64) << 24) | ((buf[7] as i64) << 16) | ((buf[8] as i64) << 8) | buf[9];
-    }
-    if masked {
-        hdr_len += 4;
-    }
-    if len < hdr_len + payload_len {
-        return -1;
-    }
-    return payload_len;
-}
+    if buf.len < 2 { return -1; }
+    let opcode = buf[0] & 0x0F;
+    if !wing::is_valid_ws_opcode(opcode) { return -2; }
+    let masked = (buf[1] & 0x80) != 0;
+    let raw_len = buf[1] & 0x7F;
+    var min_hdr: i64 = 2;
+    if raw_len == 126 { min_hdr += 2; }
+    else if raw_len == 127 { min_hdr += 8; }
+    if masked { min_hdr += 4; }
+    if buf.len < min_hdr { return -1; }
 
-fn calc_h2_stream_word(hi: i64, lo: i64) -> i64 {
-    return ((hi & 127) << 16) | (lo & 65535);
-}
-
-fn derive_mask_key(m1: i64, m2: i64) -> i64 {
-    return ((m1 ^ 0x5A5A5A5A) << 16) | (m2 & 65535);
+    let hdr, ok = wing::parse_ws_frame_header(buf);
+    if !ok { return -2; }
+    let total: i64 = hdr.header_len + (hdr.payload_len as! i64);
+    if buf.len < total { return -1; }
+    return hdr.payload_len as! i64;
 }
 
 fn main() {
@@ -68,13 +51,23 @@ fn main() {
     assert(wire_kit::fuzz_payload(ws_pkt[..], 100, validate_ws_frame));
     print("EDGE_WS_FRAME: OK");
 
-    let w = calc_h2_stream_word(1, 42);
-    assert(w == 65578);
-    let k = derive_mask_key(12345, 67890);
-    assert(k == ((12345 ^ 0x5A5A5A5A) << 16) | (67890 & 65535));
-    print("EDGE_PURE_CALC: OK");
+    var hdr_orig = wing::FrameHeader {
+        length: 8,
+        frame_type: wing::FRAME_HEADERS,
+        flags: wing::FLAG_END_STREAM | wing::FLAG_END_HEADERS,
+        stream_id: 3,
+    };
+    var enc_hdr: u8[9] = [0; 9];
+    wing::encode_frame_header(hdr_orig, enc_hdr);
+    let hdr_dec, err = wing::parse_frame_header(enc_hdr[..]);
+    assert(err == wing::ERR_NO_ERROR);
+    assert(hdr_dec.length == 8);
+    assert(hdr_dec.frame_type == wing::FRAME_HEADERS);
+    assert(hdr_dec.flags == (wing::FLAG_END_STREAM | wing::FLAG_END_HEADERS));
+    assert(hdr_dec.stream_id == 3);
+    print("EDGE_ROUNDTRIP: OK");
 }
 
 // CHECK: EDGE_H2_HEADER: OK
 // CHECK: EDGE_WS_FRAME: OK
-// CHECK: EDGE_PURE_CALC: OK
+// CHECK: EDGE_ROUNDTRIP: OK

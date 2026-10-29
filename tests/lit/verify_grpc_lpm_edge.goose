@@ -1,45 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// tests/lit/verify_grpc_lpm_edge.goose
+// Verification of gRPC Length-Prefixed Message (LPM) framing and RFC bounds via wing::grpc.
+//
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 import wire_kit from ".";
 
-// Zero-allocation gRPC LPM frame decoder with 64-bit safe length checks
-fn validate_grpc_lpm_wire(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 5 { return -1; }
-    let flag = buf[0];
-    if (flag & 254) != 0 { return -2; }
-
-    let b1 = buf[1];
-    let b2 = buf[2];
-    let b3 = buf[3];
-    let b4 = buf[4];
-    let payload_len: i64 = ((b1 as i64) << 24) | ((b2 as i64) << 16) | ((b3 as i64) << 8) | b4;
-
-    let total_len: i64 = 5 + payload_len;
-    if len < total_len {
-        return -1;
+// Wire adapter for verify_split_stream and fuzzing using wing's real decode_grpc_lpm_slice
+fn wing_validate_grpc_lpm_wire(buf: const u8[:]) -> i64 {
+    let payload_slice, _, _, ok = wing::decode_grpc_lpm_slice(buf, 0);
+    if ok {
+        return payload_slice.len;
     }
-    return payload_len;
+    guard buf.len >= (wing::GRPC_LPM_HEADER_LEN as i64) else { return -1; }
+    let flag = buf[0];
+    guard (flag & ~wing::GRPC_FLAG_COMPRESSED) == 0 else { return -2; }
+    return -1;
 }
 
 fn main() {
     var lpm_pkt: u8[>..] = [];
     assert(wire_kit::parse_hex("000000000568656C6C6F", lpm_pkt));
-    assert(wire_kit::verify_split_stream(lpm_pkt[..], -1, 5, validate_grpc_lpm_wire));
-    assert(wire_kit::fuzz_payload(lpm_pkt[..], 100, validate_grpc_lpm_wire));
+
+    // Verify encode round-trip with wing::encode_grpc_lpm
+    var encoded: u8[>..] = [];
+    wing::encode_grpc_lpm("hello", encoded, false);
+    assert(encoded[..] == lpm_pkt[..]);
+
+    assert(wire_kit::verify_split_stream(lpm_pkt[..], -1, 5, wing_validate_grpc_lpm_wire));
+    assert(wire_kit::fuzz_payload(lpm_pkt[..], 100, wing_validate_grpc_lpm_wire));
     print("GRPC_LPM_SPLIT: OK");
 
     var ovf1: u8[>..] = []; wire_kit::parse_hex("00FFFFFFFF", ovf1);
-    assert(validate_grpc_lpm_wire(ovf1[..]) == -1);
+    assert(wing_validate_grpc_lpm_wire(ovf1[..]) == -1);
 
     var ovf2: u8[>..] = []; wire_kit::parse_hex("00FFFFFFFB", ovf2);
-    assert(validate_grpc_lpm_wire(ovf2[..]) == -1);
+    assert(wing_validate_grpc_lpm_wire(ovf2[..]) == -1);
 
     var bad_flag: u8[>..] = []; wire_kit::parse_hex("0200000000", bad_flag);
-    assert(validate_grpc_lpm_wire(bad_flag[..]) == -2);
+    assert(wing_validate_grpc_lpm_wire(bad_flag[..]) == -2);
     print("GRPC_LPM_INVARIANTS: OK");
 }
 

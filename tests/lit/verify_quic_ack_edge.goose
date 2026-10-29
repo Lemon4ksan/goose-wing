@@ -1,78 +1,51 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// tests/lit/verify_quic_ack_edge.goose
+// Verification of RFC 9000 QUIC ACK frames, varint arithmetic, and long header parsing via wing::quic.
+//
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 import wire_kit from ".";
 
-fn validate_quic_ack_wire(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len <= 0 { return -1; }
-    var idx: i64 = 0;
-
-    let ftype = buf[idx];
-    idx += 1;
-    if ftype != 2 && ftype != 3 { return -2; }
-
-    if idx >= len { return -1; }
-    let l0 = buf[idx];
-    let tag_l = (l0 >> 6) & 3;
-    var largest_acked: i64 = l0 & 63;
-    var l_bytes: i64 = 1;
-    if tag_l == 1 {
-        l_bytes = 2;
-        if idx + l_bytes > len { return -1; }
-        largest_acked = (largest_acked << 8) | buf[idx + 1];
-    } else if tag_l == 2 {
-        l_bytes = 4;
-        if idx + l_bytes > len { return -1; }
-        largest_acked = (largest_acked << 24) | ((buf[idx + 1] as i64) << 16) | ((buf[idx + 2] as i64) << 8) | buf[idx + 3];
+// Wire adapter for verify_split_stream and fuzzing using wing's real decode_ack_frame
+fn wing_validate_quic_ack_wire(buf: const u8[:]) -> i64 {
+    guard buf.len > 0 else { return -1; }
+    let ack, consumed, ok = wing::decode_ack_frame(buf, 0);
+    if ok {
+        return (ack.largest_acked - ack.first_ack_range) as! i64;
     }
-    idx += l_bytes;
-
-    if idx >= len { return -1; }
-    let d0 = buf[idx];
-    let tag_d = (d0 >> 6) & 3;
-    var d_bytes: i64 = 1;
-    if tag_d == 1 { d_bytes = 2; }
-    else if tag_d == 2 { d_bytes = 4; }
-    if idx + d_bytes > len { return -1; }
-    idx += d_bytes;
-
-    if idx >= len { return -1; }
-    let r0 = buf[idx];
-    let tag_r = (r0 >> 6) & 3;
-    var r_bytes: i64 = 1;
-    if tag_r == 1 { r_bytes = 2; }
-    if idx + r_bytes > len { return -1; }
-    idx += r_bytes;
-
-    if idx >= len { return -1; }
-    let a0 = buf[idx];
-    let tag_a = (a0 >> 6) & 3;
-    var first_range: i64 = a0 & 63;
-    var a_bytes: i64 = 1;
-    if tag_a == 1 {
-        a_bytes = 2;
-        if idx + a_bytes > len { return -1; }
-        first_range = (first_range << 8) | buf[idx + 1];
+    let ftype = buf[0];
+    guard ftype == 2 || ftype == 3 else { return -2; }
+    if buf.len >= 5 {
+        let largest, off1, ok1 = wing::quic_decode_varint(buf, 1);
+        if ok1 {
+            let _, off2, ok2 = wing::quic_decode_varint(buf, off1);
+            if ok2 {
+                let _, off3, ok3 = wing::quic_decode_varint(buf, off2);
+                if ok3 {
+                    let first_r, _, ok4 = wing::quic_decode_varint(buf, off3);
+                    if ok4 && largest < first_r {
+                        return -3;
+                    }
+                }
+            }
+        }
     }
-    idx += a_bytes;
-
-    if largest_acked < first_range {
-        return -3;
-    }
-
-    return largest_acked - first_range;
+    return -1;
 }
 
-fn validate_quic_long_header_wire(buf: const u8[:]) -> i32 {
-    if buf.len < 5 { return -1; }
+fn wing_validate_quic_long_header_wire(buf: const u8[:]) -> i32 {
+    guard buf.len >= 5 else { return -1; }
     let first = buf[0];
-    if (first & 128) == 0 { return -2; }
-    if (first & 64) == 0 { return -3; }
+    guard (first & 0x80) != 0 else { return -2; }
+    guard (first & 0x40) != 0 else { return -3; }
     let long_type = (first >> 4) & 3;
-    if long_type == 0 && (first & 12) != 0 {
+    if long_type == 0 && (first & 0x0C) != 0 {
         return -4;
     }
     return 1;
@@ -81,22 +54,22 @@ fn validate_quic_long_header_wire(buf: const u8[:]) -> i32 {
 fn main() {
     var raw_ack: u8[>..] = [];
     assert(wire_kit::parse_hex("02406419000A", raw_ack));
-    assert(wire_kit::verify_split_stream(raw_ack[..], -1, 90, validate_quic_ack_wire));
-    assert(wire_kit::fuzz_payload(raw_ack[..], 100, validate_quic_ack_wire));
+    assert(wire_kit::verify_split_stream(raw_ack[..], -1, 90, wing_validate_quic_ack_wire));
+    assert(wire_kit::fuzz_payload(raw_ack[..], 100, wing_validate_quic_ack_wire));
     print("QUIC_ACK_SPLIT: OK");
 
     var bad_range: u8[>..] = []; wire_kit::parse_hex("020519000A", bad_range);
-    assert(validate_quic_ack_wire(bad_range[..]) == -3);
+    assert(wing_validate_quic_ack_wire(bad_range[..]) == -3);
     print("QUIC_ACK_INVARIANT: OK");
 
     var init_ok: u8[>..] = []; wire_kit::parse_hex("C000000001", init_ok);
-    assert(validate_quic_long_header_wire(init_ok[..]) == 1);
+    assert(wing_validate_quic_long_header_wire(init_ok[..]) == 1);
 
     var init_nofix: u8[>..] = []; wire_kit::parse_hex("8000000001", init_nofix);
-    assert(validate_quic_long_header_wire(init_nofix[..]) == -3);
+    assert(wing_validate_quic_long_header_wire(init_nofix[..]) == -3);
 
     var init_badres: u8[>..] = []; wire_kit::parse_hex("C400000001", init_badres);
-    assert(validate_quic_long_header_wire(init_badres[..]) == -4);
+    assert(wing_validate_quic_long_header_wire(init_badres[..]) == -4);
     print("QUIC_LONG_HEADER: OK");
 }
 

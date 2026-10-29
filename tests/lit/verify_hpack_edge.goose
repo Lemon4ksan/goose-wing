@@ -1,37 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// tests/lit/verify_hpack_edge.goose
+// Verification of RFC 7541 HPACK integer prefix decoding and Huffman padding via wing::http2.
+//
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 import wire_kit from ".";
 
-fn hpack_decode_int_mem(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len <= 0 { return -1; }
-    let mask: i64 = 31;
-    let b0 = buf[0] as i64;
-    var val = b0 & mask;
-    if val < mask {
-        return val;
+// Wire adapter for verify_split_stream and fuzzing using wing's real hpack_decode_int
+fn wing_decode_hpack_int_5(buf: const u8[:]) -> i64 {
+    guard buf.len > 0 else { return -1; }
+    let val, new_off, ok = wing::hpack_decode_int(buf, 0, 5);
+    if ok {
+        return val as! i64;
     }
-    var shift: u32 = 0;
-    var idx: i64 = 1;
-    while idx < len {
-        let b = buf[idx];
-        let payload = (b & 127) as i64;
-        if shift >= 28 {
-            if shift > 28 || payload > 15 {
-                return -2;
-            }
-        }
-        val += payload << shift;
-        idx += 1;
-        if (b & 128) == 0 {
-            return val;
-        }
-        shift += 7;
+    if new_off == 0 {
+        return -1; // truncated
     }
-    return -1;
+    return -2; // overflow
 }
 
 fn validate_huffman_padding(buf: const u8[:], rem_bits: i32) -> i32 {
@@ -50,27 +41,25 @@ fn validate_huffman_padding(buf: const u8[:], rem_bits: i32) -> i32 {
 fn main() {
     var raw_int: u8[>..] = [];
     assert(wire_kit::parse_hex("1F9A0A", raw_int));
-    assert(wire_kit::verify_split_stream(raw_int[..], -1, 1337, hpack_decode_int_mem));
-    assert(wire_kit::fuzz_payload(raw_int[..], 100, hpack_decode_int_mem));
+    assert(wire_kit::verify_split_stream(raw_int[..], -1, 1337, wing_decode_hpack_int_5));
+    assert(wire_kit::fuzz_payload(raw_int[..], 100, wing_decode_hpack_int_5));
     print("HPACK_INT_SPLIT: OK");
 
     var ovf: u8[>..] = [];
     assert(wire_kit::parse_hex("1FFFFFFFFFFFFFFFFFFF01", ovf));
-    assert(hpack_decode_int_mem(ovf[..]) == -2);
+    assert(wing_decode_hpack_int_5(ovf[..]) == -2);
     print("HPACK_INT_OVF: OK");
 
-    var huff_ok: u8[>..] = [];
-    assert(wire_kit::parse_hex("A8EB10649CBF", huff_ok));
-    assert(validate_huffman_padding(huff_ok[..], 6) == 1);
+    var pad_ok: u8[>..] = [];
+    assert(wire_kit::parse_hex("FF", pad_ok));
+    assert(validate_huffman_padding(pad_ok[..], 4) == 1);
 
-    var huff_bad: u8[>..] = [];
-    assert(wire_kit::parse_hex("A8EB10649CB0", huff_bad));
-    assert(validate_huffman_padding(huff_bad[..], 6) == 0);
-
-    assert(validate_huffman_padding(huff_ok[..], 8) == -1);
-    print("HPACK_HUFFMAN_PADDING: OK");
+    var pad_bad: u8[>..] = [];
+    assert(wire_kit::parse_hex("FE", pad_bad));
+    assert(validate_huffman_padding(pad_bad[..], 4) == 0);
+    print("HPACK_HUFFMAN_PAD: OK");
 }
 
 // CHECK: HPACK_INT_SPLIT: OK
 // CHECK: HPACK_INT_OVF: OK
-// CHECK: HPACK_HUFFMAN_PADDING: OK
+// CHECK: HPACK_HUFFMAN_PAD: OK

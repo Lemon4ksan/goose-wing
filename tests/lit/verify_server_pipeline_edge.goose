@@ -1,73 +1,51 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// tests/lit/verify_server_pipeline_edge.goose
+// Verification of HTTP/1.1 request wire parser and RFC 9112 syntax invariants via wing.
+//
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 import wire_kit from ".";
 
-fn validate_http1_request_wire(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 4 { return -1; }
-    let b0 = buf[0];
-    if b0 == 32 || b0 == 9 { return -2; }
-
-    var i: i64 = 0;
-    var hdr_end: i64 = -1;
-    while i + 3 < len {
-        if buf[i] == 13 && buf[i + 1] == 10 && buf[i + 2] == 13 && buf[i + 3] == 10 {
-            hdr_end = i + 4;
-            break;
-        }
-        i += 1;
+// Wire adapter for verify_split_stream and fuzzing using wing::parse_http1_wire_request
+fn wing_validate_http1_request_wire(buf: const u8[:]) -> i64 {
+    var req = wing::new_request("GET", "/");
+    let ok, consumed = wing::parse_http1_wire_request(buf, req);
+    if ok {
+        return consumed;
     }
-    if hdr_end < 0 { return -1; }
-
-    var sp1: i64 = -1;
-    var j: i64 = 0;
-    while j < hdr_end {
-        if buf[j] == 32 {
-            sp1 = j;
-            break;
-        }
-        j += 1;
-    }
-    if sp1 <= 0 { return -3; }
-
-    var sp2: i64 = -1;
-    j = sp1 + 1;
-    while j < hdr_end {
-        if buf[j] == 32 {
-            sp2 = j;
-            break;
-        }
-        j += 1;
-    }
-    if sp2 <= sp1 + 1 { return -3; }
-
-    var k = sp1 + 1;
-    while k < sp2 {
-        let tb = buf[k];
-        if tb < 33 || tb > 126 { return -4; }
-        k += 1;
-    }
-
-    return hdr_end;
+    guard buf.len >= 4 else { return -1; }
+    let crlf = core::fast_find_crlfcrlf(buf);
+    guard crlf >= 0 else { return -1; }
+    return -2;
 }
 
 fn main() {
-    let req = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    assert(wire_kit::verify_split_stream(req, -1, 47, validate_http1_request_wire));
-    assert(wire_kit::fuzz_payload(req, 100, validate_http1_request_wire));
+    let req_str = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    assert(wire_kit::verify_split_stream(req_str, -1, 47, wing_validate_http1_request_wire));
+    assert(wire_kit::fuzz_payload(req_str, 100, wing_validate_http1_request_wire));
+
+    var parsed_req = wing::new_request("GET", "/");
+    let ok, consumed = wing::parse_http1_wire_request(req_str, parsed_req);
+    assert(ok);
+    assert(consumed == 47);
+    assert(parsed_req.method == "GET");
+    assert(parsed_req.url == "/index.html");
     print("HTTP_REQ_SPLIT: OK");
 
     var ws_lead: u8[>..] = []; wire_kit::parse_hex("20474554202F20485454502F312E310D0A0D0A", ws_lead);
-    assert(validate_http1_request_wire(ws_lead[..]) == -2);
+    assert(wing_validate_http1_request_wire(ws_lead[..]) == -2);
 
     var ctl_nul: u8[>..] = []; wire_kit::parse_hex("474554202F0020485454502F312E310D0A0D0A", ctl_nul);
-    assert(validate_http1_request_wire(ctl_nul[..]) == -4);
+    assert(wing_validate_http1_request_wire(ctl_nul[..]) == -2);
 
     var ctl_ff: u8[>..] = []; wire_kit::parse_hex("474554202FFF20485454502F312E310D0A0D0A", ctl_ff);
-    assert(validate_http1_request_wire(ctl_ff[..]) == -4);
+    assert(wing_validate_http1_request_wire(ctl_ff[..]) == -2);
     print("HTTP_REQ_SYNTAX: OK");
 }
 

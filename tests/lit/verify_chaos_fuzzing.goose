@@ -1,134 +1,104 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// RUN: goose %s | %FileCheck %s
+// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: %t.exe | %FileCheck %s
+
 import std;
+import core from "../..";
+import wing from "../..";
 import wire_kit from ".";
 
-// Section 1: HTTP/1 chunked parser
+// Section 1: HTTP/1 chunked parser wired to wing FSM
 fn parse_chunk_size(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 3 { return -1; }
-    var size: i64 = 0;
-    var i: i64 = 0;
-    var seen_digits: i64 = 0;
-
-    while i < len {
-        let b = buf[i];
-        if b == 13 || b == 59 { break; }
-        if b == 10 { return -2; }
-
-        var digit: i64 = -1;
-        if b >= 48 && b <= 57 { digit = b - 48; }
-        else if b >= 97 && b <= 102 { digit = b - 87; }
-        else if b >= 65 && b <= 70 { digit = b - 55; }
-        else { return -2; }
-
-        if seen_digits >= 8 { return -2; }
-        size = (size << 4) | digit;
-        seen_digits += 1;
-        i += 1;
+    var dec = internal::new_chunk_fsm_decoder();
+    let st, consumed, chunk = internal::chunk_fsm_feed(dec, buf);
+    match st {
+        YieldChunk => {
+            if dec.state == internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
+                return chunk.len;
+            }
+            return -1;
+        },
+        Complete => {
+            if consumed == buf.len {
+                return 0;
+            }
+            return -1;
+        },
+        NeedMore => {
+            return -1;
+        },
+        Error => {
+            return -2;
+        },
     }
-
-    if seen_digits == 0 { return -2; }
-
-    while i < len && buf[i] != 13 {
-        if buf[i] == 10 { return -2; }
-        i += 1;
-    }
-
-    if i + 1 >= len { return -1; }
-    if buf[i] != 13 || buf[i + 1] != 10 { return -2; }
-    i += 2;
-
-    let total_needed = i + size + 2;
-    if len < total_needed { return -1; }
-    if buf[i + size] != 13 || buf[i + size + 1] != 10 { return -2; }
-    return size;
 }
 
-// Section 2: DNS wire question parser
+// Section 2: DNS wire question parser wired to wing DNS decoder
 fn parse_dns_question(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 12 { return -1; }
-    let qdcount = ((buf[4] as i64) << 8) | buf[5];
+    if buf.len < 12 { return -1; }
+    let qdcount = core::read_be_u16(buf, 4);
     if qdcount == 0 { return -2; }
-    var offset: i64 = 12;
-    var labels: i64 = 0;
 
-    while offset < len {
-        let label_len = buf[offset];
-        if label_len == 0 {
-            offset += 1;
+    var off: i64 = 12;
+    var saw_end = false;
+    while off < buf.len {
+        let b = buf[off];
+        if b == 0 {
+            off += 1;
+            saw_end = true;
             break;
         }
-        if (label_len & 0xC0) != 0 { return -2; }
-        if label_len > 63 { return -2; }
-        offset += 1 + (label_len as i64);
-        labels += 1;
-        if labels > 128 || offset > len {
-            if offset > len { return -1; }
-            return -2;
+        if (b & 0xC0) == 0xC0 {
+            if off + 2 > buf.len { return -1; }
+            off += 2;
+            saw_end = true;
+            break;
         }
+        if (b & 0xC0) != 0 || b > 63 { return -2; }
+        let label_len = b as i64;
+        off += 1 + label_len;
+        if off > buf.len { return -1; }
     }
+    if !saw_end { return -1; }
 
-    if offset + 4 > len { return -1; }
-    let qtype = ((buf[offset] as i64) << 8) | buf[offset + 1];
-    let qclass = ((buf[offset + 2] as i64) << 8) | buf[offset + 3];
+    var decode_off: i64 = 12;
+    var name_out: u8[..256] = [];
+    if !wing::dns_decode_name(buf, decode_off, name_out) {
+        return -2;
+    }
+    if buf.len < decode_off + 4 { return -1; }
+    let qtype = core::read_be_u16(buf, decode_off);
+    let qclass = core::read_be_u16(buf, decode_off + 2);
     if qclass != 1 && qclass != 255 { return -2; }
     return qtype;
 }
 
-// Section 3: TLS 1.3 record header parser
+// Section 3: TLS 1.3 record header parser wired to wing TLS record decoder
 fn parse_tls_record_header(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 5 { return -1; }
-    let ctype = buf[0] as i64;
-    if ctype < 20 || ctype > 23 { return -2; }
-    let v_maj = buf[1];
-    let v_min = buf[2];
-    if v_maj != 3 || (v_min != 1 && v_min != 3) { return -2; }
-    let rlen = ((buf[3] as i64) << 8) | buf[4];
-    if rlen > 16640 { return -2; }
-    if ctype == 23 && rlen == 0 { return -2; }
+    if buf.len < 5 { return -1; }
+    let _, _, rlen, _, ok = wing::parse_tls_record_header(buf);
+    if !ok { return -2; }
     return rlen;
 }
 
-// Section 4: WebSocket extended header parser
+// Section 4: WebSocket extended header parser wired to wing WebSocket decoder
 fn parse_ws_extended_header(buf: const u8[:]) -> i64 {
-    let len = buf.len;
-    if len < 2 { return -1; }
-    let b0 = buf[0];
-    let b1 = buf[1];
-    let rsv = (b0 >> 4) & 7;
-    if rsv != 0 { return -2; }
-    let opcode = b0 & 15;
-    if opcode > 10 { return -2; }
+    if buf.len < 2 { return -1; }
+    let opcode = buf[0] & 0x0F;
+    if !wing::is_valid_ws_opcode(opcode) { return -2; }
+    let masked = (buf[1] & 0x80) != 0;
+    let raw_len = buf[1] & 0x7F;
+    var min_hdr: i64 = 2;
+    if raw_len == 126 { min_hdr += 2; }
+    else if raw_len == 127 { min_hdr += 8; }
+    if masked { min_hdr += 4; }
+    if buf.len < min_hdr { return -1; }
 
-    let masked = (b1 & 128) != 0;
-    var plen = (b1 & 127) as i64;
-    var hdr_len: i64 = 2;
-
-    if plen == 126 {
-        hdr_len += 2;
-        if len < hdr_len { return -1; }
-        plen = ((buf[2] as i64) << 8) | buf[3];
-        if plen < 126 { return -2; }
-    } else if plen == 127 {
-        hdr_len += 8;
-        if len < hdr_len { return -1; }
-        let msb = ((buf[2] as i64) << 24) | ((buf[3] as i64) << 16) | ((buf[4] as i64) << 8) | buf[5];
-        if (msb & 0x80000000) != 0 { return -2; }
-        plen = ((buf[6] as i64) << 24) | ((buf[7] as i64) << 16) | ((buf[8] as i64) << 8) | buf[9];
-        if msb == 0 && plen < 65536 { return -2; }
-    }
-
-    if masked {
-        hdr_len += 4;
-        if len < hdr_len { return -1; }
-    }
-
-    return plen;
+    let hdr, ok = wing::parse_ws_frame_header(buf);
+    if !ok { return -2; }
+    return hdr.payload_len as! i64;
 }
 
 fn main() {
