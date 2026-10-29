@@ -84,6 +84,7 @@ import http3.connection;
 import quic.packet;
 import quic.AckFrame;
 import quic.bbr;
+import quic.connection;
 
 // ---- http cache engine (rfc 9111) ------------------------------------------
 
@@ -162,3 +163,8 @@ import grpc.framing;
 import grpc.status;
 import grpc.client;
 import grpc.server;
+
+// ---- reverse proxy & load balancer -----------------------------------------
+
+import proxy.load_balancer;
+import proxy.reverse_proxy;
