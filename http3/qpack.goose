@@ -993,8 +993,19 @@ fn encode_qpack_field<B>(
         return;
     }
 
-    // Literal Name + Literal Value: 00100000 (3-bit prefix name)
-    hpack_encode_int(out, 0, 3, 0x20);
-    encode_hpack_string_literal(out, name, use_huffman);
+    // Literal Name + Literal Value: 001NHxxx (3-bit prefix name)
+    if use_huffman {
+        let huff_len = huff_encoded_byte_len(name);
+        if huff_len < (name.len as u64) {
+            hpack_encode_int(out, huff_len, 3, 0x28); // 0x20 | 0x08 (H bit)
+            huff_encode_bytes(name, out);
+        } else {
+            hpack_encode_int(out, name.len as u64, 3, 0x20);
+            out.append(name);
+        }
+    } else {
+        hpack_encode_int(out, name.len as u64, 3, 0x20);
+        out.append(name);
+    }
     encode_hpack_string_literal(out, val, use_huffman);
 }

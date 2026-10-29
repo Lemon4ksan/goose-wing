@@ -1120,51 +1120,71 @@ fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) 
     return true;
 }
 
-// RFC 5280 §4.2.1.10 & OpenSSL #31392 / CVE-2009-2408: URI name constraint matching
+fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
+    var s = candidate_uri;
+    if core::starts_with(s, "http://") {
+        s = s[7..];
+    } else if core::starts_with(s, "https://") {
+        s = s[8..];
+    } else {
+        let scheme_end = core::index_of_slice(s, "://");
+        guard scheme_end >= 0 else { return s[..0]; }
+        s = s[scheme_end + 3..];
+    }
+
+    var auth_end = s.len;
+    let slash_idx = core::index_of_byte(s, '/');
+    if slash_idx >= 0 && slash_idx < auth_end { auth_end = slash_idx; }
+    let q_idx = core::index_of_byte(s, '?');
+    if q_idx >= 0 && q_idx < auth_end { auth_end = q_idx; }
+    let h_idx = core::index_of_byte(s, '#');
+    if h_idx >= 0 && h_idx < auth_end { auth_end = h_idx; }
+    return s[..auth_end];
+}
+
+fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:]) -> bool {
+    let close_bracket = core::index_of_byte(host_part, ']');
+    guard close_bracket > 1 else { return false; }
+    var inner_ip = host_part[1..close_bracket];
+
+    let pct_idx = core::index_of_byte(inner_ip, '%');
+    if pct_idx >= 0 {
+        inner_ip = inner_ip[..pct_idx];
+    }
+    guard inner_ip.len > 0 else { return false; }
+
+    var cons_cmp = constraint;
+    if cons_cmp.len > 2 && cons_cmp[0] == '[' && cons_cmp[cons_cmp.len - 1] == ']' {
+        cons_cmp = cons_cmp[1..cons_cmp.len - 1];
+    }
+    return eq_ascii_fold(inner_ip, cons_cmp);
+}
+
+fn x509_is_ipv4_literal(host_part: const u8[:]) -> bool {
+    guard host_part.len > 0 else { return false; }
+    for b in host_part {
+        if (b < '0' || b > '9') && b != '.' {
+            return false;
+        }
+    }
+    return true;
+}
+
+// RFC 5280 §4.2.1.10 & OpenSSL #31392 / CVE-2024-45341 / Go #71208: URI name constraint matching
 // Extracts the host component from candidate URI and matches it against the constraint.
-// Rejects candidate URIs or constraints containing embedded NUL bytes.
+// Rejects candidate URIs with userinfo, path/query @ smuggling, or IPv4 literals for dNSName constraints.
 fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]) -> bool {
     guard candidate_uri.len > 0 && constraint.len > 0 else { return false; }
     guard !core::contains_byte(candidate_uri, 0) && !core::contains_byte(constraint, 0) else { return false; }
 
-    var host_part = candidate_uri[..0];
-    if core::starts_with(candidate_uri, "http://") {
-        host_part = candidate_uri[7..];
-    } else if core::starts_with(candidate_uri, "https://") {
-        host_part = candidate_uri[8..];
-    } else {
-        let scheme_end = core::index_of_slice(candidate_uri, "://");
-        guard scheme_end >= 0 else { return false; }
-        host_part = candidate_uri[scheme_end + 3..];
-    }
+    var host_part = x509_extract_uri_authority(candidate_uri);
+    guard host_part.len > 0 else { return false; }
 
-    let at_idx = core::index_of_byte(host_part, '@');
-    if at_idx >= 0 {
-        host_part = host_part[at_idx + 1..];
-    }
-    let slash_idx = core::index_of_byte(host_part, '/');
-    if slash_idx >= 0 {
-        host_part = host_part[..slash_idx];
-    }
+    // RFC 5280 §4.2.1.10: URI authority cannot contain userinfo (@) to satisfy DNS name constraint
+    guard !core::contains_byte(host_part, '@') else { return false; }
 
-    // RFC 5280 & CVE-2024-45341 / Go #71208: Handle bracketed IPv6 host literals
-    // and strip IPv6 Zone IDs (%eth0 or %25eth0) to prevent Name Constraints bypass.
-    if host_part.len > 0 && host_part[0] == '[' {
-        let close_bracket = core::index_of_byte(host_part, ']');
-        guard close_bracket > 1 else { return false; }
-        var inner_ip = host_part[1..close_bracket];
-
-        let pct_idx = core::index_of_byte(inner_ip, '%');
-        if pct_idx >= 0 {
-            inner_ip = inner_ip[..pct_idx];
-        }
-        guard inner_ip.len > 0 else { return false; }
-
-        var cons_cmp = constraint;
-        if cons_cmp.len > 2 && cons_cmp[0] == '[' && cons_cmp[cons_cmp.len - 1] == ']' {
-            cons_cmp = cons_cmp[1..cons_cmp.len - 1];
-        }
-        return eq_ascii_fold(inner_ip, cons_cmp);
+    if host_part[0] == '[' {
+        return x509_match_ipv6_uri_constraint(host_part, constraint);
     }
 
     let colon_idx = core::index_of_byte(host_part, ':');
@@ -1173,6 +1193,8 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
     }
 
     guard host_part.len > 0 else { return false; }
+    guard !x509_is_ipv4_literal(host_part) else { return false; }
+
     return match_dns_name_constraint(host_part, constraint);
 }
 

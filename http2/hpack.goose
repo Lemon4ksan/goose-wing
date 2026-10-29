@@ -1566,6 +1566,7 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
 
         // RFC 9113 Section 8.3.1 & uWS #1949: :authority MUST NOT contain path, query, fragment, userinfo, whitespace or commas
         if name == ":authority" {
+            guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
             for b in val {
                 if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
                     return ERR_PROTOCOL_ERROR;
@@ -1614,15 +1615,21 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
             }
         }
 
-        // RFC 9113 Section 8.2.1 & Section 8.3.1 (Go #78762):
-        // Validate Host header duplicates and consistency with :authority
+        // RFC 9113 Section 8.2.1 & Section 8.3.1 (Go #78762, Go #80065):
+        // Validate Host header duplicates, character set, and consistency with :authority
         if name == "host" {
+            guard val.len > 0 else { return ERR_PROTOCOL_ERROR; }
+            for b in val {
+                if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
+                    return ERR_PROTOCOL_ERROR;
+                }
+            }
             for &f in out.fields {
                 if f.name[..] == "host" {
                     return ERR_PROTOCOL_ERROR;
                 }
                 if f.name[..] == ":authority" {
-                    if f.value[..] != val {
+                    if !core::eq_ascii_fold(f.value[..], val) {
                         return ERR_PROTOCOL_ERROR;
                     }
                 }

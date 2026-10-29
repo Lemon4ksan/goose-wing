@@ -567,6 +567,9 @@ fn handle_stream_data(
             var pseudo_scheme_count: i32 = 0;
             var pseudo_authority_count: i32 = 0;
             var pseudo_path_count: i32 = 0;
+            var host_count: i32 = 0;
+            var auth_val: u8[..256] = [];
+            var host_val: u8[..256] = [];
 
             // Extract status code and validate fields
             for field in decoded_fields {
@@ -628,11 +631,20 @@ fn handle_stream_data(
                         }
                     } else if field.name[..] == ":authority" {
                         pseudo_authority_count++;
-                        if pseudo_authority_count > 1 {
+                        if pseudo_authority_count > 1 || field.value.len == 0 {
                             conn.state = H3ConnState.Closed;
                             conn.error_code = H3_ERR_GENERAL_PROTOCOL;
                             return H3_ERR_GENERAL_PROTOCOL;
                         }
+                        for b in field.value {
+                            if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
+                                conn.state = H3ConnState.Closed;
+                                conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                                return H3_ERR_GENERAL_PROTOCOL;
+                            }
+                        }
+                        auth_val.clear();
+                        auth_val.append(field.value[..]);
                     } else if field.name[..] == ":path" {
                         pseudo_path_count++;
                         if pseudo_path_count > 1 {
@@ -675,6 +687,22 @@ fn handle_stream_data(
                         return H3_ERR_GENERAL_PROTOCOL;
                     }
                     conn.streams[s_idx].status_code = sc;
+                } else if eq_ascii_fold(field.name[..], "host") {
+                    host_count++;
+                    if host_count > 1 || field.value.len == 0 {
+                        conn.state = H3ConnState.Closed;
+                        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                        return H3_ERR_GENERAL_PROTOCOL;
+                    }
+                    for b in field.value {
+                        if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                            return H3_ERR_GENERAL_PROTOCOL;
+                        }
+                    }
+                    host_val.clear();
+                    host_val.append(field.value[..]);
                 } else if eq_ascii_fold(field.name[..], "content-length") {
                     let cl, ok_cl = core::parse_i64_dec(field.value[..]);
                     if !ok_cl || cl < 0 || (conn.streams[s_idx].content_length >= 0 && conn.streams[s_idx].content_length != cl) {
@@ -686,7 +714,16 @@ fn handle_stream_data(
                 }
             }
 
-            if conn.streams[s_idx].status_code >= 200 {
+            if pseudo_authority_count > 0 && host_count > 0 {
+                // RFC 9114 Section 4.3.1: :authority and host MUST match case-insensitively
+                if !core::eq_ascii_fold(auth_val[..], host_val[..]) {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                    return H3_ERR_GENERAL_PROTOCOL;
+                }
+            }
+
+            if conn.streams[s_idx].status_code >= 200 || pseudo_method_count > 0 {
                 if !conn.streams[s_idx].headers_received {
                     conn.streams[s_idx].headers_received = true;
                 } else if !conn.streams[s_idx].trailers_received {

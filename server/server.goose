@@ -17,6 +17,7 @@ import realtime.topic_tree;
 
 fn http_status_reason_phrase(code: i32) -> const u8[:] {
     return match code {
+        100 => "Continue",
         101 => "Switching Protocols",
         200 => "OK",
         201 => "Created",
@@ -277,7 +278,11 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     guard wire.len >= 4 else { return false, 0; }
 
     let hdr_end = core::fast_find_crlfcrlf(wire);
-    guard hdr_end >= 0 else { return false, 0; }
+    guard hdr_end >= 0 else {
+        if wire.len > 8192 { return false, 0; }
+        return false, 0;
+    }
+    guard hdr_end <= 8192 else { return false, 0; }
     let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
 
@@ -369,6 +374,8 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         }
     }
 
+    let is_empty_status = out_res.status_code == 204 || out_res.status_code == 304 || (out_res.status_code >= 100 && out_res.status_code < 200);
+
     // RFC 9112 Section 6.1 & RFC 7230 §3.3.3: In responses, Transfer-Encoding overrides Content-Length.
     // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
     if has_te {
@@ -376,6 +383,10 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         // RFC 9112 Section 6.1: An intermediary or recipient processing chunked MUST remove Content-Length
         if has_cl {
             remove_header_by_name(out_res.headers, "content-length");
+        }
+        // RFC 9112 §6.3 Rule 1: 1xx, 204, and 304 responses NEVER have a message body
+        if is_empty_status {
+            return true, header_end_idx;
         }
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
             wire[header_end_idx..],
@@ -387,7 +398,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     }
 
     // Status 204 No Content, 304 Not Modified, or 1xx: MUST NOT include message body
-    if out_res.status_code == 204 || out_res.status_code == 304 || (out_res.status_code >= 100 && out_res.status_code < 200) {
+    if is_empty_status {
         return true, header_end_idx;
     }
 
@@ -533,7 +544,9 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
         out_wire.append(get_cached_http_date_header());
     }
 
-    if res.status_code != 204 && res.status_code != 304 {
+    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+
+    if !is_empty_status {
         // uWS #1855 / RFC 9110 §8.6: Do not emit automatic Content-Length if already specified in res.headers (e.g. HEAD)
         if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && (mask & RES_PRESENCE_TRANSFER_ENCODING) == 0 {
             if res.body.len == 0 {
@@ -547,11 +560,10 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
     }
 
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
-    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
 
     for &hdr in res.headers {
-        // RFC 9110 §8.6 & uWS #1370: Suppress Content-Length from 204 No Content, 304 Not Modified, and 1xx Informational
-        if is_empty_status && eq_ascii_fold(hdr.name[..], "content-length") {
+        // RFC 9110 §8.6 & uWS #1370: Suppress Content-Length and Transfer-Encoding from 204 No Content, 304 Not Modified, and 1xx Informational
+        if is_empty_status && (eq_ascii_fold(hdr.name[..], "content-length") || eq_ascii_fold(hdr.name[..], "transfer-encoding")) {
             continue;
         }
 
@@ -571,8 +583,9 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
 // Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
 fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
+    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
     let te = header(res, "transfer-encoding");
-    if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
         serialize_http1_chunked_response(res, server_name, 4096, out_wire);
         return;
     }
@@ -580,7 +593,6 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
     serialize_http1_headers(res, server_name, out_wire);
 
     // RFC 9110 §8.6 & Go #81642 / uWS #1370: Status 204, 304, and 1xx MUST NOT emit a message body on wire
-    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
     if res.body.len > 0 && !is_empty_status {
         out_wire.append(res.body[..]);
     }
@@ -590,14 +602,14 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
 // Headers are serialized into wire_headers, and res.body is transmitted directly without being copied into wire_headers.
 fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], wire_headers: B&) -> i32 {
     wire_headers.clear();
+    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
     let te = header(res, "transfer-encoding");
-    if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
         serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
         return tcp_send(fd, wire_headers[..]);
     }
 
     serialize_http1_headers(res, server_name, wire_headers);
-    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
     if res.body.len == 0 || is_empty_status {
         return tcp_send(fd, wire_headers[..]);
     }

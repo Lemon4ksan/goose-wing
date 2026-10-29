@@ -197,6 +197,7 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         send_window: s.peer_initial_window_size,
         recv_window: s.local_initial_window_size,
         priority: def_prio,
+        headers_received: true,
         active: true,
         ..
     };
@@ -345,9 +346,21 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
            s.streams[s_idx].state == H2StreamState.Closed {
             return ERR_STREAM_CLOSED;
         }
-        if (hdr.flags & FLAG_END_STREAM) != 0 {
+        if s.streams[s_idx].headers_received {
+            if s.streams[s_idx].trailers_received {
+                return ERR_PROTOCOL_ERROR;
+            }
+            // RFC 9113 Section 8.1: A HEADERS frame for trailers MUST carry END_STREAM
+            if (hdr.flags & FLAG_END_STREAM) == 0 {
+                return ERR_PROTOCOL_ERROR;
+            }
             s.streams[s_idx].trailers_received = true;
             s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+        } else {
+            s.streams[s_idx].headers_received = true;
+            if (hdr.flags & FLAG_END_STREAM) != 0 {
+                s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+            }
         }
     }
 

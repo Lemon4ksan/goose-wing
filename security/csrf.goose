@@ -257,6 +257,12 @@ fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     if query_idx >= 0 { s = s[..query_idx]; }
     let hash_idx = core::index_of_byte(s, '#');
     if hash_idx >= 0 { s = s[..hash_idx]; }
+
+    // RFC 6454 / RFC 3986: Origins and hosts MUST NOT contain userinfo (@).
+    // If '@' is present, the authority has been spoofed (e.g. https://example.com@evil.com)
+    if core::contains_byte(s, '@') {
+        return s[..0];
+    }
     return s;
 }
 

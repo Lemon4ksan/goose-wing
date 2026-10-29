@@ -67,7 +67,25 @@ fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bo
     let domain_suffix = pat_rest[2..];
     guard cand_rest.len > domain_suffix.len && ends_with_fold(cand_rest, domain_suffix) else { return false; }
     let prefix_len = cand_rest.len - domain_suffix.len;
-    return cand_rest[prefix_len - 1] == '.';
+    guard cand_rest[prefix_len - 1] == '.' else { return false; }
+
+    let sub = cand_rest[..prefix_len - 1];
+    guard sub.len > 0 else { return false; }
+    guard sub[0] != '.' && sub[sub.len - 1] != '.' else { return false; }
+
+    var prev_dot = false;
+    for b in sub {
+        if b == '/' || b == '?' || b == '#' || b == '@' || b == ':' || b <= 0x20 || b == 0x7F {
+            return false;
+        }
+        if b == '.' {
+            if prev_dot { return false; }
+            prev_dot = true;
+        } else {
+            prev_dot = false;
+        }
+    }
+    return true;
 }
 
 // Validates whether the incoming Origin is permitted under policy.
