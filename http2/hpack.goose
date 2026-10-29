@@ -1261,8 +1261,8 @@ fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
 
     while i < name.len {
         let c = name[i];
-        // Rejects uppercase 'A'..'Z' and non-token characters
-        if (c >= 'A' && c <= 'Z') || c <= ' ' || c >= 0x7F || c == ':' {
+        // Rejects uppercase 'A'..'Z' and non-tchar characters (RFC 9113 §8.2.1 & RFC 9110 §5.6.2)
+        if (c >= 'A' && c <= 'Z') || !is_tchar(c) {
             return false;
         }
         i++;
@@ -1461,7 +1461,54 @@ fn decode_hpack_header_block(
         offset = val_next_off;
     }
 
+    // RFC 9113 Section 8.3.1 & 8.3.2: Verify mandatory pseudo-headers in non-trailer header blocks
+    if validate_http2_rules && !out.is_trailer {
+        let v_err = validate_mandatory_pseudo_headers(out);
+        guard v_err == ERR_NO_ERROR else { return v_err; }
+    }
+
     return ERR_NO_ERROR;
+}
+
+// RFC 9113 Section 8.3.1 & 8.3.2: Verify mandatory pseudo-headers in non-trailer header blocks
+fn validate_mandatory_pseudo_headers(out: const DecodedH2HeaderList&) -> u32 {
+    var has_status = false;
+    var has_method = false;
+    var has_scheme = false;
+    var has_path = false;
+    var has_authority = false;
+    var has_protocol = false;
+    var is_connect = false;
+
+    for &f in out.fields {
+        if f.name[..] == ":status" {
+            has_status = true;
+        } else if f.name[..] == ":method" {
+            has_method = true;
+            is_connect = (f.value[..] == "CONNECT");
+        } else if f.name[..] == ":scheme" {
+            has_scheme = true;
+        } else if f.name[..] == ":path" {
+            has_path = true;
+        } else if f.name[..] == ":authority" {
+            has_authority = true;
+        } else if f.name[..] == ":protocol" {
+            has_protocol = true;
+        }
+    }
+
+    if has_status {
+        return ERR_NO_ERROR;
+    }
+    if has_method {
+        if is_connect && !has_protocol {
+            guard has_authority else { return ERR_PROTOCOL_ERROR; }
+        } else {
+            guard has_scheme && has_path else { return ERR_PROTOCOL_ERROR; }
+        }
+        return ERR_NO_ERROR;
+    }
+    return ERR_PROTOCOL_ERROR;
 }
 
 // Validates pseudo-header ordering, duplicates, and Content-Length invariants.
@@ -1700,11 +1747,10 @@ fn encode_hpack_field<B>(
     var i: u64 = 0;
     while i < dt.count {
         let ext_idx = 62 + i;
-        var t_name: u8[..128] = [];
-        var t_val: u8[..512] = [];
-        if get_indexed_header(dt, ext_idx, t_name, t_val) {
-            if t_name[..] == name {
-                if t_val[..] == val {
+        let t_name, t_val, ok_get = get_indexed_header_slices(dt, ext_idx);
+        if ok_get {
+            if t_name == name {
+                if t_val == val {
                     d_match_idx = ext_idx;
                     d_exact = true;
                     break;

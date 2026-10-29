@@ -107,7 +107,7 @@ struct H2Connection {
     last_peer_stream_id: u32 = 0,
 
     // Active streams table (bounded inline storage)
-    streams: H2Stream[..64] = [],
+    streams: H2Stream[..128] = [],
 
     // Exclusive CONTINUATION lock (0 if not expecting CONTINUATION)
     continuation_stream_id: u32 = 0,
@@ -215,6 +215,36 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         s.streams.push(new_stream);
     }
     s.active_stream_count++;
+}
+
+// Marks the local half of a stream as closed (e.g. after sending END_STREAM).
+// If the remote half is already closed, transitions stream to Closed and frees active slot.
+fn close_local_stream(s: H2Connection&, stream_id: u32) {
+    let s_idx, found = find_session_stream_idx(s, stream_id);
+    guard found else { return; }
+
+    if s.streams[s_idx].state == H2StreamState.HalfClosedRemote {
+        s.streams[s_idx].state = H2StreamState.Closed;
+        s.streams[s_idx].active = false;
+        if s.active_stream_count > 0 {
+            s.active_stream_count--;
+        }
+    } else if s.streams[s_idx].state == H2StreamState.Open {
+        s.streams[s_idx].state = H2StreamState.HalfClosedLocal;
+    }
+}
+
+// Handles remote END_STREAM transition for an active stream.
+inline fn apply_stream_end_remote(s: H2Connection&, s_idx: i32) {
+    if s.streams[s_idx].state == H2StreamState.HalfClosedLocal {
+        s.streams[s_idx].state = H2StreamState.Closed;
+        s.streams[s_idx].active = false;
+        if s.active_stream_count > 0 {
+            s.active_stream_count--;
+        }
+    } else {
+        s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+    }
 }
 
 fn validate_h2_continuation_state(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32, bool {
@@ -356,11 +386,11 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
                 return ERR_PROTOCOL_ERROR;
             }
             s.streams[s_idx].trailers_received = true;
-            s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+            apply_stream_end_remote(s, s_idx);
         } else {
             s.streams[s_idx].headers_received = true;
             if (hdr.flags & FLAG_END_STREAM) != 0 {
-                s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+                apply_stream_end_remote(s, s_idx);
             }
         }
     }
@@ -375,7 +405,7 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
 }
 
 fn check_h2_control_frame_flood(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
-    if hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS {
+    if (hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS) && (hdr.flags & FLAG_ACK) == 0 {
         s.pending_control_frames++;
         if s.pending_control_frames > MAX_PENDING_CTRL_FRAMES {
             return ERR_ENHANCE_YOUR_CALM;
@@ -387,6 +417,10 @@ fn check_h2_control_frame_flood(s: H2Connection&, hdr: const FrameHeader&) -> u3
 // Validates protocol and Anti-DoS invariants upon receiving a 9-byte frame header
 // strictly before buffering or parsing the frame payload.
 fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
+    if hdr.length > s.local_max_frame_size {
+        return ERR_FRAME_SIZE_ERROR;
+    }
+
     let cont_err, is_cont = validate_h2_continuation_state(s, hdr, now_ms);
     if is_cont {
         return cont_err;
@@ -554,7 +588,7 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
     }
 
     if (hdr.flags & FLAG_END_STREAM) != 0 {
-        s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+        apply_stream_end_remote(s, s_idx);
 
         // Verify Content-Length match if declared (Go #32728 / #46071)
         if dec_len >= 0 && dec_len != s.streams[s_idx].received_data_bytes {

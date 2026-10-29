@@ -220,7 +220,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
 
         // Identical matching Content-Length: "10" and "10" must be accepted
         raw_block.clear();
-        raw_block.push(0x83);
+        raw_block.push(0x83); // :method: POST
+        raw_block.push(0x87); // :scheme: https
+        raw_block.push(0x84); // :path: /
         raw_block.push(0x00); raw_block.push(14); raw_block.append("content-length"); raw_block.push(2); raw_block.append("10");
         raw_block.push(0x00); raw_block.push(14); raw_block.append("content-length"); raw_block.push(2); raw_block.append("10");
 
@@ -242,6 +244,37 @@ fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
         var out = wing::DecodedH2HeaderList { .. };
         let err = wing::decode_hpack_header_block(dt, raw_block[..], out);
         sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "forbidden 'connection' header must trigger PROTOCOL_ERROR");
+    };
+
+    t.run("DYN-08: Missing Mandatory Pseudo-Headers Rejection (RFC 9113 §8.3.1)") { sub =>
+        var dt = wing::new_dynamic_table(4096);
+
+        // Missing :path (only :method: GET and :scheme: https)
+        let block_no_path: u8[2] = [0x82, 0x87];
+        var out1 = wing::DecodedH2HeaderList { .. };
+        let err1 = wing::decode_hpack_header_block(dt, block_no_path[..], out1);
+        sub.assert_eq(err1, wing::ERR_PROTOCOL_ERROR, "request without :path must trigger PROTOCOL_ERROR");
+
+        // Missing all pseudo-headers (only regular header)
+        var block_no_pseudo: u8[..32] = [];
+        block_no_pseudo.push(0x00);
+        block_no_pseudo.push(10);
+        block_no_pseudo.append("user-agent");
+        block_no_pseudo.push(3);
+        block_no_pseudo.append("bot");
+        var out2 = wing::DecodedH2HeaderList { .. };
+        let err2 = wing::decode_hpack_header_block(dt, block_no_pseudo[..], out2);
+        sub.assert_eq(err2, wing::ERR_PROTOCOL_ERROR, "request without pseudo-headers must trigger PROTOCOL_ERROR");
+    };
+
+    t.run("DYN-09: Header Field Name Character Validation (RFC 9113 §8.2.1)") { sub =>
+        // Disallowed non-tchar characters: '(', ';', '=', uppercase
+        sub.assert_false(wing::validate_h2_field_syntax("user(agent)", "test"), "parenthesis disallowed in name");
+        sub.assert_false(wing::validate_h2_field_syntax("bad;name", "test"), "semicolon disallowed in name");
+        sub.assert_false(wing::validate_h2_field_syntax("key=val", "test"), "equals disallowed in name");
+        sub.assert_false(wing::validate_h2_field_syntax("User-Agent", "test"), "uppercase disallowed in name");
+        sub.assert_true(wing::validate_h2_field_syntax("user-agent", "test"), "lowercase tchar valid");
+        sub.assert_true(wing::validate_h2_field_syntax(":method", "GET"), "pseudo-header valid");
     };
 }
 
@@ -447,7 +480,7 @@ fn test_rfc9218_write_scheduler(t: core::T&) {
         sub.assert_true((id1 == 1 && id2 == 3) || (id1 == 3 && id2 == 1), "both streams get scheduled in turn");
     };
 
-    t.run("SCHED-03: Round-Robin Multiplexing Among Concurrent Incremental Streams (RFC 9218 Section 4.2: Incremental - Concurrent stream processing)") { sub =>
+    t.run("SCHED-03: Round-Robin Multiplexing Among Concurrent Incremental Streams (RFC 9218 §4.2)") { sub =>
         var sess = wing::new_session_state();
 
         // Stream 1: urgency 2, incremental, 1000 bytes
@@ -615,6 +648,74 @@ fn test_anti_dos_mitigations(t: core::T&) {
         let ping_flood = wing::FrameHeader { length: 8, frame_type: wing::FRAME_PING, flags: 0, stream_id: 0 };
         let err_flood = wing::on_ingress_frame_header(sess, ping_flood, 0);
         sub.assert_eq(err_flood, wing::ERR_ENHANCE_YOUR_CALM, "unacknowledged control frame flood triggers ENHANCE_YOUR_CALM");
+    };
+
+    t.run("DOS-07: PING / SETTINGS with FLAG_ACK Do Not Increment Pending Counter") { sub =>
+        var sess = wing::new_session_state();
+
+        // Send 100 PING frames with FLAG_ACK (e.g. peer confirming our pings)
+        var i: u32 = 0;
+        while i < 100 {
+            let ping_ack = wing::FrameHeader { length: 8, frame_type: wing::FRAME_PING, flags: wing::FLAG_ACK, stream_id: 0 };
+            let err = wing::on_ingress_frame_header(sess, ping_ack, 0);
+            sub.assert_eq(err, wing::ERR_NO_ERROR, "ping ack must be accepted without limit");
+            i++;
+        }
+        sub.assert_eq(sess.pending_control_frames, 0, "pending_control_frames remains 0 for ACKs");
+
+        // Send 100 SETTINGS frames with FLAG_ACK
+        var j: u32 = 0;
+        while j < 100 {
+            let set_ack = wing::FrameHeader { length: 0, frame_type: wing::FRAME_SETTINGS, flags: wing::FLAG_ACK, stream_id: 0 };
+            let err = wing::on_ingress_frame_header(sess, set_ack, 0);
+            sub.assert_eq(err, wing::ERR_NO_ERROR, "settings ack must be accepted without limit");
+            j++;
+        }
+        sub.assert_eq(sess.pending_control_frames, 0, "pending_control_frames remains 0 for SETTINGS ACKs");
+    };
+
+    t.run("DOS-08: Ingress Frame Size Check on HEADERS and CONTINUATION (RFC 9113 §4.2)") { sub =>
+        var sess = wing::new_session_state();
+        // local_max_frame_size = 16384 by default
+        let big_headers = wing::FrameHeader { length: 20000, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
+        let err_h = wing::on_ingress_frame_header(sess, big_headers, 0);
+        sub.assert_eq(err_h, wing::ERR_FRAME_SIZE_ERROR, "HEADERS frame exceeding max frame size rejected with FRAME_SIZE_ERROR");
+
+        let big_cont = wing::FrameHeader { length: 20000, frame_type: wing::FRAME_CONTINUATION, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
+        let err_c = wing::on_ingress_frame_header(sess, big_cont, 0);
+        sub.assert_eq(err_c, wing::ERR_FRAME_SIZE_ERROR, "CONTINUATION frame exceeding max frame size rejected with FRAME_SIZE_ERROR");
+    };
+
+    t.run("DOS-09: Stream Capacity 128 and Slot Reclamation on Full Close") { sub =>
+        var sess = wing::new_session_state();
+        sub.assert_eq(sess.streams.cap, 128, "streams storage capacity is 128");
+
+        // Open 128 concurrent streams
+        var sid: u32 = 1;
+        while sid <= 255 {
+            let h = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: sid };
+            let err = wing::on_ingress_frame_header(sess, h, 0);
+            sub.assert_eq(err, wing::ERR_NO_ERROR, "stream opened");
+            sid += 2;
+        }
+        sub.assert_eq(sess.active_stream_count, 128, "all 128 streams active");
+
+        // 129th stream rejected with REFUSED_STREAM
+        let h_129 = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 257 };
+        let err_129 = wing::on_ingress_frame_header(sess, h_129, 0);
+        sub.assert_eq(err_129, wing::ERR_REFUSED_STREAM, "129th stream refused due to max_concurrent_streams");
+
+        // Close local side, then peer sends DATA with FLAG_END_STREAM
+        wing::close_local_stream(sess, 1);
+        let end_data = wing::FrameHeader { length: 0, frame_type: wing::FRAME_DATA, flags: wing::FLAG_END_STREAM, stream_id: 1 };
+        let d_err = wing::on_data_frame_received(sess, end_data, 0);
+        sub.assert_eq(d_err, wing::ERR_NO_ERROR, "data with end_stream processed");
+        sub.assert_eq(sess.active_stream_count, 127, "active_stream_count decremented on full close");
+
+        // Now stream 257 can be accepted in reclaimed slot
+        let err_reopen = wing::on_ingress_frame_header(sess, h_129, 0);
+        sub.assert_eq(err_reopen, wing::ERR_NO_ERROR, "slot reclaimed, new stream accepted");
+        sub.assert_eq(sess.active_stream_count, 128, "active count restored to 128");
     };
 }
 
