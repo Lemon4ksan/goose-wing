@@ -292,69 +292,13 @@ fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool
 
 // ---- 8. rfc 9218 extensible prioritization (urgency & incremental) ---------
 
-struct PriorityParam {
-    urgency: u8 = 3,       // 0..7 (0 = highest / render-blocking, 3 = default, 7 = background)
-    incremental: bool = false, // false by default, true for round-robin progressive loading
-}
-
-fn apply_priority_urgency(p: PriorityParam&, key: const u8[:], val: const u8[:], has_val: bool) -> bool {
-    guard key == "u" && has_val && val.len == 1 else { return false; }
-    let b = val[0];
-    guard b >= '0' && b <= '7' else { return false; }
-    p.urgency = b - '0';
-    return true;
-}
-
-fn apply_priority_incremental(p: PriorityParam&, key: const u8[:], val: const u8[:], has_val: bool) -> bool {
-    guard key == "i" else { return false; }
-    if !has_val || val == "?1" {
-        p.incremental = true;
-        return true;
-    }
-    if val == "?0" {
-        p.incremental = false;
-        return true;
-    }
-    return false;
-}
-
-fn apply_priority_item(p: PriorityParam&, key: const u8[:], val: const u8[:], has_val: bool) -> bool {
-    return apply_priority_urgency(p, key, val, has_val) || apply_priority_incremental(p, key, val, has_val);
-}
-
-// Parses RFC 9218 Structured Field dictionary: e.g. "u=0, i", "u=5", "i=?0, u=2".
-// Ignores unknown parameters per RFC 9218 Section 4.
-fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
-    var p = PriorityParam { urgency: 3, incremental: default_incremental };
-    var found_any = false;
-    var tok = core::make_byte_tokenizer(raw, ',');
-    while true {
-        let item, ok = tok.token_next();
-        guard ok else { break; }
-        let trimmed = core::trim_lws(item);
-        if trimmed.len == 0 {
-            continue;
-        }
-
-        let key_part, val_part, has_val = core::split_once_byte(trimmed, '=');
-        let key = core::trim_lws(key_part);
-        let val = core::trim_lws(val_part);
-
-        if apply_priority_item(p, key, val, has_val) {
-            found_any = true;
-        }
-    }
-
-    return p, found_any;
-}
-
 // Parses PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
 // Returns (prioritized_stream_id, PriorityParam, error_code).
 fn parse_priority_update_payload(
     payload: const u8[:],
     default_incremental: bool = false,
 ) -> u32, PriorityParam, u32 {
-    var p = PriorityParam { urgency: 3, incremental: default_incremental };
+    var p = priority_default(default_incremental);
     guard payload.len >= 4 else {
         return 0, p, ERR_FRAME_SIZE_ERROR;
     }
@@ -369,17 +313,8 @@ fn parse_priority_update_payload(
     }
 
     let field_value = payload[4..];
-    let parsed, _ = parse_priority_param_rfc9218(field_value, default_incremental);
+    let parsed, _ = parse_http_priority(field_value, default_incremental);
     return prioritized_stream_id, parsed, ERR_NO_ERROR;
-}
-
-// Writes RFC 9218 Priority header value: e.g. "u=3", "u=0, i".
-fn write_priority_param_rfc9218<B>(prio: const PriorityParam&, out: B&) {
-    out.append("u=");
-    out.push(('0' + prio.urgency) as u8);
-    if prio.incremental {
-        out.append(", i");
-    }
 }
 
 // Encodes PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
@@ -391,5 +326,5 @@ fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const Pri
         (prioritized_stream_id & 0xFF) as u8,
     ];
     out.append(id_bytes[..]);
-    write_priority_param_rfc9218(prio, out);
+    serialize_http_priority(prio, out);
 }

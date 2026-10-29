@@ -45,6 +45,7 @@ struct H3StreamEntry {
     status_code: i32 = 0,
     body_received_len: u64 = 0,
     content_length: i64 = -1,
+    priority: PriorityParam = PriorityParam { urgency: 3, incremental: false },
     received_body: u8[..4096] = [],
 }
 
@@ -449,6 +450,17 @@ fn handle_stream_data(
                         }
                         conn.max_push_id_received = max_pid;
                     }
+
+                    // Process PRIORITY_UPDATE frame for request stream (RFC 9218 §7.2)
+                    if hdr.frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST {
+                        let req_stream_id, prio, ok_pu = parse_h3_priority_update_request(payload);
+                        if !ok_pu {
+                            conn.state = H3ConnState.Closed;
+                            conn.error_code = H3_ERR_FRAME_ERROR;
+                            return H3_ERR_FRAME_ERROR;
+                        }
+                        apply_h3_stream_priority(conn, req_stream_id, prio);
+                    }
                 }
             }
         }
@@ -838,4 +850,23 @@ fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
         return conn.streams[s_idx].fin_received;
     }
     return false;
+}
+
+fn apply_h3_stream_priority(conn: H3Connection&, stream_id: u64, prio: const PriorityParam&) -> bool {
+    let s_idx, found = find_h3_stream_idx(conn, stream_id);
+    guard found && s_idx >= 0 && s_idx < conn.streams.len else { return false; }
+    conn.streams[s_idx].priority = prio;
+    return true;
+}
+
+fn get_stream_priority(conn: const H3Connection&, stream_id: u64) -> PriorityParam, bool {
+    let s_idx, found = find_h3_stream_idx(conn, stream_id);
+    guard found && s_idx >= 0 && s_idx < conn.streams.len else {
+        return priority_default(false), false;
+    }
+    return conn.streams[s_idx].priority, true;
+}
+
+fn h3_send_priority_update<B>(conn: H3Connection&, stream_id: u64, prio: const PriorityParam&, out: B&) -> bool {
+    return encode_h3_priority_update_request(out, stream_id, prio);
 }
