@@ -1587,5 +1587,15 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         }
     }
 
+    for s in active_slots.len {
+        if active_slots[s].fd > 0 {
+            epoll_del(epfd, active_slots[s].fd);
+            tcp_close(active_slots[s].fd);
+            active_slots[s].fd = -1;
+            active_slots[s].leftover_len = 0;
+            active_slots[s].timeout_tick = 255;
+        }
+    }
+
     return total_served;
 }
