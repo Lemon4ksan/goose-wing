@@ -1595,7 +1595,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
     let ed_pub = core::ed25519_public_key(ed_seed);
 
     t.run("RFC 8725 §3.2: Asymmetric OKP key cannot verify symmetric HS256 token (Key Confusion Defense)") { sub =>
-        var jwks = wing::new_jwks();
+        var jwks = wing::Jwks { .. };
         wing::add_ed25519_key(jwks, "ed25519-pub-key-1", ed_pub);
 
         // Attacker creates HS256 token signed with ed_pub as HMAC secret
@@ -1622,7 +1622,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
     t.run("RFC 8725 §3.2: Symmetric oct key with EdDSA token or EdDSA algorithm binding rejected") { sub =>
         // Oct key in JWKS claiming EdDSA algorithm MUST be rejected during JWKS finalization
         let jwk_bad = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"EdDSA\",\"k\":\"c2VjcmV0LWtleS0xNmJ5dGVzCg\",\"kid\":\"bad-oct-eddsa\"}]}";
-        var jwks_bad = wing::new_jwks();
+        var jwks_bad = wing::Jwks { .. };
         let ok_parse = wing::parse_jwks_json(jwk_bad, jwks_bad);
         sub.assert_false(ok_parse, "JWKS containing exclusively invalid oct-EdDSA key returns false");
         sub.assert_eq(jwks_bad.keys.len, 0, "Oct key binding EdDSA algorithm MUST be rejected");
@@ -1636,14 +1636,14 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
     t.run("RFC 8037 §2 & §3.1: OKP key with non-Ed25519 curve or omitted curve rejected") { sub =>
         // X25519 curve (ECDH key, invalid for EdDSA signing)
         let jwk_x25519 = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"X25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"x25519-key\"}]}";
-        var jwks_x = wing::new_jwks();
+        var jwks_x = wing::Jwks { .. };
         let ok_x = wing::parse_jwks_json(jwk_x25519, jwks_x);
         sub.assert_false(ok_x, "JWKS containing only non-Ed25519 curve returns false");
         sub.assert_eq(jwks_x.keys.len, 0, "OKP key with X25519 curve MUST be rejected");
 
         // Omitted curve
         let jwk_no_crv = "{\"keys\":[{\"kty\":\"OKP\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"no-crv-key\"}]}";
-        var jwks_nc = wing::new_jwks();
+        var jwks_nc = wing::Jwks { .. };
         let ok_nc = wing::parse_jwks_json(jwk_no_crv, jwks_nc);
         sub.assert_false(ok_nc, "JWKS containing OKP key with omitted crv returns false");
         sub.assert_eq(jwks_nc.keys.len, 0, "OKP key omitting crv MUST be rejected");
@@ -1651,7 +1651,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
 
     t.run("RFC 7517 §4.4: Oct key in JWKS omitting optional alg parameter verifies HS256 token") { sub =>
         let jwk_sym = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\",\"kid\":\"sym-no-alg\"}]}";
-        var jwks_sym = wing::new_jwks();
+        var jwks_sym = wing::Jwks { .. };
         let ok_sym = wing::parse_jwks_json(jwk_sym, jwks_sym);
         sub.assert_true(ok_sym, "JWKS parsed");
         sub.assert_eq(jwks_sym.keys.len, 1, "Oct key without alg parsed into key set");
@@ -1676,14 +1676,14 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
 
     t.run("RFC 8725 §3.6 & RFC 7518 §3.2: Weak symmetric key under 128 bits rejected") { sub =>
         let jwk_weak = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2hvcnQ\",\"kid\":\"weak-sym-key\"}]}";
-        var jwks_weak = wing::new_jwks();
+        var jwks_weak = wing::Jwks { .. };
         let ok_w = wing::parse_jwks_json(jwk_weak, jwks_weak);
         sub.assert_false(ok_w, "JWKS containing weak key returns false");
         sub.assert_eq(jwks_weak.keys.len, 0, "Weak symmetric key < 16 bytes MUST be rejected");
 
         // Mixed JWKS: 1 valid Ed25519 key + 1 weak oct key -> only valid key is preserved
         let jwk_mixed = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"valid-ed\"},{\"kty\":\"oct\",\"k\":\"c2hvcnQ\",\"kid\":\"weak-oct\"}]}";
-        var jwks_mixed = wing::new_jwks();
+        var jwks_mixed = wing::Jwks { .. };
         let ok_m = wing::parse_jwks_json(jwk_mixed, jwks_mixed);
         sub.assert_true(ok_m, "Mixed JWKS parses successfully because valid key is present");
         sub.assert_eq(jwks_mixed.keys.len, 1, "Only 1 valid key retained");

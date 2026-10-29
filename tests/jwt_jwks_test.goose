@@ -314,7 +314,7 @@ fn test_jwt_security_defenses(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_jwks_serialization_and_parsing(t: core::T&) {
     t.run("JWKS serialize and parse roundtrip") { sub =>
-        var jwks = wing::new_jwks();
+        var jwks = wing::Jwks { .. };
 
         // 1. Add Ed25519 public key
         let ed_pub: u8[32] = [
@@ -345,7 +345,7 @@ fn test_jwks_serialization_and_parsing(t: core::T&) {
         sub.assert_contains(jwks_json[..], "\"kid\":\"hmac-key-2026\"", "Contains hmac kid");
 
         // Parse back from JSON
-        var parsed_jwks = wing::new_jwks();
+        var parsed_jwks = wing::Jwks { .. };
         let ok_parse = wing::parse_jwks_json(jwks_json[..], parsed_jwks);
         sub.assert_true(ok_parse, "JWKS parsed from JSON");
         sub.assert_eq(parsed_jwks.keys.len, 2, "2 parsed keys");
@@ -377,7 +377,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
     let hmac_sec = "shared-vault-secret-token-key-256";
 
     // Setup active JWKS with multiple keys
-    var jwks = wing::new_jwks();
+    var jwks = wing::Jwks { .. };
     wing::add_ed25519_key(jwks, "auth-srv-v1", ed_pub);
     wing::add_symmetric_key(jwks, "legacy-sym-v1", wing::JwtAlg.HS256, hmac_sec);
 
@@ -455,7 +455,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
     };
 
     t.run("JWKS Key Usage Constraint: enc key rejected for verification (RFC 7517 §4.2)") { sub =>
-        var jwks_enc = wing::new_jwks();
+        var jwks_enc = wing::Jwks { .. };
         var key = wing::JwksKey {
             kty: wing::JwkKeyType.OKP,
             crv: "Ed25519",
@@ -484,7 +484,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
     };
 
     t.run("JWKS Key Algorithm Constraint: mismatched alg rejected (RFC 7517 §4.4)") { sub =>
-        var jwks_alg = wing::new_jwks();
+        var jwks_alg = wing::Jwks { .. };
         wing::add_symmetric_key(jwks_alg, "hs256-only-key", wing::JwtAlg.HS256, hmac_sec);
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS512, "hs256-only-key");
@@ -828,7 +828,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
     };
 
     t.run("JWKS oct key without alg rejects alg:none attack") { sub =>
-        var jwks = wing::new_jwks();
+        var jwks = wing::Jwks { .. };
         let key_json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c3VwZXJfc2VjcmV0X2tleV8zMl9ieXRlcyEh\",\"kid\":\"k-sym-01\"}]}";
         let ok_parse = wing::parse_jwks_json(key_json, jwks);
         sub.assert_true(ok_parse, "JWKS parsed");

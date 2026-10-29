@@ -46,7 +46,6 @@ d:/gooseprojects/goose-wing/auth/dpop.goose 447 wing::extract_dpop_nonce 0.03 0 
 d:/gooseprojects/goose-wing/auth/dpop.goose 457 wing::extract_dpop_nonce 0.00 0 0.85
 d:/gooseprojects/goose-wing/auth/jwks.goose 21 wing::jwk_key_type_to_string 0.00 0 0.85
 d:/gooseprojects/goose-wing/auth/jwks.goose 28 wing::parse_jwk_key_type 0.01 0 0.85
-d:/gooseprojects/goose-wing/auth/jwks.goose 49 wing::new_jwks 0.00 0 0.85
 d:/gooseprojects/goose-wing/auth/jwks.goose 54 wing::add_ed25519_key 0.01 0 0.85
 d:/gooseprojects/goose-wing/auth/jwks.goose 76 wing::add_symmetric_key 0.05 0 0.85
 d:/gooseprojects/goose-wing/auth/jwks.goose 100 wing::find_key 15.05 0 0.85

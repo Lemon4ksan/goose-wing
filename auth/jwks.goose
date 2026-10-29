@@ -25,6 +25,11 @@ fn jwk_key_type_to_string(kty: JwkKeyType) -> const u8[:] {
     };
 }
 
+// Parses a JWK "kty" parameter value into a JwkKeyType enum (RFC 7517 §4.1).
+//
+// Example:
+//   s = "OKP"
+//   returns: JwkKeyType.OKP
 fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
     if s == "OKP" { return JwkKeyType.OKP; }
     if s == "oct" { return JwkKeyType.Oct; }
@@ -44,10 +49,6 @@ struct JwksKey {
 
 struct Jwks {
     keys: JwksKey[..16] = [],
-}
-
-fn new_jwks() -> Jwks {
-    return Jwks { .. };
 }
 
 // Registers an asymmetric Ed25519 public key in the key set
@@ -198,6 +199,11 @@ fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
     out.append("]}");
 }
 
+// Parses core JWK type fields ("kty", "crv", "alg") from JSON reader (RFC 7517 §4).
+//
+// Example:
+//   field_key = "kty", json string = "OKP"
+//   sets: key_item.kty = OKP, returns: true
 fn parse_jwk_key_core_type(
     field_key: const u8[:],
     reader: json::Reader&,
@@ -225,6 +231,11 @@ fn parse_jwk_key_core_type(
     return false;
 }
 
+// Parses JWK identity and usage fields ("use", "kid") from JSON reader (RFC 7517 §4.2, §4.5).
+//
+// Example:
+//   field_key = "kid", json string = "key-1"
+//   sets: key_item.kid = "key-1", returns: true
 fn parse_jwk_key_ident(
     field_key: const u8[:],
     reader: json::Reader&,
@@ -250,6 +261,11 @@ fn parse_jwk_key_ident(
     return false;
 }
 
+// Parses JWK cryptographic material fields ("x", "k") from JSON reader (RFC 7517 §4).
+//
+// Example:
+//   field_key = "x", json string = "base64url..."
+//   stores in raw_x, returns: true
 fn parse_jwk_key_material(
     field_key: const u8[:],
     reader: json::Reader&,
@@ -276,6 +292,11 @@ fn parse_jwk_key_material(
     return false;
 }
 
+// Dispatches a single JWK key object field to core, ident, or material parsers.
+//
+// Example:
+//   field_key = "kty"
+//   routes to parse_jwk_key_core_type
 fn parse_jwk_key_field(
     field_key: const u8[:],
     reader: json::Reader&,
@@ -295,6 +316,11 @@ fn parse_jwk_key_field(
     }
 }
 
+// Iterates all fields in a JWK JSON object and extracts key properties.
+//
+// Example:
+//   reader positioned at {"kty":"OKP", ...}
+//   populates key_item, raw_x, raw_k
 fn parse_jwk_key_fields(
     reader: json::Reader&,
     scratch: u8[>..]&,
@@ -347,6 +373,11 @@ fn finalize_jwk_key(
     };
 }
 
+// Parses and validates a single JWK key object from the "keys" JSON array.
+//
+// Example:
+//   reader positioned at {"kty":"OKP", ...}
+//   appends validated key to out_jwks
 fn parse_single_jwk_element(
     reader: json::Reader&,
     scratch: u8[>..]&,
@@ -367,7 +398,11 @@ fn parse_single_jwk_element(
     }
 }
 
-// Parses an RFC 7517 JWKS JSON document into Jwks struct
+// Parses an RFC 7517 JWKS JSON document into Jwks struct.
+//
+// Example:
+//   json_bytes = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"...\"}]}"
+//   returns: true, out_jwks.keys.len = 1
 fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
     out_jwks.keys.clear();
     var reader = json::reader(json_bytes);

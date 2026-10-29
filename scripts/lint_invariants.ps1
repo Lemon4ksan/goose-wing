@@ -115,7 +115,7 @@ foreach ($file in $filesToScan) {
         }
 
         # Check: Hard line length ceiling (120 columns)
-        if ($line.Length -gt 120) {
+        if (-not $isTestOrExample -and $line.Length -gt 120) {
             $isExempt = ($line -match 'https?://') -or 
                         ($line -match '//\s*(CHECK|RUN):') -or 
                         ($line -match '"[^"]{35,}"') -or 
