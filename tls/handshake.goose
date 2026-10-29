@@ -38,6 +38,7 @@ const EXT_EARLY_DATA: u16 = 42;
 const EXT_SUPPORTED_VERSIONS: u16 = 43;
 const EXT_COOKIE: u16 = 44;
 const EXT_PSK_KEY_EXCHANGE_MODES: u16 = 45;
+const EXT_CERTIFICATE_AUTHORITIES: u16 = 47; // RFC 8446 Section 4.2.4
 const EXT_KEY_SHARE: u16 = 51;
 const EXT_QUIC_TRANSPORT_PARAMETERS: u16 = 0x39; // RFC 9001 Section 8.2
 
@@ -613,6 +614,47 @@ fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn 
     return select_alpn_result(is_quic, has_h3, has_h2, has_http11, has_any);
 }
 
+// Parses and validates a TLS 1.3 Cookie extension (RFC 8446 Section 4.2.2 & OpenSSL #30868).
+// cookie<1..2^16-1> strictly forbids zero-length values.
+fn parse_tls_cookie_extension<B>(ext_bytes: const u8[:], out_cookie: B&) -> bool {
+    out_cookie.clear();
+    // RFC 8446 Section 4.2.2 & OpenSSL #30868: cookie<1..2^16-1> forbids zero-length values.
+    guard ext_bytes.len >= 3 else { return false; }
+    var cursor = cursor_from(ext_bytes);
+    var cookie_len: u16 = 0;
+    guard get_u16(cursor, cookie_len) else { return false; }
+    guard cookie_len >= 1 else { return false; }
+    guard (cursor_len(cursor) as u16) == cookie_len else { return false; }
+    guard cookie_len <= out_cookie.cap else { return false; }
+    for i in cookie_len {
+        out_cookie.push(cursor.buf[i]);
+    }
+    return true;
+}
+
+// Validates a TLS 1.3 certificate_authorities extension (RFC 8446 Section 4.2.4 & OpenSSL #32211).
+// authorities<3..2^16-1> strictly forbids vectors smaller than 3 octets.
+fn validate_certificate_authorities_extension(ext_bytes: const u8[:]) -> bool {
+    // RFC 8446 Section 4.2.4 & OpenSSL #32211: authorities<3..2^16-1> strictly forbids vectors < 3 bytes.
+    guard ext_bytes.len >= 5 else { return false; }
+    var cursor = cursor_from(ext_bytes);
+    var authorities_len: u16 = 0;
+    guard get_u16(cursor, authorities_len) else { return false; }
+    guard authorities_len >= 3 else { return false; }
+    guard (cursor_len(cursor) as u16) == authorities_len else { return false; }
+
+    var auth_cursor = cursor_from(cursor.buf);
+    while cursor_len(auth_cursor) > 0 {
+        var dn_len: u16 = 0;
+        guard get_u16(auth_cursor, dn_len) else { return false; }
+        // Each DistinguishedName<1..2^16-1> must be at least 1 byte
+        guard dn_len >= 1 else { return false; }
+        guard cursor_len(auth_cursor) >= dn_len else { return false; }
+        auth_cursor.buf = auth_cursor.buf[dn_len..];
+    }
+    return cursor_len(auth_cursor) == 0;
+}
+
 // ---- 8. Extensions Parser Combinator ----------------------------------------
 
 struct TlsExtensionEntry {
@@ -1185,6 +1227,9 @@ fn parse_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out:
 
         if ext_type == EXT_SIGNATURE_ALGORITHMS {
             guard parse_cert_req_sig_algs(ext_data, out) else { return false; }
+        } else if ext_type == EXT_CERTIFICATE_AUTHORITIES {
+            // RFC 8446 §4.2.4 & OpenSSL #32211: authorities<3..2^16-1> lower bound validation
+            guard validate_certificate_authorities_extension(ext_data.buf) else { return false; }
         }
     }
     return cursor_len(ext_cursor) == 0;

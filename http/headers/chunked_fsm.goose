@@ -36,14 +36,18 @@ enum ChunkFsmStatus {
 
 struct ChunkFsmDecoder {
     state: u64 = 0,
+    ext_bytes: u32 = 0,
+    trailer_bytes: u32 = 0,
 }
 
 fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
-    return ChunkFsmDecoder { state: 0 };
+    return ChunkFsmDecoder { state: 0, ext_bytes: 0, trailer_bytes: 0 };
 }
 
 fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.state = 0;
+    dec.ext_bytes = 0;
+    dec.trailer_bytes = 0;
 }
 
 inline fn chunk_fsm_size(state: u64) -> u64 {
@@ -81,6 +85,11 @@ fn chunk_fsm_feed(
         // 1. Trailer mode
         if (dec.state & CHUNK_STATE_TRAILER_MODE) != 0 {
             while offset < data.len {
+                dec.trailer_bytes++;
+                if dec.trailer_bytes > 4096 {
+                    dec.state = CHUNK_STATE_IS_ERROR;
+                    return ChunkFsmStatus.Error, offset, data[..0];
+                }
                 let c = data[offset];
                 offset++;
                 let sub_st = chunk_fsm_size(dec.state);
@@ -97,6 +106,8 @@ fn chunk_fsm_feed(
                 } else if sub_st == 1 {
                     if c == '\n' {
                         dec.state = 0;
+                        dec.ext_bytes = 0;
+                        dec.trailer_bytes = 0;
                         return ChunkFsmStatus.Complete, offset, data[..0];
                     }
                     dec.state = CHUNK_STATE_IS_ERROR;
@@ -201,6 +212,12 @@ fn chunk_fsm_feed(
                     dec.state |= bits | CHUNK_STATE_SEEN_HEX;
                     offset++;
                 } else {
+                    dec.ext_bytes++;
+                    if dec.ext_bytes > 1024 {
+                        dec.state = CHUNK_STATE_IS_ERROR;
+                        return ChunkFsmStatus.Error, offset, data[..0];
+                    }
+
                     if (dec.state & CHUNK_STATE_EXTENSION_EXPECTS_LF) != 0 {
                         if c != '\n' {
                             dec.state = CHUNK_STATE_IS_ERROR;
@@ -210,6 +227,7 @@ fn chunk_fsm_feed(
                         dec.state += 2;
                         dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
                         dec.state &= ~(CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME | CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_EXTENSION_EXPECTS_VAL | CHUNK_STATE_EXTENSION_QUOTED | CHUNK_STATE_EXTENSION_ESCAPED | CHUNK_STATE_EXTENSION_EXPECTS_LF | CHUNK_STATE_SEEN_HEX | CHUNK_STATE_SEEN_BWS);
+                        dec.ext_bytes = 0;
                         break;
                     }
 
@@ -323,6 +341,7 @@ fn chunk_fsm_feed(
                 let chunk_slice = data[offset..(offset + chunk_len)];
                 offset += size as i64;
                 dec.state = CHUNK_STATE_IS_CHUNKED;
+                dec.ext_bytes = 0;
                 return ChunkFsmStatus.YieldChunk, offset, chunk_slice;
             } else if size == 2 {
                 if data[offset] != '\r' || data[offset + 1] != '\n' {
@@ -331,6 +350,7 @@ fn chunk_fsm_feed(
                 }
                 offset += 2;
                 dec.state = CHUNK_STATE_IS_CHUNKED;
+                dec.ext_bytes = 0;
                 continue;
             } else if size == 1 {
                 // Split CRLF: previously consumed body and '\r', expecting final '\n'
@@ -340,6 +360,7 @@ fn chunk_fsm_feed(
                 }
                 offset += 1;
                 dec.state = CHUNK_STATE_IS_CHUNKED;
+                dec.ext_bytes = 0;
                 continue;
             }
         } else {

@@ -9,6 +9,7 @@ import std;
 import core from "..";
 import json;
 import .constants;
+import .limits;
 import .canonical;
 import .psl;
 import .parser;
@@ -261,19 +262,34 @@ fn export_netscape<B>(jar: const CanonicalCookieJar&, out: B&) {
     }
 }
 
+inline fn is_netscape_eol(b: u8) -> bool {
+    return b == '\n' || b == '\r';
+}
+
+fn find_netscape_line_range(content: const u8[:], start: i64) -> i64, i64 {
+    var line_end = start;
+    while line_end < content.len && !is_netscape_eol(content[line_end]) {
+        line_end++;
+    }
+    var next_start = line_end;
+    while next_start < content.len && is_netscape_eol(content[next_start]) {
+        next_start++;
+    }
+    return line_end, next_start;
+}
+
 // Imports cookies from Netscape cookies.txt format into CanonicalCookieJar.
 fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) -> i64 {
     guard content.len > 0 else { return 0; }
 
     var imported_count: i64 = 0;
-    var line_start = 0;
+    var line_start: i64 = 0;
 
     while line_start < content.len {
-        var line_end = line_start;
-        while line_end < content.len && content[line_end] != '\n' && content[line_end] != '\r' {
-            line_end += 1;
-        }
+        // Go #75672 (CVE-2025-58186): Enforce K_MAX_COOKIES cap on bulk cookie import to prevent memory/CPU exhaustion
+        guard imported_count < internal::K_MAX_COOKIES else { break; }
 
+        let line_end, next_start = find_netscape_line_range(content, line_start);
         let raw_line = content[line_start..line_end];
         var parsed_cookie = CanonicalCookie { .. };
         if try_parse_netscape_cookie_line(raw_line, parsed_cookie) &&
@@ -281,10 +297,7 @@ fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) 
             imported_count += 1;
         }
 
-        line_start = line_end;
-        while line_start < content.len && (content[line_start] == '\n' || content[line_start] == '\r') {
-            line_start += 1;
-        }
+        line_start = next_start;
     }
 
     return imported_count;
@@ -331,21 +344,24 @@ fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) ->
     var imported_count = 0;
 
     json::each_element(json_reader) {
-        var parsed_cookie = CanonicalCookie { .. };
-        read_canonical_cookie_json_object(json_reader, parsed_cookie);
+        // Go #75672 (CVE-2025-58186): Enforce K_MAX_COOKIES cap on bulk cookie import to prevent memory/CPU exhaustion
+        if (imported_count as i64) < internal::K_MAX_COOKIES {
+            var parsed_cookie = CanonicalCookie { .. };
+            read_canonical_cookie_json_object(json_reader, parsed_cookie);
 
-        // CTL-08: Corrupted cookies containing control chars purged upon loading
-        let has_ctl = has_prohibited_cookie_ctl(parsed_cookie.name[..]) ||
-                      has_prohibited_cookie_ctl(parsed_cookie.value[..]) ||
-                      has_prohibited_cookie_ctl(parsed_cookie.path[..]);
-        let has_payload = parsed_cookie.name.len > 0 || parsed_cookie.value.len > 0;
+            // CTL-08: Corrupted cookies containing control chars purged upon loading
+            let has_ctl = has_prohibited_cookie_ctl(parsed_cookie.name[..]) ||
+                          has_prohibited_cookie_ctl(parsed_cookie.value[..]) ||
+                          has_prohibited_cookie_ctl(parsed_cookie.path[..]);
+            let has_payload = parsed_cookie.name.len > 0 || parsed_cookie.value.len > 0;
 
-        // CRY-02: SQLite kValuesExistInBothEncryptedAndPlaintext rejection
-        let both_encrypted_and_plain = parsed_cookie.value.len > 0 && parsed_cookie.encrypted_value.len > 0;
+            // CRY-02: SQLite kValuesExistInBothEncryptedAndPlaintext rejection
+            let both_encrypted_and_plain = parsed_cookie.value.len > 0 && parsed_cookie.encrypted_value.len > 0;
 
-        if !has_ctl && has_payload && !both_encrypted_and_plain {
-            if set_canonical_cookie(jar, parsed_cookie, true, parsed_cookie.secure, now_us) {
-                imported_count += 1;
+            if !has_ctl && has_payload && !both_encrypted_and_plain {
+                if set_canonical_cookie(jar, parsed_cookie, true, parsed_cookie.secure, now_us) {
+                    imported_count += 1;
+                }
             }
         }
     };
