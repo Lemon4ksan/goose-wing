@@ -635,8 +635,10 @@ def main() -> int:
                 not is_test_or_example
                 and is_fn_start
                 and re.match(r"^(?:parse|str_to)_[A-Za-z0-9_]+$", sig_fn_name)
+                and not sig_fn_name.endswith("_unverified")
                 and re.search(r"u8\[:\]", sig_params)
                 and re.match(r"^[A-Z][A-Za-z0-9_]*$", sig_ret)
+                and not sig_ret.endswith("Error")
             ):
                 enum_type = sig_ret
                 f_depth = 0

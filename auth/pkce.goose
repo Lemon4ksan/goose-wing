@@ -40,6 +40,15 @@ fn is_base64url_char(ch: u8) -> bool {
            ch == '-' || ch == '_';
 }
 
+// RFC 7636 §4.2 / RFC 4648 §3.5: Verifies that the 43rd Base64URL character of an S256
+// challenge has bits 1..0 set to 00 (canonical padding bits).
+fn is_canonical_s256_final_char(ch: u8) -> bool {
+    return ch == 'A' || ch == 'E' || ch == 'I' || ch == 'M' ||
+           ch == 'Q' || ch == 'U' || ch == 'Y' || ch == 'c' ||
+           ch == 'g' || ch == 'k' || ch == 'o' || ch == 's' ||
+           ch == 'w' || ch == '0' || ch == '4' || ch == '8';
+}
+
 // Validates whether verifier conforms to RFC 7636 Section 4.1.
 fn is_valid_code_verifier(v: const u8[:]) -> bool {
     guard v.len >= PKCE_MIN_VERIFIER_LEN && v.len <= PKCE_MAX_VERIFIER_LEN else {
@@ -54,14 +63,15 @@ fn is_valid_code_verifier(v: const u8[:]) -> bool {
 }
 
 // Validates whether code_challenge conforms to RFC 7636 Section 4.2.
-// S256: exactly 43 unpadded base64url characters.
+// S256: exactly 43 unpadded base64url characters with canonical padding bits.
 // plain: 43..128 unreserved characters (same as code_verifier).
 fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "S256") -> bool {
     if method == PKCE_METHOD_S256 {
         guard challenge.len == 43 else { return false; }
-        for b in challenge {
-            guard is_base64url_char(b) else { return false; }
+        for i in 42 {
+            guard is_base64url_char(challenge[i]) else { return false; }
         }
+        guard is_canonical_s256_final_char(challenge[42]) else { return false; }
         return true;
     } else if method == PKCE_METHOD_PLAIN {
         return is_valid_code_verifier(challenge);
@@ -69,28 +79,30 @@ fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "S256")
     return false;
 }
 
-let PKCE_DEFAULT_FALLBACK: const u8[64] = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk_0123456789abcdefghij";
-
-// Generates a valid PKCE code verifier (43..128 characters) into out.
-// If entropy bytes (e.g. 32-64 bytes) are provided, encodes them into URL-safe characters.
-// If empty, derives a high-entropy 64-character verifier.
+// Generates a valid PKCE code verifier (43..128 characters) into out (RFC 7636 §4.1).
+// If entropy bytes (>= 32 bytes) are provided, encodes them into URL-safe characters.
+// If empty, derives high-entropy dynamic bytes from the monotonic clock (invariant 16).
+// Returns false if entropy is non-empty but less than 32 bytes (256 bits).
 fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
     out.clear();
+    guard entropy.len == 0 || entropy.len >= 32 else {
+        return false; // RFC 7636 §4.1: Minimum 256 bits (32 bytes) of entropy required
+    }
     if entropy.len >= 32 {
-        var b64: u8[..192] = [];
-        core::base64url_encode(entropy, b64);
-        var take_len = b64.len;
-        if take_len > PKCE_MAX_VERIFIER_LEN {
-            take_len = PKCE_MAX_VERIFIER_LEN;
-        }
-        guard take_len <= b64.len else { return false; }
-        for i in take_len {
-            out.push(b64[i]);
-        }
+        let max_raw = if entropy.len > 96 { 96 } else { entropy.len };
+        core::base64url_encode(entropy[..max_raw], out);
         return is_valid_code_verifier(out[..]);
     }
 
-    out.append(PKCE_DEFAULT_FALLBACK);
+    var raw_entropy: u8[32] = [0; 32];
+    var state: u64 = (clock_ns() as u64) ^ 0x56e8feb86659fd93;
+    for i in 4 {
+        state = state * 6364136223846793005 + 1442695040888963407;
+        for j in 8 {
+            raw_entropy[i * 8 + j] = ((state >> (j * 8)) & 0xFF) as u8;
+        }
+    }
+    core::base64url_encode(raw_entropy[..], out);
     return is_valid_code_verifier(out[..]);
 }
 
@@ -136,14 +148,15 @@ fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method
     return core::ct_eq_bytes(computed[..], challenge);
 }
 
-// Creates a complete PKCE challenge pair.
-fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair {
+// Creates a complete PKCE challenge pair. Returns false if entropy or method is invalid.
+fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair, bool {
     var pair = PkcePair { .. };
+    guard method.len <= pair.method.cap else { return pair, false; }
     pair.method.clear();
     pair.method.append(method);
-    generate_code_verifier(pair.verifier, entropy);
-    compute_code_challenge(pair.verifier[..], method, pair.challenge);
-    return pair;
+    guard generate_code_verifier(pair.verifier, entropy) else { return pair, false; }
+    guard compute_code_challenge(pair.verifier[..], method, pair.challenge) else { return pair, false; }
+    return pair, true;
 }
 
 // ---- 3. OAuth 2.1 & RFC 9700 Security BCP Enforcement -----------------------

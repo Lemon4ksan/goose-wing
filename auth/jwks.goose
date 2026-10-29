@@ -41,7 +41,7 @@ fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
 struct JwksKey {
     kty: JwkKeyType = JwkKeyType.Unknown,
     crv: u8[..32] = "",
-    alg: JwtAlg = JwtAlg.None,
+    alg: JwtAlg = JwtAlg.Unspecified,
     use: u8[..16] = "",
     kid: u8[..64] = [],
     symmetric_key: u8[..64] = [],
@@ -85,7 +85,7 @@ fn add_symmetric_key(
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
     guard kid.len <= 64 else { return false; }
-    guard secret_key.len > 0 && secret_key.len <= 64 else { return false; }
+    guard secret_key.len >= 16 && secret_key.len <= 64 else { return false; }
     var key = JwksKey {
         kty: JwkKeyType.Oct,
         crv: "",
@@ -174,7 +174,7 @@ fn serialize_jwk_key<B>(k: const JwksKey&, out: B&) {
         json::format_string(out, k_b64[..]);
     }
 
-    if k.alg != JwtAlg.None {
+    if k.alg != JwtAlg.Unspecified && k.alg != JwtAlg.None && k.alg != JwtAlg.Unknown {
         out.append(",\"alg\":");
         json::format_string(out, jwt_alg_to_string(k.alg));
     }
@@ -235,6 +235,9 @@ fn parse_jwk_key_core_type(
     if field_key == "alg" {
         let alg_str = json::read_string(reader, scratch);
         key_item.alg = parse_jwt_alg(alg_str);
+        if key_item.alg == JwtAlg.Unknown || key_item.alg == JwtAlg.None {
+            key_item.has_invalid_type = true;
+        }
         return true;
     }
     return false;
@@ -287,6 +290,7 @@ fn parse_jwk_key_material(
     scratch: u8[>..]&,
     raw_x: u8[..128]&,
     raw_k: u8[..128]&,
+    key_item: JwksKey&,
 ) -> bool {
     if field_key == "x" {
         let x_str = json::read_string(reader, scratch);
@@ -295,6 +299,7 @@ fn parse_jwk_key_material(
             raw_x.append(x_str);
         } else {
             raw_x.clear();
+            key_item.has_invalid_type = true;
         }
         return true;
     }
@@ -305,6 +310,7 @@ fn parse_jwk_key_material(
             raw_k.append(k_str);
         } else {
             raw_k.clear();
+            key_item.has_invalid_type = true;
         }
         return true;
     }
@@ -328,7 +334,7 @@ fn parse_jwk_key_field(
         // Matched kty, crv, or alg
     } else if parse_jwk_key_ident(field_key, reader, scratch, key_item) {
         // Matched use or kid
-    } else if parse_jwk_key_material(field_key, reader, scratch, raw_x, raw_k) {
+    } else if parse_jwk_key_material(field_key, reader, scratch, raw_x, raw_k, key_item) {
         // Matched x or k
     } else {
         json::skip(reader);
@@ -356,7 +362,7 @@ fn parse_jwk_key_fields(
 fn finalize_okp_key(raw_x: const u8[:], key_item: JwksKey&) -> bool {
     // RFC 8037 §2 & §3.1: OKP curve MUST be Ed25519 for EdDSA signatures
     guard key_item.crv[..] == "Ed25519" else { return false; }
-    guard key_item.alg == JwtAlg.None || key_item.alg == JwtAlg.EdDSA else { return false; }
+    guard key_item.alg == JwtAlg.Unspecified || key_item.alg == JwtAlg.EdDSA else { return false; }
     guard raw_x.len > 0 else { return false; }
     var decoded_x: u8[>..] = [];
     guard core::base64url_decode(raw_x, decoded_x) else { return false; }
@@ -448,7 +454,7 @@ fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
     if kid.len > 0 {
         return find_key(jwks, kid);
     }
-    if jwks.keys.len == 1 && jwks.keys[0].valid {
+    if jwks.keys.len == 1 && jwks.keys[0].valid && jwks.keys[0].kid.len == 0 {
         return 0;
     }
     return -1;
@@ -457,7 +463,7 @@ fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
 fn is_kty_alg_compatible(kty: JwkKeyType, alg: JwtAlg) -> bool {
     return match kty {
         OKP => alg == JwtAlg.EdDSA,
-        Oct => alg != JwtAlg.EdDSA && alg != JwtAlg.None,
+        Oct => (alg != JwtAlg.EdDSA && alg != JwtAlg.None && alg != JwtAlg.Unknown && alg != JwtAlg.Unspecified),
         Unknown => false,
     };
 }
@@ -474,6 +480,9 @@ fn validate_jwks_key_compatibility(
     guard is_valid_key_use(key.use[..]) else {
         return JwtError.UnsupportedAlgorithm;
     }
+    if header_alg == JwtAlg.Unknown {
+        return JwtError.UnsupportedAlgorithm;
+    }
     if header_alg == JwtAlg.None && !allow_none {
         return JwtError.UnsupportedAlgorithm;
     }
@@ -481,7 +490,7 @@ fn validate_jwks_key_compatibility(
     guard is_kty_alg_compatible(key.kty, header_alg) else {
         return JwtError.AlgorithmMismatch;
     }
-    if key.alg != JwtAlg.None && key.alg != header_alg {
+    if key.alg != JwtAlg.Unspecified && key.alg != header_alg {
         return JwtError.AlgorithmMismatch;
     }
     return JwtError.None;

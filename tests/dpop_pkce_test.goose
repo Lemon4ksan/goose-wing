@@ -65,12 +65,44 @@ fn test_pkce_rfc7636(t: core::T&) {
         sub.assert_false(wing::is_valid_code_challenge("too_short", "S256"), "Short S256 challenge rejected");
         let illegal_char_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw+cM"; // '+' instead of '-'
         sub.assert_false(wing::is_valid_code_challenge(illegal_char_challenge, "S256"), "Illegal char in S256 challenge rejected");
+
+        // RFC 7636 §4.2 / RFC 4648 §3.5: 43rd character MUST have zero padding bits (bits 1..0 == 00)
+        // 'M' (001100) has bits 1..0 == 00 (valid). 'B' (000001) has bits 1..0 == 01 (invalid non-zero padding bits)
+        let non_canonical_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cB";
+        sub.assert_false(wing::is_valid_code_challenge(non_canonical_challenge, "S256"), "Non-zero padding bits in 43rd char rejected");
     };
 
-    t.run("PKCE Create Challenge Pair Helper") { sub =>
-        let pair = wing::create_pkce_pair("", "S256");
+    t.run("PKCE Create Challenge Pair Helper & Security Invariants") { sub =>
+        // 1. Valid pair generation with default dynamic entropy
+        let pair, ok_pair = wing::create_pkce_pair("", "S256");
+        sub.assert_true(ok_pair, "PKCE pair created successfully");
         sub.assert_ge(pair.verifier.len, 43, "Pair verifier length >= 43");
+        sub.assert_le(pair.verifier.len, 128, "Pair verifier length <= 128");
         sub.assert_true(wing::validate_code_challenge(pair.verifier[..], pair.challenge[..], "S256"), "Pair challenge matches verifier");
+
+        // 2. Dynamic entropy prevents static replay when entropy is omitted (invariant 16)
+        var v1: u8[..128] = [];
+        var v2: u8[..128] = [];
+        sub.assert_true(wing::generate_code_verifier(v1), "Verifier 1 generated");
+        sub.assert_true(wing::generate_code_verifier(v2), "Verifier 2 generated");
+        sub.assert_false(core::ct_eq_bytes(v1[..], v2[..]), "Consecutive verifiers with omitted entropy are distinct");
+
+        // 3. Insufficient entropy (< 32 bytes) returns false (RFC 7636 §4.1)
+        var v_short: u8[..128] = [];
+        sub.assert_false(wing::generate_code_verifier(v_short, "short_entropy_16b"), "Entropy < 32 bytes rejected");
+        let pair_bad_ent, ok_ent = wing::create_pkce_pair("short_entropy_16b", "S256");
+        sub.assert_false(ok_ent, "create_pkce_pair rejects entropy < 32 bytes");
+
+        // 4. Large entropy (> 96 bytes) properly caps at 128 chars without buffer overflow
+        var large_entropy: u8[..150] = [];
+        for i in 120 { large_entropy.push((i & 0xFF) as u8); }
+        var v_large: u8[..128] = [];
+        sub.assert_true(wing::generate_code_verifier(v_large, large_entropy[..]), "Large entropy accepted");
+        sub.assert_eq(v_large.len, 128, "Large entropy capped to exactly 128 characters");
+
+        // 5. Invalid method returns false in create_pkce_pair
+        let pair_bad_m, ok_m = wing::create_pkce_pair("", "invalid_method");
+        sub.assert_false(ok_m, "create_pkce_pair rejects invalid method");
     };
 }
 

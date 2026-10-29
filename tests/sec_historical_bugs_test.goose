@@ -1655,7 +1655,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
         let ok_sym = wing::parse_jwks_json(jwk_sym, jwks_sym);
         sub.assert_true(ok_sym, "JWKS parsed");
         sub.assert_eq(jwks_sym.keys.len, 1, "Oct key without alg parsed into key set");
-        sub.assert_eq(jwks_sym.keys[0].alg, wing::JwtAlg.None, "Default alg is None (compatible with HS256/384/512)");
+        sub.assert_eq(jwks_sym.keys[0].alg, wing::JwtAlg.Unspecified, "Default alg is Unspecified (compatible with HS256/384/512)");
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "sym-no-alg");
         var clm = wing::JwtClaims { .. };

@@ -360,6 +360,44 @@ fn test_jwks_serialization_and_parsing(t: core::T&) {
         sub.assert_bytes_eq(k1.kid[..], "hmac-key-2026", "k1 kid");
         sub.assert_bytes_eq(k1.symmetric_key[..], hmac_sec, "k1 symmetric key matches");
     };
+
+    t.run("JWK Parser Defenses: Missing kty, unknown kty, invalid alg & overflows rejected") { sub =>
+        // 1. Missing kty in JWK
+        let jwk_no_kty = "{\"keys\":[{\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}]}";
+        var jwks1 = wing::Jwks { .. };
+        sub.assert_false(wing::parse_jwks_json(jwk_no_kty, jwks1), "Missing kty rejected");
+
+        // 2. Unknown kty in JWK (e.g. RSA or EC)
+        let jwk_rsa = "{\"keys\":[{\"kty\":\"RSA\",\"n\":\"...\",\"e\":\"AQAB\"}]}";
+        var jwks2 = wing::Jwks { .. };
+        sub.assert_false(wing::parse_jwks_json(jwk_rsa, jwks2), "Unknown kty RSA rejected");
+
+        // 3. Unsupported alg in JWK (e.g. RS256 or none)
+        let jwk_bad_alg = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"RS256\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\"}]}";
+        var jwks3 = wing::Jwks { .. };
+        sub.assert_false(wing::parse_jwks_json(jwk_bad_alg, jwks3), "Unsupported alg RS256 rejected");
+
+        let jwk_none_alg = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"none\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\"}]}";
+        var jwks4 = wing::Jwks { .. };
+        sub.assert_false(wing::parse_jwks_json(jwk_none_alg, jwks4), "Explicit alg:none in JWK rejected");
+
+        // 4. Oversize kid (> 64 bytes)
+        let jwk_long_kid = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\",\"kid\":\"this-key-identifier-is-intentionally-crafted-to-exceed-the-sixty-four-byte-limit-enforced-by-jwks\"}]}";
+        var jwks5 = wing::Jwks { .. };
+        sub.assert_false(wing::parse_jwks_json(jwk_long_kid, jwks5), "Oversize kid rejected");
+
+        // 5. add_symmetric_key enforces >= 16 bytes (RFC 8725 §3.6)
+        var jwks_api = wing::Jwks { .. };
+        sub.assert_false(wing::add_symmetric_key(jwks_api, "short-key", wing::JwtAlg.HS256, "short"), "Key < 16 bytes rejected");
+        sub.assert_true(wing::add_symmetric_key(jwks_api, "valid-key", wing::JwtAlg.HS256, "1234567890123456"), "Key == 16 bytes accepted");
+
+        // 6. resolve_jwks_key_index: empty kid token rejected when single JWK has configured non-empty kid
+        sub.assert_eq(wing::resolve_jwks_key_index(jwks_api, ""), -1, "Empty kid does not match key with explicit kid");
+
+        var jwks_anon = wing::Jwks { .. };
+        sub.assert_true(wing::add_symmetric_key(jwks_anon, "", wing::JwtAlg.HS256, "1234567890123456"), "Add anon key");
+        sub.assert_eq(wing::resolve_jwks_key_index(jwks_anon, ""), 0, "Empty kid matches anon single key");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -847,6 +885,59 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         opts.allow_none_alg = false;
         let err = wing::verify(token_none[..], jwks, opts, now_sec, out_h, out_c);
         sub.assert_true(err == wing::JwtError.UnsupportedAlgorithm || err == wing::JwtError.KeyNotFound, "alg:none against JWKS oct key rejected");
+    };
+
+    t.run("Hardened RFC 7515/7519 edge cases and defenses") { sub =>
+        // 1. audiences.clear() contract on repeated parsing
+        let clm_json_auds = "{\"sub\":\"alice\",\"aud\":[\"aud-1\",\"aud-2\",\"aud-3\"],\"exp\":2000000000}";
+        var clm_repeated = wing::JwtClaims { .. };
+        sub.assert_true(wing::parse_jwt_claims_json(clm_json_auds, clm_repeated), "Claims parsed first time");
+        sub.assert_eq(clm_repeated.audiences.len, 3, "Exactly 3 audiences first time");
+        sub.assert_true(wing::parse_jwt_claims_json(clm_json_auds, clm_repeated), "Claims parsed second time (reused struct)");
+        sub.assert_eq(clm_repeated.audiences.len, 3, "audiences cleared on re-parsing (not 6!)");
+
+        // 2. parse_aud_claim: empty array [] rejected per RFC 7519 §4.1.3
+        var clm_empty_aud = wing::JwtClaims { .. };
+        sub.assert_false(wing::parse_jwt_claims_json("{\"aud\":[]}", clm_empty_aud), "Empty aud array rejected");
+
+        // 2b. parse_aud_claim: non-string element in aud array rejected
+        var clm_num_aud = wing::JwtClaims { .. };
+        sub.assert_false(wing::parse_jwt_claims_json("{\"aud\":[123]}", clm_num_aud), "Non-string aud element rejected");
+
+        // 3. parse_jwt_alg: unknown alg parses as Unknown and rejects even with allow_none_alg = true
+        let alg_rs = wing::parse_jwt_alg("RS256");
+        sub.assert_eq(alg_rs, wing::JwtAlg.Unknown, "RS256 parses as Unknown");
+        var opts_allow_none = wing::default_jwt_validation_options(wing::JwtAlg.None);
+        opts_allow_none.allow_none_alg = true;
+        let err_unknown = wing::verify_jwt_algorithm(alg_rs, wing::JwtAlg.None, opts_allow_none.allow_none_alg);
+        sub.assert_eq(err_unknown, wing::JwtError.UnsupportedAlgorithm, "Unknown alg cannot bypass as none");
+
+        // 4. claim_str ignores numeric/boolean claims, and set_claim_int clears val_str
+        var clm_types = wing::JwtClaims { .. };
+        wing::set_claim(clm_types, "tier", "gold");
+        sub.assert_bytes_eq(wing::claim_str(clm_types, "tier"), "gold", "tier is string 'gold'");
+        wing::set_claim_int(clm_types, "tier", 42);
+        sub.assert_bytes_eq(wing::claim_str(clm_types, "tier"), "", "claim_str returns empty for numeric claim");
+        let tier_val, ok_tier = wing::claim_int(clm_types, "tier");
+        sub.assert_true(ok_tier, "tier is present as int");
+        sub.assert_eq(tier_val, 42, "tier value is 42");
+
+        // 5. Duplicate custom claim detection when initial value is skipped (array/object)
+        var clm_dup = wing::JwtClaims { .. };
+        let clm_dup_json = "{\"sub\":\"alice\",\"roles\":[\"admin\"],\"roles\":\"admin\"}";
+        sub.assert_false(wing::parse_jwt_claims_json(clm_dup_json, clm_dup), "Duplicate custom claim key with mixed types rejected");
+
+        // 6. Duplicate crit parameter rejected per RFC 7515 §4.1.11
+        var hdr_crit_dup = wing::new_jwt_header();
+        let hdr_crit_dup_json = "{\"alg\":\"HS256\",\"crit\":[\"custom\",\"custom\"],\"custom\":\"value\"}";
+        sub.assert_false(wing::parse_jwt_header_json(hdr_crit_dup_json, hdr_crit_dup), "Duplicate parameter inside crit list rejected");
+
+        // 7. NumericDate: non-integer float timestamp support (RFC 7519 §2)
+        var clm_float = wing::JwtClaims { .. };
+        let clm_float_json = "{\"sub\":\"alice\",\"iat\":1770000000.456,\"exp\":1770003600.789}";
+        sub.assert_true(wing::parse_jwt_claims_json(clm_float_json, clm_float), "Float NumericDate claims parsed successfully");
+        sub.assert_eq(clm_float.iat, 1770000000, "iat parsed and truncated to whole seconds");
+        sub.assert_eq(clm_float.exp, 1770003600, "exp parsed and truncated to whole seconds");
     };
 }
 
