@@ -234,6 +234,13 @@ fn init_execution_context(session: const Session&, req: const Request&, parsed_i
         ctx.headers.push(copy(req_hdr));
     }
 
+    if session.profile != Profile.None {
+        let has_ae = find_header(ctx.headers[..], "accept-encoding").len > 0;
+        if !has_ae {
+            ctx.headers.push(make_header("Accept-Encoding", "zstd, br, gzip"));
+        }
+    }
+
     ctx.url_chain.push(parsed_initial);
     return ctx;
 }

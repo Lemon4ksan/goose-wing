@@ -149,3 +149,19 @@ fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> 
     compute_code_challenge(pair.verifier[..], method, pair.challenge);
     return pair;
 }
+
+// ---- 3. OAuth 2.1 & RFC 9700 Security BCP Enforcement -----------------------
+
+// Validates whether code_challenge conforms to OAuth 2.1 Section 7.6.1 and RFC 9700 Section 2.1.1.
+// Strictly mandates S256 and forbids the legacy plain transformation.
+fn is_valid_code_challenge_strict(challenge: const u8[:], method: const u8[:] = "S256") -> bool {
+    guard method == PKCE_METHOD_S256 else { return false; }
+    return is_valid_code_challenge(challenge, method);
+}
+
+// Validates code_verifier against code_challenge under OAuth 2.1 / RFC 9700 strict rules.
+// Rejects method != "S256" immediately.
+fn validate_code_challenge_strict(verifier: const u8[:], challenge: const u8[:], method: const u8[:] = "S256") -> bool {
+    guard method == PKCE_METHOD_S256 else { return false; }
+    return validate_code_challenge(verifier, challenge, method);
+}

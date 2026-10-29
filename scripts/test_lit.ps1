@@ -3,10 +3,13 @@
 
 # scripts/test_lit.ps1
 # Master test runner for goose-lit native test suites in goose-wing.
+# Supports parallel execution, filtering, verbose tracing, and clean exit status.
 
 param(
     [string]$Pattern = "*",
-    [switch]$Verbose
+    [int]$Jobs = 4,
+    [switch]$Verbose,
+    [switch]$Sequential
 )
 
 $ErrorActionPreference = "Continue"
@@ -41,24 +44,97 @@ if (-not (Test-Path $litTestsDir)) {
     exit 1
 }
 
-$litArgs = @()
-if ($Pattern -ne "*") {
-    $matched = Get-ChildItem -Path $litTestsDir -Filter "$Pattern" | Where-Object { $_.Extension -eq ".goose" }
-    if ($matched.Count -eq 0) {
-        Write-Host "No tests found matching pattern '$Pattern' in $litTestsDir" -ForegroundColor Yellow
-        exit 0
-    }
-    foreach ($m in $matched) {
-        $litArgs += $m.FullName
-    }
-} else {
-    $litArgs += $litTestsDir
+# Discover tests matching pattern
+$filter = if ($Pattern.EndsWith(".goose")) { $Pattern } else { "$Pattern.goose" }
+if ($Pattern -eq "*") { $filter = "*.goose" }
+
+$allFiles = Get-ChildItem -Path $litTestsDir -Recurse -Filter $filter | Where-Object {
+    $_.Extension -eq ".goose" -and $_.Name -ne "wire_kit.goose"
+} | Sort-Object Name
+
+if ($allFiles.Count -eq 0) {
+    Write-Host "No tests found matching pattern '$Pattern' in $litTestsDir" -ForegroundColor Yellow
+    exit 0
 }
 
-if ($Verbose) {
-    $litArgs += "--verbose"
+function Start-GooseProcess([string]$fileName, [string]$cmdArgs) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $fileName
+    $psi.Arguments = $cmdArgs
+    $psi.WorkingDirectory = $root
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    return [System.Diagnostics.Process]::Start($psi)
 }
 
-Write-Host "Running native goose-lit verification suites..." -ForegroundColor Cyan
-& $litBin @litArgs
-exit $LASTEXITCODE
+$swTotal = [System.Diagnostics.Stopwatch]::StartNew()
+$maxConcurrent = if ($Sequential) { 1 } else { [Math]::Max(1, [Math]::Min($Jobs, [Environment]::ProcessorCount)) }
+
+Write-Host "Running $($allFiles.Count) goose-lit verification suites (concurrency: $maxConcurrent)..." -ForegroundColor Cyan
+
+$queue = [System.Collections.Queue]::new()
+foreach ($file in $allFiles) {
+    $queue.Enqueue($file)
+}
+
+$running = [System.Collections.ArrayList]::new()
+$passedCount = 0
+$failedCount = 0
+$completedCount = 0
+$totalCount = $allFiles.Count
+
+while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+    while ($running.Count -lt $maxConcurrent -and $queue.Count -gt 0) {
+        $targetFile = $queue.Dequeue()
+        $extraArgs = if ($Verbose) { "--verbose" } else { "" }
+        $argsStr = "`"$($targetFile.FullName)`" $extraArgs".Trim()
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $proc = Start-GooseProcess $litBin $argsStr
+        [void]$running.Add([PSCustomObject]@{
+            File = $targetFile
+            Process = $proc
+            Stopwatch = $sw
+        })
+    }
+
+    Start-Sleep -Milliseconds 40
+    for ($i = $running.Count - 1; $i -ge 0; $i--) {
+        $task = $running[$i]
+        if ($task.Process.HasExited) {
+            $task.Process.WaitForExit()
+            $task.Stopwatch.Stop()
+            $completedCount++
+            $ms = $task.Stopwatch.ElapsedMilliseconds
+            $stdout = $task.Process.StandardOutput.ReadToEnd()
+            $stderr = $task.Process.StandardError.ReadToEnd()
+
+            if ($task.Process.ExitCode -eq 0) {
+                $passedCount++
+                Write-Host "  [PASS] $($task.File.Name) ($ms ms)" -ForegroundColor Green
+                if ($Verbose -and $stdout) {
+                    Write-Host $stdout -ForegroundColor DarkGray
+                }
+            } else {
+                $failedCount++
+                Write-Host "  [FAIL] $($task.File.Name) (exit $($task.Process.ExitCode), $ms ms)" -ForegroundColor Red
+                if ($stdout) { Write-Host $stdout -ForegroundColor Yellow }
+                if ($stderr) { Write-Host $stderr -ForegroundColor Red }
+            }
+            $running.RemoveAt($i)
+        }
+    }
+}
+
+$swTotal.Stop()
+
+# Sanity cleanup of any leftover temp artifacts
+Get-ChildItem -Path $litTestsDir -Filter "*.tmp*" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
+
+Write-Host "-----------------------------------------------------------------------"
+Write-Host "Test Summary: $passedCount passed, $failedCount failed in $($swTotal.ElapsedMilliseconds) ms" -ForegroundColor $(if ($failedCount -eq 0) { "Green" } else { "Red" })
+
+if ($failedCount -gt 0) {
+    exit 1
+}
+exit 0

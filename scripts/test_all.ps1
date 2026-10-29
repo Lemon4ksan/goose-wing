@@ -8,6 +8,7 @@ param(
     [switch]$CheckOnly,
     [switch]$Release,
     [switch]$KeepBinaries,
+    [switch]$Lit,
     [int]$Jobs = 4
 )
 
@@ -209,4 +210,15 @@ Write-Host "Timing:  Build: $($swBuild.Elapsed.TotalSeconds.ToString('F2'))s | R
 if ($failedSuites -ne 0) {
     exit 1
 }
+
+if ($Lit) {
+    Write-Host "`n[4/4] Executing Goose LIT native verification suites..." -ForegroundColor Yellow
+    $litScript = Join-Path $PSScriptRoot "test_lit.ps1"
+    & powershell -ExecutionPolicy Bypass -File $litScript -Jobs $Jobs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: Goose LIT verification suites failed." -ForegroundColor Red
+        exit 1
+    }
+}
+
 exit 0

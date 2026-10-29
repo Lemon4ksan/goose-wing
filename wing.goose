@@ -66,6 +66,7 @@ import http.trace;
 import http.altsvc;
 import http.compression_dict;
 import http.signatures;
+import http.digest_fields;
 import http.resumable_upload;
 import http.status_diagnostics;
 import http.hsts;
