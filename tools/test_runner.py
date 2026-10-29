@@ -166,12 +166,16 @@ def main() -> int:
         print(red(f"Tests directory not found: {tests_dir}"))
         return 1
 
+    pat = args.pattern
+    if "*" not in pat and "?" not in pat:
+        pat = f"*{pat}*"
+
     all_test_files = [
-        f for f in sorted(tests_dir.glob("*.goose")) if fnmatch.fnmatch(f.name, args.pattern)
+        f for f in sorted(tests_dir.glob("*.goose")) if fnmatch.fnmatch(f.name, pat)
     ]
 
     if not all_test_files:
-        print(yellow(f"No test files matching '{args.pattern}' found in {tests_dir}."))
+        print(yellow(f"No test files matching '{args.pattern}' (resolved: '{pat}') found in {tests_dir}."))
         return 0
 
     # 3. Check-only mode

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
+// Consolidated Verification Suite: Core Compression Engine (Deflate, Brotli, Dictionaries) Suite
+import std;
+import core from "..";
+import wing from "..";
+
+// ============================================================================// --- Component: core_compress ---
 // Test suite for Goose compression (`core::compress`).
 //
 // Verification Coverage:
@@ -10,9 +16,6 @@
 // 4. RFC 1950 Zlib Container Round-Trip & Adler-32 Verification
 // 5. Extreme & Boundary Vectors (Empty, 1-byte, 35KB Sliding Window Wrap)
 // 6. Corrupt Bitstream & Tampering Defenses (Checksum/Size/Truncation detection)
-import std;
-import core from "..";
-import wing from "..";
 
 fn test_checksums(t: core::T&) {
     t.run("CRC-32 Known Test Vectors") { sub =>
@@ -1443,8 +1446,399 @@ fn test_rfc1951_bounds_and_error_handling(t: core::T&) {
     };
 }
 
+// --- Component: core_brotli ---
+// Verification suite for RFC 7932 Brotli Compression & Decompression Engine:
+// 1. Bit-level framing and empty stream handling
+// 2. Uncompressed meta-blocks (Level 0 encoder & decoder) with roundtrip
+// 3. Official Google Brotli compressed test vectors (uncompressed & compressed)
+// 4. Repetitive LZ77 matching & backward copy decoding
+// 5. Built-in Static Dictionary (122 KB) & Word Transformations (Appendix B)
+// 6. Output limit protection (decompression bomb defense)
+// 7. Error handling on corrupted/truncated bitstreams
+// 8. HTTP Client Response auto-decompression (`Content-Encoding: br`)
+
+// ---- Official Google Brotli Test Vectors -------------------------------------
+
+// empty raw_len=0 c_len=1
+const VEC_EMPTY_RAW: const u8[0] = [];
+const VEC_EMPTY_COMP: const u8[1] = [59];
+
+// hello raw_len=23 c_len=27
+const VEC_HELLO_RAW: const u8[23] = [
+    72, 101, 108, 108, 111, 44, 32, 66, 114, 111, 116, 108, 105, 32, 105, 110, 32, 71, 111, 111, 115, 101, 33,
+];
+const VEC_HELLO_COMP: const u8[27] = [
+    11, 11, 128, 72, 101, 108, 108, 111, 44, 32, 66, 114, 111, 116, 108, 105, 32, 105, 110, 32, 71, 111, 111, 115, 101, 33, 3,
+];
+
+// json raw_len=26 c_len=30
+const VEC_JSON_RAW: const u8[26] = [
+    123, 34, 115, 116, 97, 116, 117, 115, 34, 58, 34, 111, 107, 34, 44, 34, 99, 111, 100, 101, 34, 58, 50, 48, 48, 125,
+];
+const VEC_JSON_COMP: const u8[30] = [
+    139, 12, 128, 123, 34, 115, 116, 97, 116, 117, 115, 34, 58, 34, 111, 107, 34, 44, 34, 99, 111, 100, 101, 34, 58, 50, 48, 48, 125, 3,
+];
+
+// repeat raw_len=100 c_len=20 (LZ77 compressed)
+const VEC_REPEAT_COMP: const u8[20] = [
+    139, 49, 0, 0, 32, 130, 216, 0, 14, 92, 195, 9, 113, 54, 128, 11, 112, 88, 222, 6,
+];
+
+// ---- Test Cases -------------------------------------------------------------
+
+fn test_brotli_empty_and_uncompressed(t: core::T&) {
+    t.run("Empty stream and Google Brotli uncompressed vectors") { sub =>
+        // 1. Empty stream: Google Brotli vector [59]
+        var dec_empty: u8[>..] = [];
+        let ok_e, err_e = core::brotli_decompress(VEC_EMPTY_COMP[..], dec_empty);
+        sub.assert_true(ok_e, "Decompress empty vector succeeds");
+        sub.assert_true(err_e == core::CompressError.None, "No error on empty vector");
+        sub.assert_eq(dec_empty.len, 0, "Decoded empty length is 0");
+
+        // 2. Hello World vector
+        var dec_hello: u8[>..] = [];
+        let ok_h, err_h = core::brotli_decompress(VEC_HELLO_COMP[..], dec_hello);
+        sub.assert_true(ok_h, "Decompress hello vector succeeds");
+        sub.assert_true(err_h == core::CompressError.None, "No error on hello vector");
+        sub.assert_eq(dec_hello.len, VEC_HELLO_RAW.len, "Hello length matches");
+        sub.assert_eq(dec_hello[..], VEC_HELLO_RAW[..], "Hello payload matches 100%");
+
+        // 3. JSON vector
+        var dec_json: u8[>..] = [];
+        let ok_j, err_j = core::brotli_decompress(VEC_JSON_COMP[..], dec_json);
+        sub.assert_true(ok_j, "Decompress JSON vector succeeds");
+        sub.assert_true(err_j == core::CompressError.None, "No error on JSON vector");
+        sub.assert_eq(dec_json.len, VEC_JSON_RAW.len, "JSON length matches");
+        sub.assert_eq(dec_json[..], VEC_JSON_RAW[..], "JSON payload matches 100%");
+    };
+}
+
+fn test_brotli_level0_roundtrip(t: core::T&) {
+    t.run("Level 0 uncompressed encoder and decoder round-trip") { sub =>
+        // 1. Short text roundtrip
+        let text = "Brotli zero-heap compression running natively inside Goose-Wing!";
+        var comp: u8[>..] = [];
+        let ok_c = core::brotli_compress(text, comp, 0);
+        sub.assert_true(ok_c, "Level 0 compression succeeds");
+        sub.assert_true(comp.len > 0, "Compressed output not empty");
+
+        var decomp: u8[>..] = [];
+        let ok_d, err_d = core::brotli_decompress(comp[..], decomp);
+        sub.assert_true(ok_d, "Decompression succeeds");
+        sub.assert_true(err_d == core::CompressError.None, "No decompression error");
+        sub.assert_eq(decomp.len, text.len, "Decompressed length matches original");
+        sub.assert_eq(decomp[..], text, "Decompressed content matches exactly");
+
+        // 2. Empty string roundtrip
+        var comp_empty: u8[>..] = [];
+        let ok_ce = core::brotli_compress("", comp_empty, 0);
+        sub.assert_true(ok_ce, "Empty string compression succeeds");
+
+        var decomp_empty: u8[>..] = [];
+        let ok_de, err_de = core::brotli_decompress(comp_empty[..], decomp_empty);
+        sub.assert_true(ok_de, "Empty string decompression succeeds");
+        sub.assert_eq(decomp_empty.len, 0, "Empty string roundtrips to 0 bytes");
+    };
+}
+
+fn test_brotli_compressed_meta_blocks(t: core::T&) {
+    t.run("Google Brotli LZ77 compressed meta-block decoding") { sub =>
+        // VEC_REPEAT_COMP compresses 100 'A's into 20 bytes
+        var decomp: u8[>..] = [];
+        let ok, err = core::brotli_decompress(VEC_REPEAT_COMP[..], decomp);
+        sub.assert_true(ok, "Decompress LZ77 vector succeeds");
+        sub.assert_true(err == core::CompressError.None, "No error on repeat vector");
+        sub.assert_eq(decomp.len, 100, "Decompressed length is 100");
+
+        var all_a = true;
+        for b in decomp {
+            if b != ('A' as u8) {
+                all_a = false;
+                break;
+            }
+        }
+        sub.assert_true(all_a, "All 100 bytes are correctly decompressed 'A's");
+    };
+}
+
+fn test_brotli_static_dictionary_transforms(t: core::T&) {
+    t.run("Static built-in dictionary and word transformations") { sub =>
+        // 1. Verify static dictionary is present and non-empty
+        sub.assert_eq(core::BROTLI_DICTIONARY.len, 122784, "Dictionary size is exactly 122,784 bytes");
+
+        // 2. Test word transformations directly
+        var word_out1: u8[>..] = [];
+        // Transform 0: Identity
+        let ok1 = core::brotli_transform_word("world", 0, word_out1);
+        sub.assert_true(ok1, "Transform 0 succeeds");
+        sub.assert_eq(word_out1[..], "world", "Transform 0 is Identity");
+
+        // Transform 1: Add trailing space
+        var word_out2: u8[>..] = [];
+        let ok2 = core::brotli_transform_word("hello", 1, word_out2);
+        sub.assert_true(ok2, "Transform 1 succeeds");
+        sub.assert_eq(word_out2[..], "hello ", "Transform 1 adds trailing space");
+
+        // Transform 2: Add leading and trailing space
+        var word_out3: u8[>..] = [];
+        let ok3 = core::brotli_transform_word("test", 2, word_out3);
+        sub.assert_true(ok3, "Transform 2 succeeds");
+        sub.assert_eq(word_out3[..], " test ", "Transform 2 adds leading & trailing space");
+
+        // Transform 4: Uppercase first and add space
+        var word_out4: u8[>..] = [];
+        let ok4 = core::brotli_transform_word("google", 4, word_out4);
+        sub.assert_true(ok4, "Transform 4 succeeds");
+        sub.assert_eq(word_out4[..], "Google ", "Transform 4 capitalizes first letter and adds space");
+
+        // Transform 5: Add suffix " the "
+        var word_out5: u8[>..] = [];
+        let ok5 = core::brotli_transform_word("all", 5, word_out5);
+        sub.assert_true(ok5, "Transform 5 succeeds");
+        sub.assert_eq(word_out5[..], "all the ", "Transform 5 appends ' the '");
+
+        // 3. Test static dictionary word lookup
+        var dict_out: u8[>..] = [];
+        // Look up 4-letter word at index 0 (distance = max_dist + 1)
+        // Offset for length 4, index 0 is 0..4
+        let ok_lookup = core::brotli_lookup_dictionary_word(1001, 1000, 4, dict_out);
+        sub.assert_true(ok_lookup, "Dictionary lookup succeeds");
+        sub.assert_true(dict_out.len >= 4, "Dictionary word length >= 4");
+    };
+}
+
+fn test_brotli_quota_and_error_handling(t: core::T&) {
+    t.run("Decompression bomb protection and corrupted streams") { sub =>
+        // 1. Quota limit exceeded guard
+        var out_limited: u8[>..] = [];
+        // VEC_HELLO_COMP has 23 bytes uncompressed. Limit to 10 bytes:
+        let ok_q, err_q = core::brotli_decompress_with_limit(VEC_HELLO_COMP[..], out_limited, 10);
+        sub.assert_false(ok_q, "Decompression quota limit triggers failure");
+        sub.assert_true(err_q == core::CompressError.OutputBufferOverflow, "Returns OutputBufferOverflow");
+
+        // 2. Empty input buffer
+        var out_empty: u8[>..] = [];
+        let ok_trunc, err_trunc = core::brotli_decompress(VEC_EMPTY_RAW[..], out_empty);
+        sub.assert_false(ok_trunc, "Empty buffer rejected");
+        sub.assert_true(err_trunc == core::CompressError.InputBufferTruncated, "Returns InputBufferTruncated");
+
+        // 3. Corrupted header
+        var bad_bytes: u8[4] = [0xFF, 0xFF, 0xFF, 0xFF];
+        var out_bad: u8[>..] = [];
+        let ok_bad, _ = core::brotli_decompress(bad_bytes[..], out_bad);
+        sub.assert_false(ok_bad, "Corrupted header is rejected");
+
+        // 4. RFC 7932 Section 3.4: Duplicate symbols in simple prefix code must be rejected
+        var dup_simple_bytes: u8[10] = [2, 0, 0, 0, 84, 80, 80, 32, 16, 0];
+        var out_dup: u8[>..] = [];
+        let ok_dup, err_dup = core::brotli_decompress(dup_simple_bytes[..], out_dup);
+        sub.assert_false(ok_dup, "Simple prefix code with duplicate symbols is rejected");
+        sub.assert_true(err_dup == core::CompressError.InvalidHuffmanCode, "Returns InvalidHuffmanCode");
+
+        // 5. RFC 7932 Section 8 & Section 9.2: Static dictionary transformed word length exceeding MLEN must be rejected
+        var dict_overflow_bytes: u8[10] = [98, 0, 0, 0, 4, 64, 8, 18, 32, 1];
+        var out_dict_overflow: u8[>..] = [];
+        let ok_do, err_do = core::brotli_decompress(dict_overflow_bytes[..], out_dict_overflow);
+        sub.assert_false(ok_do, "Dictionary transformed word exceeding MLEN is rejected");
+        sub.assert_true(err_do == core::CompressError.CorruptedBitstream, "Returns CorruptedBitstream on MLEN overflow");
+
+        // 6. Decompression bomb quota: dictionary transform expansion exceeding max_output_bytes must be rejected
+        var out_quota_dict: u8[>..] = [];
+        let ok_qd, _ = core::brotli_decompress_with_limit(dict_overflow_bytes[..], out_quota_dict, 4);
+        sub.assert_false(ok_qd, "Decompression quota defense rejects dictionary word exceeding limit");
+
+        // 7. RFC 7932 Section 9.2: Metadata meta-blocks must be parsed and skipped cleanly without corrupting stream
+        var metadata_stream: u8[15] = [172, 1, 77, 69, 84, 65, 32, 0, 8, 71, 111, 111, 115, 101, 3];
+        var out_meta: u8[>..] = [];
+        let ok_meta, err_meta = core::brotli_decompress(metadata_stream[..], out_meta);
+        sub.assert_true(ok_meta, "Metadata meta-block decompress succeeded");
+        sub.assert_eq(out_meta[..], "Goose", "Payload decompressed matches 'Goose'");
+    };
+}
+
+fn test_brotli_http_client_integration(t: core::T&) {
+    t.run("HTTP Client Response auto-decompression for Content-Encoding: br") { sub =>
+        // 1. Compress payload with Level 0 Brotli
+        let original_body = "{\"user\":\"admin\",\"authenticated\":true,\"stack\":\"wing-brotli\"}";
+        var comp_body: u8[>..] = [];
+        let ok_c = core::brotli_compress(original_body, comp_body, 0);
+        sub.assert_true(ok_c, "Compressed test payload");
+
+        // 2. Response with Content-Encoding: br
+        var res = wing::new_response();
+        res.status_code = 200;
+        res.headers.push(wing::make_header("Content-Encoding", "br"));
+        res.headers.push(wing::make_header("Content-Type", "application/json"));
+        res.body.append(comp_body[..]);
+
+        // 3. Transparent auto-decompression via wing::decode_body
+        let ok_dec = wing::decode_body(res);
+        sub.assert_true(ok_dec, "decode_body succeeded for Content-Encoding: br");
+        sub.assert_eq(res.body[..], original_body, "Body was automatically decompressed from Brotli");
+    };
+}
+
+// --- Component: core_compress_dict ---
+// Verification suite for Compression Dictionary Transport (IETF / Chrome 123+ dcz/dcb):
+// - `Use-As-Dictionary` response header parsing & dictionary caching
+// - `Available-Dictionary` RFC 8941 Structured Fields byte sequence generation
+// - `dcz` (Dictionary-Compressed Zstandard) frame encoding & decoding
+// - Client automatic dictionary discovery, Available-Dictionary injection & transparent dcz decompression
+// - Origin scoping, pattern matching, TTL expiration, and insecure HTTP rejection
+
+fn test_dictionary_header_parsing_and_matching(t: core::T&) {
+    t.run("Use-As-Dictionary Parser: match, id, ttl") { sub =>
+        let raw = "match=\"/assets/*\", id=\"v1\", ttl=3600, type=\"raw\"";
+        let p, ok = wing::parse_use_as_dictionary_header(raw);
+        sub.assert_true(ok, "parse_use_as_dictionary_header succeeded");
+        sub.assert_bytes_eq(p.match_pattern[..], "/assets/*", "match_pattern is /assets/*");
+        sub.assert_bytes_eq(p.id[..], "v1", "id is v1");
+        sub.assert_eq(p.ttl_sec, 3600, "ttl is 3600");
+        sub.assert_bytes_eq(p.dict_type[..], "raw", "type is raw");
+
+        // Semicolon separated format
+        let raw_semi = "match=\"/api/*\"; ttl=7200";
+        let p2, ok2 = wing::parse_use_as_dictionary_header(raw_semi);
+        sub.assert_true(ok2, "semicolon format parsed");
+        sub.assert_bytes_eq(p2.match_pattern[..], "/api/*", "match is /api/*");
+        sub.assert_eq(p2.ttl_sec, 7200, "ttl is 7200");
+    };
+
+    t.run("URL Pattern Matching") { sub =>
+        sub.assert_true(wing::url_path_matches_pattern("/assets/app.js", "/assets/*"), "/assets/app.js matches /assets/*");
+        sub.assert_true(wing::url_path_matches_pattern("/assets/vendor/chunk.js", "/assets/*"), "subpath matches /assets/*");
+        sub.assert_false(wing::url_path_matches_pattern("/api/users", "/assets/*"), "/api/users does NOT match /assets/*");
+        sub.assert_true(wing::url_path_matches_pattern("/exact.js", "/exact.js"), "exact match works");
+        sub.assert_false(wing::url_path_matches_pattern("/other.js", "/exact.js"), "mismatch works");
+    };
+}
+
+fn test_dcz_frame_codec(t: core::T&) {
+    t.run("DCZ Magic, 32-Byte Hash & Payload Codec") { sub =>
+        let dict_data = "dictionary_shared_context_v1";
+        let hash = core::sha256(dict_data);
+
+        let uncompressed_target = "Hello World! This is target data to compress with dcz.";
+        var dcz_wire: u8[>..] = [];
+        let enc_ok = wing::encode_dcz_response(dcz_wire, hash, uncompressed_target);
+        sub.assert_true(enc_ok, "encode_dcz_response ok");
+
+        // Verify wire format:
+        // Byte 0..3: 0xFF, 'D', 'C', 'Z'
+        sub.assert_true(dcz_wire.len >= 36, "dcz frame is at least 36 bytes");
+        sub.assert_eq(dcz_wire[0], 0xFF, "Magic byte 0 is 0xFF");
+        sub.assert_eq(dcz_wire[1], 'D' as u8, "Magic byte 1 is 'D'");
+        sub.assert_eq(dcz_wire[2], 'C' as u8, "Magic byte 2 is 'C'");
+        sub.assert_eq(dcz_wire[3], 'Z' as u8, "Magic byte 3 is 'Z'");
+
+        // Decode DCZ header
+        var decoded_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let p_slice, dec_ok = wing::decode_dcz_header(dcz_wire[..], decoded_hash);
+        sub.assert_true(dec_ok, "decode_dcz_header ok");
+        sub.assert_bytes_eq(decoded_hash[..], hash[..], "Decoded 32-byte dict hash matches");
+
+        // Decompress payload using dictionary
+        var decompressed: u8[>..] = [];
+        let dec_body_ok = wing::decompress_dcz_payload(p_slice, dict_data, decompressed);
+        sub.assert_true(dec_body_ok, "decompress_dcz_payload ok");
+        sub.assert_bytes_eq(decompressed[..], uncompressed_target, "Decompressed payload matches original target data!");
+    };
+}
+
+fn test_client_dictionary_lifecycle(t: core::T&) {
+    t.run("Request 1 Learns Dictionary, Request 2 Sends Available-Dictionary & Decodes dcz") { sub =>
+        var client = wing::new_client();
+        wing::set_clock_us(client, 1700000000000000); // t0
+
+        let dict_body = "function sharedCommonUtils() { return 42; }";
+        let dict_hash = core::sha256(dict_body);
+
+        // 1. Mock dictionary endpoint returning Use-As-Dictionary header
+        wing::mock_route(client, "GET", "https://cdn.site.com/assets/dict.js", 200, dict_body);
+        wing::add_mock_header(client, "Use-As-Dictionary", "match=\"/assets/*\", id=\"v1\", ttl=86400");
+
+        sub.assert_false(wing::has_dictionary_for(client, "https://cdn.site.com/assets/app.js"), "no dictionary before request");
+
+        // Fetch dictionary
+        let resp1, err1 = wing::get(client, "https://cdn.site.com/assets/dict.js");
+        sub.assert_true(wing::ok(err1), "fetch dict ok");
+        sub.assert_eq(wing::status(resp1), 200, "200 OK");
+
+        // Client has now ingested dictionary
+        sub.assert_true(wing::has_dictionary_for(client, "https://cdn.site.com/assets/app.js"), "dictionary available for /assets/app.js");
+        sub.assert_false(wing::has_dictionary_for(client, "https://cdn.site.com/api/user"), "not available for non-matching path");
+        sub.assert_false(wing::has_dictionary_for(client, "https://other.com/assets/app.js"), "not available for different origin");
+
+        // 2. Mock app endpoint returning DCZ compressed response
+        let original_app_js = "console.log('App started with shared utils'); sharedCommonUtils();";
+        var dcz_payload: u8[>..] = [];
+        wing::encode_dcz_response(dcz_payload, dict_hash, original_app_js);
+
+        wing::mock_route(client, "GET", "https://cdn.site.com/assets/app.js", 200, dcz_payload[..]);
+        wing::add_mock_header(client, "Content-Encoding", "dcz");
+
+        // Fetch app.js: Client automatically adds Available-Dictionary and decompresses dcz!
+        let resp2, err2 = wing::get(client, "https://cdn.site.com/assets/app.js");
+        sub.assert_true(wing::ok(err2), "fetch app.js ok");
+        sub.assert_eq(wing::status(resp2), 200, "200 OK");
+
+        // Verify client sent Available-Dictionary header
+        let sent_avail = wing::sent_header(resp2, "Available-Dictionary");
+        sub.assert_true(sent_avail.len > 0, "Available-Dictionary sent in request");
+        sub.assert_eq(sent_avail[0], ':' as u8, "Starts with colon (Structured Fields byte sequence)");
+        sub.assert_eq(sent_avail[sent_avail.len - 1], ':' as u8, "Ends with colon");
+
+        // Verify transparent dcz decompression!
+        sub.assert_bytes_eq(resp2.body[..], original_app_js, "Body was transparently decompressed from dcz!");
+
+        // 3. Mock app endpoint returning DCB (Dictionary-Compressed Brotli) response
+        let original_app_css = "body { margin: 0; padding: 0; background: #fff; }";
+        var dcb_payload: u8[>..] = [];
+        wing::encode_dcb_response(dcb_payload, dict_hash, original_app_css);
+
+        wing::mock_route(client, "GET", "https://cdn.site.com/assets/style.css", 200, dcb_payload[..]);
+        wing::add_mock_header(client, "Content-Encoding", "dcb");
+
+        let resp3, err3 = wing::get(client, "https://cdn.site.com/assets/style.css");
+        sub.assert_true(wing::ok(err3), "fetch style.css ok");
+        sub.assert_bytes_eq(resp3.body[..], original_app_css, "Body was transparently decompressed from dcb!");
+    };
+
+    t.run("Dictionary TTL Expiration") { sub =>
+        var client = wing::new_client();
+        wing::set_clock_us(client, 1700000000000000); // t0
+
+        wing::mock_route(client, "GET", "https://api.site.com/dict", 200, "short_lived_dictionary");
+        wing::add_mock_header(client, "Use-As-Dictionary", "match=\"/api/*\", id=\"temp\", ttl=3");
+
+        let _, _ = wing::get(client, "https://api.site.com/dict");
+        sub.assert_true(wing::has_dictionary_for(client, "https://api.site.com/api/v1"), "valid at t0");
+
+        // Advance 2s: still valid
+        wing::set_clock_us(client, 1700000002000000);
+        sub.assert_true(wing::has_dictionary_for(client, "https://api.site.com/api/v1"), "valid at t0+2s (< 3s)");
+
+        // Advance 4s: expired
+        wing::set_clock_us(client, 1700000004000000);
+        sub.assert_false(wing::has_dictionary_for(client, "https://api.site.com/api/v1"), "expired at t0+4s (>= 3s)");
+    };
+
+    t.run("Insecure Transport Security Invariant") { sub =>
+        var client = wing::new_client();
+        wing::set_clock_us(client, 1700000000000000);
+
+        // Plain HTTP server tries to declare a dictionary
+        wing::mock_route(client, "GET", "http://insecure.site.com/dict", 200, "insecure_dict");
+        wing::add_mock_header(client, "Use-As-Dictionary", "match=\"/*\"");
+
+        let _, _ = wing::get(client, "http://insecure.site.com/dict");
+        sub.assert_false(wing::has_dictionary_for(client, "http://insecure.site.com/page"), "Use-As-Dictionary ignored over insecure HTTP");
+    };
+}
+
 fn main() {
-    var runner = core::new_runner("Goose Native Compression Engine Verification Suite", core::Verbosity.Verbose);
+    var runner = core::new_runner("Core Compression Engine (Deflate, Brotli, Dictionaries) Suite", core::Verbosity.Verbose);
+
     core::run_case(runner, "1. IEEE 802.3 CRC-32 & RFC 1950 Adler-32 Checksums", test_checksums);
     core::run_case(runner, "2. RFC 1951 Deflate & Inflate (Stored and LZ77 + Fixed)", test_deflate_stored_and_fixed);
     core::run_case(runner, "3. RFC 1952 Gzip Container & Verification", test_gzip_container);
@@ -1460,6 +1854,16 @@ fn main() {
     core::run_case(runner, "13. Resumable Arbitrary-Chunk Streaming", test_resumable_streaming_chunk_by_chunk);
     core::run_case(runner, "14. RFC 8878 Zstandard Frame Decompression & Test Vectors", test_zstandard_rfc8878);
     core::run_case(runner, "15. RFC 1951 Stored Blocks & Huffman Header Bounds", test_rfc1951_bounds_and_error_handling);
+    core::run_case(runner, "16. Empty Stream and Google Brotli Vectors", test_brotli_empty_and_uncompressed);
+    core::run_case(runner, "17. Level 0 Uncompressed Round-Trip", test_brotli_level0_roundtrip);
+    core::run_case(runner, "18. Compressed Meta-Block Decoding", test_brotli_compressed_meta_blocks);
+    core::run_case(runner, "19. Static Built-in Dictionary and Word Transforms", test_brotli_static_dictionary_transforms);
+    core::run_case(runner, "20. Decompression Bomb Quota Protection & Errors", test_brotli_quota_and_error_handling);
+    core::run_case(runner, "21. HTTP Client Response Content-Encoding: br", test_brotli_http_client_integration);
+    core::run_case(runner, "22. Dictionary Header Parsing & Pattern Matching", test_dictionary_header_parsing_and_matching);
+    core::run_case(runner, "23. DCZ Wire Format Codec & Decompression", test_dcz_frame_codec);
+    core::run_case(runner, "24. Client Dictionary Lifecycle & dcz Decompression", test_client_dictionary_lifecycle);
+
     let ok = core::finish(runner);
     assert(ok);
 }

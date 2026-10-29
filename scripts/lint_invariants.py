@@ -82,7 +82,8 @@ def main() -> int:
                 ["git", "diff", "--cached", "-U0", "--diff-filter=ACM"],
                 cwd=root,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
             )
             current_rel = ""
