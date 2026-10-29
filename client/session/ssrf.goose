@@ -34,7 +34,8 @@ fn is_private_ipv4_octets(octet0: i32, octet1: i32) -> bool {
     if octet0 == 169 && octet1 == 254 { return true; }                   // 169.254.0.0/16 Link-Local / Cloud Metadata
     if octet0 == 172 && (octet1 >= 16 && octet1 <= 31) { return true; }  // 172.16.0.0/12
     if octet0 == 192 && octet1 == 168 { return true; }                   // 192.168.0.0/16
-    if octet0 == 198 && (octet1 == 18 || octet1 == 19) { return true; }  // 198.18.0.0/15 Benchmarking (RFC 2544 / RFC 6890)
+    // 198.18.0.0/15 Benchmarking (RFC 2544 / RFC 6890)
+    if octet0 == 198 && (octet1 == 18 || octet1 == 19) { return true; }
     if octet0 == 100 && (octet1 >= 64 && octet1 <= 127) { return true; } // 100.64.0.0/10 CGNAT
     if octet0 >= 224 { return true; }                                    // 224.0.0.0/4 Multicast & Reserved
 
@@ -52,6 +53,11 @@ fn is_private_ipv4_4octets(octet0: i32, octet1: i32, octet2: i32, octet3: i32) -
     return false;
 }
 
+// Parses an IPv4 octet/part in decimal, octal (leading 0), or hex (0x prefix).
+//
+// Example:
+//   part = "0x7f"
+//   returns: val = 127, ok = true
 fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
     guard part.len > 0 else { return 0, false; }
     var base: u64 = 10;
@@ -81,6 +87,10 @@ fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
 
 // Parses IPv4 addresses in standard dotted-decimal, octal, hex, dword, or
 // shorthand notation into 4 canonical octets.
+//
+// Example:
+//   clean_ip = "127.0.0.1"
+//   returns: ok = true, octets = [127, 0, 0, 1]
 fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
     guard clean_ip.len > 0 else { return false; }
     var parts: u8[..32][..4] = [];
@@ -159,12 +169,17 @@ fn is_localhost_name(host: const u8[:]) -> bool {
     if eq_ascii_fold(host, "localhost") || eq_ascii_fold(host, "localhost.") {
         return true;
     }
-    if ends_with(host, ".localhost") || ends_with(host, ".localhost.") {
+    if ends_with_fold(host, ".localhost") || ends_with_fold(host, ".localhost.") {
         return true;
     }
     return false;
 }
 
+// Parses a hex string up to 4 characters into a 16-bit integer.
+//
+// Example:
+//   s = "1f90"
+//   returns: 8080
 fn parse_hex_u16(s: const u8[:]) -> i32 {
     var val: i32 = 0;
     for b in s {
@@ -234,6 +249,12 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
         return is_private_ipv4_octets(o0, o1);
     }
 
+    // Documentation prefix (RFC 3849), Teredo (RFC 4380), Discard-Only (RFC 6666)
+    if starts_with(eff_ip, "2001:db8:") || starts_with(eff_ip, "2001:0:") ||
+       starts_with(eff_ip, "2001::") || starts_with(eff_ip, "100::") {
+        return true;
+    }
+
     return false;
 }
 
@@ -262,8 +283,8 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
 
     clean_ip = core::trim_end_byte(clean_ip, '.');
 
-    var lower_buf: u8[..64] = [];
-    if clean_ip.len <= 64 {
+    var lower_buf: u8[..256] = [];
+    if clean_ip.len <= 256 {
         lower_buf.append(clean_ip);
         to_lower(lower_buf[..]);
     }

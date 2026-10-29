@@ -57,9 +57,8 @@ fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
     };
 }
 
-// Attempts to consume one token. Returns false if the balance is exhausted.
-fn allow(limiter: RateLimiter&) -> bool {
-    let now_mono = clock_ns();
+// Attempts to consume one token using an explicit monotonic timestamp (for deterministic testing).
+fn allow(limiter: RateLimiter&, now_mono: i64) -> bool {
     let elapsed_sec = (now_mono - limiter.last_update_mono_ns) as f64 / 1000000000.0;
     limiter.last_update_mono_ns = now_mono;
     limiter.tokens += elapsed_sec * limiter.rate_per_sec;
@@ -71,4 +70,9 @@ fn allow(limiter: RateLimiter&) -> bool {
         return true;
     }
     return false;
+}
+
+// Attempts to consume one token using the current monotonic system clock.
+fn allow(limiter: RateLimiter&) -> bool {
+    return allow(limiter, clock_ns());
 }

@@ -7,6 +7,7 @@ namespace wing;
 import std;
 import json;
 import http.compression_dict;
+import http.headers;
 
 // ---- error model & diagnostics ---------------------------------------------
 
@@ -152,6 +153,12 @@ fn text(res: const Response&) -> const u8[:] {
     return res.body[..];
 }
 
+fn clear_decompressed_headers(res: Response&) {
+    remove_header_by_name(res.headers, "content-encoding");
+    remove_header_by_name(res.headers, "content-length");
+    res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
+}
+
 // Automatically decompresses response.body if Content-Encoding is gzip or deflate.
 // Replaces res.body in-place with decompressed bytes and clears the Content-Encoding header.
 // Returns true if body was successfully decompressed or if uncompressed; false on corrupted stream.
@@ -163,6 +170,7 @@ fn decode_body(res: Response&) -> bool {
         if ok_z {
             res.body.clear();
             res.body.append(uncompressed[..]);
+            clear_decompressed_headers(res);
             return true;
         }
         return false;
@@ -172,6 +180,7 @@ fn decode_body(res: Response&) -> bool {
         if ok_d {
             res.body.clear();
             res.body.append(uncompressed[..]);
+            clear_decompressed_headers(res);
             return true;
         }
         return false;
@@ -181,6 +190,7 @@ fn decode_body(res: Response&) -> bool {
         if ok_b {
             res.body.clear();
             res.body.append(uncompressed[..]);
+            clear_decompressed_headers(res);
             return true;
         }
         return false;
@@ -190,6 +200,7 @@ fn decode_body(res: Response&) -> bool {
         if ok_z {
             res.body.clear();
             res.body.append(uncompressed[..]);
+            clear_decompressed_headers(res);
             return true;
         }
         uncompressed.clear();
@@ -197,6 +208,7 @@ fn decode_body(res: Response&) -> bool {
         if ok_d {
             res.body.clear();
             res.body.append(uncompressed[..]);
+            clear_decompressed_headers(res);
             return true;
         }
         return false;
@@ -227,6 +239,7 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
 
         res.body.clear();
         res.body.append(decompressed[..]);
+        clear_decompressed_headers(res);
         return true;
     } else if eq_ascii_fold(enc, "dcb") {
         var dict_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -247,6 +260,7 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
 
         res.body.clear();
         res.body.append(decompressed[..]);
+        clear_decompressed_headers(res);
         return true;
     }
     return decode_body(res);

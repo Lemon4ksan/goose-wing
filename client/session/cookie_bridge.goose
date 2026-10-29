@@ -24,7 +24,11 @@ fn compute_hop_samesite_context(
 
     if ctx.is_main_frame {
         if ctx.had_cross_site_hop {
-            samesite_ctx_type = if safe_method { SameSiteContextType.SameSiteLax } else { SameSiteContextType.CrossSite };
+            samesite_ctx_type = if safe_method {
+                SameSiteContextType.SameSiteLax
+            } else {
+                SameSiteContextType.CrossSite
+            };
         } else if is_first_p {
             samesite_ctx_type = SameSiteContextType.SameSiteStrict;
         } else if safe_method {
@@ -68,7 +72,7 @@ fn prepare_hop_cookie_header(
         "",
         session.virtual_clock_us,
         matched_cookies,
-        samesite_eval.context_type != SameSiteContextType.CrossSite,
+        samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
         ctx.is_main_frame,
         safe_method,
     );
@@ -94,9 +98,15 @@ fn ingest_hop_response_cookies(
     for &set_cookie_str in set_cookies {
         var def_path: u8[..256] = [];
         compute_default_cookie_path(current_url.pathname(), def_path);
-        var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(set_cookie_str[..], current_url.hostname(), def_path[..], session.virtual_clock_us);
+        var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(
+            set_cookie_str[..],
+            current_url.hostname(),
+            def_path[..],
+            session.virtual_clock_us,
+        );
         if cookie_ok {
-            let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
+            let is_sec_channel = current_url.is_secure_scheme() ||
+                is_trustworthy_non_crypto_host(current_url.hostname());
             let can_write, code = can_set_canonical_cookie_for_context(
                 parsed_cookie,
                 samesite_eval,

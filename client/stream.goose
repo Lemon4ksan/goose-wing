@@ -148,6 +148,23 @@ fn has_error(dec: const ChunkedStreamDecoder&) -> bool {
     return dec.state == ChunkedStreamState.Error;
 }
 
+fn has_header_whitespace(s: const u8[:]) -> bool {
+    for b in s {
+        if b == ' ' || b == '\t' || b == '\r' {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn append_trailer_item(trailers: HeaderItem[..16]&, name: const u8[:], val: const u8[:]) {
+    guard trailers.len < trailers.cap else { return; }
+    var item = HeaderItem { .. };
+    item.name.append(name);
+    item.value.append(val);
+    trailers.push(item);
+}
+
 // Feeds incoming wire slice into incremental decoder.
 // Emits decoded chunk body payload bytes directly into out_body.
 // Returns (ok, bytes_consumed_from_input).
@@ -286,19 +303,16 @@ fn feed_chunked_stream<B>(
                 }
 
                 let hname = tr_line[..col_idx];
-                if is_disallowed_trailer_field(hname) {
+                // RFC 9112 §5.1 / §7.1: Header/trailer field name must not contain whitespace
+                // nor can there be whitespace before colon (preventing HTTP smuggling bypass).
+                if has_header_whitespace(hname) || is_disallowed_trailer_field(hname) {
                     dec.state = ChunkedStreamState.Error;
                     dec.error_code = ChunkedDecodeError.DisallowedTrailer;
                     return false, cursor;
                 }
 
                 let hval = trim_lws(tr_line[(col_idx + 1)..]);
-                if dec.trailers.len < dec.trailers.cap {
-                    var item = HeaderItem { .. };
-                    item.name.append(trim_lws(hname));
-                    item.value.append(hval);
-                    dec.trailers.push(item);
-                }
+                append_trailer_item(dec.trailers, hname, hval);
                 dec.line_buf.clear();
             } else {
                 guard dec.line_buf.len < dec.line_buf.cap else {
@@ -327,6 +341,7 @@ struct StreamReader {
     cursor: i64 = 0,
     content_length: i64 = -1,
     is_chunked: bool = false,
+    chunk_decoder: ChunkedStreamDecoder = ChunkedStreamDecoder { .. },
     bytes_read: u64 = 0,
     finished: bool = false,
     raw_data: u8[>..] = [],
@@ -369,8 +384,24 @@ fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> bool, bool {
         return false, true;
     }
 
-    let to_read = if remaining < max_bytes { remaining } else { max_bytes };
     out.clear();
+    if reader.is_chunked {
+        var temp_body: u8[>..] = [];
+        let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], temp_body);
+        reader.cursor += consumed;
+        let to_take = if max_bytes > 0 && temp_body.len > max_bytes { max_bytes } else { temp_body.len };
+        if to_take > 0 {
+            out.append(temp_body[..to_take]);
+            reader.bytes_read += to_take as! u64;
+        }
+        if is_complete(reader.chunk_decoder) || !ok_dec || reader.cursor >= reader.raw_data.len {
+            reader.finished = true;
+            return to_take > 0, true;
+        }
+        return to_take > 0, false;
+    }
+
+    let to_read = if remaining < max_bytes { remaining } else { max_bytes };
     out.append(reader.raw_data[reader.cursor..reader.cursor + to_read]);
     reader.cursor += to_read;
     reader.bytes_read += to_read as! u64;
@@ -390,6 +421,17 @@ fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
         reader.finished = true;
         return 0;
     }
+
+    if reader.is_chunked {
+        let prev_len = out.len;
+        let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], out);
+        reader.cursor += consumed;
+        let emitted = (out.len - prev_len) as! u64;
+        reader.bytes_read += emitted;
+        reader.finished = true;
+        return emitted;
+    }
+
     out.append(reader.raw_data[reader.cursor..]);
     reader.cursor = reader.raw_data.len;
     reader.bytes_read += remaining as! u64;

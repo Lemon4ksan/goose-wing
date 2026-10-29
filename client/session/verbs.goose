@@ -175,6 +175,17 @@ fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
     }
 }
 
+fn connection_has_upgrade(conn: const u8[:]) -> bool {
+    if eq_ascii_fold(conn, "upgrade") { return true; }
+    guard conn.len >= 7 else { return false; }
+    for t in 0..conn.len - 6 {
+        if eq_ascii_fold(conn[t..t + 7], "upgrade") {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn ws_perform_handshake(
     session: Session&,
     req: Request&,
@@ -206,18 +217,7 @@ fn ws_perform_handshake(
 
     // Validate Connection header contains Upgrade
     let conn = header(resp, "Connection");
-    var has_upgrade_token = false;
-    if eq_ascii_fold(conn, "upgrade") {
-        has_upgrade_token = true;
-    } else {
-        for t in 0..conn.len {
-            if t + 7 <= conn.len && eq_ascii_fold(conn[t..t + 7], "upgrade") {
-                has_upgrade_token = true;
-                break;
-            }
-        }
-    }
-    if !has_upgrade_token {
+    if !connection_has_upgrade(conn) {
         return new_websocket_session(true), resp, make_error(
             400,
             "websocket_handshake",
@@ -239,11 +239,6 @@ fn ws_perform_handshake(
     let proto = header(resp, "Sec-WebSocket-Protocol");
     if proto.len > 0 {
         ws_sess.subprotocol.append(proto);
-    } else {
-        let req_proto = header(req, "Sec-WebSocket-Protocol");
-        if req_proto.len > 0 {
-            ws_sess.subprotocol.append(req_proto);
-        }
     }
 
     return ws_sess, resp, no_error();
@@ -308,11 +303,11 @@ fn sse_perform_connect(
         return eff_sub, resp, err;
     }
 
-    if !is_success(resp) && !is_redirect(resp) {
+    if resp.status_code != 200 {
         return eff_sub, resp, make_error(
             resp.status_code,
             "sse_connect",
-            "server returned non-2xx status for SSE stream",
+            "server returned non-200 status for SSE stream",
         );
     }
 
@@ -358,12 +353,22 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
         return resp, err;
     }
 
-    if !is_success(resp) {
+    if resp.status_code != 200 {
         sub.connected = false;
         return resp, make_error(
             resp.status_code,
             "sse_reconnect",
-            "server returned non-2xx status during reconnection",
+            "server returned non-200 status during reconnection",
+        );
+    }
+
+    let ct = header(resp, "Content-Type");
+    if !starts_with(ct, "text/event-stream") {
+        sub.connected = false;
+        return resp, make_error(
+            415,
+            "sse_reconnect",
+            "server response is not text/event-stream",
         );
     }
 
@@ -403,7 +408,12 @@ fn connect_udp(
     let resp, err = do(session, req);
     if !ok(err) || !is_success(resp) {
         tunnel.state = MasqueTunnelState.Failed;
-        return tunnel, resp, if !ok(err) { err } else { make_error(resp.status_code, "masque", "proxy rejected CONNECT-UDP") };
+        let ret_err = if !ok(err) {
+            err
+        } else {
+            make_error(resp.status_code, "masque", "proxy rejected CONNECT-UDP")
+        };
+        return tunnel, resp, ret_err;
     }
 
     let caps_val = header(resp, "capsule-protocol");
@@ -444,7 +454,12 @@ fn connect_ip(
     let resp, err = do(session, req);
     if !ok(err) || !is_success(resp) {
         tunnel.state = MasqueTunnelState.Failed;
-        return tunnel, resp, if !ok(err) { err } else { make_error(resp.status_code, "masque", "proxy rejected CONNECT-IP") };
+        let ret_err = if !ok(err) {
+            err
+        } else {
+            make_error(resp.status_code, "masque", "proxy rejected CONNECT-IP")
+        };
+        return tunnel, resp, ret_err;
     }
 
     let caps_val = header(resp, "capsule-protocol");

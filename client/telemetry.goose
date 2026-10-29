@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import json;
 
 // ---- 1. Waterfall Timing Model ---------------------------------------------
 
@@ -71,9 +72,9 @@ fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
 
     out.append(",\"request\":{\"method\":\"");
     out.append(entry.method[..]);
-    out.append("\",\"url\":\"");
-    out.append(entry.url[..]);
-    out.append("\",\"httpVersion\":\"");
+    out.append("\",\"url\":");
+    json::format_string(out, entry.url[..]);
+    out.append(",\"httpVersion\":\"");
     out.append(entry.http_version[..]);
     out.append("\",\"bodySize\":");
     format(out, entry.request_bytes);
@@ -81,9 +82,9 @@ fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
 
     out.append(",\"response\":{\"status\":");
     format(out, entry.status as u32);
-    out.append(",\"statusText\":\"");
-    out.append(entry.status_text[..]);
-    out.append("\",\"httpVersion\":\"");
+    out.append(",\"statusText\":");
+    json::format_string(out, entry.status_text[..]);
+    out.append(",\"httpVersion\":\"");
     out.append(entry.http_version[..]);
     out.append("\",\"bodySize\":");
     format(out, entry.response_bytes);

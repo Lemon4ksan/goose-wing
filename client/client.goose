@@ -142,6 +142,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         profile: cfg.profile,
         timeout_ms: cfg.timeout_ms,
         follow_redirects: cfg.follow_redirects,
+        redirect_mode: if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
         ssrf_guard: SsrfGuardPolicy { .. },
         cache: new_http_cache(cfg.cache_options),
         enable_cache: cfg.enable_cache,
@@ -152,6 +153,8 @@ fn new_client(cfg: ClientConfig) -> Client {
         dict_cache: new_dictionary_cache(),
         enable_compression_dict: cfg.enable_compression_dict,
         pipeline: new_interceptor_pipeline(),
+        hsts: new_hsts_cache(),
+        enable_hsts: true,
         jar: new_canonical_cookie_jar(),
         ..
     };
@@ -326,7 +329,8 @@ fn enable_ech(session: Session&, auto_discover: bool = true) {
     }
 }
 
-// Dispatches a DNS-over-HTTPS wire query using the session's HTTP client transport.
+// Dispatches a DNS-over-HTTPS wire query using an isolated HTTP client transport
+// to ensure application credentials, custom headers, and interceptors do not leak to public resolvers.
 fn doh_query(
     session: Session&,
     domain: const u8[:],
@@ -338,26 +342,22 @@ fn doh_query(
 
     if session.doh.use_post {
         req.url.append(session.doh.endpoint[..]);
-        var ct = HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append("application/dns-message");
-        req.headers.push(ct);
-
-        var ac = HeaderItem { .. };
-        ac.name.append("accept");
-        ac.value.append("application/dns-message");
-        req.headers.push(ac);
-
+        set_header(req, "content-type", "application/dns-message");
+        set_header(req, "accept", "application/dns-message");
         guard build_dns_query(domain, qtype, tx_id, req.body) else { return false; }
     } else {
         guard build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else { return false; }
-        var ac = HeaderItem { .. };
-        ac.name.append("accept");
-        ac.value.append("application/dns-message");
-        req.headers.push(ac);
+        set_header(req, "accept", "application/dns-message");
     }
 
-    let res, err = do(session, req);
+    var doh_client = new_client();
+    doh_client.virtual_clock_us = session.virtual_clock_us;
+    doh_client.proxy_url.append(session.proxy_url[..]);
+    doh_client.timeout_ms = session.timeout_ms;
+    doh_client.ssrf_guard = copy(session.ssrf_guard);
+    doh_client.mock_routes = copy(session.mock_routes);
+
+    let res, err = do(doh_client, req);
     guard ok(err) && res.status_code == 200 else { return false; }
 
     return parse_dns_response(res.body[..], out_resp);
@@ -371,7 +371,7 @@ fn lookup_cached_ech_config(
 ) -> bool {
     var cached = DnsCacheEntry { .. };
     let cache_status = dns_cache_lookup(dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
-    if cache_status == DnsCacheStatus.Fresh || cache_status == DnsCacheStatus.Stale {
+    if cache_status == DnsCacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
                 out_ech.append(rec.ech_config_list[..]);
@@ -391,7 +391,8 @@ fn discover_and_cache_ech_config(
     guard session.enable_doh && session.auto_ech_discovery else { return false; }
 
     var dns_resp = DnsResponse { .. };
-    guard doh_query(session, domain, DNS_QTYPE_HTTPS, 0x1234, dns_resp) else { return false; }
+    // RFC 8484 §4.1: DoH clients SHOULD set DNS ID to 0 for maximum HTTP cacheability
+    guard doh_query(session, domain, DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
 
     var cache_entry = DnsCacheEntry {
         qtype: DNS_QTYPE_HTTPS,
@@ -429,7 +430,21 @@ fn resolve_ech_config(
     if lookup_cached_ech_config(session.dns_cache, domain, now_sec, out_ech) {
         return true;
     }
-    return discover_and_cache_ech_config(session, domain, now_sec, out_ech);
+    if discover_and_cache_ech_config(session, domain, now_sec, out_ech) {
+        return true;
+    }
+    // Fallback: If discovery failed, check if a stale entry is available
+    var cached = DnsCacheEntry { .. };
+    let stale_status = dns_cache_lookup(session.dns_cache, domain, DNS_QTYPE_HTTPS, 0, cached);
+    if stale_status == DnsCacheStatus.Fresh || stale_status == DnsCacheStatus.Stale {
+        for &rec in cached.https_records {
+            if rec.has_ech && rec.ech_config_list.len > 0 {
+                out_ech.append(rec.ech_config_list[..]);
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // ---- alt-svc & protocol racing configuration (rfc 7838, rfc 8305) ----------

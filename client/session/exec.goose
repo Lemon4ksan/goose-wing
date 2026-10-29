@@ -28,6 +28,7 @@ import client.session.ssrf;
 import client.session.mock;
 import client.client;
 import client.session.cookie_bridge;
+import net.retry;
 
 // ---- url resolution helpers ------------------------------------------------
 
@@ -138,11 +139,10 @@ fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response
     resp.final_method.clear();
     resp.final_method.append(ctx.current_method[..]);
     for &hop_u in ctx.url_chain {
-        if resp.url_chain.len < 16 {
-            var u_str: u8[..256] = [];
-            u_str.append(href(hop_u));
-            resp.url_chain.push(u_str);
-        }
+        guard resp.url_chain.len < resp.url_chain.cap else { break; }
+        var u_str: u8[..256] = [];
+        u_str.append(href(hop_u));
+        resp.url_chain.push(u_str);
     }
 }
 
@@ -184,7 +184,32 @@ fn apply_redirect_transition(
     return no_error();
 }
 
-fn init_execution_context(session: const Session&, req: const Request&, parsed_initial: const core::Url&) -> RequestExecutionContext {
+fn merge_session_and_request_headers(
+    headers: HeaderItem[..32]&,
+    default_headers: const HeaderItem[..16]&,
+    req_headers: const HeaderItem[..32]&,
+    profile: Profile,
+) {
+    for &default_hdr in default_headers {
+        headers.push(copy(default_hdr));
+    }
+    for &req_hdr in req_headers {
+        remove_header_by_name(headers, req_hdr.name[..]);
+        headers.push(copy(req_hdr));
+    }
+    if profile != Profile.None {
+        let has_ae = find_header(headers[..], "accept-encoding").len > 0;
+        if !has_ae {
+            headers.push(make_header("Accept-Encoding", "zstd, br, gzip"));
+        }
+    }
+}
+
+fn init_execution_context(
+    session: const Session&,
+    req: const Request&,
+    parsed_initial: const core::Url&,
+) -> RequestExecutionContext {
     var ctx = RequestExecutionContext {
         current_method: copy(req.method),
         rewindable: req.rewindable,
@@ -211,7 +236,11 @@ fn init_execution_context(session: const Session&, req: const Request&, parsed_i
     }
 
     ctx.body.append(req.body[..]);
-    ctx.rewind_buf.append(req.rewind_buf[..]);
+    if req.rewind_buf.len > 0 {
+        ctx.rewind_buf.append(req.rewind_buf[..]);
+    } else if req.rewindable && req.body.len <= 4096 {
+        ctx.rewind_buf.append(req.body[..]);
+    }
 
     if req.has_initiator {
         ctx.initiator = copy(req.initiator);
@@ -227,19 +256,7 @@ fn init_execution_context(session: const Session&, req: const Request&, parsed_i
         ctx.site_for_cookies = site_for_cookies_from_parsed_url(parsed_initial);
     }
 
-    for &default_hdr in session.default_headers {
-        ctx.headers.push(copy(default_hdr));
-    }
-    for &req_hdr in req.headers {
-        ctx.headers.push(copy(req_hdr));
-    }
-
-    if session.profile != Profile.None {
-        let has_ae = find_header(ctx.headers[..], "accept-encoding").len > 0;
-        if !has_ae {
-            ctx.headers.push(make_header("Accept-Encoding", "zstd, br, gzip"));
-        }
-    }
+    merge_session_and_request_headers(ctx.headers, session.default_headers, req.headers, session.profile);
 
     ctx.url_chain.push(parsed_initial);
     return ctx;
@@ -294,6 +311,185 @@ fn process_redirect_hop(
     return true, no_error();
 }
 
+fn append_available_dict_header(headers: HeaderItem[..32]&, dict_b64: const u8[:]) {
+    remove_header_by_name(headers, "Available-Dictionary");
+    headers.push(make_header("Available-Dictionary", dict_b64));
+    var ae_idx = -1;
+    for i in headers.len {
+        if eq_ascii_fold(headers[i].name[..], "accept-encoding") {
+            ae_idx = i;
+            break;
+        }
+    }
+    if ae_idx < 0 {
+        return;
+    }
+    let val = headers[ae_idx].value[..];
+    var already_has = false;
+    if val.len >= 3 {
+        for k in val.len - 2 {
+            if val[k] == 'd' && val[k + 1] == 'c' && val[k + 2] == 'b' {
+                already_has = true;
+                break;
+            }
+        }
+    }
+    if !already_has {
+        headers[ae_idx].value.append(", dcb, dcz");
+    }
+}
+
+fn resolve_mock_protocol_racing(
+    session: Session&,
+    route: const MockExchange&,
+    is_https: bool,
+    origin_buf: const u8[:],
+    has_h3: bool,
+    now_sec: i64,
+    resp: Response&,
+) {
+    if !has_h3 {
+        if route.protocol.len > 0 {
+            resp.protocol.clear();
+            resp.protocol.append(route.protocol[..]);
+        }
+        return;
+    }
+
+    let race_eligible = should_create_dns_alpn_h3_job(
+        is_https,
+        session.enable_protocol_racing,
+        session.proxy_url.len > 0,
+        false,
+    );
+    if race_eligible || session.enable_altsvc {
+        if route.simulate_quic_blocked {
+            record_failure(session.altsvc, origin_buf, now_sec);
+            resp.protocol.clear();
+            let proto = if route.protocol.len > 0 { route.protocol[..] } else { "HTTP/1.1" };
+            resp.protocol.append(proto);
+        } else {
+            record_success(session.altsvc, origin_buf);
+            resp.protocol.clear();
+            resp.protocol.append("h3");
+        }
+    }
+}
+
+fn ingest_compression_dict_header(
+    dict_cache: DictionaryCache&,
+    origin_buf: const u8[:],
+    curr_path: const u8[:],
+    now_sec: i64,
+    resp: Response&,
+) {
+    let dict_hdr = header(resp, "Use-As-Dictionary");
+    guard dict_hdr.len > 0 else { return; }
+    let d_params, ok_p = parse_use_as_dictionary_header(dict_hdr);
+    guard ok_p else { return; }
+    let pat = if d_params.match_pattern.len > 0 {
+        d_params.match_pattern[..]
+    } else {
+        curr_path
+    };
+    dictionary_cache_insert(
+        dict_cache,
+        origin_buf,
+        pat,
+        d_params.id[..],
+        resp.body[..],
+        d_params.ttl_sec,
+        now_sec,
+    );
+}
+
+fn ingest_transport_response_headers(
+    session: Session&,
+    current_url: const core::Url&,
+    is_https: bool,
+    origin_buf: const u8[:],
+    curr_path: const u8[:],
+    now_sec: i64,
+    resp: Response&,
+) {
+    if session.enable_altsvc && is_https {
+        let alt_svc_val = header(resp, "Alt-Svc");
+        if alt_svc_val.len > 0 {
+            update(session.altsvc, origin_buf, alt_svc_val, now_sec);
+        }
+    }
+
+    if session.enable_hsts && is_https {
+        let hsts_val = header(resp, "Strict-Transport-Security");
+        if hsts_val.len > 0 {
+            hsts_cache_update(session.hsts, core::hostname(current_url), hsts_val, now_sec);
+        }
+    }
+
+    if session.enable_compression_dict && is_https {
+        ingest_compression_dict_header(session.dict_cache, origin_buf, curr_path, now_sec, resp);
+    }
+
+    let enc = header(resp, "Content-Encoding");
+    if enc.len > 0 {
+        decode_body_with_dictionary(resp, session.dict_cache);
+    }
+}
+
+fn try_match_mock_route(
+    session: Session&,
+    ctx: RequestExecutionContext&,
+    current_url: const core::Url&,
+    has_h3: bool,
+    origin_buf: const u8[:],
+    curr_path: const u8[:],
+    now_sec: i64,
+    out_dns_err: RedirectError&,
+    out_resp: Response&,
+) -> bool {
+    let curr_href = href(current_url);
+    let curr_method = ctx.current_method[..];
+    let is_https = current_url.is_secure_scheme();
+
+    for &route in session.mock_routes {
+        let method_match = route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method);
+        let url_match = route.pattern_url[..] == curr_href || starts_with(curr_href, route.pattern_url[..]);
+        guard method_match && url_match else { continue; }
+
+        let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
+        if dns_err != RedirectError.None {
+            out_dns_err = dns_err;
+            out_resp = Response {
+                status_code: 403,
+                effective_url: copy(current_url.href),
+                ..
+            };
+            return true;
+        }
+
+        out_resp = build_mock_response(route, current_url, ctx.headers[..]);
+        if route.status_code == 101 {
+            let sent_key = find_header(ctx.headers[..], "sec-websocket-key");
+            if sent_key.len > 0 && out_resp.header("sec-websocket-accept").len == 0 {
+                var accept_buf: u8[..64] = [];
+                compute_websocket_accept(sent_key, accept_buf);
+                out_resp.headers.push(make_header("Sec-WebSocket-Accept", accept_buf[..]));
+            }
+        }
+
+        resolve_mock_protocol_racing(session, route, is_https, origin_buf, has_h3, now_sec, out_resp);
+        ingest_transport_response_headers(session, current_url, is_https, origin_buf, curr_path, now_sec, out_resp);
+        return true;
+    }
+    return false;
+}
+
+fn copy_sent_headers(headers: const HeaderItem[..32]&, sent_headers: HeaderItem[..32]&) {
+    for &sent_h in headers {
+        sent_headers.push(copy(sent_h));
+    }
+}
+
 // Executes a mock or echo response hop, verifying IP addresses against SSRF policies.
 fn execute_mock_or_echo_hop(
     session: Session&,
@@ -311,144 +507,47 @@ fn execute_mock_or_echo_hop(
     let is_https = current_url.is_secure_scheme();
 
     var candidate_h3_ep = AltSvcEndpoint { .. };
-    let has_h3 = session.enable_altsvc && is_https && lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
+    var has_h3 = false;
+    if session.enable_altsvc && is_https {
+        has_h3 = lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
+    }
 
     let curr_path = core::pathname(current_url);
     var matched_dict_b64: u8[..64] = [];
-    let has_dict = session.enable_compression_dict && is_https && dictionary_lookup_for_request(session.dict_cache, origin_buf[..], curr_path, now_sec, matched_dict_b64);
+    var has_dict = false;
+    if session.enable_compression_dict && is_https {
+        has_dict = dictionary_lookup_for_request(
+            session.dict_cache,
+            origin_buf[..],
+            curr_path,
+            now_sec,
+            matched_dict_b64,
+        );
+    }
+    remove_header_by_name(ctx.headers, "Available-Dictionary");
     if has_dict {
-        ctx.headers.push(make_header("Available-Dictionary", matched_dict_b64[..]));
-        var ae_idx = -1;
-        for i in ctx.headers.len {
-            if eq_ascii_fold(ctx.headers[i].name[..], "accept-encoding") {
-                ae_idx = i;
-                break;
-            }
-        }
-        if ae_idx >= 0 {
-            var already_has = false;
-            let val = ctx.headers[ae_idx].value[..];
-            if val.len >= 3 {
-                for k in val.len - 2 {
-                    if val[k] == 'd' && val[k + 1] == 'c' && val[k + 2] == 'b' {
-                        already_has = true;
-                        break;
-                    }
-                }
-            }
-            if !already_has {
-                ctx.headers[ae_idx].value.append(", dcb, dcz");
-            }
-        }
+        append_available_dict_header(ctx.headers, matched_dict_b64[..]);
     }
 
-    // Check mock routes
-    for &route in session.mock_routes {
-        if (route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method)) &&
-           (route.pattern_url[..] == curr_href || starts_with(curr_href, route.pattern_url[..])) {
-            let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
-            if dns_err != RedirectError.None {
-                out_dns_err = dns_err;
-                return Response {
-                    status_code: 403,
-                    effective_url: copy(current_url.href),
-                    ..
-                };
-            }
-            var resp = build_mock_response(route, current_url, ctx.headers[..]);
-            if route.status_code == 101 {
-                let sent_key = find_header(ctx.headers[..], "sec-websocket-key");
-                if sent_key.len > 0 && resp.header("sec-websocket-accept").len == 0 {
-                    var accept_buf: u8[..64] = [];
-                    compute_websocket_accept(sent_key, accept_buf);
-                    resp.headers.push(make_header("Sec-WebSocket-Accept", accept_buf[..]));
-                }
-            }
-
-            // Chromium-style Protocol Racing & Alt-Svc Promotion
-            if has_h3 {
-                let race_eligible = should_create_dns_alpn_h3_job(
-                    is_https,
-                    session.enable_protocol_racing,
-                    session.proxy_url.len > 0,
-                    false,
-                );
-                if race_eligible {
-                    // Protocol race: QUIC Alternative Job vs TCP Main Job (Chromium JobController / RFC 8305)
-                    if route.simulate_quic_blocked {
-                        // QUIC handshake dropped/blocked by firewall -> Main TCP Job wins!
-                        record_failure(session.altsvc, origin_buf[..], now_sec);
-                        resp.protocol.clear();
-                        if route.protocol.len > 0 {
-                            resp.protocol.append(route.protocol[..]);
-                        } else {
-                            resp.protocol.append("HTTP/1.1");
-                        }
-                    } else {
-                        // QUIC handshake succeeds -> HTTP/3 wins!
-                        record_success(session.altsvc, origin_buf[..]);
-                        resp.protocol.clear();
-                        resp.protocol.append("h3");
-                    }
-                } else if session.enable_altsvc {
-                    if route.simulate_quic_blocked {
-                        record_failure(session.altsvc, origin_buf[..], now_sec);
-                        resp.protocol.clear();
-                        resp.protocol.append(if route.protocol.len > 0 { route.protocol[..] } else { "HTTP/1.1" });
-                    } else {
-                        record_success(session.altsvc, origin_buf[..]);
-                        resp.protocol.clear();
-                        resp.protocol.append("h3");
-                    }
-                }
-            } else if route.protocol.len > 0 {
-                resp.protocol.clear();
-                resp.protocol.append(route.protocol[..]);
-            }
-
-            // Ingest Alt-Svc header from response (RFC 7838 Section 3)
-            if session.enable_altsvc && is_https {
-                let alt_svc_val = header(resp, "Alt-Svc");
-                if alt_svc_val.len > 0 {
-                    update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
-                }
-            }
-
-            // Ingest Strict-Transport-Security header (RFC 6797 Section 8.1 - HTTPS only)
-            if session.enable_hsts && is_https {
-                let hsts_val = header(resp, "Strict-Transport-Security");
-                if hsts_val.len > 0 {
-                    hsts_cache_update(session.hsts, core::hostname(current_url), hsts_val, now_sec);
-                }
-            }
-
-            // Compression Dictionary Transport (Use-As-Dictionary and dcz decode)
-            if session.enable_compression_dict && is_https {
-                let dict_hdr = header(resp, "Use-As-Dictionary");
-                if dict_hdr.len > 0 {
-                    let d_params, ok_p = parse_use_as_dictionary_header(dict_hdr);
-                    if ok_p {
-                        let pat = if d_params.match_pattern.len > 0 { d_params.match_pattern[..] } else { curr_path };
-                        dictionary_cache_insert(session.dict_cache, origin_buf[..], pat, d_params.id[..], resp.body[..], d_params.ttl_sec, now_sec);
-                    }
-                }
-            }
-
-            let enc = header(resp, "Content-Encoding");
-            if enc.len > 0 {
-                decode_body_with_dictionary(resp, session.dict_cache);
-            }
-
-            return resp;
-        }
+    var resp = Response { .. };
+    let matched = try_match_mock_route(
+        session,
+        ctx,
+        current_url,
+        has_h3,
+        origin_buf[..],
+        curr_path,
+        now_sec,
+        out_dns_err,
+        resp,
+    );
+    if matched {
+        return resp;
     }
 
     // Default mock response
-    var resp = Response {
-        status_code: 200,
-        effective_url: copy(current_url.href),
-        ..
-    };
+    resp.status_code = 200;
+    resp.effective_url = copy(current_url.href);
     resp.headers.push(make_header("Content-Type", "application/json"));
     resp.headers.push(make_header("Server", "goose-wing/1.0"));
     resp.body.append("{\"id\":1042,\"status\":\"confirmed\",\"ok\":true}");
@@ -459,40 +558,237 @@ fn execute_mock_or_echo_hop(
         resp.protocol.append("h3");
     }
 
-    if session.enable_altsvc && is_https {
-        let alt_svc_val = header(resp, "Alt-Svc");
-        if alt_svc_val.len > 0 {
-            update(session.altsvc, origin_buf[..], alt_svc_val, now_sec);
+    ingest_transport_response_headers(session, current_url, is_https, origin_buf[..], curr_path, now_sec, resp);
+
+    copy_sent_headers(ctx.headers, resp.sent_headers);
+    return resp;
+}
+
+fn compute_401_auth_header(
+    session: Client&,
+    ctx: RequestExecutionContext&,
+    current_url: const core::Url&,
+    www_auth: const u8[:],
+    auth_header_val: u8[..512]&,
+) -> bool {
+    if starts_with_fold(www_auth, "Digest") {
+        let chal, ok_c = parse_digest_challenge(www_auth);
+        guard ok_c else { return false; }
+        let uri_path = core::pathname(current_url);
+        let uri_search = core::search(current_url);
+        var uri_target: u8[..2048] = [];
+        if uri_path.len > 0 {
+            uri_target.append(uri_path);
+        } else {
+            uri_target.push('/');
         }
+        if uri_search.len > 0 {
+            uri_target.append(uri_search);
+        }
+        var c_creds = DigestCredentials { .. };
+        c_creds.username.append(session.creds.username[..]);
+        c_creds.password.append(session.creds.password[..]);
+
+        let ok_d = compute_digest_response(
+            chal,
+            c_creds,
+            ctx.current_method[..],
+            uri_target[..],
+            session.creds.nonce_counter,
+            session.creds.cnonce[..],
+            ctx.body[..],
+            auth_header_val,
+        );
+        guard ok_d else { return false; }
+        session.creds.nonce_counter += 1;
+        return true;
+    }
+    if starts_with_fold(www_auth, "Basic") {
+        var user_pass: u8[..140] = [];
+        user_pass.append(session.creds.username[..]);
+        user_pass.push(':');
+        user_pass.append(session.creds.password[..]);
+        var b64_user_pass: u8[..200] = [];
+        core::base64_encode(user_pass[..], b64_user_pass);
+        auth_header_val.append("Basic ");
+        auth_header_val.append(b64_user_pass[..]);
+        return true;
+    }
+    return false;
+}
+
+fn handle_401_auth_retry(
+    session: Client&,
+    ctx: RequestExecutionContext&,
+    current_url: const core::Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    safe_method: bool,
+    resp: Response&,
+    dns_rebinding_err: RedirectError&,
+) -> bool, Error {
+    guard resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried else {
+        return false, no_error();
+    }
+    let www_auth = header(resp, "WWW-Authenticate");
+    guard www_auth.len > 0 else { return false, no_error(); }
+
+    var auth_header_val: u8[..512] = [];
+    guard compute_401_auth_header(session, ctx, current_url, www_auth, auth_header_val) else {
+        return false, no_error();
     }
 
-    if session.enable_hsts && is_https {
-        let hsts_val = header(resp, "Strict-Transport-Security");
-        if hsts_val.len > 0 {
-            hsts_cache_update(session.hsts, core::hostname(current_url), hsts_val, now_sec);
-        }
-    }
+    ctx.auth_retried = true;
+    ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
+    prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
 
-    if session.enable_compression_dict && is_https {
-        let dict_hdr = header(resp, "Use-As-Dictionary");
-        if dict_hdr.len > 0 {
-            let d_params, ok_p = parse_use_as_dictionary_header(dict_hdr);
-            if ok_p {
-                let pat = if d_params.match_pattern.len > 0 { d_params.match_pattern[..] } else { curr_path };
-                dictionary_cache_insert(session.dict_cache, origin_buf[..], pat, d_params.id[..], resp.body[..], d_params.ttl_sec, now_sec);
+    remove_header_by_name(ctx.headers, "Authorization");
+    ctx.headers.push(make_header("Authorization", auth_header_val[..]));
+
+    resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
+    if dns_rebinding_err != RedirectError.None {
+        return true, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
+    }
+    return true, no_error();
+}
+
+fn execute_single_hop(
+    session: Client&,
+    ctx: RequestExecutionContext&,
+    req: const Request&,
+    cache_ts: CacheTimestamps&,
+    cache_revalidate_idx: i64,
+    out_resp: Response&,
+) -> bool, Error {
+    var current_url = ctx.url_chain[ctx.url_chain.len - 1];
+
+    // RFC 6797 HSTS Upgrade on redirect hops
+    if session.enable_hsts && !current_url.is_secure_scheme() {
+        var upgraded_url: u8[..2048] = [];
+        let now_sec = session.virtual_clock_us / 1000000;
+        if hsts_upgrade_url(session.hsts, current_url.href[..], now_sec, upgraded_url) {
+            let parsed_upgraded, parse_err = core::parse_url(upgraded_url[..]);
+            if parsed_upgraded.valid {
+                ctx.url_chain[ctx.url_chain.len - 1] = parsed_upgraded;
+                current_url = parsed_upgraded;
             }
         }
     }
 
-    let enc = header(resp, "Content-Encoding");
-    if enc.len > 0 {
-        decode_body_with_dictionary(resp, session.dict_cache);
+    // Phase 1: Pre-validation of Hop
+    let pre_err = validate_hop_prerequisites(session, current_url);
+    guard ok(pre_err) else { return false, pre_err; }
+
+    // Phase 2 & 3: Compute SameSite Context & Synthesize Fresh Cookie Header
+    let safe_method = is_safe_http_method(ctx.current_method[..]);
+    let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
+    prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
+
+    // Phase 3.5: Network Interceptors (Request Hook)
+    let hop_start_us = session.virtual_clock_us;
+    apply_network_interceptors_request(
+        session.pipeline,
+        ctx.headers,
+        current_url.href[..],
+        ctx.current_method[..],
+        ctx.body.len,
+        ctx.redirect_count,
+    );
+
+    // Phase 4: Network Transaction & Ingest Set-Cookie Before 3xx Analysis
+    var dns_rebinding_err = RedirectError.None;
+    out_resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
+    guard dns_rebinding_err == RedirectError.None else {
+        return false, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
     }
 
-    for &sent_h in ctx.headers {
-        resp.sent_headers.push(copy(sent_h));
+    // Phase 4.1: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
+    let did_retry, auth_err = handle_401_auth_retry(
+        session,
+        ctx,
+        current_url,
+        samesite_eval,
+        safe_method,
+        out_resp,
+        dns_rebinding_err,
+    );
+    guard ok(auth_err) else { return false, auth_err; }
+
+    // Phase 4.2: Network Interceptors (Response Hook)
+    let hop_dur_us = session.virtual_clock_us - hop_start_us;
+    apply_network_interceptors_response(session.pipeline, out_resp, ctx.redirect_count, hop_dur_us);
+
+    ctx.body_consumed = true;
+    ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, out_resp.set_cookies);
+
+    // Phase 4.5: RFC 9111 HTTP Cache Update & 304 Freshening
+    if session.enable_cache {
+        cache_ts.response_time = cache_ts.now;
+        var hop_req = copy(req);
+        hop_req.url.clear();
+        hop_req.url.append(current_url.href[..]);
+        let resp_dec = on_response(session.cache, hop_req, out_resp, cache_ts, cache_revalidate_idx);
+        if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
+            out_resp = copy(resp_dec.response);
+        }
     }
-    return resp;
+
+    // Phase 5: 3xx Detection & ComputeRedirectInfo
+    let loc_hdr = header(out_resp, "Location");
+    let is_red = is_redirect(out_resp) && loc_hdr.len > 0;
+
+    if is_red {
+        session.pipeline.metrics.redirect_hops += 1;
+    } else {
+        finalize_success_response(ctx, out_resp);
+        return false, no_error();
+    }
+
+    let should_continue, red_err = process_redirect_hop(session, ctx, out_resp, current_url, loc_hdr);
+    guard ok(red_err) else { return false, red_err; }
+    return should_continue, no_error();
+}
+
+fn check_cache_and_inject_headers(
+    session: Client&,
+    req: const Request&,
+    raw_eff_url: const u8[:],
+    cache_ts: const CacheTimestamps&,
+    ctx: RequestExecutionContext&,
+    out_resp: Response&,
+    out_err: Error&,
+    revalidate_idx: i64&,
+) -> bool {
+    guard session.enable_cache else { return false; }
+    var lookup_req = copy(req);
+    lookup_req.url.clear();
+    lookup_req.url.append(raw_eff_url);
+    let lookup_dec = lookup(session.cache, lookup_req, cache_ts.now);
+    if lookup_dec.kind == LookupResultKind.Hit {
+        out_resp = copy(lookup_dec.cached_response);
+        out_err = no_error();
+        return true;
+    }
+    if lookup_dec.kind == LookupResultKind.Fail504 {
+        out_resp = Response {
+            status_code: 504,
+            ..
+        };
+        out_resp.effective_url.append(raw_eff_url);
+        out_err = make_error(504, "cache", "504 Gateway Timeout (only-if-cached miss)");
+        return true;
+    }
+    if lookup_dec.kind == LookupResultKind.Revalidate {
+        revalidate_idx = lookup_dec.entry_idx;
+        if revalidate_idx >= 0 && revalidate_idx < session.cache.entries.len {
+            let cond_map = session.cache.entries[revalidate_idx].build_revalidation_headers();
+            for &c_entry in cond_map.entries {
+                let c_name = cond_map.raw_buf[c_entry.name_begin..c_entry.name_end];
+                let c_val = cond_map.raw_buf[c_entry.values_begin..c_entry.values_end];
+                ctx.headers.push(make_header(c_name, c_val));
+            }
+        }
+    }
+    return false;
 }
 
 fn execute_request_inner(session: Client&, req: const Request&) -> Response, Error {
@@ -514,169 +810,45 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
         return Response { .. }, make_error(400, "url_parse", "invalid request url");
     }
 
+    let req_time = session.virtual_clock_us / 1000000;
+    let req_time_ns = ((session.virtual_clock_us % 1000000) * 1000) as u32;
     var cache_ts = CacheTimestamps {
-        request_time: core::unix(session.virtual_clock_us / 1000000, ((session.virtual_clock_us % 1000000) * 1000) as u32),
-        now: core::unix(session.virtual_clock_us / 1000000, ((session.virtual_clock_us % 1000000) * 1000) as u32),
+        request_time: core::unix(req_time, req_time_ns),
+        now: core::unix(req_time, req_time_ns),
     };
-
-    var cache_revalidate_idx: i64 = -1;
-
-    // Phase 0: RFC 9111 HTTP Cache Lookup
-    if session.enable_cache {
-        var lookup_req = copy(req);
-        lookup_req.url.clear();
-        lookup_req.url.append(raw_eff_url[..]);
-        let lookup_dec = lookup(session.cache, lookup_req, cache_ts.now);
-        if lookup_dec.kind == LookupResultKind.Hit {
-            return copy(lookup_dec.cached_response), no_error();
-        } else if lookup_dec.kind == LookupResultKind.Fail504 {
-            var fail_resp = Response {
-                status_code: 504,
-                effective_url: copy(raw_eff_url),
-                ..
-            };
-            return fail_resp, make_error(504, "cache", "504 Gateway Timeout (only-if-cached miss)");
-        } else if lookup_dec.kind == LookupResultKind.Revalidate {
-            cache_revalidate_idx = lookup_dec.entry_idx;
-        }
-    }
 
     var ctx = init_execution_context(session, req, parsed_initial);
 
-    // If cache revalidation is needed, inject conditional headers into ctx
-    if cache_revalidate_idx >= 0 && cache_revalidate_idx < session.cache.entries.len {
-        let cond_map = session.cache.entries[cache_revalidate_idx].build_revalidation_headers();
-        for &c_entry in cond_map.entries {
-            let c_name = cond_map.raw_buf[c_entry.name_begin..c_entry.name_end];
-            let c_val = cond_map.raw_buf[c_entry.values_begin..c_entry.values_end];
-            ctx.headers.push(make_header(c_name, c_val));
-        }
+    // Phase 0: RFC 9111 HTTP Cache Lookup & Conditional Header Injection
+    var cache_resp = Response { .. };
+    var cache_err = no_error();
+    var cache_revalidate_idx: i64 = -1;
+    let cache_hit = check_cache_and_inject_headers(
+        session,
+        req,
+        raw_eff_url[..],
+        cache_ts,
+        ctx,
+        cache_resp,
+        cache_err,
+        cache_revalidate_idx,
+    );
+    if cache_hit {
+        return cache_resp, cache_err;
     }
 
     // Main redirect execution loop (Chromium net::URLRequest 6-phase pipeline)
     while ctx.redirect_count <= ctx.max_redirects {
-        let current_url = ctx.url_chain[ctx.url_chain.len - 1];
-
-        // Phase 1: Pre-validation of Hop
-        let pre_err = validate_hop_prerequisites(session, current_url);
-        guard ok(pre_err) else { return Response { .. }, pre_err; }
-
-        // Phase 2 & 3: Compute SameSite Context & Synthesize Fresh Cookie Header
-        let safe_method = is_safe_http_method(ctx.current_method[..]);
-        let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
-        prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
-
-        // Phase 3.5: Network Interceptors (Request Hook)
-        let hop_start_us = session.virtual_clock_us;
-        apply_network_interceptors_request(session.pipeline, ctx.headers, current_url.href[..], ctx.current_method[..], ctx.body.len, ctx.redirect_count);
-
-        // Phase 4: Network Transaction & Ingest Set-Cookie Before 3xx Analysis
-        var dns_rebinding_err = RedirectError.None;
-        var resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
-        guard dns_rebinding_err == RedirectError.None else {
-            return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
-        }
-
-        // Phase 4.1: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
-        if resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried {
-            let www_auth = header(resp, "WWW-Authenticate");
-            if www_auth.len > 0 {
-                var auth_header_val: u8[..512] = [];
-                var should_retry = false;
-
-                if starts_with_fold(www_auth, "Digest") {
-                    let chal, ok_c = parse_digest_challenge(www_auth);
-                    if ok_c {
-                        let uri_path = core::pathname(current_url);
-                        let uri_to_send = if uri_path.len > 0 { uri_path } else { "/" };
-                        var c_creds = DigestCredentials { .. };
-                        c_creds.username.append(session.creds.username[..]);
-                        c_creds.password.append(session.creds.password[..]);
-
-                        let ok_d = compute_digest_response(
-                            chal,
-                            c_creds,
-                            ctx.current_method[..],
-                            uri_to_send,
-                            session.creds.nonce_counter,
-                            session.creds.cnonce[..],
-                            ctx.body[..],
-                            auth_header_val,
-                        );
-                        if ok_d {
-                            session.creds.nonce_counter += 1;
-                            should_retry = true;
-                        }
-                    }
-                } else if starts_with_fold(www_auth, "Basic") {
-                    var user_pass: u8[..140] = [];
-                    user_pass.append(session.creds.username[..]);
-                    user_pass.push(':');
-                    user_pass.append(session.creds.password[..]);
-                    var b64_user_pass: u8[..200] = [];
-                    core::base64_encode(user_pass[..], b64_user_pass);
-                    auth_header_val.append("Basic ");
-                    auth_header_val.append(b64_user_pass[..]);
-                    should_retry = true;
-                }
-
-                if should_retry {
-                    ctx.auth_retried = true;
-                    var auth_idx: i64 = -1;
-                    for i in ctx.headers.len {
-                        if eq_ascii_fold(ctx.headers[i].name[..], "Authorization") {
-                            auth_idx = i;
-                            break;
-                        }
-                    }
-                    if auth_idx >= 0 {
-                        ctx.headers[auth_idx].value.clear();
-                        ctx.headers[auth_idx].value.append(auth_header_val[..]);
-                    } else {
-                        ctx.headers.push(make_header("Authorization", auth_header_val[..]));
-                    }
-                    resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
-                    guard dns_rebinding_err == RedirectError.None else {
-                        return Response { .. }, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
-                    }
-                }
-            }
-        }
-
-        // Phase 4.2: Network Interceptors (Response Hook)
-        let hop_dur_us = session.virtual_clock_us - hop_start_us;
-        apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, hop_dur_us);
-
-        ctx.body_consumed = true;
-        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
-
-        // Phase 4.5: RFC 9111 HTTP Cache Update & 304 Freshening
-        if session.enable_cache {
-            cache_ts.response_time = cache_ts.now;
-            var hop_req = copy(req);
-            hop_req.url.clear();
-            hop_req.url.append(current_url.href[..]);
-            let resp_dec = on_response(session.cache, hop_req, resp, cache_ts, cache_revalidate_idx);
-            if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
-                resp = copy(resp_dec.response);
-            }
-        }
-
-        // Phase 5: 3xx Detection & ComputeRedirectInfo
-        let loc_hdr = header(resp, "Location");
-        let is_red = is_redirect(resp) && loc_hdr.len > 0;
-
-        if is_red {
-            session.pipeline.metrics.redirect_hops += 1;
-        }
-
-        if !is_red {
-            finalize_success_response(ctx, resp);
-            return resp, no_error();
-        }
-
-        let should_continue, red_err = process_redirect_hop(session, ctx, resp, current_url, loc_hdr);
-        guard ok(red_err) else { return resp, red_err; }
+        var resp = Response { .. };
+        let should_continue, hop_err = execute_single_hop(
+            session,
+            ctx,
+            req,
+            cache_ts,
+            cache_revalidate_idx,
+            resp,
+        );
+        guard ok(hop_err) else { return resp, hop_err; }
         if !should_continue {
             return resp, no_error();
         }
@@ -700,7 +872,9 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     while true {
         let resp, err = execute_request_inner(session, active_req);
         if has_retry && attempts < max_retries {
-            if !ok(err) || (retry_5xx && resp.status_code >= 500 && resp.status_code <= 599) {
+            let can_retry = is_idempotent_method(active_req.method[..]) || has_idempotency_key(active_req);
+            let retryable = !ok(err) || (retry_5xx && resp.status_code >= 500 && resp.status_code <= 599);
+            if can_retry && retryable {
                 attempts += 1;
                 continue;
             }

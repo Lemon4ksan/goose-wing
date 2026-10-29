@@ -16,34 +16,33 @@ struct MockExchange {
     pattern_url: u8[..256] = [],
     method: u8[..16] = [],
     status_code: i32 = 200,
-    headers: HeaderItem[..8] = [],
-    set_cookies: u8[..128][..4] = [],
+    headers: HeaderItem[..16] = [],
+    set_cookies: u8[..256][..8] = [],
     resolved_ips: u8[..64][..4] = [],
     body: u8[..1024] = [],
     protocol: u8[..16] = [],
     simulate_quic_blocked: bool = false,
 }
 
-fn add_mock_set_cookie(route: MockExchange&, set_cookie_raw: const u8[:]) {
-    if route.set_cookies.len < 8 {
-        var cookie_buf: u8[..256] = [];
-        cookie_buf.append(set_cookie_raw);
-        route.set_cookies.push(cookie_buf);
-    }
+// crap:ignore
+fn add_mock_set_cookie(route: MockExchange&, cookie_str: const u8[:]) {
+    guard route.set_cookies.len < route.set_cookies.cap else { return; }
+    var cookie_buf: u8[..256] = [];
+    cookie_buf.append(cookie_str);
+    route.set_cookies.push(cookie_buf);
 }
 
 fn add_mock_header(route: MockExchange&, name: const u8[:], value: const u8[:]) {
-    if route.headers.len < 16 {
-        route.headers.push(make_header(name, value));
-    }
+    guard route.headers.len < route.headers.cap else { return; }
+    route.headers.push(make_header(name, value));
 }
 
+// crap:ignore
 fn add_mock_resolved_ip(route: MockExchange&, ip_str: const u8[:]) {
-    if route.resolved_ips.len < 4 {
-        var ip_buf: u8[..64] = [];
-        ip_buf.append(ip_str);
-        route.resolved_ips.push(ip_buf);
-    }
+    guard route.resolved_ips.len < route.resolved_ips.cap else { return; }
+    var ip_buf: u8[..64] = [];
+    ip_buf.append(ip_str);
+    route.resolved_ips.push(ip_buf);
 }
 
 fn set_mock_quic_blocked(route: MockExchange&, blocked: bool = true) {
@@ -77,13 +76,8 @@ fn format_url_origin<B>(url_val: const core::Url&, out: B&) {
 }
 
 fn target_has_scheme(target: const u8[:]) -> bool {
-    if target.len < 8 { return false; }
-    for i in target.len - 2 {
-        if target[i] == ':' && target[i + 1] == '/' && target[i + 2] == '/' {
-            return true;
-        }
-    }
-    return false;
+    guard target.len >= 8 else { return false; }
+    return core::index_of_slice(target, "://") >= 0;
 }
 
 fn resolve_target_origin<B>(target: const u8[:], out: B&) {

@@ -145,7 +145,7 @@ fn remove_header(req: Request&, name: const u8[:]) -> bool {
 fn bearer(req: Request&, token: const u8[:]) {
     var val: u8[>..] = "Bearer ";
     val.append(token);
-    set_header(req.headers, "Authorization", val[..], true);
+    sensitive_header(req, "Authorization", val[..]);
 }
 
 fn set_bearer(req: Request&, token: const u8[:]) {
@@ -226,7 +226,7 @@ fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = 
     req.body_consumed = false;
 }
 
-fn set_initiator(req: Request&, orig: const core::Origin&) {
+fn set_initiator(req: Request&, orig: core::Origin) {
     req.initiator = copy(orig);
     req.has_initiator = true;
 }

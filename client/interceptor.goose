@@ -8,6 +8,8 @@
 namespace wing;
 
 import std;
+import client.request;
+import http.headers;
 
 // ---- 1. Interceptor Scope & Kinds -------------------------------------------
 
@@ -212,28 +214,28 @@ fn apply_app_interceptors_request(
         guard entry.enabled && entry.scope == InterceptorScope.Application else { continue; }
 
         if entry.kind == InterceptorKind.AuthBearer {
-            // Only add if not already present
+            // Only add if not already present, updating Bloom filter and sensitivity flag
             if header(req, "Authorization").len == 0 {
-                req.headers.push(make_header("Authorization", entry.header_val[..]));
+                sensitive_header(req, "Authorization", entry.header_val[..]);
             }
         } else if entry.kind == InterceptorKind.Header {
             let h_name = entry.header_name[..];
             if header(req, h_name).len == 0 {
-                req.headers.push(make_header(h_name, entry.header_val[..]));
+                set_header(req, h_name, entry.header_val[..]);
             }
         } else if entry.kind == InterceptorKind.RequestId {
             if header(req, "X-Request-ID").len == 0 {
                 var val_buf: u8[..64] = [];
                 format(val_buf, entry.prefix[..], entry.counter);
                 entry.counter += 1;
-                req.headers.push(make_header("X-Request-ID", val_buf[..]));
+                set_header(req, "X-Request-ID", val_buf[..]);
             }
         } else if entry.kind == InterceptorKind.Traceparent {
             if header(req, "traceparent").len == 0 {
                 var tp_buf: u8[..64] = [];
                 generate_traceparent(entry.counter, clock_us, entry.prefix[..], tp_buf);
                 entry.counter += 1;
-                req.headers.push(make_header("traceparent", tp_buf[..]));
+                set_header(req, "traceparent", tp_buf[..]);
             }
         } else if entry.kind == InterceptorKind.Logging {
             let lvl = entry.log_level;

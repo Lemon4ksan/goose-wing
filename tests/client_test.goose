@@ -504,6 +504,95 @@ fn test_client_cache_integration(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 11. Network Pipeline Edge Invariants & Multi-Module Audit
+// ----------------------------------------------------------------------------
+fn test_network_pipeline_edge_invariants(t: core::T&) {
+    t.run("SameSite Strict vs Lax Cookie Isolation on Cross-Site Hop") { sub =>
+        var session = wing::new_session();
+        wing::set_clock_us(session, 1700000000000000);
+
+        // Pre-populate cookie jar with Strict and Lax cookies for bank.com
+        session.jar.set_cookie_header("https://bank.com/", "strict_token=secret1; SameSite=Strict; Secure; Path=/", session.virtual_clock_us);
+        session.jar.set_cookie_header("https://bank.com/", "lax_token=public2; SameSite=Lax; Secure; Path=/", session.virtual_clock_us);
+
+        // Cross-site navigation initiated from evil.com to bank.com
+        wing::mock_route(session, "GET", "https://bank.com/dashboard", 200, "ok");
+        var req = wing::new_get("https://bank.com/dashboard");
+        let evil_url = core::new_url("https://evil.com");
+        let evil_origin = core::origin_from_url(evil_url);
+        wing::set_initiator(req, evil_origin);
+        req.site_for_cookies = wing::site_for_cookies_from_url("https://evil.com/");
+        req.has_site_for_cookies = true;
+
+        let resp, err = wing::execute_request(session, req);
+        sub.assert_true(wing::ok(err), "request succeeded");
+
+        var sent_cookie: u8[..512] = [];
+        for &sent_h in resp.sent_headers {
+            if core::eq_ascii_fold(sent_h.name[..], "Cookie") {
+                sent_cookie.append(sent_h.value[..]);
+            }
+        }
+
+        sub.assert_contains(sent_cookie[..], "lax_token=public2", "Lax cookie included in top-level cross-site navigation");
+        sub.assert_not_contains(sent_cookie[..], "strict_token=secret1", "Strict cookie NOT leaked in cross-site navigation");
+    };
+
+    t.run("HSTS Upgrade on 302 Redirect Hop") { sub =>
+        var session = wing::new_session();
+        wing::set_clock_us(session, 1700000000000000);
+
+        // Step 1: GET https://example.com/login -> sets HSTS header and redirects to http://example.com/dash
+        wing::mock_route(session, "GET", "https://example.com/login", 302, "");
+        wing::add_mock_header(session, "Location", "http://example.com/dash");
+        wing::add_mock_header(session, "Strict-Transport-Security", "max-age=31536000");
+
+        // Step 2: The redirect hop MUST be upgraded to https://example.com/dash
+        wing::mock_route(session, "GET", "https://example.com/dash", 200, "welcome");
+
+        var req = wing::new_get("https://example.com/login");
+        let resp, err = wing::execute_request(session, req);
+        sub.assert_true(wing::ok(err), "request with HSTS redirect succeeded");
+        sub.assert_eq(resp.status_code, 200, "final status 200");
+        sub.assert_bytes_eq(resp.effective_url[..], "https://example.com/dash", "hop was upgraded to https");
+    };
+
+    t.run("SSRF Case-Insensitive .LOCALHOST with Long Host") { sub =>
+        let long_localhost = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.LOCALHOST";
+        sub.assert_true(wing::is_localhost_name(long_localhost), "uppercase .LOCALHOST recognized as localhost");
+        sub.assert_true(wing::is_private_or_reserved_ip(long_localhost), "long .LOCALHOST blocked by SSRF filter");
+
+        // RFC 6890 / RFC 3849 documentation prefix
+        sub.assert_true(wing::is_private_or_reserved_ip("2001:db8::1"), "2001:db8::/32 documentation blocked");
+    };
+
+    t.run("Header Override: Request Headers Replace Session Default Headers") { sub =>
+        var session = wing::new_session();
+        wing::set_clock_us(session, 1700000000000000);
+        wing::default_header(session, "Accept", "application/json");
+
+        wing::mock_route(session, "GET", "https://api.example.com/data", 200, "ok");
+        var req = wing::new_get("https://api.example.com/data");
+        wing::set_header(req, "Accept", "text/plain");
+
+        let resp, err = wing::execute_request(session, req);
+        sub.assert_true(wing::ok(err), "request succeeded");
+
+        var accept_count = 0;
+        var final_accept: u8[..64] = [];
+        for &sent_h in resp.sent_headers {
+            if core::eq_ascii_fold(sent_h.name[..], "Accept") {
+                accept_count += 1;
+                final_accept.clear();
+                final_accept.append(sent_h.value[..]);
+            }
+        }
+        sub.assert_eq(accept_count, 1, "exactly one Accept header sent");
+        sub.assert_bytes_eq(final_accept[..], "text/plain", "request-level Accept header overrode session default");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -519,6 +608,7 @@ fn main() {
     core::run_case(runner, "8. DNS Rebinding Defense via Resolved IP Sweep", test_dns_rebinding);
     core::run_case(runner, "9. Dangerous Service Port Blocking", test_dangerous_ports);
     core::run_case(runner, "10. Client Integrated RFC 9111 HTTP Cache Pipeline", test_client_cache_integration);
+    core::run_case(runner, "11. Network Pipeline Edge Invariants & Multi-Module Audit", test_network_pipeline_edge_invariants);
 
     let ok = core::finish(runner);
     assert(ok);
