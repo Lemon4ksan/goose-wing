@@ -42,7 +42,11 @@ fn test_load_balancer_circuit_breaker() {
 
     let idx3, ok3 = wing::select_upstream(cluster);
 
-    print("LB_CB: t0_fail_routed_to_t1=", (idx1 == 1 && idx2 == 1), " circuit_open=", cluster.circuit_open, " exhausted=", !ok3, "\n");
+    print(
+        "LB_CB: t0_fail_routed_to_t1=", (idx1 == 1 && idx2 == 1),
+        " circuit_open=", cluster.circuit_open,
+        " exhausted=", !ok3, "\n",
+    );
     // CHECK: LB_CB: t0_fail_routed_to_t1=true circuit_open=true exhausted=true
 
     // Recover target 0
@@ -83,7 +87,7 @@ fn test_reverse_proxy_hop_by_hop_stripping() {
     wing::append_header(in_headers, "TE", "trailers");
 
     var out_headers = wing::new_header_map();
-    var cfg = wing::new_proxy_config();
+    var cfg = wing::ProxyConfig { .. };
     cfg.preserve_host = false;
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-gw");
@@ -136,7 +140,7 @@ fn test_reverse_proxy_xff_chaining() {
     wing::append_header(in_headers, "X-Forwarded-For", "198.51.100.1, 10.0.0.1");
 
     var out_headers = wing::new_header_map();
-    let cfg = wing::new_proxy_config();
+    let cfg = wing::ProxyConfig { .. };
 
     wing::filter_and_forward_headers(
         in_headers,

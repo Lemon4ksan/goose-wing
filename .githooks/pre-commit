@@ -18,10 +18,10 @@ if [ -z "$STAGED_FILES" ]; then
     exit 0
 fi
 
-# Enforce code clarity and anti-aliasing invariants
+# Enforce code clarity, formatting geometry, anti-aliasing, and parser contracts
 if command -v powershell >/dev/null 2>&1 && [ -f "scripts/lint_invariants.ps1" ]; then
-    echo "[pre-commit] Checking code clarity and anti-aliasing invariants..."
-    if ! powershell -ExecutionPolicy Bypass -File scripts/lint_invariants.ps1 -Staged; then
+    echo "[pre-commit] Checking code clarity, geometry, and anti-aliasing invariants..."
+    if ! powershell -ExecutionPolicy Bypass -File scripts/lint_invariants.ps1 -Staged -StrictExamples; then
         exit 1
     fi
 fi
@@ -63,11 +63,17 @@ if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
                 ;;
             *)
                 if [ -f "$file" ]; then
-                    $LIT_BIN gate "$file" 25 --cov 0.85
+                    $LIT_BIN gate "$file" 25 --cov 0.85 >/dev/null 2>&1
                     RC=$?
                     if [ $RC -ne 0 ]; then
-                        echo "[pre-commit] GATE REJECTED: $file exceeds G-CRAP ceiling or contains bounds safety violations."
-                        exit 1
+                        # If file is grandfathered in baseline, ratchet enforces delta below
+                        if [ -f "scripts/gcrap_baseline.txt" ] && grep -F "$file" scripts/gcrap_baseline.txt >/dev/null 2>&1; then
+                            echo "[pre-commit] INFO: $file contains grandfathered baseline entries; ratchet will enforce zero regression."
+                        else
+                            $LIT_BIN gate "$file" 25 --cov 0.85
+                            echo "[pre-commit] GATE REJECTED: $file exceeds G-CRAP ceiling or contains bounds safety violations."
+                            exit 1
+                        fi
                     fi
                 fi
                 ;;

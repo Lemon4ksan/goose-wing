@@ -1,5 +1,6 @@
 # Binaries for programs and plugins
 bin/
+*.tmp
 *.exe
 *.exe~
 *.dll
@@ -26,6 +27,5 @@ tests/wasm_runner.c
 # goose-crap build artifacts and test binaries
 *.gcrap-cov
 *.gcrap-cov.raw
-*.gcrap-baseline.json
 *.gcrap_bak
 .system_generated/

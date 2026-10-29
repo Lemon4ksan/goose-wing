@@ -168,7 +168,7 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
     wing::append_header(in_map, "X-Forwarded-For", "198.51.100.1");
 
     var out_map = wing::new_header_map();
-    var cfg = wing::new_proxy_config();
+    var cfg = wing::ProxyConfig { .. };
     cfg.preserve_host = false;
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-chaos");

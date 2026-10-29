@@ -26,10 +26,6 @@ struct ProxyConfig {
     http_version: u8[..8] = "HTTP/1.1",
 }
 
-fn new_proxy_config() -> ProxyConfig {
-    return ProxyConfig { .. };
-}
-
 // Helper to format chained X-Forwarded-For value without in-branch bounded buffer operations.
 fn format_chained_xff(buf: u8[>..]&, existing_xff: const u8[:], client_ip: const u8[:]) {
     buf.clear();
@@ -216,42 +212,26 @@ struct ReverseProxy {
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy {
     return ReverseProxy {
         cluster: new_upstream_cluster(policy),
-        config: new_proxy_config(),
+        config: ProxyConfig { .. },
         rate_limiter: new_gateway_rate_limiter(100, 20),
         ..
     };
 }
 
-inline fn inc_proxy_dropped(proxy: ReverseProxy&) {
+fn record_proxy_dropped(proxy: ReverseProxy&) {
     proxy.total_dropped = proxy.total_dropped + 1;
 }
 
-fn record_proxy_dropped(proxy: ReverseProxy&) {
-    inc_proxy_dropped(proxy);
-}
-
-inline fn inc_proxy_forwarded(proxy: ReverseProxy&) {
+fn record_proxy_forwarded(proxy: ReverseProxy&) {
     proxy.total_forwarded = proxy.total_forwarded + 1;
 }
 
-fn record_proxy_forwarded(proxy: ReverseProxy&) {
-    inc_proxy_forwarded(proxy);
-}
-
-inline fn inc_proxy_rate_limited(proxy: ReverseProxy&) {
+fn record_proxy_rate_limited(proxy: ReverseProxy&) {
     proxy.total_rate_limited = proxy.total_rate_limited + 1;
 }
 
-fn record_proxy_rate_limited(proxy: ReverseProxy&) {
-    inc_proxy_rate_limited(proxy);
-}
-
-inline fn inc_proxy_overloaded(proxy: ReverseProxy&) {
-    proxy.total_overloaded = proxy.total_overloaded + 1;
-}
-
 fn record_proxy_overloaded(proxy: ReverseProxy&) {
-    inc_proxy_overloaded(proxy);
+    proxy.total_overloaded = proxy.total_overloaded + 1;
 }
 
 // Checks if an upstream target has exceeded its maximum concurrent active connections.

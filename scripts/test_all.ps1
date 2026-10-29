@@ -41,8 +41,11 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect
     return [System.Diagnostics.Process]::Start($psi)
 }
 
+# Determine total verification steps
+$totalSteps = if ($CheckOnly) { 2 } else { 3 }
+
 # Typecheck core and wing libraries
-Write-Host "`n[1/3] Typechecking core and wing libraries..." -ForegroundColor Yellow
+Write-Host "`n[1/$totalSteps] Typechecking core and wing libraries..." -ForegroundColor Yellow
 $swCore = [System.Diagnostics.Stopwatch]::StartNew()
 $corePath = Join-Path $root "core.goose"
 $checkCoreOut = & goose check $corePath 2>&1
@@ -86,7 +89,7 @@ if ($testFiles.Count -eq 0) {
 
 # Check-only mode
 if ($CheckOnly) {
-    Write-Host "`n[2/2] Running typecheck on $($testFiles.Count) suites..." -ForegroundColor Yellow
+    Write-Host "`n[2/$totalSteps] Running typecheck on $($testFiles.Count) suites..." -ForegroundColor Yellow
     $swCheck = [System.Diagnostics.Stopwatch]::StartNew()
     $failed = 0
     foreach ($file in $testFiles) {
@@ -108,7 +111,7 @@ if ($CheckOnly) {
 
 # Parallel compilation
 $maxConcurrent = if ($Jobs -gt 0) { [Math]::Min($Jobs, [Environment]::ProcessorCount) } else { 4 }
-Write-Host "`n[2/3] Compiling $($testFiles.Count) suites (max $maxConcurrent parallel, $optFlag)..." -ForegroundColor Yellow
+Write-Host "`n[2/$totalSteps] Compiling $($testFiles.Count) suites (max $maxConcurrent parallel, $optFlag)..." -ForegroundColor Yellow
 $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
 
 if (-not (Test-Path $binDir)) {
@@ -174,7 +177,7 @@ if ($buildFailed -ne 0) {
 Write-Host "  All $($testFiles.Count) suites compiled cleanly in $($swBuild.Elapsed.TotalSeconds.ToString('F2')) s." -ForegroundColor Green
 
 # Execute test suites
-Write-Host "`n[3/3] Executing verification suites..." -ForegroundColor Yellow
+Write-Host "`n[3/$totalSteps] Executing verification suites..." -ForegroundColor Yellow
 $swRun = [System.Diagnostics.Stopwatch]::StartNew()
 $passedSuites = 0
 $failedSuites = 0
