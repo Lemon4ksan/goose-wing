@@ -116,11 +116,6 @@ inline fn build_stream_frame_type(flags: QuicStreamFlags) -> u64 {
     return t;
 }
 
-// Computes next slice offset after consuming reader cursor bytes.
-inline fn calc_next_offset(offset: u64, cursor: i64) -> u64 {
-    return offset + (cursor as u64);
-}
-
 // ---- 4. Dedicated Frame Encoders (RFC 9000 Section 19) ----------------------
 
 // Encodes one or more PADDING frames (0x00) into output buffer.
@@ -316,19 +311,19 @@ fn encode_connection_close_frame<B>(
 
 // ---- 5. Dedicated Frame Decoders (RFC 9000 Section 19) ----------------------
 
-// Decodes a RESET_STREAM frame (0x04) from SliceReader (RFC 9000 §19.4).
+// Decodes a RESET_STREAM frame (0x04) directly from slice with cursor (RFC 9000 §19.4).
 //
 // Example:
-//   r = [stream_id=4, error_code=0x10c, final_size=1024]
+//   src = [stream_id=4, error_code=0x10c, final_size=1024], idx = 0
 //   returns: QuicResetStreamFrame { stream_id: 4, error_code: 0x10c, final_size: 1024 }, ok = true
-fn decode_reset_stream_frame_reader(r: core::SliceReader&) -> QuicResetStreamFrame, bool {
-    let stream_id, ok_sid = quic_decode_varint_reader(r);
+inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> QuicResetStreamFrame, bool {
+    let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicResetStreamFrame { .. }, false; }
 
-    let error_code, ok_err = quic_decode_varint_reader(r);
+    let error_code, ok_err = quic_decode_varint_cursor(src, idx);
     guard ok_err else { return QuicResetStreamFrame { .. }, false; }
 
-    let final_size, ok_fs = quic_decode_varint_reader(r);
+    let final_size, ok_fs = quic_decode_varint_cursor(src, idx);
     guard ok_fs else { return QuicResetStreamFrame { .. }, false; }
 
     return QuicResetStreamFrame {
@@ -338,16 +333,16 @@ fn decode_reset_stream_frame_reader(r: core::SliceReader&) -> QuicResetStreamFra
     }, true;
 }
 
-// Decodes a STOP_SENDING frame (0x05) from SliceReader (RFC 9000 §19.5).
+// Decodes a STOP_SENDING frame (0x05) directly from slice with cursor (RFC 9000 §19.5).
 //
 // Example:
-//   r = [stream_id=4, error_code=0x10c]
+//   src = [stream_id=4, error_code=0x10c], idx = 0
 //   returns: QuicStopSendingFrame { stream_id: 4, error_code: 0x10c }, ok = true
-fn decode_stop_sending_frame_reader(r: core::SliceReader&) -> QuicStopSendingFrame, bool {
-    let stream_id, ok_sid = quic_decode_varint_reader(r);
+inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> QuicStopSendingFrame, bool {
+    let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicStopSendingFrame { .. }, false; }
 
-    let error_code, ok_err = quic_decode_varint_reader(r);
+    let error_code, ok_err = quic_decode_varint_cursor(src, idx);
     guard ok_err else { return QuicStopSendingFrame { .. }, false; }
 
     return QuicStopSendingFrame {
@@ -356,31 +351,29 @@ fn decode_stop_sending_frame_reader(r: core::SliceReader&) -> QuicStopSendingFra
     }, true;
 }
 
-// Decodes a CRYPTO frame (0x06) from SliceReader (RFC 9000 Section 19.6).
-// Assumes the frame type varint (0x06) has already been consumed from `r`.
+// Decodes a CRYPTO frame (0x06) directly from slice with cursor (RFC 9000 Section 19.6).
+// Assumes the frame type varint (0x06) has already been consumed.
 //
 // Example:
-//   r = [0x00, 0x04, 't', 'e', 's', 't'], cursor = 0
-//   returns: QuicCryptoFrame { offset: 0, data: "test" }, ok = true, cursor = 6
-fn decode_crypto_frame_reader(r: core::SliceReader&) -> QuicCryptoFrame, bool {
-    let offset, ok_off = quic_decode_varint_reader(r);
+//   src = [0x00, 0x04, 't', 'e', 's', 't'], idx = 0
+//   returns: QuicCryptoFrame { offset: 0, data: "test" }, ok = true, idx = 6
+inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, bool {
+    let offset, ok_off = quic_decode_varint_cursor(src, idx);
     guard ok_off else { return QuicCryptoFrame { .. }, false; }
 
-    let data_len, ok_len = quic_decode_varint_reader(r);
+    let data_len, ok_len = quic_decode_varint_cursor(src, idx);
     guard ok_len else { return QuicCryptoFrame { .. }, false; }
 
-    // RFC 9000 Section 19.6: offset + length must not exceed 2^62 - 1
     guard quic_valid_offset_len(offset, data_len) else {
         return QuicCryptoFrame { .. }, false;
     }
-    guard (r.remaining() as u64) >= data_len else {
+    let dlen = data_len as i64;
+    guard idx + dlen <= src.len else {
         return QuicCryptoFrame { .. }, false;
     }
 
-    let payload, err = r.read_slice(data_len as i64);
-    guard err == core::IoError.None else {
-        return QuicCryptoFrame { .. }, false;
-    }
+    let payload = src[idx..idx + dlen];
+    idx += dlen;
 
     return QuicCryptoFrame {
         offset: offset,
@@ -388,14 +381,14 @@ fn decode_crypto_frame_reader(r: core::SliceReader&) -> QuicCryptoFrame, bool {
     }, true;
 }
 
-// Decodes a STREAM frame (0x08-0x0F) from SliceReader with zero allocations (RFC 9000 Section 19.8).
+// Decodes a STREAM frame (0x08-0x0F) directly from slice with cursor (RFC 9000 Section 19.8).
 // Flags encoded in `ftype`: 0x04 = OFF, 0x02 = LEN, 0x01 = FIN.
-// If LEN (0x02) is unset, consumes all remaining bytes in `r`.
+// If LEN (0x02) is unset, consumes all remaining bytes in `src`.
 //
 // Example:
-//   r = [0x04, 0x00, 0x02, 'o', 'k'], ftype = 0x0f (OFF|LEN|FIN), cursor = 0
-//   returns: QuicStreamFrame { stream_id: 4, offset: 0, fin: true, data: "ok" }, ok = true, cursor = 5
-fn decode_stream_frame_reader(r: core::SliceReader&, ftype: u64) -> QuicStreamFrame, bool {
+//   src = [0x04, 0x00, 0x02, 'o', 'k'], idx = 0, ftype = 0x0f (OFF|LEN|FIN)
+//   returns: QuicStreamFrame { stream_id: 4, offset: 0, fin: true, data: "ok" }, ok = true, idx = 5
+inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicStreamFrame, bool {
     guard ftype >= QUIC_FRAME_STREAM_BASE && ftype <= QUIC_STREAM_MAX_TYPE else {
         return QuicStreamFrame { .. }, false;
     }
@@ -403,37 +396,37 @@ fn decode_stream_frame_reader(r: core::SliceReader&, ftype: u64) -> QuicStreamFr
     let has_len = (ftype & QUIC_STREAM_FLAG_LEN) != 0;
     let has_off = (ftype & QUIC_STREAM_FLAG_OFF) != 0;
 
-    let stream_id, ok_sid = quic_decode_varint_reader(r);
+    let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicStreamFrame { .. }, false; }
 
     var offset: u64 = 0;
     if has_off {
-        let off_val, ok_off = quic_decode_varint_reader(r);
+        let off_val, ok_off = quic_decode_varint_cursor(src, idx);
         guard ok_off else { return QuicStreamFrame { .. }, false; }
         offset = off_val;
     }
 
     var data_len: u64 = 0;
     if has_len {
-        let len_val, ok_len = quic_decode_varint_reader(r);
+        let len_val, ok_len = quic_decode_varint_cursor(src, idx);
         guard ok_len else { return QuicStreamFrame { .. }, false; }
         data_len = len_val;
     } else {
-        data_len = r.remaining() as u64;
+        let rem = src.len - idx;
+        guard rem >= 0 else { return QuicStreamFrame { .. }, false; }
+        data_len = rem as u64;
     }
 
-    // RFC 9000 Section 19.8: offset + length must not exceed 2^62 - 1
     guard quic_valid_offset_len(offset, data_len) else {
         return QuicStreamFrame { .. }, false;
     }
-    guard (r.remaining() as u64) >= data_len else {
+    let dlen = data_len as i64;
+    guard idx + dlen <= src.len else {
         return QuicStreamFrame { .. }, false;
     }
 
-    let payload, err = r.read_slice(data_len as i64);
-    guard err == core::IoError.None else {
-        return QuicStreamFrame { .. }, false;
-    }
+    let payload = src[idx..idx + dlen];
+    idx += dlen;
 
     return QuicStreamFrame {
         stream_id: stream_id,
@@ -443,29 +436,30 @@ fn decode_stream_frame_reader(r: core::SliceReader&, ftype: u64) -> QuicStreamFr
     }, true;
 }
 
-// Decodes a MAX_DATA frame (0x10) from SliceReader (RFC 9000 §19.9).
+// Decodes a MAX_DATA frame (0x10) directly from slice with cursor (RFC 9000 §19.9).
 //
 // Example:
-//   r = [max_data=0x100000]
-//   returns: QuicMaxDataFrame { max_data: 1048576 }, ok = true
-fn decode_max_data_frame_reader(r: core::SliceReader&) -> QuicMaxDataFrame, bool {
-    let max_data, ok = quic_decode_varint_reader(r);
-    guard ok else { return QuicMaxDataFrame { .. }, false; }
-
+//   src = [0x50, 0x00], idx = 0 (varint 4096)
+//   returns: QuicMaxDataFrame { max_data: 4096 }, ok = true, idx = 2
+inline fn decode_max_data_frame(src: const u8[:], idx: i64&) -> QuicMaxDataFrame, bool {
+    let max_data, ok = quic_decode_varint_cursor(src, idx);
+    guard ok && max_data <= QUIC_VARINT_MAX else { return QuicMaxDataFrame { .. }, false; }
     return QuicMaxDataFrame { max_data: max_data }, true;
 }
 
-// Decodes a MAX_STREAM_DATA frame (0x11) from SliceReader (RFC 9000 §19.10).
+// Decodes a MAX_STREAM_DATA frame (0x11) directly from slice with cursor (RFC 9000 §19.10).
 //
 // Example:
-//   r = [stream_id=8, max_stream_data=0x40000]
-//   returns: QuicMaxStreamDataFrame { stream_id: 8, max_stream_data: 262144 }, ok = true
-fn decode_max_stream_data_frame_reader(r: core::SliceReader&) -> QuicMaxStreamDataFrame, bool {
-    let stream_id, ok_sid = quic_decode_varint_reader(r);
+//   src = [0x04, 0x50, 0x00], idx = 0 (stream_id = 4, max_stream_data = 4096)
+//   returns: QuicMaxStreamDataFrame { stream_id: 4, max_stream_data: 4096 }, ok = true, idx = 3
+inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxStreamDataFrame, bool {
+    let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicMaxStreamDataFrame { .. }, false; }
 
-    let max_stream_data, ok_msd = quic_decode_varint_reader(r);
-    guard ok_msd else { return QuicMaxStreamDataFrame { .. }, false; }
+    let max_stream_data, ok_msd = quic_decode_varint_cursor(src, idx);
+    guard ok_msd && max_stream_data <= QUIC_VARINT_MAX else {
+        return QuicMaxStreamDataFrame { .. }, false;
+    }
 
     return QuicMaxStreamDataFrame {
         stream_id: stream_id,
@@ -475,27 +469,18 @@ fn decode_max_stream_data_frame_reader(r: core::SliceReader&) -> QuicMaxStreamDa
 
 // ---- 6. Frame Demuxer Dispatch Subroutines ----------------------------------
 
-// Decodes a single 1-byte PADDING frame.
+// Dispatches core QUIC frame types (0x00 - 0x11) directly from slice with cursor.
 //
 // Example:
-//   r = [0x00, ...]
-//   returns: QuicFrame { frame_type: Padding, raw_type: 0x00, length: 1 }, ok = true
-inline fn decode_padding_frame(r: core::SliceReader&) -> QuicFrame, bool {
-    return QuicFrame {
-        frame_type: QuicFrameType.Padding,
-        raw_type: QUIC_FRAME_PADDING,
-        length: 1,
-    }, true;
-}
-
-// Dispatches core QUIC frame types (0x00 - 0x11).
-//
-// Example:
-//   r = [0x00, ...], ftype = QUIC_FRAME_PING (0x01)
+//   src = [0x00, ...], idx = 0, ftype = QUIC_FRAME_PING (0x01)
 //   returns: QuicFrame { frame_type: Ping, raw_type: 0x01 }, ok = true
-fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
+fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == QUIC_FRAME_PADDING {
-        return decode_padding_frame(r);
+        return QuicFrame {
+            frame_type: QuicFrameType.Padding,
+            raw_type: QUIC_FRAME_PADDING,
+            length: 1,
+        }, true;
     }
     if ftype == QUIC_FRAME_PING {
         return QuicFrame {
@@ -504,7 +489,7 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
         }, true;
     }
     if ftype == QUIC_FRAME_RESET_STREAM {
-        let rst, ok = decode_reset_stream_frame_reader(r);
+        let rst, ok = decode_reset_stream_frame(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.ResetStream,
@@ -515,7 +500,7 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
         }, true;
     }
     if ftype == QUIC_FRAME_STOP_SENDING {
-        let ss, ok = decode_stop_sending_frame_reader(r);
+        let ss, ok = decode_stop_sending_frame(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.StopSending,
@@ -525,7 +510,7 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
         }, true;
     }
     if ftype == QUIC_FRAME_CRYPTO {
-        let cr, ok = decode_crypto_frame_reader(r);
+        let cr, ok = decode_crypto_frame(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.Crypto,
@@ -536,7 +521,7 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
         }, true;
     }
     if ftype >= QUIC_FRAME_STREAM_BASE && ftype <= QUIC_STREAM_MAX_TYPE {
-        let st, ok = decode_stream_frame_reader(r, ftype);
+        let st, ok = decode_stream_frame(src, idx, ftype);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.Stream,
@@ -549,7 +534,7 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
         }, true;
     }
     if ftype == QUIC_FRAME_MAX_DATA {
-        let md, ok = decode_max_data_frame_reader(r);
+        let md, ok = decode_max_data_frame(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.MaxData,
@@ -558,7 +543,7 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
         }, true;
     }
     if ftype == QUIC_FRAME_MAX_STREAM_DATA {
-        let msd, ok = decode_max_stream_data_frame_reader(r);
+        let msd, ok = decode_max_stream_data_frame(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.MaxStreamData,
@@ -573,11 +558,11 @@ fn demux_core_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
 // Dispatches stream count limit frames (0x12, 0x13, 0x16, 0x17).
 //
 // Example:
-//   r = [varint(100)], ftype = QUIC_FRAME_MAX_STREAMS_BIDI (0x12)
+//   src = [varint(100)], idx = 0, ftype = QUIC_FRAME_MAX_STREAMS_BIDI (0x12)
 //   returns: QuicFrame { frame_type: MaxStreamsBidi, max_data: 100 }, ok = true
-fn demux_streams_limit_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
+fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == QUIC_FRAME_MAX_STREAMS_BIDI || ftype == QUIC_FRAME_MAX_STREAMS_UNI {
-        let limit, ok = quic_decode_varint_reader(r);
+        let limit, ok = quic_decode_varint_cursor(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         let k = if ftype == QUIC_FRAME_MAX_STREAMS_BIDI {
             QuicFrameType.MaxStreamsBidi
@@ -587,7 +572,7 @@ fn demux_streams_limit_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bo
         return QuicFrame { frame_type: k, raw_type: ftype, max_data: limit }, true;
     }
     if ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == QUIC_FRAME_STREAMS_BLOCKED_UNI {
-        let lim, ok = quic_decode_varint_reader(r);
+        let lim, ok = quic_decode_varint_cursor(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         let k = if ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI {
             QuicFrameType.StreamsBlockedBidi
@@ -602,17 +587,17 @@ fn demux_streams_limit_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bo
 // Dispatches data blocked frames (0x14, 0x15).
 //
 // Example:
-//   r = [varint(5000)], ftype = QUIC_FRAME_DATA_BLOCKED (0x14)
+//   src = [varint(5000)], idx = 0, ftype = QUIC_FRAME_DATA_BLOCKED (0x14)
 //   returns: QuicFrame { frame_type: DataBlocked, max_data: 5000 }, ok = true
-fn demux_blocked_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
+fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == QUIC_FRAME_DATA_BLOCKED {
-        let limit, ok = quic_decode_varint_reader(r);
+        let limit, ok = quic_decode_varint_cursor(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
         return QuicFrame { frame_type: QuicFrameType.DataBlocked, raw_type: ftype, max_data: limit }, true;
     }
     if ftype == QUIC_FRAME_STREAM_DATA_BLOCKED {
-        let sid, ok_sid = quic_decode_varint_reader(r);
-        let lim, ok_lim = quic_decode_varint_reader(r);
+        let sid, ok_sid = quic_decode_varint_cursor(src, idx);
+        let lim, ok_lim = quic_decode_varint_cursor(src, idx);
         guard ok_sid && ok_lim else { return QuicFrame { .. }, false; }
         return QuicFrame {
             frame_type: QuicFrameType.StreamDataBlocked,
@@ -624,46 +609,89 @@ fn demux_blocked_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
     return QuicFrame { .. }, false;
 }
 
+// Decodes a CONNECTION_CLOSE frame (0x1C or 0x1D) directly from slice with cursor (RFC 9000 §19.19).
+//
+// Example:
+//   src = [0x00, 0x00, 0x02, 'b', 'y', 'e'], idx = 0, ftype = 0x1C
+//   returns: QuicFrame { frame_type: ConnectionClose, error_code: 0, payload: "bye" }, ok = true
+inline fn decode_connection_close_frame(
+    src: const u8[:],
+    idx: i64&,
+    ftype: u64,
+) -> QuicFrame, bool {
+    let err, ok_err = quic_decode_varint_cursor(src, idx);
+    guard ok_err else { return QuicFrame { .. }, false; }
+    var trigger_type: u64 = 0;
+    if ftype == QUIC_FRAME_CONNECTION_CLOSE {
+        let trg, ok_trg = quic_decode_varint_cursor(src, idx);
+        guard ok_trg else { return QuicFrame { .. }, false; }
+        trigger_type = trg;
+    }
+    let rlen, ok_rlen = quic_decode_varint_cursor(src, idx);
+    guard ok_rlen else { return QuicFrame { .. }, false; }
+    let ilen = rlen as i64;
+    guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
+    let reason = src[idx..idx + ilen];
+    idx += ilen;
+    let k = if ftype == QUIC_FRAME_CONNECTION_CLOSE {
+        QuicFrameType.ConnectionClose
+    } else {
+        QuicFrameType.ConnectionCloseApp
+    };
+    return QuicFrame {
+        frame_type: k,
+        raw_type: ftype,
+        error_code: err,
+        offset: trigger_type,
+        length: rlen,
+        payload: reason,
+    }, true;
+}
+
 // Dispatches connection management frames (0x1C - 0x1E).
 //
 // Example:
-//   r = [], ftype = QUIC_FRAME_HANDSHAKE_DONE (0x1E)
+//   src = [], idx = 0, ftype = QUIC_FRAME_HANDSHAKE_DONE (0x1E)
 //   returns: QuicFrame { frame_type: HandshakeDone, raw_type: 0x1E }, ok = true
-fn demux_session_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
+fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == QUIC_FRAME_HANDSHAKE_DONE {
         return QuicFrame { frame_type: QuicFrameType.HandshakeDone, raw_type: ftype }, true;
     }
     if ftype == QUIC_FRAME_CONNECTION_CLOSE || ftype == QUIC_FRAME_CONNECTION_CLOSE_APP {
-        let err, ok_err = quic_decode_varint_reader(r);
-        guard ok_err else { return QuicFrame { .. }, false; }
-        var trigger_type: u64 = 0;
-        if ftype == QUIC_FRAME_CONNECTION_CLOSE {
-            let trg, ok_trg = quic_decode_varint_reader(r);
-            guard ok_trg else { return QuicFrame { .. }, false; }
-            trigger_type = trg;
-        }
-        let rlen, ok_rlen = quic_decode_varint_reader(r);
-        guard ok_rlen && (r.remaining() as u64) >= rlen else { return QuicFrame { .. }, false; }
-        let reason, r_err = r.read_slice(rlen as i64);
-        guard r_err == core::IoError.None else { return QuicFrame { .. }, false; }
-        let k = if ftype == QUIC_FRAME_CONNECTION_CLOSE {
-            QuicFrameType.ConnectionClose
-        } else {
-            QuicFrameType.ConnectionCloseApp
-        };
-        return QuicFrame {
-            frame_type: k,
-            raw_type: ftype,
-            error_code: err,
-            offset: trigger_type,
-            length: rlen,
-            payload: reason,
-        }, true;
+        return decode_connection_close_frame(src, idx, ftype);
     }
     return QuicFrame { .. }, false;
 }
 
 // ---- 7. Zero-Allocation Frame Demuxer API -----------------------------------
+
+// Decodes a single QUIC frame directly from slice with cursor (RFC 9000 §19).
+// Advances `idx` past the decoded frame on success.
+//
+// Example:
+//   src = [0x01, 0x06, 0x00, 0x02, 'o', 'k'], idx = 0
+//   returns: QuicFrame { frame_type: Ping }, ok = true, idx = 1
+fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    guard idx < src.len else { return QuicFrame { .. }, false; }
+
+    let ftype, ok_type = quic_decode_varint_cursor(src, idx);
+    guard ok_type else { return QuicFrame { .. }, false; }
+
+    if ftype <= 0x11 {
+        return demux_core_frame(src, idx, ftype);
+    }
+    if ftype == QUIC_FRAME_MAX_STREAMS_BIDI || ftype == QUIC_FRAME_MAX_STREAMS_UNI ||
+       ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == QUIC_FRAME_STREAMS_BLOCKED_UNI {
+        return demux_streams_limit_frame(src, idx, ftype);
+    }
+    if ftype == QUIC_FRAME_DATA_BLOCKED || ftype == QUIC_FRAME_STREAM_DATA_BLOCKED {
+        return demux_blocked_frame(src, idx, ftype);
+    }
+    if ftype <= 0x1E {
+        return demux_session_frame(src, idx, ftype);
+    }
+    return QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown }, false;
+}
 
 // Decodes a single QUIC frame from SliceReader (RFC 9000 §19).
 // Advances cursor past the decoded frame on success.
@@ -672,25 +700,7 @@ fn demux_session_frame(r: core::SliceReader&, ftype: u64) -> QuicFrame, bool {
 //   r = [0x01, 0x06, 0x00, 0x02, 'o', 'k'], cursor = 0
 //   returns: QuicFrame { frame_type: Ping }, ok = true, cursor = 1
 fn decode_quic_frame_reader(r: core::SliceReader&) -> QuicFrame, bool {
-    guard !r.is_eof() else { return QuicFrame { .. }, false; }
-
-    let ftype, ok_type = quic_decode_varint_reader(r);
-    guard ok_type else { return QuicFrame { .. }, false; }
-
-    if ftype <= 0x11 {
-        return demux_core_frame(r, ftype);
-    }
-    if ftype == QUIC_FRAME_MAX_STREAMS_BIDI || ftype == QUIC_FRAME_MAX_STREAMS_UNI ||
-       ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == QUIC_FRAME_STREAMS_BLOCKED_UNI {
-        return demux_streams_limit_frame(r, ftype);
-    }
-    if ftype == QUIC_FRAME_DATA_BLOCKED || ftype == QUIC_FRAME_STREAM_DATA_BLOCKED {
-        return demux_blocked_frame(r, ftype);
-    }
-    if ftype <= 0x1E {
-        return demux_session_frame(r, ftype);
-    }
-    return QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown }, false;
+    return decode_quic_frame_cursor(r.data, r.cursor);
 }
 
 // Decodes a single QUIC frame from a byte slice at `offset`.
@@ -704,9 +714,8 @@ fn decode_quic_frame(src: const u8[:], offset: u64) -> QuicFrame, u64, bool {
     guard offset < (src.len as u64) else {
         return QuicFrame { .. }, offset, false;
     }
-    var r = core::new_slice_reader(src[(offset as i64)..]);
-    let frame, ok = decode_quic_frame_reader(r);
+    var idx = offset as i64;
+    let frame, ok = decode_quic_frame_cursor(src, idx);
     guard ok else { return frame, offset, false; }
-    let next_off = calc_next_offset(offset, r.cursor);
-    return frame, next_off, true;
+    return frame, idx as u64, true;
 }

@@ -91,42 +91,57 @@ fn quic_encode_varint<B>(out: B&, val: u64) -> bool {
     return true;
 }
 
-// Decodes a QUIC variable-length integer directly from a SliceReader.
-fn quic_decode_varint_reader(r: core::SliceReader&) -> u64, bool {
-    guard !r.is_eof() else { return 0, false; }
-    let first, ok = r.peek();
-    guard ok else { return 0, false; }
-
-    let vlen = quic_varint_len(first);
-    guard r.remaining() >= vlen else { return 0, false; }
+// Decodes a QUIC variable-length integer directly from a byte slice with an in-out cursor (RFC 9000 §16).
+//
+// Example:
+//   src = [0x40, 0x25], idx = 0
+//   returns: val = 37, ok = true, idx = 2
+inline fn quic_decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
+    guard idx >= 0 && idx < src.len else { return 0, false; }
+    let first = src[idx];
+    let vlen = (1 as i64) << ((first >> 6) & 0x03);
+    guard idx + vlen <= src.len else { return 0, false; }
 
     if vlen == 1 {
-        let b, _ = r.read_u8();
-        return (b & 0x3F), true;
+        idx += 1;
+        return first & 0x3F, true;
     }
     if vlen == 2 {
-        let v16, _ = r.read_u16_be();
-        return (v16 & 0x3FFF), true;
+        let val = (((first & 0x3F) as u64) << 8) | src[idx + 1];
+        idx += 2;
+        return val, true;
     }
     if vlen == 4 {
-        let v32, _ = r.read_u32_be();
-        return (v32 & 0x3FFFFFFF), true;
+        let val = (((first & 0x3F) as u64) << 24) |
+                  ((src[idx + 1] as u64) << 16) |
+                  ((src[idx + 2] as u64) << 8) |
+                  src[idx + 3];
+        idx += 4;
+        return val, true;
     }
-    if vlen == 8 {
-        let v64, _ = r.read_u64_be();
-        return (v64 & 0x3FFFFFFFFFFFFFFF), true;
-    }
-    return 0, false;
+    let val = (((first & 0x3F) as u64) << 56) |
+              ((src[idx + 1] as u64) << 48) |
+              ((src[idx + 2] as u64) << 40) |
+              ((src[idx + 3] as u64) << 32) |
+              ((src[idx + 4] as u64) << 24) |
+              ((src[idx + 5] as u64) << 16) |
+              ((src[idx + 6] as u64) << 8) |
+              src[idx + 7];
+    idx += 8;
+    return val, true;
 }
 
-// Decodes a variable-length integer from big-endian wire format.
+// Decodes a variable-length integer from big-endian wire format (RFC 9000 §16).
+//
+// Example:
+//   src = [0x40, 0x25], offset = 0
+//   returns: val = 37, next_offset = 2, ok = true
 fn quic_decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
     guard offset < (src.len as u64) else { return 0, offset, false; }
-    var r = core::new_slice_reader(src[(offset as i64)..]);
-    let val, ok = quic_decode_varint_reader(r);
+    var idx = offset as i64;
+    let val, ok = quic_decode_varint_cursor(src, idx);
     guard ok else { return 0, offset, false; }
-    guard (0xFFFFFFFFFFFFFFFF - offset) >= (r.cursor as u64) else { return 0, offset, false; }
-    return val, offset + (r.cursor as u64), true;
+    return val, idx as u64, true;
 }
 
 // Stream identifier classification helpers (RFC 9000 Section 2.1)
@@ -161,97 +176,144 @@ struct QuicHeader {
     header_len: u32 = 0,
 }
 
-// Parses unmasked QUIC Long or Short header up to the payload boundary.
-fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bool {
+// Parses a Version Negotiation Long Header (RFC 9000 §17.2.1).
+//
+// Example:
+//   src = [0x80, 0x00, 0x00, 0x00, 0x00, 0x04, ...], in_hdr = initial header
+//   returns: QuicHeader { header_type: VersionNegotiation, version: 0 }, ok = true
+fn parse_quic_version_negotiation(src: const u8[:], in_hdr: QuicHeader) -> QuicHeader, bool {
+    var hdr = in_hdr;
+    hdr.header_type = QuicHeaderType.VersionNegotiation;
+    guard src.len >= 7 else { return hdr, false; }
+    let dlen = src[5];
+    guard dlen <= (QUIC_MAX_CID_LEN as i64) && (7 + dlen) <= src.len else { return hdr, false; }
+    hdr.dcid.append(src[6..6 + dlen]);
+    let slen = src[6 + dlen];
+    guard slen <= (QUIC_MAX_CID_LEN as i64) && (7 + dlen + slen) <= src.len else { return hdr, false; }
+    hdr.scid.append(src[7 + dlen..7 + dlen + slen]);
+
+    // RFC 9000 §17.2.1: Version Negotiation packet MUST contain one or more 32-bit versions
+    let rem_versions = src.len - (7 + dlen + slen);
+    guard rem_versions >= 4 && (rem_versions & 3) == 0 else { return hdr, false; }
+
+    hdr.header_len = 7 + dlen + slen;
+    return hdr, true;
+}
+
+// Extracts DCID and SCID for Long Headers (RFC 9000 §17.2).
+//
+// Example:
+//   src = [0x04, 1, 2, 3, 4, 0x00], idx = 0
+//   returns: true, idx = 6, dcid = [1, 2, 3, 4], scid = []
+fn parse_quic_long_cids(
+    src: const u8[:],
+    idx: i64&,
+    dcid: u8[..20]&,
+    scid: u8[..20]&,
+) -> bool {
+    guard idx < src.len else { return false; }
+    let dlen = src[idx];
+    idx += 1;
+    guard dlen <= (QUIC_MAX_CID_LEN as i64) && idx + dlen <= src.len else { return false; }
+    dcid.append(src[idx..idx + dlen]);
+    idx += dlen;
+
+    guard idx < src.len else { return false; }
+    let slen = src[idx];
+    idx += 1;
+    guard slen <= (QUIC_MAX_CID_LEN as i64) && idx + slen <= src.len else { return false; }
+    scid.append(src[idx..idx + slen]);
+    idx += slen;
+    return true;
+}
+
+// Parses variable-length initial token for Initial packets (RFC 9000 §17.2.2).
+//
+// Example:
+//   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
+//   returns: true, idx = 5, token = "tokn"
+fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> bool {
+    let tok_len, ok_tok = quic_decode_varint_cursor(src, idx);
+    let itok = tok_len as i64;
+    guard ok_tok && idx + itok <= src.len && tok_len <= (token.cap as u64) else {
+        return false;
+    }
+    if itok > 0 {
+        token.append(src[idx..idx + itok]);
+        idx += itok;
+    }
+    return true;
+}
+
+// Maps 2-bit long packet type to QuicHeaderType enum (RFC 9000 §17.2).
+inline fn classify_long_header_type(long_type: u8) -> QuicHeaderType {
+    if long_type == 0 { return QuicHeaderType.Initial; }
+    if long_type == 1 { return QuicHeaderType.ZeroRtt; }
+    if long_type == 2 { return QuicHeaderType.Handshake; }
+    return QuicHeaderType.Retry;
+}
+
+// Parses a QUIC Long Header (RFC 9000 §17.2).
+//
+// Example:
+//   src = [0xC0, 0x00, 0x00, 0x00, 0x01, ...], first = 0xC0
+//   returns: QuicHeader { header_type: Initial, version: 1 }, ok = true
+fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
     var hdr = QuicHeader {};
-    guard src.len > 0 else { return hdr, false; }
+    guard src.len >= 5 else { return hdr, false; }
+    let ver = ((src[1] as u32) << 24) | ((src[2] as u32) << 16) |
+              ((src[3] as u32) << 8) | src[4];
+    hdr.version = ver;
 
-    let first = src[0];
-    let is_long = (first & 0x80) != 0;
+    if ver == QUIC_VERSION_NEGOTIATION {
+        return parse_quic_version_negotiation(src, hdr);
+    }
 
-    if is_long {
-        guard src.len >= 5 else { return hdr, false; }
-        let ver = ((src[1] as u32) << 24) | ((src[2] as u32) << 16) |
-                  ((src[3] as u32) << 8) | src[4];
-        hdr.version = ver;
+    // Fixed bit (0x40) MUST be set for non-Version Negotiation Long Headers (RFC 9000 §17.2)
+    guard (first & 0x40) != 0 else { return hdr, false; }
 
-        if ver == QUIC_VERSION_NEGOTIATION {
-            hdr.header_type = QuicHeaderType.VersionNegotiation;
-            guard src.len >= 7 else { return hdr, false; }
-            let dlen = src[5];
-            guard dlen <= QUIC_MAX_CID_LEN && (7 + dlen) <= src.len else { return hdr, false; }
-            hdr.dcid.append(src[6..6 + dlen]);
-            let slen = src[6 + dlen];
-            guard slen <= QUIC_MAX_CID_LEN && (7 + dlen + slen) <= src.len else { return hdr, false; }
-            hdr.scid.append(src[7 + dlen..7 + dlen + slen]);
+    hdr.header_type = classify_long_header_type((first >> 4) & 0x03);
 
-            // RFC 9000 §17.2.1: Version Negotiation packet MUST contain one or more 32-bit versions
-            let rem_versions = src.len - (7 + dlen + slen);
-            guard rem_versions >= 4 && (rem_versions & 3) == 0 else { return hdr, false; }
+    // Reserved bits check (RFC 9000 §17.2): For Initial, 0-RTT, and Handshake,
+    // bits 2 and 3 of byte 0 (mask 0x0C) are reserved and MUST be 0.
+    if hdr.header_type != QuicHeaderType.Retry {
+        guard (first & 0x0C) == 0 else { return hdr, false; }
+    }
 
-            hdr.header_len = 7 + dlen + slen;
-            return hdr, true;
-        }
+    var idx: i64 = 5;
+    guard parse_quic_long_cids(src, idx, hdr.dcid, hdr.scid) else { return hdr, false; }
 
-        // Fixed bit (0x40) MUST be set for non-Version Negotiation Long Headers (RFC 9000 §17.2)
-        guard (first & 0x40) != 0 else { return hdr, false; }
+    if hdr.header_type == QuicHeaderType.Initial {
+        guard parse_quic_initial_token(src, idx, hdr.token) else { return hdr, false; }
+    }
 
-        let long_type = (first >> 4) & 0x03;
-        hdr.header_type = if long_type == 0 {
-            QuicHeaderType.Initial
-        } else if long_type == 1 {
-            QuicHeaderType.ZeroRtt
-        } else if long_type == 2 {
-            QuicHeaderType.Handshake
-        } else {
-            QuicHeaderType.Retry
-        };
-
-        // Reserved bits check (RFC 9000 §17.2): For Initial, 0-RTT, and Handshake,
-        // bits 2 and 3 of byte 0 (mask 0x0C) are reserved and MUST be 0.
-        if hdr.header_type != QuicHeaderType.Retry {
-            guard (first & 0x0C) == 0 else { return hdr, false; }
-        }
-
-        var off: u64 = 5;
-        guard off < (src.len as u64) else { return hdr, false; }
-        let dlen = src[off]; off++;
-        guard dlen <= QUIC_MAX_CID_LEN && (off + dlen) <= (src.len as u64) else { return hdr, false; }
-        hdr.dcid.append(src[off..off + dlen]);
-        off += dlen;
-
-        guard off < (src.len as u64) else { return hdr, false; }
-        let slen = src[off]; off++;
-        guard slen <= QUIC_MAX_CID_LEN && (off + slen) <= (src.len as u64) else { return hdr, false; }
-        hdr.scid.append(src[off..off + slen]);
-        off += slen;
-
-        if hdr.header_type == QuicHeaderType.Initial {
-            let tok_len, next_tok, ok_tok = quic_decode_varint(src, off);
-            guard ok_tok && (next_tok + tok_len) <= (src.len as u64) && tok_len <= (hdr.token.cap as u64) else { return hdr, false; }
-            if tok_len > 0 {
-                hdr.token.append(src[next_tok..next_tok + tok_len]);
-            }
-            off = next_tok + tok_len;
-        }
-
-        if hdr.header_type == QuicHeaderType.Retry {
-            hdr.header_len = off as u32;
-            return hdr, true;
-        }
-
-        let plen, next_plen, ok_plen = quic_decode_varint(src, off);
-        guard ok_plen else { return hdr, false; }
-        hdr.payload_length = plen;
-        hdr.pn_offset = next_plen as u32;
-        hdr.pn_length = (first & 0x03) + 1;
-        guard plen >= hdr.pn_length else { return hdr, false; }
-        guard (0xFFFFFFFFFFFFFFFF - next_plen) >= hdr.pn_length && (next_plen + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
-        hdr.header_len = (next_plen + hdr.pn_length) as u32;
+    if hdr.header_type == QuicHeaderType.Retry {
+        hdr.header_len = idx as u32;
         return hdr, true;
     }
 
-    // Short Header (1-RTT)
+    let plen, ok_plen = quic_decode_varint_cursor(src, idx);
+    guard ok_plen else { return hdr, false; }
+    hdr.payload_length = plen;
+    hdr.pn_offset = idx as u32;
+    hdr.pn_length = (first & 0x03) + 1;
+    let ipn = hdr.pn_length as i64;
+    guard plen >= hdr.pn_length && idx + ipn <= src.len else { return hdr, false; }
+    hdr.header_len = (idx + ipn) as u32;
+    return hdr, true;
+}
+
+// Parses a Short Header (1-RTT) (RFC 9000 §17.3).
+//
+// Example:
+//   src = [0x40, 0x01, 0x02, 0x03, 0x04, 0x05], first = 0x40, dcid_len_short = 4
+//   returns: QuicHeader { header_type: OneRtt, dcid: [1, 2, 3, 4] }, ok = true
+fn parse_quic_short_header(
+    src: const u8[:],
+    first: u8,
+    dcid_len_short: u8,
+) -> QuicHeader, bool {
+    var hdr = QuicHeader {};
     // Fixed bit (0x40) MUST be set (RFC 9000 §17.3)
     guard (first & 0x40) != 0 else { return hdr, false; }
     // Reserved bits check (RFC 9000 §17.3): Bits 3 and 4 of byte 0 (mask 0x18) MUST be 0
@@ -261,17 +323,33 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
     hdr.spin_bit = (first & 0x20) != 0;
     hdr.key_phase = (first & 0x04) != 0;
 
-    var off: u64 = 1;
-    guard (off + dcid_len_short) <= (src.len as u64) else { return hdr, false; }
-    if dcid_len_short > 0 {
-        hdr.dcid.append(src[off..off + dcid_len_short]);
-        off += dcid_len_short;
+    let dlen = dcid_len_short as i64;
+    var idx: i64 = 1;
+    guard idx + dlen <= src.len else { return hdr, false; }
+    if dlen > 0 {
+        hdr.dcid.append(src[idx..idx + dlen]);
+        idx += dlen;
     }
-    hdr.pn_offset = off as u32;
+    hdr.pn_offset = idx as u32;
     hdr.pn_length = (first & 0x03) + 1;
-    guard (off + hdr.pn_length) <= (src.len as u64) else { return hdr, false; }
-    hdr.header_len = (off + hdr.pn_length) as u32;
+    let ipn = hdr.pn_length as i64;
+    guard idx + ipn <= src.len else { return hdr, false; }
+    hdr.header_len = (idx + ipn) as u32;
     return hdr, true;
+}
+
+// Parses unmasked QUIC Long or Short header up to the payload boundary (RFC 9000 §17).
+//
+// Example:
+//   src = [0x40, 0x01, 0x02, 0x03, 0x04, 0x05], dcid_len_short = 4
+//   returns: QuicHeader { header_type: OneRtt, dcid: [1, 2, 3, 4] }, ok = true
+fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bool {
+    guard src.len > 0 else { return QuicHeader { .. }, false; }
+    let first = src[0];
+    if (first & 0x80) != 0 {
+        return parse_quic_long_header(src, first);
+    }
+    return parse_quic_short_header(src, first, dcid_len_short);
 }
 
 // Encodes a QUIC Long or Short header in unmasked form into out buffer.
@@ -424,6 +502,10 @@ const QUIC_PN_LIMIT: u64 = (1 as u64) << 62; // 2^62
 
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
 // Returns (reconstructed_pn, ok). If reconstructed PN exceeds 2^62 - 1 or pn_len is invalid, ok is false.
+//
+// Example:
+//   largest_acked_pn = 100, truncated_pn = 101, pn_len = 1
+//   returns: 101, ok = true
 fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64, bool {
     guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn, false; }
     guard largest_acked_pn <= QUIC_MAX_PN else { return 0, false; }
@@ -438,11 +520,15 @@ fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len
 
     let candidate_pn = (expected_pn & ~pn_mask) | truncated_pn;
 
-    if expected_pn >= pnhwin && candidate_pn <= (expected_pn - pnhwin) && candidate_pn < (QUIC_PN_LIMIT - pn_win) {
+    if expected_pn >= pnhwin &&
+       candidate_pn <= (expected_pn - pnhwin) &&
+       candidate_pn < (QUIC_PN_LIMIT - pn_win) {
         let res = candidate_pn + pn_win;
         return res, res <= QUIC_MAX_PN;
     }
-    if (0xFFFFFFFFFFFFFFFF - expected_pn) >= pnhwin && candidate_pn > (expected_pn + pnhwin) && candidate_pn >= pn_win {
+    if (0xFFFFFFFFFFFFFFFF - expected_pn) >= pnhwin &&
+       candidate_pn > (expected_pn + pnhwin) &&
+       candidate_pn >= pn_win {
         let res = candidate_pn - pn_win;
         return res, res <= QUIC_MAX_PN;
     }
@@ -450,6 +536,10 @@ fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len
 }
 
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
+//
+// Example:
+//   largest_acked_pn = 100, truncated_pn = 101, pn_len = 1
+//   returns: 101
 fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
     guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn; }
     let pn, _ = decode_packet_number_checked(largest_acked_pn, truncated_pn, pn_len);
@@ -642,20 +732,31 @@ fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: boo
 }
 
 // Decodes an RFC 9221 QUIC DATAGRAM frame from wire slice.
-fn decode_quic_datagram_frame(src: const u8[:], offset: u64, packet_end: u64 = 0) -> const u8[:], u64, bool {
-    guard offset < src.len as u64 else { return "", offset, false; }
+//
+// Example:
+//   src = [0x31, 0x04, 't', 'e', 's', 't'], offset = 0
+//   returns: payload = "test", next_offset = 6, ok = true
+fn decode_quic_datagram_frame(
+    src: const u8[:],
+    offset: u64,
+    packet_end: u64 = 0,
+) -> const u8[:], u64, bool {
+    guard offset < (src.len as u64) else { return "", offset, false; }
     let ftype, off1, ok1 = quic_decode_varint(src, offset);
     guard ok1 else { return "", offset, false; }
 
+    let total_len = src.len as u64;
+    let limit = if packet_end > 0 && packet_end <= total_len { packet_end } else { total_len };
+
     if ftype == QUIC_FRAME_DATAGRAM {
-        let eff_end = if packet_end > 0 && packet_end <= src.len as u64 { packet_end } else { src.len as u64 };
-        guard off1 <= eff_end else { return "", offset, false; }
-        return src[(off1 as i64)..(eff_end as i64)], eff_end, true;
+        guard off1 <= limit else { return "", offset, false; }
+        return src[(off1 as i64)..(limit as i64)], limit, true;
     } else if ftype == QUIC_FRAME_DATAGRAM_LEN {
         let dlen, off2, ok2 = quic_decode_varint(src, off1);
         guard ok2 else { return "", offset, false; }
-        let limit = if packet_end > 0 && packet_end <= (src.len as u64) { packet_end } else { src.len as u64 };
-        guard (0xFFFFFFFFFFFFFFFF - off2) >= dlen && (off2 + dlen) <= limit else { return "", offset, false; }
+        guard (0xFFFFFFFFFFFFFFFF - off2) >= dlen && (off2 + dlen) <= limit else {
+            return "", offset, false;
+        }
         let eff_end = off2 + dlen;
         return src[(off2 as i64)..(eff_end as i64)], eff_end, true;
     }

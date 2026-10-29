@@ -40,6 +40,11 @@ fn jwt_alg_to_string(alg: JwtAlg) -> const u8[:] {
     };
 }
 
+// Parses a JWS algorithm token into a typed JwtAlg (RFC 7518 §3.1).
+//
+// Example:
+//   s = "HS256"
+//   returns: JwtAlg.HS256
 fn parse_jwt_alg(s: const u8[:]) -> JwtAlg {
     if s == "HS256" { return JwtAlg.HS256; }
     if s == "HS384" { return JwtAlg.HS384; }
@@ -64,7 +69,7 @@ enum JwtError {
     AudienceMismatch,      // aud claim does not match expected audience
     SubjectMismatch,       // sub claim does not match expected subject
     KeyNotFound,           // kid requested by token not found in JWKS
-    CriticalHeaderUnsupported, // crit header contains unsupported/unrecognized parameter (RFC 7515 §4.1.11 / RFC 8725 §3.8)
+    CriticalHeaderUnsupported, // crit header contains unsupported param (RFC 7515 §4.1.11 / RFC 8725 §3.8)
     TypeMismatch,          // typ header does not match expected type (RFC 8725 §3.11 / RFC 9068)
 }
 
@@ -166,6 +171,116 @@ struct SeenHeaderKey {
     name: u8[..64] = [],
 }
 
+// Parses critical header parameters from JSON array (RFC 7515 §4.1.11).
+//
+// Example:
+//   reader at "[\"b64\",\"claim\"]", scratch = []
+//   returns: out_crit with 2 elements, had_error = false
+inline fn parse_crit_header_elements(
+    reader: json::Reader&,
+    scratch: u8[>..]&,
+    out_crit: CritParam[..8]&,
+    had_error: bool&,
+) {
+    json::each_element(reader) {
+        scratch.clear();
+        let crit_name = json::read_string(reader, scratch);
+        if is_standard_jws_header_param(crit_name) {
+            had_error = true;
+        }
+        if out_crit.len < out_crit.cap && crit_name.len <= 32 {
+            var cp = CritParam { .. };
+            cp.name.append(crit_name);
+            out_crit.push(cp);
+        } else {
+            had_error = true;
+        }
+    };
+    if out_crit.len == 0 {
+        had_error = true;
+    }
+}
+
+inline fn is_header_key_present(name: const u8[:], seen: const SeenHeaderKey[..8]) -> bool {
+    for &o in seen {
+        if o.name[..] == name { return true; }
+    }
+    return false;
+}
+
+// Parses a single member of a JWT header JSON object.
+//
+// Example:
+//   key = "alg", reader at "\"HS256\"", scratch = []
+//   returns: out_header.alg = JwtAlg.HS256, seen_alg = true
+inline fn parse_jwt_header_member(
+    key: const u8[:],
+    reader: json::Reader&,
+    scratch: u8[>..]&,
+    out_header: JwtHeader&,
+    seen_alg: bool&,
+    seen_typ: bool&,
+    seen_kid: bool&,
+    seen_cty: bool&,
+    seen_crit: bool&,
+    seen_others: SeenHeaderKey[..8]&,
+    had_error: bool&,
+) {
+    if key == "alg" {
+        if seen_alg { had_error = true; }
+        seen_alg = true;
+        let alg_str = json::read_string(reader, scratch);
+        out_header.alg = parse_jwt_alg(alg_str);
+    } else if key == "typ" {
+        if seen_typ { had_error = true; }
+        seen_typ = true;
+        let typ_str = json::read_string(reader, scratch);
+        if typ_str.len <= out_header.typ.cap {
+            out_header.typ.clear();
+            out_header.typ.append(typ_str);
+        } else { had_error = true; }
+    } else if key == "kid" {
+        if seen_kid { had_error = true; }
+        seen_kid = true;
+        let kid_str = json::read_string(reader, scratch);
+        if kid_str.len <= out_header.kid.cap {
+            out_header.kid.clear();
+            out_header.kid.append(kid_str);
+        } else { had_error = true; }
+    } else if key == "cty" {
+        if seen_cty { had_error = true; }
+        seen_cty = true;
+        let cty_str = json::read_string(reader, scratch);
+        if cty_str.len <= out_header.cty.cap {
+            out_header.cty.clear();
+            out_header.cty.append(cty_str);
+        } else { had_error = true; }
+    } else if key == "crit" {
+        if seen_crit { had_error = true; }
+        seen_crit = true;
+        let p = json::peek(reader);
+        if p == '[' {
+            parse_crit_header_elements(reader, scratch, out_header.crit, had_error);
+        } else {
+            json::skip(reader);
+            had_error = true;
+        }
+    } else {
+        if is_header_key_present(key, seen_others) { had_error = true; }
+        if seen_others.len < seen_others.cap && key.len <= 64 {
+            var item = SeenHeaderKey { .. };
+            item.name.append(key);
+            seen_others.push(item);
+        }
+        json::skip(reader);
+    }
+}
+
+// Parses a decoded JSON byte slice into a JwtHeader struct (RFC 7515 §4).
+//
+// Example:
+//   json_bytes = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
+//   returns: ok = true, out_header.alg = JwtAlg.HS256
 fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> bool {
     var reader = json::reader(json_bytes);
     var scratch: u8[>..] = [];
@@ -183,109 +298,21 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
 
     json::each_member(reader) { key =>
         scratch.clear();
-        if key == "alg" {
-            if seen_alg {
-                had_error = true;
-            }
-            seen_alg = true;
-            let alg_str = json::read_string(reader, scratch);
-            out_header.alg = parse_jwt_alg(alg_str);
-        } else if key == "typ" {
-            if seen_typ {
-                had_error = true;
-            }
-            seen_typ = true;
-            let typ_str = json::read_string(reader, scratch);
-            if typ_str.len <= out_header.typ.cap {
-                out_header.typ.clear();
-                out_header.typ.append(typ_str);
-            } else {
-                had_error = true;
-            }
-        } else if key == "kid" {
-            if seen_kid {
-                had_error = true;
-            }
-            seen_kid = true;
-            let kid_str = json::read_string(reader, scratch);
-            if kid_str.len <= out_header.kid.cap {
-                out_header.kid.clear();
-                out_header.kid.append(kid_str);
-            } else {
-                had_error = true;
-            }
-        } else if key == "cty" {
-            if seen_cty {
-                had_error = true;
-            }
-            seen_cty = true;
-            let cty_str = json::read_string(reader, scratch);
-            if cty_str.len <= out_header.cty.cap {
-                out_header.cty.clear();
-                out_header.cty.append(cty_str);
-            } else {
-                had_error = true;
-            }
-        } else if key == "crit" {
-            if seen_crit {
-                had_error = true;
-            }
-            seen_crit = true;
-            let p = json::peek(reader);
-            if p == '[' {
-                json::each_element(reader) {
-                    scratch.clear();
-                    let crit_name = json::read_string(reader, scratch);
-                    if is_standard_jws_header_param(crit_name) {
-                        had_error = true; // RFC 7515 §4.1.11: standard names forbidden in crit
-                    }
-                    if out_header.crit.len < out_header.crit.cap && crit_name.len <= 32 {
-                        var cp = CritParam { .. };
-                        cp.name.append(crit_name);
-                        out_header.crit.push(cp);
-                    } else {
-                        had_error = true;
-                    }
-                };
-                if out_header.crit.len == 0 {
-                    had_error = true; // RFC 7515 §4.1.11: crit MUST NOT be empty
-                }
-            } else {
-                json::skip(reader);
-                had_error = true;
-            }
-        } else {
-            for &o in seen_others {
-                if o.name[..] == key {
-                    had_error = true;
-                }
-            }
-            if seen_others.len < seen_others.cap && key.len <= 64 {
-                var item = SeenHeaderKey { .. };
-                item.name.append(key);
-                seen_others.push(item);
-            }
-            json::skip(reader);
-        }
+        parse_jwt_header_member(
+            key, reader, scratch, out_header,
+            seen_alg, seen_typ, seen_kid, seen_cty, seen_crit,
+            seen_others, had_error,
+        );
     };
 
     // RFC 7515 §4.1.11: Every parameter listed in crit MUST be present in the header
-    if out_header.crit.len > 0 {
-        for &cp in out_header.crit {
-            var present = false;
-            for &o in seen_others {
-                if o.name[..] == cp.name[..] {
-                    present = true;
-                    break;
-                }
-            }
-            if !present {
-                had_error = true;
-            }
+    for &cp in out_header.crit {
+        if !is_header_key_present(cp.name[..], seen_others) {
+            had_error = true;
         }
     }
 
-    return json::finish(reader) && !had_error;
+    return json::finish(reader) && !had_error && seen_alg;
 }
 
 // ---- 3. JWT Claims Model & Parser -------------------------------------------
@@ -309,10 +336,6 @@ struct JwtClaims {
     nbf: i64 = -1,
     iat: i64 = -1,
     custom_claims: JwtClaimItem[..16] = [],
-}
-
-fn new_jwt_claims() -> JwtClaims {
-    return JwtClaims { .. };
 }
 
 fn set_issuer(claims: JwtClaims&, iss: const u8[:]) {
@@ -476,6 +499,28 @@ fn has_claim(claims: const JwtClaims&, key: const u8[:]) -> bool {
     return false;
 }
 
+// Serializes audiences array in JSON format (RFC 7519 §4.1.3).
+inline fn serialize_audiences_array<B>(audiences: const u8[..128][..8], out: B&) {
+    out.push('[');
+    for i in audiences.len {
+        if i > 0 { out.push(','); }
+        json::format_string(out, audiences[i][..]);
+    }
+    out.push(']');
+}
+
+// Serializes a single custom JWT claim item in JSON format.
+inline fn serialize_custom_claim<B>(c: const JwtClaimItem&, out: B&) {
+    json::format_key(out, c.key[..]);
+    if c.is_num {
+        json::format_int(out, c.val_num);
+    } else if c.is_bool {
+        json::format_bool(out, c.val_bool);
+    } else {
+        json::format_string(out, c.val_str[..]);
+    }
+}
+
 fn serialize_jwt_claims<B>(claims: const JwtClaims&, out: B&) {
     out.push('{');
     var first = true;
@@ -494,12 +539,7 @@ fn serialize_jwt_claims<B>(claims: const JwtClaims&, out: B&) {
     if claims.audiences.len > 1 {
         if !first { out.push(','); }
         json::format_key(out, "aud");
-        out.push('[');
-        for i in claims.audiences.len {
-            if i > 0 { out.push(','); }
-            json::format_string(out, claims.audiences[i][..]);
-        }
-        out.push(']');
+        serialize_audiences_array(claims.audiences, out);
         first = false;
     } else if claims.aud.len > 0 {
         if !first { out.push(','); }
@@ -534,20 +574,117 @@ fn serialize_jwt_claims<B>(claims: const JwtClaims&, out: B&) {
 
     for &c in claims.custom_claims {
         if !first { out.push(','); }
-        json::format_key(out, c.key[..]);
-        if c.is_num {
-            json::format_int(out, c.val_num);
-        } else if c.is_bool {
-            json::format_bool(out, c.val_bool);
-        } else {
-            json::format_string(out, c.val_str[..]);
-        }
+        serialize_custom_claim(c, out);
         first = false;
     }
 
     out.push('}');
 }
 
+// Parses aud claim from a JSON string or array (RFC 7519 §4.1.3).
+//
+// Example:
+//   reader at "\"https://api.example.com\"", scratch = []
+//   returns: out_claims.aud = "https://api.example.com", had_error = false
+inline fn parse_aud_claim(
+    reader: json::Reader&,
+    scratch: u8[>..]&,
+    out_claims: JwtClaims&,
+    had_error: bool&,
+) {
+    let p = json::peek(reader);
+    if p == '"' {
+        let s = json::read_string(reader, scratch);
+        if s.len <= out_claims.aud.cap {
+            out_claims.aud.clear();
+            out_claims.aud.append(s);
+            if out_claims.audiences.len < out_claims.audiences.cap {
+                var item: u8[..128] = [];
+                item.append(s);
+                out_claims.audiences.push(item);
+            }
+        } else {
+            had_error = true;
+        }
+    } else if p == '[' {
+        json::each_element(reader) {
+            scratch.clear();
+            let s = json::read_string(reader, scratch);
+            if out_claims.aud.len == 0 && s.len <= out_claims.aud.cap {
+                out_claims.aud.append(s);
+            }
+            if out_claims.audiences.len < out_claims.audiences.cap && s.len <= 128 {
+                var item: u8[..128] = [];
+                item.append(s);
+                out_claims.audiences.push(item);
+            }
+        };
+    } else {
+        json::skip(reader);
+        had_error = true;
+    }
+}
+
+// Parses a custom JWT claim into custom_claims list.
+//
+// Example:
+//   key = "role", reader at "\"admin\"", scratch = []
+//   returns: out_claims.custom_claims includes ("role", "admin")
+inline fn parse_custom_claim_entry(
+    key: const u8[:],
+    reader: json::Reader&,
+    scratch: u8[>..]&,
+    out_claims: JwtClaims&,
+    had_error: bool&,
+) {
+    for &c in out_claims.custom_claims {
+        if c.key[..] == key {
+            had_error = true;
+        }
+    }
+    let p = json::peek(reader);
+    if p == '"' {
+        let s = json::read_string(reader, scratch);
+        if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 && s.len <= 256 {
+            var item = JwtClaimItem { .. };
+            item.key.append(key);
+            item.val_str.append(s);
+            out_claims.custom_claims.push(item);
+        } else {
+            had_error = true;
+        }
+    } else if p == 't' || p == 'f' {
+        let b = json::read_bool(reader);
+        if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 {
+            var item = JwtClaimItem { .. };
+            item.key.append(key);
+            item.val_bool = b;
+            item.is_bool = true;
+            out_claims.custom_claims.push(item);
+        } else {
+            had_error = true;
+        }
+    } else if (p >= '0' && p <= '9') || p == '-' {
+        let n = json::read_int(reader);
+        if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 {
+            var item = JwtClaimItem { .. };
+            item.key.append(key);
+            item.val_num = n;
+            item.is_num = true;
+            out_claims.custom_claims.push(item);
+        } else {
+            had_error = true;
+        }
+    } else {
+        json::skip(reader);
+    }
+}
+
+// Parses a decoded JSON byte slice into a JwtClaims struct (RFC 7519 §4).
+//
+// Example:
+//   json_bytes = "{\"sub\":\"user123\",\"exp\":1700000000}"
+//   returns: ok = true, out_claims.sub = "user123"
 fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> bool {
     var reader = json::reader(json_bytes);
     var scratch: u8[>..] = [];
@@ -572,152 +709,50 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     json::each_member(reader) { key =>
         scratch.clear();
         if key == "iss" {
-            if seen_iss {
-                had_error = true;
-            }
+            if seen_iss { had_error = true; }
             seen_iss = true;
             let s = json::read_string(reader, scratch);
             if s.len <= out_claims.iss.cap {
                 out_claims.iss.clear();
                 out_claims.iss.append(s);
-            } else {
-                had_error = true;
-            }
+            } else { had_error = true; }
         } else if key == "sub" {
-            if seen_sub {
-                had_error = true;
-            }
+            if seen_sub { had_error = true; }
             seen_sub = true;
             let s = json::read_string(reader, scratch);
             if s.len <= out_claims.sub.cap {
                 out_claims.sub.clear();
                 out_claims.sub.append(s);
-            } else {
-                had_error = true;
-            }
+            } else { had_error = true; }
         } else if key == "aud" {
-            if seen_aud {
-                had_error = true;
-            }
+            if seen_aud { had_error = true; }
             seen_aud = true;
-            let p = json::peek(reader);
-            if p == '"' {
-                let s = json::read_string(reader, scratch);
-                if s.len <= out_claims.aud.cap {
-                    out_claims.aud.clear();
-                    out_claims.aud.append(s);
-                    if out_claims.audiences.len < out_claims.audiences.cap {
-                        var item: u8[..128] = [];
-                        item.append(s);
-                        out_claims.audiences.push(item);
-                    }
-                } else {
-                    had_error = true;
-                }
-            } else if p == '[' {
-                json::each_element(reader) {
-                    scratch.clear();
-                    let s = json::read_string(reader, scratch);
-                    if out_claims.aud.len == 0 && s.len <= out_claims.aud.cap {
-                        out_claims.aud.append(s);
-                    }
-                    if out_claims.audiences.len < out_claims.audiences.cap && s.len <= 128 {
-                        var item: u8[..128] = [];
-                        item.append(s);
-                        out_claims.audiences.push(item);
-                    }
-                };
-            } else {
-                json::skip(reader);
-                had_error = true;
-            }
+            parse_aud_claim(reader, scratch, out_claims, had_error);
         } else if key == "jti" {
-            if seen_jti {
-                had_error = true;
-            }
+            if seen_jti { had_error = true; }
             seen_jti = true;
             let s = json::read_string(reader, scratch);
             if s.len <= out_claims.jti.cap {
                 out_claims.jti.clear();
                 out_claims.jti.append(s);
-            } else {
-                had_error = true;
-            }
+            } else { had_error = true; }
         } else if key == "exp" {
-            if seen_exp {
-                had_error = true;
-            }
+            if seen_exp { had_error = true; }
             seen_exp = true;
             let val = json::read_int(reader);
-            if val < 0 {
-                had_error = true;
-            } else {
-                out_claims.exp = val;
-            }
+            if val < 0 { had_error = true; } else { out_claims.exp = val; }
         } else if key == "nbf" {
-            if seen_nbf {
-                had_error = true;
-            }
+            if seen_nbf { had_error = true; }
             seen_nbf = true;
             let val = json::read_int(reader);
-            if val < 0 {
-                had_error = true;
-            } else {
-                out_claims.nbf = val;
-            }
+            if val < 0 { had_error = true; } else { out_claims.nbf = val; }
         } else if key == "iat" {
-            if seen_iat {
-                had_error = true;
-            }
+            if seen_iat { had_error = true; }
             seen_iat = true;
             let val = json::read_int(reader);
-            if val < 0 {
-                had_error = true;
-            } else {
-                out_claims.iat = val;
-            }
+            if val < 0 { had_error = true; } else { out_claims.iat = val; }
         } else {
-            for &c in out_claims.custom_claims {
-                if c.key[..] == key {
-                    had_error = true;
-                }
-            }
-            let p = json::peek(reader);
-            if p == '"' {
-                let s = json::read_string(reader, scratch);
-                if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 && s.len <= 256 {
-                    var item = JwtClaimItem { .. };
-                    item.key.append(key);
-                    item.val_str.append(s);
-                    out_claims.custom_claims.push(item);
-                } else {
-                    had_error = true;
-                }
-            } else if p == 't' || p == 'f' {
-                let b = json::read_bool(reader);
-                if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 {
-                    var item = JwtClaimItem { .. };
-                    item.key.append(key);
-                    item.val_bool = b;
-                    item.is_bool = true;
-                    out_claims.custom_claims.push(item);
-                } else {
-                    had_error = true;
-                }
-            } else if (p >= '0' && p <= '9') || p == '-' {
-                let n = json::read_int(reader);
-                if out_claims.custom_claims.len < out_claims.custom_claims.cap && key.len <= 64 {
-                    var item = JwtClaimItem { .. };
-                    item.key.append(key);
-                    item.val_num = n;
-                    item.is_num = true;
-                    out_claims.custom_claims.push(item);
-                } else {
-                    had_error = true;
-                }
-            } else {
-                json::skip(reader);
-            }
+            parse_custom_claim_entry(key, reader, scratch, out_claims, had_error);
         }
     };
     return json::finish(reader) && !had_error;
@@ -899,26 +934,20 @@ fn validate_jwt_not_before(nbf: i64, require_nbf: bool, leeway: i64, now_unix_se
     return !require_nbf;
 }
 
+inline fn claims_match_audience(claims: const JwtClaims&, expected: const u8[:]) -> bool {
+    if claims.aud.len > 0 && claims.aud[..] == expected { return true; }
+    for &a in claims.audiences {
+        if a[..] == expected { return true; }
+    }
+    return false;
+}
+
 fn validate_jwt_identity_claims(claims: const JwtClaims&, options: const JwtValidationOptions&) -> JwtError {
     if options.expected_issuer.len > 0 && claims.iss[..] != options.expected_issuer[..] {
         return JwtError.IssuerMismatch;
     }
-    if options.expected_audience.len > 0 {
-        var matched = false;
-        if claims.aud.len > 0 && claims.aud[..] == options.expected_audience[..] {
-            matched = true;
-        }
-        if !matched && claims.audiences.len > 0 {
-            for &a in claims.audiences {
-                if a[..] == options.expected_audience[..] {
-                    matched = true;
-                    break;
-                }
-            }
-        }
-        if !matched {
-            return JwtError.AudienceMismatch;
-        }
+    if options.expected_audience.len > 0 && !claims_match_audience(claims, options.expected_audience[..]) {
+        return JwtError.AudienceMismatch;
     }
     if options.expected_subject.len > 0 && claims.sub[..] != options.expected_subject[..] {
         return JwtError.SubjectMismatch;
@@ -941,6 +970,11 @@ fn validate_jwt_claims_rules(
     return validate_jwt_identity_claims(claims, options);
 }
 
+// Decodes and parses a base64url-encoded JWT header into a JwtHeader struct.
+//
+// Example:
+//   hdr_b64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+//   returns: JwtError.None, out_header.alg = JwtAlg.HS256
 fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
     var hdr_json: u8[>..] = [];
     guard core::base64url_decode(hdr_b64, hdr_json) else {
@@ -952,6 +986,11 @@ fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
     return JwtError.None;
 }
 
+// Decodes and parses a base64url-encoded JWT claims payload into a JwtClaims struct.
+//
+// Example:
+//   clm_b64 = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+//   returns: JwtError.None, out_claims.sub = "1234567890"
 fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
     var clm_json: u8[>..] = [];
     guard core::base64url_decode(clm_b64, clm_json) else {
@@ -963,7 +1002,11 @@ fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
     return JwtError.None;
 }
 
-// Decodes and parses header and claims without signature verification (useful for inspection)
+// Decodes and parses header and claims without signature verification (RFC 7519).
+//
+// Example:
+//   token = "header_b64.claims_b64.signature_b64"
+//   returns: JwtError.None, out_header and out_claims populated
 fn parse_jwt_unverified(
     token: const u8[:],
     out_header: JwtHeader&,
@@ -1009,6 +1052,13 @@ fn is_matching_jwt_typ(header_typ: const u8[:], expected_typ: const u8[:]) -> bo
     return false;
 }
 
+inline fn is_crit_param_supported(cp_name: const u8[:], supported: const CritParam[..8]) -> bool {
+    for &sc in supported {
+        if sc.name[..] == cp_name { return true; }
+    }
+    return false;
+}
+
 fn verify_jwt_header_rules(header: const JwtHeader&, options: const JwtValidationOptions&) -> JwtError {
     let alg_err = verify_jwt_algorithm(header.alg, options.expected_alg, options.allow_none_alg);
     guard alg_err == JwtError.None else { return alg_err; }
@@ -1023,14 +1073,7 @@ fn verify_jwt_header_rules(header: const JwtHeader&, options: const JwtValidatio
     // RFC 7515 §4.1.11 / RFC 8725 §3.8: Critical Header Parameters (crit)
     if header.crit.len > 0 {
         for &cp in header.crit {
-            var found = false;
-            for &sc in options.supported_crit {
-                if sc.name[..] == cp.name[..] {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
+            if !is_crit_param_supported(cp.name[..], options.supported_crit) {
                 return JwtError.CriticalHeaderUnsupported;
             }
         }

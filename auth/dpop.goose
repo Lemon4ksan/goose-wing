@@ -42,6 +42,35 @@ struct DPoPConfig {
 
 // ---- 3. Helper Functions: URI Normalization & Access Token Hash -------------
 
+// Scans URI delimiter boundaries for RFC 9449 normalization.
+//
+// Example:
+//   raw_uri = "https://example.com:443/resource?query=1#frag"
+//   returns: end_idx = 35, path_start = 25, ok = true (end before '?', path at '/')
+inline fn scan_uri_delimiters(raw_uri: const u8[:]) -> i64, i64, bool {
+    var end_idx = raw_uri.len;
+    for i in raw_uri.len {
+        let b = raw_uri[i];
+        if b == '?' || b == '#' {
+            end_idx = i;
+            break;
+        }
+        guard b != '\\' else { return 0, 0, false; }
+    }
+    var slash_cnt = 0;
+    var path_start = -1;
+    for k in end_idx {
+        if raw_uri[k] == '/' {
+            slash_cnt += 1;
+            if slash_cnt == 3 {
+                path_start = k;
+                break;
+            }
+        }
+    }
+    return end_idx, path_start, true;
+}
+
 // Normalizes target URI for the "htu" claim (RFC 9449 Section 4.2).
 // Strips query string and fragment, forces scheme and host to lowercase.
 fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
@@ -52,32 +81,9 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
         return false;
     }
 
-    var i = 0;
-    // Find query '?' or fragment '#' to truncate
-    var end_idx = raw_uri.len;
-    while i < raw_uri.len {
-        if raw_uri[i] == '?' || raw_uri[i] == '#' {
-            end_idx = i;
-            break;
-        }
-        guard raw_uri[i] != '\\' else { return false; }
-        i += 1;
-    }
-
-    var scheme_host_end = end_idx;
-    var path_start = -1;
-    // Find path start (first '/' after "://")
-    var slash_cnt = 0;
-    for k in end_idx {
-        if raw_uri[k] == '/' {
-            slash_cnt += 1;
-            if slash_cnt == 3 {
-                path_start = k;
-                scheme_host_end = k;
-                break;
-            }
-        }
-    }
+    let end_idx, path_start, ok = scan_uri_delimiters(raw_uri);
+    guard ok else { return false; }
+    let scheme_host_end = if path_start != -1 { path_start } else { end_idx };
 
     // RFC 3986 §3.2.1: Reject userinfo in authority
     guard !raw_uri[..scheme_host_end].contains('@') else { return false; }
@@ -145,6 +151,55 @@ fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") {
 
 // ---- 4. DPoP Proof JWT Generation -------------------------------------------
 
+// Serializes DPoP claims JSON payload (RFC 9449 §4.2).
+inline fn build_dpop_claims_json<B>(
+    method: const u8[:],
+    norm_uri: const u8[:],
+    access_token: const u8[:],
+    nonce: const u8[:],
+    now_sec: i64,
+    jti: const u8[:],
+    out: B&,
+) {
+    out.clear();
+    out.append("{\"jti\":\"");
+    if jti.len > 0 {
+        out.append(jti);
+    } else {
+        var auto_jti: u8[..32] = [];
+        generate_dpop_jti(auto_jti);
+        out.append(auto_jti[..]);
+    }
+    out.append("\",\"htm\":\"");
+    for b in method {
+        if b >= 'a' && b <= 'z' {
+            out.push(b - 32);
+        } else {
+            out.push(b);
+        }
+    }
+    out.append("\",\"htu\":\"");
+    out.append(norm_uri);
+    out.append("\",\"iat\":");
+    core::format_i64_dec(now_sec, out);
+
+    if nonce.len > 0 {
+        out.append(",\"nonce\":\"");
+        out.append(nonce);
+        out.push('"' as u8);
+    }
+
+    if access_token.len > 0 {
+        var ath: u8[..64] = [];
+        compute_dpop_ath(access_token, ath);
+        out.append(",\"ath\":\"");
+        out.append(ath[..]);
+        out.push('"' as u8);
+    }
+
+    out.push('}' as u8);
+}
+
 // Creates an RFC 9449 signed DPoP Proof JWT:
 // `header_b64.claims_b64.signature_b64`
 fn create_dpop_proof<B>(
@@ -171,43 +226,7 @@ fn create_dpop_proof<B>(
     }
 
     var claims_json: u8[..512] = [];
-    claims_json.append("{\"jti\":\"");
-    if jti.len > 0 {
-        claims_json.append(jti);
-    } else {
-        var auto_jti: u8[..32] = [];
-        generate_dpop_jti(auto_jti);
-        claims_json.append(auto_jti[..]);
-    }
-    claims_json.append("\",\"htm\":\"");
-    // Uppercase method
-    for b in method {
-        if b >= 'a' && b <= 'z' {
-            claims_json.push(b - 32);
-        } else {
-            claims_json.push(b);
-        }
-    }
-    claims_json.append("\",\"htu\":\"");
-    claims_json.append(norm_uri[..]);
-    claims_json.append("\",\"iat\":");
-    core::format_i64_dec(now_sec, claims_json);
-
-    if nonce.len > 0 {
-        claims_json.append(",\"nonce\":\"");
-        claims_json.append(nonce);
-        claims_json.push('"' as u8);
-    }
-
-    if access_token.len > 0 {
-        var ath: u8[..64] = [];
-        compute_dpop_ath(access_token, ath);
-        claims_json.append(",\"ath\":\"");
-        claims_json.append(ath[..]);
-        claims_json.push('"' as u8);
-    }
-
-    claims_json.push('}' as u8);
+    build_dpop_claims_json(method, norm_uri[..], access_token, nonce, now_sec, jti, claims_json);
 
     var claims_b64: u8[..768] = [];
     core::base64url_encode(claims_json[..], claims_b64);
@@ -271,15 +290,15 @@ fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: 
     let expected_sig = core::hmac_sha256(key, signing_input);
     var expected_sig_b64: u8[..64] = [];
     core::base64url_encode(expected_sig[..], expected_sig_b64);
-
     guard expected_sig_b64.len == sig_b64.len else { return false; }
-    var diff: u8 = 0;
-    for i in sig_b64.len {
-        diff |= sig_b64[i] ^ expected_sig_b64[i];
-    }
-    return diff == 0;
+    return core::ct_eq_bytes(sig_b64, expected_sig_b64[..]);
 }
 
+// Extracts a string claim value from a JSON payload without allocations.
+//
+// Example:
+//   json = "{\"jti\":\"dpop-123\",\"htm\":\"POST\"}", claim_name = "\"jti\""
+//   returns: "dpop-123", ok = true
 fn extract_json_string_claim(json: const u8[:], claim_name: const u8[:]) -> const u8[:], bool {
     let key_idx = core::index_of_slice(json, claim_name);
     guard key_idx >= 0 else { return "", false; }
@@ -292,6 +311,11 @@ fn extract_json_string_claim(json: const u8[:], claim_name: const u8[:]) -> cons
     return after_colon[1..1 + rel_q], true;
 }
 
+// Extracts an integer claim value from a JSON payload.
+//
+// Example:
+//   json = "{\"iat\":1700000000,\"exp\":1700003600}", claim_name = "\"iat\""
+//   returns: 1700000000, ok = true
 fn extract_json_int_claim(json: const u8[:], claim_name: const u8[:]) -> i64, bool {
     let key_idx = core::index_of_slice(json, claim_name);
     guard key_idx >= 0 else { return 0, false; }
@@ -443,7 +467,11 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
     }
 }
 
-// Extracts DPoP-Nonce from response headers as a zero-copy slice.
+// Extracts DPoP-Nonce from response headers as a zero-copy slice (RFC 9449 §8).
+//
+// Example:
+//   headers = [{"DPoP-Nonce", "eyJhbGciOi..."}]
+//   returns: "eyJhbGciOi...", ok = true
 fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
     for idx in headers.len {
         if core::eq_ascii_fold(headers[idx].name[..], DPOP_NONCE_HEADER) {
@@ -454,6 +482,10 @@ fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
 }
 
 // Extracts DPoP-Nonce into a target buffer (cleared only on success).
+//
+// Example:
+//   headers = [{"DPoP-Nonce", "nonce-xyz"}], out_nonce = ""
+//   returns: ok = true, out_nonce = "nonce-xyz"
 fn extract_dpop_nonce<H, B>(headers: const H[:], out_nonce: B&) -> bool {
     let nonce, ok = extract_dpop_nonce(headers);
     guard ok else { return false; }

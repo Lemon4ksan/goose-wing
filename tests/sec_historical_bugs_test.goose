@@ -1600,7 +1600,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
 
         // Attacker creates HS256 token signed with ed_pub as HMAC secret
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "ed25519-pub-key-1");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "attacker");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -1608,7 +1608,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, ed_pub[..], token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
 
         let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
@@ -1658,7 +1658,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
         sub.assert_eq(jwks_sym.keys[0].alg, wing::JwtAlg.None, "Default alg is None (compatible with HS256/384/512)");
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "sym-no-alg");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "user_bob");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -1666,7 +1666,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, "secret-sym-key-16bytes", token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
 
         let err = wing::verify(token[..], jwks_sym, opts, now_sec, out_h, out_c);

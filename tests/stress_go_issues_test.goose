@@ -43,6 +43,7 @@ fn test_websocket_length_overflow(t: core::T&) {
         0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     ];
     var session = wing::new_websocket_session(true);
+    session.max_payload_length = 0;
     var msg = wing::WsMessage {};
     var reply: u8[..64] = [];
     let ok = wing::receive(session, bad_ws_hdr[..], msg, reply);
@@ -77,7 +78,7 @@ fn test_masque_address_capsule_bounds(t: core::T&) {
 }
 
 fn test_jwt_exp_overflow(t: core::T&) {
-    var claims = wing::new_jwt_claims();
+    var claims = wing::JwtClaims { .. };
     // Expiry near i64::MAX
     wing::set_expiry(claims, 9223372036854775800);
     var opts = wing::JwtValidationOptions {};

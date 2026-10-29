@@ -251,13 +251,23 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         return false, false;
     }
 
-    let fc_ok, fc_err = quic_fc_record_recv_stream(conn.flow_ctrl, conn.stream_table.streams[idx], frame.offset, frame.length);
+    let fc_ok, fc_err = quic_fc_record_recv_stream(
+        conn.flow_ctrl,
+        conn.stream_table.streams[idx],
+        frame.offset,
+        frame.length,
+    );
     guard fc_ok else {
         quic_conn_close(conn, fc_err);
         return false, false;
     }
 
-    let st_ok, st_err = quic_stream_on_recv_stream_frame(conn.stream_table.streams[idx], frame.offset, frame.length, frame.fin);
+    let st_ok, st_err = quic_stream_on_recv_stream_frame(
+        conn.stream_table.streams[idx],
+        frame.offset,
+        frame.length,
+        frame.fin,
+    );
     guard st_ok else {
         quic_conn_close(conn, st_err);
         return false, false;
@@ -370,11 +380,11 @@ fn dispatch_inbound_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
 
 fn quic_conn_process_payload(conn: QuicConnection&, payload: const u8[:]) -> bool, bool {
     guard payload.len > 0 else { return true, false; }
-    var r = core::new_slice_reader(payload);
+    var idx: i64 = 0;
     var any_ack_el = false;
 
-    while !r.is_eof() {
-        let frame, ok = decode_quic_frame_reader(r);
+    while idx < payload.len {
+        let frame, ok = decode_quic_frame_cursor(payload, idx);
         guard ok else { break; }
 
         let handled, ack_el = dispatch_inbound_frame(conn, frame);

@@ -21,7 +21,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
 
     t.run("HS256 token generation and validation") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "key-hs256");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_issuer(clm, "https://auth.goose-wing.dev");
         wing::set_subject(clm, "user_42");
         wing::set_audience(clm, "api.service.internal");
@@ -39,7 +39,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
 
         // Verify token
         var out_hdr = wing::new_jwt_header();
-        var out_clm = wing::new_jwt_claims();
+        var out_clm = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         opts.expected_issuer.append("https://auth.goose-wing.dev");
         opts.expected_audience.append("api.service.internal");
@@ -62,7 +62,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
     t.run("HS384 and HS512 multi-algorithm verification") { sub =>
         // HS384
         var hdr384 = wing::new_jwt_header(wing::JwtAlg.HS384);
-        var clm384 = wing::new_jwt_claims();
+        var clm384 = wing::JwtClaims { .. };
         wing::set_subject(clm384, "agent_384");
         wing::set_expiry(clm384, now_sec + 100);
 
@@ -70,7 +70,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
         sub.assert_true(wing::sign_jwt_hmac(hdr384, clm384, secret, token384), "HS384 signed");
 
         var out_hdr384 = wing::new_jwt_header();
-        var out_clm384 = wing::new_jwt_claims();
+        var out_clm384 = wing::JwtClaims { .. };
         var opts384 = wing::default_jwt_validation_options(wing::JwtAlg.HS384);
         let err384 = wing::verify_jwt_hmac(token384[..], secret, opts384, now_sec, out_hdr384, out_clm384);
         sub.assert_eq(err384, wing::JwtError.None, "HS384 verified");
@@ -78,7 +78,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
 
         // HS512
         var hdr512 = wing::new_jwt_header(wing::JwtAlg.HS512);
-        var clm512 = wing::new_jwt_claims();
+        var clm512 = wing::JwtClaims { .. };
         wing::set_subject(clm512, "agent_512");
         wing::set_expiry(clm512, now_sec + 100);
 
@@ -86,7 +86,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
         sub.assert_true(wing::sign_jwt_hmac(hdr512, clm512, secret, token512), "HS512 signed");
 
         var out_hdr512 = wing::new_jwt_header();
-        var out_clm512 = wing::new_jwt_claims();
+        var out_clm512 = wing::JwtClaims { .. };
         var opts512 = wing::default_jwt_validation_options(wing::JwtAlg.HS512);
         let err512 = wing::verify_jwt_hmac(token512[..], secret, opts512, now_sec, out_hdr512, out_clm512);
         sub.assert_eq(err512, wing::JwtError.None, "HS512 verified");
@@ -95,7 +95,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
 
     t.run("Tampered payload or signature rejected") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "original_user");
         wing::set_expiry(clm, now_sec + 600);
 
@@ -108,7 +108,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
         tampered_sig[tampered_sig.len - 2] = if tampered_sig[tampered_sig.len - 2] == 'A' { 'B' } else { 'A' };
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts_sig = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err_sig = wing::verify_jwt_hmac(tampered_sig[..], secret, opts_sig, now_sec, out_h, out_c);
         sub.assert_eq(err_sig, wing::JwtError.SignatureInvalid, "Tampered signature rejected");
@@ -135,7 +135,7 @@ fn test_asymmetric_eddsa_jwt(t: core::T&) {
 
     t.run("EdDSA token generation and validation") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "ed25519-root-key");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_issuer(clm, "https://id.goose.io");
         wing::set_subject(clm, "srv_identity_ed25519");
         wing::set_expiry(clm, now_sec + 1800);
@@ -146,7 +146,7 @@ fn test_asymmetric_eddsa_jwt(t: core::T&) {
         sub.assert_true(ok_sign, "EdDSA token signed");
 
         var out_hdr = wing::new_jwt_header();
-        var out_clm = wing::new_jwt_claims();
+        var out_clm = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
         opts.expected_issuer.append("https://id.goose.io");
 
@@ -159,7 +159,7 @@ fn test_asymmetric_eddsa_jwt(t: core::T&) {
 
     t.run("EdDSA signature tampering and wrong public key") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "device_007");
         wing::set_expiry(clm, now_sec + 600);
 
@@ -169,7 +169,7 @@ fn test_asymmetric_eddsa_jwt(t: core::T&) {
         // Wrong public key (all zeros)
         let zero_pub: u8[32] = [0; 32];
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts_bad = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
         let err_bad_key = wing::verify_jwt_eddsa(token[..], zero_pub, opts_bad, now_sec, out_h, out_c);
         sub.assert_eq(err_bad_key, wing::JwtError.SignatureInvalid, "Invalid public key rejected");
@@ -186,7 +186,7 @@ fn test_jwt_security_defenses(t: core::T&) {
     t.run("Algorithm Confusion Defense (RFC 8725 Section 3.1)") { sub =>
         // Attacker creates HS256 token, but server expects EdDSA
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "victim");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -194,7 +194,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         let dummy_pub: u8[32] = [0x55; 32];
         var opts_conf = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
         let err = wing::verify_jwt_eddsa(token[..], dummy_pub, opts_conf, now_sec, out_h, out_c);
@@ -210,7 +210,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         ];
         let public_key = core::ed25519_public_key(seed);
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "victim");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -218,7 +218,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         wing::sign_jwt_eddsa(hdr, clm, seed, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts_conf = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_eddsa(token[..], public_key, opts_conf, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "EdDSA token rejected when HS256 expected");
@@ -228,7 +228,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         // Attacker sends token with alg: "none" and empty signature: "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9."
         let none_token = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.";
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts_none = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(none_token, secret, opts_none, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.UnsupportedAlgorithm, "none algorithm rejected by default");
@@ -236,7 +236,7 @@ fn test_jwt_security_defenses(t: core::T&) {
 
     t.run("Expiration and Clock Skew Leeway (exp)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "time_traveler");
         wing::set_expiry(clm, now_sec - 100); // Expired 100 seconds ago
 
@@ -244,7 +244,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
 
         // 1. With standard 60s leeway -> still expired (100 > 60)
         var opts60 = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
@@ -261,7 +261,7 @@ fn test_jwt_security_defenses(t: core::T&) {
 
     t.run("Not Before check (nbf)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "future_user");
         wing::set_not_before(clm, now_sec + 200); // Valid only in 200 seconds
         wing::set_expiry(clm, now_sec + 1000);
@@ -270,7 +270,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         opts.leeway_seconds = 30;
 
@@ -280,7 +280,7 @@ fn test_jwt_security_defenses(t: core::T&) {
 
     t.run("Issuer, Audience, Subject Mismatch Rejections") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_issuer(clm, "auth.real.com");
         wing::set_audience(clm, "app.real.com");
         wing::set_subject(clm, "user.real");
@@ -290,7 +290,7 @@ fn test_jwt_security_defenses(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
 
         // Mismatched Issuer
         var opts_iss = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
@@ -383,7 +383,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
 
     t.run("Verify EdDSA token using JWKS key lookup") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_issuer(clm, "auth.corp.com");
         wing::set_subject(clm, "admin_alice");
         wing::set_expiry(clm, now_sec + 600);
@@ -392,7 +392,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
         opts.expected_issuer.append("auth.corp.com");
 
@@ -404,7 +404,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
 
     t.run("Verify HMAC token using JWKS key lookup") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "legacy-sym-v1");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "service_worker");
         wing::set_expiry(clm, now_sec + 600);
 
@@ -412,7 +412,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
 
         let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
@@ -423,7 +423,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
 
     t.run("Unknown kid in token rejected with KeyNotFound") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "unregistered-kid-999");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "intruder");
         wing::set_expiry(clm, now_sec + 600);
 
@@ -431,7 +431,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
 
         let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
@@ -440,7 +440,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
 
     t.run("JWKS Algorithm Confusion: EdDSA token rejected when HS256 expected (RFC 8725 §3.1)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "victim");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -448,7 +448,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "JWKS verify rejects EdDSA when HS256 expected");
@@ -469,7 +469,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         jwks_enc.keys.push(key);
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "enc-key-1");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "victim");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -477,7 +477,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
         let err = wing::verify(token[..], jwks_enc, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.UnsupportedAlgorithm, "enc key rejected for signature verification");
@@ -488,7 +488,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::add_symmetric_key(jwks_alg, "hs256-only-key", wing::JwtAlg.HS256, hmac_sec);
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS512, "hs256-only-key");
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "victim");
         wing::set_expiry(clm, now_sec + 300);
 
@@ -496,7 +496,7 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS512);
         let err = wing::verify(token[..], jwks_alg, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Mismatched key alg rejected");
@@ -534,7 +534,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate exp claim MUST be rejected");
@@ -547,7 +547,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate sub claim MUST be rejected");
@@ -560,7 +560,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate custom claim MUST be rejected");
@@ -573,7 +573,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Header with duplicate alg MUST be rejected");
@@ -586,7 +586,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         opts.require_exp = false; // Even if exp not required, invalid negative timestamp must be rejected
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -595,7 +595,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
 
     t.run("Negative leeway rejected in expiration validation (RFC 8725 §2.5)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::new_jwt_claims();
+        var clm = wing::JwtClaims { .. };
         wing::set_subject(clm, "alice");
         wing::set_expiry(clm, 1000);
 
@@ -603,7 +603,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
         wing::sign_jwt_hmac(hdr, clm, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         opts.leeway_seconds = -1; // Negative leeway must not trigger signed overflow
         let err = wing::verify_jwt_hmac(token[..], secret, opts, 1005, out_h, out_c);
@@ -677,7 +677,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.CriticalHeaderUnsupported, "Unsupported crit parameter MUST fail verification");
@@ -690,7 +690,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         sub.assert_true(wing::add_supported_crit(opts, "custom_ext"), "Added supported crit parameter");
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -707,7 +707,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Standard parameter 'alg' in crit array MUST be rejected");
@@ -721,7 +721,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Missing crit member in header MUST be rejected");
@@ -734,7 +734,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Empty crit array MUST be rejected");
@@ -747,7 +747,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         wing::set_expected_type(opts, "at+jwt");
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -762,7 +762,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         wing::set_expected_type(opts, "at+jwt"); // expected without prefix, header has prefix
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -786,7 +786,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         wing::set_expected_type(opts, "at+jwt"); // expecting access token
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -800,7 +800,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         wing::set_expected_type(opts, "at+jwt");
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -814,7 +814,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
         opts.expected_audience.append("https://api.two.com");
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
@@ -842,7 +842,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
         token_none.push('.' as u8);
 
         var out_h = wing::new_jwt_header();
-        var out_c = wing::new_jwt_claims();
+        var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.None);
         opts.allow_none_alg = false;
         let err = wing::verify(token_none[..], jwks, opts, now_sec, out_h, out_c);
