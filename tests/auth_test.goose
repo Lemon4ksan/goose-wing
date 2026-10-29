@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Verification suite for RFC 7616 Digest Access Authentication, RFC 7617 Basic Authentication,
-// 401 Authenticator Replay Loop, and AWS SigV4 Request Signing.
+// and 401 Authenticator Replay Loop.
 import std;
 import core from "..";
 import wing from "..";
@@ -130,46 +130,8 @@ fn test_401_authenticator_loop(t: core::T&) {
     };
 }
 
-fn test_aws_sigv4_signing(t: core::T&) {
-    t.run("AWS SigV4 Request Signing & Canonical Header Derivation") { sub =>
-        let creds = wing::new_aws_credentials(
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-            "us-east-1",
-            "s3",
-        );
-
-        var req = wing::new_get("https://examplebucket.s3.amazonaws.com/test.txt");
-        let dt = "20130524T000000Z";
-
-        let signed = wing::sign_aws_sigv4(req, creds, dt);
-        sub.assert_true(signed, "AWS SigV4 signed successfully");
-
-        // Verify injected headers
-        let amz_date = wing::header(req, "x-amz-date");
-        sub.assert_bytes_eq(amz_date, dt, "x-amz-date header set");
-
-        let amz_sha = wing::header(req, "x-amz-content-sha256");
-        // Empty payload SHA-256
-        sub.assert_bytes_eq(amz_sha, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "Empty payload sha256 correct");
-
-        let auth = wing::header(req, "Authorization");
-        sub.assert_true(auth.len > 0, "Authorization header present");
-        sub.assert_bytes_eq(auth[..17], "AWS4-HMAC-SHA256 ", "Algorithm identifier is AWS4-HMAC-SHA256");
-
-        var has_cred = false;
-        if auth.len >= 20 {
-            for i in auth.len - 19 {
-                if auth[i..i + 20] == "AKIAIOSFODNN7EXAMPLE" { has_cred = true; break; }
-            }
-        }
-        sub.assert_true(has_cred, "Credential contains AccessKey");
-    };
-}
-
-fn test_rfc7616_userhash_and_sigv4_session_token(t: core::T&) {
-    t.run("RFC 7616 userhash=true and AWS SigV4 STS Session Token") { sub =>
-        // 1. RFC 7616 Section 3.4.4 userhash=true
+fn test_rfc7616_userhash_options(t: core::T&) {
+    t.run("RFC 7616 Section 3.4.4 userhash=true") { sub =>
         let raw_chal = "Digest realm=\"secure@example.com\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", userhash=true";
         let chal, ok_chal = wing::parse_digest_challenge(raw_chal);
         sub.assert_true(ok_chal, "Challenge with userhash parsed");
@@ -186,30 +148,14 @@ fn test_rfc7616_userhash_and_sigv4_session_token(t: core::T&) {
 
         // Verify username is hex hash, not plain "alice"
         sub.assert_false(core::contains(out_hdr[..], "username=\"alice\""), "Plain username is hidden by userhash");
-
-        // 2. AWS SigV4 with STS session token
-        var aws_creds = wing::new_aws_credentials("ASIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "us-east-1", "s3");
-        aws_creds.session_token.append("AQoDYXdzEJr1EXAMPLETOKEN");
-
-        var req = wing::new_get("https://examplebucket.s3.amazonaws.com/test.txt");
-        let dt = "20130524T000000Z";
-        let signed = wing::sign_aws_sigv4(req, aws_creds, dt);
-        sub.assert_true(signed, "AWS SigV4 with session token signed");
-
-        let sec_tok = wing::header(req, "x-amz-security-token");
-        sub.assert_bytes_eq(sec_tok, "AQoDYXdzEJr1EXAMPLETOKEN", "x-amz-security-token header present");
-
-        let auth = wing::header(req, "Authorization");
-        sub.assert_true(core::contains(auth, "x-amz-security-token"), "SignedHeaders includes x-amz-security-token");
     };
 }
 
 fn main() {
-    var runner = core::new_runner("RFC 7616 Digest Access Authentication & AWS SigV4 Suite", core::Verbosity.Verbose);
+    var runner = core::new_runner("RFC 7616 Digest Access Authentication Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. RFC 7616 Official IETF Test Vector & MD5 Fallback", test_rfc7616_official_ietf_vector);
     core::run_case(runner, "2. 401 Authenticator Replay Loop (Digest & Basic)", test_401_authenticator_loop);
-    core::run_case(runner, "3. AWS SigV4 Request Signing", test_aws_sigv4_signing);
-    core::run_case(runner, "4. RFC 7616 Userhash & AWS SigV4 Session Token", test_rfc7616_userhash_and_sigv4_session_token);
+    core::run_case(runner, "3. RFC 7616 Userhash Options", test_rfc7616_userhash_options);
     let ok = core::finish(runner);
     assert(ok);
 }

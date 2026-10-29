@@ -22,7 +22,7 @@ This document covers architectural invariants, repository layout, and testing wo
 
 ```text
 goose-wing/
-├── auth/             # Digest, AWS SigV4, PKCE, DPoP, JWT, and JWKS
+├── auth/             # Digest, PKCE, DPoP, JWT, and JWKS
 ├── client/           # Client sessions, redirects, SSRF guard, interceptors, and streaming
 ├── cookie/           # RFC 6265bis CookieMonster engine, PSL matcher, and eviction store
 ├── core/             # Byte search, math, monotonic time, compression, crypto, URL, IO, and UFCS

@@ -29,7 +29,7 @@ Raw network bytes are validated once at the ingress boundary: the L4 socket driv
 - `http2/`: RFC 9113 9-byte frame codec, RFC 7541 HPACK encoder and 256-state Huffman decoder, stream flow control, and priority scheduler.
 - `http3/`: RFC 9114 frame codec, RFC 9204 QPACK encoder/decoder, and H3 connection state machine.
 - `cookie/`: RFC 6265bis storage engine, Mozilla Public Suffix List matcher, CHIPS partitioned cookies, and 6-round eviction policy.
-- `security/` and `auth/`: `CryptoJar` authenticated cookie encryption, W3C Fetch Metadata CSRF guard, CORS policy evaluator, GCRA rate limiter, Privacy Pass (RFC 9576–9578), Digest auth, AWS SigV4, PKCE, DPoP (RFC 9449), JWT, and JWKS.
+- `security/` and `auth/`: `CryptoJar` authenticated cookie encryption, W3C Fetch Metadata CSRF guard, CORS policy evaluator, GCRA rate limiter, Privacy Pass (RFC 9576–9578), Digest auth, PKCE, DPoP (RFC 9449), JWT, and JWKS.
 - `fingerprint/`: JA4 TLS client fingerprinting, p0f TCP signature analysis, and Akamai HTTP/2 fingerprint generation.
 - `client/`: connection pool, redirect policy, 3-tier SSRF guard, replay protection, request/response interceptors, and retry backoff.
 - `server/`: compressed radix trie router (`ZeroAllocParams`), Tako v2 connection pool, HTTP/1.1 pipeline, and HTTP/2 server frame multiplexer.

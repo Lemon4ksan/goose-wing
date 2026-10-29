@@ -268,13 +268,9 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Derives code challenge via `S256` (`Base64URL(SHA-256(verifier))`) or `plain`.
   - Verification runs in constant time.
 
-### 10.3 AWS SigV4 and RFC 9421 HTTP Message Signatures
-- AWS Signature Version 4:
-  - Canonical request derivation: method, canonical URI, query parameters in ASCII order, headers in lower-case order, signed headers list, and hashed payload (`SHA-256(body)`).
-  - Multi-tier key derivation: `kDate = HMAC("AWS4" + secret, date)`, `kRegion = HMAC(kDate, region)`, `kService = HMAC(kRegion, service)`, `kSigning = HMAC(kService, "aws4_request")`.
-- RFC 9421 Message Signatures:
-  - Structured fields serialization of `Signature-Input` and `Signature`.
-  - Canonical component basis covering `@method`, `@target-uri`, `@authority`, and selective headers.
+### 10.3 RFC 9421 HTTP Message Signatures
+- Structured fields serialization of `Signature-Input` and `Signature`.
+- Canonical component basis covering `@method`, `@target-uri`, `@authority`, and selective headers.
 
 ## 11. Cookie store and partitioning (CHIPS)
 
