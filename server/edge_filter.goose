@@ -1,53 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Programmable zero-allocation WebAssembly Edge Filter for Goose-Wing.
-// Allows sandboxed L7 request and frame inspection, WAF rule evaluation,
-// and path/header filtering compatible with Gosling Wasm VM and x86_64 JIT.
+// Programmable zero-allocation L7 Edge Filter for Goose-Wing.
+// Provides sandboxed L7 request inspection, rule evaluation,
+// and path/header filtering without heap allocations.
 namespace wing;
 
 import std;
 import core from "..";
 
-enum WasmFilterVerdict {
+enum EdgeFilterVerdict {
     Pass,
     BlockForbidden,
     ThrottleRate,
     DropConnection,
 }
 
-struct WasmFilterRule {
+struct EdgeFilterRule {
     name: u8[..64] = [],
     path_prefix: u8[..64] = [],
     required_header: u8[..64] = [],
-    verdict: WasmFilterVerdict = WasmFilterVerdict.Pass,
+    verdict: EdgeFilterVerdict = EdgeFilterVerdict.Pass,
     enabled: bool = true,
 }
 
-struct WasmEdgeFilter {
-    rules: WasmFilterRule[..16] = [],
+struct EdgeFilter {
+    rules: EdgeFilterRule[..16] = [],
     total_inspected: u64 = 0,
     total_blocked: u64 = 0,
     max_payload_bytes: i64 = 65536,
     enabled: bool = true,
 }
 
-fn new_wasm_edge_filter() -> WasmEdgeFilter {
-    return WasmEdgeFilter { .. };
+fn new_edge_filter() -> EdgeFilter {
+    return EdgeFilter { .. };
 }
 
-fn add_wasm_filter_rule(filter: WasmEdgeFilter&, rule: WasmFilterRule) -> bool {
+fn add_edge_filter_rule(filter: EdgeFilter&, rule: EdgeFilterRule) -> bool {
     guard filter.rules.len < filter.rules.cap else { return false; }
     filter.rules.push(rule);
     return true;
 }
 
-fn make_wasm_filter_rule(
+fn make_edge_filter_rule(
     name: const u8[:],
     path_prefix: const u8[:],
-    verdict: WasmFilterVerdict,
-) -> WasmFilterRule {
-    var r = WasmFilterRule {
+    verdict: EdgeFilterVerdict,
+) -> EdgeFilterRule {
+    var r = EdgeFilterRule {
         name: [],
         path_prefix: [],
         required_header: [],
@@ -60,14 +60,14 @@ fn make_wasm_filter_rule(
 }
 
 // Evaluates request path and headers against active edge filter rules.
-// Returns WasmFilterVerdict::Pass if allowed, or specific verdict on violation.
-fn evaluate_wasm_request_filter(
-    filter: WasmEdgeFilter&,
+// Returns EdgeFilterVerdict::Pass if allowed, or specific verdict on violation.
+fn evaluate_edge_filter(
+    filter: EdgeFilter&,
     method: const u8[:],
     path: const u8[:],
     headers: const HeaderItem[:],
-) -> WasmFilterVerdict {
-    guard filter.enabled else { return WasmFilterVerdict.Pass; }
+) -> EdgeFilterVerdict {
+    guard filter.enabled else { return EdgeFilterVerdict.Pass; }
     filter.total_inspected += 1;
 
     for &rule in filter.rules {
@@ -93,5 +93,5 @@ fn evaluate_wasm_request_filter(
         }
     }
 
-    return WasmFilterVerdict.Pass;
+    return EdgeFilterVerdict.Pass;
 }

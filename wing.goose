@@ -96,10 +96,9 @@ import security.rate_limiter;
 import security.privacypass;
 import security.cross_origin_isolation;
 
-// ---- authentication (rfc 7616 digest, aws sigv4, rfc 7636 pkce, rfc 9449 dpop) -
+// ---- authentication (rfc 7616 digest, rfc 7636 pkce, rfc 9449 dpop) ---------
 
 import auth.digest;
-import auth.sigv4;
 import auth.pkce;
 import auth.dpop;
 import auth.jwt;
@@ -120,7 +119,7 @@ import tls.post_quantum;
 import server.router;
 import server.pool;
 import server.pipeline;
-import server.wasm_filter;
+import server.edge_filter;
 import server.cache;
 import server.server;
 import server.h2_multiplexer;
