@@ -239,8 +239,8 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
 
 // ---- 3. Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
 
-fn digest_hash_hex<B>(algorithm: const u8[:], data: const u8[:], out_hex: B&) {
-    out_hex.clear();
+fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
+    var out_hex: u8[..64] = [];
     if eq_ascii_fold(algorithm, "md5") || eq_ascii_fold(algorithm, "md5-sess") {
         let md = core::md5(data);
         for b in md {
@@ -253,8 +253,14 @@ fn digest_hash_hex<B>(algorithm: const u8[:], data: const u8[:], out_hex: B&) {
             core::format_u8_hex(b, out_hex);
         }
     }
+    return out_hex;
 }
 
+// Calculates RFC 7616 HA1 hash string from user credentials.
+//
+// Example:
+//   algo = "SHA-256", username = "Mufasa", realm = "myrealm", password = "SecretPassword"
+//   returns: "66b23d060da48775017ec881db093beec3b1028307e3210250052b4111421008"
 fn calculate_digest_ha1(
     algo: const u8[:],
     username: const u8[:],
@@ -262,8 +268,7 @@ fn calculate_digest_ha1(
     password: const u8[:],
     nonce: const u8[:],
     cnonce: const u8[:],
-    out_ha1_hex: u8[..64]&,
-) {
+) -> u8[..64] {
     var a1: u8[>..] = [];
     a1.append(username);
     a1.push(':');
@@ -271,42 +276,51 @@ fn calculate_digest_ha1(
     a1.push(':');
     a1.append(password);
 
-    digest_hash_hex(algo, a1[..], out_ha1_hex);
+    var ha1 = digest_hash_hex(algo, a1[..]);
 
     if eq_ascii_fold(algo, "sha-256-sess") || eq_ascii_fold(algo, "md5-sess") {
         var a1_sess: u8[>..] = [];
-        a1_sess.append(out_ha1_hex[..]);
+        a1_sess.append(ha1[..]);
         a1_sess.push(':');
         a1_sess.append(nonce);
         a1_sess.push(':');
         a1_sess.append(cnonce);
-        digest_hash_hex(algo, a1_sess[..], out_ha1_hex);
+        ha1 = digest_hash_hex(algo, a1_sess[..]);
     }
+    return ha1;
 }
 
+// Calculates RFC 7616 HA2 hash string from HTTP request attributes.
+//
+// Example:
+//   algo = "SHA-256", method = "GET", uri = "/dir/index.html", is_auth_int = false, body = ""
+//   returns: "39f363da7850af35b22440f6f8493fb60822d0bceb67218c51e37d9c53bc4e0e"
 fn calculate_digest_ha2(
     algo: const u8[:],
     method: const u8[:],
     uri: const u8[:],
     is_auth_int: bool,
     body: const u8[:],
-    out_ha2_hex: u8[..64]&,
-) {
+) -> u8[..64] {
     var a2: u8[>..] = [];
     a2.append(method);
     a2.push(':');
     a2.append(uri);
 
     if is_auth_int {
-        var h_body_hex: u8[..64] = [];
-        digest_hash_hex(algo, body, h_body_hex);
+        let h_body_hex = digest_hash_hex(algo, body);
         a2.push(':');
         a2.append(h_body_hex[..]);
     }
 
-    digest_hash_hex(algo, a2[..], out_ha2_hex);
+    return digest_hash_hex(algo, a2[..]);
 }
 
+// Calculates RFC 7616 final response hash string from HA1, HA2, and nonce values.
+//
+// Example:
+//   algo = "SHA-256", ha1_hex = "66b2...", nonce = "xyz", nc_str = "00000001", ...
+//   returns: "86049f1f1000e540362c603f50b9cf140d0371f68682d4577da4e0610a29ea83"
 fn calculate_digest_response(
     algo: const u8[:],
     ha1_hex: const u8[:],
@@ -316,8 +330,7 @@ fn calculate_digest_response(
     has_qop: bool,
     is_auth_int: bool,
     ha2_hex: const u8[:],
-    out_response_hex: u8[..64]&,
-) {
+) -> u8[..64] {
     var a3: u8[>..] = [];
     a3.append(ha1_hex);
     a3.push(':');
@@ -336,7 +349,7 @@ fn calculate_digest_response(
     a3.push(':');
     a3.append(ha2_hex);
 
-    digest_hash_hex(algo, a3[..], out_response_hex);
+    return digest_hash_hex(algo, a3[..]);
 }
 
 fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
@@ -462,25 +475,36 @@ fn serialize_digest_auth<B>(
     return true;
 }
 
-fn resolve_digest_user<B>(
+inline fn build_user_realm(username: const u8[:], realm: const u8[:], out: u8[..256]&) -> bool {
+    guard username.len + 1 + realm.len <= out.cap else { return false; }
+    out.append(username);
+    out.push(':');
+    out.append(realm);
+    return true;
+}
+
+fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]) -> u8[..128] {
+    var out: u8[..128] = [];
+    var user_realm: u8[..256] = [];
+    guard build_user_realm(username, realm, user_realm) else { return out; }
+    let h = digest_hash_hex(algo, user_realm[..]);
+    out.append(h[..]);
+    return out;
+}
+
+fn resolve_digest_user(
     username: const u8[:],
     realm: const u8[:],
     userhash: bool,
     algo: const u8[:],
-    out_user: B&,
-) {
-    out_user.clear();
+) -> u8[..128] {
     if userhash {
-        var user_realm: u8[..256] = [];
-        guard username.len + 1 + realm.len <= user_realm.cap else { return; }
-        user_realm.append(username);
-        user_realm.push(':');
-        user_realm.append(realm);
-        digest_hash_hex(algo, user_realm[..], out_user);
-    } else {
-        guard username.len <= out_user.cap else { return; }
-        out_user.append(username);
+        return resolve_userhash(username, realm, algo);
     }
+    var out_user: u8[..128] = [];
+    guard username.len <= out_user.cap else { return out_user; }
+    out_user.append(username);
+    return out_user;
 }
 
 // Computes RFC 7616 Digest response and outputs the full Authorization header.
@@ -504,28 +528,23 @@ fn compute_digest_response(
     let is_auth_int = eq_ascii_fold(challenge.qop[..], "auth-int");
     let has_qop = (challenge.qop.len > 0);
 
-    var effective_user: u8[..128] = [];
-    resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo, effective_user);
+    let effective_user = resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo);
 
-    var ha1_hex: u8[..64] = [];
-    calculate_digest_ha1(
+    let ha1_hex = calculate_digest_ha1(
         algo,
         effective_user[..],
         challenge.realm[..],
         creds.password[..],
         challenge.nonce[..],
         cnonce,
-        ha1_hex,
     );
 
-    var ha2_hex: u8[..64] = [];
-    calculate_digest_ha2(algo, method, uri, is_auth_int, body, ha2_hex);
+    let ha2_hex = calculate_digest_ha2(algo, method, uri, is_auth_int, body);
 
     var nc_str: u8[..16] = [];
     core::format_u64_hex_fixed(nc, 8, nc_str, false);
 
-    var response_hex: u8[..64] = [];
-    calculate_digest_response(
+    let response_hex = calculate_digest_response(
         algo,
         ha1_hex[..],
         challenge.nonce[..],
@@ -534,7 +553,6 @@ fn compute_digest_response(
         has_qop,
         is_auth_int,
         ha2_hex[..],
-        response_hex,
     );
 
     let active_qop: const u8[:] = if has_qop {

@@ -22,25 +22,45 @@ const DIGEST_ALG_SHA512: const u8[:] = "sha-512";
 
 // ---- 2. Digest Computation --------------------------------------------------
 
-fn compute_digest_bytes(data: const u8[:], alg: const u8[:], out: u8[>..]&) -> bool {
-    out.clear();
+inline fn compute_sha256_digest(data: const u8[:]) -> u8[..64] {
+    var out: u8[..64] = [];
+    let hash = core::sha256(data);
+    out.append(hash[..]);
+    return out;
+}
+
+inline fn compute_sha512_digest(data: const u8[:]) -> u8[..64] {
+    var out: u8[..64] = [];
+    let hash = core::sha512(data);
+    out.append(hash[..]);
+    return out;
+}
+
+// Computes raw RFC 9530 digest bytes (SHA-256 or SHA-512) returning bounded array via RVO.
+//
+// Example:
+//   data = "hello world", alg = "sha-256"
+//   returns: [185, 91, 154, ...], ok = true
+fn compute_digest_bytes(data: const u8[:], alg: const u8[:]) -> u8[..64], bool {
     if eq_ascii_fold(alg, DIGEST_ALG_SHA256) {
-        let hash = core::sha256(data);
-        for b in hash { out.push(b); }
-        return true;
-    } else if eq_ascii_fold(alg, DIGEST_ALG_SHA512) {
-        let hash = core::sha512(data);
-        for b in hash { out.push(b); }
-        return true;
+        return compute_sha256_digest(data), true;
     }
-    return false;
+    if eq_ascii_fold(alg, DIGEST_ALG_SHA512) {
+        return compute_sha512_digest(data), true;
+    }
+    var empty: u8[..64] = [];
+    return empty, false;
 }
 
 // Formats an RFC 9530 Structured Field dictionary value: e.g. "sha-256=:X48E9...=:"
+//
+// Example:
+//   alg = "sha-256", data = "hello world"
+//   returns: true, out = "sha-256=:uU0nuZ...=:"
 fn format_digest_field_value<B>(alg: const u8[:], data: const u8[:], out: B&) -> bool {
     out.clear();
-    var hash_bytes: u8[>..] = [];
-    guard compute_digest_bytes(data, alg, hash_bytes) else { return false; }
+    let hash_bytes, ok_hash = compute_digest_bytes(data, alg);
+    guard ok_hash else { return false; }
 
     out.append(if eq_ascii_fold(alg, DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" });
     core::base64_encode(hash_bytes[..], out);
@@ -87,8 +107,8 @@ fn set_response_repr_digest(res: Response&, alg: const u8[:] = "sha-256") -> boo
 fn check_digest_match(expected_b64: const u8[:], alg: const u8[:], data: const u8[:]) -> bool {
     var expected_hash: u8[>..] = [];
     guard core::base64_decode(expected_b64, expected_hash) else { return false; }
-    var computed_hash: u8[>..] = [];
-    guard compute_digest_bytes(data, alg, computed_hash) else { return false; }
+    let computed_hash, ok_hash = compute_digest_bytes(data, alg);
+    guard ok_hash else { return false; }
     guard computed_hash.len == expected_hash.len else { return false; }
     return core::ct_eq_bytes(computed_hash[..], expected_hash[..]);
 }

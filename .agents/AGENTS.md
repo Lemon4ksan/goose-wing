@@ -187,6 +187,14 @@ Enforced statically via `scripts/lint_invariants.ps1` and `.githooks/pre-commit`
    - Never commit `TODO`, `FIXME`, `HACK`, or `simplified for now` markers in production modules.
 8. **Linear Git commit history**:
    - Merge commits are strictly prohibited (`git merge` without `--ff-only` is blocked). The commit graph on `main` must remain 100% linear via fast-forward, rebase, or cherry-pick.
+9. **Value returns over intermediate out-parameters (No C-style out-buffers for pure computations)**:
+   - Functions computing intermediate cryptographic hashes, message digests, token slices, or single-result data transformations must return their values directly (`-> u8[..64]`, `-> u8[32]`, `-> const u8[:]`, `-> (T, bool)`) relying on compiler RVO / structural return (`sret`).
+   - Never define functions taking C-style out-parameters (`out_hex: u8[..64]&`, `out_ha1: u8[..64]&`, `out_response: u8[..64]&`) that force the caller to declare uninitialized temporary stack buffers (`var buf: u8[..64] = [];`) before invocation.
+   - Out-parameters (`out: B&`, `dst: u8[:]&`) are permitted exclusively for cumulative streaming sinks (e.g. `HeaderWriter`, `serialize_digest_auth`, `encode_quic_frame`) that append directly into caller-owned transport buffers without intermediate copies.
+10. **Byte slice (`const u8[:]`) as universal lingua franca (Prohibition of `io.Reader` and cursor wrappers in parsers)**:
+   - The byte slice (`const u8[:]` or `u8[:]`) is the universal primitive for all memory, wire packets, and protocol payloads across Goose.
+   - **No artificial cursor wrappers**: Protocol parsers, frame decoders, and RFC tokenizers must never wrap in-memory slices in artificial cursor objects (`struct SliceReader`, `struct ByteCursor`, `struct WireReader`). Parsers must accept canonical slices (`raw: const u8[:]`) and an explicit cursor offset (`idx: i64&`), or return `(consumed_len, bool)` / `(Frame, bool)`. Direct slices preserve bounds visibility for compiler Bounds Check Elimination (BCE) and maintain minimal G-CRAP branch depth.
+   - **Zero-copy socket streaming via ring-buffer views**: Sockets and transports must not implement Go-style virtual `io.Reader.Read(p: u8[:])` (which forces callers to allocate receiving buffers and copy bytes from the kernel). Transports manage an internal ring buffer or scratch arena and vend unread slices directly (`incoming_slice() -> const u8[:]`), advancing state after parsing (`advance_read(consumed)`).
 
 ## Code formatting, geometry, and G-CRAP harmony
 

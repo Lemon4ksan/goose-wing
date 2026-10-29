@@ -54,7 +54,7 @@ foreach ($file in $filesToScan) {
     if ($file.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
         $relPath = $file.Substring($root.Length).TrimStart('\', '/')
     }
-    $isTestOrExample = ($relPath -match '^(tests|examples|bench|tools)\\')
+    $isTestOrExample = ($relPath -match '^(tests|examples|bench|tools|core\\test)\\' -or $relPath -match '_test\.goose$')
     $lines = Get-Content -Path $file
 
     # Count function name occurrences in file to distinguish polymorphic overloads
@@ -268,6 +268,20 @@ foreach ($file in $filesToScan) {
                         }
                     }
                 }
+            }
+        }
+
+        # Rule 9: Prohibition of intermediate out-parameters for pure computations
+        if (-not $isTestOrExample -and $line -match '^\s*(pub\s+)?(inline\s+)?fn\s+([A-Za-z0-9_]+)\b.*?(out_[a-zA-Z0-9_]*(hex|ha\d+|response_hex)\s*:\s*[^,)]+&)') {
+            Write-Host "[LINT] ${relPath}:${lineNum} -> C-style intermediate out-parameter '$($Matches[4])' prohibited in '$($Matches[3])'. Return value directly via RVO ('-> u8[..N]')." -ForegroundColor Red
+            $violations++
+        }
+
+        # Rule 10: Prohibition of artificial slice/cursor wrappers in parsers (Lingua Franca is const u8[:])
+        if (-not $isTestOrExample -and $line -match '^\s*(pub\s+)?(inline\s+)?fn\s+(parse_[a-zA-Z0-9_]+|decode_[a-zA-Z0-9_]+|demux_[a-zA-Z0-9_]+)\b.*?\b([A-Za-z0-9_]+:\s*(core::)?(SliceReader|ByteCursor|WireReader)&)') {
+            if ($relPath -notmatch '^(core\\io|quic\\frames)\.goose$') {
+                Write-Host "[LINT] ${relPath}:${lineNum} -> Parser '$($Matches[3])' takes artificial cursor wrapper '$($Matches[4])'. Lingua franca is 'const u8[:]' with 'idx: i64&'." -ForegroundColor Red
+                $violations++
             }
         }
 
