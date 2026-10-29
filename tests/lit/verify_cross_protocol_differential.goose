@@ -96,49 +96,49 @@ fn test_h1_chunking_desync_fsm() {
 
 fn test_smuggling_and_framing_conflicts() {
     // 1. CL.TE conflict
-    var map_cl_te = wing::new_header_map();
+    var map_cl_te = wing::HeaderMap { .. };
     let err_cl_te = wing::parse_headers("Content-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n", map_cl_te);
     assert(err_cl_te == wing::HeaderParseError.InvalidContentLength);
     assert(!map_cl_te.valid);
     print("SMUGGLE_CL_TE_CONFLICT: REJECTED");
 
     // 2. TE.CL conflict
-    var map_te_cl = wing::new_header_map();
+    var map_te_cl = wing::HeaderMap { .. };
     let err_te_cl = wing::parse_headers("Transfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n", map_te_cl);
     assert(err_te_cl == wing::HeaderParseError.InvalidContentLength);
     assert(!map_te_cl.valid);
     print("SMUGGLE_TE_CL_CONFLICT: REJECTED");
 
     // 3. Duplicate differing Content-Length headers
-    var map_dup_diff = wing::new_header_map();
+    var map_dup_diff = wing::HeaderMap { .. };
     let err_dup_diff = wing::parse_headers("Content-Length: 10\r\nContent-Length: 20\r\n\r\n", map_dup_diff);
     assert(err_dup_diff == wing::HeaderParseError.InvalidContentLength);
     assert(!map_dup_diff.valid);
     print("SMUGGLE_DUP_CL_DIFF: REJECTED");
 
     // 4. Duplicate identical Content-Length headers (RFC 9112 §6.3)
-    var map_dup_same = wing::new_header_map();
+    var map_dup_same = wing::HeaderMap { .. };
     let err_dup_same = wing::parse_headers("Content-Length: 42\r\nContent-Length: 42\r\n\r\n", map_dup_same);
     assert(err_dup_same == wing::HeaderParseError.None);
     assert(map_dup_same.valid);
     print("SMUGGLE_DUP_CL_SAME: ACCEPTED");
 
     // 5. Duplicate Host header rejection (RFC 9112 §7.2)
-    var map_dup_host = wing::new_header_map();
+    var map_dup_host = wing::HeaderMap { .. };
     let err_dup_host = wing::parse_headers("Host: a.example.com\r\nHost: b.example.com\r\n\r\n", map_dup_host);
     assert(err_dup_host == wing::HeaderParseError.InvalidHeaderName);
     assert(!map_dup_host.valid);
     print("SMUGGLE_DUP_HOST: REJECTED");
 
     // 6. Host header with forbidden characters (@ userinfo)
-    var map_bad_host = wing::new_header_map();
+    var map_bad_host = wing::HeaderMap { .. };
     let err_bad_host = wing::parse_headers("Host: admin@example.com\r\n\r\n", map_bad_host);
     assert(err_bad_host == wing::HeaderParseError.InvalidHeaderValue);
     assert(!map_bad_host.valid);
     print("SMUGGLE_HOST_FORBIDDEN_CHARS: REJECTED");
 
     // 7. Embedded null-byte injection rejection
-    var map_null = wing::new_header_map();
+    var map_null = wing::HeaderMap { .. };
     var null_raw: u8[>..] = [];
     null_raw.append("Host: example.com");
     null_raw.push(0x00);
@@ -149,7 +149,7 @@ fn test_smuggling_and_framing_conflicts() {
     print("SMUGGLE_NULL_BYTE: REJECTED");
 
     // 8. Obsolete line folding rejection
-    var map_fold = wing::new_header_map();
+    var map_fold = wing::HeaderMap { .. };
     let err_fold = wing::parse_headers("Host: example.com\r\n folded: val\r\n\r\n", map_fold, false);
     assert(err_fold == wing::HeaderParseError.ObsFoldForbidden);
     assert(!map_fold.valid);
@@ -157,7 +157,7 @@ fn test_smuggling_and_framing_conflicts() {
 }
 
 fn test_reverse_proxy_hop_by_hop_sanitization() {
-    var in_map = wing::new_header_map();
+    var in_map = wing::HeaderMap { .. };
     wing::append_header(in_map, "Host", "public.example.com");
     wing::append_header(in_map, "Connection", "close, X-Internal-Token");
     wing::append_header(in_map, "Keep-Alive", "timeout=5");
@@ -167,7 +167,7 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
     wing::append_header(in_map, "TE", "trailers");
     wing::append_header(in_map, "X-Forwarded-For", "198.51.100.1");
 
-    var out_map = wing::new_header_map();
+    var out_map = wing::HeaderMap { .. };
     var cfg = wing::ProxyConfig { .. };
     cfg.preserve_host = false;
     cfg.via_pseudonym.clear();
@@ -207,7 +207,7 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
 }
 
 fn test_h2_continuation_flood_and_interleaving() {
-    var framer = wing::new_h2_security_framer();
+    var framer = wing::H2SecurityFramer { .. };
 
     // 1. Initial HEADERS frame on stream 1 without END_HEADERS
     let h_hdr = wing::H2FrameHeader {
@@ -239,7 +239,7 @@ fn test_h2_continuation_flood_and_interleaving() {
     print("H2_INTERLEAVED_PING_BAN: PROTOCOL_ERROR");
 
     // 3. Reset framer: Interleaved DATA frame on stream 1 -> ProtocolError
-    var framer_data = wing::new_h2_security_framer();
+    var framer_data = wing::H2SecurityFramer { .. };
     wing::process_incoming_frame(framer_data, h_hdr);
     let data_hdr = wing::H2FrameHeader {
         payload_len: 64,
@@ -255,7 +255,7 @@ fn test_h2_continuation_flood_and_interleaving() {
     print("H2_INTERLEAVED_DATA_BAN: PROTOCOL_ERROR");
 
     // 4. Reset framer: CONTINUATION on wrong stream ID (stream 3 instead of 1) -> ProtocolError
-    var framer_mismatch = wing::new_h2_security_framer();
+    var framer_mismatch = wing::H2SecurityFramer { .. };
     wing::process_incoming_frame(framer_mismatch, h_hdr);
     let cont_bad_sid = wing::H2FrameHeader {
         payload_len: 64,
@@ -271,7 +271,7 @@ fn test_h2_continuation_flood_and_interleaving() {
     print("H2_MISMATCHED_STREAM_BAN: PROTOCOL_ERROR");
 
     // 5. Unsolicited CONTINUATION frame when state is Idle -> ProtocolError
-    var framer_idle = wing::new_h2_security_framer();
+    var framer_idle = wing::H2SecurityFramer { .. };
     let cont_unsolicited = wing::H2FrameHeader {
         payload_len: 64,
         frame_type: wing::H2FrameType.Continuation,
@@ -285,7 +285,7 @@ fn test_h2_continuation_flood_and_interleaving() {
     print("H2_UNSOLICITED_CONTINUATION_BAN: PROTOCOL_ERROR");
 
     // 6. CONTINUATION flood DoS (CVE-2024-27983): Send 5 allowed, 6th triggers EnhanceYourCalm
-    var framer_flood = wing::new_h2_security_framer();
+    var framer_flood = wing::H2SecurityFramer { .. };
     wing::process_incoming_frame(framer_flood, h_hdr);
     for _ in 5 {
         let cont_ok = wing::H2FrameHeader {
@@ -313,7 +313,7 @@ fn test_h2_continuation_flood_and_interleaving() {
     print("H2_CONTINUATION_FLOOD_LIMIT: ENHANCE_YOUR_CALM");
 
     // 7. Cumulative header block size DoS limit (> 8192 bytes)
-    var framer_size = wing::new_h2_security_framer();
+    var framer_size = wing::H2SecurityFramer { .. };
     let big_h_hdr = wing::H2FrameHeader {
         payload_len: 8000,
         frame_type: wing::H2FrameType.Headers,
@@ -339,7 +339,7 @@ fn test_h2_continuation_flood_and_interleaving() {
 
 fn test_h2_dos_and_stream_parity() {
     // 1. Rapid Reset DoS (CVE-2023-44487): 100 allowed, 101st triggers EnhanceYourCalm
-    var framer_rr = wing::new_h2_security_framer();
+    var framer_rr = wing::H2SecurityFramer { .. };
     for _ in 100 {
         let rst_hdr = wing::H2FrameHeader {
             payload_len: 4,
@@ -366,7 +366,7 @@ fn test_h2_dos_and_stream_parity() {
     print("H2_RAPID_RESET_DEFENSE: ENHANCE_YOUR_CALM");
 
     // 2. Ping flood DoS: 10 allowed, 11th triggers EnhanceYourCalm
-    var framer_ping = wing::new_h2_security_framer();
+    var framer_ping = wing::H2SecurityFramer { .. };
     for _ in 10 {
         let ping_hdr = wing::H2FrameHeader {
             payload_len: 8,
@@ -392,7 +392,7 @@ fn test_h2_dos_and_stream_parity() {
     print("H2_PING_FLOOD_DEFENSE: ENHANCE_YOUR_CALM");
 
     // 3. Client stream parity: Client HEADERS on even stream ID (stream 2) -> ProtocolError
-    var framer_parity = wing::new_h2_security_framer();
+    var framer_parity = wing::H2SecurityFramer { .. };
     let even_hdr = wing::H2FrameHeader {
         payload_len: 32,
         frame_type: wing::H2FrameType.Headers,

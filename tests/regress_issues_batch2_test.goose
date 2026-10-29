@@ -787,7 +787,7 @@ fn test_ws_handshake_missing_host_rejection(t: core::T&) {
         wing::set_header(req, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
         // Omit Host header!
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         let _, ok = wing::ws_upgrade_request(req, resp);
         sub.assert_false(ok, "Upgrade handshake MUST fail when Host header is missing (RFC 6455 §4.2.1)");
         sub.assert_eq(resp.status_code, 400, "Response status code MUST be 400 Bad Request");
@@ -796,7 +796,7 @@ fn test_ws_handshake_missing_host_rejection(t: core::T&) {
 
         // With valid Host header, handshake succeeds
         wing::set_header(req, "Host", "example.com");
-        var resp_ok = wing::new_response();
+        var resp_ok = wing::Response { .. };
         let _, ok_with_host = wing::ws_upgrade_request(req, resp_ok);
         sub.assert_true(ok_with_host, "Upgrade handshake succeeds with Host header present");
         sub.assert_eq(resp_ok.status_code, 101, "Response status code is 101 Switching Protocols");
@@ -820,14 +820,14 @@ fn test_ws_subprotocol_agreement_verification(t: core::T&) {
         wing::set_header(req, "Sec-WebSocket-Protocol", "chat, superchat");
 
         // Server attempts to negotiate "unsupported_protocol" not offered by client
-        var resp_unmatched = wing::new_response();
+        var resp_unmatched = wing::Response { .. };
         let sess_unmatched, ok1 = wing::ws_upgrade_request(req, resp_unmatched, "unsupported_protocol");
         sub.assert_true(ok1, "Handshake succeeds");
         sub.assert_eq(sess_unmatched.subprotocol.len, 0, "Unmatched subprotocol MUST NOT be accepted in session");
         sub.assert_false(wing::has_header(resp_unmatched, "Sec-WebSocket-Protocol"), "Sec-WebSocket-Protocol header MUST NOT be sent for unoffered protocol");
 
         // Server selects "chat" which WAS offered by client
-        var resp_matched = wing::new_response();
+        var resp_matched = wing::Response { .. };
         let sess_matched, ok2 = wing::ws_upgrade_request(req, resp_matched, "chat");
         sub.assert_true(ok2, "Handshake succeeds");
         sub.assert_bytes_eq(sess_matched.subprotocol[..], "chat", "Matched subprotocol 'chat' is negotiated");
@@ -873,29 +873,29 @@ fn test_h1_host_header_validation_and_duplicates(t: core::T&) {
         // RFC 9112 Section 7.2:
         // Host = uri-host [ ":" port ]
         // Must not contain path (/), query (?), fragment (#), or userinfo (@)
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let err_path = wing::parse_headers("Host: example.com/path\r\n\r\n", map1);
         sub.assert_false(wing::is_ok(err_path), "Host with path '/' MUST be rejected");
 
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let err_query = wing::parse_headers("Host: example.com?q=1\r\n\r\n", map2);
         sub.assert_false(wing::is_ok(err_query), "Host with query '?' MUST be rejected");
 
-        var map3 = wing::new_header_map();
+        var map3 = wing::HeaderMap { .. };
         let err_hash = wing::parse_headers("Host: example.com#frag\r\n\r\n", map3);
         sub.assert_false(wing::is_ok(err_hash), "Host with fragment '#' MUST be rejected");
 
-        var map4 = wing::new_header_map();
+        var map4 = wing::HeaderMap { .. };
         let err_at = wing::parse_headers("Host: user@example.com\r\n\r\n", map4);
         sub.assert_false(wing::is_ok(err_at), "Host with userinfo '@' MUST be rejected");
 
-        var map_ok = wing::new_header_map();
+        var map_ok = wing::HeaderMap { .. };
         let err_ok = wing::parse_headers("Host: example.com:8080\r\n\r\n", map_ok);
         sub.assert_true(wing::is_ok(err_ok), "Clean Host 'example.com:8080' is valid");
     };
 
     t.run("Duplicate Host headers in HTTP/1.1 MUST be rejected (RFC 9112 §7.2)") { sub =>
-        var map_dup = wing::new_header_map();
+        var map_dup = wing::HeaderMap { .. };
         let err_dup = wing::parse_headers("Host: example.com\r\nHost: evil.com\r\n\r\n", map_dup);
         sub.assert_false(wing::is_ok(err_dup), "Duplicate Host headers MUST be rejected (smuggling protection)");
     };

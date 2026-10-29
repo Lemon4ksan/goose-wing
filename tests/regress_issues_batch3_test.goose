@@ -95,7 +95,7 @@ fn test_vary_snapshot_capacity_poisoning_defense(t: core::T&) {
             format(vary_val, i);
         }
 
-        var req_headers = wing::new_header_map();
+        var req_headers = wing::HeaderMap { .. };
         wing::append_header(req_headers, "X-Vary-16", "secret-value");
 
         let snap = wing::record_vary_snapshot(vary_val[..], req_headers);
@@ -191,7 +191,7 @@ fn test_http_headers_obs_fold_capacity_safety(t: core::T&) {
         }
         headers_raw.append("\r\n");
 
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let err = wing::parse_headers(headers_raw[..], map, true);
         sub.assert_true(err == wing::HeaderParseError.CapacityExceeded, "Oversized obs-fold MUST return CapacityExceeded");
     };
@@ -306,19 +306,19 @@ fn test_chunked_fsm_and_extensions_rfc9112(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_http1_headers_cl_host_and_cookie_bounds(t: core::T&) {
     t.run("track_header_presence MUST reject invalid first Content-Length value") { sub =>
-        var tracker = wing::new_header_presence_tracker();
+        var tracker = wing::HeaderPresenceTracker { .. };
         let ok = wing::track_header_presence(tracker, "Content-Length", "invalid", 0);
         sub.assert_false(ok, "Invalid first Content-Length MUST return false immediately");
     };
 
     t.run("validate_header_framing_conflicts rejects Host with interior comma") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let err = wing::parse_headers("Host: a.com, b.com\r\n\r\n", map);
         sub.assert_true(err == wing::HeaderParseError.InvalidHeaderValue, "Host with comma MUST be rejected");
     };
 
     t.run("validate_header_framing_conflicts rejects Host with interior space") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let err = wing::parse_headers("Host: a .com\r\n\r\n", map);
         sub.assert_true(err == wing::HeaderParseError.InvalidHeaderValue, "Host with space MUST be rejected");
     };
@@ -329,7 +329,7 @@ fn test_http1_headers_cl_host_and_cookie_bounds(t: core::T&) {
         for i in 1500 { raw_hdr.push('x'); }
         raw_hdr.append("\r\n\r\n");
 
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let err = wing::parse_headers(raw_hdr[..], map);
         sub.assert_true(err == wing::HeaderParseError.None, "Headers parsed successfully");
 
@@ -389,10 +389,10 @@ fn test_mime_and_sfv_truncation_smuggling(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
     t.run("Unqualified private directive following qualified private must make response uncacheable in shared cache") { sub =>
-        var req_map = wing::new_header_map();
+        var req_map = wing::HeaderMap { .. };
         wing::append_header(req_map, ":method", "GET");
 
-        var resp_map = wing::new_header_map();
+        var resp_map = wing::HeaderMap { .. };
         // Qualified private followed by unqualified private
         wing::append_header(resp_map, "Cache-Control", "private=\"X-Custom\", private");
 
@@ -402,7 +402,7 @@ fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
     };
 
     t.run("Empty private=\"\" directive must not leave response cacheable in shared cache") { sub =>
-        var resp_map = wing::new_header_map();
+        var resp_map = wing::HeaderMap { .. };
         wing::append_header(resp_map, "Cache-Control", "private=\"\"");
 
         let resp_cc = wing::parse_cache_control_headers(resp_map, false, false);
@@ -411,7 +411,7 @@ fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
     };
 
     t.run("Vary snapshot with header value > 256 bytes must invalidate snapshot") { sub =>
-        var req_headers = wing::new_header_map();
+        var req_headers = wing::HeaderMap { .. };
         var long_val: u8[>..] = [];
         for i in 300 { long_val.push('k'); }
         wing::append_header(req_headers, "X-Auth-Token", long_val[..]);
@@ -646,14 +646,14 @@ fn test_grpc_stream_truncation_and_status(t: core::T&) {
             wing::encode_grpc_lpm(msg_buf[..], body, false);
         }
 
-        var reader = wing::new_grpc_client_stream_reader();
+        var reader = wing::GrpcClientStreamReader { .. };
         let ok = wing::parse_client_stream(body[..], false, reader);
         sub.assert_false(ok, "parse_client_stream with > 32 messages MUST return false to prevent message loss");
     };
 
     t.run("extract_grpc_status with non-numeric grpc-status sets Unknown") { sub =>
-        var hdrs = wing::new_header_map();
-        var trls = wing::new_header_map();
+        var hdrs = wing::HeaderMap { .. };
+        var trls = wing::HeaderMap { .. };
         wing::append_header(trls, "grpc-status", "invalid-code");
 
         var status = wing::GrpcStatusCode.Ok;
@@ -663,11 +663,11 @@ fn test_grpc_stream_truncation_and_status(t: core::T&) {
     };
 
     t.run("parse_grpc_unary_response with truncated 3-byte body returns false") { sub =>
-        var hdrs = wing::new_header_map();
-        var trls = wing::new_header_map();
+        var hdrs = wing::HeaderMap { .. };
+        var trls = wing::HeaderMap { .. };
         let trunc_body: u8[3] = [0x00, 0x00, 0x05]; // Needs 5 bytes LPM header
 
-        var resp = wing::new_grpc_response();
+        var resp = wing::GrpcResponse { .. };
         let ok = wing::parse_grpc_unary_response(hdrs, trls, trunc_body[..], false, resp);
         sub.assert_false(ok, "Truncated gRPC body < 5 bytes MUST return false");
     };
@@ -866,7 +866,7 @@ fn test_websocket_token_and_capacity_invariants(t: core::T&) {
         req.set_header("Sec-WebSocket-Version", "13");
         req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         let _, ok = wing::ws_upgrade_request(req, resp);
         sub.assert_false(ok, "Connection: not-an-upgrade MUST NOT match 'Upgrade' token");
         sub.assert_eq(resp.status_code, 400, "Response status 400 Bad Request");
@@ -880,7 +880,7 @@ fn test_websocket_token_and_capacity_invariants(t: core::T&) {
         req.set_header("Sec-WebSocket-Version", "13");
         req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         let _, ok = wing::ws_upgrade_request(req, resp);
         sub.assert_true(ok, "Upgrade token in second Connection header MUST be recognized");
         sub.assert_eq(resp.status_code, 101, "Response status 101 Switching Protocols");
@@ -955,7 +955,7 @@ fn test_client_redirect_origin_and_fragment_safety(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_sse_w3c_spec_invariants(t: core::T&) {
     t.run("W3C EventSource §9.2.6: Event without data field MUST NOT dispatch") { sub =>
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..16] = [];
 
         // Stream with event: ping but NO data: line, followed by empty line
@@ -965,7 +965,7 @@ fn test_sse_w3c_spec_invariants(t: core::T&) {
     };
 
     t.run("SSE retry integer parsing must not overflow into tight reconnect loop") { sub =>
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..16] = [];
 
         // 20-digit number exceeding u32::MAX
@@ -1190,7 +1190,7 @@ fn test_websocket_close_and_subprotocol(t: core::T&) {
         req.headers.push(wing::make_header("Sec-WebSocket-Protocol", "wamp.2.json"));
         req.headers.push(wing::make_header("Sec-WebSocket-Protocol", "chat.v1"));
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         let ws_sess, ok = wing::ws_upgrade_request(req, resp, "chat.v1");
         sub.assert_true(ok, "Upgrade accepted with subprotocol from second header");
         sub.assert_eq(resp.status_code, 101, "Switching Protocols 101");
@@ -1210,7 +1210,7 @@ fn test_websocket_close_and_subprotocol(t: core::T&) {
     };
 
     t.run("SharedWsCompressor deflate and inflate round-trip with RFC 7692 tail stripping") { sub =>
-        var comp = wing::new_shared_ws_compressor();
+        var comp = wing::SharedWsCompressor { .. };
         let original = "Hello, WebSocket PerMessageDeflate with zero-heap shared reactor context!";
 
         var wire: u8[>..] = [];

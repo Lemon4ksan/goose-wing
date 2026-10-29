@@ -27,10 +27,6 @@ struct HeaderMapPool {
     pool: PooledHeaderMap[..16] = [PooledHeaderMap { .. }; 16],
 }
 
-fn new_header_map_pool() -> HeaderMapPool {
-    return HeaderMapPool { .. };
-}
-
 fn acquire_header_map(pool: HeaderMapPool&) -> i32 {
     for idx in pool.pool.len {
         if !pool.pool[idx].in_use {
@@ -62,10 +58,6 @@ struct RequestExtensions {
 
 struct ExtensionsPool {
     slots: RequestExtensions[..16] = [RequestExtensions { .. }; 16],
-}
-
-fn new_extensions_pool() -> ExtensionsPool {
-    return ExtensionsPool { .. };
 }
 
 fn acquire_extensions(pool: ExtensionsPool&) -> i32 {

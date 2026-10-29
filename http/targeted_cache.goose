@@ -54,7 +54,7 @@ fn parse_targeted_cache_control_headers(
     is_request: bool = false,
     ignore_cargo_cult: bool = true,
 ) -> CacheControl {
-    var cc = new_cache_control();
+    var cc = CacheControl { .. };
 
     // 1. Specific target header (e.g. "fastly-cache-control")
     if check_target_cache_control(map, target_name, cc, ignore_cargo_cult) {

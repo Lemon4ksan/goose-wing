@@ -981,7 +981,7 @@ fn handle_h2_server_ingress<B>(
             req.body.append(sess.streams[i].body[..]);
 
             // Execute pipeline
-            var res = new_response();
+            var res = Response { .. };
             var future = internal::new_inline_handler_future(0);
             let now_ns = (now_ms as u64) * 1000000;
             execute_pipeline(pipeline, timer, client_ip, req, now_ns, res, future);

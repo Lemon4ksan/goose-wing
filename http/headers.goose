@@ -724,10 +724,6 @@ struct HeaderMap {
     valid: bool = true,
 }
 
-fn new_header_map() -> HeaderMap {
-    return HeaderMap { .. };
-}
-
 fn reset_for_keep_alive(map: HeaderMap&) {
     map.raw_buf.clear();
     map.entries.clear();

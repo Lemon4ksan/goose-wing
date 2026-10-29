@@ -1778,7 +1778,7 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
 fn test_continuation_flood_and_interleaving(t: core::T&) {
     t.run("H2-01: CONTINUATION Flood Exceeding Frame Cap Rejection (CVE-2024-27983)") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         // 1. Initial HEADERS frame on stream 1 without END_HEADERS
         let h_hdr = wing::H2FrameHeader {
@@ -1822,7 +1822,7 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
     };
 
     t.run("H2-02: Stream Interleaving While Expecting CONTINUATION Rejection (RFC 9113 Section 4.3)") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         // HEADERS on stream 1 without END_HEADERS
         let h_hdr = wing::H2FrameHeader {
@@ -1848,7 +1848,7 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
         sub.assert_eq(err1, wing::H2ErrorCode.ProtocolError, "Non-CONTINUATION frame interleaved must trigger ProtocolError");
 
         // Reset and test interleaved CONTINUATION on DIFFERENT stream (stream 3 instead of 1)
-        var framer2 = wing::new_h2_security_framer();
+        var framer2 = wing::H2SecurityFramer { .. };
         wing::process_incoming_frame(framer2, h_hdr);
 
         let cont_other_stream = wing::H2FrameHeader {
@@ -1864,7 +1864,7 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
     };
 
     t.run("H2-03: Cumulative Header Block Size Bomb Rejection") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         // HEADERS with 4000 bytes
         let h_hdr = wing::H2FrameHeader {
@@ -1891,7 +1891,7 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
     };
 
     t.run("H2-04: Valid CONTINUATION Sequence with END_HEADERS") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         let h_hdr = wing::H2FrameHeader {
             payload_len: 200,
@@ -1918,7 +1918,7 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
 
 fn test_rapid_reset_and_dos_floods(t: core::T&) {
     t.run("RESET-01: Rapid Reset Flood Defense (CVE-2023-44487)") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         // 100 RST_STREAM frames processed (under limit)
         for _ in 100 {
@@ -1949,7 +1949,7 @@ fn test_rapid_reset_and_dos_floods(t: core::T&) {
     };
 
     t.run("PING-01: PING Flood Defense (CVE-2019-9512)") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         // 10 unacknowledged PING frames allowed
         for _ in 10 {
@@ -2001,7 +2001,7 @@ fn test_settings_and_stream_id_invariants(t: core::T&) {
     };
 
     t.run("STREAM-01: Stream ID Parity & Connection-Level Isolation (RFC 9113 Section 5.1.1)") { sub =>
-        var framer = wing::new_h2_security_framer();
+        var framer = wing::H2SecurityFramer { .. };
 
         // 1. Client HEADERS on even stream (stream 2) -> ProtocolError
         let even_hdr = wing::H2FrameHeader {
@@ -2502,7 +2502,7 @@ fn test_h3_server_upgrade(t: core::T&) {
         var req = wing::new_request("GET", "/");
         wing::format_h3_websocket_request(req, "/ws", "h3.example.com", "https", "v1.proto, v2.proto");
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         let session, ok = wing::ws_h3_upgrade_request(req, resp, "v2.proto");
         sub.assert_true(ok, "Upgrade accepted");
         sub.assert_eq(resp.status_code, 200, "RFC 9220 §3: Status code MUST be 200 (NOT 101)");

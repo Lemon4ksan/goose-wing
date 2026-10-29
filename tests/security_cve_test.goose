@@ -205,7 +205,7 @@ fn test_cve_cookie_url_and_query_ordering(t: core::T&) {
     };
 
     t.run("set_cookie_header: Normalizes Path Dot-Segments") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let clock = core::new_mock_clock();
 
         let ok = wing::set_cookie_header(jar, "https://example.com/admin/../public", "sid=xyz", clock.now_us);
@@ -234,7 +234,7 @@ fn test_cve_cookie_url_and_query_ordering(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_netscape_import_security(t: core::T&) {
     t.run("Netscape Import: Public Suffix Domain Supercookie Must Be Rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let clock = core::new_mock_clock();
 
         let netscape_psl = "co.uk\tTRUE\t/\tFALSE\t0\tsupercookie\tevil\n";
@@ -245,7 +245,7 @@ fn test_cve_netscape_import_security(t: core::T&) {
     };
 
     t.run("Netscape Import: CTL Character in Cookie Must Be Rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let clock = core::new_mock_clock();
 
         let netscape_ctl = "example.com\tTRUE\t/\tFALSE\t0\tbad\x01name\tval\n";

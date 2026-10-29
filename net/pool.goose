@@ -244,10 +244,6 @@ struct WantQueue {
     tail: WantConn[..32] = [],
 }
 
-fn new_want_queue() -> WantQueue {
-    return WantQueue { .. };
-}
-
 fn queue_len(q: const WantQueue&) -> i64 {
     let head_remaining = core::ct_max_i64(0, q.head.len - q.head_pos);
     return head_remaining + q.tail.len;
@@ -513,7 +509,7 @@ fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
         var grp = ConnectionGroup {
             key: copy(key),
             key_hash: kh,
-            wait_queue: new_want_queue(),
+            wait_queue: WantQueue { .. },
             ..
         };
         pool.groups.push(grp);

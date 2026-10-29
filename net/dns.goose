@@ -474,10 +474,6 @@ struct DnsCache {
     entries: DnsCacheEntry[..64] = [],
 }
 
-fn new_dns_cache() -> DnsCache {
-    return DnsCache { .. };
-}
-
 fn dns_cache_lookup(
     cache: const DnsCache&,
     domain: const u8[:],

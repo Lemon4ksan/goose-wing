@@ -171,6 +171,9 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
    - **No primitive or slice `type` aliases**: Never hide memory layout behind aliases like `type ByteSlice = u8[:]` or `type UserId = u64`. Write canonical Goose types (`const u8[:]`, `u8[..256]`, `u64`) directly at every call site so bounds and ownership are immediately visible.
    - **No `import ... as ...` namespace renaming**: Use canonical module names unless resolving a hard symbol collision.
    - **No local variable re-aliasing**: Do not create chains of synonymous local bindings (`let a = buf.len; let n = a;`).
+   - **No redundant 0-arg struct constructor wrappers**: Never declare `fn new_foo() -> Foo { return Foo { .. }; }` (or `Foo {}`). Instantiate structs with native literal syntax `Foo { .. }` (or `wing::Foo { .. }`, `core::Foo { .. }`) directly at every call site.
+   - **No trivial single-line struct field getters**: Never write wrapper functions whose sole purpose is returning an attribute or field of an argument (`fn foo(x: const Bar&) -> Baz { return x.field; }`). Access struct attributes directly at call sites or document invariants directly on struct fields.
+   - **Zero dead code (Mandatory call-site or test integration)**: Every function declared in production source files must be actively integrated and called by protocol engines, dispatchers, or test suites. Unreferenced functions are rejected by pre-commit.
    - **Domain-named leaf primitives over mechanical names**: When isolating a depth-0 arithmetic invariant for G-CRAP proof (`inline fn calc_amplification_limit`), name the function after the protocol domain rule, never after the raw operator (`add_one`, `sub_one`, `mul_by_three`).
 2. **Input/output examples (`// Example:`) where genuinely useful**:
    - **Compulsory function archetypes**:

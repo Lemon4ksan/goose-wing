@@ -49,10 +49,6 @@ struct CacheControl {
 }
 
 // Constructs a zero-initialized CacheControl structure with default unset values (-1).
-fn new_cache_control() -> CacheControl {
-    return CacheControl { .. };
-}
-
 // ---- flag inspectors -------------------------------------------------------
 
 // Returns whether the specified bitmask flag is set.
@@ -381,7 +377,7 @@ fn contains_pragma_no_cache(pragma_val: const u8[:]) -> bool {
 
 // Parses all Cache-Control (and optional Pragma fallback) headers from HeaderMap.
 fn parse_cache_control_headers(map: const HeaderMap&, is_request: bool = false, ignore_cargo_cult: bool = true) -> CacheControl {
-    var cc = new_cache_control();
+    var cc = CacheControl { .. };
     var has_cc_header = false;
 
     for entry in map.entries {

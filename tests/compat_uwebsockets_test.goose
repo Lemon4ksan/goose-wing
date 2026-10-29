@@ -169,7 +169,7 @@ fn test_selective_compression(t: core::T&) {
     t.run("1. Selective Compression Flag Toggle") { sub =>
         var ws = wing::new_websocket_session(false);
         wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
-        var comp = wing::new_shared_ws_compressor();
+        var comp = wing::SharedWsCompressor { .. };
 
         let repetitive_text = "{\"event\":\"trade\",\"ticker\":\"BTC-USDT\",\"price\":65432.10,\"volume\":1.54321,\"timestamp\":1700000000}";
 
@@ -464,7 +464,7 @@ fn test_header_bloom_filter(t: core::T&) {
 
 fn test_fast_serialization(t: core::T&) {
     t.run("1. Pre-formatted 200 OK Status Line & Content-Length 0") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
 
         var wire: u8[>..] = [];
@@ -539,7 +539,7 @@ fn test_shared_tcp_buffer(t: core::T&) {
 
 fn test_topic_tree_pubsub(t: core::T&) {
     t.run("1. Exact and Wildcard MQTT Pattern Matching") { sub =>
-        var tree = wing::new_topic_tree();
+        var tree = wing::TopicTree { .. };
 
         // Register subscribers with distinct socket descriptors
         sub.assert_true(tree.subscribe(101, "chat/general"), "Sub 101 to exact chat/general");
@@ -571,7 +571,7 @@ fn test_topic_tree_pubsub(t: core::T&) {
     };
 
     t.run("2. Subscriber Deduplication across Overlapping Patterns") { sub =>
-        var tree = wing::new_topic_tree();
+        var tree = wing::TopicTree { .. };
 
         // Socket 200 subscribes to multiple overlapping wildcard topics
         tree.subscribe(200, "market/#");
@@ -585,7 +585,7 @@ fn test_topic_tree_pubsub(t: core::T&) {
     };
 
     t.run("3. Unsubscribe and Complete Connection Teardown") { sub =>
-        var tree = wing::new_topic_tree();
+        var tree = wing::TopicTree { .. };
 
         tree.subscribe(301, "news/sport");
         tree.subscribe(301, "news/weather");
@@ -634,7 +634,7 @@ fn test_vectored_io(t: core::T&) {
         sub.assert_bytes_eq(client_buf[..recvd], "HDR_PART;BODY_PART_VECTORED_IO", "Data matches concatenation without memory copy");
 
         // 2. Full HTTP response via send_http1_response (zero-copy body)
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         res.set_header("Content-Type", "text/plain");
         res.body.append("HELLO_VECTORED_WORLD");
@@ -710,7 +710,7 @@ fn test_handshake_and_date_and_swar_utf8(t: core::T&) {
         sub.assert_true(core::index_of_slice(date_hdr, "GMT\r\n") > 0, "Header ends with GMT CRLF");
 
         // Check response serialization automatically includes Date
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         var wire: u8[..512] = [];
         wing::serialize_http1_headers(res, "goose-wing", wire);
@@ -1161,7 +1161,7 @@ fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
     // When responding to HEAD or providing a manual Content-Length on empty body,
     // the server MUST NOT serialize two conflicting Content-Length headers (e.g. 0 and 1024).
 
-    var res = wing::new_response();
+    var res = wing::Response { .. };
     res.status_code = 200;
     wing::set_header(res, "Content-Length", "1024");
     // Body is intentionally empty (HEAD response)
@@ -1253,7 +1253,7 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
 
     // uWebSockets Issue #1924 / #1933:
     // Publishing to empty TopicTree or querying non-existent topic must return 0 without panicking.
-    var tree = wing::new_topic_tree();
+    var tree = wing::TopicTree { .. };
     t.assert_eq(wing::subscriber_count(tree, "non/existent"), 0, "Subscriber count on non-existent topic must be 0");
     var out_fds: i64[..512] = [];
     let count = wing::find_subscribers(tree, "test/topic", out_fds);
@@ -1335,7 +1335,7 @@ fn test_uweb_1370_204_no_content_length(t: core::T&) {
     // uWebSockets Issue #1370 / RFC 9110 Section 8.6:
     // A server MUST NOT send a Content-Length header field in any response
     // with status code 204 (No Content).
-    var res = wing::new_response();
+    var res = wing::Response { .. };
     res.status_code = 204;
     wing::set_header(res, "Content-Length", "0"); // User handler mistakenly sets Content-Length
 
@@ -1407,7 +1407,7 @@ fn test_mqtt_invalid_multilevel_wildcard_rejection(t: core::T&) {
     // Multi-level wildcard '#' MUST be the last character in the topic pattern,
     // and MUST be either alone ("#") or preceded by '/' ("sport/#").
     // Patterns like "sport/#/tennis" or "sport#" or "sport+foo" are syntactically illegal!
-    var tree = wing::new_topic_tree();
+    var tree = wing::TopicTree { .. };
 
     t.assert_false(wing::subscribe(tree, 10, "sport/#/tennis"), "'#' in middle of topic pattern must be rejected");
     t.assert_false(wing::subscribe(tree, 10, "sport#"), "'#' not preceded by '/' must be rejected");
@@ -1421,7 +1421,7 @@ fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: core::T&) {
     // uWebSockets Issue #1090 / OASIS MQTT v5.0 §3.3.2.1:
     // "The Topic Name in the PUBLISH packet MUST NOT contain wildcard characters [MQTT-3.3.2-1]."
     // Publishing to wildcard topics ("sport/+", "sport/#", "+", "#") is illegal and MUST be rejected.
-    var tree = wing::new_topic_tree();
+    var tree = wing::TopicTree { .. };
     t.assert_true(wing::subscribe(tree, 10, "sport/+"), "Subscribe to 'sport/+'");
     t.assert_true(wing::subscribe(tree, 20, "sport/#"), "Subscribe to 'sport/#'");
 
@@ -1565,7 +1565,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
     wing::set_header(req_bad, "Sec-WebSocket-Version", "13");
     wing::set_header(req_bad, "Sec-WebSocket-Key", "short_invalid_key");
 
-    var res_bad = wing::new_response();
+    var res_bad = wing::Response { .. };
     let sess_bad, ok_bad = wing::ws_upgrade_request(req_bad, res_bad);
     t.assert_false(ok_bad, "Upgrade with non-16-byte key must fail");
     t.assert_eq(res_bad.status_code, 400, "Must return HTTP 400 Bad Request for malformed Sec-WebSocket-Key");
@@ -1578,7 +1578,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
     wing::set_header(req_good, "Sec-WebSocket-Version", "13");
     wing::set_header(req_good, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
-    var res_good = wing::new_response();
+    var res_good = wing::Response { .. };
     let sess_good, ok_good = wing::ws_upgrade_request(req_good, res_good);
     t.assert_true(ok_good, "Upgrade with valid Sec-WebSocket-Key must succeed");
     t.assert_eq(res_good.status_code, 101, "Must return HTTP 101 Switching Protocols");

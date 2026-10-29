@@ -18,7 +18,7 @@ fn assert(cond: bool, msg: const u8[:]) {
 fn main() {
     print("goose-wing Cookie Jar Example (UFCS)\n");
 
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
     let now_us: i64 = 1700000000 * 1000000;
 
     // 1. Fluent Builder via UFCS: push returns a reference configured in-place!
@@ -120,7 +120,7 @@ fn main() {
     jar.export_json(json_buf);
     assert(find(json_buf[..], "\"name\":\"order_token\"") >= 0, "JSON export contains order_token");
 
-    var fresh_jar = wing::new_canonical_cookie_jar();
+    var fresh_jar = wing::CanonicalCookieJar { .. };
     let imported_count = fresh_jar.import_json(json_buf[..], now_us);
     print("  Imported ", imported_count, " cookies into fresh jar from JSON");
     assert(imported_count == jar.cookies.len, "All cookies successfully imported");
@@ -226,7 +226,7 @@ fn main() {
     assert(srv_cookies[1].name[..] == "valid2", "Second clean cookie parsed");
 
     let json_downgrade = "[{\"name\":\"sid_downgrade\",\"value\":\"tok123\",\"domain\":\"crypto-dex.io\",\"path\":\"/\",\"source_scheme\":\"secure\",\"source_port\":443}]";
-    var json_test_jar = wing::new_canonical_cookie_jar();
+    var json_test_jar = wing::CanonicalCookieJar { .. };
     let imported_down = json_test_jar.import_json(json_downgrade, now_us);
     assert(imported_down == 1, "Non-secure cookie with source_scheme:secure imported without channel rejection");
     assert(json_test_jar.get("sid_downgrade") == "tok123", "Retrieved imported cookie");

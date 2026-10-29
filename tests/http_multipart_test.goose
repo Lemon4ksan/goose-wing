@@ -483,7 +483,7 @@ fn test_serve_range_and_patch_validation(t: core::T&) {
         let res_len = source_data.len;
 
         var status: i32 = 0;
-        var headers = wing::new_header_map();
+        var headers = wing::HeaderMap { .. };
         var body_out: u8[>..] = [];
 
         wing::serve_range_request(
@@ -648,7 +648,7 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: core::T&) {
         });
 
         var status: i32 = 0;
-        var headers = wing::new_header_map();
+        var headers = wing::HeaderMap { .. };
         var body_out: u8[>..] = [];
 
         wing::serve_range_set(

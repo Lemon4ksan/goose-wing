@@ -11,7 +11,7 @@ import wing from "..";
 
 fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
     t.run("Basic HeaderMap Operations and O(1) WellKnown Slots") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         sub.assert_true(map.valid, "Newly created map is valid");
 
         // Set well-known inline headers
@@ -35,7 +35,7 @@ fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
     };
 
     t.run("Custom Headers & Overwrite Behavior") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "X-Custom-Engine", "GooseWing/1.0");
         wing::append_header(map, "X-Trace-ID", "trace-abc-123");
 
@@ -53,7 +53,7 @@ fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
     };
 
     t.run("Connection Reuse (reset_for_keep_alive)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::set_inline(map, wing::WellKnownHeader.Host, "example.com");
         wing::append_header(map, "X-Req", "1");
         sub.assert_eq(map.entries.len, 2, "2 entries before reset");
@@ -71,7 +71,7 @@ fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
 
 fn test_rfc9110_and_cookie_fold_isolation(t: core::T&) {
     t.run("List-Based Header Comma Folding (Vary, Accept)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "Vary", "Accept-Encoding");
         wing::append_header(map, "Vary", "User-Agent");
         wing::append_header(map, "Vary", "Origin");
@@ -83,7 +83,7 @@ fn test_rfc9110_and_cookie_fold_isolation(t: core::T&) {
     };
 
     t.run("Absolute Prohibition of Set-Cookie Folding (RFC 6265bis & RFC 9110 Section 5.3)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "Set-Cookie", "session_id=abc; Secure; HttpOnly; SameSite=Strict");
         wing::append_header(map, "Set-Cookie", "theme=dark; Path=/; Max-Age=86400");
         wing::append_header(map, "Set-Cookie", "cart=item1,item2; Path=/cart");
@@ -110,7 +110,7 @@ fn test_rfc9110_and_cookie_fold_isolation(t: core::T&) {
     };
 
     t.run("Authentication Challenge Fold Isolation (WWW-Authenticate)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "WWW-Authenticate", "Basic realm=\"Access to staging\"");
         wing::append_header(map, "WWW-Authenticate", "Bearer error=\"invalid_token\"");
 
@@ -141,7 +141,7 @@ fn test_lexical_validation_and_swar(t: core::T&) {
 
     t.run("Control Character and Embedded NUL Injection Hard Rejection") { sub =>
         // Embedded NUL
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let nul_raw: u8[28] = ['H', 'o', 's', 't', ':', ' ', 'a', 0, 'b', 'c', '.', 'c', 'o', 'm', '\r', '\n', '\r', '\n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let err_nul = wing::parse_headers(nul_raw[..18], map);
         sub.assert_eq(err_nul, wing::HeaderParseError.EmbeddedNull, "Embedded NUL causes immediate parse failure");
@@ -153,14 +153,14 @@ fn test_lexical_validation_and_swar(t: core::T&) {
     };
 
     t.run("Whitespace before Colon Rejection (RFC 9110 Section 5.1)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw = "Host : example.com\r\n\r\n";
         let err = wing::parse_headers(raw, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidHeaderName, "Space before colon rejected");
     };
 
     t.run("HeaderPresenceTracker Duplicate Transfer-Encoding Smuggling Rejection") { sub =>
-        var tracker = wing::new_header_presence_tracker();
+        var tracker = wing::HeaderPresenceTracker { .. };
         sub.assert_true(wing::track_header_presence(tracker, "Transfer-Encoding", "chunked", 0), "First TE accepted");
         sub.assert_false(wing::track_header_presence(tracker, "Transfer-Encoding", "identity", 1), "Duplicate TE rejected");
         sub.assert_true(tracker.has_duplicate_te, "has_duplicate_te flag set");
@@ -186,7 +186,7 @@ fn test_lexical_validation_and_swar(t: core::T&) {
 
 fn test_httparse_regression_and_obs_fold(t: core::T&) {
     t.run("httparse PR #223 / Issue #222: Whitespace-Only Line Hard Syntax Error") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         // A line containing only spaces between valid headers MUST NOT silently truncate headers!
         let raw = "Host: example.com\r\n   \r\nX-Secret: leak\r\n\r\n";
         let err = wing::parse_headers(raw, map);
@@ -195,7 +195,7 @@ fn test_httparse_regression_and_obs_fold(t: core::T&) {
     };
 
     t.run("obs-fold Request Smuggling Defense") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw_fold = "Header: initial\r\n continuation\r\n\r\n";
 
         // Default: obs-fold rejected
@@ -216,7 +216,7 @@ fn test_httparse_regression_and_obs_fold(t: core::T&) {
 
 fn test_chromium_net_parity(t: core::T&) {
     t.run("Chromium raw_headers_ \\0\\0 Format") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "Host", "chromium.org");
         wing::append_header(map, "Accept", "*/*");
 
@@ -230,13 +230,13 @@ fn test_chromium_net_parity(t: core::T&) {
     };
 
     t.run("Chromium 304 Not Modified Merge (Shielding Cookies and Challenges)") { sub =>
-        var cached = wing::new_header_map();
+        var cached = wing::HeaderMap { .. };
         wing::append_header(cached, "ETag", "\"etag-123\"");
         wing::append_header(cached, "Cache-Control", "max-age=3600");
         wing::append_header(cached, "Set-Cookie", "session=original; Secure");
         wing::append_header(cached, "Strict-Transport-Security", "max-age=31536000");
 
-        var resp_304 = wing::new_header_map();
+        var resp_304 = wing::HeaderMap { .. };
         wing::append_header(resp_304, "Cache-Control", "max-age=7200");
         wing::append_header(resp_304, "Set-Cookie", "session=hijacked");
         wing::append_header(resp_304, "Strict-Transport-Security", "max-age=0");
@@ -255,13 +255,13 @@ fn test_chromium_net_parity(t: core::T&) {
     };
 
     t.run("Chromium Cache Persistence Filtering") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         wing::append_header(src, "Content-Type", "text/html");
         wing::append_header(src, "Set-Cookie", "user=alice");
         wing::append_header(src, "WWW-Authenticate", "Basic realm=\"admin\"");
         wing::append_header(src, "Connection", "keep-alive");
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::persist_headers(src, dst, wing::PERSIST_SANS_COOKIES | wing::PERSIST_SANS_CHALLENGES | wing::PERSIST_SANS_NON_CACHEABLE);
 
         sub.assert_true(wing::has_header(dst, "Content-Type"), "Content-Type persisted");
@@ -576,7 +576,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
 fn test_incremental_chunked_stream_decoder(t: core::T&) {
     t.run("Torture 1-byte incremental feeding") { sub =>
         let wire = "5\r\nHello\r\n6\r\n World\r\n0\r\nX-Checksum: c89a\r\n\r\n";
-        var dec = wing::new_chunked_stream_decoder();
+        var dec = wing::ChunkedStreamDecoder { .. };
         var stream_out: u8[>..] = [];
 
         for i in wire.len {
@@ -596,7 +596,7 @@ fn test_incremental_chunked_stream_decoder(t: core::T&) {
 
     t.run("Arbitrary 7-byte chunk slice feeding") { sub =>
         let wire = "A\r\n0123456789\r\n5\r\nABCDE\r\n0\r\n\r\n";
-        var dec = wing::new_chunked_stream_decoder();
+        var dec = wing::ChunkedStreamDecoder { .. };
         var stream_out: u8[>..] = [];
 
         var offset: i64 = 0;
@@ -615,7 +615,7 @@ fn test_incremental_chunked_stream_decoder(t: core::T&) {
 
     t.run("Incremental decoder stops on bare LF error") { sub =>
         let wire = "4\nWiki\r\n0\r\n\r\n";
-        var dec = wing::new_chunked_stream_decoder();
+        var dec = wing::ChunkedStreamDecoder { .. };
         var stream_out: u8[>..] = [];
 
         let ok, consumed = wing::feed_chunked_stream(dec, wire, stream_out);
@@ -695,7 +695,7 @@ fn test_httpserver_chunked_ingress(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunked_response_and_wire_parser(t: core::T&) {
     t.run("Server response serialization automatically chunks when trailers present") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         res.body.append("Streaming payload message");
         wing::add_trailer(res, "X-Checksum", "sha256-res-hash");
@@ -711,7 +711,7 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
         sub.assert_contains(wire_out[..], "X-Duration: 12ms\r\n", "Second trailer emitted");
 
         // Parse serialized response with symmetrical parse_http1_wire_response
-        var parsed_res = wing::new_response();
+        var parsed_res = wing::Response { .. };
         let ok_parse, consumed = wing::parse_http1_wire_response(wire_out[..], parsed_res);
         sub.assert_true(ok_parse, "Wire response parsed cleanly");
         sub.assert_eq(consumed, wire_out.len, "Entire wire stream consumed");
@@ -746,7 +746,7 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
 
     t.run("RFC 9112 Section 6.1: Response wire parser strips Content-Length when chunked present") { sub =>
         let wire_dual = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let ok_parse, consumed = wing::parse_http1_wire_response(wire_dual, res);
         sub.assert_true(ok_parse, "Dual TE+CL in response parsed cleanly (TE overrides CL)");
         sub.assert_bytes_eq(res.body[..], "hello", "Body decoded from chunked");
@@ -764,14 +764,14 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
 fn test_te_cl_request_smuggling_defense(t: core::T&) {
     t.run("SMUGGLE-01: Conflicting Transfer-Encoding and Content-Length (TE.CL / CL.TE) Rejection") { sub =>
         // TE then CL
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw_te_cl = "Transfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n";
         let err1 = wing::parse_headers(raw_te_cl, map1);
         sub.assert_eq(err1, wing::HeaderParseError.InvalidContentLength, "TE followed by CL must fail with InvalidContentLength per RFC 9112 Section 6.3");
         sub.assert_false(map1.valid, "Map must be marked invalid on TE/CL conflict");
 
         // CL then TE
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw_cl_te = "Content-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n";
         let err2 = wing::parse_headers(raw_cl_te, map2);
         sub.assert_eq(err2, wing::HeaderParseError.InvalidContentLength, "CL followed by TE must fail with InvalidContentLength per RFC 9112 Section 6.3");
@@ -779,7 +779,7 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 
     t.run("SMUGGLE-02: Duplicate Differing Content-Length Rejection (CL.CL)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw_diff_cl = "Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
         let err = wing::parse_headers(raw_diff_cl, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidContentLength, "Duplicate differing Content-Length must be rejected");
@@ -787,7 +787,7 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 
     t.run("SMUGGLE-03: Negative Content-Length Rejection") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw_neg = "Content-Length: -5\r\n\r\n";
         let err = wing::parse_headers(raw_neg, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidContentLength, "Negative Content-Length must be rejected");
@@ -796,32 +796,32 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
 
     t.run("SMUGGLE-04: Non-Digit Characters in Content-Length Rejection") { sub =>
         // Suffix alphanumeric
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw_alpha = "Content-Length: 12abc\r\n\r\n";
         let err1 = wing::parse_headers(raw_alpha, map1);
         sub.assert_eq(err1, wing::HeaderParseError.InvalidContentLength, "Alpha characters in Content-Length must be rejected");
 
         // Explicit positive sign '+'
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw_plus = "Content-Length: +10\r\n\r\n";
         let err2 = wing::parse_headers(raw_plus, map2);
         sub.assert_eq(err2, wing::HeaderParseError.InvalidContentLength, "Plus sign in Content-Length must be rejected");
 
         // Decimal dot
-        var map3 = wing::new_header_map();
+        var map3 = wing::HeaderMap { .. };
         let raw_dot = "Content-Length: 10.5\r\n\r\n";
         let err3 = wing::parse_headers(raw_dot, map3);
         sub.assert_eq(err3, wing::HeaderParseError.InvalidContentLength, "Decimal dot in Content-Length must be rejected");
 
         // Empty value
-        var map4 = wing::new_header_map();
+        var map4 = wing::HeaderMap { .. };
         let raw_empty = "Content-Length:\r\n\r\n";
         let err4 = wing::parse_headers(raw_empty, map4);
         sub.assert_eq(err4, wing::HeaderParseError.InvalidContentLength, "Empty Content-Length must be rejected");
     };
 
     t.run("SMUGGLE-05: Content-Length 64-bit Overflow Rejection") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         // 30-digit integer overflow
         let raw_ovf = "Content-Length: 999999999999999999999999999999\r\n\r\n";
         let err = wing::parse_headers(raw_ovf, map);
@@ -830,14 +830,14 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 
     t.run("SMUGGLE-06: Comma-Separated Differing Content-Length Rejection") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw_comma = "Content-Length: 15, 30\r\n\r\n";
         let err = wing::parse_headers(raw_comma, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidContentLength, "Differing comma-separated Content-Length must be rejected");
     };
 
     t.run("SMUGGLE-07: Duplicate Transfer-Encoding Headers Rejection") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw_dup_te = "Transfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n";
         let err = wing::parse_headers(raw_dup_te, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidContentLength, "Duplicate Transfer-Encoding headers must be rejected");
@@ -845,21 +845,21 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
 
     t.run("SMUGGLE-08: Valid Content-Length Acceptance & Identical Duplicate Folding") { sub =>
         // Valid Content-Length: 0
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw_zero = "Content-Length: 0\r\n\r\n";
         let err1 = wing::parse_headers(raw_zero, map1);
         sub.assert_eq(err1, wing::HeaderParseError.None, "Content-Length: 0 is valid");
         sub.assert_true(map1.valid, "Map must be valid");
 
         // Valid Content-Length: 1024
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw_valid = "Content-Length: 1024\r\n\r\n";
         let err2 = wing::parse_headers(raw_valid, map2);
         sub.assert_eq(err2, wing::HeaderParseError.None, "Content-Length: 1024 is valid");
         sub.assert_bytes_eq(wing::get_header(map2, "content-length"), "1024", "Header retrieved correctly");
 
         // Duplicate IDENTICAL Content-Length per RFC 9112 Section 6.3
-        var map3 = wing::new_header_map();
+        var map3 = wing::HeaderMap { .. };
         let raw_dup_same = "Content-Length: 42\r\nContent-Length: 42\r\n\r\n";
         let err3 = wing::parse_headers(raw_dup_same, map3);
         sub.assert_eq(err3, wing::HeaderParseError.None, "Duplicate identical Content-Length must be accepted per RFC 9112 Section 6.3");
@@ -867,7 +867,7 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 
     t.run("SMUGGLE-09: obs-fold on Content-Length Rejection") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         // Even in allow_obs_fold=true compatibility mode, obs-fold on Content-Length must be rejected
         let raw_fold_cl = "Content-Length: 10\r\n 20\r\n\r\n";
         let err = wing::parse_headers(raw_fold_cl, map, true);
@@ -876,37 +876,37 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 
     t.run("SMUGGLE-10: Space Before Colon in Header Name Rejection ") { sub =>
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw1 = "Content-Length : 10\r\n\r\n";
         let err1 = wing::parse_headers(raw1, map1);
         sub.assert_eq(err1, wing::HeaderParseError.InvalidHeaderName, "Space before colon in Content-Length must be rejected per RFC 7230 Section 3.2.4");
 
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw2 = "Transfer-Encoding : chunked\r\n\r\n";
         let err2 = wing::parse_headers(raw2, map2);
         sub.assert_eq(err2, wing::HeaderParseError.InvalidHeaderName, "Space before colon in Transfer-Encoding must be rejected");
 
-        var map3 = wing::new_header_map();
+        var map3 = wing::HeaderMap { .. };
         let raw3 = "X-Foo : bar\r\n\r\n";
         let err3 = wing::parse_headers(raw3, map3);
         sub.assert_eq(err3, wing::HeaderParseError.InvalidHeaderName, "Space before colon in general header must be rejected");
     };
 
     t.run("SMUGGLE-11: Tab Before Colon in Header Name Rejection") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw = "Content-Length\t: 10\r\n\r\n";
         let err = wing::parse_headers(raw, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidHeaderName, "Tab before colon must be rejected as InvalidHeaderName");
     };
 
     t.run("SMUGGLE-12: CR or CTL Injection in Transfer-Encoding ") { sub =>
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw1 = "Transfer-Encoding: \rchunked\r\n\r\n";
         let err1 = wing::parse_headers(raw1, map1);
         sub.assert_ne(err1, wing::HeaderParseError.None, "Bare CR in header splits line into invalid header line without colon");
         sub.assert_false(map1.valid, "Map must be invalid on bare CR injection");
 
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw2 = "Transfer-Encoding: chunked\x01\r\n\r\n";
         let err2 = wing::parse_headers(raw2, map2);
         sub.assert_eq(err2, wing::HeaderParseError.InvalidHeaderValue, "CTL character in Transfer-Encoding must be rejected");
@@ -914,7 +914,7 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 
     t.run("SMUGGLE-13: Multiple Identical Content-Length Folded ") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         let raw = "Content-Length: 128\r\nContent-Length: 128\r\nContent-Length: 128\r\n\r\n";
         let err = wing::parse_headers(raw, map);
         sub.assert_eq(err, wing::HeaderParseError.None, "Triple identical Content-Length must be accepted per RFC 9112 Section 6.3");
@@ -923,25 +923,25 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
 
     t.run("SMUGGLE-14: HTTP/2 Malformed Framing Protection Against Smuggling into HTTP/1 (CVE-2026-78660)") { sub =>
         // Differing comma-separated values
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw1 = "Content-Length: 10, 20\r\n\r\n";
         let err1 = wing::parse_headers(raw1, map1);
         sub.assert_eq(err1, wing::HeaderParseError.InvalidContentLength, "Differing comma-delimited Content-Length rejected");
 
         // Duplicate differing values
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw2 = "Content-Length: 0\r\nContent-Length: 5\r\n\r\n";
         let err2 = wing::parse_headers(raw2, map2);
         sub.assert_eq(err2, wing::HeaderParseError.InvalidContentLength, "Duplicate differing Content-Length rejected");
     };
 
     t.run("SMUGGLE-15: Content-Length Validation When Transfer-Encoding Present ") { sub =>
-        var map1 = wing::new_header_map();
+        var map1 = wing::HeaderMap { .. };
         let raw1 = "Transfer-Encoding: chunked\r\nContent-Length: invalid_num\r\n\r\n";
         let err1 = wing::parse_headers(raw1, map1);
         sub.assert_eq(err1, wing::HeaderParseError.InvalidContentLength, "TE with invalid CL rejected");
 
-        var map2 = wing::new_header_map();
+        var map2 = wing::HeaderMap { .. };
         let raw2 = "Transfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n";
         let err2 = wing::parse_headers(raw2, map2);
         sub.assert_eq(err2, wing::HeaderParseError.InvalidContentLength, "TE with CL:0 rejected");
@@ -1128,12 +1128,12 @@ fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
 
 fn test_hop_by_hop_stripping_defense(t: core::T&) {
     t.run("HOP-01: Standard Hop-by-Hop Headers Stripped (RFC 9110 Section 7.6.1)") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         let raw = "Host: example.com\r\nConnection: close\r\nKeep-Alive: timeout=5, max=100\r\nProxy-Authenticate: Basic\r\nProxy-Authorization: Basic abc\r\nTE: gzip\r\nTrailer: X-Checksum\r\nTransfer-Encoding: chunked\r\nUpgrade: websocket\r\nProxy-Connection: keep-alive\r\nContent-Type: application/json\r\nAuthorization: Bearer token123\r\n\r\n";
         let p_err = wing::parse_headers(raw, src);
         sub.assert_eq(p_err, wing::HeaderParseError.None, "Source headers parsed ok");
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         // Verify hop-by-hop headers are completely absent
@@ -1155,11 +1155,11 @@ fn test_hop_by_hop_stripping_defense(t: core::T&) {
     };
 
     t.run("HOP-02: Dynamic Custom Tokens in Connection Header (RFC 9110 Section 7.6.1)") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         let raw = "Host: api.internal\r\nConnection: close, X-Custom-Hop, X-Internal-Token\r\nX-Custom-Hop: sensitive_gateway_data\r\nX-Internal-Token: secret999\r\nX-Preserve-Me: public_data\r\n\r\n";
         wing::parse_headers(raw, src);
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_false(wing::has_header(dst, "connection"), "Connection header stripped");
@@ -1170,12 +1170,12 @@ fn test_hop_by_hop_stripping_defense(t: core::T&) {
     };
 
     t.run("HOP-03: Empty Connection Header Does Not Block Subsequent Stripping ") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         // First Connection header is empty, second specifies sensitive custom header
         let raw = "Host: example.com\r\nConnection:\r\nConnection: close, X-Secret-Hop\r\nX-Secret-Hop: leaked_token\r\nContent-Type: text/plain\r\n\r\n";
         wing::parse_headers(raw, src);
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_false(wing::has_header(dst, "connection"), "Connection headers stripped");
@@ -1184,12 +1184,12 @@ fn test_hop_by_hop_stripping_defense(t: core::T&) {
     };
 
     t.run("HOP-04: Multiple Comma-Separated Connection Headers ") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         // Multiple Connection headers with multiple tokens
         let raw = "Host: example.com\r\nConnection: keep-alive, X-Hop-One\r\nConnection: X-Hop-Two, X-Hop-Three\r\nX-Hop-One: v1\r\nX-Hop-Two: v2\r\nX-Hop-Three: v3\r\nX-Retained: keep_this\r\n\r\n";
         wing::parse_headers(raw, src);
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_false(wing::has_header(dst, "x-hop-one"), "X-Hop-One stripped");
@@ -1199,11 +1199,11 @@ fn test_hop_by_hop_stripping_defense(t: core::T&) {
     };
 
     t.run("HOP-05: Case-Insensitive & Whitespace-Tolerant Token Stripping") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         let raw = "Host: example.com\r\nConnection: \t  x-foo  ,\t X-BAR \t\r\nX-FOO: val1\r\nx-bar: val2\r\nX-Normal: val3\r\n\r\n";
         wing::parse_headers(raw, src);
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_false(wing::has_header(dst, "x-foo"), "X-FOO stripped case-insensitively");
@@ -1212,11 +1212,11 @@ fn test_hop_by_hop_stripping_defense(t: core::T&) {
     };
 
     t.run("HOP-06: Hop-by-Hop Stripping on 1xx Informational Responses (CVE-2021-33197)") { sub =>
-        var src_1xx = wing::new_header_map();
+        var src_1xx = wing::HeaderMap { .. };
         let raw_1xx = "Link: </style.css>; rel=preload\r\nConnection: close, X-Early-Hop\r\nX-Early-Hop: forbidden_hint\r\nKeep-Alive: timeout=10\r\n\r\n";
         wing::parse_headers(raw_1xx, src_1xx);
 
-        var dst_1xx = wing::new_header_map();
+        var dst_1xx = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src_1xx, dst_1xx);
 
         sub.assert_true(wing::has_header(dst_1xx, "link"), "Link header retained on 1xx");

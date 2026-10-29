@@ -139,7 +139,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     out_req.headers.clear();
     clear(out_req.bloom_filter);
-    var presence_tracker = new_header_presence_tracker();
+    var presence_tracker = HeaderPresenceTracker { .. };
 
     while cursor < rest_headers.len {
         let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
@@ -951,14 +951,14 @@ fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
 const MAX_SERVER_BODY_LIMIT: i64 = 10 * 1024 * 1024; // 10 MB payload limit
 
 fn serialize_payload_too_large_error<B>(server_name: const u8[:], wire_out: B&) {
-    var err_resp = new_response();
+    var err_resp = Response { .. };
     err_resp.status_code = 413; // Payload Too Large
     set_header(err_resp, "Connection", "close");
     serialize_http1_response(err_resp, server_name, wire_out);
 }
 
 fn serialize_bad_request_error<B>(server_name: const u8[:], wire_out: B&) {
-    var err_resp = new_response();
+    var err_resp = Response { .. };
     err_resp.status_code = 400; // Bad Request
     serialize_http1_response(err_resp, server_name, wire_out);
 }
@@ -988,7 +988,7 @@ fn handle_connection_wire<B>(
             if ws_idx >= 0 {
                 let entry = &server.ws_routes[ws_idx as i64];
                 let subproto = entry.behavior.subprotocol[..];
-                var ws_res = new_response();
+                var ws_res = Response { .. };
                 var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
                 if ok_upg {
                     sess.max_backpressure = entry.behavior.max_backpressure;
@@ -1010,7 +1010,7 @@ fn handle_connection_wire<B>(
             }
         }
 
-        var res = new_response();
+        var res = Response { .. };
         var params = ZeroAllocParams { .. };
         let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
         match match_res {
@@ -1081,7 +1081,7 @@ fn handle_connection_wire<B>(
         if ws_idx >= 0 {
             let entry = &server.ws_routes[ws_idx as i64];
             let subproto = entry.behavior.subprotocol[..];
-            var ws_res = new_response();
+            var ws_res = Response { .. };
             var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
             if ok_upg {
                 sess.max_backpressure = entry.behavior.max_backpressure;
@@ -1103,7 +1103,7 @@ fn handle_connection_wire<B>(
         }
     }
 
-    var res = new_response();
+    var res = Response { .. };
     var future = internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
 
@@ -1213,7 +1213,7 @@ fn handle_connection_wire_pipelined_stream<B>(
             if ws_idx >= 0 {
                 let entry = &server.ws_routes[ws_idx as i64];
                 let subproto = entry.behavior.subprotocol[..];
-                var ws_res = new_response();
+                var ws_res = Response { .. };
                 var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
                 if ok_upg {
                     sess.max_backpressure = entry.behavior.max_backpressure;
@@ -1237,7 +1237,7 @@ fn handle_connection_wire_pipelined_stream<B>(
             }
         }
 
-        var res = new_response();
+        var res = Response { .. };
         if server.fast_path {
             var params = ZeroAllocParams { .. };
             let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
@@ -1332,7 +1332,7 @@ fn handle_connection_pipe<B>(
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
         if ok_parse && consumed > 0 {
-            var res = new_response();
+            var res = Response { .. };
             if server.fast_path {
                 var params = ZeroAllocParams { .. };
                 let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);

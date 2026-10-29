@@ -42,10 +42,6 @@ struct GrpcResponse {
     payload: u8[>..] = [],
 }
 
-fn new_grpc_response() -> GrpcResponse {
-    return GrpcResponse { .. };
-}
-
 fn is_grpc_success(res: const GrpcResponse&) -> bool {
     return res.status == GrpcStatusCode.Ok;
 }

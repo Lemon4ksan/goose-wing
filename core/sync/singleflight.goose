@@ -24,10 +24,6 @@ struct SingleflightGroup {
     total_shared_calls: i64 = 0,
 }
 
-fn new_singleflight_group() -> SingleflightGroup {
-    return SingleflightGroup { .. };
-}
-
 // Finds the index of an entry by key and precomputed hash, or returns -1.
 fn find_flight_entry_idx(g: const SingleflightGroup&, key_str: const u8[:], kh: u64) -> i64 {
     for idx in g.entries.len {

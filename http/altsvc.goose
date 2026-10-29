@@ -34,10 +34,6 @@ struct AltSvcCache {
     entries: AltSvcOriginEntry[..64] = [],
 }
 
-fn new_altsvc_cache() -> AltSvcCache {
-    return AltSvcCache { .. };
-}
-
 // Finds index of valid origin entry in cache, or -1 if not found.
 fn find_origin_entry_idx(cache: const AltSvcCache&, origin: const u8[:]) -> i64 {
     for &entry, idx in cache.entries {

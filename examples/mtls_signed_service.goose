@@ -107,7 +107,7 @@ fn main() {
     let resp_chunk1 = "{\"status\": \"settled\", \"transaction_id\": \"TXN-40192\", ";
     let resp_chunk2 = "\"timestamp\": 1730198000, \"cleared\": true}";
 
-    var res = wing::new_response();
+    var res = wing::Response { .. };
     res.status_code = 200;
     res.body.append(resp_chunk1);
     res.body.append(resp_chunk2);

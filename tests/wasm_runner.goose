@@ -32,7 +32,7 @@ fn main() {
     // Scenario 2: Zero-Allocation HeaderMap & O(1) Fast Inline Lookups
     // ------------------------------------------------------------------------
     print("\n[2/11] RFC 9110 HeaderMap & O(1) Slots...\n");
-    var map = wing::new_header_map();
+    var map = wing::HeaderMap { .. };
     let _h = wing::set_inline(map, wing::WellKnownHeader.Host, "api.exchange.io:8443");
     let _ct = wing::set_inline(map, wing::WellKnownHeader.ContentType, "application/json; charset=utf-8");
     let _cl = wing::set_inline(map, wing::WellKnownHeader.ContentLength, "2048");
@@ -50,7 +50,7 @@ fn main() {
     // Scenario 3: Canonical Cookie Jar with Security Scoping & Prefix Rules
     // ------------------------------------------------------------------------
     print("\n[3/11] RFC 6265bis Canonical Cookie Jar...\n");
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
     var clock = core::new_mock_clock();
 
     // 1. Host-only secure cookie

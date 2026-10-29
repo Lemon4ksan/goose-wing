@@ -42,10 +42,6 @@ struct StashBuffer {
     messages: StashedEnvelope[>..] = [],
 }
 
-fn new_stash_buffer() -> StashBuffer {
-    return StashBuffer { .. };
-}
-
 fn stash(sb: StashBuffer&, env: StashedEnvelope) {
     sb.messages.push(env);
 }
@@ -78,10 +74,6 @@ struct PriorityItem {
 struct PriorityMailbox {
     seq_counter: u32 = 0,
     heap: PriorityItem[>..<] = [],
-}
-
-fn new_priority_mailbox() -> PriorityMailbox {
-    return PriorityMailbox { .. };
 }
 
 fn push(mb: PriorityMailbox&, priority: u32, payload_type: u16, val: i64) {

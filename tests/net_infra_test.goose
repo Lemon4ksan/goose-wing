@@ -546,7 +546,7 @@ fn test_pool_key_dimensions_and_isolation(t: core::T&) {
 
 fn test_want_queue_dual_slice(t: core::T&) {
     t.run("FIFO Operations and Reallocation-Free Promotion") { sub =>
-        var q = wing::new_want_queue();
+        var q = wing::WantQueue { .. };
         sub.assert_true(wing::is_queue_empty(q), "Initial queue is empty");
         sub.assert_eq(wing::queue_len(q), 0, "Initial queue len is 0");
 
@@ -581,7 +581,7 @@ fn test_want_queue_dual_slice(t: core::T&) {
     };
 
     t.run("Tail-to-Head Compaction Under Sustained Load") { sub =>
-        var q = wing::new_want_queue();
+        var q = wing::WantQueue { .. };
         let nak = wing::new_network_anonymization_key("https://origin.io");
         let key = wing::new_pool_key(wing::PoolScheme.Https, "origin.io", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
 
@@ -1862,7 +1862,7 @@ fn test_doh_query_generation(t: core::T&) {
 
 fn test_dns_cache_lifecycle(t: core::T&) {
     t.run("1. Freshness, Stale-While-Revalidate Window, and Expiration") { sub =>
-        var cache = wing::new_dns_cache();
+        var cache = wing::DnsCache { .. };
 
         var entry = wing::DnsCacheEntry { .. };
         entry.domain.append("api.example.com");

@@ -1072,7 +1072,7 @@ fn test_tls_client_hello_fragmentation(t: core::T&) {
 
 fn test_dns_cache_and_stale_revalidate(t: core::T&) {
     t.run("1. DNS Cache TTL and Stale-While-Revalidate Lifecycle") { sub =>
-        var cache = wing::new_dns_cache();
+        var cache = wing::DnsCache { .. };
 
         var entry = wing::DnsCacheEntry {
             qtype: wing::DNS_QTYPE_A,
@@ -1542,7 +1542,7 @@ fn test_aead_ciphers(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_crypto_jar_container(t: core::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
-        var store = wing::new_key_store();
+        var store = wing::KeyStore { .. };
         var raw_key: u8[32] = [0x33; 32];
         let slot = core::new_key_slot(1, raw_key[..], 1700000000);
         wing::add_key(store, slot);
@@ -1571,7 +1571,7 @@ fn test_crypto_jar_container(t: core::T&) {
     };
 
     t.run("PrivateJar HKDF-AES-GCM (65B Overhead)") { sub =>
-        var store = wing::new_key_store();
+        var store = wing::KeyStore { .. };
         var raw_key: u8[32] = [0x44; 32];
         let slot = core::new_key_slot(2, raw_key[..], 1700000000);
         wing::add_key(store, slot);
@@ -1590,7 +1590,7 @@ fn test_crypto_jar_container(t: core::T&) {
     };
 
     t.run("SignedJar HMAC-SHA256 (45B Overhead) & Forgery Resistance") { sub =>
-        var store = wing::new_key_store();
+        var store = wing::KeyStore { .. };
         var raw_key: u8[32] = [0x88; 32];
         let slot = core::new_key_slot(7, raw_key[..], 1700000000);
         wing::add_key(store, slot);
@@ -1615,7 +1615,7 @@ fn test_crypto_jar_container(t: core::T&) {
     };
 
     t.run("KeyStore Proactive Key Rotation") { sub =>
-        var store = wing::new_key_store();
+        var store = wing::KeyStore { .. };
         var k1: u8[32] = [0x11; 32];
         var k2: u8[32] = [0x22; 32];
         wing::add_key(store, core::new_key_slot(10, k1[..], 1700000000));

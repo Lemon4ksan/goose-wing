@@ -90,10 +90,6 @@ struct HstsCache {
     enable_preload_list: bool = true,
 }
 
-fn new_hsts_cache() -> HstsCache {
-    return HstsCache { .. };
-}
-
 fn host_matches_domain(sub: const u8[:], domain: const u8[:]) -> bool {
     if eq_ascii_fold(sub, domain) { return true; }
     guard sub.len > domain.len + 1 else { return false; }

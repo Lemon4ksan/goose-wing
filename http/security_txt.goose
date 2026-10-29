@@ -45,10 +45,6 @@ struct SecurityTxt {
 }
 
 // Constructs a zero-initialized SecurityTxt structure.
-fn new_security_txt() -> SecurityTxt {
-    return SecurityTxt { .. };
-}
-
 // Returns whether the request URI path matches the RFC 9116 security.txt location.
 fn is_security_txt_path(path: const u8[:]) -> bool {
     return path == SECURITY_TXT_WELL_KNOWN_PATH || path == SECURITY_TXT_LEGACY_PATH;
@@ -199,7 +195,7 @@ fn parse_security_txt_line(line: const u8[:], now_epoch: i64, sec: SecurityTxt&)
 
 // Parses and validates a security.txt buffer per RFC 9116.
 fn parse_security_txt(content: const u8[:], now_epoch: i64 = 0) -> SecurityTxt {
-    var sec = new_security_txt();
+    var sec = SecurityTxt { .. };
     var tok = core::make_byte_tokenizer(content, '\n');
 
     while true {

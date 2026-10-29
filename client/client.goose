@@ -121,16 +121,16 @@ fn new_client() -> Client {
         ssrf_guard: SsrfGuardPolicy { .. },
         cache: new_http_cache(),
         enable_cache: false,
-        altsvc: new_altsvc_cache(),
+        altsvc: AltSvcCache { .. },
         enable_altsvc: true,
         enable_protocol_racing: true,
         quic_race_delay_ms: 200,
-        dict_cache: new_dictionary_cache(),
+        dict_cache: DictionaryCache { .. },
         enable_compression_dict: true,
-        pipeline: new_interceptor_pipeline(),
-        hsts: new_hsts_cache(),
+        pipeline: InterceptorPipeline { .. },
+        hsts: HstsCache { .. },
         enable_hsts: true,
-        jar: new_canonical_cookie_jar(),
+        jar: CanonicalCookieJar { .. },
         ..
     };
     let def_p = wing_default_profile();
@@ -147,16 +147,16 @@ fn new_client(cfg: ClientConfig) -> Client {
         ssrf_guard: SsrfGuardPolicy { .. },
         cache: new_http_cache(cfg.cache_options),
         enable_cache: cfg.enable_cache,
-        altsvc: new_altsvc_cache(),
+        altsvc: AltSvcCache { .. },
         enable_altsvc: cfg.enable_altsvc,
         enable_protocol_racing: cfg.enable_protocol_racing,
         quic_race_delay_ms: cfg.quic_race_delay_ms,
-        dict_cache: new_dictionary_cache(),
+        dict_cache: DictionaryCache { .. },
         enable_compression_dict: cfg.enable_compression_dict,
-        pipeline: new_interceptor_pipeline(),
-        hsts: new_hsts_cache(),
+        pipeline: InterceptorPipeline { .. },
+        hsts: HstsCache { .. },
         enable_hsts: true,
-        jar: new_canonical_cookie_jar(),
+        jar: CanonicalCookieJar { .. },
         ..
     };
     client.base_url.append(cfg.base_url);
@@ -458,14 +458,6 @@ fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms
     session.quic_race_delay_ms = quic_delay_ms;
 }
 
-fn clear_altsvc_cache(session: Session&) {
-    session.altsvc = new_altsvc_cache();
-}
-
-fn altsvc_cache(session: const Session&) -> const AltSvcCache& {
-    return session.altsvc;
-}
-
 fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
     resolve_target_origin(target, origin_buf);
@@ -485,14 +477,6 @@ fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
 
 fn enable_compression_dict(session: Session&, enabled: bool = true) {
     session.enable_compression_dict = enabled;
-}
-
-fn clear_dictionary_cache(session: Session&) {
-    session.dict_cache = new_dictionary_cache();
-}
-
-fn dictionary_cache(session: const Session&) -> const DictionaryCache& {
-    return session.dict_cache;
 }
 
 fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool {
@@ -599,14 +583,6 @@ fn enable_hsts_preload(session: Session&, enabled: bool = true) {
 fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
     let now_sec = session.virtual_clock_us / 1000000;
     return is_hsts_host(session.hsts, hostname, now_sec);
-}
-
-fn hsts_cache(session: const Session&) -> const HstsCache& {
-    return session.hsts;
-}
-
-fn clear_hsts_cache(session: Session&) {
-    session.hsts = new_hsts_cache();
 }
 
 fn allow_port(session: Session&, port_num: i32) {

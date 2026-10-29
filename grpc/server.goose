@@ -102,10 +102,6 @@ struct GrpcServerContext {
     response_trailers: GrpcMetadata[..16] = [],
 }
 
-fn new_grpc_server_context() -> GrpcServerContext {
-    return GrpcServerContext { .. };
-}
-
 fn get_metadata(ctx: const GrpcServerContext&, key: const u8[:]) -> const u8[:] {
     for &m in ctx.metadata {
         if eq_ascii_fold(m.key[..], key) {
@@ -484,10 +480,6 @@ struct GrpcClientStreamReader {
     wire: u8[>..] = [],
 }
 
-fn new_grpc_client_stream_reader() -> GrpcClientStreamReader {
-    return GrpcClientStreamReader { .. };
-}
-
 fn parse_client_stream(
     raw_body: const u8[:],
     is_web_text: bool,
@@ -548,10 +540,6 @@ struct GrpcServerStreamWriter {
     body: u8[>..] = [],
 }
 
-fn new_grpc_server_stream_writer() -> GrpcServerStreamWriter {
-    return GrpcServerStreamWriter { .. };
-}
-
 fn write_stream_message(
     writer: GrpcServerStreamWriter&,
     payload: const u8[:],
@@ -575,7 +563,7 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     // 1. Validate gRPC Content-Type
     guard is_grpc_request(req) else { return false; }
 
-    var ctx = new_grpc_server_context();
+    var ctx = GrpcServerContext { .. };
 
     // 2. Validate HTTP Method (RFC gRPC mandates POST)
     if !eq_ascii_fold(req.method[..], "POST") {
@@ -689,7 +677,7 @@ fn dispatch_grpc_server_streaming<
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
-    var ctx = new_grpc_server_context();
+    var ctx = GrpcServerContext { .. };
 
     if !eq_ascii_fold(req.method[..], "POST") {
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
@@ -766,7 +754,7 @@ fn dispatch_grpc_server_streaming<
         return true;
     }
 
-    var writer = new_grpc_server_stream_writer();
+    var writer = GrpcServerStreamWriter { .. };
     var status = GrpcStatusCode.Ok;
     var message: u8[..256] = [];
 
@@ -816,7 +804,7 @@ fn dispatch_grpc_client_streaming<
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
-    var ctx = new_grpc_server_context();
+    var ctx = GrpcServerContext { .. };
 
     if !eq_ascii_fold(req.method[..], "POST") {
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
@@ -859,7 +847,7 @@ fn dispatch_grpc_client_streaming<
         return true;
     }
 
-    var reader = new_grpc_client_stream_reader();
+    var reader = GrpcClientStreamReader { .. };
     let ok_stream = parse_client_stream(req.body[..], ctx.is_web_text, reader);
     if !ok_stream {
         build_grpc_trailers_only_response(

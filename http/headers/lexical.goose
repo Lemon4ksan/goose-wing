@@ -69,10 +69,6 @@ struct HeaderPresenceTracker {
     has_smuggling_conflict: bool = false,
 }
 
-fn new_header_presence_tracker() -> HeaderPresenceTracker {
-    return HeaderPresenceTracker { .. };
-}
-
 // Tracks header presence and detects duplicates/smuggling in O(1) via bitmask (uWebSockets pattern)
 fn track_header_presence(
     tracker: HeaderPresenceTracker&,

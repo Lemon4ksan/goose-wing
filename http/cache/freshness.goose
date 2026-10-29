@@ -25,10 +25,6 @@ struct CacheTimestamps {
 }
 
 // Constructs a zero-initialized CacheTimestamps structure.
-fn new_cache_timestamps() -> CacheTimestamps {
-    return CacheTimestamps { .. };
-}
-
 // Constructs CacheTimestamps with specified wall-clock times.
 fn new_cache_timestamps(req_time: core::Time, resp_time: core::Time, cur_now: core::Time) -> CacheTimestamps {
     return CacheTimestamps {

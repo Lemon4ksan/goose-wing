@@ -28,12 +28,12 @@ struct ServerPipelineConfig {
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
     var cfg = ServerPipelineConfig {
         limiter: new_sharded_limiter(quota),
-        csrf_guard: new_cross_origin_guard(),
-        cors_policy: new_cors_policy(),
+        csrf_guard: CrossOriginGuard { .. },
+        cors_policy: CorsPolicy { .. },
         router: new_radix_router(),
-        private_jar: new_private_jar(new_key_store()),
-        header_pool: internal::new_header_map_pool(),
-        ext_pool: internal::new_extensions_pool(),
+        private_jar: new_private_jar(KeyStore { .. }),
+        header_pool: internal::HeaderMapPool { .. },
+        ext_pool: internal::ExtensionsPool { .. },
         target_host: [],
         deadline_ns: 30000000000,
     };

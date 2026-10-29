@@ -23,7 +23,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("Size Limits: 4096B Name+Value and 1024B Attribute Cap (Issue #1340)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // 1. Exactly 4096 bytes (4 + 4092) -> must be accepted
         var val_4092: u8[..4100] = [];
@@ -60,7 +60,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
     };
 
     t.run("CTL Rejection vs HTAB Allowance (Issue #1420, #1531)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // Control bytes \r, \n, \0, \x7F must reject the cookie rather than truncating it
         sub.assert_false(wing::set_cookie_header(jar, "https://example.com/", "a=b\r\nSecure", clock.now_us));
@@ -75,7 +75,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
     };
 
     t.run("WPT http-state Nameless Cookies (0004, 0020, 0023)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // WPT 0004: Set-Cookie: foo -> ("", "foo")
         sub.require_true(wing::set_cookie_header(jar, "https://example.com/", "foo", clock.now_us));
@@ -95,7 +95,7 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_dates_400d_cap_and_expired_overwrite(t: core::T&) {
     var clock = core::new_mock_clock(1700000000000000);
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // 1. 400-day cap (kMinutesIn400Days = 576000)
     t.require_true(wing::set_cookie_header(jar, "https://example.com/", "long=1; Max-Age=999999999", clock.now_us));
@@ -117,7 +117,7 @@ fn test_dates_400d_cap_and_expired_overwrite(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_domain_psl_ip_and_path_matching(t: core::T&) {
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     t.run("DOM-01: PSL Rejection for TLD and Effective Public Suffixes") { sub =>
         // Cannot set cookie for 'com', 'co.uk', or 'github.io'
@@ -138,7 +138,7 @@ fn test_domain_psl_ip_and_path_matching(t: core::T&) {
     };
 
     t.run("DOM-05: IP Literals must never domain-match") { sub =>
-        var ip_jar = wing::new_canonical_cookie_jar();
+        var ip_jar = wing::CanonicalCookieJar { .. };
         // Domain=0.1 must be rejected
         sub.assert_false(wing::set_cookie_header(ip_jar, "http://192.168.0.1:8080/", "sid=1; Domain=0.1", clock.now_us));
         // Domain=192.168.0.1 on IP origin must be accepted but treated as host_only
@@ -175,7 +175,7 @@ fn test_layered_prefixes_table(t: core::T&) {
     ];
 
     core::run_table(t, "PrefixMatrix", vectors[..]) { sub, row, idx =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let u = wing::parse_canonical_cookie_url(row.url);
         var c = wing::parse_canonical_set_cookie(row.header, u.host[..], u.path[..], clock.now_us);
         c.source_scheme = if u.is_secure { wing::CookieSourceScheme.Secure } else { wing::CookieSourceScheme.NonSecure };
@@ -190,7 +190,7 @@ fn test_layered_prefixes_table(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_samesite_lax_post_window_and_obc(t: core::T&) {
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // Default SameSite -> Lax-allowing-unsafe for 120 seconds
     t.require_true(wing::set_cookie_header(jar, "https://idp.example.com/login", "sso=token123; Secure", clock.now_us));
@@ -232,7 +232,7 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_gc_6_rounds_asymmetry_and_global_immunity(t: core::T&) {
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // Populate example.com domain:
     // - 30 Low Secure (protected by low quota = 30)
@@ -279,7 +279,7 @@ fn test_gc_6_rounds_asymmetry_and_global_immunity(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_global_gc_and_30_day_immunity(t: core::T&) {
     var clock = core::new_mock_clock(1700000000000000);
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
     jar.max_cookies_global = 20;
     jar.target_cookies_global = 10;
     jar.max_cookies_per_domain = 50;
@@ -311,7 +311,7 @@ fn test_global_gc_and_30_day_immunity(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_chips_and_10kb_quota(t: core::T&) {
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // 1. Partitioned cookie ingestion with valid top-level site
     t.assert_true(
@@ -341,7 +341,7 @@ fn test_chips_and_10kb_quota(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_header_sorting_and_persistence_key(t: core::T&) {
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     t.run("RFC 6265 Section 5.4 Cookie Header Sorting (Longest Path First, Earliest Creation First)") { sub =>
         // 1. Shorter path, earlier creation
@@ -359,7 +359,7 @@ fn test_header_sorting_and_persistence_key(t: core::T&) {
     };
 
     t.run("SQL Persistence Key Model (host_only prefixing)") { sub =>
-        var jar2 = wing::new_canonical_cookie_jar();
+        var jar2 = wing::CanonicalCookieJar { .. };
         // Host-only cookie: host_key = 'example.com'
         wing::set_cookie_header(jar2, "https://example.com/", "sid=host_val", clock.now_us);
         // Domain cookie: host_key = '.example.com'
@@ -625,7 +625,7 @@ fn run_ingestion_matrix(t: core::T&) {
     ];
 
     core::run_table(t, "IngestionVectors", vectors[..]) { sub, v, idx =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, v.url, v.set_cookie, now_us, v.from_http);
         sub.require_eq(ok, v.expect_accepted, v.id);
 
@@ -650,7 +650,7 @@ fn run_ingestion_matrix(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_exhaustive_ctl_sweep(t: core::T&) {
     let now_us = 1700000000000000;
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     for b in 128 {
         let byte_val = b as u8;
@@ -774,7 +774,7 @@ fn run_samesite_and_redirect_matrix(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_chips_partition_quota_and_isolation(t: core::T&) {
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // CHIPS-02: Partitioned cookie without Secure is rejected
     t.assert_false(
@@ -846,7 +846,7 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("GC-07: Domain cookies evicted BEFORE Host cookies despite newer LastAccessDate") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // 1. Insert 175 Host-Only cookies with OLD access times (t = 1..175)
         for i in 175 {
@@ -874,7 +874,7 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
     };
 
     t.run("GC-10 & GC-11: Global 3300 Limit and 30-Day kSafeFromGlobalPurgeDays Immunity") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // Create 3350 cookies across 34 eTLD+1 domains (~98-100 per domain)
         // First 400 cookies created on day 0
@@ -912,7 +912,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("SER-01 & SRV-01: RFC 6265 Section 5.4 Path-Length Ordering and Server First-Win Protection") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // Set 3 cookies named 'sid' with different paths and creation timestamps:
         // 1) path="/" (create = T+10)
@@ -974,7 +974,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_matrix_11_clock_skew_and_throttling(t: core::T&) {
     t.run("CLK-01 & CLK-02: 60s LastAccessDate Throttling (kDefaultAccessUpdateThresholdSeconds)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         jar.access_update_threshold_us = 60000000; // 60 seconds
 
         let t0: i64 = 1000 * 1000000; // 1000s
@@ -996,7 +996,7 @@ fn run_matrix_11_clock_skew_and_throttling(t: core::T&) {
     };
 
     t.run("CLK-03: Sub-microsecond Collision Ordering via monotonic seq_counter") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let t0: i64 = 5000; // identical microsecond
 
         // Insert 3 cookies in the exact same microsecond
@@ -1010,7 +1010,7 @@ fn run_matrix_11_clock_skew_and_throttling(t: core::T&) {
     };
 
     t.run("CLK-04 & CLK-05: NTP Clock Skew Backward Shift and CreationDate Preservation") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // c1 created at t0 = 2000s
         let t0: i64 = 2000 * 1000000;
@@ -1059,7 +1059,7 @@ fn run_matrix_13_site_for_cookies_and_ancestors(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_matrix_14_selective_deletion(t: core::T&) {
     t.run("DEL-01: TimeRange Selective Deletion [begin, end]") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         wing::set_cookie_header(jar, "https://example.com/", "c1=1; Path=/", 100);
         wing::set_cookie_header(jar, "https://example.com/", "c2=2; Path=/", 200);
         wing::set_cookie_header(jar, "https://example.com/", "c3=3; Path=/", 300);
@@ -1074,7 +1074,7 @@ fn run_matrix_14_selective_deletion(t: core::T&) {
     };
 
     t.run("DEL-02 & DEL-04: Session Cookie Deletion and Cookie Incrementalism Section 3.5") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // c1: Session cookie (no Max-Age/Expires)
         wing::set_cookie_header(jar, "https://example.com/", "c_sess=1; Path=/", 1000);
         // c2: Persistent cookie over secure channel
@@ -1096,7 +1096,7 @@ fn run_matrix_14_selective_deletion(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_matrix_15_and_16_crypto_and_attacks(t: core::T&) {
     t.run("CRY-02: Rejection of Tampered Record with Both Plaintext and Encrypted Values") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // Valid JSON with normal cookie
         let valid_json = "[{\"name\":\"clean_sid\",\"value\":\"secret_123\",\"domain\":\"example.com\",\"path\":\"/\"}]";
@@ -1119,7 +1119,7 @@ fn run_matrix_15_and_16_crypto_and_attacks(t: core::T&) {
     };
 
     t.run("ATK-01: Set-Cookie Comma Folding Invariant (RFC 6265bis Section 1)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // Comma inside Path attribute must NOT split the cookie
         let ok = wing::set_cookie_header(jar, "https://example.com/c,d=e", "a=b; Path=/c,d=e", 1000);
         sub.assert_true(ok);
@@ -1135,7 +1135,7 @@ fn run_matrix_15_and_16_crypto_and_attacks(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_gc_strict_secure_policy(t: core::T&) {
     let now_us = 1700000000000000;
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
     jar.strict_secure_cookies = true;
 
     // Insert 100 Secure cookies
@@ -1164,7 +1164,7 @@ fn run_gc_strict_secure_policy(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
     let now_us = 1700000000000000;
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // 1. JSON import supporting nameless omnomnom cookies
     var json_data: u8[..512] = [];
@@ -1198,7 +1198,7 @@ fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
 fn run_property_based_fuzzer(t: core::T&) {
     var rng = core::new_fuzz_rng(0xCAFEBABE1337BEEF);
     var clock = core::new_mock_clock();
-    var jar = wing::new_canonical_cookie_jar();
+    var jar = wing::CanonicalCookieJar { .. };
 
     // Run 600 random insertion, overwrite, and expiration steps on a single domain
     for step in 600 {
@@ -1419,7 +1419,7 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("HOST-01: __Host- cookie with Domain=127.0.0.1 literal must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // RFC 6265bis Section 5.6.2: Must not include a Domain attribute
         let ok = wing::set_cookie_header(jar, "https://127.0.0.1/", "__Host-auth=secret123; Domain=127.0.0.1; Secure; Path=/", clock.now_us);
         sub.assert_false(ok, "__Host- with Domain=127.0.0.1 must be rejected per RFC 6265bis");
@@ -1427,14 +1427,14 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
     };
 
     t.run("HOST-02: __Host- cookie with Domain=localhost must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://localhost/", "__Host-token=secret456; Domain=localhost; Secure; Path=/", clock.now_us);
         sub.assert_false(ok, "__Host- with Domain=localhost must be rejected per RFC 6265bis");
         sub.assert_eq(jar.cookies.len, 0, "Jar must not store __Host- cookie with Domain attribute on localhost");
     };
 
     t.run("HOST-03: __Host- cookie with empty or dot Domain attribute must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok1 = wing::set_cookie_header(jar, "https://example.com/", "__Host-sess=val; Domain=; Secure; Path=/", clock.now_us);
         sub.assert_false(ok1, "__Host- with empty Domain= attribute must be rejected");
 
@@ -1455,28 +1455,28 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
     };
 
     t.run("HOST-05: __Host- cookie with non-root path must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/api/", "__Host-tok=val; Path=/api; Secure", clock.now_us);
         sub.assert_false(ok, "__Host- cookie with Path=/api must be rejected (must be Path=/)");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("HOST-06: __Host- cookie over plain HTTP must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "http://example.com/", "__Host-tok=val; Secure; Path=/", clock.now_us);
         sub.assert_false(ok, "__Host- cookie over http:// must be rejected (requires secure channel)");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("HOST-07: __Host- cookie without Secure attribute must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "__Host-tok=val; Path=/", clock.now_us);
         sub.assert_false(ok, "__Host- cookie without Secure attribute must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("HOST-08: Valid __Host- cookie on HTTPS with Path=/ is stored and retrieved") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "__Host-auth=valid_secret; Secure; Path=/", clock.now_us);
         sub.assert_true(ok, "Valid __Host- cookie must be accepted");
         sub.assert_eq(jar.cookies.len, 1);
@@ -1484,28 +1484,28 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
     };
 
     t.run("SECURE-01: __Secure- cookie without Secure attribute must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "__Secure-id=12345; Path=/", clock.now_us);
         sub.assert_false(ok, "__Secure- cookie without Secure attribute must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("SECURE-02: __Secure- cookie over plain HTTP must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "http://example.com/", "__Secure-id=12345; Secure; Path=/", clock.now_us);
         sub.assert_false(ok, "__Secure- cookie over plain http:// must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("SECURE-03: Valid __Secure- cookie with Domain and sub-path on HTTPS is accepted") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://sub.example.com/api/", "__Secure-id=ok123; Secure; Domain=example.com; Path=/api", clock.now_us);
         sub.assert_true(ok, "__Secure- cookie with Domain and sub-path must be accepted on HTTPS");
         sub.assert_eq(jar.cookies.len, 1);
     };
 
     t.run("SECURE-04: Case-folded prefixes (__HOST- and __secure-) are strictly enforced") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok1 = wing::set_cookie_header(jar, "https://example.com/", "__HOST-key=val; Domain=example.com; Secure; Path=/", clock.now_us);
         sub.assert_false(ok1, "Case-folded __HOST- with Domain must be rejected");
 
@@ -1514,13 +1514,13 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
     };
 
     t.run("SECURE-05: Cookie Crumbles / Nameless cookie prefix injection rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "=__Host-sess=stolen; Secure; Path=/", clock.now_us);
         sub.assert_false(ok, "Nameless cookie containing __Host- prefix in value must be rejected (SHAD-01)");
     };
 
     t.run("SECURE-06: Non-secure HTTP cannot overwrite an existing secure __Secure- cookie") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // 1. Secure set over HTTPS
         let ok1 = wing::set_cookie_header(jar, "https://example.com/", "__Secure-token=legit; Secure; Path=/", clock.now_us);
         sub.assert_true(ok1);
@@ -1683,7 +1683,7 @@ fn test_public_suffix_boundary_attacks(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("PSL-01: Supercookie prevention on ICANN public suffixes") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // example.com cannot set cookie for .com
         let ok1 = wing::set_cookie_header(jar, "https://example.com/", "super=bad; Domain=com; Secure; Path=/", clock.now_us);
         sub.assert_false(ok1, "Setting Domain=com must be rejected");
@@ -1696,7 +1696,7 @@ fn test_public_suffix_boundary_attacks(t: core::T&) {
     };
 
     t.run("PSL-02: Private PSL section boundary protection") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // tenant.github.io cannot set cookie for .github.io
         let ok1 = wing::set_cookie_header(jar, "https://tenant.github.io/", "cross=bad; Domain=github.io; Secure; Path=/", clock.now_us);
         sub.assert_false(ok1, "Setting Domain=github.io must be rejected");
@@ -1709,7 +1709,7 @@ fn test_public_suffix_boundary_attacks(t: core::T&) {
     };
 
     t.run("PSL-03: Mozilla PSL Wildcards & Exception rules (!city.kobe.jp)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // !city.kobe.jp is an exception rule: city.kobe.jp is NOT a public suffix!
         let ok_kobe = wing::set_cookie_header(jar, "https://sub.city.kobe.jp/", "area=kobe; Domain=city.kobe.jp; Secure; Path=/", clock.now_us);
         sub.assert_true(ok_kobe, "Domain=city.kobe.jp must be accepted due to !city.kobe.jp exception");
@@ -1863,7 +1863,7 @@ fn test_rate_limiter_burst_and_concurrency(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_singleflight_thundering_herd(t: core::T&) {
     t.run("FLIGHT-01: Duplicate call suppression (10 concurrent requests, exactly 1 leader)") { sub =>
-        var g = core::new_singleflight_group();
+        var g = core::SingleflightGroup { .. };
         let key = "cache:user:profile:42";
 
         var leader_count = 0;
@@ -1886,7 +1886,7 @@ fn test_singleflight_thundering_herd(t: core::T&) {
     };
 
     t.run("FLIGHT-02: Result broadcast and shared flag accuracy ") { sub =>
-        var g = core::new_singleflight_group();
+        var g = core::SingleflightGroup { .. };
         let key = "db:query:orders";
 
         // Leader starts
@@ -1910,7 +1910,7 @@ fn test_singleflight_thundering_herd(t: core::T&) {
     };
 
     t.run("FLIGHT-03: Unshared execution (single caller)") { sub =>
-        var g = core::new_singleflight_group();
+        var g = core::SingleflightGroup { .. };
         let key = "db:query:rare_item";
 
         let is_lead, _, _ = core::start_or_join(g, key);
@@ -1923,7 +1923,7 @@ fn test_singleflight_thundering_herd(t: core::T&) {
     };
 
     t.run("FLIGHT-04: Explicit Forget & re-execution ") { sub =>
-        var g = core::new_singleflight_group();
+        var g = core::SingleflightGroup { .. };
         let key = "cache:stock:price";
 
         // Initial run
@@ -1940,7 +1940,7 @@ fn test_singleflight_thundering_herd(t: core::T&) {
     };
 
     t.run("FLIGHT-05: ForgetUnshared proposal ") { sub =>
-        var g = core::new_singleflight_group();
+        var g = core::SingleflightGroup { .. };
 
         // 1. Shared key
         core::start_or_join(g, "key_shared");
@@ -1961,7 +1961,7 @@ fn test_singleflight_thundering_herd(t: core::T&) {
     };
 
     t.run("FLIGHT-06: Error / Failure unblocking ") { sub =>
-        var g = core::new_singleflight_group();
+        var g = core::SingleflightGroup { .. };
         let key = "db:broken_query";
 
         // Leader starts
@@ -1997,7 +1997,7 @@ fn test_rfc6265bis_sec56_shadowing_protection(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("SEC-01: Insecure subpath must not shadow root secure cookie") { sub =>
-        var j = wing::new_canonical_cookie_jar();
+        var j = wing::CanonicalCookieJar { .. };
         // Set Secure cookie on HTTPS at root path "/"
         sub.require_true(wing::set_cookie_header(j, "https://example.com/", "session=secure_val; Secure; Path=/", clock.now_us));
         sub.assert_eq(j.cookies.len, 1);
@@ -2010,7 +2010,7 @@ fn test_rfc6265bis_sec56_shadowing_protection(t: core::T&) {
     };
 
     t.run("SEC-02: Insecure subdomain must not shadow parent domain secure cookie") { sub =>
-        var j = wing::new_canonical_cookie_jar();
+        var j = wing::CanonicalCookieJar { .. };
         // Set Secure domain cookie at parent domain "example.com"
         sub.require_true(wing::set_cookie_header(j, "https://example.com/", "auth=secure_val; Domain=example.com; Secure; Path=/", clock.now_us));
         sub.assert_eq(j.cookies.len, 1);
@@ -2030,42 +2030,42 @@ fn test_case_insensitive_prefix_enforcement(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("PREFIX-01: Lowercase __secure- without Secure flag must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "__secure-token=abc", clock.now_us);
         sub.assert_false(ok, "__secure- without Secure flag must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("PREFIX-02: Lowercase __secure- on insecure HTTP channel must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "http://example.com/", "__secure-token=abc; Secure", clock.now_us);
         sub.assert_false(ok, "__secure- on insecure HTTP must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("PREFIX-03: Lowercase __host- with Domain attribute must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "__host-token=abc; Secure; Path=/; Domain=example.com", clock.now_us);
         sub.assert_false(ok, "__host- with Domain attribute must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("PREFIX-04: Lowercase __host- with non-root Path must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/sub", "__host-token=abc; Secure; Path=/sub", clock.now_us);
         sub.assert_false(ok, "__host- with non-root path must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("PREFIX-05: Lowercase __http- without HttpOnly must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "__http-token=abc; Secure", clock.now_us);
         sub.assert_false(ok, "__http- without HttpOnly must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
 
     t.run("PREFIX-06: Nameless cookie with lowercase prefix value must be rejected") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         var cookie = wing::new_canonical_cookie("", "__secure-val");
         let ok = wing::set_canonical_cookie(jar, cookie, true, true, clock.now_us);
         sub.assert_false(ok, "Nameless cookie starting with lowercase security prefix must be rejected");
@@ -2081,7 +2081,7 @@ fn test_max_age_overflow_and_capping(t: core::T&) {
     let expected_cap_us = clock.now_us + internal::K_MAX_COOKIE_AGE_US;
 
     t.run("MAXAGE-01: Large Max-Age (10000000000000) must clamp to 400 days in jar") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "session=tok1; Max-Age=10000000000000", clock.now_us);
         sub.assert_true(ok, "Large Max-Age must be accepted into jar");
         sub.assert_eq(jar.cookies.len, 1, "Cookie with large Max-Age must be stored in jar");
@@ -2099,7 +2099,7 @@ fn test_max_age_overflow_and_capping(t: core::T&) {
     };
 
     t.run("MAXAGE-03: Max-Age exceeding i64 max microseconds boundary") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "boundary=1; Max-Age=9223372036855", clock.now_us);
         sub.assert_true(ok, "Boundary Max-Age must be accepted");
         sub.assert_eq(jar.cookies.len, 1, "Boundary Max-Age cookie must be retained");
@@ -2109,7 +2109,7 @@ fn test_max_age_overflow_and_capping(t: core::T&) {
     };
 
     t.run("MAXAGE-04: Reasonable Max-Age below 400 days remains unchanged") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, "https://example.com/", "short=1; Max-Age=3600", clock.now_us);
         sub.assert_true(ok, "3600s Max-Age must be accepted");
         sub.assert_eq(jar.cookies.len, 1);
@@ -2133,7 +2133,7 @@ fn test_httponly_script_overwrite_protection(t: core::T&) {
     var clock = core::new_mock_clock();
 
     t.run("HTTPONLY-01: Non-HTTP script API must not overwrite existing HttpOnly cookie (RFC 6265 Sec 5.3 Step 11.2)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // 1. HTTP API sets a sensitive HttpOnly session cookie
         sub.require_true(
             wing::set_cookie_header(jar, "https://example.com/", "session=super_secret_token; HttpOnly; Secure; Path=/", clock.now_us, true),
@@ -2156,7 +2156,7 @@ fn test_httponly_script_overwrite_protection(t: core::T&) {
     };
 
     t.run("HTTPONLY-02: Non-HTTP script API must not delete HttpOnly cookie via Max-Age=0 (RFC 6265 Sec 5.3 Step 11.2)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         sub.require_true(
             wing::set_cookie_header(jar, "https://example.com/", "auth=token123; HttpOnly; Secure; Path=/", clock.now_us, true),
         );
@@ -2230,7 +2230,7 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
     let t2 = clock.now_us + 10000000; // 10s later
 
     t.run("CREATION-01: Updating cookie with unset source_port preserves original creation_utc (RFC 6265 §5.3 Step 11.3)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         // 1. Initial cookie set via HTTP at t1 (source_port = 443)
         let ok1 = wing::set_cookie_header(jar, "https://example.com/", "session=initial_val; Secure; Path=/", t1);
         sub.require_true(ok1, "Initial cookie set must succeed");
@@ -2252,7 +2252,7 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
     };
 
     t.run("CREATION-02: Updating cookie with case-different domain preserves creation_utc (RFC 6265 §5.3 Step 11.3)") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         let ok1 = wing::set_cookie_header(jar, "https://example.com/", "auth=val1; Secure; Path=/", t1);
         sub.require_true(ok1);
         sub.assert_eq(jar.cookies[0].creation_utc, t1);
@@ -2413,7 +2413,7 @@ fn test_cookie_hardening_invariants(t: core::T&) {
     };
 
     t.run("FILTER-01: Deletion filter strips leading dot in domain") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
         sub.require_true(wing::set_cookie_header(jar, "https://example.com/", "a=1; Domain=example.com", now_us));
         sub.assert_eq(jar.cookies.len, 1);
 

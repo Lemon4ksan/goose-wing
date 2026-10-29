@@ -50,7 +50,7 @@ fn test_cross_origin_isolation(t: core::T&) {
         sub.assert_false(ctx.is_cross_origin_isolated, "Not isolated without COEP");
 
         // 5. Update directly from HeaderMap via UFCS
-        var headers = wing::new_header_map();
+        var headers = wing::HeaderMap { .. };
         wing::append_header(headers, "cross-origin-opener-policy", "same-origin");
         wing::append_header(headers, "cross-origin-embedder-policy", "require-corp");
         ctx.update_from_headers(headers, "https://service.internal");
@@ -108,7 +108,7 @@ fn test_cross_origin_isolation(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_fetch_metadata_decision_matrix(t: core::T&) {
     t.run("Row 1: Direct User Navigation (Sec-Fetch-Site: none)") { sub =>
-        let guard_cfg = wing::new_cross_origin_guard();
+        let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
             site: wing::SecFetchSite.None,
             mode: wing::SecFetchMode.Navigate,
@@ -125,7 +125,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 2: Same-Origin SOP Requests") { sub =>
-        let guard_cfg = wing::new_cross_origin_guard();
+        let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
             site: wing::SecFetchSite.SameOrigin,
             mode: wing::SecFetchMode.Cors,
@@ -142,7 +142,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 3: Same-Site Subdomain Policy") { sub =>
-        var guard_cfg = wing::new_cross_origin_guard();
+        var guard_cfg = wing::CrossOriginGuard { .. };
         guard_cfg.allow_same_site = false;
 
         // Safe method GET across subdomains
@@ -182,7 +182,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 4: Cross-Site State Mutation (POST/PUT/DELETE) Blocked") { sub =>
-        let guard_cfg = wing::new_cross_origin_guard();
+        let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
             site: wing::SecFetchSite.CrossSite,
             mode: wing::SecFetchMode.Cors,
@@ -199,7 +199,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 5: Top-Level Cross-Site Navigation & First-Login CSRF Defense") { sub =>
-        var guard_cfg = wing::new_cross_origin_guard();
+        var guard_cfg = wing::CrossOriginGuard { .. };
         guard_cfg.require_user_activation_on_sensitive_nav = true;
 
         // Normal top-level document navigation (e.g. following a link to a blog post)
@@ -246,7 +246,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 6: Clickjacking, Framing & XSSI Rejection") { sub =>
-        let guard_cfg = wing::new_cross_origin_guard();
+        let guard_cfg = wing::CrossOriginGuard { .. };
 
         let evil_dests: const wing::SecFetchDest[5] = [
             wing::SecFetchDest.Iframe,
@@ -273,7 +273,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 7: Cross-Site Subresources (Static Assets)") { sub =>
-        var guard_cfg = wing::new_cross_origin_guard();
+        var guard_cfg = wing::CrossOriginGuard { .. };
         guard_cfg.allow_cross_site_static_assets = true;
 
         var ctx_img = wing::FetchContext {
@@ -304,7 +304,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 8: Fallback Mode (Origin / Referer Validation)") { sub =>
-        var guard_cfg = wing::new_cross_origin_guard();
+        var guard_cfg = wing::CrossOriginGuard { .. };
         wing::add_trusted_origin(guard_cfg, "https://partner.example.com");
 
         // Matching target host
@@ -357,7 +357,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Row 9: Fail-Closed Cookie Gate") { sub =>
-        let guard_cfg = wing::new_cross_origin_guard();
+        let guard_cfg = wing::CrossOriginGuard { .. };
 
         // Request with session cookie but ZERO browser security headers (no Sec-Fetch-*, no Origin, no Referer)
         var ctx_blind = wing::FetchContext {
@@ -377,7 +377,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     };
 
     t.run("Path Exemptions & Webhooks") { sub =>
-        var guard_cfg = wing::new_cross_origin_guard();
+        var guard_cfg = wing::CrossOriginGuard { .. };
         wing::add_exempt_path(guard_cfg, "/api/webhook/stripe");
 
         var ctx = wing::FetchContext {
@@ -402,7 +402,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_isolation_headers_injection(t: core::T&) {
     t.run("Mandatory Vary and HSTS Headers") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         wing::apply_isolation_headers(res);
 
         sub.assert_true(res.has_header("Vary"), "Vary header present on protected response");
@@ -434,7 +434,7 @@ fn test_cors_policy_and_matching(t: core::T&) {
     };
 
     t.run("CORS Preflight (OPTIONS) & Actual Request Evaluation") { sub =>
-        var policy = wing::new_cors_policy();
+        var policy = wing::CorsPolicy { .. };
         wing::add_allowed_origin(policy, "https://portal.example.com");
         policy.allow_credentials = true;
         policy.max_age_sec = 7200;
@@ -445,7 +445,7 @@ fn test_cors_policy_and_matching(t: core::T&) {
         preflight_req.headers.push(wing::make_header("Access-Control-Request-Method", "POST"));
         preflight_req.headers.push(wing::make_header("Access-Control-Request-Headers", "Content-Type, Authorization"));
 
-        var preflight_res = wing::new_response();
+        var preflight_res = wing::Response { .. };
         let preflight_res_code = wing::evaluate_cors(policy, preflight_req, preflight_res);
         sub.assert_true(preflight_res_code == wing::CorsResult.AllowedPreflight, "preflight handled cleanly");
         sub.assert_eq(preflight_res.status_code, 204, "preflight returns 204 No Content");
@@ -459,20 +459,20 @@ fn test_cors_policy_and_matching(t: core::T&) {
     };
 
     t.run("CORS Wildcard with Credentials Rejection") { sub =>
-        var policy = wing::new_cors_policy();
+        var policy = wing::CorsPolicy { .. };
         wing::add_allowed_origin(policy, "*");
         policy.allow_credentials = true; // Illegal combination per W3C CORS / Fetch spec
 
         var req = wing::new_request("GET", "/api/data");
         req.headers.push(wing::make_header("Origin", "https://untrusted.com"));
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let res_code = wing::evaluate_cors(policy, req, res);
         sub.assert_true(res_code == wing::CorsResult.InvalidConfig, "wildcard with allow_credentials rejected with InvalidConfig");
     };
 
     t.run("CORS Multi-Origin Wildcard with Credentials Rejection (Fetch §3.2.2)") { sub =>
-        var policy = wing::new_cors_policy();
+        var policy = wing::CorsPolicy { .. };
         wing::add_allowed_origin(policy, "https://portal.example.com");
         wing::add_allowed_origin(policy, "*");
         policy.allow_credentials = true; // Illegal per Fetch spec §3.2.2 even if multiple origins present
@@ -480,32 +480,32 @@ fn test_cors_policy_and_matching(t: core::T&) {
         var req = wing::new_request("GET", "/api/data");
         req.headers.push(wing::make_header("Origin", "https://portal.example.com"));
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let res_code = wing::evaluate_cors(policy, req, res);
         sub.assert_true(res_code == wing::CorsResult.InvalidConfig, "wildcard in multi-origin with allow_credentials rejected with InvalidConfig");
     };
 
     t.run("CORS Null Origin & Sandboxed Iframe Rejection (RFC 6454)") { sub =>
         // 1. Wildcard policy without credentials must NOT match Origin: null (sandboxed iframe / data: URI bypass)
-        var wild_policy = wing::new_cors_policy();
+        var wild_policy = wing::CorsPolicy { .. };
         wing::add_allowed_origin(wild_policy, "*");
         wild_policy.allow_credentials = false;
 
         var iframe_req = wing::new_request("GET", "/api/data");
         iframe_req.headers.push(wing::make_header("Origin", "null"));
-        var iframe_res = wing::new_response();
+        var iframe_res = wing::Response { .. };
         let wild_null_code = wing::evaluate_cors(wild_policy, iframe_req, iframe_res);
         sub.assert_true(wild_null_code == wing::CorsResult.RejectedOrigin, "Origin: null rejected against wildcard pattern");
         sub.assert_false(iframe_res.has_header("Access-Control-Allow-Origin"), "never reflect Access-Control-Allow-Origin: null");
 
         // 2. Case-insensitive "NULL" rejection when allow_credentials is true
-        var cred_policy = wing::new_cors_policy();
+        var cred_policy = wing::CorsPolicy { .. };
         wing::add_allowed_origin(cred_policy, "https://app.example.com");
         cred_policy.allow_credentials = true;
 
         var upper_null_req = wing::new_request("GET", "/api/user");
         upper_null_req.headers.push(wing::make_header("Origin", "NULL"));
-        var upper_null_res = wing::new_response();
+        var upper_null_res = wing::Response { .. };
         let upper_code = wing::evaluate_cors(cred_policy, upper_null_req, upper_null_res);
         sub.assert_true(upper_code == wing::CorsResult.RejectedOrigin, "Origin: NULL rejected when credentials enabled");
     };
@@ -591,7 +591,7 @@ thread_fn test_worker(id: i64) {
 fn test_wait_group_capacity_and_completion(t: core::T&) {
     t.run("ASYNC-01: WaitGroup must track and wait for >64 workers") { sub =>
         let total_workers: i64 = 72;
-        var wg = core::new_wait_group();
+        var wg = core::WaitGroup { .. };
 
         for i in total_workers {
             let tid = thread_spawn(test_worker, i);
@@ -682,7 +682,7 @@ thread_fn normal_contained_worker() {
 
 fn test_crash_diagnostics_and_supervision(t: core::T&) {
     t.run("ASYNC-03 Case 1: WaitGroup must preserve crash diagnostics and track failed workers") { sub =>
-        var wg = core::new_wait_group();
+        var wg = core::WaitGroup { .. };
 
         let tid1 = thread_spawn_contained(crashing_contained_worker);
         let tid2 = thread_spawn_contained(normal_contained_worker);
@@ -698,7 +698,7 @@ fn test_crash_diagnostics_and_supervision(t: core::T&) {
     };
 
     t.run("ASYNC-03 Case 2: Supervisor fault-tolerant containment & worker status monitoring") { sub =>
-        var sup = core::new_supervisor();
+        var sup = core::Supervisor { .. };
 
         let tid1 = thread_spawn_contained(crashing_contained_worker);
         let tid2 = thread_spawn_contained(normal_contained_worker);
@@ -726,7 +726,7 @@ fn test_crash_diagnostics_and_supervision(t: core::T&) {
 
 fn test_edge_filter_lifecycle_and_evaluation(t: core::T&) {
     t.run("Case 1: Edge Filter Rule Registration and Path Filtering") { sub =>
-        var filter = wing::new_edge_filter();
+        var filter = wing::EdgeFilter { .. };
         sub.assert_true(filter.enabled, "Filter enabled by default");
         sub.assert_eq(filter.rules.len, 0, "Initial rules empty");
 
@@ -765,7 +765,7 @@ fn test_edge_filter_lifecycle_and_evaluation(t: core::T&) {
     };
 
     t.run("Case 2: Required Header Condition") { sub =>
-        var filter = wing::new_edge_filter();
+        var filter = wing::EdgeFilter { .. };
         var rule = wing::make_edge_filter_rule("api-key-gate", "/v1/secure", wing::EdgeFilterVerdict.BlockForbidden);
         rule.required_header.append("X-API-Key");
         let _ = wing::add_edge_filter_rule(filter, rule);
@@ -1177,7 +1177,7 @@ fn test_security_txt_valid_matrix(t: core::T&) {
     };
 
     t.run("7. Roundtrip Format and Parse") { sub =>
-        var orig = wing::new_security_txt();
+        var orig = wing::SecurityTxt { .. };
         orig.contact.push("mailto:cert@company.org");
         orig.expires.append("2032-06-30T12:00:00Z");
         orig.canonical.push("https://company.org/.well-known/security.txt");
@@ -1248,7 +1248,7 @@ fn test_altsvc_and_h3_promotion(t: core::T&) {
     };
 
     t.run("2. Alt-Svc Cache Promotion & Backoff on Failure") { sub =>
-        var cache = wing::new_altsvc_cache();
+        var cache = wing::AltSvcCache { .. };
         let origin = "example.com:443";
         let raw = "h3=\":443\"; ma=1000";
 

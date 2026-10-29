@@ -17,10 +17,6 @@ struct Error {
     message: u8[..256] = [],
 }
 
-fn no_error() -> Error {
-    return Error { .. };
-}
-
 fn make_error(code: i32, stage: const u8[:], message: const u8[:]) -> Error {
     var err = Error { code: code, .. };
     err.stage.append(stage);
@@ -61,10 +57,6 @@ struct Response {
     sent_headers: HeaderItem[..32] = [],
     set_cookies: u8[..256][..16] = [],
     body: u8[>..] = [],
-}
-
-fn new_response() -> Response {
-    return Response { .. };
 }
 
 fn protocol(res: const Response&) -> const u8[:] {
@@ -311,7 +303,7 @@ fn json<T>(res: const Response&, out: T&) -> Error {
         let msg = json::message(reader);
         return make_error(422, "json_decode", msg[..]);
     }
-    return no_error();
+    return Error { .. };
 }
 
 fn decode_json<T>(res: const Response&) -> T, Error {

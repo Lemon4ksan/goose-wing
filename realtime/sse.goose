@@ -34,10 +34,6 @@ struct SseParser {
     bom_checked: bool = false,
 }
 
-fn new_sse_parser() -> SseParser {
-    return SseParser { .. };
-}
-
 // ---- 2. Line Dispatch and Event Dispatch (W3C Section 6) -------------------
 
 fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8[:]) {

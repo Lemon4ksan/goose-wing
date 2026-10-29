@@ -58,10 +58,6 @@ struct DictionaryCache {
     entries: DictionaryEntry[..8] = [],
 }
 
-fn new_dictionary_cache() -> DictionaryCache {
-    return DictionaryCache { .. };
-}
-
 // ---- 3. URL Pattern Matching (draft Section 2.1) ---------------------------
 
 // Matches path against pattern (e.g. `/assets/*` or `/api/*`) per RFC 9842 Section 2.1

@@ -62,7 +62,7 @@ fn test_grpc_server_unary_http2(t: core::T&) {
         // Body: 5-byte LPM with payload "Alice"
         wing::encode_grpc_lpm("Alice", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
 
         sub.assert_true(handled, "Request handled by gRPC dispatcher");
@@ -93,7 +93,7 @@ fn test_grpc_server_unary_http2(t: core::T&) {
         var tmap = wing::HeaderMap { .. };
         wing::append_header(tmap, wing::HEADER_GRPC_STATUS, grpc_st);
 
-        var client_resp = wing::new_grpc_response();
+        var client_resp = wing::GrpcResponse { .. };
         let ok_client = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], false, client_resp);
         sub.assert_true(ok_client, "Client parser parsed response");
         sub.assert_eq(client_resp.status, wing::GrpcStatusCode.Ok, "Client status Ok");
@@ -115,7 +115,7 @@ fn test_grpc_server_unary_http2(t: core::T&) {
 
         wing::encode_grpc_lpm("Bob", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
 
         sub.assert_true(handled, "Dispatched");
@@ -149,7 +149,7 @@ fn test_grpc_server_unary_web(t: core::T&) {
 
         wing::encode_grpc_lpm("WebUser", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Dispatched web request");
 
@@ -161,7 +161,7 @@ fn test_grpc_server_unary_web(t: core::T&) {
         wing::append_header(hmap, "content-type", res_ct);
         var tmap = wing::HeaderMap { .. };
 
-        var client_resp = wing::new_grpc_response();
+        var client_resp = wing::GrpcResponse { .. };
         let ok_parse = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], true, client_resp);
         sub.assert_true(ok_parse, "gRPC-Web response parsed cleanly");
         sub.assert_eq(client_resp.status, wing::GrpcStatusCode.Ok, "Status Ok");
@@ -180,7 +180,7 @@ fn test_grpc_server_unary_web(t: core::T&) {
         wing::encode_grpc_lpm("TextUser", raw_lpm, false);
         wing::encode_grpc_web_text(raw_lpm[..], req.body);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Dispatched text web request");
 
@@ -192,7 +192,7 @@ fn test_grpc_server_unary_web(t: core::T&) {
         wing::append_header(hmap, "content-type", res_ct);
         var tmap = wing::HeaderMap { .. };
 
-        var client_resp = wing::new_grpc_response();
+        var client_resp = wing::GrpcResponse { .. };
         let ok_parse = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], true, client_resp);
         sub.assert_true(ok_parse, "Text gRPC-Web parsed cleanly");
         sub.assert_eq(client_resp.status, wing::GrpcStatusCode.Ok, "Status Ok");
@@ -233,7 +233,7 @@ fn test_grpc_server_streaming(t: core::T&) {
 
         wing::encode_grpc_lpm("channel_general", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_server_streaming(dispatcher, req, 1000000000, res, test_server_streaming_handler);
         sub.assert_true(handled, "Server streaming dispatched");
         sub.assert_eq(res.status_code, 200, "HTTP 200");
@@ -305,7 +305,7 @@ fn test_grpc_client_streaming(t: core::T&) {
         wing::encode_grpc_lpm("item_3", req.body, false);
         wing::encode_grpc_lpm("item_4", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_client_streaming(dispatcher, req, 1000000000, res, test_client_streaming_handler);
         sub.assert_true(handled, "Client streaming dispatched");
 
@@ -336,7 +336,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         req.headers.push(ct);
         wing::encode_grpc_lpm("test", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
         sub.assert_eq(res.status_code, 200, "HTTP status 200");
@@ -356,7 +356,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
@@ -371,7 +371,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
@@ -386,7 +386,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         ct.value.append("application/json");
         req.headers.push(ct);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_false(handled, "Non-gRPC request ignored by gRPC dispatcher");
     };
@@ -402,7 +402,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         let big_msg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
         wing::encode_grpc_lpm(big_msg, req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
@@ -424,7 +424,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
 
         wing::encode_grpc_lpm("LateUser", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         // Base time: 1000000000 (1.0s), Timeout 50ms -> Deadline is 1.05s (1050000000). Current time is 1.1s (1100000000).
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1100000000, res, 1000000000, test_unary_handler);
         sub.assert_true(handled, "Handled");
@@ -442,7 +442,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
 
         wing::encode_grpc_lpm("vault_secret_request", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
@@ -469,7 +469,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
 
         wing::encode_grpc_lpm("Alice", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
@@ -488,7 +488,7 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         wing::encode_grpc_lpm("Msg1", req.body, false);
         wing::encode_grpc_lpm("Msg2", req.body, false);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 

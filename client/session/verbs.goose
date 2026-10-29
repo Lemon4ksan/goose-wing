@@ -112,7 +112,7 @@ fn delete<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Err
 // ---- chunked uploads and download streaming --------------------------------
 
 fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Response, Error {
-    var writer = new_chunk_writer();
+    var writer = ChunkWriter { .. };
     F(&writer);
     finish_chunk_writer(writer);
 
@@ -123,7 +123,7 @@ fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Res
 }
 
 fn put_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Response, Error {
-    var writer = new_chunk_writer();
+    var writer = ChunkWriter { .. };
     F(&writer);
     finish_chunk_writer(writer);
 
@@ -156,7 +156,7 @@ fn download_stream<F: fn(const StreamProgress&)>(
             break;
         }
     }
-    return resp, no_error();
+    return resp, Error { .. };
 }
 
 // ---- realtime & streaming (aoni-style ergonomics) -------------------------
@@ -241,7 +241,7 @@ fn ws_perform_handshake(
         ws_sess.subprotocol.append(proto);
     }
 
-    return ws_sess, resp, no_error();
+    return ws_sess, resp, Error { .. };
 }
 
 // Initiates a WebSocket connection with automatic RFC 6455 handshake negotiation
@@ -321,7 +321,7 @@ fn sse_perform_connect(
     }
 
     eff_sub.connected = true;
-    return eff_sub, resp, no_error();
+    return eff_sub, resp, Error { .. };
 }
 
 // Initiates a Server-Sent Events (SSE) stream subscription per W3C EventSource
@@ -373,7 +373,7 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
     }
 
     sub.connected = true;
-    return resp, no_error();
+    return resp, Error { .. };
 }
 
 // ---- masque connect-udp & connect-ip tunnels (rfc 9298, rfc 9484) -----------
@@ -423,7 +423,7 @@ fn connect_udp(
     }
 
     tunnel.state = MasqueTunnelState.Established;
-    return tunnel, resp, no_error();
+    return tunnel, resp, Error { .. };
 }
 
 fn connect_ip(
@@ -469,5 +469,5 @@ fn connect_ip(
     }
 
     tunnel.state = MasqueTunnelState.Established;
-    return tunnel, resp, no_error();
+    return tunnel, resp, Error { .. };
 }

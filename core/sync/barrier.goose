@@ -14,10 +14,6 @@ struct WaitGroup {
 }
 
 // Creates an empty WaitGroup.
-fn new_wait_group() -> WaitGroup {
-    return WaitGroup { .. };
-}
-
 // Registers a worker thread ID with the WaitGroup.
 fn add_worker(wg: WaitGroup&, worker_id: i64) -> bool {
     wg.worker_ids.push(worker_id);

@@ -298,7 +298,7 @@ fn prepare_proxy_request_at(
     }
 
     // 4. Header filtering and metadata injection
-    var forward_headers = new_header_map();
+    var forward_headers = HeaderMap { .. };
     let upstream_host = proxy.cluster.targets[target_idx].host[..];
 
     filter_and_forward_headers(

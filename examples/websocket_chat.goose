@@ -11,7 +11,7 @@ fn main() {
     print("goose-wing Realtime WebSocket & Pub/Sub Engine Demo\n");
 
     // 1. Initialize Zero-Heap TopicTree (OASIS MQTT / uWebSockets architecture)
-    var tree = wing::new_topic_tree();
+    var tree = wing::TopicTree { .. };
 
     // 2. Subscribe simulated client sockets to topic channels
     let client1_fd: i64 = 101;

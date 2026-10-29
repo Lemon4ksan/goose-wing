@@ -269,10 +269,6 @@ struct CubicState {
     last_update_us: u64 = 0,
 }
 
-fn new_cubic_state() -> CubicState {
-    return CubicState {};
-}
-
 // Computes K = cbrt(w_max * beta / C) in milliseconds (RFC 9438 Section 4.1).
 fn cubic_compute_k(w_max: u64) -> u64 {
     // K = cbrt((w_max * (1 - 0.7)) / 0.4) = cbrt((w_max * 3) / 4)

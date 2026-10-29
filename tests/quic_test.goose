@@ -699,7 +699,7 @@ fn test_bbr_cubic_and_pacing(t: core::T&) {
         sub.assert_eq(wing::int_cbrt(1000), 10, "cbrt(1000) = 10");
         sub.assert_eq(wing::int_cbrt(1000000), 100, "cbrt(1000000) = 100");
 
-        var cubic = wing::new_cubic_state();
+        var cubic = wing::CubicState { .. };
         cubic.cwnd_segments = 20; // 20 * 1200 = 24000 bytes
         cubic.epoch_start_us = 1000000;
         cubic.last_update_us = 1000000;
@@ -713,7 +713,7 @@ fn test_bbr_cubic_and_pacing(t: core::T&) {
     };
 
     t.run("CUBIC-02: Loss Multiplicative Window Reduction (RFC 9438)") { sub =>
-        var cubic = wing::new_cubic_state();
+        var cubic = wing::CubicState { .. };
         cubic.cwnd_segments = 100;
         wing::cubic_on_loss(cubic, 5000000);
         sub.assert_eq(cubic.w_max_segments, 100, "w_max saved as 100");

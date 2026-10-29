@@ -27,10 +27,6 @@ struct CacheOptions {
 }
 
 // Constructs CacheOptions with RFC 9111 baseline defaults.
-fn new_cache_options() -> CacheOptions {
-    return CacheOptions { .. };
-}
-
 // ---- cached entry model ----------------------------------------------------
 
 // Cached HTTP representation including headers, body, Vary invariants, and intrusive LRU pointers.
@@ -54,10 +50,6 @@ struct CachedEntry {
 }
 
 // Constructs an empty, uninitialized CachedEntry.
-fn new_cached_entry() -> CachedEntry {
-    return CachedEntry { .. };
-}
-
 // Computes FNV-1a hash of a byte slice for fast URL pre-matching.
 fn hash_fnv1a(s: const u8[:]) -> u32 {
     var h: u32 = 2166136261;
@@ -164,10 +156,6 @@ struct CacheWriters {
 }
 
 // Constructs a zero-initialized CacheWriters container.
-fn new_cache_writers() -> CacheWriters {
-    return CacheWriters { .. };
-}
-
 // Registers or joins an in-flight network transaction for key.
 // Returns (is_leader, flight_idx). Leader executes network fetch; joiner shares result.
 fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
@@ -243,7 +231,7 @@ struct HttpCache {
 fn new_http_cache(options: CacheOptions = CacheOptions { .. }) -> HttpCache {
     return HttpCache {
         options: options,
-        writers: new_cache_writers(),
+        writers: CacheWriters { .. },
         ..
     };
 }
@@ -284,14 +272,14 @@ fn lru_touch(cache: HttpCache&, idx: i64) {
 
 // Converts request headers from app Request to HeaderMap.
 fn request_headers_to_map(req: const Request&) -> HeaderMap {
-    var map = new_header_map();
+    var map = HeaderMap { .. };
     for &h in req.headers { map.append_header(h.name[..], h.value[..]); }
     return map;
 }
 
 // Converts response headers from app Response to HeaderMap.
 fn response_headers_to_map(resp: const Response&) -> HeaderMap {
-    var map = new_header_map();
+    var map = HeaderMap { .. };
     map.status_code = resp.status_code;
     for &h in resp.headers { map.append_header(h.name[..], h.value[..]); }
     return map;
@@ -350,7 +338,7 @@ fn find_matching_entry(
 
 // Builds conditional request headers (If-None-Match and If-Modified-Since) for revalidation.
 fn build_revalidation_headers(entry: const CachedEntry&) -> HeaderMap {
-    var cond = new_header_map();
+    var cond = HeaderMap { .. };
     if entry.etag.valid {
         var etag_buf: u8[..160] = [];
         if entry.etag.is_weak { etag_buf.append("W/"); }
@@ -661,7 +649,7 @@ fn on_response(
         return dec;
     }
 
-    var sanitized = new_header_map();
+    var sanitized = HeaderMap { .. };
     resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
 
     let lm_raw = resp_headers.get_header("last-modified");

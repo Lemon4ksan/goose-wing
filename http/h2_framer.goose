@@ -131,10 +131,6 @@ struct H2SecurityFramer {
 }
 
 // Returns a default-initialized H2SecurityFramer with RFC 9113 baseline limits.
-fn new_h2_security_framer() -> H2SecurityFramer {
-    return H2SecurityFramer { .. };
-}
-
 // Validates whether a frame type is permitted on stream 0 or a non-zero stream (RFC 9113 Section 5.1.1).
 fn validate_h2_stream_association(hdr: const H2FrameHeader&) -> H2ErrorCode {
     if hdr.stream_id == 0 {

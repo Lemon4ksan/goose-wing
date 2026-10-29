@@ -1723,7 +1723,7 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: core:
         let eof = wing::tcp_recv(server_conn, eof_probe, 16, 500);
         sub.assert_eq(eof, 0, "Server detected peer FIN (EOF)");
 
-        var server_bp = wing::new_backpressure();
+        var server_bp = wing::BackPressure { .. };
         wing::async_socket_on_peer_fin(server_conn, server_bp);
         sub.assert_true(server_bp.peer_fin_received, "Server recorded peer FIN");
         sub.assert_false(server_bp.write_shut, "Server write half is still open for response");
@@ -1768,7 +1768,7 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: core:
         sub.assert_gt(server_conn, 0, "Server accepted");
         defer wing::tcp_close(server_conn);
 
-        var server_bp = wing::new_backpressure();
+        var server_bp = wing::BackPressure { .. };
         var server_cork = core::new_cork_buffer();
 
         // Server initiates write shutdown first (sends FIN to client)
@@ -1823,7 +1823,7 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: core:
         sub.assert_gt(server_conn, 0, "Server accepted");
         defer wing::tcp_close(server_conn);
 
-        var server_bp = wing::new_backpressure();
+        var server_bp = wing::BackPressure { .. };
         var server_cork = core::new_cork_buffer();
 
         // Client shuts down its write side (sends FIN)
@@ -1865,7 +1865,7 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: core:
     };
 
     t.run("Case 4: Drain failure on broken socket triggers abort and clears backpressure to prevent deadlock") { sub =>
-        var bp = wing::new_backpressure();
+        var bp = wing::BackPressure { .. };
         wing::backpressure_append(bp, "STALLED_PAYLOAD_FOR_DEAD_SOCKET");
         sub.assert_gt(wing::backpressure_len(bp), 0, "Backpressure has buffered data");
 

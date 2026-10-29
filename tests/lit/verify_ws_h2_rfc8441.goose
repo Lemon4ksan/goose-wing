@@ -41,7 +41,7 @@ fn test_rfc8441_handshake() {
     assert(wing::is_h2_websocket_request(req));
     assert(wing::validate_h2_websocket_request(req));
 
-    var resp = wing::new_response();
+    var resp = wing::Response { .. };
     let session, ok = wing::ws_h2_upgrade_request(req, resp, "chat.v1");
     assert(ok);
     assert(resp.status_code == 200);

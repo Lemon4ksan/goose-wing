@@ -18,7 +18,7 @@ fn test_frameforge_r1_websocket(t: core::T&) {
         var ws = wing::new_websocket_session(true); // client session
         wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
 
-        var comp = wing::new_shared_ws_compressor();
+        var comp = wing::SharedWsCompressor { .. };
         let original_text = "The quick brown fox jumps over the lazy dog. Repetition for deflate efficiency: The quick brown fox jumps over the lazy dog!";
         var comp_wire: u8[..1024] = [];
         let ok_c = wing::ws_deflate_message(comp, original_text, comp_wire, true);
@@ -54,7 +54,7 @@ fn test_frameforge_r1_websocket(t: core::T&) {
         var ws = wing::new_websocket_session(true);
         wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
 
-        var comp = wing::new_shared_ws_compressor();
+        var comp = wing::SharedWsCompressor { .. };
         let msg_text = "Fragmented compressed WebSocket stream testing per RFC 7692 §5.1 and RFC 6455 §5.4.";
         var comp_wire: u8[..1024] = [];
         let ok_c = wing::ws_deflate_message(comp, msg_text, comp_wire, true);
@@ -266,7 +266,7 @@ fn test_frameforge_r2_websocket(t: core::T&) {
     // Bug 8: RFC 7692 §7.2 & RFC 6455 §7.4.1 (1009): Decompression Bomb Abort
     // ------------------------------------------------------------------------
     t.run("1. RFC 7692 Decompression Bomb Defense and Buffer Sanitization") { sub =>
-        var comp = wing::new_shared_ws_compressor();
+        var comp = wing::SharedWsCompressor { .. };
         // Construct highly compressible payload that expands significantly
         var raw_payload: u8[..4096] = [];
         for i in 2048 {
@@ -381,7 +381,7 @@ fn test_frameforge_r2_websocket(t: core::T&) {
         var ws = wing::new_websocket_session(true);
         wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
 
-        var comp = wing::new_shared_ws_compressor();
+        var comp = wing::SharedWsCompressor { .. };
         let stream_msg = "Realtime telemetry payload fragmented across WebSocket frames with interleaved control heartbeats.";
         var comp_wire: u8[..1024] = [];
         let ok_c = wing::ws_deflate_message(comp, stream_msg, comp_wire, true);
@@ -1033,7 +1033,7 @@ fn test_rfc8441_server_upgrade(t: core::T&) {
         var req = wing::new_request("GET", "/");
         wing::format_h2_websocket_request(req, "/live", "stream.example.com", "https", "wamp.2.json, mqtt");
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         let session, ok = wing::ws_h2_upgrade_request(req, resp, "mqtt");
         sub.assert_true(ok, "ws_h2_upgrade_request succeeds");
         sub.assert_eq(resp.status_code, 200, "RFC 8441 §5: Status code MUST be 200 (NOT 101)");
@@ -1045,7 +1045,7 @@ fn test_rfc8441_server_upgrade(t: core::T&) {
         var bad_req = wing::new_request("GET", "/");
         wing::format_h2_websocket_request(bad_req, "/live", "stream.example.com");
         wing::set_header(bad_req, "Connection", "keep-alive");
-        var bad_resp = wing::new_response();
+        var bad_resp = wing::Response { .. };
         let _, bad_ok = wing::ws_h2_upgrade_request(bad_req, bad_resp);
         sub.assert_false(bad_ok, "Upgrade invalid request fails");
         sub.assert_eq(bad_resp.status_code, 400, "Bad request produces 400");
@@ -1261,7 +1261,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         server_req.set_header("Sec-WebSocket-Version", "13");
         server_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
-        var server_resp = wing::new_response();
+        var server_resp = wing::Response { .. };
         let s_ws, ok_s = wing::ws_upgrade_request(server_req, server_resp, "chat.v1");
         sub.assert_true(ok_s, "Server upgrade succeeded");
         sub.assert_eq(server_resp.status_code, 101, "Server status 101");
@@ -1270,7 +1270,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         // Negative tests: wrong method
         var bad_meth_req = wing::new_request("POST", "https://example.com/ws");
-        var bad_resp = wing::new_response();
+        var bad_resp = wing::Response { .. };
         let _, ok_bad_m = wing::ws_upgrade_request(bad_meth_req, bad_resp);
         sub.assert_false(ok_bad_m, "POST upgrade rejected");
         sub.assert_eq(bad_resp.status_code, 405, "Status 405 Method Not Allowed");
@@ -1281,7 +1281,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         bad_ver_req.set_header("Connection", "Upgrade");
         bad_ver_req.set_header("Sec-WebSocket-Version", "12");
         bad_ver_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
-        bad_resp = wing::new_response();
+        bad_resp = wing::Response { .. };
         let _, ok_bad_v = wing::ws_upgrade_request(bad_ver_req, bad_resp);
         sub.assert_false(ok_bad_v, "WebSocket Version 12 rejected");
         sub.assert_eq(bad_resp.status_code, 426, "Status 426 Upgrade Required");
@@ -1411,7 +1411,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
         upg_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
         sub.assert_true(wing::is_websocket_upgrade_request(upg_req), "is_websocket_upgrade_request accepts multi-token Upgrade");
-        var upg_resp = wing::new_response();
+        var upg_resp = wing::Response { .. };
         let _, ok_upg = wing::ws_upgrade_request(upg_req, upg_resp);
         sub.assert_true(ok_upg, "ws_upgrade_request accepts multi-token Upgrade");
         sub.assert_eq(upg_resp.status_code, 101, "Status 101 Switching Protocols");
@@ -1455,7 +1455,7 @@ fn test_server_sent_events(t: core::T&) {
     t.run("1. W3C EventSource Standard Streaming Parsing") { sub =>
         let stream_data = "data: first event\n\nevent: custom\ndata: second event line 1\ndata: second event line 2\nid: 42\nretry: 5000\n\n";
 
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..10] = [];
 
         wing::sse_feed(parser, stream_data, events);
@@ -1476,7 +1476,7 @@ fn test_server_sent_events(t: core::T&) {
 
     t.run("2. SSE Comment Lines and Keepalive Filtering") { sub =>
         let stream = ": this is a comment\n: keepalive ping\ndata: real data\n\n: another comment\n";
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..10] = [];
 
         wing::sse_feed(parser, stream, events);
@@ -1486,7 +1486,7 @@ fn test_server_sent_events(t: core::T&) {
 
     t.run("3. CRLF and CR Line Ending Normalization") { sub =>
         let stream_crlf = "data: hello\r\n\r\ndata: world\r\r";
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..10] = [];
 
         wing::sse_feed(parser, stream_crlf, events);
@@ -1503,7 +1503,7 @@ fn test_server_sent_events(t: core::T&) {
         sub.assert_bytes_eq(out[..], expected, "SSE serialized event matches expected format");
 
         // Parse back through parser
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..10] = [];
         wing::sse_feed(parser, out[..], events);
         sub.assert_eq(events.len, 1, "Roundtrip parsed 1 event");
@@ -1548,7 +1548,7 @@ fn test_server_sent_events(t: core::T&) {
         sub.assert_bytes_eq(events[0].id[..], "1", "Event ID matches");
 
         // Server-side response initialization
-        var s_resp = wing::new_response();
+        var s_resp = wing::Response { .. };
         wing::init_response(s_resp);
         sub.assert_eq(s_resp.status_code, 200, "Server SSE status 200");
         sub.assert_bytes_eq(wing::header(s_resp, "Content-Type"), "text/event-stream", "Content-Type text/event-stream");
@@ -1558,7 +1558,7 @@ fn test_server_sent_events(t: core::T&) {
         // Empty data field ("data:\n\n") must dispatch an event with empty data,
         // and "data:\ndata: hello\n\n" must preserve the leading newline ("\nhello").
         let stream_empty = "\xEF\xBB\xBFdata:\n\ndata:\ndata: hello\n\n";
-        var parser = wing::new_sse_parser();
+        var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..10] = [];
         wing::sse_feed(parser, stream_empty, events);
 

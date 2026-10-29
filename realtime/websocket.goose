@@ -282,10 +282,6 @@ struct SharedWsCompressor {
     reset_window: bool = true,
 }
 
-fn new_shared_ws_compressor() -> SharedWsCompressor {
-    return SharedWsCompressor { .. };
-}
-
 // Compresses raw payload using raw Deflate (RFC 1951) and strips trailing 0x00 0x00 0xFF 0xFF (RFC 7692 §7.2.1).
 // With reset_window=true (Z_FULL_FLUSH equivalent), clears dictionary between messages to prevent cross-connection leak.
 fn ws_deflate_message<B>(

@@ -251,7 +251,7 @@ fn test_h3_request_streams(t: core::T&) {
         sub.assert_true(ok_sid, "open request stream succeeds");
         sub.assert_eq(sid, 0, "first client stream id is 0");
 
-        var extra_hdrs = wing::new_header_map();
+        var extra_hdrs = wing::HeaderMap { .. };
         wing::append_header(extra_hdrs, "user-agent", "GooseWing/1.0");
 
         var req_buf: u8[..512] = [];
@@ -603,7 +603,7 @@ fn test_h3_extended_frames(t: core::T&) {
 
         // Send headers
         var req_buf: u8[..256] = [];
-        var hdrs = wing::new_header_map();
+        var hdrs = wing::HeaderMap { .. };
         conn.send_request_headers(sid, "GET", "https", "example.com", "/", hdrs, false, req_buf);
 
         // Send data without end_stream

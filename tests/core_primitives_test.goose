@@ -1443,7 +1443,7 @@ fn test_multithreading_and_actors(t: core::T&) {
         let num_tasks: i64 = 8;
         let num_workers: i64 = 2;
 
-        var wg = core::new_wait_group();
+        var wg = core::WaitGroup { .. };
         for worker_idx in num_workers {
             let tid = thread_spawn(compute_worker);
             wg.add_worker(tid);
@@ -1681,7 +1681,7 @@ fn test_csp_patterns(t: core::T&) {
 
 fn test_actor_subsystem(t: core::T&) {
     t.run("Case 1: PriorityMailbox Stable Binary Min-Heap Ordering") { sub =>
-        var mb = core::new_priority_mailbox();
+        var mb = core::PriorityMailbox { .. };
 
         // Push entries with different priorities:
         // Priority 10 (Low), Priority 1 (High), Priority 5 (Medium), Priority 1 (High FIFO second)
@@ -1713,7 +1713,7 @@ fn test_actor_subsystem(t: core::T&) {
     };
 
     t.run("Case 2: StashBuffer Message Deferral and Replay") { sub =>
-        var stash = core::new_stash_buffer();
+        var stash = core::StashBuffer { .. };
         sub.assert_true(stash.is_empty(), "StashBuffer starts empty");
 
         stash.stash(core::StashedEnvelope { priority: 1, seq: 1, payload_type: 10, .. });
@@ -1744,7 +1744,7 @@ fn test_actor_subsystem(t: core::T&) {
 
 fn test_supervision_trees(t: core::T&) {
     t.run("Case 1: RestartType Specification & Restart Evaluation") { sub =>
-        var sup = core::new_supervisor();
+        var sup = core::Supervisor { .. };
 
         let ok_perm = sup.add_child(core::ChildSpec { id: 1, restart_type: core::RestartType.Permanent, .. }, 101);
         let ok_trans = sup.add_child(core::ChildSpec { id: 2, restart_type: core::RestartType.Transient, .. }, 102);

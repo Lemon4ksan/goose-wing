@@ -40,6 +40,11 @@ def main() -> int:
         action="store_true",
         help="Enforce // Example: input/output contracts",
     )
+    parser.add_argument(
+        "--check-dead-code",
+        action="store_true",
+        help="Enforce zero dead (unreferenced) functions across scanned files",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -51,9 +56,8 @@ def main() -> int:
         if m and args.staged and staged_lines_by_file:
             rel_p = m.group(1).replace("\\", "/")
             line_no = int(m.group(2))
-            if rel_p in staged_lines_by_file:
-                if line_no not in staged_lines_by_file[rel_p]:
-                    return
+            if rel_p in staged_lines_by_file and line_no not in staged_lines_by_file[rel_p]:
+                return
         print_colored(text, color)
         violations += 1
 
@@ -129,6 +133,27 @@ def main() -> int:
     incomplete_markers = re.compile(
         r"\b(TODO|FIXME|HACK|XXX)\b|simplified for now|placeholder implementation"
     )
+
+    # Build token frequency index for fast dead code detection
+    repo_token_counts: dict[str, int] = {}
+    if args.staged or args.check_dead_code:
+        token_re = re.compile(r"\b[A-Za-z0-9_]+\b")
+        for r, dirs, files in os.walk(root):
+            dirs[:] = [
+                d for d in dirs if d not in (".git", ".gemini", "build", "target", "node_modules")
+            ]
+            for f in files:
+                if f.endswith((".goose", ".c")):
+                    p = os.path.join(r, f)
+                    try:
+                        with open(p, encoding="utf-8", errors="replace") as fp:
+                            for f_line in fp:
+                                code = f_line.split("//")[0].strip()
+                                if code:
+                                    for tok in token_re.findall(code):
+                                        repo_token_counts[tok] = repo_token_counts.get(tok, 0) + 1
+                    except OSError:
+                        pass
 
     for file_path in files_to_scan:
         try:
@@ -296,28 +321,26 @@ def main() -> int:
                 r"^\s*(?:pub\s+)?(?:inline\s+)?fn\s+([A-Za-z0-9_]+)\s*\(\s*\)\s*->\s*([A-Za-z0-9_:]+)",
                 line,
             )
-            if empty_ctor_match:
+            if empty_ctor_match and not is_test_or_example:
                 cur_fn = empty_ctor_match.group(1)
                 ret_type = empty_ctor_match.group(2)
                 base_ret = ret_type.split(":")[-1]
 
                 struct_constructed = ""
-                single_ret_match = re.search(
-                    r"\{\s*(?:return\s+)?([A-Za-z0-9_:]+)\s*\{\s*\.\.\s*\}\s*;\s*\}",
-                    line,
+                depth = 0
+                body_span = []
+                for k in range(i, min(len(lines), i + 12)):
+                    body_span.append(lines[k].strip())
+                    depth += lines[k].count("{") - lines[k].count("}")
+                    if depth <= 0 and ("{" in lines[k] or k > i):
+                        break
+                body_text = " ".join(body_span)
+                m_ret = re.search(
+                    r"\{\s*(?:return\s+)?([A-Za-z0-9_:]+)\s*\{\s*(?:\.\.)?\s*\}\s*;\s*\}",
+                    body_text,
                 )
-                if single_ret_match:
-                    struct_constructed = single_ret_match.group(1).split(":")[-1]
-                elif (i + 2) < len(lines) and re.search(r"\{\s*$", line):
-                    next_line = lines[i + 1].strip()
-                    close_line = lines[i + 2].strip()
-                    if close_line == "}":
-                        m_ret = re.match(
-                            r"^(?:return\s+)?([A-Za-z0-9_:]+)\s*\{\s*\.\.\s*\}\s*;$",
-                            next_line,
-                        )
-                        if m_ret:
-                            struct_constructed = m_ret.group(1).split(":")[-1]
+                if m_ret:
+                    struct_constructed = m_ret.group(1).split(":")[-1]
 
                 if struct_constructed and struct_constructed == base_ret:
                     record_violation(
@@ -325,6 +348,56 @@ def main() -> int:
                         f"merely returns '{base_ret} {{ .. }}'. Use native struct default syntax directly at call sites.",
                         "red",
                     )
+
+            # Rule 1c: Trivial single-line struct field getter wrapper detection
+            getter_match = re.match(
+                r"^\s*(?:pub\s+)?(?:inline\s+)?fn\s+([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_]+)\s*:[^)]*\)\s*->\s*([^{;]+)",
+                line,
+            )
+            if getter_match and not is_test_or_example:
+                cur_fn = getter_match.group(1)
+                param_name = getter_match.group(2)
+                is_trait_exempt = cur_fn in (
+                    "len",
+                    "count",
+                    "as_nanos",
+                    "unix",
+                    "nanosecond",
+                    "tz_offset",
+                    "href",
+                    "scheme",
+                    "host",
+                    "hostname",
+                    "pathname",
+                    "search",
+                    "hash",
+                    "port",
+                    "is_valid",
+                    "protocol",
+                    "status",
+                    "text",
+                    "written",
+                )
+                if not is_trait_exempt:
+                    depth = 0
+                    body_span = []
+                    for k in range(i, min(len(lines), i + 12)):
+                        body_span.append(lines[k].strip())
+                        depth += lines[k].count("{") - lines[k].count("}")
+                        if depth <= 0 and ("{" in lines[k] or k > i):
+                            break
+                    body_text = " ".join(body_span)
+                    m_getter = re.search(
+                        rf"\{{\s*return\s+({param_name}\.[A-Za-z0-9_.]+)(?:\[[^\]]*\])?\s*;\s*\}}",
+                        body_text,
+                    )
+                    if m_getter:
+                        field_path = m_getter.group(1)
+                        record_violation(
+                            f"[LINT] {rel_path}:{line_num} -> Trivial single-line field getter '{cur_fn}' "
+                            f"merely returns '{field_path}'. Access struct fields directly at call sites or document on struct.",
+                            "red",
+                        )
 
             # Rule 2: No primitive or slice type aliases
             m_type = re.match(
@@ -419,6 +492,39 @@ def main() -> int:
                     sig_params = m_jsig.group(2)
                     sig_ret = m_jsig.group(3).strip() if m_jsig.group(3) else ""
                     is_multiline_sig = sig_end_idx > i
+
+            # Rule 1d: Dead code detection for staged or scanned production functions
+            if (
+                repo_token_counts
+                and not is_test_or_example
+                and is_fn_start
+                and sig_fn_name
+                and sig_fn_name
+                not in (
+                    "main",
+                    "init",
+                    "drop",
+                    "reset",
+                    "clear",
+                    "clone",
+                    "append",
+                    "push",
+                    "len",
+                    "count",
+                    "do",
+                    "get",
+                    "set",
+                )
+                and (not args.staged or line_num in staged_lines_by_file.get(rel_path, set()))
+            ):
+                cnt = repo_token_counts.get(sig_fn_name, 0)
+                if cnt <= 1:
+                    record_violation(
+                        f"[LINT] {rel_path}:{line_num} -> Dead code: function '{sig_fn_name}' "
+                        f"is declared but never referenced or called anywhere in the repository. "
+                        f"Integrate it into callers/tests or remove it.",
+                        "red",
+                    )
 
             # Rule 1e: Prohibition of mechanical function names
             if is_fn_start and re.match(

@@ -41,7 +41,7 @@ fn main() {
     print("=== HTTP1_SMUGGLE_DEFENSES ===");
 
     // 1. Conflicting TE followed by CL (TE.CL)
-    var map1 = wing::new_header_map();
+    var map1 = wing::HeaderMap { .. };
     let raw_te_cl = "Transfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n";
     let err1 = wing::parse_headers(raw_te_cl, map1);
     assert(err1 == wing::HeaderParseError.InvalidContentLength);
@@ -49,7 +49,7 @@ fn main() {
     print("TE_CL_CONFLICT: REJECTED");
 
     // 2. Conflicting CL followed by TE (CL.TE)
-    var map2 = wing::new_header_map();
+    var map2 = wing::HeaderMap { .. };
     let raw_cl_te = "Content-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n";
     let err2 = wing::parse_headers(raw_cl_te, map2);
     assert(err2 == wing::HeaderParseError.InvalidContentLength);
@@ -57,7 +57,7 @@ fn main() {
     print("CL_TE_CONFLICT: REJECTED");
 
     // 3. Duplicate differing Content-Length headers (CL.CL)
-    var map3 = wing::new_header_map();
+    var map3 = wing::HeaderMap { .. };
     let raw_diff_cl = "Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
     let err3 = wing::parse_headers(raw_diff_cl, map3);
     assert(err3 == wing::HeaderParseError.InvalidContentLength);
@@ -65,7 +65,7 @@ fn main() {
     print("DUP_CL_DIFF: REJECTED");
 
     // 4. Duplicate IDENTICAL Content-Length headers per RFC 9112 §6.3
-    var map4 = wing::new_header_map();
+    var map4 = wing::HeaderMap { .. };
     let raw_same_cl = "Content-Length: 42\r\nContent-Length: 42\r\n\r\n";
     let err4 = wing::parse_headers(raw_same_cl, map4);
     assert(err4 == wing::HeaderParseError.None);
@@ -74,21 +74,21 @@ fn main() {
     print("DUP_CL_SAME: ACCEPTED");
 
     // 5. 64-bit integer overflow in Content-Length (30-digit flood)
-    var map5 = wing::new_header_map();
+    var map5 = wing::HeaderMap { .. };
     let raw_ovf = "Content-Length: 999999999999999999999999999999\r\n\r\n";
     let err5 = wing::parse_headers(raw_ovf, map5);
     assert(err5 == wing::HeaderParseError.InvalidContentLength);
     print("CL_OVERFLOW: REJECTED");
 
     // 6. obs-fold on Content-Length rejection even in compatibility mode
-    var map6 = wing::new_header_map();
+    var map6 = wing::HeaderMap { .. };
     let raw_fold = "Content-Length: 10\r\n 20\r\n\r\n";
     let err6 = wing::parse_headers(raw_fold, map6, true);
     assert(err6 == wing::HeaderParseError.InvalidContentLength);
     print("CL_OBS_FOLD: REJECTED");
 
     // 7. Duplicate Transfer-Encoding headers rejection
-    var map7 = wing::new_header_map();
+    var map7 = wing::HeaderMap { .. };
     let raw_dup_te = "Transfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n";
     let err7 = wing::parse_headers(raw_dup_te, map7);
     assert(err7 == wing::HeaderParseError.InvalidContentLength);

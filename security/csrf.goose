@@ -155,10 +155,6 @@ struct CrossOriginGuard {
     exempt_paths: u8[..128][..16] = [],
 }
 
-fn new_cross_origin_guard() -> CrossOriginGuard {
-    return CrossOriginGuard { .. };
-}
-
 fn add_trusted_origin(guard_cfg: CrossOriginGuard&, origin_str: const u8[:]) -> bool {
     guard guard_cfg.trusted_origins.len < guard_cfg.trusted_origins.cap else { return false; }
     guard origin_str.len <= 128 else { return false; }

@@ -225,7 +225,7 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
                 }
 
                 if (flags & 1) != 0 { // END_STREAM
-                    var res = wing::new_response();
+                    var res = wing::Response { .. };
                     wing::dispatch_grpc_unary(dispatcher, req, 1000000, res, grpc_test_unary_handler);
 
                     var out_bytes: u8[>..] = [];
@@ -250,7 +250,7 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
                 ct.value.append("application/grpc");
                 req.headers.push(ct);
 
-                var res = wing::new_response();
+                var res = wing::Response { .. };
                 wing::dispatch_grpc_unary(dispatcher, req, 1000000, res, grpc_test_unary_handler);
 
                 var out_bytes: u8[>..] = [];
@@ -293,7 +293,7 @@ fn handle_grpc_web_http1(conn: i64, req_raw: const u8[:], dispatcher: wing::Grpc
         return;
     }
 
-    var res = wing::new_response();
+    var res = wing::Response { .. };
     wing::dispatch_grpc_unary(dispatcher, req, 1000000, res, grpc_test_unary_handler);
 
     var out_wire: u8[>..] = [];
@@ -362,7 +362,7 @@ fn main() {
                     var cl_val: i64 = 0;
                     for c in cl_line {
                         if c >= '0' && c <= '9' {
-                            cl_val = cl_val * 10 + (c - '0') as i64;
+                            cl_val = cl_val * 10 + (c - '0');
                         } else if c == '\r' || c == '\n' {
                             break;
                         }

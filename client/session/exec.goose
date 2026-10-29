@@ -131,7 +131,7 @@ fn validate_hop_prerequisites(session: const Session&, current_url: const core::
     if ssrf_err != RedirectError.None {
         return make_error(403, "ssrf_guard", redirect_error_to_string(ssrf_err));
     }
-    return no_error();
+    return Error { .. };
 }
 
 fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response&) {
@@ -181,7 +181,7 @@ fn apply_redirect_transition(
         session.enable_referer,
         is_trusted,
     );
-    return no_error();
+    return Error { .. };
 }
 
 fn merge_session_and_request_headers(
@@ -270,7 +270,7 @@ fn process_redirect_hop(
     loc_hdr: const u8[:],
 ) -> bool, Error {
     if ctx.redirect_mode == RedirectMode.Manual {
-        return false, no_error();
+        return false, Error { .. };
     }
     if ctx.redirect_mode == RedirectMode.Error {
         return false, make_error(310, "redirect", "redirects disabled by mode");
@@ -308,7 +308,7 @@ fn process_redirect_hop(
 
     ctx.url_chain.push(redirect_info.new_url);
     ctx.redirect_count += 1;
-    return true, no_error();
+    return true, Error { .. };
 }
 
 fn append_available_dict_header(headers: HeaderItem[..32]&, dict_b64: const u8[:]) {
@@ -627,14 +627,14 @@ fn handle_401_auth_retry(
     dns_rebinding_err: RedirectError&,
 ) -> bool, Error {
     guard resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried else {
-        return false, no_error();
+        return false, Error { .. };
     }
     let www_auth = header(resp, "WWW-Authenticate");
-    guard www_auth.len > 0 else { return false, no_error(); }
+    guard www_auth.len > 0 else { return false, Error { .. }; }
 
     var auth_header_val: u8[..512] = [];
     guard compute_401_auth_header(session, ctx, current_url, www_auth, auth_header_val) else {
-        return false, no_error();
+        return false, Error { .. };
     }
 
     ctx.auth_retried = true;
@@ -648,7 +648,7 @@ fn handle_401_auth_retry(
     if dns_rebinding_err != RedirectError.None {
         return true, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
     }
-    return true, no_error();
+    return true, Error { .. };
 }
 
 fn execute_single_hop(
@@ -740,12 +740,12 @@ fn execute_single_hop(
         session.pipeline.metrics.redirect_hops += 1;
     } else {
         finalize_success_response(ctx, out_resp);
-        return false, no_error();
+        return false, Error { .. };
     }
 
     let should_continue, red_err = process_redirect_hop(session, ctx, out_resp, current_url, loc_hdr);
     guard ok(red_err) else { return false, red_err; }
-    return should_continue, no_error();
+    return should_continue, Error { .. };
 }
 
 fn check_cache_and_inject_headers(
@@ -765,7 +765,7 @@ fn check_cache_and_inject_headers(
     let lookup_dec = lookup(session.cache, lookup_req, cache_ts.now);
     if lookup_dec.kind == LookupResultKind.Hit {
         out_resp = copy(lookup_dec.cached_response);
-        out_err = no_error();
+        out_err = Error { .. };
         return true;
     }
     if lookup_dec.kind == LookupResultKind.Fail504 {
@@ -821,7 +821,7 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
 
     // Phase 0: RFC 9111 HTTP Cache Lookup & Conditional Header Injection
     var cache_resp = Response { .. };
-    var cache_err = no_error();
+    var cache_err = Error { .. };
     var cache_revalidate_idx: i64 = -1;
     let cache_hit = check_cache_and_inject_headers(
         session,
@@ -850,7 +850,7 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
         );
         guard ok(hop_err) else { return resp, hop_err; }
         if !should_continue {
-            return resp, no_error();
+            return resp, Error { .. };
         }
     }
 

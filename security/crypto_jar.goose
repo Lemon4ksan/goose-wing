@@ -52,10 +52,6 @@ struct KeyStore {
 }
 
 // Creates an empty KeyStore with default session lifetime and skew tolerance.
-fn new_key_store() -> KeyStore {
-    return KeyStore { .. };
-}
-
 // Appends a KeySlot to the store if capacity permits.
 fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
     guard store.keys.len < store.keys.cap else { return false; }

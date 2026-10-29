@@ -76,7 +76,7 @@ fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
         // RFC 9112 §6.3 rule 1: 1xx, 204, and 304 responses NEVER have a message body,
         // even if Transfer-Encoding: chunked is sent by a broken/malicious upstream.
         let wire_204 = "HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n";
-        var res_204 = wing::new_response();
+        var res_204 = wing::Response { .. };
         let ok_204, consumed_204 = wing::parse_http1_wire_response(wire_204, res_204);
         sub.assert_true(ok_204, "204 with Transfer-Encoding: chunked MUST succeed");
         sub.assert_eq(consumed_204, wire_204.len, "consumed exact header bytes");
@@ -84,7 +84,7 @@ fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
         sub.assert_eq(res_204.body.len, 0, "body must be empty for 204");
 
         let wire_304 = "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n";
-        var res_304 = wing::new_response();
+        var res_304 = wing::Response { .. };
         let ok_304, consumed_304 = wing::parse_http1_wire_response(wire_304, res_304);
         sub.assert_true(ok_304, "304 with Transfer-Encoding: chunked MUST succeed");
         sub.assert_eq(consumed_304, wire_304.len, "consumed exact header bytes");
@@ -92,7 +92,7 @@ fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
         sub.assert_eq(res_304.body.len, 0, "body must be empty for 304");
 
         let wire_100 = "HTTP/1.1 100 Continue\r\nTransfer-Encoding: chunked\r\n\r\n";
-        var res_100 = wing::new_response();
+        var res_100 = wing::Response { .. };
         let ok_100, consumed_100 = wing::parse_http1_wire_response(wire_100, res_100);
         sub.assert_true(ok_100, "100 Continue with Transfer-Encoding: chunked MUST succeed");
         sub.assert_eq(consumed_100, wire_100.len, "consumed exact header bytes");
@@ -109,7 +109,7 @@ fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
         }
         huge_resp.append("\r\n");
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let ok, _ = wing::parse_http1_wire_response(huge_resp[..], res);
         sub.assert_false(ok, "response header block > 8192 bytes MUST be rejected");
     };
@@ -121,7 +121,7 @@ fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
 fn test_http1_response_serialization_empty_status(t: core::T&) {
     t.run("serialize_http1_response: 204/304 suppresses Transfer-Encoding and chunked body") { sub =>
         // 204 No Content with Transfer-Encoding or trailers requested
-        var res_204 = wing::new_response();
+        var res_204 = wing::Response { .. };
         res_204.status_code = 204;
         res_204.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
         wing::add_trailer(res_204, "X-Checksum", "abc");
@@ -137,7 +137,7 @@ fn test_http1_response_serialization_empty_status(t: core::T&) {
         sub.assert_not_contains(wire_204[..], "illegal body data", "body data MUST NOT be emitted on 204");
 
         // 304 Not Modified
-        var res_304 = wing::new_response();
+        var res_304 = wing::Response { .. };
         res_304.status_code = 304;
         res_304.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
         wing::add_trailer(res_304, "X-Checksum", "abc");
@@ -152,7 +152,7 @@ fn test_http1_response_serialization_empty_status(t: core::T&) {
     };
 
     t.run("serialize_http1_response: 1xx suppresses automatic Content-Length: 0") { sub =>
-        var res_100 = wing::new_response();
+        var res_100 = wing::Response { .. };
         res_100.status_code = 100;
 
         var wire_100: u8[>..] = [];
@@ -1322,7 +1322,7 @@ fn test_tls13_cert_authorities_extension_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_cookie_import_cap_defense(t: core::T&) {
     t.run("import_netscape caps cookies at K_MAX_COOKIES to prevent memory/CPU exhaustion") { sub =>
-        var jar = wing::new_canonical_cookie_jar();
+        var jar = wing::CanonicalCookieJar { .. };
 
         // Generate 3500 valid Netscape cookie lines:
         // domain \t flag \t path \t secure \t expiration \t name \t value \n

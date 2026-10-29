@@ -370,10 +370,6 @@ struct SlowlorisDefenseConfig {
     max_header_count: i32 = 100,                    // 100 header fields cap
 }
 
-fn new_slowloris_defense_config() -> SlowlorisDefenseConfig {
-    return SlowlorisDefenseConfig { .. };
-}
-
 struct HeaderReader {
     config: SlowlorisDefenseConfig = SlowlorisDefenseConfig { .. },
     header_read_start_ns: i64 = 0,

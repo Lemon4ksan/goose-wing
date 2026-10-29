@@ -861,7 +861,7 @@ fn test_zstandard_rfc8878(t: core::T&) {
         var wire: u8[>..] = [];
         core::zstd_compress(raw_payload, wire, true);
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         let h_enc = wing::make_header("Content-Encoding", "zstd");
         let h_type = wing::make_header("Content-Type", "text/plain");
@@ -1665,7 +1665,7 @@ fn test_brotli_http_client_integration(t: core::T&) {
         sub.assert_true(ok_c, "Compressed test payload");
 
         // 2. Response with Content-Encoding: br
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         res.headers.push(wing::make_header("Content-Encoding", "br"));
         res.headers.push(wing::make_header("Content-Type", "application/json"));

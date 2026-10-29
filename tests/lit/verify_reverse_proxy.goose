@@ -75,7 +75,7 @@ fn test_load_balancer_least_connections() {
 }
 
 fn test_reverse_proxy_hop_by_hop_stripping() {
-    var in_headers = wing::new_header_map();
+    var in_headers = wing::HeaderMap { .. };
     wing::append_header(in_headers, "Host", "frontend.example.com");
     wing::append_header(in_headers, "User-Agent", "curl/8.0");
     wing::append_header(in_headers, "Connection", "keep-alive, X-Foo-Internal");
@@ -86,7 +86,7 @@ fn test_reverse_proxy_hop_by_hop_stripping() {
     wing::append_header(in_headers, "X-Custom-Data", "retained-value");
     wing::append_header(in_headers, "TE", "trailers");
 
-    var out_headers = wing::new_header_map();
+    var out_headers = wing::HeaderMap { .. };
     var cfg = wing::ProxyConfig { .. };
     cfg.preserve_host = false;
     cfg.via_pseudonym.clear();
@@ -135,11 +135,11 @@ fn test_reverse_proxy_hop_by_hop_stripping() {
 }
 
 fn test_reverse_proxy_xff_chaining() {
-    var in_headers = wing::new_header_map();
+    var in_headers = wing::HeaderMap { .. };
     wing::append_header(in_headers, "Host", "api.example.com");
     wing::append_header(in_headers, "X-Forwarded-For", "198.51.100.1, 10.0.0.1");
 
-    var out_headers = wing::new_header_map();
+    var out_headers = wing::HeaderMap { .. };
     let cfg = wing::ProxyConfig { .. };
 
     wing::filter_and_forward_headers(
@@ -160,7 +160,7 @@ fn test_upstream_request_wire_serialization() {
     var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
     wing::add_upstream_target(proxy.cluster, "upstream.local:9000", 9000);
 
-    var in_headers = wing::new_header_map();
+    var in_headers = wing::HeaderMap { .. };
     wing::append_header(in_headers, "Host", "public.example.com");
     wing::append_header(in_headers, "Accept", "application/json");
 

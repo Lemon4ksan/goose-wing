@@ -166,7 +166,7 @@ fn test_radix_trie_routing(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_tako_v2_pool_mechanisms(t: core::T&) {
     t.run("HeaderMapPool Acquisition and Clean Release") { sub =>
-        var pool = internal::new_header_map_pool();
+        var pool = internal::HeaderMapPool { .. };
         let s0 = internal::acquire_header_map(pool);
         let s1 = internal::acquire_header_map(pool);
 
@@ -182,7 +182,7 @@ fn test_tako_v2_pool_mechanisms(t: core::T&) {
     };
 
     t.run("ExtensionsPool Sanitization (Zero State Leakage)") { sub =>
-        var pool = internal::new_extensions_pool();
+        var pool = internal::ExtensionsPool { .. };
         let idx = internal::acquire_extensions(pool);
         sub.assert_true(idx >= 0, "acquired extensions slot");
 
@@ -236,7 +236,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
         req.headers.push(wing::make_header("Sec-Fetch-Dest", "empty"));
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
 
         let outcome = wing::execute_pipeline(cfg, conn_timer, "127.0.0.1", req, 1000000000, res, fut);
@@ -258,13 +258,13 @@ fn test_unified_server_pipeline(t: core::T&) {
         var req = wing::new_request("GET", "/health");
         req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
 
-        var res1 = wing::new_response();
+        var res1 = wing::Response { .. };
         var fut1 = internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "first request handled");
 
         // Second request at same nanosecond -> Rate Limited
-        var res2 = wing::new_response();
+        var res2 = wing::Response { .. };
         var fut2 = internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.RateLimited, "second request rate limited");
@@ -281,7 +281,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         evil_req.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
         evil_req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
         let out = wing::execute_pipeline(cfg, timer, "192.168.1.1", evil_req, 1000000000, res, fut);
         sub.assert_true(out == wing::PipelineOutcome.CsrfRejected, "cross-site mutation rejected by CSRF guard");
@@ -299,7 +299,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         var req_post = wing::new_request("POST", "/api/data");
         req_post.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
         let out = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_post, 1000000000, res, fut);
         sub.assert_true(out == wing::PipelineOutcome.MethodNotAllowed, "method not allowed triggered");
@@ -321,7 +321,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         req_100.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
         req_100.headers.push(wing::make_header("Expect", "100-continue"));
 
-        var res1 = wing::new_response();
+        var res1 = wing::Response { .. };
         var fut1 = internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_100, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "Expect: 100-continue on valid route handled");
@@ -331,7 +331,7 @@ fn test_unified_server_pipeline(t: core::T&) {
         req_unknown.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
         req_unknown.headers.push(wing::make_header("Expect", "unknown-feature-flag"));
 
-        var res2 = wing::new_response();
+        var res2 = wing::Response { .. };
         var fut2 = internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_unknown, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.ExpectationFailed, "unknown Expect rejected with ExpectationFailed");
@@ -354,7 +354,7 @@ fn test_standalone_http_server(t: core::T&) {
         sub.assert_bytes_eq(req.url[..], "/api/echo", "Path is /api/echo");
         sub.assert_bytes_eq(req.body[..], "Hello World", "Body payload extracted");
 
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         wing::set_header(resp, "content-type", "application/json");
         resp.body.append("{\"status\":\"ok\"}");
@@ -648,7 +648,7 @@ fn test_topic_tree_live_broadcast_and_batch_drain(t: core::T&) {
         defer wing::tcp_close(s2);
         defer wing::tcp_close(s3);
 
-        var tree = wing::new_topic_tree();
+        var tree = wing::TopicTree { .. };
         sub.assert_true(wing::subscribe(tree, s1, "chat/general"), "s1 subscribed to chat/general");
         sub.assert_true(wing::subscribe(tree, s2, "chat/general"), "s2 subscribed to chat/general");
         sub.assert_true(wing::subscribe(tree, s3, "alerts/#"), "s3 subscribed to alerts/#");

@@ -55,10 +55,6 @@ struct UpstreamHealth {
     failed_probes: u64 = 0,
 }
 
-fn new_upstream_health() -> UpstreamHealth {
-    return UpstreamHealth { .. };
-}
-
 inline fn inc_consecutive_successes(h: UpstreamHealth&) -> u32 {
     let s = h.consecutive_successes + 1;
     h.consecutive_successes = s;
@@ -209,7 +205,7 @@ fn find_probe_slot(checker: const ClusterHealthChecker&, target_idx: i32) -> i32
 
 inline fn init_probe_slot(slot: TargetProbeSlot&, target_idx: i32) {
     slot.target_idx = target_idx;
-    slot.health = new_upstream_health();
+    slot.health = UpstreamHealth { .. };
     slot.active_in_flight = false;
     slot.probe_start_ms = 0;
     slot.in_use = true;

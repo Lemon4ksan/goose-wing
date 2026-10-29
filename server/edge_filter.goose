@@ -32,10 +32,6 @@ struct EdgeFilter {
     enabled: bool = true,
 }
 
-fn new_edge_filter() -> EdgeFilter {
-    return EdgeFilter { .. };
-}
-
 fn add_edge_filter_rule(filter: EdgeFilter&, rule: EdgeFilterRule) -> bool {
     guard filter.rules.len < filter.rules.cap else { return false; }
     filter.rules.push(rule);

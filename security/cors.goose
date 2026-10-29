@@ -25,10 +25,6 @@ struct CorsPolicy {
 }
 
 // Creates a default CORS policy.
-fn new_cors_policy() -> CorsPolicy {
-    return CorsPolicy { .. };
-}
-
 // Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     guard policy.allowed_origins.len < policy.allowed_origins.cap else { return false; }

@@ -323,7 +323,7 @@ fn test_http_connect_tunnel_and_buffer_hygiene(t: core::T&) {
 
 fn test_slowloris_tarpit_defenses(t: core::T&) {
     t.run("4-Tier Slowloris Defense Enforcement") { sub =>
-        let cfg = wing::new_slowloris_defense_config();
+        let cfg = wing::SlowlorisDefenseConfig { .. };
         var reader = wing::new_header_reader(cfg, 0);
 
         // Feed standard fast chunk at t=100ms
@@ -667,7 +667,7 @@ fn test_proxy_server_integration(t: core::T&) {
 fn test_health_state_transitions(t: core::T&) {
     t.run("Up -> Down on Consecutive Failures") { sub =>
         let cfg = wing::new_health_check_config(5000, 2000, 2, 3);
-        var health = wing::new_upstream_health();
+        var health = wing::UpstreamHealth { .. };
         sub.assert_true(health.state == wing::HealthState.Up, "Initial state is Up");
 
         // Fail 1 & 2: still Up
@@ -686,7 +686,7 @@ fn test_health_state_transitions(t: core::T&) {
 
     t.run("Down -> Probing -> Up on Consecutive Successes") { sub =>
         let cfg = wing::new_health_check_config(5000, 2000, 2, 3);
-        var health = wing::new_upstream_health();
+        var health = wing::UpstreamHealth { .. };
         health.state = wing::HealthState.Down;
         health.consecutive_failures = 3;
 
@@ -709,7 +709,7 @@ fn test_health_state_transitions(t: core::T&) {
 
     t.run("Probing Failure Demotes to Down") { sub =>
         let cfg = wing::new_health_check_config(5000, 2000, 2, 1);
-        var health = wing::new_upstream_health();
+        var health = wing::UpstreamHealth { .. };
         health.state = wing::HealthState.Probing;
         health.consecutive_successes = 1;
 
@@ -797,7 +797,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
         var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
         wing::add_upstream_target(proxy.cluster, "upstream.local:8080", 8080);
 
-        var in_headers = wing::new_header_map();
+        var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "frontend.test");
 
         var wire: u8[>..] = [];
@@ -824,7 +824,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
         wing::add_upstream_target(proxy.cluster, "backend.srv:8080", 8080);
         proxy.config.max_active_conns_per_target = 2;
 
-        var in_headers = wing::new_header_map();
+        var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "test.example.com");
 
         var wire: u8[>..] = [];
@@ -854,7 +854,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
         var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
         wing::add_upstream_target(proxy.cluster, "app.internal:80", 80);
 
-        var in_headers = wing::new_header_map();
+        var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "legit.example.com");
         wing::append_header(in_headers, "Connection", "keep-alive, X-Secret-Internal");
         wing::append_header(in_headers, "X-Secret-Internal", "should-be-stripped");
@@ -881,7 +881,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
         proxy.config.enable_rate_limiting = true;
         proxy.rate_limiter = wing::new_gateway_rate_limiter(10, 1); // 10 rps, burst 1
 
-        var in_headers = wing::new_header_map();
+        var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "test.example.com");
 
         var wire: u8[>..] = [];
@@ -1216,7 +1216,7 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
             reset_after_ns: 200000000,
         };
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         wing::apply_rate_limit_headers(res, quota, dec);
 
         sub.assert_true(res.has_header("RateLimit-Limit"), "RateLimit-Limit emitted");
@@ -1234,7 +1234,7 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
             current_tat_ns: 3500000000,
         };
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         wing::apply_rate_limit_headers(res, quota, dec);
 
         sub.assert_eq(res.status_code, 429, "status set to 429 Too Many Requests");
@@ -1354,7 +1354,7 @@ fn test_rfc9297_capsules_and_datagrams(t: core::T&) {
         sub.assert_true(wing::is_capsule_protocol_negotiated(" ?1; param=value "), "Structured ?1 with params");
         sub.assert_false(wing::is_capsule_protocol_negotiated("?0"), "?0 rejected");
 
-        var mock_hdrs = wing::new_header_map();
+        var mock_hdrs = wing::HeaderMap { .. };
         wing::append_header(mock_hdrs, "capsule-protocol", "?1");
         sub.assert_true(mock_hdrs.has_capsule_protocol(), "has_capsule_protocol on HeaderMap");
     };

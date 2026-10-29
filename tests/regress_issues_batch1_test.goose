@@ -188,7 +188,7 @@ fn test_status_204_body_suppression_on_wire(t: core::T&) {
         // In server/server.goose:540, serialize_http1_response appends res.body[..]
         // directly to the wire when body.len > 0, despite status 204 omitting Content-Length.
         // This causes HTTP response splitting / smuggling on persistent connections!
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 204;
         res.body.append("LEAKED_PAYLOAD_SMUGGLING");
 
@@ -263,11 +263,11 @@ fn test_connection_header_hop_by_hop_token_capacity(t: core::T&) {
         //   out_tokens: u8[..64][..16]&
         // If a Connection header specifies > 16 tokens (e.g. h1..h17), the 17th token
         // is silently dropped, causing strip_hop_by_hop_headers to retain 'h17'!
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         wing::append_header(src, "Connection", "h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, h15, h16, h17");
         wing::append_header(src, "h17", "confidential-token");
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_false(wing::has_header(dst, "h17"), "Hop-by-hop header h17 must be stripped per RFC 9110 §7.6.1");
@@ -331,7 +331,7 @@ fn test_scoped_ipv6_link_local_url_acceptance(t: core::T&) {
 fn test_unsupported_range_unit_ignored(t: core::T&) {
     t.run("Unrecognized Range unit (e.g. items=0-10) must be ignored and return 200 OK") { sub =>
         var out_status: i32 = 0;
-        var out_headers = wing::new_header_map();
+        var out_headers = wing::HeaderMap { .. };
         var out_body: u8[>..] = [];
 
         let payload: const u8[:] = "Hello World Range Test";
@@ -361,12 +361,12 @@ fn test_unsupported_range_unit_ignored(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_grpc_te_trailers_preserved(t: core::T&) {
     t.run("TE: trailers header must NOT be stripped by strip_hop_by_hop_headers") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         wing::append_header(src, "TE", "trailers");
         wing::append_header(src, "Connection", "keep-alive");
         wing::append_header(src, "X-Custom", "preserve-me");
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_true(wing::has_header(dst, "TE"), "TE: trailers must be preserved across proxies for gRPC (Go #21096)");
@@ -377,11 +377,11 @@ fn test_grpc_te_trailers_preserved(t: core::T&) {
     };
 
     t.run("TE with non-trailers (e.g. TE: gzip, deflate) must be stripped") { sub =>
-        var src = wing::new_header_map();
+        var src = wing::HeaderMap { .. };
         wing::append_header(src, "TE", "gzip, deflate");
         wing::append_header(src, "X-Custom", "keep");
 
-        var dst = wing::new_header_map();
+        var dst = wing::HeaderMap { .. };
         wing::strip_hop_by_hop_headers(src, dst);
 
         sub.assert_false(wing::has_header(dst, "TE"), "TE without 'trailers' must be stripped as hop-by-hop");
@@ -479,14 +479,14 @@ fn test_parse_url_view_ipv6_bracket_trailing_garbage(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_http1_wire_response_status_line_validation(t: core::T&) {
     t.run("parse_http1_wire_response must reject 4-digit status code 'HTTP/1.1 2000 OK'") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let wire: const u8[:] = "HTTP/1.1 2000 OK\r\nContent-Length: 0\r\n\r\n";
         let ok, _ = wing::parse_http1_wire_response(wire, res);
         sub.assert_false(ok, "parse_http1_wire_response MUST reject 4-digit status codes like '2000'");
     };
 
     t.run("parse_http1_wire_response must reject non-SP whitespace 'HTTP/1.1\\t200 OK'") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let wire_tab: const u8[:] = "HTTP/1.1\t200 OK\r\nContent-Length: 0\r\n\r\n";
         let ok_tab, _ = wing::parse_http1_wire_response(wire_tab, res);
         sub.assert_false(ok_tab, "parse_http1_wire_response MUST reject Tab (\\t) between HTTP-version and status code");
@@ -543,7 +543,7 @@ fn test_exceeded_max_ranges_returns_200(t: core::T&) {
         // representation with a 200 (OK) status code."
         // In http/multipart.goose:668, serve_range_request returns 416 for ExceededMaxRanges!
         var out_status: i32 = 0;
-        var out_headers = wing::new_header_map();
+        var out_headers = wing::HeaderMap { .. };
         var out_body: u8[>..] = [];
 
         let payload: const u8[:] = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -581,7 +581,7 @@ fn test_response_invalid_transfer_encoding_rejected(t: core::T&) {
         // coding is not the final transfer coding, the recipient MUST treat the response as an
         // error or close the connection without reading the body."
         // Currently, parse_http1_wire_response falls through to Content-Length!
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let wire: const u8[:] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, identity\r\nContent-Length: 5\r\n\r\nhello";
         let ok, _ = wing::parse_http1_wire_response(wire, res);
 
@@ -589,7 +589,7 @@ fn test_response_invalid_transfer_encoding_rejected(t: core::T&) {
     };
 
     t.run("Response with unknown Transfer-Encoding must be rejected") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         let wire_unknown: const u8[:] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: bogus\r\nContent-Length: 4\r\n\r\ntest";
         let ok_unk, _ = wing::parse_http1_wire_response(wire_unknown, res);
 

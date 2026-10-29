@@ -85,7 +85,7 @@ fn test_uncork_backpressure_fifo_ordering(t: core::T&) {
         defer wing::tcp_close(server_conn);
 
         var cork = core::new_cork_buffer();
-        var bp = wing::new_backpressure();
+        var bp = wing::BackPressure { .. };
 
         // Simulate active backpressure: PART 1 was previously queued in backpressure
         let part1: const u8[:] = "PART1_PREFIX_DATA_";
@@ -149,7 +149,7 @@ fn test_uncork_empty_cork_with_backpressure(t: core::T&) {
         defer wing::tcp_close(server_conn);
 
         var cork = core::new_cork_buffer();
-        var bp = wing::new_backpressure();
+        var bp = wing::BackPressure { .. };
 
         // Set pending backpressure
         let data: const u8[:] = "STALLED_BACKPRESSURE_CHUNK";
@@ -323,7 +323,7 @@ fn test_abrupt_rst_on_unread_receive_data(t: core::T&) {
         // 2. Server closes socket via async_socket_close while unread data is still pending:
         // RFC 1122 §4.2.2.13 mandates that closing with unread data MUST issue an abortive RST,
         // never a graceful FIN!
-        var srv_bp = wing::new_backpressure();
+        var srv_bp = wing::BackPressure { .. };
         let close_ok = wing::async_socket_close(server_conn, srv_bp);
         sub.assert_true(close_ok, "async_socket_close executed");
 
@@ -348,7 +348,7 @@ fn test_explicit_socket_abort(t: core::T&) {
         defer wing::tcp_close(listener);
         defer wing::tcp_close(client);
 
-        var srv_bp = wing::new_backpressure();
+        var srv_bp = wing::BackPressure { .. };
         wing::backpressure_append(srv_bp, "PENDING_DIRTY_DATA_TO_BE_DISCARDED");
         sub.assert_gt(wing::backpressure_len(srv_bp), 0, "Server backpressure holds pending data");
 
@@ -392,7 +392,7 @@ fn test_keepalive_boundary_validation(t: core::T&) {
 
 fn test_flow_control_state_tracking(t: core::T&) {
     t.run("Case 4: Backpressure Flow Control State Tracking") { sub =>
-        var bp = wing::new_backpressure();
+        var bp = wing::BackPressure { .. };
         sub.assert_false(wing::tcp_is_flow_controlled(bp), "Empty backpressure is not flow controlled");
 
         wing::backpressure_append(bp, "FLOW_CONTROLLED_PAYLOAD");
@@ -429,7 +429,7 @@ fn test_half_close_deferred_shutdown(t: core::T&) {
         defer wing::tcp_close(server_conn);
 
         var cork = core::new_cork_buffer();
-        var bp = wing::new_backpressure();
+        var bp = wing::BackPressure { .. };
 
         // 1. Simulate active backpressure: data is buffered in BackPressure queue
         let payload: const u8[:] = "CRITICAL_TRANSACTION_PAYLOAD_BEFORE_SHUTDOWN";
@@ -510,7 +510,7 @@ fn test_peer_fin_half_closed_response(t: core::T&) {
         sub.assert_eq(eof, 0, "Server detected peer FIN (EOF on read)");
 
         // 3. Server marks peer FIN
-        var server_bp = wing::new_backpressure();
+        var server_bp = wing::BackPressure { .. };
         wing::async_socket_on_peer_fin(server_conn, server_bp);
         sub.assert_true(server_bp.peer_fin_received, "Server registered peer FIN in backpressure state");
 

@@ -81,10 +81,6 @@ struct ChunkWriter {
     buffer: u8[>..] = [],
 }
 
-fn new_chunk_writer() -> ChunkWriter {
-    return ChunkWriter { .. };
-}
-
 fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
     guard !writer.finished && data.len > 0 else { return; }
     encode_chunk(data, writer.buffer);
@@ -134,10 +130,6 @@ struct ChunkedStreamDecoder {
     total_trailer_bytes: i64 = 0,
     bytes_consumed_total: u64 = 0,
     error_code: ChunkedDecodeError = ChunkedDecodeError.None,
-}
-
-fn new_chunked_stream_decoder() -> ChunkedStreamDecoder {
-    return ChunkedStreamDecoder { .. };
 }
 
 fn is_complete(dec: const ChunkedStreamDecoder&) -> bool {

@@ -71,7 +71,7 @@ fn main() {
     print("    LPM Wire Size: ", req1.body.len, " bytes");
 
     // 4. Dispatch through zero-allocation gRPC dispatcher
-    var res1 = wing::new_response();
+    var res1 = wing::Response { .. };
     let now_mono_ns: u64 = 1000000000;
     let handled1 = wing::dispatch_grpc_unary(dispatcher, req1, now_mono_ns, res1, service_unary_handler);
 
@@ -93,7 +93,7 @@ fn main() {
     };
     wing::encode_grpc_lpm("Intruder", req2.body, false);
 
-    var res2 = wing::new_response();
+    var res2 = wing::Response { .. };
     let handled2 = wing::dispatch_grpc_unary(dispatcher, req2, now_mono_ns, res2, service_unary_handler);
 
     // In RFC gRPC over HTTP/2, pure errors are returned as 'Trailers-Only'

@@ -68,10 +68,6 @@ struct InterceptorPipeline {
     record_logs: bool = true,
 }
 
-fn new_interceptor_pipeline() -> InterceptorPipeline {
-    return InterceptorPipeline { .. };
-}
-
 // ---- 3. Pipeline Builders ---------------------------------------------------
 
 fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> bool {

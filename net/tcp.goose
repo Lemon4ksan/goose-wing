@@ -395,10 +395,6 @@ struct BackPressure {
     peer_fin_received: bool = false,
 }
 
-fn new_backpressure() -> BackPressure {
-    return BackPressure { .. };
-}
-
 fn backpressure_len(bp: const BackPressure&) -> i64 {
     return bp.data.len - bp.pending_removal;
 }

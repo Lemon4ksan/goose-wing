@@ -20,14 +20,10 @@ struct EntityTag {
 }
 
 // Constructs a zero-initialized invalid EntityTag.
-fn new_entity_tag() -> EntityTag {
-    return EntityTag { .. };
-}
-
 // Parses an ETag header value into an EntityTag struct (RFC 9110 §8.8.3).
 // Handles case-sensitive "W/" weak prefix and strips enclosing double quotes.
 fn parse_etag(raw: const u8[:]) -> EntityTag {
-    var etag = new_entity_tag();
+    var etag = EntityTag { .. };
     var s = trim_lws(raw);
     guard s.len >= 2 else { return etag; }
 
@@ -160,10 +156,6 @@ struct VarySnapshot {
 }
 
 // Constructs a zero-initialized VarySnapshot.
-fn new_vary_snapshot() -> VarySnapshot {
-    return VarySnapshot { .. };
-}
-
 // Checks if field_name already exists in recorded vary items.
 fn has_vary_field(items: const VaryItem[..16]&, field_name: const u8[:]) -> bool {
     for &item in items {
@@ -195,7 +187,7 @@ fn extract_vary_value(req_headers: const HeaderMap&, field_name: const u8[:], ou
 // Records the request headers specified in the response's Vary header.
 // Defends against CVE-2026-93750 by marking has_star = true on "*", preventing subsequent matches.
 fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderMap&) -> VarySnapshot {
-    var snap = new_vary_snapshot();
+    var snap = VarySnapshot { .. };
     var s = trim_lws(cached_vary_raw);
     guard s.len > 0 else { return snap; }
 
@@ -295,7 +287,7 @@ fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc:
 fn sanitize_for_storage(src: const HeaderMap&, dst: HeaderMap&, shared: bool = false, cc: const CacheControl& = CacheControl { .. }) {
     reset_for_keep_alive(dst);
 
-    var intermediate = new_header_map();
+    var intermediate = HeaderMap { .. };
     strip_hop_by_hop_headers(src, intermediate);
 
     for entry in intermediate.entries {

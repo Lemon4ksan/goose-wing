@@ -16,7 +16,7 @@ import wing from "..";
 
 fn test_cache_control_parsing_and_overflow(t: core::T&) {
     t.run("Standard Boolean Directives & Bitmask Compression") { sub =>
-        var cc = wing::new_cache_control();
+        var cc = wing::CacheControl { .. };
         let raw = "no-store, no-cache, must-revalidate, proxy-revalidate, must-understand, public, immutable, only-if-cached, no-transform";
         wing::parse_cache_control_str(raw, cc);
 
@@ -32,7 +32,7 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
     };
 
     t.run("Delta-Seconds Parsing & Overflow Clamping to i32::MAX") { sub =>
-        var cc = wing::new_cache_control();
+        var cc = wing::CacheControl { .. };
         let raw = "max-age=3600, s-maxage=7200, min-fresh=60, max-stale=300";
         wing::parse_cache_control_str(raw, cc);
 
@@ -42,29 +42,29 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
         sub.assert_eq(cc.max_stale, 300, "max-stale 300 parsed");
 
         // Clamping overflow to 2147483647
-        var cc_over = wing::new_cache_control();
+        var cc_over = wing::CacheControl { .. };
         wing::parse_cache_control_str("max-age=9999999999999", cc_over);
         sub.assert_eq(cc_over.max_age, wing::MAX_DELTA_SECONDS, "max-age clamped to i32::MAX");
 
         // Unbounded max-stale
-        var cc_unbounded = wing::new_cache_control();
+        var cc_unbounded = wing::CacheControl { .. };
         wing::parse_cache_control_str("max-stale", cc_unbounded);
         sub.assert_true(wing::has_max_stale(cc_unbounded), "has max-stale flag");
         sub.assert_eq(cc_unbounded.max_stale, -1, "unbounded max-stale is -1");
     };
 
     t.run("Corrupted Freshness Parameters Set INVALID_FRESHNESS Flag") { sub =>
-        var cc_bad = wing::new_cache_control();
+        var cc_bad = wing::CacheControl { .. };
         wing::parse_cache_control_str("max-age=corrupted_string", cc_bad);
         sub.assert_true(wing::has_invalid_freshness(cc_bad), "Corrupted max-age flagged invalid");
 
-        var cc_bad_s = wing::new_cache_control();
+        var cc_bad_s = wing::CacheControl { .. };
         wing::parse_cache_control_str("s-maxage=123xyz", cc_bad_s);
         sub.assert_true(wing::has_invalid_freshness(cc_bad_s), "Alphanumeric s-maxage flagged invalid");
     };
 
     t.run("Qualified Lists & Pragma Fallback & Cargo-Cult Filtering") { sub =>
-        var cc_qual = wing::new_cache_control();
+        var cc_qual = wing::CacheControl { .. };
         wing::parse_cache_control_str("private=\"Set-Cookie, X-Custom\", no-cache=\"X-Token\"", cc_qual);
         sub.assert_true(wing::is_private(cc_qual), "is private");
         sub.assert_true(wing::is_private_field(cc_qual, "Set-Cookie"), "Set-Cookie is private field");
@@ -73,19 +73,19 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
         sub.assert_true(wing::is_no_cache_field(cc_qual, "X-Token"), "X-Token is no-cache field");
 
         // Cargo-cult pre-check/post-check ignored without error
-        var cc_cult = wing::new_cache_control();
+        var cc_cult = wing::CacheControl { .. };
         wing::parse_cache_control_str("max-age=3600, pre-check=0, post-check=0", cc_cult, true);
         sub.assert_eq(cc_cult.max_age, 3600, "max-age parsed despite cargo-cult directives");
 
         // Pragma: no-cache fallback
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "Pragma", "no-cache");
         let cc_pragma = wing::parse_cache_control_headers(map, true);
         sub.assert_true(wing::is_no_cache(cc_pragma), "Pragma: no-cache promoted to CacheControl::no-cache");
     };
 
     t.run("Targeted HTTP Cache-Control Precedence (RFC 9213)") { sub =>
-        var map = wing::new_header_map();
+        var map = wing::HeaderMap { .. };
         wing::append_header(map, "Cache-Control", "public, max-age=3600");
         wing::append_header(map, "CDN-Cache-Control", "max-age=600");
         wing::append_header(map, "Edge-Cache-Control", "max-age=60");
@@ -107,7 +107,7 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
         sub.assert_eq(cc_other.max_age, 600, "Unknown proxy falls back to CDN-Cache-Control max-age=600");
 
         // When CDN headers are absent, falls back to Cache-Control
-        var map_plain = wing::new_header_map();
+        var map_plain = wing::HeaderMap { .. };
         wing::append_header(map_plain, "Cache-Control", "max-age=1800");
         let cc_plain = wing::parse_targeted_cache_control_headers(map_plain, "Edge");
         sub.assert_eq(cc_plain.max_age, 1800, "Fallback to standard Cache-Control when target missing");
@@ -164,14 +164,14 @@ fn test_freshness_math_and_clock_skew(t: core::T&) {
         let ts = wing::new_cache_timestamps(req_time, resp_time, resp_time);
 
         // 1. Corrupted freshness sets lifetime to 0
-        var cc_bad = wing::new_cache_control();
+        var cc_bad = wing::CacheControl { .. };
         cc_bad.flags |= wing::CC_INVALID_FRESHNESS;
-        var hdrs = wing::new_header_map();
+        var hdrs = wing::HeaderMap { .. };
         let lt_bad = wing::compute_freshness_lifetime(cc_bad, hdrs, ts);
         sub.assert_eq(lt_bad, 0, "Corrupted freshness forces lifetime 0");
 
         // 2. Shared cache: s-maxage overrides max-age
-        var cc_shared = wing::new_cache_control();
+        var cc_shared = wing::CacheControl { .. };
         cc_shared.flags |= wing::CC_HAS_MAX_AGE | wing::CC_HAS_S_MAXAGE;
         cc_shared.max_age = 3600;
         cc_shared.s_maxage = 7200;
@@ -183,14 +183,14 @@ fn test_freshness_math_and_clock_skew(t: core::T&) {
         sub.assert_eq(lt_priv, 3600, "max-age used in private cache");
 
         // 4. Immutable directive
-        var cc_imm = wing::new_cache_control();
+        var cc_imm = wing::CacheControl { .. };
         cc_imm.flags |= wing::CC_IMMUTABLE;
         let lt_imm = wing::compute_freshness_lifetime(cc_imm, hdrs, ts, false, 10, 86400);
         sub.assert_eq(lt_imm, 86400, "immutable sets configured minimum ttl");
 
         // 5. Heuristic 10% of (Date - Last-Modified) for 200 OK
-        var cc_empty = wing::new_cache_control();
-        var hdrs_lm = wing::new_header_map();
+        var cc_empty = wing::CacheControl { .. };
+        var hdrs_lm = wing::HeaderMap { .. };
         hdrs_lm.status_code = 200;
         wing::append_header(hdrs_lm, "Date", "Sun, 06 Nov 1994 09:00:00 GMT");
         wing::append_header(hdrs_lm, "Last-Modified", "Sun, 06 Nov 1994 08:00:00 GMT"); // 3600s delta
@@ -249,7 +249,7 @@ fn test_etag_validators(t: core::T&) {
 
 fn test_vary_normalization_and_cve_2026_93750(t: core::T&) {
     t.run("CVE-2026-93750: Vary: * Unconditional Hard Rejection") { sub =>
-        var req_hdrs = wing::new_header_map();
+        var req_hdrs = wing::HeaderMap { .. };
         wing::append_header(req_hdrs, "Accept-Encoding", "gzip");
 
         // Vary: *
@@ -265,24 +265,24 @@ fn test_vary_normalization_and_cve_2026_93750(t: core::T&) {
 
     t.run("Vary Matching with Simultaneous Absence Invariant") { sub =>
         // Request 1: has Accept-Encoding: gzip, but NO User-Agent
-        var req_1 = wing::new_header_map();
+        var req_1 = wing::HeaderMap { .. };
         wing::append_header(req_1, "Accept-Encoding", "gzip");
 
         let snap = wing::record_vary_snapshot("Accept-Encoding, User-Agent", req_1);
 
         // Incoming Request 2: matches Accept-Encoding: gzip, User-Agent is also absent -> PASS
-        var req_2 = wing::new_header_map();
+        var req_2 = wing::HeaderMap { .. };
         wing::append_header(req_2, "Accept-Encoding", "gzip");
         sub.assert_true(wing::matches_vary(snap, req_2), "Matches when User-Agent is simultaneously absent in both requests");
 
         // Incoming Request 3: has User-Agent present -> MUST FAIL simultaneous absence invariant!
-        var req_3 = wing::new_header_map();
+        var req_3 = wing::HeaderMap { .. };
         wing::append_header(req_3, "Accept-Encoding", "gzip");
         wing::append_header(req_3, "User-Agent", "Mozilla/5.0");
         sub.assert_false(wing::matches_vary(snap, req_3), "Fails when header was absent originally but present in incoming request");
 
         // Incoming Request 4: different Accept-Encoding -> FAIL
-        var req_4 = wing::new_header_map();
+        var req_4 = wing::HeaderMap { .. };
         wing::append_header(req_4, "Accept-Encoding", "br");
         sub.assert_false(wing::matches_vary(snap, req_4), "Fails on Accept-Encoding mismatch");
     };
@@ -297,15 +297,15 @@ fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
         let t_now = core::unix(500, 0); // Well past expiration (stale)
         let ts = wing::new_cache_timestamps(t_req, t_resp, t_now);
 
-        var hdrs = wing::new_header_map();
+        var hdrs = wing::HeaderMap { .. };
 
         // Client request with max-stale=1000
-        var req_cc = wing::new_cache_control();
+        var req_cc = wing::CacheControl { .. };
         req_cc.flags |= wing::CC_HAS_MAX_STALE;
         req_cc.max_stale = 1000;
 
         // Case A: Ordinary stale response (max-age=100) -> max-stale ALLOWED
-        var cc_normal = wing::new_cache_control();
+        var cc_normal = wing::CacheControl { .. };
         cc_normal.flags |= wing::CC_HAS_MAX_AGE;
         cc_normal.max_age = 100;
         let m_normal = wing::evaluate_freshness(cc_normal, req_cc, hdrs, ts);
@@ -313,14 +313,14 @@ fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
         sub.assert_true(m_normal.stale_allowed, "Normal stale response allowed by max-stale");
 
         // Case B: must-revalidate present -> max-stale STRICTLY BLOCKED!
-        var cc_must_rev = wing::new_cache_control();
+        var cc_must_rev = wing::CacheControl { .. };
         cc_must_rev.flags |= wing::CC_HAS_MAX_AGE | wing::CC_MUST_REVALIDATE;
         cc_must_rev.max_age = 100;
         let m_must_rev = wing::evaluate_freshness(cc_must_rev, req_cc, hdrs, ts);
         sub.assert_false(m_must_rev.stale_allowed, "max-stale strictly blocked when must-revalidate is present");
 
         // Case C: s-maxage present -> max-stale STRICTLY BLOCKED!
-        var cc_s_max = wing::new_cache_control();
+        var cc_s_max = wing::CacheControl { .. };
         cc_s_max.flags |= wing::CC_HAS_MAX_AGE | wing::CC_HAS_S_MAXAGE;
         cc_s_max.max_age = 100;
         cc_s_max.s_maxage = 100;
@@ -328,7 +328,7 @@ fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
         sub.assert_false(m_s_max.stale_allowed, "max-stale strictly blocked when s-maxage is present");
 
         // Case D: proxy-revalidate in shared cache -> max-stale STRICTLY BLOCKED!
-        var cc_proxy_rev = wing::new_cache_control();
+        var cc_proxy_rev = wing::CacheControl { .. };
         cc_proxy_rev.flags |= wing::CC_HAS_MAX_AGE | wing::CC_PROXY_REVALIDATE;
         cc_proxy_rev.max_age = 100;
         let m_proxy = wing::evaluate_freshness(cc_proxy_rev, req_cc, hdrs, ts, true);
@@ -353,7 +353,7 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
         sub.assert_true(dec_1.kind == wing::LookupResultKind.Miss, "Initial lookup is Miss");
 
         // 2. Origin returns 200 OK with max-age=3600
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/api/data");
         let h_cc = wing::make_header("Cache-Control", "max-age=3600");
@@ -384,7 +384,7 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
         let t0 = core::unix(1000, 0);
 
         let req = wing::new_get("https://example.com/resource");
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/resource");
         resp.headers.push(wing::make_header("Cache-Control", "max-age=60"));
@@ -403,7 +403,7 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
         sub.assert_bytes_eq(wing::get_header(dec_stale.conditional_headers, "If-None-Match"), "\"tag-abc\"", "If-None-Match built");
 
         // Origin returns 304 Not Modified with fresh Cache-Control: max-age=7200
-        var resp_304 = wing::new_response();
+        var resp_304 = wing::Response { .. };
         resp_304.status_code = 304;
         resp_304.headers.push(wing::make_header("Cache-Control", "max-age=7200"));
         resp_304.headers.push(wing::make_header("X-Fresh-Note", "updated"));
@@ -430,7 +430,7 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
         let t0 = core::unix(1000, 0);
 
         let req = wing::new_get("https://example.com/freshness-test");
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/freshness-test");
         resp.headers.push(wing::make_header("Cache-Control", "max-age=60"));
@@ -446,7 +446,7 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
         sub.assert_true(dec_stale.kind == wing::LookupResultKind.Revalidate, "Lookup at t=4600 requires revalidation");
 
         // Origin responds 304 with max-age=60 at t=4601
-        var resp_304 = wing::new_response();
+        var resp_304 = wing::Response { .. };
         resp_304.status_code = 304;
         resp_304.headers.push(wing::make_header("Cache-Control", "max-age=60"));
 
@@ -485,7 +485,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
         let req = wing::new_get("https://example.com/custom");
 
         // Unknown status code 299 with must-understand -> MUST NOT be stored
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 299;
         resp.headers.push(wing::make_header("Cache-Control", "max-age=3600, must-understand"));
         resp.body.append("data");
@@ -502,7 +502,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // Store a HEAD response
         var req_head = wing::new_request("HEAD", "https://example.com/asset.png");
-        var resp_head = wing::new_response();
+        var resp_head = wing::Response { .. };
         resp_head.status_code = 200;
         resp_head.effective_url.append("https://example.com/asset.png");
         resp_head.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
@@ -525,7 +525,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // Store two cached entries for same origin
         let req1 = wing::new_get("https://example.com/api/items");
-        var resp1 = wing::new_response();
+        var resp1 = wing::Response { .. };
         resp1.status_code = 200;
         resp1.effective_url.append("https://example.com/api/items");
         resp1.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
@@ -533,7 +533,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
         wing::on_response(cache, req1, resp1, ts);
 
         let req2 = wing::new_get("https://example.com/api/items/42");
-        var resp2 = wing::new_response();
+        var resp2 = wing::Response { .. };
         resp2.status_code = 200;
         resp2.effective_url.append("https://example.com/api/items/42");
         resp2.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
@@ -544,7 +544,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // Succeeded POST request to /api/items with Location: https://example.com/api/items/42
         var post_req = wing::new_post("https://example.com/api/items");
-        var post_resp = wing::new_response();
+        var post_resp = wing::Response { .. };
         post_resp.status_code = 201; // Created
         post_resp.headers.push(wing::make_header("Location", "https://example.com/api/items/42"));
 
@@ -567,7 +567,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         let req_child = wing::new_get("https://example.com/posts/42");
-        var resp_child = wing::new_response();
+        var resp_child = wing::Response { .. };
         resp_child.status_code = 200;
         resp_child.effective_url.append("https://example.com/posts/42");
         resp_child.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
@@ -576,7 +576,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // POST to https://example.com/posts with relative Location: /posts/42
         var post_req = wing::new_post("https://example.com/posts");
-        var post_resp = wing::new_response();
+        var post_resp = wing::Response { .. };
         post_resp.status_code = 201;
         post_resp.headers.push(wing::make_header("Location", "/posts/42"));
 
@@ -593,20 +593,20 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // 500 without Cache-Control -> MUST NOT store
         let req1 = wing::new_get("https://example.com/err500");
-        var resp_500 = wing::new_response();
+        var resp_500 = wing::Response { .. };
         resp_500.status_code = 500;
         let dec1 = wing::on_response(cache, req1, resp_500, ts);
         sub.assert_eq(dec1.kind, wing::ResponseDecisionKind.PassThrough, "500 without freshness not stored");
 
         // 403 without Cache-Control -> MUST NOT store
         let req2 = wing::new_get("https://example.com/err403");
-        var resp_403 = wing::new_response();
+        var resp_403 = wing::Response { .. };
         resp_403.status_code = 403;
         let dec2 = wing::on_response(cache, req2, resp_403, ts);
         sub.assert_eq(dec2.kind, wing::ResponseDecisionKind.PassThrough, "403 without freshness not stored");
 
         // 403 WITH max-age=60 -> STORE
-        var resp_403_fresh = wing::new_response();
+        var resp_403_fresh = wing::Response { .. };
         resp_403_fresh.status_code = 403;
         resp_403_fresh.headers.push(wing::make_header("Cache-Control", "max-age=60"));
         let dec3 = wing::on_response(cache, req2, resp_403_fresh, ts);
@@ -620,25 +620,25 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // Store 3 items
         let req_a = wing::new_get("https://example.com/a");
-        var resp_a = wing::new_response();
+        var resp_a = wing::Response { .. };
         resp_a.status_code = 200;
         resp_a.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
         wing::on_response(cache, req_a, resp_a, ts);
 
         let req_b = wing::new_get("https://example.com/b");
-        var resp_b = wing::new_response();
+        var resp_b = wing::Response { .. };
         resp_b.status_code = 200;
         resp_b.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
         wing::on_response(cache, req_b, resp_b, ts);
 
         let req_c = wing::new_get("https://example.com/c");
-        var resp_c = wing::new_response();
+        var resp_c = wing::Response { .. };
         resp_c.status_code = 200;
         resp_c.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
         wing::on_response(cache, req_c, resp_c, ts);
 
         // Updating entry B should NOT corrupt LRU pointers
-        var resp_b_v2 = wing::new_response();
+        var resp_b_v2 = wing::Response { .. };
         resp_b_v2.status_code = 200;
         resp_b_v2.headers.push(wing::make_header("Cache-Control", "max-age=7200"));
         wing::on_response(cache, req_b, resp_b_v2, ts);
@@ -649,13 +649,13 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
         // Invalidate entry A via POST
         var post_a = wing::new_post("https://example.com/a");
-        var post_a_resp = wing::new_response();
+        var post_a_resp = wing::Response { .. };
         post_a_resp.status_code = 200;
         wing::on_response(cache, post_a, post_a_resp, ts);
 
         // Store new entry D: should reuse invalidated slot of entry A
         let req_d = wing::new_get("https://example.com/d");
-        var resp_d = wing::new_response();
+        var resp_d = wing::Response { .. };
         resp_d.status_code = 200;
         resp_d.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
         let dec_d = wing::on_response(cache, req_d, resp_d, ts);
@@ -670,7 +670,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         let req = wing::new_get("https://example.com/qualified-no-cache");
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.headers.push(wing::make_header("Cache-Control", "max-age=3600, no-cache=\"X-Sensitive\""));
         resp.headers.push(wing::make_header("X-Sensitive", "secret"));
@@ -696,7 +696,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
 fn test_request_collapsing(t: core::T&) {
     t.run("Single-Flight Writers Collapsing Concurrent Requests") { sub =>
-        var writers = wing::new_cache_writers();
+        var writers = wing::CacheWriters { .. };
         let key = "GET https://example.com/resource";
 
         // First caller arrives -> becomes leader
@@ -716,7 +716,7 @@ fn test_request_collapsing(t: core::T&) {
     };
 
     t.run("Multiple Parallel In-Flight Requests Slot Stability") { sub =>
-        var writers = wing::new_cache_writers();
+        var writers = wing::CacheWriters { .. };
         let key_a = "GET https://example.com/res-a";
         let key_b = "GET https://example.com/res-b";
 
@@ -757,7 +757,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
 
         // Populate cache with max-age=60, stale-while-revalidate=120
         var req = wing::new_request("GET", "https://api.example.com/feed");
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         wing::set_header(resp, "cache-control", "max-age=60, stale-while-revalidate=120");
         wing::set_header(resp, "etag", "\"feed-v1\"");
@@ -795,7 +795,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
 
         // Populate cache with max-age=60, stale-if-error=300
         var req = wing::new_request("GET", "https://api.example.com/prices");
-        var resp = wing::new_response();
+        var resp = wing::Response { .. };
         resp.status_code = 200;
         wing::set_header(resp, "cache-control", "max-age=60, stale-if-error=300");
         wing::set_header(resp, "etag", "\"prices-v1\"");
@@ -811,7 +811,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
         sub.assert_eq(dec_req.kind, wing::LookupResultKind.Revalidate, "Entry requires revalidation");
 
         // Origin fails and returns 503 Service Unavailable
-        var resp_503 = wing::new_response();
+        var resp_503 = wing::Response { .. };
         resp_503.status_code = 503;
         var ts_503 = wing::CacheTimestamps {
             request_time: t_reval,
@@ -1348,7 +1348,7 @@ fn test_response_signatures(t: core::T&) {
         };
         wing::set_header(req, "X-Client-Id", "client-999");
 
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         res.set_header("Content-Type", "application/json");
         res.set_header("ETag", "\"v42-alpha\"");

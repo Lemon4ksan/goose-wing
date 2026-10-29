@@ -109,10 +109,6 @@ struct TopicTree {
     total_messages_delivered: u64 = 0,
 }
 
-fn new_topic_tree() -> TopicTree {
-    return TopicTree { .. };
-}
-
 // Validates an MQTT topic filter per OASIS MQTT v5.0 §4.7.1.2:
 // - Multi-level wildcard '#' must be the last character and either standalone ("#") or preceded by '/' ("sport/#").
 // - Single-level wildcard '+' must occupy an entire level (must be preceded by '/' or start-of-filter, and followed by '/' or end-of-filter).
@@ -817,11 +813,6 @@ fn publish_batch(
 
     tree.total_publishes += 1;
     return queued;
-}
-
-// Returns the number of currently active messages in the outgoing palette.
-fn palette_size(tree: const TopicTree&) -> i32 {
-    return tree.palette_len;
 }
 
 // Returns the number of subscribers currently queued for batch drainage.

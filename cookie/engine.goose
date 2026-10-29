@@ -49,10 +49,6 @@ struct CanonicalCookieJar {
 }
 
 // Factory constructor for CanonicalCookieJar.
-fn new_canonical_cookie_jar() -> CanonicalCookieJar {
-    return CanonicalCookieJar { .. };
-}
-
 // Adds a new cookie directly to the jar in-place and returns a reference for fluent chaining:
 // jar.add("session_id", "val").with_domain("example.com").with_secure();
 fn add(jar: CanonicalCookieJar&, name: const u8[:], val: const u8[:]) -> CanonicalCookie& {

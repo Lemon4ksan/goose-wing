@@ -68,10 +68,6 @@ struct Supervisor {
     statuses: WorkerStatus[>..] = [],
 }
 
-fn new_supervisor() -> Supervisor {
-    return Supervisor { .. };
-}
-
 fn new_supervisor(spec: SupervisorSpec) -> Supervisor {
     return Supervisor { spec: spec, .. };
 }

@@ -27,7 +27,7 @@ fn main() {
     }
 
     // 2. Prepare incoming client request headers
-    var client_headers = wing::new_header_map();
+    var client_headers = wing::HeaderMap { .. };
     wing::append_header(client_headers, "Host", "api.example.com");
     wing::append_header(client_headers, "User-Agent", "Mozilla/5.0 (Client Gateway Test)");
     wing::append_header(client_headers, "Connection", "keep-alive, X-Debug-Trace");

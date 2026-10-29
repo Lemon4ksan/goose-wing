@@ -273,10 +273,10 @@ fn test_grpc_status_and_metadata(t: core::T&) {
     };
 
     t.run("4. Status Extraction from Response Headers and Trailers") { sub =>
-        var headers = wing::new_header_map();
+        var headers = wing::HeaderMap { .. };
         headers.status_code = 200;
 
-        var trailers = wing::new_header_map();
+        var trailers = wing::HeaderMap { .. };
         wing::append_header(trailers, "grpc-status", "0");
         wing::append_header(trailers, "grpc-message", "OK");
 
@@ -289,12 +289,12 @@ fn test_grpc_status_and_metadata(t: core::T&) {
         sub.assert_bytes_eq(msg[..], "OK", "Message is OK");
 
         // Trailers-only response (immediate error in headers)
-        var err_headers = wing::new_header_map();
+        var err_headers = wing::HeaderMap { .. };
         err_headers.status_code = 200;
         wing::append_header(err_headers, "grpc-status", "7");
         wing::append_header(err_headers, "grpc-message", "permission%20denied");
 
-        var empty_trailers = wing::new_header_map();
+        var empty_trailers = wing::HeaderMap { .. };
         let has_err = wing::extract_grpc_status(err_headers, empty_trailers, status, msg);
         sub.assert_true(has_err, "Status extracted from headers in Trailers-Only case");
         sub.assert_eq(status, wing::GrpcStatusCode.PermissionDenied, "Status is PermissionDenied");
@@ -388,7 +388,7 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
         var cfg = wing::new_grpc_call_config("helloworld.Greeter", "SayHello");
         cfg.timeout_ms = 5000;
 
-        var h2_headers = wing::new_header_map();
+        var h2_headers = wing::HeaderMap { .. };
         wing::build_grpc_request_headers(cfg, "grpc.example.com", "https", h2_headers);
 
         sub.assert_bytes_eq(wing::get_header(h2_headers, ":method"), "POST", ":method is POST");
@@ -419,7 +419,7 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
         client.mock_routes.push(mock);
 
         var cfg = wing::new_grpc_call_config("order.OrderService", "CreateOrder");
-        var resp = wing::new_grpc_response();
+        var resp = wing::GrpcResponse { .. };
         let ok_rpc = wing::grpc_unary_call(client, "https://api.example.com", cfg, "order_request_data", resp);
 
         sub.assert_true(ok_rpc, "Unary RPC succeeded");
@@ -429,7 +429,7 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
     };
 
     t.run("3. Response Trailer Status Extraction") { sub =>
-        var res = wing::new_response();
+        var res = wing::Response { .. };
         res.status_code = 200;
         res.headers.push(wing::make_header("content-type", "application/grpc+proto"));
         wing::add_trailer(res, wing::HEADER_GRPC_STATUS, "7");
