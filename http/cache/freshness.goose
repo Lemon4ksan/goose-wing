@@ -342,7 +342,9 @@ fn evaluate_freshness(
         );
     }
 
-    let force_rev = is_no_cache(resp_cc) || is_no_cache(req_cc);
+    let resp_force_rev = is_no_cache(resp_cc) && (resp_cc.no_cache_overflow || resp_cc.no_cache_fields.len == 0);
+    let req_force_rev = is_no_cache(req_cc);
+    let force_rev = resp_force_rev || req_force_rev;
     metrics.requires_revalidation = force_rev || (!metrics.is_fresh && !metrics.stale_allowed);
 
     return metrics;

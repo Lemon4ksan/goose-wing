@@ -421,6 +421,44 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
         // Cache-Control was updated to 7200
         sub.assert_eq(cache.entries[dec_stale.entry_idx].cc.max_age, 7200, "Cache-Control updated to max-age=7200");
     };
+
+    t.run("304 Not Modified Freshening Keeps Entry Fresh on Subsequent Lookup") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+
+        let req = wing::new_get("https://example.com/freshness-test");
+        var resp = wing::new_response();
+        resp.status_code = 200;
+        resp.effective_url.append("https://example.com/freshness-test");
+        resp.headers.push(wing::make_header("Cache-Control", "max-age=60"));
+        resp.headers.push(wing::make_header("ETag", "\"etag-1\""));
+        resp.body.append("content v1");
+
+        let ts0 = wing::new_cache_timestamps(t0, t0, t0);
+        wing::on_response(cache, req, resp, ts0);
+
+        // At t=4600 (1 hour later), cache is stale
+        let t_stale = core::unix(4600, 0);
+        let dec_stale = wing::lookup(cache, req, t_stale);
+        sub.assert_true(dec_stale.kind == wing::LookupResultKind.Revalidate, "Lookup at t=4600 requires revalidation");
+
+        // Origin responds 304 with max-age=60 at t=4601
+        var resp_304 = wing::new_response();
+        resp_304.status_code = 304;
+        resp_304.headers.push(wing::make_header("Cache-Control", "max-age=60"));
+
+        let t_resp_304 = core::unix(4601, 0);
+        let ts_304 = wing::new_cache_timestamps(t_stale, t_resp_304, t_resp_304);
+        let dec_freshen = wing::on_response(cache, req, resp_304, ts_304, dec_stale.entry_idx);
+        sub.assert_true(dec_freshen.kind == wing::ResponseDecisionKind.FreshenAndReturn, "Freshened cached entry");
+
+        // 1 second later at t=4602: MUST BE FRESH HIT!
+        let t_subsequent = core::unix(4602, 0);
+        let dec_sub = wing::lookup(cache, req, t_subsequent);
+        sub.assert_true(dec_sub.kind == wing::LookupResultKind.Hit, "Subsequent lookup after 304 merge must be Hit, not expired");
+        let age_sub = wing::header(dec_sub.cached_response, "Age");
+        sub.assert_bytes_eq(age_sub, "2", "Age is 2s (1s network delay + 1s resident), not hours");
+    };
 }
 
 // ---- 7. RFC 9111 Special Behaviors & Cascade Invalidation -------------------
@@ -519,6 +557,136 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
         sub.assert_true(cache.entries[0].security_zeroed, "Entry 1 security_zeroed");
         sub.assert_true(cache.entries[1].security_zeroed, "Entry 2 security_zeroed");
     };
+
+    t.run("Relative Location and Content-Location Invalidation") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+        let ts = wing::new_cache_timestamps(t0, t0, t0);
+
+        let req_child = wing::new_get("https://example.com/posts/42");
+        var resp_child = wing::new_response();
+        resp_child.status_code = 200;
+        resp_child.effective_url.append("https://example.com/posts/42");
+        resp_child.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        resp_child.body.append("{\"id\": 42}");
+        wing::on_response(cache, req_child, resp_child, ts);
+
+        // POST to https://example.com/posts with relative Location: /posts/42
+        var post_req = wing::new_post("https://example.com/posts");
+        var post_resp = wing::new_response();
+        post_resp.status_code = 201;
+        post_resp.headers.push(wing::make_header("Location", "/posts/42"));
+
+        wing::on_response(cache, post_req, post_resp, ts);
+
+        let dec_check = wing::lookup(cache, req_child, t0);
+        sub.assert_true(dec_check.kind == wing::LookupResultKind.Miss, "Relative Location /posts/42 resolved and invalidated");
+    };
+
+    t.run("Non-Heuristic Status Codes Require Explicit Freshness (RFC 9111 §3)") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+        let ts = wing::new_cache_timestamps(t0, t0, t0);
+
+        // 500 without Cache-Control -> MUST NOT store
+        let req1 = wing::new_get("https://example.com/err500");
+        var resp_500 = wing::new_response();
+        resp_500.status_code = 500;
+        let dec1 = wing::on_response(cache, req1, resp_500, ts);
+        sub.assert_eq(dec1.kind, wing::ResponseDecisionKind.PassThrough, "500 without freshness not stored");
+
+        // 403 without Cache-Control -> MUST NOT store
+        let req2 = wing::new_get("https://example.com/err403");
+        var resp_403 = wing::new_response();
+        resp_403.status_code = 403;
+        let dec2 = wing::on_response(cache, req2, resp_403, ts);
+        sub.assert_eq(dec2.kind, wing::ResponseDecisionKind.PassThrough, "403 without freshness not stored");
+
+        // 403 WITH max-age=60 -> STORE
+        var resp_403_fresh = wing::new_response();
+        resp_403_fresh.status_code = 403;
+        resp_403_fresh.headers.push(wing::make_header("Cache-Control", "max-age=60"));
+        let dec3 = wing::on_response(cache, req2, resp_403_fresh, ts);
+        sub.assert_eq(dec3.kind, wing::ResponseDecisionKind.StoreAndReturn, "403 with explicit max-age is stored");
+    };
+
+    t.run("LRU Integrity and Slot Reuse After Invalidation") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+        let ts = wing::new_cache_timestamps(t0, t0, t0);
+
+        // Store 3 items
+        let req_a = wing::new_get("https://example.com/a");
+        var resp_a = wing::new_response();
+        resp_a.status_code = 200;
+        resp_a.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::on_response(cache, req_a, resp_a, ts);
+
+        let req_b = wing::new_get("https://example.com/b");
+        var resp_b = wing::new_response();
+        resp_b.status_code = 200;
+        resp_b.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::on_response(cache, req_b, resp_b, ts);
+
+        let req_c = wing::new_get("https://example.com/c");
+        var resp_c = wing::new_response();
+        resp_c.status_code = 200;
+        resp_c.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::on_response(cache, req_c, resp_c, ts);
+
+        // Updating entry B should NOT corrupt LRU pointers
+        var resp_b_v2 = wing::new_response();
+        resp_b_v2.status_code = 200;
+        resp_b_v2.headers.push(wing::make_header("Cache-Control", "max-age=7200"));
+        wing::on_response(cache, req_b, resp_b_v2, ts);
+
+        sub.assert_true(cache.lru_head >= 0, "LRU head valid");
+        sub.assert_true(cache.lru_tail >= 0, "LRU tail valid");
+        sub.assert_eq(cache.lru_head as i64, 1, "Updated entry B is at LRU head");
+
+        // Invalidate entry A via POST
+        var post_a = wing::new_post("https://example.com/a");
+        var post_a_resp = wing::new_response();
+        post_a_resp.status_code = 200;
+        wing::on_response(cache, post_a, post_a_resp, ts);
+
+        // Store new entry D: should reuse invalidated slot of entry A
+        let req_d = wing::new_get("https://example.com/d");
+        var resp_d = wing::new_response();
+        resp_d.status_code = 200;
+        resp_d.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        let dec_d = wing::on_response(cache, req_d, resp_d, ts);
+
+        sub.assert_eq(dec_d.entry_idx, 0, "Invalidated slot 0 reused for new entry D");
+        sub.assert_true(cache.entries[0].is_valid, "Reused slot is valid");
+    };
+
+    t.run("Qualified no-cache=\"Field\" Does Not Force Revalidation of Stored Response") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+        let ts = wing::new_cache_timestamps(t0, t0, t0);
+
+        let req = wing::new_get("https://example.com/qualified-no-cache");
+        var resp = wing::new_response();
+        resp.status_code = 200;
+        resp.headers.push(wing::make_header("Cache-Control", "max-age=3600, no-cache=\"X-Sensitive\""));
+        resp.headers.push(wing::make_header("X-Sensitive", "secret"));
+        resp.headers.push(wing::make_header("X-Public", "hello"));
+        resp.body.append("content");
+
+        wing::on_response(cache, req, resp, ts);
+
+        // Sensitive header was stripped
+        let stripped_sens = wing::get_header(cache.entries[0].headers, "X-Sensitive");
+        sub.assert_bytes_eq(stripped_sens, "", "X-Sensitive was stripped from cache");
+        let kept_pub = wing::get_header(cache.entries[0].headers, "X-Public");
+        sub.assert_bytes_eq(kept_pub, "hello", "X-Public was kept");
+
+        // Next request within 10s: MUST BE HIT (not forced revalidation)
+        let t1 = core::unix(1010, 0);
+        let dec = wing::lookup(cache, req, t1);
+        sub.assert_eq(dec.kind, wing::LookupResultKind.Hit, "Qualified no-cache allows Hit within freshness lifetime");
+    };
 }
 
 // ---- 8. Single-Flight / Request Collapsing ---------------------------------
@@ -541,7 +709,37 @@ fn test_request_collapsing(t: core::T&) {
 
         // Finish in-flight transaction
         wing::finish_writer(writers, flight_idx_1);
-        sub.assert_eq(writers.flights.len, 0, "Flight cleanly finished and removed");
+        sub.assert_false(writers.flights[flight_idx_1].is_active, "Flight cleanly finished and slot deactivated");
+    };
+
+    t.run("Multiple Parallel In-Flight Requests Slot Stability") { sub =>
+        var writers = wing::new_cache_writers();
+        let key_a = "GET https://example.com/res-a";
+        let key_b = "GET https://example.com/res-b";
+
+        let is_lead_a, idx_a = wing::start_writer_or_join(writers, key_a);
+        let is_lead_b, idx_b = wing::start_writer_or_join(writers, key_b);
+        sub.assert_true(is_lead_a && is_lead_b, "Both are leaders for different keys");
+        sub.assert_eq(idx_a, 0, "Flight A is at index 0");
+        sub.assert_eq(idx_b, 1, "Flight B is at index 1");
+
+        // Complete flight A first
+        wing::finish_writer(writers, idx_a);
+        sub.assert_false(writers.flights[idx_a].is_active, "Flight A slot deactivated");
+
+        // Flight B must still be active and its index preserved at 1!
+        sub.assert_true(writers.flights[idx_b].is_active, "Flight B still active at index 1");
+        sub.assert_bytes_eq(writers.flights[idx_b].key[..], key_b, "Flight B key preserved");
+
+        // Complete flight B
+        wing::finish_writer(writers, idx_b);
+        sub.assert_false(writers.flights[idx_b].is_active, "Flight B slot deactivated");
+
+        // New flight reuses slot 0 without growing past capacity
+        let key_c = "GET https://example.com/res-c";
+        let is_lead_c, idx_c = wing::start_writer_or_join(writers, key_c);
+        sub.assert_true(is_lead_c, "Leader for key C");
+        sub.assert_eq(idx_c, 0, "Slot 0 reused for new flight");
     };
 }
 
@@ -621,6 +819,16 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
         let dec_err = wing::on_response(cache, req, resp_503, ts_503, dec_req.entry_idx);
         sub.assert_eq(dec_err.kind, wing::ResponseDecisionKind.FreshenAndReturn, "503 triggers stale-if-error fallback");
         sub.assert_bytes_eq(dec_err.response.body[..], "Price: $42.00", "Cached prices returned to caller despite 503");
+
+        // At t = +500s, beyond max-age (60) + stale-if-error (300) = 360s
+        let t_expired_err = core::unix(1700000500, 0);
+        var ts_500 = wing::CacheTimestamps {
+            request_time: t_expired_err,
+            response_time: t_expired_err,
+            ..
+        };
+        let dec_exp_err = wing::on_response(cache, req, resp_503, ts_500, dec_req.entry_idx);
+        sub.assert_eq(dec_exp_err.kind, wing::ResponseDecisionKind.PassThrough, "503 after stale-if-error window passes through error");
     };
 }
 
