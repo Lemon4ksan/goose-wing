@@ -42,6 +42,9 @@ Releases are automated via Google's `release-please` workflow on `main`.
     # or: just check
     ```
   - Core libraries (`core.goose`, `wing.goose`) and all test suites must pass without errors or warnings.
+  - **Zero unverified assertions (Empirical evidence over declarations)**: Never declare that code
+    compiles, passes tests, or satisfies invariants without having executed the corresponding command
+    in the session and observing exit code 0.
 - **Hardware enforcement gate (`goose-lit`)**:
   - Every modified or refactored `.goose` file must pass the hardware complexity gate before finalizing changes:
     ```bash
@@ -138,6 +141,22 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
 - **Hot path performance**:
   - Maintain zero dynamic memory allocation on wire parsing and serialization paths.
   - Use bounded inline buffers, slices (`u8[:]`), SWAR word scanners, and SIMD primitives.
+- **Goose language hallucination traps**:
+  - **Zero integer literal type suffixes**: Goose does not support type suffixes on literals (`1u64`,
+    `0xFFu32`, `0i64` fail to parse). Write bare numbers (`1`, `0xFF`) or cast explicitly when required:
+    `(0xFF as u64)`. Hex literals in `0x8000000000000000..0xFFFFFFFFFFFFFFFF` receive type `u64`; cast
+    explicitly `(lit as! i64)` if assigning to `i64`.
+  - **Zero heap allocators or object graphs**: Goose has no `malloc`, `free`, `new`, `make`, `Box`, `Vec`,
+    or garbage collection. Never invent heap allocation calls. Memory lives on the stack or compiler-sized
+    data stacks (`reusable var pool: T[>..] = []`).
+  - **Zero OOP traits, interfaces, or virtual dispatch**: Goose has no `trait`, `impl`, `interface`,
+    virtual methods, or dynamic dispatch. Dynamic polymorphism is algebraic (`enum` + `match`).
+  - **Zero imaginary standard library imports**: Goose standard library is compact. Never import Go
+    (`strings`, `bytes`, `io`), Rust (`std::collections`, `anyhow`), or nonexistent packages. Use only
+    valid Goose modules (`std`, `core`, `core::*`, `http`, etc.).
+  - **Zero dynamic arrays (`u8[>..]`) in mid-struct definitions**: Struct fields of growable array type
+    (`u8[>..]`) may only appear as the final field of a struct, never followed by other fields. Prefer
+    bounded arrays (`u8[..N]`).
 
 ## Strict code clarity and anti-bloat invariants
 
@@ -239,6 +258,13 @@ Engineering rules ensuring protocol compliance and resilience against real-world
      3. Check every string search: is a structured reader used for JSON, headers, and URLs?
      4. Check enum dispatchers: do unknown strings return `Unknown` / `false` instead of defaulting to a valid variant?
      5. Check buffer sizing: are enterprise-sized tokens (up to 4096 bytes) supported?
+4. **Anti-hallucination RFC citation contract**:
+   - Always cite the active authoritative RFC specification (e.g. RFC 9110 / RFC 9112 over obsolete
+     RFC 7230 / RFC 7231 / RFC 2616).
+   - **Never invent or extrapolate section numbers**: Do not guess section numbers (such as `RFC 9112 §3.1.2`
+     or `RFC 7692 §8.1`). Validate section numbers against the local RFC corpus in `.gemini/rfc/` or execute
+     `python scripts/audit_rfc_citations.py`. If a specific section number cannot be verified, cite the
+     RFC title or top-level RFC number only.
 
 ## Code formatting, geometry, and G-CRAP harmony
 
