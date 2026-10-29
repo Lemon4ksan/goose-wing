@@ -103,9 +103,8 @@ jobs:
           fi
 
       - name: Run LIT verification suites
-        shell: pwsh
         run: |
-          powershell -ExecutionPolicy Bypass -File ./scripts/test_lit.ps1 -Jobs 4
+          python3 scripts/test_lit.py --jobs 4
 
       - name: Enforce G-CRAP hardware complexity gate and ratchet
         run: |

@@ -53,9 +53,8 @@ DEFAULT_OUT_DIR = ROOT_DIR / "reports" / "autobahn"
 def ensure_server_binary(force_rebuild: bool = False) -> Path:
     """Ensures the native Goose Autobahn server is compiled and ready."""
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and SERVER_EXE.is_file():
-        if SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
-            return SERVER_EXE
+    if not force_rebuild and SERVER_EXE.is_file() and SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
+        return SERVER_EXE
 
     print(f"[*] Building native Autobahn WebSocket server: {SERVER_SRC} -> {SERVER_EXE}...")
     env = os.environ.copy()

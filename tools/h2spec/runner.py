@@ -50,9 +50,8 @@ H2SPEC_EXE = BIN_DIR / ("h2spec.exe" if sys.platform == "win32" else "h2spec")
 def ensure_server_binary(force_rebuild: bool = False) -> Path:
     """Ensures the native Goose HTTP/2 server is compiled and ready."""
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and SERVER_EXE.is_file():
-        if SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
-            return SERVER_EXE
+    if not force_rebuild and SERVER_EXE.is_file() and SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
+        return SERVER_EXE
 
     print(f"[*] Building native HTTP/2 h2spec server: {SERVER_SRC} -> {SERVER_EXE}...")
     env = os.environ.copy()

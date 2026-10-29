@@ -60,9 +60,8 @@ WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 def ensure_server_binary(force_rebuild: bool = False) -> Path:
     """Ensures the native Goose Chaos server is compiled and ready."""
     SERVER_EXE.parent.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and SERVER_EXE.is_file():
-        if SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
-            return SERVER_EXE
+    if not force_rebuild and SERVER_EXE.is_file() and SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
+        return SERVER_EXE
 
     print(f"[*] Building native Goose Chaos server: {SERVER_SRC} -> {SERVER_EXE}...")
     env = os.environ.copy()

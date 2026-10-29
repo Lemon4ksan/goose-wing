@@ -151,12 +151,16 @@ Comparison against [`aoni/fast`](https://github.com/lemon4ksan/aoni), a zero-all
 
 The test suite validates RFC compliance, Chromium edge cases, cryptographic vectors, and CVE defenses:
 
-```powershell
+```bash
 # Typecheck the entire library and all test suites
-powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
+python tools/test_runner.py --check-only
+# or via just:
+just check
 
 # Run all test suites in parallel with native execution
-powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1
+python tools/test_runner.py
+# or via just:
+just test
 ```
 
 ```text

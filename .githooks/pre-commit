@@ -19,9 +19,14 @@ if [ -z "$STAGED_FILES" ]; then
 fi
 
 # Enforce code clarity, formatting geometry, anti-aliasing, and parser contracts
-if command -v powershell >/dev/null 2>&1 && [ -f "scripts/lint_invariants.ps1" ]; then
+PYTHON_BIN="python3"
+if ! command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+fi
+
+if command -v "$PYTHON_BIN" >/dev/null 2>&1 && [ -f "scripts/lint_invariants.py" ]; then
     echo "[pre-commit] Checking code clarity, geometry, and anti-aliasing invariants..."
-    if ! powershell -ExecutionPolicy Bypass -File scripts/lint_invariants.ps1 -Staged -StrictExamples; then
+    if ! "$PYTHON_BIN" scripts/lint_invariants.py --staged --strict-examples; then
         exit 1
     fi
 fi

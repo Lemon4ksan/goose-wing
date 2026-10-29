@@ -64,13 +64,17 @@ Verified on every CI run via [tests/lit/verify_wire_benchmarks.goose](file:///te
 
 To reproduce the full suite on native hardware:
 
-```powershell
+```bash
 # Pipelined scenario (5 seconds)
-powershell -ExecutionPolicy Bypass -File .\scripts\bench_matrix.ps1 -Scenario pipelined -Duration 5
+just bench pipelined 5
+# or directly via python:
+python tools/bench-vs-uwebsockets/run_cli.py --scenario pipelined --duration 5
 
 # Full comparative matrix across all scenarios
-powershell -ExecutionPolicy Bypass -File .\scripts\bench_matrix.ps1 -Scenario all -Duration 10
+just bench all 10
+# or directly via python:
+python tools/bench-vs-uwebsockets/run_cli.py --scenario all --duration 10
 
 # Microbenchmark latency budget validation
-..\goose-lit\bin\goose-lit.exe tests\lit\verify_wire_benchmarks.goose
+goose-lit tests/lit/verify_wire_benchmarks.goose
 ```

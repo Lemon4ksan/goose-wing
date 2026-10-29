@@ -45,12 +45,12 @@ def generate_repl_regression(
         use_page_edge: If True, uses :pkt_edge to place bytes flush against Wasm 64KB page boundary.
     """
     lines: list[str] = [
-        f"# -----------------------------------------------------------------------------",
+        "# -----------------------------------------------------------------------------",
         f"# Regression Vector: {name}",
     ]
     if description:
         lines.append(f"# Context: {description}")
-    lines.append(f"# -----------------------------------------------------------------------------")
+    lines.append("# -----------------------------------------------------------------------------")
 
     if isinstance(payload, bytes):
         payload_str = bytes_to_hex_str(payload)

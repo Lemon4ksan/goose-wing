@@ -14,6 +14,26 @@ check:
 test pattern="*":
     python tools/test_runner.py --pattern "{{pattern}}"
 
+# Run native Goose LIT test suites matching a pattern
+lit pattern="*":
+    python scripts/test_lit.py "{{pattern}}"
+
+# Enforce hardware complexity gate on a file
+gate target max_gcrap="25":
+    python scripts/verify_wing_gate.py "{{target}}" --max-gcrap {{max_gcrap}}
+
+# Verify G-CRAP regression ratchet against baseline
+ratchet:
+    python scripts/ratchet.py
+
+# Run static G-CRAP complexity radar
+crap target="." threshold="25.0":
+    goose-lit crap "{{target}}" --threshold {{threshold}}
+
+# Enforce strict code clarity and anti-bloat invariants
+lint-invariants target="":
+    python scripts/lint_invariants.py {{ if target == "" { "--staged" } else { "--target-file " + target } }} --strict-examples
+
 # Format all Goose source files
 fmt:
     goose format .
@@ -32,7 +52,19 @@ license-fix:
 
 # Lint Python tooling with Ruff
 lint:
-    ruff check tools/
+    ruff check tools/ scripts/
+
+# Configure git to use repository pre-commit hooks
+install-hooks:
+    git config core.hooksPath .githooks
+
+# Run Autobahn WebSocket conformance testsuite
+autobahn *args:
+    python tools/autobahn.py {{args}}
+
+# Run performance benchmark matrix
+bench scenario="pipelined" duration="5":
+    python tools/bench-vs-uwebsockets/run_cli.py --scenario {{scenario}} --duration {{duration}}
 
 # Compile C acceleration shims with strict warning flags
 [unix]

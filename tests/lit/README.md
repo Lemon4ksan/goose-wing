@@ -165,21 +165,25 @@ fn main() {
 ## Running LIT tests
 
 ### Run all suites in parallel
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test_lit.ps1 -Jobs 8
+```bash
+python scripts/test_lit.py --jobs 8
+# or via just:
+just lit
 ```
 
 ### Run a specific pattern
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test_lit.ps1 -Pattern "*h2*"
+```bash
+python scripts/test_lit.py "*h2*"
+# or via just:
+just lit "*h2*"
 ```
 
 ### Verbose tracing
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test_lit.ps1 -Pattern "verify_wire_framing" -Verbose
+```bash
+python scripts/test_lit.py "verify_wire_framing" --verbose
 ```
 
 ### Integrated with full test runner
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -Lit -Jobs 8
+```bash
+python tools/test_runner.py --lit --jobs 8
 ```

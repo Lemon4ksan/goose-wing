@@ -15,7 +15,7 @@ Fixes # (issue)
 
 ## Checklist
 
-- [ ] I have run `python tools/test_runner.py --check-only` (or `powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly`) - all 81 test suites pass cleanly
+- [ ] I have run `python tools/test_runner.py --check-only` (or `just check`) - all test suites pass cleanly
 - [ ] I have formatted modified files with `goose format` (`goose format --check .` reports 0 unformatted files)
 - [ ] Any extern declarations follow Goose §7.10 (`extern fn name(...) -> ret = "symbol";`)
 - [ ] Zero dynamic memory allocation invariant is maintained on wire parsing and serialization hot paths

@@ -37,28 +37,31 @@ Releases are automated via Google's `release-please` workflow on `main`.
   - These suites only run in a PR if `.goose` files (`**/*.goose`) have been modified.
 - **Local verification**:
   - Always run the full typecheck validation before opening a PR or finalizing a commit:
-    ```powershell
-    powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
+    ```bash
+    python tools/test_runner.py --check-only
+    # or: just check
     ```
   - Core libraries (`core.goose`, `wing.goose`) and all test suites must pass without errors or warnings.
 - **Hardware enforcement gate (`goose-lit`)**:
   - Every modified or refactored `.goose` file must pass the hardware complexity gate before finalizing changes:
-    ```powershell
-    powershell -ExecutionPolicy Bypass -File .\scripts\verify_wing_gate.ps1 -TargetFile "<path\to\file.goose>" -MaxGCrap 25
+    ```bash
+    python scripts/verify_wing_gate.py "<path/to/file.goose>" --max-gcrap 25
+    # or: just gate "<path/to/file.goose>" 25
     ```
-  - Pass `-LitScript "<path\to\test.goose>"` and `-TestSuite "<path\to\test.goose>"` to combine static complexity gating with native LIT assertions and unit tests in a single run.
+  - Pass `--lit-script "<path/to/test.goose>"` and `--test-suite "<path/to/test.goose>"` to combine static complexity gating with native LIT assertions and unit tests in a single run.
   - If the script exits with code 1 (`GATE REJECTED`), functions must be flattened with `guard` clauses, bounds checks proved, and cyclomatic depth reduced until all functions pass.
 
 ## Goose LIT and native wire verification workflow
 
 Use `..\goose-lit\bin\goose-lit.exe` to run LLVM-style `// RUN:` test directives, FileCheck output matching, and static G-CRAP complexity analysis without Wasm virtualization:
 
-```powershell
+```bash
 # Execute a single native LIT test suite
 ..\goose-lit\bin\goose-lit.exe tests\lit\verify_wire_framing.goose
 
 # Run all native LIT verification suites in parallel
-powershell -ExecutionPolicy Bypass -File .\scripts\test_lit.ps1
+python scripts/test_lit.py
+# or: just lit
 
 # Hardware complexity gate analysis
 ..\goose-lit\bin\goose-lit.exe gate auth/jwks.goose 25 --cov 0.85
@@ -138,7 +141,7 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
 
 ## Strict code clarity and anti-bloat invariants
 
-Enforced statically via `scripts/lint_invariants.ps1` and `.githooks/pre-commit`:
+Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
 
 1. **Zero meaningless function aliases (No pass-through wrappers)**:
    - **No pass-through function aliases**: Never declare a function `fn foo(a, b) { return bar(a, b); }` that merely forwards its identical argument list to another function under a different name without adding validation, constants, or state transitions. Call the canonical function directly.

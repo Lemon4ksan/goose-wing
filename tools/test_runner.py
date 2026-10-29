@@ -101,6 +101,9 @@ def main() -> int:
         "-k", "--keep-binaries", action="store_true", help="Keep generated test executables on disk"
     )
     parser.add_argument(
+        "--lit", action="store_true", help="Execute Goose LIT native verification suites"
+    )
+    parser.add_argument(
         "-j",
         "--jobs",
         type=int,
@@ -300,7 +303,18 @@ def main() -> int:
     )
     print(cyan(f"Timing:  Build: {dt_build:.2f}s | Run: {dt_run:.2f}s | Total: {total_time:.2f}s"))
 
-    return 1 if failed_count > 0 else 0
+    if failed_count > 0:
+        return 1
+
+    if args.lit:
+        print(f"\n{yellow('[4/4] Executing Goose LIT native verification suites...')}")
+        lit_script = root_dir / "scripts" / "test_lit.py"
+        res = subprocess.run([sys.executable, str(lit_script), "--jobs", str(args.jobs)])
+        if res.returncode != 0:
+            print(red("Error: Goose LIT verification suites failed."))
+            return 1
+
+    return 0
 
 
 if __name__ == "__main__":

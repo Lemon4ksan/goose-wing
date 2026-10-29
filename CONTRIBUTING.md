@@ -36,7 +36,7 @@ goose-wing/
 ├── net/              # TCP, UDP, Happy Eyeballs v2, SOCKS5, PROXY protocol, DNS, and poller
 ├── quic/             # RFC 9000 packet codec, ACK frames, and BBR v1/v2 congestion control
 ├── realtime/         # RFC 6455 WebSocket, TopicTree pub/sub, SSE, and WebTransport
-├── scripts/          # PowerShell and batch scripts for testing and license management
+├── scripts/          # Invariant linter, G-CRAP ratchet, and LIT test runners
 ├── security/         # CryptoJar, Fetch Metadata CSRF, CORS, GCRA rate limiter, and Privacy Pass
 ├── server/           # Radix router, Tako v2 pool, HTTP/1.1 pipeline, and H2 multiplexer
 ├── shim/             # C11 shims for Windows RIO, Linux io_uring, kqueue, AF_XDP, and SIMD
@@ -55,10 +55,10 @@ Verify that `core.goose`, `wing.goose`, examples, and all test suites pass typec
 python tools/test_runner.py --check-only
 ```
 
-Or on Windows PowerShell:
+Or using `just`:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -CheckOnly
+```bash
+just check
 ```
 
 ### 2. Running specific test suites
