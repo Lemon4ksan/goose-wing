@@ -14,6 +14,7 @@ import .jwt;
 // ---- 1. JWK / JWKS Key Models -----------------------------------------------
 
 enum JwkKeyType {
+    Unknown,
     OKP,    // Octet Key Pair (RFC 8037: Ed25519)
     Oct,    // Symmetric Octet Sequence (RFC 7518: HMAC)
 }
@@ -22,6 +23,7 @@ fn jwk_key_type_to_string(kty: JwkKeyType) -> const u8[:] {
     return match kty {
         OKP => "OKP",
         Oct => "oct",
+        Unknown => "unknown",
     };
 }
 
@@ -33,18 +35,19 @@ fn jwk_key_type_to_string(kty: JwkKeyType) -> const u8[:] {
 fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
     if s == "OKP" { return JwkKeyType.OKP; }
     if s == "oct" { return JwkKeyType.Oct; }
-    return JwkKeyType.OKP;
+    return JwkKeyType.Unknown;
 }
 
 struct JwksKey {
-    kty: JwkKeyType = JwkKeyType.OKP,
+    kty: JwkKeyType = JwkKeyType.Unknown,
     crv: u8[..32] = "",
     alg: JwtAlg = JwtAlg.None,
-    use: u8[..16] = "sig",
+    use: u8[..16] = "",
     kid: u8[..64] = [],
     symmetric_key: u8[..64] = [],
     public_key: u8[32] = [0; 32],
     valid: bool = false,
+    has_invalid_type: bool = false,
 }
 
 struct Jwks {
@@ -213,6 +216,9 @@ fn parse_jwk_key_core_type(
     if field_key == "kty" {
         let kty_str = json::read_string(reader, scratch);
         key_item.kty = parse_jwk_key_type(kty_str);
+        if key_item.kty == JwkKeyType.Unknown {
+            key_item.has_invalid_type = true;
+        }
         return true;
     }
     if field_key == "crv" {
@@ -220,6 +226,9 @@ fn parse_jwk_key_core_type(
         if crv_str.len <= key_item.crv.cap {
             key_item.crv.clear();
             key_item.crv.append(crv_str);
+        } else {
+            key_item.crv.clear();
+            key_item.has_invalid_type = true;
         }
         return true;
     }
@@ -247,6 +256,9 @@ fn parse_jwk_key_ident(
         if use_str.len <= key_item.use.cap {
             key_item.use.clear();
             key_item.use.append(use_str);
+        } else {
+            key_item.use.clear();
+            key_item.has_invalid_type = true;
         }
         return true;
     }
@@ -255,6 +267,9 @@ fn parse_jwk_key_ident(
         if kid_str.len <= key_item.kid.cap {
             key_item.kid.clear();
             key_item.kid.append(kid_str);
+        } else {
+            key_item.kid.clear();
+            key_item.has_invalid_type = true;
         }
         return true;
     }
@@ -278,6 +293,8 @@ fn parse_jwk_key_material(
         if x_str.len <= raw_x.cap {
             raw_x.clear();
             raw_x.append(x_str);
+        } else {
+            raw_x.clear();
         }
         return true;
     }
@@ -286,6 +303,8 @@ fn parse_jwk_key_material(
         if k_str.len <= raw_k.cap {
             raw_k.clear();
             raw_k.append(k_str);
+        } else {
+            raw_k.clear();
         }
         return true;
     }
@@ -367,9 +386,11 @@ fn finalize_jwk_key(
     raw_k: const u8[:],
     key_item: JwksKey&,
 ) -> bool {
+    guard !key_item.has_invalid_type else { return false; }
     return match key_item.kty {
         OKP => finalize_okp_key(raw_x, key_item),
         Oct => finalize_oct_key(raw_k, key_item),
+        Unknown => false,
     };
 }
 
@@ -437,6 +458,7 @@ fn is_kty_alg_compatible(kty: JwkKeyType, alg: JwtAlg) -> bool {
     return match kty {
         OKP => alg == JwtAlg.EdDSA,
         Oct => alg != JwtAlg.EdDSA && alg != JwtAlg.None,
+        Unknown => false,
     };
 }
 
@@ -507,6 +529,7 @@ fn dispatch_jwks_verification(
     return match key.kty {
         OKP => verify_jwks_okp(token, key, options, now_unix_sec, out_header, out_claims),
         Oct => verify_jwks_oct(token, key, options, now_unix_sec, out_header, out_claims),
+        Unknown => JwtError.KeyNotFound,
     };
 }
 

@@ -43,11 +43,31 @@ for file in $STAGED_FILES; do
 done
 
 echo "[pre-commit] Running typecheck..."
+if ! goose check core.goose >/dev/null 2>&1; then
+    echo "[pre-commit] ERROR: Typecheck failed for core.goose"
+    goose check core.goose
+    exit 1
+fi
+
 if ! goose check wing.goose >/dev/null 2>&1; then
     echo "[pre-commit] ERROR: Typecheck failed for wing.goose"
     goose check wing.goose
     exit 1
 fi
+
+for file in $STAGED_FILES; do
+    case "$file" in
+        tests/*.goose|examples/*.goose)
+            if [ -f "$file" ]; then
+                if ! goose check "$file" >/dev/null 2>&1; then
+                    echo "[pre-commit] ERROR: Typecheck failed for $file"
+                    goose check "$file"
+                    exit 1
+                fi
+            fi
+            ;;
+    esac
+done
 
 LIT_BIN="../goose-lit/bin/goose-lit"
 if [ -f "../goose-lit/bin/goose-lit.exe" ]; then

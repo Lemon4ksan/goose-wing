@@ -2,20 +2,42 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // RFC 7616 HTTP Digest Access Authentication (obsoleting RFC 2617).
-// Supports SHA-256 (mandatory by RFC 7616 Section 3.4) and MD5 legacy fallback.
+// Supports SHA-256 (mandatory by RFC 7616 Section 3.4), SHA-512-256 (high security), and MD5 legacy fallback.
 // Handles challenge parsing, HA1/HA2 derivation, qop=auth/auth-int, and Authorization header generation.
 namespace wing;
 
 import std;
 import core from "..";
 
-// ---- 1. Digest Models -------------------------------------------------------
+// ---- 1. RFC 7616 & RFC 2617 Protocol Constants ------------------------------
+
+const DIGEST_ALGO_MD5: const u8[:] = "MD5";
+const DIGEST_ALGO_MD5_SESS: const u8[:] = "MD5-sess";
+const DIGEST_ALGO_SHA256: const u8[:] = "SHA-256";
+const DIGEST_ALGO_SHA256_SESS: const u8[:] = "SHA-256-sess";
+const DIGEST_ALGO_SHA512_256: const u8[:] = "SHA-512-256";
+const DIGEST_ALGO_SHA512_256_SESS: const u8[:] = "SHA-512-256-sess";
+
+const DIGEST_QOP_AUTH: const u8[:] = "auth";
+const DIGEST_QOP_AUTH_INT: const u8[:] = "auth-int";
+
+// Validates whether the algorithm is officially supported by RFC 7616 / RFC 2617.
+inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
+    return eq_ascii_fold(algo, DIGEST_ALGO_MD5)
+        || eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
+        || eq_ascii_fold(algo, DIGEST_ALGO_SHA256)
+        || eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
+        || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256)
+        || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
+}
+
+// ---- 2. Digest Models -------------------------------------------------------
 
 struct DigestChallenge {
     realm: u8[..128] = [],
     nonce: u8[..128] = [],
-    algorithm: u8[..32] = "SHA-256",
-    qop: u8[..32] = "auth",
+    algorithm: u8[..32] = "MD5", // RFC 7616 §3.4 default when omitted
+    qop: u8[..32] = [],          // Empty by default (RFC 2069 legacy mode when omitted)
     opaque: u8[..128] = [],
     domain: u8[..128] = [],
     stale: bool = false,
@@ -28,20 +50,10 @@ struct DigestCredentials {
     password: u8[..128] = [],
 }
 
-// ---- 2. Challenge Parsing (RFC 7616 Section 3.3) -----------------------------
-
-// Advances `idx` past any leading whitespace, commas, or line breaks (RFC 7616 §3.3).
-//
-// Example:
-//   raw = ",  realm=\"api\"", idx = 0
-//   advances `idx` to 3 (pointing to 'r')
-fn skip_whitespace_and_commas(raw: const u8[:], idx: i64&) {
-    let rem = raw[idx..].trim_start_bytes(" \t,\r\n");
-    idx = raw.len - rem.len;
-}
+// ---- 3. Challenge Parsing (RFC 7616 Section 3.3) -----------------------------
 
 inline fn is_digest_key_char(b: u8) -> bool {
-    return b != '=' && b != ' ' && b != '\t';
+    return b != '=' && b != ' ' && b != '\t' && b != ',' && b != '\r' && b != '\n' && b != '"';
 }
 
 // Extracts a digest parameter key up to '=', space, or tab (RFC 7616 §3.3).
@@ -124,7 +136,7 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
     if rem[0] == '"' {
         var tmp: u8[..128] = [];
         let consumed, ok = parse_quoted_param(rem, tmp);
-        guard ok else { return false; }
+        guard ok && tmp.len <= out_val.cap else { return false; }
         out_val.clear();
         out_val.append(tmp[..]);
         idx = new_idx + consumed;
@@ -199,6 +211,16 @@ fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]
     }
 }
 
+// Advances `idx` past any leading whitespace, commas, or line breaks (RFC 7616 §3.3).
+//
+// Example:
+//   raw = ",  realm=\"api\"", idx = 0
+//   advances `idx` to 3 (pointing to 'r')
+fn skip_whitespace_and_commas(raw: const u8[:], idx: i64&) {
+    let rem = raw[idx..].trim_start_bytes(" \t,\r\n");
+    idx = raw.len - rem.len;
+}
+
 // Advances `idx` past optional leading "Digest " scheme token (RFC 7616 §3.3).
 //
 // Example:
@@ -236,22 +258,28 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         apply_digest_param(chal, key, val[..]);
     }
 
-    chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0);
+    chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 && is_supported_digest_algo(chal.algorithm[..]));
     return chal, chal.valid;
 }
 
-// ---- 3. Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
+// ---- 4. Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
 
-// Computes MD5 or SHA-256 digest and returns formatted hexadecimal string.
+// Computes MD5, SHA-256, or SHA-512-256 digest and returns formatted hexadecimal string.
 //
 // Example:
 //   algorithm = "SHA-256", data = "hello"
 //   returns: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
     var out_hex: u8[..64] = [];
-    if eq_ascii_fold(algorithm, "md5") || eq_ascii_fold(algorithm, "md5-sess") {
+    if eq_ascii_fold(algorithm, DIGEST_ALGO_MD5) || eq_ascii_fold(algorithm, DIGEST_ALGO_MD5_SESS) {
         let md = core::md5(data);
         for b in md {
+            core::format_u8_hex(b, out_hex);
+        }
+    } else if eq_ascii_fold(algorithm, DIGEST_ALGO_SHA512_256)
+        || eq_ascii_fold(algorithm, DIGEST_ALGO_SHA512_256_SESS) {
+        let sh = core::sha512_256(data);
+        for b in sh {
             core::format_u8_hex(b, out_hex);
         }
     } else {
@@ -286,7 +314,9 @@ fn calculate_digest_ha1(
 
     var ha1 = digest_hash_hex(algo, a1[..]);
 
-    if eq_ascii_fold(algo, "sha-256-sess") || eq_ascii_fold(algo, "md5-sess") {
+    if eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
+        || eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
+        || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS) {
         var a1_sess: u8[>..] = [];
         a1_sess.append(ha1[..]);
         a1_sess.push(':');
@@ -379,6 +409,19 @@ fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
     return true;
 }
 
+// Appends a digest URI without backslash escaping (RFC 7616 §3.4 / RFC 3986).
+// Rejects control characters (\r, \n, \0) and unencoded quotes to prevent header breakout.
+fn append_digest_uri<B>(out: B&, uri: const u8[:]) -> bool {
+    for b in uri {
+        if b == '\r' || b == '\n' || b == '\0' || b == '"' {
+            return false;
+        }
+        guard out.len < out.cap else { return false; }
+        out.push(b);
+    }
+    return true;
+}
+
 // Appends mandatory RFC 7616 Digest key-value pairs (username, realm, nonce, uri, response).
 fn serialize_digest_core_kv<B>(
     out: B&,
@@ -400,7 +443,7 @@ fn serialize_digest_core_kv<B>(
     guard append_escaped_digest_param(out, nonce) else { return false; }
     guard out.len + 8 <= out.cap else { return false; }
     out.append("\", uri=\"");
-    guard append_escaped_digest_param(out, uri) else { return false; }
+    guard append_digest_uri(out, uri) else { return false; }
     guard out.len + 13 + algo.len + 13 + response_hex.len + 1 <= out.cap else { return false; }
     out.append("\", algorithm=");
     out.append(algo);
@@ -489,21 +532,12 @@ fn serialize_digest_auth<B>(
     return true;
 }
 
-inline fn build_user_realm(username: const u8[:], realm: const u8[:], out: u8[..256]&) -> bool {
-    guard username.len + 1 + realm.len <= out.cap else { return false; }
-    out.append(username);
-    out.push(':');
-    out.append(realm);
-    return true;
-}
-
-fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]) -> u8[..128] {
-    var out: u8[..128] = [];
-    var user_realm: u8[..256] = [];
-    guard build_user_realm(username, realm, user_realm) else { return out; }
-    let h = digest_hash_hex(algo, user_realm[..]);
-    out.append(h[..]);
-    return out;
+fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]) -> u8[..64] {
+    var user_realm: u8[>..] = [];
+    user_realm.append(username);
+    user_realm.push(':');
+    user_realm.append(realm);
+    return digest_hash_hex(algo, user_realm[..]);
 }
 
 fn resolve_digest_user(
@@ -513,7 +547,10 @@ fn resolve_digest_user(
     algo: const u8[:],
 ) -> u8[..128] {
     if userhash {
-        return resolve_userhash(username, realm, algo);
+        let h = resolve_userhash(username, realm, algo);
+        var out: u8[..128] = [];
+        for b in h { out.push(b); }
+        return out;
     }
     var out_user: u8[..128] = [];
     guard username.len <= out_user.cap else { return out_user; }
@@ -521,12 +558,60 @@ fn resolve_digest_user(
     return out_user;
 }
 
+inline fn is_qop_token_char(b: u8) -> bool {
+    return b != ',' && b != '"' && b != ' ' && b != '\t';
+}
+
+// Scans the byte length of a single qop token up to comma, quote, or whitespace (RFC 7616 §3.3).
+//
+// Example:
+//   s = "auth-int, auth"
+//   returns: 8 ("auth-int")
+fn scan_qop_token_len(s: const u8[:]) -> i64 {
+    var n: i64 = 0;
+    while n < s.len && is_qop_token_char(s[n]) {
+        n += 1;
+    }
+    return n;
+}
+
+fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
+    var idx: i64 = 0;
+    while idx < raw_qop.len {
+        let rem = raw_qop[idx..].trim_start_bytes(" \t,\"");
+        guard rem.len > 0 else { break; }
+        let tok_len = scan_qop_token_len(rem);
+        let tok = rem[..tok_len];
+        if eq_ascii_fold(tok, target) {
+            return true;
+        }
+        let advance = (raw_qop.len - rem.len) + tok_len;
+        idx = advance;
+        while idx < raw_qop.len && raw_qop[idx] != ',' {
+            idx += 1;
+        }
+        if idx < raw_qop.len && raw_qop[idx] == ',' {
+            idx += 1;
+        }
+    }
+    return false;
+}
+
+// Resolves active qop preference from challenge qop parameter (RFC 7616 §3.4).
+// Prefers "auth" over "auth-int" if both are offered. Returns empty if neither offered.
+//
+// Example:
+//   raw_qop = "auth, auth-int"
+//   returns: "auth"
 inline fn resolve_active_qop(raw_qop: const u8[:]) -> const u8[:] {
     guard raw_qop.len > 0 else { return ""; }
-    if eq_ascii_fold(raw_qop, "auth-int") {
-        return "auth-int";
+    if qop_list_has_token(raw_qop, DIGEST_QOP_AUTH) {
+        return DIGEST_QOP_AUTH;
     }
-    return "auth";
+    if qop_list_has_token(raw_qop, DIGEST_QOP_AUTH_INT) {
+        return DIGEST_QOP_AUTH_INT;
+    }
+    return "";
 }
 
 // Computes RFC 7616 Digest response and outputs the full Authorization header.
@@ -534,7 +619,7 @@ inline fn resolve_active_qop(raw_qop: const u8[:]) -> const u8[:] {
 // Example:
 //   challenge = { realm: "test", nonce: "abc", algorithm: "SHA-256" }, creds = { username: "user", password: "pwd" }
 //   returns: true, out_header = "Digest username=\"user\", realm=\"test\", ..."
-fn compute_digest_response(
+fn compute_digest_response<B>(
     challenge: const DigestChallenge&,
     creds: const DigestCredentials&,
     method: const u8[:],
@@ -542,11 +627,13 @@ fn compute_digest_response(
     nc: u32,
     cnonce: const u8[:],
     body: const u8[:],
-    out_header: u8[..512]&,
+    out_header: B&,
 ) -> bool {
     guard challenge.valid else { return false; }
 
     let algo = challenge.algorithm[..];
+    guard is_supported_digest_algo(algo) else { return false; }
+
     let active_qop = resolve_active_qop(challenge.qop[..]);
     let is_auth_int = (active_qop.len == 8);
 
@@ -554,7 +641,7 @@ fn compute_digest_response(
 
     let ha1_hex = calculate_digest_ha1(
         algo,
-        effective_user[..],
+        creds.username[..],
         challenge.realm[..],
         creds.password[..],
         challenge.nonce[..],

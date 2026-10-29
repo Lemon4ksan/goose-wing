@@ -52,17 +52,28 @@ struct EdPoint {
     T: Fe10 = Fe10 { .. },
 }
 
-inline fn ed25519_point_identity() -> EdPoint {
-    return EdPoint { .. };
-}
-
 // Generator base point B = (Bx, By) on Ed25519
 fn ed25519_base_point() -> EdPoint {
     return EdPoint {
-        X: Fe10 { v: [52811034, 25909283, 16144682, 17082669, 27570973, 30858332, 40966398, 8378388, 20764389, 8758491] },
-        Y: Fe10 { v: [40265304, 26843545, 13421772, 20132659, 26843545, 6710886, 53687091, 13421772, 40265318, 26843545] },
+        X: Fe10 {
+            v: [
+                52811034, 25909283, 16144682, 17082669, 27570973,
+                30858332, 40966398, 8378388, 20764389, 8758491,
+            ],
+        },
+        Y: Fe10 {
+            v: [
+                40265304, 26843545, 13421772, 20132659, 26843545,
+                6710886, 53687091, 13421772, 40265318, 26843545,
+            ],
+        },
         Z: Fe10 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-        T: Fe10 { v: [28827043, 27438313, 39759291, 244362, 8635006, 11264893, 19351346, 13413597, 16611511, 27139452] },
+        T: Fe10 {
+            v: [
+                28827043, 27438313, 39759291, 244362, 8635006,
+                11264893, 19351346, 13413597, 16611511, 27139452,
+            ],
+        },
     };
 }
 
@@ -72,12 +83,8 @@ inline fn fe_one() -> Fe10 {
     return Fe10 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
 }
 
-inline fn fe_zero() -> Fe10 {
-    return Fe10 { .. };
-}
-
 inline fn fe_neg(a: Fe10) -> Fe10 {
-    return fe_sub(fe_zero(), a);
+    return fe_sub(Fe10 { .. }, a);
 }
 
 // Equality check for normalized field elements
@@ -260,7 +267,7 @@ fn ed25519_point_decompress(b: const u8[32]&, out: EdPoint&) -> bool {
         x = fe_neg(x);
     }
 
-    if fe_eq(x, fe_zero()) && x_0 == 1 {
+    if fe_eq(x, Fe10 { .. }) && x_0 == 1 {
         return false;
     }
 
@@ -273,7 +280,7 @@ fn ed25519_point_decompress(b: const u8[32]&, out: EdPoint&) -> bool {
 
 // Constant-time scalar multiplication: [scalar] * point.
 fn ed25519_scalarmult_ct(p: EdPoint, scalar: const u8[32]&) -> EdPoint {
-    var r = ed25519_point_identity();
+    var r = EdPoint { .. };
     var base = p;
     for byte_idx in 32 {
         let b = scalar[byte_idx];
@@ -289,7 +296,7 @@ fn ed25519_scalarmult_ct(p: EdPoint, scalar: const u8[32]&) -> EdPoint {
 
 // Variable-time scalar multiplication for verification: [scalar] * point.
 fn ed25519_scalarmult_vartime(p: EdPoint, scalar: const u8[32]&) -> EdPoint {
-    var r = ed25519_point_identity();
+    var r = EdPoint { .. };
     var base = p;
     for byte_idx in 32 {
         let b = scalar[byte_idx];
@@ -319,6 +326,20 @@ fn sc_is_ge_l(s: const u8[32]&) -> bool {
         if s[idx] < ED25519_L_BYTES[idx] { return false; }
     }
     return true; // equal to L
+}
+
+inline fn sc_sub_l_inplace(rem: u64[4]&) {
+    var borrow: u64 = 0;
+    for j in 4 {
+        let term = ED25519_L_WORDS[j] + borrow;
+        if rem[j] < term || (borrow == 1 && term == 0) {
+            rem[j] = (rem[j] + (0xFFFFFFFFFFFFFFFF - term)) + 1;
+            borrow = 1;
+        } else {
+            rem[j] -= term;
+            borrow = 0;
+        }
+    }
 }
 
 // Reduces 64-byte little-endian integer modulo L using bitwise division.
@@ -352,19 +373,8 @@ fn sc_reduce(in64: const u8[64]&) -> u8[32] {
             }
         }
 
-        // Subtract L if rem >= L
         if ge {
-            var borrow: u64 = 0;
-            for j in 4 {
-                let term = ED25519_L_WORDS[j] + borrow;
-                if rem[j] < term || (borrow == 1 && term == 0) {
-                    rem[j] = (rem[j] + (0xFFFFFFFFFFFFFFFF - term)) + 1;
-                    borrow = 1;
-                } else {
-                    rem[j] -= term;
-                    borrow = 0;
-                }
-            }
+            sc_sub_l_inplace(rem);
         }
     }
 
@@ -475,7 +485,7 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     let a_bytes = ed25519_point_compress(a_pt);
 
     // Nonce r = SHA-512(prefix || message) mod L
-    var r_ctx = sha512_init();
+    var r_ctx = Sha512Ctx { .. };
     sha512_update(r_ctx, prefix[..]);
     sha512_update(r_ctx, message);
     let r_hash = sha512_final(r_ctx);
@@ -486,7 +496,7 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     let r_bytes = ed25519_point_compress(r_pt);
 
     // Challenge k = SHA-512(R || A || message) mod L
-    var k_ctx = sha512_init();
+    var k_ctx = Sha512Ctx { .. };
     sha512_update(k_ctx, r_bytes[..]);
     sha512_update(k_ctx, a_bytes[..]);
     sha512_update(k_ctx, message);
@@ -506,7 +516,7 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
 }
 
 fn compute_ed25519_challenge(r_bytes: const u8[32], public_key: const u8[32], message: const u8[:]) -> u8[32] {
-    var k_ctx = sha512_init();
+    var k_ctx = Sha512Ctx { .. };
     sha512_update(k_ctx, r_bytes[..]);
     sha512_update(k_ctx, public_key[..]);
     sha512_update(k_ctx, message);

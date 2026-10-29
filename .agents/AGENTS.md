@@ -202,6 +202,43 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
    - Never compare cryptographic digests, MAC tags, HMAC outputs, or verification tokens using `==` or `!=`. Always use `core::ct_eq_bytes` to prevent timing side-channel leaks.
 12. **Zero dynamic vectors (`u8[>..]`) in wire frame structs**:
    - Protocol frame, packet, and header structs (`*Frame`, `*Packet`, `*Header`) must store payload views as zero-copy slices (`const u8[:]`) or stack-bounded arrays (`u8[..N]`), never heap-allocated `u8[>..]` vectors.
+13. **Zero silent buffer drops (Strict capacity overflow error propagation)**:
+   - Never write `if len <= cap { push(); }` or `if len < cap { ... }` without an explicit rejection or error-handling branch (`else { return ..., false; }` or emitting a protocol error).
+   - Silently ignoring input when a buffer's capacity is exceeded masks protocol violations, corrupts security invariants, and creates silent state de-synchronization.
+   - Invert checks into top-level guards at function ingress: `guard buf.len + item.len <= buf.cap else { return ..., false; }`.
+14. **Prohibition of naive substring searching on structured wire formats**:
+   - Never use `index_of_slice`, `contains`, `index_of_byte`, or manual slice splitting to extract fields from JSON, URLs, HTTP headers, query strings, or cookies in security-critical parsers.
+   - Always use canonical streaming readers (`json::reader`, `url::`, `HeaderMap`) to defend against escaped quote bugs, duplicate key smuggling, and injection attacks.
+15. **Zero fallback to valid enum variants in parsers (Exhaustive enum parsing)**:
+   - Parsers converting wire strings to enums (`parse_*_type`, `str_to_*`, `parse_alg`) must return `(Enum, bool)` or define an explicit `Enum.Unknown` or `Enum.Invalid` variant.
+   - Never map unrecognized values, unsupported algorithms, or wildcard `_` to an operational default (such as returning `OKP` for unknown key types like `"RSA"`, or defaulting unknown hash algorithms to `SHA-256`).
+16. **Stateful entropy in pseudo-random and identifier generators**:
+   - Never declare fixed initial states (`var state: u64 = 0x...`) inside functions generating unique tokens (`jti`, `nonce`, `uuid`).
+   - Generators must either accept a mutable RNG state by reference (`rng: Rng&`), take an external entropy buffer, or mix high-resolution hardware/OS clocks (`clock_ns()`).
+17. **Enterprise-scale buffer limits over toy RFC examples**:
+   - Never allocate miniature stack buffers (`u8[..384]`, `u8[..512]`) for external bearer tokens, access tokens, certificates, or authorization headers based on brief RFC examples.
+   - Use canonical enterprise constants: `const MAX_AUTH_TOKEN_LEN: usize = 4096;`, `const MAX_HEADER_FIELD_LEN: usize = 8192;`.
+
+## Protocol specification fidelity and adversarial testing
+
+Engineering rules ensuring protocol compliance and resilience against real-world edge cases:
+
+1. **RFC Appendix vector conformance**:
+   - Implementations of RFC protocols must verify behavior against official test vectors in the RFC's Appendix.
+   - Intermediate cryptographic digests (such as `HA1`, `HA2`, `response` in RFC 7616 §5, or `ath` in RFC 9449) must match RFC vector values byte-for-byte before a module is approved.
+2. **Mandatory negative and edge fuzzing test vectors**:
+   - Every parser must include explicit negative tests verifying:
+     - *Oversize inputs*: strings exceeding buffer capacity must return explicit errors (`ok == false`), never silent truncation.
+     - *Unknown enum variants*: unrecognized algorithms or key types must fail parsing.
+     - *Injection payloads*: escaped quotes (`\"`), CRLF, and duplicate keys must not confuse parsers.
+     - *Delimiter variations*: comma-separated lists (`qop="auth, auth-int"`) must be tested with varying whitespace, order, and extra tokens.
+3. **Pre-commit adversarial self-audit checklist**:
+   - Before opening a PR or finalizing any feature branch, verify the 5 cardinal LLM bug patterns:
+     1. Check every `len < cap` and `len <= cap`: does every branch reject on overflow?
+     2. Check every PRNG / unique ID generator: does it preserve entropy across invocations?
+     3. Check every string search: is a structured reader used for JSON, headers, and URLs?
+     4. Check enum dispatchers: do unknown strings return `Unknown` / `false` instead of defaulting to a valid variant?
+     5. Check buffer sizing: are enterprise-sized tokens (up to 4096 bytes) supported?
 
 ## Code formatting, geometry, and G-CRAP harmony
 

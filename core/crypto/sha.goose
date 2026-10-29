@@ -27,10 +27,6 @@ struct Sha256Ctx {
     total_len: u64 = 0,
 }
 
-fn sha256_init() -> Sha256Ctx {
-    return Sha256Ctx { .. };
-}
-
 fn sha256_transform(ctx: Sha256Ctx&, chunk: const u8[:]) {
     var w: u32[64] = [0; 64];
     for i in 16 {
@@ -136,7 +132,7 @@ fn sha256_final(ctx: Sha256Ctx&) -> u8[32] {
 }
 
 fn sha256(data: const u8[:]) -> u8[32] {
-    var ctx = sha256_init();
+    var ctx = Sha256Ctx { .. };
     sha256_update(ctx, data);
     return sha256_final(ctx);
 }
@@ -159,12 +155,12 @@ fn hmac_sha256(key: const u8[:], message: const u8[:]) -> u8[32] {
         opad[i] = key_block[i] ^ 0x5c;
     }
 
-    var inner_ctx = sha256_init();
+    var inner_ctx = Sha256Ctx { .. };
     sha256_update(inner_ctx, ipad[..]);
     sha256_update(inner_ctx, message);
     let inner_hash = sha256_final(inner_ctx);
 
-    var outer_ctx = sha256_init();
+    var outer_ctx = Sha256Ctx { .. };
     sha256_update(outer_ctx, opad[..]);
     sha256_update(outer_ctx, inner_hash[..]);
     return sha256_final(outer_ctx);
@@ -288,10 +284,6 @@ struct Sha384Ctx {
     total_len: u64 = 0,
 }
 
-fn sha384_init() -> Sha384Ctx {
-    return Sha384Ctx { .. };
-}
-
 fn sha384_update(ctx: Sha384Ctx&, data: const u8[:]) {
     guard data.len > 0 else { return; }
     ctx.total_len += (data.len as u64) * 8;
@@ -347,7 +339,7 @@ fn sha384_final(ctx: Sha384Ctx&) -> u8[48] {
 }
 
 fn sha384(data: const u8[:]) -> u8[48] {
-    var ctx = sha384_init();
+    var ctx = Sha384Ctx { .. };
     sha384_update(ctx, data);
     return sha384_final(ctx);
 }
@@ -362,10 +354,6 @@ struct Sha512Ctx {
     buf: u8[128] = [0; 128],
     buf_len: i64 = 0,
     total_len: u64 = 0,
-}
-
-fn sha512_init() -> Sha512Ctx {
-    return Sha512Ctx { .. };
 }
 
 fn sha512_update(ctx: Sha512Ctx&, data: const u8[:]) {
@@ -423,9 +411,81 @@ fn sha512_final(ctx: Sha512Ctx&) -> u8[64] {
 }
 
 fn sha512(data: const u8[:]) -> u8[64] {
-    var ctx = sha512_init();
+    var ctx = Sha512Ctx { .. };
     sha512_update(ctx, data);
     return sha512_final(ctx);
+}
+
+// ---- sha-512-256 (fips 180-4) ----------------------------------------------
+
+struct Sha512_256Ctx {
+    h: u64[8] = [
+        0x22312194fc2bf72c, 0x9f555fa3c84c64c2, 0x2393b86b6f53b151, 0x963877195940eabd,
+        0x96283ee2a88effe3, 0xbe5e1e2553863992, 0x2b0199fc2c85b8aa, 0x0eb72ddc81c52ca2,
+    ],
+    buf: u8[128] = [0; 128],
+    buf_len: i64 = 0,
+    total_len: u64 = 0,
+}
+
+fn sha512_256_update(ctx: Sha512_256Ctx&, data: const u8[:]) {
+    guard data.len > 0 else { return; }
+    ctx.total_len += (data.len as u64) * 8;
+    var offset = 0;
+    while offset < data.len {
+        let needed = 128 - ctx.buf_len;
+        let available = data.len - offset;
+        let to_copy = if available < needed { available } else { needed };
+        for i in to_copy {
+            ctx.buf[ctx.buf_len + i] = data[offset + i];
+        }
+        ctx.buf_len += to_copy;
+        offset += to_copy;
+
+        if ctx.buf_len == 128 {
+            sha512_transform(ctx.h, ctx.buf[..]);
+            ctx.buf_len = 0;
+        }
+    }
+}
+
+fn sha512_256_final(ctx: Sha512_256Ctx&) -> u8[32] {
+    ctx.buf[ctx.buf_len] = 0x80;
+    ctx.buf_len += 1;
+
+    if ctx.buf_len > 112 {
+        for i in (128 - ctx.buf_len) {
+            ctx.buf[ctx.buf_len + i] = 0;
+        }
+        sha512_transform(ctx.h, ctx.buf[..]);
+        ctx.buf_len = 0;
+    }
+
+    for i in (112 - ctx.buf_len) {
+        ctx.buf[ctx.buf_len + i] = 0;
+    }
+
+    for i in 8 {
+        ctx.buf[112 + i] = 0;
+    }
+    for i in 8 {
+        ctx.buf[120 + i] = ((ctx.total_len >> ((7 - i) * 8)) & 0xFF) as u8;
+    }
+    sha512_transform(ctx.h, ctx.buf[..]);
+
+    var out: u8[32] = [0; 32];
+    for i in 4 {
+        for j in 8 {
+            out[i * 8 + j] = ((ctx.h[i] >> ((7 - j) * 8)) & 0xFF) as u8;
+        }
+    }
+    return out;
+}
+
+fn sha512_256(data: const u8[:]) -> u8[32] {
+    var ctx = Sha512_256Ctx { .. };
+    sha512_256_update(ctx, data);
+    return sha512_256_final(ctx);
 }
 
 // ---- hmac-sha512 (rfc 2104 / rfc 4231) -------------------------------------
@@ -446,12 +506,12 @@ fn hmac_sha512(key: const u8[:], message: const u8[:]) -> u8[64] {
         opad[i] = key_block[i] ^ 0x5c;
     }
 
-    var inner_ctx = sha512_init();
+    var inner_ctx = Sha512Ctx { .. };
     sha512_update(inner_ctx, ipad[..]);
     sha512_update(inner_ctx, message);
     let inner_hash = sha512_final(inner_ctx);
 
-    var outer_ctx = sha512_init();
+    var outer_ctx = Sha512Ctx { .. };
     sha512_update(outer_ctx, opad[..]);
     sha512_update(outer_ctx, inner_hash[..]);
     return sha512_final(outer_ctx);
@@ -475,12 +535,12 @@ fn hmac_sha384(key: const u8[:], message: const u8[:]) -> u8[48] {
         opad[i] = key_block[i] ^ 0x5c;
     }
 
-    var inner_ctx = sha384_init();
+    var inner_ctx = Sha384Ctx { .. };
     sha384_update(inner_ctx, ipad[..]);
     sha384_update(inner_ctx, message);
     let inner_hash = sha384_final(inner_ctx);
 
-    var outer_ctx = sha384_init();
+    var outer_ctx = Sha384Ctx { .. };
     sha384_update(outer_ctx, opad[..]);
     sha384_update(outer_ctx, inner_hash[..]);
     return sha384_final(outer_ctx);
@@ -503,9 +563,10 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
     guard n <= 255 && out.len >= length else { return false; }
     var t: u8[32] = [0; 32];
     var out_off: i64 = 0;
+    var msg: u8[>..] = [];
 
     for i in 1..n + 1 {
-        var msg: u8[>..] = [];
+        msg.clear();
         if i > 1 {
             msg.append(t[..]);
         }
@@ -526,9 +587,10 @@ fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: 
     guard n <= 255 && out.len >= length else { return false; }
     var t: u8[48] = [0; 48];
     var out_off: i64 = 0;
+    var msg: u8[>..] = [];
 
     for i in 1..n + 1 {
-        var msg: u8[>..] = [];
+        msg.clear();
         if i > 1 {
             msg.append(t[..]);
         }

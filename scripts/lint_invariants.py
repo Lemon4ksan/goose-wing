@@ -575,6 +575,119 @@ def main() -> int:
                         )
                         violations += 1
 
+            # Rule 13: Zero silent buffer drops (if len <= cap without else/error branch)
+            if not is_test_or_example and not re.match(r"^\s*//", line):
+                code_only_13 = re.sub(r"//.*$", "", line)
+                if re.match(
+                    r"^\s*if\s+[^{]*\b[A-Za-z0-9_.]+\.len\b[^{]*<=\s*[A-Za-z0-9_.]+\.cap\b\s*\{",
+                    code_only_13,
+                ) or re.match(
+                    r"^\s*if\s+[^{]*\b[A-Za-z0-9_.]+\.len\b[^{]*<\s*[A-Za-z0-9_.]+\.cap\b\s*\{",
+                    code_only_13,
+                ):
+                    if_depth = code_only_13.count("{") - code_only_13.count("}")
+                    has_else_or_return = "return " in code_only_13 or "else" in code_only_13
+                    scan_idx = i + 1
+                    while scan_idx < len(lines) and if_depth > 0 and scan_idx < i + 25:
+                        scan_line = re.sub(r"//.*$", "", lines[scan_idx])
+                        if "return " in scan_line or "break" in scan_line:
+                            has_else_or_return = True
+                        if if_depth == 1 and re.search(r"\}\s*else\b", scan_line):
+                            has_else_or_return = True
+                            break
+                        if_depth += scan_line.count("{") - scan_line.count("}")
+                        if if_depth <= 0:
+                            if "else" in scan_line:
+                                has_else_or_return = True
+                            elif scan_idx + 1 < len(lines):
+                                next_clean = re.sub(r"//.*$", "", lines[scan_idx + 1]).strip()
+                                if next_clean.startswith("else"):
+                                    has_else_or_return = True
+                            break
+                        scan_idx += 1
+                    if not has_else_or_return:
+                        print_colored(
+                            f"[LINT] {rel_path}:{line_num} -> Silent capacity overflow drop ('if ... <= ...cap' without 'else' error branch). "
+                            f"Use 'guard ... <= ...cap else {{ return ..., false; }}' or handle overflow explicitly.",
+                            "red",
+                        )
+                        violations += 1
+
+            # Rule 14: Prohibition of naive substring searching on structured wire formats (JSON/JWT/headers)
+            if not is_test_or_example and not re.match(r"^\s*//", line):
+                code_only_14 = re.sub(r"//.*$", "", line)
+                if re.search(
+                    r'\b(?:index_of_slice|contains)\s*\([^)]*\\"[^)]*\\"',
+                    code_only_14,
+                ) or re.search(
+                    r"\b(?:index_of_slice|contains)\s*\(\s*(?:json|payload_json|claims_json|raw_json|jwt_payload|jwk_json)\b",
+                    code_only_14,
+                ):
+                    print_colored(
+                        f"[LINT] {rel_path}:{line_num} -> Naive substring search on structured JSON/wire payload prohibited. "
+                        f"Use 'json::reader' or a structured tokenizer to prevent injection and escaped-quote bugs.",
+                        "red",
+                    )
+                    violations += 1
+
+            # Rule 15: Exhaustive enum parsing (prohibit defaulting unknown strings to valid operational variants)
+            if (
+                not is_test_or_example
+                and is_fn_start
+                and re.match(r"^(?:parse|str_to)_[A-Za-z0-9_]+$", sig_fn_name)
+                and re.search(r"u8\[:\]", sig_params)
+                and re.match(r"^[A-Z][A-Za-z0-9_]*$", sig_ret)
+            ):
+                enum_type = sig_ret
+                f_depth = 0
+                f_started = False
+                last_ret_variant = ""
+                for s_idx in range(i, min(len(lines), i + 80)):
+                    s_clean = re.sub(r"//.*$", "", lines[s_idx])
+                    if "{" in s_clean:
+                        f_started = True
+                    f_depth += s_clean.count("{") - s_clean.count("}")
+                    m_ret_enum = re.search(
+                        rf"\breturn\s+{re.escape(enum_type)}\.([A-Za-z0-9_]+)\s*;",
+                        s_clean,
+                    )
+                    if m_ret_enum:
+                        last_ret_variant = m_ret_enum.group(1)
+                    if f_started and f_depth <= 0:
+                        break
+                if last_ret_variant and last_ret_variant not in (
+                    "Unknown",
+                    "Invalid",
+                    "None",
+                    "Unsupported",
+                    "Other",
+                    "Custom",
+                ):
+                    print_colored(
+                        f"[LINT] {rel_path}:{line_num} -> Enum parser '{sig_fn_name}' defaults unrecognized input to operational variant "
+                        f"'{enum_type}.{last_ret_variant}'. Return '{enum_type}.Unknown' or '({enum_type}, bool)'.",
+                        "red",
+                    )
+                    violations += 1
+
+            # Rule 17: Enterprise-scale buffer limits over toy RFC examples
+            if not is_test_or_example and not re.match(r"^\s*//", line):
+                code_only_17 = re.sub(r"//.*$", "", line)
+                m_toy_buf = re.search(
+                    r"\b(auth_header|bearer_buf|token_buf|jwt_buf|dpop_buf|proof_buf|access_token|id_token)\s*:\s*u8\[\.\.(\d+)\]",
+                    code_only_17,
+                )
+                if m_toy_buf:
+                    buf_name = m_toy_buf.group(1)
+                    buf_cap = int(m_toy_buf.group(2))
+                    if buf_cap < 1024:
+                        print_colored(
+                            f"[LINT] {rel_path}:{line_num} -> Miniature auth buffer '{buf_name}: u8[..{buf_cap}]' (< 1024 bytes). "
+                            f"Enterprise JWTs and auth headers require >= 2048..4096 bytes.",
+                            "red",
+                        )
+                        violations += 1
+
             # Track Function Geometry, Nesting Depth, and Zero Heap Allocation in Loops
             m_fn_entry = re.match(r"^\s*(?:pub\s+)?(?:inline\s+)?fn\s+([A-Za-z0-9_]+)", line)
             if m_fn_entry:
@@ -616,6 +729,25 @@ def main() -> int:
                     print_colored(
                         f"[LINT] {rel_path}:{line_num} -> Dynamic heap allocation inside loop ('var ...: ...[>..]'). "
                         f"Hoist buffer outside loop and call .clear().",
+                        "red",
+                    )
+                    violations += 1
+
+                # Rule 16: Stateful entropy in pseudo-random and identifier generators
+                if (
+                    not is_test_or_example
+                    and re.match(
+                        r"^(?:generate|create|new|next|make|build)_.*(?:jti|nonce|cnonce|id|token|rand|uuid|secret|challenge|salt)\b",
+                        fn_name,
+                    )
+                    and re.match(
+                        r"^\s*var\s+(?:state|seed|rng|prng|lcg_state)[A-Za-z0-9_]*\s*:\s*(?:u64|u32|i64|usize)\s*=\s*(?:0x[0-9a-fA-F_]+|\d+)\s*;",
+                        re.sub(r"//.*$", "", line),
+                    )
+                ):
+                    print_colored(
+                        f"[LINT] {rel_path}:{line_num} -> Constant local PRNG state inside generator '{fn_name}' "
+                        f"produces identical output on every call. Mix 'clock_ns()' or pass mutable 'Rng&' state.",
                         "red",
                     )
                     violations += 1

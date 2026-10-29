@@ -149,6 +149,31 @@ fn test_rfc7616_userhash_options(t: core::T&) {
         // Verify username is hex hash, not plain "alice"
         sub.assert_false(core::contains(out_hdr[..], "username=\"alice\""), "Plain username is hidden by userhash");
     };
+
+    t.run("Official RFC 7616 Section 3.9.2 SHA-512-256 Vector") { sub =>
+        let raw_chal = "Digest realm=\"api@example.org\", qop=\"auth, auth-int\", algorithm=SHA-512-256, nonce=\"5TsQWLVdgBdmrQ0XsxbDODV+57QdFR34I9HAbC/RVvkK\", opaque=\"HRPCssKJSGjCrkzDg8OhwpzCiGPChXYjwrI2QmXDnsOS\", charset=UTF-8, userhash=true";
+        let chal, ok_chal = wing::parse_digest_challenge(raw_chal);
+        sub.assert_true(ok_chal, "Parsed SHA-512-256 challenge");
+        sub.assert_bytes_eq(chal.algorithm[..], "SHA-512-256", "Algorithm is SHA-512-256");
+
+        var creds = wing::DigestCredentials { .. };
+        creds.username.append("J\xc3\xa4s\xc3\xb8n Doe");
+        creds.password.append("Secret, or not?");
+
+        let cnonce = "NTg6RKcb9boFIAS3KrFK9BGeh+iDa/sm6jUMp2wds69v";
+        let method = "GET";
+        let uri = "/doe.json";
+
+        var out_hdr: u8[..1024] = [];
+        let ok_resp = wing::compute_digest_response(chal, creds, method, uri, 1, cnonce, "", out_hdr);
+        sub.assert_true(ok_resp, "Digest response computed for SHA-512-256");
+
+        let expected_userhash = "793263caabb707a56211940d90411ea4a575adeccb7e360aeb624ed06ece9b0b";
+        let expected_response = "3798d4131c277846293534c3edc11bd8a5e4cdcbff78b05db9d95eeb1cec68a5";
+
+        sub.assert_true(core::contains(out_hdr[..], expected_userhash), "Hashed username matches official RFC 7616 Section 3.9.2 vector");
+        sub.assert_true(core::contains(out_hdr[..], expected_response), "Response hash matches official RFC 7616 Section 3.9.2 vector");
+    };
 }
 
 fn main() {

@@ -358,6 +358,92 @@ fn test_dpop_rfc9449(t: core::T&) {
         let ok_fake_typ = wing::verify_dpop_proof(tok_bad[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_fake_typ, "Proof with fake typ must be rejected even if dpop+jwt is in extra property");
     };
+
+    t.run("DPoP JTI dynamic entropy fallback (RFC 9449 §4.2)") { sub =>
+        var jti1: u8[..64] = [];
+        var jti2: u8[..64] = [];
+        wing::generate_dpop_jti(jti1);
+        for i in 100000 {
+            // spin loop to advance nanosecond clock
+        }
+        wing::generate_dpop_jti(jti2);
+        sub.assert_eq(jti1.len, 22, "Fallback JTI length is 22");
+        sub.assert_eq(jti2.len, 22, "Fallback JTI length is 22");
+        let are_equal = (jti1[..] == jti2[..]);
+        sub.assert_false(are_equal, "Successive JTI generations must produce distinct values");
+    };
+
+    t.run("DPoP Nonce NQCHAR syntax & injection rejection (RFC 9449 §8)") { sub =>
+        sub.assert_true(wing::is_valid_dpop_nonce("valid-server-nonce_123.456"), "Valid nonce accepted");
+        sub.assert_false(wing::is_valid_dpop_nonce(""), "Empty nonce rejected");
+        sub.assert_false(wing::is_valid_dpop_nonce("nonce\"with_quote"), "Quote in nonce rejected");
+        sub.assert_false(wing::is_valid_dpop_nonce("nonce\\with_backslash"), "Backslash in nonce rejected");
+        sub.assert_false(wing::is_valid_dpop_nonce("nonce with space"), "Space in nonce rejected");
+        sub.assert_false(wing::is_valid_dpop_nonce("nonce\r\ninjection"), "CRLF in nonce rejected");
+    };
+
+    t.run("DPoP URI normalization rejects quotes and control characters") { sub =>
+        var norm: u8[..256] = [];
+        sub.assert_false(wing::normalize_dpop_target_uri("https://example.com/api\"evil", norm), "Quote in URI rejected");
+        sub.assert_false(wing::normalize_dpop_target_uri("https://example.com/api space", norm), "Space in URI rejected");
+    };
+
+    t.run("DPoP Claims JSON Parser defends against duplicate keys & claim smuggling") { sub =>
+        let key = "super_secret_dpop_key_32_bytes!!";
+        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
+
+        // Duplicate htm claim
+        let c_dup_htm = "{\"jti\":\"jti-dup\",\"htm\":\"POST\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        var c_dup_b64: u8[..256] = [];
+        core::base64url_encode(c_dup_htm, c_dup_b64);
+        var sign_dup: u8[..512] = [];
+        sign_dup.append(h_b64);
+        sign_dup.push('.' as u8);
+        sign_dup.append(c_dup_b64[..]);
+        let sig_dup = core::hmac_sha256(key, sign_dup[..]);
+        var sig_dup_b64: u8[..64] = [];
+        core::base64url_encode(sig_dup[..], sig_dup_b64);
+        var tok_dup: u8[..1024] = [];
+        tok_dup.append(sign_dup[..]);
+        tok_dup.push('.' as u8);
+        tok_dup.append(sig_dup_b64[..]);
+
+        let ok_dup = wing::verify_dpop_proof(tok_dup[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        sub.assert_false(ok_dup, "Proof with duplicate htm claim MUST be rejected (JSON smuggling defense)");
+
+        // Substring spoofing in custom claim value
+        let c_spoof = "{\"jti\":\"jti-spoof\",\"custom\":\"hello \\\"htm\\\":\\\"GET\\\"\",\"htm\":\"POST\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
+        var c_spoof_b64: u8[..256] = [];
+        core::base64url_encode(c_spoof, c_spoof_b64);
+        var sign_spoof: u8[..512] = [];
+        sign_spoof.append(h_b64);
+        sign_spoof.push('.' as u8);
+        sign_spoof.append(c_spoof_b64[..]);
+        let sig_spoof = core::hmac_sha256(key, sign_spoof[..]);
+        var sig_spoof_b64: u8[..64] = [];
+        core::base64url_encode(sig_spoof[..], sig_spoof_b64);
+        var tok_spoof: u8[..1024] = [];
+        tok_spoof.append(sign_spoof[..]);
+        tok_spoof.push('.' as u8);
+        tok_spoof.append(sig_spoof_b64[..]);
+
+        let ok_spoof_get = wing::verify_dpop_proof(tok_spoof[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
+        sub.assert_false(ok_spoof_get, "Fake htm inside custom string value MUST NOT fool method verification");
+
+        let ok_spoof_post = wing::verify_dpop_proof(tok_spoof[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        sub.assert_true(ok_spoof_post, "Real htm claim matches correctly despite custom field noise");
+    };
+
+    t.run("DPoP Attach access token into Authorization header") { sub =>
+        var req = wing::Request { .. };
+        var token_bytes: u8[..350] = [];
+        for i in 300 {
+            token_bytes.push(('a' as u8) + ((i % 26) as u8));
+        }
+        wing::attach_dpop(req, "proof_signature_sample", token_bytes[..]);
+        sub.assert_true(req.has_header("Authorization"), "Authorization header attached with access token");
+        sub.assert_ge(req.header("Authorization").len, 300, "Access token preserved without truncation");
+    };
 }
 
 fn main() {
