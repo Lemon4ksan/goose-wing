@@ -16,18 +16,43 @@ from pathlib import Path
 
 
 def find_or_build_goose_lit(root: Path) -> Path:
+    # 1. Prefer goose-lit from PATH
+    cmd = shutil.which("goose-lit")
+    if cmd:
+        return Path(cmd)
+
+    # 2. Check Windows registry User / System PATH if running in an older environment
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            for hive, subkey in [
+                (winreg.HKEY_CURRENT_USER, r"Environment"),
+                (
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                ),
+            ]:
+                try:
+                    with winreg.OpenKey(hive, subkey) as key:
+                        val, _ = winreg.QueryValueEx(key, "PATH")
+                        for p in val.split(";"):
+                            candidate = Path(p.strip()) / "goose-lit.exe"
+                            if candidate.is_file():
+                                return candidate
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+
     exe_name = "goose-lit.exe" if sys.platform == "win32" else "goose-lit"
     candidates = [
-        root.parent / "goose-lit" / "bin" / exe_name,
         root / "bin" / exe_name,
+        root.parent / "goose-lit" / "bin" / exe_name,
     ]
     for c in candidates:
         if c.exists():
             return c
-
-    cmd = shutil.which("goose-lit")
-    if cmd:
-        return Path(cmd)
 
     lit_src = root.parent / "goose-lit" / "bin.goose"
     if lit_src.exists():
@@ -42,7 +67,7 @@ def find_or_build_goose_lit(root: Path) -> Path:
         sys.exit(res.returncode)
 
     print(
-        "Error: goose-lit binary not found. Please clone goose-lit beside goose-wing.",
+        "Error: goose-lit binary not found in PATH or beside goose-wing.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -70,13 +95,13 @@ def main() -> int:
         cmd = [
             str(lit_bin),
             "crap",
-            str(root),
+            ".",
             "--save-baseline",
             str(baseline_file),
             "--cov",
             str(args.cov),
         ]
-        res = subprocess.run(cmd)
+        res = subprocess.run(cmd, cwd=root)
         return res.returncode
     else:
         if not baseline_file.exists():
@@ -91,7 +116,7 @@ def main() -> int:
         cmd = [
             str(lit_bin),
             "crap",
-            str(root),
+            ".",
             "--baseline",
             str(baseline_file),
             "--cov",
@@ -99,7 +124,7 @@ def main() -> int:
             "--delta",
             str(args.delta),
         ]
-        res = subprocess.run(cmd)
+        res = subprocess.run(cmd, cwd=root)
         return res.returncode
 
 

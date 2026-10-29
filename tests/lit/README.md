@@ -99,8 +99,8 @@ Validate that optimized SIMD routines match scalar fallbacks on all boundary con
 
 ### 5. Static complexity and bounds gating
 Enforce function flatness and proven index bounds before compilation:
-```powershell
-..\goose-lit\bin\goose-lit.exe gate auth/pkce.goose 25 --cov 0.85
+```bash
+goose-lit gate auth/pkce.goose 25 --cov 0.85
 ```
 
 ### 6. Bug regression reproducers

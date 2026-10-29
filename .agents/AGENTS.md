@@ -56,21 +56,21 @@ Releases are automated via Google's `release-please` workflow on `main`.
 
 ## Goose LIT and native wire verification workflow
 
-Use `..\goose-lit\bin\goose-lit.exe` to run LLVM-style `// RUN:` test directives, FileCheck output matching, and static G-CRAP complexity analysis without Wasm virtualization:
+Use `goose-lit` (available in PATH) to run LLVM-style `// RUN:` test directives, FileCheck output matching, and static G-CRAP complexity analysis without Wasm virtualization:
 
 ```bash
 # Execute a single native LIT test suite
-..\goose-lit\bin\goose-lit.exe tests\lit\verify_wire_framing.goose
+goose-lit tests/lit/verify_wire_framing.goose
 
 # Run all native LIT verification suites in parallel
 python scripts/test_lit.py
 # or: just lit
 
 # Hardware complexity gate analysis
-..\goose-lit\bin\goose-lit.exe gate auth/jwks.goose 25 --cov 0.85
+goose-lit gate auth/jwks.goose 25 --cov 0.85
 
 # Risk radar table output
-..\goose-lit\bin\goose-lit.exe crap http/headers.goose --threshold 25.0
+goose-lit crap http/headers.goose --threshold 25.0
 ```
 
 ### Goose LIT CLI commands and options

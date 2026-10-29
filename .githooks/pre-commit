@@ -69,13 +69,17 @@ for file in $STAGED_FILES; do
     esac
 done
 
-LIT_BIN="../goose-lit/bin/goose-lit"
-if [ -f "../goose-lit/bin/goose-lit.exe" ]; then
-    LIT_BIN="../goose-lit/bin/goose-lit.exe"
-fi
-
-if command -v goose-lit >/dev/null 2>&1; then
-    LIT_BIN="goose-lit"
+LIT_BIN="goose-lit"
+if ! command -v "$LIT_BIN" >/dev/null 2>&1; then
+    if [ -f "../goose-lit/bin/goose-lit.exe" ]; then
+        LIT_BIN="../goose-lit/bin/goose-lit.exe"
+    elif [ -f "../goose-lit/bin/goose-lit" ]; then
+        LIT_BIN="../goose-lit/bin/goose-lit"
+    elif [ -f "bin/goose-lit.exe" ]; then
+        LIT_BIN="bin/goose-lit.exe"
+    elif [ -f "bin/goose-lit" ]; then
+        LIT_BIN="bin/goose-lit"
+    fi
 fi
 
 if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
