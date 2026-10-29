@@ -294,8 +294,12 @@ inline fn sync_cluster_target_health(cluster: UpstreamCluster&, target_idx: i32,
 }
 
 inline fn sync_slot_from_cluster(slot: TargetProbeSlot&, cluster_state: UpstreamHealthState) {
-    if cluster_state == UpstreamHealthState.Down && slot.health.state == HealthState.Up {
-        slot.health.state = HealthState.Down;
+    if cluster_state != UpstreamHealthState.Up && slot.health.state == HealthState.Up {
+        slot.health.state = if cluster_state == UpstreamHealthState.Probing {
+            HealthState.Probing
+        } else {
+            HealthState.Down
+        };
         reset_health_successes(slot.health);
     }
 }

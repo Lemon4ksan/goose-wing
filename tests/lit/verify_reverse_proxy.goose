@@ -140,7 +140,8 @@ fn test_reverse_proxy_xff_chaining() {
     wing::append_header(in_headers, "X-Forwarded-For", "198.51.100.1, 10.0.0.1");
 
     var out_headers = wing::HeaderMap { .. };
-    let cfg = wing::ProxyConfig { .. };
+    var cfg = wing::ProxyConfig { .. };
+    cfg.trust_incoming_xff = true;
 
     wing::filter_and_forward_headers(
         in_headers,
@@ -154,6 +155,28 @@ fn test_reverse_proxy_xff_chaining() {
     let chained_xff = wing::get_header(out_headers, "X-Forwarded-For");
     print("XFF_CHAINED: ", chained_xff, "\n");
     // CHECK: XFF_CHAINED: 198.51.100.1, 10.0.0.1, 192.0.2.42
+}
+
+fn test_reverse_proxy_xff_untrusted_perimeter() {
+    var in_headers = wing::HeaderMap { .. };
+    wing::append_header(in_headers, "Host", "api.example.com");
+    wing::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
+
+    var out_headers = wing::HeaderMap { .. };
+    let cfg = wing::ProxyConfig { .. }; // trust_incoming_xff is false by default
+
+    wing::filter_and_forward_headers(
+        in_headers,
+        out_headers,
+        "192.0.2.42",
+        "http",
+        "app-cluster",
+        cfg,
+    );
+
+    let perimeter_xff = wing::get_header(out_headers, "X-Forwarded-For");
+    print("XFF_PERIMETER: ", perimeter_xff, "\n");
+    // CHECK: XFF_PERIMETER: 192.0.2.42
 }
 
 fn test_upstream_request_wire_serialization() {
@@ -195,5 +218,6 @@ fn main() {
     test_load_balancer_least_connections();
     test_reverse_proxy_hop_by_hop_stripping();
     test_reverse_proxy_xff_chaining();
+    test_reverse_proxy_xff_untrusted_perimeter();
     test_upstream_request_wire_serialization();
 }

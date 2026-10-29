@@ -170,6 +170,7 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
     var out_map = wing::HeaderMap { .. };
     var cfg = wing::ProxyConfig { .. };
     cfg.preserve_host = false;
+    cfg.trust_incoming_xff = true;
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-chaos");
 

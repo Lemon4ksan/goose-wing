@@ -185,7 +185,9 @@ fn select_p2c(cluster: UpstreamCluster&, n: i32) -> i32, bool {
         record_target_dispatch(cluster.targets[r2]);
         return r2, true;
     }
-    return NO_UPSTREAM_TARGET, false;
+    // Fallback to least-connections scan when both random choices are unhealthy
+    // to prevent dropping traffic when other cluster targets remain healthy.
+    return select_least_connections(cluster, n);
 }
 
 // Selects next healthy upstream target index according to configured LbPolicy.

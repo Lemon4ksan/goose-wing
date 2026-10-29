@@ -18,6 +18,7 @@ struct ProxyConfig {
     strip_hop_by_hop: bool = true,
     append_forwarded: bool = true,
     preserve_host: bool = false,
+    trust_incoming_xff: bool = false,
     max_active_conns_per_target: i32 = 1024,
     enable_rate_limiting: bool = false,
     rate_limit_rps: u64 = 100,
@@ -122,6 +123,26 @@ fn inject_via_header(out_headers: HeaderMap&, pseudonym: const u8[:]) {
     append_header(out_headers, "Via", via_buf[..]);
 }
 
+// Injects forwarded client IP into X-Forwarded-For, respecting trust boundary.
+fn append_forwarded_metadata_xff(
+    out_headers: HeaderMap&,
+    in_headers: const HeaderMap&,
+    client_ip: const u8[:],
+    trust_incoming_xff: bool,
+) {
+    if !trust_incoming_xff {
+        append_forwarded_for(out_headers, "", client_ip);
+        return;
+    }
+    var combined_buf: u8[>..] = [];
+    if get_combined(in_headers, "X-Forwarded-For", combined_buf) {
+        append_forwarded_for(out_headers, combined_buf[..], client_ip);
+    } else {
+        let existing = get_header(in_headers, "X-Forwarded-For");
+        append_forwarded_for(out_headers, existing, client_ip);
+    }
+}
+
 // Injects standard proxy forwarding headers (RFC 7239 / de facto).
 fn inject_forwarded_metadata(
     out_headers: HeaderMap&,
@@ -129,12 +150,11 @@ fn inject_forwarded_metadata(
     client_ip: const u8[:],
     proto: const u8[:],
     preserve_host: bool,
+    trust_incoming_xff: bool = false,
 ) {
-    let existing_xff = get_header(in_headers, "X-Forwarded-For");
+    append_forwarded_metadata_xff(out_headers, in_headers, client_ip, trust_incoming_xff);
+
     let orig_host = get_header(in_headers, "Host");
-
-    append_forwarded_for(out_headers, existing_xff, client_ip);
-
     if proto.len > 0 {
         append_header(out_headers, "X-Forwarded-Proto", proto);
     }
@@ -161,7 +181,14 @@ fn filter_and_forward_headers(
     }
 
     if config.append_forwarded {
-        inject_forwarded_metadata(out_headers, in_headers, client_ip, proto, config.preserve_host);
+        inject_forwarded_metadata(
+            out_headers,
+            in_headers,
+            client_ip,
+            proto,
+            config.preserve_host,
+            config.trust_incoming_xff,
+        );
     }
 
     inject_via_header(out_headers, config.via_pseudonym[..]);
@@ -258,6 +285,14 @@ fn abort_proxy_request(proxy: ReverseProxy&, target_idx: i32) {
     record_upstream_failure(proxy.cluster, target_idx);
 }
 
+// Configures gateway rate limit parameters, keeping ProxyConfig and GatewayRateLimiter in sync.
+fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64) {
+    proxy.config.enable_rate_limiting = true;
+    proxy.config.rate_limit_rps = rps;
+    proxy.config.rate_limit_burst = burst;
+    proxy.rate_limiter.config = new_gcra_config(rps, burst);
+}
+
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
 // rewrites headers, and serializes forward wire request.
 fn prepare_proxy_request_at(
@@ -271,9 +306,11 @@ fn prepare_proxy_request_at(
     out_wire: u8[>..]&,
     now_ns: u64,
 ) -> i32, bool {
+    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
+
     // 1. Rate limiter defense against client flooding and downstream backpressure
-    if proxy.config.enable_rate_limiting && client_ip.len > 0 && now_ns > 0 {
-        let dec = check_gateway_rate_limit(proxy.rate_limiter, client_ip, 1, now_ns);
+    if proxy.config.enable_rate_limiting && client_ip.len > 0 && effective_now > 0 {
+        let dec = check_gateway_rate_limit(proxy.rate_limiter, client_ip, 1, effective_now);
         if !dec.allowed {
             record_proxy_rate_limited(proxy);
             record_proxy_dropped(proxy);
@@ -327,6 +364,7 @@ fn prepare_proxy_request(
     body: const u8[:],
     out_wire: u8[>..]&,
 ) -> i32, bool {
+    let now_ns = core::as_nanos(core::monotonic_now());
     return prepare_proxy_request_at(
         proxy,
         method,
@@ -336,6 +374,6 @@ fn prepare_proxy_request(
         proto,
         body,
         out_wire,
-        0,
+        now_ns,
     );
 }
