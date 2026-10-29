@@ -770,6 +770,13 @@ fn emit_field_checked(
         }
     }
 
+    // RFC 9114 Section 4.2 & Go #80683: Field values MUST NOT contain NUL, CR, or LF
+    for b in val {
+        if b == 0 || b == '\r' || b == '\n' {
+            return QpackError.DecompressionFailed;
+        }
+    }
+
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
     guard budget_left >= cost else {
         return QpackError.HeaderListTooLarge;

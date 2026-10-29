@@ -88,6 +88,7 @@ struct H2Stream {
     received_data_bytes: i64 = 0,
     headers_received: bool = false,
     trailers_received: bool = false,
+    status_code: i32 = 0,
     active: bool = false,
 }
 
@@ -528,8 +529,15 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
     }
 
     if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
-       s.streams[s_idx].state == H2StreamState.Closed {
+       s.streams[s_idx].state == H2StreamState.Closed ||
+       s.streams[s_idx].trailers_received {
         return ERR_STREAM_CLOSED;
+    }
+
+    // RFC 9113 §8.1.1 & §8.8: Status 204, 304, or 1xx MUST NOT contain message body / DATA frames
+    let sc = s.streams[s_idx].status_code;
+    if sc == 204 || sc == 304 || (sc >= 100 && sc < 200) {
+        return ERR_PROTOCOL_ERROR;
     }
 
     s.streams[s_idx].recv_window -= total_consumed;

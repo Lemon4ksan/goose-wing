@@ -575,7 +575,7 @@ fn handle_stream_data(
             for field in decoded_fields {
                 let is_pseudo = field.name.len > 0 && field.name[0] == ':';
 
-                // Trailers MUST NOT contain pseudo-headers or disallowed headers (RFC 9114 Section 4.3)
+                // Trailers MUST NOT contain pseudo-headers or disallowed framing headers (RFC 9114 Section 4.3)
                 let is_trailer_section = conn.streams[s_idx].headers_received && conn.streams[s_idx].status_code >= 200;
                 if is_trailer_section {
                     if is_pseudo {
@@ -585,7 +585,12 @@ fn handle_stream_data(
                     }
                     if eq_ascii_fold(field.name[..], "content-length") ||
                        eq_ascii_fold(field.name[..], "host") ||
-                       eq_ascii_fold(field.name[..], "trailer") {
+                       eq_ascii_fold(field.name[..], "trailer") ||
+                       eq_ascii_fold(field.name[..], "transfer-encoding") ||
+                       eq_ascii_fold(field.name[..], "connection") ||
+                       eq_ascii_fold(field.name[..], "upgrade") ||
+                       eq_ascii_fold(field.name[..], "keep-alive") ||
+                       eq_ascii_fold(field.name[..], "proxy-connection") {
                         conn.state = H3ConnState.Closed;
                         conn.error_code = H3_ERR_GENERAL_PROTOCOL;
                         return H3_ERR_GENERAL_PROTOCOL;
@@ -740,6 +745,13 @@ fn handle_stream_data(
         if hdr.frame_type == H3_FRAME_DATA {
             // DATA before HEADERS or after trailers is a fatal protocol error
             if !conn.streams[s_idx].headers_received || conn.streams[s_idx].trailers_received {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+                return H3_ERR_FRAME_UNEXPECTED;
+            }
+            // RFC 9114 §4.1 & Go #81642: 1xx, 204, and 304 responses MUST NOT include DATA frames
+            let sc = conn.streams[s_idx].status_code;
+            if sc == 204 || sc == 304 || (sc >= 100 && sc < 200) {
                 conn.state = H3ConnState.Closed;
                 conn.error_code = H3_ERR_FRAME_UNEXPECTED;
                 return H3_ERR_FRAME_UNEXPECTED;

@@ -137,12 +137,15 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
 // - Reserved initial octet 0xFF (11111111_2) is strictly FORBIDDEN (X.690 §8.1.3.5(c)).
 // - Enforces non-negative 31-bit bounds (0..0x7FFFFFFF) to prevent integer overflows.
 fn parse_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
+    guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     var length: i64 = 0;
-    for i in num_bytes {
+    var i: i64 = 0;
+    while i < num_bytes {
         var b: u8 = 0;
-        if !get_u8(c, b) { return false; }
-        if i == 0 && b == 0x00 { return false; }
+        guard get_u8(c, b) else { return false; }
+        guard i != 0 || b != 0x00 else { return false; }
         length = (length << 8) | b;
+        i++;
     }
     guard length >= 128 && length <= 0x7FFFFFFF else { return false; }
     out_len = length;
@@ -243,12 +246,10 @@ fn validate_asn1_bit_string(val: const u8[:]) -> bool {
     if val.len == 1 {
         return unused == 0;
     }
-    if unused > 0 {
-        let last_byte = val[val.len - 1];
-        let mask = ((1 as u16 << unused) - 1) as u8;
-        guard (last_byte & mask) == 0 else { return false; }
-    }
-    return true;
+    guard unused > 0 else { return true; }
+    let last_byte = val[val.len - 1];
+    let mask = ((1 as u16 << unused) - 1) as u8;
+    return (last_byte & mask) == 0;
 }
 
 // Consumes an ASN.1 BIT STRING element, validating DER unused bits rules and extracting bit payload.
@@ -264,11 +265,12 @@ fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -
 // ---- 3. Date & Time Parser (UTCTime & GeneralizedTime) -----------------------
 
 fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
-    guard off + 2 <= buf.len else { return 0, false; }
+    guard off >= 0 && off <= buf.len - 2 else { return 0, false; }
     let c1 = buf[off];
     let c2 = buf[off + 1];
-    guard c1 >= '0' && c1 <= '9' && c2 >= '0' && c2 <= '9' else { return 0, false; }
-    return ((c1 - '0') as i64) * 10 + (c2 - '0'), true;
+    guard c1 >= '0' && c1 <= '9' else { return 0, false; }
+    guard c2 >= '0' && c2 <= '9' else { return 0, false; }
+    return (c1 - '0') * 10 + (c2 - '0'), true;
 }
 
 // Validates time fields and leap-year days in month per RFC 5280 Section 4.1.2.5.
@@ -280,6 +282,13 @@ fn validate_time_fields(year: i64, month: i64, day: i64, hour: i64, min: i64, se
     guard min >= 0 && min <= 59 else { return false; }
     guard sec >= 0 && sec <= 59 else { return false; }
     return true;
+}
+
+fn civil_to_epoch_seconds(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64, bool {
+    guard validate_time_fields(year, month, day, hour, min, sec) else { return 0, false; }
+    let days = core::civil_to_days(year, month, day);
+    let total_secs = days * 86400 + hour * 3600 + min * 60 + sec;
+    return total_secs, true;
 }
 
 // Parses UTCTime ("YYMMDDHHMMSSZ") per RFC 5280 Section 4.1.2.5.1:
@@ -296,17 +305,17 @@ fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
     let year = if y2 >= 50 { 1900 + y2 } else { 2000 + y2 };
 
     let month, ok_m = parse_2digit(time_bytes, 2);
+    guard ok_m else { return 0, false; }
     let day, ok_d = parse_2digit(time_bytes, 4);
+    guard ok_d else { return 0, false; }
     let hour, ok_h = parse_2digit(time_bytes, 6);
+    guard ok_h else { return 0, false; }
     let min, ok_min = parse_2digit(time_bytes, 8);
+    guard ok_min else { return 0, false; }
     let sec, ok_s = parse_2digit(time_bytes, 10);
+    guard ok_s else { return 0, false; }
 
-    guard ok_m && ok_d && ok_h && ok_min && ok_s else { return 0, false; }
-    guard validate_time_fields(year, month, day, hour, min, sec) else { return 0, false; }
-
-    let days = core::civil_to_days(year, month, day);
-    let total_secs = days * 86400 + hour * 3600 + min * 60 + sec;
-    return total_secs, true;
+    return civil_to_epoch_seconds(year, month, day, hour, min, sec);
 }
 
 // Parses GeneralizedTime ("YYYYMMDDHHMMSSZ") per RFC 5280 Section 4.1.2.5.2:
@@ -316,22 +325,23 @@ fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
 fn parse_generalized_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 15 && time_bytes[14] == 'Z' else { return 0, false; }
     let y1, ok_y1 = parse_2digit(time_bytes, 0);
+    guard ok_y1 else { return 0, false; }
     let y2, ok_y2 = parse_2digit(time_bytes, 2);
-    guard ok_y1 && ok_y2 else { return 0, false; }
+    guard ok_y2 else { return 0, false; }
     let year = y1 * 100 + y2;
 
     let month, ok_m = parse_2digit(time_bytes, 4);
+    guard ok_m else { return 0, false; }
     let day, ok_d = parse_2digit(time_bytes, 6);
+    guard ok_d else { return 0, false; }
     let hour, ok_h = parse_2digit(time_bytes, 8);
+    guard ok_h else { return 0, false; }
     let min, ok_min = parse_2digit(time_bytes, 10);
+    guard ok_min else { return 0, false; }
     let sec, ok_s = parse_2digit(time_bytes, 12);
+    guard ok_s else { return 0, false; }
 
-    guard ok_m && ok_d && ok_h && ok_min && ok_s else { return 0, false; }
-    guard validate_time_fields(year, month, day, hour, min, sec) else { return 0, false; }
-
-    let days = core::civil_to_days(year, month, day);
-    let total_secs = days * 86400 + hour * 3600 + min * 60 + sec;
-    return total_secs, true;
+    return civil_to_epoch_seconds(year, month, day, hour, min, sec);
 }
 
 // Parses UTCTime ("YYMMDDHHMMSSZ") or GeneralizedTime ("YYYYMMDDHHMMSSZ") to Unix timestamp seconds.
@@ -359,16 +369,17 @@ fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
 }
 
 fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
-    // Slices in Goose have base pointer arithmetic or offset deduction
     let target_len = target.len;
     guard target_len > 0 && target_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
-    // Offset calculation: compare slice bounds
     let base_len = base.len;
     guard base_len >= target_len && base_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
-    for i in base_len - target_len + 1 {
+    let max_idx = base_len - target_len;
+    var i: i64 = 0;
+    while i <= max_idx {
         if base[i..i + target_len] == target {
             return Span16 { offset: i as u16, length: target_len as u16 };
         }
+        i++;
     }
     return Span16 { offset: 0, length: 0 };
 }
@@ -555,14 +566,13 @@ fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     var ku_bits = cursor_from(ext_val.buf[..0]);
     guard get_asn1_element(ext_val, ASN1_TAG_BIT_STRING, ku_bits) else { return; }
     guard validate_asn1_bit_string(ku_bits.buf) else { return; }
+    guard ku_bits.buf.len >= 2 else { return; }
 
-    if ku_bits.buf.len >= 2 {
-        var ku: u16 = (ku_bits.buf[1] as u16) << 8;
-        if ku_bits.buf.len >= 3 {
-            ku = ku | ku_bits.buf[2];
-        }
-        cert.key_usage = ku;
+    var ku: u16 = (ku_bits.buf[1] as u16) << 8;
+    if ku_bits.buf.len >= 3 {
+        ku = ku | ku_bits.buf[2];
     }
+    cert.key_usage = ku;
 }
 
 fn x509_parse_akid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
@@ -1065,40 +1075,49 @@ fn validate_cidr_mask(mask: const u8[:]) -> bool {
     return true;
 }
 
+fn x509_validate_dns_candidate(cand: const u8[:]) -> bool {
+    guard cand.len > 0 else { return false; }
+    guard cand[0] != '.' else { return false; }
+    guard !core::contains_byte(cand, 0) else { return false; }
+    return core::index_of_slice(cand, "..") < 0;
+}
+
+fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> bool {
+    guard cons.len > 1 else { return false; }
+    guard cand.len > cons.len else { return false; }
+    return core::ends_with_fold(cand, cons);
+}
+
+fn x509_match_dns_subdomain(cand: const u8[:], cons: const u8[:]) -> bool {
+    guard cons.len > 0 else { return false; }
+    guard cand.len > cons.len else { return false; }
+    guard core::ends_with_fold(cand, cons) else { return false; }
+    var idx = cand.len - cons.len;
+    idx--;
+    guard idx >= 0 else { return false; }
+    return cand[idx] == '.';
+}
+
 // RFC 5280 §4.2.1.10: DNS name constraint matching
 // DNS name restrictions may be indicated as "example.com" or ".example.com".
 // Normalizes trailing dots in candidate and constraint to prevent ExcludedSubtree bypass.
 // Rejects embedded NUL bytes (CVE-2021-3712 / OpenSSL #31686).
 fn match_dns_name_constraint(candidate_dns: const u8[:], constraint: const u8[:]) -> bool {
     guard candidate_dns.len > 0 && constraint.len > 0 else { return false; }
-    guard !core::contains_byte(candidate_dns, 0) && !core::contains_byte(constraint, 0) else { return false; }
+    guard !core::contains_byte(constraint, 0) else { return false; }
 
     let cand = x509_strip_trailing_dot(candidate_dns);
     let cons = x509_strip_trailing_dot(constraint);
-    guard cand.len > 0 && cons.len > 0 else { return false; }
+    guard x509_validate_dns_candidate(cand) else { return false; }
+    guard cons.len > 0 && core::index_of_slice(cons, "..") < 0 else { return false; }
 
-    // If constraint has a leading dot: ".example.com"
     if cons[0] == '.' {
-        let domain = cons[1..];
-        guard domain.len > 0 else { return false; }
-        // Candidate must be a subdomain ending with constraint (e.g. "sub.example.com")
-        guard cand.len > cons.len else { return false; }
-        let suffix = cand[cand.len - cons.len..];
-        return eq_ascii_fold(suffix, cons);
+        return x509_match_dns_dotted_constraint(cand, cons);
     }
-
-    // Constraint without leading dot: "example.com"
-    // Matches exact domain
     if eq_ascii_fold(cand, cons) {
         return true;
     }
-
-    // Matches subdomains of "example.com", e.g. "sub.example.com"
-    guard cand.len > cons.len + 1 else { return false; }
-    let dot_pos = cand.len - cons.len - 1;
-    guard cand[dot_pos] == '.' else { return false; }
-    let suffix = cand[cand.len - cons.len..];
-    return eq_ascii_fold(suffix, cons);
+    return x509_match_dns_subdomain(cand, cons);
 }
 
 // RFC 5280 §4.2.1.10: IP address name constraint matching

@@ -1519,9 +1519,16 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
             }
         }
 
-        // RFC 9113 Section 8.3: Pseudo-headers for requests MUST NOT appear in responses;
-        // pseudo-headers for responses MUST NOT appear in requests.
+        // RFC 9113 Section 8.3 & Section 8.8: Pseudo-headers for requests MUST NOT appear in responses;
+        // pseudo-headers for responses MUST NOT appear in requests. :status MUST be a 3-digit integer from 100 to 599.
+        // 101 Switching Protocols is explicitly forbidden in HTTP/2.
         if name == ":status" {
+            guard val.len == 3 else { return ERR_PROTOCOL_ERROR; }
+            guard val[0] >= '1' && val[0] <= '5' else { return ERR_PROTOCOL_ERROR; }
+            guard val[1] >= '0' && val[1] <= '9' else { return ERR_PROTOCOL_ERROR; }
+            guard val[2] >= '0' && val[2] <= '9' else { return ERR_PROTOCOL_ERROR; }
+            guard val != "101" else { return ERR_PROTOCOL_ERROR; }
+
             for &f in out.fields {
                 if f.name[..] == ":method" || f.name[..] == ":scheme" ||
                    f.name[..] == ":path" || f.name[..] == ":protocol" {
