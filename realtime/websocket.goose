@@ -1878,3 +1878,64 @@ fn format_h2_websocket_response(res: Response&, subprotocol: const u8[:] = "") {
 fn is_h2_websocket_response(res: const Response&) -> bool {
     return res.status_code == 200;
 }
+
+// ---- 12. RFC 9220 Bootstrapping WebSockets with HTTP/3 ---------------------
+
+// Formats an outbound RFC 9220 WebSocket Extended CONNECT Request for HTTP/3
+fn format_h3_websocket_request(
+    req: Request&,
+    path: const u8[:],
+    authority: const u8[:],
+    scheme: const u8[:] = "https",
+    subprotocol: const u8[:] = "",
+) {
+    format_h2_websocket_request(req, path, authority, scheme, subprotocol);
+}
+
+// Validates an RFC 9220 WebSocket Extended CONNECT request over HTTP/3.
+// Follows exact same validation rules as RFC 8441 per RFC 9220 Section 3.
+fn validate_h3_websocket_request(req: const Request&) -> bool {
+    return validate_h2_websocket_request(req);
+}
+
+// Server-side RFC 9220 WebSocket Extended CONNECT upgrade handler for HTTP/3.
+fn ws_h3_upgrade_request(
+    req: const Request&,
+    out_resp: Response&,
+    subprotocol: const u8[:] = "",
+) -> WebSocketSession, bool {
+    return ws_h2_upgrade_request(req, out_resp, subprotocol);
+}
+
+// Formats an HTTP/3 response accepting an RFC 9220 WebSocket session (200 OK)
+fn format_h3_websocket_response(res: Response&, subprotocol: const u8[:] = "") {
+    format_h2_websocket_response(res, subprotocol);
+}
+
+// Inspects an HTTP/3 Response to determine if it accepted an RFC 9220 WebSocket session
+fn is_h3_websocket_response(res: const Response&) -> bool {
+    return is_h2_websocket_response(res);
+}
+
+// Checks if an arbitrary HTTP request is an RFC 8441 / RFC 9220 Extended CONNECT request
+fn is_extended_connect_request(req: const Request&) -> bool {
+    guard req.method == "CONNECT" else { return false; }
+    let proto = req.headers.find_header(":protocol");
+    return proto.len > 0;
+}
+
+// Encapsulates a WebSocket message into an HTTP/2 or HTTP/3 stream DATA frame payload
+fn ws_encapsulate_stream_data<B>(
+    out: B&,
+    opcode: u8,
+    payload: const u8[:],
+    is_client: bool,
+    mask_key: const u8[4] = [0x11, 0x22, 0x33, 0x44],
+) {
+    if is_client {
+        encode_ws_frame(out, opcode, payload, true, mask_key);
+    } else {
+        let empty_mask: const u8[4] = [0, 0, 0, 0];
+        encode_ws_frame(out, opcode, payload, false, empty_mask);
+    }
+}
