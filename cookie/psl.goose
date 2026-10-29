@@ -128,6 +128,12 @@ fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_la
 }
 
 fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_labels: i32&) -> bool {
+    let dots = core::count_byte(pat, '.') as i32;
+    if norm == pat {
+        out_start = 0;
+        out_labels = psl_labels_count(dots, 1);
+        return true;
+    }
     if !core::ends_with_dot_suffix(norm, pat) {
         return false;
     }

@@ -50,7 +50,7 @@ fn parse_canonical_set_cookie(
     var has_max_age = false;
     if unparsed_attrs.len > 0 {
         each_split(unparsed_attrs, ';') { raw_attr =>
-            apply_parsed_cookie_attribute(parsed_cookie, raw_attr, has_max_age, now_us);
+            apply_parsed_cookie_attribute(parsed_cookie, raw_attr, has_max_age, default_path, now_us);
         };
     }
 
@@ -69,6 +69,10 @@ fn parse_canonical_set_cookie(
         }
     } else if starts_with_fold(parsed_cookie.name[..], "__host-") {
         if !parsed_cookie.secure || parsed_cookie.has_domain_attr || parsed_cookie.path[..] != "/" {
+            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        }
+    } else if starts_with_fold(parsed_cookie.name[..], "__http-") {
+        if !parsed_cookie.secure || !parsed_cookie.httponly {
             return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
         }
     }
@@ -404,6 +408,7 @@ fn apply_parsed_cookie_attribute(
     cookie_ref: CanonicalCookie&,
     raw_attr: const u8[:],
     has_max_age: bool&,
+    default_path: const u8[:],
     now_us: i64,
 ) {
     let clean_attr = trim(raw_attr);
@@ -432,7 +437,7 @@ fn apply_parsed_cookie_attribute(
         cookie_ref.has_domain_attr = true;
         apply_parsed_domain_attribute(cookie_ref, attr_val);
     } else if eq_ascii_fold(attr_name, "path") {
-        apply_parsed_path_attribute(cookie_ref, attr_val);
+        apply_parsed_path_attribute(cookie_ref, attr_val, default_path);
     } else if eq_ascii_fold(attr_name, "max-age") {
         apply_parsed_max_age_attribute(cookie_ref, attr_val, has_max_age, now_us);
     } else if eq_ascii_fold(attr_name, "expires") {
@@ -452,8 +457,14 @@ fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u
     cookie_ref.host_only = false;
 }
 
-fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
-    guard attr_val.len > 0 && attr_val[0] == '/' else { return; }
+fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:], default_path: const u8[:] = "") {
+    if attr_val.len == 0 || attr_val[0] != '/' {
+        guard default_path.len > 0 else { return; }
+        guard default_path.len <= cookie_ref.path.cap else { return; }
+        cookie_ref.path.clear();
+        cookie_ref.path.append(default_path);
+        return;
+    }
     guard attr_val.len <= cookie_ref.path.cap else { return; }
     cookie_ref.path.clear();
     cookie_ref.path.append(attr_val);
@@ -520,8 +531,11 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
 
     // Single-label hosts without dots cannot set domain cookies
     if core::count_byte(cookie_ref.domain[..], '.') == 0 {
-        cookie_ref.host_only = true;
-        return true;
+        if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
+            cookie_ref.host_only = true;
+            return true;
+        }
+        return false;
     }
 
     if default_domain.len > 0 && !cookie_domain_match(default_domain, cookie_ref.domain[..]) {

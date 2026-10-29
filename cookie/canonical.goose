@@ -93,6 +93,7 @@ fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only:
         is_host = false;
     }
     cookie_ref.domain.append(clean_domain);
+    to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = is_host;
     return cookie_ref;
 }
@@ -105,6 +106,7 @@ fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCo
     } else {
         cookie_ref.domain.append(host_val);
     }
+    to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = true;
     return cookie_ref;
 }

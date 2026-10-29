@@ -92,7 +92,10 @@ fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: co
     if filter.start_utc > 0 && cookie_val.creation_utc < filter.start_utc { return false; }
     if filter.end_utc > 0 && cookie_val.creation_utc > filter.end_utc { return false; }
     if filter.session_only && cookie_val.persistent { return false; }
-    if filter.domain.len > 0 && !eq_ascii_fold(cookie_val.domain[..], filter.domain[..]) { return false; }
+    if filter.domain.len > 0 {
+        let clean_filter_domain = if filter.domain[0] == '.' { filter.domain[1..] } else { filter.domain[..] };
+        if !eq_ascii_fold(cookie_val.domain[..], clean_filter_domain) { return false; }
+    }
     if filter.name.len > 0 && cookie_val.name[..] != filter.name[..] { return false; }
     if filter.partition_key.len > 0 && cookie_val.partition_key[..] != filter.partition_key[..] { return false; }
     if filter.top_frame_site_key.len > 0 && cookie_val.partition_key[..] != filter.top_frame_site_key[..] { return false; }

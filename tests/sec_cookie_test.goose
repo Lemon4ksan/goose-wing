@@ -374,6 +374,74 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// Round 7: Cookie Hardening & Cross-Origin Single-Label Protection
+// ----------------------------------------------------------------------------
+fn test_cookie_hardening_invariants(t: core::T&) {
+    let now_us: i64 = 1700000000000000;
+
+    t.run("SEC-07: Single-label cross-origin domain injection must be rejected") { sub =>
+        // evil.com attempting to set cookie for localhost
+        let _, _, ok_lh = wing::parse_canonical_set_cookie("sid=hacked; Domain=localhost", "evil.com", "/", now_us);
+        sub.assert_false(ok_lh, "evil.com must NOT set Domain=localhost cookie");
+
+        // evil.com attempting to set cookie for intranet
+        let _, _, ok_intra = wing::parse_canonical_set_cookie("sid=hacked; Domain=intranet", "evil.com", "/", now_us);
+        sub.assert_false(ok_intra, "evil.com must NOT set Domain=intranet cookie");
+
+        // localhost setting cookie on localhost itself is valid (converted to host-only)
+        let c_lh, _, ok_lh_self = wing::parse_canonical_set_cookie("sid=ok; Domain=localhost", "localhost", "/", now_us);
+        sub.assert_true(ok_lh_self, "localhost setting Domain=localhost must be accepted");
+        sub.assert_true(c_lh.host_only, "localhost cookie must be forced host-only");
+    };
+
+    t.run("PSL-01: PSL Wildcard base domains must be recognized as public suffixes") { sub =>
+        var db = wing::new_psl_database();
+        wing::init_default_psl_rules(db);
+
+        // kawasaki.jp is a wildcard rule pattern (*.kawasaki.jp) -> base domain is a public suffix
+        sub.assert_true(wing::is_public_suffix(db, "kawasaki.jp"), "kawasaki.jp base domain must be public suffix");
+        // compute.amazonaws.com is a wildcard rule (*.compute.amazonaws.com) -> base domain is a public suffix
+        sub.assert_true(wing::is_public_suffix(db, "compute.amazonaws.com"), "compute.amazonaws.com base domain must be public suffix");
+    };
+
+    t.run("PREFIX-07: __Http- prefix requires Secure and HttpOnly in parser") { sub =>
+        // __Http- without HttpOnly rejected
+        let _, _, ok_no_http = wing::parse_canonical_set_cookie("__Http-tok=1; Secure", "example.com", "/", now_us);
+        sub.assert_false(ok_no_http, "__Http- without HttpOnly must be rejected");
+
+        // __Http- without Secure rejected
+        let _, _, ok_no_sec = wing::parse_canonical_set_cookie("__Http-tok=1; HttpOnly", "example.com", "/", now_us);
+        sub.assert_false(ok_no_sec, "__Http- without Secure must be rejected");
+
+        // __Http- with both Secure and HttpOnly accepted
+        let _, _, ok_valid = wing::parse_canonical_set_cookie("__Http-tok=1; Secure; HttpOnly", "example.com", "/", now_us);
+        sub.assert_true(ok_valid, "__Http- with Secure and HttpOnly must be accepted");
+    };
+
+    t.run("BUILDER-01: with_domain and with_host lowercase domain") { sub =>
+        var c1 = wing::new_canonical_cookie("a", "1");
+        wing::with_domain(c1, "Example.COM");
+        sub.assert_bytes_eq(c1.domain[..], "example.com");
+
+        var c2 = wing::new_canonical_cookie("b", "2");
+        wing::with_host(c2, "HOST.Local");
+        sub.assert_bytes_eq(c2.domain[..], "host.local");
+    };
+
+    t.run("FILTER-01: Deletion filter strips leading dot in domain") { sub =>
+        var jar = wing::new_canonical_cookie_jar();
+        sub.require_true(wing::set_cookie_header(jar, "https://example.com/", "a=1; Domain=example.com", now_us));
+        sub.assert_eq(jar.cookies.len, 1);
+
+        var filter = wing::CookieDeletionInfo { .. };
+        filter.domain.append(".example.com");
+        let deleted = wing::delete_matching(jar, filter);
+        sub.assert_eq(deleted, 1, "delete_matching must match despite leading dot in filter.domain");
+        sub.assert_eq(jar.cookies.len, 0);
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Consolidated Suite Entry Point
 // ----------------------------------------------------------------------------
 fn main() {
@@ -385,6 +453,7 @@ fn main() {
     core::run_case(runner, "4. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection", test_httponly_script_overwrite_protection);
     core::run_case(runner, "5. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants", test_rfc6265bis_samesite_and_domain_ip_rules);
     core::run_case(runner, "6. RFC 6265 §5.3 Step 11.3 Creation-Time & §5.1.1 Date Lexer", test_rfc6265_creation_time_and_date_lexing);
+    core::run_case(runner, "7. Cookie Hardening & Cross-Origin Single-Label Protection", test_cookie_hardening_invariants);
 
     let ok = core::finish(runner);
     assert(ok);

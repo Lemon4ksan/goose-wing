@@ -566,7 +566,11 @@ fn populate_netscape_cookie_fields(
 
     let expires_sec, parse_ok = parse_int(expires_str);
     if parse_ok && expires_sec > 0 {
-        cookie_ref.expires_utc = expires_sec * 1000000;
+        var safe_sec = expires_sec;
+        if safe_sec > 9000000000000 {
+            safe_sec = 9000000000000;
+        }
+        cookie_ref.expires_utc = safe_sec * 1000000;
         cookie_ref.persistent = true;
     }
 }
@@ -654,7 +658,12 @@ fn read_json_cookie_member(json_reader: json::Reader&, key: const u8[:], cookie_
     else if key == "secure" { cookie_ref.secure = json::read_bool(json_reader); }
     else if key == "httponly" { cookie_ref.httponly = json::read_bool(json_reader); }
     else if key == "partitioned" { cookie_ref.partitioned = json::read_bool(json_reader); }
-    else if key == "partition_key" { cookie_ref.partition_key.clear(); cookie_ref.partition_key.append(json::read_string(json_reader, scratch)); }
+    else if key == "partition_key" {
+        let s = json::read_string(json_reader, scratch);
+        guard s.len <= cookie_ref.partition_key.cap else { return; }
+        cookie_ref.partition_key.clear();
+        cookie_ref.partition_key.append(s);
+    }
     else if key == "same_site" { cookie_ref.same_site = parse_cookie_same_site(json::read_string(json_reader, scratch)); }
     else if key == "priority" { cookie_ref.priority = parse_cookie_priority(json::read_string(json_reader, scratch)); }
     else if key == "source_scheme" { cookie_ref.source_scheme = parse_cookie_source_scheme(json::read_string(json_reader, scratch)); }
