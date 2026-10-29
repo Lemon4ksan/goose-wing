@@ -144,12 +144,16 @@ fn is_known_three_level_suffix(suffix_str: const u8[:], is_icann: bool&) -> bool
 
 fn is_known_private_two_level_suffix(suffix_str: const u8[:]) -> bool {
     return suffix_str == "github.io" ||
+           suffix_str == "gitlab.io" ||
            suffix_str == "alwaysdata.net" ||
            suffix_str == "amazonaws.com" ||
            suffix_str == "dyndns.org" ||
            suffix_str == "blogspot.com" ||
            suffix_str == "vercel.app" ||
            suffix_str == "pages.dev" ||
+           suffix_str == "workers.dev" ||
+           suffix_str == "fly.dev" ||
+           suffix_str == "deno.dev" ||
            suffix_str == "netlify.app" ||
            suffix_str == "herokuapp.com" ||
            suffix_str == "azurewebsites.net" ||
@@ -179,20 +183,21 @@ fn find_trailing_dot_positions(
 }
 
 fn is_known_two_level_suffix(domain_suffix: const u8[:]) -> bool {
-    return domain_suffix == "co.uk" || domain_suffix == "org.uk" || domain_suffix == "gov.uk" || domain_suffix == "ac.uk" || domain_suffix == "net.uk" || domain_suffix == "me.uk" ||
+    return domain_suffix == "co.uk" || domain_suffix == "org.uk" || domain_suffix == "gov.uk" || domain_suffix == "ac.uk" || domain_suffix == "net.uk" || domain_suffix == "me.uk" || domain_suffix == "sch.uk" ||
            domain_suffix == "com.au" || domain_suffix == "net.au" || domain_suffix == "org.au" || domain_suffix == "edu.au" || domain_suffix == "gov.au" ||
-           domain_suffix == "co.jp" || domain_suffix == "ne.jp" || domain_suffix == "or.jp" || domain_suffix == "ac.jp" || domain_suffix == "go.jp" ||
-           domain_suffix == "co.nz" || domain_suffix == "net.nz" || domain_suffix == "org.nz" ||
-           domain_suffix == "com.br" || domain_suffix == "net.br" || domain_suffix == "org.br" ||
-           domain_suffix == "co.in" || domain_suffix == "net.in" || domain_suffix == "org.in" || domain_suffix == "gen.in" ||
-           domain_suffix == "com.ru" || domain_suffix == "net.ru" || domain_suffix == "org.ru" || domain_suffix == "pp.ru" || domain_suffix == "spb.ru" || domain_suffix == "msk.ru" ||
-           domain_suffix == "com.cn" || domain_suffix == "net.cn" || domain_suffix == "org.cn" || domain_suffix == "gov.cn" ||
-           domain_suffix == "com.tw" || domain_suffix == "org.tw" || domain_suffix == "net.tw" ||
-           domain_suffix == "co.kr" || domain_suffix == "ne.kr" || domain_suffix == "or.kr" ||
-           domain_suffix == "com.sg" || domain_suffix == "edu.sg" || domain_suffix == "gov.sg" || domain_suffix == "net.sg" ||
-           domain_suffix == "com.tr" || domain_suffix == "edu.tr" || domain_suffix == "gov.tr" || domain_suffix == "org.tr" ||
-           domain_suffix == "co.za" || domain_suffix == "net.za" || domain_suffix == "org.za" ||
-           domain_suffix == "co.il" || domain_suffix == "org.il" || domain_suffix == "net.il";
+           domain_suffix == "co.jp" || domain_suffix == "ne.jp" || domain_suffix == "or.jp" || domain_suffix == "ac.jp" || domain_suffix == "go.jp" || domain_suffix == "ed.jp" ||
+           domain_suffix == "co.nz" || domain_suffix == "net.nz" || domain_suffix == "org.nz" || domain_suffix == "govt.nz" || domain_suffix == "ac.nz" ||
+           domain_suffix == "com.br" || domain_suffix == "net.br" || domain_suffix == "org.br" || domain_suffix == "gov.br" ||
+           domain_suffix == "co.in" || domain_suffix == "net.in" || domain_suffix == "org.in" || domain_suffix == "gen.in" || domain_suffix == "gov.in" || domain_suffix == "ac.in" ||
+           domain_suffix == "com.ru" || domain_suffix == "net.ru" || domain_suffix == "org.ru" || domain_suffix == "pp.ru" || domain_suffix == "spb.ru" || domain_suffix == "msk.ru" || domain_suffix == "gov.ru" || domain_suffix == "edu.ru" ||
+           domain_suffix == "com.cn" || domain_suffix == "net.cn" || domain_suffix == "org.cn" || domain_suffix == "gov.cn" || domain_suffix == "edu.cn" ||
+           domain_suffix == "com.tw" || domain_suffix == "org.tw" || domain_suffix == "net.tw" || domain_suffix == "gov.tw" || domain_suffix == "edu.tw" ||
+           domain_suffix == "co.kr" || domain_suffix == "ne.kr" || domain_suffix == "or.kr" || domain_suffix == "go.kr" || domain_suffix == "ac.kr" ||
+           domain_suffix == "com.sg" || domain_suffix == "edu.sg" || domain_suffix == "gov.sg" || domain_suffix == "net.sg" || domain_suffix == "org.sg" ||
+           domain_suffix == "com.tr" || domain_suffix == "edu.tr" || domain_suffix == "gov.tr" || domain_suffix == "org.tr" || domain_suffix == "net.tr" ||
+           domain_suffix == "co.za" || domain_suffix == "net.za" || domain_suffix == "org.za" || domain_suffix == "gov.za" || domain_suffix == "ac.za" ||
+           domain_suffix == "co.il" || domain_suffix == "org.il" || domain_suffix == "net.il" || domain_suffix == "ac.il" || domain_suffix == "gov.il" ||
+           domain_suffix == "fed.us" || domain_suffix == "state.us";
 }
 
 fn is_known_one_level_suffix(domain_suffix: const u8[:]) -> bool {
