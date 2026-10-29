@@ -37,6 +37,7 @@ import http.headers;
 import http.headers.lexical;
 import http.headers.chunked;
 import http.headers.chunked_fsm;
+import http.sfv;
 
 // ---- client session and application layer ----------------------------------
 
