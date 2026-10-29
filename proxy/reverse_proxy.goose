@@ -2,12 +2,14 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Layer 7 Reverse Proxy Engine, Hop-by-Hop Header Stripping,
-// Forwarded/Via Chaining, and Upstream Request Dispatcher (RFC 9110 §7.6).
+// Forwarded/Via Chaining, Upstream Request Dispatcher,
+// Connection Leak Defense, and Backpressure Shield (RFC 9110 §7.6).
 namespace wing;
 
 import std;
 import core from "..";
 import http.headers;
+import proxy.gcra;
 import proxy.load_balancer;
 
 const PROXY_TARGET_NONE: i32 = -1;
@@ -16,6 +18,10 @@ struct ProxyConfig {
     strip_hop_by_hop: bool = true,
     append_forwarded: bool = true,
     preserve_host: bool = false,
+    max_active_conns_per_target: i32 = 1024,
+    enable_rate_limiting: bool = false,
+    rate_limit_rps: u64 = 100,
+    rate_limit_burst: u64 = 20,
     via_pseudonym: u8[..32] = "wing",
     http_version: u8[..8] = "HTTP/1.1",
 }
@@ -47,6 +53,18 @@ fn append_forwarded_for(out_headers: HeaderMap&, existing_xff: const u8[:], clie
     return append_header(out_headers, "X-Forwarded-For", client_ip);
 }
 
+// Identifies untrusted forwarding metadata headers to strip before re-injection.
+inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
+    if eq_ascii_fold(name, "x-forwarded-for") { return true; }
+    if eq_ascii_fold(name, "x-forwarded-proto") { return true; }
+    if eq_ascii_fold(name, "x-forwarded-host") { return true; }
+    if eq_ascii_fold(name, "x-forwarded-port") { return true; }
+    if eq_ascii_fold(name, "x-forwarded-server") { return true; }
+    if eq_ascii_fold(name, "x-forwarded-ssl") { return true; }
+    if eq_ascii_fold(name, "forwarded") { return true; }
+    return false;
+}
+
 // Determines if an incoming header should be forwarded to upstream.
 fn should_forward_header(
     name: const u8[:],
@@ -58,7 +76,7 @@ fn should_forward_header(
     if eq_ascii_fold(name, "host") {
         return preserve_host;
     }
-    if eq_ascii_fold(name, "x-forwarded-for") {
+    if is_forwarded_metadata_header(name) {
         return false;
     }
     guard strip_hop else { return true; }
@@ -188,28 +206,81 @@ fn serialize_upstream_request(
 struct ReverseProxy {
     cluster: UpstreamCluster = UpstreamCluster { .. },
     config: ProxyConfig = ProxyConfig { .. },
+    rate_limiter: GatewayRateLimiter = GatewayRateLimiter { .. },
     total_forwarded: u64 = 0,
     total_dropped: u64 = 0,
+    total_rate_limited: u64 = 0,
+    total_overloaded: u64 = 0,
 }
 
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy {
     return ReverseProxy {
         cluster: new_upstream_cluster(policy),
         config: new_proxy_config(),
+        rate_limiter: new_gateway_rate_limiter(100, 20),
         ..
     };
 }
 
-fn record_proxy_dropped(proxy: ReverseProxy&) {
+inline fn inc_proxy_dropped(proxy: ReverseProxy&) {
     proxy.total_dropped = proxy.total_dropped + 1;
 }
 
-fn record_proxy_forwarded(proxy: ReverseProxy&) {
+fn record_proxy_dropped(proxy: ReverseProxy&) {
+    inc_proxy_dropped(proxy);
+}
+
+inline fn inc_proxy_forwarded(proxy: ReverseProxy&) {
     proxy.total_forwarded = proxy.total_forwarded + 1;
 }
 
-// Selects upstream target, rewrites headers, and serializes forward wire request.
-fn prepare_proxy_request(
+fn record_proxy_forwarded(proxy: ReverseProxy&) {
+    inc_proxy_forwarded(proxy);
+}
+
+inline fn inc_proxy_rate_limited(proxy: ReverseProxy&) {
+    proxy.total_rate_limited = proxy.total_rate_limited + 1;
+}
+
+fn record_proxy_rate_limited(proxy: ReverseProxy&) {
+    inc_proxy_rate_limited(proxy);
+}
+
+inline fn inc_proxy_overloaded(proxy: ReverseProxy&) {
+    proxy.total_overloaded = proxy.total_overloaded + 1;
+}
+
+fn record_proxy_overloaded(proxy: ReverseProxy&) {
+    inc_proxy_overloaded(proxy);
+}
+
+// Checks if an upstream target has exceeded its maximum concurrent active connections.
+inline fn is_target_concurrency_saturated(target: const UpstreamTarget&, max_conns: i32) -> bool {
+    guard max_conns > 0 else { return false; }
+    return target.active_conns > max_conns;
+}
+
+// Completes a dispatched proxy request cleanly, preventing active connection leaks.
+fn finish_proxy_request(proxy: ReverseProxy&, target_idx: i32, success: bool) {
+    guard target_idx >= 0 && target_idx < proxy.cluster.targets.len else { return; }
+    release_upstream_connection(proxy.cluster, target_idx);
+    if success {
+        record_upstream_success(proxy.cluster, target_idx);
+    } else {
+        record_upstream_failure(proxy.cluster, target_idx);
+    }
+}
+
+// Aborts an in-flight proxy request due to downstream stall, timeout, or network disconnect.
+fn abort_proxy_request(proxy: ReverseProxy&, target_idx: i32) {
+    guard target_idx >= 0 && target_idx < proxy.cluster.targets.len else { return; }
+    release_upstream_connection(proxy.cluster, target_idx);
+    record_upstream_failure(proxy.cluster, target_idx);
+}
+
+// Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
+// rewrites headers, and serializes forward wire request.
+fn prepare_proxy_request_at(
     proxy: ReverseProxy&,
     method: const u8[:],
     uri: const u8[:],
@@ -218,13 +289,35 @@ fn prepare_proxy_request(
     proto: const u8[:],
     body: const u8[:],
     out_wire: u8[>..]&,
+    now_ns: u64,
 ) -> i32, bool {
+    // 1. Rate limiter defense against client flooding and downstream backpressure
+    if proxy.config.enable_rate_limiting && client_ip.len > 0 && now_ns > 0 {
+        let dec = check_gateway_rate_limit(proxy.rate_limiter, client_ip, 1, now_ns);
+        if !dec.allowed {
+            record_proxy_rate_limited(proxy);
+            record_proxy_dropped(proxy);
+            return PROXY_TARGET_NONE, false;
+        }
+    }
+
+    // 2. Upstream target selection
     let target_idx, ok = select_upstream(proxy.cluster);
-    guard ok && target_idx >= 0 else {
+    guard ok && target_idx >= 0 && target_idx < proxy.cluster.targets.len else {
         record_proxy_dropped(proxy);
         return PROXY_TARGET_NONE, false;
     }
 
+    // 3. Concurrency ceiling defense against connection exhaustion
+    let max_conns = proxy.config.max_active_conns_per_target;
+    if is_target_concurrency_saturated(proxy.cluster.targets[target_idx], max_conns) {
+        release_upstream_connection(proxy.cluster, target_idx);
+        record_proxy_overloaded(proxy);
+        record_proxy_dropped(proxy);
+        return PROXY_TARGET_NONE, false;
+    }
+
+    // 4. Header filtering and metadata injection
     var forward_headers = new_header_map();
     let upstream_host = proxy.cluster.targets[target_idx].host[..];
 
@@ -237,7 +330,32 @@ fn prepare_proxy_request(
         proxy.config,
     );
 
+    // 5. Upstream wire serialization
     serialize_upstream_request(method, uri, forward_headers, body, out_wire);
     record_proxy_forwarded(proxy);
     return target_idx, true;
+}
+
+// Compatibility wrapper for prepare_proxy_request without explicit timestamp.
+fn prepare_proxy_request(
+    proxy: ReverseProxy&,
+    method: const u8[:],
+    uri: const u8[:],
+    in_headers: const HeaderMap&,
+    client_ip: const u8[:],
+    proto: const u8[:],
+    body: const u8[:],
+    out_wire: u8[>..]&,
+) -> i32, bool {
+    return prepare_proxy_request_at(
+        proxy,
+        method,
+        uri,
+        in_headers,
+        client_ip,
+        proto,
+        body,
+        out_wire,
+        0,
+    );
 }

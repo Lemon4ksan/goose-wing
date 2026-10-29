@@ -166,5 +166,7 @@ import grpc.server;
 
 // ---- reverse proxy & load balancer -----------------------------------------
 
+import proxy.gcra;
+import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;

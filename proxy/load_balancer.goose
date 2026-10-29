@@ -16,13 +16,23 @@ enum LbPolicy {
     LeastConnections,
 }
 
+enum UpstreamHealthState {
+    Up,
+    Down,
+    Probing,
+}
+
 struct UpstreamTarget {
     host: u8[..64] = [],
     port: u16 = 80,
     active_conns: i32 = 0,
     weight: u16 = 1,
     is_healthy: bool = true,
+    health_state: UpstreamHealthState = UpstreamHealthState.Up,
     fails: i32 = 0,
+    successes: i32 = 0,
+    healthy_threshold: i32 = 2,
+    unhealthy_threshold: i32 = 3,
     total_requests: u64 = 0,
 }
 
@@ -210,12 +220,29 @@ fn release_upstream_connection(cluster: UpstreamCluster&, target_idx: i32) {
     dec_active_conns(cluster.targets[target_idx]);
 }
 
+inline fn inc_target_successes(target: UpstreamTarget&) -> i32 {
+    let s = target.successes + 1;
+    target.successes = s;
+    return s;
+}
+
 // Records success, clearing failure streak and restoring circuit if applicable.
 fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return; }
     cluster.targets[target_idx].fails = 0;
-    cluster.targets[target_idx].is_healthy = true;
-    cluster.circuit_open = false;
+    let s = inc_target_successes(cluster.targets[target_idx]);
+
+    if cluster.targets[target_idx].health_state == UpstreamHealthState.Probing {
+        if s >= cluster.targets[target_idx].healthy_threshold {
+            cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
+            cluster.targets[target_idx].is_healthy = true;
+            cluster.circuit_open = false;
+        }
+    } else {
+        cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
+        cluster.targets[target_idx].is_healthy = true;
+        cluster.circuit_open = false;
+    }
 }
 
 fn update_cluster_circuit_state(cluster: UpstreamCluster&) {
@@ -240,10 +267,35 @@ inline fn inc_target_fails(target: UpstreamTarget&) -> i32 {
 // Records connection or timeout failure, tripping circuit breaker if ceiling reached.
 fn record_upstream_failure(cluster: UpstreamCluster&, target_idx: i32) {
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return; }
+    cluster.targets[target_idx].successes = 0;
     let fails = inc_target_fails(cluster.targets[target_idx]);
 
-    if fails >= cluster.max_fails {
+    let max_f = if cluster.max_fails > 0 { cluster.max_fails } else { cluster.targets[target_idx].unhealthy_threshold };
+    if fails >= max_f {
+        cluster.targets[target_idx].health_state = UpstreamHealthState.Down;
         cluster.targets[target_idx].is_healthy = false;
     }
     update_cluster_circuit_state(cluster);
+}
+
+// Transitions a Down target to Probing state for active health check verification.
+fn set_upstream_probing(cluster: UpstreamCluster&, target_idx: i32) -> bool {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }
+    guard cluster.targets[target_idx].health_state == UpstreamHealthState.Down else { return false; }
+    cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
+    cluster.targets[target_idx].successes = 0;
+    return true;
+}
+
+// Configures target-specific consecutive healthy and unhealthy thresholds.
+fn set_target_health_thresholds(
+    cluster: UpstreamCluster&,
+    target_idx: i32,
+    healthy_thresh: i32,
+    unhealthy_thresh: i32,
+) -> bool {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }
+    cluster.targets[target_idx].healthy_threshold = if healthy_thresh > 0 { healthy_thresh } else { 1 };
+    cluster.targets[target_idx].unhealthy_threshold = if unhealthy_thresh > 0 { unhealthy_thresh } else { 1 };
+    return true;
 }
