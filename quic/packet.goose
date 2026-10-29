@@ -184,6 +184,11 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
             let slen = src[6 + dlen];
             guard slen <= QUIC_MAX_CID_LEN && (7 + dlen + slen) <= src.len else { return hdr, false; }
             hdr.scid.append(src[7 + dlen..7 + dlen + slen]);
+
+            // RFC 9000 §17.2.1: Version Negotiation packet MUST contain one or more 32-bit versions
+            let rem_versions = src.len - (7 + dlen + slen);
+            guard rem_versions >= 4 && (rem_versions & 3) == 0 else { return hdr, false; }
+
             hdr.header_len = 7 + dlen + slen;
             return hdr, true;
         }

@@ -1356,10 +1356,12 @@ fn decode_literals(src: const u8[:], offset: i64&, block_end: i64, lit_buf: u8[>
             let s4 = total_streams - s1 - s2 - s3;
             if s1 < 1 || s2 < 1 || s3 < 1 || s4 < 1 { return DecodedLiterals { ok: false }; }
 
-            let stream_size_chunk = (regenerated_size + 3) / 4;
-            let c1 = stream_size_chunk;
-            let c2 = c1 + stream_size_chunk;
-            let c3 = c2 + stream_size_chunk;
+            let sz1 = (regenerated_size + 3) / 4;
+            let sz2 = (regenerated_size + 2) / 4;
+            let sz3 = (regenerated_size + 1) / 4;
+            let c1 = sz1;
+            let c2 = c1 + sz2;
+            let c3 = c2 + sz3;
 
             let o1 = offset;
             let o2 = o1 + s1;
@@ -2305,7 +2307,7 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
                 frame_content_size = src[offset] as i64; offset += 1;
             } else if fcs_flag == 1 {
                 if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-                frame_content_size = (src[offset] as i64) | ((src[offset + 1] as i64) << 8) + 256;
+                frame_content_size = ((src[offset] as i64) | ((src[offset + 1] as i64) << 8)) + 256;
                 offset += 2;
             } else if fcs_flag == 2 {
                 if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
@@ -2320,7 +2322,7 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
         } else {
             if fcs_flag == 1 {
                 if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-                frame_content_size = (src[offset] as i64) | ((src[offset + 1] as i64) << 8) + 256;
+                frame_content_size = ((src[offset] as i64) | ((src[offset + 1] as i64) << 8)) + 256;
                 offset += 2;
             } else if fcs_flag == 2 {
                 if offset + 4 > src.len { return CompressError.InputBufferTruncated; }

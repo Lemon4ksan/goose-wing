@@ -101,7 +101,7 @@ fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
     return true;
 }
 
-// Decodes an ACK or ACK_ECN frame from wire buffer.
+// Decodes an ACK or ACK_ECN frame from wire buffer, returning the frame, next offset, and success status.
 fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     var cur = offset;
     let ftype, next_cur0, ok0 = quic_decode_varint(src, cur);
@@ -172,7 +172,7 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
         ack.ect1_count = e1;
         ack.ecn_ce_count = ce;
     }
-    return ack, cur - offset, true;
+    return ack, cur, true;
 }
 
 // Converts a list of received packet intervals into an AckFrame representation.
