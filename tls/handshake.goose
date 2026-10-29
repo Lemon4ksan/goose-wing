@@ -1341,3 +1341,92 @@ fn early_data_record_sent(ctrl: EarlyDataController&, record_len: u32) -> bool {
     ctrl.bytes_sent = new_total;
     return true;
 }
+
+// ---- 14. Mutual TLS (mTLS) Client Authentication (RFC 8446 Section 4.4.2) ---
+
+fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
+    core::append_u16_be(out, EXT_SIGNATURE_ALGORITHMS);
+    let algs_bytes_len = (sig_algorithms.len * 2) as u16;
+    core::append_u16_be(out, algs_bytes_len + 2);
+    core::append_u16_be(out, algs_bytes_len);
+    for alg in sig_algorithms {
+        core::append_u16_be(out, alg);
+    }
+}
+
+// Encodes a CertificateRequest handshake message (RFC 8446 §4.3.2).
+fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: const u16[:]) -> bool {
+    guard context.len <= 32 else { return false; }
+    out.push(context.len as u8);
+    out.append(context);
+
+    var ext_buf: u8[..64] = [];
+    encode_cert_req_ext_sig_algs(ext_buf, sig_algorithms);
+    core::append_u16_be(out, ext_buf.len as u16);
+    out.append(ext_buf[..]);
+    return true;
+}
+
+// Encodes a client Certificate message (RFC 8446 §4.4.2).
+// When cert_der is empty, an empty certificate_list is encoded.
+fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: const u8[:]) -> bool {
+    guard cert_context.len <= 32 else { return false; }
+    out.push(cert_context.len as u8);
+    out.append(cert_context);
+
+    if cert_der.len == 0 {
+        // Empty certificate list (3 zero bytes for u24 length)
+        core::append_u24_be(out, 0);
+        return true;
+    }
+
+    // List length = 3 bytes cert_data len + cert_der.len + 2 bytes extensions len
+    let list_len = (cert_der.len + 5) as u32;
+    core::append_u24_be(out, list_len);
+    core::append_u24_be(out, cert_der.len as u32);
+    out.append(cert_der);
+    core::append_u16_be(out, 0); // 0 extensions for client cert entry
+    return true;
+}
+
+// Encodes a client CertificateVerify message (RFC 8446 §4.4.3).
+fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: const u8[:]) -> bool {
+    guard signature.len > 0 && signature.len <= 512 else { return false; }
+    core::append_u16_be(out, sig_scheme);
+    core::append_u16_be(out, signature.len as u16);
+    out.append(signature);
+    return true;
+}
+
+// Parses CertificateVerify handshake message payload (RFC 8446 §4.4.3).
+// Returns (sig_scheme, signature_slice, ok).
+fn parse_certificate_verify(payload: const u8[:]) -> u16, const u8[:], bool {
+    guard payload.len >= 4 else { return 0, "", false; }
+    let sig_scheme = ((payload[0] as u16) << 8) | payload[1];
+    let sig_len = (((payload[2] as u16) << 8) | payload[3]) as i64;
+    let expected_total = 4 + sig_len;
+    guard payload.len == expected_total else { return 0, "", false; }
+    return sig_scheme, payload[4..], true;
+}
+
+// Verifies a client's digital signature in CertificateVerify (RFC 8446 §4.4.3).
+fn verify_client_certificate_verify(
+    sig_scheme: u16,
+    signature: const u8[:],
+    client_pubkey: const u8[:],
+    transcript_hash: const u8[:],
+) -> bool {
+    guard sig_scheme == SIG_SCHEME_ED25519 else { return false; }
+    guard client_pubkey.len == 32 && signature.len == 64 else { return false; }
+
+    var pub_arr: u8[32] = [0; 32];
+    for i in 32 { pub_arr[i] = client_pubkey[i]; }
+
+    var sig_arr: u8[64] = [0; 64];
+    for i in 64 { sig_arr[i] = signature[i]; }
+
+    var msg_buf: u8[160] = [0; 160];
+    let msg_len, ok_m = build_certificate_verify_message(false, transcript_hash, msg_buf[..]);
+    guard ok_m else { return false; }
+    return core::ed25519_verify(pub_arr, msg_buf[..msg_len], sig_arr);
+}
