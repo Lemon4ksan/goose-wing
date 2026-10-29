@@ -616,6 +616,24 @@ fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:
     return tcp_send2(fd, wire_headers[..], res.body[..]);
 }
 
+// Sends an HTTP/1.1 response where the payload is provided as an IoVecArray of up to 15 chunks,
+// prepending wire headers zero-copy via tcp_sendv (WSASend / writev).
+fn send_http1_response_iov<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], body_iov: const core::IoVecArray&, wire_headers: B&) -> i32 {
+    wire_headers.clear();
+    serialize_http1_headers(res, server_name, wire_headers);
+    guard fd > 0 else { return 0; }
+    var arr = core::new_iovec_array();
+    core::iovec_push(arr, wire_headers[..]);
+    let n = core::iovec_count(body_iov);
+    for i in n {
+        let chunk = core::iovec_get(body_iov, i);
+        if chunk.len > 0 {
+            core::iovec_push(arr, chunk);
+        }
+    }
+    return tcp_sendv(fd, arr);
+}
+
 // Outbound Cork Buffer Manager for TCP connections (uWebSockets 16 KB Cork Buffer pattern).
 // Aggregates headers, frames, and small payload chunks into a single 16384-byte buffer
 // before flushing via 1 system call.

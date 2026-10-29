@@ -8,6 +8,7 @@ namespace wing;
 import std;
 import json;
 import cookie.policy;
+import http.priority;
 
 // ---- request & query item models -------------------------------------------
 
@@ -142,7 +143,7 @@ fn remove_header(req: Request&, name: const u8[:]) -> bool {
 }
 
 fn bearer(req: Request&, token: const u8[:]) {
-    var val: u8[..384] = "Bearer ";
+    var val: u8[>..] = "Bearer ";
     val.append(token);
     set_header(req.headers, "Authorization", val[..], true);
 }
@@ -241,6 +242,16 @@ fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
 
 // ---- middleware & signers --------------------------------------------------
 
+// Sets RFC 9218 HTTP Priority header ("Priority: u=..., i").
+// Urgency ranges from 0 (highest) to 7 (lowest), default is 3.
+fn set_priority(req: Request&, urgency: i32, incremental: bool = false) {
+    let u: u8 = if urgency >= 0 && urgency <= 7 { urgency as u8 } else { PRIORITY_URGENCY_DEFAULT };
+    var p = HttpPriority { urgency: u, incremental: incremental };
+    var wire_val: u8[>..] = [];
+    serialize_http_priority(p, wire_val);
+    set_header(req, "priority", wire_val[..]);
+}
+
 fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
     set_header(req, "X-Trace-Id", trace_id);
     set_header(req, "X-B3-Sampled", "1");
@@ -248,7 +259,7 @@ fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
 
 fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
     // Lightweight deterministic signature stub for the shell skeleton
-    var sig: u8[..128] = "hmac-sha256:";
+    var sig: u8[>..] = "hmac-sha256:";
     sig.append(secret_key);
     sig.append(":len=");
     format(sig, req.body.len);

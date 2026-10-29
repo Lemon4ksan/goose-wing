@@ -417,3 +417,63 @@ fn verify_http_response_signature(
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
 }
+
+// ---- 8. High-Level Convenience Helpers --------------------------------------
+
+// Signs request with RFC 9421 HTTP Message Signatures using Ed25519.
+// Automatically configures standard component identifiers (@method, @authority, @path, @query).
+fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u8[:]) -> bool {
+    var params = HttpSignatureParams { .. };
+    if key_id.len > 0 {
+        params.key_id.append(key_id);
+    }
+    params.alg.clear();
+    params.alg.append(SIG_ALG_ED25519);
+    params.components.push("@method");
+    params.components.push("@authority");
+    params.components.push("@path");
+    params.components.push("@query");
+    return sign_http_request(req, params, private_key);
+}
+
+// Verifies request signature using Ed25519 public key and key_id.
+fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool {
+    var params = HttpSignatureParams { .. };
+    if key_id.len > 0 {
+        params.key_id.append(key_id);
+    }
+    params.alg.clear();
+    params.alg.append(SIG_ALG_ED25519);
+    params.components.push("@method");
+    params.components.push("@authority");
+    params.components.push("@path");
+    params.components.push("@query");
+    return verify_http_signature(req, "sig1", params, public_key);
+}
+
+// Signs response with RFC 9421 HTTP Message Signatures using Ed25519.
+// Automatically configures standard component identifiers (@status, content-type).
+fn sign_response_ed25519(res: Response&, req: const Request&, key_id: const u8[:], private_key: const u8[:]) -> bool {
+    var params = HttpSignatureParams { .. };
+    if key_id.len > 0 {
+        params.key_id.append(key_id);
+    }
+    params.alg.clear();
+    params.alg.append(SIG_ALG_ED25519);
+    params.components.push("@status");
+    params.components.push("content-type");
+    return sign_http_response(res, req, params, private_key);
+}
+
+// Verifies response signature using Ed25519 public key and key_id.
+fn verify_response_ed25519(res: const Response&, req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool {
+    var params = HttpSignatureParams { .. };
+    if key_id.len > 0 {
+        params.key_id.append(key_id);
+    }
+    params.alg.clear();
+    params.alg.append(SIG_ALG_ED25519);
+    params.components.push("@status");
+    params.components.push("content-type");
+    return verify_http_response_signature(res, req, "sig1", params, public_key);
+}
