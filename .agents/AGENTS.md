@@ -136,6 +136,40 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
   - Maintain zero dynamic memory allocation on wire parsing and serialization paths.
   - Use bounded inline buffers, slices (`u8[:]`), SWAR word scanners, and SIMD primitives.
 
+## Strict code clarity and anti-bloat invariants
+
+Enforced statically via `scripts/lint_invariants.ps1` and `.githooks/pre-commit`:
+
+1. **Minimum aliases (Zero redundant aliasing)**:
+   - **No primitive or slice `type` aliases**: Never hide memory layout behind aliases like `type ByteSlice = u8[:]` or `type UserId = u64`. Write canonical Goose types (`const u8[:]`, `u8[..256]`, `u64`) directly at every call site so bounds and ownership are immediately visible.
+   - **No `import ... as ...` namespace renaming**: Use canonical module names unless resolving a hard symbol collision.
+   - **No pass-through wrapper functions**: Never write 1-line helper functions that merely rename or forward arguments to another function without adding domain invariants.
+   - **No local variable re-aliasing**: Do not create chains of synonymous local bindings (`let a = buf.len; let n = a;`).
+2. **Input/output examples (`// Example:`) where genuinely useful**:
+   - **Required on cursor-mutating parsers and non-trivial algorithms**: Any function that advances a wire cursor (`idx: i64&`, `pos: i64&`, `offset: u64&`, `r: SliceReader&`), performs SWAR/bit manipulation, or parses complex RFC grammar (`fn parse_*`, `fn decode_*`, `fn extract_*`) must include a compact 2-3 line `// Example:` block showing:
+     - Input wire bytes and initial cursor index.
+     - Returned slice/value and exact final cursor index (e.g., whether `idx` stops *at* or *after* the delimiter).
+     ```goose
+     // Extracts a parameter key up to '=', space, or tab (RFC 7616 §3.4).
+     // Advances `idx` to the delimiter without consuming it.
+     //
+     // Example:
+     //   raw = "realm=\"api\", nonce=\"xyz\"", idx = 0
+     //   returns: "realm", ok = true, idx = 5 (points to '=')
+     ```
+   - **Omit on trivial functions (Anti-noise)**: Do not add examples to simple getters, constructors (`new_*`), state resets, or self-evident 1-line predicates.
+3. **No boolean trap signatures**:
+   - Do not declare functions with consecutive raw `bool` parameters (`fn configure(a: bool, b: bool)`). Use explicit `enum` types (`QuicRole.Server`, `VerifyMode.Strict`) or configuration structs with named fields.
+4. **Transactional cursor contract on error**:
+   - Functions taking a mutable cursor (`idx: i64&`) and returning `(..., bool)` must document or guarantee whether `idx` remains unchanged on `false` or stops at the offending byte.
+5. **Named RFC constants over magic numbers**:
+   - Protocol frame types (`0x08`), close codes (`1002`, `1007`), and wire bitmasks must be defined as module-level `const` declarations referencing the RFC section (`const WS_CLOSE_PROTOCOL_ERROR: u16 = 1002; // RFC 6455 §7.4.1`), never hardcoded inside branch conditions.
+6. **Silence on the obvious in comments**:
+   - Never write comments that merely restate the function name (`// Parses header` above `fn parse_header`).
+   - Never write `// Does not panic` or `// Memory safe` (zero-panic safety is the baseline expectation; document only failure conditions and invariants).
+7. **Linear Git commit history**:
+   - Merge commits are strictly prohibited (`git merge` without `--ff-only` is blocked). The commit graph on `main` must remain 100% linear via fast-forward, rebase, or cherry-pick.
+
 ## Documentation and style
 
 - Write documentation, comments, and commit messages concisely and factually without AI buzzwords, corporate fluff, or melodrama.

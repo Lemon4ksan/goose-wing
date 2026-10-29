@@ -3,13 +3,27 @@
 # Copyright (c) 2026 Lemon4ksan
 
 # .githooks/pre-commit
-# Hardware complexity gate and format verification for goose-wing.
+# Hardware complexity gate, style invariants, and format verification for goose-wing.
+
+# Enforce Linear Git History (block merge commits)
+if [ -f ".git/MERGE_HEAD" ]; then
+    echo "[pre-commit] ERROR: Merge commits are prohibited. Maintain a linear commit history via rebase or fast-forward."
+    exit 1
+fi
 
 # Find all staged .goose files
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.goose$' || true)
 
 if [ -z "$STAGED_FILES" ]; then
     exit 0
+fi
+
+# Enforce code clarity and anti-aliasing invariants
+if command -v powershell >/dev/null 2>&1 && [ -f "scripts/lint_invariants.ps1" ]; then
+    echo "[pre-commit] Checking code clarity and anti-aliasing invariants..."
+    if ! powershell -ExecutionPolicy Bypass -File scripts/lint_invariants.ps1 -Staged; then
+        exit 1
+    fi
 fi
 
 echo "[pre-commit] Checking formatting on staged .goose files..."
