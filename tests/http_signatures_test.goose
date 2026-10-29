@@ -152,9 +152,102 @@ fn test_http_signatures(t: core::T&) {
     };
 }
 
+fn test_ed25519_signatures(t: core::T&) {
+    t.run("Ed25519 Asymmetric HTTP Signatures (RFC 9421 §3.2.2)") { sub =>
+        var seed: u8[32] = [0; 32];
+        for i in 32 { seed[i] = (i + 17) as u8; }
+        let pub_key = core::ed25519_public_key(seed);
+
+        var req = wing::Request {
+            method: "POST",
+            url: "https://api.gateway.org/transfers",
+            ..
+        };
+        wing::set_header(req, "Content-Type", "application/json");
+        wing::set_header(req, "Digest", "SHA-256=abcdef1234567890");
+
+        var params = wing::HttpSignatureParams {
+            label: "sig-ed",
+            key_id: "ed25519-key-1",
+            alg: "ed25519",
+            created: 1700000000,
+            ..
+        };
+        params.components.push("@method");
+        params.components.push("@authority");
+        params.components.push("content-type");
+
+        let sign_ok = wing::sign_http_request(req, params, seed[..]);
+        sub.assert_true(sign_ok, "Signed request with Ed25519");
+        sub.assert_true(req.has_header("Signature-Input"), "Has Signature-Input");
+        sub.assert_true(req.has_header("Signature"), "Has Signature");
+
+        // Verification with public key
+        let v_ok = wing::verify_http_signature(req, "sig-ed", params, pub_key[..], 1700000050);
+        sub.assert_true(v_ok, "Ed25519 signature verified successfully");
+
+        // Rejection on wrong public key
+        var wrong_pub: u8[32] = [0xFF; 32];
+        let v_wrong = wing::verify_http_signature(req, "sig-ed", params, wrong_pub[..], 1700000050);
+        sub.assert_false(v_wrong, "Wrong public key rejected");
+
+        // Rejection on tampered method
+        var tampered_req = req;
+        tampered_req.method.clear();
+        tampered_req.method.append("PUT");
+        let v_tampered = wing::verify_http_signature(tampered_req, "sig-ed", params, pub_key[..], 1700000050);
+        sub.assert_false(v_tampered, "Tampered method rejected");
+    };
+}
+
+fn test_response_signatures(t: core::T&) {
+    t.run("HTTP Response Signatures with @status & ;req component chaining") { sub =>
+        var req = wing::Request {
+            method: "GET",
+            url: "https://shop.com/orders/42",
+            ..
+        };
+        wing::set_header(req, "X-Client-Id", "client-999");
+
+        var res = wing::new_response();
+        res.status_code = 200;
+        res.set_header("Content-Type", "application/json");
+        res.set_header("ETag", "\"v42-alpha\"");
+
+        var params = wing::HttpSignatureParams {
+            label: "res-sig",
+            key_id: "res-key-01",
+            alg: "hmac-sha256",
+            created: 1700000100,
+            ..
+        };
+        params.components.push("@status");
+        params.components.push("etag");
+        params.components.push("@method;req");
+
+        let secret = "response_hmac_secret_32_bytes_!!";
+        let sign_ok = wing::sign_http_response(res, req, params, secret);
+        sub.assert_true(sign_ok, "Response signed");
+        sub.assert_true(res.has_header("Signature-Input"), "Response has Signature-Input");
+        sub.assert_true(res.has_header("Signature"), "Response has Signature");
+
+        // Verify valid response signature
+        let v_ok = wing::verify_http_response_signature(res, req, "res-sig", params, secret, 1700000110);
+        sub.assert_true(v_ok, "Response signature verified");
+
+        // Tamper status code (200 -> 404)
+        var tampered_res = res;
+        tampered_res.status_code = 404;
+        let v_status_tampered = wing::verify_http_response_signature(tampered_res, req, "res-sig", params, secret, 1700000110);
+        sub.assert_false(v_status_tampered, "Tampered response status code rejected");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("RFC 9421 HTTP Message Signatures Suite", core::Verbosity.Verbose);
     core::run_case(runner, "1. HTTP Message Signatures", test_http_signatures);
+    core::run_case(runner, "2. Ed25519 Signatures", test_ed25519_signatures);
+    core::run_case(runner, "3. Response Signatures", test_response_signatures);
     let ok = core::finish(runner);
     assert(ok);
 }
