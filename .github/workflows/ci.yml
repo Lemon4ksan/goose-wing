@@ -107,11 +107,14 @@ jobs:
         run: |
           powershell -ExecutionPolicy Bypass -File ./scripts/test_lit.ps1 -Jobs 4
 
-      - name: Enforce G-CRAP hardware complexity gate
+      - name: Enforce G-CRAP hardware complexity gate and ratchet
         run: |
           if command -v goose-lit >/dev/null 2>&1; then
             goose-lit gate auth/pkce.goose 25 --cov 0.85
             goose-lit gate http/digest_fields.goose 25 --cov 0.85
+            if [ -f "scripts/gcrap_baseline.txt" ]; then
+              goose-lit crap . --baseline scripts/gcrap_baseline.txt --cov 0.85 --delta 5.0
+            fi
           fi
 
   e2e-protocols:

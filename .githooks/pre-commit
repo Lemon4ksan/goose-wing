@@ -59,6 +59,17 @@ if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
                 ;;
         esac
     done
+
+    if [ -f "scripts/gcrap_baseline.txt" ]; then
+        echo "[pre-commit] Evaluating G-CRAP ratchet against baseline..."
+        $LIT_BIN crap . --baseline scripts/gcrap_baseline.txt --cov 0.85 --delta 5.0 >/dev/null 2>&1
+        RC=$?
+        if [ $RC -ne 0 ]; then
+            echo "[pre-commit] RATCHET GATE REJECTED: Safety regressions or unproven bce:keep detected."
+            $LIT_BIN crap . --baseline scripts/gcrap_baseline.txt --cov 0.85 --delta 5.0
+            exit 1
+        fi
+    fi
 fi
 
 echo "[pre-commit] All invariants and complexity gates passed."

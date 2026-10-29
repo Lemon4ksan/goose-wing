@@ -11,8 +11,6 @@ This directory houses native LLVM-style LIT (`goose-lit`) verification suites fo
 - [Running LIT tests](#running-lit-tests)
 - [Hardware complexity gate](#hardware-complexity-gate)
 
----
-
 ## Design principles
 
 Standard unit tests rely on private helper assertions (`assert(x == y)`). This leaves hidden bugs in streaming parsers:
@@ -27,8 +25,6 @@ Goose LIT adopts the LLVM testing paradigm:
 - Trace every FSM state transition and cursor movement explicitly.
 - Exercise all prefix slices `1..N-1` through `wire_kit::verify_split_stream`.
 - Mutate wire streams via in-process deterministic fuzzing (`wire_kit::fuzz_payload`).
-
----
 
 ## Directive reference
 
@@ -54,8 +50,6 @@ Directives are parsed directly from comments at the top of each `.goose` test fi
 | `// CHECK-NOT: <pattern>` | Asserts that `<pattern>` does not appear before the next match. |
 | `// CHECK-LABEL: <tag>` | Divides file into independent verification blocks (prevents cross-block matching). |
 | `// CHECK-SAME: <pattern>` | Matches `<pattern>` on the same line as the previous match. |
-
----
 
 ## The six-pillar testing methodology
 
@@ -119,8 +113,6 @@ print("HIST_BUG_123: DEFENDED");
 // CHECK: HIST_BUG_123: DEFENDED
 ```
 
----
-
 ## Canonical test template
 
 ```goose
@@ -169,8 +161,6 @@ fn main() {
 // CHECK-NEXT: STREAM_SLICING: PASS
 // CHECK-NEXT: MUTATION_FUZZ: PASS
 ```
-
----
 
 ## Running LIT tests
 
