@@ -112,6 +112,25 @@
 - Incremental streaming decoder (`ChunkedStreamDecoder`):
   - 6-state zero-alloc state machine (`ChunkSizeLine`, `ChunkData`, `ChunkDataCrlf`, `Trailers`, `Complete`, `Error`) that accepts input split into pieces as small as 1 byte.
 
+### 4.5 RFC 9530 Digest Fields (`http/digest_fields.goose`)
+- Modern replacement for obsolete RFC 3230 `Digest` headers (`Content-Digest` and `Repr-Digest`).
+- Structured Field Values (RFC 8941 / RFC 9651) dictionary formatting using byte sequences (`:base64:`).
+- Supported hashing algorithms: `sha-256` and `sha-512`.
+- Direct helper methods: `set_content_digest`, `set_repr_digest`, `verify_request_content_digest`, and `verify_response_content_digest`.
+- Constant-time hash verification via `core::ct_eq_bytes` to prevent timing side channels.
+
+### 4.6 RFC 9213 Targeted HTTP Cache-Control (`http/cache/cache_control.goose`)
+- Zero-allocation parsing and precedence resolution for targeted intermediary cache headers.
+- Precedence hierarchy: `<target>-Cache-Control` -> `CDN-Cache-Control` -> standard `Cache-Control`.
+- Allows CDN edges and reverse proxies to apply specific cache lifetimes without mutating end-user browser caching directives.
+
+### 4.7 RFC 9116 Vulnerability Disclosure (`http/security_txt.goose`)
+- Zero-heap line parser and validator for `/.well-known/security.txt` and `/security.txt`.
+- Enforces mandatory `Contact` and `Expires` directives per RFC 9116 §2.5.3 and §2.5.5.
+- Validates RFC 3339 timestamps and rejects stale files against current Unix epoch.
+- Enforces HTTPS URI requirements on `Canonical` directives.
+- Wire formatter for exporting valid `security.txt` metadata from embedded HTTP servers.
+
 ## 5. HTTP/2 stack and server multiplexer
 
 `goose-wing` implements HTTP/2 (RFC 9113), HPACK (RFC 7541), and Extensible Priorities (RFC 9218) in `http2/` and `server/h2_multiplexer.goose`.
@@ -193,7 +212,13 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Binary framing with trailer flags (`0x80`).
   - Base64 gRPC-Web-Text for legacy proxy environments.
 
-### 7.4 MASQUE and the Capsule Protocol (RFC 9297, RFC 9298)
+### 7.4 Extended CONNECT for WebSockets (RFC 8441, RFC 9220)
+- WebSocket bootstrapping over HTTP/2 and HTTP/3 multiplexed streams.
+- Protocol pseudo-header `:protocol = websocket` with `CONNECT` method.
+- Replaces TCP connection upgrades with stream-isolated bidirectional tunnels.
+- Extensible prioritization integration via RFC 9218 frames.
+
+### 7.5 MASQUE and the Capsule Protocol (RFC 9297, RFC 9298)
 - CONNECT-UDP tunneling: Translates IP UDP packets across HTTP/2 and HTTP/3 capsules.
 - Capsule framer: Variable-length integer framing for Datagram, Address Assign, and Route Request capsules.
 
@@ -224,6 +249,13 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 - Ed25519 (RFC 8032): Twisted Edwards curve $-x^2 + y^2 = 1 + d x^2 y^2$ over $\mathbb{F}_{2^{255}-19}$ with extended projective coordinates $(X:Y:Z:T)$, branchless scalar multiplication, signature verification, and malleability protection ($S < L$).
 - Privacy Pass blind tokens (RFC 9576–9578): Zero-alloc wire codec for `TokenChallenge` and `Token`, single-use cache, and GREASE support for Cloudflare Turnstile and Apple Private Access Tokens.
 
+### 8.4 TLS 1.3 Mutual Authentication (mTLS / RFC 8446 §4.4.2)
+- Server-side and client-side support for TLS 1.3 client certificates.
+- Codec for `CertificateRequest` messages with configurable signature algorithms (`SIG_SCHEME_ED25519`, `SIG_SCHEME_ECDSA_SECP256R1_SHA256`, `SIG_SCHEME_RSA_PSS_RSAE_SHA256`).
+- FSM state transitions: `ServerWaitCert` -> `ServerWaitCV` -> `ServerWaitFinished`.
+- Verifies `CertificateVerify` signature over transcript hash using Ed25519.
+- Hardware rejection of legacy digest algorithms (MD5/SHA-1) in client certificate chains.
+
 ## 9. Compression (Brotli, Zstandard, DCB/DCZ)
 
 `goose-wing` includes compression and decompression code with no external dependencies in `core/compress/`.
@@ -243,6 +275,10 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 - Zstandard decompressor: Frame format, FSE (Finite State Entropy) and Huffman decoding with streaming block assembly.
 - Canonical signatures: All decompressors provide the uniform signature `fn <algo>_decompress(src, out) -> bool, CompressError` without proxy adapters.
 
+### 9.4 Automatic Zstandard Client Negotiation (RFC 8878)
+- Default client sessions automatically advertise `Accept-Encoding: zstd, br, gzip`.
+- Streaming decompression of Zstandard response payloads with zero heap allocation.
+
 ## 10. Authentication and tokens
 
 ### 10.1 RFC 7519 JWT, RFC 7515 JWS, and RFC 7517 JWKS (`auth/`)
@@ -257,7 +293,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Clock skew leeway: Configurable `leeway_seconds` on `exp` and `nbf` timestamp evaluations.
 - JWKS key rotation: Holds up to 16 active keys (`OKP` for Ed25519 and `Oct` for HMAC) with $O(1)$ lookup by `kid`.
 
-### 10.2 OAuth 2.0 DPoP (RFC 9449) and PKCE (RFC 7636, RFC 9700)
+### 10.2 OAuth 2.0 DPoP (RFC 9449) and PKCE (RFC 7636, RFC 9700, OAuth 2.1)
 - Demonstrating proof-of-possession (DPoP):
   - Signs JOSE tokens with `typ: "dpop+jwt"`.
   - Canonicalizes HTTP target URI (HTU without query or fragment) and HTTP method (HTM).
@@ -265,12 +301,15 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Validates DPoP proofs with timestamp skew, method, URI, and nonce verification.
 - Proof key for code exchange (PKCE):
   - Generates random verifiers ($43..128$ characters from the unreserved set).
-  - Derives code challenge via `S256` (`Base64URL(SHA-256(verifier))`) or `plain`.
+  - Derives code challenge via `S256` (`Base64URL(SHA-256(verifier))`).
+  - Strict mode (`is_valid_code_challenge_strict`, `validate_code_challenge_strict`): bans `plain` method per OAuth 2.1 §7.6.1 and RFC 9700.
   - Verification runs in constant time.
 
-### 10.3 RFC 9421 HTTP Message Signatures
+### 10.3 RFC 9421 HTTP Message Signatures (`http/signatures.goose`)
 - Structured fields serialization of `Signature-Input` and `Signature`.
-- Canonical component basis covering `@method`, `@target-uri`, `@authority`, and selective headers.
+- Cryptographic signature support with Ed25519 (RFC 8032) and HMAC-SHA256.
+- Canonical component basis covering `@method`, `@authority`, `@path`, `@query`, and `@status`.
+- End-to-end request and response signing helpers (`sign_request_ed25519`, `verify_request_ed25519`, `sign_response_ed25519`, `verify_response_ed25519`).
 
 ## 11. Cookie store and partitioning (CHIPS)
 
@@ -307,6 +346,11 @@ Isolated within `namespace internal;`:
 - `SyncHeadRelease`: Zero-copy handoff of connection heads to worker threads.
 - `InlineHandlerFuture`: Stack-allocated task completion states avoiding promise/future heap allocations.
 - `ConnectionTimer`: Slowloris sweeper tracking connection activity and dropping stalled clients.
+
+### 12.3 Vectorized zero-copy server transmission (`server/server.goose`)
+- Scatter/gather vectorized response dispatch via `send_http1_response_iov`.
+- Combines serialized HTTP headers and up to 15 payload segments from `IoVecArray` into a single `tcp_sendv` kernel call (`WSASend` / `writev`).
+- Eliminates intermediate buffer copies when assembling multipart or chunked JSON payloads.
 
 ## 13. Buffer limits and edge cases
 

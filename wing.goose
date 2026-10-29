@@ -67,6 +67,8 @@ import http.altsvc;
 import http.compression_dict;
 import http.signatures;
 import http.digest_fields;
+import http.security_txt;
+import http.targeted_cache;
 import http.resumable_upload;
 import http.status_diagnostics;
 import http.hsts;

@@ -72,6 +72,48 @@ jobs:
           clang -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/af_xdp.c shim/smartnic.c
           rm -f *.o
 
+  lit-verification:
+    name: Native Goose LIT verification
+    needs: changes
+    if: needs.changes.outputs.goose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up toolchain and Goose compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+
+      - name: Typecheck core and wing libraries
+        run: |
+          goose check core.goose
+          goose check wing.goose
+
+      - name: Clone and build goose-lit
+        run: |
+          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit || true
+          if [ -d "../goose-lit" ]; then
+            mkdir -p ../goose-lit/bin
+            goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
+            sudo ln -s $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
+          fi
+
+      - name: Run LIT verification suites
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File ./scripts/test_lit.ps1 -Jobs 4
+
+      - name: Enforce G-CRAP hardware complexity gate
+        run: |
+          if command -v goose-lit >/dev/null 2>&1; then
+            goose-lit gate auth/pkce.goose 25 --cov 0.85
+            goose-lit gate http/digest_fields.goose 25 --cov 0.85
+          fi
+
   e2e-protocols:
     name: Protocol tests
     needs: changes

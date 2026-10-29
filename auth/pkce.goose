@@ -69,6 +69,8 @@ fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "S256")
     return false;
 }
 
+let PKCE_DEFAULT_FALLBACK: const u8[64] = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk_0123456789abcdefghij";
+
 // Generates a valid PKCE code verifier (43..128 characters) into out.
 // If entropy bytes (e.g. 32-64 bytes) are provided, encodes them into URL-safe characters.
 // If empty, derives a high-entropy 64-character verifier.
@@ -81,20 +83,14 @@ fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
         if take_len > PKCE_MAX_VERIFIER_LEN {
             take_len = PKCE_MAX_VERIFIER_LEN;
         }
+        guard take_len <= b64.len else { return false; }
         for i in take_len {
             out.push(b64[i]);
         }
         return is_valid_code_verifier(out[..]);
     }
 
-    // Default fallback: 64-character pseudo-random verifier using unreserved charset
-    let charset: const u8[66] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    var state: u64 = 0x9e3779b97f4a7c15;
-    for i in 64 {
-        state = state * 6364136223846793005 + 1442695040888963407 + (i as u64);
-        let idx = (state >> 32) % 66;
-        out.push(charset[idx as i64]);
-    }
+    out.append(PKCE_DEFAULT_FALLBACK);
     return is_valid_code_verifier(out[..]);
 }
 

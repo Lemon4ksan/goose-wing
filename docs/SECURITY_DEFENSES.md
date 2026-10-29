@@ -52,6 +52,9 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | Chunked Trailer Bombs | Unbounded memory exhaustion (CWE-400 / RFC 9112 §7.1.2) | Trailers are capped at 16 headers and 4,096 bytes total. Exceeding these bounds aborts parsing with a framing error. |
 | Sensitive Header Bans in Trailers | RFC 9110 §6.5.2 | These headers are rejected in chunked trailers: `Authorization`, `Set-Cookie`, `Cookie`, `Content-Range`, `TE`, `Host`, and `Transfer-Encoding`. |
 | Comma-Fold Isolation | RFC 9110 §5.3, RFC 6265bis | `Set-Cookie`, `WWW-Authenticate`, and `Proxy-Authenticate` headers are flagged with `HEADER_FLAG_NO_COMMA_FOLD`. They are never joined with commas, so cookie attributes stay intact. |
+| RFC 9530 Digest Structured Fields | RFC 9530, RFC 8941 | Replaces deprecated RFC 3230 `Digest` with `Content-Digest` and `Repr-Digest`. Enforces SFV byte sequences (`:base64:`) and verifies `sha-256` / `sha-512` in constant time (`core::ct_eq_bytes`), preventing unquoted algorithm confusion and timing attacks. |
+| Targeted Cache-Control Precedence | RFC 9213 §2 | Strict precedence hierarchy: `<target>-Cache-Control` overrides `CDN-Cache-Control`, which overrides general `Cache-Control`. Prevents cache lifetime desynchronization between CDN edges and browsers. |
+| RFC 9116 security.txt Verification | RFC 9116 §2.5 | Mandatory `Contact` and `Expires` directives required. RFC 3339 timestamps verified against current time rejecting expired or stale files. `Canonical` directives must use HTTPS. |
 
 ## 5. Multipart, range, and resource exhaustion (`http/multipart.goose`)
 
@@ -224,6 +227,9 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | CSRF FetchContext Method & Header Hygiene | W3C Fetch Metadata | Clears `ctx.method` and bounds `target_host`, `Origin`, and `Referer` to buffer limits. Retains only the first valid Origin and Referer instead of concatenating duplicate headers. |
 | gRPC-Web Trailers CRLF Sanitization | gRPC Wire Spec | Percent-encodes `message` in `encode_grpc_web_trailers` using `encode_grpc_message` and bounds trailer body generation to prevent CRLF trailer injection and buffer overflow. |
 | Keyed Rate Limiter Key Bounds | GCRA rate limiter | Normalizes rate limit keys $> 64$ bytes into a deterministic 64-byte token (prefix + FNV-1a hex hash), preventing capacity panic aborts on long keys. |
+| TLS 1.3 mTLS State Machine & Signature Defense | RFC 8446 §4.4.2 | Strict client certificate FSM: `ServerWaitCert` -> `ServerWaitCV` -> `ServerWaitFinished`. Rejects unexpected or omitted `CertificateVerify`. Verifies Ed25519 signature over transcript hash. Blocks legacy MD5/SHA-1 signatures in certificate chains. |
+| OAuth 2.1 PKCE Method Strictness | OAuth 2.1 §7.6.1, RFC 9700 | Rejects `plain` code challenge method in strict mode (`validate_code_challenge_strict`). Mandates `S256` hashing to prevent authorization code interception on public clients. |
+| RFC 9421 Signature Replay & Spoofing Defense | RFC 9421 §2.1 | Canonical component dictionary binds `@method`, `@authority`, `@path`, `@query`, and `@status` into the signature preimage. Cryptographic signature and parameters verification prevents request tampering and header injection. |
 
 ## 18. Test coverage
 

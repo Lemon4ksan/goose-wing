@@ -1,0 +1,65 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
+# .githooks/pre-commit
+# Hardware complexity gate and format verification for goose-wing.
+
+# Find all staged .goose files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.goose$' || true)
+
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+echo "[pre-commit] Checking formatting on staged .goose files..."
+for file in $STAGED_FILES; do
+    if [ -f "$file" ]; then
+        if ! goose format --check "$file" >/dev/null 2>&1; then
+            echo "[pre-commit] ERROR: Formatting check failed for $file"
+            echo "[pre-commit] Run: goose format $file"
+            exit 1
+        fi
+    fi
+done
+
+echo "[pre-commit] Running typecheck..."
+if ! goose check wing.goose >/dev/null 2>&1; then
+    echo "[pre-commit] ERROR: Typecheck failed for wing.goose"
+    goose check wing.goose
+    exit 1
+fi
+
+LIT_BIN="../goose-lit/bin/goose-lit"
+if [ -f "../goose-lit/bin/goose-lit.exe" ]; then
+    LIT_BIN="../goose-lit/bin/goose-lit.exe"
+fi
+
+if command -v goose-lit >/dev/null 2>&1; then
+    LIT_BIN="goose-lit"
+fi
+
+if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
+    echo "[pre-commit] Enforcing G-CRAP complexity gate (ceiling: 25)..."
+    for file in $STAGED_FILES; do
+        # Enforce gate on production source files (excluding tests/ and examples/)
+        case "$file" in
+            tests/*|examples/*|bench/*)
+                continue
+                ;;
+            *)
+                if [ -f "$file" ]; then
+                    $LIT_BIN gate "$file" 25 --cov 0.85
+                    RC=$?
+                    if [ $RC -ne 0 ]; then
+                        echo "[pre-commit] GATE REJECTED: $file exceeds G-CRAP ceiling or contains bounds safety violations."
+                        exit 1
+                    fi
+                fi
+                ;;
+        esac
+    done
+fi
+
+echo "[pre-commit] All invariants and complexity gates passed."
+exit 0

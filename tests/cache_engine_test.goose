@@ -80,6 +80,35 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
         let cc_pragma = wing::parse_cache_control_headers(map, true);
         sub.assert_true(wing::is_no_cache(cc_pragma), "Pragma: no-cache promoted to CacheControl::no-cache");
     };
+
+    t.run("Targeted HTTP Cache-Control Precedence (RFC 9213)") { sub =>
+        var map = wing::new_header_map();
+        wing::append_header(map, "Cache-Control", "public, max-age=3600");
+        wing::append_header(map, "CDN-Cache-Control", "max-age=600");
+        wing::append_header(map, "Edge-Cache-Control", "max-age=60");
+
+        // Generic client/browser targets standard Cache-Control
+        let cc_client = wing::parse_targeted_cache_control_headers(map, "");
+        sub.assert_eq(cc_client.max_age, 3600, "Client honors standard Cache-Control max-age=3600");
+
+        // Specific Edge target honors Edge-Cache-Control
+        let cc_edge = wing::parse_targeted_cache_control_headers(map, "Edge");
+        sub.assert_eq(cc_edge.max_age, 60, "Edge target honors Edge-Cache-Control max-age=60");
+
+        // Generic CDN target honors CDN-Cache-Control
+        let cc_cdn = wing::parse_targeted_cache_control_headers(map, "CDN");
+        sub.assert_eq(cc_cdn.max_age, 600, "CDN target honors CDN-Cache-Control max-age=600");
+
+        // Unknown intermediary target falls back to CDN-Cache-Control per RFC 9213 §2
+        let cc_other = wing::parse_targeted_cache_control_headers(map, "CloudProxy");
+        sub.assert_eq(cc_other.max_age, 600, "Unknown proxy falls back to CDN-Cache-Control max-age=600");
+
+        // When CDN headers are absent, falls back to Cache-Control
+        var map_plain = wing::new_header_map();
+        wing::append_header(map_plain, "Cache-Control", "max-age=1800");
+        let cc_plain = wing::parse_targeted_cache_control_headers(map_plain, "Edge");
+        sub.assert_eq(cc_plain.max_age, 1800, "Fallback to standard Cache-Control when target missing");
+    };
 }
 
 // ---- 2. Mathematical Freshness Model & Clock Skew ---------------------------
