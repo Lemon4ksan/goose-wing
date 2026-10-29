@@ -7,9 +7,12 @@ namespace wing;
 
 import std;
 import core from "..";
-import quic.packet;
-import quic.AckFrame;
-import quic.bbr;
+import .packet;
+import .AckFrame;
+import .bbr;
+import .frames;
+import .stream;
+import .flow_control;
 
 enum QuicRole {
     Client,
@@ -35,6 +38,8 @@ struct QuicConnection {
     app_space: PnSpaceState = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
     rtt: RttState = RttState { .. },
     pacer: Pacer = Pacer { .. },
+    stream_table: QuicStreamTable = QuicStreamTable { .. },
+    flow_ctrl: QuicFlowControl = QuicFlowControl { .. },
     bytes_received: u64 = 0,
     bytes_sent: u64 = 0,
     validated_address: bool = false,
@@ -48,6 +53,8 @@ fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
         role: QuicRole.Server,
         state: QuicConnState.Initial,
         validated_address: false,
+        stream_table: new_quic_stream_table(QuicRole.Server),
+        flow_ctrl: new_quic_flow_control(65536, 65536),
         ..
     };
     conn.scid.append(scid);
@@ -59,6 +66,8 @@ fn new_quic_client_connection(server_dcid: const u8[:], client_scid: const u8[:]
         role: QuicRole.Client,
         state: QuicConnState.Initial,
         validated_address: true, // Client address validation is implicit
+        stream_table: new_quic_stream_table(QuicRole.Client),
+        flow_ctrl: new_quic_flow_control(65536, 65536),
         ..
     };
     conn.dcid.append(server_dcid);
@@ -204,6 +213,180 @@ fn dispatch_packet_type(conn: QuicConnection&, hdr: const QuicHeader&, out_ack: 
     return true, false;
 }
 
+inline fn calc_payload_offset(hdr_len: u32) -> i64 {
+    return hdr_len;
+}
+
+inline fn calc_bounded_payload_len(total_len: u64, pn_len: u8) -> i64 {
+    let sub = total_len - pn_len;
+    return sub as i64;
+}
+
+inline fn calc_payload_end(start: i64, bounded_len: i64, dgram_len: i64) -> i64 {
+    let end = start + bounded_len;
+    if end <= dgram_len { return end; }
+    return dgram_len;
+}
+
+fn get_packet_payload(dgram: const u8[:], hdr: const QuicHeader&) -> u8[:] {
+    let start = calc_payload_offset(hdr.header_len);
+    guard start <= dgram.len else { return dgram[..0]; }
+    if hdr.payload_length > hdr.pn_length {
+        let blen = calc_bounded_payload_len(hdr.payload_length, hdr.pn_length);
+        let end = calc_payload_end(start, blen, dgram.len);
+        return dgram[start..end];
+    }
+    return dgram[start..];
+}
+
+fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    guard quic_stream_can_recv(frame.stream_id, conn.role) else {
+        quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+        return false, false;
+    }
+
+    let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
+    guard ok else {
+        quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
+        return false, false;
+    }
+
+    let fc_ok, fc_err = quic_fc_record_recv_stream(conn.flow_ctrl, conn.stream_table.streams[idx], frame.offset, frame.length);
+    guard fc_ok else {
+        quic_conn_close(conn, fc_err);
+        return false, false;
+    }
+
+    let st_ok, st_err = quic_stream_on_recv_stream_frame(conn.stream_table.streams[idx], frame.offset, frame.length, frame.fin);
+    guard st_ok else {
+        quic_conn_close(conn, st_err);
+        return false, false;
+    }
+
+    return true, true;
+}
+
+fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    guard quic_stream_can_recv(frame.stream_id, conn.role) else {
+        quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+        return false, false;
+    }
+
+    let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
+    guard ok else {
+        quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
+        return false, false;
+    }
+
+    let fc_ok, fc_err = quic_fc_record_recv_reset(conn.flow_ctrl, conn.stream_table.streams[idx], frame.length);
+    guard fc_ok else {
+        quic_conn_close(conn, fc_err);
+        return false, false;
+    }
+
+    let st_ok, st_err = quic_stream_on_recv_reset(conn.stream_table.streams[idx], frame.error_code, frame.length);
+    guard st_ok else {
+        quic_conn_close(conn, st_err);
+        return false, false;
+    }
+
+    return true, true;
+}
+
+fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    guard quic_stream_can_send(frame.stream_id, conn.role) else {
+        quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+        return false, false;
+    }
+
+    let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
+    guard ok else {
+        quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
+        return false, false;
+    }
+
+    let st_ok, st_err = quic_stream_on_recv_stop_sending(conn.stream_table.streams[idx], frame.error_code, conn.role);
+    guard st_ok else {
+        quic_conn_close(conn, st_err);
+        return false, false;
+    }
+
+    return true, true;
+}
+
+fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    if frame.frame_type == QuicFrameType.MaxData {
+        quic_fc_update_remote_max_data(conn.flow_ctrl, frame.length);
+        return true, true;
+    }
+
+    if frame.frame_type == QuicFrameType.MaxStreamData {
+        guard quic_stream_can_send(frame.stream_id, conn.role) else {
+            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
+        let idx = quic_table_find_stream(conn.stream_table, frame.stream_id);
+        if idx >= 0 {
+            quic_fc_update_stream_send_max_data(conn.stream_table.streams[idx], frame.length);
+        }
+        return true, true;
+    }
+
+    return true, true;
+}
+
+fn dispatch_inbound_frame(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    if frame.frame_type == QuicFrameType.Padding {
+        return true, false;
+    }
+    if frame.frame_type == QuicFrameType.Ping {
+        return true, true;
+    }
+    if frame.frame_type == QuicFrameType.Stream {
+        return dispatch_stream_inbound(conn, frame);
+    }
+    if frame.frame_type == QuicFrameType.ResetStream {
+        return dispatch_reset_stream_inbound(conn, frame);
+    }
+    if frame.frame_type == QuicFrameType.StopSending {
+        return dispatch_stop_sending_inbound(conn, frame);
+    }
+    if frame.frame_type == QuicFrameType.MaxData || frame.frame_type == QuicFrameType.MaxStreamData {
+        return dispatch_flow_control_inbound(conn, frame);
+    }
+    if frame.frame_type == QuicFrameType.ConnectionClose || frame.frame_type == QuicFrameType.ConnectionCloseApp {
+        quic_conn_close(conn, frame.error_code);
+        return true, false;
+    }
+    if frame.frame_type == QuicFrameType.HandshakeDone {
+        if conn.role == QuicRole.Client {
+            conn.state = QuicConnState.Established;
+        }
+        return true, true;
+    }
+
+    return true, true;
+}
+
+fn quic_conn_process_payload(conn: QuicConnection&, payload: const u8[:]) -> bool, bool {
+    guard payload.len > 0 else { return true, false; }
+    var r = core::new_slice_reader(payload);
+    var any_ack_el = false;
+
+    while !r.is_eof() {
+        let frame, ok = decode_quic_frame_reader(r);
+        guard ok else { break; }
+
+        let handled, ack_el = dispatch_inbound_frame(conn, frame);
+        guard handled else { return false, false; }
+        if ack_el {
+            any_ack_el = true;
+        }
+    }
+
+    return true, any_ack_el;
+}
+
 // Processes an inbound UDP datagram containing QUIC packets.
 // Returns (handled: bool, needs_ack: bool).
 fn quic_conn_process_datagram(
@@ -222,5 +405,13 @@ fn quic_conn_process_datagram(
     guard ok else { return false, false; }
 
     bind_initial_server_cids(conn, hdr);
-    return dispatch_packet_type(conn, hdr, out_ack);
+    let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
+    guard handled_pkt else { return false, false; }
+
+    let payload = get_packet_payload(dgram, hdr);
+    let handled_frames, frame_ack_el = quic_conn_process_payload(conn, payload);
+    guard handled_frames else { return false, false; }
+
+    let final_needs_ack = needs_ack_pkt || frame_ack_el;
+    return true, final_needs_ack;
 }
