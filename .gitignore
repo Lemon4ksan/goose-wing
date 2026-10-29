@@ -18,6 +18,7 @@ __pycache__/
 .gemini/
 scratch/
 vendor/
+.worktrees/
 
 # Benchmarks and e2e
 reports/
