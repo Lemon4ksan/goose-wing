@@ -547,8 +547,18 @@ fn x509_parse_bc_ca_bool(bc_seq: ByteCursor&, cert: ParsedCert&) {
 fn x509_parse_bc_path_len(bc_seq: ByteCursor&, cert: ParsedCert&) {
     guard cursor_len(bc_seq) > 0 && bc_seq.buf[0] == ASN1_TAG_INTEGER else { return; }
     var path_len: i64 = 0;
-    guard get_asn1_integer(bc_seq, path_len) else { return; }
-    if cert.is_ca && path_len >= 0 && path_len <= 255 {
+    guard get_asn1_integer(bc_seq, path_len) else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
+    // RFC 5280 Section 4.2.1.9 & OpenSSL #32374:
+    // pathLenConstraint MUST be greater than or equal to zero.
+    // CAs MUST NOT include pathLenConstraint unless cA boolean is asserted.
+    if !cert.is_ca || path_len < 0 {
+        cert.has_unsupported_critical = true;
+        return;
+    }
+    if path_len <= 255 {
         cert.path_len_constraint = path_len as i32;
     }
 }
@@ -559,6 +569,9 @@ fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     guard get_asn1_element(ext_val, ASN1_TAG_SEQUENCE, bc_seq) else { return; }
     x509_parse_bc_ca_bool(bc_seq, cert);
     x509_parse_bc_path_len(bc_seq, cert);
+    if cursor_len(bc_seq) > 0 {
+        cert.has_unsupported_critical = true;
+    }
 }
 
 fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
@@ -1223,7 +1236,7 @@ fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out
     let tag_num = base_tag & 0x1F;
     if tag_num == 2 { // dNSName
         out_type = SanType.Dns;
-        guard out_val.buf.len > 0 else { return false; }
+        guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
     } else if tag_num == 7 { // iPAddress
         out_type = SanType.Ip;
         guard out_val.buf.len == 8 || out_val.buf.len == 32 else { return false; }

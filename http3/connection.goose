@@ -13,6 +13,8 @@ import http3.framing;
 
 // ---- 1. Stream Kinds, States and Structures --------------------------------
 
+const MAX_H3_EMPTY_FRAME_STREAK: u32 = 32;
+
 enum H3StreamKind {
     Request,
     Control,
@@ -80,6 +82,7 @@ struct H3Connection {
     max_push_id_sent: bool = false,
     max_push_id_advertised: u64 = 0,
     max_push_id_received: u64 = 0,
+    empty_frame_streak: u32 = 0,
     error_code: u64 = H3_ERR_NO_ERROR,
     local_settings: H3Settings = H3Settings { .. },
     peer_settings: H3Settings = H3Settings { .. },
@@ -89,6 +92,16 @@ struct H3Connection {
 
 fn new_h3_client_connection(settings: const H3Settings&) -> H3Connection {
     return H3Connection {
+        role: H3ConnRole.Client,
+        local_settings: settings,
+        qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32),
+        ..
+    };
+}
+
+fn new_h3_server_connection(settings: const H3Settings&) -> H3Connection {
+    return H3Connection {
+        role: H3ConnRole.Server,
         local_settings: settings,
         qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32),
         ..
@@ -553,6 +566,13 @@ fn handle_stream_data(
 
         // 1. HEADERS Frame
         if hdr.frame_type == H3_FRAME_HEADERS {
+            // RFC 9114 §4.1: Extra HEADERS frame after trailers is forbidden
+            if conn.streams[s_idx].trailers_received {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+                return H3_ERR_FRAME_UNEXPECTED;
+            }
+
             var decoded_fields: HeaderField[>..] = [];
             let q_err = decode_qpack_section(conn.qpack_table, payload, decoded_fields);
             if q_err != QpackError.None {
@@ -572,11 +592,11 @@ fn handle_stream_data(
             var host_val: u8[..256] = [];
 
             // Extract status code and validate fields
+            let is_trailer_section = conn.streams[s_idx].headers_received && (conn.role == H3ConnRole.Server || conn.streams[s_idx].status_code >= 200);
             for field in decoded_fields {
                 let is_pseudo = field.name.len > 0 && field.name[0] == ':';
 
                 // Trailers MUST NOT contain pseudo-headers or disallowed framing headers (RFC 9114 Section 4.3)
-                let is_trailer_section = conn.streams[s_idx].headers_received && conn.streams[s_idx].status_code >= 200;
                 if is_trailer_section {
                     if is_pseudo {
                         conn.state = H3ConnState.Closed;
@@ -728,21 +748,27 @@ fn handle_stream_data(
                 }
             }
 
-            if conn.streams[s_idx].status_code >= 200 || pseudo_method_count > 0 {
-                if !conn.streams[s_idx].headers_received {
-                    conn.streams[s_idx].headers_received = true;
-                } else if !conn.streams[s_idx].trailers_received {
-                    conn.streams[s_idx].trailers_received = true;
-                } else {
-                    conn.state = H3ConnState.Closed;
-                    conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-                    return H3_ERR_FRAME_UNEXPECTED;
-                }
+            if is_trailer_section {
+                conn.streams[s_idx].trailers_received = true;
+            } else if conn.streams[s_idx].status_code >= 200 || pseudo_method_count > 0 {
+                conn.streams[s_idx].headers_received = true;
             }
         }
 
         // 2. DATA Frame
         if hdr.frame_type == H3_FRAME_DATA {
+            // Track empty DATA frame streak for DoS / CPU exhaustion defense (CVE-2019-9518 / RFC 9114 §10.5)
+            if hdr.payload_len == 0 {
+                conn.empty_frame_streak++;
+                if conn.empty_frame_streak > MAX_H3_EMPTY_FRAME_STREAK {
+                    conn.state = H3ConnState.Closed;
+                    conn.error_code = H3_ERR_EXCESSIVE_LOAD;
+                    return H3_ERR_EXCESSIVE_LOAD;
+                }
+            } else {
+                conn.empty_frame_streak = 0;
+            }
+
             // DATA before HEADERS or after trailers is a fatal protocol error
             if !conn.streams[s_idx].headers_received || conn.streams[s_idx].trailers_received {
                 conn.state = H3ConnState.Closed;
