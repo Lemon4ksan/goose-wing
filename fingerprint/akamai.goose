@@ -263,6 +263,36 @@ fn bytes_eq(a: const u8[:], b: const u8[:]) -> bool {
     return true;
 }
 
+// Parses a single Akamai priority token `stream_id:exclusive:dep_stream_id:weight` (RFC 7540 §6.3).
+//
+// Example:
+//   token = "3:0:0:201"
+//   returns: AkamaiPriorityFrame { stream_id: 3, exclusive: 0, dep_stream_id: 0, weight: 201 }, ok = true
+fn parse_priority_token(token: const u8[:]) -> AkamaiPriorityFrame, bool {
+    var dummy = AkamaiPriorityFrame { .. };
+    var colons: i64[4] = [-1; 4];
+    var c_cnt = 0;
+    for k in token.len {
+        if token[k] == ':' && c_cnt < 3 {
+            colons[c_cnt] = k;
+            c_cnt += 1;
+        }
+    }
+    guard c_cnt == 3 else { return dummy, false; }
+    let s_id, ok1 = parse_u32_dec(token[0..colons[0]]);
+    let excl, ok2 = parse_u32_dec(token[(colons[0] + 1)..colons[1]]);
+    let dep, ok3 = parse_u32_dec(token[(colons[1] + 1)..colons[2]]);
+    let w, ok4 = parse_u32_dec(token[(colons[2] + 1)..token.len]);
+    guard ok1 && ok2 && ok3 && ok4 && w >= 1 && w <= 256 else { return dummy, false; }
+
+    return AkamaiPriorityFrame {
+        stream_id: s_id,
+        exclusive: (excl & 1) as u8,
+        dep_stream_id: dep,
+        weight: w as u16,
+    }, true;
+}
+
 // Parses a canonical Akamai string `SETTINGS|WINDOW_UPDATE|PRIORITY|PSEUDO_HEADERS` into an AkamaiFingerprint.
 fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
     var fp = AkamaiFingerprint { .. };
@@ -334,35 +364,18 @@ fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
         var start: i64 = 0;
         var idx: i64 = 0;
         while idx <= prio_part.len {
-            if idx == prio_part.len || prio_part[idx] == ',' {
-                if idx > start {
-                    let token = prio_part[start..idx];
-                    // token format: stream_id:exclusive:dep_stream_id:weight
-                    var colons: i64[4] = [-1; 4];
-                    var c_cnt = 0;
-                    for k in token.len {
-                        if token[k] == ':' && c_cnt < 3 {
-                            colons[c_cnt] = k;
-                            c_cnt += 1;
-                        }
-                    }
-                    guard c_cnt == 3 else { return fp, false; }
-                    let s_id, ok1 = parse_u32_dec(token[0..colons[0]]);
-                    let excl, ok2 = parse_u32_dec(token[(colons[0] + 1)..colons[1]]);
-                    let dep, ok3 = parse_u32_dec(token[(colons[1] + 1)..colons[2]]);
-                    let w, ok4 = parse_u32_dec(token[(colons[2] + 1)..token.len]);
-                    guard ok1 && ok2 && ok3 && ok4 else { return fp, false; }
-
-                    guard fp.priority_frames.len < fp.priority_frames.cap else { return fp, false; }
-                    fp.priority_frames.push(AkamaiPriorityFrame {
-                        stream_id: s_id,
-                        exclusive: (excl & 1) as u8,
-                        dep_stream_id: dep,
-                        weight: w as u16,
-                    });
-                }
-                start = idx + 1;
+            let is_sep = idx == prio_part.len || prio_part[idx] == ',';
+            if !is_sep {
+                idx += 1;
+                continue;
             }
+            if idx > start {
+                let frame, ok = parse_priority_token(prio_part[start..idx]);
+                guard ok else { return fp, false; }
+                guard fp.priority_frames.len < fp.priority_frames.cap else { return fp, false; }
+                fp.priority_frames.push(frame);
+            }
+            start = idx + 1;
             idx += 1;
         }
     }
@@ -539,6 +552,8 @@ fn extract_akamai_from_wire(
         offset = 24;
     }
 
+    var found_settings = false;
+
     while (wire_bytes.len - offset) >= 9 {
         let hdr, err = parse_frame_header(wire_bytes[offset..wire_bytes.len]);
         if err != ERR_NO_ERROR {
@@ -547,10 +562,17 @@ fn extract_akamai_from_wire(
         let frame_total_len = 9 + (hdr.length as i64);
         guard (wire_bytes.len - offset) >= frame_total_len else { break; }
 
+        // Connection handshake phase ends on first HEADERS or DATA frame
+        if hdr.frame_type == FRAME_HEADERS || hdr.frame_type == FRAME_DATA {
+            break;
+        }
+
         let payload = wire_bytes[(offset + 9)..(offset + frame_total_len)];
 
         // SETTINGS Frame (Type 0x04) on Stream 0 (non-ACK)
         if hdr.frame_type == FRAME_SETTINGS && hdr.stream_id == 0 && (hdr.flags & FLAG_ACK) == 0 {
+            guard (hdr.length % 6) == 0 else { return fp, false; }
+            found_settings = true;
             let num_settings = (hdr.length / 6) as i64;
             for i in num_settings {
                 let s_off = i * 6;
@@ -595,6 +617,8 @@ fn extract_akamai_from_wire(
 
         offset += frame_total_len;
     }
+
+    guard found_settings else { return fp, false; }
 
     // Assign pseudo-headers (filtering commas and whitespace)
     for b in pseudo_headers_order {

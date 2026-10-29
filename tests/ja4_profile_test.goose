@@ -47,17 +47,23 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
         sub.assert_false(wing::is_grease_u16(0x1301), "0x1301 is not GREASE");
         sub.assert_false(wing::is_grease_u16(0x0a1a), "0x0a1a has mismatched nibbles, not GREASE");
 
-        // JA4 must be identical with or without GREASE injection
+        // JA4 must be identical with or without GREASE injection (ciphers, extensions, and signature algorithms)
         let base_ciphers: u16[3] = [0x1301, 0x1302, 0x1303];
         let grease_ciphers: u16[5] = [0x0a0a, 0x1301, 0x2a2a, 0x1302, 0x1303];
         let base_exts: u16[2] = [0x0000, 0x002b];
         let grease_exts: u16[3] = [0x0000, 0x3a3a, 0x002b];
         let vers: u16[1] = [0x0304];
+        let base_sigs: u16[2] = [0x0403, 0x0804];
+        let grease_sigs: u16[4] = [0x0a0a, 0x0403, 0x1a1a, 0x0804];
 
-        let fp_clean = wing::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, "h2");
-        let fp_grease = wing::compute_ja4(grease_ciphers[..], grease_exts[..], vers[..], true, "h2");
+        let fp_clean = wing::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, "h2", base_sigs[..]);
+        let fp_grease = wing::compute_ja4(grease_ciphers[..], grease_exts[..], vers[..], true, "h2", grease_sigs[..]);
 
-        sub.assert_bytes_eq(fp_clean[..], fp_grease[..], "JA4 must remain strictly invariant under GREASE injection");
+        sub.assert_bytes_eq(fp_clean[..], fp_grease[..], "JA4 must remain strictly invariant under GREASE injection in ciphers, exts, and sig_algorithms");
+
+        // Non-alphanumeric ALPN character handling
+        let fp_alpn_custom = wing::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, " ", base_sigs[..]);
+        sub.assert_bytes_eq(fp_alpn_custom[8..10], "20", "Non-alnum ALPN space byte (0x20) maps to '20'");
     };
 
     t.run("3. QUIC Protocol Code and DTLS Support") { sub =>
@@ -94,8 +100,24 @@ fn test_ja4h_http_fingerprint(t: core::T&) {
         sub.assert_eq(ja4h_result[38], '_' as u8, "Delimiter 3");
     };
 
-    t.run("2. Header Sorting Case-Insensitivity & Cookie/Referer Exclusion") { sub =>
-        // JA4H standard requires header names (excluding Cookie and Referer) to be sorted alphabetically in lowercase
+    t.run("2. Header Wire-Order & Cookie Alphabetical Sorting & Exclusion") { sub =>
+        // Headers preserve wire transmission order in section b
+        let h_order1: const u8[:][2] = ["Accept", "User-Agent"];
+        let h_order2: const u8[:][2] = ["User-Agent", "Accept"];
+        let ja4h_1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], false, false);
+        let ja4h_2 = wing::compute_ja4h("GET", "HTTP/2", h_order2[..], false, false);
+        sub.assert_false(ja4h_1[13..25] == ja4h_2[13..25], "Different header arrival order produces distinct JA4H_b hash");
+
+        // Cookies are sorted alphabetically in section c & d regardless of arrival order
+        let c_names1: const u8[:][2] = ["zebra", "apple"];
+        let c_vals1: const u8[:][2] = ["z1", "a1"];
+        let c_names2: const u8[:][2] = ["apple", "zebra"];
+        let c_vals2: const u8[:][2] = ["a1", "z1"];
+        let ja4h_c1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], true, false, "", c_names1[..], c_vals1[..]);
+        let ja4h_c2 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], true, false, "", c_names2[..], c_vals2[..]);
+        sub.assert_bytes_eq(ja4h_c1[26..38], ja4h_c2[26..38], "Cookie names hash JA4H_c is invariant under permutation");
+        sub.assert_bytes_eq(ja4h_c1[39..51], ja4h_c2[39..51], "Cookie values hash JA4H_d is invariant under permutation");
+
         let mixed_headers: const u8[:][5] = ["User-Agent", "accept-language", "ACCEPT", "Cookie", "Referer"];
         let ja4h = wing::compute_ja4h("POST", "HTTP/1.1", mixed_headers[..], true, true, "ru-RU", [], []);
 
@@ -165,6 +187,12 @@ fn test_wing_profile_and_session(t: core::T&) {
 
         let custom_ja4h = wing::ja4h(custom, "POST", "HTTP/2");
         sub.assert_bytes_eq(custom_ja4h[..12], "po20nn05dede", "Custom JA4H reflects custom profile headers (dede lang, 5 headers)");
+
+        // set_header overrides standard headers without creating duplicates
+        var prof_ovr = wing::wing_default_profile();
+        wing::set_header(prof_ovr, "User-Agent", "UniqueUA/1.0");
+        sub.assert_bytes_eq(prof_ovr.user_agent[..], "UniqueUA/1.0", "set_header overrides user_agent field");
+        sub.assert_eq(prof_ovr.extra_headers.len, 0, "No duplicate in extra_headers");
     };
 }
 

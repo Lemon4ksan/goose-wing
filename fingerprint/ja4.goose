@@ -86,14 +86,32 @@ fn ja4_version_string(supported_versions: const u16[:]) -> const u8[:] {
     return "00";
 }
 
+fn is_ja4_alnum(b: u8) -> bool {
+    return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z');
+}
+
 // Extracts 2-character ALPN code (first and last char of first protocol).
+// Falls back to first/last hex nibble if characters are non-alphanumeric.
 fn ja4_alpn_string<B>(alpn_protocol: const u8[:], out: B&) {
     if alpn_protocol.len == 0 {
         out.append("00");
         return;
     }
-    out.push(alpn_protocol[0]);
-    out.push(alpn_protocol[alpn_protocol.len - 1]);
+    let hex_chars = "0123456789abcdef";
+    let b_first = alpn_protocol[0];
+    let b_last = alpn_protocol[alpn_protocol.len - 1];
+
+    if is_ja4_alnum(b_first) {
+        out.push(b_first);
+    } else {
+        out.push(hex_chars[((b_first >> 4) & 0x0F) as i64]);
+    }
+
+    if is_ja4_alnum(b_last) {
+        out.push(b_last);
+    } else {
+        out.push(hex_chars[(b_last & 0x0F) as i64]);
+    }
 }
 
 // ---- ja4 tls client fingerprint calculation --------------------------------
@@ -159,7 +177,11 @@ fn compute_ja4<B>(
         }
     }
 
-    if hash_exts.len == 0 && sig_algorithms.len == 0 {
+    // Filter GREASE from signature algorithms per FoxIO JA4 spec
+    var filtered_sigs: u16[>..] = [];
+    filter_grease_u16(sig_algorithms, filtered_sigs);
+
+    if hash_exts.len == 0 && filtered_sigs.len == 0 {
         out.append("000000000000");
     } else {
         sort_u16(hash_exts);
@@ -168,13 +190,13 @@ fn compute_ja4<B>(
             if i > 0 { ext_buf.push(','); }
             append_hex4(hash_exts[i], ext_buf);
         }
-        if sig_algorithms.len > 0 {
+        if filtered_sigs.len > 0 {
             if hash_exts.len > 0 {
                 ext_buf.push('_');
             }
-            for i in sig_algorithms.len {
+            for i in filtered_sigs.len {
                 if i > 0 { ext_buf.push(','); }
-                append_hex4(sig_algorithms[i], ext_buf);
+                append_hex4(filtered_sigs[i], ext_buf);
             }
         }
         hash_12_hex(ext_buf[..], out);
@@ -212,16 +234,17 @@ fn compare_lower_ascii(a: const u8[:], b: const u8[:]) -> i32 {
     return 0;
 }
 
-fn sort_header_names(arr: const u8[:][>..]&) {
-    if arr.len <= 1 { return; }
-    for i in 1..arr.len {
-        let key = arr[i];
+fn sort_cookie_indices(names: const u8[:][:], order: i64[>..]&) {
+    if order.len <= 1 { return; }
+    for i in 1..order.len {
+        let key_idx = order[i];
+        let key_name = names[key_idx];
         var j = i - 1;
-        while j >= 0 && compare_lower_ascii(arr[j], key) > 0 {
-            arr[j + 1] = arr[j];
+        while j >= 0 && compare_lower_ascii(names[order[j]], key_name) > 0 {
+            order[j + 1] = order[j];
             j--;
         }
-        arr[j + 1] = key;
+        order[j + 1] = key_idx;
     }
 }
 
@@ -306,11 +329,10 @@ fn compute_ja4h<B>(
 
     out.push('_');
 
-    // 7. Headers Hash (sorted lowercase header names joined by comma)
+    // 7. Headers Hash (wire-order lowercase header names joined by comma per FoxIO JA4H)
     if filtered_headers.len == 0 {
         out.append("000000000000");
     } else {
-        sort_header_names(filtered_headers);
         var hbuf: u8[>..] = [];
         for i in filtered_headers.len {
             if i > 0 { hbuf.push(','); }
@@ -321,28 +343,34 @@ fn compute_ja4h<B>(
 
     out.push('_');
 
-    // 8. Cookie Names Hash
+    // 8. Cookie Names & 9. Cookie Values (sorted alphabetically by cookie name per FoxIO JA4H)
     if cookie_names.len == 0 {
-        out.append("000000000000");
+        out.append("000000000000_000000000000");
     } else {
+        var order: i64[>..] = [];
+        for i in cookie_names.len { order.push(i); }
+        sort_cookie_indices(cookie_names, order);
+
+        // 8. Cookie Names Hash
         var cbuf: u8[>..] = [];
-        for i in cookie_names.len {
+        for i in order.len {
             if i > 0 { cbuf.push(','); }
-            cbuf.append(cookie_names[i]);
+            cbuf.append(cookie_names[order[i]]);
         }
         hash_12_hex(cbuf[..], out);
-    }
 
-    out.push('_');
+        out.push('_');
 
-    // 9. Cookie Values Hash
-    if cookie_values.len == 0 {
-        out.append("000000000000");
-    } else {
+        // 9. Cookie Values Hash (sorted name=value pairs)
         var vbuf: u8[>..] = [];
-        for i in cookie_values.len {
+        for i in order.len {
             if i > 0 { vbuf.push(','); }
-            vbuf.append(cookie_values[i]);
+            let idx = order[i];
+            vbuf.append(cookie_names[idx]);
+            vbuf.push('=');
+            if idx < cookie_values.len {
+                vbuf.append(cookie_values[idx]);
+            }
         }
         hash_12_hex(vbuf[..], out);
     }

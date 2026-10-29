@@ -427,6 +427,7 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
     }
 
     // 8. Payload
+    guard f7.len <= sig.payload.cap else { return dummy, false; }
     sig.payload.append(f7);
 
     return sig, true;
@@ -434,7 +435,7 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
 
 fn push_parsed_option(sig: P0fSignature&, token: const u8[:]) {
     guard sig.options.len < sig.options.cap else { return; }
-    if token == "eol" { sig.options.push(P0fTcpOption.Eol); }
+    if token == "eol" || starts_with(token, "eol+") { sig.options.push(P0fTcpOption.Eol); }
     else if token == "nop" { sig.options.push(P0fTcpOption.Nop); }
     else if token == "mss" { sig.options.push(P0fTcpOption.Mss); }
     else if token == "ws" { sig.options.push(P0fTcpOption.Ws); }

@@ -104,6 +104,12 @@ fn test_akamai_parsing_and_roundtrip(t: core::T&) {
 
         let _, bad3 = wing::parse_akamai_fingerprint("1:not_a_number|1000|0|m,a,s,p");
         sub.assert_false(bad3, "Fails on non-numeric setting value");
+
+        let _, bad4 = wing::parse_akamai_fingerprint("1:65536|1000|3:0:0:0|m,a,s,p");
+        sub.assert_false(bad4, "Fails on priority weight 0 (< 1)");
+
+        let _, bad5 = wing::parse_akamai_fingerprint("1:65536|1000|3:0:0:257|m,a,s,p");
+        sub.assert_false(bad5, "Fails on priority weight 257 (> 256)");
     };
 }
 
@@ -197,6 +203,11 @@ fn test_akamai_wire_framing_roundtrip(t: core::T&) {
         sub.assert_true(wing::match_akamai_fingerprints(extracted_fp, chrome_fp), "Extracted wire fingerprint matches Chrome preset exactly");
         sub.assert_eq(extracted_fp.window_update, 15663105, "Extracted window update is 15663105");
         sub.assert_eq(extracted_fp.settings.len, 4, "Extracted 4 settings");
+
+        // 4. Reject garbage / non-HTTP/2 input (e.g. plain HTTP/1.1 request)
+        let http1_req = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let _, ok_bad = wing::extract_akamai_from_wire(http1_req, pseudos);
+        sub.assert_false(ok_bad, "Rejects plain HTTP/1.1 stream lacking valid HTTP/2 SETTINGS frame");
     };
 }
 

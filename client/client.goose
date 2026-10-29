@@ -61,6 +61,7 @@ struct ClientCredentials {
 struct Client {
     base_url: u8[..256] = [],
     profile: Profile = Profile.Wing,
+    profile_spec: BrowserProfile = BrowserProfile { .. },
     proxy_url: u8[..256] = [],
     timeout_ms: i64 = 15000,
     follow_redirects: bool = true,
@@ -207,6 +208,7 @@ fn set_base_url(session: Session&, url: const u8[:]) {
 
 fn apply_profile(client: Client&, profile: const BrowserProfile&) {
     client.profile = profile.kind;
+    client.profile_spec = profile;
     client.default_headers.clear();
     if profile.user_agent.len > 0 {
         client.default_headers.push(make_header("User-Agent", profile.user_agent[..]));
@@ -233,6 +235,7 @@ fn apply_profile(client: Client&, profile: const BrowserProfile&) {
 fn set_profile(session: Session&, profile: Profile) {
     session.profile = profile;
     if profile == Profile.None {
+        session.profile_spec = none_profile();
         session.default_headers.clear();
         return;
     }
@@ -248,6 +251,7 @@ fn set_profile(session: Session&, profile: const BrowserProfile&) {
 
 fn set_user_agent(session: Session&, ua: const u8[:]) {
     set_header(session.default_headers, "User-Agent", ua);
+    set_user_agent(session.profile_spec, ua);
 }
 
 fn user_agent(session: const Session&) -> const u8[:] {
@@ -257,23 +261,19 @@ fn user_agent(session: const Session&) -> const u8[:] {
 }
 
 fn ja4(session: const Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
-    let p = wing_default_profile();
-    return ja4(p, is_quic, sni);
+    return ja4(session.profile_spec, is_quic, sni);
 }
 
 fn p0f(session: const Session&) -> u8[..128] {
-    let p = wing_default_profile();
-    return p0f(p);
+    return p0f(session.profile_spec);
 }
 
 fn akamai(session: const Session&) -> u8[..256] {
-    let p = wing_default_profile();
-    return akamai(p);
+    return akamai(session.profile_spec);
 }
 
 fn akamai_hash(session: const Session&) -> u8[..32] {
-    let p = wing_default_profile();
-    return akamai_hash(p);
+    return akamai_hash(session.profile_spec);
 }
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {

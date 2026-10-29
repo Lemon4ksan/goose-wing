@@ -137,6 +137,17 @@ fn test_p0f_parser_and_roundtrip(t: core::T&) {
         // Missing window scale
         let _, err5 = wing::parse_p0f("*:64:0:*:65535:mss:df:0");
         sub.assert_false(err5, "Rejects window field without comma separator");
+
+        // Payload buffer overflow (> 8 chars)
+        let _, err6 = wing::parse_p0f("*:64:0:*:65535,0:mss:df:excessive_payload_length");
+        sub.assert_false(err6, "Rejects payload exceeding buffer capacity");
+
+        // Apple Darwin/FreeBSD eol+1 TCP option parsing
+        let apple_raw = "*:64:0:*:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,id+:0";
+        let sig_apple, ok_apple = wing::parse_p0f(apple_raw);
+        sub.assert_true(ok_apple, "Successfully parses Darwin/FreeBSD eol+1 option layout");
+        sub.assert_eq(sig_apple.options.len, 8, "Darwin signature has 8 TCP options");
+        sub.assert_eq(sig_apple.options[7], wing::P0fTcpOption.Eol, "eol+1 maps to P0fTcpOption.Eol");
     };
 }
 

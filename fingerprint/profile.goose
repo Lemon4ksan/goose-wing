@@ -169,8 +169,9 @@ fn new_browser_profile(kind: Profile) -> ClientProfile {
 // ---- profile manipulation & builder functions -------------------------------
 
 fn push_header_order(profile: BrowserProfile&, header_name: const u8[:]) {
+    guard header_name.len <= 32 else { return; }
     if profile.header_order.len < profile.header_order.cap {
-        var entry: u8[..64] = [];
+        var entry: u8[..32] = [];
         entry.append(header_name);
         profile.header_order.push(entry);
     }
@@ -224,6 +225,27 @@ fn ja4h(
 
 // Adds or overrides a header in the profile.
 fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
+    if eq_ascii_fold(name, "user-agent") {
+        set_user_agent(profile, value);
+        return;
+    }
+    if eq_ascii_fold(name, "accept") {
+        set_accept(profile, value);
+        return;
+    }
+    if eq_ascii_fold(name, "accept-encoding") {
+        set_accept_encoding(profile, value);
+        return;
+    }
+    if eq_ascii_fold(name, "accept-language") {
+        set_accept_language(profile, value);
+        return;
+    }
+    if eq_ascii_fold(name, "upgrade-insecure-requests") {
+        profile.upgrade_insecure_requests.clear();
+        profile.upgrade_insecure_requests.append(value);
+        return;
+    }
     for idx in profile.extra_headers.len {
         if eq_ascii_fold(profile.extra_headers[idx].name[..], name) {
             profile.extra_headers[idx].value.clear();
