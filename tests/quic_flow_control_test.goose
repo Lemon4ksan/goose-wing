@@ -256,7 +256,7 @@ fn test_connection_datagram_demuxing(t: core::T&) {
     dgram.push(0x01); // PN = 1
 
     // Encode STREAM frame into dgram: Stream ID 0 (Client Bidi), offset 0, len 4, fin false
-    let ok_enc = wing::encode_stream_frame(dgram, 0, 0, "WING", true, false);
+    let ok_enc = wing::encode_stream_frame(dgram, 0, 0, "WING", wing::QuicStreamFlags { fin: true, with_len: false });
     t.assert_true(ok_enc, "stream frame encoded into datagram");
 
     var out_ack = wing::AckFrame { .. };
@@ -280,7 +280,10 @@ fn test_connection_datagram_demuxing(t: core::T&) {
     dgram2.append(scid2[..]);
     dgram2.push(0x02);
 
-    let _ = wing::encode_stream_frame(dgram2, 0, 0, "0123456789ABCDEFGHIJ", true, false); // 20 bytes > 10
+    let _ = wing::encode_stream_frame(
+        dgram2, 0, 0, "0123456789ABCDEFGHIJ",
+        wing::QuicStreamFlags { fin: true, with_len: false },
+    ); // 20 bytes > 10
 
     var out_ack2 = wing::AckFrame { .. };
     let handled2, _ = wing::quic_conn_process_datagram(conn2, dgram2[..], 2000, out_ack2);

@@ -10,7 +10,8 @@ import wing from "..";
 fn test_quic_stream_frame_codec(t: core::T&) {
     // 1. STREAM frame: Base (stream_id=4, offset=0, no FIN, with length)
     var wire1: u8[..128] = [];
-    let ok_enc1 = wing::encode_stream_frame(wire1, 4, 0, "hello quic", false, true);
+    let flags1 = wing::QuicStreamFlags { fin: false, with_len: true };
+    let ok_enc1 = wing::encode_stream_frame(wire1, 4, 0, "hello quic", flags1);
     t.assert_true(ok_enc1, "encode basic stream frame");
 
     var r1 = core::new_slice_reader(wire1[..]);
@@ -23,7 +24,8 @@ fn test_quic_stream_frame_codec(t: core::T&) {
 
     // 2. STREAM frame with Offset and FIN
     var wire2: u8[..128] = [];
-    let ok_enc2 = wing::encode_stream_frame(wire2, 8, 1024, "world", true, true);
+    let flags2 = wing::QuicStreamFlags { fin: true, with_len: true };
+    let ok_enc2 = wing::encode_stream_frame(wire2, 8, 1024, "world", flags2);
     t.assert_true(ok_enc2, "encode stream frame with off and fin");
 
     var r2 = core::new_slice_reader(wire2[..]);
@@ -36,7 +38,8 @@ fn test_quic_stream_frame_codec(t: core::T&) {
 
     // 3. STREAM frame without length (consumes remainder of buffer)
     var wire3: u8[..128] = [];
-    let ok_enc3 = wing::encode_stream_frame(wire3, 12, 2048, "rest-of-packet", false, false);
+    let flags3 = wing::QuicStreamFlags { fin: false, with_len: false };
+    let ok_enc3 = wing::encode_stream_frame(wire3, 12, 2048, "rest-of-packet", flags3);
     t.assert_true(ok_enc3, "encode stream frame without length");
 
     var r3 = core::new_slice_reader(wire3[..]);
@@ -48,7 +51,8 @@ fn test_quic_stream_frame_codec(t: core::T&) {
 
     // 4. Zero-length payload STREAM with FIN
     var wire4: u8[..64] = [];
-    let ok_enc4 = wing::encode_stream_frame(wire4, 16, 5000, "", true, true);
+    let flags4 = wing::QuicStreamFlags { fin: true, with_len: true };
+    let ok_enc4 = wing::encode_stream_frame(wire4, 16, 5000, "", flags4);
     t.assert_true(ok_enc4, "encode empty fin stream frame");
 
     var r4 = core::new_slice_reader(wire4[..]);
@@ -61,7 +65,8 @@ fn test_quic_stream_frame_codec(t: core::T&) {
 
     // 5. RFC 9000 §19.8 bounds check: offset + length > 2^62 - 1 rejected
     var wire_bad: u8[..64] = [];
-    let ok_bad_enc = wing::encode_stream_frame(wire_bad, 4, 0x3FFFFFFFFFFFFFFF, "overflow", false, true);
+    let flags_bad = wing::QuicStreamFlags { fin: false, with_len: true };
+    let ok_bad_enc = wing::encode_stream_frame(wire_bad, 4, 0x3FFFFFFFFFFFFFFF, "overflow", flags_bad);
     t.assert_false(ok_bad_enc, "offset + len exceeding 2^62-1 rejected during encoding");
 }
 
@@ -156,11 +161,11 @@ fn test_quic_frame_demuxer(t: core::T&) {
     // Frame 3: MAX_DATA
     wing::encode_max_data_frame(packet_wire, 2000000);
     // Frame 4: STREAM (id=0, offset=0, fin=false)
-    wing::encode_stream_frame(packet_wire, 0, 0, "demux-part-1", false, true);
+    wing::encode_stream_frame(packet_wire, 0, 0, "demux-part-1", wing::QuicStreamFlags { fin: false, with_len: true });
     // Frame 5: STOP_SENDING (id=4, err=0x99)
     wing::encode_stop_sending_frame(packet_wire, 4, 0x99);
     // Frame 6: STREAM (id=0, offset=12, fin=true)
-    wing::encode_stream_frame(packet_wire, 0, 12, "-part-2", true, true);
+    wing::encode_stream_frame(packet_wire, 0, 12, "-part-2", wing::QuicStreamFlags { fin: true, with_len: true });
 
     // Iteratively demux packet frames using zero-alloc slice reader
     var r = core::new_slice_reader(packet_wire[..]);

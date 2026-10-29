@@ -49,6 +49,12 @@ struct QuicStreamFrame {
     data: const u8[:] = "",
 }
 
+struct QuicStreamFlags {
+    fin: bool = false,
+    with_len: bool = true,
+    with_offset: bool = false,
+}
+
 struct QuicCryptoFrame {
     offset: u64 = 0,
     data: const u8[:] = "",
@@ -100,13 +106,13 @@ inline fn quic_valid_offset_len(offset: u64, len: u64) -> bool {
 // Builds the STREAM frame type byte (0x08 - 0x0F) based on flags (RFC 9000 §19.8).
 //
 // Example:
-//   build_stream_frame_type(fin = false, with_len = true, with_offset = true)
+//   flags = QuicStreamFlags { fin: false, with_len: true, with_offset: true }
 //   returns: 0x0E (QUIC_FRAME_STREAM_BASE | LEN | OFF)
-inline fn build_stream_frame_type(fin: bool, with_len: bool, with_offset: bool) -> u64 {
+inline fn build_stream_frame_type(flags: QuicStreamFlags) -> u64 {
     var t: u64 = QUIC_FRAME_STREAM_BASE;
-    if with_offset { t = t | QUIC_STREAM_FLAG_OFF; }
-    if with_len { t = t | QUIC_STREAM_FLAG_LEN; }
-    if fin { t = t | QUIC_STREAM_FLAG_FIN; }
+    if flags.with_offset { t = t | QUIC_STREAM_FLAG_OFF; }
+    if flags.with_len { t = t | QUIC_STREAM_FLAG_LEN; }
+    if flags.fin { t = t | QUIC_STREAM_FLAG_FIN; }
     return t;
 }
 
@@ -188,21 +194,19 @@ fn encode_stream_frame_explicit<B>(
     stream_id: u64,
     offset: u64,
     data: const u8[:],
-    fin: bool,
-    with_offset: bool,
-    with_len: bool,
+    flags: QuicStreamFlags,
 ) -> bool {
     guard stream_id <= QUIC_VARINT_MAX else { return false; }
     guard quic_valid_offset_len(offset, data.len as u64) else { return false; }
 
-    let ftype = build_stream_frame_type(fin, with_len, with_offset);
+    let ftype = build_stream_frame_type(flags);
 
     guard quic_encode_varint(out, ftype) else { return false; }
     guard quic_encode_varint(out, stream_id) else { return false; }
-    if with_offset {
+    if flags.with_offset {
         guard quic_encode_varint(out, offset) else { return false; }
     }
-    if with_len {
+    if flags.with_len {
         guard quic_encode_varint(out, data.len as u64) else { return false; }
     }
     if data.len > 0 {
@@ -217,11 +221,11 @@ fn encode_stream_frame<B>(
     stream_id: u64,
     offset: u64,
     data: const u8[:],
-    fin: bool,
-    with_len: bool = true,
+    flags: QuicStreamFlags = QuicStreamFlags { .. },
 ) -> bool {
-    let with_offset = offset > 0;
-    return encode_stream_frame_explicit(out, stream_id, offset, data, fin, with_offset, with_len);
+    var fl = flags;
+    fl.with_offset = offset > 0;
+    return encode_stream_frame_explicit(out, stream_id, offset, data, fl);
 }
 
 // Encodes a MAX_DATA frame (0x10) (RFC 9000 Section 19.9).
