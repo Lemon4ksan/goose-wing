@@ -55,6 +55,7 @@ struct DnsResponse {
     a_records: u32[..8] = [],
     aaaa_records: u8[16][..8] = [],
     https_records: HttpsRecord[..4] = [],
+    min_ttl_sec: u32 = 0,
 }
 
 // ---- 3. DNS Name Encoding and Compression Decoding (RFC 1035) --------------
@@ -354,6 +355,7 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
 
     out.question_count = ((raw[4] as u16) << 8) | raw[5];
     out.answer_count = ((raw[6] as u16) << 8) | raw[7];
+    out.min_ttl_sec = if out.answer_count > 0 { 0xFFFFFFFF } else { 0 };
 
     guard out.rcode == DNS_RCODE_NOERROR else { return true; }
 
@@ -377,6 +379,9 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
         let rclass = ((raw[off + 2] as u16) << 8) | raw[off + 3];
         let ttl = ((raw[off + 4] as u32) << 24) | ((raw[off + 5] as u32) << 16) |
                   ((raw[off + 6] as u32) << 8) | raw[off + 7];
+        if ttl < out.min_ttl_sec {
+            out.min_ttl_sec = ttl;
+        }
         let rdlength = (((raw[off + 8] as u16) << 8) | raw[off + 9]) as i64;
         off += 10;
         guard off + rdlength <= raw.len else { return false; }

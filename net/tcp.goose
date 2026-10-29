@@ -475,7 +475,9 @@ fn async_write_drain_existing(
     if optionally {
         return true, 0, true;
     }
-    backpressure_append(bp, data);
+    guard backpressure_append(bp, data) else {
+        return true, 0, true;
+    }
     return true, data.len as i32, true;
 }
 
@@ -493,10 +495,14 @@ fn async_write_spill_cork(
         core::cork_consume(cork, cork_sent);
     }
     guard core::cork_pending(cork) > 0 else { return false, 0, false; }
-    backpressure_append(bp, core::cork_as_slice(cork));
+    guard backpressure_append(bp, core::cork_as_slice(cork)) else {
+        return true, 0, true;
+    }
     core::cork_reset(cork);
     if !optionally && data.len > 0 {
-        backpressure_append(bp, data);
+        guard backpressure_append(bp, data) else {
+            return true, 0, true;
+        }
         return true, data.len as i32, true;
     }
     return true, 0, true;
@@ -516,7 +522,10 @@ fn async_write_direct(
         return sent_clamped, true;
     }
     let unsent_offset = if sent > 0 { sent as i64 } else { 0 };
-    backpressure_append(bp, data[unsent_offset..]);
+    guard backpressure_append(bp, data[unsent_offset..]) else {
+        let sent_clamped = if sent > 0 { sent } else { 0 };
+        return sent_clamped, true;
+    }
     return data.len as i32, true;
 }
 
@@ -557,8 +566,9 @@ fn async_socket_write(
 // Spills remaining cork buffer into backpressure.
 fn uncork_spill_to_bp(cork: core::CorkBuffer&, bp: BackPressure&) {
     guard core::cork_pending(cork) > 0 else { return; }
-    backpressure_append(bp, core::cork_as_slice(cork));
-    core::cork_reset(cork);
+    if backpressure_append(bp, core::cork_as_slice(cork)) {
+        core::cork_reset(cork);
+    }
 }
 
 // Directly flushes cork buffer to wire, spilling to backpressure if partially sent.
@@ -571,8 +581,9 @@ fn uncork_flush_direct(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i
     guard core::cork_pending(cork) > 0 else {
         return sent_cork, false;
     }
-    backpressure_append(bp, core::cork_as_slice(cork));
-    core::cork_reset(cork);
+    if backpressure_append(bp, core::cork_as_slice(cork)) {
+        core::cork_reset(cork);
+    }
     return sent_cork, true;
 }
 

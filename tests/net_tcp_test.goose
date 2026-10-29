@@ -400,6 +400,23 @@ fn test_flow_control_state_tracking(t: core::T&) {
 
         wing::backpressure_clear(bp);
         sub.assert_false(wing::tcp_is_flow_controlled(bp), "Cleared backpressure is not flow controlled");
+
+        // Bounded capacity: when backpressure reaches 65536 bytes, backpressure_append returns false
+        var bp_full = wing::BackPressure { .. };
+        var big_chunk: u8[4096] = ['B'; 4096];
+        for i in 16 {
+            wing::backpressure_append(bp_full, big_chunk[..]);
+        }
+        sub.assert_eq(wing::backpressure_len(bp_full), 65536, "Backpressure at max capacity 65536");
+        let ok_append = wing::backpressure_append(bp_full, "OVERFLOW");
+        sub.assert_false(ok_append, "Appending to full backpressure returns false");
+        sub.assert_eq(bp_full.drop_count, 1, "Drop count incremented on overflow");
+
+        // uncork_spill_to_bp preserves cork buffer when backpressure is full
+        var cork = core::new_cork_buffer();
+        core::cork_write_exact(cork, "SAVED_IN_CORK");
+        wing::uncork_spill_to_bp(cork, bp_full);
+        sub.assert_eq(core::cork_pending(cork), 13, "Cork data preserved when backpressure full");
     };
 }
 

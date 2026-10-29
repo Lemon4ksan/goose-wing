@@ -679,6 +679,17 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
             ..
         };
         sub.assert_true(wing::is_connection_healthy(conn_h2, 5000000000, false), "Active HTTP/2 multiplexed stream is healthy");
+
+        // Idle connection past 90 seconds timeout becomes unhealthy
+        var conn_idle_timeout = wing::PooledConnection {
+            conn_id: 5,
+            key: copy(key),
+            active_allocations: 0,
+            idle_at_ns: 1000000000,
+            ..
+        };
+        sub.assert_false(wing::is_connection_healthy(conn_idle_timeout, 96000000000, false), "Connection idle > 90s is unhealthy");
+        sub.assert_true(conn_idle_timeout.closed, "Expired idle connection marked closed");
     };
 }
 
@@ -764,6 +775,10 @@ fn test_stream_pool_quotas_and_eviction(t: core::T&) {
 
         // Release c1 at t=3.0s, making it idle
         wing::release_connection(pool, c1, 3000000000);
+        let grp_idx = pool.find_group_index(key);
+        sub.assert_true(grp_idx >= 0, "Group index exists");
+        sub.assert_eq(pool.groups[grp_idx].active_conns, 1, "1 active conn in group");
+        sub.assert_eq(pool.groups[grp_idx].idle_conns, 1, "1 idle conn in group");
 
         // Adding 3rd connection exceeds soft-cap (2) -> triggers eviction of oldest idle (c1)
         let c3 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "1.1.1.1", 1, 4000000);
@@ -1188,6 +1203,23 @@ fn test_coarse_socket_timeouts(t: core::T&) {
         wing::deregister_socket(poller, 50);
     };
 
+    t.run("Multi-Tick Jump Expiry Without Skips (elapsed_ticks > 1)") { sub =>
+        let now_ns: u64 = 10000000000; // 10.0s
+        wing::register_socket(poller, 60, 8001, wing::PollInterest.Read, wing::PollTrigger.Level);
+
+        // Arm timeout for 4 seconds (target = current_tick + 1)
+        wing::set_socket_timeout(poller, 60, 4);
+
+        // Advance poll by 12 seconds (elapsed_ticks = 3, skips over tick + 1)
+        var evs: wing::PollReadyEvent[..64] = [];
+        let fired = wing::poll_events(poller, 0, now_ns + 12000000000, evs);
+        sub.assert_eq(fired, 1, "Coarse timeout fired even when time jumped 3 ticks ahead");
+        sub.assert_true(evs[0].is_timer, "Event is marked as timer");
+        sub.assert_eq(evs[0].fd, 60, "Event fd matches socket 60");
+
+        wing::deregister_socket(poller, 60);
+    };
+
     wing::close_poller(poller);
 }
 
@@ -1451,6 +1483,18 @@ fn test_attempt_manager_racing_and_winner(t: core::T&) {
         wing::tick_attempt_manager(mgr, 2000);
         sub.assert_true(mgr.last_resort_triggered, "Last resort synthesis triggered at 2000 ms");
         sub.assert_true(mgr.pending_candidates.len >= 2, "Synthesized NAT64 candidate injected into pending queue");
+
+        // With an IPv4 candidate present, synthesizes 64:ff9b::<ipv4> with target port
+        var mgr4 = wing::new_attempt_manager(250);
+        var cands4: wing::DnsCandidate[..2] = [];
+        cands4.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 8443));
+        cands4.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "192.0.2.33", 8443));
+        wing::start_attempt_race(mgr4, cands4[..], 0);
+        wing::tick_attempt_manager(mgr4, 2000);
+        sub.assert_true(mgr4.last_resort_triggered, "Triggered for mixed list");
+        let last_cand = mgr4.pending_candidates[mgr4.pending_candidates.len - 1];
+        sub.assert_bytes_eq(last_cand.ip[..], "64:ff9b::192.0.2.33", "NAT64 synthesized from candidate IPv4");
+        sub.assert_eq(last_cand.port, 8443, "Target port 8443 preserved");
     };
 
     t.run("Chromium JobController Creation Rules and Waiting Delay") { sub =>

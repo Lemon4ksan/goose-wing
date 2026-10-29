@@ -398,6 +398,12 @@ fn test_proxy_v1_conformance(t: core::T&) {
         sub.assert_bytes_eq(hdr.dst_ip_str[..], "2001:db8::2", "IPv6 dst matches");
         sub.assert_eq(hdr.src_port, 56324, "src port matches");
         sub.assert_eq(hdr.dst_port, 443, "dst port matches");
+        sub.assert_eq(hdr.src_ipv6[0], 0x20, "IPv6 src byte 0 is 0x20");
+        sub.assert_eq(hdr.src_ipv6[1], 0x01, "IPv6 src byte 1 is 0x01");
+        sub.assert_eq(hdr.src_ipv6[2], 0x0d, "IPv6 src byte 2 is 0x0d");
+        sub.assert_eq(hdr.src_ipv6[3], 0xb8, "IPv6 src byte 3 is 0xb8");
+        sub.assert_eq(hdr.src_ipv6[15], 0x01, "IPv6 src byte 15 is 0x01");
+        sub.assert_eq(hdr.dst_ipv6[15], 0x02, "IPv6 dst byte 15 is 0x02");
     };
 
     t.run("PROXY-v1-03: UNKNOWN protocol parsing") { sub =>
@@ -572,6 +578,7 @@ fn test_proxy_v2_tlvs(t: core::T&) {
         hdr.alpn.append("h2");
         hdr.authority.append("secure.api.internal");
         hdr.unique_id.append("trace-c0ffee-9988");
+        hdr.netns.append("ns_customer_prod");
 
         var wire: u8[..256] = [];
         let ok_fmt = wing::format_proxy_v2(hdr, wire);
@@ -584,6 +591,7 @@ fn test_proxy_v2_tlvs(t: core::T&) {
         sub.assert_bytes_eq(back_hdr.alpn[..], "h2", "ALPN TLV matches");
         sub.assert_bytes_eq(back_hdr.authority[..], "secure.api.internal", "Authority/SNI TLV matches");
         sub.assert_bytes_eq(back_hdr.unique_id[..], "trace-c0ffee-9988", "Unique ID TLV matches");
+        sub.assert_bytes_eq(back_hdr.netns[..], "ns_customer_prod", "Netns TLV matches");
     };
 
     t.run("PROXY-v2-TLV-02: SSL/TLS Metadata & Sub-TLVs") { sub =>
@@ -603,6 +611,8 @@ fn test_proxy_v2_tlvs(t: core::T&) {
         hdr.ssl.verify_result = 0; // successfully verified client cert
         hdr.ssl.version.append("TLSv1.3");
         hdr.ssl.cipher.append("TLS_AES_128_GCM_SHA256");
+        hdr.ssl.sig_alg.append("SHA256");
+        hdr.ssl.key_alg.append("RSA2048");
         hdr.ssl.client_cn.append("client.tenant42.prod");
 
         var wire: u8[..512] = [];
@@ -618,6 +628,8 @@ fn test_proxy_v2_tlvs(t: core::T&) {
         sub.assert_eq(back_hdr.ssl.verify_result, 0, "verify_result is 0");
         sub.assert_bytes_eq(back_hdr.ssl.version[..], "TLSv1.3", "SSL version matches");
         sub.assert_bytes_eq(back_hdr.ssl.cipher[..], "TLS_AES_128_GCM_SHA256", "Cipher matches");
+        sub.assert_bytes_eq(back_hdr.ssl.sig_alg[..], "SHA256", "Signature alg matches");
+        sub.assert_bytes_eq(back_hdr.ssl.key_alg[..], "RSA2048", "Key alg matches");
         sub.assert_bytes_eq(back_hdr.ssl.client_cn[..], "client.tenant42.prod", "Client CN matches");
     };
 }
@@ -790,6 +802,37 @@ fn test_cluster_health_checker_integration(t: core::T&) {
         sub.assert_true(ok, "Upstream selection succeeds");
         sub.assert_eq(chosen, 0, "Target 0 selected");
     };
+
+    t.run("Probing State Hysteresis on Cluster Sync") { sub =>
+        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
+        wing::add_upstream_target(cluster, "10.0.0.1", 8080);
+
+        let cfg = wing::new_health_check_config(1000, 500, 2, 2);
+        var checker = wing::new_cluster_health_checker(cfg);
+        wing::register_target_for_probing(checker, 0);
+
+        // Fail target 0 via load balancer failures
+        wing::record_upstream_failure(cluster, 0);
+        wing::record_upstream_failure(cluster, 0);
+        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Down, "Target 0 state is Down");
+
+        // Manually place in Probing mode
+        wing::set_upstream_probing(cluster, 0);
+        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Probing, "Target 0 in Probing");
+
+        // Reset checker slot to Up to simulate desync prior to probe
+        checker.slots[0].health.state = wing::HealthState.Up;
+
+        // 1st probe success must NOT promote directly to Up; sync_slot_from_cluster must enforce Probing
+        let st1 = wing::on_probe_success(checker, cluster, 0, 500);
+        sub.assert_true(st1 == wing::HealthState.Probing, "Target 0 remains Probing after 1st success");
+        sub.assert_true(!cluster.targets[0].is_healthy, "Target 0 remains unhealthy in cluster during Probing");
+
+        // 2nd probe success reaches healthy_threshold (2) -> promoted to Up
+        let st2 = wing::on_probe_success(checker, cluster, 0, 500);
+        sub.assert_true(st2 == wing::HealthState.Up, "Target 0 promoted to Up after 2nd success");
+        sub.assert_true(cluster.targets[0].is_healthy, "Target 0 is healthy again");
+    };
 }
 
 fn test_reverse_proxy_hardening(t: core::T&) {
@@ -897,6 +940,95 @@ fn test_reverse_proxy_hardening(t: core::T&) {
         sub.assert_true(!ok3, "3rd request rejected by GCRA rate limit");
         sub.assert_eq(proxy.total_rate_limited, 1, "total_rate_limited recorded");
         sub.assert_eq(proxy.cluster.targets[0].active_conns, 2, "Upstream active conns untouched by rejected request");
+    };
+
+    t.run("P2C Resilient Fallback on Degraded Cluster") { sub =>
+        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RandomTwoChoice, 2);
+        wing::add_upstream_target(cluster, "10.0.0.1", 8080);
+        wing::add_upstream_target(cluster, "10.0.0.2", 8080);
+        wing::add_upstream_target(cluster, "10.0.0.3", 8080);
+        wing::add_upstream_target(cluster, "10.0.0.4", 8080);
+
+        // Mark nodes 1, 2, 3 as unhealthy; only node 0 remains UP
+        cluster.targets[1].is_healthy = false;
+        cluster.targets[2].is_healthy = false;
+        cluster.targets[3].is_healthy = false;
+
+        // Select 20 times: all 20 must succeed and select node 0 via least-connections fallback
+        for _ in 20 {
+            let chosen, ok = wing::select_upstream(cluster);
+            sub.assert_true(ok, "P2C gracefully falls back and finds healthy target");
+            sub.assert_eq(chosen, 0, "Selected only healthy node 0");
+            wing::release_upstream_connection(cluster, chosen);
+        }
+    };
+
+    t.run("X-Forwarded-For Edge Perimeter Spoofing vs Trust Chaining") { sub =>
+        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+        wing::add_upstream_target(proxy.cluster, "app.internal:80", 80);
+
+        var in_headers = wing::HeaderMap { .. };
+        wing::append_header(in_headers, "Host", "api.example.com");
+        wing::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
+
+        // 1. Default mode: trust_incoming_xff is false -> spoofed XFF dropped
+        var wire_untrusted: u8[>..] = [];
+        let _, ok1 = wing::prepare_proxy_request(
+            proxy,
+            "GET",
+            "/api",
+            in_headers,
+            "203.0.113.195",
+            "https",
+            "",
+            wire_untrusted,
+        );
+        sub.assert_true(ok1, "Untrusted XFF request prepared");
+        sub.assert_true(!core::contains(wire_untrusted[..], "127.0.0.1"), "Spoofed 127.0.0.1 dropped at edge");
+        sub.assert_true(!core::contains(wire_untrusted[..], "10.0.0.1"), "Spoofed 10.0.0.1 dropped at edge");
+        sub.assert_true(core::contains(wire_untrusted[..], "X-Forwarded-For: 203.0.113.195"), "Real client IP injected");
+
+        // 2. Internal proxy mode: trust_incoming_xff is true -> chained
+        proxy.config.trust_incoming_xff = true;
+        var wire_trusted: u8[>..] = [];
+        let _, ok2 = wing::prepare_proxy_request(
+            proxy,
+            "GET",
+            "/api",
+            in_headers,
+            "203.0.113.195",
+            "https",
+            "",
+            wire_trusted,
+        );
+        sub.assert_true(ok2, "Trusted XFF request prepared");
+        sub.assert_true(core::contains(wire_trusted[..], "X-Forwarded-For: 127.0.0.1, 10.0.0.1, 203.0.113.195"), "Chained XFF forwarded");
+    };
+
+    t.run("Dynamic Rate Limiter Synchronization") { sub =>
+        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+        wing::add_upstream_target(proxy.cluster, "backend.internal:8080", 8080);
+
+        // Configure rate limit dynamically via helper
+        wing::set_proxy_rate_limit(proxy, 10, 1);
+        sub.assert_true(proxy.config.enable_rate_limiting, "Rate limit enabled");
+        sub.assert_eq(proxy.config.rate_limit_rps, 10, "Config RPS is 10");
+        sub.assert_eq(proxy.config.rate_limit_burst, 1, "Config burst is 1");
+
+        var in_headers = wing::HeaderMap { .. };
+        wing::append_header(in_headers, "Host", "test.example.com");
+
+        var wire: u8[>..] = [];
+        let client_ip: u8[..16] = "198.51.100.88";
+        let now_ns: u64 = 2000000000;
+
+        let _, ok1 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok2 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        sub.assert_true(ok1 && ok2, "Initial burst requests admitted");
+
+        // 3rd request rejected by dynamically synchronized limiter
+        let _, ok3 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        sub.assert_true(!ok3, "3rd request rejected by synced GCRA rate limit");
     };
 }
 
@@ -1680,6 +1812,7 @@ fn test_dns_pointer_security(t: core::T&) {
     t.assert_true(ok1, "valid backward pointer must succeed");
     t.assert_eq(resp1.a_records.len, 1, "parsed 1 A record");
     t.assert_true(resp1.a_records[0] == 0x5db8d822, "IP address matches");
+    t.assert_eq(resp1.min_ttl_sec, 60, "min_ttl_sec parsed as 60 seconds");
 
     // Forward pointer rejected (RFC 1035 §4.1.4: ptr_off >= current_off)
     var fwd_wire = valid_wire;

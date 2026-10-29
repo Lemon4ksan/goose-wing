@@ -17,12 +17,16 @@ const TICK_TIMER_MODULO: u8 = 240;
 
 struct TickTimerWheel {
     current_tick: u8 = 0,
+    prev_tick: u8 = 0,
+    last_elapsed: u32 = 0,
     idle_timeout_sec: u8 = 10,
 }
 
 fn new_tick_timer_wheel(idle_timeout_sec: u8 = 10) -> TickTimerWheel {
     return TickTimerWheel {
         current_tick: 0,
+        prev_tick: 0,
+        last_elapsed: 0,
         idle_timeout_sec: idle_timeout_sec,
     };
 }
@@ -40,12 +44,20 @@ inline fn tick_timer_disarm() -> u8 {
 
 // Advances the tick counter by elapsed_seconds.
 fn tick_timer_advance(wheel: TickTimerWheel&, elapsed_seconds: u32 = 1) -> u8 {
+    wheel.prev_tick = wheel.current_tick;
+    wheel.last_elapsed = elapsed_seconds;
     wheel.current_tick = ((wheel.current_tick + elapsed_seconds) % TICK_TIMER_MODULO) as u8;
     return wheel.current_tick;
+}
+
+inline fn is_slot_in_elapsed_range(slot: u8, prev: u8, elapsed: u32) -> bool {
+    guard elapsed < TICK_TIMER_MODULO else { return true; }
+    let dist = (slot + TICK_TIMER_MODULO - prev) % TICK_TIMER_MODULO;
+    return dist > 0 && dist <= elapsed;
 }
 
 // Checks if an armed slot has reached its timeout.
 inline fn tick_timer_is_expired(wheel: const TickTimerWheel&, slot_timeout: u8) -> bool {
     if slot_timeout == TICK_TIMER_DISARMED { return false; }
-    return slot_timeout == wheel.current_tick;
+    return is_slot_in_elapsed_range(slot_timeout, wheel.prev_tick, wheel.last_elapsed);
 }

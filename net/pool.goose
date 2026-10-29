@@ -363,6 +363,7 @@ fn is_connection_healthy(
     now_ns: i64,
     do_extensive_checks: bool = false,
     healthy_threshold_ns: i64 = IDLE_CONNECTION_HEALTHY_NS,
+    max_idle_ns: i64 = DEFAULT_IDLE_CONN_TIMEOUT_NS,
 ) -> bool {
     if conn.closed || conn.no_new_exchanges || conn.remote_rst {
         return false;
@@ -374,6 +375,12 @@ fn is_connection_healthy(
     }
 
     let idle_duration_ns = core::ct_max_i64(0, now_ns - conn.idle_at_ns);
+
+    if max_idle_ns > 0 && idle_duration_ns > max_idle_ns {
+        conn.no_new_exchanges = true;
+        conn.closed = true;
+        return false;
+    }
 
     if do_extensive_checks || idle_duration_ns >= healthy_threshold_ns {
         // Non-blocking check for received FIN (stream exhaustion)
@@ -497,14 +504,24 @@ fn new_stream_pool(
     };
 }
 
-// Finds an existing connection group or creates a new one.
-fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
+// Finds an existing connection group by key.
+fn find_group_index(pool: const StreamPool&, key: const PoolKey&) -> i32 {
     let kh = pool_key_hash(key);
     for &grp, idx in pool.groups {
         if grp.key_hash == kh && grp.key.pool_key_equals(key) {
             return idx as i32;
         }
     }
+    return -1;
+}
+
+// Finds an existing connection group or creates a new one.
+fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
+    let idx = pool.find_group_index(key);
+    if idx >= 0 {
+        return idx;
+    }
+    let kh = pool_key_hash(key);
     if pool.groups.len < 32 {
         var grp = ConnectionGroup {
             key: copy(key),
@@ -539,10 +556,35 @@ fn acquire_connection_slot(pool: StreamPool&, now_ns: i64) -> i32 {
     return find_closed_connection_slot(pool);
 }
 
+fn group_record_closed(pool: StreamPool&, key: const PoolKey&, active: bool) {
+    let grp_idx = pool.find_group_index(key);
+    guard grp_idx >= 0 else { return; }
+    if active {
+        if pool.groups[grp_idx].active_conns > 0 { pool.groups[grp_idx].active_conns--; }
+    } else {
+        if pool.groups[grp_idx].idle_conns > 0 { pool.groups[grp_idx].idle_conns--; }
+    }
+}
+
+fn group_record_acquired(pool: StreamPool&, key: const PoolKey&) {
+    let grp_idx = pool.find_group_index(key);
+    guard grp_idx >= 0 else { return; }
+    pool.groups[grp_idx].active_conns++;
+    if pool.groups[grp_idx].idle_conns > 0 { pool.groups[grp_idx].idle_conns--; }
+}
+
+fn group_record_released(pool: StreamPool&, key: const PoolKey&) {
+    let grp_idx = pool.find_group_index(key);
+    guard grp_idx >= 0 else { return; }
+    if pool.groups[grp_idx].active_conns > 0 { pool.groups[grp_idx].active_conns--; }
+    pool.groups[grp_idx].idle_conns++;
+}
+
 // Marks a pooled connection as closed, freeing it for slot reclamation.
 fn close_pooled_connection(pool: StreamPool&, conn_id: i32) -> bool {
     for &c in pool.conns {
-        if c.conn_id == conn_id {
+        if c.conn_id == conn_id && !c.closed {
+            group_record_closed(pool, c.key, c.active_allocations > 0);
             c.closed = true;
             c.no_new_exchanges = true;
             c.active_allocations = 0;
@@ -567,6 +609,7 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
     }
 
     if oldest_idx >= 0 {
+        group_record_closed(pool, pool.conns[oldest_idx].key, false);
         pool.conns[oldest_idx].closed = true;
         pool.conns[oldest_idx].no_new_exchanges = true;
         return true;
@@ -585,39 +628,46 @@ fn acquire_pooled_connection(
 ) -> i32, bool {
     // 1. Direct pool match for exact key
     for &c in pool.conns {
-        if !c.closed && c.key.pool_key_equals(key) {
-            if c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic {
-                if c.active_allocations < c.max_concurrent_streams {
-                    if c.is_connection_healthy(now_ns, do_extensive_checks) {
-                        c.active_allocations++;
-                        c.use_count++;
-                        return c.conn_id, true;
-                    }
-                }
-            } else if c.active_allocations == 0 {
-                if c.is_connection_healthy(now_ns, do_extensive_checks) {
-                    c.active_allocations = 1;
-                    c.use_count++;
-                    return c.conn_id, true;
-                }
-            }
+        guard !c.closed && c.key.pool_key_equals(key) else { continue; }
+        let is_h2_h3 = c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic;
+        if is_h2_h3 {
+            guard c.active_allocations < c.max_concurrent_streams else { continue; }
+            let healthy = c.is_connection_healthy(
+                now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+            );
+            guard healthy else { continue; }
+            c.active_allocations++;
+            c.use_count++;
+            return c.conn_id, true;
         }
+
+        guard c.active_allocations == 0 else { continue; }
+        let healthy = c.is_connection_healthy(
+            now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+        );
+        guard healthy else { continue; }
+        c.active_allocations = 1;
+        c.use_count++;
+        group_record_acquired(pool, c.key);
+        return c.conn_id, true;
     }
 
     // 2. HTTP/2 IP coalescing match across origins
     if pool.enable_ip_coalescing_h2 && key.scheme == PoolScheme.Https && target_resolved_ip.len > 0 {
         for &c in pool.conns {
-            if !c.closed && c.active_allocations < c.max_concurrent_streams {
-                let can_coalesce, is_negative = c.can_coalesce_h2_connection(key, target_resolved_ip);
-                if is_negative {
-                    pool.negative_ip_pool_result_count++;
-                }
-                if can_coalesce && c.is_connection_healthy(now_ns, do_extensive_checks) {
-                    c.active_allocations++;
-                    c.use_count++;
-                    return c.conn_id, true;
-                }
+            guard !c.closed && c.active_allocations < c.max_concurrent_streams else { continue; }
+            let can_coalesce, is_negative = c.can_coalesce_h2_connection(key, target_resolved_ip);
+            if is_negative {
+                pool.negative_ip_pool_result_count++;
             }
+            guard can_coalesce else { continue; }
+            let healthy = c.is_connection_healthy(
+                now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+            );
+            guard healthy else { continue; }
+            c.active_allocations++;
+            c.use_count++;
+            return c.conn_id, true;
         }
     }
 
@@ -682,6 +732,7 @@ fn release_connection(pool: StreamPool&, conn_id: i32, now_ns: i64) -> bool {
             }
             if c.active_allocations == 0 {
                 c.idle_at_ns = now_ns;
+                group_record_released(pool, c.key);
             }
             return true;
         }

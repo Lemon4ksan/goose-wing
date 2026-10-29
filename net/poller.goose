@@ -348,39 +348,60 @@ fn get_socket_timeout(p: const Poller&, fd: SocketFd) -> u8 {
     return p.registrations[idx].timeout;
 }
 
-// Advances the coarse clock and dispatches expired coarse socket timeouts.
-fn check_coarse_timeouts(p: Poller&, now_ns: Nanoseconds, out_events: PollReadyEvent[..64]&) -> i32 {
+inline fn is_coarse_timeout_expired(t: u8, old_tick: u64, elapsed_ticks: u64) -> bool {
+    guard t != COARSE_TIMEOUT_DISABLED else { return false; }
+    guard elapsed_ticks < 240 else { return true; }
+    let dist = (t as u64 + 240 - old_tick) % 240;
+    return dist > 0 && dist <= elapsed_ticks;
+}
+
+inline fn dispatch_expired_registration(
+    reg: SocketRegistration&,
+    old_tick: u64,
+    elapsed_ticks: u64,
+    out_events: PollReadyEvent[..64]&,
+) -> bool {
+    guard reg.in_use else { return false; }
+    guard is_coarse_timeout_expired(reg.timeout, old_tick, elapsed_ticks) else { return false; }
+    reg.timeout = COARSE_TIMEOUT_DISABLED;
+    guard out_events.len < out_events.cap else { return false; }
+    out_events.push(PollReadyEvent {
+        tag: reg.tag,
+        fd: reg.fd,
+        events: POLL_TIMER,
+        bytes_available: 0,
+        is_eof: false,
+        is_timer: true,
+    });
+    return true;
+}
+
+inline fn advance_coarse_clock(p: Poller&, now_ns: Nanoseconds, old_tick: u64&, elapsed_ticks: u64&) -> bool {
     guard p.last_coarse_tick_ns > 0 else {
         p.last_coarse_tick_ns = now_ns;
-        return 0;
+        return false;
     }
-
-    if now_ns < p.last_coarse_tick_ns + COARSE_TIMEOUT_GRANULARITY_NS {
-        return 0;
+    guard now_ns >= p.last_coarse_tick_ns + COARSE_TIMEOUT_GRANULARITY_NS else {
+        return false;
     }
+    let el = (now_ns - p.last_coarse_tick_ns) / COARSE_TIMEOUT_GRANULARITY_NS;
+    elapsed_ticks = el;
+    p.last_coarse_tick_ns += el * COARSE_TIMEOUT_GRANULARITY_NS;
+    old_tick = p.global_coarse_tick;
+    p.global_coarse_tick = ((old_tick + elapsed_ticks) % 240) as u8;
+    return true;
+}
 
-    let elapsed_ticks = (now_ns - p.last_coarse_tick_ns) / COARSE_TIMEOUT_GRANULARITY_NS;
-    p.last_coarse_tick_ns = now_ns;
-    p.global_coarse_tick = ((p.global_coarse_tick + elapsed_ticks) % 240) as u8;
-    let current_tick = p.global_coarse_tick;
+// Advances the coarse clock and dispatches expired coarse socket timeouts.
+fn check_coarse_timeouts(p: Poller&, now_ns: Nanoseconds, out_events: PollReadyEvent[..64]&) -> i32 {
+    var old_tick: u64 = 0;
+    var elapsed_ticks: u64 = 0;
+    guard advance_coarse_clock(p, now_ns, old_tick, elapsed_ticks) else { return 0; }
 
     var fired: i32 = 0;
     for i in p.registrations.len {
-        guard p.registrations[i].in_use else { continue; }
-        if p.registrations[i].timeout != COARSE_TIMEOUT_DISABLED && p.registrations[i].timeout == current_tick {
-            p.registrations[i].timeout = COARSE_TIMEOUT_DISABLED;
-            if out_events.len < out_events.cap {
-                var ev = PollReadyEvent {
-                    tag: p.registrations[i].tag,
-                    fd: p.registrations[i].fd,
-                    events: POLL_TIMER,
-                    bytes_available: 0,
-                    is_eof: false,
-                    is_timer: true,
-                };
-                out_events.push(ev);
-                fired += 1;
-            }
+        if dispatch_expired_registration(p.registrations[i], old_tick, elapsed_ticks, out_events) {
+            fired += 1;
         }
     }
     return fired;

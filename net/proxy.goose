@@ -413,7 +413,7 @@ fn feed_header_bytes(
 
     // Barrier 4: Byte-Drip Gate (minimum ingress rate check on windows >= 1s)
     if elapsed_ns >= 1000000000 {
-        let elapsed_sec: f64 = elapsed_ns / 1000000000;
+        let elapsed_sec: f64 = elapsed_ns / 1000000000.0;
         let current_rate: f64 = reader.cumulative_header_bytes / elapsed_sec;
         let min_rate: f64 = reader.config.min_header_ingress_rate_bps;
         if current_rate < min_rate {

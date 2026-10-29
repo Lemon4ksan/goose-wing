@@ -350,6 +350,40 @@ fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool 
     return true;
 }
 
+// Synthesizes a NAT64 IPv6 address prefix 64:ff9b::/96 per RFC 7050 from IPv4 candidate.
+fn synthesize_nat64_candidate(manager: AttemptManager&) {
+    guard manager.pending_candidates.len < manager.pending_candidates.cap else { return; }
+    var v4_idx: i64 = -1;
+    for i in manager.pending_candidates.len {
+        guard manager.pending_candidates[i].family == AddressFamily.IPv4 else { continue; }
+        v4_idx = i;
+        break;
+    }
+    if v4_idx >= 0 {
+        let cand4 = manager.pending_candidates[v4_idx];
+        var syn_ip: u8[..64] = [];
+        syn_ip.append("64:ff9b::");
+        syn_ip.append(cand4.ip[..]);
+        var nat64_cand = new_dns_candidate(
+            AddressFamily.IPv6,
+            syn_ip[..],
+            cand4.port,
+            cand4.l4_proto,
+            cand4.precedence,
+        );
+        manager.pending_candidates.push(nat64_cand);
+        return;
+    }
+    var nat64_cand = new_dns_candidate(
+        AddressFamily.IPv6,
+        "64:ff9b::192.0.2.1",
+        443,
+        L4Protocol.Tcp,
+        30,
+    );
+    manager.pending_candidates.push(nat64_cand);
+}
+
 // Advances the connection racing state machine on monotonic time ticks.
 fn tick_attempt_manager(manager: AttemptManager&, now_ms: i64) -> bool {
     if manager.has_winner { return false; }
@@ -357,11 +391,7 @@ fn tick_attempt_manager(manager: AttemptManager&, now_ms: i64) -> bool {
     // Check if Last Resort Local Synthesis Delay expired (2000 ms)
     if manager.last_resort_armed && !manager.last_resort_triggered && now_ms >= manager.last_resort_deadline_ms {
         manager.last_resort_triggered = true;
-        // Synthesizes NAT64 address prefix 64:ff9b::/96 per RFC 7050
-        if manager.pending_candidates.len < 32 {
-            var nat64_cand = new_dns_candidate(AddressFamily.IPv6, "64:ff9b::192.0.2.1", 443, L4Protocol.Tcp, 30);
-            manager.pending_candidates.push(nat64_cand);
-        }
+        synthesize_nat64_candidate(manager);
     }
 
     // Launch next connection attempt if CAD interval has passed

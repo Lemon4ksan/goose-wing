@@ -145,6 +145,114 @@ fn parse_ipv4_decimal(str: const u8[:], out_ip: u8[4]&) -> bool {
     return true;
 }
 
+// Parses 1-4 hex characters into u16 (RFC 4291 §2.2).
+//
+// Example:
+//   str = "1a2f"
+//   returns: out_val = 0x1a2f, ok = true
+fn parse_hex_u16(str: const u8[:], out_val: u16&) -> bool {
+    guard str.len > 0 && str.len <= 4 else { return false; }
+    var acc: u32 = 0;
+    for b in str {
+        var digit: u32 = 0;
+        if b >= '0' && b <= '9' {
+            digit = b - '0';
+        } else if b >= 'a' && b <= 'f' {
+            digit = b - 'a' + 10;
+        } else if b >= 'A' && b <= 'F' {
+            digit = b - 'A' + 10;
+        } else {
+            return false;
+        }
+        acc = (acc << 4) | digit;
+    }
+    out_val = acc as u16;
+    return true;
+}
+
+// Extracts colon-delimited hex groups into target buffer.
+//
+// Example:
+//   part = "2001:db8", groups = []
+//   returns: ok = true, groups = [0x2001, 0x0db8]
+fn parse_colon_groups(part: const u8[:], groups: u16[..8]&) -> bool {
+    guard part.len > 0 else { return true; }
+    var tok_start: i64 = 0;
+    for i in part.len {
+        guard part[i] == ':' else { continue; }
+        let seg = part[tok_start..i];
+        var val: u16 = 0;
+        guard parse_hex_u16(seg, val) else { return false; }
+        guard groups.len < groups.cap else { return false; }
+        groups.push(val);
+        tok_start = i + 1;
+    }
+    let seg = part[tok_start..];
+    var val: u16 = 0;
+    guard parse_hex_u16(seg, val) else { return false; }
+    guard groups.len < groups.cap else { return false; }
+    groups.push(val);
+    return true;
+}
+
+// Parses standard IPv6 hex notation (RFC 4291 §2.2 / RFC 5952) into u8[16].
+//
+// Example:
+//   str = "2001:db8::1"
+//   returns: out_ip = [0x20, 0x01, 0x0d, 0xb8, ...], ok = true
+fn parse_ipv6_hex(str: const u8[:], out_ip: u8[16]&) -> bool {
+    guard str.len >= 2 && str.len <= 39 else { return false; }
+
+    let dcolon_idx = core::index_of_slice(str, "::");
+    if dcolon_idx >= 0 {
+        let second_dcolon = core::index_of_slice(str[dcolon_idx + 2..], "::");
+        guard second_dcolon < 0 else { return false; }
+    }
+
+    var head_groups: u16[..8] = [];
+    var tail_groups: u16[..8] = [];
+
+    if dcolon_idx >= 0 {
+        let head_part = str[..dcolon_idx];
+        let tail_part = str[dcolon_idx + 2..];
+        guard parse_colon_groups(head_part, head_groups) else { return false; }
+        guard parse_colon_groups(tail_part, tail_groups) else { return false; }
+
+        let total_present = head_groups.len + tail_groups.len;
+        guard total_present < 8 else { return false; }
+        let zeros_needed = 8 - total_present;
+
+        var byte_idx: i64 = 0;
+        for v in head_groups {
+            out_ip[byte_idx] = ((v >> 8) & 0xFF) as u8;
+            out_ip[byte_idx + 1] = (v & 0xFF) as u8;
+            byte_idx += 2;
+        }
+        for z in zeros_needed {
+            out_ip[byte_idx] = 0;
+            out_ip[byte_idx + 1] = 0;
+            byte_idx += 2;
+        }
+        for v in tail_groups {
+            out_ip[byte_idx] = ((v >> 8) & 0xFF) as u8;
+            out_ip[byte_idx + 1] = (v & 0xFF) as u8;
+            byte_idx += 2;
+        }
+        return true;
+    }
+
+    guard parse_colon_groups(str, head_groups) else { return false; }
+    guard head_groups.len == 8 else { return false; }
+
+    var byte_idx: i64 = 0;
+    for v in head_groups {
+        out_ip[byte_idx] = ((v >> 8) & 0xFF) as u8;
+        out_ip[byte_idx + 1] = (v & 0xFF) as u8;
+        byte_idx += 2;
+    }
+    return true;
+}
+
 // ---- 4. PROXY Protocol v1 Parser & Serializer (Text) ------------------------
 
 struct ProxyTokenSpan {
@@ -233,6 +341,8 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     } else if proto_str == "TCP6" {
         hdr.family = ProxyAddressFamily.Inet6;
         hdr.transport = ProxyTransportProtocol.Stream;
+        guard parse_ipv6_hex(src_ip_str, hdr.src_ipv6) else { return hdr, 0, false; }
+        guard parse_ipv6_hex(dst_ip_str, hdr.dst_ipv6) else { return hdr, 0, false; }
     } else {
         return hdr, 0, false;
     }
@@ -551,33 +661,37 @@ fn format_proxy_v2_addresses<B>(hdr: const ProxyHeader&, out: B&) {
     }
 }
 
+inline fn calc_proxy_v2_sub_tlv_len(val: const u8[:]) -> i64 {
+    if val.len > 0 { return 3 + val.len; }
+    return 0;
+}
+
+inline fn append_proxy_v2_sub_tlv<B>(out: B&, sub_type: u8, val: const u8[:]) {
+    guard val.len > 0 else { return; }
+    out.push(sub_type);
+    append_u16_be(out, val.len as u16);
+    out.append(val);
+}
+
 fn format_proxy_v2_ssl_tlv<B>(ssl: const ProxySslInfo&, out: B&) {
     out.push(internal::PP2_TYPE_SSL);
 
-    var sub_len = 5;
-    if ssl.version.len > 0 { sub_len += 3 + ssl.version.len; }
-    if ssl.cipher.len > 0 { sub_len += 3 + ssl.cipher.len; }
-    if ssl.client_cn.len > 0 { sub_len += 3 + ssl.client_cn.len; }
+    var sub_len: i64 = 5;
+    sub_len += calc_proxy_v2_sub_tlv_len(ssl.version[..]);
+    sub_len += calc_proxy_v2_sub_tlv_len(ssl.cipher[..]);
+    sub_len += calc_proxy_v2_sub_tlv_len(ssl.sig_alg[..]);
+    sub_len += calc_proxy_v2_sub_tlv_len(ssl.key_alg[..]);
+    sub_len += calc_proxy_v2_sub_tlv_len(ssl.client_cn[..]);
 
     append_u16_be(out, sub_len as u16);
     out.push(ssl.client_flags);
     append_u32_be(out, ssl.verify_result);
 
-    if ssl.version.len > 0 {
-        out.push(internal::PP2_SUBTYPE_SSL_VERSION);
-        append_u16_be(out, ssl.version.len as u16);
-        out.append(ssl.version[..]);
-    }
-    if ssl.cipher.len > 0 {
-        out.push(internal::PP2_SUBTYPE_SSL_CIPHER);
-        append_u16_be(out, ssl.cipher.len as u16);
-        out.append(ssl.cipher[..]);
-    }
-    if ssl.client_cn.len > 0 {
-        out.push(internal::PP2_SUBTYPE_SSL_CN);
-        append_u16_be(out, ssl.client_cn.len as u16);
-        out.append(ssl.client_cn[..]);
-    }
+    append_proxy_v2_sub_tlv(out, internal::PP2_SUBTYPE_SSL_VERSION, ssl.version[..]);
+    append_proxy_v2_sub_tlv(out, internal::PP2_SUBTYPE_SSL_CIPHER, ssl.cipher[..]);
+    append_proxy_v2_sub_tlv(out, internal::PP2_SUBTYPE_SSL_SIG_ALG, ssl.sig_alg[..]);
+    append_proxy_v2_sub_tlv(out, internal::PP2_SUBTYPE_SSL_KEY_ALG, ssl.key_alg[..]);
+    append_proxy_v2_sub_tlv(out, internal::PP2_SUBTYPE_SSL_CN, ssl.client_cn[..]);
 }
 
 fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
@@ -597,6 +711,12 @@ fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
         out.push(internal::PP2_TYPE_UNIQUE_ID);
         append_u16_be(out, hdr.unique_id.len as u16);
         out.append(hdr.unique_id[..]);
+    }
+
+    if hdr.netns.len > 0 {
+        out.push(internal::PP2_TYPE_NETNS);
+        append_u16_be(out, hdr.netns.len as u16);
+        out.append(hdr.netns[..]);
     }
 
     if hdr.ssl.has_ssl {
