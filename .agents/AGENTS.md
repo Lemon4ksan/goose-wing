@@ -195,6 +195,10 @@ Enforced statically via `scripts/lint_invariants.ps1` and `.githooks/pre-commit`
    - The byte slice (`const u8[:]` or `u8[:]`) is the universal primitive for all memory, wire packets, and protocol payloads across Goose.
    - **No artificial cursor wrappers**: Protocol parsers, frame decoders, and RFC tokenizers must never wrap in-memory slices in artificial cursor objects (`struct SliceReader`, `struct ByteCursor`, `struct WireReader`). Parsers must accept canonical slices (`raw: const u8[:]`) and an explicit cursor offset (`idx: i64&`), or return `(consumed_len, bool)` / `(Frame, bool)`. Direct slices preserve bounds visibility for compiler Bounds Check Elimination (BCE) and maintain minimal G-CRAP branch depth.
    - **Zero-copy socket streaming via ring-buffer views**: Sockets and transports must not implement Go-style virtual `io.Reader.Read(p: u8[:])` (which forces callers to allocate receiving buffers and copy bytes from the kernel). Transports manage an internal ring buffer or scratch arena and vend unread slices directly (`incoming_slice() -> const u8[:]`), advancing state after parsing (`advance_read(consumed)`).
+11. **Constant-time cryptographic comparisons (No timing side-channels)**:
+   - Never compare cryptographic digests, MAC tags, HMAC outputs, or verification tokens using `==` or `!=`. Always use `core::ct_eq_bytes` to prevent timing side-channel leaks.
+12. **Zero dynamic vectors (`u8[>..]`) in wire frame structs**:
+   - Protocol frame, packet, and header structs (`*Frame`, `*Packet`, `*Header`) must store payload views as zero-copy slices (`const u8[:]`) or stack-bounded arrays (`u8[..N]`), never heap-allocated `u8[>..]` vectors.
 
 ## Code formatting, geometry, and G-CRAP harmony
 

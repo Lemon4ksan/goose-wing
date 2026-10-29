@@ -327,8 +327,7 @@ fn calculate_digest_response(
     nonce: const u8[:],
     nc_str: const u8[:],
     cnonce: const u8[:],
-    has_qop: bool,
-    is_auth_int: bool,
+    active_qop: const u8[:],
     ha2_hex: const u8[:],
 ) -> u8[..64] {
     var a3: u8[>..] = [];
@@ -336,8 +335,7 @@ fn calculate_digest_response(
     a3.push(':');
     a3.append(nonce);
 
-    if has_qop {
-        let active_qop = if is_auth_int { "auth-int" } else { "auth" };
+    if active_qop.len > 0 {
         a3.push(':');
         a3.append(nc_str);
         a3.push(':');
@@ -507,6 +505,14 @@ fn resolve_digest_user(
     return out_user;
 }
 
+inline fn resolve_active_qop(raw_qop: const u8[:]) -> const u8[:] {
+    guard raw_qop.len > 0 else { return ""; }
+    if eq_ascii_fold(raw_qop, "auth-int") {
+        return "auth-int";
+    }
+    return "auth";
+}
+
 // Computes RFC 7616 Digest response and outputs the full Authorization header.
 //
 // Example:
@@ -525,8 +531,8 @@ fn compute_digest_response(
     guard challenge.valid else { return false; }
 
     let algo = challenge.algorithm[..];
-    let is_auth_int = eq_ascii_fold(challenge.qop[..], "auth-int");
-    let has_qop = (challenge.qop.len > 0);
+    let active_qop = resolve_active_qop(challenge.qop[..]);
+    let is_auth_int = (active_qop.len == 8);
 
     let effective_user = resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo);
 
@@ -550,16 +556,9 @@ fn compute_digest_response(
         challenge.nonce[..],
         nc_str[..],
         cnonce,
-        has_qop,
-        is_auth_int,
+        active_qop,
         ha2_hex[..],
     );
-
-    let active_qop: const u8[:] = if has_qop {
-        if is_auth_int { "auth-int" } else { "auth" }
-    } else {
-        ""
-    };
 
     return serialize_digest_auth(
         effective_user[..],

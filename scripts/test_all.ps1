@@ -42,7 +42,7 @@ function Start-GooseProcess([string]$fileName, [string]$cmdArgs, [bool]$redirect
 }
 
 # Determine total verification steps
-$totalSteps = if ($CheckOnly) { 2 } else { 3 }
+$totalSteps = if ($CheckOnly) { 2 } elseif ($Lit) { 4 } else { 3 }
 
 # Typecheck core and wing libraries
 Write-Host "`n[1/$totalSteps] Typechecking core and wing libraries..." -ForegroundColor Yellow
@@ -215,7 +215,7 @@ if ($failedSuites -ne 0) {
 }
 
 if ($Lit) {
-    Write-Host "`n[4/4] Executing Goose LIT native verification suites..." -ForegroundColor Yellow
+    Write-Host "`n[$totalSteps/$totalSteps] Executing Goose LIT native verification suites..." -ForegroundColor Yellow
     $litScript = Join-Path $PSScriptRoot "test_lit.ps1"
     & powershell -ExecutionPolicy Bypass -File $litScript -Jobs $Jobs
     if ($LASTEXITCODE -ne 0) {

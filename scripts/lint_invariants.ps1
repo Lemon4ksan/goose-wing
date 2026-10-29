@@ -75,20 +75,31 @@ foreach ($file in $filesToScan) {
     $fnHasLoop = $false
     $inLoop = $false
     $loopBraceDepth = 0
+    $inWireStruct = $false
+    $wireStructName = ""
+    $wireStructDepth = 0
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
         $lineNum = $i + 1
 
-        # Check: Consecutive blank lines
+        # Check: Consecutive blank lines & brace blank line hygiene
         if ($line.Trim() -eq "") {
             $consecutiveBlankLines++
             if ($consecutiveBlankLines -ge 2) {
                 Write-Host "[LINT] ${relPath}:${lineNum} -> Multiple consecutive blank lines. Keep vertical rhythm to at most 1 blank line." -ForegroundColor Yellow
                 $violations++
             }
+            if (-not $isTestOrExample -and $inFunction -and $i -gt ($fnStartLine - 1) -and $lines[$i - 1].Trim() -match '\{\s*$') {
+                Write-Host "[LINT] ${relPath}:${lineNum} -> Blank line immediately after opening brace '{' prohibited." -ForegroundColor Yellow
+                $violations++
+            }
         } else {
             $consecutiveBlankLines = 0
+            if (-not $isTestOrExample -and $inFunction -and $line.Trim() -eq "}" -and $i -gt 0 -and $lines[$i - 1].Trim() -eq "") {
+                Write-Host "[LINT] ${relPath}:${lineNum} -> Blank line immediately before closing brace '}' prohibited." -ForegroundColor Yellow
+                $violations++
+            }
         }
 
         # Check: Tab characters (\t)
@@ -216,72 +227,149 @@ foreach ($file in $filesToScan) {
             }
         }
 
+        # Multi-line function signature reconstruction
+        $isFnStart = ($line -match '^\s*(pub\s+)?(inline\s+)?fn\s+([A-Za-z0-9_:]+)' -and $line -notmatch '^\s*extern\b')
+        $sigFnName = ""
+        $sigParams = ""
+        $sigRet = ""
+        $isMultiLineSig = $false
+
+        if ($isFnStart) {
+            $sigLines = @()
+            $sigEndIdx = $i
+            for ($s = $i; $s -lt [Math]::Min($lines.Count, $i + 20); $s++) {
+                $curSigLine = ($lines[$s] -replace '//.*$', '').Trim()
+                $sigLines += $curSigLine
+                if ($lines[$s] -match '[\{;]') {
+                    $sigEndIdx = $s
+                    break
+                }
+            }
+            $joinedSig = $sigLines -join ' '
+            if ($joinedSig -match '^\s*(pub\s+)?(inline\s+)?fn\s+(::)?([A-Za-z0-9_]+)(<[^>]+>)?\s*\(([^)]*)\)\s*(->\s*([^\{;]+))?') {
+                $sigFnName = $Matches[4]
+                $sigParams = $Matches[6]
+                $sigRet = if ($Matches[8]) { $Matches[8].Trim() } else { "" }
+                $isMultiLineSig = ($sigEndIdx -gt $i)
+            }
+        }
+
+        # Rule 1e: Prohibition of mechanical function names
+        if ($isFnStart -and $sigFnName -match '^(add|sub|mul|div|inc|dec)_(one|two|three|four|five|ten|\d+|by_\w+)$') {
+            Write-Host "[LINT] ${relPath}:${lineNum} -> Mechanical function name '$sigFnName' prohibited. Name helper after the protocol domain invariant." -ForegroundColor Red
+            $violations++
+        }
+
+        # Rule 3: Boolean trap detection (consecutive bool parameters)
+        if (-not $isTestOrExample -and $isFnStart -and $sigParams -match ':\s*bool(\s*=\s*(true|false))?\s*,\s*[A-Za-z0-9_]+\s*:\s*bool') {
+            Write-Host "[LINT] ${relPath}:${lineNum} -> Boolean trap in function '$sigFnName': consecutive 'bool' parameters detected. Use an enum, struct, or domain slice." -ForegroundColor Red
+            $violations++
+        }
+
+        # Geometry Rule 1c: Single-line signature parameter overflow
+        if (-not $isTestOrExample -and $isFnStart -and -not $isMultiLineSig -and $line.Length -gt 100) {
+            $paramCount = ($sigParams -split ',').Count
+            if ($paramCount -ge 5) {
+                Write-Host "[LINT] ${relPath}:${lineNum} -> Single-line signature for '$sigFnName' has $paramCount parameters and exceeds 100 columns ($($line.Length) chars). Place each parameter on its own 4-space indented line." -ForegroundColor Yellow
+                $violations++
+            }
+        }
+
         # Rule 6: Expanded // Example: Input/Output Contract Coverage
-        if ($StrictExamples -and -not $isTestOrExample) {
-            if ($line -match '^\s*(pub\s+)?(inline\s+)?fn\s+([A-Za-z0-9_]+)(<[^>]+>)?\s*\(([^)]*)\)\s*(->\s*([^\{]+))?') {
-                $name = $Matches[3]
-                $params = $Matches[5]
-                $ret = $Matches[7]
+        if ($StrictExamples -and -not $isTestOrExample -and $isFnStart -and $sigFnName -ne "") {
+            $name = $sigFnName
+            $params = $sigParams
+            $ret = $sigRet
 
-                $isExempt = ($name -match '^(new_|is_|has_|get_|set_|len|cap|clear|reset|init_|alloc_)') -or
-                            ($name -in @('append', 'push', 'clear', 'reset', 'do', 'next'))
+            $isExempt = ($name -match '^(new_|is_|has_|get_|set_|len|cap|clear|reset|init_|alloc_)') -or
+                        ($name -in @('append', 'push', 'clear', 'reset', 'do', 'next'))
 
-                if (-not $isExempt) {
-                    $needsExample = $false
-                    $reason = ""
+            if (-not $isExempt) {
+                $needsExample = $false
+                $reason = ""
 
-                    # Category A: Advances a wire cursor or SliceReader
-                    if ($params -match '\b(idx|pos|offset)\s*:\s*(i64|u64|usize|i32|u32)&' -or
-                        $params -match '\b(r|rd|reader|sr)\s*:\s*(core::)?(SliceReader|WireReader)&') {
-                        $needsExample = $true
-                        $reason = "advances a wire cursor or SliceReader"
-                    }
-                    # Category B: Consumes a wire slice and returns (consumed_len, bool) or (token, bool)
-                    elseif ($params -match '\b(s|raw|buf|src|input)\s*:\s*(const\s+)?u8\[:\]' -and 
-                            ($ret -match '\b(i64|u64|usize|i32|u32)\s*,\s*bool' -or $ret -match '(const\s+)?u8\[:\]\s*,\s*bool')) {
-                        $needsExample = $true
-                        $reason = "consumes a wire slice and returns (consumed_len, bool)"
-                    }
-                    # Category C: RFC grammar parsers, decoders, and extractors
-                    elseif ($name -match '^(parse|decode|extract|scan)_') {
-                        $needsExample = $true
-                        $reason = "parses wire tokens or RFC grammar"
-                    }
-                    # Category D: Wire transformers, sanitizers, and bitmask builders
-                    elseif ($name -match '^(unescape|escape|sanitize)_' -or $name -match '^build_.*_type') {
-                        $needsExample = $true
-                        $reason = "transforms wire tokens or builds wire type bitmasks"
-                    }
+                # Category A: Advances a wire cursor or SliceReader
+                if ($params -match '\b(idx|pos|offset)\s*:\s*(i64|u64|usize|i32|u32)&' -or
+                    $params -match '\b(r|rd|reader|sr)\s*:\s*(core::)?(SliceReader|WireReader)&') {
+                    $needsExample = $true
+                    $reason = "advances a wire cursor or SliceReader"
+                }
+                # Category B: Consumes a wire slice and returns (consumed_len, bool) or (token, bool)
+                elseif ($params -match '\b(s|raw|buf|src|input)\s*:\s*(const\s+)?u8\[:\]' -and 
+                        ($ret -match '\b(i64|u64|usize|i32|u32)\s*,\s*bool' -or $ret -match '(const\s+)?u8\[:\]\s*,\s*bool')) {
+                    $needsExample = $true
+                    $reason = "consumes a wire slice and returns (consumed_len, bool)"
+                }
+                # Category C: RFC grammar parsers, decoders, and extractors
+                elseif ($name -match '^(parse|decode|extract|scan)_') {
+                    $needsExample = $true
+                    $reason = "parses wire tokens or RFC grammar"
+                }
+                # Category D: Wire transformers, sanitizers, and bitmask builders
+                elseif ($name -match '^(unescape|escape|sanitize)_' -or $name -match '^build_.*_type') {
+                    $needsExample = $true
+                    $reason = "transforms wire tokens or builds wire type bitmasks"
+                }
 
-                    if ($needsExample) {
-                        $hasExample = $false
-                        $lookback = [Math]::Max(0, $i - 15)
-                        for ($k = $lookback; $k -lt $i; $k++) {
-                            if ($lines[$k] -match '//\s*Example(:|s:)?') {
-                                $hasExample = $true
-                                break
-                            }
+                if ($needsExample) {
+                    $hasExample = $false
+                    $lookback = [Math]::Max(0, $i - 15)
+                    for ($k = $lookback; $k -lt $i; $k++) {
+                        if ($lines[$k] -match '//\s*Example(:|s:)?') {
+                            $hasExample = $true
+                            break
                         }
-                        if (-not $hasExample) {
-                            Write-Host "[LINT] ${relPath}:${lineNum} -> Function '$name' $reason but is missing an input/output contract block ('// Example:')." -ForegroundColor Yellow
-                            $violations++
-                        }
+                    }
+                    if (-not $hasExample) {
+                        Write-Host "[LINT] ${relPath}:${lineNum} -> Function '$name' $reason but is missing an input/output contract block ('// Example:')." -ForegroundColor Yellow
+                        $violations++
                     }
                 }
             }
         }
 
         # Rule 9: Prohibition of intermediate out-parameters for pure computations
-        if (-not $isTestOrExample -and $line -match '^\s*(pub\s+)?(inline\s+)?fn\s+([A-Za-z0-9_]+)\b.*?(out_[a-zA-Z0-9_]*(hex|ha\d+|response_hex)\s*:\s*[^,)]+&)') {
-            Write-Host "[LINT] ${relPath}:${lineNum} -> C-style intermediate out-parameter '$($Matches[4])' prohibited in '$($Matches[3])'. Return value directly via RVO ('-> u8[..N]')." -ForegroundColor Red
+        if (-not $isTestOrExample -and $isFnStart -and $sigParams -match 'out_[a-zA-Z0-9_]*(hex|ha\d+|response_hex)\s*:\s*[^,)]+&') {
+            Write-Host "[LINT] ${relPath}:${lineNum} -> C-style intermediate out-parameter '$($Matches[0])' prohibited in '$sigFnName'. Return value directly via RVO ('-> u8[..N]')." -ForegroundColor Red
             $violations++
         }
 
         # Rule 10: Prohibition of artificial slice/cursor wrappers in parsers (Lingua Franca is const u8[:])
-        if (-not $isTestOrExample -and $line -match '^\s*(pub\s+)?(inline\s+)?fn\s+(parse_[a-zA-Z0-9_]+|decode_[a-zA-Z0-9_]+|demux_[a-zA-Z0-9_]+)\b.*?\b([A-Za-z0-9_]+:\s*(core::)?(SliceReader|ByteCursor|WireReader)&)') {
+        if (-not $isTestOrExample -and $isFnStart -and $sigFnName -match '^(parse|decode|demux)_' -and $sigParams -match '\b([A-Za-z0-9_]+:\s*(core::)?(SliceReader|ByteCursor|WireReader)&)') {
             if ($relPath -notmatch '^(core\\io|quic\\frames)\.goose$') {
-                Write-Host "[LINT] ${relPath}:${lineNum} -> Parser '$($Matches[3])' takes artificial cursor wrapper '$($Matches[4])'. Lingua franca is 'const u8[:]' with 'idx: i64&'." -ForegroundColor Red
+                Write-Host "[LINT] ${relPath}:${lineNum} -> Parser '$sigFnName' takes artificial cursor wrapper '$($Matches[1])'. Lingua franca is 'const u8[:]' with 'idx: i64&'." -ForegroundColor Red
                 $violations++
+            }
+        }
+
+        # Rule 11: Timing side-channel detector on secret/tag comparisons
+        if (-not $isTestOrExample -and -not ($line -match '^\s*//')) {
+            $codeOnly = ($line -replace '//.*$', '')
+            if ($codeOnly -match '\b(expected_hash|computed_hash|expected_mac|computed_mac|hmac_tag|auth_tag|expected_digest|verify_tag)\s*(\[\.\.\])?\s*(==|!=)' -or
+                $codeOnly -match '(==|!=)\s*(expected_hash|computed_hash|expected_mac|computed_mac|hmac_tag|auth_tag|expected_digest|verify_tag)\b') {
+                if ($codeOnly -notmatch '\.len\s*(==|!=)') {
+                    Write-Host "[LINT] ${relPath}:${lineNum} -> Potential timing side-channel: direct '=='/'!=' on cryptographic tag/digest. Use 'core::ct_eq_bytes'." -ForegroundColor Red
+                    $violations++
+                }
+            }
+        }
+
+        # Rule 12: Wire struct zero-copy layout (no heap u8[>..] in wire frame structs)
+        if (-not $isTestOrExample) {
+            if ($line -match '^\s*(pub\s+)?struct\s+([A-Za-z0-9_]*(Frame|Packet|WireHeader))\s*\{') {
+                $inWireStruct = $true
+                $wireStructName = $Matches[2]
+                $wireStructDepth = 1
+            } elseif ($inWireStruct) {
+                if ($line -match '\{') { $wireStructDepth++ }
+                if ($line -match '\}') {
+                    $wireStructDepth--
+                    if ($wireStructDepth -le 0) { $inWireStruct = $false }
+                }
+                if ($inWireStruct -and $line -match ':\s*u8\[>\.\.\]') {
+                    Write-Host "[LINT] ${relPath}:${lineNum} -> Dynamic heap vector 'u8[>..]' inside wire struct '$wireStructName'. Use zero-copy slice 'const u8[:]' or stack-bounded 'u8[..N]'." -ForegroundColor Red
+                    $violations++
+                }
             }
         }
 
@@ -318,6 +406,19 @@ foreach ($file in $filesToScan) {
             if (-not $isTestOrExample -and $inLoop -and $line -match '^\s*var\s+[A-Za-z0-9_]+\s*:\s*[A-Za-z0-9_]*\[>\.\.\]') {
                 Write-Host "[LINT] ${relPath}:${lineNum} -> Dynamic heap allocation inside loop ('var ...: ...[>..]'). Hoist buffer outside loop and call .clear()." -ForegroundColor Red
                 $violations++
+            }
+
+            # Rule 1d: Local variable re-aliasing (let a = x; let b = a;)
+            if (-not $isTestOrExample -and $line -match '^\s*(let|var)\s+([A-Za-z0-9_]+)\s*(:\s*[^=]+)?=\s*([A-Za-z0-9_]+)\s*;$') {
+                $aliasLhs = $Matches[2]
+                $aliasRhs = $Matches[4]
+                if ($i -gt 0 -and $lines[$i - 1] -match '^\s*(let|var)\s+([A-Za-z0-9_]+)\s*(:\s*[^=]+)?=\s*([^;]+);$') {
+                    $prevLhs = $Matches[2]
+                    if ($aliasRhs -eq $prevLhs -and $aliasLhs -ne $prevLhs) {
+                        Write-Host "[LINT] ${relPath}:${lineNum} -> Redundant local variable re-aliasing ('let $aliasLhs = $prevLhs;'). Bind the canonical name directly." -ForegroundColor Red
+                        $violations++
+                    }
+                }
             }
 
             # Update brace depth
