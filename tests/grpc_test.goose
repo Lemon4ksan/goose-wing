@@ -200,11 +200,12 @@ fn test_grpc_status_and_metadata(t: core::T&) {
         sub.assert_bytes_eq(wing::grpc_status_name(wing::GrpcStatusCode.Internal), "INTERNAL", "Name INTERNAL");
         sub.assert_bytes_eq(wing::grpc_status_name(wing::GrpcStatusCode.Unavailable), "UNAVAILABLE", "Name UNAVAILABLE");
 
-        // HTTP status fallbacks
-        sub.assert_eq(wing::grpc_status_from_http(200), wing::GrpcStatusCode.Ok, "HTTP 200 -> OK");
+        // HTTP status fallbacks per gRPC HTTP/2 Status Mapping
+        sub.assert_eq(wing::grpc_status_from_http(200), wing::GrpcStatusCode.Unknown, "HTTP 200 without grpc-status -> Unknown");
+        sub.assert_eq(wing::grpc_status_from_http(400), wing::GrpcStatusCode.Internal, "HTTP 400 -> Internal");
         sub.assert_eq(wing::grpc_status_from_http(401), wing::GrpcStatusCode.Unauthenticated, "HTTP 401 -> Unauthenticated");
         sub.assert_eq(wing::grpc_status_from_http(403), wing::GrpcStatusCode.PermissionDenied, "HTTP 403 -> PermissionDenied");
-        sub.assert_eq(wing::grpc_status_from_http(404), wing::GrpcStatusCode.NotFound, "HTTP 404 -> NotFound");
+        sub.assert_eq(wing::grpc_status_from_http(404), wing::GrpcStatusCode.Unimplemented, "HTTP 404 -> Unimplemented");
         sub.assert_eq(wing::grpc_status_from_http(429), wing::GrpcStatusCode.ResourceExhausted, "HTTP 429 -> ResourceExhausted");
         sub.assert_eq(wing::grpc_status_from_http(503), wing::GrpcStatusCode.Unavailable, "HTTP 503 -> Unavailable");
         sub.assert_eq(wing::grpc_status_from_http(504), wing::GrpcStatusCode.DeadlineExceeded, "HTTP 504 -> DeadlineExceeded");
@@ -427,7 +428,41 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
         sub.assert_bytes_eq(resp.payload[..], "order_id_998822", "LPM response body received");
     };
 
-    t.run("3. Streaming RPC Session (write_stream_message & feed_stream_chunk)") { sub =>
+    t.run("3. Response Trailer Status Extraction") { sub =>
+        var res = wing::new_response();
+        res.status_code = 200;
+        res.headers.push(wing::make_header("content-type", "application/grpc+proto"));
+        wing::add_trailer(res, wing::HEADER_GRPC_STATUS, "7");
+        wing::add_trailer(res, wing::HEADER_GRPC_MESSAGE, "Not%20Authorized");
+
+        var status_val = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(status_val, "7", "Trailer grpc-status is 7");
+        var msg_val = wing::trailer(res, wing::HEADER_GRPC_MESSAGE);
+        sub.assert_bytes_eq(msg_val, "Not%20Authorized", "Trailer grpc-message is present");
+
+        var decoded_msg: u8[..256] = [];
+        wing::decode_grpc_message(msg_val, decoded_msg);
+        sub.assert_bytes_eq(decoded_msg[..], "Not Authorized", "Decoded message matches");
+    };
+
+    t.run("4. Request Bloom Filter Indexed in build_grpc_http_request") { sub =>
+        var cfg = wing::new_grpc_call_config("order.OrderService", "GetOrder");
+        cfg.timeout_ms = 2500;
+        var meta = wing::GrpcMetadata { .. };
+        meta.key.append("x-trace-id");
+        meta.value.append("trace-12345");
+        cfg.metadata.push(meta);
+
+        var req = wing::new_request("POST", "");
+        wing::build_grpc_http_request(cfg, "https://api.example.com", "req_bytes", req);
+
+        sub.assert_bytes_eq(req.header("content-type"), wing::GRPC_CONTENT_TYPE_PROTO, "content-type indexed");
+        sub.assert_bytes_eq(req.header("te"), "trailers", "te indexed");
+        sub.assert_bytes_eq(req.header(wing::HEADER_GRPC_TIMEOUT), "2500m", "grpc-timeout indexed");
+        sub.assert_bytes_eq(req.header("x-trace-id"), "trace-12345", "custom metadata indexed in bloom filter");
+    };
+
+    t.run("5. Streaming RPC Session (write_stream_message & feed_stream_chunk)") { sub =>
         var client_stream = wing::new_grpc_client_stream(1, false, false);
 
         var wire_out: u8[>..] = [];

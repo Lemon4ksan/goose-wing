@@ -454,6 +454,56 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
         wing::decode_grpc_message(msg, decoded_msg);
         sub.assert_bytes_eq(decoded_msg[..], "Access forbidden by security policy", "Error message decoded");
     };
+
+    t.run("Huge Timeout 99999999H does not overflow u64 deadline") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        var ct = wing::HeaderItem { .. };
+        ct.name.append("content-type");
+        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        req.headers.push(ct);
+
+        var to = wing::HeaderItem { .. };
+        to.name.append(wing::HEADER_GRPC_TIMEOUT);
+        to.value.append("99999999H");
+        req.headers.push(to);
+
+        wing::encode_grpc_lpm("Alice", req.body, false);
+
+        var res = wing::new_response();
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "0", "grpc-status 0 (OK) - deadline was not falsely triggered");
+    };
+
+    t.run("Concatenated LPM frames in Unary RPC rejected with InvalidArgument (3)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        var ct = wing::HeaderItem { .. };
+        ct.name.append("content-type");
+        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        req.headers.push(ct);
+
+        // Two concatenated LPM messages in unary request
+        wing::encode_grpc_lpm("Msg1", req.body, false);
+        wing::encode_grpc_lpm("Msg2", req.body, false);
+
+        var res = wing::new_response();
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "3", "grpc-status 3 (INVALID_ARGUMENT)");
+    };
+
+    t.run("Bogus Content-Type Prefix rejected by boundary parser") { sub =>
+        sub.assert_false(wing::is_grpc_content_type("application/grpc_bogus"), "application/grpc_bogus rejected");
+        sub.assert_false(wing::is_grpc_content_type("application/grpc-web-bogus"), "application/grpc-web-bogus rejected");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc"), "application/grpc accepted");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc+proto"), "application/grpc+proto accepted");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc-web+proto"), "application/grpc-web+proto accepted");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc-web-text+proto"), "application/grpc-web-text+proto accepted");
+    };
 }
 
 // ----------------------------------------------------------------------------

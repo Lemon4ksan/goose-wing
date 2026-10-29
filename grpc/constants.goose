@@ -117,14 +117,15 @@ fn grpc_status_from_code(code: u32) -> GrpcStatusCode {
 }
 
 // Maps standard HTTP status codes to canonical gRPC status codes when grpc-status is missing.
-// Follows gRPC HTTP/2 transport mapping specifications.
+// Follows gRPC HTTP/2 transport mapping specifications:
+// HTTP 200 without grpc-status maps to Unknown (success requires explicit grpc-status: 0).
 fn grpc_status_from_http(http_status: i32) -> GrpcStatusCode {
     return match http_status {
-        200 => GrpcStatusCode.Ok,
-        400 => GrpcStatusCode.InvalidArgument,
+        200 => GrpcStatusCode.Unknown,
+        400 => GrpcStatusCode.Internal,
         401 => GrpcStatusCode.Unauthenticated,
         403 => GrpcStatusCode.PermissionDenied,
-        404 => GrpcStatusCode.NotFound,
+        404 => GrpcStatusCode.Unimplemented,
         409 => GrpcStatusCode.Aborted,
         429 => GrpcStatusCode.ResourceExhausted,
         499 => GrpcStatusCode.Cancelled,
@@ -133,8 +134,13 @@ fn grpc_status_from_http(http_status: i32) -> GrpcStatusCode {
         502 => GrpcStatusCode.Unavailable,
         503 => GrpcStatusCode.Unavailable,
         504 => GrpcStatusCode.DeadlineExceeded,
-        _ => if http_status >= 200 && http_status < 300 { GrpcStatusCode.Ok } else { GrpcStatusCode.Unknown },
+        _ => GrpcStatusCode.Unknown,
     };
+}
+
+struct GrpcMetadata {
+    key: u8[..64] = [],
+    value: u8[..256] = [],
 }
 
 // ---- 3. Well-Known gRPC Headers and Content Types --------------------------

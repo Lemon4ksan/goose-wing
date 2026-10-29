@@ -17,11 +17,6 @@ import client.client;
 
 // ---- 1. gRPC Request & Response Models -------------------------------------
 
-struct GrpcMetadata {
-    key: u8[..64] = [],
-    value: u8[..256] = [],
-}
-
 struct GrpcCallConfig {
     service: u8[..128] = [],
     method: u8[..128] = [],
@@ -127,41 +122,34 @@ fn build_grpc_http_request(
         out_req.url.append(cfg.method[..]);
     }
 
-    // Headers
-    var ct_hdr = HeaderItem { .. };
-    ct_hdr.name.append("content-type");
-    if cfg.is_web_text {
-        ct_hdr.value.append(GRPC_WEB_TEXT_PROTO);
-    } else if cfg.is_web {
-        ct_hdr.value.append(GRPC_WEB_CONTENT_TYPE_PROTO);
-    } else {
-        ct_hdr.value.append(GRPC_CONTENT_TYPE_PROTO);
-    }
-    out_req.headers.push(ct_hdr);
+    // Reset headers and bloom filter for reliable O(1) header lookup
+    out_req.headers.clear();
+    out_req.bloom_filter.clear();
 
-    var te_hdr = HeaderItem { .. };
-    te_hdr.name.append("te");
-    te_hdr.value.append("trailers");
-    out_req.headers.push(te_hdr);
+    if cfg.is_web_text {
+        set_header(out_req, "content-type", GRPC_WEB_TEXT_PROTO);
+    } else if cfg.is_web {
+        set_header(out_req, "content-type", GRPC_WEB_CONTENT_TYPE_PROTO);
+    } else {
+        set_header(out_req, "content-type", GRPC_CONTENT_TYPE_PROTO);
+    }
+
+    set_header(out_req, "te", "trailers");
 
     if cfg.timeout_ms > 0 {
-        var timeout_hdr = HeaderItem { .. };
-        timeout_hdr.name.append(HEADER_GRPC_TIMEOUT);
-        encode_grpc_timeout(cfg.timeout_ms, timeout_hdr.value);
-        out_req.headers.push(timeout_hdr);
+        var timeout_buf: u8[..32] = [];
+        encode_grpc_timeout(cfg.timeout_ms, timeout_buf);
+        set_header(out_req, HEADER_GRPC_TIMEOUT, timeout_buf[..]);
     }
 
     for i in cfg.metadata.len {
-        var meta_hdr = HeaderItem { .. };
-        meta_hdr.name.append(cfg.metadata[i].key[..]);
-        meta_hdr.value.append(cfg.metadata[i].value[..]);
-        out_req.headers.push(meta_hdr);
+        set_header(out_req, cfg.metadata[i].key[..], cfg.metadata[i].value[..]);
     }
 
     // Body LPM encoding
     out_req.body.clear();
     if cfg.is_web_text {
-        var raw_lpm: u8[..8192] = [];
+        var raw_lpm: u8[>..] = [];
         encode_grpc_lpm(serialized_msg, raw_lpm, cfg.use_compression);
         encode_grpc_web_text(raw_lpm[..], out_req.body);
     } else {
@@ -185,7 +173,7 @@ fn parse_grpc_unary_response(
 
     // gRPC-Web handling (trailers encoded in body with flag 0x80)
     if is_web {
-        var wire_bytes: u8[..65536] = [];
+        var wire_bytes: u8[>..] = [];
         let content_type = get_header(res_headers, "content-type");
         if starts_with_fold(content_type, GRPC_WEB_TEXT_CONTENT_TYPE) {
             guard decode_grpc_web_text(body, wire_bytes) else { return false; }
@@ -195,8 +183,9 @@ fn parse_grpc_unary_response(
 
         var offset: u32 = 0;
         var found_trailer = false;
+        var frame_payload: u8[>..] = [];
         while offset < (wire_bytes.len as u32) {
-            var frame_payload: u8[..16384] = [];
+            frame_payload.clear();
             var is_trailers = false;
             var is_comp = false;
             let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
@@ -257,8 +246,14 @@ fn grpc_unary_call(
         return false;
     }
 
-    // Check for explicit grpc-status in response headers (trailers or headers-only)
-    let status_val = header(res, HEADER_GRPC_STATUS);
+    // Check for explicit grpc-status in response trailers first, then headers (Trailers-Only)
+    var status_val = trailer(res, HEADER_GRPC_STATUS);
+    var msg_val = trailer(res, HEADER_GRPC_MESSAGE);
+    if status_val.len == 0 {
+        status_val = header(res, HEADER_GRPC_STATUS);
+        msg_val = header(res, HEADER_GRPC_MESSAGE);
+    }
+
     if status_val.len > 0 {
         var status_int: u32 = 0;
         for b in trim_lws(status_val) {
@@ -268,7 +263,6 @@ fn grpc_unary_call(
         }
         out_resp.status = grpc_status_from_code(status_int);
 
-        let msg_val = header(res, HEADER_GRPC_MESSAGE);
         if msg_val.len > 0 {
             decode_grpc_message(msg_val, out_resp.message);
         }
@@ -277,7 +271,7 @@ fn grpc_unary_call(
     }
 
     if cfg.is_web {
-        var wire_bytes: u8[..65536] = [];
+        var wire_bytes: u8[>..] = [];
         let ct = header(res, "content-type");
         if starts_with_fold(ct, GRPC_WEB_TEXT_CONTENT_TYPE) {
             decode_grpc_web_text(res.body[..], wire_bytes);
@@ -286,8 +280,9 @@ fn grpc_unary_call(
         }
 
         var offset: u32 = 0;
+        var frame_payload: u8[>..] = [];
         while offset < (wire_bytes.len as u32) {
-            var frame_payload: u8[..16384] = [];
+            frame_payload.clear();
             var is_trailers = false;
             var is_comp = false;
             let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);

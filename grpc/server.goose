@@ -19,25 +19,32 @@ const HTTP_STATUS_OK: i32 = 200;
 
 // ---- 1. Protocol Detection and Content-Type Helpers -------------------------
 
+inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
+    guard starts_with_fold(ct, prefix) else { return false; }
+    if ct.len == prefix.len { return true; }
+    let next_byte = ct[prefix.len];
+    return next_byte == '+' || next_byte == ';' || next_byte == ' ' || next_byte == '\t';
+}
+
 // Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text
 fn is_grpc_content_type(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return starts_with_fold(trimmed, GRPC_CONTENT_TYPE) ||
-           starts_with_fold(trimmed, GRPC_WEB_CONTENT_TYPE) ||
-           starts_with_fold(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return matches_grpc_media_type(trimmed, GRPC_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, GRPC_WEB_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Returns true if Content-Type indicates gRPC-Web (binary or text)
 fn is_grpc_web(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return starts_with_fold(trimmed, GRPC_WEB_CONTENT_TYPE) ||
-           starts_with_fold(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return matches_grpc_media_type(trimmed, GRPC_WEB_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Returns true if Content-Type is specifically gRPC-Web-Text (Base64 encoded)
 fn is_grpc_web_text(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return starts_with_fold(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return matches_grpc_media_type(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Inspects an incoming Request to determine if it is a gRPC call
@@ -276,7 +283,7 @@ fn build_grpc_trailers_only_response(
         }
 
         var raw_trailers: u8[>..] = [];
-        encode_grpc_web_trailers(status, message, raw_trailers);
+        encode_grpc_web_trailers_with_meta(status, message, ctx.response_trailers[..], raw_trailers);
 
         if ctx.is_web_text {
             encode_grpc_web_text(raw_trailers[..], out_res.body);
@@ -303,6 +310,13 @@ fn build_grpc_trailers_only_response(
         }
 
         for &m in ctx.response_metadata {
+            var item = HeaderItem { .. };
+            item.name.append(m.key[..]);
+            item.value.append(m.value[..]);
+            out_res.headers.push(item);
+        }
+
+        for &m in ctx.response_trailers {
             var item = HeaderItem { .. };
             item.name.append(m.key[..]);
             item.value.append(m.value[..]);
@@ -344,7 +358,7 @@ fn build_grpc_wire_response(
 
         var web_body: u8[>..] = [];
         web_body.append(raw_lpm_body);
-        encode_grpc_web_trailers(status, message, web_body);
+        encode_grpc_web_trailers_with_meta(status, message, ctx.response_trailers[..], web_body);
 
         if ctx.is_web_text {
             encode_grpc_web_text(web_body[..], out_res.body);
@@ -396,6 +410,16 @@ fn build_grpc_wire_response(
 
 // ---- 5. Request Ingress Context Extraction ----------------------------------
 
+inline fn compute_safe_grpc_deadline(base_ns: u64, ms: u64) -> u64 {
+    guard base_ns > 0 && ms > 0 else { return 0; }
+    let max_ms_for_nanos: u64 = 18446744073709; // u64::MAX / 10^6
+    let safe_ms = if ms > max_ms_for_nanos { max_ms_for_nanos } else { ms };
+    let nanos = safe_ms * NANOS_PER_MILLI;
+    let max_add: u64 = 0xFFFFFFFFFFFFFFFF - base_ns;
+    let safe_nanos = if nanos > max_add { max_add } else { nanos };
+    return base_ns + safe_nanos;
+}
+
 fn extract_grpc_server_context(
     req: const Request&,
     out_ctx: GrpcServerContext&,
@@ -429,21 +453,18 @@ fn extract_grpc_server_context(
             if ok_to {
                 out_ctx.timeout_ms = ms;
                 let base_ns = if req_start_mono_ns > 0 { req_start_mono_ns } else { now_mono_ns };
-                if base_ns > 0 && ms > 0 {
-                    out_ctx.deadline_mono_ns = base_ns + (ms * NANOS_PER_MILLI);
-                }
+                out_ctx.deadline_mono_ns = compute_safe_grpc_deadline(base_ns, ms);
             }
         } else if !starts_with_fold(n, ":") &&
                    !eq_ascii_fold(n, "te") &&
                    !eq_ascii_fold(n, "host") &&
                    !eq_ascii_fold(n, "connection") {
             // User metadata
-            if out_ctx.metadata.len < out_ctx.metadata.cap {
-                var item = GrpcMetadata { .. };
-                item.key.append(n);
-                item.value.append(v);
-                out_ctx.metadata.push(item);
-            }
+            guard out_ctx.metadata.len < out_ctx.metadata.cap else { return false; }
+            var item = GrpcMetadata { .. };
+            item.key.append(n);
+            item.value.append(v);
+            out_ctx.metadata.push(item);
         }
     }
 
@@ -485,6 +506,7 @@ fn parse_client_stream(
     while reader.remaining() >= GRPC_LPM_HEADER_LEN {
         let flag, err_flag = reader.read_u8();
         guard err_flag == core::IoError.None else { return false; }
+        guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
         let is_comp = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
         let len_val, err_len = reader.read_u32_be();
@@ -504,6 +526,7 @@ fn parse_client_stream(
         out_reader.spans.push(span);
     }
 
+    guard reader.remaining() == 0 else { return false; }
     return true;
 }
 
@@ -584,6 +607,14 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     }
 
     let entry = d.methods[method_idx];
+    if ctx.is_web && !d.enable_web {
+        build_grpc_trailers_only_response(GrpcStatusCode.PermissionDenied, "gRPC-Web transport disabled", ctx, res);
+        return true;
+    }
+    if entry.method_type != GrpcMethodType.Unary {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Method type mismatch", ctx, res);
+        return true;
+    }
 
     // 5. Check Deadline Expiration
     if is_deadline_exceeded(ctx, now_mono_ns) {
@@ -605,8 +636,8 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     var req_payload: u8[>..] = [];
     var is_compressed = false;
     if wire_bytes.len >= GRPC_LPM_HEADER_LEN {
-        let ok_lpm, _ = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
-        if !ok_lpm {
+        let ok_lpm, consumed = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
+        if !ok_lpm || (consumed as i64) != wire_bytes.len {
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);
             return true;
         }
@@ -648,7 +679,9 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
 
 // Server-Streaming RPC Dispatcher:
 // Handler sends 0, 1, or multiple messages through GrpcServerStreamWriter.
-fn dispatch_grpc_server_streaming<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], GrpcServerStreamWriter&, GrpcStatusCode&, u8[..256]&)>(
+fn dispatch_grpc_server_streaming<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], GrpcServerStreamWriter&, GrpcStatusCode&, u8[..256]&),
+>(
     d: const GrpcServerDispatcher&,
     req: const Request&,
     now_mono_ns: u64,
@@ -685,6 +718,19 @@ fn dispatch_grpc_server_streaming<HandlerFn: fn(u16, GrpcServerContext&, const u
     }
 
     let entry = d.methods[method_idx];
+    if ctx.is_web && !d.enable_web {
+        build_grpc_trailers_only_response(GrpcStatusCode.PermissionDenied, "gRPC-Web transport disabled", ctx, res);
+        return true;
+    }
+    if entry.method_type != GrpcMethodType.ServerStreaming {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Method type mismatch", ctx, res);
+        return true;
+    }
+
+    if is_deadline_exceeded(ctx, now_mono_ns) {
+        build_grpc_trailers_only_response(GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res);
+        return true;
+    }
 
     // Decode single request message
     var wire_bytes: u8[>..] = [];
@@ -700,11 +746,24 @@ fn dispatch_grpc_server_streaming<HandlerFn: fn(u16, GrpcServerContext&, const u
     var req_payload: u8[>..] = [];
     var is_compressed = false;
     if wire_bytes.len >= GRPC_LPM_HEADER_LEN {
-        let ok_lpm, _ = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
-        if !ok_lpm {
+        let ok_lpm, consumed = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
+        if !ok_lpm || (consumed as i64) != wire_bytes.len {
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);
             return true;
         }
+    } else if wire_bytes.len > 0 {
+        build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Incomplete 5-byte LPM header", ctx, res);
+        return true;
+    }
+
+    if (req_payload.len as u32) > d.max_message_size {
+        build_grpc_trailers_only_response(GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res);
+        return true;
+    }
+
+    if is_compressed {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res);
+        return true;
     }
 
     var writer = new_grpc_server_stream_writer();
@@ -722,9 +781,34 @@ fn dispatch_grpc_server_streaming<HandlerFn: fn(u16, GrpcServerContext&, const u
     return true;
 }
 
+fn validate_client_stream_spans(
+    reader: const GrpcClientStreamReader&,
+    max_size: u32,
+    ctx: const GrpcServerContext&,
+    res: Response&,
+) -> bool {
+    for span in reader.spans {
+        if span.len > max_size {
+            build_grpc_trailers_only_response(
+                GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
+            );
+            return false;
+        }
+        if span.compressed {
+            build_grpc_trailers_only_response(
+                GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res,
+            );
+            return false;
+        }
+    }
+    return true;
+}
+
 // Client-Streaming RPC Dispatcher:
 // Parses all received LPM messages from the request body into GrpcClientStreamReader.
-fn dispatch_grpc_client_streaming<HandlerFn: fn(u16, GrpcServerContext&, const GrpcClientStreamReader&, u8[>..]&, GrpcStatusCode&, u8[..256]&)>(
+fn dispatch_grpc_client_streaming<
+    HandlerFn: fn(u16, GrpcServerContext&, const GrpcClientStreamReader&, u8[>..]&, GrpcStatusCode&, u8[..256]&),
+>(
     d: const GrpcServerDispatcher&,
     req: const Request&,
     now_mono_ns: u64,
@@ -761,11 +845,30 @@ fn dispatch_grpc_client_streaming<HandlerFn: fn(u16, GrpcServerContext&, const G
     }
 
     let entry = d.methods[method_idx];
+    if ctx.is_web && !d.enable_web {
+        build_grpc_trailers_only_response(GrpcStatusCode.PermissionDenied, "gRPC-Web transport disabled", ctx, res);
+        return true;
+    }
+    if entry.method_type != GrpcMethodType.ClientStreaming {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Method type mismatch", ctx, res);
+        return true;
+    }
+
+    if is_deadline_exceeded(ctx, now_mono_ns) {
+        build_grpc_trailers_only_response(GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res);
+        return true;
+    }
 
     var reader = new_grpc_client_stream_reader();
     let ok_stream = parse_client_stream(req.body[..], ctx.is_web_text, reader);
     if !ok_stream {
-        build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed client stream LPM frames", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.InvalidArgument, "Malformed client stream LPM frames", ctx, res,
+        );
+        return true;
+    }
+
+    guard validate_client_stream_spans(reader, d.max_message_size, ctx, res) else {
         return true;
     }
 

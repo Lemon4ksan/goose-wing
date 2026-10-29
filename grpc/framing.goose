@@ -56,11 +56,15 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
 
 // Reassembles LPM messages arriving across fragmented HTTP/2 or HTTP/3 DATA chunks.
 struct GrpcStreamParser {
-    buf: u8[..65536] = [],
+    max_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    buf: u8[>..] = [],
 }
 
-fn new_grpc_stream_parser() -> GrpcStreamParser {
-    return GrpcStreamParser { .. };
+fn new_grpc_stream_parser(max_msg_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcStreamParser {
+    return GrpcStreamParser {
+        max_size: max_msg_size,
+        buf: [],
+    };
 }
 
 fn reset(p: GrpcStreamParser&) {
@@ -68,7 +72,7 @@ fn reset(p: GrpcStreamParser&) {
 }
 
 fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
-    guard p.buf.len + chunk.len <= 65536 else { return false; }
+    guard ((p.buf.len + chunk.len) as u64) <= p.max_size else { return false; }
     p.buf.append(chunk);
     return true;
 }
@@ -93,7 +97,7 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
     if remaining_bytes == 0 {
         p.buf.clear();
     } else {
-        var temp: u8[..65536] = [];
+        var temp: u8[>..] = [];
         temp.append(p.buf[total_len..]);
         p.buf.clear();
         p.buf.append(temp[..]);
@@ -105,8 +109,13 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
 // ---- 3. gRPC-Web Framing (Trailers-in-Body) ---------------------------------
 
 // Encodes gRPC-Web trailers frame into body payload with flag 0x80.
-// Trailer format: "grpc-status: <status>\r\ngrpc-message: <message>\r\n"
-fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out: B&) {
+// Trailer format: "grpc-status: <status>\r\ngrpc-message: <message>\r\n[custom-trailers]\r\n"
+fn encode_grpc_web_trailers_with_meta<B>(
+    status: GrpcStatusCode,
+    message: const u8[:],
+    extra_trailers: const GrpcMetadata[:],
+    out: B&,
+) {
     var trailer_body: u8[..1024] = [];
     trailer_body.append("grpc-status: ");
     core::format_i64_dec(grpc_status_to_code(status) as i64, trailer_body);
@@ -116,10 +125,25 @@ fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out
         var enc_msg: u8[>..] = [];
         encode_grpc_message(message, enc_msg);
         let max_msg_bytes = (trailer_body.cap - trailer_body.len - 18) as i64;
-        if max_msg_bytes > 0 {
-            let take_len = if enc_msg.len > max_msg_bytes { max_msg_bytes } else { enc_msg.len };
+        var take_len = if enc_msg.len > max_msg_bytes { max_msg_bytes } else { enc_msg.len };
+        if take_len < enc_msg.len && take_len >= 1 && enc_msg[take_len - 1] == '%' {
+            take_len -= 1;
+        } else if take_len < enc_msg.len && take_len >= 2 && enc_msg[take_len - 2] == '%' {
+            take_len -= 2;
+        }
+        if take_len > 0 {
             trailer_body.append("grpc-message: ");
             trailer_body.append(enc_msg[..take_len]);
+            trailer_body.append("\r\n");
+        }
+    }
+
+    for &m in extra_trailers {
+        let line_len = m.key.len + m.value.len + 4;
+        if (trailer_body.cap - trailer_body.len) as i64 >= (line_len as i64) {
+            trailer_body.append(m.key[..]);
+            trailer_body.append(": ");
+            trailer_body.append(m.value[..]);
             trailer_body.append("\r\n");
         }
     }
@@ -127,6 +151,11 @@ fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out
     out.push(GRPC_WEB_FLAG_TRAILERS);
     core::write_be_u32(out, trailer_body.len as u32);
     out.append(trailer_body[..]);
+}
+
+fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out: B&) {
+    let empty_trailers: GrpcMetadata[0] = [];
+    encode_grpc_web_trailers_with_meta(status, message, empty_trailers[..], out);
 }
 
 // Decodes a gRPC-Web frame (distinguishing data messages from trailer frames).
