@@ -293,11 +293,22 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
                 dec.state |= CHUNK_STATE_EXTENSION_ESCAPED;
             } else if c == '"' {
                 dec.state &= ~CHUNK_STATE_EXTENSION_QUOTED;
+                dec.state |= CHUNK_STATE_SEEN_BWS;
+            }
+        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 {
+            if c == ';' {
+                dec.state &= ~CHUNK_STATE_SEEN_BWS;
+                dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
+            } else if c != ' ' && c != '\t' {
+                dec.state = CHUNK_STATE_IS_ERROR;
+                return false;
             }
         } else {
             if c == ';' {
                 dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
-            } else if c != ' ' && c != '\t' && !is_chunk_token_char(c) {
+            } else if c == ' ' || c == '\t' {
+                dec.state |= CHUNK_STATE_SEEN_BWS;
+            } else if !is_chunk_token_char(c) {
                 dec.state = CHUNK_STATE_IS_ERROR;
                 return false;
             }

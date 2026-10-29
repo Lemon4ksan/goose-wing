@@ -155,6 +155,30 @@ fn test_lexical_validation_and_swar(t: core::T&) {
         let err = wing::parse_headers(raw, map);
         sub.assert_eq(err, wing::HeaderParseError.InvalidHeaderName, "Space before colon rejected");
     };
+
+    t.run("HeaderPresenceTracker Duplicate Transfer-Encoding Smuggling Rejection") { sub =>
+        var tracker = wing::new_header_presence_tracker();
+        sub.assert_true(wing::track_header_presence(tracker, "Transfer-Encoding", "chunked", 0), "First TE accepted");
+        sub.assert_false(wing::track_header_presence(tracker, "Transfer-Encoding", "identity", 1), "Duplicate TE rejected");
+        sub.assert_true(tracker.has_duplicate_te, "has_duplicate_te flag set");
+    };
+
+    t.run("advance_crlf Strict Line Ending Validation") { sub =>
+        let valid_crlf = "header: value\r\nnext";
+        var c1: i64 = 0;
+        sub.assert_true(wing::advance_crlf(valid_crlf, c1, 13), "CRLF advanced");
+        sub.assert_eq(c1, 15, "Cursor advanced by 2");
+
+        let valid_lf = "header: value\nnext";
+        var c2: i64 = 0;
+        sub.assert_true(wing::advance_crlf(valid_lf, c2, 13), "LF advanced");
+        sub.assert_eq(c2, 14, "Cursor advanced by 1");
+
+        let invalid_end = "header: valuenext";
+        var c3: i64 = 0;
+        sub.assert_false(wing::advance_crlf(invalid_end, c3, 13), "Non-CRLF/LF rejected");
+        sub.assert_eq(c3, 13, "Cursor stops at line_end");
+    };
 }
 
 fn test_httparse_regression_and_obs_fold(t: core::T&) {

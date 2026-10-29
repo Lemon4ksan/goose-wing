@@ -93,6 +93,15 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
         sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInChunkData, "Bare LF after chunk data rejected");
     };
 
+    t.run("Bare LF in chunk data terminator at exact buffer end") { sub =>
+        var out_body: u8[>..] = [];
+        var out_trailers: wing::HeaderItem[..16] = [];
+
+        let raw = "4\r\nWiki\n";
+        let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
+        sub.assert_eq(err, wing::ChunkedDecodeError.BareLfInChunkData, "Bare LF at buffer boundary rejected");
+    };
+
     t.run("Bare LF in trailer line rejection") { sub =>
         var out_body: u8[>..] = [];
         var out_trailers: wing::HeaderItem[..16] = [];
@@ -278,6 +287,16 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
         let st_ok, _, slice = internal::chunk_fsm_feed(dec_ok, "5 ;ext=1\r\nhello\r\n0\r\n\r\n");
         sub.assert_eq(st_ok, internal::ChunkFsmStatus.YieldChunk, "Space before semicolon in valid extension accepted");
         sub.assert_bytes_eq(slice, "hello", "Payload correctly yielded");
+    };
+
+    t.run("RFC 9112 Section 7.1.1: Chunked FSM rejects unseparated tokens and post-quote tokens in extensions") { sub =>
+        var dec1 = internal::new_chunk_fsm_decoder();
+        let st1, _, _ = internal::chunk_fsm_feed(dec1, "5;ext=val1 val2\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "Unseparated tokens after value must return Error");
+
+        var dec2 = internal::new_chunk_fsm_decoder();
+        let st2, _, _ = internal::chunk_fsm_feed(dec2, "5;ext=\"quoted\"junk\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Trailing junk after closing quote must return Error");
     };
 }
 

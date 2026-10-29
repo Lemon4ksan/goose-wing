@@ -201,7 +201,7 @@ fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
     guard key.len <= flight.key.cap else { return false, -1; }
     flight.key.append(key);
     writers.flights.push(flight);
-    return true, (writers.flights.len - 1) as i64;
+    return true, writers.flights.len - 1;
 }
 
 // Marks the in-flight writer transaction as successfully completed and frees its slot.
@@ -247,7 +247,7 @@ fn new_http_cache(options: CacheOptions = CacheOptions { .. }) -> HttpCache {
 
 // Detaches entry at idx from the intrusive LRU list without copying struct data.
 fn lru_detach(cache: HttpCache&, idx: i32) {
-    guard idx >= 0 && (idx as i64) < cache.entries.len else { return; }
+    guard idx >= 0 && idx < cache.entries.len else { return; }
     let p = cache.entries[idx as i64].prev_lru;
     let n = cache.entries[idx as i64].next_lru;
     if p >= 0 { cache.entries[p as i64].next_lru = n; } else { cache.lru_head = n; }
@@ -258,7 +258,7 @@ fn lru_detach(cache: HttpCache&, idx: i32) {
 
 // Pushes entry at idx to the MRU head of the intrusive LRU list in O(1).
 fn lru_push_front(cache: HttpCache&, idx: i32) {
-    guard idx >= 0 && (idx as i64) < cache.entries.len else { return; }
+    guard idx >= 0 && idx < cache.entries.len else { return; }
     cache.entries[idx as i64].next_lru = cache.lru_head;
     cache.entries[idx as i64].prev_lru = -1;
     if cache.lru_head >= 0 {
@@ -551,7 +551,7 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
         cache.entries.push(entry);
         let new_idx = (cache.entries.len - 1) as i32;
         cache.lru_push_front(new_idx);
-        return new_idx as i64;
+        return new_idx;
     }
 
     // Evict LRU tail in O(1) without shifting any elements
@@ -560,7 +560,7 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
     cache.lru_detach(victim_idx);
     cache.entries[victim_idx as i64] = entry;
     cache.lru_push_front(victim_idx);
-    return victim_idx as i64;
+    return victim_idx;
 }
 
 // ---- on_response handler (store, freshen 304, or passthrough) ---------------

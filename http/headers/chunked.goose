@@ -302,21 +302,26 @@ fn consume_chunk_data(raw: const u8[:], cursor: i64&, chunk_size: u64, out_body:
         return ChunkedDecodeError.UnexpectedEof;
     }
     let csize = chunk_size as! i64;
-    guard csize <= raw.len - cursor - 2 else {
+    guard csize <= raw.len - cursor else {
         return ChunkedDecodeError.UnexpectedEof;
     }
 
-    let chunk_data = raw[cursor..cursor + csize];
-    out_body.append(chunk_data);
-    cursor += csize;
-
-    if raw[cursor] == '\n' {
+    let end_pos = cursor + csize;
+    if end_pos < raw.len && raw[end_pos] == '\n' {
         return ChunkedDecodeError.BareLfInChunkData;
     }
-    guard raw[cursor] == '\r' && raw[cursor + 1] == '\n' else {
+
+    guard end_pos + 1 < raw.len else {
+        return ChunkedDecodeError.UnexpectedEof;
+    }
+
+    guard raw[end_pos] == '\r' && raw[end_pos + 1] == '\n' else {
         return ChunkedDecodeError.MalformedChunkEnding;
     }
-    cursor += 2;
+
+    let chunk_data = raw[cursor..end_pos];
+    out_body.append(chunk_data);
+    cursor = end_pos + 2;
     return ChunkedDecodeError.None;
 }
 

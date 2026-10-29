@@ -65,6 +65,7 @@ struct HeaderPresenceTracker {
     parsed_cl: i64 = -1,
     has_duplicate_host: bool = false,
     has_duplicate_cl: bool = false,
+    has_duplicate_te: bool = false,
     has_smuggling_conflict: bool = false,
 }
 
@@ -119,6 +120,10 @@ fn track_header_presence(
     }
 
     if eq_ascii_fold(name, "transfer-encoding") {
+        if (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
+            tracker.has_duplicate_te = true;
+            return false;
+        }
         tracker.mask |= HDR_PRESENCE_TRANSFER_ENCODING;
         tracker.te_idx = hdr_idx;
         if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
@@ -411,5 +416,5 @@ fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
         cursor++;
         return true;
     }
-    return true;
+    return false;
 }
