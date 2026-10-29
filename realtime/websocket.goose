@@ -1767,3 +1767,114 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     guard is_valid_websocket_key(key) else { return false; }
     return true;
 }
+
+// ---- 7. Bootstrapping WebSockets with HTTP/2 (RFC 8441) ---------------------
+
+// Inspects an incoming HTTP Request to determine if it is an RFC 8441 WebSocket Extended CONNECT request
+fn is_h2_websocket_request(req: const Request&) -> bool {
+    guard req.method[..] == "CONNECT" else { return false; }
+    let proto = req.headers.find_header(":protocol");
+    guard core::eq_ascii_fold(proto, "websocket") else { return false; }
+    let ver = req.headers.find_header("sec-websocket-version");
+    guard ver == "13" else { return false; }
+    return true;
+}
+
+// Validates an RFC 8441 WebSocket Extended CONNECT request according to strict protocol rules:
+// - :method MUST be CONNECT
+// - :protocol MUST be websocket
+// - :scheme and :path MUST be present
+// - :authority MUST be present
+// - sec-websocket-version MUST be 13
+// - MUST NOT contain connection, upgrade, keep-alive, transfer-encoding, proxy-connection, or sec-websocket-key
+fn validate_h2_websocket_request(req: const Request&) -> bool {
+    guard is_h2_websocket_request(req) else { return false; }
+
+    let scheme = req.headers.find_header(":scheme");
+    guard scheme.len > 0 else { return false; }
+    let path = req.headers.find_header(":path");
+    guard path.len > 0 else { return false; }
+    let auth = req.headers.find_header(":authority");
+    guard auth.len > 0 else { return false; }
+
+    // RFC 8441 §4: Connection-specific headers and Sec-WebSocket-Key MUST NOT be present
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], "connection") ||
+           core::eq_ascii_fold(hdr.name[..], "upgrade") ||
+           core::eq_ascii_fold(hdr.name[..], "keep-alive") ||
+           core::eq_ascii_fold(hdr.name[..], "transfer-encoding") ||
+           core::eq_ascii_fold(hdr.name[..], "proxy-connection") ||
+           core::eq_ascii_fold(hdr.name[..], "sec-websocket-key") {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Formats an outbound RFC 8441 WebSocket Extended CONNECT Request for HTTP/2
+fn format_h2_websocket_request(
+    req: Request&,
+    path: const u8[:],
+    authority: const u8[:],
+    scheme: const u8[:] = "https",
+    subprotocol: const u8[:] = "",
+) {
+    req = new_request("CONNECT", path);
+    set_header(req, ":method", "CONNECT");
+    set_header(req, ":protocol", "websocket");
+    set_header(req, ":scheme", scheme);
+    set_header(req, ":authority", authority);
+    set_header(req, ":path", path);
+    set_header(req, "sec-websocket-version", "13");
+
+    if subprotocol.len > 0 {
+        set_header(req, "sec-websocket-protocol", subprotocol);
+    }
+}
+
+// Server-side RFC 8441 WebSocket Extended CONNECT upgrade handler.
+// Validates client request and populates 200 OK response (NOT 101 per RFC 8441 §5).
+fn ws_h2_upgrade_request(
+    req: const Request&,
+    out_resp: Response&,
+    subprotocol: const u8[:] = "",
+) -> WebSocketSession, bool {
+    guard validate_h2_websocket_request(req) else {
+        out_resp.status_code = 400;
+        return WebSocketSession { .. }, false;
+    }
+
+    out_resp.status_code = 200;
+
+    var session = new_websocket_session(false);
+    if subprotocol.len > 0 && subprotocol.len <= session.subprotocol.cap {
+        var proto_matched = false;
+        for &hdr in req.headers {
+            if core::eq_ascii_fold(hdr.name[..], "sec-websocket-protocol") {
+                if has_subprotocol_token(hdr.value[..], subprotocol) {
+                    proto_matched = true;
+                    break;
+                }
+            }
+        }
+        if proto_matched {
+            out_resp.set_header("sec-websocket-protocol", subprotocol);
+            session.subprotocol.append(subprotocol);
+        }
+    }
+
+    return session, true;
+}
+
+// Formats an HTTP/2 response accepting an RFC 8441 WebSocket session
+fn format_h2_websocket_response(res: Response&, subprotocol: const u8[:] = "") {
+    res.status_code = 200;
+    if subprotocol.len > 0 {
+        res.set_header("sec-websocket-protocol", subprotocol);
+    }
+}
+
+// Inspects an HTTP/2 Response to determine if it accepted an RFC 8441 WebSocket session
+fn is_h2_websocket_response(res: const Response&) -> bool {
+    return res.status_code == 200;
+}
