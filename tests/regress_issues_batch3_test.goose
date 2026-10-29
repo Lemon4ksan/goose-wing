@@ -254,6 +254,28 @@ fn test_novarysearch_truncation_and_bounds(t: core::T&) {
         sub.assert_true(nvs.is_valid, "nvs must be valid");
         sub.assert_true(wing::is_param_ignored(nvs, "utm_campaign_source"), "utm_campaign_source is ignored");
     };
+
+    t.run("No-Vary-Search key-order defaults to true per W3C Section 2.1") { sub =>
+        let nvs, ok = wing::parse_no_vary_search("params=(\"utm_source\")");
+        sub.assert_true(ok, "Parse without key-order directive");
+        sub.assert_true(nvs.key_order_matters, "key_order_matters MUST default to true");
+
+        var out_norm: u8[..256] = [];
+        wing::normalize_query_for_cache("b=2&a=1&c=3", nvs, out_norm);
+        sub.assert_bytes_eq(out_norm[..], "b=2&a=1&c=3", "Order preserved when key-order directive is absent");
+
+        let nvs_order, ok_order = wing::parse_no_vary_search("key-order");
+        sub.assert_true(ok_order, "Parse key-order directive");
+        sub.assert_false(nvs_order.key_order_matters, "key-order sets key_order_matters to false");
+
+        var out_sorted: u8[..256] = [];
+        wing::normalize_query_for_cache("b=2&a=1&c=3", nvs_order, out_sorted);
+        sub.assert_bytes_eq(out_sorted[..], "a=1&b=2&c=3", "Order sorted when key-order is present");
+
+        let nvs_q0, ok_q0 = wing::parse_no_vary_search("key-order=?0");
+        sub.assert_true(ok_q0, "Parse key-order=?0");
+        sub.assert_true(nvs_q0.key_order_matters, "key-order=?0 sets key_order_matters to true");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -337,6 +359,16 @@ fn test_http1_headers_cl_host_and_cookie_bounds(t: core::T&) {
         wing::get_set_cookie(map, cookies);
         sub.assert_eq(cookies.len, 1, "Exactly one Set-Cookie retrieved without abort");
     };
+
+    t.run("classify_well_known_header recognises CORS access-control headers") { sub =>
+        var map = wing::HeaderMap { .. };
+        let raw = "Access-Control-Max-Age: 600\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: X-Custom, Authorization\r\n\r\n";
+        let err = wing::parse_headers(raw, map);
+        sub.assert_true(err == wing::HeaderParseError.None, "Headers parsed successfully");
+        sub.assert_bytes_eq(wing::get_inline(map, wing::WellKnownHeader.AccessControlMaxAge), "600", "AccessControlMaxAge inline match");
+        sub.assert_bytes_eq(wing::get_inline(map, wing::WellKnownHeader.AccessControlRequestMethod), "POST", "AccessControlRequestMethod inline match");
+        sub.assert_bytes_eq(wing::get_inline(map, wing::WellKnownHeader.AccessControlRequestHeaders), "X-Custom, Authorization", "AccessControlRequestHeaders inline match");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -381,6 +413,19 @@ fn test_mime_and_sfv_truncation_smuggling(t: core::T&) {
 
         let mt, ok = wing::parse_content_disposition(raw_disp[..]);
         sub.assert_false(ok, "Disposition type > 32 bytes MUST return false safely");
+    };
+
+    t.run("decompress_dcz_payload and decompress_dcb_payload reject corrupted payloads") { sub =>
+        let corrupt = "corrupted non-compressed payload bytes";
+        var out_dcz: u8[>..] = [];
+        let ok_dcz = wing::decompress_dcz_payload(corrupt, "dictionary", out_dcz);
+        sub.assert_false(ok_dcz, "decompress_dcz_payload MUST return false on corrupted data");
+        sub.assert_eq(out_dcz.len, 0, "No raw bytes emitted to out_buf on DCZ error");
+
+        var out_dcb: u8[>..] = [];
+        let ok_dcb = wing::decompress_dcb_payload(corrupt, "dictionary", out_dcb);
+        sub.assert_false(ok_dcb, "decompress_dcb_payload MUST return false on corrupted data");
+        sub.assert_eq(out_dcb.len, 0, "No raw bytes emitted to out_buf on DCB error");
     };
 }
 
@@ -520,6 +565,21 @@ fn test_http_extensions_signatures_hsts_trace(t: core::T&) {
         let ts, ok = wing::parse_tracestate("_bad=1");
         sub.assert_false(ok, "Tracestate key starting with '_' MUST be rejected per W3C Section 3.3.1.1");
     };
+
+    t.run("hsts rejects IP address literal and trims trailing dot") { sub =>
+        var cache = wing::HstsCache { .. };
+        // RFC 6797 §8.1.1: Rejection of IP address literals
+        sub.assert_false(wing::hsts_cache_update(cache, "192.168.1.1", "max-age=31536000", 1000), "HSTS must reject IPv4 literal");
+        sub.assert_false(wing::hsts_cache_update(cache, "::1", "max-age=31536000", 1000), "HSTS must reject IPv6 literal");
+        sub.assert_false(wing::is_hsts_host(cache, "192.168.1.1", 1000), "IPv4 is not HSTS host");
+        sub.assert_false(wing::is_hsts_host(cache, "127.0.0.1", 1000), "127.0.0.1 is not HSTS host");
+
+        // FQDN trailing dot normalization
+        sub.assert_true(wing::hsts_cache_update(cache, "example.com.", "max-age=31536000", 1000), "HSTS ingests FQDN with trailing dot");
+        sub.assert_true(wing::is_hsts_host(cache, "example.com", 1000), "Matches without trailing dot");
+        sub.assert_true(wing::is_hsts_host(cache, "example.com.", 1000), "Matches with trailing dot");
+        sub.assert_true(wing::is_hsts_host(cache, "app.dev.", 1000), "Preloaded TLD matches with trailing dot");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -573,6 +633,47 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
             payload_len: 8,
         };
         sub.assert_true(wing::validate_h2_stream_association(hdr_ga) == wing::H2ErrorCode.ProtocolError, "GoAway on stream 1 is ProtocolError");
+    };
+
+    t.run("H2SecurityFramer enforces settings flood and single headers frame bounds") { sub =>
+        var framer = wing::H2SecurityFramer { .. };
+
+        // 1. Single HEADERS frame exceeding max_header_block_bytes (8192) must trigger EnhanceYourCalm
+        let big_hdr = wing::H2FrameHeader {
+            payload_len: 12000,
+            frame_type: wing::H2FrameType.Headers,
+            raw_type: 0x1,
+            flags: wing::H2_FLAG_END_HEADERS,
+            stream_id: 1,
+            valid: true,
+        };
+        let err_big = wing::process_incoming_frame(framer, big_hdr);
+        sub.assert_eq(err_big, wing::H2ErrorCode.EnhanceYourCalm, "Single HEADERS > 8KB triggers EnhanceYourCalm");
+        sub.assert_true(framer.state == wing::H2ConnState.Closed);
+
+        // 2. SETTINGS flood defense (CVE-2019-9515)
+        var framer_set = wing::H2SecurityFramer { .. };
+        for _ in 10 {
+            let sf = wing::H2FrameHeader {
+                payload_len: 6,
+                frame_type: wing::H2FrameType.Settings,
+                raw_type: 0x4,
+                flags: 0x0,
+                stream_id: 0,
+                valid: true,
+            };
+            sub.assert_eq(wing::process_incoming_frame(framer_set, sf), wing::H2ErrorCode.NoError);
+        }
+        let sf_11 = wing::H2FrameHeader {
+            payload_len: 6,
+            frame_type: wing::H2FrameType.Settings,
+            raw_type: 0x4,
+            flags: 0x0,
+            stream_id: 0,
+            valid: true,
+        };
+        sub.assert_eq(wing::process_incoming_frame(framer_set, sf_11), wing::H2ErrorCode.EnhanceYourCalm, "11th SETTINGS triggers EnhanceYourCalm");
+        sub.assert_true(framer_set.state == wing::H2ConnState.Closed);
     };
 }
 

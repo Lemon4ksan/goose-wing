@@ -87,7 +87,7 @@ struct H3Connection {
     error_code: u64 = H3_ERR_NO_ERROR,
     local_settings: H3Settings = H3Settings { .. },
     peer_settings: H3Settings = H3Settings { .. },
-    streams: H3StreamEntry[..8] = [],
+    streams: H3StreamEntry[..32] = [],
     qpack_table: QpackTable = QpackTable { .. }, // Resizable array must be final field
 }
 
@@ -158,14 +158,24 @@ fn open_request_stream(conn: H3Connection&) -> u64, bool {
     guard conn.state == H3ConnState.Active || conn.state == H3ConnState.Connecting else {
         return 0, false;
     }
-    guard conn.streams.len < conn.streams.cap else { return 0, false; }
+
+    var slot_idx: i32 = -1;
+    for i in conn.streams.len {
+        if conn.streams[i].state == H3StreamState.Closed {
+            slot_idx = i as i32;
+            break;
+        }
+    }
+    if slot_idx < 0 {
+        guard conn.streams.len < conn.streams.cap else { return 0, false; }
+    }
 
     let sid = conn.next_bidi_stream_id;
     if conn.goaway_received && sid >= conn.goaway_max_stream_id {
         return 0, false;
     }
 
-    conn.streams.push(H3StreamEntry {
+    let ent = H3StreamEntry {
         stream_id: sid,
         kind: H3StreamKind.Request,
         state: H3StreamState.Open,
@@ -179,7 +189,13 @@ fn open_request_stream(conn: H3Connection&) -> u64, bool {
         body_received_len: 0,
         content_length: -1,
         received_body: [],
-    });
+    };
+
+    if slot_idx >= 0 {
+        conn.streams[slot_idx] = ent;
+    } else {
+        conn.streams.push(ent);
+    }
 
     conn.next_bidi_stream_id += 4;
     return sid, true;
@@ -256,6 +272,144 @@ fn send_request_data<B>(
 
 // ---- 4. Inbound Frame and Stream Processing ---------------------------------
 
+// Handles frames received on the peer control stream.
+fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, payload: const u8[:]) -> u64 {
+    // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
+    if !conn.peer_settings_received {
+        if hdr.frame_type != H3_FRAME_SETTINGS {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_MISSING_SETTINGS;
+            return H3_ERR_MISSING_SETTINGS;
+        }
+        let set_err = parse_h3_settings_frame(payload, conn.peer_settings);
+        guard set_err == H3_ERR_NO_ERROR else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = set_err;
+            return set_err;
+        }
+        conn.peer_settings_received = true;
+        conn.state = H3ConnState.Active;
+        return H3_ERR_NO_ERROR;
+    }
+
+    // Subsequent frames must be allowed on control stream
+    guard is_allowed_on_control_stream(hdr.frame_type) else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+        return H3_ERR_FRAME_UNEXPECTED;
+    }
+    guard hdr.frame_type != H3_FRAME_SETTINGS else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+        return H3_ERR_FRAME_UNEXPECTED;
+    }
+
+    if hdr.frame_type == H3_FRAME_GOAWAY {
+        let max_sid, ok_ga = parse_h3_goaway_frame(payload);
+        guard ok_ga else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
+            return H3_ERR_FRAME_ERROR;
+        }
+        if conn.role == H3ConnRole.Client && (max_sid & 0x03) != 0 {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_ID_ERROR;
+            return H3_ERR_ID_ERROR;
+        }
+        if conn.goaway_received && max_sid > conn.goaway_max_stream_id {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_ID_ERROR;
+            return H3_ERR_ID_ERROR;
+        }
+        conn.goaway_received = true;
+        conn.goaway_max_stream_id = max_sid;
+        conn.state = H3ConnState.Draining;
+        return H3_ERR_NO_ERROR;
+    }
+
+    if hdr.frame_type == H3_FRAME_CANCEL_PUSH {
+        let push_id, ok_cp = parse_h3_cancel_push(payload);
+        guard ok_cp else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
+            return H3_ERR_FRAME_ERROR;
+        }
+        if conn.max_push_id_sent && push_id > conn.max_push_id_advertised {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_ID_ERROR;
+            return H3_ERR_ID_ERROR;
+        }
+        return H3_ERR_NO_ERROR;
+    }
+
+    if hdr.frame_type == H3_FRAME_MAX_PUSH_ID {
+        guard conn.role != H3ConnRole.Client else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+            return H3_ERR_FRAME_UNEXPECTED;
+        }
+        let max_pid, ok_mp = parse_h3_max_push_id(payload);
+        guard ok_mp else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
+            return H3_ERR_FRAME_ERROR;
+        }
+        if conn.max_push_id_received > 0 && max_pid < conn.max_push_id_received {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_ID_ERROR;
+            return H3_ERR_ID_ERROR;
+        }
+        conn.max_push_id_received = max_pid;
+        return H3_ERR_NO_ERROR;
+    }
+
+    if hdr.frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST {
+        guard conn.role != H3ConnRole.Client else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+            return H3_ERR_FRAME_UNEXPECTED;
+        }
+        let req_stream_id, prio, ok_pu = parse_h3_priority_update_request(payload);
+        guard ok_pu else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
+            return H3_ERR_FRAME_ERROR;
+        }
+        guard (req_stream_id & 0x03) == 0 else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_ID_ERROR;
+            return H3_ERR_ID_ERROR;
+        }
+        apply_h3_stream_priority(conn, req_stream_id, prio);
+        return H3_ERR_NO_ERROR;
+    }
+
+    if hdr.frame_type == H3_FRAME_PRIORITY_UPDATE_PUSH {
+        guard conn.role != H3ConnRole.Client else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+            return H3_ERR_FRAME_UNEXPECTED;
+        }
+    }
+
+    return H3_ERR_NO_ERROR;
+}
+
+// Validates required HTTP/3 pseudo-headers (RFC 9114 Section 4.3).
+fn validate_h3_pseudo_headers(
+    role: H3ConnRole,
+    status_count: i32,
+    method_count: i32,
+    scheme_count: i32,
+    path_count: i32,
+    auth_count: i32,
+) -> bool {
+    if role == H3ConnRole.Client {
+        return status_count == 1 && method_count == 0 && scheme_count == 0 && path_count == 0 && auth_count == 0;
+    }
+    return status_count == 0 && method_count == 1 && scheme_count == 1 && path_count == 1;
+}
+
 // Handles incoming raw bytes on a given stream.
 // Returns H3_ERR_NO_ERROR (0x0100) or appropriate HTTP/3 error code.
 fn handle_stream_data(
@@ -282,6 +436,13 @@ fn handle_stream_data(
         let is_known = (conn.peer_control_opened && stream_id == conn.peer_control_stream_id) ||
                        (conn.peer_qpack_enc_opened && stream_id == conn.peer_qpack_enc_stream_id) ||
                        (conn.peer_qpack_dec_opened && stream_id == conn.peer_qpack_dec_stream_id);
+
+        // RFC 9114 §6.2: Closing a unidirectional stream before stream type header is an error
+        if !is_known && data.len == 0 && fin {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+            return H3_ERR_GENERAL_PROTOCOL;
+        }
 
         if !is_known && data.len > 0 {
             let stype, off1, ok_type = quic_decode_varint(data, offset);
@@ -361,107 +522,8 @@ fn handle_stream_data(
                 let payload = data[p_start..p_end];
                 offset += hdr.payload_len;
 
-                // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
-                if !conn.peer_settings_received {
-                    if hdr.frame_type != H3_FRAME_SETTINGS {
-                        conn.state = H3ConnState.Closed;
-                        conn.error_code = H3_ERR_MISSING_SETTINGS;
-                        return H3_ERR_MISSING_SETTINGS;
-                    }
-                    let set_err = parse_h3_settings_frame(payload, conn.peer_settings);
-                    if set_err != H3_ERR_NO_ERROR {
-                        conn.state = H3ConnState.Closed;
-                        conn.error_code = set_err;
-                        return set_err;
-                    }
-                    conn.peer_settings_received = true;
-                    conn.state = H3ConnState.Active;
-                } else {
-                    // Control stream invariants for subsequent frames (RFC 9114 Section 7.2)
-                    if !is_allowed_on_control_stream(hdr.frame_type) {
-                        conn.state = H3ConnState.Closed;
-                        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-                        return H3_ERR_FRAME_UNEXPECTED;
-                    }
-
-                    // Second SETTINGS frame is strictly forbidden
-                    if hdr.frame_type == H3_FRAME_SETTINGS {
-                        conn.state = H3ConnState.Closed;
-                        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-                        return H3_ERR_FRAME_UNEXPECTED;
-                    }
-
-                    // Process GOAWAY frame (RFC 9114 §5.2 & §7.2.6)
-                    if hdr.frame_type == H3_FRAME_GOAWAY {
-                        let max_sid, ok_ga = parse_h3_goaway_frame(payload);
-                        if !ok_ga {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_FRAME_ERROR;
-                            return H3_ERR_FRAME_ERROR;
-                        }
-                        // RFC 9114 §5.2: Stream ID MUST identify a client-initiated bidirectional stream ((id & 0x03) == 0)
-                        if (max_sid & 0x03) != 0 {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_ID_ERROR;
-                            return H3_ERR_ID_ERROR;
-                        }
-                        // RFC 9114 §5.2: Monotonicity - subsequent GOAWAY Stream ID must not be greater than previous
-                        if conn.goaway_received {
-                            if max_sid > conn.goaway_max_stream_id {
-                                conn.state = H3ConnState.Closed;
-                                conn.error_code = H3_ERR_ID_ERROR;
-                                return H3_ERR_ID_ERROR;
-                            }
-                        }
-                        conn.goaway_received = true;
-                        conn.goaway_max_stream_id = max_sid;
-                        conn.state = H3ConnState.Draining;
-                    }
-
-                    // Process CANCEL_PUSH frame (RFC 9114 §7.2.7)
-                    if hdr.frame_type == H3_FRAME_CANCEL_PUSH {
-                        let push_id, ok_cp = parse_h3_cancel_push(payload);
-                        if !ok_cp {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_FRAME_ERROR;
-                            return H3_ERR_FRAME_ERROR;
-                        }
-                        // RFC 9114 §7.2.7: push_id cannot exceed advertised max push ID
-                        if conn.max_push_id_sent && push_id > conn.max_push_id_advertised {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_ID_ERROR;
-                            return H3_ERR_ID_ERROR;
-                        }
-                    }
-
-                    // Process MAX_PUSH_ID frame (RFC 9114 §7.2.7)
-                    if hdr.frame_type == H3_FRAME_MAX_PUSH_ID {
-                        let max_pid, ok_mp = parse_h3_max_push_id(payload);
-                        if !ok_mp {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_FRAME_ERROR;
-                            return H3_ERR_FRAME_ERROR;
-                        }
-                        // Monotonicity: subsequent MAX_PUSH_ID MUST NOT decrease
-                        if conn.max_push_id_received > 0 && max_pid < conn.max_push_id_received {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_ID_ERROR;
-                            return H3_ERR_ID_ERROR;
-                        }
-                        conn.max_push_id_received = max_pid;
-                    }
-
-                    // Process PRIORITY_UPDATE frame for request stream (RFC 9218 §7.2)
-                    if hdr.frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST {
-                        let req_stream_id, prio, ok_pu = parse_h3_priority_update_request(payload);
-                        if !ok_pu {
-                            conn.state = H3ConnState.Closed;
-                            conn.error_code = H3_ERR_FRAME_ERROR;
-                            return H3_ERR_FRAME_ERROR;
-                        }
-                        apply_h3_stream_priority(conn, req_stream_id, prio);
-                    }
-                }
+                let c_err = handle_peer_control_frame(conn, hdr, payload);
+                guard c_err == H3_ERR_NO_ERROR else { return c_err; }
             }
         }
 
@@ -501,8 +563,14 @@ fn handle_stream_data(
     // -------------------------------------------------------------------------
     var s_idx, found = find_h3_stream_idx(conn, stream_id);
     if !found {
-        guard conn.streams.len < conn.streams.cap else { return H3_ERR_EXCESSIVE_LOAD; }
-        conn.streams.push(H3StreamEntry {
+        var reuse_slot: i32 = -1;
+        for i in conn.streams.len {
+            if conn.streams[i].state == H3StreamState.Closed {
+                reuse_slot = i as i32;
+                break;
+            }
+        }
+        let ent = H3StreamEntry {
             stream_id: stream_id,
             kind: H3StreamKind.Request,
             state: H3StreamState.Open,
@@ -516,8 +584,15 @@ fn handle_stream_data(
             body_received_len: 0,
             content_length: -1,
             received_body: [],
-        });
-        s_idx = (conn.streams.len - 1) as i32;
+        };
+        if reuse_slot >= 0 {
+            conn.streams[reuse_slot] = ent;
+            s_idx = reuse_slot;
+        } else {
+            guard conn.streams.len < conn.streams.cap else { return H3_ERR_EXCESSIVE_LOAD; }
+            conn.streams.push(ent);
+            s_idx = (conn.streams.len - 1) as i32;
+        }
     }
 
     var offset: u64 = 0;
@@ -586,7 +661,9 @@ fn handle_stream_data(
             }
 
             var decoded_fields: HeaderField[>..] = [];
-            let q_err = decode_qpack_section(conn.qpack_table, payload, decoded_fields);
+            let q_err = decode_qpack_section(
+                conn.qpack_table, payload, decoded_fields, conn.local_settings.max_field_section_size,
+            );
             if q_err != QpackError.None {
                 conn.state = H3ConnState.Closed;
                 conn.error_code = H3_ERR_QPACK_DECOMPRESSION_FAILED;
@@ -762,7 +839,18 @@ fn handle_stream_data(
 
             if is_trailer_section {
                 conn.streams[s_idx].trailers_received = true;
-            } else if conn.streams[s_idx].status_code >= 200 || pseudo_method_count > 0 {
+                continue;
+            }
+            let ok_pseudos = validate_h3_pseudo_headers(
+                conn.role, pseudo_status_count, pseudo_method_count,
+                pseudo_scheme_count, pseudo_path_count, pseudo_authority_count,
+            );
+            guard ok_pseudos else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                return H3_ERR_GENERAL_PROTOCOL;
+            }
+            if conn.role == H3ConnRole.Server || conn.streams[s_idx].status_code >= 200 {
                 conn.streams[s_idx].headers_received = true;
             }
         }

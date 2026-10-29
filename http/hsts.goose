@@ -134,18 +134,21 @@ fn entry_matches_hsts(entry: const HstsEntry&, hostname: const u8[:], now_sec: i
 
 // Queries if hostname is a Known HSTS Host
 fn is_hsts_host(cache: const HstsCache&, hostname: const u8[:], now_sec: i64) -> bool {
-    guard hostname.len > 0 else { return false; }
+    let clean = hostname.trim_end_byte('.');
+    guard clean.len > 0 else { return false; }
+    // RFC 6797 Section 8.1.1: An HSTS Host MUST NOT be an IP address literal
+    guard !core::is_ip_address_literal(clean) else { return false; }
 
     // 1. Check dynamic cache
     for &entry in cache.entries {
-        if entry_matches_hsts(entry, hostname, now_sec) {
+        if entry_matches_hsts(entry, clean, now_sec) {
             return true;
         }
     }
 
     // 2. Check static preload list
     if cache.enable_preload_list {
-        let preloaded, _ = is_static_preloaded_host(hostname);
+        let preloaded, _ = is_static_preloaded_host(clean);
         return preloaded;
     }
 
@@ -192,6 +195,11 @@ fn store_hsts_entry(cache: HstsCache&, entry: const HstsEntry&, now_sec: i64) {
     }
 }
 
+inline fn is_valid_hsts_hostname(name: const u8[:]) -> bool {
+    guard name.len > 0 && name.len <= 256 else { return false; }
+    return !core::is_ip_address_literal(name);
+}
+
 // Ingests a validated Strict-Transport-Security header into the HSTS cache
 // RFC 6797 Section 8.1: Must ONLY be called for secure HTTPS connections!
 fn hsts_cache_update(
@@ -200,11 +208,13 @@ fn hsts_cache_update(
     raw_header: const u8[:],
     now_sec: i64,
 ) -> bool {
-    guard hostname.len > 0 && hostname.len <= 256 else { return false; }
+    let clean = hostname.trim_end_byte('.');
+    guard is_valid_hsts_hostname(clean) else { return false; }
+
     let dir, ok_d = parse_hsts_header(raw_header);
     guard ok_d else { return false; }
 
-    let existing_idx = find_hsts_entry_index(cache, hostname);
+    let existing_idx = find_hsts_entry_index(cache, clean);
 
     // RFC 6797 Section 6.1.1: max-age=0 signals deletion of known HSTS host
     if dir.max_age_sec == 0 {
@@ -231,7 +241,7 @@ fn hsts_cache_update(
         valid: true,
         ..
     };
-    new_entry.host.append(hostname);
+    new_entry.host.append(clean);
     store_hsts_entry(cache, new_entry, now_sec);
     return true;
 }

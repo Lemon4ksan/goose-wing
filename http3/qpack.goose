@@ -427,11 +427,7 @@ fn qpack_insert_literal(tbl: QpackTable&, name: const u8[:], val: const u8[:]) -
     }
 
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
-    if cost > tbl.capacity_bytes {
-        guard qpack_evict_until(tbl, 0) else { return false; }
-        tbl.insert_count++;
-        return true;
-    }
+    guard cost <= tbl.capacity_bytes else { return false; }
     guard qpack_evict_until(tbl, tbl.capacity_bytes - cost) else { return false; }
 
     var ent = DynamicEntry {
@@ -970,9 +966,9 @@ fn decode_qpack_section(
         return QpackError.DecompressionFailed;
     }
 
-    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must be >= minimum required insert count and <= TotalNumberOfInserts.
+    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must equal min required insert count and <= insert_count.
     let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
-    guard ric >= min_ric && ric <= tbl.insert_count else {
+    guard ric == min_ric && ric <= tbl.insert_count else {
         return QpackError.DecompressionFailed;
     }
 

@@ -128,6 +128,7 @@ struct H2SecurityFramer {
     max_continuation_frames: i32 = 5,     // limit on consecutive CONTINUATION frames
     max_rapid_resets: i32 = 100,          // reset flood threshold
     max_unack_pings: i32 = 10,            // unacknowledged ping limit
+    max_unack_settings: i32 = 10,         // unacknowledged settings flood limit
 }
 
 // Returns a default-initialized H2SecurityFramer with RFC 9113 baseline limits.
@@ -188,6 +189,11 @@ fn process_h2_headers_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&
         return H2ErrorCode.ProtocolError;
     }
 
+    guard hdr.payload_len <= framer.max_header_block_bytes else {
+        framer.state = H2ConnState.Closed;
+        return H2ErrorCode.EnhanceYourCalm;
+    }
+
     if (hdr.flags & H2_FLAG_END_HEADERS) == 0 {
         framer.state = H2ConnState.ExpectContinuation;
         framer.continuation_stream_id = hdr.stream_id;
@@ -195,6 +201,12 @@ fn process_h2_headers_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&
         framer.header_block_bytes = hdr.payload_len;
     }
     return H2ErrorCode.NoError;
+}
+
+inline fn track_unack_flood(count: i32&, max_limit: i32, flags: u8) -> bool {
+    if (flags & H2_FLAG_ACK) != 0 { return true; }
+    count++;
+    return count <= max_limit;
 }
 
 // Validates an incoming frame header and transitions the connection state machine.
@@ -227,9 +239,16 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
         return H2ErrorCode.NoError;
     }
 
-    if hdr.frame_type == H2FrameType.Ping && (hdr.flags & H2_FLAG_ACK) == 0 {
-        framer.ping_flood_count++;
-        guard framer.ping_flood_count <= framer.max_unack_pings else {
+    if hdr.frame_type == H2FrameType.Ping {
+        guard track_unack_flood(framer.ping_flood_count, framer.max_unack_pings, hdr.flags) else {
+            framer.state = H2ConnState.Closed;
+            return H2ErrorCode.EnhanceYourCalm;
+        }
+    }
+
+    if hdr.frame_type == H2FrameType.Settings {
+        guard track_unack_flood(framer.settings_flood_count, framer.max_unack_settings, hdr.flags) else {
+            framer.state = H2ConnState.Closed;
             return H2ErrorCode.EnhanceYourCalm;
         }
     }

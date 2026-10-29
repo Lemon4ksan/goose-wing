@@ -489,9 +489,50 @@ fn well_known_to_slot(id: WellKnownHeader) -> i64 {
     };
 }
 
+inline fn classify_cors_header(name: const u8[:], len: i64) -> WellKnownHeader {
+    match len {
+        22 => {
+            if eq_ascii_fold(name, "access-control-max-age") {
+                return WellKnownHeader.AccessControlMaxAge;
+            }
+        },
+        27 => {
+            if eq_ascii_fold(name, "access-control-allow-origin") { return WellKnownHeader.AccessControlAllowOrigin; }
+            if eq_ascii_fold(name, "access-control-allow-headers") { return WellKnownHeader.AccessControlAllowHeaders; }
+            if eq_ascii_fold(name, "access-control-allow-methods") { return WellKnownHeader.AccessControlAllowMethods; }
+        },
+        28 => {
+            if eq_ascii_fold(name, "access-control-expose-headers") {
+                return WellKnownHeader.AccessControlExposeHeaders;
+            }
+        },
+        29 => {
+            if eq_ascii_fold(name, "access-control-request-method") {
+                return WellKnownHeader.AccessControlRequestMethod;
+            }
+        },
+        30 => {
+            if eq_ascii_fold(name, "access-control-request-headers") {
+                return WellKnownHeader.AccessControlRequestHeaders;
+            }
+        },
+        32 => {
+            if eq_ascii_fold(name, "access-control-allow-credentials") {
+                return WellKnownHeader.AccessControlAllowCredentials;
+            }
+        },
+        _ => {},
+    }
+    return WellKnownHeader.Unknown;
+}
+
 fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
     let len = name.len;
     guard len >= 2 && len <= 32 else { return WellKnownHeader.Unknown; }
+
+    if starts_with_fold(name, "access-control-") {
+        return classify_cors_header(name, len);
+    }
 
     match len {
         2 => {
@@ -613,17 +654,6 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
         },
         25 => {
             if eq_ascii_fold(name, "strict-transport-security") { return WellKnownHeader.StrictTransportSecurity; }
-        },
-        27 => {
-            if eq_ascii_fold(name, "access-control-allow-origin") { return WellKnownHeader.AccessControlAllowOrigin; }
-            if eq_ascii_fold(name, "access-control-allow-headers") { return WellKnownHeader.AccessControlAllowHeaders; }
-            if eq_ascii_fold(name, "access-control-allow-methods") { return WellKnownHeader.AccessControlAllowMethods; }
-        },
-        28 => {
-            if eq_ascii_fold(name, "access-control-expose-headers") { return WellKnownHeader.AccessControlExposeHeaders; }
-        },
-        32 => {
-            if eq_ascii_fold(name, "access-control-allow-credentials") { return WellKnownHeader.AccessControlAllowCredentials; }
         },
         _ => {},
     }

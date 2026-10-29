@@ -16,7 +16,7 @@ struct NoVarySearch {
     ignore_all_params: bool = false,       // `params` without argument
     params: u8[..64][..16] = [],           // Explicit list of ignored parameters
     except_params: u8[..64][..16] = [],    // Parameters that MUST NOT be ignored
-    key_order_matters: bool = false,       // Default false (key order does not affect cache hit)
+    key_order_matters: bool = true,        // Default true (W3C No-Vary-Search §2.1)
     is_valid: bool = false,
 }
 
@@ -68,12 +68,15 @@ fn apply_nvs_except(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool
 }
 
 fn apply_nvs_key_order(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
-    if has_val && val == "?0" {
-        nvs.key_order_matters = true;
-    } else {
+    if !has_val || val == "?1" {
         nvs.key_order_matters = false;
+        return true;
     }
-    return true;
+    if val == "?0" {
+        nvs.key_order_matters = true;
+        return true;
+    }
+    return false;
 }
 
 fn apply_nvs_item(nvs: NoVarySearch&, token: const u8[:], has_val: bool, val: const u8[:]) -> bool {

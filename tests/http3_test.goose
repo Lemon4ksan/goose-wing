@@ -539,7 +539,7 @@ fn test_qpack_table_and_codec(t: core::T&) {
 fn test_h3_extended_frames(t: core::T&) {
     t.run("H3-13: Extended Frame Encoding & Inbound Ingestion") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = wing::new_h3_client_connection(settings);
+        var conn = wing::new_h3_server_connection(settings);
 
         // Encode and parse CANCEL_PUSH frame
         var cp_buf: u8[..32] = [];
@@ -1110,6 +1110,87 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
         sub.assert_true(wing::encode_h3_max_push_id(mp2_wire, 30), "decreasing MAX_PUSH_ID = 30 < 50");
         let err_mp2 = srv_ctrl_conn.handle_stream_data(2, false, mp2_wire[..], false);
         sub.assert_eq(err_mp2, wing::H3_ERR_ID_ERROR, "decreasing MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
+    };
+
+    t.run("H3-R3-02: RFC 9114 & RFC 9204 Hardening (RIC, Stream Recycling, Role Checks, Pseudo-Headers)") { sub =>
+        let settings = wing::H3Settings { .. };
+
+        // Test A: qpack_insert_literal rejects entry larger than table capacity (RFC 9204 §3.2.2)
+        var tbl_small = wing::new_qpack_table(40, 0); // capacity 40 bytes
+        // Entry overhead is 32. Name len 5 + Val len 5 = 10, total cost 42 > 40
+        let ok_oversize = wing::qpack_insert_literal(tbl_small, "hello", "world");
+        sub.assert_false(ok_oversize, "entry larger than capacity MUST return false per RFC 9204 §3.2.2");
+
+        // Test B: decode_qpack_section enforces strict RIC == min_ric (RFC 9204 §4.5.1)
+        var tbl_ric = wing::new_qpack_table(4096, 16);
+        wing::qpack_insert_literal(tbl_ric, "x-header", "v1"); // abs_idx 0
+        // Encoded block with only static table field (:status 200, 0xD9), but declaring RIC=1 (encoded as 2)
+        // Since no dynamic entries were referenced, min_ric == 0, so RIC=1 MUST fail
+        var sec_bad_ric: u8[..16] = [0x02, 0x00, 0xD9];
+        var out_f: wing::HeaderField[>..] = [];
+        let err_bad_ric = wing::decode_qpack_section(tbl_ric, sec_bad_ric[..], out_f);
+        sub.assert_eq(err_bad_ric, wing::QpackError.DecompressionFailed, "RIC > min_ric MUST fail decompression");
+
+        // Test C: Stream slot reuse allows > 8 requests on same connection
+        var cli_reuse = wing::new_h3_client_connection(settings);
+        let empty_headers = wing::HeaderMap { .. };
+        for i in 12 {
+            let sid, ok_open = cli_reuse.open_request_stream();
+            sub.assert_true(ok_open, "open request stream in loop");
+            sub.assert_eq(sid, (i * 4) as u64, "stream ID increments by 4");
+
+            // Server sends 200 response with FIN
+            var resp_wire: u8[..64] = [];
+            wing::encode_h3_headers_frame(resp_wire, [0x00, 0x00, 0xD9]);
+            let err_resp = cli_reuse.handle_stream_data(sid, true, resp_wire[..], true);
+            sub.assert_eq(err_resp, wing::H3_ERR_NO_ERROR, "response ingested");
+            // Client sends FIN to close stream locally and remotely
+            var req_data: u8[..256] = [];
+            cli_reuse.send_request_headers(sid, "GET", "https", "example.com", "/", empty_headers, true, req_data);
+        }
+
+        // Test D: Server sending MAX_PUSH_ID to client triggers H3_FRAME_UNEXPECTED (RFC 9114 §7.2.7)
+        var cli_mp = wing::new_h3_client_connection(settings);
+        var init_ctrl_d: u8[..64] = [];
+        wing::quic_encode_varint(init_ctrl_d, wing::H3_STREAM_CONTROL);
+        wing::encode_h3_settings_frame(init_ctrl_d, settings);
+        cli_mp.handle_stream_data(3, false, init_ctrl_d[..], false);
+
+        var bad_mp_wire: u8[..32] = [];
+        wing::encode_h3_max_push_id(bad_mp_wire, 10);
+        let err_cli_mp = cli_mp.handle_stream_data(3, false, bad_mp_wire[..], false);
+        sub.assert_eq(err_cli_mp, wing::H3_ERR_FRAME_UNEXPECTED, "Server sending MAX_PUSH_ID to client rejected");
+
+        // Test E: Server sending PRIORITY_UPDATE to client triggers H3_FRAME_UNEXPECTED (RFC 9218 §7.2)
+        var cli_prio = wing::new_h3_client_connection(settings);
+        cli_prio.handle_stream_data(3, false, init_ctrl_d[..], false);
+
+        var bad_prio_wire: u8[..64] = [];
+        let bad_prio = wing::PriorityParam { urgency: 2, incremental: false };
+        wing::encode_h3_priority_update_request(bad_prio_wire, 0, bad_prio);
+        let err_cli_prio = cli_prio.handle_stream_data(3, false, bad_prio_wire[..], false);
+        sub.assert_eq(err_cli_prio, wing::H3_ERR_FRAME_UNEXPECTED, "Server sending PRIORITY_UPDATE to client rejected");
+
+        // Test F: Response missing :status triggers H3_ERR_GENERAL_PROTOCOL (RFC 9114 §4.3.2)
+        var cli_no_status = wing::new_h3_client_connection(settings);
+        let sid_ns, _ = cli_no_status.open_request_stream();
+        var no_status_wire: u8[..64] = [];
+        // Section with only custom header: "x-foo: bar" (RIC=0, Base=0, Literal Name)
+        var qpack_no_st: u8[..64] = [0x00, 0x00];
+        wing::encode_qpack_field(qpack_no_st, "x-foo", "bar", true);
+        wing::encode_h3_headers_frame(no_status_wire, qpack_no_st[..]);
+        let err_no_status = cli_no_status.handle_stream_data(sid_ns, true, no_status_wire[..], false);
+        sub.assert_eq(err_no_status, wing::H3_ERR_GENERAL_PROTOCOL, "Response missing :status rejected");
+
+        // Test G: Response with client pseudo-header :method triggers H3_ERR_GENERAL_PROTOCOL (RFC 9114 §4.3.2)
+        var cli_with_meth = wing::new_h3_client_connection(settings);
+        let sid_wm, _ = cli_with_meth.open_request_stream();
+        var with_meth_wire: u8[..64] = [];
+        var qpack_wm: u8[..64] = [0x00, 0x00, 0xD9]; // :status 200
+        wing::encode_qpack_field(qpack_wm, ":method", "GET", true);
+        wing::encode_h3_headers_frame(with_meth_wire, qpack_wm[..]);
+        let err_with_meth = cli_with_meth.handle_stream_data(sid_wm, true, with_meth_wire[..], false);
+        sub.assert_eq(err_with_meth, wing::H3_ERR_GENERAL_PROTOCOL, "Response containing :method rejected");
     };
 }
 
