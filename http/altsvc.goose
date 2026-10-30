@@ -176,8 +176,11 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
 
         var ep = AltSvcEndpoint { .. };
         if parse_single_altsvc_entry(entry_str, ep) {
-            guard out_endpoints.len < out_endpoints.cap else { return false, false; }
-            out_endpoints.push(ep);
+            if out_endpoints.len < out_endpoints.cap {
+                out_endpoints.push(ep);
+            } else {
+                break;
+            }
         }
     }
 

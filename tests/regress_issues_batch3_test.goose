@@ -881,6 +881,20 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. HTTP/2 Server Multiplexer (server/h2_multiplexer.goose, http2/*)
 // ----------------------------------------------------------------------------
+fn has_rst_stream_for(wire: const u8[:], stream_id: u32) -> bool {
+    var p: i64 = 0;
+    while p + 9 <= wire.len {
+        let f_len = ((wire[p] as u32) << 16) | ((wire[p + 1] as u32) << 8) | wire[p + 2];
+        let f_type = wire[p + 3];
+        let f_sid = ((wire[p + 5] as u32) << 24) | ((wire[p + 6] as u32) << 16) | ((wire[p + 7] as u32) << 8) | wire[p + 8];
+        if f_type == internal::FRAME_RST_STREAM && f_sid == stream_id {
+            return true;
+        }
+        p += 9 + (f_len as i64);
+    }
+    return false;
+}
+
 fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
     var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -912,8 +926,9 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
         var out_wire: u8[>..] = [];
         let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
 
-        // Under RFC 9113 §8.1.1, Content-Length mismatch on END_STREAM MUST be rejected
-        sub.assert_false(ok, "Content-Length: 10 with 0 DATA bytes must be rejected as protocol error");
+        // Under RFC 9113 §8.1.1, Content-Length mismatch on END_STREAM MUST be rejected with stream error RST_STREAM
+        sub.assert_true(ok, "Connection MUST remain alive on stream error per RFC 9113 §5.4.2");
+        sub.assert_true(has_rst_stream_for(out_wire[..], 1), "Content-Length: 10 with 0 DATA bytes must emit RST_STREAM(PROTOCOL_ERROR)");
     };
 
     t.run("H2 ingress rejects PADDED frame when pad_len >= frame_payload.len") { sub =>
@@ -959,7 +974,8 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
 
         var out_wire: u8[>..] = [];
         let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
-        sub.assert_false(ok, "Request missing :scheme and :path MUST be rejected");
+        sub.assert_true(ok, "Connection MUST remain alive on stream error per RFC 9113 §5.4.2");
+        sub.assert_true(has_rst_stream_for(out_wire[..], 1), "Request missing :scheme and :path MUST emit RST_STREAM(PROTOCOL_ERROR)");
     };
 }
 
@@ -1186,7 +1202,7 @@ fn test_h2_multiplexer_trailers(t: core::T&) {
         sub.assert_true((hdr.flags & internal::FLAG_END_STREAM) != 0, "FLAG_END_STREAM set");
 
         // Decode HPACK payload
-        var dec_list = internal::DecodedH2HeaderList { .. };
+        var dec_list = internal::DecodedH2HeaderList { is_trailer: true, .. };
         let dec_err = internal::decode_hpack_header_block(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_list);
         sub.assert_eq(dec_err, internal::ERR_NO_ERROR, "HPACK block decoded");
 

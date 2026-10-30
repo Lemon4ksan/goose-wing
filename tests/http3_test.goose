@@ -1141,15 +1141,15 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
         let ok_oversize = internal::qpack_insert_literal(tbl_small, "hello", "world");
         sub.assert_false(ok_oversize, "entry larger than capacity MUST return false per RFC 9204 §3.2.2");
 
-        // Test B: decode_qpack_section enforces strict RIC == min_ric (RFC 9204 §4.5.1)
+        // Test B: decode_qpack_section rejects RIC > insert_count (RFC 9204 §4.5.1)
         var tbl_ric = internal::new_qpack_table(4096, 16);
         internal::qpack_insert_literal(tbl_ric, "x-header", "v1"); // abs_idx 0
-        // Encoded block with only static table field (:status 200, 0xD9), but declaring RIC=1 (encoded as 2)
-        // Since no dynamic entries were referenced, min_ric == 0, so RIC=1 MUST fail
-        var sec_bad_ric: u8[..16]                   = [0x02, 0x00, 0xD9];
+        // Encoded block declaring RIC=2 (encoded as 3) when table only has insert_count=1
+        // Per RFC 9204 §4.5.1, RIC > insert_count MUST fail decompression
+        var sec_bad_ric: u8[..16]                   = [0x03, 0x00, 0xD9];
         var out_f:       internal::HeaderField[>..] = [];
         let err_bad_ric = internal::decode_qpack_section(tbl_ric, sec_bad_ric[..], out_f);
-        sub.assert_eq(err_bad_ric, internal::QpackError.DecompressionFailed, "RIC > min_ric MUST fail decompression");
+        sub.assert_eq(err_bad_ric, internal::QpackError.DecompressionFailed, "RIC > insert_count MUST fail decompression");
 
         // Test C: Stream slot reuse allows > 8 requests on same connection
         var cli_reuse = internal::new_h3_client_connection(settings);

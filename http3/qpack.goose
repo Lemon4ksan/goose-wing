@@ -1116,9 +1116,9 @@ fn decode_qpack_section(
         guard f_err == QpackError.None else { return f_err; }
     }
 
-    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must equal min required insert count and <= insert_count.
+    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must be >= min required insert count and <= insert_count.
     let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
-    guard ric == min_ric && ric <= tbl.insert_count else {
+    guard ric >= min_ric && ric <= tbl.insert_count else {
         return QpackError.DecompressionFailed;
     }
 

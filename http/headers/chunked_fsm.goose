@@ -166,6 +166,7 @@ inline fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
+        dec.state &= ~CHUNK_STATE_SEEN_BWS;
         dec.state |= CHUNK_STATE_EXTENSION_MODE | CHUNK_STATE_EXTENSION_EXPECTS_NAME;
         return true;
     }

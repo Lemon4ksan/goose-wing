@@ -1293,7 +1293,7 @@ fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: core::T&) {
         wire.append("newval");
 
         var out_headers = internal::DecodedH2HeaderList { .. };
-        let err_code = internal::decode_hpack_header_block(dt, wire[..], out_headers);
+        let err_code = internal::decode_hpack_header_block(dt, wire[..], out_headers, 8192, false);
         sub.assert_eq(err_code, internal::ERR_NO_ERROR, "Literal header with indexed name from dynamic table MUST decode without bounds abort");
         sub.assert_eq(out_headers.fields.len, 1, "Decoded 1 header");
         sub.assert_eq(out_headers.fields[0].name[..], "custom-header", "Header name matches dynamic table entry");

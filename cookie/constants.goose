@@ -68,6 +68,7 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
 //   returns: CookiePriority.High
 fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
     if core::eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
+    if core::eq_ascii_fold(raw_val, "medium") { return CookiePriority.Medium; }
     if core::eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
     return CookiePriority.Unknown;
 }
