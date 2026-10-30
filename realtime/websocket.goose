@@ -40,10 +40,15 @@ let WS_HANDSHAKE_GUID: const u8[:] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // Native CSPRNG & SIMD shims
 extern fn native_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
 extern fn native_simd_mask_websocket(data: u8[:], mask: const u8[4]&) = "wing_simd_mask_websocket";
-extern fn native_simd_unmask_shifted(slice: u8[:], header_len: i64, payload_len: i64, mask: const u8[4]&) = "wing_simd_unmask_shifted";
+extern fn native_simd_unmask_shifted(
+    slice:       u8[:],
+    header_len:  i64,
+    payload_len: i64,
+    mask:        const u8[4]&,
+) = "wing_simd_unmask_shifted";
 
-// In-place zero-copy unmasking that shifts the unmasked payload back over the frame header (uWebSockets unmaskImprecise8)
-// Overwrites the header directly in slice and returns a slice of frame pointing to the unmasked payload [0 .. payload_len].
+// In-place zero-copy unmasking that shifts the unmasked payload back over the frame header
+// (uWebSockets unmaskImprecise8). Overwrites header directly in slice and returns payload slice.
 fn unmask_websocket_shifted(frame: u8[:], header_len: i64, payload_len: i64, mask_key: const u8[4]&) -> u8[:] {
     guard payload_len > 0 && header_len > 0 && frame.len >= header_len + payload_len else {
         return frame[..0];
@@ -130,6 +135,10 @@ fn mask_websocket_payload(data: u8[:], mask_key: const u8[4]&) {
 }
 
 // Parses RFC 6455 Frame Header with strict protocol validation
+//
+// Example:
+//   src = [0x81, 0x05, 0x48, 0x65, 0x6C, 0x6C, 0x6F]
+//   returns: WsFrameHeader { fin: true, opcode: 1, payload_len: 5, header_len: 2, ... }, ok = true
 fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     var hdr = WsFrameHeader { .. };
     guard src.len >= 2 else { return hdr, false; }
@@ -437,6 +446,14 @@ fn deflate_message_dedicated<B>(
         }
     }
 
+    if !reset_window {
+        guard raw.len <= dedicated.history.cap else {
+            dedicated.history.clear();
+            dedicated.compress_buf.clear();
+            return false;
+        }
+    }
+
     out_wire.append(dedicated.compress_buf[..eff_len]);
     dedicated.total_compressed += eff_len as u64;
     dedicated.total_uncompressed += raw.len as u64;
@@ -445,10 +462,8 @@ fn deflate_message_dedicated<B>(
         dedicated.history.clear();
         dedicated.compress_buf.clear();
     } else {
-        if raw.len <= dedicated.history.cap {
-            dedicated.history.clear();
-            dedicated.history.append(raw);
-        }
+        dedicated.history.clear();
+        dedicated.history.append(raw);
     }
     return true;
 }
@@ -524,7 +539,8 @@ fn encode_ws_frame_compressed<B>(
 // Fast-path template blocks for 24-byte RFC 6455 client key hashing (uWebSockets WebSocketHandshake pattern).
 // Block 1: 24 bytes client key + 36 bytes GUID + 0x80 padding + 3 zero bytes = 64 bytes.
 let WS_SHA1_BLOCK1_GUID: const u8[40] = [
-    '2', '5', '8', 'E', 'A', 'F', 'A', '5', '-', 'E', '9', '1', '4', '-', '4', '7', 'D', 'A', '-', '9', '5', 'C', 'A', '-', 'C', '5', 'A', 'B', '0', 'D', 'C', '8', '5', 'B', '1', '1',
+    '2', '5', '8', 'E', 'A', 'F', 'A', '5', '-', 'E', '9', '1', '4', '-', '4', '7', 'D', 'A',
+    '-', '9', '5', 'C', 'A', '-', 'C', '5', 'A', 'B', '0', 'D', 'C', '8', '5', 'B', '1', '1',
     0x80, 0, 0, 0,
 ];
 
@@ -647,6 +663,10 @@ fn is_valid_ws_close_code(code: u16) -> bool {
 }
 
 // Parses a Close frame payload into (status_code, reason_slice, ok)
+//
+// Example:
+//   payload = [0x03, 0xE8, 'b', 'y', 'e']
+//   returns: status_code = 1000, reason = "bye", ok = true
 fn parse_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     if payload.len == 0 {
         return WS_STATUS_NO_STATUS, "", true;
@@ -778,36 +798,36 @@ fn set_max_payload_length(ws: WebSocketSession&, max_len: u64) {
     ws.max_payload_length = max_len;
 }
 
-fn get_max_payload_length(ws: const WebSocketSession&) -> u64 {
-    return ws.max_payload_length;
-}
-
-fn is_close_received(ws: const WebSocketSession&) -> bool {
-    return ws.close_received;
+// Configuration options for RFC 7692 context takeover sliding window boundaries
+struct WsContextTakeoverOptions {
+    server_no_context: bool = false,
+    client_no_context: bool = false,
 }
 
 // RFC 7692 §7.1.1: Configures sliding window context takeover boundaries
-fn set_context_takeover(ws: WebSocketSession&, server_no_context: bool, client_no_context: bool) {
-    ws.server_no_context_takeover = server_no_context;
-    ws.client_no_context_takeover = client_no_context;
+fn set_context_takeover(ws: WebSocketSession&, opts: WsContextTakeoverOptions) {
+    ws.server_no_context_takeover = opts.server_no_context;
+    ws.client_no_context_takeover = opts.client_no_context;
 }
 
 // RFC 7692 §7.1.1: Determines if outbound compressor sliding window must be reset after sending
 fn ws_should_reset_compressor(ws: const WebSocketSession&) -> bool {
-    if ws.is_client {
-        return ws.client_no_context_takeover;
+    let should_reset = if ws.is_client {
+        ws.client_no_context_takeover
     } else {
-        return ws.server_no_context_takeover;
-    }
+        ws.server_no_context_takeover
+    };
+    return should_reset;
 }
 
 // RFC 7692 §7.1.1: Determines if inbound decompressor sliding window must be reset after receiving
 fn ws_should_reset_decompressor(ws: const WebSocketSession&) -> bool {
-    if ws.is_client {
-        return ws.server_no_context_takeover;
+    let should_reset = if ws.is_client {
+        ws.server_no_context_takeover
     } else {
-        return ws.client_no_context_takeover;
-    }
+        ws.client_no_context_takeover
+    };
+    return should_reset;
 }
 
 // Heartbeat action result for WebSocket keep-alive / auto-ping daemon
@@ -862,7 +882,8 @@ fn check_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) -> WsHea
     if ws.timeout_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.timeout_slot) {
         return WsHeartbeatAction.CloseIdle;
     }
-    if ws.send_pings_automatically && ws.ping_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.ping_slot) {
+    if ws.send_pings_automatically && ws.ping_slot != TICK_TIMER_DISARMED &&
+        tick_timer_is_expired(wheel, ws.ping_slot) {
         return WsHeartbeatAction.SendPing;
     }
     return WsHeartbeatAction.None;
@@ -938,20 +959,8 @@ fn set_user_data(pending: WsPendingUpgrade&, data: const u8[:]) -> bool {
     return true;
 }
 
-fn get_user_data(pending: const WsPendingUpgrade&) -> const u8[:] {
-    return pending.user_data[..];
-}
-
 fn set_user_tag(pending: WsPendingUpgrade&, tag: u64) {
     pending.user_tag = tag;
-}
-
-fn get_user_tag(pending: const WsPendingUpgrade&) -> u64 {
-    return pending.user_tag;
-}
-
-fn is_aborted(pending: const WsPendingUpgrade&) -> bool {
-    return pending.is_aborted;
 }
 
 // Per-Socket UserData accessors (zero-alloc inline context)
@@ -962,25 +971,8 @@ fn set_user_data(ws: WebSocketSession&, data: const u8[:]) -> bool {
     return true;
 }
 
-fn get_user_data(ws: const WebSocketSession&) -> const u8[:] {
-    return ws.user_data[..];
-}
-
 fn set_user_tag(ws: WebSocketSession&, tag: u64) {
     ws.user_tag = tag;
-}
-
-fn get_user_tag(ws: const WebSocketSession&) -> u64 {
-    return ws.user_tag;
-}
-
-// Backpressure & buffer flow control accessors
-fn get_buffered_amount(ws: const WebSocketSession&) -> u64 {
-    return ws.buffered_amount;
-}
-
-fn is_backpressured(ws: const WebSocketSession&) -> bool {
-    return ws.is_backpressured;
 }
 
 fn set_max_backpressure(ws: WebSocketSession&, max_bytes: u64, close_on_limit: bool = false) {
@@ -1026,15 +1018,17 @@ fn notify_drained(ws: WebSocketSession&, bytes_drained: u64) -> bool {
 
 // Configures PerMessageDeflate (RFC 7692) on the WebSocket session
 fn enable_permessage_deflate(
-    ws:                WebSocketSession&,
-    mode:              u16  = WS_COMPRESS_SHARED_COMPRESSOR,
-    server_no_context: bool = true,
-    client_no_context: bool = true,
+    ws:   WebSocketSession&,
+    mode: u16 = WS_COMPRESS_SHARED_COMPRESSOR,
+    opts: WsContextTakeoverOptions = WsContextTakeoverOptions {
+        server_no_context: true,
+        client_no_context: true,
+    },
 ) {
     ws.permessage_deflate = true;
     ws.compress_mode = mode;
-    ws.server_no_context_takeover = server_no_context;
-    ws.client_no_context_takeover = client_no_context;
+    ws.server_no_context_takeover = opts.server_no_context;
+    ws.client_no_context_takeover = opts.client_no_context;
 }
 
 // Generates cryptographically secure 4-byte masking key for client frames per RFC 6455 Section 5.3.
@@ -1251,11 +1245,16 @@ struct WsMessageView {
     is_compressed: bool        = false,
 }
 
-fn is_ws_masking_valid(is_client: bool, masked: bool) -> bool {
-    if is_client && masked {
+enum WsRole {
+    Client,
+    Server,
+}
+
+fn is_ws_masking_valid(role: WsRole, masked: bool) -> bool {
+    if role == WsRole.Client && masked {
         return false;
     }
-    if !is_client && !masked {
+    if role == WsRole.Server && !masked {
         return false;
     }
     return true;
@@ -1324,8 +1323,13 @@ fn receive_view_into<B, F>(
 
         // RFC 6455 §5.1: Masking enforcement - check immediately upon receiving header
         let masked = (b1 & 0x80) != 0;
-        if !is_ws_masking_valid(ws.is_client, masked) {
-            let reason = if ws.is_client { "masked frame received by client" } else { "unmasked frame received by server" };
+        let role = if ws.is_client { WsRole.Client } else { WsRole.Server };
+        if !is_ws_masking_valid(role, masked) {
+            let reason = if ws.is_client {
+                "masked frame received by client"
+            } else {
+                "unmasked frame received by server"
+            };
             close(ws, WS_STATUS_PROTOCOL_ERROR, reason, out_reply);
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
@@ -1491,57 +1495,61 @@ fn receive_view_into<B, F>(
                 return true, out_view;
             }
             // RFC 7692 Section 6.1: Compression - UTF-8 validation only applies to uncompressed plaintext payload
-            if hdr.opcode == WS_OPCODE_TEXT && !hdr.rsv1 {
-                if !core::validate_utf8(payload) {
-                    close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
-                    ws.is_closed = true;
-                    ws.close_code = WS_STATUS_INVALID_PAYLOAD;
-                    return true, out_view;
-                }
+            let need_utf8 = hdr.opcode == WS_OPCODE_TEXT && !hdr.rsv1;
+            if need_utf8 && !core::validate_utf8(payload) {
+                close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
+                ws.is_closed = true;
+                ws.close_code = WS_STATUS_INVALID_PAYLOAD;
+                return true, out_view;
             }
             out_view.opcode = hdr.opcode;
             out_view.payload = payload;
             out_view.is_valid = true;
             out_view.is_compressed = hdr.rsv1;
             return true, out_view;
+        }
+
+        // Initial fragment of a multi-frame message
+        ws.frag_opcode = hdr.opcode;
+        ws.frag_compressed = hdr.rsv1;
+        ws.frag_utf8_offset = 0;
+        frag_buf.clear();
+        let max_len_i64 = ws.max_payload_length as i64;
+        let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
+            max_len_i64
         } else {
-            // Initial fragment of a multi-frame message
-            ws.frag_opcode = hdr.opcode;
-            ws.frag_compressed = hdr.rsv1;
+            max_frag_cap
+        };
+        if eff_cap > 0 && payload.len > eff_cap {
+            close(ws, WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
+            ws.is_closed = true;
+            ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+            ws.frag_opcode = 0;
+            ws.frag_compressed = false;
             ws.frag_utf8_offset = 0;
             frag_buf.clear();
-            let eff_cap = if ws.max_payload_length > 0 && (ws.max_payload_length as i64) < max_frag_cap { ws.max_payload_length as i64 } else { max_frag_cap };
-            if eff_cap > 0 && payload.len > eff_cap {
-                close(ws, WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
+            return true, out_view;
+        }
+        frag_buf.append(payload);
+
+        // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 validation on initial fragment
+        if ws.frag_opcode == WS_OPCODE_TEXT && !ws.frag_compressed {
+            let valid_len, ok_u8 = core::validate_utf8_streaming(frag_buf[..], false);
+            if !ok_u8 {
+                close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in initial fragment", out_reply);
                 ws.is_closed = true;
-                ws.close_code = WS_STATUS_MESSAGE_TOO_BIG;
+                ws.close_code = WS_STATUS_INVALID_PAYLOAD;
                 ws.frag_opcode = 0;
                 ws.frag_compressed = false;
                 ws.frag_utf8_offset = 0;
                 frag_buf.clear();
                 return true, out_view;
             }
-            frag_buf.append(payload);
-
-            // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 validation on initial fragment
-            if ws.frag_opcode == WS_OPCODE_TEXT && !ws.frag_compressed {
-                let valid_len, ok_u8 = core::validate_utf8_streaming(frag_buf[..], false);
-                if !ok_u8 {
-                    close(ws, WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in initial fragment", out_reply);
-                    ws.is_closed = true;
-                    ws.close_code = WS_STATUS_INVALID_PAYLOAD;
-                    ws.frag_opcode = 0;
-                    ws.frag_compressed = false;
-                    ws.frag_utf8_offset = 0;
-                    frag_buf.clear();
-                    return true, out_view;
-                }
-                ws.frag_utf8_offset = valid_len;
-            }
-
-            out_view.is_valid = false;
-            return true, out_view;
+            ws.frag_utf8_offset = valid_len;
         }
+
+        out_view.is_valid = false;
+        return true, out_view;
     } else if hdr.opcode == WS_OPCODE_CONTINUATION {
         if ws.frag_opcode == 0 {
             close(ws, WS_STATUS_PROTOCOL_ERROR, "continuation frame without starting fragment", out_reply);
@@ -1550,7 +1558,12 @@ fn receive_view_into<B, F>(
             return true, out_view;
         }
 
-        let eff_cap = if ws.max_payload_length > 0 && (ws.max_payload_length as i64) < max_frag_cap { ws.max_payload_length as i64 } else { max_frag_cap };
+        let max_len_i64 = ws.max_payload_length as i64;
+        let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
+            max_len_i64
+        } else {
+            max_frag_cap
+        };
         if eff_cap > 0 && (frag_buf.len + payload.len) > eff_cap {
             close(ws, WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds capacity", out_reply);
             ws.is_closed = true;
@@ -1610,8 +1623,8 @@ fn receive_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessageView&,
 }
 
 // Streams and dispatches a single WebSocket frame from the front of `wire` into a caller-supplied assembly buffer:
-// - Returns `(0, false, view)` when `wire` contains an incomplete frame header or payload and more socket bytes are needed.
-// - Returns `(consumed, true, view)` when a complete frame was processed or a fatal header violation closed the session.
+// - Returns `(0, false, view)` when `wire` contains an incomplete frame header or payload.
+// - Returns `(consumed, true, view)` when a complete frame was processed or a fatal violation closed the session.
 fn consume_frame_view_into<B, F>(
     ws:           WebSocketSession&,
     wire:         u8[:],
@@ -1669,7 +1682,8 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
     out_msg.opcode = view.opcode;
     out_msg.close_code = view.close_code;
     out_msg.close_reason.clear();
-    if view.close_reason.len > 0 && view.close_reason.len <= out_msg.close_reason.cap {
+    guard view.close_reason.len <= out_msg.close_reason.cap else { return false; }
+    if view.close_reason.len > 0 {
         out_msg.close_reason.append(view.close_reason);
     }
     out_msg.data.clear();
@@ -1693,7 +1707,8 @@ fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
     return false;
 }
 
-// Checks if a requested subprotocol is present in the comma-separated Sec-WebSocket-Protocol header list (RFC 6455 §4.2.2).
+// Checks if a requested subprotocol is present in the comma-separated Sec-WebSocket-Protocol
+// header list (RFC 6455 §4.2.2).
 fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
     guard list.len > 0 && target.len > 0 else { return false; }
     var tok = make_byte_tokenizer(list, ',');
@@ -1707,10 +1722,37 @@ fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
     return false;
 }
 
+// Helper to search for a token inside a specified HTTP header across all matching lines.
+fn req_has_header_token(req: const Request&, header_name: const u8[:], token: const u8[:]) -> bool {
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], header_name) {
+            if has_header_token_fold(hdr.value[..], token) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Helper to determine if a subprotocol is requested by the client in Sec-WebSocket-Protocol.
+fn req_has_subprotocol(req: const Request&, subprotocol: const u8[:]) -> bool {
+    for &hdr in req.headers {
+        if core::eq_ascii_fold(hdr.name[..], "sec-websocket-protocol") {
+            if has_subprotocol_token(hdr.value[..], subprotocol) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.
-fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: const u8[:] = "") -> WebSocketSession, bool {
-    let method = req.method[..];
-    if method != "GET" {
+fn ws_upgrade_request(
+    req:         const Request&,
+    out_resp:    Response&,
+    subprotocol: const u8[:] = "",
+) -> WebSocketSession, bool {
+    guard req.method[..] == "GET" else {
         out_resp.status_code = 405;
         return WebSocketSession { .. }, false;
     }
@@ -1724,48 +1766,30 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
             has_host = true;
         }
     }
-    if !has_host {
+    guard has_host else {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
 
-    var has_upgrade_header = false;
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], "upgrade") {
-            if has_header_token_fold(hdr.value[..], "websocket") {
-                has_upgrade_header = true;
-                break;
-            }
-        }
-    }
-    if !has_upgrade_header {
+    guard req_has_header_token(req, "upgrade", "websocket") else {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
 
-    var has_upgrade_connection = false;
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], "connection") {
-            if has_header_token_fold(hdr.value[..], "upgrade") {
-                has_upgrade_connection = true;
-                break;
-            }
-        }
-    }
-    if !has_upgrade_connection {
+    guard req_has_header_token(req, "connection", "upgrade") else {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
 
     let ver = req.headers.find_header("Sec-WebSocket-Version");
-    if ver != "13" {
+    guard ver == "13" else {
         out_resp.status_code = 426;
         out_resp.set_header("Sec-WebSocket-Version", "13");
         return WebSocketSession { .. }, false;
     }
 
     let client_key = req.headers.find_header("Sec-WebSocket-Key");
-    if !is_valid_websocket_key(client_key) {
+    guard is_valid_websocket_key(client_key) else {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
@@ -1779,19 +1803,14 @@ fn ws_upgrade_request(req: const Request&, out_resp: Response&, subprotocol: con
     out_resp.set_header("Sec-WebSocket-Accept", accept_key[..]);
 
     var session = new_websocket_session(false);
-    if subprotocol.len > 0 && subprotocol.len <= session.subprotocol.cap {
+    if subprotocol.len > 0 {
+        guard subprotocol.len <= session.subprotocol.cap else {
+            out_resp.status_code = 400;
+            return WebSocketSession { .. }, false;
+        }
         // RFC 6455 §4.1 & §4.2.2 item 5: Server MUST only select a subprotocol requested by the client
         // across one or more Sec-WebSocket-Protocol header fields.
-        var proto_matched = false;
-        for &hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "sec-websocket-protocol") {
-                if has_subprotocol_token(hdr.value[..], subprotocol) {
-                    proto_matched = true;
-                    break;
-                }
-            }
-        }
-        if proto_matched {
+        if req_has_subprotocol(req, subprotocol) {
             out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
             session.subprotocol.append(subprotocol);
         }
@@ -1912,17 +1931,12 @@ fn ws_h2_upgrade_request(
     out_resp.status_code = 200;
 
     var session = new_websocket_session(false);
-    if subprotocol.len > 0 && subprotocol.len <= session.subprotocol.cap {
-        var proto_matched = false;
-        for &hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "sec-websocket-protocol") {
-                if has_subprotocol_token(hdr.value[..], subprotocol) {
-                    proto_matched = true;
-                    break;
-                }
-            }
+    if subprotocol.len > 0 {
+        guard subprotocol.len <= session.subprotocol.cap else {
+            out_resp.status_code = 400;
+            return WebSocketSession { .. }, false;
         }
-        if proto_matched {
+        if req_has_subprotocol(req, subprotocol) {
             out_resp.set_header("sec-websocket-protocol", subprotocol);
             session.subprotocol.append(subprotocol);
         }
@@ -1960,6 +1974,7 @@ fn format_h3_websocket_request(
 // Validates an RFC 9220 WebSocket Extended CONNECT request over HTTP/3.
 // Follows exact same validation rules as RFC 8441 per RFC 9220 Section 3.
 fn validate_h3_websocket_request(req: const Request&) -> bool {
+    guard req.method == "CONNECT" else { return false; }
     return validate_h2_websocket_request(req);
 }
 
@@ -1974,11 +1989,13 @@ fn ws_h3_upgrade_request(
 
 // Formats an HTTP/3 response accepting an RFC 9220 WebSocket session (200 OK)
 fn format_h3_websocket_response(res: Response&, subprotocol: const u8[:] = "") {
+    res.status_code = 200;
     format_h2_websocket_response(res, subprotocol);
 }
 
 // Inspects an HTTP/3 Response to determine if it accepted an RFC 9220 WebSocket session
 fn is_h3_websocket_response(res: const Response&) -> bool {
+    guard res.status_code == 200 else { return false; }
     return is_h2_websocket_response(res);
 }
 

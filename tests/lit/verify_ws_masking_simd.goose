@@ -46,7 +46,7 @@ fn test_masking_roundtrip_across_sizes() {
 }
 
 fn verify_single_swar_equivalence(sz: i64, mask: const u8[4]&) {
-    var buf_swar: u8[>..] = [];
+    var buf_swar:   u8[>..] = [];
     var buf_scalar: u8[>..] = [];
 
     for i in sz {
@@ -68,7 +68,7 @@ fn verify_single_swar_equivalence(sz: i64, mask: const u8[4]&) {
 }
 
 fn test_swar_vs_scalar_equivalence() {
-    let mask: u8[4] = [0xA5, 0x5A, 0xF0, 0x0F];
+    let mask:       u8[4]  = [0xA5, 0x5A, 0xF0, 0x0F];
     let test_sizes: i64[6] = [1, 7, 8, 15, 33, 63];
     for s in test_sizes {
         verify_single_swar_equivalence(s, mask);
@@ -77,19 +77,19 @@ fn test_swar_vs_scalar_equivalence() {
 }
 
 fn test_masking_enforcement_invariants() {
-    let client_recv_masked = wing::is_ws_masking_valid(true, true);
+    let client_recv_masked = wing::is_ws_masking_valid(wing::WsRole.Client, true);
     assert(!client_recv_masked);
     print("CLIENT_RECV_MASKED_INVALID: OK");
 
-    let client_recv_unmasked = wing::is_ws_masking_valid(true, false);
+    let client_recv_unmasked = wing::is_ws_masking_valid(wing::WsRole.Client, false);
     assert(client_recv_unmasked);
     print("CLIENT_RECV_UNMASKED_VALID: OK");
 
-    let server_recv_unmasked = wing::is_ws_masking_valid(false, false);
+    let server_recv_unmasked = wing::is_ws_masking_valid(wing::WsRole.Server, false);
     assert(!server_recv_unmasked);
     print("SERVER_RECV_UNMASKED_INVALID: OK");
 
-    let server_recv_masked = wing::is_ws_masking_valid(false, true);
+    let server_recv_masked = wing::is_ws_masking_valid(wing::WsRole.Server, true);
     assert(server_recv_masked);
     print("SERVER_RECV_MASKED_VALID: OK");
 }

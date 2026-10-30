@@ -20,30 +20,30 @@ import .store;
 // and partition key isolation.
 struct CanonicalCookieJar {
     // Quotas and thresholds
-    max_cookies_per_domain: i64 = internal::K_DOMAIN_MAX_COOKIES,       // 180
-    purge_cookies_per_domain: i64 = internal::K_DOMAIN_PURGE_COOKIES,   // 30
+    max_cookies_per_domain:    i64 = internal::K_DOMAIN_MAX_COOKIES,    // 180
+    purge_cookies_per_domain:  i64 = internal::K_DOMAIN_PURGE_COOKIES,  // 30
     target_cookies_per_domain: i64 = internal::K_DOMAIN_TARGET_COOKIES, // 150
 
-    quota_low: i64 = internal::K_DOMAIN_COOKIES_QUOTA_LOW,              // 30
+    quota_low:    i64 = internal::K_DOMAIN_COOKIES_QUOTA_LOW,           // 30
     quota_medium: i64 = internal::K_DOMAIN_COOKIES_QUOTA_MEDIUM,        // 50
-    quota_high: i64 = internal::K_DOMAIN_COOKIES_QUOTA_HIGH,            // 70
+    quota_high:   i64 = internal::K_DOMAIN_COOKIES_QUOTA_HIGH,          // 70
 
-    max_cookies_global: i64 = internal::K_MAX_COOKIES,                  // 3300
-    purge_cookies_global: i64 = internal::K_PURGE_COOKIES,              // 300
+    max_cookies_global:    i64 = internal::K_MAX_COOKIES,               // 3300
+    purge_cookies_global:  i64 = internal::K_PURGE_COOKIES,             // 300
     target_cookies_global: i64 = internal::K_GLOBAL_TARGET_COOKIES,     // 3000
 
     seq_counter: i64 = 1,
 
     // Telemetry counters
-    overwritten_count: i64 = 0,
-    evicted_expired_count: i64 = 0,
-    evicted_domain_count: i64 = 0,
-    evicted_global_count: i64 = 0,
-    evicted_chips_count: i64 = 0,
-    expired_overwrite_count: i64 = 0,
-    rejected_security_count: i64 = 0,
-    strict_secure_cookies: bool = false,
-    access_update_threshold_us: i64 = 60000000, // 60s (Chromium kDefaultAccessUpdateThresholdSeconds)
+    overwritten_count:          i64  = 0,
+    evicted_expired_count:      i64  = 0,
+    evicted_domain_count:       i64  = 0,
+    evicted_global_count:       i64  = 0,
+    evicted_chips_count:        i64  = 0,
+    expired_overwrite_count:    i64  = 0,
+    rejected_security_count:    i64  = 0,
+    strict_secure_cookies:      bool = false,
+    access_update_threshold_us: i64  = 60000000, // 60s (Chromium kDefaultAccessUpdateThresholdSeconds)
 
     cookies: CanonicalCookie[>..] = [],
 }
@@ -73,14 +73,14 @@ fn purge_expired(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
 
 // Filter criteria for selective cookie deletion across time ranges, domains, and partitions.
 struct CookieDeletionInfo {
-    start_utc: i64 = 0,
-    end_utc: i64 = 0,
-    session_only: bool = false,
-    domain: u8[..128] = [],
-    name: u8[..128] = [],
-    partition_key: u8[..256] = [],
+    start_utc:          i64       = 0,
+    end_utc:            i64       = 0,
+    session_only:       bool      = false,
+    domain:             u8[..128] = [],
+    name:               u8[..128] = [],
+    partition_key:      u8[..256] = [],
     top_frame_site_key: u8[..256] = [],
-    purge_non_secure: bool = false,
+    purge_non_secure:   bool      = false,
 }
 
 // Whether cookie_val matches all active predicates in filter.
@@ -94,8 +94,10 @@ fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: co
     }
     if filter.name.len > 0 && cookie_val.name[..] != filter.name[..] { return false; }
     if filter.partition_key.len > 0 && cookie_val.partition_key[..] != filter.partition_key[..] { return false; }
-    if filter.top_frame_site_key.len > 0 && cookie_val.partition_key[..] != filter.top_frame_site_key[..] { return false; }
-    if filter.purge_non_secure && (cookie_val.secure || cookie_val.source_scheme == CookieSourceScheme.Secure) { return false; }
+    if filter.top_frame_site_key.len > 0
+        && cookie_val.partition_key[..] != filter.top_frame_site_key[..] { return false; }
+    if filter.purge_non_secure
+        && (cookie_val.secure || cookie_val.source_scheme == CookieSourceScheme.Secure) { return false; }
     return true; // Matches filter -> should be deleted
 }
 
@@ -131,19 +133,21 @@ fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = fal
 // Safely inserts a pre-built CanonicalCookie through full security validation, collision overwrite and GC.
 fn set(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bool {
     let is_sec = cookie_val.secure || (cookie_val.source_scheme == CookieSourceScheme.Secure);
-    return jar.set_canonical_cookie(cookie_val, true, is_sec, now_us);
+    return jar.set_canonical_cookie(
+        cookie_val,
+        CookieSourceOptions { is_http_api: true, url_is_secure: is_sec },
+        now_us,
+    );
 }
 
 // Queries a cookie value by name for a specific request URL.
 fn get(
-    jar: CanonicalCookieJar&,
-    req_url: const u8[:],
-    name: const u8[:],
-    now_us: i64,
-    is_same_site: bool = true,
-    is_top_level_navigation: bool = true,
-    is_safe_method: bool = true,
-    partition_key: const u8[:] = "",
+    jar:           CanonicalCookieJar&,
+    req_url:       const u8[:],
+    name:          const u8[:],
+    now_us:        i64,
+    access:        CookieAccessOptions = CookieAccessOptions { .. },
+    partition_key: const u8[:]         = "",
 ) -> const u8[:] {
     let parsed_url = parse_canonical_cookie_url(req_url);
     for &cookie_val in jar.cookies {
@@ -151,8 +155,9 @@ fn get(
 
         if !cookie_val.cookie_matches_request(
             parsed_url.host[..], parsed_url.path[..],
-            parsed_url.scheme[..], parsed_url.port, parsed_url.is_secure,
-            true, partition_key, is_same_site, is_top_level_navigation, is_safe_method, now_us,
+            parsed_url.scheme[..], parsed_url.port,
+            CookieSourceOptions { is_http_api: true, url_is_secure: parsed_url.is_secure },
+            partition_key, access, now_us,
         ) {
             continue;
         }
@@ -178,11 +183,11 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 
 // ---- ingestion & insertion pipeline ----------------------------------------
 
-fn is_cookie_security_valid(cookie: const CanonicalCookie&, is_http_api: bool, url_is_secure: bool) -> bool {
-    if !cookie.validate_canonical_cookie_security(url_is_secure, is_http_api) {
+fn is_cookie_security_valid(cookie: const CanonicalCookie&, opts: CookieSourceOptions) -> bool {
+    if !cookie.validate_canonical_cookie_security(opts) {
         return false;
     }
-    if !is_http_api && !validate_script_cookie_name(cookie.name[..]) {
+    if !opts.is_http_api && !validate_script_cookie_name(cookie.name[..]) {
         return false;
     }
     return true;
@@ -201,25 +206,24 @@ fn insert_fresh_cookie(jar: CanonicalCookieJar&, new_cookie: CanonicalCookie&, n
 // origin security, overwrite precedence, and memory quotas (RFC 6265bis Section 5.6).
 // Returns false if the cookie violates security policies.
 fn set_canonical_cookie(
-    jar: CanonicalCookieJar&,
+    jar:        CanonicalCookieJar&,
     new_cookie: CanonicalCookie&,
-    is_http_api: bool,
-    url_is_secure: bool,
-    now_us: i64,
+    opts:       CookieSourceOptions,
+    now_us:     i64,
 ) -> bool {
-    if !is_cookie_security_valid(new_cookie, is_http_api, url_is_secure) {
+    if !is_cookie_security_valid(new_cookie, opts) {
         jar.rejected_security_count += 1;
         return false;
     }
 
-    if !is_http_api && jar.has_httponly_shadowing_collision(new_cookie) {
+    if !opts.is_http_api && jar.has_httponly_shadowing_collision(new_cookie) {
         jar.rejected_security_count += 1;
         return false;
     }
 
     let collision_idx = jar.find_canonical_cookie_collision_index(new_cookie);
     if collision_idx >= 0 {
-        return jar.handle_cookie_collision(new_cookie, collision_idx, url_is_secure, now_us);
+        return jar.handle_cookie_collision(new_cookie, collision_idx, opts.url_is_secure, now_us);
     }
 
     if new_cookie.is_expired(now_us) {
@@ -227,7 +231,7 @@ fn set_canonical_cookie(
         return true;
     }
 
-    if jar.has_secure_shadowing_collision(new_cookie, url_is_secure) {
+    if jar.has_secure_shadowing_collision(new_cookie, opts.url_is_secure) {
         jar.rejected_security_count += 1;
         return false;
     }
@@ -250,18 +254,20 @@ fn set_canonical_cookie(
 // - Collision Overwrites: Overwriting an existing cookie preserves its original creation_utc timestamp.
 // - Access Throttling: Repeated reads within 60 seconds throttle last_access_utc updates to prevent write storms.
 fn set_cookie_header(
-    jar: CanonicalCookieJar&,
-    req_url: const u8[:],
+    jar:            CanonicalCookieJar&,
+    req_url:        const u8[:],
     set_cookie_raw: const u8[:],
-    now_us: i64,
-    is_http_api: bool = true,
-    partition_key: const u8[:] = "",
+    now_us:         i64,
+    is_http_api:    bool        = true,
+    partition_key:  const u8[:] = "",
 ) -> bool {
     let parsed_url = parse_canonical_cookie_url(req_url);
     var def_path: u8[..256] = [];
     compute_default_cookie_path(parsed_url.path[..], def_path);
 
-    var parsed_cookie, cause, ok = parse_canonical_set_cookie(set_cookie_raw, parsed_url.host[..], def_path[..], now_us);
+    var parsed_cookie, cause, ok = parse_canonical_set_cookie(
+        set_cookie_raw, parsed_url.host[..], def_path[..], now_us,
+    );
     guard ok else { return false; }
 
     if partition_key.len > 0 {
@@ -271,16 +277,20 @@ fn set_cookie_header(
 
     parsed_cookie.adjust_origin_bound_cookies_on_insert(parsed_url.host[..], parsed_url.port, parsed_url.is_secure);
     let effective_secure_channel = parsed_url.is_secure || is_trustworthy_non_crypto_host(parsed_url.host[..]);
-    return jar.set_canonical_cookie(parsed_cookie, is_http_api, effective_secure_channel, now_us);
+    return jar.set_canonical_cookie(
+        parsed_cookie,
+        CookieSourceOptions { is_http_api: is_http_api, url_is_secure: effective_secure_channel },
+        now_us,
+    );
 }
 
 // Ingests a raw Set-Cookie header for req_url with an explicit CHIPS partition key.
 fn set_cookie_header(
-    jar: CanonicalCookieJar&,
-    req_url: const u8[:],
+    jar:            CanonicalCookieJar&,
+    req_url:        const u8[:],
     set_cookie_raw: const u8[:],
-    now_us: i64,
-    partition_key: const u8[:],
+    now_us:         i64,
+    partition_key:  const u8[:],
 ) -> bool {
     return jar.set_cookie_header(req_url, set_cookie_raw, now_us, true, partition_key);
 }
@@ -289,29 +299,30 @@ fn set_cookie_header(
 
 // High-level declarative helper for generating outgoing HTTP Cookie header.
 fn build_cookie_header<B>(
-    jar: CanonicalCookieJar&,
-    out: B&,
-    host: const u8[:],
-    path: const u8[:],
+    jar:       CanonicalCookieJar&,
+    out:       B&,
+    host:      const u8[:],
+    path:      const u8[:],
     is_secure: bool,
-    now_us: i64,
+    now_us:    i64,
 ) {
     var matched: CanonicalCookie[>..] = [];
     jar.get_canonical_cookies_for_request(
         host, path,
         if is_secure { "https" } else { "http" },
         if is_secure { 443 } else { 80 },
-        is_secure, true, "", now_us, matched,
+        CookieSourceOptions { is_http_api: true, url_is_secure: is_secure },
+        "", now_us, matched,
     );
     format_cookie_header_value(out, matched[..]);
 }
 
 // Builds an outgoing HTTP Cookie header directly from an arbitrary request URL.
 fn build_cookie_header<B>(
-    jar: CanonicalCookieJar&,
-    req_url: const u8[:],
-    out: B&,
-    now_us: i64,
+    jar:           CanonicalCookieJar&,
+    req_url:       const u8[:],
+    out:           B&,
+    now_us:        i64,
     partition_key: const u8[:] = "",
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
@@ -321,8 +332,7 @@ fn build_cookie_header<B>(
         parsed_url.path[..],
         parsed_url.scheme[..],
         parsed_url.port,
-        parsed_url.is_secure,
-        true,
+        CookieSourceOptions { is_http_api: true, url_is_secure: parsed_url.is_secure },
         partition_key,
         now_us,
         matched,
@@ -332,12 +342,12 @@ fn build_cookie_header<B>(
 
 // Builds an outgoing HTTP Cookie header for a request with explicit is_http_api and partition_key
 fn build_request_cookie_header<B>(
-    jar: CanonicalCookieJar&,
-    req_url: const u8[:],
-    is_http_api: bool,
+    jar:           CanonicalCookieJar&,
+    req_url:       const u8[:],
+    is_http_api:   bool,
     partition_key: const u8[:],
-    now_us: i64,
-    out: B&,
+    now_us:        i64,
+    out:           B&,
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
     var matched: CanonicalCookie[>..] = [];
@@ -346,8 +356,7 @@ fn build_request_cookie_header<B>(
         parsed_url.path[..],
         parsed_url.scheme[..],
         parsed_url.port,
-        parsed_url.is_secure,
-        is_http_api,
+        CookieSourceOptions { is_http_api: is_http_api, url_is_secure: parsed_url.is_secure },
         partition_key,
         now_us,
         matched,
@@ -357,15 +366,13 @@ fn build_request_cookie_header<B>(
 
 // URL-based overload for get_canonical_cookies_for_request.
 fn get_canonical_cookies_for_request(
-    jar: CanonicalCookieJar&,
-    req_url: const u8[:],
-    is_http_api: bool,
+    jar:           CanonicalCookieJar&,
+    req_url:       const u8[:],
+    is_http_api:   bool,
     partition_key: const u8[:],
-    now_us: i64,
-    out: CanonicalCookie[>..]&,
-    is_same_site: bool = true,
-    is_top_level_navigation: bool = true,
-    is_safe_method: bool = true,
+    now_us:        i64,
+    out:           CanonicalCookie[>..]&,
+    access:        CookieAccessOptions = CookieAccessOptions { .. },
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
     jar.get_canonical_cookies_for_request(
@@ -373,14 +380,11 @@ fn get_canonical_cookies_for_request(
         parsed_url.path[..],
         parsed_url.scheme[..],
         parsed_url.port,
-        parsed_url.is_secure,
-        is_http_api,
+        CookieSourceOptions { is_http_api: is_http_api, url_is_secure: parsed_url.is_secure },
         partition_key,
         now_us,
         out,
-        is_same_site,
-        is_top_level_navigation,
-        is_safe_method,
+        access,
     );
 }
 
@@ -390,25 +394,21 @@ fn get_canonical_cookies_for_request(
 // 1. Longest Path first (path.len descending)
 // 2. Earliest creation_utc first (creation_utc ascending)
 fn get_canonical_cookies_for_request(
-    jar: CanonicalCookieJar&,
-    host: const u8[:],
-    path: const u8[:],
-    scheme: const u8[:],
-    port: i32,
-    is_secure: bool,
-    is_http_api: bool,
+    jar:           CanonicalCookieJar&,
+    host:          const u8[:],
+    path:          const u8[:],
+    scheme:        const u8[:],
+    port:          i32,
+    source:        CookieSourceOptions,
     partition_key: const u8[:],
-    now_us: i64,
-    out: CanonicalCookie[>..]&,
-    is_same_site: bool = true,
-    is_top_level_navigation: bool = true,
-    is_safe_method: bool = true,
+    now_us:        i64,
+    out:           CanonicalCookie[>..]&,
+    access:        CookieAccessOptions = CookieAccessOptions { .. },
 ) {
     for &cookie_val in jar.cookies {
         if !cookie_val.cookie_matches_request(
             host, path, scheme, port,
-            is_secure, is_http_api, partition_key,
-            is_same_site, is_top_level_navigation, is_safe_method,
+            source, partition_key, access,
             now_us,
         ) {
             continue;
@@ -448,12 +448,14 @@ fn garbage_collect_per_domain(jar: CanonicalCookieJar&, etld_plus_one: const u8[
     guard domain_count > jar.target_cookies_per_domain else { return total_evicted; }
 
     var need_to_evict = domain_count - jar.target_cookies_per_domain;
-    var low_excess: i64 = 0;
-    var med_excess: i64 = 0;
+    var low_excess:  i64 = 0;
+    var med_excess:  i64 = 0;
     var high_excess: i64 = 0;
     jar.calculate_domain_priority_excesses(etld_plus_one, low_excess, med_excess, high_excess);
 
-    total_evicted += jar.purge_domain_priority_rounds(etld_plus_one, need_to_evict, low_excess, med_excess, high_excess);
+    total_evicted += jar.purge_domain_priority_rounds(
+        etld_plus_one, need_to_evict, low_excess, med_excess, high_excess,
+    );
 
     if need_to_evict > 0 {
         let fallback_evicted = jar.purge_domain_fallback(etld_plus_one, need_to_evict);
@@ -488,15 +490,15 @@ fn garbage_collect_global(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
 // Enforces CHIPS Partition memory quota (10 KB per partition-domain pair).
 // Evicts oldest partitioned cookies by LRA until total memory <= 10240 bytes.
 fn enforce_chips_quota(
-    jar: CanonicalCookieJar&,
+    jar:           CanonicalCookieJar&,
     partition_key: const u8[:],
     etld_plus_one: const u8[:],
-    now_us: i64,
+    now_us:        i64,
 ) -> i64 {
     guard partition_key.len > 0 else { return 0; }
 
-    var candidates: CanonicalCookie[>..] = [];
-    var total_bytes: i64 = 0;
+    var candidates:  CanonicalCookie[>..] = [];
+    var total_bytes: i64                  = 0;
     jar.gather_chips_candidates(partition_key, etld_plus_one, candidates, total_bytes);
 
     guard total_bytes > internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES else { return 0; }
@@ -504,7 +506,7 @@ fn enforce_chips_quota(
     candidates.stable_sort() { a, b => a.chips_lra_candidate_less(b) };
 
     var to_delete_seqs: i64[>..] = [];
-    var evicted_count: i64 = 0;
+    var evicted_count:  i64      = 0;
 
     for &candidate_cookie in candidates {
         if total_bytes <= internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES { break; }
@@ -524,12 +526,12 @@ fn enforce_chips_quota(
 // ---- internal implementation helpers ---------------------------------------
 
 fn purge_domain_priority_rounds(
-    jar: CanonicalCookieJar&,
+    jar:           CanonicalCookieJar&,
     etld_plus_one: const u8[:],
     need_to_evict: i64&,
-    low_excess: i64&,
-    med_excess: i64&,
-    high_excess: i64&,
+    low_excess:    i64&,
+    med_excess:    i64&,
+    high_excess:   i64&,
 ) -> i64 {
     var evicted_count: i64 = 0;
     for round_idx in 1..7 {
@@ -554,10 +556,10 @@ fn purge_domain_priority_rounds(
 }
 
 fn enforce_post_insertion_quotas(
-    jar: CanonicalCookieJar&,
-    new_cookie: const CanonicalCookie&,
+    jar:           CanonicalCookieJar&,
+    new_cookie:    const CanonicalCookie&,
     etld_plus_one: const u8[:],
-    now_us: i64,
+    now_us:        i64,
 ) {
     if (new_cookie.partitioned || new_cookie.partition_key.len > 0) && new_cookie.partition_key.len > 0 {
         jar.enforce_chips_quota(new_cookie.partition_key[..], etld_plus_one, now_us);
@@ -567,15 +569,15 @@ fn enforce_post_insertion_quotas(
 }
 
 fn has_secure_shadowing_collision(
-    jar: const CanonicalCookieJar&,
-    new_cookie: const CanonicalCookie&,
+    jar:           const CanonicalCookieJar&,
+    new_cookie:    const CanonicalCookie&,
     url_is_secure: bool,
 ) -> bool {
     return jar.cookies.any() { it.would_insecure_overwrite_secure(new_cookie, url_is_secure) };
 }
 
 fn has_httponly_shadowing_collision(
-    jar: const CanonicalCookieJar&,
+    jar:        const CanonicalCookieJar&,
     new_cookie: const CanonicalCookie&,
 ) -> bool {
     for &existing in jar.cookies {
@@ -591,11 +593,11 @@ fn has_httponly_shadowing_collision(
 }
 
 fn gather_chips_candidates<B>(
-    jar: const CanonicalCookieJar&,
+    jar:           const CanonicalCookieJar&,
     partition_key: const u8[:],
     etld_plus_one: const u8[:],
-    candidates: B&,
-    total_bytes: i64&,
+    candidates:    B&,
+    total_bytes:   i64&,
 ) {
     for &cookie_val in jar.cookies {
         if (cookie_val.partitioned || cookie_val.partition_key.len > 0) &&
@@ -612,6 +614,7 @@ fn priority_rank(priority_level: CookiePriority) -> i32 {
         Low => 0,
         Medium => 1,
         High => 2,
+        Unknown => 1,
     };
 }
 
@@ -627,13 +630,17 @@ fn matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus
 
 fn find_canonical_cookie_collision_index(jar: const CanonicalCookieJar&, new_cookie: const CanonicalCookie&) -> i64 {
     for &existing, cookie_idx in jar.cookies {
+        let port_match = existing.source_port == -1 || new_cookie.source_port == -1
+            || existing.source_port == new_cookie.source_port;
+        let scheme_match = existing.source_scheme == CookieSourceScheme.Unset
+            || new_cookie.source_scheme == CookieSourceScheme.Unset
+            || existing.source_scheme == new_cookie.source_scheme;
         if existing.name[..] == new_cookie.name[..] &&
            eq_ascii_fold(existing.domain[..], new_cookie.domain[..]) &&
            existing.path[..] == new_cookie.path[..] &&
            existing.host_only == new_cookie.host_only &&
            existing.partition_key[..] == new_cookie.partition_key[..] &&
-           (existing.source_port == -1 || new_cookie.source_port == -1 || existing.source_port == new_cookie.source_port) &&
-           (existing.source_scheme == CookieSourceScheme.Unset || new_cookie.source_scheme == CookieSourceScheme.Unset || existing.source_scheme == new_cookie.source_scheme) {
+           port_match && scheme_match {
             return cookie_idx;
         }
     }
@@ -641,8 +648,8 @@ fn find_canonical_cookie_collision_index(jar: const CanonicalCookieJar&, new_coo
 }
 
 fn would_insecure_overwrite_secure(
-    existing: const CanonicalCookie&,
-    new_cookie: const CanonicalCookie&,
+    existing:      const CanonicalCookie&,
+    new_cookie:    const CanonicalCookie&,
     url_is_secure: bool,
 ) -> bool {
     if !existing.secure { return false; }
@@ -650,8 +657,8 @@ fn would_insecure_overwrite_secure(
     if existing.name[..] != new_cookie.name[..] { return false; }
     if existing.partition_key[..] != new_cookie.partition_key[..] { return false; }
 
-    let domain_matches = cookie_domain_match(existing.domain[..], new_cookie.domain[..]) ||
-                         cookie_domain_match(new_cookie.domain[..], existing.domain[..]);
+    let domain_matches = cookie_domain_match(existing.domain[..], new_cookie.domain[..])
+        || cookie_domain_match(new_cookie.domain[..], existing.domain[..]);
     guard domain_matches else { return false; }
 
     return cookie_path_match(new_cookie.path[..], existing.path[..]);
@@ -740,24 +747,29 @@ fn evict_domain_non_secure_cookies(jar: CanonicalCookieJar&, etld_plus_one: cons
     return evicted_count;
 }
 
+// Increments priority category counter for domain purge calculations.
+inline fn count_cookie_priority(prio: CookiePriority, low: i64&, med: i64&, high: i64&) {
+    match prio {
+        Low => { low += 1; },
+        High => { high += 1; },
+        _ => { med += 1; },
+    };
+}
+
 fn calculate_domain_priority_excesses(
-    jar: const CanonicalCookieJar&,
+    jar:           const CanonicalCookieJar&,
     etld_plus_one: const u8[:],
-    low_excess: i64&,
-    med_excess: i64&,
-    high_excess: i64&,
+    low_excess:    i64&,
+    med_excess:    i64&,
+    high_excess:   i64&,
 ) {
-    var low_count: i64 = 0;
-    var med_count: i64 = 0;
+    var low_count:  i64 = 0;
+    var med_count:  i64 = 0;
     var high_count: i64 = 0;
 
     for &cookie_val in jar.cookies {
         if !cookie_val.matches_effective_domain(etld_plus_one) { continue; }
-        match cookie_val.priority {
-            Low => { low_count += 1; },
-            Medium => { med_count += 1; },
-            High => { high_count += 1; },
-        };
+        count_cookie_priority(cookie_val.priority, low_count, med_count, high_count);
     }
 
     low_excess = max(0, low_count - jar.quota_low);
@@ -766,11 +778,11 @@ fn calculate_domain_priority_excesses(
 }
 
 fn resolve_domain_purge_round_params(
-    round_idx: i64,
+    round_idx:     i64,
     need_to_evict: i64,
-    low_excess: i64,
-    med_excess: i64,
-    high_excess: i64,
+    low_excess:    i64,
+    med_excess:    i64,
+    high_excess:   i64,
 ) -> CookiePriority, bool, i64 {
     if round_idx == 1 {
         return CookiePriority.Low, true, min(need_to_evict, low_excess);
@@ -792,10 +804,10 @@ fn resolve_domain_purge_round_params(
 }
 
 fn purge_domain_priority_round(
-    jar: CanonicalCookieJar&,
+    jar:           CanonicalCookieJar&,
     etld_plus_one: const u8[:],
-    target_prio: CookiePriority,
-    protect_sec: bool,
+    target_prio:   CookiePriority,
+    protect_sec:   bool,
     quota_allowed: i64,
 ) -> i64 {
     var candidates: CanonicalCookie[>..] = [];
@@ -821,11 +833,11 @@ fn purge_domain_priority_round(
 }
 
 fn deduct_domain_priority_excess(
-    target_prio: CookiePriority,
+    target_prio:   CookiePriority,
     evicted_count: i64,
-    low_excess: i64&,
-    med_excess: i64&,
-    high_excess: i64&,
+    low_excess:    i64&,
+    med_excess:    i64&,
+    high_excess:   i64&,
 ) {
     if target_prio == CookiePriority.Low {
         low_excess -= evicted_count;
@@ -877,11 +889,11 @@ fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64,
 }
 
 fn handle_cookie_collision(
-    jar: CanonicalCookieJar&,
-    new_cookie: CanonicalCookie&,
+    jar:           CanonicalCookieJar&,
+    new_cookie:    CanonicalCookie&,
     collision_idx: i64,
     url_is_secure: bool,
-    now_us: i64,
+    now_us:        i64,
 ) -> bool {
     let existing = jar.cookies[collision_idx];
 
@@ -913,25 +925,22 @@ fn handle_cookie_collision(
 }
 
 fn cookie_matches_request(
-    cookie_val: const CanonicalCookie&,
-    host: const u8[:],
-    path: const u8[:],
-    scheme: const u8[:],
-    port: i32,
-    is_secure: bool,
-    is_http_api: bool,
+    cookie_val:    const CanonicalCookie&,
+    host:          const u8[:],
+    path:          const u8[:],
+    scheme:        const u8[:],
+    port:          i32,
+    source:        CookieSourceOptions,
     partition_key: const u8[:],
-    is_same_site: bool,
-    is_top_level_navigation: bool,
-    is_safe_method: bool,
-    now_us: i64,
+    access:        CookieAccessOptions,
+    now_us:        i64,
 ) -> bool {
     if cookie_val.is_expired(now_us) { return false; }
     if !cookie_val.matches_domain(host) { return false; }
     if !cookie_val.matches_path(path) { return false; }
-    if cookie_val.secure && !is_secure && !is_trustworthy_non_crypto_host(host) { return false; }
-    if cookie_val.httponly && !is_http_api { return false; }
-    if !cookie_val.is_cookie_sendable_for_samesite(is_same_site, is_top_level_navigation, is_safe_method, now_us) { return false; }
+    if cookie_val.secure && !source.url_is_secure && !is_trustworthy_non_crypto_host(host) { return false; }
+    if cookie_val.httponly && !source.is_http_api { return false; }
+    if !cookie_val.is_cookie_sendable_for_samesite(access, now_us) { return false; }
     if !cookie_val.is_cookie_sendable_for_obc(scheme, port, host) { return false; }
     if cookie_val.partitioned && cookie_val.partition_key[..] != partition_key { return false; }
     return true;

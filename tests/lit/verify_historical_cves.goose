@@ -52,7 +52,7 @@ fn test_uwebsockets_1876_backpressure_priority() {
 
     var out_wire: u8[>..] = [];
     let _ = wing::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);
-    assert(wing::is_backpressured(ws));
+    assert(ws.is_backpressured);
     print("WS_BACKPRESSURE_SATURATED: OK");
 
     var dropped_wire: u8[>..] = [];

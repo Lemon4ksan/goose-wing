@@ -80,18 +80,18 @@ fn test_per_socket_user_data(t: core::T&) {
 
         // User tag (64-bit integer handle)
         ws.set_user_tag(0xFEEDFACEDEADBEEF);
-        sub.assert_eq(ws.get_user_tag(), 0xFEEDFACEDEADBEEF, "User tag set and retrieved");
+        sub.assert_eq(ws.user_tag, 0xFEEDFACEDEADBEEF, "User tag set and retrieved");
 
         // User data slice
         let udata_sample = "session_token=usr_998124_admin;room=crypto_traders";
         let ok_set = ws.set_user_data(udata_sample);
         sub.assert_true(ok_set, "User data stored in inline buffer");
-        sub.assert_bytes_eq(ws.get_user_data(), udata_sample, "Retrieved user data matches");
+        sub.assert_bytes_eq(ws.user_data[..], udata_sample, "Retrieved user data matches");
 
         // Update user data
         let udata_update = "room=lobby";
         ws.set_user_data(udata_update);
-        sub.assert_bytes_eq(ws.get_user_data(), udata_update, "Updated user data retrieved");
+        sub.assert_bytes_eq(ws.user_data[..], udata_update, "Updated user data retrieved");
     };
 }
 
@@ -99,26 +99,26 @@ fn test_backpressure_and_drain(t: core::T&) {
     t.run("1. Backpressure Watermark Tracking & Drain Event") { sub =>
         var ws = wing::new_websocket_session(false);
         ws.set_max_backpressure(500, false);
-        sub.assert_eq(ws.get_buffered_amount(), 0, "Initial buffered amount is 0");
+        sub.assert_eq(ws.buffered_amount, 0, "Initial buffered amount is 0");
         sub.assert_false(ws.is_backpressured, "Initially not backpressured");
 
         var out: u8[..1024] = [];
         // Send small message (40 bytes payload + 2 bytes server frame header = 42 bytes)
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
         sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "Status is Backpressure when queued bytes > 0");
-        sub.assert_eq(ws.get_buffered_amount(), 42, "42 bytes buffered");
+        sub.assert_eq(ws.buffered_amount, 42, "42 bytes buffered");
         sub.assert_true(ws.is_backpressured, "Marked as backpressured");
 
         // Partial drain
         let drained_part = ws.notify_drained(20);
         sub.assert_false(drained_part, "Partial drain does not trigger drain event");
-        sub.assert_eq(ws.get_buffered_amount(), 22, "22 bytes remaining");
+        sub.assert_eq(ws.buffered_amount, 22, "22 bytes remaining");
         sub.assert_true(ws.is_backpressured, "Still backpressured");
 
         // Full drain
         let drained_full = ws.notify_drained(22);
         sub.assert_true(drained_full, "Full drain to 0 triggers drain event!");
-        sub.assert_eq(ws.get_buffered_amount(), 0, "Buffered amount is 0");
+        sub.assert_eq(ws.buffered_amount, 0, "Buffered amount is 0");
         sub.assert_false(ws.is_backpressured, "No longer backpressured");
 
         // Subsequent drain when already 0
@@ -134,7 +134,7 @@ fn test_backpressure_and_drain(t: core::T&) {
         // 1st message: 40 + 2 = 42 bytes <= 60
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
         sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "First send accepted");
-        sub.assert_eq(ws.get_buffered_amount(), 42, "42 bytes buffered");
+        sub.assert_eq(ws.buffered_amount, 42, "42 bytes buffered");
         let initial_out_len = out.len;
 
         // 2nd message: 42 + 42 = 84 > 60 -> Must be DROPPED
@@ -343,7 +343,7 @@ fn test_async_upgrade_and_aborted(t: core::T&) {
         var sess, ok_comp = server.complete_ws_upgrade(pending, wire_out);
         sub.assert_true(ok_comp, "complete_ws_upgrade succeeded");
         sub.assert_eq(sess.user_tag, 123456789, "UserTag passed to session");
-        sub.assert_eq(sess.get_user_data(), "auth:user_jwt_token", "UserData passed to session");
+        sub.assert_eq(sess.user_data[..], "auth:user_jwt_token", "UserData passed to session");
 
         let wire_str = wire_out[..];
         sub.assert_true(core::contains(wire_str, "HTTP/1.1 101 Switching Protocols\r\n"), "Status 101");

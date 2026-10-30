@@ -16,25 +16,45 @@ import client.response;
 // ---- 1. SSE Event Model ----------------------------------------------------
 
 struct SseEvent {
-    event: u8[..64] = [],       // Event type, default "message"
-    data: u8[..4096] = [],      // Aggregated payload
-    id: u8[..128] = [],         // Event ID
-    retry_ms: u32 = 0,          // Reconnection delay in milliseconds (0 if unchanged)
-    is_valid: bool = false,
+    event:    u8[..64]   = [],  // Event type, default "message"
+    data:     u8[..4096] = [],  // Aggregated payload
+    id:       u8[..128]  = [],  // Event ID
+    retry_ms: u32        = 0,   // Reconnection delay in milliseconds (0 if unchanged)
+    is_valid: bool       = false,
 }
 
 struct SseParser {
-    cur_event: u8[..64] = [],
-    cur_data: u8[..4096] = [],
-    last_event_id: u8[..128] = [],
-    retry_ms: u32 = 3000,
-    line_buf: u8[..4112] = [],
-    prev_was_cr: bool = false,
-    has_data: bool = false,
-    bom_checked: bool = false,
+    cur_event:     u8[..64]   = [],
+    cur_data:      u8[..4096] = [],
+    last_event_id: u8[..128]  = [],
+    retry_ms:      u32        = 3000,
+    line_buf:      u8[..4112] = [],
+    prev_was_cr:   bool       = false,
+    has_data:      bool       = false,
+    bom_checked:   bool       = false,
 }
 
 // ---- 2. Line Dispatch and Event Dispatch (W3C Section 6) -------------------
+
+// Parses an SSE retry milliseconds field value.
+//
+// Example:
+//   field_val = "3000"
+//   returns: 3000, true
+fn parse_sse_retry(field_val: const u8[:]) -> u32, bool {
+    guard field_val.len > 0 else { return 0, false; }
+    var num: u32 = 0;
+    for b in field_val {
+        guard b >= '0' && b <= '9' else { return 0, false; }
+        let digit = (b - '0') as u32;
+        if num > (0xFFFFFFFF - digit) / 10 {
+            num = 0xFFFFFFFF;
+        } else {
+            num = num * 10 + digit;
+        }
+    }
+    return num, true;
+}
 
 fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8[:]) {
     if field_name == "event" {
@@ -63,22 +83,8 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
             p.last_event_id.append(field_val[..copy_len]);
         }
     } else if field_name == "retry" {
-        var num: u32 = 0;
-        var valid_digits = field_val.len > 0;
-        for b in field_val {
-            if b >= '0' && b <= '9' {
-                let digit = (b - '0') as u32;
-                if num > (0xFFFFFFFF - digit) / 10 {
-                    num = 0xFFFFFFFF;
-                } else {
-                    num = num * 10 + digit;
-                }
-            } else {
-                valid_digits = false;
-                break;
-            }
-        }
-        if valid_digits {
+        let num, ok = parse_sse_retry(field_val);
+        if ok {
             p.retry_ms = num;
         }
     }
@@ -114,6 +120,8 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
 
             if out_events.len < out_events.cap {
                 out_events.push(ev);
+            } else {
+                return;
             }
 
             // Reset current event buffer, keep last_event_id and retry_ms
@@ -132,14 +140,7 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
     }
 
     // Find colon separating field name from value
-    var colon_pos: i64 = -1;
-    for i in line.len {
-        if line[i] == ':' {
-            colon_pos = i;
-            break;
-        }
-    }
-
+    let colon_pos = core::index_of_byte(line, ':');
     if colon_pos >= 0 {
         let field_name = line[..colon_pos];
         var val_start = colon_pos + 1;
@@ -192,52 +193,18 @@ fn sse_flush<E>(p: SseParser&, out_events: E&) {
 
 // ---- 3. SSE Serializer -----------------------------------------------------
 
-// Serializes an SSE event into standard wire format
-fn sse_format_event<B>(
-    out: B&,
-    event_type: const u8[:],
-    data: const u8[:],
-    id: const u8[:] = "",
-    retry_ms: u32 = 0,
-) {
-    if retry_ms > 0 {
-        out.append("retry: ");
-        format(out, retry_ms);
-        out.push('\n');
-    }
-    if id.len > 0 {
-        var clean_id_len: i64 = id.len;
-        for i in id.len {
-            if id[i] == '\r' || id[i] == '\n' {
-                clean_id_len = i;
-                break;
-            }
-        }
-        if clean_id_len > 0 {
-            out.append("id: ");
-            out.append(id[..clean_id_len]);
-            out.push('\n');
+fn sse_clean_token_len(s: const u8[:]) -> i64 {
+    for i in s.len {
+        if s[i] == '\r' || s[i] == '\n' {
+            return i;
         }
     }
-    if event_type.len > 0 {
-        var clean_ev_len: i64 = event_type.len;
-        for i in event_type.len {
-            if event_type[i] == '\r' || event_type[i] == '\n' {
-                clean_ev_len = i;
-                break;
-            }
-        }
-        let clean_ev = event_type[..clean_ev_len];
-        if clean_ev.len > 0 && clean_ev != "message" {
-            out.append("event: ");
-            out.append(clean_ev);
-            out.push('\n');
-        }
-    }
+    return s.len;
+}
 
-    // Split multi-line data into separate data: lines (handling LF, CRLF, and bare CR)
+fn sse_format_data_lines<B>(out: B&, data: const u8[:]) {
     var start: i64 = 0;
-    var i: i64 = 0;
+    var i:     i64 = 0;
     while i < data.len {
         if data[i] == '\r' || data[i] == '\n' {
             out.append("data: ");
@@ -256,17 +223,49 @@ fn sse_format_event<B>(
     out.append("data: ");
     out.append(data[start..]);
     out.push('\n');
+}
 
-    // Terminal newline to dispatch event
+// Serializes an SSE event into standard wire format
+fn sse_format_event<B>(
+    out:        B&,
+    event_type: const u8[:],
+    data:       const u8[:],
+    id:         const u8[:] = "",
+    retry_ms:   u32         = 0,
+) {
+    if retry_ms > 0 {
+        out.append("retry: ");
+        format(out, retry_ms);
+        out.push('\n');
+    }
+    if id.len > 0 {
+        let clean_id_len = sse_clean_token_len(id);
+        if clean_id_len > 0 {
+            out.append("id: ");
+            out.append(id[..clean_id_len]);
+            out.push('\n');
+        }
+    }
+    if event_type.len > 0 {
+        let clean_ev_len = sse_clean_token_len(event_type);
+        let clean_ev = event_type[..clean_ev_len];
+        if clean_ev.len > 0 && clean_ev != "message" {
+            out.append("event: ");
+            out.append(clean_ev);
+            out.push('\n');
+        }
+    }
+
+    sse_format_data_lines(out, data);
     out.push('\n');
 }
 
 // ---- 4. High-Level Ergonomic SSE Subscription ------------------------------
 
 struct SseSubscription {
-    parser: SseParser = SseParser { .. },
-    url: u8[..256] = [],
-    connected: bool = false,
+    parser:    SseParser = SseParser { .. },
+    url:       u8[..256] = [],
+    connected: bool      = false,
 }
 
 fn new_sse_subscription(url: const u8[:] = "") -> SseSubscription {
@@ -280,10 +279,10 @@ fn new_sse_subscription(url: const u8[:] = "") -> SseSubscription {
 
 // Formats HTTP/1.1 or H2/H3 GET headers for SSE subscription per W3C EventSource
 fn sse_build_request_headers<B>(
-    sub: const SseSubscription&,
+    sub:  const SseSubscription&,
     host: const u8[:],
     path: const u8[:],
-    out: B&,
+    out:  B&,
 ) {
     let eff_path = if path.len > 0 { path } else { "/" };
     out.append("GET ");

@@ -179,11 +179,21 @@ fn main() {
     // 13. SameSite Cross-Site Isolation
     print("\n--- 13. SameSite Isolation in Querying ---");
     // Cross-site subresource (is_same_site = false, is_top_level = false)
-    let strict_cross = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, false, false, true);
+    let strict_cross = jar.get(
+        "https://api.crypto-dex.io/v1/orders",
+        "auth_jwt",
+        now_us,
+        wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: false, is_safe_method: true },
+    );
     assert(strict_cross.len == 0, "SameSite=Strict cookie BLOCKED on cross-site subresource");
 
     // Same-site request
-    let strict_same = jar.get("https://api.crypto-dex.io/v1/orders", "auth_jwt", now_us, true, true, true);
+    let strict_same = jar.get(
+        "https://api.crypto-dex.io/v1/orders",
+        "auth_jwt",
+        now_us,
+        wing::CookieAccessOptions { is_same_site: true, is_top_level_navigation: true, is_safe_method: true },
+    );
     assert(strict_same == "secret_jwt_token_999", "SameSite=Strict cookie sent on same-site request");
 
     // 14. CHIPS (Partitioned Cookies) Isolation
@@ -198,11 +208,23 @@ fn main() {
     assert(chips_ingested, "CHIPS partitioned cookie ingested under site-a partition");
 
     // Visible from site-a
-    let val_site_a = jar.get("https://embed.partner-service.com/api", "__Host-embed_session", now_us, true, true, true, "https://site-a.com");
+    let val_site_a = jar.get(
+        "https://embed.partner-service.com/api",
+        "__Host-embed_session",
+        now_us,
+        wing::CookieAccessOptions { .. },
+        "https://site-a.com",
+    );
     assert(val_site_a == "token_abc", "Cookie visible under site-a partition");
 
     // Isolated from site-b
-    let val_site_b = jar.get("https://embed.partner-service.com/api", "__Host-embed_session", now_us, true, true, true, "https://site-b.com");
+    let val_site_b = jar.get(
+        "https://embed.partner-service.com/api",
+        "__Host-embed_session",
+        now_us,
+        wing::CookieAccessOptions { .. },
+        "https://site-b.com",
+    );
     assert(val_site_b.len == 0, "Cookie isolated and blocked under site-b partition");
 
     // 15. Polish & Edge Cases: SQLite V24 host_key, IPv6 URL, Server CTL, JSON Scheme Downgrade

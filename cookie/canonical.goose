@@ -11,42 +11,63 @@ import .policy;
 
 // ---- canonical cookie model ------------------------------------------------
 
+// Options for cookie request matching and same-site sendability.
+struct CookieAccessOptions {
+    is_same_site:            bool = true,
+    is_top_level_navigation: bool = true,
+    is_safe_method:          bool = true,
+}
+
+// Source options for cookie insertion and security validation.
+struct CookieSourceOptions {
+    is_http_api:   bool = true,
+    url_is_secure: bool = true,
+}
+
+// Context options for cookie frame and channel security.
+struct CookieInclusionOptions {
+    is_main_frame:     bool = true,
+    is_secure_channel: bool = true,
+}
+
 // Represents a validated HTTP cookie in memory or persistent storage.
 struct CanonicalCookie {
-    name: u8[..256] = [],
-    value: u8[..4096] = [],
-    encrypted_value: u8[..4096] = [],
-    domain: u8[..256] = [],
-    path: u8[..256] = "/",
-    creation_utc: i64 = 0,     // Microsecond UTC timestamp (immutable across overwrites)
-    last_access_utc: i64 = 0,  // Microsecond UTC timestamp (Least Recently Accessed key)
-    last_update_utc: i64 = 0,  // Microsecond UTC timestamp
-    expires_utc: i64 = 0,      // Microsecond UTC timestamp (capped at 400 days)
-    partition_key: u8[..256] = [], // Scheme + eTLD+1 (CHIPS top frame site key)
-    source_port: i32 = -1,     // 1..65535 or -1 (unset/unknown)
-    host_only: bool = true,
-    has_domain_attr: bool = false,
-    has_path_attr: bool = false,
-    persistent: bool = false,  // True if Max-Age or Expires was specified
-    secure: bool = false,
-    httponly: bool = false,
-    partitioned: bool = false,
-    same_site: CookieSameSite = CookieSameSite.Default,
-    priority: CookiePriority = CookiePriority.Medium,
-    source_scheme: CookieSourceScheme = CookieSourceScheme.Unset,
-    creation_seq: i64 = 0,
+    name:            u8[..256]          = [],
+    value:           u8[..4096]         = [],
+    encrypted_value: u8[..4096]         = [],
+    domain:          u8[..256]          = [],
+    path:            u8[..256]          = "/",
+    creation_utc:    i64                = 0, // Microsecond UTC timestamp (immutable across overwrites)
+    last_access_utc: i64                = 0, // Microsecond UTC timestamp (Least Recently Accessed key)
+    last_update_utc: i64                = 0, // Microsecond UTC timestamp
+    expires_utc:     i64                = 0, // Microsecond UTC timestamp (capped at 400 days)
+    partition_key:   u8[..256]          = [], // Scheme + eTLD+1 (CHIPS top frame site key)
+    source_port:     i32                = -1, // 1..65535 or -1 (unset/unknown)
+    host_only:       bool               = true,
+    has_domain_attr: bool               = false,
+    has_path_attr:   bool               = false,
+    persistent:      bool               = false, // True if Max-Age or Expires was specified
+    secure:          bool               = false,
+    httponly:        bool               = false,
+    partitioned:     bool               = false,
+    same_site:       CookieSameSite     = CookieSameSite.Default,
+    priority:        CookiePriority     = CookiePriority.Medium,
+    source_scheme:   CookieSourceScheme = CookieSourceScheme.Unset,
+    creation_seq:    i64                = 0,
 }
 
 // Constructs a CanonicalCookie, verifying that name and value do not exceed
 // 4096 bytes and contain no control characters (RFC 6265bis Section 5.5).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
-    if name.len <= new_cookie.name.cap {
-        new_cookie.name.append(name);
+    guard name.len <= new_cookie.name.cap else {
+        return new_cookie;
     }
-    if val.len <= new_cookie.value.cap {
-        new_cookie.value.append(val);
+    new_cookie.name.append(name);
+    guard val.len <= new_cookie.value.cap else {
+        return new_cookie;
     }
+    new_cookie.value.append(val);
     return new_cookie;
 }
 

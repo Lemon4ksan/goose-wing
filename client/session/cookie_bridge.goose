@@ -15,7 +15,7 @@ import client.client;
 
 // Computes the SameSite cookie context for a request hop.
 fn compute_hop_samesite_context(
-    ctx: const RequestExecutionContext&,
+    ctx:         const RequestExecutionContext&,
     current_url: const core::Url&,
     safe_method: bool,
 ) -> SameSiteCookieContext {
@@ -45,20 +45,20 @@ fn compute_hop_samesite_context(
     }
 
     return SameSiteCookieContext {
-        context_type: samesite_ctx_type,
-        schemefully_same: ctx.site_for_cookies.schemefully_same,
-        is_reload: ctx.is_reload,
+        context_type:       samesite_ctx_type,
+        schemefully_same:   ctx.site_for_cookies.schemefully_same,
+        is_reload:          ctx.is_reload,
         had_cross_site_hop: ctx.had_cross_site_hop,
     };
 }
 
 // Matches and attaches Cookie headers from the canonical jar to outbound request headers.
 fn prepare_hop_cookie_header(
-    session: Session&,
-    ctx: RequestExecutionContext&,
-    current_url: const core::Url&,
+    session:       Session&,
+    ctx:           RequestExecutionContext&,
+    current_url:   const core::Url&,
     samesite_eval: const SameSiteCookieContext&,
-    safe_method: bool,
+    safe_method:   bool,
 ) {
     var matched_cookies: CanonicalCookie[>..] = [];
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
@@ -67,14 +67,15 @@ fn prepare_hop_cookie_header(
         current_url.pathname(),
         current_url.scheme(),
         current_url.effective_port(),
-        is_sec_channel,
-        true,
+        CookieSourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
         "",
         session.virtual_clock_us,
         matched_cookies,
-        samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
-        ctx.is_main_frame,
-        safe_method,
+        CookieAccessOptions {
+            is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
+            is_top_level_navigation: ctx.is_main_frame,
+            is_safe_method:          safe_method,
+        },
     );
 
     remove_header_by_name(ctx.headers, "Cookie");
@@ -89,11 +90,11 @@ fn prepare_hop_cookie_header(
 
 // Ingests Set-Cookie headers from an incoming response hop into the canonical jar.
 fn ingest_hop_response_cookies(
-    session: Session&,
-    ctx: const RequestExecutionContext&,
-    current_url: const core::Url&,
+    session:       Session&,
+    ctx:           const RequestExecutionContext&,
+    current_url:   const core::Url&,
     samesite_eval: const SameSiteCookieContext&,
-    set_cookies: const u8[..256][..16]&,
+    set_cookies:   const u8[..256][..16]&,
 ) {
     for &set_cookie_str in set_cookies {
         var def_path: u8[..256] = [];
@@ -104,18 +105,23 @@ fn ingest_hop_response_cookies(
             def_path[..],
             session.virtual_clock_us,
         );
-        if cookie_ok {
-            let is_sec_channel = current_url.is_secure_scheme() ||
-                is_trustworthy_non_crypto_host(current_url.hostname());
-            let can_write, code = can_set_canonical_cookie_for_context(
-                parsed_cookie,
-                samesite_eval,
-                ctx.is_main_frame,
-                is_sec_channel,
-            );
-            if can_write {
-                session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us);
-            }
+        guard cookie_ok else {
+            continue;
         }
+        let is_sec_channel = current_url.is_secure_scheme() ||
+            is_trustworthy_non_crypto_host(current_url.hostname());
+        let opts = CookieInclusionOptions {
+            is_main_frame:     ctx.is_main_frame,
+            is_secure_channel: is_sec_channel,
+        };
+        let can_write, code = can_set_canonical_cookie_for_context(
+            parsed_cookie,
+            samesite_eval,
+            opts,
+        );
+        guard can_write else {
+            continue;
+        }
+        session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us);
     }
 }

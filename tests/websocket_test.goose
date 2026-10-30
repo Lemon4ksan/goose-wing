@@ -308,7 +308,7 @@ fn test_frameforge_r2_websocket(t: core::T&) {
     t.run("2. RFC 6455 §7.4.1 Early Fast-Fail on Oversized Declared Frame Header") { sub =>
         var ws = wing::new_websocket_session(true);
         wing::set_max_payload_length(ws, 512);
-        sub.assert_eq(wing::get_max_payload_length(ws), 512, "Max payload length configured to 512 bytes");
+        sub.assert_eq(ws.max_payload_length, 512, "Max payload length configured to 512 bytes");
 
         // Create a frame claiming 2048 bytes payload (16-bit extended length: 0x0800),
         // but providing only 4 header bytes on the wire.
@@ -496,7 +496,7 @@ fn test_frameforge_r2_websocket(t: core::T&) {
         // 5d: Inbound Close handshake and duplicate Close frame rejection
         var ws_srv = wing::new_websocket_session(false); // Server session expecting masked frames
         var client_close_frame: u8[..256] = [];
-        var close_body: u8[..64] = [];
+        var close_body:         u8[..64]  = [];
         wing::encode_close_payload(close_body, wing::WS_STATUS_NORMAL, "client close");
         let mask_k: u8[4] = [0x12, 0x34, 0x56, 0x78];
         wing::encode_ws_frame(client_close_frame, wing::WS_OPCODE_CLOSE, close_body[..], true, mask_k, true);
@@ -509,7 +509,7 @@ fn test_frameforge_r2_websocket(t: core::T&) {
         sub.assert_eq(v_close.opcode, wing::WS_OPCODE_CLOSE, "Opcode is CLOSE");
         sub.assert_eq(v_close.close_code, wing::WS_STATUS_NORMAL, "Close code 1000");
         sub.assert_true(ws_srv.is_closed, "Server session closed");
-        sub.assert_true(wing::is_close_received(ws_srv), "close_received flag is true");
+        sub.assert_true(ws_srv.close_received, "close_received flag is true");
         sub.assert_gt(r_close.len, 0, "Server generated Close response frame");
 
         // Duplicate peer Close frame reception
@@ -644,7 +644,7 @@ fn test_frameforge_r3_websocket(t: core::T&) {
         // Frag 2: 0xA6 (FIN=0, CONTINUATION)
         // Frag 3: 0x80 (FIN=1, CONTINUATION)
         var ws3 = wing::new_websocket_session(true);
-        var c1_body: u8[..8] = [0xF0, 0x9F];
+        var c1_body: u8[..8]  = [0xF0, 0x9F];
         var c1_wire: u8[..64] = [];
         wing::encode_ws_frame(c1_wire, wing::WS_OPCODE_TEXT, c1_body[..], false, no_mask, false);
         var vc1 = wing::WsMessageView { .. };
@@ -652,7 +652,7 @@ fn test_frameforge_r3_websocket(t: core::T&) {
         wing::receive_view(ws3, c1_wire[..], vc1, rc1);
         sub.assert_false(ws3.is_closed, "Frag 1 of 4-byte codepoint accepted");
 
-        var c2_body: u8[..8] = [0xA6];
+        var c2_body: u8[..8]  = [0xA6];
         var c2_wire: u8[..64] = [];
         wing::encode_ws_frame(c2_wire, wing::WS_OPCODE_CONTINUATION, c2_body[..], false, no_mask, false);
         var vc2 = wing::WsMessageView { .. };
@@ -660,7 +660,7 @@ fn test_frameforge_r3_websocket(t: core::T&) {
         wing::receive_view(ws3, c2_wire[..], vc2, rc2);
         sub.assert_false(ws3.is_closed, "Frag 2 of 4-byte codepoint accepted");
 
-        var c3_body: u8[..8] = [0x80];
+        var c3_body: u8[..8]  = [0x80];
         var c3_wire: u8[..64] = [];
         wing::encode_ws_frame(c3_wire, wing::WS_OPCODE_CONTINUATION, c3_body[..], false, no_mask, true);
         var vc3 = wing::WsMessageView { .. };
@@ -673,14 +673,14 @@ fn test_frameforge_r3_websocket(t: core::T&) {
 
         // 1d: Malformed split sequence: Fragment 1 has 0xC3, Fragment 2 has invalid continuation 0x20 (ASCII space)
         var ws4 = wing::new_websocket_session(true);
-        var bad1_body: u8[..8] = ['h', 'i', 0xC3];
+        var bad1_body: u8[..8]  = ['h', 'i', 0xC3];
         var bad1_wire: u8[..64] = [];
         wing::encode_ws_frame(bad1_wire, wing::WS_OPCODE_TEXT, bad1_body[..], false, no_mask, false);
         var vb1 = wing::WsMessageView { .. };
         var rb1: u8[..256] = [];
         wing::receive_view(ws4, bad1_wire[..], vb1, rb1);
 
-        var bad2_body: u8[..8] = [' ', 'x']; // 0x20 is not a valid UTF-8 continuation byte
+        var bad2_body: u8[..8]  = [' ', 'x']; // 0x20 is not a valid UTF-8 continuation byte
         var bad2_wire: u8[..64] = [];
         wing::encode_ws_frame(bad2_wire, wing::WS_OPCODE_CONTINUATION, bad2_body[..], false, no_mask, true);
         var vb2 = wing::WsMessageView { .. };
@@ -697,18 +697,28 @@ fn test_frameforge_r3_websocket(t: core::T&) {
     t.run("2. RFC 7692 Permessage-Deflate Sliding Window Context Takeover Boundaries") { sub =>
         // 2a: Session context takeover negotiation configuration
         var ws_c = wing::new_websocket_session(true); // client
-        wing::enable_permessage_deflate(ws_c, wing::WS_COMPRESS_SHARED_COMPRESSOR, true, true);
+        wing::enable_permessage_deflate(
+            ws_c,
+            wing::WS_COMPRESS_SHARED_COMPRESSOR,
+            wing::WsContextTakeoverOptions { server_no_context: true, client_no_context: true },
+        );
         sub.assert_true(wing::ws_should_reset_compressor(ws_c), "Client with client_no_context_takeover resets compressor");
         sub.assert_true(wing::ws_should_reset_decompressor(ws_c), "Client with server_no_context_takeover resets decompressor");
 
         // Allow context takeover on client compressor (persistent sliding dictionary)
-        wing::set_context_takeover(ws_c, false, false);
+        wing::set_context_takeover(
+            ws_c,
+            wing::WsContextTakeoverOptions { server_no_context: false, client_no_context: false },
+        );
         sub.assert_false(wing::ws_should_reset_compressor(ws_c), "Compressor retains sliding window when client takeover allowed");
         sub.assert_false(wing::ws_should_reset_decompressor(ws_c), "Decompressor retains sliding window when server takeover allowed");
 
         // Server session configuration
         var ws_s = wing::new_websocket_session(false); // server
-        wing::set_context_takeover(ws_s, false, true); // server retains, client resets
+        wing::set_context_takeover(
+            ws_s,
+            wing::WsContextTakeoverOptions { server_no_context: false, client_no_context: true },
+        ); // server retains, client resets
         sub.assert_false(wing::ws_should_reset_compressor(ws_s), "Server compressor retains window when server_no_context=false");
         sub.assert_true(wing::ws_should_reset_decompressor(ws_s), "Server decompressor resets window when client_no_context=true");
 
@@ -1113,10 +1123,10 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
     t.run("3. Small, Medium (16-bit) and Large (64-bit) Frame Headers") { sub =>
         // Small frame (<= 125 bytes)
         let hdr_small = wing::WsFrameHeader {
-            fin: true,
-            opcode: wing::WS_OPCODE_TEXT,
-            masked: true,
-            mask_key: [0x12, 0x34, 0x56, 0x78],
+            fin:         true,
+            opcode:      wing::WS_OPCODE_TEXT,
+            masked:      true,
+            mask_key:    [0x12, 0x34, 0x56, 0x78],
             payload_len: 42,
             ..
         };
@@ -1132,9 +1142,9 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         // Medium frame (126..65535 bytes)
         let hdr_med = wing::WsFrameHeader {
-            fin: true,
-            opcode: wing::WS_OPCODE_BINARY,
-            masked: false,
+            fin:         true,
+            opcode:      wing::WS_OPCODE_BINARY,
+            masked:      false,
             payload_len: 1000,
             ..
         };
@@ -1148,9 +1158,9 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
 
         // Large frame (> 65535 bytes)
         let hdr_lg = wing::WsFrameHeader {
-            fin: true,
-            opcode: wing::WS_OPCODE_BINARY,
-            masked: false,
+            fin:         true,
+            opcode:      wing::WS_OPCODE_BINARY,
+            masked:      false,
             payload_len: 100000,
             ..
         };

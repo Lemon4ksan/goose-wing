@@ -10,8 +10,8 @@ import wing from "..";
 // Tests for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 
 struct PrefixVector {
-    header: const u8[:],
-    url: const u8[:],
+    header:    const u8[:],
+    url:       const u8[:],
     from_http: bool,
     expect_ok: bool,
 }
@@ -180,7 +180,8 @@ fn test_layered_prefixes_table(t: core::T&) {
         var c = wing::parse_canonical_set_cookie(row.header, u.host[..], u.path[..], clock.now_us);
         c.source_scheme = if u.is_secure { wing::CookieSourceScheme.Secure } else { wing::CookieSourceScheme.NonSecure };
         c.source_port = u.port;
-        let ok = wing::set_canonical_cookie(jar, c, row.from_http, u.is_secure, clock.now_us);
+        let src_opts = wing::CookieSourceOptions { is_http_api: row.from_http, url_is_secure: u.is_secure };
+        let ok = wing::set_canonical_cookie(jar, c, src_opts, clock.now_us);
         sub.assert_eq(ok, row.expect_ok, row.header);
     };
 }
@@ -200,9 +201,7 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
     var out_119: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_119,
-        false, // is_same_site = false (cross-site)
-        true,  // is_top_level_nav = true
-        false, // is_safe_method = false (POST)
+        wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: true, is_safe_method: false },
     );
     t.assert_eq(out_119.len, 1, "at t=119s Lax+POST window must allow cross-site top-level POST");
 
@@ -211,14 +210,14 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
     var out_121_post: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_post,
-        false, true, false,
+        wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: true, is_safe_method: false },
     );
     t.assert_eq(out_121_post.len, 0, "at t=121s Lax+POST window expired for unsafe POST");
 
     var out_121_get: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_get,
-        false, true, true,
+        wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: true, is_safe_method: true },
     );
     t.assert_eq(out_121_get.len, 1, "at t=121s safe top-level GET is still allowed under Lax");
 
@@ -379,20 +378,20 @@ fn test_header_sorting_and_persistence_key(t: core::T&) {
 // Test vectors for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 
 struct IngestionVector {
-    id: const u8[:],
-    url: const u8[:],
-    set_cookie: const u8[:],
-    from_http: bool,
-    expect_accepted: bool,
-    expect_name: const u8[:],
-    expect_val: const u8[:],
-    expect_domain: const u8[:],
-    expect_path: const u8[:],
-    expect_host_only: bool,
-    expect_secure: bool,
-    expect_httponly: bool,
+    id:                const u8[:],
+    url:               const u8[:],
+    set_cookie:        const u8[:],
+    from_http:         bool,
+    expect_accepted:   bool,
+    expect_name:       const u8[:],
+    expect_val:        const u8[:],
+    expect_domain:     const u8[:],
+    expect_path:       const u8[:],
+    expect_host_only:  bool,
+    expect_secure:     bool,
+    expect_httponly:   bool,
     expect_persistent: bool,
-    expect_port: i32,
+    expect_port:       i32,
 }
 
 // ----------------------------------------------------------------------------
@@ -403,223 +402,223 @@ fn run_ingestion_matrix(t: core::T&) {
     let vectors = [
         // --- LEX & OMNOMNOM ---
         IngestionVector {
-            id: "LEX-10 (WPT 0004 nameless value)",
-            url: "https://example.com/", set_cookie: "foo", from_http: true,
-            expect_accepted: true, expect_name: "", expect_val: "foo",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "LEX-10 (WPT 0004 nameless value)",
+            url:               "https://example.com/", set_cookie: "foo", from_http: true,
+            expect_accepted:   true, expect_name: "", expect_val: "foo",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-11 (WPT 0004 nameless value with spaces and Secure)",
-            url: "https://example.com/", set_cookie: "foo ; Secure", from_http: true,
-            expect_accepted: true, expect_name: "", expect_val: "foo",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: true, expect_httponly: false,
+            id:                "LEX-11 (WPT 0004 nameless value with spaces and Secure)",
+            url:               "https://example.com/", set_cookie: "foo ; Secure", from_http: true,
+            expect_accepted:   true, expect_name: "", expect_val: "foo",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: true, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-12 (WPT 0020 empty '=' rejected)",
-            url: "https://example.com/", set_cookie: "   =   ", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "LEX-12 (WPT 0020 empty '=' rejected)",
+            url:               "https://example.com/", set_cookie: "   =   ", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-13 (Multiple '=' in value and path)",
-            url: "https://example.com/", set_cookie: "k=v1=v2=v3; Path=/a=b", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v1=v2=v3",
-            expect_domain: "example.com", expect_path: "/a=b",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "LEX-13 (Multiple '=' in value and path)",
+            url:               "https://example.com/", set_cookie: "k=v1=v2=v3; Path=/a=b", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v1=v2=v3",
+            expect_domain:     "example.com", expect_path: "/a=b",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-14 (HTAB and SP trimming around tokens)",
-            url: "https://example.com/", set_cookie: "\t key \t = \t val \t ; \t HttpOnly \t", from_http: true,
-            expect_accepted: true, expect_name: "key", expect_val: "val",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: true,
+            id:                "LEX-14 (HTAB and SP trimming around tokens)",
+            url:               "https://example.com/", set_cookie: "\t key \t = \t val \t ; \t HttpOnly \t", from_http: true,
+            expect_accepted:   true, expect_name: "key", expect_val: "val",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: true,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-15 (Semicolon inside DQUOTE splits pair; unclosed quote rejected per RFC 6265 В§4.1.1)",
-            url: "https://example.com/", set_cookie: "k=\"quoted;val\"", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "LEX-15 (Semicolon inside DQUOTE splits pair; unclosed quote rejected per RFC 6265 В§4.1.1)",
+            url:               "https://example.com/", set_cookie: "k=\"quoted;val\"", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-16 (DQUOTE preserved in cookie value)",
-            url: "https://example.com/", set_cookie: "k=\"hello_world\"", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "\"hello_world\"",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "LEX-16 (DQUOTE preserved in cookie value)",
+            url:               "https://example.com/", set_cookie: "k=\"hello_world\"", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "\"hello_world\"",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-17 (Duplicate Path attribute: last wins)",
-            url: "https://example.com/", set_cookie: "k=v; Path=/first; PATH=/second", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/second",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "LEX-17 (Duplicate Path attribute: last wins)",
+            url:               "https://example.com/", set_cookie: "k=v; Path=/first; PATH=/second", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/second",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
 
         // --- DATES & CALENDAR BOUNDARIES ---
         IngestionVector {
-            id: "TIME-01 (Canonical RFC 1123 date)",
-            url: "https://example.com/", set_cookie: "k=v; Expires=Wed, 21 Oct 2026 07:28:00 GMT", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "TIME-01 (Canonical RFC 1123 date)",
+            url:               "https://example.com/", set_cookie: "k=v; Expires=Wed, 21 Oct 2026 07:28:00 GMT", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: true, expect_port: 443,
         },
         IngestionVector {
-            id: "TIME-07 (Year 1600 < 1601 falls back to session cookie)",
-            url: "https://example.com/", set_cookie: "k=v; Expires=Sun, 31 Dec 1600 23:59:59 GMT", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "TIME-07 (Year 1600 < 1601 falls back to session cookie)",
+            url:               "https://example.com/", set_cookie: "k=v; Expires=Sun, 31 Dec 1600 23:59:59 GMT", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "TIME-08 (Invalid day 32 falls back to session cookie)",
-            url: "https://example.com/", set_cookie: "k=v; Expires=32 Jan 2027 00:00:00 GMT", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "TIME-08 (Invalid day 32 falls back to session cookie)",
+            url:               "https://example.com/", set_cookie: "k=v; Expires=32 Jan 2027 00:00:00 GMT", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "TIME-13 (Max-Age=100 overrides past Expires=1970)",
-            url: "https://example.com/", set_cookie: "k=v; Max-Age=100; Expires=Thu, 01 Jan 1970 00:00:00 GMT", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "TIME-13 (Max-Age=100 overrides past Expires=1970)",
+            url:               "https://example.com/", set_cookie: "k=v; Max-Age=100; Expires=Thu, 01 Jan 1970 00:00:00 GMT", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: true, expect_port: 443,
         },
         IngestionVector {
-            id: "TIME-15 (Non-digit Max-Age=100abc ignored -> session)",
-            url: "https://example.com/", set_cookie: "k=v; Max-Age=100abc", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "TIME-15 (Non-digit Max-Age=100abc ignored -> session)",
+            url:               "https://example.com/", set_cookie: "k=v; Max-Age=100abc", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
 
         // --- DOMAIN, PSL, IPv4 & IPv6 ---
         IngestionVector {
-            id: "DOM-01 (No Domain attribute -> host-only)",
-            url: "https://sub.example.com/", set_cookie: "k=v", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "sub.example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-01 (No Domain attribute -> host-only)",
+            url:               "https://sub.example.com/", set_cookie: "k=v", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "sub.example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-02 (Domain attribute present -> not host-only)",
-            url: "https://sub.example.com/", set_cookie: "k=v; Domain=sub.example.com", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "sub.example.com", expect_path: "/",
-            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            id:                "DOM-02 (Domain attribute present -> not host-only)",
+            url:               "https://sub.example.com/", set_cookie: "k=v; Domain=sub.example.com", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "sub.example.com", expect_path: "/",
+            expect_host_only:  false, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-03 (Multiple leading dots Domain=..example.com ignored -> host-only)",
-            url: "https://sub.example.com/", set_cookie: "k=v; Domain=..example.com", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "sub.example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-03 (Multiple leading dots Domain=..example.com ignored -> host-only)",
+            url:               "https://sub.example.com/", set_cookie: "k=v; Domain=..example.com", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "sub.example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-05 (Empty Domain= ignored -> host-only)",
-            url: "https://example.com/", set_cookie: "k=v; Domain=", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "example.com", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-05 (Empty Domain= ignored -> host-only)",
+            url:               "https://example.com/", set_cookie: "k=v; Domain=", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "example.com", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-06 (PSL supercookie co.uk rejected)",
-            url: "https://app.co.uk/", set_cookie: "k=v; Domain=co.uk", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            id:                "DOM-06 (PSL supercookie co.uk rejected)",
+            url:               "https://app.co.uk/", set_cookie: "k=v; Domain=co.uk", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  false, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-07 (Direct request to PSL co.uk forces host_only=true)",
-            url: "https://co.uk/", set_cookie: "k=v; Domain=co.uk", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "co.uk", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-07 (Direct request to PSL co.uk forces host_only=true)",
+            url:               "https://co.uk/", set_cookie: "k=v; Domain=co.uk", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "co.uk", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-08 (Parent domain cannot set child subdomain)",
-            url: "https://example.com/", set_cookie: "k=v; Domain=sub.example.com", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            id:                "DOM-08 (Parent domain cannot set child subdomain)",
+            url:               "https://example.com/", set_cookie: "k=v; Domain=sub.example.com", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  false, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-09 (Suffix without dot boundary: notexample.com -> example.com)",
-            url: "https://notexample.com/", set_cookie: "k=v; Domain=example.com", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            id:                "DOM-09 (Suffix without dot boundary: notexample.com -> example.com)",
+            url:               "https://notexample.com/", set_cookie: "k=v; Domain=example.com", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  false, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "DOM-10 (CVE-2016-8615 IPv4 partial suffix rejected)",
-            url: "http://192.168.1.100/", set_cookie: "k=v; Domain=1.100", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            id:                "DOM-10 (CVE-2016-8615 IPv4 partial suffix rejected)",
+            url:               "http://192.168.1.100/", set_cookie: "k=v; Domain=1.100", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  false, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 80,
         },
         IngestionVector {
-            id: "DOM-11 (IPv4 exact match accepted as host-only)",
-            url: "http://192.168.1.100/", set_cookie: "k=v; Domain=192.168.1.100", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "192.168.1.100", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-11 (IPv4 exact match accepted as host-only)",
+            url:               "http://192.168.1.100/", set_cookie: "k=v; Domain=192.168.1.100", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "192.168.1.100", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 80,
         },
         IngestionVector {
-            id: "DOM-12 & PATH-06 (IPv6 bracketed literal + query string slash)",
-            url: "http://[::1]:8080/a/b?redirect=/x/y/z", set_cookie: "k=v", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "::1", expect_path: "/a",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-12 & PATH-06 (IPv6 bracketed literal + query string slash)",
+            url:               "http://[::1]:8080/a/b?redirect=/x/y/z", set_cookie: "k=v", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "::1", expect_path: "/a",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 8080,
         },
         IngestionVector {
-            id: "DOM-13 (Intranet single-label host forces host_only=true)",
-            url: "http://intranet-server/", set_cookie: "k=v; Domain=intranet-server", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "v",
-            expect_domain: "intranet-server", expect_path: "/",
-            expect_host_only: true, expect_secure: false, expect_httponly: false,
+            id:                "DOM-13 (Intranet single-label host forces host_only=true)",
+            url:               "http://intranet-server/", set_cookie: "k=v; Domain=intranet-server", from_http: true,
+            expect_accepted:   true, expect_name: "k", expect_val: "v",
+            expect_domain:     "intranet-server", expect_path: "/",
+            expect_host_only:  true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 80,
         },
         IngestionVector {
-            id: "SHAD-01 (Cookie Crumbles: nameless cookie simulating __Host- rejected)",
-            url: "http://sub.example.com/", set_cookie: "=__Host-sid=attacker_val; Domain=example.com", from_http: true,
-            expect_accepted: false, expect_name: "", expect_val: "",
-            expect_domain: "", expect_path: "",
-            expect_host_only: false, expect_secure: false, expect_httponly: false,
+            id:                "SHAD-01 (Cookie Crumbles: nameless cookie simulating __Host- rejected)",
+            url:               "http://sub.example.com/", set_cookie: "=__Host-sid=attacker_val; Domain=example.com", from_http: true,
+            expect_accepted:   false, expect_name: "", expect_val: "",
+            expect_domain:     "", expect_path: "",
+            expect_host_only:  false, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 80,
         },
         IngestionVector {
-            id: "OBC-03 (Trustworthy localhost:80 with Secure upgrades port to 443)",
-            url: "http://127.0.0.1:80/login", set_cookie: "__Host-s=1; Secure; Path=/", from_http: true,
-            expect_accepted: true, expect_name: "__Host-s", expect_val: "1",
-            expect_domain: "127.0.0.1", expect_path: "/",
-            expect_host_only: true, expect_secure: true, expect_httponly: false,
+            id:                "OBC-03 (Trustworthy localhost:80 with Secure upgrades port to 443)",
+            url:               "http://127.0.0.1:80/login", set_cookie: "__Host-s=1; Secure; Path=/", from_http: true,
+            expect_accepted:   true, expect_name: "__Host-s", expect_val: "1",
+            expect_domain:     "127.0.0.1", expect_path: "/",
+            expect_host_only:  true, expect_secure: true, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },
     ];
@@ -671,8 +670,8 @@ fn run_exhaustive_ctl_sweep(t: core::T&) {
 // 3. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules
 // ----------------------------------------------------------------------------
 struct PathMatchVector {
-    id: const u8[:],
-    cookie_path: const u8[:],
+    id:           const u8[:],
+    cookie_path:  const u8[:],
     request_path: const u8[:],
     expect_match: bool,
 }
@@ -721,13 +720,13 @@ fn run_path_matching_matrix(t: core::T&) {
 // 4. SameSite, Lax+POST 120s Window & Schemeful Same-Site (SS-01..SS-14)
 // ----------------------------------------------------------------------------
 struct SameSiteVector {
-    id: const u8[:],
-    samesite_mode: wing::CookieSameSite,
-    age_sec: i64,
-    is_same_site: bool,
+    id:               const u8[:],
+    samesite_mode:    wing::CookieSameSite,
+    age_sec:          i64,
+    is_same_site:     bool,
     is_top_level_nav: bool,
-    is_safe_method: bool,
-    expect_send: bool,
+    is_safe_method:   bool,
+    expect_send:      bool,
 }
 
 fn run_samesite_and_redirect_matrix(t: core::T&) {
@@ -752,7 +751,13 @@ fn run_samesite_and_redirect_matrix(t: core::T&) {
         c.creation_utc = create_us;
 
         let got = wing::is_cookie_sendable_for_samesite(
-            c, v.is_same_site, v.is_top_level_nav, v.is_safe_method, now_us,
+            c,
+            wing::CookieAccessOptions {
+                is_same_site:            v.is_same_site,
+                is_top_level_navigation: v.is_top_level_nav,
+                is_safe_method:          v.is_safe_method,
+            },
+            now_us,
         );
         sub.assert_eq(got, v.expect_send, v.id);
     };
@@ -799,7 +804,8 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
         c.source_scheme = wing::CookieSourceScheme.Secure;
         c.source_port = 443;
         let step_time = core::advance_sec(clock, 10);
-        t.require_true(wing::set_canonical_cookie(jar, c, true, true, step_time));
+        let src_opts = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+        t.require_true(wing::set_canonical_cookie(jar, c, src_opts, step_time));
     }
     t.assert_eq(jar.cookies.len, 5, "5 partitioned cookies (10,000 B total) must fit in 10,240 B quota");
 
@@ -812,7 +818,8 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
     c_other_part.partition_key.append("https://shop.com");
     c_other_part.source_scheme = wing::CookieSourceScheme.Secure;
     c_other_part.source_port = 443;
-    t.require_true(wing::set_canonical_cookie(jar, c_other_part, true, true, core::advance_sec(clock, 10)));
+    let src_opts_other = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+    t.require_true(wing::set_canonical_cookie(jar, c_other_part, src_opts_other, core::advance_sec(clock, 10)));
     t.assert_eq(jar.cookies.len, 6, "other partition must have an independent 10,240 B quota");
 
     // Add 6th cookie into first partition "https://news.com" of size 500 B (10,000 + 500 = 10,500 > 10,240)
@@ -826,7 +833,8 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
     c_overflow.partition_key.append("https://news.com");
     c_overflow.source_scheme = wing::CookieSourceScheme.Secure;
     c_overflow.source_port = 443;
-    t.require_true(wing::set_canonical_cookie(jar, c_overflow, true, true, core::advance_sec(clock, 10)));
+    let src_opts_overflow = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+    t.require_true(wing::set_canonical_cookie(jar, c_overflow, src_opts_overflow, core::advance_sec(clock, 10)));
 
     // Oldest cookie "p00" from partition "https://news.com" must be evicted
     var p00_found = false;
@@ -952,7 +960,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
         c_dom.host_only = false;
 
         var sql_host: u8[..512] = [];
-        var sql_dom: u8[..512] = [];
+        var sql_dom:  u8[..512] = [];
         wing::generate_sqlite_insert_sql(c_host, sql_host);
         wing::generate_sqlite_insert_sql(c_dom, sql_dom);
 
@@ -1188,7 +1196,8 @@ fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
     corrupt_cookie.domain.append("example.com");
     corrupt_cookie.path.clear();
     corrupt_cookie.path.append("/");
-    let corrupt_inserted = wing::set_canonical_cookie(jar, corrupt_cookie, true, true, now_us);
+    let src_opts_corrupt = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+    let corrupt_inserted = wing::set_canonical_cookie(jar, corrupt_cookie, src_opts_corrupt, now_us);
     t.assert_false(corrupt_inserted, "CTL-08: Cookie with CTL byte %x01 rejected upon loading/insertion");
 }
 
@@ -1347,13 +1356,13 @@ fn test_psl_rule_types_and_precedence(t: core::T&) {
 fn test_psl_dynamic_update_and_scoping(t: core::T&) {
     t.run("Case 1: Dynamic update_with_list parsing") { sub =>
         var db = wing::PslDatabase { rules: [] };
-        let initial_count = wing::count_rules(db);
+        let initial_count = db.rules.len;
         sub.assert_eq(initial_count, 0, "empty db initially");
 
         let psl_text = "// ===BEGIN ICANN DOMAINS===\ncom\nco.uk\n*.sch.uk\n!special.sch.uk\n\n// ===BEGIN PRIVATE DOMAINS===\ninternal.corp\n";
 
         wing::update_with_list(db, psl_text);
-        sub.assert_eq(wing::count_rules(db), 5, "5 rules parsed");
+        sub.assert_eq(db.rules.len, 5, "5 rules parsed");
 
         // Verify normal
         sub.assert_true(wing::is_public_suffix(db, "com"), "com is public suffix");
@@ -2067,7 +2076,8 @@ fn test_case_insensitive_prefix_enforcement(t: core::T&) {
     t.run("PREFIX-06: Nameless cookie with lowercase prefix value must be rejected") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
         var cookie = wing::new_canonical_cookie("", "__secure-val");
-        let ok = wing::set_canonical_cookie(jar, cookie, true, true, clock.now_us);
+        let src_opts = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+        let ok = wing::set_canonical_cookie(jar, cookie, src_opts, clock.now_us);
         sub.assert_false(ok, "Nameless cookie starting with lowercase security prefix must be rejected");
         sub.assert_eq(jar.cookies.len, 0);
     };
@@ -2146,7 +2156,8 @@ fn test_httponly_script_overwrite_protection(t: core::T&) {
         // 2. Non-HTTP script API attempts to overwrite the HttpOnly cookie (e.g. via document.cookie)
         var script_cookie = wing::new_canonical_cookie("session", "attacker_controlled_value");
         script_cookie.with_domain("example.com", true).with_path("/").with_secure(true);
-        let accepted = wing::set_canonical_cookie(jar, script_cookie, false, true, clock.now_us);
+        let src_opts1 = wing::CookieSourceOptions { is_http_api: false, url_is_secure: true };
+        let accepted = wing::set_canonical_cookie(jar, script_cookie, src_opts1, clock.now_us);
 
         sub.assert_false(accepted, "Non-HTTP API must NOT be allowed to overwrite an existing HttpOnly cookie");
         sub.assert_eq(jar.cookies.len, 1, "Cookie store must retain exactly 1 cookie");
@@ -2165,7 +2176,8 @@ fn test_httponly_script_overwrite_protection(t: core::T&) {
         // Script attempts to purge the HttpOnly cookie using Max-Age=0
         var purge_cookie = wing::new_canonical_cookie("auth", "deleted");
         purge_cookie.with_domain("example.com", true).with_path("/").with_secure(true).with_max_age_seconds(0, clock.now_us);
-        let accepted = wing::set_canonical_cookie(jar, purge_cookie, false, true, clock.now_us);
+        let src_opts2 = wing::CookieSourceOptions { is_http_api: false, url_is_secure: true };
+        let accepted = wing::set_canonical_cookie(jar, purge_cookie, src_opts2, clock.now_us);
 
         sub.assert_false(accepted, "Non-HTTP API must NOT be allowed to delete an HttpOnly cookie via expired overwrite");
         sub.assert_eq(jar.cookies.len, 1, "HttpOnly cookie must not be deleted by script API");
@@ -2240,7 +2252,8 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
         // 2. Cookie updated at t2 with new value and unset port (source_port = -1)
         var update_cookie = wing::new_canonical_cookie("session", "updated_val");
         update_cookie.with_domain("example.com", true).with_path("/").with_secure(true);
-        let ok2 = wing::set_canonical_cookie(jar, update_cookie, true, true, t2);
+        let src_opts_u1 = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+        let ok2 = wing::set_canonical_cookie(jar, update_cookie, src_opts_u1, t2);
 
         sub.assert_true(ok2, "Update must succeed");
         sub.assert_eq(jar.cookies.len, 1, "Cookie store must contain exactly 1 cookie after update");
@@ -2259,7 +2272,8 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
 
         var update_cookie = wing::new_canonical_cookie("auth", "val2");
         update_cookie.with_domain("EXAMPLE.COM", true).with_path("/").with_secure(true);
-        let ok2 = wing::set_canonical_cookie(jar, update_cookie, true, true, t2);
+        let src_opts_u2 = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
+        let ok2 = wing::set_canonical_cookie(jar, update_cookie, src_opts_u2, t2);
 
         sub.assert_true(ok2);
         sub.assert_eq(jar.cookies.len, 1, "Must recognize collision across case-different domain");

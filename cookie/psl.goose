@@ -22,9 +22,9 @@ enum PslSection {
 }
 
 struct PslRule {
-    pattern: u8[..64] = [],
+    pattern:   u8[..64]    = [],
     rule_type: PslRuleType = PslRuleType.Normal,
-    section: PslSection = PslSection.Icann,
+    section:   PslSection  = PslSection.Icann,
 }
 
 struct PslDatabase {
@@ -50,10 +50,6 @@ fn add_psl_rule(db: PslDatabase&, pattern: const u8[:], rule_type: PslRuleType, 
 
 fn clear_psl_rules(db: PslDatabase&) {
     db.rules.clear();
-}
-
-fn count_rules(db: const PslDatabase&) -> i64 {
-    return db.rules.len;
 }
 
 fn new_psl_database() -> PslDatabase {
@@ -163,13 +159,13 @@ fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_
 
 fn psl_find_best_rule(db: const PslDatabase&, norm: const u8[:], out_start: i64&, out_sec: PslSection&) -> bool {
     var best_labels: i32 = 0;
-    var best_start: i64 = 0;
+    var best_start:  i64 = 0;
     var best_sec = PslSection.Icann;
     var found = false;
 
     for &rule in db.rules {
         var start_idx: i64 = 0;
-        var labels: i32 = 0;
+        var labels:    i32 = 0;
         var matched = false;
 
         if rule.rule_type == PslRuleType.Normal {
@@ -221,6 +217,7 @@ fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -
     var best_sec = PslSection.Icann;
     if psl_find_best_rule(db, norm, best_start, best_sec) {
         if best_start < 0 || best_start > norm.len {
+            out.clear();
             return false, false;
         }
         out.append(norm[best_start..]);
@@ -235,6 +232,7 @@ fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -
         tld_start = next_dot;
     }
     if tld_start < 0 || tld_start > norm.len {
+        out.clear();
         return false, false;
     }
     out.append(norm[tld_start..]);
@@ -280,6 +278,10 @@ fn psl_find_registrable_start(clean_host: const u8[:], suffix_len: i64) -> i64 {
 }
 
 // Extracts the effective top-level domain plus one (eTLD+1 / registrable domain) using database.
+//
+// Example:
+//   host = "sub.example.co.uk"
+//   out = "example.co.uk"
 fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) {
     out.clear();
     var norm_buf: u8[..256] = [];
@@ -377,6 +379,11 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
 
 // ---- runtime updatable psl database ----------------------------------------
 
+// Parses a Public Suffix List rule line into a PslRule.
+//
+// Example:
+//   line = "*.co.uk", sec = PslSection.Icann
+//   returns: true, out_rule.pattern = "co.uk"
 fn parse_psl_rule_line(line: const u8[:], sec: PslSection, out_rule: PslRule&) -> bool {
     guard line.len > 0 && !(line.len >= 2 && line[0] == '/' && line[1] == '/') else { return false; }
     var is_exc = false;

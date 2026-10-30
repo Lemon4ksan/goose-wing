@@ -15,6 +15,7 @@ enum CookieSameSite {
     Lax,     // Permitted for top-level safe navigations (GET/HEAD)
     Strict,  // Only sent in same-site contexts
     None,    // Permitted cross-site, strictly requires Secure flag
+    Unknown,
 }
 
 // Canonical string representation of same_site_mode.
@@ -24,15 +25,20 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
         Lax => "Lax",
         Strict => "Strict",
         None => "None",
+        Unknown => "Unknown",
     };
 }
 
-// Parses a SameSite attribute value case-insensitively, defaulting to CookieSameSite.Default (RFC 6265bis Section 5.4.7).
+// Parses a SameSite attribute value case-insensitively (RFC 6265bis Section 5.4.7).
+//
+// Example:
+//   raw_val = "Strict"
+//   returns: CookieSameSite.Strict
 fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
     if core::eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
     if core::eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
     if core::eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
-    return CookieSameSite.Default;
+    return CookieSameSite.Unknown;
 }
 
 // ---- priority enumeration --------------------------------------------------
@@ -42,6 +48,7 @@ enum CookiePriority {
     Low,
     Medium, // Default priority (COOKIE_PRIORITY_DEFAULT)
     High,
+    Unknown,
 }
 
 // Canonical string representation of priority_level.
@@ -50,14 +57,19 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
         Low => "Low",
         Medium => "Medium",
         High => "High",
+        Unknown => "Unknown",
     };
 }
 
-// Parses a Priority attribute value case-insensitively, defaulting to CookiePriority.Medium.
+// Parses a Priority attribute value case-insensitively.
+//
+// Example:
+//   raw_val = "high"
+//   returns: CookiePriority.High
 fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
     if core::eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
     if core::eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
-    return CookiePriority.Medium;
+    return CookiePriority.Unknown;
 }
 
 // ---- source scheme enumeration ---------------------------------------------
@@ -67,6 +79,7 @@ enum CookieSourceScheme {
     Unset,
     NonSecure,
     Secure,
+    Unknown,
 }
 
 // Canonical string representation of source_scheme.
@@ -75,14 +88,19 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
         Unset => "Unset",
         NonSecure => "NonSecure",
         Secure => "Secure",
+        Unknown => "Unknown",
     };
 }
 
-// Parses a serialized source scheme string case-insensitively, defaulting to CookieSourceScheme.Unset.
+// Parses a serialized source scheme string case-insensitively.
+//
+// Example:
+//   raw_val = "secure"
+//   returns: CookieSourceScheme.Secure
 fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
     if core::eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
     if core::eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
-    return CookieSourceScheme.Unset;
+    return CookieSourceScheme.Unknown;
 }
 
 // ---- deletion cause enumeration --------------------------------------------

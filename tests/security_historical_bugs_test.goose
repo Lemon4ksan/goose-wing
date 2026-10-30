@@ -141,7 +141,7 @@ fn test_uwebsockets_1876_control_priority_under_backpressure(t: core::T&) {
         // Saturate backpressure buffer
         let st1 = wing::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);
         sub.assert_true(st1 == wing::WsSendStatus.Backpressure || st1 == wing::WsSendStatus.Success, "Initial send succeeds or backpressures");
-        sub.assert_true(wing::is_backpressured(ws), "Socket is backpressured");
+        sub.assert_true(ws.is_backpressured, "Socket is backpressured");
 
         // Subsequent data message exceeding threshold is dropped
         var dropped_wire: u8[>..] = [];

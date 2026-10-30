@@ -32,9 +32,9 @@ fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
 
 // Rewrites source_port and source_scheme for local loopback origins (Chromium OBC).
 fn adjust_origin_bound_cookies_on_insert(
-    cookie_ref: CanonicalCookie&,
-    host: const u8[:],
-    port: i32,
+    cookie_ref:        CanonicalCookie&,
+    host:              const u8[:],
+    port:              i32,
     is_secure_channel: bool,
 ) {
     if is_secure_channel {
@@ -67,8 +67,7 @@ fn validate_script_cookie_name(name: const u8[:]) -> bool {
 // __Http-, __Host-Http-), Partitioned attributes, and SameSite=None (RFC 6265bis Section 5.6).
 fn validate_canonical_cookie_security(
     cookie_val: const CanonicalCookie&,
-    is_secure_channel: bool,
-    is_http_api: bool,
+    opts:       CookieSourceOptions = CookieSourceOptions { .. },
 ) -> bool {
     let cookie_name = cookie_val.name[..];
 
@@ -81,7 +80,7 @@ fn validate_canonical_cookie_security(
     }
 
     // Non-HTTP API restrictions
-    if !is_http_api {
+    if !opts.is_http_api {
         if cookie_val.httponly { return false; } // Script cannot set HttpOnly
         if !validate_script_cookie_name(cookie_name) { return false; }
     }
@@ -90,7 +89,7 @@ fn validate_canonical_cookie_security(
     if cookie_val.same_site == CookieSameSite.None && !cookie_val.secure { return false; }
     if cookie_val.partitioned && !cookie_val.secure { return false; }
 
-    return validate_security_cookie_prefixes(cookie_val, cookie_name, is_secure_channel, is_http_api);
+    return validate_security_cookie_prefixes(cookie_val, cookie_name, opts);
 }
 
 // ---- schemeful same-site engine --------------------------------------------
@@ -113,32 +112,31 @@ fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: con
 // Whether a cookie is sendable in the given request context (RFC 6265bis).
 fn is_cookie_sendable_for_samesite(
     cookie_val: const CanonicalCookie&,
-    is_same_site: bool,
-    is_top_level_navigation: bool,
-    is_safe_method: bool,
-    now_us: i64,
+    access:     CookieAccessOptions,
+    now_us:     i64,
 ) -> bool {
-    if is_same_site {
+    if access.is_same_site {
         return true;
     }
 
     // Cross-site subresources (fetch, img, iframe) block all SameSite cookies except None
-    if !is_top_level_navigation {
+    if !access.is_top_level_navigation {
         return cookie_val.same_site == CookieSameSite.None;
     }
 
     // Top-level cross-site navigation
     return match cookie_val.same_site {
         Strict => false,
-        Lax => is_safe_method,
+        Lax => access.is_safe_method,
         None => true,
         Default => {
-            if is_safe_method {
+            if access.is_safe_method {
                 true
             } else {
                 is_in_lax_allowing_unsafe_window(cookie_val, now_us)
             }
         },
+        Unknown => false,
     };
 }
 
@@ -146,13 +144,14 @@ fn is_cookie_sendable_for_samesite(
 fn is_cookie_sendable_for_obc(
     cookie_val: const CanonicalCookie&,
     req_scheme: const u8[:],
-    req_port: i32,
-    host: const u8[:] = "",
+    req_port:   i32,
+    host:       const u8[:] = "",
 ) -> bool {
     let is_trustworthy = host.len > 0 && is_trustworthy_non_crypto_host(host);
 
     // Scheme check: Secure cookies require secure request scheme (or trustworthy non-crypto origin)
-    if cookie_val.source_scheme == CookieSourceScheme.Secure && !core::eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
+    if cookie_val.source_scheme == CookieSourceScheme.Secure
+        && !core::eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
         return false;
     }
 
@@ -172,10 +171,9 @@ fn is_cookie_sendable_for_obc(
 // ---- internal implementation helpers ---------------------------------------
 
 fn validate_security_cookie_prefixes(
-    cookie_val: const CanonicalCookie&,
+    cookie_val:  const CanonicalCookie&,
     cookie_name: const u8[:],
-    is_secure_channel: bool,
-    is_http_api: bool,
+    opts:        CookieSourceOptions,
 ) -> bool {
     // Nameless cookies cannot have values starting with security prefixes
     if cookie_name.len == 0 {
@@ -190,20 +188,20 @@ fn validate_security_cookie_prefixes(
 
     // Prefix: __Host-Http- (draft-ietf-httpbis-layered-cookies, check before __Host- / __Http-)
     if starts_with_fold(cookie_name, "__host-http-") {
-        if !is_http_api { return false; }
-        if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
+        if !opts.is_http_api { return false; }
+        if !cookie_val.secure || !opts.url_is_secure || !cookie_val.httponly { return false; }
         if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
     } else if starts_with_fold(cookie_name, "__host-") {
         // Prefix: __Host-
-        if !cookie_val.secure || !is_secure_channel { return false; }
+        if !cookie_val.secure || !opts.url_is_secure { return false; }
         if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
     } else if starts_with_fold(cookie_name, "__http-") {
         // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
-        if !is_http_api { return false; }
-        if !cookie_val.secure || !is_secure_channel || !cookie_val.httponly { return false; }
+        if !opts.is_http_api { return false; }
+        if !cookie_val.secure || !opts.url_is_secure || !cookie_val.httponly { return false; }
     } else if starts_with_fold(cookie_name, "__secure-") {
         // Prefix: __Secure-
-        if !cookie_val.secure || !is_secure_channel { return false; }
+        if !cookie_val.secure || !opts.url_is_secure { return false; }
     }
 
     return true;
@@ -212,10 +210,10 @@ fn validate_security_cookie_prefixes(
 // ---- site for cookies and navigation context -------------------------------
 
 struct SiteForCookies {
-    scheme: u8[..16] = [],
+    scheme:             u8[..16]  = [],
     registrable_domain: u8[..128] = [],
-    schemefully_same: bool = true,
-    is_null: bool = false,
+    schemefully_same:   bool      = true,
+    is_null:            bool      = false,
 }
 
 fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
@@ -270,9 +268,9 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
 
 // Computes SiteForCookies evaluating the full ancestor chain (RFC 6265bis Section 5.2.1 / CTX-01, CTX-02)
 fn compute_site_for_cookies_with_ancestors(
-    top_url: const u8[:],
+    top_url:       const u8[:],
     ancestor_urls: const u8[:][:],
-    is_sandboxed: bool = false,
+    is_sandboxed:  bool = false,
 ) -> SiteForCookies {
     if is_sandboxed || starts_with(top_url, "data:") || starts_with(top_url, "about:") {
         return null_site_for_cookies();
@@ -308,18 +306,18 @@ fn is_request_same_site(site: const SiteForCookies&, req_url: const u8[:]) -> bo
 
 // ---- Chromium net::CookieInclusionStatus codes -----------------------------
 
-let EXCLUDE_UNKNOWN: i64 = 0;
-let EXCLUDE_SAMESITE_STRICT: i64 = 1;
-let EXCLUDE_SAMESITE_LAX: i64 = 2;
-let EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX: i64 = 3;
-let EXCLUDE_SAMESITE_NONE_INSECURE: i64 = 4;
-let EXCLUDE_NONCOOKIEABLE_SCHEME: i64 = 5;
-let EXCLUDE_SECURE_ONLY: i64 = 6;
-let EXCLUDE_HTTP_ONLY: i64 = 7;
-let EXCLUDE_DOMAIN_MISMATCH: i64 = 8;
-let EXCLUDE_NOT_ON_PATH: i64 = 9;
-let EXCLUDE_FAILURE_TO_STORE: i64 = 10;
-let WARN_SAMESITE_LAX_ALLOWING_UNSAFE: i64 = 11;
+let EXCLUDE_UNKNOWN:                                      i64 = 0;
+let EXCLUDE_SAMESITE_STRICT:                              i64 = 1;
+let EXCLUDE_SAMESITE_LAX:                                 i64 = 2;
+let EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX:          i64 = 3;
+let EXCLUDE_SAMESITE_NONE_INSECURE:                       i64 = 4;
+let EXCLUDE_NONCOOKIEABLE_SCHEME:                         i64 = 5;
+let EXCLUDE_SECURE_ONLY:                                  i64 = 6;
+let EXCLUDE_HTTP_ONLY:                                    i64 = 7;
+let EXCLUDE_DOMAIN_MISMATCH:                              i64 = 8;
+let EXCLUDE_NOT_ON_PATH:                                  i64 = 9;
+let EXCLUDE_FAILURE_TO_STORE:                             i64 = 10;
+let WARN_SAMESITE_LAX_ALLOWING_UNSAFE:                    i64 = 11;
 let WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION: i64 = 12;
 
 // ---- FirstPartyURLPolicy and IsolationInfo ---------------------------------
@@ -337,10 +335,10 @@ enum SameSiteContextType {
 }
 
 struct SameSiteCookieContext {
-    context_type: SameSiteContextType = SameSiteContextType.CrossSite,
-    schemefully_same: bool = true,
-    is_reload: bool = false,
-    had_cross_site_hop: bool = false,
+    context_type:       SameSiteContextType = SameSiteContextType.CrossSite,
+    schemefully_same:   bool                = true,
+    is_reload:          bool                = false,
+    had_cross_site_hop: bool                = false,
 }
 
 fn new_samesite_context(ctx_type: SameSiteContextType) -> SameSiteCookieContext {
@@ -349,22 +347,22 @@ fn new_samesite_context(ctx_type: SameSiteContextType) -> SameSiteCookieContext 
 
 fn can_set_canonical_cookie_for_context(
     cookie_val: const CanonicalCookie&,
-    context: const SameSiteCookieContext&,
-    is_main_frame: bool,
-    is_secure_channel: bool,
+    context:    const SameSiteCookieContext&,
+    opts:       CookieInclusionOptions = CookieInclusionOptions { .. },
 ) -> bool, i64 {
     // Cross-site subresources or non-main frame navigations cannot set SameSite cookies
-    if !is_main_frame && context.context_type == SameSiteContextType.CrossSite {
+    if !opts.is_main_frame && context.context_type == SameSiteContextType.CrossSite {
         match cookie_val.same_site {
             Strict => { return false, EXCLUDE_SAMESITE_STRICT; },
             Lax => { return false, EXCLUDE_SAMESITE_LAX; },
             Default => { return false, EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX; },
             None => {
-                if !is_secure_channel { return false, EXCLUDE_SAMESITE_NONE_INSECURE; }
+                if !opts.is_secure_channel { return false, EXCLUDE_SAMESITE_NONE_INSECURE; }
             },
+            Unknown => { return false, EXCLUDE_UNKNOWN; },
         };
     }
-    if cookie_val.same_site == CookieSameSite.None && !is_secure_channel {
+    if cookie_val.same_site == CookieSameSite.None && !opts.is_secure_channel {
         return false, EXCLUDE_SAMESITE_NONE_INSECURE;
     }
     return true, EXCLUDE_UNKNOWN;
