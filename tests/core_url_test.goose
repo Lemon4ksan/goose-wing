@@ -487,7 +487,7 @@ fn test_whatwg_audit_fixes(t: core::T&) {
     };
 
     t.run("5.1 & 5.3: Base URL Without Authority & InvalidScheme Rejection") { sub =>
-        // 5.1: Base URL without authority (custom:/root) does not panic on relative resolution
+        // 5.1: Base URL without authority (custom:/root) resolves relative path safely
         let base_no_auth, err_base = core::parse_url("custom:/root");
         sub.assert_true(base_no_auth.valid, "base without authority valid");
         let rel_resolved, err_rel = core::parse_url_with_base("leaf", base_no_auth);
