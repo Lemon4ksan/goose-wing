@@ -1690,6 +1690,9 @@ fn handle_connection_wire_pipelined_stream<B>(
     var total_handled: i64 = 0;
     var total_consumed: i64 = 0;
 
+    var req = new_request("GET", "");
+    var res = Response { .. };
+
     while stream.len > 0 {
         // Strip optional benign CRLFs between pipelined requests (RFC 9112 §2.2)
         while stream.len > 0 && (stream[0] == '\r' || stream[0] == '\n') {
@@ -1698,7 +1701,7 @@ fn handle_connection_wire_pipelined_stream<B>(
         }
         if stream.len == 0 { break; }
 
-        var req = new_request("GET", "");
+        reset_request(req);
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
         guard ok_parse && consumed > 0 else {
             var keep_stream = false;
@@ -1725,7 +1728,7 @@ fn handle_connection_wire_pipelined_stream<B>(
             }
         }
 
-        var res = Response { .. };
+        reset_response(res);
         if server.fast_path {
             dispatch_fast_path_route(server.pipeline.router, req, res);
         } else {
@@ -1829,9 +1832,12 @@ fn handle_connection_pipe<B>(
         }
     }
 
+    var req = new_request("GET", "");
+    var res = Response { .. };
+
     while pipe.readable_len() > 0 {
         let stream = core::readable_slice(pipe);
-        var req = new_request("GET", "");
+        reset_request(req);
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
         if !ok_parse || consumed <= 0 {
@@ -1851,7 +1857,7 @@ fn handle_connection_pipe<B>(
             }
         }
 
-        var res = Response { .. };
+        reset_response(res);
         if server.fast_path {
             dispatch_fast_path_route(server.pipeline.router, req, res);
         } else {
