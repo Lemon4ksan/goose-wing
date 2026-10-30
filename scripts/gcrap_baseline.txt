@@ -1789,6 +1789,9 @@ net/tcp.goose 845 wing::tcp_set_incoming_cpu 0.01 0 0.85
 net/tcp.goose 859 wing::init_free_slots 60.05 0 0.85
 net/tcp.goose 869 wing::pop_free_slot 60.01 0 0.85
 net/tcp.goose 878 wing::push_free_slot 30.01 0 0.85
+net/tcp.goose 895 wing::clear_backpressure_slot 0.00 0 0.85
+net/tcp.goose 907 wing::buffer_backpressure 0.03 0 0.85
+net/tcp.goose 924 wing::drain_backpressure 105.12 0 0.85
 net/tick_timer.goose 25 wing::new_tick_timer_wheel 0.00 0 0.85
 net/tick_timer.goose 35 wing::tick_timer_arm 45.01 0 0.85
 net/tick_timer.goose 41 wing::tick_timer_disarm 0.00 0 0.85
