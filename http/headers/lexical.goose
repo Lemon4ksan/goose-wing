@@ -414,3 +414,68 @@ fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
     }
     return false;
 }
+
+// Scans header field name characters up to ':' or whitespace, validating RFC 9110 tchars.
+// Returns consumed length up to delimiter, and ok = true if valid and stopped at ':'.
+//
+// Example:
+//   src = "Host: example.com\r\n"
+//   returns: 4, ok = true (points to ':')
+fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
+    guard src.len > 0 else { return 0, false; }
+    var i: i64 = 0;
+    while i + 8 <= src.len {
+        let w = swar_pack_u64_le(src, i);
+        if swar_has_byte(w, ':') || swar_has_ctl_or_del(w) || swar_has_byte(w, ' ') {
+            break;
+        }
+        for k in 8 {
+            guard is_tchar(src[i + k]) else { return 0, false; }
+        }
+        i += 8;
+    }
+    while i < src.len {
+        let b = src[i];
+        if b == ':' {
+            guard i > 0 else { return 0, false; }
+            return i, true;
+        }
+        guard is_tchar(b) else { return 0, false; }
+        i++;
+    }
+    return 0, false;
+}
+
+// Scans header field value characters up to CRLF or LF, validating RFC 9110 field values.
+// Returns (consumed_val_len, crlf_len, ok).
+//
+// Example:
+//   src = "example.com\r\nNext: val"
+//   returns: 11, 2, ok = true
+fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
+    var i: i64 = 0;
+    while i + 8 <= src.len {
+        let w = swar_pack_u64_le(src, i);
+        if swar_has_byte(w, '\r') || swar_has_byte(w, '\n') || swar_has_ctl_or_del(w) {
+            break;
+        }
+        i += 8;
+    }
+    while i < src.len {
+        let b = src[i];
+        if b == '\r' {
+            guard i + 1 < src.len && src[i + 1] == '\n' else { return 0, 0, false; }
+            return i, 2, true;
+        }
+        if b == '\n' {
+            return i, 1, true;
+        }
+        if b < 0x20 {
+            guard b == 0x09 else { return 0, 0, false; }
+        } else if b == 0x7F {
+            return 0, 0, false;
+        }
+        i++;
+    }
+    return 0, 0, false;
+}

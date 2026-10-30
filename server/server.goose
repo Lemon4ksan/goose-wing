@@ -170,7 +170,52 @@ fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     return true;
 }
 
+// Parses a single wire header line using single-pass SWAR scanning and tchar validation.
+// Advances `cursor` past the trailing CRLF delimiter.
+//
+// Example:
+//   rest_headers = "Host: example.com\r\n\r\n", cursor = 0
+//   returns: ok = true, cursor = 19 (points to final CRLF)
+fn parse_http1_wire_header_line<Req>(
+    rest_headers: const u8[:],
+    cursor: i64&,
+    presence_tracker: HeaderPresenceTracker&,
+    out_req: Req&,
+) -> bool {
+    // Single-pass SWAR header name scanning & RFC 9110 tchar validation
+    let name_len, ok_name = scan_header_field_name_swar(rest_headers[cursor..]);
+    guard ok_name && name_len > 0 else { return false; }
+    let hname = rest_headers[cursor..(cursor + name_len)];
+
+    // Single-pass SWAR header value scanning & CTL/CRLF detection
+    let val_slice = rest_headers[(cursor + name_len + 1)..];
+    let val_len, crlf_len, ok_val = scan_header_field_value_swar(val_slice);
+    guard ok_val else { return false; }
+    let hval = trim_lws(val_slice[..val_len]);
+
+    // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
+    let cur_hdr_idx = out_req.headers.len as i16;
+    guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
+        return false;
+    }
+
+    var item = HeaderItem { .. };
+    guard hname.len <= item.name.cap && hval.len <= item.value.cap else {
+        return false;
+    }
+    item.name.append(hname);
+    item.value.append(hval);
+    guard out_req.headers.len < out_req.headers.cap else {
+        return false;
+    }
+    out_req.headers.push(item);
+    add_header(out_req.bloom_filter, hname);
+    cursor += name_len + 1 + val_len + crlf_len;
+    return true;
+}
+
 // Parses raw HTTP/1.x header lines into HeaderItem entries and tracks presence bitmask.
+// Uses single-pass SWAR scanning for header name, delimiter, value, and CTL validation.
 //
 // Example:
 //   rest_headers = "Host: localhost\r\nUser-Agent: test\r\n\r\n"
@@ -182,35 +227,17 @@ fn parse_http1_headers_stream<Req>(
 ) -> bool {
     var cursor: i64 = 0;
     while cursor < rest_headers.len {
-        let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
-        if rel_end <= 0 { break; }
-
-        let line = rest_headers[cursor..(cursor + rel_end)];
-        let colon = core::index_of_byte(line, ':');
-        guard colon > 0 else { return false; }
-        let hname = line[..colon];
-        guard is_valid_header_name(hname) else { return false; }
-
-        let hval = trim_lws(line[(colon + 1)..]);
-        guard is_valid_header_value(hval) else { return false; }
-
-        let cur_hdr_idx = out_req.headers.len as i16;
-        guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
-            return false;
+        // Empty line reached (RFC 9112 Section 2.1)
+        if rest_headers[cursor] == '\r' && cursor + 1 < rest_headers.len && rest_headers[cursor + 1] == '\n' {
+            break;
+        }
+        if rest_headers[cursor] == '\n' {
+            break;
         }
 
-        var item = HeaderItem { .. };
-        guard hname.len <= item.name.cap && hval.len <= item.value.cap else {
+        guard parse_http1_wire_header_line(rest_headers, cursor, presence_tracker, out_req) else {
             return false;
         }
-        item.name.append(hname);
-        item.value.append(hval);
-        guard out_req.headers.len < out_req.headers.cap else {
-            return false;
-        }
-        out_req.headers.push(item);
-        add_header(out_req.bloom_filter, hname);
-        cursor += rel_end + 2;
     }
     return true;
 }
