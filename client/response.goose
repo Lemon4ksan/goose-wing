@@ -59,6 +59,23 @@ struct Response {
     body: u8[>..] = [],
 }
 
+fn reset_response(res: Response&) {
+    res.status_code = 200;
+    res.effective_url.clear();
+    res.headers.clear();
+    res.trailers.clear();
+    res.presence_mask = 0;
+    res.redirect_count = 0;
+    res.url_chain.clear();
+    res.final_method.clear();
+    res.final_method.append("GET");
+    res.protocol.clear();
+    res.protocol.append("HTTP/1.1");
+    res.sent_headers.clear();
+    res.set_cookies.clear();
+    res.body.clear();
+}
+
 fn protocol(res: const Response&) -> const u8[:] {
     return res.protocol[..];
 }

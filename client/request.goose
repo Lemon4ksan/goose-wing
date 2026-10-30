@@ -65,6 +65,28 @@ fn write_json_field(out: u8[>..]&, val_bool: bool) {
 
 // ---- request factories -----------------------------------------------------
 
+fn reset_request(req: Request&) {
+    req.method.clear();
+    req.method.append("GET");
+    req.url.clear();
+    req.headers.clear();
+    req.bloom_filter.clear();
+    req.trailers.clear();
+    req.query_params.clear();
+    req.rewind_buf.clear();
+    req.body.clear();
+    req.timeout = 0;
+    req.rewindable = true;
+    req.body_consumed = false;
+    req.cors_mode = false;
+    req.tainted_origin = false;
+    req.is_main_frame = true;
+    req.is_reload = false;
+    req.has_initiator = false;
+    req.has_site_for_cookies = false;
+    req.is_http10 = false;
+}
+
 fn new_request(method: const u8[:], url: const u8[:]) -> Request {
     var req = Request { .. };
     req.method.clear();
