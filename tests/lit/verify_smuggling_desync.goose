@@ -110,7 +110,7 @@ fn main() {
     var srv_te_cl = wing::new_http_server();
     var out_wire1: u8[..4096] = [];
     let payload_te_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n0\r\n\r\n";
-    let _, _, ok1 = wing::handle_connection_wire_pipelined_stream(srv_te_cl, "127.0.0.1", payload_te_cl, 0, out_wire1);
+    let _, _, ok1, _ = wing::handle_connection_wire_pipelined_stream(srv_te_cl, "127.0.0.1", payload_te_cl, 0, out_wire1);
     assert(!ok1);
     assert(core::index_of_slice(out_wire1[..], "400 Bad Request") >= 0);
     print("PIPELINE_TE_CL_SMUGGLE: REJECTED");
@@ -119,7 +119,7 @@ fn main() {
     var srv_cl_te = wing::new_http_server();
     var out_wire2: u8[..4096] = [];
     let payload_cl_te = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
-    let _, _, ok2 = wing::handle_connection_wire_pipelined_stream(srv_cl_te, "127.0.0.1", payload_cl_te, 0, out_wire2);
+    let _, _, ok2, _ = wing::handle_connection_wire_pipelined_stream(srv_cl_te, "127.0.0.1", payload_cl_te, 0, out_wire2);
     assert(!ok2);
     assert(core::index_of_slice(out_wire2[..], "400 Bad Request") >= 0);
     print("PIPELINE_CL_TE_SMUGGLE: REJECTED");
@@ -128,7 +128,7 @@ fn main() {
     var srv_cl_cl = wing::new_http_server();
     var out_wire3: u8[..4096] = [];
     let payload_cl_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\nContent-Length: 60\r\n\r\nhello";
-    let _, _, ok3 = wing::handle_connection_wire_pipelined_stream(srv_cl_cl, "127.0.0.1", payload_cl_cl, 0, out_wire3);
+    let _, _, ok3, _ = wing::handle_connection_wire_pipelined_stream(srv_cl_cl, "127.0.0.1", payload_cl_cl, 0, out_wire3);
     assert(!ok3);
     assert(core::index_of_slice(out_wire3[..], "400 Bad Request") >= 0);
     print("PIPELINE_DUP_CL_DIFF: REJECTED");

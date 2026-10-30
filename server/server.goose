@@ -1674,14 +1674,14 @@ fn handle_pipelined_parse_failure<B>(
 }
 
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
-// Returns (total_requests_processed, total_bytes_consumed, ok).
+// Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
 fn handle_connection_wire_pipelined_stream<B>(
     server: HttpServer&,
     client_ip: const u8[:],
     wire_in: const u8[:],
     now_ns: u64,
     wire_out: B&,
-) -> i64, i64, bool {
+) -> i64, i64, bool, bool {
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
@@ -1689,6 +1689,7 @@ fn handle_connection_wire_pipelined_stream<B>(
     var stream = wire_in;
     var total_handled: i64 = 0;
     var total_consumed: i64 = 0;
+    var conn_wants_close: bool = false;
 
     var req = new_request("GET", "");
     var res = Response { .. };
@@ -1712,19 +1713,16 @@ fn handle_connection_wire_pipelined_stream<B>(
                 wire_out,
                 keep_stream,
             );
-            return total_handled, total_consumed, keep_stream;
+            return total_handled, total_consumed, keep_stream, true;
         }
 
         // WebSocket Upgrade Interception on Pipelined Stream
         if is_websocket_upgrade_request(req) {
             let ws_idx = find_ws_route(server, req.url[..]);
-            if ws_idx >= 0 {
-                let ok_upg = complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
-                if ok_upg {
-                    total_handled++;
-                    total_consumed += consumed;
-                    return total_handled, total_consumed, true;
-                }
+            if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
+                total_handled++;
+                total_consumed += consumed;
+                return total_handled, total_consumed, true, false;
             }
         }
 
@@ -1737,6 +1735,9 @@ fn handle_connection_wire_pipelined_stream<B>(
         }
 
         let wants_close = check_and_apply_connection_close(req, res);
+        if wants_close {
+            conn_wants_close = true;
+        }
 
         serialize_http1_response(res, server.server_name[..], wire_out);
         server.requests_processed++;
@@ -1746,6 +1747,7 @@ fn handle_connection_wire_pipelined_stream<B>(
         // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT or Connection: close
         if req.method[..] == "CONNECT" {
             total_consumed = wire_in.len;
+            conn_wants_close = true;
             break;
         }
 
@@ -1756,7 +1758,7 @@ fn handle_connection_wire_pipelined_stream<B>(
         stream = stream[consumed..];
     }
 
-    return total_handled, total_consumed, true;
+    return total_handled, total_consumed, true, conn_wants_close;
 }
 
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests (RFC 9112 Section 9.3).
@@ -1768,7 +1770,7 @@ fn handle_connection_wire_pipelined<B>(
     now_ns: u64,
     wire_out: B&,
 ) -> i64, bool {
-    let count, _, ok = handle_connection_wire_pipelined_stream(server, client_ip, wire_in, now_ns, wire_out);
+    let count, _, ok, _ = handle_connection_wire_pipelined_stream(server, client_ip, wire_in, now_ns, wire_out);
     return count, ok;
 }
 
@@ -2124,11 +2126,11 @@ fn reactor_handle_ingress(
 
     cork_wire.clear();
     let now_ns = core::as_nanos(core::monotonic_now());
-    let count, consumed, ok = handle_connection_wire_pipelined_stream(
+    let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
         server, "127.0.0.1", chunk[..], now_ns, cork_wire,
     );
 
-    let should_close = !ok || core::contains_fold(cork_wire[..], "connection: close");
+    let should_close = !ok || wants_close;
     if cork_wire.len > 0 {
         let sent = tcp_send(conn, cork_wire[..]);
         if sent <= 0 || should_close {

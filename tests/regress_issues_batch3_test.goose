@@ -821,8 +821,9 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: core::T&) {
         wire_in.append("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\nGET /smuggled HTTP/1.1\r\nHost: example.com\r\n\r\n");
 
         var wire_out: u8[..1024] = [];
-        let count, total_consumed, ok = wing::handle_connection_wire_pipelined_stream(server, "127.0.0.1", wire_in[..], 1000, wire_out);
+        let count, total_consumed, ok, wants_close = wing::handle_connection_wire_pipelined_stream(server, "127.0.0.1", wire_in[..], 1000, wire_out);
         sub.assert_true(ok, "CONNECT request handled");
+        sub.assert_true(wants_close, "CONNECT request must set wants_close");
         sub.assert_eq(count, 1, "Only the CONNECT request was processed");
         sub.assert_eq(total_consumed, wire_in.len, "All post-CONNECT tunnel bytes consumed to prevent HTTP/1 pipelining smuggling");
         sub.assert_true(core::contains(wire_out[..], "connection: close") || core::contains(wire_out[..], "Connection: close"), "CONNECT response must contain Connection: close");
