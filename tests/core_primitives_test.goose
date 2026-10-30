@@ -1131,7 +1131,7 @@ fn test_prng_and_lemire_range(t: core::T&) {
     };
 
     t.run("Xoroshiro64StarStar Generation") { sub =>
-        var rng = core::new_xoroshiro64(123456);
+        var rng = core::new_xoroshiro64_star_star(123456);
         let a = core::next_u32(rng);
         let b = core::next_u32(rng);
         sub.assert_ne(a, b, "Xoroshiro64 steps state");

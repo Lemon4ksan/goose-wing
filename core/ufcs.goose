@@ -69,7 +69,6 @@ fn ::is_zero(time_val: core::Time) -> bool { return core::is_zero(time_val); }
 fn ::add(time_val: core::Time, dur: core::Duration) -> core::Time { return core::add(time_val, dur); }
 fn ::sub(time_val: core::Time, other_time: core::Time) -> core::Duration { return core::sub(time_val, other_time); }
 fn ::sub(time_val: core::Time, dur: core::Duration) -> core::Time { return core::sub(time_val, dur); }
-fn ::sub_duration(time_val: core::Time, dur: core::Duration) -> core::Time { return core::sub_duration(time_val, dur); }
 fn ::since(time_val: core::Time) -> core::Duration { return core::since(time_val); }
 fn ::until(time_val: core::Time) -> core::Duration { return core::until(time_val); }
 fn ::equal(time_val: core::Time, other_time: core::Time) -> bool { return core::equal(time_val, other_time); }

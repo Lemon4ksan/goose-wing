@@ -64,14 +64,14 @@ enum MuxEvent {
 
 // Generic in-order reassembler item.
 struct ReassemblerItem {
-    seq_id: i64 = 0,
-    data: u8[..256] = [],
+    seq_id: i64       = 0,
+    data:   u8[..256] = [],
 }
 
 // In-Order stream reassembly buffer for Fan-Out parallel worker pipelines.
 struct Reassembler {
-    next_expected_seq: i64 = 0,
-    stash: ReassemblerItem[>..<] = [],
+    next_expected_seq: i64                   = 0,
+    stash:             ReassemblerItem[>..<] = [],
 }
 
 fn new_reassembler(initial_seq: i64 = 0) -> Reassembler {
@@ -96,5 +96,6 @@ fn pop_next_in_order(r: Reassembler&) -> ReassemblerItem, bool {
 }
 
 fn pending_count(r: const Reassembler&) -> i64 {
+    guard r.stash.len >= 0 else { return 0; }
     return r.stash.len;
 }

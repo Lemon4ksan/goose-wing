@@ -12,8 +12,8 @@ import os;
 // Represents an absolute instant in time with an explicit timezone offset.
 // Monotonic time is strictly separated into Stopwatch and Deadline.
 struct Time {
-    wall_sec: i64 = 0,    // Seconds elapsed since Unix epoch 1970-01-01 00:00:00 UTC.
-    nsec: i32 = 0,        // Subsecond fractional nanoseconds in range [0, 999_999_999].
+    wall_sec:  i64 = 0,   // Seconds elapsed since Unix epoch 1970-01-01 00:00:00 UTC.
+    nsec:      i32 = 0,   // Subsecond fractional nanoseconds in range [0, 999_999_999].
     tz_offset: i32 = 0,   // Seconds east of UTC (e.g. +10800 for UTC+3, -18000 for UTC-5; 0 = UTC).
 }
 
@@ -22,8 +22,8 @@ fn now() -> Time {
     let sec = wall_ns / 1000000000;
     let nsec = (wall_ns % 1000000000) as i32;
     return Time {
-        wall_sec: sec,
-        nsec: nsec,
+        wall_sec:  sec,
+        nsec:      nsec,
         tz_offset: 0,
     };
 }
@@ -50,8 +50,8 @@ fn unix(secs_count: i64, nano_count: i64 = 0) -> Time {
         }
     }
     return Time {
-        wall_sec: sec_val,
-        nsec: nsec_val as i32,
+        wall_sec:  sec_val,
+        nsec:      nsec_val as i32,
         tz_offset: 0,
     };
 }
@@ -68,7 +68,16 @@ fn unix_nano(nanos_count: i64) -> Time {
     return unix(nanos_count / 1000000000, nanos_count % 1000000000);
 }
 
-fn date(year_val: i64, month_val: Month, day_val: i64, hour_val: i64 = 0, min_val: i64 = 0, sec_val: i64 = 0, nsec_val: i64 = 0, tz_offset: i32 = 0) -> Time {
+fn date(
+    year_val:  i64,
+    month_val: Month,
+    day_val:   i64,
+    hour_val:  i64 = 0,
+    min_val:   i64 = 0,
+    sec_val:   i64 = 0,
+    nsec_val:  i64 = 0,
+    tz_offset: i32 = 0,
+) -> Time {
     let days_count = civil_to_days(year_val, month_number(month_val), day_val);
     let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val - tz_offset;
     var result_time = unix(total_secs, nsec_val);
@@ -76,7 +85,16 @@ fn date(year_val: i64, month_val: Month, day_val: i64, hour_val: i64 = 0, min_va
     return result_time;
 }
 
-fn date(year_val: i64, month_num: i64, day_val: i64, hour_val: i64 = 0, min_val: i64 = 0, sec_val: i64 = 0, nsec_val: i64 = 0, tz_offset: i32 = 0) -> Time {
+fn date(
+    year_val:  i64,
+    month_num: i64,
+    day_val:   i64,
+    hour_val:  i64 = 0,
+    min_val:   i64 = 0,
+    sec_val:   i64 = 0,
+    nsec_val:  i64 = 0,
+    tz_offset: i32 = 0,
+) -> Time {
     return date(year_val, month_from_number(month_num), day_val, hour_val, min_val, sec_val, nsec_val, tz_offset);
 }
 
@@ -97,7 +115,10 @@ fn civil_parts(time_val: Time) -> i64, i64, i64, i64, i64, i64 {
 }
 
 fn year(time_val: Time) -> i64 { let year_val, _, _, _, _, _ = civil_parts(time_val); return year_val; }
-fn month(time_val: Time) -> Month { let _, month_val, _, _, _, _ = civil_parts(time_val); return month_from_number(month_val); }
+fn month(time_val: Time) -> Month {
+    let _, month_val, _, _, _, _ = civil_parts(time_val);
+    return month_from_number(month_val);
+}
 fn month_number(time_val: Time) -> i64 { let _, month_val, _, _, _, _ = civil_parts(time_val); return month_val; }
 fn day(time_val: Time) -> i64 { let _, _, day_val, _, _, _ = civil_parts(time_val); return day_val; }
 fn weekday(time_val: Time) -> Weekday {
@@ -140,8 +161,8 @@ fn add(time_val: Time, dur: Duration) -> Time {
         nsec_val += 1000000000;
     }
     return Time {
-        wall_sec: sec_val,
-        nsec: nsec_val as i32,
+        wall_sec:  sec_val,
+        nsec:      nsec_val as i32,
         tz_offset: time_val.tz_offset,
     };
 }
@@ -173,14 +194,10 @@ fn sub(time_val: Time, dur: Duration) -> Time {
         nsec_val += 1000000000;
     }
     return Time {
-        wall_sec: sec_val,
-        nsec: nsec_val as i32,
+        wall_sec:  sec_val,
+        nsec:      nsec_val as i32,
         tz_offset: time_val.tz_offset,
     };
-}
-
-fn sub_duration(time_val: Time, dur: Duration) -> Time {
-    return sub(time_val, dur);
 }
 
 // add_months_clamped adds months_count calendar months to time_val with end-of-month clamping.
@@ -205,8 +222,8 @@ fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
     let base_days = civil_to_days(new_year, new_month, clamped_day);
     let total_secs = base_days * 86400 + hour_val * 3600 + min_val * 60 + sec_val - time_val.tz_offset;
     return Time {
-        wall_sec: total_secs,
-        nsec: time_val.nsec,
+        wall_sec:  total_secs,
+        nsec:      time_val.nsec,
         tz_offset: time_val.tz_offset,
     };
 }
@@ -275,8 +292,8 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
             trunc_sec -= step_secs;
         }
         return Time {
-            wall_sec: trunc_sec,
-            nsec: 0,
+            wall_sec:  trunc_sec,
+            nsec:      0,
             tz_offset: time_val.tz_offset,
         };
     }
@@ -285,8 +302,8 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
     if dur.nanos < 1000000000 && (1000000000 % dur.nanos == 0) {
         let trunc_nsec = (time_val.nsec / dur.nanos) * dur.nanos;
         return Time {
-            wall_sec: time_val.wall_sec,
-            nsec: trunc_nsec as i32,
+            wall_sec:  time_val.wall_sec,
+            nsec:      trunc_nsec as i32,
             tz_offset: time_val.tz_offset,
         };
     }
@@ -320,8 +337,8 @@ fn round_seconds_multiple(time_val: Time, dur_nanos: i64) -> Time {
         base_sec += step_secs;
     }
     return Time {
-        wall_sec: base_sec,
-        nsec: 0,
+        wall_sec:  base_sec,
+        nsec:      0,
         tz_offset: time_val.tz_offset,
     };
 }
@@ -340,8 +357,8 @@ fn round_subsecond_divisor(time_val: Time, dur_nanos: i64) -> Time {
         }
     }
     return Time {
-        wall_sec: time_val.wall_sec + sec_add,
-        nsec: base_nsec as i32,
+        wall_sec:  time_val.wall_sec + sec_add,
+        nsec:      base_nsec as i32,
         tz_offset: time_val.tz_offset,
     };
 }

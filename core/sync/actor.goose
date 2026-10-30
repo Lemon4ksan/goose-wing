@@ -8,17 +8,17 @@ import std;
 
 // 16-byte flat position-independent actor handle without heap references or pointers.
 struct ActorRef {
-    actor_id: u32 = 0,
-    generation: u32 = 0,
-    node_id: u32 = 0,
+    actor_id:    u32 = 0,
+    generation:  u32 = 0,
+    node_id:     u32 = 0,
     mailbox_tag: u32 = 0,
 }
 
 fn new_actor_ref(actor_id: u32, generation: u32 = 1, node_id: u32 = 0, mailbox_tag: u32 = 0) -> ActorRef {
     return ActorRef {
-        actor_id: actor_id,
-        generation: generation,
-        node_id: node_id,
+        actor_id:    actor_id,
+        generation:  generation,
+        node_id:     node_id,
         mailbox_tag: mailbox_tag,
     };
 }
@@ -32,10 +32,10 @@ fn eq_actor_ref(a: const ActorRef&, b: const ActorRef&) -> bool {
 
 // Deferred envelope stored on bump-pointer data stacks during state transitions.
 struct StashedEnvelope {
-    priority: u32 = 0,
-    seq: u32 = 0,
-    payload_type: u16 = 0,
-    data: u8[..256] = [],
+    priority:     u32       = 0,
+    seq:          u32       = 0,
+    payload_type: u16       = 0,
+    data:         u8[..256] = [],
 }
 
 struct StashBuffer {
@@ -56,6 +56,7 @@ fn unstash_all(sb: StashBuffer&, out_pending: StashedEnvelope[>..]&) -> i64 {
 }
 
 fn stash_count(sb: const StashBuffer&) -> i64 {
+    guard sb.messages.len >= 0 else { return 0; }
     return sb.messages.len;
 }
 
@@ -65,24 +66,24 @@ fn is_empty(sb: const StashBuffer&) -> bool {
 
 // Stable priority queue item for binary heap mailboxes.
 struct PriorityItem {
-    sort_key: u64 = 0, // (priority_u32 << 32) | (seq_counter_u32 & 0xFFFFFFFF)
+    sort_key:     u64 = 0, // (priority_u32 << 32) | (seq_counter_u32 & 0xFFFFFFFF)
     payload_type: u16 = 0,
-    payload_val: i64 = 0,
+    payload_val:  i64 = 0,
 }
 
 // Zero-allocation binary min-heap priority mailbox on grow-shrink data stacks.
 struct PriorityMailbox {
-    seq_counter: u32 = 0,
-    heap: PriorityItem[>..<] = [],
+    seq_counter: u32                = 0,
+    heap:        PriorityItem[>..<] = [],
 }
 
 fn push(mb: PriorityMailbox&, priority: u32, payload_type: u16, val: i64) {
     let key = ((priority as u64) << 32) | ((mb.seq_counter as u64) & 0xFFFFFFFF);
     mb.seq_counter++;
     mb.heap.heap_push(PriorityItem {
-        sort_key: key,
+        sort_key:     key,
         payload_type: payload_type,
-        payload_val: val,
+        payload_val:  val,
     }) { a, b => a.sort_key < b.sort_key };
 }
 

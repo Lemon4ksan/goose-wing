@@ -34,38 +34,38 @@ enum AutoShutdown {
 }
 
 struct ChildSpec {
-    id: i64 = 0,
-    restart_type: RestartType = RestartType.Permanent,
-    significant: bool = false,
-    worker_id: i64 = 0,
-    restarts_count: i32 = 0,
+    id:             i64         = 0,
+    restart_type:   RestartType = RestartType.Permanent,
+    significant:    bool        = false,
+    worker_id:      i64         = 0,
+    restarts_count: i32         = 0,
 }
 
 struct SupervisorSpec {
-    strategy: Strategy = Strategy.OneForOne,
-    max_restarts: i32 = 3,
-    max_seconds: i32 = 5,
+    strategy:      Strategy     = Strategy.OneForOne,
+    max_restarts:  i32          = 3,
+    max_seconds:   i32          = 5,
     auto_shutdown: AutoShutdown = AutoShutdown.Never,
 }
 
 // Represents the terminal execution status and specification of a supervised worker.
 struct WorkerStatus {
-    worker_id: i64 = 0,
-    ok: bool = false,
-    reason: ExitReason = ExitReason.Normal,
-    restart_type: RestartType = RestartType.Permanent,
-    significant: bool = false,
-    restarts_count: i32 = 0,
+    worker_id:      i64         = 0,
+    ok:             bool        = false,
+    reason:         ExitReason  = ExitReason.Normal,
+    restart_type:   RestartType = RestartType.Permanent,
+    significant:    bool        = false,
+    restarts_count: i32         = 0,
 }
 
 // Supervisor monitors background workers, containing crashes and enforcing restart policies.
 struct Supervisor {
-    spec: SupervisorSpec = SupervisorSpec { .. },
-    failed_count_val: i64 = 0,
-    success_count_val: i64 = 0,
-    is_auto_shutdown_val: bool = false,
-    restart_history_times_s: i64[..32] = [],
-    statuses: WorkerStatus[>..] = [],
+    spec:                    SupervisorSpec    = SupervisorSpec { .. },
+    failed_count_val:        i64               = 0,
+    success_count_val:       i64               = 0,
+    is_auto_shutdown_val:    bool              = false,
+    restart_history_times_s: i64[..32]         = [],
+    statuses:                WorkerStatus[>..] = [],
 }
 
 fn new_supervisor(spec: SupervisorSpec) -> Supervisor {
@@ -85,9 +85,9 @@ fn add_child(sup: Supervisor&, spec: ChildSpec, worker_id: i64) -> bool {
         return false; // OTP rule: permanent processes cannot be marked significant
     }
     sup.statuses.push(WorkerStatus {
-        worker_id: worker_id,
-        restart_type: spec.restart_type,
-        significant: spec.significant,
+        worker_id:      worker_id,
+        restart_type:   spec.restart_type,
+        significant:    spec.significant,
         restarts_count: spec.restarts_count,
         ..
     });
@@ -95,18 +95,22 @@ fn add_child(sup: Supervisor&, spec: ChildSpec, worker_id: i64) -> bool {
 }
 
 fn child_count(sup: const Supervisor&) -> i64 {
+    guard sup.statuses.len >= 0 else { return 0; }
     return sup.statuses.len;
 }
 
 fn failed_count(sup: const Supervisor&) -> i64 {
+    guard sup.failed_count_val >= 0 else { return 0; }
     return sup.failed_count_val;
 }
 
 fn success_count(sup: const Supervisor&) -> i64 {
+    guard sup.success_count_val >= 0 else { return 0; }
     return sup.success_count_val;
 }
 
 fn is_auto_shutdown(sup: const Supervisor&) -> bool {
+    guard sup.statuses.len >= 0 else { return false; }
     return sup.is_auto_shutdown_val;
 }
 
@@ -126,21 +130,25 @@ fn should_restart_child(sup: const Supervisor&, child_idx: i64, reason: const Ex
     };
 }
 
+inline fn count_restarts_in_window(history: const i64[:], cutoff: i64) -> i64 {
+    var count: i64 = 0;
+    for t in history {
+        if t >= cutoff {
+            count++;
+        }
+    }
+    return count;
+}
+
 fn record_failure(sup: Supervisor&, child_idx: i64, current_time_s: i64) -> bool {
     guard child_idx >= 0 && child_idx < sup.statuses.len else { return false; }
     let cutoff = current_time_s - sup.spec.max_seconds;
-    var count_in_window: i64 = 0;
-    for t in sup.restart_history_times_s {
-        if t >= cutoff {
-            count_in_window++;
-        }
-    }
+    let count_in_window = count_restarts_in_window(sup.restart_history_times_s[..], cutoff);
     guard count_in_window < sup.spec.max_restarts else {
         return false; // Intensity threshold exceeded!
     }
-    if sup.restart_history_times_s.len < sup.restart_history_times_s.cap {
-        sup.restart_history_times_s.push(current_time_s);
-    }
+    guard sup.restart_history_times_s.len < sup.restart_history_times_s.cap else { return false; }
+    sup.restart_history_times_s.push(current_time_s);
     sup.statuses[child_idx].restarts_count++;
     return true;
 }

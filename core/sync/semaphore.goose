@@ -8,7 +8,7 @@ import std;
 
 // Flat ticket token representing an active execution slot in a concurrency quota.
 struct SemPermit {
-    epoch: u32 = 1,
+    epoch:   u32 = 1,
     slot_id: u16 = 0,
 }
 
@@ -32,6 +32,7 @@ fn sem_try_acquire() -> SemPermit, bool {
 
 // Returns an execution permit back to the pool.
 fn sem_release(permit: SemPermit) -> bool {
+    guard permit.epoch > 0 else { return false; }
     return qput(permit);
 }
 

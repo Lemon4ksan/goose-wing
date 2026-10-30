@@ -67,10 +67,6 @@ fn new_xoroshiro64_star_star(seed: u64) -> Xoroshiro64StarStar {
     return Xoroshiro64StarStar { s0: lo, s1: hi };
 }
 
-inline fn new_xoroshiro64(seed: u64) -> Xoroshiro64StarStar {
-    return new_xoroshiro64_star_star(seed);
-}
-
 inline fn next_u32(rng: Xoroshiro64StarStar&) -> u32 {
     let s0 = rng.s0;
     var s1 = rng.s1;

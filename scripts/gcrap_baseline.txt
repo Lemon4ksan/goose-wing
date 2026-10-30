@@ -598,7 +598,6 @@ core/ufcs.goose 65 is_zero 0.00 0 0.85
 core/ufcs.goose 69 add 0.00 0 0.85
 core/ufcs.goose 70 sub 0.00 0 0.85
 core/ufcs.goose 71 sub 0.00 0 0.85
-core/ufcs.goose 72 sub_duration 0.00 0 0.85
 core/ufcs.goose 73 since 0.00 0 0.85
 core/ufcs.goose 74 until 0.00 0 0.85
 core/ufcs.goose 75 equal 0.00 0 0.85
@@ -3500,7 +3499,6 @@ core/math/random.goose 37 core::next_u64 15.00 0 0.85
 core/math/random.goose 42 core::next_u32 30.00 0 0.85
 core/math/random.goose 47 core::w1rand_next 45.00 0 0.85
 core/math/random.goose 59 core::new_xoroshiro64_star_star 60.01 0 0.85
-core/math/random.goose 70 core::new_xoroshiro64 0.00 0 0.85
 core/math/random.goose 74 core::next_u32 45.00 0 0.85
 core/math/random.goose 86 core::next_star_u32 30.00 0 0.85
 core/math/random.goose 98 core::fast_range_biased_u32 45.00 0 0.85
@@ -3704,7 +3702,6 @@ core/time/time.goose 128 core::is_zero 0.00 0 0.85
 core/time/time.goose 132 core::add 210.01 0 0.85
 core/time/time.goose 151 core::sub 150.12 0 0.85
 core/time/time.goose 165 core::sub 210.01 0 0.85
-core/time/time.goose 182 core::sub_duration 0.00 0 0.85
 core/time/time.goose 193 core::add_months_clamped 285.03 0 0.85
 core/time/time.goose 215 core::add_years_clamped 15.00 0 0.85
 core/time/time.goose 219 core::days_in_month 0.00 0 0.85

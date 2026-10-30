@@ -6,24 +6,24 @@ namespace core;
 
 import std;
 
-const NANOSECOND: i64 = 1;
+const NANOSECOND:  i64 = 1;
 const MICROSECOND: i64 = 1000 * NANOSECOND;
 const MILLISECOND: i64 = 1000 * MICROSECOND;
-const SECOND: i64 = 1000 * MILLISECOND;
-const MINUTE: i64 = 60 * SECOND;
-const HOUR: i64 = 60 * MINUTE;
-const DAY: i64 = 24 * HOUR;
-const WEEK: i64 = 7 * DAY;
+const SECOND:      i64 = 1000 * MILLISECOND;
+const MINUTE:      i64 = 60 * SECOND;
+const HOUR:        i64 = 60 * MINUTE;
+const DAY:         i64 = 24 * HOUR;
+const WEEK:        i64 = 7 * DAY;
 
 // Exact scalar time conversions
 const SECS_PER_MINUTE: i64 = 60;
-const SECS_PER_HOUR: i64 = 3600;
-const SECS_PER_DAY: i64 = 86400;
+const SECS_PER_HOUR:   i64 = 3600;
+const SECS_PER_DAY:    i64 = 86400;
 
-const NANOS_PER_MICRO: i64 = 1000;
+const NANOS_PER_MICRO:  i64 = 1000;
 const MICROS_PER_MILLI: i64 = 1000;
-const NANOS_PER_MILLI: i64 = 1000000;
-const NANOS_PER_SEC: i64 = 1000000000;
+const NANOS_PER_MILLI:  i64 = 1000000;
+const NANOS_PER_SEC:    i64 = 1000000000;
 
 // Extreme 64-bit integer duration boundaries
 const DURATION_MIN_NANOS: i64 = -9223372036854775807 - 1;
@@ -129,6 +129,7 @@ fn round(dur: Duration, step_dur: Duration) -> Duration {
 
 // Formats duration into human-readable shorthand (e.g. "0s", "250ms", "1.5s", "2h45m").
 fn format_subsecond_duration<B>(out: B&, total_nanos: i64) -> bool {
+    guard total_nanos < SECOND else { return false; }
     if total_nanos < MICROSECOND {
         format(out, total_nanos);
         out.append("ns");
@@ -142,15 +143,12 @@ fn format_subsecond_duration<B>(out: B&, total_nanos: i64) -> bool {
         out.append("us");
         return true;
     }
-    if total_nanos < SECOND {
-        let millis_val = total_nanos / MILLISECOND;
-        let fraction_micros = (total_nanos % MILLISECOND) / MICROS_PER_MILLI;
-        format(out, millis_val);
-        append_trimmed_fraction(out, fraction_micros, 3);
-        out.append("ms");
-        return true;
-    }
-    return false;
+    let millis_val = total_nanos / MILLISECOND;
+    let fraction_micros = (total_nanos % MILLISECOND) / MICROS_PER_MILLI;
+    format(out, millis_val);
+    append_trimmed_fraction(out, fraction_micros, 3);
+    out.append("ms");
+    return true;
 }
 
 fn format_composite_duration<B>(out: B&, total_nanos: i64) {
@@ -206,12 +204,16 @@ fn format<B>(out: B&, dur: Duration) {
 // Supported units: "ns", "us" / "us", "ms", "s", "m", "h", "d", "w".
 //
 // Caller Contract & Nuances:
-// - Return Mode: Returns (Duration, false) on any syntactic, range, or numeric failure. Never panics.
+// - Return Mode: Returns (Duration, false) on any syntactic, range, or numeric failure.
 // - Leading Dot: Supports shorthand leading decimal points (e.g. ".5s" -> 500ms).
 // - Strict Validation: Rejects multi-sign prefixes, embedded whitespace, duplicate units, or trailing characters.
 // - Overflow Protection: Every multiplication and unit sum is guarded against 64-bit integer overflow;
 //   inputs exceeding i64.max nanoseconds safely fail with false.
 // - Zero Heap: Operates without heap allocations or runtime regex engines.
+//
+// Example:
+//   raw_str = "1h30m"
+//   returns: Duration { nanos: 5400000000000 }, ok = true
 fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     let text = trim(raw_str);
     guard text.len > 0 else { return Duration { 0 }, false; }
@@ -238,7 +240,8 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
         guard num_str.len > 0 else { return Duration { 0 }, false; }
 
         let unit_start = cursor;
-        while cursor < text.len && !((text[cursor] >= '0' && text[cursor] <= '9') || text[cursor] == '+' || text[cursor] == '-') {
+        while cursor < text.len &&
+              !((text[cursor] >= '0' && text[cursor] <= '9') || text[cursor] == '+' || text[cursor] == '-') {
             cursor++;
         }
         let unit_str = text[unit_start..cursor];

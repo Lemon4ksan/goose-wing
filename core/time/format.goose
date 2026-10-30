@@ -89,13 +89,18 @@ fn format<B>(out: B&, weekday_val: Weekday) {
 }
 
 // Parses an RFC 3339 / ISO 8601 string into a Time.
+//
+// Example:
+//   raw_str = "2026-10-30T16:00:00Z"
+//   returns: Time { ... }, ok = true
 fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     let text = trim(raw_str);
     guard text.len >= 19 else { return Time { .. }, false; }
 
-    guard text[4] == '-' && text[7] == '-' && (text[10] == 'T' || text[10] == 't' || text[10] == ' ') && text[13] == ':' && text[16] == ':' else {
-        return Time { .. }, false;
-    }
+    let is_delim = text[4] == '-' && text[7] == '-' &&
+                   (text[10] == 'T' || text[10] == 't' || text[10] == ' ') &&
+                   text[13] == ':' && text[16] == ':';
+    guard is_delim else { return Time { .. }, false; }
 
     let year_val, ok_year = parse_digits(text[..4]);
     let month_val, ok_month = parse_digits(text[5..7]);
@@ -105,8 +110,12 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     let sec_val, ok_sec = parse_digits(text[17..19]);
 
     guard ok_year && ok_month && ok_day && ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
-    guard year_val >= 1 && month_val >= 1 && month_val <= 12 && day_val >= 1 && day_val <= days_in_month(year_val, month_val) else { return Time { .. }, false; }
-    guard hour_val >= 0 && hour_val <= 23 && min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60 else { return Time { .. }, false; }
+    let valid_date = year_val >= 1 && month_val >= 1 && month_val <= 12 &&
+        day_val >= 1 && day_val <= days_in_month(year_val, month_val);
+    guard valid_date else { return Time { .. }, false; }
+    let valid_time = hour_val >= 0 && hour_val <= 23 &&
+        min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60;
+    guard valid_time else { return Time { .. }, false; }
 
     let nsec_val, cursor, ok_frac = parse_fractional_nanos(text, 19);
     guard ok_frac else { return Time { .. }, false; }
@@ -120,8 +129,8 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val - offset_val;
 
     return Time {
-        wall_sec: total_secs,
-        nsec: nsec_val as i32,
+        wall_sec:  total_secs,
+        nsec:      nsec_val as i32,
         tz_offset: offset_val,
     }, true;
 }
@@ -151,6 +160,10 @@ fn format_http<B>(out: B&, time_val: Time) {
 
 // Parses RFC 9110 Section 5.6.7 HTTP-Date formats (IMF-fixdate, RFC 850, asctime).
 // Returns (Time, false) if the string is malformed or represents an invalid calendar date.
+//
+// Example:
+//   raw_str = "Sun, 06 Nov 1994 08:49:37 GMT"
+//   returns: Time { ... }, ok = true
 fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
     let text = trim(raw_str);
     guard text.len >= 24 else { return Time { .. }, false; }
@@ -216,6 +229,9 @@ fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
     }
 }
 
+// Example:
+//   str_val = "1234"
+//   returns: 1234, ok = true
 fn parse_digits(str_val: const u8[:]) -> i64, bool {
     guard str_val.len > 0 else { return 0, false; }
     let max_i64 = 9223372036854775807;
@@ -250,7 +266,8 @@ fn is_valid_weekday_name(token: const u8[:]) -> bool {
         clean_buf[char_idx] = if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte };
     }
     let s = clean_buf[..token.len];
-    return s == "sunday" || s == "monday" || s == "tuesday" || s == "wednesday" || s == "thursday" || s == "friday" || s == "saturday";
+    return s == "sunday" || s == "monday" || s == "tuesday" ||
+           s == "wednesday" || s == "thursday" || s == "friday" || s == "saturday";
 }
 
 fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
@@ -265,10 +282,13 @@ fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
     return 0, false;
 }
 
+// Example:
+//   fraction_str = "5", unit_mult = SECOND
+//   returns: 500000000, ok = true
 fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64, bool {
     guard fraction_str.len > 0 else { return 0, true; }
     var fraction_nanos_9d: i64 = 0;
-    var scale: i64 = 100000000;
+    var scale:             i64 = 100000000;
     for frac_idx in fraction_str.len {
         let char_byte = fraction_str[frac_idx];
         guard char_byte >= '0' && char_byte <= '9' else { return 0, false; }
@@ -283,6 +303,9 @@ fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64, bool
     return (fraction_nanos_9d * unit_mult) / SECOND, true;
 }
 
+// Example:
+//   num_str = "1.5", unit_mult = SECOND
+//   returns: 1500000000, ok = true
 fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
     var dot_pos = -1;
     for scan_idx in num_str.len {
@@ -319,6 +342,9 @@ fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
     return whole_nanos + fraction_nanos, true;
 }
 
+// Example:
+//   text = ".500", start_pos = 0
+//   returns: 500000000, cursor = 4, ok = true
 fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64, bool {
     var cursor = start_pos;
     if cursor >= text.len || (text[cursor] != '.' && text[cursor] != ',') {
@@ -327,7 +353,7 @@ fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64, bool {
     cursor++;
     let digit_start = cursor;
     var nsec_val: i64 = 0;
-    var scale: i64 = 100000000;
+    var scale:    i64 = 100000000;
     while cursor < text.len && (text[cursor] >= '0' && text[cursor] <= '9') {
         if scale > 0 {
             nsec_val += (text[cursor] - '0') * scale;
@@ -339,6 +365,9 @@ fn parse_fractional_nanos(text: const u8[:], start_pos: i64) -> i64, i64, bool {
     return nsec_val, cursor, true;
 }
 
+// Example:
+//   tz_text = "+02:00"
+//   returns: 7200, ok = true
 fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
     guard tz_text.len > 0 else { return 0, false; }
     let tz_char = tz_text[0];
@@ -372,6 +401,9 @@ fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
     return offset_seconds as i32, true;
 }
 
+// Example:
+//   token = "Jan"
+//   returns: 1
 fn parse_month_name(token: const u8[:]) -> i64 {
     guard token.len == 3 else { return 0; }
     var clean_buf: u8[3] = [0; 3];
@@ -395,21 +427,33 @@ fn parse_month_name(token: const u8[:]) -> i64 {
     return 0;
 }
 
-fn make_validated_civil_time(year_val: i64, month_val: i64, day_val: i64, hour_val: i64, min_val: i64, sec_val: i64) -> Time, bool {
+fn make_validated_civil_time(
+    year_val:  i64,
+    month_val: i64,
+    day_val:   i64,
+    hour_val:  i64,
+    min_val:   i64,
+    sec_val:   i64,
+) -> Time, bool {
     guard year_val >= 1 else { return Time { .. }, false; }
     guard month_val >= 1 && month_val <= 12 else { return Time { .. }, false; }
     guard day_val >= 1 && day_val <= days_in_month(year_val, month_val) else { return Time { .. }, false; }
-    guard hour_val >= 0 && hour_val <= 23 && min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60 else { return Time { .. }, false; }
+    let valid_clock = hour_val >= 0 && hour_val <= 23 &&
+        min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60;
+    guard valid_clock else { return Time { .. }, false; }
 
     let days_count = civil_to_days(year_val, month_val, day_val);
     let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val;
     return unix(total_secs, 0), true;
 }
 
+// Example:
+//   rest = "06 Nov 1994 08:49:37 GMT"
+//   returns: Time { ... }, ok = true
 fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
-    guard rest.len == 24 && rest[2] == ' ' && rest[6] == ' ' && rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' && rest[20..24] == " GMT" else {
-        return Time { .. }, false;
-    }
+    let is_imf = rest.len == 24 && rest[2] == ' ' && rest[6] == ' ' &&
+                 rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' && rest[20..24] == " GMT";
+    guard is_imf else { return Time { .. }, false; }
     let day_val, ok_day = parse_digits(rest[..2]);
     let month_val = parse_month_name(rest[3..6]);
     let year_val, ok_year = parse_digits(rest[7..11]);
@@ -423,6 +467,9 @@ fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
 }
 
+// Example:
+//   rest = "Sunday, 06-Nov-94 08:49:37 GMT"
+//   returns: Time { ... }, ok = true
 fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     var first_dash = -1;
     for scan_idx in rest.len {
@@ -444,9 +491,9 @@ fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     guard month_val > 0 else { return Time { .. }, false; }
 
     let after_month = after_day[second_dash + 1..];
-    guard after_month.len == 15 && after_month[2] == ' ' && after_month[5] == ':' && after_month[8] == ':' && after_month[11..15] == " GMT" else {
-        return Time { .. }, false;
-    }
+    let is_rfc850 = after_month.len == 15 && after_month[2] == ' ' && after_month[5] == ':' &&
+        after_month[8] == ':' && after_month[11..15] == " GMT";
+    guard is_rfc850 else { return Time { .. }, false; }
 
     let parsed_year, ok_year = parse_digits(after_month[..2]);
     guard ok_year else { return Time { .. }, false; }
@@ -460,10 +507,13 @@ fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
 }
 
+// Example:
+//   text = "Sun Nov  6 08:49:37 1994"
+//   returns: Time { ... }, ok = true
 fn parse_asctime_date(text: const u8[:]) -> Time, bool {
-    guard text.len == 24 && text[3] == ' ' && text[7] == ' ' && text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ' else {
-        return Time { .. }, false;
-    }
+    let is_asctime = text.len == 24 && text[3] == ' ' && text[7] == ' ' &&
+        text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ';
+    guard is_asctime else { return Time { .. }, false; }
     guard is_valid_weekday_short(text[..3]) else { return Time { .. }, false; }
     let month_val = parse_month_name(text[4..7]);
     guard month_val > 0 else { return Time { .. }, false; }

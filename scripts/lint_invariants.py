@@ -310,7 +310,8 @@ def main() -> int:
                                 )
 
                     if (
-                        callee
+                        not is_test_or_example
+                        and callee
                         and not re.match(r"^(native_|wing_)", callee)
                         and len(param_names) > 0
                         and call_args == expected_args

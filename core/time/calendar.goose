@@ -151,7 +151,8 @@ fn civil_to_days(year_val: i64, month_val: i64, day_val: i64) -> i64 {
     if adjusted_month <= 2 { adjusted_year -= 1; }
     let era = (if adjusted_year >= 0 { adjusted_year } else { adjusted_year - 399 }) / 400;
     let year_of_era = adjusted_year - era * 400;
-    let day_of_year = (153 * (if adjusted_month > 2 { adjusted_month - 3 } else { adjusted_month + 9 }) + 2) / 5 + adjusted_day - 1;
+    let m_shift = if adjusted_month > 2 { adjusted_month - 3 } else { adjusted_month + 9 };
+    let day_of_year = (153 * m_shift + 2) / 5 + adjusted_day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     return era * 146097 + day_of_era - 719468;
 }

@@ -9,8 +9,8 @@ import os;
 
 // WaitGroup coordinates and waits for a collection of worker threads to finish.
 struct WaitGroup {
-    failed_count_val: i64 = 0,
-    worker_ids: i64[>..] = [],
+    failed_count_val: i64      = 0,
+    worker_ids:       i64[>..] = [],
 }
 
 // Creates an empty WaitGroup.
@@ -22,11 +22,13 @@ fn add_worker(wg: WaitGroup&, worker_id: i64) -> bool {
 
 // Returns the number of workers registered in the wait group.
 fn worker_count(wg: const WaitGroup&) -> i64 {
+    guard wg.worker_ids.len >= 0 else { return 0; }
     return wg.worker_ids.len;
 }
 
 // Returns the count of failed/aborted workers from the last wait_all.
 fn failed_count(wg: const WaitGroup&) -> i64 {
+    guard wg.failed_count_val >= 0 else { return 0; }
     return wg.failed_count_val;
 }
 
@@ -35,8 +37,9 @@ fn failed_count(wg: const WaitGroup&) -> i64 {
 fn wait_all(wg: WaitGroup&, out_diagnostics: u8[>..]&) -> bool {
     var all_ok = true;
     wg.failed_count_val = 0;
+    var err: u8[>..] = [];
     for id in wg.worker_ids {
-        var err: u8[>..] = [];
+        err.clear();
         let ok = thread_wait(id, err);
         if !ok {
             all_ok = false;
@@ -105,7 +108,7 @@ fn latch_wait() {
 // Two-phase turnstile cyclic barrier message types
 struct BarrierArrive {
     worker_id: i32 = 0,
-    epoch: u64 = 0,
+    epoch:     u64 = 0,
 }
 
 struct BarrierRelease {
@@ -114,7 +117,7 @@ struct BarrierRelease {
 
 struct BarrierDepart {
     worker_id: i32 = 0,
-    epoch: u64 = 0,
+    epoch:     u64 = 0,
 }
 
 struct BarrierDepartAck {
