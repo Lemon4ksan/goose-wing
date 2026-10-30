@@ -11,57 +11,57 @@ import core from "..";
 
 // ---- 1. constants and error codes (rfc 9000 section 20) ---------------------
 
-const QUIC_VERSION_1: u32 = 0x00000001;
-const QUIC_VERSION_NEGOTIATION: u32 = 0x00000000;
+const QUIC_VERSION_1:                u32 = 0x00000001;
+const QUIC_VERSION_NEGOTIATION:      u32 = 0x00000000;
 const QUIC_MIN_INITIAL_DATAGRAM_LEN: u64 = 1200; // RFC 9000 Section 8.1
-const QUIC_MAX_CID_LEN: u8 = 20;
+const QUIC_MAX_CID_LEN:              u8  = 20;
 
 // QUIC Transport Error Codes (RFC 9000 Section 20.1)
-const QUIC_ERR_NO_ERROR: u64 = 0x00;
-const QUIC_ERR_INTERNAL: u64 = 0x01;
-const QUIC_ERR_CONNECTION_REFUSED: u64 = 0x02;
-const QUIC_ERR_FLOW_CONTROL: u64 = 0x03;
-const QUIC_ERR_STREAM_LIMIT: u64 = 0x04;
-const QUIC_ERR_STREAM_STATE: u64 = 0x05;
-const QUIC_ERR_FINAL_SIZE: u64 = 0x06;
-const QUIC_ERR_FRAME_ENCODING: u64 = 0x07;
-const QUIC_ERR_TRANSPORT_PARAMETER: u64 = 0x08;
-const QUIC_ERR_CONNECTION_ID_LIMIT: u64 = 0x09;
-const QUIC_ERR_PROTOCOL_VIOLATION: u64 = 0x0A;
-const QUIC_ERR_INVALID_TOKEN: u64 = 0x0B;
-const QUIC_ERR_APPLICATION_ERROR: u64 = 0x0C;
+const QUIC_ERR_NO_ERROR:               u64 = 0x00;
+const QUIC_ERR_INTERNAL:               u64 = 0x01;
+const QUIC_ERR_CONNECTION_REFUSED:     u64 = 0x02;
+const QUIC_ERR_FLOW_CONTROL:           u64 = 0x03;
+const QUIC_ERR_STREAM_LIMIT:           u64 = 0x04;
+const QUIC_ERR_STREAM_STATE:           u64 = 0x05;
+const QUIC_ERR_FINAL_SIZE:             u64 = 0x06;
+const QUIC_ERR_FRAME_ENCODING:         u64 = 0x07;
+const QUIC_ERR_TRANSPORT_PARAMETER:    u64 = 0x08;
+const QUIC_ERR_CONNECTION_ID_LIMIT:    u64 = 0x09;
+const QUIC_ERR_PROTOCOL_VIOLATION:     u64 = 0x0A;
+const QUIC_ERR_INVALID_TOKEN:          u64 = 0x0B;
+const QUIC_ERR_APPLICATION_ERROR:      u64 = 0x0C;
 const QUIC_ERR_CRYPTO_BUFFER_EXCEEDED: u64 = 0x0D;
-const QUIC_ERR_KEY_UPDATE_ERROR: u64 = 0x0E;
-const QUIC_ERR_AEAD_LIMIT_REACHED: u64 = 0x0F;
-const QUIC_ERR_NO_VIABLE_PATH: u64 = 0x10;
+const QUIC_ERR_KEY_UPDATE_ERROR:       u64 = 0x0E;
+const QUIC_ERR_AEAD_LIMIT_REACHED:     u64 = 0x0F;
+const QUIC_ERR_NO_VIABLE_PATH:         u64 = 0x10;
 
 // Frame Types (RFC 9000 Section 19)
-const QUIC_FRAME_PADDING: u64 = 0x00;
-const QUIC_FRAME_PING: u64 = 0x01;
-const QUIC_FRAME_ACK: u64 = 0x02;
-const QUIC_FRAME_ACK_ECN: u64 = 0x03;
-const QUIC_FRAME_RESET_STREAM: u64 = 0x04;
-const QUIC_FRAME_STOP_SENDING: u64 = 0x05;
-const QUIC_FRAME_CRYPTO: u64 = 0x06;
-const QUIC_FRAME_NEW_TOKEN: u64 = 0x07;
-const QUIC_FRAME_STREAM_BASE: u64 = 0x08; // 0x08..0x0F
-const QUIC_FRAME_MAX_DATA: u64 = 0x10;
-const QUIC_FRAME_MAX_STREAM_DATA: u64 = 0x11;
-const QUIC_FRAME_MAX_STREAMS_BIDI: u64 = 0x12;
-const QUIC_FRAME_MAX_STREAMS_UNI: u64 = 0x13;
-const QUIC_FRAME_DATA_BLOCKED: u64 = 0x14;
-const QUIC_FRAME_STREAM_DATA_BLOCKED: u64 = 0x15;
+const QUIC_FRAME_PADDING:              u64 = 0x00;
+const QUIC_FRAME_PING:                 u64 = 0x01;
+const QUIC_FRAME_ACK:                  u64 = 0x02;
+const QUIC_FRAME_ACK_ECN:              u64 = 0x03;
+const QUIC_FRAME_RESET_STREAM:         u64 = 0x04;
+const QUIC_FRAME_STOP_SENDING:         u64 = 0x05;
+const QUIC_FRAME_CRYPTO:               u64 = 0x06;
+const QUIC_FRAME_NEW_TOKEN:            u64 = 0x07;
+const QUIC_FRAME_STREAM_BASE:          u64 = 0x08; // 0x08..0x0F
+const QUIC_FRAME_MAX_DATA:             u64 = 0x10;
+const QUIC_FRAME_MAX_STREAM_DATA:      u64 = 0x11;
+const QUIC_FRAME_MAX_STREAMS_BIDI:     u64 = 0x12;
+const QUIC_FRAME_MAX_STREAMS_UNI:      u64 = 0x13;
+const QUIC_FRAME_DATA_BLOCKED:         u64 = 0x14;
+const QUIC_FRAME_STREAM_DATA_BLOCKED:  u64 = 0x15;
 const QUIC_FRAME_STREAMS_BLOCKED_BIDI: u64 = 0x16;
-const QUIC_FRAME_STREAMS_BLOCKED_UNI: u64 = 0x17;
-const QUIC_FRAME_NEW_CONNECTION_ID: u64 = 0x18;
+const QUIC_FRAME_STREAMS_BLOCKED_UNI:  u64 = 0x17;
+const QUIC_FRAME_NEW_CONNECTION_ID:    u64 = 0x18;
 const QUIC_FRAME_RETIRE_CONNECTION_ID: u64 = 0x19;
-const QUIC_FRAME_PATH_CHALLENGE: u64 = 0x1A;
-const QUIC_FRAME_PATH_RESPONSE: u64 = 0x1B;
-const QUIC_FRAME_CONNECTION_CLOSE: u64 = 0x1C;
+const QUIC_FRAME_PATH_CHALLENGE:       u64 = 0x1A;
+const QUIC_FRAME_PATH_RESPONSE:        u64 = 0x1B;
+const QUIC_FRAME_CONNECTION_CLOSE:     u64 = 0x1C;
 const QUIC_FRAME_CONNECTION_CLOSE_APP: u64 = 0x1D;
-const QUIC_FRAME_HANDSHAKE_DONE: u64 = 0x1E;
-const QUIC_FRAME_DATAGRAM: u64 = 0x30;            // RFC 9221 Section 3: DATAGRAM without Length
-const QUIC_FRAME_DATAGRAM_LEN: u64 = 0x31;        // RFC 9221 Section 3: DATAGRAM with Length
+const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
+const QUIC_FRAME_DATAGRAM:             u64 = 0x30; // RFC 9221 Section 3: DATAGRAM without Length
+const QUIC_FRAME_DATAGRAM_LEN:         u64 = 0x31; // RFC 9221 Section 3: DATAGRAM with Length
 
 // ---- 2. variable-length integer codec (rfc 9000 section 16) ----------------
 
@@ -162,18 +162,18 @@ enum QuicHeaderType {
 }
 
 struct QuicHeader {
-    header_type: QuicHeaderType = QuicHeaderType.OneRtt,
-    version: u32 = QUIC_VERSION_1,
-    dcid: u8[..20] = [],
-    scid: u8[..20] = [],
-    token: u8[..512] = [],
-    payload_length: u64 = 0,
-    packet_number: u64 = 0,
-    pn_offset: u32 = 0,
-    pn_length: u8 = 0,
-    key_phase: bool = false,
-    spin_bit: bool = false,
-    header_len: u32 = 0,
+    header_type:    QuicHeaderType = QuicHeaderType.OneRtt,
+    version:        u32            = QUIC_VERSION_1,
+    dcid:           u8[..20]       = [],
+    scid:           u8[..20]       = [],
+    token:          u8[..512]      = [],
+    payload_length: u64            = 0,
+    packet_number:  u64            = 0,
+    pn_offset:      u32            = 0,
+    pn_length:      u8             = 0,
+    key_phase:      bool           = false,
+    spin_bit:       bool           = false,
+    header_len:     u32            = 0,
 }
 
 // Parses a Version Negotiation Long Header (RFC 9000 §17.2.1).
@@ -206,8 +206,8 @@ fn parse_quic_version_negotiation(src: const u8[:], in_hdr: QuicHeader) -> QuicH
 //   src = [0x04, 1, 2, 3, 4, 0x00], idx = 0
 //   returns: true, idx = 6, dcid = [1, 2, 3, 4], scid = []
 fn parse_quic_long_cids(
-    src: const u8[:],
-    idx: i64&,
+    src:  const u8[:],
+    idx:  i64&,
     dcid: u8[..20]&,
     scid: u8[..20]&,
 ) -> bool {
@@ -309,8 +309,8 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
 //   src = [0x40, 0x01, 0x02, 0x03, 0x04, 0x05], first = 0x40, dcid_len_short = 4
 //   returns: QuicHeader { header_type: OneRtt, dcid: [1, 2, 3, 4] }, ok = true
 fn parse_quic_short_header(
-    src: const u8[:],
-    first: u8,
+    src:            const u8[:],
+    first:          u8,
     dcid_len_short: u8,
 ) -> QuicHeader, bool {
     var hdr = QuicHeader {};
@@ -356,6 +356,7 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
 fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     guard pn_len >= 1 && pn_len <= 4 else { return false; }
     guard hdr.dcid.len <= QUIC_MAX_CID_LEN && hdr.scid.len <= QUIC_MAX_CID_LEN else { return false; }
+
     let pn_bits = (pn_len - 1) & 0x03;
 
     if hdr.header_type != QuicHeaderType.OneRtt {
@@ -380,15 +381,15 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
         out.append(hdr.scid[..]);
 
         if hdr.header_type == QuicHeaderType.Initial {
-            guard quic_encode_varint(out, hdr.token.len as u64) else { return false; }
+            quic_encode_varint(out, hdr.token.len as u64);
             if hdr.token.len > 0 {
                 out.append(hdr.token[..]);
             }
         }
 
         if hdr.header_type != QuicHeaderType.Retry {
-            guard quic_encode_varint(out, hdr.payload_length) else { return false; }
-            guard encode_packet_number(out, hdr.packet_number, pn_len) else { return false; }
+            quic_encode_varint(out, hdr.payload_length);
+            encode_packet_number(out, hdr.packet_number, pn_len);
         }
         return true;
     }
@@ -402,7 +403,7 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     if hdr.dcid.len > 0 {
         out.append(hdr.dcid[..]);
     }
-    guard encode_packet_number(out, hdr.packet_number, pn_len) else { return false; }
+    encode_packet_number(out, hdr.packet_number, pn_len);
     return true;
 }
 
@@ -497,8 +498,8 @@ fn encode_packet_number<B>(out: B&, pn: u64, pn_len: u8) -> bool {
     return true;
 }
 
-const QUIC_MAX_PN: u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 Section 17.1)
-const QUIC_PN_LIMIT: u64 = (1 as u64) << 62; // 2^62
+const QUIC_MAX_PN:   u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 Section 17.1)
+const QUIC_PN_LIMIT: u64 = (1 as u64) << 62;   // 2^62
 
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
 // Returns (reconstructed_pn, ok). If reconstructed PN exceeds 2^62 - 1 or pn_len is invalid, ok is false.
@@ -514,9 +515,9 @@ fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len
     let pn_nbits: u64 = (pn_len as u64) * 8;
     guard (0xFFFFFFFFFFFFFFFF - largest_acked_pn) >= 1 else { return 0, false; }
     let expected_pn: u64 = largest_acked_pn + 1;
-    let pn_win: u64 = (1 as u64) << pn_nbits;
-    let pnhwin: u64 = pn_win / 2;
-    let pn_mask: u64 = pn_win - 1;
+    let pn_win:      u64 = (1 as u64) << pn_nbits;
+    let pnhwin:      u64 = pn_win / 2;
+    let pn_mask:     u64 = pn_win - 1;
 
     let candidate_pn = (expected_pn & ~pn_mask) | truncated_pn;
 
@@ -549,11 +550,11 @@ fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) ->
 // ---- 5. path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---
 
 struct PathState {
-    remote_ip: u8[16] = [0; 16],
-    remote_port: u16 = 0,
-    bytes_received: u64 = 0,
-    bytes_sent: u64 = 0,
-    is_validated: bool = false,
+    remote_ip:      u8[16] = [0; 16],
+    remote_port:    u16    = 0,
+    bytes_received: u64    = 0,
+    bytes_sent:     u64    = 0,
+    is_validated:   bool   = false,
 }
 
 fn new_path_state(ip: const u8[16]&, port: u16, validated: bool = false) -> PathState {
@@ -594,16 +595,16 @@ fn validate_path(path: PathState&) {
 
 struct Interval {
     start: u64 = 0,
-    end: u64 = 0, // [start, end)
+    end:   u64 = 0, // [start, end)
 }
 
 struct ReassemblyBuffer {
-    intervals: Interval[..64] = [],
-    consumed_offset: u64 = 0,
-    max_data_limit: u64 = 1048576,
-    final_size: u64 = 0xFFFFFFFFFFFFFFFF,
-    fin_received: bool = false,
-    data_slab: u8[>..<] = [], // Must be last!
+    intervals:       Interval[..64] = [],
+    consumed_offset: u64            = 0,
+    max_data_limit:  u64            = 1048576,
+    final_size:      u64            = 0xFFFFFFFFFFFFFFFF,
+    fin_received:    bool           = false,
+    data_slab:       u8[>..<]       = [], // Must be last!
 }
 
 fn new_reassembly_buffer(max_flow_limit: u64 = 1048576) -> ReassemblyBuffer {
@@ -644,10 +645,10 @@ fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end
 
 // Inserts incoming STREAM or CRYPTO fragment, enforcing flow control and FIN invariants.
 fn insert_fragment(
-    buf: ReassemblyBuffer&,
-    offset: u64,
+    buf:     ReassemblyBuffer&,
+    offset:  u64,
     payload: const u8[:],
-    is_fin: bool,
+    is_fin:  bool,
 ) -> bool {
     guard (0xFFFFFFFFFFFFFFFF - offset) >= (payload.len as u64) else { return false; }
     let frag_end = offset + (payload.len as u64);
@@ -737,8 +738,8 @@ fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: boo
 //   src = [0x31, 0x04, 't', 'e', 's', 't'], offset = 0
 //   returns: payload = "test", next_offset = 6, ok = true
 fn decode_quic_datagram_frame(
-    src: const u8[:],
-    offset: u64,
+    src:        const u8[:],
+    offset:     u64,
     packet_end: u64 = 0,
 ) -> const u8[:], u64, bool {
     guard offset < (src.len as u64) else { return "", offset, false; }

@@ -11,10 +11,10 @@ import core from "..";
 
 // ---- 1. Privacy Pass Constants & Token Types --------------------------------
 
-const SCHEME_PRIVATE_TOKEN: const u8[:] = "PrivateToken";
+const SCHEME_PRIVATE_TOKEN:           const u8[:] = "PrivateToken";
 const HEADER_SEC_PRIVATE_STATE_TOKEN: const u8[:] = "Sec-Private-State-Token";
 
-const TOKEN_TYPE_BLIND_RSA: u16 = 0x0001;           // RFC 9578 Blind RSA
+const TOKEN_TYPE_BLIND_RSA:           u16 = 0x0001; // RFC 9578 Blind RSA
 const TOKEN_TYPE_PUBLICLY_VERIFIABLE: u16 = 0x0002; // RFC 9578 §6 Publicly Verifiable
 
 // Checks whether token type is a GREASE identifier (RFC 9577 §6.2.1)
@@ -32,10 +32,10 @@ fn is_grease_token_type(t: u16) -> bool {
 // ---- 2. Data Structures -----------------------------------------------------
 
 struct TokenChallenge {
-    token_type: u16 = TOKEN_TYPE_BLIND_RSA,
-    issuer_name: u8[..128] = [],
-    redemption_context: u8[..32] = [],
-    origin_info: u8[..256] = [],
+    token_type:         u16       = TOKEN_TYPE_BLIND_RSA,
+    issuer_name:        u8[..128] = [],
+    redemption_context: u8[..32]  = [],
+    origin_info:        u8[..256] = [],
 }
 
 struct Token {
@@ -48,7 +48,7 @@ struct Token {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
-    token_key_id: u8[..32] = [],
+    token_key_id:  u8[..32]  = [],
     authenticator: u8[..256] = [],
 }
 
@@ -57,10 +57,10 @@ struct CachedToken {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
-    token: Token = Token { .. },
-    raw_token: u8[..512] = [],
-    expires_at_sec: i64 = 0,
-    used: bool = false,
+    token:          Token     = Token { .. },
+    raw_token:      u8[..512] = [],
+    expires_at_sec: i64       = 0,
+    used:           bool      = false,
 }
 
 struct PrivateTokenCache {
@@ -182,6 +182,11 @@ fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token
 
 // ---- 4. HTTP Authentication Header Parsing & Formatting (RFC 9577 §2.1 & §2.2)
 
+// Extracts parameter value from key-value parameter string.
+//
+// Example:
+//   rem = "= \"abc\", def", idx = 0
+//   returns: "abc", ok = true, idx = 7
 fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
     while idx < rem.len && (rem[idx] == ' ' || rem[idx] == '=') {
         idx += 1;
@@ -203,6 +208,11 @@ fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
     return rem[v_start..idx], true;
 }
 
+// Decodes base64url-encoded token-key parameter into buffer.
+//
+// Example:
+//   val = "ZXhhbXBsZQ"
+//   returns: ok = true, temp_token_key = "example"
 fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..128]&) -> bool {
     var raw_key: u8[>..] = [];
     guard core::base64url_decode(val, raw_key) else { return false; }
@@ -215,10 +225,10 @@ fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..128]&) -> bool 
 }
 
 fn apply_challenge_param(
-    key: const u8[:],
-    val: const u8[:],
+    key:            const u8[:],
+    val:            const u8[:],
     temp_token_key: u8[..128]&,
-    temp_max_age: i64&,
+    temp_max_age:   i64&,
 ) -> const u8[:], bool {
     if eq_ascii_fold(key, "challenge") {
         return val, true;
@@ -245,10 +255,15 @@ fn read_param_key(rem: const u8[:]) -> const u8[:] {
     return rem[..k_len];
 }
 
+// Parses comma-separated PrivateToken challenge parameters.
+//
+// Example:
+//   params_str = "challenge=\"xyz\", max-age=3600"
+//   returns: "xyz", ok = true
 fn parse_challenge_params(
-    params_str: const u8[:],
+    params_str:     const u8[:],
     temp_token_key: u8[..128]&,
-    temp_max_age: i64&,
+    temp_max_age:   i64&,
 ) -> const u8[:], bool {
     var challenge_slice = params_str[..0];
     var idx: i64 = 0;
@@ -273,17 +288,21 @@ fn parse_challenge_params(
 }
 
 // Parses `WWW-Authenticate: PrivateToken challenge="<base64url>", ...` header.
+//
+// Example:
+//   header_val = "PrivateToken challenge=\"AQIDBA\", token-key=\"xyz\""
+//   returns: ok = true
 fn parse_private_token_challenge(
-    header_val: const u8[:],
-    out_challenge: TokenChallenge&,
-    out_token_key: u8[..128]&,
+    header_val:      const u8[:],
+    out_challenge:   TokenChallenge&,
+    out_token_key:   u8[..128]&,
     out_max_age_sec: i64&,
 ) -> bool {
     guard header_val.len > SCHEME_PRIVATE_TOKEN.len else { return false; }
     guard eq_ascii_fold(header_val[..SCHEME_PRIVATE_TOKEN.len], SCHEME_PRIVATE_TOKEN) else { return false; }
 
     var temp_token_key: u8[..128] = [];
-    var temp_max_age: i64 = 0;
+    var temp_max_age:   i64       = 0;
     let challenge_slice, ok_params = parse_challenge_params(
         header_val[SCHEME_PRIVATE_TOKEN.len..].trim_lws(),
         temp_token_key,
@@ -335,12 +354,12 @@ fn find_free_token_slot(cache: const PrivateTokenCache&, now_sec: i64) -> i64 {
 
 // Puts a pre-issued or blinded token into cache for a challenge.
 fn put_private_token(
-    cache: PrivateTokenCache&,
+    cache:     PrivateTokenCache&,
     challenge: const TokenChallenge&,
-    token: const Token&,
+    token:     const Token&,
     raw_token: const u8[:],
-    ttl_sec: i64,
-    now_sec: i64,
+    ttl_sec:   i64,
+    now_sec:   i64,
 ) -> bool {
     let digest = compute_challenge_digest(challenge);
     var target_idx = find_free_token_slot(cache, now_sec);
@@ -376,11 +395,11 @@ fn entry_matches_challenge(entry: const CachedToken&, digest: const u8[32]&, now
 
 // Gets and consumes a single-use token matching the challenge (RFC 9577 §2.1.4 single-spend).
 fn get_private_token(
-    cache: PrivateTokenCache&,
+    cache:     PrivateTokenCache&,
     challenge: const TokenChallenge&,
-    now_sec: i64,
+    now_sec:   i64,
     out_token: Token&,
-    out_raw: u8[..512]&,
+    out_raw:   u8[..512]&,
 ) -> bool {
     let digest = compute_challenge_digest(challenge);
 
@@ -395,6 +414,7 @@ fn get_private_token(
         }
     }
 
+    out_raw.clear();
     return false;
 }
 

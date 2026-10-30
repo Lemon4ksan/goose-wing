@@ -10,6 +10,7 @@ import core from "..";
 // ---- fetch metadata attribute taxonomy -------------------------------------
 
 enum SecFetchSite {
+    Unknown,
     SameOrigin,
     SameSite,
     CrossSite,
@@ -59,35 +60,44 @@ enum CsrfDecision {
 
 // 5-attribute vector projection pi_FM(r) = (sigma, mu, delta, u, m)
 struct FetchContext {
-    method_is_safe: bool = true,
-    method: u8[..16] = "GET",
-    site: SecFetchSite = SecFetchSite.Missing,
-    mode: SecFetchMode = SecFetchMode.Other,
-    dest: SecFetchDest = SecFetchDest.Other,
-    user_activated: bool = false,
-    has_origin: bool = false,
-    origin: u8[..256] = [],
-    has_referer: bool = false,
-    referer: u8[..512] = [],
-    target_scheme: u8[..16] = "https",
-    target_host: u8[..256] = [],
-    path: u8[..512] = "/",
-    has_session_cookie: bool = false,
-    has_explicit_auth: bool = false,
-    is_sensitive_navigation_route: bool = false,
+    method_is_safe:                bool         = true,
+    method:                        u8[..16]     = "GET",
+    site:                          SecFetchSite = SecFetchSite.Missing,
+    mode:                          SecFetchMode = SecFetchMode.Other,
+    dest:                          SecFetchDest = SecFetchDest.Other,
+    user_activated:                bool         = false,
+    has_origin:                    bool         = false,
+    origin:                        u8[..256]    = [],
+    has_referer:                   bool         = false,
+    referer:                       u8[..512]    = [],
+    target_scheme:                 u8[..16]     = "https",
+    target_host:                   u8[..256]    = [],
+    path:                          u8[..512]    = "/",
+    has_session_cookie:            bool         = false,
+    has_explicit_auth:             bool         = false,
+    is_sensitive_navigation_route: bool         = false,
 }
 
 // Parses Sec-Fetch-Site string value.
+//
+// Example:
+//   val = "same-origin"
+//   returns: SecFetchSite.SameOrigin
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
     let clean = trim_lws(val);
+    if clean.len == 0 { return SecFetchSite.Missing; }
     if core::eq_ascii_fold(clean, "same-origin") { return SecFetchSite.SameOrigin; }
     if core::eq_ascii_fold(clean, "same-site") { return SecFetchSite.SameSite; }
     if core::eq_ascii_fold(clean, "cross-site") { return SecFetchSite.CrossSite; }
     if core::eq_ascii_fold(clean, "none") { return SecFetchSite.None; }
-    return SecFetchSite.Missing;
+    return SecFetchSite.Unknown;
 }
 
 // Parses Sec-Fetch-Mode string value.
+//
+// Example:
+//   val = "navigate"
+//   returns: SecFetchMode.Navigate
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
     let clean = trim_lws(val);
     if core::eq_ascii_fold(clean, "navigate") { return SecFetchMode.Navigate; }
@@ -99,6 +109,10 @@ fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
 }
 
 // Parses Sec-Fetch-Dest string value.
+//
+// Example:
+//   val = "document"
+//   returns: SecFetchDest.Document
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
     let clean = trim_lws(val);
     if core::eq_ascii_fold(clean, "document") { return SecFetchDest.Document; }
@@ -148,11 +162,11 @@ fn is_allowed(decision: const CsrfDecision&) -> bool {
 // ---- crossoriginguard policy & state machine -------------------------------
 
 struct CrossOriginGuard {
-    allow_same_site: bool = false,
-    require_user_activation_on_sensitive_nav: bool = true,
-    allow_cross_site_static_assets: bool = true,
-    trusted_origins: u8[..128][..16] = [],
-    exempt_paths: u8[..128][..16] = [],
+    allow_same_site:                          bool            = false,
+    require_user_activation_on_sensitive_nav: bool            = true,
+    allow_cross_site_static_assets:           bool            = true,
+    trusted_origins:                          u8[..128][..16] = [],
+    exempt_paths:                             u8[..128][..16] = [],
 }
 
 fn add_trusted_origin(guard_cfg: CrossOriginGuard&, origin_str: const u8[:]) -> bool {
@@ -182,11 +196,6 @@ fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> 
     return false;
 }
 
-// Branchless constant-time equality check for byte slices (tokens, nonces).
-fn subtle_equal(a: const u8[:], b: const u8[:]) -> bool {
-    return core::ct_eq_bytes(a, b);
-}
-
 // Branchless constant-time case-insensitive ASCII comparison.
 fn subtle_equal_ascii_fold(a: const u8[:], b: const u8[:]) -> bool {
     guard a.len == b.len else { return false; }
@@ -203,7 +212,7 @@ fn subtle_equal_ascii_fold(a: const u8[:], b: const u8[:]) -> bool {
 // Constant-time double-submit CSRF token validation.
 fn validate_csrf_token(cookie_token: const u8[:], request_token: const u8[:]) -> bool {
     guard cookie_token.len > 0 && request_token.len > 0 else { return false; }
-    return subtle_equal(cookie_token, request_token);
+    return core::ct_eq_bytes(cookie_token, request_token);
 }
 
 // Masks a CSRF token using a one-time pad XOR mask into out: [mask (N bytes) | masked_secret (N bytes)].
@@ -367,6 +376,11 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
 // Example:
 //   raw = "https://example.com/api/webhook?foo=bar"
 //   returns: "/api/webhook"
+// Extracts normalized path component from a URL.
+//
+// Example:
+//   raw = "https://example.com/api/v1?query=1"
+//   returns: "/api/v1"
 fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
     var s = raw;
     if starts_with_fold(s, "https://") {
@@ -389,19 +403,23 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
 }
 
 // Extracts FetchContext from an incoming Request.
+//
+// Example:
+//   req.method = "POST", target_host = "api.example.com"
+//   returns: ctx with method = "POST", target_host = "api.example.com"
 fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> FetchContext {
     var ctx = FetchContext { .. };
     ctx.method.clear();
-    if req.method.len <= ctx.method.cap {
-        ctx.method.append(req.method[..]);
-    }
+    let m_len = if req.method.len <= ctx.method.cap { req.method.len } else { ctx.method.cap };
+    ctx.method.append(req.method[..m_len]);
+
     // RFC 9110 Section 9.2.1 & RFC 10008 Section 2: safe methods
     let m = req.method[..];
     ctx.method_is_safe = (m == "GET" || m == "HEAD" || m == "OPTIONS" || m == "QUERY");
     ctx.target_host.clear();
-    if target_host.len <= ctx.target_host.cap {
-        ctx.target_host.append(target_host);
-    }
+    let th_len = if target_host.len <= ctx.target_host.cap { target_host.len } else { ctx.target_host.cap };
+    ctx.target_host.append(target_host[..th_len]);
+
     let req_path = extract_path_from_url(req.url[..]);
     ctx.path.clear();
     let copy_len = if req_path.len <= ctx.path.cap { req_path.len } else { ctx.path.cap };
@@ -420,13 +438,15 @@ fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> Fetc
         } else if core::eq_ascii_fold(name, "Sec-Fetch-User") {
             ctx.user_activated = (val == "?1");
         } else if core::eq_ascii_fold(name, "Origin") {
-            if !ctx.has_origin && val.len <= ctx.origin.cap {
-                ctx.origin.append(val);
+            if !ctx.has_origin {
+                let o_len = if val.len <= ctx.origin.cap { val.len } else { ctx.origin.cap };
+                ctx.origin.append(val[..o_len]);
                 ctx.has_origin = true;
             }
         } else if core::eq_ascii_fold(name, "Referer") {
-            if !ctx.has_referer && val.len <= ctx.referer.cap {
-                ctx.referer.append(val);
+            if !ctx.has_referer {
+                let r_len = if val.len <= ctx.referer.cap { val.len } else { ctx.referer.cap };
+                ctx.referer.append(val[..r_len]);
                 ctx.has_referer = true;
             }
         } else if core::eq_ascii_fold(name, "Cookie") {

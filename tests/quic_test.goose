@@ -67,13 +67,13 @@ fn test_qpack_table_and_codecs(t: core::T&) {
         sub.assert_eq(tbl.used_bytes, 102, "used bytes remains 102 after eviction");
 
         // Absolute index 0 was evicted
-        var n0: u8[..256] = [];
+        var n0: u8[..256]  = [];
         var v0: u8[..4096] = [];
         let ok_evicted = internal::qpack_lookup_absolute(tbl, 0, n0, v0);
         sub.assert_false(ok_evicted, "evicted entry 0 cannot be looked up");
 
         // Absolute index 2 (latest) is active
-        var n2: u8[..256] = [];
+        var n2: u8[..256]  = [];
         var v2: u8[..4096] = [];
         let ok_act = internal::qpack_lookup_absolute(tbl, 2, n2, v2);
         sub.assert_true(ok_act, "active entry 2 looked up");
@@ -98,8 +98,8 @@ fn test_qpack_table_and_codecs(t: core::T&) {
 // 2. QPACK Header Accordion DoS Defense & Post-Decode RIC Validation
 fn test_qpack_security_defenses(t: core::T&) {
     t.run("QPACK-DOS-01: Header Accordion 32-Byte Overhead Enforcement") { sub =>
-        var fields: internal::HeaderField[>..] = [];
-        var budget_left: u64 = 100; // 100 bytes budget
+        var fields:      internal::HeaderField[>..] = [];
+        var budget_left: u64                        = 100; // 100 bytes budget
 
         // Entry: "a": "b" -> length 2. Plus 32 overhead = 34 bytes!
         let err1 = internal::emit_field_checked(fields, budget_left, "a", "b", false);
@@ -174,10 +174,10 @@ fn test_quic_varint_and_framing(t: core::T&) {
     t.run("FRAMING-01: Long & Short Header Encode / Decode Roundtrip") { sub =>
         // Initial Header
         var orig_hdr = internal::QuicHeader {
-            header_type: internal::QuicHeaderType.Initial,
-            version: internal::QUIC_VERSION_1,
+            header_type:    internal::QuicHeaderType.Initial,
+            version:        internal::QUIC_VERSION_1,
             payload_length: 1200,
-            packet_number: 42,
+            packet_number:  42,
             ..
         };
         orig_hdr.dcid.append([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -316,10 +316,10 @@ fn test_header_protection_and_pn(t: core::T&) {
     t.run("HDR-02: QUIC Header Parsing Across All Packet Types") { sub =>
         // 1. Handshake Packet Header
         var h_hdr = internal::QuicHeader {
-            header_type: internal::QuicHeaderType.Handshake,
-            version: internal::QUIC_VERSION_1,
+            header_type:    internal::QuicHeaderType.Handshake,
+            version:        internal::QUIC_VERSION_1,
             payload_length: 120,
-            packet_number: 42,
+            packet_number:  42,
             ..
         };
         h_hdr.dcid.append("dcid1234");
@@ -336,10 +336,10 @@ fn test_header_protection_and_pn(t: core::T&) {
 
         // 2. 0-RTT Packet Header
         var z_hdr = internal::QuicHeader {
-            header_type: internal::QuicHeaderType.ZeroRtt,
-            version: internal::QUIC_VERSION_1,
+            header_type:    internal::QuicHeaderType.ZeroRtt,
+            version:        internal::QUIC_VERSION_1,
             payload_length: 50,
-            packet_number: 1,
+            packet_number:  1,
             ..
         };
         z_hdr.dcid.append("zero-dcid");
@@ -352,7 +352,7 @@ fn test_header_protection_and_pn(t: core::T&) {
         // 3. Retry Packet Header
         var r_hdr = internal::QuicHeader {
             header_type: internal::QuicHeaderType.Retry,
-            version: internal::QUIC_VERSION_1,
+            version:     internal::QUIC_VERSION_1,
             ..
         };
         r_hdr.dcid.append("retry-dcid");
@@ -454,13 +454,13 @@ fn test_anti_amplification_and_reassembly(t: core::T&) {
 fn test_ack_and_pto_engine(t: core::T&) {
     t.run("ACK-01: ACK & ACK_ECN Encode / Decode Roundtrip") { sub =>
         var orig_ack = internal::AckFrame {
-            is_ecn: true,
-            largest_acked: 100,
-            ack_delay: 250,
+            is_ecn:          true,
+            largest_acked:   100,
+            ack_delay:       250,
             first_ack_range: 10, // packets 90..100
-            ect0_count: 5,
-            ect1_count: 0,
-            ecn_ce_count: 2,
+            ect0_count:      5,
+            ect1_count:      0,
+            ecn_ce_count:    2,
             ..
         };
         // Gap 2 (packets 87..89 unacked), ACK range 5 (packets 81..86 acked)
@@ -484,16 +484,16 @@ fn test_ack_and_pto_engine(t: core::T&) {
 
     t.run("ACK-02: Optimistic ACK (OACK) Forward-Dated Attack Rejection") { sub =>
         var space = internal::PnSpaceState {
-            space_id: internal::PnSpaceId.ApplicationData,
-            largest_sent_pn: 50, // Sender only sent up to PN 50!
+            space_id:         internal::PnSpaceId.ApplicationData,
+            largest_sent_pn:  50, // Sender only sent up to PN 50!
             has_sent_packets: true,
             ..
         };
 
         // Malicious peer sends ACK for PN 60 > largest_sent_pn
         let malicious_ack = internal::AckFrame {
-            largest_acked: 60,
-            ack_delay: 0,
+            largest_acked:   60,
+            ack_delay:       0,
             first_ack_range: 0,
             ..
         };
@@ -530,13 +530,21 @@ fn test_ack_and_pto_engine(t: core::T&) {
 
         // Priority 2: Server at anti-amplification limit
         let dec_amp = internal::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, true, true, false, false,
+            spaces, rtt, 0, 1000000, internal::PtoContext {
+                is_server:                true,
+                is_amplification_limited: true,
+            },
         );
         sub.assert_eq(dec_amp.mode, internal::PtoTimerMode.AntiAmplification, "server at amp limit returns AntiAmplification");
 
         // Priority 3: Client Anti-deadlock PTO when no packets in flight
         let dec_deadlock = internal::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, false, false, false, false,
+            spaces, rtt, 0, 1000000, internal::PtoContext {
+                is_server:                      false,
+                is_amplification_limited:       false,
+                peer_completed_addr_validation: false,
+                handshake_confirmed:            false,
+            },
         );
         sub.assert_eq(dec_deadlock.mode, internal::PtoTimerMode.AntiDeadlock, "client anti-deadlock armed");
 
@@ -546,14 +554,20 @@ fn test_ack_and_pto_engine(t: core::T&) {
         });
         spaces[0].time_of_last_ack_eliciting_us = 1000000;
         let dec_std = internal::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, true, false, true, false,
+            spaces, rtt, 0, 1000000, internal::PtoContext {
+                is_server:                      true,
+                peer_completed_addr_validation: true,
+            },
         );
         sub.assert_eq(dec_std.mode, internal::PtoTimerMode.StandardPto, "standard PTO scheduled");
 
         // Priority 1: Time threshold loss detection takes precedence over PTO
         spaces[0].loss_time_us = 1010000;
         let dec_loss = internal::evaluate_pto_timer(
-            spaces, rtt, 0, 1000000, true, false, true, false,
+            spaces, rtt, 0, 1000000, internal::PtoContext {
+                is_server:                      true,
+                peer_completed_addr_validation: true,
+            },
         );
         sub.assert_eq(dec_loss.mode, internal::PtoTimerMode.LossTime, "loss time timer takes Priority 1");
     };
@@ -600,9 +614,9 @@ fn test_ack_and_pto_engine(t: core::T&) {
 
     t.run("LOSS-01: Packet and Time Threshold Loss Detection (RFC 9002)") { sub =>
         var space = internal::PnSpaceState {
-            space_id: internal::PnSpaceId.ApplicationData,
+            space_id:          internal::PnSpaceId.ApplicationData,
             has_acked_packets: true,
-            largest_acked_pn: 10,
+            largest_acked_pn:  10,
             ..
         };
         // Sent packets: PN 5 (t=1000), PN 6 (t=1000), PN 8 (t=1000)
@@ -618,7 +632,7 @@ fn test_ack_and_pto_engine(t: core::T&) {
 
         var rtt = internal::RttState {
             smoothed_rtt_us: 40000,
-            latest_rtt_us: 40000,
+            latest_rtt_us:   40000,
             ..
         };
 
@@ -1362,9 +1376,9 @@ fn test_connection_datagram_demuxing(t: core::T&) {
 fn test_quic_ack_frame_decoding_invariants(t: core::T&) {
     // 1. Valid ACK Frame
     var ack = internal::AckFrame {
-        is_ecn: false,
-        largest_acked: 100,
-        ack_delay: 25,
+        is_ecn:          false,
+        largest_acked:   100,
+        ack_delay:       25,
         first_ack_range: 10,
         ..
     };
@@ -1394,13 +1408,13 @@ fn test_quic_ack_frame_decoding_invariants(t: core::T&) {
 fn test_quic_oack_defense(t: core::T&) {
     var space = internal::PnSpaceState {
         has_sent_packets: true,
-        largest_sent_pn: 50,
+        largest_sent_pn:  50,
         ..
     };
 
     // Forward-dated ACK (largest_acked = 60 > largest_sent_pn = 50)
     var fwd_ack = internal::AckFrame {
-        largest_acked: 60,
+        largest_acked:   60,
         first_ack_range: 0,
         ..
     };
@@ -1410,7 +1424,7 @@ fn test_quic_oack_defense(t: core::T&) {
 
     // Valid ACK within sent range
     var valid_ack = internal::AckFrame {
-        largest_acked: 50,
+        largest_acked:   50,
         first_ack_range: 5,
         ..
     };
@@ -1609,8 +1623,8 @@ fn test_connection_migration(t: core::T&) {
         // Simulate incoming PathResponse frame dispatch
         let resp_frame = internal::QuicFrame {
             frame_type: internal::QuicFrameType.PathResponse,
-            length: 8,
-            payload: token[..],
+            length:     8,
+            payload:    token[..],
             ..
         };
         let ok_disp, _ = internal::dispatch_inbound_frame(conn, resp_frame);
@@ -1641,8 +1655,8 @@ fn test_dplpmtud(t: core::T&) {
     };
 
     t.run("DPL-02: Padded PATH_CHALLENGE probe generation across target sizes") { sub =>
-        let challenge: u8[8] = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03, 0x04];
-        let sizes: u32[4] = [1200, 1280, 1420, 1500];
+        let challenge: u8[8]  = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03, 0x04];
+        let sizes:     u32[4] = [1200, 1280, 1420, 1500];
         for sz in sizes {
             var buf: u8[>..] = [];
             let ok = internal::generate_path_challenge_probe(buf, challenge, sz);
@@ -1771,9 +1785,9 @@ fn test_quic_cross_module_bug_fixes(t: core::T&) {
         dgram.push(0x01); // PN = 1
 
         let ack = internal::AckFrame {
-            is_ecn: false,
-            largest_acked: 0,
-            ack_delay: 5,
+            is_ecn:          false,
+            largest_acked:   0,
+            ack_delay:       5,
             first_ack_range: 0,
             ..
         };

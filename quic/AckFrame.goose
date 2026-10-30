@@ -21,61 +21,61 @@ enum PnSpaceId {
 // ACK Range interval [smallest, largest], inclusive
 struct AckInterval {
     smallest: u64 = 0,
-    largest: u64 = 0,
+    largest:  u64 = 0,
 }
 
 struct AckRange {
-    gap: u64 = 0,
+    gap:       u64 = 0,
     ack_range: u64 = 0,
 }
 
 // ACK / ACK_ECN Frame structure (RFC 9000 Section 19.3)
 struct AckFrame {
-    is_ecn: bool = false,
-    largest_acked: u64 = 0,
-    ack_delay: u64 = 0,
-    first_ack_range: u64 = 0,
-    ranges: AckRange[..64] = [],
-    ect0_count: u64 = 0,
-    ect1_count: u64 = 0,
-    ecn_ce_count: u64 = 0,
+    is_ecn:          bool           = false,
+    largest_acked:   u64            = 0,
+    ack_delay:       u64            = 0,
+    first_ack_range: u64            = 0,
+    ranges:          AckRange[..64] = [],
+    ect0_count:      u64            = 0,
+    ect1_count:      u64            = 0,
+    ecn_ce_count:    u64            = 0,
 }
 
 struct SentPacketMeta {
-    pn: u64 = 0,
-    time_sent_us: u64 = 0,
-    size_bytes: u64 = 0,
+    pn:            u64  = 0,
+    time_sent_us:  u64  = 0,
+    size_bytes:    u64  = 0,
     ack_eliciting: bool = false,
-    in_flight: bool = false,
+    in_flight:     bool = false,
 }
 
 struct PnSpaceState {
-    space_id: PnSpaceId = PnSpaceId.Initial,
-    largest_sent_pn: u64 = 0,
-    has_sent_packets: bool = false,
-    largest_acked_pn: u64 = 0,
-    has_acked_packets: bool = false,
-    largest_recv_pn: u64 = 0,
-    has_recv_packets: bool = false,
-    time_of_last_ack_eliciting_us: u64 = 0,
-    loss_time_us: u64 = 0,
-    sent_packets: SentPacketMeta[..128] = [],
-    recv_ranges: AckInterval[..64] = [],
+    space_id:                      PnSpaceId             = PnSpaceId.Initial,
+    largest_sent_pn:               u64                   = 0,
+    has_sent_packets:              bool                  = false,
+    largest_acked_pn:              u64                   = 0,
+    has_acked_packets:             bool                  = false,
+    largest_recv_pn:               u64                   = 0,
+    has_recv_packets:              bool                  = false,
+    time_of_last_ack_eliciting_us: u64                   = 0,
+    loss_time_us:                  u64                   = 0,
+    sent_packets:                  SentPacketMeta[..128] = [],
+    recv_ranges:                   AckInterval[..64]     = [],
 }
 
 struct RttState {
-    latest_rtt_us: u64 = 0,
-    min_rtt_us: u64 = 0,
-    smoothed_rtt_us: u64 = 333000,      // kInitialRtt = 333 ms (RFC 9002 Sec 6.2.2)
-    rttvar_us: u64 = 166500,            // kInitialRtt / 2
-    max_ack_delay_us: u64 = 25000,      // 25 ms default (RFC 9000 Sec 18.2)
+    latest_rtt_us:        u64 = 0,
+    min_rtt_us:           u64 = 0,
+    smoothed_rtt_us:      u64 = 333000, // kInitialRtt = 333 ms (RFC 9002 Sec 6.2.2)
+    rttvar_us:            u64 = 166500, // kInitialRtt / 2
+    max_ack_delay_us:     u64 = 25000,  // 25 ms default (RFC 9000 Sec 18.2)
     first_sample_time_us: u64 = 0,
 }
 
 const QUIC_LOSS_PACKET_THRESHOLD: u64 = 3;    // kPacketThreshold (RFC 9002 Sec 6.1.1)
-const QUIC_LOSS_TIME_NUMERATOR: u64 = 9;      // 9/8 kTimeThreshold (RFC 9002 Sec 6.1.2)
+const QUIC_LOSS_TIME_NUMERATOR:   u64 = 9;    // 9/8 kTimeThreshold (RFC 9002 Sec 6.1.2)
 const QUIC_LOSS_TIME_DENOMINATOR: u64 = 8;
-const QUIC_TIMER_GRANULARITY_US: u64 = 1000; // 1 ms kGranularity
+const QUIC_TIMER_GRANULARITY_US:  u64 = 1000; // 1 ms kGranularity
 
 // ---- 2. ack frame encoder & decoder (rfc 9000 section 19.3) -----------------
 
@@ -101,7 +101,47 @@ fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
     return true;
 }
 
+// Decodes sequential ACK gap and range fields.
+//
+// Example:
+//   src = [0x00, 0x01], cur = 0, range_cnt = 1
+//   returns: ok = true, cur = 2
+fn decode_ack_ranges(
+    src:           const u8[:],
+    cur:           u64&,
+    range_cnt:     u64,
+    largest_acked: u64,
+    first_range:   u64,
+    ack:           AckFrame&,
+) -> bool {
+    var cur_smallest = largest_acked - first_range;
+    var r_idx: u64 = 0;
+    while r_idx < range_cnt {
+        let gap, next_cur_g, okg = quic_decode_varint(src, cur);
+        guard okg else { return false; }
+        cur = next_cur_g;
+        let rlen, next_cur_r, okr = quic_decode_varint(src, cur);
+        guard okr else { return false; }
+        cur = next_cur_r;
+
+        // RFC 9000 §19.3.1: Enforce descending bounds and avoid underflow
+        guard cur_smallest >= 2 && (cur_smallest - 2) >= gap else { return false; }
+        let cur_largest = cur_smallest - gap - 2;
+        guard cur_largest >= rlen else { return false; }
+        cur_smallest = cur_largest - rlen;
+
+        guard ack.ranges.len < ack.ranges.cap else { return false; }
+        ack.ranges.push(AckRange { gap: gap, ack_range: rlen });
+        r_idx++;
+    }
+    return true;
+}
+
 // Decodes an ACK or ACK_ECN frame from wire buffer, returning the frame, next offset, and success status.
+//
+// Example:
+//   src = [0x02, 0x05, 0x00, 0x00, 0x00], offset = 0
+//   returns: AckFrame { largest_acked: 5 }, next_offset = 5, ok = true
 fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     var cur = offset;
     let ftype, next_cur0, ok0 = quic_decode_varint(src, cur);
@@ -130,32 +170,16 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     guard largest_acked >= first_range else { return AckFrame {}, offset, false; }
 
     var ack = AckFrame {
-        is_ecn: (ftype == QUIC_FRAME_ACK_ECN),
-        largest_acked: largest_acked,
-        ack_delay: ack_delay,
+        is_ecn:          (ftype == QUIC_FRAME_ACK_ECN),
+        largest_acked:   largest_acked,
+        ack_delay:       ack_delay,
         first_ack_range: first_range,
         ..
     };
 
     guard range_cnt <= (ack.ranges.cap as u64) else { return AckFrame {}, offset, false; }
-    var cur_smallest = largest_acked - first_range;
-    var r_idx: u64 = 0;
-    while r_idx < range_cnt {
-        let gap, next_cur_g, okg = quic_decode_varint(src, cur);
-        guard okg else { return AckFrame {}, offset, false; }
-        cur = next_cur_g;
-        let rlen, next_cur_r, okr = quic_decode_varint(src, cur);
-        guard okr else { return AckFrame {}, offset, false; }
-        cur = next_cur_r;
-
-        // RFC 9000 §19.3.1: Enforce descending bounds and avoid underflow
-        guard cur_smallest >= 2 && (cur_smallest - 2) >= gap else { return AckFrame {}, offset, false; }
-        let cur_largest = cur_smallest - gap - 2;
-        guard cur_largest >= rlen else { return AckFrame {}, offset, false; }
-        cur_smallest = cur_largest - rlen;
-
-        ack.ranges.push(AckRange { gap: gap, ack_range: rlen });
-        r_idx++;
+    guard decode_ack_ranges(src, cur, range_cnt, largest_acked, first_range, ack) else {
+        return AckFrame {}, offset, false;
     }
 
     if ack.is_ecn {
@@ -176,15 +200,19 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
 }
 
 // Converts a list of received packet intervals into an AckFrame representation.
+//
+// Example:
+//   ranges = [AckInterval { smallest: 5, largest: 10 }], ack_delay = 0
+//   returns: AckFrame { largest_acked: 10, first_ack_range: 5 }, ok = true
 fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: bool = false) -> AckFrame, bool {
     guard ranges.len > 0 else { return AckFrame {}, false; }
     let largest = ranges[0].largest;
     guard largest >= ranges[0].smallest else { return AckFrame {}, false; }
 
     var ack = AckFrame {
-        is_ecn: is_ecn,
-        largest_acked: largest,
-        ack_delay: ack_delay,
+        is_ecn:          is_ecn,
+        largest_acked:   largest,
+        ack_delay:       ack_delay,
         first_ack_range: largest - ranges[0].smallest,
         ..
     };
@@ -206,9 +234,13 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
 
 // Validates ACK against sent state to defeat Optimistic ACK attacks (ANRW 2025).
 // Checks for forward-dated packet numbers, underflow, and descending consistency.
+//
+// Example:
+//   space.largest_sent_pn = 10, ack = AckFrame { largest_acked: 10, first_ack_range: 2 }
+//   returns: ok = true, out_intervals = [AckInterval { smallest: 8, largest: 10 }]
 fn parse_and_validate_ack(
-    space: const PnSpaceState&,
-    ack: const AckFrame&,
+    space:         const PnSpaceState&,
+    ack:           const AckFrame&,
     out_intervals: AckInterval[..64]&,
 ) -> bool {
     guard space.has_sent_packets else { return false; }
@@ -235,15 +267,14 @@ fn parse_and_validate_ack(
 }
 
 // Records received packet number into descending non-overlapping interval set.
-fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) {
+fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
     var i = 0;
     while i < ranges.len {
         let r = ranges[i];
         if pn > r.largest + 1 {
-            if ranges.len < ranges.cap {
-                ranges.insert_at(i, AckInterval { smallest: pn, largest: pn });
-            }
-            return;
+            guard ranges.len < ranges.cap else { return false; }
+            ranges.insert_at(i, AckInterval { smallest: pn, largest: pn });
+            return true;
         }
         if pn == r.largest + 1 {
             ranges[i].largest = pn;
@@ -252,10 +283,10 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) {
                 ranges[i - 1].smallest = ranges[i].smallest;
                 ranges.remove_at(i);
             }
-            return;
+            return true;
         }
         if pn >= r.smallest && pn <= r.largest {
-            return; // Duplicate packet
+            return true; // Duplicate packet
         }
         if pn + 1 == r.smallest {
             ranges[i].smallest = pn;
@@ -264,13 +295,13 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) {
                 ranges[i].smallest = ranges[i + 1].smallest;
                 ranges.remove_at(i + 1);
             }
-            return;
+            return true;
         }
         i++;
     }
-    if ranges.len < ranges.cap {
-        ranges.push(AckInterval { smallest: pn, largest: pn });
-    }
+    guard ranges.len < ranges.cap else { return false; }
+    ranges.push(AckInterval { smallest: pn, largest: pn });
+    return true;
 }
 
 // ---- 4. rtt estimation (rfc 9002 section 5.3) --------------------------------
@@ -281,11 +312,11 @@ inline fn rtt_abs_diff(a: u64, b: u64) -> u64 {
 
 // Updates smoothed_rtt, rttvar, and min_rtt upon receiving an ACK with ack-eliciting sample.
 fn update_rtt(
-    rtt: RttState&,
-    latest_rtt: u64,
-    ack_delay: u64,
+    rtt:                 RttState&,
+    latest_rtt:          u64,
+    ack_delay:           u64,
     handshake_confirmed: bool,
-    now_us: u64,
+    now_us:              u64,
 ) {
     rtt.latest_rtt_us = latest_rtt;
 
@@ -320,12 +351,12 @@ fn update_rtt(
 
 // Detects and removes lost packets in pn_space using packet and time thresholds.
 fn detect_lost_packets(
-    space: PnSpaceState&,
-    rtt: const RttState&,
-    now_us: u64,
+    space:    PnSpaceState&,
+    rtt:      const RttState&,
+    now_us:   u64,
     out_lost: SentPacketMeta[..64]&,
-) {
-    guard space.has_acked_packets else { return; }
+) -> bool {
+    guard space.has_acked_packets else { return true; }
     space.loss_time_us = 0;
 
     let max_rtt = if rtt.latest_rtt_us > rtt.smoothed_rtt_us {
@@ -351,9 +382,8 @@ fn detect_lost_packets(
         let is_time_threshold = pkt.time_sent_us <= lost_send_time;
 
         if is_packet_threshold || is_time_threshold {
-            if out_lost.len < out_lost.cap {
-                out_lost.push(pkt);
-            }
+            guard out_lost.len < out_lost.cap else { return false; }
+            out_lost.push(pkt);
             space.sent_packets.remove_at(i);
         } else {
             let next_loss_time = pkt.time_sent_us + loss_delay;
@@ -363,6 +393,7 @@ fn detect_lost_packets(
             i++;
         }
     }
+    return true;
 }
 
 // ---- 6. 5-priority probe timeout (pto) state machine (rfc 9002 a.8/a.9) -----
@@ -376,9 +407,9 @@ enum PtoTimerMode {
 }
 
 struct PtoTimerDecision {
-    mode: PtoTimerMode = PtoTimerMode.None,
-    target_time_us: u64 = 0,
-    space_id: PnSpaceId = PnSpaceId.Initial,
+    mode:           PtoTimerMode = PtoTimerMode.None,
+    target_time_us: u64          = 0,
+    space_id:       PnSpaceId    = PnSpaceId.Initial,
 }
 
 // Finds earliest loss detection time across all active spaces (Priority 1).
@@ -411,60 +442,31 @@ fn compute_pto_duration(rtt: const RttState&, pto_count: u32, is_app_data: bool)
     return dur * ((1 as u64) << shift);
 }
 
-// Evaluates 5-tier PTO scheduling priority (RFC 9002 Section 6.2 & Appendix A.8).
-fn evaluate_pto_timer(
-    spaces: const PnSpaceState[3]&,
-    rtt: const RttState&,
-    pto_count: u32,
-    now_us: u64,
-    is_server: bool,
-    is_amplification_limited: bool,
-    peer_completed_addr_validation: bool,
-    handshake_confirmed: bool,
-) -> PtoTimerDecision {
-    // Priority 1: Time threshold loss detection
-    let loss_t, loss_sp = get_earliest_loss_time(spaces);
-    if loss_t != 0 {
-        return PtoTimerDecision {
-            mode: PtoTimerMode.LossTime,
-            target_time_us: loss_t,
-            space_id: loss_sp,
-        };
-    }
+struct PtoContext {
+    is_server:                      bool = false,
+    is_amplification_limited:       bool = false,
+    peer_completed_addr_validation: bool = false,
+    handshake_confirmed:            bool = false,
+}
 
-    // Priority 2: Server anti-amplification limit
-    if is_server && is_amplification_limited {
-        return PtoTimerDecision { mode: PtoTimerMode.AntiAmplification, .. };
-    }
-
-    // Check ack-eliciting packets in flight across spaces
-    var in_flight_count: u64 = 0;
+fn count_in_flight_eliciting(spaces: const PnSpaceState[3]&) -> u64 {
+    var count: u64 = 0;
     for s in 3 {
         for p in spaces[s].sent_packets.len {
-            if spaces[s].sent_packets[p].ack_eliciting { in_flight_count++; }
+            if spaces[s].sent_packets[p].ack_eliciting { count++; }
         }
     }
+    return count;
+}
 
-    // Priority 3: Client Anti-deadlock PTO
-    if in_flight_count == 0 && !peer_completed_addr_validation {
-        let dur = compute_pto_duration(rtt, pto_count, false);
-        let sp = if spaces[1].has_sent_packets { PnSpaceId.Handshake } else { PnSpaceId.Initial };
-        return PtoTimerDecision {
-            mode: PtoTimerMode.AntiDeadlock,
-            target_time_us: now_us + dur,
-            space_id: sp,
-        };
-    }
-
-    // Priority 4: Idle connection with completed address validation
-    if in_flight_count == 0 && peer_completed_addr_validation {
-        return PtoTimerDecision { mode: PtoTimerMode.None, .. };
-    }
-
-    // Priority 5: Standard PTO across active spaces
+fn find_earliest_standard_pto(
+    spaces:              const PnSpaceState[3]&,
+    rtt:                 const RttState&,
+    pto_count:           u32,
+    handshake_confirmed: bool,
+    out_target_sp:       PnSpaceId&,
+) -> u64 {
     var earliest_pto: u64 = 0;
-    var target_sp = PnSpaceId.Initial;
-
     for s in 3 {
         let space = spaces[s];
         var space_has_eliciting = false;
@@ -481,15 +483,62 @@ fn evaluate_pto_timer(
         let t = space.time_of_last_ack_eliciting_us + dur;
         if earliest_pto == 0 || t < earliest_pto {
             earliest_pto = t;
-            target_sp = space.space_id;
+            out_target_sp = space.space_id;
         }
     }
+    return earliest_pto;
+}
 
+// Evaluates 5-tier PTO scheduling priority (RFC 9002 Section 6.2 & Appendix A.8).
+fn evaluate_pto_timer(
+    spaces:    const PnSpaceState[3]&,
+    rtt:       const RttState&,
+    pto_count: u32,
+    now_us:    u64,
+    ctx:       PtoContext,
+) -> PtoTimerDecision {
+    // Priority 1: Time threshold loss detection
+    let loss_t, loss_sp = get_earliest_loss_time(spaces);
+    if loss_t != 0 {
+        return PtoTimerDecision {
+            mode:           PtoTimerMode.LossTime,
+            target_time_us: loss_t,
+            space_id:       loss_sp,
+        };
+    }
+
+    // Priority 2: Server anti-amplification limit
+    if ctx.is_server && ctx.is_amplification_limited {
+        return PtoTimerDecision { mode: PtoTimerMode.AntiAmplification, .. };
+    }
+
+    // Check ack-eliciting packets in flight across spaces
+    let in_flight_count = count_in_flight_eliciting(spaces);
+
+    // Priority 3: Client Anti-deadlock PTO
+    if in_flight_count == 0 && !ctx.peer_completed_addr_validation {
+        let dur = compute_pto_duration(rtt, pto_count, false);
+        let sp = if spaces[1].has_sent_packets { PnSpaceId.Handshake } else { PnSpaceId.Initial };
+        return PtoTimerDecision {
+            mode:           PtoTimerMode.AntiDeadlock,
+            target_time_us: now_us + dur,
+            space_id:       sp,
+        };
+    }
+
+    // Priority 4: Idle connection with completed address validation
+    if in_flight_count == 0 && ctx.peer_completed_addr_validation {
+        return PtoTimerDecision { mode: PtoTimerMode.None, .. };
+    }
+
+    // Priority 5: Standard PTO across active spaces
+    var target_sp = PnSpaceId.Initial;
+    let earliest_pto = find_earliest_standard_pto(spaces, rtt, pto_count, ctx.handshake_confirmed, target_sp);
     if earliest_pto != 0 {
         return PtoTimerDecision {
-            mode: PtoTimerMode.StandardPto,
+            mode:           PtoTimerMode.StandardPto,
             target_time_us: earliest_pto,
-            space_id: target_sp,
+            space_id:       target_sp,
         };
     }
 

@@ -9,18 +9,24 @@ import core from "..";
 
 // ---- protocol wire constants & overhead definitions ------------------------
 
-let WIRE_VER_XCHACHA20: u8 = 0x01;
+let WIRE_VER_XCHACHA20:    u8 = 0x01;
 let WIRE_VER_HKDF_AES_GCM: u8 = 0x02;
-let WIRE_VER_HMAC_SHA256: u8 = 0x03;
+let WIRE_VER_HMAC_SHA256:  u8 = 0x03;
 
-let K_OVERHEAD_XCHACHA20: i64 = 53;    // 1 + 4 + 8 + 24 + 16
+let K_OVERHEAD_XCHACHA20:    i64 = 53; // 1 + 4 + 8 + 24 + 16
 let K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
-let K_OVERHEAD_HMAC_SHA256: i64 = 45;  // 1 + 4 + 8 + 32
+let K_OVERHEAD_HMAC_SHA256:  i64 = 45; // 1 + 4 + 8 + 32
 
 // Additional Authenticated Data (AAD) for context binding:
 // ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
 // Binds creation timestamp and cookie name to prevent replay and context swapping.
-fn build_cookie_aad<B>(ver: u8, key_id: u32, timestamp_sec: i64, cookie_name: const u8[:], out: B&) {
+fn build_cookie_aad<B>(
+    ver:           u8,
+    key_id:        u32,
+    timestamp_sec: i64,
+    cookie_name:   const u8[:],
+    out:           B&,
+) {
     out.push(ver);
     core::write_be_u32(out, key_id);
     core::write_be_u64(out, timestamp_sec as u64);
@@ -31,7 +37,13 @@ fn build_cookie_aad<B>(ver: u8, key_id: u32, timestamp_sec: i64, cookie_name: co
 // Framed HMAC input buffer for SignedJar:
 // ver (1B) || key_id (4B) || timestamp (8B) || cookie_name_len (2B) || cookie_name || payload_len (4B) || payload.
 // Length prefixes prevent boundary collisions between cookie name and payload.
-fn build_signed_to_sign<B>(key_id: u32, cookie_sec: i64, cookie_name: const u8[:], payload: const u8[:], out: B&) {
+fn build_signed_to_sign<B>(
+    key_id:      u32,
+    cookie_sec:  i64,
+    cookie_name: const u8[:],
+    payload:     const u8[:],
+    out:         B&,
+) {
     out.push(WIRE_VER_HMAC_SHA256);
     core::write_be_u32(out, key_id);
     core::write_be_u64(out, cookie_sec as u64);
@@ -45,10 +57,10 @@ fn build_signed_to_sign<B>(key_id: u32, cookie_sec: i64, cookie_name: const u8[:
 
 // Key rotation store supporting an active primary key and retired keys.
 struct KeyStore {
-    keys: core::KeySlot[..8] = [],
-    active_idx: i64 = 0,
-    max_age_sec: i64 = 2592000,          // 30 days default session lifetime
-    clock_skew_tolerance_sec: i64 = 300, // 5 minutes skew tolerance
+    keys:                     core::KeySlot[..8] = [],
+    active_idx:               i64                = 0,
+    max_age_sec:              i64                = 2592000, // 30 days default session lifetime
+    clock_skew_tolerance_sec: i64                = 300,     // 5 minutes skew tolerance
 }
 
 // Creates an empty KeyStore with default session lifetime and skew tolerance.
@@ -118,8 +130,8 @@ fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i
 // Encrypted cookie jar using AEAD (XChaCha20-Poly1305 or HKDF-AES-GCM).
 // Wire format: version (1B) | key_id (4B) | timestamp/salt | nonce | ciphertext | tag.
 struct PrivateJar {
-    store: KeyStore = KeyStore { .. },
-    use_hkdf_aes: bool = false, // false = XChaCha20-Poly1305 (default), true = HKDF + AES-256-GCM
+    store:        KeyStore = KeyStore { .. },
+    use_hkdf_aes: bool     = false, // false = XChaCha20-Poly1305 (default), true = HKDF + AES-256-GCM
 }
 
 fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
@@ -128,9 +140,9 @@ fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
 
 inline fn init_hkdf_salt_nonce(
     nonce_seed: u64,
-    now_sec: i64,
-    salt: u8[32]&,
-    nonce12: u8[12]&,
+    now_sec:    i64,
+    salt:       u8[32]&,
+    nonce12:    u8[12]&,
 ) {
     let step1 = nonce_seed * 6364136223846793005 + 1;
     let step2 = step1 * 6364136223846793005 + 1;
@@ -147,17 +159,17 @@ inline fn init_hkdf_salt_nonce(
 }
 
 fn seal_binary_hkdf_aes<B>(
-    slot: const core::KeySlot&,
+    slot:        const core::KeySlot&,
     cookie_name: const u8[:],
-    plaintext: const u8[:],
-    now_sec: i64,
-    nonce_seed: u64,
-    out: B&,
+    plaintext:   const u8[:],
+    now_sec:     i64,
+    nonce_seed:  u64,
+    out:         B&,
 ) -> bool {
     out.push(WIRE_VER_HKDF_AES_GCM);
     core::write_be_u32(out, slot.key_id);
 
-    var salt: u8[32] = [0; 32];
+    var salt:    u8[32] = [0; 32];
     var nonce12: u8[12] = [0; 12];
     init_hkdf_salt_nonce(nonce_seed, now_sec, salt, nonce12);
     for i in 32 { out.push(salt[i]); }
@@ -183,12 +195,12 @@ fn seal_binary_hkdf_aes<B>(
 }
 
 fn seal_binary_xchacha20<B>(
-    slot: const core::KeySlot&,
+    slot:        const core::KeySlot&,
     cookie_name: const u8[:],
-    plaintext: const u8[:],
-    now_sec: i64,
-    nonce_seed: u64,
-    out: B&,
+    plaintext:   const u8[:],
+    now_sec:     i64,
+    nonce_seed:  u64,
+    out:         B&,
 ) -> bool {
     out.push(WIRE_VER_XCHACHA20);
     core::write_be_u32(out, slot.key_id);
@@ -224,12 +236,12 @@ fn seal_binary_xchacha20<B>(
 // Encrypts and authenticates cookie payload into binary wire format:
 // For XChaCha20: ver (0x01) | key_id (4B) | timestamp (8B) | nonce (24B) | ciphertext | tag (16B)
 fn private_jar_seal_binary<B>(
-    jar: const PrivateJar&,
+    jar:         const PrivateJar&,
     cookie_name: const u8[:],
-    plaintext: const u8[:],
-    now_sec: i64,
-    nonce_seed: u64,
-    out: B&,
+    plaintext:   const u8[:],
+    now_sec:     i64,
+    nonce_seed:  u64,
+    out:         B&,
 ) -> bool {
     let slot, ok_key = active_key(jar.store);
     guard ok_key else { return false; }
@@ -241,11 +253,11 @@ fn private_jar_seal_binary<B>(
 }
 
 fn open_binary_xchacha20(
-    jar: const PrivateJar&,
-    slot: const core::KeySlot&,
-    cookie_name: const u8[:],
-    raw_wire: const u8[:],
-    now_sec: i64,
+    jar:           const PrivateJar&,
+    slot:          const core::KeySlot&,
+    cookie_name:   const u8[:],
+    raw_wire:      const u8[:],
+    now_sec:       i64,
     out_plaintext: u8[>..]&,
 ) -> bool {
     guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
@@ -280,11 +292,11 @@ fn open_binary_xchacha20(
 }
 
 fn open_binary_hkdf_aes(
-    jar: const PrivateJar&,
-    slot: const core::KeySlot&,
-    cookie_name: const u8[:],
-    raw_wire: const u8[:],
-    now_sec: i64,
+    jar:           const PrivateJar&,
+    slot:          const core::KeySlot&,
+    cookie_name:   const u8[:],
+    raw_wire:      const u8[:],
+    now_sec:       i64,
     out_plaintext: u8[>..]&,
 ) -> bool {
     guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
@@ -323,10 +335,10 @@ fn open_binary_hkdf_aes(
 
 // Verifies authentication tag, context binding, and decrypts payload into out_plaintext.
 fn private_jar_open_binary(
-    jar: const PrivateJar&,
-    cookie_name: const u8[:],
-    raw_wire: const u8[:],
-    now_sec: i64,
+    jar:           const PrivateJar&,
+    cookie_name:   const u8[:],
+    raw_wire:      const u8[:],
+    now_sec:       i64,
     out_plaintext: u8[>..]&,
 ) -> bool {
     out_plaintext.clear();
@@ -348,12 +360,12 @@ fn private_jar_open_binary(
 
 // Encodes encrypted cookie to Base64URL string for HTTP header transmission.
 fn private_jar_seal<B>(
-    jar: const PrivateJar&,
+    jar:         const PrivateJar&,
     cookie_name: const u8[:],
-    plaintext: const u8[:],
-    now_sec: i64,
-    nonce_seed: u64,
-    out: B&,
+    plaintext:   const u8[:],
+    now_sec:     i64,
+    nonce_seed:  u64,
+    out:         B&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
     guard private_jar_seal_binary(jar, cookie_name, plaintext, now_sec, nonce_seed, raw_wire) else {
@@ -365,10 +377,10 @@ fn private_jar_seal<B>(
 
 // Decodes Base64URL cookie value and decrypts with constant-time verification.
 fn private_jar_open(
-    jar: const PrivateJar&,
-    cookie_name: const u8[:],
-    encoded_val: const u8[:],
-    now_sec: i64,
+    jar:           const PrivateJar&,
+    cookie_name:   const u8[:],
+    encoded_val:   const u8[:],
+    now_sec:       i64,
     out_plaintext: u8[>..]&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
@@ -391,11 +403,11 @@ fn new_signed_jar(store: KeyStore) -> SignedJar {
 // Formats signed cookie into binary wire:
 // ver (0x03) | key_id (4B) | timestamp (8B) | payload (NB) | mac (32B)
 fn signed_jar_seal_binary<B>(
-    jar: const SignedJar&,
+    jar:         const SignedJar&,
     cookie_name: const u8[:],
-    payload: const u8[:],
-    now_sec: i64,
-    out: B&,
+    payload:     const u8[:],
+    now_sec:     i64,
+    out:         B&,
 ) -> bool {
     let slot, ok_key = active_key(jar.store);
     guard ok_key else { return false; }
@@ -421,10 +433,10 @@ fn signed_jar_seal_binary<B>(
 }
 
 fn signed_jar_open_binary(
-    jar: const SignedJar&,
+    jar:         const SignedJar&,
     cookie_name: const u8[:],
-    raw_wire: const u8[:],
-    now_sec: i64,
+    raw_wire:    const u8[:],
+    now_sec:     i64,
     out_payload: u8[>..]&,
 ) -> bool {
     out_payload.clear();
@@ -468,11 +480,11 @@ fn signed_jar_open_binary(
 }
 
 fn signed_jar_seal<B>(
-    jar: const SignedJar&,
+    jar:         const SignedJar&,
     cookie_name: const u8[:],
-    payload: const u8[:],
-    now_sec: i64,
-    out: B&,
+    payload:     const u8[:],
+    now_sec:     i64,
+    out:         B&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
     guard signed_jar_seal_binary(jar, cookie_name, payload, now_sec, raw_wire) else { return false; }
@@ -481,10 +493,10 @@ fn signed_jar_seal<B>(
 }
 
 fn signed_jar_open(
-    jar: const SignedJar&,
+    jar:         const SignedJar&,
     cookie_name: const u8[:],
     encoded_val: const u8[:],
-    now_sec: i64,
+    now_sec:     i64,
     out_payload: u8[>..]&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
