@@ -11,7 +11,7 @@ import wing from "../..";
 fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) -> const u8[:], bool {
     var cursor: i64 = 0;
     while cursor < headers_block.len {
-        let rel_end = core::index_of_slice(headers_block[cursor..], "\r\n");
+        let rel_end = find(headers_block[cursor..], "\r\n");
         if rel_end < 0 { break; }
         let line = headers_block[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
@@ -42,22 +42,22 @@ const RESP_METRICS: const u8[:] =
 // Connection slot tracking state for non-blocking multiplexed sockets
 // Perfectly 8-byte aligned to eliminate unaligned loads/stores & allow vectorization
 struct ConnSlot {
-    fd: i64 = -1,
-    leftover_len: i64 = 0,
-    is_ws: bool = false,
-    timeout_tick: u8 = 255,
-    bp_idx: i16 = -1,
-    _pad: u8[4] = [0; 4],
-    leftover: u8[232] = [0; 232],
+    fd:           i64     = -1,
+    leftover_len: i64     = 0,
+    is_ws:        bool    = false,
+    timeout_tick: u8      = 255,
+    bp_idx:       i16     = -1,
+    _pad:         u8[4]   = [0; 4],
+    leftover:     u8[232] = [0; 232],
 }
 
 // Cleans up a connection slot, closing fd, freeing backpressure, and restoring to free stack.
 fn cleanup_slot(
-    epfd: i64,
-    slot: ConnSlot&,
-    slot_idx: i64,
-    free_slots: wing::FreeSlotStack&,
-    bp_free: i64[:],
+    epfd:        i64,
+    slot:        ConnSlot&,
+    slot_idx:    i64,
+    free_slots:  wing::FreeSlotStack&,
+    bp_free:     i64[:],
     bp_free_top: i64&,
 ) {
     if slot.fd > 0 {
@@ -75,11 +75,11 @@ fn cleanup_slot(
 
 // Accepts and registers all pending connections from the listener queue.
 fn drain_listener(
-    epfd: i64,
-    listener: i64,
+    epfd:        i64,
+    listener:    i64,
     timer_wheel: wing::TickTimerWheel&,
-    slots: ConnSlot[:],
-    free_slots: wing::FreeSlotStack&,
+    slots:       ConnSlot[:],
+    free_slots:  wing::FreeSlotStack&,
 ) {
     while true {
         let client_fd = wing::tcp_accept_nonblocking(listener);
@@ -104,18 +104,18 @@ fn drain_listener(
 // Flushes the accumulated cork buffer via bounded send loop with fallback to backpressure.
 // Returns true if connection remains alive, false on unbuffered write failure.
 fn flush_cork_batch(
-    epfd: i64,
-    conn: i64,
-    slot: ConnSlot&,
-    slot_idx: i64,
-    cork_buf: const u8[:],
-    cork_len: i64,
-    bp_pool: wing::BackpressureSlot[:],
-    bp_free: i64[:],
+    epfd:        i64,
+    conn:        i64,
+    slot:        ConnSlot&,
+    slot_idx:    i64,
+    cork_buf:    const u8[:],
+    cork_len:    i64,
+    bp_pool:     wing::BackpressureSlot[:],
+    bp_free:     i64[:],
     bp_free_top: i64&,
 ) -> bool {
     guard cork_len > 0 && cork_len <= cork_buf.len else { return true; }
-    var total_sent: i64 = 0;
+    var total_sent:    i64 = 0;
     var send_attempts: i64 = 0;
     while total_sent < cork_len && send_attempts < 16 {
         let sent = wing::tcp_send(conn, cork_buf[total_sent..cork_len]);
@@ -140,11 +140,11 @@ fn flush_cork_batch(
 
 // Periodic sweep to close expired idle connections and free resources.
 fn sweep_expired_slots(
-    epfd: i64,
+    epfd:        i64,
     timer_wheel: wing::TickTimerWheel&,
-    slots: ConnSlot[:],
-    free_slots: wing::FreeSlotStack&,
-    bp_free: i64[:],
+    slots:       ConnSlot[:],
+    free_slots:  wing::FreeSlotStack&,
+    bp_free:     i64[:],
     bp_free_top: i64&,
 ) {
     wing::tick_timer_advance(timer_wheel, 1);
@@ -158,12 +158,12 @@ fn sweep_expired_slots(
 // Drains active backpressure bytes on socket if previously registered for EPOLLOUT.
 // Returns 1 if fully drained/inactive, 0 if still congested, -1 on fatal socket error.
 fn check_drain_backpressure(
-    epfd: i64,
-    conn: i64,
-    slot: ConnSlot&,
-    slot_idx: i64,
-    bp_pool: wing::BackpressureSlot[:],
-    bp_free: i64[:],
+    epfd:        i64,
+    conn:        i64,
+    slot:        ConnSlot&,
+    slot_idx:    i64,
+    bp_pool:     wing::BackpressureSlot[:],
+    bp_free:     i64[:],
     bp_free_top: i64&,
 ) -> i32 {
     guard slot.bp_idx >= 0 else { return 1; }
@@ -186,9 +186,9 @@ fn check_drain_backpressure(
 // Processes incoming WebSocket wire frames (RFC 6455).
 // Returns true if connection remains active, false if closed.
 fn handle_ws_ingress(
-    conn: i64,
-    in_buf: u8[:],
-    slot: ConnSlot&,
+    conn:    i64,
+    in_buf:  u8[:],
+    slot:    ConnSlot&,
     ws_cork: u8[..65536]&,
 ) -> bool {
     ws_cork.clear();
@@ -266,7 +266,7 @@ fn handle_ws_ingress(
     }
 
     if ws_alive && ws_cork.len > 0 {
-        var total_sent: i64 = 0;
+        var total_sent:    i64 = 0;
         var send_attempts: i64 = 0;
         let target_len = ws_cork.len;
         while total_sent < target_len && send_attempts < 16 {
@@ -320,17 +320,17 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
     var free_slots = wing::FreeSlotStack { .. };
     wing::init_free_slots(free_slots, 1024);
     var bp_pool: wing::BackpressureSlot[64] = [wing::BackpressureSlot { .. }; 64];
-    var bp_free: i64[64] = [0; 64];
+    var bp_free: i64[64]                    = [0; 64];
     for b in 64 {
         bp_free[b] = 63 - b;
     }
     var bp_free_top: i64 = 64;
 
-    var ready_fds: i64[0] = [];
-    var ready_udata: u64[1024] = [0; 1024];
-    var raw_recv: u8[65536] = [0; 65536];
-    var cork_buf: u8[65536] = [0; 65536];
-    var ws_cork: u8[..65536] = [];
+    var ready_fds:   i64[0]      = [];
+    var ready_udata: u64[1024]   = [0; 1024];
+    var raw_recv:    u8[65536]   = [0; 65536];
+    var cork_buf:    u8[65536]   = [0; 65536];
+    var ws_cork:     u8[..65536] = [];
     var timer_wheel = wing::new_tick_timer_wheel(15);
 
     while true {
@@ -421,7 +421,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 
             // HTTP/1.1 Pipelined Request Batch Processing
             var cork_len: i64 = 0;
-            var cursor: i64 = 0;
+            var cursor:   i64 = 0;
             var client_alive = true;
             var upgraded_ws = false;
 
@@ -488,19 +488,19 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 }
 
                 // Fast request-line fallback
-                let line_end = core::index_of_slice(req_bytes, "\r\n");
+                let line_end = find(req_bytes, "\r\n");
                 let req_line = if line_end > 0 && line_end <= req_bytes.len { req_bytes[..line_end] } else { req_bytes };
 
-                if core::index_of_slice(req_line, " /plaintext") >= 0 {
+                if find(req_line, " /plaintext") >= 0 {
                     cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
                     if cork_len < 0 { client_alive = false; break; }
-                } else if core::index_of_slice(req_line, " /json") >= 0 {
+                } else if find(req_line, " /json") >= 0 {
                     cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
                     if cork_len < 0 { client_alive = false; break; }
-                } else if core::index_of_slice(req_line, " /metrics") >= 0 {
+                } else if find(req_line, " /metrics") >= 0 {
                     cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
                     if cork_len < 0 { client_alive = false; break; }
-                } else if core::index_of_slice(req_line, " /ws") >= 0 || core::index_of_slice(req_bytes, "Upgrade:") >= 0 || core::index_of_slice(req_bytes, "upgrade:") >= 0 {
+                } else if find(req_line, " /ws") >= 0 || find(req_bytes, "Upgrade:") >= 0 || find(req_bytes, "upgrade:") >= 0 {
                     let upgrade_val, has_upgrade = extract_header_val(req_bytes, "upgrade");
                     if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
                         let sec_key, has_key = extract_header_val(req_bytes, "sec-websocket-key");
@@ -579,7 +579,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 // Context for worker thread pinned to CPU core
 struct WorkerContext {
     worker_id: i64 = 0,
-    port: u16 = 3001,
+    port:      u16 = 3001,
 }
 
 // Worker thread entry point for multi-core scaling (SO_REUSEPORT + CPU core pinning)

@@ -9,13 +9,13 @@ import std;
 import core.io.types;
 
 struct SliceReader {
-    data: const u8[:] = [],
-    cursor: i64 = 0,
+    data:   const u8[:] = [],
+    cursor: i64         = 0,
 }
 
 fn new_slice_reader(src: const u8[:]) -> SliceReader {
     return SliceReader {
-        data: src,
+        data:   src,
         cursor: 0,
     };
 }
@@ -36,6 +36,10 @@ fn reset(r: SliceReader&, src: const u8[:]) {
 
 // Reads up to dst.len bytes from the stream into dst.
 // Returns (bytes_read, IoError).
+//
+// Example:
+//   r = SliceReader("abcde", cursor=0), dst = [0; 3]
+//   returns: n = 3, err = IoError.None, r.cursor = 3
 fn read(r: SliceReader&, dst: u8[:]) -> i64, IoError {
     guard dst.len > 0 else { return 0, IoError.None; }
     if is_eof(r) {
@@ -51,6 +55,10 @@ fn read(r: SliceReader&, dst: u8[:]) -> i64, IoError {
 }
 
 // Reads exactly dst.len bytes, failing with UnexpectedEof if stream has fewer bytes remaining.
+//
+// Example:
+//   r = SliceReader("abcde", cursor=0), dst = [0; 4]
+//   returns: err = IoError.None, r.cursor = 4
 fn read_exact(r: SliceReader&, dst: u8[:]) -> IoError {
     guard dst.len >= 0 else {
         return IoError.InvalidArgument;
@@ -66,6 +74,10 @@ fn read_exact(r: SliceReader&, dst: u8[:]) -> IoError {
 }
 
 // Zero-copy: yields a sub-slice of exact length count and advances cursor.
+//
+// Example:
+//   r = SliceReader("abcde", cursor=0), count = 2
+//   returns: "ab", err = IoError.None, r.cursor = 2
 fn read_slice(r: SliceReader&, count: i64) -> const u8[:], IoError {
     guard count >= 0 else {
         return "", IoError.InvalidArgument;
@@ -80,6 +92,10 @@ fn read_slice(r: SliceReader&, count: i64) -> const u8[:], IoError {
 }
 
 // Reads single byte.
+//
+// Example:
+//   r = SliceReader([0x42], cursor=0)
+//   returns: 0x42, err = IoError.None, r.cursor = 1
 fn read_u8(r: SliceReader&) -> u8, IoError {
     guard remaining(r) >= 1 else {
         return 0, IoError.UnexpectedEof;
@@ -90,6 +106,10 @@ fn read_u8(r: SliceReader&) -> u8, IoError {
 }
 
 // Reads 16-bit unsigned integer in Big-Endian wire order.
+//
+// Example:
+//   r = SliceReader([0x01, 0x02], cursor=0)
+//   returns: 0x0102, err = IoError.None, r.cursor = 2
 fn read_u16_be(r: SliceReader&) -> u16, IoError {
     guard remaining(r) >= 2 else {
         return 0, IoError.UnexpectedEof;
@@ -101,6 +121,10 @@ fn read_u16_be(r: SliceReader&) -> u16, IoError {
 }
 
 // Reads 16-bit unsigned integer in Little-Endian order.
+//
+// Example:
+//   r = SliceReader([0x02, 0x01], cursor=0)
+//   returns: 0x0102, err = IoError.None, r.cursor = 2
 fn read_u16_le(r: SliceReader&) -> u16, IoError {
     guard remaining(r) >= 2 else {
         return 0, IoError.UnexpectedEof;
@@ -112,6 +136,10 @@ fn read_u16_le(r: SliceReader&) -> u16, IoError {
 }
 
 // Reads 24-bit unsigned integer in Big-Endian wire order (RFC 8446 TLS, RFC 9113 HTTP/2 framing).
+//
+// Example:
+//   r = SliceReader([0x01, 0x02, 0x03], cursor=0)
+//   returns: 0x010203, err = IoError.None, r.cursor = 3
 fn read_u24_be(r: SliceReader&) -> u32, IoError {
     guard remaining(r) >= 3 else {
         return 0, IoError.UnexpectedEof;
@@ -124,6 +152,10 @@ fn read_u24_be(r: SliceReader&) -> u32, IoError {
 }
 
 // Reads 24-bit unsigned integer in Little-Endian order.
+//
+// Example:
+//   r = SliceReader([0x03, 0x02, 0x01], cursor=0)
+//   returns: 0x010203, err = IoError.None, r.cursor = 3
 fn read_u24_le(r: SliceReader&) -> u32, IoError {
     guard remaining(r) >= 3 else {
         return 0, IoError.UnexpectedEof;
@@ -136,6 +168,10 @@ fn read_u24_le(r: SliceReader&) -> u32, IoError {
 }
 
 // Reads 32-bit unsigned integer in Big-Endian wire order.
+//
+// Example:
+//   r = SliceReader([0x00, 0x00, 0x01, 0x02], cursor=0)
+//   returns: 0x00000102, err = IoError.None, r.cursor = 4
 fn read_u32_be(r: SliceReader&) -> u32, IoError {
     guard remaining(r) >= 4 else {
         return 0, IoError.UnexpectedEof;
@@ -149,6 +185,10 @@ fn read_u32_be(r: SliceReader&) -> u32, IoError {
 }
 
 // Reads 32-bit unsigned integer in Little-Endian order.
+//
+// Example:
+//   r = SliceReader([0x02, 0x01, 0x00, 0x00], cursor=0)
+//   returns: 0x00000102, err = IoError.None, r.cursor = 4
 fn read_u32_le(r: SliceReader&) -> u32, IoError {
     guard remaining(r) >= 4 else {
         return 0, IoError.UnexpectedEof;
@@ -162,6 +202,10 @@ fn read_u32_le(r: SliceReader&) -> u32, IoError {
 }
 
 // Reads 64-bit unsigned integer in Big-Endian wire order.
+//
+// Example:
+//   r = SliceReader([0, 0, 0, 0, 0, 0, 0, 1], cursor=0)
+//   returns: 1, err = IoError.None, r.cursor = 8
 fn read_u64_be(r: SliceReader&) -> u64, IoError {
     guard remaining(r) >= 8 else {
         return 0, IoError.UnexpectedEof;
@@ -180,6 +224,10 @@ fn read_u64_be(r: SliceReader&) -> u64, IoError {
 }
 
 // Reads 64-bit unsigned integer in Little-Endian order.
+//
+// Example:
+//   r = SliceReader([1, 0, 0, 0, 0, 0, 0, 0], cursor=0)
+//   returns: 1, err = IoError.None, r.cursor = 8
 fn read_u64_le(r: SliceReader&) -> u64, IoError {
     guard remaining(r) >= 8 else {
         return 0, IoError.UnexpectedEof;
@@ -198,6 +246,10 @@ fn read_u64_le(r: SliceReader&) -> u64, IoError {
 }
 
 // Advances cursor forward by count bytes.
+//
+// Example:
+//   r = SliceReader("abcde", cursor=1), count = 2
+//   returns: err = IoError.None, r.cursor = 3
 fn skip(r: SliceReader&, count: i64) -> IoError {
     guard count >= 0 else {
         return IoError.InvalidArgument;

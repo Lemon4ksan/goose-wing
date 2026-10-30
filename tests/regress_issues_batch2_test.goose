@@ -134,10 +134,10 @@ fn test_h2_push_promise_frame_rules(t: core::T&) {
         // RFC 9113 Section 6.6: "PUSH_PROMISE frames MUST be associated with an existing, peer-initiated stream.
         // If the stream identifier field specifies the value 0x00, a recipient MUST respond with a connection error of type PROTOCOL_ERROR."
         let hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_PUSH_PROMISE,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         let err = internal::validate_frame_header_rules(hdr);
         sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "PUSH_PROMISE on stream 0 MUST return PROTOCOL_ERROR");
@@ -146,10 +146,10 @@ fn test_h2_push_promise_frame_rules(t: core::T&) {
     t.run("PUSH_PROMISE with length < 4 MUST return ERR_FRAME_SIZE_ERROR") { sub =>
         // RFC 9113 Section 6.6: Promised Stream ID is 4 bytes. Unpadded PUSH_PROMISE < 4 bytes is invalid.
         let hdr = internal::FrameHeader {
-            length: 3,
+            length:     3,
             frame_type: internal::FRAME_PUSH_PROMISE,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         let err = internal::validate_frame_header_rules(hdr);
         sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "Unpadded PUSH_PROMISE < 4 bytes MUST return FRAME_SIZE_ERROR");
@@ -158,10 +158,10 @@ fn test_h2_push_promise_frame_rules(t: core::T&) {
     t.run("Padded PUSH_PROMISE with length < 5 MUST return ERR_FRAME_SIZE_ERROR") { sub =>
         // With PADDED flag, Pad Length (1 byte) + Promised Stream ID (4 bytes) = 5 bytes minimum
         let hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_PUSH_PROMISE,
-            flags: internal::FLAG_PADDED,
-            stream_id: 1,
+            flags:      internal::FLAG_PADDED,
+            stream_id:  1,
         };
         let err = internal::validate_frame_header_rules(hdr);
         sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "Padded PUSH_PROMISE < 5 bytes MUST return FRAME_SIZE_ERROR");
@@ -198,7 +198,7 @@ fn test_chunked_fsm_bws_preceding_semicolon(t: core::T&) {
         var dec = internal::new_chunk_fsm_decoder();
         let raw = "5 ;ext=foo\r\nhello\r\n0\r\n\r\n";
         var total_body: u8[..64] = [];
-        var cursor: i64 = 0;
+        var cursor:     i64      = 0;
 
         while cursor < raw.len {
             let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw[cursor..]);
@@ -220,7 +220,7 @@ fn test_chunked_fsm_bws_preceding_semicolon(t: core::T&) {
         var dec = internal::new_chunk_fsm_decoder();
         let raw = "5\t;ext=foo\r\nworld\r\n0\r\n\r\n";
         var total_body: u8[..64] = [];
-        var cursor: i64 = 0;
+        var cursor:     i64      = 0;
 
         while cursor < raw.len {
             let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw[cursor..]);
@@ -288,28 +288,28 @@ fn test_h2_goaway_stream_id_zero(t: core::T&) {
         // "An endpoint MUST treat a GOAWAY frame with a stream identifier other than 0x00
         // as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."
         let bad_hdr = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_GOAWAY,
-            flags: 0,
-            stream_id: 1, // Invalid: GOAWAY MUST be on stream 0
+            flags:      0,
+            stream_id:  1, // Invalid: GOAWAY MUST be on stream 0
         };
         let err = internal::validate_frame_header_rules(bad_hdr);
         sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "GOAWAY on stream 1 MUST be rejected with PROTOCOL_ERROR (RFC 9113 §6.8)");
 
         let bad_hdr3 = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_GOAWAY,
-            flags: 0,
-            stream_id: 3,
+            flags:      0,
+            stream_id:  3,
         };
         let err3 = internal::validate_frame_header_rules(bad_hdr3);
         sub.assert_eq(err3, internal::ERR_PROTOCOL_ERROR, "GOAWAY on stream 3 MUST be rejected with PROTOCOL_ERROR (RFC 9113 §6.8)");
 
         let good_hdr = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_GOAWAY,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         let ok_err = internal::validate_frame_header_rules(good_hdr);
         sub.assert_eq(ok_err, internal::ERR_NO_ERROR, "GOAWAY on stream 0 is valid");
@@ -703,20 +703,20 @@ fn test_h2_stream_blocked_after_goaway(t: core::T&) {
 
         // Attempting to open stream 5 (> 3) after GOAWAY must be refused
         let hdr_st5 = internal::FrameHeader {
-            length: 10,
+            length:     10,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 5,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  5,
         };
         let res_st5 = internal::handle_h2_headers_frame_header(conn, hdr_st5, 0);
         sub.assert_eq(res_st5, internal::ERR_REFUSED_STREAM, "Stream 5 > last_stream_id 3 MUST return REFUSED_STREAM");
 
         // Stream 1 (<= 3) was processed before GOAWAY, so it is not rejected as refused
         let hdr_st1 = internal::FrameHeader {
-            length: 10,
+            length:     10,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
         };
         let res_st1 = internal::handle_h2_headers_frame_header(conn, hdr_st1, 0);
         sub.assert_eq(res_st1, internal::ERR_NO_ERROR, "Stream 1 <= last_stream_id 3 is accepted");
@@ -1049,10 +1049,10 @@ fn test_redirect_sensitive_header_stripping(t: core::T&) {
         headers.push(wing::make_header("User-Agent", "GooseWing/1.0"));
 
         let red_info = wing::RedirectInfo {
-            is_cross_origin: true,
+            is_cross_origin:     true,
             is_scheme_downgrade: false,
-            is_port_changed: false,
-            clear_body: false,
+            is_port_changed:     false,
+            clear_body:          false,
             ..
         };
 
@@ -1106,14 +1106,14 @@ fn test_path_dot_segment_capacity_desync(t: core::T&) {
 
         let path = core::pathname(parsed);
         // 'target' should have been canceled out by '..'
-        let has_target = core::index_of_slice(path, "target") >= 0;
+        let has_target = find(path, "target") >= 0;
         sub.assert_false(has_target, "Path segment 'target' MUST be canceled by '/..' and not leak into normalized path");
 
         // Count how many '/s' segments remain: must be exactly 256!
         var s_count = 0;
         var cur: i64 = 0;
         while cur < path.len {
-            let idx = core::index_of_slice(path[cur..], "/s");
+            let idx = find(path[cur..], "/s");
             if idx >= 0 {
                 s_count++;
                 cur += idx + 2;

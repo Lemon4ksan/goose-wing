@@ -51,9 +51,9 @@ fn aes256_key_schedule(key: const u8[32]&) -> Aes256KeySchedule {
     for i in 8 {
         let off = i * 4;
         ks.round_keys[i] = ((key[off] as u32) << 24) |
-                           ((key[off + 1] as u32) << 16) |
-                           ((key[off + 2] as u32) << 8) |
-                           key[off + 3];
+            ((key[off + 1] as u32) << 16) |
+            ((key[off + 2] as u32) << 8) |
+            key[off + 3];
     }
     for i in 8..60 {
         var temp = ks.round_keys[i - 1];
@@ -140,9 +140,9 @@ fn aes128_key_schedule(key: const u8[16]&) -> Aes128KeySchedule {
     for i in 4 {
         let off = i * 4;
         ks.round_keys[i] = ((key[off] as u32) << 24) |
-                           ((key[off + 1] as u32) << 16) |
-                           ((key[off + 2] as u32) << 8) |
-                           key[off + 3];
+            ((key[off + 1] as u32) << 16) |
+            ((key[off + 2] as u32) << 8) |
+            key[off + 3];
     }
     for i in 4..44 {
         var temp = ks.round_keys[i - 1];
@@ -260,10 +260,10 @@ fn ghash_update(h: const u8[16]&, y: u8[16]&, data: const u8[:]) {
 }
 
 fn aes256_gcm_seal(
-    key: const u8[32]&,
-    nonce12: const u8[12]&,
-    plaintext: const u8[:],
-    aad: const u8[:],
+    key:            const u8[32]&,
+    nonce12:        const u8[12]&,
+    plaintext:      const u8[:],
+    aad:            const u8[:],
     out_ciphertext: u8[>..]&,
 ) -> u8[16] {
     let ks = aes256_key_schedule(key);
@@ -317,11 +317,11 @@ fn aes256_gcm_seal(
 }
 
 fn aes256_gcm_open(
-    key: const u8[32]&,
-    nonce12: const u8[12]&,
-    ciphertext: const u8[:],
-    aad: const u8[:],
-    tag: const u8[16]&,
+    key:           const u8[32]&,
+    nonce12:       const u8[12]&,
+    ciphertext:    const u8[:],
+    aad:           const u8[:],
+    tag:           const u8[16]&,
     out_plaintext: u8[>..]&,
 ) -> bool {
     let ks = aes256_key_schedule(key);
@@ -377,10 +377,10 @@ fn aes256_gcm_open(
 
 // AES-128-GCM (NIST SP 800-38D)
 fn aes128_gcm_seal(
-    key: const u8[16]&,
-    nonce12: const u8[12]&,
-    plaintext: const u8[:],
-    aad: const u8[:],
+    key:            const u8[16]&,
+    nonce12:        const u8[12]&,
+    plaintext:      const u8[:],
+    aad:            const u8[:],
     out_ciphertext: u8[>..]&,
 ) -> u8[16] {
     let ks = aes128_key_schedule(key);
@@ -433,11 +433,11 @@ fn aes128_gcm_seal(
 }
 
 fn aes128_gcm_open(
-    key: const u8[16]&,
-    nonce12: const u8[12]&,
-    ciphertext: const u8[:],
-    aad: const u8[:],
-    tag: const u8[16]&,
+    key:           const u8[16]&,
+    nonce12:       const u8[12]&,
+    ciphertext:    const u8[:],
+    aad:           const u8[:],
+    tag:           const u8[16]&,
     out_plaintext: u8[>..]&,
 ) -> bool {
     let ks = aes128_key_schedule(key);
@@ -493,11 +493,11 @@ fn aes128_gcm_open(
 
 // HKDF-SHA256 + AES-256-GCM scheme (32-byte salt + 12-byte nonce)
 fn hkdf_aes256_gcm_seal(
-    master_key: const u8[32]&,
-    salt32: const u8[32]&,
-    nonce12: const u8[12]&,
-    plaintext: const u8[:],
-    aad: const u8[:],
+    master_key:     const u8[32]&,
+    salt32:         const u8[32]&,
+    nonce12:        const u8[12]&,
+    plaintext:      const u8[:],
+    aad:            const u8[:],
     out_ciphertext: u8[>..]&,
 ) -> u8[16] {
     let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
@@ -505,12 +505,12 @@ fn hkdf_aes256_gcm_seal(
 }
 
 fn hkdf_aes256_gcm_open(
-    master_key: const u8[32]&,
-    salt32: const u8[32]&,
-    nonce12: const u8[12]&,
-    ciphertext: const u8[:],
-    aad: const u8[:],
-    tag: const u8[16]&,
+    master_key:    const u8[32]&,
+    salt32:        const u8[32]&,
+    nonce12:       const u8[12]&,
+    ciphertext:    const u8[:],
+    aad:           const u8[:],
+    tag:           const u8[16]&,
     out_plaintext: u8[>..]&,
 ) -> bool {
     let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");

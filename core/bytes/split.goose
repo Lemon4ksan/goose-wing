@@ -9,6 +9,10 @@ import std;
 // Splits s around the first occurrence of delimiter byte delim.
 // Returns (prefix_before_delim, suffix_after_delim, true) if delim is present;
 // otherwise returns (s, "", false). Delimiter byte is omitted from both returned slices.
+//
+// Example:
+//   s = "key=value", delim = '='
+//   returns: "key", "value", ok = true
 fn split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     let idx = index_of_byte(s, delim);
     if idx >= 0 {
@@ -20,6 +24,10 @@ fn split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool 
 // Splits s around the last occurrence of delimiter byte delim.
 // Returns (prefix_before_delim, suffix_after_delim, true) if delim is present;
 // otherwise returns (s, "", false). Delimiter byte is omitted from both returned slices.
+//
+// Example:
+//   s = "a/b/c", delim = '/'
+//   returns: "a/b", "c", ok = true
 fn rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     let idx = last_index_of_byte(s, delim);
     if idx >= 0 {
@@ -31,6 +39,10 @@ fn rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool
 // Splits s around the first occurrence of delimiter subslice delim.
 // Returns (prefix_before_delim, suffix_after_delim, true) if delim is present;
 // otherwise returns (s, "", false). Delimiter is omitted from both returned slices.
+//
+// Example:
+//   s = "foo::bar", delim = "::"
+//   returns: "foo", "bar", ok = true
 fn split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
     guard delim.len > 0 else { return s, "", false; }
     let idx = find(s, delim);
@@ -43,6 +55,10 @@ fn split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], b
 // Splits s around the first case-insensitive ASCII occurrence of delimiter subslice delim.
 // Returns (prefix_before_delim, suffix_after_delim, true) if delim is present;
 // otherwise returns (s, "", false). Delimiter is omitted from both returned slices.
+//
+// Example:
+//   s = "Content-Type: text/plain", delim = ": "
+//   returns: "Content-Type", "text/plain", ok = true
 fn split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
     guard delim.len > 0 else { return s, "", false; }
     let idx = index_of_fold(s, delim);
@@ -54,18 +70,18 @@ fn split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[
 
 // Zero-allocation byte tokenizer for iterating over delimiter-separated tokens.
 struct ByteTokenizer {
-    src: const u8[:],
-    cursor: i64 = 0,
-    delim: u8 = 0,
+    src:       const u8[:],
+    cursor:    i64  = 0,
+    delim:     u8   = 0,
     exhausted: bool = false,
 }
 
 // Initializes a ByteTokenizer on src scanning for single byte delimiter delim.
 fn make_byte_tokenizer(src: const u8[:], delim: u8) -> ByteTokenizer {
     return ByteTokenizer {
-        src: src,
-        cursor: 0,
-        delim: delim,
+        src:       src,
+        cursor:    0,
+        delim:     delim,
         exhausted: false,
     };
 }

@@ -17,6 +17,10 @@ fn hex_digit_to_val(b: u8) -> i32 {
 
 // Parses an unsigned 64-bit integer in base 10 from ASCII byte slice s.
 // Rejects empty input, non-digit characters, and values exceeding u64::MAX (18446744073709551615).
+//
+// Example:
+//   s = "12345"
+//   returns: 12345, ok = true
 fn parse_u64_dec(s: const u8[:]) -> u64, bool {
     guard s.len > 0 else { return 0, false; }
     for b in s {
@@ -29,7 +33,7 @@ fn parse_u64_dec(s: const u8[:]) -> u64, bool {
     guard sig.len > 0 else { return 0, true; }
     guard sig.len <= 20 else { return 0, false; }
 
-    var num: u64 = 0;
+    var num:    u64 = 0;
     var digits: i64 = 0;
     for b in sig {
         digits++;
@@ -49,6 +53,10 @@ fn parse_u64_dec(s: const u8[:]) -> u64, bool {
 // Parses a signed 64-bit integer in base 10 from ASCII byte slice s.
 // Supports optional leading '+' or '-' sign.
 // Rejects empty input, non-digits, and values outside [-9223372036854775808, 9223372036854775807].
+//
+// Example:
+//   s = "-42"
+//   returns: -42, ok = true
 fn parse_i64_dec(s: const u8[:]) -> i64, bool {
     guard s.len > 0 else { return 0, false; }
     var is_neg = false;
@@ -72,7 +80,7 @@ fn parse_i64_dec(s: const u8[:]) -> i64, bool {
     guard sig.len > 0 else { return 0, true; }
     guard sig.len <= 19 else { return 0, false; }
 
-    var num: u64 = 0;
+    var num:    u64 = 0;
     var digits: i64 = 0;
     for b in sig {
         digits++;
@@ -98,6 +106,10 @@ fn parse_i64_dec(s: const u8[:]) -> i64, bool {
 }
 
 // Parses an unsigned 32-bit integer in base 10.
+//
+// Example:
+//   s = "1024"
+//   returns: 1024, ok = true
 fn parse_u32_dec(s: const u8[:]) -> u32, bool {
     let val, ok = parse_u64_dec(s);
     guard ok && val <= 4294967295 else { return 0, false; }
@@ -105,6 +117,10 @@ fn parse_u32_dec(s: const u8[:]) -> u32, bool {
 }
 
 // Parses a signed 32-bit integer in base 10.
+//
+// Example:
+//   s = "-100"
+//   returns: -100, ok = true
 fn parse_i32_dec(s: const u8[:]) -> i32, bool {
     let val, ok = parse_i64_dec(s);
     guard ok && val >= -2147483648 && val <= 2147483647 else { return 0, false; }
@@ -114,6 +130,10 @@ fn parse_i32_dec(s: const u8[:]) -> i32, bool {
 // Parses an unsigned 64-bit integer from hexadecimal ASCII byte slice s.
 // Supports optional leading "0x" or "0X" prefix.
 // Rejects empty input, invalid characters, and numbers exceeding 16 hex digits (u64::MAX).
+//
+// Example:
+//   s = "0x1A2B"
+//   returns: 0x1A2B, ok = true
 fn parse_u64_hex(s: const u8[:]) -> u64, bool {
     var raw = s;
     if raw.len >= 2 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X') {
@@ -139,6 +159,10 @@ fn parse_u64_hex(s: const u8[:]) -> u64, bool {
 }
 
 // Parses an unsigned 32-bit integer from hexadecimal ASCII byte slice s.
+//
+// Example:
+//   s = "FF"
+//   returns: 255, ok = true
 fn parse_u32_hex(s: const u8[:]) -> u32, bool {
     let val, ok = parse_u64_hex(s);
     guard ok && val <= 0xFFFFFFFF else { return 0, false; }
@@ -146,6 +170,10 @@ fn parse_u32_hex(s: const u8[:]) -> u32, bool {
 }
 
 // Parses an unsigned 8-bit integer from hexadecimal ASCII byte slice s (1 or 2 hex digits).
+//
+// Example:
+//   s = "2A"
+//   returns: 42, ok = true
 fn parse_u8_hex(s: const u8[:]) -> u8, bool {
     let val, ok = parse_u64_hex(s);
     guard ok && val <= 0xFF else { return 0, false; }

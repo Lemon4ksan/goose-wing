@@ -12,21 +12,22 @@ import core.io.types;
 const CORK_BUFFER_CAP: i64 = 16384; // 16 KB standard cork buffer size
 
 struct CorkBuffer {
-    storage: u8[16384] = [0; 16384],
-    len: i64 = 0,
-    is_corked: bool = true,
+    storage:   u8[16384] = [0; 16384],
+    len:       i64       = 0,
+    is_corked: bool      = true,
 }
 
 fn new_cork_buffer() -> CorkBuffer {
     return CorkBuffer {
-        storage: [0; 16384],
-        len: 0,
+        storage:   [0; 16384],
+        len:       0,
         is_corked: true,
     };
 }
 
 // Returns the number of buffered bytes waiting to be flushed.
 fn cork_pending(cb: const CorkBuffer&) -> i64 {
+    guard cb.len >= 0 else { return 0; }
     return cb.len;
 }
 

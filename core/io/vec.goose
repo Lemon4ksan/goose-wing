@@ -16,10 +16,10 @@ struct IoVec {
 }
 
 struct IoVecArray {
-    entries: IoVec[..16] = [],
-    head: i32 = 0,
-    head_offset: i64 = 0,
-    total_bytes: i64 = 0,
+    entries:     IoVec[..16] = [],
+    head:        i32         = 0,
+    head_offset: i64         = 0,
+    total_bytes: i64         = 0,
 }
 
 // ---- 1. Safe Arithmetic Helpers ---------------------------------------------
@@ -48,8 +48,8 @@ fn iovec_min_i64(a: i64, b: i64) -> i64 {
 
 fn new_iovec_array() -> IoVecArray {
     return IoVecArray {
-        entries: [],
-        head: 0,
+        entries:     [],
+        head:        0,
         head_offset: 0,
         total_bytes: 0,
     };
@@ -63,6 +63,7 @@ fn iovec_clear(arr: IoVecArray&) {
 }
 
 fn iovec_total_bytes(arr: const IoVecArray&) -> i64 {
+    guard arr.total_bytes >= 0 else { return 0; }
     return arr.total_bytes;
 }
 
@@ -80,7 +81,7 @@ fn iovec_count(arr: const IoVecArray&) -> i32 {
 fn iovec_compact(arr: IoVecArray&) {
     guard arr.head > 0 else { return; }
     var write_idx: i32 = 0;
-    var read_idx: i32 = arr.head;
+    var read_idx:  i32 = arr.head;
     while read_idx < (arr.entries.len as i32) {
         if write_idx == 0 && arr.head_offset > 0 {
             let orig = arr.entries[read_idx].base;
@@ -142,7 +143,7 @@ fn iovec_copy_chunk(chunk: const u8[:], count: i64, dst: u8[:], dst_offset: i64)
 
 fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
     var dst_off: i64 = 0;
-    var i: i32 = 0;
+    var i:       i32 = 0;
     let n = iovec_count(arr);
     while i < n && dst_off < dst.len {
         let chunk = iovec_get(arr, i);

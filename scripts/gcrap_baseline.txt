@@ -773,7 +773,6 @@ core/ufcs.goose 304 clear 0.00 0 0.85
 core/ufcs.goose 305 read_slices 0.00 0 0.85
 core/ufcs.goose 306 write_slices 0.00 0 0.85
 core/ufcs.goose 307 commit_written 0.00 0 0.85
-core/ufcs.goose 308 commit_read 0.00 0 0.85
 core/ufcs.goose 309 contiguous_readable 0.00 0 0.85
 core/ufcs.goose 313 readable_slice 0.00 0 0.85
 core/ufcs.goose 314 unexamined_slice 0.00 0 0.85
@@ -825,7 +824,6 @@ core/ufcs.goose 364 trim_end_bytes 0.00 0 0.85
 core/ufcs.goose 366 contains_byte 0.00 0 0.85
 core/ufcs.goose 367 index_of_byte 0.00 0 0.85
 core/ufcs.goose 368 last_index_of_byte 0.00 0 0.85
-core/ufcs.goose 369 index_of_slice 0.00 0 0.85
 core/ufcs.goose 370 count_byte 0.00 0 0.85
 core/ufcs.goose 372 split_once_byte 0.00 0 0.85
 core/ufcs.goose 373 rsplit_once_byte 0.00 0 0.85
@@ -2976,7 +2974,6 @@ core/bytes/search.goose 22 core::contains 0.00 0 0.85
 core/bytes/search.goose 27 core::contains_byte 0.03 0 0.85
 core/bytes/search.goose 35 core::index_of_byte 60.05 0 0.85
 core/bytes/search.goose 44 core::last_index_of_byte 120.05 0 0.85
-core/bytes/search.goose 55 core::index_of_slice 0.00 0 0.85
 core/bytes/search.goose 60 core::count_byte 45.03 0 0.85
 core/bytes/search.goose 73 core::swar_find_ctl 0.00 0 0.85
 core/bytes/search.goose 79 core::fast_find_crlfcrlf 0.00 0 0.85
@@ -3356,7 +3353,6 @@ core/io/ring.goose 122 core::discard 120.05 0 0.85
 core/io/ring.goose 137 core::read_slices 180.01 0 0.85
 core/io/ring.goose 149 core::write_slices 240.12 0 0.85
 core/io/ring.goose 169 core::commit_written 240.03 0 0.85
-core/io/ring.goose 179 core::commit_read 0.00 0 0.85
 core/io/ring.goose 184 core::contiguous_readable 0.00 0 0.85
 core/io/tee.goose 18 core::new_tee_reader 0.00 0 0.85
 core/io/tee.goose 25 core::remaining 0.00 0 0.85

@@ -58,8 +58,8 @@ fn test_go_75557_content_disposition_crlf_injection(t: core::T&) {
         var out: u8[..256] = [];
         let ok = wing::format_content_disposition("my \"field\"", "vacation\\\"photo\".jpg", out);
         sub.assert_true(ok, "Valid parameters should format successfully");
-        sub.assert_true(core::index_of_slice(out[..], "name=\"my \\\"field\\\"\"") >= 0, "Quotes in name must be escaped");
-        sub.assert_true(core::index_of_slice(out[..], "filename=\"vacation\\\\\\\"photo\\\".jpg\"") >= 0, "Backslashes and quotes escaped in filename");
+        sub.assert_true(find(out[..], "name=\"my \\\"field\\\"\"") >= 0, "Quotes in name must be escaped");
+        sub.assert_true(find(out[..], "filename=\"vacation\\\\\\\"photo\\\".jpg\"") >= 0, "Backslashes and quotes escaped in filename");
     };
 }
 
@@ -275,9 +275,9 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: core::T&) {
         headers.push(wing::make_header("X-Custom-Data", "regular-value"));
 
         var rinfo = wing::RedirectInfo {
-            is_cross_origin: true,
+            is_cross_origin:     true,
             is_scheme_downgrade: false,
-            is_port_changed: false,
+            is_port_changed:     false,
             ..
         };
 
@@ -296,9 +296,9 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: core::T&) {
         headers.push(wing::make_header("X-Custom", "safe"));
 
         var rinfo = wing::RedirectInfo {
-            is_cross_origin: false,
+            is_cross_origin:     false,
             is_scheme_downgrade: true,
-            is_port_changed: false,
+            is_port_changed:     false,
             ..
         };
 
@@ -334,7 +334,7 @@ fn test_cve_2026_42507_diagnostic_log_injection_defense(t: core::T&) {
         sub.assert_false(core::contains_byte(out[..], 13), "Raw CR (13) must not be present in output");
         sub.assert_false(core::contains_byte(out[..], 10), "Raw LF (10) must not be present in output");
         sub.assert_false(core::contains_byte(out[..], 0), "Raw NUL (0) must not be present in output");
-        sub.assert_true(core::index_of_slice(out[..], "\\r\\n") >= 0, "CRLF properly escaped as literal '\\r\\n'");
+        sub.assert_true(find(out[..], "\\r\\n") >= 0, "CRLF properly escaped as literal '\\r\\n'");
     };
 }
 
@@ -830,7 +830,7 @@ fn test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse(t: core::T&
     t.run("Full Jitter backoff with U64_MAX cap must not collapse entropy to zero") { sub =>
         var rng = core::new_wyrand(12345);
         let base_ms: u64 = 100;
-        let cap_ms: u64 = core::U64_MAX;
+        let cap_ms:  u64 = core::U64_MAX;
 
         // When attempt >= 64, target = U64_MAX. In unpatched code, target + 1 wraps around to 0,
         // fast_range_biased_u64 returns 0, collapsing backoff entropy to 0 and triggering retry storms.
@@ -1362,7 +1362,7 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
 
         var t1 = wing::NewSessionTicketMsg {
             ticket_lifetime: 3600,
-            ticket_age_add: 100,
+            ticket_age_add:  100,
             ..
         };
         t1.ticket_nonce.append([0x01, 0x02, 0x03]);
@@ -1375,7 +1375,7 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
         // Duplicate ticket_nonce with different ticket payload MUST be rejected
         var t2 = wing::NewSessionTicketMsg {
             ticket_lifetime: 3600,
-            ticket_age_add: 200,
+            ticket_age_add:  200,
             ..
         };
         t2.ticket_nonce.append([0x01, 0x02, 0x03]); // DUPLICATE NONCE
@@ -1391,7 +1391,7 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
 
         var t1 = wing::NewSessionTicketMsg {
             ticket_lifetime: 3600,
-            ticket_age_add: 100,
+            ticket_age_add:  100,
             ..
         };
         t1.ticket_nonce.append([0x01, 0x01]);
@@ -1402,7 +1402,7 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
         // Duplicate ticket payload with different nonce MUST be rejected
         var t2 = wing::NewSessionTicketMsg {
             ticket_lifetime: 3600,
-            ticket_age_add: 300,
+            ticket_age_add:  300,
             ..
         };
         t2.ticket_nonce.append([0x02, 0x02]);
@@ -1414,7 +1414,7 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: core::T&) {
         // Distinct ticket with unique nonce and payload succeeds
         var t3 = wing::NewSessionTicketMsg {
             ticket_lifetime: 3600,
-            ticket_age_add: 400,
+            ticket_age_add:  400,
             ..
         };
         t3.ticket_nonce.append([0x03, 0x03]);
@@ -2165,8 +2165,8 @@ fn test_ring_buffer_wraparound_zero_copy_and_fragmentation_defenses(t: core::T&)
             sub.assert_eq(s2[i], pattern[1096 + i], "s2 wrapped payload matches");
         }
 
-        let consumed = core::commit_read(rb, s1.len);
-        sub.assert_eq(consumed, 1097, "commit_read consumed first slice");
+        let consumed = core::discard(rb, s1.len);
+        sub.assert_eq(consumed, 1097, "discard consumed first slice");
         sub.assert_eq(rb.head, 0, "Head wrapped around to 0");
         sub.assert_eq(rb.count, 904, "Remaining count is 904");
 

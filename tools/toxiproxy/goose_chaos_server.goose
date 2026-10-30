@@ -10,7 +10,7 @@ import wing from "../..";
 fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) -> const u8[:], bool {
     var cursor: i64 = 0;
     while cursor < headers_block.len {
-        let rel_end = core::index_of_slice(headers_block[cursor..], "\r\n");
+        let rel_end = find(headers_block[cursor..], "\r\n");
         if rel_end < 0 { break; }
         let line = headers_block[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
@@ -67,9 +67,9 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     wing::tcp_send(conn, handshake_resp[..]);
 
     var ws = wing::new_websocket_session(false);
-    var ws_buf: u8[>..] = [];
-    var frag_buf: u8[>..] = [];
-    var reply: u8[>..] = [];
+    var ws_buf:    u8[>..] = [];
+    var frag_buf:  u8[>..] = [];
+    var reply:     u8[>..] = [];
     var echo_wire: u8[>..] = [];
     while !ws.is_closed {
         var chunk: u8[..4096] = [];
@@ -225,7 +225,7 @@ fn main() {
             }
 
             // 2. Check for HTTP/1.1 or WebSocket
-            let hdr_end = core::index_of_slice(in_buf[..], "\r\n\r\n");
+            let hdr_end = find(in_buf[..], "\r\n\r\n");
             if hdr_end >= 0 {
                 let body_start = hdr_end + 4;
 
@@ -239,7 +239,7 @@ fn main() {
                     }
                 }
 
-                let has_te_hdr = core::index_of_slice(in_buf[..body_start], "transfer-encoding") >= 0 || core::index_of_slice(in_buf[..body_start], "Transfer-Encoding") >= 0;
+                let has_te_hdr = find(in_buf[..body_start], "transfer-encoding") >= 0 || find(in_buf[..body_start], "Transfer-Encoding") >= 0;
                 let cl, has_cl = extract_content_length(in_buf[..body_start]);
                 if has_te_hdr && has_cl {
                     // RFC 9112 Section 6.1: Reject TE.CL / CL.TE conflict immediately with 400 Bad Request
@@ -251,8 +251,8 @@ fn main() {
                     continue;
                 }
 
-                let is_chunked = core::index_of_slice(in_buf[..body_start], "chunked") >= 0;
-                if is_chunked && core::index_of_slice(in_buf[body_start..], "0\r\n\r\n") < 0 {
+                let is_chunked = find(in_buf[..body_start], "chunked") >= 0;
+                if is_chunked && find(in_buf[body_start..], "0\r\n\r\n") < 0 {
                     continue;
                 }
 

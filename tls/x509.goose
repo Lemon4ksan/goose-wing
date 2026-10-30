@@ -12,19 +12,19 @@ import .record;
 
 // ---- 1. ASN.1 Universal Tags and OIDs ---------------------------------------
 
-const ASN1_TAG_BOOLEAN: u8 = 0x01;
-const ASN1_TAG_INTEGER: u8 = 0x02;
-const ASN1_TAG_BIT_STRING: u8 = 0x03;
-const ASN1_TAG_OCTET_STRING: u8 = 0x04;
-const ASN1_TAG_NULL: u8 = 0x05;
-const ASN1_TAG_OID: u8 = 0x06;
-const ASN1_TAG_UTF8_STRING: u8 = 0x0C;
+const ASN1_TAG_BOOLEAN:          u8 = 0x01;
+const ASN1_TAG_INTEGER:          u8 = 0x02;
+const ASN1_TAG_BIT_STRING:       u8 = 0x03;
+const ASN1_TAG_OCTET_STRING:     u8 = 0x04;
+const ASN1_TAG_NULL:             u8 = 0x05;
+const ASN1_TAG_OID:              u8 = 0x06;
+const ASN1_TAG_UTF8_STRING:      u8 = 0x0C;
 const ASN1_TAG_PRINTABLE_STRING: u8 = 0x13;
-const ASN1_TAG_IA5_STRING: u8 = 0x16;
-const ASN1_TAG_UTC_TIME: u8 = 0x17;
+const ASN1_TAG_IA5_STRING:       u8 = 0x16;
+const ASN1_TAG_UTC_TIME:         u8 = 0x17;
 const ASN1_TAG_GENERALIZED_TIME: u8 = 0x18;
-const ASN1_TAG_SEQUENCE: u8 = 0x30;
-const ASN1_TAG_SET: u8 = 0x31;
+const ASN1_TAG_SEQUENCE:         u8 = 0x30;
+const ASN1_TAG_SET:              u8 = 0x31;
 
 // Standard OIDs (DER byte encodings):
 // id-at-commonName (2.5.4.3): 55 04 03
@@ -77,22 +77,22 @@ fn is_known_extension_oid(oid: const u8[:]) -> bool {
 
 // Key Usage bitmasks (byte 1)
 const KEY_USAGE_DIGITAL_SIGNATURE: u16 = 0x8000;
-const KEY_USAGE_KEY_ENCIPHERMENT: u16 = 0x2000;
-const KEY_USAGE_KEY_CERT_SIGN: u16 = 0x0400;
-const KEY_USAGE_CRL_SIGN: u16 = 0x0200;
+const KEY_USAGE_KEY_ENCIPHERMENT:  u16 = 0x2000;
+const KEY_USAGE_KEY_CERT_SIGN:     u16 = 0x0400;
+const KEY_USAGE_CRL_SIGN:          u16 = 0x0200;
 
 // SignatureScheme identifiers (RFC 8446 Section 4.2.3)
-const SIG_SCHEME_RSA_PKCS1_SHA256: u16 = 0x0401; // Forbidden in TLS 1.3
+const SIG_SCHEME_RSA_PKCS1_SHA256:       u16 = 0x0401; // Forbidden in TLS 1.3
 const SIG_SCHEME_ECDSA_SECP256R1_SHA256: u16 = 0x0403;
-const SIG_SCHEME_RSA_PKCS1_SHA384: u16 = 0x0501; // Forbidden in TLS 1.3
+const SIG_SCHEME_RSA_PKCS1_SHA384:       u16 = 0x0501; // Forbidden in TLS 1.3
 const SIG_SCHEME_ECDSA_SECP384R1_SHA384: u16 = 0x0503;
-const SIG_SCHEME_RSA_PKCS1_SHA512: u16 = 0x0601; // Forbidden in TLS 1.3
-const SIG_SCHEME_RSA_PKCS1_SHA1: u16 = 0x0201;   // Forbidden in TLS 1.3
-const SIG_SCHEME_ECDSA_SHA1: u16 = 0x0203;       // Forbidden in TLS 1.3
-const SIG_SCHEME_RSA_PKCS1_MD5: u16 = 0x0101;    // Forbidden in TLS 1.3
-const SIG_SCHEME_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
-const SIG_SCHEME_RSA_PSS_RSAE_SHA384: u16 = 0x0805;
-const SIG_SCHEME_ED25519: u16 = 0x0807;
+const SIG_SCHEME_RSA_PKCS1_SHA512:       u16 = 0x0601; // Forbidden in TLS 1.3
+const SIG_SCHEME_RSA_PKCS1_SHA1:         u16 = 0x0201; // Forbidden in TLS 1.3
+const SIG_SCHEME_ECDSA_SHA1:             u16 = 0x0203; // Forbidden in TLS 1.3
+const SIG_SCHEME_RSA_PKCS1_MD5:          u16 = 0x0101; // Forbidden in TLS 1.3
+const SIG_SCHEME_RSA_PSS_RSAE_SHA256:    u16 = 0x0804;
+const SIG_SCHEME_RSA_PSS_RSAE_SHA384:    u16 = 0x0805;
+const SIG_SCHEME_ED25519:                u16 = 0x0807;
 
 // Forbidden Certificate Signature Algorithm OIDs (RFC 8446 Section 4.4.2.3: MD5 & SHA-1 forbidden):
 // md5WithRSAEncryption (1.2.840.113549.1.1.4): 2A 86 48 86 F7 0D 01 01 04
@@ -139,7 +139,7 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
 fn parse_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     var length: i64 = 0;
-    var i: i64 = 0;
+    var i:      i64 = 0;
     while i < num_bytes {
         var b: u8 = 0;
         guard get_u8(c, b) else { return false; }
@@ -385,34 +385,34 @@ fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
 }
 
 struct ParsedCert {
-    raw_len: u32 = 0,
-    tbs_cert: Span16 = Span16 { offset: 0, length: 0 },
-    serial_number: Span16 = Span16 { offset: 0, length: 0 },
-    sig_alg_oid: Span16 = Span16 { offset: 0, length: 0 },
-    issuer_raw: Span16 = Span16 { offset: 0, length: 0 },
-    validity_not_before: i64 = 0,
-    validity_not_after: i64 = 0,
-    subject_raw: Span16 = Span16 { offset: 0, length: 0 },
-    spki_raw: Span16 = Span16 { offset: 0, length: 0 },
-    spki_alg_oid: Span16 = Span16 { offset: 0, length: 0 },
-    spki_pubkey: Span16 = Span16 { offset: 0, length: 0 },
-    extensions_raw: Span16 = Span16 { offset: 0, length: 0 },
-    san_raw: Span16 = Span16 { offset: 0, length: 0 },
-    has_san: bool = false,
-    is_ca: bool = false,
-    has_basic_constraints: bool = false,
-    path_len_constraint: i32 = -1,
-    key_usage: u16 = 0,
-    has_key_usage: bool = false,
-    has_unsupported_critical: bool = false,
-    akid_key_id: Span16 = Span16 { offset: 0, length: 0 },
-    has_akid: bool = false,
-    skid_key_id: Span16 = Span16 { offset: 0, length: 0 },
-    has_skid: bool = false,
-    name_constraints_raw: Span16 = Span16 { offset: 0, length: 0 },
-    has_name_constraints: bool = false,
-    has_malformed_policy_constraints: bool = false,
-    signature_value: Span16 = Span16 { offset: 0, length: 0 },
+    raw_len:                          u32    = 0,
+    tbs_cert:                         Span16 = Span16 { offset: 0, length: 0 },
+    serial_number:                    Span16 = Span16 { offset: 0, length: 0 },
+    sig_alg_oid:                      Span16 = Span16 { offset: 0, length: 0 },
+    issuer_raw:                       Span16 = Span16 { offset: 0, length: 0 },
+    validity_not_before:              i64    = 0,
+    validity_not_after:               i64    = 0,
+    subject_raw:                      Span16 = Span16 { offset: 0, length: 0 },
+    spki_raw:                         Span16 = Span16 { offset: 0, length: 0 },
+    spki_alg_oid:                     Span16 = Span16 { offset: 0, length: 0 },
+    spki_pubkey:                      Span16 = Span16 { offset: 0, length: 0 },
+    extensions_raw:                   Span16 = Span16 { offset: 0, length: 0 },
+    san_raw:                          Span16 = Span16 { offset: 0, length: 0 },
+    has_san:                          bool   = false,
+    is_ca:                            bool   = false,
+    has_basic_constraints:            bool   = false,
+    path_len_constraint:              i32    = -1,
+    key_usage:                        u16    = 0,
+    has_key_usage:                    bool   = false,
+    has_unsupported_critical:         bool   = false,
+    akid_key_id:                      Span16 = Span16 { offset: 0, length: 0 },
+    has_akid:                         bool   = false,
+    skid_key_id:                      Span16 = Span16 { offset: 0, length: 0 },
+    has_skid:                         bool   = false,
+    name_constraints_raw:             Span16 = Span16 { offset: 0, length: 0 },
+    has_name_constraints:             bool   = false,
+    has_malformed_policy_constraints: bool   = false,
+    signature_value:                  Span16 = Span16 { offset: 0, length: 0 },
 }
 
 fn parse_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
@@ -742,8 +742,8 @@ fn parse_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: Pars
 
 struct TrustAnchor {
     subject_dn_sha256: u8[32] = [0; 32],
-    spki_sha256: u8[32] = [0; 32],
-    is_valid: bool = false,
+    spki_sha256:       u8[32] = [0; 32],
+    is_valid:          bool   = false,
 }
 
 struct TrustAnchorStore {
@@ -756,8 +756,8 @@ fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw
     let spki_hash = core::sha256(spki_raw);
     store.anchors.push(TrustAnchor {
         subject_dn_sha256: s_hash,
-        spki_sha256: spki_hash,
-        is_valid: true,
+        spki_sha256:       spki_hash,
+        is_valid:          true,
     });
     return true;
 }
@@ -908,8 +908,8 @@ enum SanType {
 }
 
 struct SanEntry {
-    san_type: SanType = SanType.Dns,
-    val: const u8[:] = [],
+    san_type: SanType     = SanType.Dns,
+    val:      const u8[:] = [],
 }
 
 fn x509_process_ipv4_char(b: u8, octet_idx: i64&, current: u32&, digits: i64&, out_ip: u8[4]&) -> bool {
@@ -930,8 +930,8 @@ fn x509_process_ipv4_char(b: u8, octet_idx: i64&, current: u32&, digits: i64&, o
 // Parses decimal IPv4 octets into u8[4]
 fn parse_ipv4_literal(str: const u8[:], out_ip: u8[4]&) -> bool {
     var octet_idx: i64 = 0;
-    var current: u32 = 0;
-    var digits: i64 = 0;
+    var current:   u32 = 0;
+    var digits:    i64 = 0;
 
     for i in str.len {
         if !x509_process_ipv4_char(str[i], octet_idx, current, digits, out_ip) {
@@ -973,7 +973,7 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
     guard dns[0] != '.' && dns[dns.len - 1] != '.' else { return false; }
 
     var label_start: i64 = 0;
-    var label_idx: i64 = 0;
+    var label_idx:   i64 = 0;
 
     for i in dns.len + 1 {
         let is_end = (i == dns.len);
@@ -1036,7 +1036,7 @@ fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool 
         if out_sans.len < out_sans.cap {
             out_sans.push(SanEntry {
                 san_type: st,
-                val: elem.buf,
+                val:      elem.buf,
             });
         }
         count++;
@@ -1095,9 +1095,9 @@ fn get_cert_san_extension(cert: const ParsedCert&, raw_cert: const u8[:], out_sa
 // ---- 6b. RFC 5280 Section 4.2.1.10 Name Constraints & Subtree Validation -----
 
 struct NameConstraintEntry {
-    san_type: SanType = SanType.Dns,
-    is_excluded: bool = false,
-    val: const u8[:] = [],
+    san_type:    SanType     = SanType.Dns,
+    is_excluded: bool        = false,
+    val:         const u8[:] = [],
 }
 
 // Validates that an IPv4 (4-byte) or IPv6 (16-byte) subnet mask is contiguous CIDR.
@@ -1129,7 +1129,7 @@ fn x509_validate_dns_candidate(cand: const u8[:]) -> bool {
     guard cand.len > 0 else { return false; }
     guard cand[0] != '.' else { return false; }
     guard !core::contains_byte(cand, 0) else { return false; }
-    return core::index_of_slice(cand, "..") < 0;
+    return find(cand, "..") < 0;
 }
 
 fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> bool {
@@ -1159,7 +1159,7 @@ fn match_dns_name_constraint(candidate_dns: const u8[:], constraint: const u8[:]
     let cand = x509_strip_trailing_dot(candidate_dns);
     let cons = x509_strip_trailing_dot(constraint);
     guard x509_validate_dns_candidate(cand) else { return false; }
-    guard cons.len > 0 && core::index_of_slice(cons, "..") < 0 else { return false; }
+    guard cons.len > 0 && find(cons, "..") < 0 else { return false; }
 
     if cons[0] == '.' {
         return x509_match_dns_dotted_constraint(cand, cons);
@@ -1196,7 +1196,7 @@ fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     } else if core::starts_with(s, "https://") {
         s = s[8..];
     } else {
-        let scheme_end = core::index_of_slice(s, "://");
+        let scheme_end = find(s, "://");
         guard scheme_end >= 0 else { return s[..0]; }
         s = s[scheme_end + 3..];
     }
@@ -1308,9 +1308,9 @@ fn x509_parse_general_subtree_bounds(subtree: ByteCursor&) -> bool {
 }
 
 fn x509_parse_general_subtree(
-    nc_der: const u8[:],
-    subtree: ByteCursor&,
-    is_excluded: bool,
+    nc_der:          const u8[:],
+    subtree:         ByteCursor&,
+    is_excluded:     bool,
     out_constraints: NameConstraintEntry[..16]&,
 ) -> bool {
     var st = SanType.Other;
@@ -1321,20 +1321,20 @@ fn x509_parse_general_subtree(
     if out_constraints.len < out_constraints.cap {
         let span = make_span(nc_der, base_elem.buf);
         out_constraints.push(NameConstraintEntry {
-            san_type: st,
+            san_type:    st,
             is_excluded: is_excluded,
-            val: span_slice(nc_der, span),
+            val:         span_slice(nc_der, span),
         });
     }
     return true;
 }
 
 fn x509_parse_subtrees_sequence(
-    nc_der: const u8[:],
-    subtrees_elem: ByteCursor&,
-    is_excluded: bool,
+    nc_der:          const u8[:],
+    subtrees_elem:   ByteCursor&,
+    is_excluded:     bool,
     out_constraints: NameConstraintEntry[..16]&,
-    count: i64&,
+    count:           i64&,
 ) -> bool {
     var subtrees_seq = cursor_from(subtrees_elem.buf[..0]);
     if cursor_len(subtrees_elem) > 0 && subtrees_elem.buf[0] == ASN1_TAG_SEQUENCE {
@@ -1391,9 +1391,9 @@ fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEnt
 }
 
 fn x509_eval_single_nc(
-    nc: const NameConstraintEntry&,
-    san: const SanEntry&,
-    has_permitted: bool&,
+    nc:                const NameConstraintEntry&,
+    san:               const SanEntry&,
+    has_permitted:     bool&,
     matched_permitted: bool&,
 ) -> bool {
     if nc.san_type != san.san_type {
@@ -1413,7 +1413,7 @@ fn x509_eval_single_nc(
 // Matches a single SAN against parsed Name Constraints.
 fn check_name_constraints(
     constraints: const NameConstraintEntry[..16]&,
-    san: const SanEntry&,
+    san:         const SanEntry&,
 ) -> bool {
     var has_permitted = false;
     var matched_permitted = false;
@@ -1449,11 +1449,11 @@ fn x509_detect_chain_cycles(chain_certs: const ParsedCert[..8]&, raw_certs: cons
 }
 
 fn x509_validate_single_chain_cert(
-    cert: const ParsedCert&,
-    raw_cert: const u8[:],
-    i: i64,
+    cert:                   const ParsedCert&,
+    raw_cert:               const u8[:],
+    i:                      i64,
     is_direct_trust_anchor: bool,
-    now_unix: i64,
+    now_unix:               i64,
 ) -> TlsAlert {
     if cert.has_unsupported_critical {
         return TlsAlert.UnsupportedExtension;
@@ -1479,10 +1479,10 @@ fn x509_validate_single_chain_cert(
 }
 
 fn x509_verify_cert_signature(
-    child_cert: const ParsedCert&,
-    child_raw: const u8[:],
+    child_cert:  const ParsedCert&,
+    child_raw:   const u8[:],
     parent_cert: const ParsedCert&,
-    parent_raw: const u8[:],
+    parent_raw:  const u8[:],
 ) -> TlsAlert {
     guard child_cert.signature_value.length > 0 else { return TlsAlert.CloseNotify; }
 
@@ -1515,8 +1515,8 @@ fn x509_verify_cert_signature(
 
 fn x509_validate_chain_linkage(
     chain_certs: const ParsedCert[..8]&,
-    raw_certs: const u8[:][..8]&,
-    i: i64,
+    raw_certs:   const u8[:][..8]&,
+    i:           i64,
 ) -> TlsAlert {
     if i + 1 < chain_certs.len {
         let cert = chain_certs[i];
@@ -1539,8 +1539,8 @@ fn x509_validate_chain_linkage(
 
 fn x509_validate_link_signature(
     chain_certs: const ParsedCert[..8]&,
-    raw_certs: const u8[:][..8]&,
-    i: i64,
+    raw_certs:   const u8[:][..8]&,
+    i:           i64,
 ) -> TlsAlert {
     guard i + 1 < chain_certs.len else { return TlsAlert.CloseNotify; }
     return x509_verify_cert_signature(chain_certs[i], raw_certs[i], chain_certs[i + 1], raw_certs[i + 1]);
@@ -1549,7 +1549,7 @@ fn x509_validate_link_signature(
 fn x509_check_child_sans_against_nc(
     nc_entries: const NameConstraintEntry[..16]&,
     child_cert: const ParsedCert&,
-    child_raw: const u8[:],
+    child_raw:  const u8[:],
 ) -> bool {
     guard child_cert.has_san else { return true; }
     var child_sans: SanEntry[..16] = [];
@@ -1564,8 +1564,8 @@ fn x509_check_child_sans_against_nc(
 
 fn x509_enforce_single_cert_nc(
     chain_certs: const ParsedCert[..8]&,
-    raw_certs: const u8[:][..8]&,
-    k: i64,
+    raw_certs:   const u8[:][..8]&,
+    k:           i64,
 ) -> bool {
     guard chain_certs[k].has_name_constraints else { return true; }
     var nc_entries: NameConstraintEntry[..16] = [];
@@ -1581,7 +1581,7 @@ fn x509_enforce_single_cert_nc(
 
 fn x509_enforce_chain_name_constraints(
     chain_certs: const ParsedCert[..8]&,
-    raw_certs: const u8[:][..8]&,
+    raw_certs:   const u8[:][..8]&,
 ) -> TlsAlert {
     for k in chain_certs.len {
         guard x509_enforce_single_cert_nc(chain_certs, raw_certs, k) else {
@@ -1595,9 +1595,9 @@ fn x509_enforce_chain_name_constraints(
 // Returns TlsAlert.CloseNotify (0) on success, or appropriate fatal alert.
 fn verify_certificate_chain(
     chain_certs: const ParsedCert[..8]&,
-    raw_certs: const u8[:][..8]&,
+    raw_certs:   const u8[:][..8]&,
     trust_store: const TrustAnchorStore&,
-    now_unix: i64,
+    now_unix:    i64,
 ) -> TlsAlert {
     guard chain_certs.len > 0 && chain_certs.len <= MAX_CHAIN_DEPTH else { return TlsAlert.BadCertificate; }
     guard raw_certs.len == chain_certs.len else { return TlsAlert.BadCertificate; }
@@ -1655,12 +1655,12 @@ enum OcspCertStatus {
 }
 
 struct ParsedOcspResponse {
-    status: OcspResponseStatus = OcspResponseStatus.Unknown,
-    cert_status: OcspCertStatus = OcspCertStatus.Unknown,
-    serial_number: Span16 = Span16 { offset: 0, length: 0 },
-    this_update: i64 = 0,
-    next_update: i64 = 0,
-    has_next_update: bool = false,
+    status:          OcspResponseStatus = OcspResponseStatus.Unknown,
+    cert_status:     OcspCertStatus     = OcspCertStatus.Unknown,
+    serial_number:   Span16             = Span16 { offset: 0, length: 0 },
+    this_update:     i64                = 0,
+    next_update:     i64                = 0,
+    has_next_update: bool               = false,
 }
 
 fn x509_parse_ocsp_status(s_val: u8, out_status: OcspResponseStatus&) -> bool {
@@ -1694,8 +1694,8 @@ fn x509_parse_ocsp_status(s_val: u8, out_status: OcspResponseStatus&) -> bool {
 
 fn x509_parse_ocsp_cert_id(
     single_resp: ByteCursor&,
-    raw_ocsp: const u8[:],
-    out: ParsedOcspResponse&,
+    raw_ocsp:    const u8[:],
+    out:         ParsedOcspResponse&,
 ) -> bool {
     var cert_id_seq = cursor_from(single_resp.buf[..0]);
     if !get_asn1_element(single_resp, ASN1_TAG_SEQUENCE, cert_id_seq) { return false; }
@@ -1750,8 +1750,8 @@ fn x509_parse_ocsp_next_update(single_resp: ByteCursor&, out: ParsedOcspResponse
 
 fn x509_parse_ocsp_single_response(
     responses_seq: ByteCursor&,
-    raw_ocsp: const u8[:],
-    out: ParsedOcspResponse&,
+    raw_ocsp:      const u8[:],
+    out:           ParsedOcspResponse&,
 ) -> bool {
     guard cursor_len(responses_seq) > 0 else { return false; }
     var single_resp = cursor_from(responses_seq.buf[..0]);
@@ -1783,8 +1783,8 @@ fn x509_skip_ocsp_version_and_id(tbs_resp_data: ByteCursor&) -> bool {
 
 fn x509_parse_ocsp_basic_response(
     resp_bytes_seq: ByteCursor&,
-    raw_ocsp: const u8[:],
-    out: ParsedOcspResponse&,
+    raw_ocsp:       const u8[:],
+    out:            ParsedOcspResponse&,
 ) -> bool {
     var resp_type_oid = cursor_from(resp_bytes_seq.buf[..0]);
     if !get_asn1_element(resp_bytes_seq, ASN1_TAG_OID, resp_type_oid) { return false; }
@@ -1851,10 +1851,10 @@ fn x509_validate_ocsp_temporal(resp: const ParsedOcspResponse&, now_unix: i64) -
 
 // Validates an OCSP stapled response against the leaf certificate (RFC 6066 §8, RFC 6960).
 fn validate_ocsp_stapling(
-    raw_ocsp: const u8[:],
+    raw_ocsp:  const u8[:],
     leaf_cert: const ParsedCert&,
-    leaf_raw: const u8[:],
-    now_unix: i64,
+    leaf_raw:  const u8[:],
+    now_unix:  i64,
 ) -> TlsAlert {
     var resp = ParsedOcspResponse {};
     if !parse_ocsp_response(raw_ocsp, resp) {
@@ -1896,7 +1896,7 @@ fn unwrap_tls_ocsp_response(ext_data: const u8[:]) -> const u8[:], bool {
 // Enforces that legacy PKCS#1 v1.5 RSA schemes are rejected in TLS 1.3.
 fn verify_signature_scheme_curve_binding(
     sig_scheme: u16,
-    spki_oid: const u8[:],
+    spki_oid:   const u8[:],
 ) -> bool {
     if is_forbidden_tls13_sig_scheme(sig_scheme) {
         return false;
@@ -1917,9 +1917,9 @@ fn verify_signature_scheme_curve_binding(
 // 64 spaces (0x20) || "TLS 1.3, " || context_string || 0x00 || Transcript-Hash
 // Total length: 64 + 33 + 1 + hash_len = 98 + hash_len.
 fn build_certificate_verify_message(
-    is_server: bool,
+    is_server:       bool,
     transcript_hash: const u8[:],
-    out: u8[:],
+    out:             u8[:],
 ) -> i64, bool {
     let needed = 98 + transcript_hash.len;
     guard out.len >= needed else { return 0, false; }

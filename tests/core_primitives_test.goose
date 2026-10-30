@@ -10,9 +10,9 @@ import os;
 // Tests for core/time: duration arithmetic, calendar math, and RFC 3339 codecs.
 
 struct StringVector {
-    input: const u8[:],
+    input:     const u8[:],
     expect_ok: bool,
-    desc: const u8[:],
+    desc:      const u8[:],
 }
 
 // ----------------------------------------------------------------------------
@@ -1162,7 +1162,7 @@ fn test_backoff_and_jitter_strategies(t: core::T&) {
     t.run("AWS Full and Equal Jitter Bounds") { sub =>
         var rng = core::new_wyrand(1234);
         let base_ms: u64 = 100;
-        let cap_ms: u64 = 10000;
+        let cap_ms:  u64 = 10000;
 
         for attempt in 10 {
             let sleep_full = core::backoff_full_jitter_ms(rng, base_ms, cap_ms, attempt as u32);
@@ -1176,7 +1176,7 @@ fn test_backoff_and_jitter_strategies(t: core::T&) {
     t.run("AWS Decorrelated Jitter (Clamping Flaw Immunity)") { sub =>
         var rng = core::new_wyrand(5678);
         let base_ms: u64 = 50;
-        let cap_ms: u64 = 5000;
+        let cap_ms:  u64 = 5000;
         var sleep_ms = base_ms;
 
         // In naive implementations, if sleep_ms >= cap_ms, clamping to [base_ms, cap_ms]
@@ -1386,13 +1386,13 @@ fn test_socks5_frame_validation_ct(t: core::T&) {
 // ---- suite 1: multithreading, actors & crash containment ------------------
 
 struct ComputeTask {
-    task_id: i64 = 0,
-    operand: i64 = 0,
+    task_id:     i64  = 0,
+    operand:     i64  = 0,
     is_terminal: bool = false,
 }
 
 struct ComputeResult {
-    task_id: i64 = 0,
+    task_id:      i64 = 0,
     computed_val: i64 = 0,
 }
 
@@ -1401,7 +1401,7 @@ thread_fn compute_worker() {
         let task = core::recv_msg<ComputeTask>();
         guard !task.is_terminal else { break; }
         core::send_msg(ComputeResult {
-            task_id: task.task_id,
+            task_id:      task.task_id,
             computed_val: task.operand * task.operand,
         });
     }
@@ -1409,9 +1409,9 @@ thread_fn compute_worker() {
 
 // Actor pattern: State manager thread that owns mutable counter without mutexes
 struct CounterCommand {
-    delta: i64 = 0,
+    delta: i64  = 0,
     query: bool = false,
-    quit: bool = false,
+    quit:  bool = false,
 }
 
 struct CounterResponse {
@@ -1440,7 +1440,7 @@ thread_fn contained_crashing_worker() {
 
 fn test_multithreading_and_actors(t: core::T&) {
     t.run("Case 1: WaitGroup & Parallel Worker Pool Dispatch") { sub =>
-        let num_tasks: i64 = 8;
+        let num_tasks:   i64 = 8;
         let num_workers: i64 = 2;
 
         var wg = core::WaitGroup { .. };
@@ -1451,8 +1451,8 @@ fn test_multithreading_and_actors(t: core::T&) {
 
         for task_idx in num_tasks {
             core::send_msg(ComputeTask {
-                task_id: task_idx,
-                operand: task_idx + 1,
+                task_id:     task_idx,
+                operand:     task_idx + 1,
                 is_terminal: false,
             });
         }
@@ -1754,7 +1754,7 @@ fn test_supervision_trees(t: core::T&) {
         sub.assert_true(ok_temp, "Temporary child added");
         sub.assert_eq(sup.child_count(), 3, "Supervisor has 3 children");
 
-        var normal_reason: core::ExitReason = core::ExitReason.Normal;
+        var normal_reason:   core::ExitReason = core::ExitReason.Normal;
         var abnormal_reason: core::ExitReason = core::ExitReason.Abnormal { error_code: 1, details: [] };
 
         // Permanent: always restarts
@@ -1772,9 +1772,9 @@ fn test_supervision_trees(t: core::T&) {
 
     t.run("Case 2: Restart Intensity Throttling (max_restarts / max_seconds)") { sub =>
         var spec = core::SupervisorSpec {
-            strategy: core::Strategy.OneForOne,
-            max_restarts: 3,
-            max_seconds: 5,
+            strategy:      core::Strategy.OneForOne,
+            max_restarts:  3,
+            max_seconds:   5,
             auto_shutdown: core::AutoShutdown.Never,
         };
         var sup = core::new_supervisor(spec);
@@ -1801,9 +1801,9 @@ fn test_supervision_trees(t: core::T&) {
         // Invalid config: significant child when auto_shutdown is Never must be rejected
         var sup_never = core::new_supervisor(core::SupervisorSpec { auto_shutdown: core::AutoShutdown.Never, .. });
         let rejected_sig = sup_never.add_child(core::ChildSpec {
-            id: 1,
+            id:           1,
             restart_type: core::RestartType.Transient,
-            significant: true,
+            significant:  true,
             ..
         }, 301);
         sub.assert_false(rejected_sig, "Child with significant=true rejected when auto_shutdown is Never");
@@ -1811,18 +1811,18 @@ fn test_supervision_trees(t: core::T&) {
         // Invalid config: permanent child marked significant must be rejected
         var sup_auto = core::new_supervisor(core::SupervisorSpec { auto_shutdown: core::AutoShutdown.AnySignificant, .. });
         let rejected_perm_sig = sup_auto.add_child(core::ChildSpec {
-            id: 2,
+            id:           2,
             restart_type: core::RestartType.Permanent,
-            significant: true,
+            significant:  true,
             ..
         }, 302);
         sub.assert_false(rejected_perm_sig, "Permanent child cannot be marked significant");
 
         // Valid config: transient child marked significant
         let accepted = sup_auto.add_child(core::ChildSpec {
-            id: 3,
+            id:           3,
             restart_type: core::RestartType.Transient,
-            significant: true,
+            significant:  true,
             ..
         }, 303);
         sub.assert_true(accepted, "Transient significant child accepted");
@@ -1970,9 +1970,9 @@ fn test_search_and_split(t: core::T&) {
         sub.assert_eq(core::last_index_of_byte(path, '/' as u8), 15, "last_index_of_byte '/' at 15");
         sub.assert_eq(path.last_index_of_byte('/' as u8), 15, "last_index_of_byte via UFCS");
 
-        sub.assert_eq(core::index_of_slice(path, "metrics"), 8, "index_of_slice finds 'metrics' at 8");
-        sub.assert_eq(path.index_of_slice("metrics"), 8, "index_of_slice via UFCS");
-        sub.assert_eq(core::index_of_slice(path, "missing"), -1, "index_of_slice missing is -1");
+        sub.assert_eq(find(path, "metrics"), 8, "index_of_slice finds 'metrics' at 8");
+        sub.assert_eq(path.find("metrics"), 8, "index_of_slice via UFCS");
+        sub.assert_eq(find(path, "missing"), -1, "index_of_slice missing is -1");
     };
 
     t.run("Split Once & Reverse Split Once") { sub =>

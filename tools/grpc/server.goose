@@ -8,11 +8,11 @@ import core from "../..";
 import wing from "../..";
 
 fn grpc_test_unary_handler(
-    handler_id: u16,
-    ctx: wing::GrpcServerContext&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-    out_status: wing::GrpcStatusCode&,
+    out_status:  wing::GrpcStatusCode&,
     out_message: u8[..256]&,
 ) {
     if handler_id == 1 {
@@ -70,14 +70,14 @@ fn grpc_test_unary_handler(
 }
 
 fn emit_grpc_h2_headers<B>(
-    hpack_enc: internal::DynamicTable&,
-    stream_id: u32,
-    res: const wing::Response&,
+    hpack_enc:  internal::DynamicTable&,
+    stream_id:  u32,
+    res:        const wing::Response&,
     end_stream: bool,
-    out: B&,
+    out:        B&,
 ) {
     var hpack_block: u8[..4096] = [];
-    var status_buf: u8[..16] = "200";
+    var status_buf:  u8[..16]   = "200";
     internal::encode_hpack_field(hpack_enc, hpack_block, ":status", status_buf[..], true, false);
     internal::encode_hpack_field(hpack_enc, hpack_block, "content-type", "application/grpc", true, false);
 
@@ -95,20 +95,20 @@ fn emit_grpc_h2_headers<B>(
     }
 
     let hdr = internal::FrameHeader {
-        length: hpack_block.len as u32,
+        length:     hpack_block.len as u32,
         frame_type: 1, // HEADERS
-        flags: flags,
-        stream_id: stream_id,
+        flags:      flags,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
 }
 
 fn emit_grpc_h2_data<B>(
-    stream_id: u32,
-    body: const u8[:],
+    stream_id:  u32,
+    body:       const u8[:],
     end_stream: bool,
-    out: B&,
+    out:        B&,
 ) {
     guard body.len > 0 else { return; }
     var flags: u8 = 0;
@@ -117,10 +117,10 @@ fn emit_grpc_h2_data<B>(
     }
 
     let hdr = internal::FrameHeader {
-        length: body.len as u32,
+        length:     body.len as u32,
         frame_type: 0, // DATA
-        flags: flags,
-        stream_id: stream_id,
+        flags:      flags,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(body);
@@ -129,8 +129,8 @@ fn emit_grpc_h2_data<B>(
 fn emit_grpc_h2_trailers<B>(
     hpack_enc: internal::DynamicTable&,
     stream_id: u32,
-    trailers: const wing::HeaderItem[..16]&,
-    out: B&,
+    trailers:  const wing::HeaderItem[..16]&,
+    out:       B&,
 ) {
     var hpack_block: u8[..4096] = [];
     for &t in trailers {
@@ -139,10 +139,10 @@ fn emit_grpc_h2_trailers<B>(
 
     let flags: u8 = 4 | 1; // FLAG_END_HEADERS | FLAG_END_STREAM
     let hdr = internal::FrameHeader {
-        length: hpack_block.len as u32,
+        length:     hpack_block.len as u32,
         frame_type: 1, // HEADERS
-        flags: flags,
-        stream_id: stream_id,
+        flags:      flags,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
@@ -195,7 +195,7 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
             } else if frame_type == 1 { // HEADERS
                 var dec_list = internal::DecodedH2HeaderList { .. };
                 var pad_offset: i64 = 0;
-                var pay_end: i64 = payload.len;
+                var pay_end:    i64 = payload.len;
                 if (flags & 8) != 0 && payload.len > 0 {
                     let pad_len = payload[0] as i64;
                     pad_offset += 1;
@@ -345,9 +345,9 @@ fn main() {
             }
 
             // 2. HTTP/1.1 gRPC-Web Check
-            let hdr_end = core::index_of_slice(in_buf[..], "\r\n\r\n");
+            let hdr_end = find(in_buf[..], "\r\n\r\n");
             if hdr_end >= 0 {
-                if core::index_of_slice(in_buf[..], "GET /shutdown") >= 0 {
+                if find(in_buf[..], "GET /shutdown") >= 0 {
                     let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
                     wing::tcp_send(conn, resp);
                     is_running = false;
@@ -356,7 +356,7 @@ fn main() {
 
                 // Check Content-Length to ensure entire body has been received
                 var req_complete = true;
-                let cl_pos = core::index_of_slice(in_buf[..hdr_end], "Content-Length:");
+                let cl_pos = find(in_buf[..hdr_end], "Content-Length:");
                 if cl_pos >= 0 {
                     let cl_line = in_buf[(cl_pos + 15)..hdr_end];
                     var cl_val: i64 = 0;

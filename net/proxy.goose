@@ -334,7 +334,7 @@ fn verify_connect_tunnel_response(
     guard starts_with(raw_response, "HTTP/1.") else { return ConnectTunnelError.InvalidStatusLine; }
 
     // Find \r\n\r\n boundary separating headers from potential smuggled body bytes
-    let delim_idx = core::index_of_slice(raw_response, "\r\n\r\n");
+    let delim_idx = find(raw_response, "\r\n\r\n");
     guard delim_idx >= 0 else { return ConnectTunnelError.MalformedHeaders; }
     let header_end_pos = delim_idx + 4;
 

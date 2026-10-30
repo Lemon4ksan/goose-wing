@@ -216,9 +216,9 @@ fn parse_colon_groups(part: const u8[:], groups: u16[..8]&) -> bool {
 fn parse_ipv6_hex(str: const u8[:], out_ip: u8[16]&) -> bool {
     guard str.len >= 2 && str.len <= 39 else { return false; }
 
-    let dcolon_idx = core::index_of_slice(str, "::");
+    let dcolon_idx = find(str, "::");
     if dcolon_idx >= 0 {
-        let second_dcolon = core::index_of_slice(str[dcolon_idx + 2..], "::");
+        let second_dcolon = find(str[dcolon_idx + 2..], "::");
         guard second_dcolon < 0 else { return false; }
     }
 

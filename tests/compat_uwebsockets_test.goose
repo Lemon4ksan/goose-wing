@@ -38,12 +38,12 @@ fn test_declarative_ws_routing(t: core::T&) {
         sub.assert_true(outcome == wing::PipelineOutcome.Handled, "Outcome is Handled");
 
         let wire_str = wire_out[..];
-        sub.assert_true(core::index_of_slice(wire_str, "HTTP/1.1 101 Switching Protocols\r\n") == 0, "Status 101");
-        sub.assert_true(core::index_of_slice(wire_str, "Upgrade: websocket\r\n") >= 0, "Upgrade header");
-        sub.assert_true(core::index_of_slice(wire_str, "Connection: Upgrade\r\n") >= 0, "Connection header");
-        sub.assert_true(core::index_of_slice(wire_str, "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n") >= 0, "Accept key derived");
-        sub.assert_true(core::index_of_slice(wire_str, "Sec-WebSocket-Protocol: chat.v2\r\n") >= 0, "Negotiated subprotocol");
-        sub.assert_true(core::index_of_slice(wire_str, "Sec-WebSocket-Extensions: permessage-deflate") >= 0, "Negotiated compression");
+        sub.assert_true(find(wire_str, "HTTP/1.1 101 Switching Protocols\r\n") == 0, "Status 101");
+        sub.assert_true(find(wire_str, "Upgrade: websocket\r\n") >= 0, "Upgrade header");
+        sub.assert_true(find(wire_str, "Connection: Upgrade\r\n") >= 0, "Connection header");
+        sub.assert_true(find(wire_str, "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n") >= 0, "Accept key derived");
+        sub.assert_true(find(wire_str, "Sec-WebSocket-Protocol: chat.v2\r\n") >= 0, "Negotiated subprotocol");
+        sub.assert_true(find(wire_str, "Sec-WebSocket-Extensions: permessage-deflate") >= 0, "Negotiated compression");
     };
 
     t.run("2. WS Request to Unregistered Route Falls Back to 404") { sub =>
@@ -56,7 +56,7 @@ fn test_declarative_ws_routing(t: core::T&) {
         var wire_out: u8[..1024] = [];
         let outcome, ok_handle = wing::handle_connection_wire(server, "127.0.0.1", unreg_wire, 1000, wire_out);
         sub.assert_true(ok_handle, "Handled gracefully");
-        sub.assert_true(core::index_of_slice(wire_out[..], "404 Not Found") >= 0, "Returns 404 for unknown WS route");
+        sub.assert_true(find(wire_out[..], "404 Not Found") >= 0, "Returns 404 for unknown WS route");
     };
 
     t.run("3. Fast-Path and Pipelined Stream WS Upgrade") { sub =>
@@ -70,7 +70,7 @@ fn test_declarative_ws_routing(t: core::T&) {
         var wire_out: u8[..1024] = [];
         let outcome, ok_handle = wing::handle_connection_wire(server, "127.0.0.1", fast_wire, 1000, wire_out);
         sub.assert_true(ok_handle, "Fast-path handled WS upgrade");
-        sub.assert_true(core::index_of_slice(wire_out[..], "HTTP/1.1 101 Switching Protocols") == 0, "Fast-path returns 101");
+        sub.assert_true(find(wire_out[..], "HTTP/1.1 101 Switching Protocols") == 0, "Fast-path returns 101");
     };
 }
 
@@ -471,9 +471,9 @@ fn test_fast_serialization(t: core::T&) {
         wing::serialize_http1_response(res, "goose-wing", wire);
 
         let wire_str = wire[..];
-        sub.assert_true(core::index_of_slice(wire_str, "HTTP/1.1 200 OK\r\n") == 0, "Status line uses pre-formatted 200 OK");
-        sub.assert_true(core::index_of_slice(wire_str, "Content-Length: 0\r\n") >= 0, "Zero-length body emits Content-Length: 0 without decimal format loop");
-        sub.assert_true(core::index_of_slice(wire_str, "Connection: keep-alive\r\n") >= 0, "Default keep-alive emitted");
+        sub.assert_true(find(wire_str, "HTTP/1.1 200 OK\r\n") == 0, "Status line uses pre-formatted 200 OK");
+        sub.assert_true(find(wire_str, "Content-Length: 0\r\n") >= 0, "Zero-length body emits Content-Length: 0 without decimal format loop");
+        sub.assert_true(find(wire_str, "Connection: keep-alive\r\n") >= 0, "Default keep-alive emitted");
     };
 }
 
@@ -647,8 +647,8 @@ fn test_vectored_io(t: core::T&) {
         let recvd_resp = wing::tcp_recv_slice(client, resp_buf[..], 2000);
         sub.assert_gt(recvd_resp, 0, "Client received response");
         let resp_slice = resp_buf[..recvd_resp];
-        sub.assert_true(core::index_of_slice(resp_slice, "HTTP/1.1 200 OK\r\n") == 0, "Starts with 200 OK");
-        sub.assert_true(core::index_of_slice(resp_slice, "HELLO_VECTORED_WORLD") >= 0, "Body received intact");
+        sub.assert_true(find(resp_slice, "HTTP/1.1 200 OK\r\n") == 0, "Starts with 200 OK");
+        sub.assert_true(find(resp_slice, "HELLO_VECTORED_WORLD") >= 0, "Body received intact");
 
         wing::tcp_close(client);
         wing::tcp_close(srv_sock);
@@ -706,15 +706,15 @@ fn test_handshake_and_date_and_swar_utf8(t: core::T&) {
 
     t.run("2. Cached RFC 7231 Date Header Generation") { sub =>
         let date_hdr = wing::get_cached_http_date_header(1700000000); // Fixed epoch 2023-11-14 22:13:20 GMT
-        sub.assert_true(core::index_of_slice(date_hdr, "Date: ") == 0, "Header starts with Date: ");
-        sub.assert_true(core::index_of_slice(date_hdr, "GMT\r\n") > 0, "Header ends with GMT CRLF");
+        sub.assert_true(find(date_hdr, "Date: ") == 0, "Header starts with Date: ");
+        sub.assert_true(find(date_hdr, "GMT\r\n") > 0, "Header ends with GMT CRLF");
 
         // Check response serialization automatically includes Date
         var res = wing::Response { .. };
         res.status_code = 200;
         var wire: u8[..512] = [];
         wing::serialize_http1_headers(res, "goose-wing", wire);
-        sub.assert_true(core::index_of_slice(wire[..], "Date: ") >= 0, "HTTP/1.1 response includes Date header");
+        sub.assert_true(find(wire[..], "Date: ") >= 0, "HTTP/1.1 response includes Date header");
     };
 
     t.run("3. 16-byte SWAR ASCII Skip UTF-8 Validator") { sub =>
@@ -1170,14 +1170,14 @@ fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
     wing::serialize_http1_response(res, "GooseWing", wire_out);
     let wire_str = wire_out[..];
 
-    t.assert_true(core::index_of_slice(wire_str, "Content-Length: 1024\r\n") >= 0, "Must contain Content-Length: 1024");
-    t.assert_false(core::index_of_slice(wire_str, "Content-Length: 0\r\n") >= 0, "Must NOT contain conflicting Content-Length: 0");
+    t.assert_true(find(wire_str, "Content-Length: 1024\r\n") >= 0, "Must contain Content-Length: 1024");
+    t.assert_false(find(wire_str, "Content-Length: 0\r\n") >= 0, "Must NOT contain conflicting Content-Length: 0");
 
     // Count occurrences of 'Content-Length:'
     var count:  i64 = 0;
     var cursor: i64 = 0;
     while cursor < wire_str.len {
-        let idx = core::index_of_slice(wire_str[cursor..], "Content-Length:");
+        let idx = find(wire_str[cursor..], "Content-Length:");
         if idx < 0 { break; }
         count++;
         cursor += idx + 15;
@@ -1198,7 +1198,7 @@ fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: core::T&) {
     let outcome, ok = wing::handle_connection_wire(srv, "192.168.1.50", plain_http, 123456789, wire_out);
 
     t.assert_false(ok, "Direct plain HTTP connection when PROXY is enforced must be rejected");
-    t.assert_true(core::index_of_slice(wire_out[..], "400 Bad Request") >= 0, "Must return 400 Bad Request on missing PROXY header");
+    t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must return 400 Bad Request on missing PROXY header");
 }
 
 fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
@@ -1354,7 +1354,7 @@ fn test_uweb_1370_204_no_content_length(t: core::T&) {
     wing::serialize_http1_response(res, "GooseWing", wire_out);
     let wire_str = wire_out[..];
 
-    t.assert_false(core::index_of_slice(wire_str, "Content-Length") >= 0, "204 No Content response must NOT contain Content-Length header");
+    t.assert_false(find(wire_str, "Content-Length") >= 0, "204 No Content response must NOT contain Content-Length header");
 }
 
 fn test_rfc_6455_1005_empty_close_payload(t: core::T&) {
@@ -1493,7 +1493,7 @@ fn test_uweb_1898_extra_bytes_connection_poisoning(t: core::T&) {
     var wire_out: u8[..4096] = [];
     let handled, ok = wing::handle_connection_wire_pipelined(server, "127.0.0.1", poisoned_stream, 0, wire_out);
     t.assert_false(ok, "Trailing unparseable bytes after Content-Length must invalidate the stream (ok = false)");
-    t.assert_true(core::index_of_slice(wire_out[..], "400 Bad Request") >= 0, "Must serialize 400 Bad Request for poisoned connection");
+    t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must serialize 400 Bad Request for poisoned connection");
 }
 
 fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
@@ -1924,7 +1924,7 @@ fn test_uweb_end_without_body(t: core::T&) {
     t.assert_eq(sent_bytes, 0, "send_http1_end_without_body returns 0 on non-positive fd");
 
     // Verify wire has exactly 0 body bytes after \r\n\r\n
-    let pos_end = core::index_of_slice(wire[..], "\r\n\r\n");
+    let pos_end = find(wire[..], "\r\n\r\n");
     t.assert_eq(pos_end + 4, wire.len, "Zero body bytes emitted on wire after header end");
 
     // 2. end_without_body with close_connection = true

@@ -124,7 +124,7 @@ fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
 //   returns: true, out_req.method = "GET", out_req.url = "/index.html"
 fn parse_http1_request_line<Req>(
     req_line: const u8[:],
-    out_req: Req&,
+    out_req:  Req&,
 ) -> bool {
     let sp1 = core::index_of_byte(req_line, ' ');
     guard sp1 > 0 else { return false; }
@@ -177,10 +177,10 @@ fn validate_host_header_chars(host_val: const u8[:]) -> bool {
 //   rest_headers = "Host: example.com\r\n\r\n", cursor = 0
 //   returns: ok = true, cursor = 19 (points to final CRLF)
 fn parse_http1_wire_header_line<Req>(
-    rest_headers: const u8[:],
-    cursor: i64&,
+    rest_headers:     const u8[:],
+    cursor:           i64&,
     presence_tracker: HeaderPresenceTracker&,
-    out_req: Req&,
+    out_req:          Req&,
 ) -> bool {
     // Single-pass SWAR header name scanning & RFC 9110 tchar validation
     let name_len, ok_name = scan_header_field_name_swar(rest_headers[cursor..]);
@@ -221,8 +221,8 @@ fn parse_http1_wire_header_line<Req>(
 //   rest_headers = "Host: localhost\r\nUser-Agent: test\r\n\r\n"
 //   returns: true, out_req.headers.len = 2
 fn parse_http1_headers_stream<Req>(
-    rest_headers: const u8[:],
-    out_req: Req&,
+    rest_headers:     const u8[:],
+    out_req:          Req&,
     presence_tracker: HeaderPresenceTracker&,
 ) -> bool {
     var cursor: i64 = 0;
@@ -250,10 +250,10 @@ fn parse_http1_headers_stream<Req>(
 //   wire = "POST /api HTTP/1.1\r\nHost: loc\r\n\r\n..."
 //   returns: ok = true, body_start_idx = 33
 fn parse_http1_request_headers<Req>(
-    wire: const u8[:],
-    out_req: Req&,
+    wire:             const u8[:],
+    out_req:          Req&,
     presence_tracker: HeaderPresenceTracker&,
-    body_start_idx: i64&,
+    body_start_idx:   i64&,
 ) -> bool {
     guard wire.len >= 4 else { return false; }
 
@@ -285,7 +285,7 @@ fn parse_http1_request_headers<Req>(
     let header_bytes = active_wire[..header_end_idx];
 
     // Find end of request line
-    let line_end = core::index_of_slice(header_bytes, "\r\n");
+    let line_end = find(header_bytes, "\r\n");
     guard line_end > 0 else { return false; }
     guard parse_http1_request_line(header_bytes[..line_end], out_req) else { return false; }
 
@@ -435,7 +435,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     let header_bytes = wire[..header_end_idx];
 
     // Find end of status line
-    let line_end = core::index_of_slice(header_bytes, "\r\n");
+    let line_end = find(header_bytes, "\r\n");
     guard line_end > 0 else { return false, 0; }
 
     let status_line = header_bytes[..line_end];
@@ -459,7 +459,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     var cursor: i64 = 0;
     out_res.headers.clear();
     while cursor < rest_headers.len {
-        let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
+        let rel_end = find(rest_headers[cursor..], "\r\n");
         if rel_end < 0 { break; }
         if rel_end == 0 { break; }
 
@@ -605,10 +605,10 @@ fn serialize_server_header<B>(server_name: const u8[:], out: B&) {
 }
 
 fn serialize_http1_chunked_response<Res, B>(
-    res: const Res&,
+    res:         const Res&,
     server_name: const u8[:],
-    chunk_size: i64,
-    out_wire: B&,
+    chunk_size:  i64,
+    out_wire:    B&,
 ) {
     serialize_status_line(res.status_code, out_wire);
     serialize_server_header(server_name, out_wire);
@@ -649,7 +649,7 @@ fn serialize_http1_chunked_response<Res, B>(
 // Eliminates repetitive wall-clock system calls and calendar math for every HTTP response.
 struct CachedHttpDate {
     header_str: u8[..64] = [],
-    last_sec: i64 = 0,
+    last_sec:   i64      = 0,
 }
 
 var g_cached_http_date: CachedHttpDate = CachedHttpDate { .. };
@@ -770,10 +770,10 @@ fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:
 // Sends an HTTP/1.1 response where the payload is provided as an IoVecArray of up to 15 chunks,
 // prepending wire headers zero-copy via tcp_sendv (WSASend / writev).
 fn send_http1_response_iov<Res, B>(
-    fd: i64,
-    res: const Res&,
-    server_name: const u8[:],
-    body_iov: const core::IoVecArray&,
+    fd:           i64,
+    res:          const Res&,
+    server_name:  const u8[:],
+    body_iov:     const core::IoVecArray&,
     wire_headers: B&,
 ) -> i32 {
     wire_headers.clear();
@@ -799,11 +799,11 @@ fn send_http1_response_iov<Res, B>(
 //   res.status_code = 200, reported_content_length = 1048576, close_connection = false
 //   out_wire populated with "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n"
 fn end_without_body<Res, B>(
-    res: Res&,
-    server_name: const u8[:],
-    out_wire: B&,
-    reported_content_length: i64 = -1,
-    close_connection: bool = false,
+    res:                     Res&,
+    server_name:             const u8[:],
+    out_wire:                B&,
+    reported_content_length: i64  = -1,
+    close_connection:        bool = false,
 ) {
     if reported_content_length >= 0 {
         var len_buf: u8[..32] = [];
@@ -819,12 +819,12 @@ fn end_without_body<Res, B>(
 // Sends an HTTP/1.1 response without body directly over a socket descriptor
 // (uWebSockets endWithoutBody socket pattern).
 fn send_http1_end_without_body<Res, B>(
-    fd: i64,
-    res: Res&,
-    server_name: const u8[:],
-    wire_headers: B&,
-    reported_content_length: i64 = -1,
-    close_connection: bool = false,
+    fd:                      i64,
+    res:                     Res&,
+    server_name:             const u8[:],
+    wire_headers:            B&,
+    reported_content_length: i64  = -1,
+    close_connection:        bool = false,
 ) -> i32 {
     wire_headers.clear();
     end_without_body(res, server_name, wire_headers, reported_content_length, close_connection);
@@ -836,13 +836,13 @@ fn send_http1_end_without_body<Res, B>(
 // Aggregates headers, frames, and small payload chunks into a single 16384-byte buffer
 // before flushing via 1 system call.
 struct ServerCork {
-    buffer: core::CorkBuffer = core::new_cork_buffer(),
-    sock_fd: i64 = -1,
+    buffer:  core::CorkBuffer = core::new_cork_buffer(),
+    sock_fd: i64              = -1,
 }
 
 fn new_server_cork(fd: i64) -> ServerCork {
     return ServerCork {
-        buffer: core::new_cork_buffer(),
+        buffer:  core::new_cork_buffer(),
         sock_fd: fd,
     };
 }
@@ -877,12 +877,12 @@ fn server_cork_flush(sc: ServerCork&) -> i32 {
 
 // State of a streaming HTTP/1.1 request body consumer (uWebSockets onData / onDataV2 pattern)
 struct HttpStreamConsumer {
-    content_length: i64 = -1,
-    bytes_received: i64 = 0,
-    header_end_idx: i64 = 0,
-    is_chunked: bool = false,
+    content_length:    i64  = -1,
+    bytes_received:    i64  = 0,
+    header_end_idx:    i64  = 0,
+    is_chunked:        bool = false,
     is_headers_parsed: bool = false,
-    is_finished: bool = false,
+    is_finished:       bool = false,
 }
 
 // Parses request headers and prepares a streaming body reader without buffering the entire body.
@@ -892,8 +892,8 @@ struct HttpStreamConsumer {
 //   wire = "POST /upload HTTP/1.1\r\nHost: api\r\nContent-Length: 1048576\r\n\r\n<data>"
 //   returns: ok = true, header_end_idx = points to start of body, consumer.content_length = 1048576
 fn begin_http_stream_request<Req>(
-    wire: const u8[:],
-    out_req: Req&,
+    wire:     const u8[:],
+    out_req:  Req&,
     consumer: HttpStreamConsumer&,
 ) -> bool, i64 {
     consumer.is_headers_parsed = false;
@@ -972,12 +972,12 @@ fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
 // Connection lifecycle context for asynchronous streaming backpressure and abort notifications
 // (uWebSockets res->onWritable & res->onAborted pattern).
 struct HttpAsyncContext {
-    sock_fd: i64 = -1,
-    is_aborted: bool = false,
+    sock_fd:          i64  = -1,
+    is_aborted:       bool = false,
     is_backpressured: bool = false,
-    total_written: u64 = 0,
-    user_tag: u64 = 0,
-    in_use: bool = false,
+    total_written:    u64  = 0,
+    user_tag:         u64  = 0,
+    in_use:           bool = false,
 }
 
 // Dispatches a client abort event if the client disconnected during async processing
@@ -1006,57 +1006,57 @@ fn notify_socket_writable<Callback: fn(i64, u64, u64) -> bool>(
 
 // Dynamic Runtime SNI multi-certificate credentials (uWebSockets addServerName / removeServerName pattern).
 struct SniCertEntry {
-    pattern: u8[..128] = [],
+    pattern:  u8[..128]   = [],
     cert_pem: const u8[:] = "",
-    key_pem: const u8[:] = "",
-    in_use: bool = false,
+    key_pem:  const u8[:] = "",
+    in_use:   bool        = false,
 }
 
 const MAX_SNI_DOMAINS: i64 = 32;
 
 struct SniRegistry {
     entries: SniCertEntry[32] = [SniCertEntry { .. }; 32],
-    count: i32 = 0,
+    count:   i32              = 0,
 }
 
 struct SniCredentials {
     cert_pem: const u8[:] = "",
-    key_pem: const u8[:] = "",
+    key_pem:  const u8[:] = "",
 }
 
 struct WsRouteEntry {
-    path: u8[..128] = [],
+    path:     u8[..128]  = [],
     behavior: WsBehavior = WsBehavior { .. },
-    in_use: bool = false,
+    in_use:   bool       = false,
 }
 
 struct HttpServer {
-    pipeline: ServerPipelineConfig = ServerPipelineConfig { .. },
-    host: u8[..128] = "127.0.0.1",
-    port: u16 = 8080,
-    server_name: u8[..64] = "goose-wing/1.0",
-    timer: internal::ConnectionTimer = internal::ConnectionTimer { .. },
-    is_running: bool = false,
-    requests_processed: u64 = 0,
-    accept_proxy_protocol: bool = false,
-    trust_proxy_headers: bool = false,
-    fast_path: bool = false,
-    topic_tree: TopicTree = TopicTree { .. },
-    ws_routes: WsRouteEntry[..16] = [WsRouteEntry { .. }; 16],
-    ws_route_count: i32 = 0,
-    shared_compressor: SharedWsCompressor = SharedWsCompressor { .. },
-    sni_registry: SniRegistry = SniRegistry { .. },
+    pipeline:              ServerPipelineConfig      = ServerPipelineConfig { .. },
+    host:                  u8[..128]                 = "127.0.0.1",
+    port:                  u16                       = 8080,
+    server_name:           u8[..64]                  = "goose-wing/1.0",
+    timer:                 internal::ConnectionTimer = internal::ConnectionTimer { .. },
+    is_running:            bool                      = false,
+    requests_processed:    u64                       = 0,
+    accept_proxy_protocol: bool                      = false,
+    trust_proxy_headers:   bool                      = false,
+    fast_path:             bool                      = false,
+    topic_tree:            TopicTree                 = TopicTree { .. },
+    ws_routes:             WsRouteEntry[..16]        = [WsRouteEntry { .. }; 16],
+    ws_route_count:        i32                       = 0,
+    shared_compressor:     SharedWsCompressor        = SharedWsCompressor { .. },
+    sni_registry:          SniRegistry               = SniRegistry { .. },
 }
 
 fn new_http_server(
     host_str: const u8[:] = "127.0.0.1",
-    port_num: u16 = 8080,
+    port_num: u16         = 8080,
 ) -> HttpServer {
     var server = HttpServer {
-        pipeline: new_default_server_pipeline_config(host_str),
-        port: port_num,
-        timer: internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
-        is_running: true,
+        pipeline:           new_default_server_pipeline_config(host_str),
+        port:               port_num,
+        timer:              internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
+        is_running:         true,
         requests_processed: 0,
         ..
     };
@@ -1068,13 +1068,13 @@ fn new_http_server(
 fn new_http_server_with_quota<Q>(
     host_str: const u8[:],
     port_num: u16,
-    quota: Q,
+    quota:    Q,
 ) -> HttpServer {
     var server = HttpServer {
-        pipeline: new_server_pipeline_config(host_str, quota),
-        port: port_num,
-        timer: internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
-        is_running: true,
+        pipeline:           new_server_pipeline_config(host_str, quota),
+        port:               port_num,
+        timer:              internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
+        is_running:         true,
         requests_processed: 0,
         ..
     };
@@ -1149,10 +1149,10 @@ fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
 // Registers or updates an SNI domain pattern with certificate and private key credentials.
 // Supports exact domains and wildcard patterns (uWebSockets app.addServerName).
 fn add_server_name(
-    server: HttpServer&,
-    pattern: const u8[:],
+    server:   HttpServer&,
+    pattern:  const u8[:],
     cert_pem: const u8[:],
-    key_pem: const u8[:],
+    key_pem:  const u8[:],
 ) -> bool {
     guard pattern.len > 0 && pattern.len <= 128 else { return false; }
 
@@ -1201,7 +1201,7 @@ fn remove_server_name(server: HttpServer&, pattern: const u8[:]) -> bool {
 // Resolves TLS credentials for an SNI hostname using exact match first, then wildcard (RFC 6125 §6.4.3).
 // Returns (SniCredentials, ok).
 fn resolve_sni_credentials(
-    server: const HttpServer&,
+    server:       const HttpServer&,
     sni_hostname: const u8[:],
 ) -> SniCredentials, bool {
     guard server.sni_registry.count > 0 && sni_hostname.len > 0 else {
@@ -1214,7 +1214,7 @@ fn resolve_sni_credentials(
         if entry.in_use && eq_ascii_fold(entry.pattern[..], sni_hostname) {
             return SniCredentials {
                 cert_pem: entry.cert_pem,
-                key_pem: entry.key_pem,
+                key_pem:  entry.key_pem,
             }, true;
         }
     }
@@ -1228,7 +1228,7 @@ fn resolve_sni_credentials(
         if match_dns_san(pat, sni_hostname) {
             return SniCredentials {
                 cert_pem: entry.cert_pem,
-                key_pem: entry.key_pem,
+                key_pem:  entry.key_pem,
             }, true;
         }
     }
@@ -1239,7 +1239,7 @@ fn resolve_sni_credentials(
 // Resolves TLS credentials for an SNI hostname with fallback handler for missing server names
 // (uWebSockets app.missingServerName pattern).
 fn resolve_sni_credentials_with_fallback<Fallback: fn(const u8[:]) -> SniCredentials>(
-    server: const HttpServer&,
+    server:       const HttpServer&,
     sni_hostname: const u8[:],
 ) -> SniCredentials, bool {
     let creds, ok = resolve_sni_credentials(server, sni_hostname);
@@ -1282,36 +1282,36 @@ fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[
 }
 
 fn subscribe_ex(
-    server: HttpServer&,
-    sock_fd: i64,
+    server:        HttpServer&,
+    sock_fd:       i64,
     topic_pattern: const u8[:],
-    out_old: i32&,
-    out_new: i32&,
+    out_old:       i32&,
+    out_new:       i32&,
 ) -> bool {
     return subscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
 }
 
 fn unsubscribe_ex(
-    server: HttpServer&,
-    sock_fd: i64,
+    server:        HttpServer&,
+    sock_fd:       i64,
     topic_pattern: const u8[:],
-    out_old: i32&,
-    out_new: i32&,
+    out_old:       i32&,
+    out_new:       i32&,
 ) -> bool {
     return unsubscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
 }
 
 fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
-    server: HttpServer&,
-    sock_fd: i64,
+    server:        HttpServer&,
+    sock_fd:       i64,
     topic_pattern: const u8[:],
 ) -> bool {
     return subscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
 }
 
 fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
-    server: HttpServer&,
-    sock_fd: i64,
+    server:        HttpServer&,
+    sock_fd:       i64,
     topic_pattern: const u8[:],
 ) -> bool {
     return unsubscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
@@ -1335,8 +1335,8 @@ fn iterate_socket_topics<IterFn: fn(const u8[:])>(server: const HttpServer&, soc
 
 // Asynchronous WebSocket Upgrade helpers (uWebSockets res->onAborted & res->upgrade pattern)
 fn defer_ws_upgrade(
-    server: const HttpServer&,
-    req: const Request&,
+    server:  const HttpServer&,
+    req:     const Request&,
     sock_fd: i64,
 ) -> WsPendingUpgrade, bool {
     let r_idx = find_ws_route(server, req.url[..]);
@@ -1355,8 +1355,8 @@ fn defer_ws_upgrade(
 }
 
 fn complete_ws_upgrade<B>(
-    server: HttpServer&,
-    pending: WsPendingUpgrade&,
+    server:   HttpServer&,
+    pending:  WsPendingUpgrade&,
     out_wire: B&,
 ) -> WebSocketSession, bool {
     guard pending.in_use && !pending.is_aborted else {
@@ -1498,9 +1498,9 @@ fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool
 }
 
 fn complete_ws_upgrade<Req, B>(
-    server: HttpServer&,
-    req: const Req&,
-    entry: const WebSocketRoute&,
+    server:   HttpServer&,
+    req:      const Req&,
+    entry:    const WebSocketRoute&,
     wire_out: B&,
 ) -> bool {
     let subproto = entry.behavior.subprotocol[..];
@@ -1533,11 +1533,11 @@ fn complete_ws_upgrade<Req, B>(
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline, and serializing the wire response.
 fn handle_connection_wire<B>(
-    server: HttpServer&,
+    server:    HttpServer&,
     client_ip: const u8[:],
-    wire_in: const u8[:],
-    now_ns: u64,
-    wire_out: B&,
+    wire_in:   const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
 ) -> PipelineOutcome, bool {
     wire_out.clear();
 
@@ -1663,12 +1663,12 @@ fn is_possible_http_method_prefix(stream: const u8[:]) -> bool {
 
 // Checks if pipelined stream body with Content-Length is incomplete or exceeds payload limits.
 fn check_pipelined_content_length<B>(
-    stream: const u8[:],
-    hdr_end: i64,
-    cl_str: const u8[:],
+    stream:      const u8[:],
+    hdr_end:     i64,
+    cl_str:      const u8[:],
     server_name: const u8[:],
-    wire_out: B&,
-    out_keep: bool&,
+    wire_out:    B&,
+    out_keep:    bool&,
 ) -> bool {
     guard cl_str.len > 0 else { return false; }
     let cl_val, cl_ok = core::parse_i64_dec(trim(cl_str));
@@ -1688,10 +1688,10 @@ fn check_pipelined_content_length<B>(
 
 // Handles incomplete pipelined HTTP stream or syntax errors.
 fn handle_pipelined_parse_failure<B>(
-    server_name: const u8[:],
-    stream: const u8[:],
-    req: const Request&,
-    wire_out: B&,
+    server_name:     const u8[:],
+    stream:          const u8[:],
+    req:             const Request&,
+    wire_out:        B&,
     out_keep_stream: bool&,
 ) -> bool {
     let hdr_end = core::fast_find_crlfcrlf(stream);
@@ -1735,19 +1735,19 @@ fn handle_pipelined_parse_failure<B>(
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
 // Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
 fn handle_connection_wire_pipelined_stream<B>(
-    server: HttpServer&,
+    server:    HttpServer&,
     client_ip: const u8[:],
-    wire_in: const u8[:],
-    now_ns: u64,
-    wire_out: B&,
+    wire_in:   const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
 ) -> i64, i64, bool, bool {
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
     wire_out.clear();
     var stream = wire_in;
-    var total_handled: i64 = 0;
-    var total_consumed: i64 = 0;
+    var total_handled:    i64  = 0;
+    var total_consumed:   i64  = 0;
     var conn_wants_close: bool = false;
 
     var req = new_request("GET", "");
@@ -1823,24 +1823,24 @@ fn handle_connection_wire_pipelined_stream<B>(
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests (RFC 9112 Section 9.3).
 // Concatenates all serialized responses into wire_out and returns (total_requests_processed, ok).
 fn handle_connection_wire_pipelined<B>(
-    server: HttpServer&,
+    server:    HttpServer&,
     client_ip: const u8[:],
-    wire_in: const u8[:],
-    now_ns: u64,
-    wire_out: B&,
+    wire_in:   const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
 ) -> i64, bool {
     let count, _, ok, _ = handle_connection_wire_pipelined_stream(server, client_ip, wire_in, now_ns, wire_out);
     return count, ok;
 }
 
 inline fn handle_h2_pipe_ingress<B>(
-    server: HttpServer&,
-    client_ip: const u8[:],
-    pipe: core::PipeBuffer&,
-    h2_sess: internal::H2ServerSession&,
-    now_ms: u64,
+    server:     HttpServer&,
+    client_ip:  const u8[:],
+    pipe:       core::PipeBuffer&,
+    h2_sess:    internal::H2ServerSession&,
+    now_ms:     u64,
     unread_len: i64,
-    wire_out: B&,
+    wire_out:   B&,
 ) -> i64, bool {
     let stream = core::readable_slice(pipe);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
@@ -1860,12 +1860,12 @@ inline fn handle_h2_pipe_ingress<B>(
 // pipe cursors (consumed, examined) with strict monotonicity.
 // Returns (total_requests_processed, ok).
 fn handle_connection_pipe<B>(
-    server: HttpServer&,
+    server:    HttpServer&,
     client_ip: const u8[:],
-    pipe: core::PipeBuffer&,
-    now_ns: u64,
-    wire_out: B&,
-    h2_sess: internal::H2ServerSession&,
+    pipe:      core::PipeBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
+    h2_sess:   internal::H2ServerSession&,
 ) -> i64, bool {
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
@@ -1941,11 +1941,11 @@ fn handle_connection_pipe<B>(
 }
 
 fn handle_connection_pipe<B>(
-    server: HttpServer&,
+    server:    HttpServer&,
     client_ip: const u8[:],
-    pipe: core::PipeBuffer&,
-    now_ns: u64,
-    wire_out: B&,
+    pipe:      core::PipeBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
 ) -> i64, bool {
     var dummy_sess = internal::new_h2_server_session(server.server_name[..]);
     return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, dummy_sess);
@@ -2013,17 +2013,17 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 const REACTOR_LEFTOVER_CAP: i64 = 1024;
 
 struct ReactorConnSlot {
-    fd: i64 = -1,
-    leftover_len: i64 = 0,
-    timeout_tick: u8 = 255,
-    leftover: u8[1024] = [0; 1024],
+    fd:           i64      = -1,
+    leftover_len: i64      = 0,
+    timeout_tick: u8       = 255,
+    leftover:     u8[1024] = [0; 1024],
 }
 
 // Cleans up a connection slot, removes from epoll, closes fd, and returns slot to free stack.
 fn reactor_cleanup_slot(
-    epfd: i64,
-    slot: ReactorConnSlot&,
-    slot_idx: i64,
+    epfd:       i64,
+    slot:       ReactorConnSlot&,
+    slot_idx:   i64,
     free_slots: FreeSlotStack&,
 ) {
     if slot.fd > 0 {
@@ -2038,13 +2038,13 @@ fn reactor_cleanup_slot(
 
 // 1-second Tick Wheel Connection Timeout Sweeper (Slowloris defense & slot reclamation).
 fn reactor_sweep_timeouts(
-    epfd: i64,
-    active_slots: ReactorConnSlot[:],
-    free_slots: FreeSlotStack&,
-    timer_wheel: TickTimerWheel&,
-    now_sec: i64,
+    epfd:           i64,
+    active_slots:   ReactorConnSlot[:],
+    free_slots:     FreeSlotStack&,
+    timer_wheel:    TickTimerWheel&,
+    now_sec:        i64,
     last_sweep_sec: i64&,
-    total_served: i64&,
+    total_served:   i64&,
 ) {
     guard now_sec > last_sweep_sec else { return; }
     let elapsed = if last_sweep_sec == 0 { 1 } else { (now_sec - last_sweep_sec) as u32 };
@@ -2061,10 +2061,10 @@ fn reactor_sweep_timeouts(
 
 // Reclaims one expired connection slot during emergency saturation.
 fn reactor_evict_stale_slot(
-    epfd: i64,
+    epfd:         i64,
     active_slots: ReactorConnSlot[:],
-    free_slots: FreeSlotStack&,
-    timer_wheel: TickTimerWheel&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  TickTimerWheel&,
     total_served: i64&,
 ) -> i64 {
     for s in active_slots.len {
@@ -2079,11 +2079,11 @@ fn reactor_evict_stale_slot(
 
 // Drains non-blocking listener queue and accepts ready incoming connections into free slots.
 fn reactor_drain_listener(
-    listener_fd: i64,
-    epfd: i64,
+    listener_fd:  i64,
+    epfd:         i64,
     active_slots: ReactorConnSlot[:],
-    free_slots: FreeSlotStack&,
-    timer_wheel: TickTimerWheel&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  TickTimerWheel&,
     total_served: i64&,
 ) {
     while true {
@@ -2150,15 +2150,15 @@ fn reactor_save_leftover(slot: ReactorConnSlot&, rem: const u8[:]) -> bool {
 
 // Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
 fn reactor_handle_ingress(
-    server: HttpServer&,
-    epfd: i64,
+    server:       HttpServer&,
+    epfd:         i64,
     active_slots: ReactorConnSlot[:],
-    slot: i64,
-    free_slots: FreeSlotStack&,
-    timer_wheel: TickTimerWheel&,
-    now_ns: u64,
-    chunk: u8[..65536]&,
-    cork_wire: u8[..16384]&,
+    slot:         i64,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        u8[..65536]&,
+    cork_wire:    u8[..16384]&,
     total_served: i64&,
 ) {
     let conn = active_slots[slot].fd;
@@ -2218,11 +2218,11 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
     defer epoll_close(epfd);
     epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
 
-    var ready_fds: i64[256] = [0; 256];
-    var ready_udata: u64[256] = [0; 256];
-    var cork_wire: u8[..16384] = [];
-    var chunk: u8[..65536] = [];
-    var total_served: i64 = 0;
+    var ready_fds:    i64[256]    = [0; 256];
+    var ready_udata:  u64[256]    = [0; 256];
+    var cork_wire:    u8[..16384] = [];
+    var chunk:        u8[..65536] = [];
+    var total_served: i64         = 0;
 
     var active_slots: ReactorConnSlot[256] = [ReactorConnSlot { .. }; 256];
     var free_slots = FreeSlotStack { .. };

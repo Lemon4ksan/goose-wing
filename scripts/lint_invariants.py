@@ -749,10 +749,10 @@ def main() -> int:
             if not is_test_or_example and not re.match(r"^\s*//", line):
                 code_only_14 = re.sub(r"//.*$", "", line)
                 if re.search(
-                    r'\b(?:index_of_slice|contains)\s*\([^)]*\\"[^)]*\\"',
+                    r'\b(?:index_of_slice|contains|find)\s*\([^)]*\\"[^)]*\\"',
                     code_only_14,
                 ) or re.search(
-                    r"\b(?:index_of_slice|contains)\s*\(\s*(?:json|payload_json|claims_json|raw_json|jwt_payload|jwk_json)\b",
+                    r"\b(?:index_of_slice|contains|find)\s*\(\s*(?:json|payload_json|claims_json|raw_json|jwt_payload|jwk_json)\b",
                     code_only_14,
                 ):
                     record_violation(

@@ -52,9 +52,9 @@ fn has_forbidden_host_code_point(host_str: const u8[:]) -> bool {
 }
 
 fn parse_opaque_path_url(
-    out_url: Url&,
+    out_url:    Url&,
     scheme_str: const u8[:],
-    remainder: const u8[:],
+    remainder:  const u8[:],
 ) -> Url, UrlParseError {
     out_url.has_opaque_path = true;
     out_url.href.append(scheme_str);
@@ -63,7 +63,7 @@ fn parse_opaque_path_url(
 
     out_url.pathname_start = out_url.href.len as i32;
     var query_pos: i64 = -1;
-    var hash_pos: i64 = -1;
+    var hash_pos:  i64 = -1;
     let first_delim = find_any(remainder, URL_QUERY_HASH_SET);
     if first_delim >= 0 {
         if remainder[first_delim] == '?' {
@@ -99,8 +99,8 @@ fn parse_opaque_path_url(
 }
 
 fn resolve_fragment_on_opaque_base(
-    out_url: Url&,
-    base_url: const Url&,
+    out_url:    Url&,
+    base_url:   const Url&,
     frag_input: const u8[:],
 ) -> Url, UrlParseError {
     let base_href = href(base_url);
@@ -299,12 +299,12 @@ fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) {
 }
 
 fn apply_canonical_host_and_port(
-    out_url: Url&,
-    scheme_str: const u8[:],
+    out_url:        Url&,
+    scheme_str:     const u8[:],
     host_port_part: const u8[:],
 ) -> UrlParseError {
     var raw_host: u8[..256] = [];
-    var port_val: i32 = -1;
+    var port_val: i32       = -1;
     let is_file = scheme_str == "file";
     let is_spec = is_special_scheme(scheme_str);
 
@@ -352,9 +352,9 @@ fn apply_canonical_host_and_port(
 }
 
 fn parse_absolute_authority_url(
-    out_url: Url&,
-    scheme_str: const u8[:],
-    is_spec: bool,
+    out_url:       Url&,
+    scheme_str:    const u8[:],
+    is_spec:       bool,
     auth_and_path: const u8[:],
 ) -> Url, UrlParseError {
     out_url.href.append(scheme_str);
@@ -545,7 +545,7 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
                 // Bracketed host MUST be a valid IPv6 literal (or IPvFuture).
                 // Hostnames and IPv4 addresses MUST NOT be enclosed in brackets.
                 var dummy_comp: u8[..64] = [];
-                let pct_pos = index_of_slice(inside_brackets, "%25");
+                let pct_pos = find(inside_brackets, "%25");
                 let addr_to_check = if pct_pos >= 0 { inside_brackets[..pct_pos] } else { inside_brackets };
                 guard parse_and_compress_ipv6(addr_to_check, dummy_comp) else {
                     return view, UrlParseError.InvalidIpv6;
@@ -687,8 +687,8 @@ fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
 
 fn extract_host_and_port_canonical<B>(
     host_port: const u8[:],
-    host_out: B&,
-    port_out: i32&,
+    host_out:  B&,
+    port_out:  i32&,
 ) -> UrlParseError {
     host_out.clear();
     port_out = -1;
@@ -709,7 +709,7 @@ fn extract_host_and_port_canonical<B>(
 
         let ipv6_body = host_port[1..close_bracket];
         var compressed_ipv6: u8[..64] = [];
-        let pct_pos = index_of_slice(ipv6_body, "%25");
+        let pct_pos = find(ipv6_body, "%25");
 
         if pct_pos >= 0 {
             let addr_to_parse = ipv6_body[..pct_pos];
@@ -804,8 +804,8 @@ fn extract_host_and_port_canonical<B>(
 
 // Parses a dotted-quad IPv4 suffix e.g. ::ffff:192.0.2.1 into 2 x 16-bit pieces
 fn parse_ipv4_mapped_pieces(
-    rem_slice: const u8[:],
-    pieces: u16[8]&,
+    rem_slice:   const u8[:],
+    pieces:      u16[8]&,
     piece_count: i64&,
 ) -> bool {
     guard piece_count <= 6 else { return false; }
@@ -845,10 +845,10 @@ fn parse_ipv4_mapped_pieces(
 
 // Finds the longest continuous run of zero pieces for RFC 5952 canonical compression
 fn find_longest_zero_run(pieces: const u16[8]&) -> i64, i64 {
-    var best_run_start: i64 = -1;
-    var best_run_len: i64 = 0;
+    var best_run_start:    i64 = -1;
+    var best_run_len:      i64 = 0;
     var current_run_start: i64 = -1;
-    var current_run_len: i64 = 0;
+    var current_run_len:   i64 = 0;
 
     for piece_idx in 8 {
         if pieces[piece_idx] == 0 {
@@ -929,9 +929,9 @@ fn format_compressed_ipv6<B>(pieces: const u16[8]&, out: B&) {
 // RFC 5952 / WHATWG IPv6 Parser and Zero-Run Canonical Compression
 fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
     out.clear();
-    var pieces: u16[8] = [0, 0, 0, 0, 0, 0, 0, 0];
-    var piece_count: i64 = 0;
-    var double_colon_pos: i64 = -1;
+    var pieces:           u16[8] = [0, 0, 0, 0, 0, 0, 0, 0];
+    var piece_count:      i64    = 0;
+    var double_colon_pos: i64    = -1;
 
     var rem_slice = raw_ipv6;
     if rem_slice.len > 0 && rem_slice[0] == ':' {
@@ -1210,8 +1210,8 @@ fn copy_base_authority_offsets(out_url: Url&, base_url: const Url&) {
 }
 
 fn resolve_relative_path_against_base(
-    out_url: Url&,
-    base_url: const Url&,
+    out_url:   Url&,
+    base_url:  const Url&,
     rel_input: const u8[:],
 ) -> Url, UrlParseError {
     guard rel_input.len > 0 else {

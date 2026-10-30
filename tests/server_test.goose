@@ -533,7 +533,7 @@ fn test_standalone_http_server(t: core::T&) {
 
 struct ServerSpawnConfig {
     listener_fd: i64 = -1,
-    max_conns: i64 = 0,
+    max_conns:   i64 = 0,
 }
 
 thread_fn serve_sync_worker() {
@@ -573,7 +573,7 @@ fn test_serve_connection_capping(t: core::T&) {
             var resp_buf: u8[..512] = [];
             let r = wing::tcp_recv(client, resp_buf, 512, 2000);
             sub.assert_gt(r, 0, "Client received response");
-            sub.assert_true(core::index_of_slice(resp_buf[..], "200 OK") >= 0, "Response is 200 OK");
+            sub.assert_true(find(resp_buf[..], "200 OK") >= 0, "Response is 200 OK");
 
             wing::tcp_close(client);
         }
@@ -607,7 +607,7 @@ fn test_serve_reactor_connection_capping(t: core::T&) {
             var resp_buf: u8[..512] = [];
             let r = wing::tcp_recv(client, resp_buf, 512, 2000);
             sub.assert_gt(r, 0, "Client received response");
-            sub.assert_true(core::index_of_slice(resp_buf[..], "200 OK") >= 0, "Response is 200 OK");
+            sub.assert_true(find(resp_buf[..], "200 OK") >= 0, "Response is 200 OK");
 
             wing::tcp_close(client);
         }
@@ -659,12 +659,12 @@ fn test_topic_tree_live_broadcast_and_batch_drain(t: core::T&) {
         var buf1: u8[..256] = [];
         let r1 = wing::tcp_recv(c1, buf1, 256, 1000);
         sub.assert_gt(r1, 0, "Client 1 received frame");
-        sub.assert_true(core::index_of_slice(buf1[..], "ROOM_MSG") >= 0, "Frame contains ROOM_MSG");
+        sub.assert_true(find(buf1[..], "ROOM_MSG") >= 0, "Frame contains ROOM_MSG");
 
         var buf2: u8[..256] = [];
         let r2 = wing::tcp_recv(c2, buf2, 256, 1000);
         sub.assert_gt(r2, 0, "Client 2 received frame");
-        sub.assert_true(core::index_of_slice(buf2[..], "ROOM_MSG") >= 0, "Frame contains ROOM_MSG");
+        sub.assert_true(find(buf2[..], "ROOM_MSG") >= 0, "Frame contains ROOM_MSG");
 
         let queued = wing::publish_batch(tree, "alerts/fire", "EVACUATE");
         sub.assert_eq(queued, 1, "Queued to 1 subscriber matching wildcard alerts/#");
@@ -677,7 +677,7 @@ fn test_topic_tree_live_broadcast_and_batch_drain(t: core::T&) {
         var buf3: u8[..256] = [];
         let r3 = wing::tcp_recv(c3, buf3, 256, 1000);
         sub.assert_gt(r3, 0, "Client 3 received drained alert frame");
-        sub.assert_true(core::index_of_slice(buf3[..], "EVACUATE") >= 0, "Alert frame contains EVACUATE");
+        sub.assert_true(find(buf3[..], "EVACUATE") >= 0, "Alert frame contains EVACUATE");
     };
 }
 

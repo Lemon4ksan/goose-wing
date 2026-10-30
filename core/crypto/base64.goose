@@ -65,9 +65,9 @@ inline fn base64url_val(ch: u8) -> i32 {
 
 fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
     guard encoded.len > 0 else { return true; }
-    var buf: u32 = 0;
+    var buf:  u32 = 0;
     var bits: i32 = 0;
-    var idx: i64 = 0;
+    var idx:  i64 = 0;
 
     while idx < encoded.len {
         let ch = encoded[idx];
@@ -88,7 +88,7 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
         }
 
         let v = base64url_val(ch);
-        guard v >= 0 else { return false; }
+        guard v >= 0 else { out.clear(); return false; }
         buf = (buf << 6) | (v as u32);
         bits += 6;
         if bits >= 8 {
@@ -99,10 +99,10 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
     }
 
     // RFC 4648 §3.5: single lone 6-bit char (len % 4 == 1) is impossible
-    guard bits != 6 else { return false; }
+    guard bits != 6 else { out.clear(); return false; }
     if bits > 0 {
         let pad_mask = (((1 as u32) << bits) - 1);
-        guard (buf & pad_mask) == 0 else { return false; }
+        guard (buf & pad_mask) == 0 else { out.clear(); return false; }
     }
     return true;
 }
@@ -168,9 +168,9 @@ inline fn base64_val(ch: u8) -> i32 {
 
 fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
     guard encoded.len > 0 else { return true; }
-    var buf: u32 = 0;
+    var buf:  u32 = 0;
     var bits: i32 = 0;
-    var idx: i64 = 0;
+    var idx:  i64 = 0;
 
     while idx < encoded.len {
         let ch = encoded[idx];
@@ -178,12 +178,12 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
             // RFC 4648 §3.5: padding only valid when 2 chars (bits=4) or 3 chars (bits=2) decoded
             guard bits == 4 || bits == 2 else { return false; }
             let pad_mask = (((1 as u32) << bits) - 1);
-            guard (buf & pad_mask) == 0 else { return false; }
+            guard (buf & pad_mask) == 0 else { out.clear(); return false; }
             let expected_pad = if bits == 4 { 2 } else { 1 };
-            guard (encoded.len - idx) == expected_pad else { return false; }
+            guard (encoded.len - idx) == expected_pad else { out.clear(); return false; }
             var p = idx;
             while p < encoded.len {
-                guard encoded[p] == '=' else { return false; }
+                guard encoded[p] == '=' else { out.clear(); return false; }
                 p++;
             }
             bits = 0;
@@ -191,7 +191,7 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
         }
 
         let v = base64_val(ch);
-        guard v >= 0 else { return false; }
+        guard v >= 0 else { out.clear(); return false; }
         buf = (buf << 6) | (v as u32);
         bits += 6;
         if bits >= 8 {
@@ -202,10 +202,10 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
     }
 
     // RFC 4648 §3.5: single lone 6-bit char (len % 4 == 1) is impossible
-    guard bits != 6 else { return false; }
+    guard bits != 6 else { out.clear(); return false; }
     if bits > 0 {
         let pad_mask = (((1 as u32) << bits) - 1);
-        guard (buf & pad_mask) == 0 else { return false; }
+        guard (buf & pad_mask) == 0 else { out.clear(); return false; }
     }
     return true;
 }

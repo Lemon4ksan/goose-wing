@@ -10,7 +10,7 @@ import wing from "../..";
 fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) -> const u8[:], bool {
     var cursor: i64 = 0;
     while cursor < headers_block.len {
-        let rel_end = core::index_of_slice(headers_block[cursor..], "\r\n");
+        let rel_end = find(headers_block[cursor..], "\r\n");
         if rel_end < 0 { break; }
         let line = headers_block[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
@@ -58,9 +58,9 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     var ws = wing::new_websocket_session(false);
     wing::set_max_payload_length(ws, 16777216); // 16 MB for Autobahn Case 9.x large payload tests
 
-    var ws_buf: u8[>..] = [];
-    var frag_buf: u8[>..] = [];
-    var reply: u8[>..] = [];
+    var ws_buf:    u8[>..] = [];
+    var frag_buf:  u8[>..] = [];
+    var reply:     u8[>..] = [];
     var echo_wire: u8[>..] = [];
     var idle_count = 0;
     while !ws.is_closed {
@@ -158,7 +158,7 @@ fn main() {
             }
             in_buf.append(chunk[..recvd]);
 
-            let hdr_end = core::index_of_slice(in_buf[..], "\r\n\r\n");
+            let hdr_end = find(in_buf[..], "\r\n\r\n");
             if hdr_end >= 0 {
                 let body_start = hdr_end + 4;
                 let upgrade_val, has_upgrade = extract_header_val(in_buf[..body_start], "upgrade");
@@ -171,7 +171,7 @@ fn main() {
                 }
 
                 // Check for /shutdown
-                if core::index_of_slice(in_buf[..body_start], "GET /shutdown") >= 0 {
+                if find(in_buf[..body_start], "GET /shutdown") >= 0 {
                     let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
                     wing::tcp_send(conn, resp);
                     is_running = false;

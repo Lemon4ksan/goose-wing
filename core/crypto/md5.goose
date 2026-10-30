@@ -8,8 +8,8 @@ namespace core;
 import std;
 
 struct Md5Context {
-    state: u32[4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476],
-    count: u64 = 0,
+    state:  u32[4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476],
+    count:  u64    = 0,
     buffer: u8[64] = [0; 64],
 }
 
@@ -17,12 +17,7 @@ fn md5_rotate_left(x: u32, n: u32) -> u32 {
     return (x << n) | (x >> (32 - n));
 }
 
-fn md5_transform(state: u32[4]&, blk: const u8[64]&) {
-    var a = state[0];
-    var b = state[1];
-    var c = state[2];
-    var d = state[3];
-
+inline fn md5_decode_block(blk: const u8[64]&) -> u32[16] {
     var x: u32[16] = [0; 16];
     for i in 16 {
         let idx = i * 4;
@@ -31,6 +26,16 @@ fn md5_transform(state: u32[4]&, blk: const u8[64]&) {
                ((blk[idx + 2] as! u32) << 16) |
                ((blk[idx + 3] as! u32) << 24);
     }
+    return x;
+}
+
+fn md5_transform(state: u32[4]&, blk: const u8[64]&) {
+    var a = state[0];
+    var b = state[1];
+    var c = state[2];
+    var d = state[3];
+
+    let x = md5_decode_block(blk);
 
     // Round 1
     a = b + md5_rotate_left(a + ((b & c) | ((~b) & d)) + x[0] + 0xd76aa478, 7);

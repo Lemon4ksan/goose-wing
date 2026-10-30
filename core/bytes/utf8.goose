@@ -111,10 +111,73 @@ fn validate_utf8(data: const u8[:]) -> bool {
     return true;
 }
 
+inline fn step_utf8_multibyte(
+    data:     const u8[:],
+    n:        i64,
+    i:        i64,
+    b0:       u8,
+    is_final: bool,
+) -> i64, bool {
+    if (b0 & 0xE0) == 0xC0 {
+        guard b0 >= 0xC2 else { return 0, false; }
+        if i + 1 >= n {
+            if is_final { return 0, false; }
+            return i, true;
+        }
+        let b1 = data[i + 1];
+        guard (b1 & 0xC0) == 0x80 else { return 0, false; }
+        return i + 2, true;
+    } else if (b0 & 0xF0) == 0xE0 {
+        if i + 1 >= n {
+            if is_final { return 0, false; }
+            return i, true;
+        }
+        let b1 = data[i + 1];
+        guard (b1 & 0xC0) == 0x80 else { return 0, false; }
+        if b0 == 0xE0 && b1 < 0xA0 { return 0, false; }
+        if b0 == 0xED && b1 >= 0xA0 { return 0, false; }
+        if i + 2 >= n {
+            if is_final { return 0, false; }
+            return i, true;
+        }
+        let b2 = data[i + 2];
+        guard (b2 & 0xC0) == 0x80 else { return 0, false; }
+        return i + 3, true;
+    } else if (b0 & 0xF8) == 0xF0 {
+        guard b0 <= 0xF4 else { return 0, false; }
+        if i + 1 >= n {
+            if is_final { return 0, false; }
+            return i, true;
+        }
+        let b1 = data[i + 1];
+        guard (b1 & 0xC0) == 0x80 else { return 0, false; }
+        if b0 == 0xF0 && b1 < 0x90 { return 0, false; }
+        if b0 == 0xF4 && b1 > 0x8F { return 0, false; }
+        if i + 2 >= n {
+            if is_final { return 0, false; }
+            return i, true;
+        }
+        let b2 = data[i + 2];
+        guard (b2 & 0xC0) == 0x80 else { return 0, false; }
+        if i + 3 >= n {
+            if is_final { return 0, false; }
+            return i, true;
+        }
+        let b3 = data[i + 3];
+        guard (b3 & 0xC0) == 0x80 else { return 0, false; }
+        return i + 4, true;
+    }
+    return 0, false;
+}
+
 // Validates a streaming UTF-8 buffer across fragment boundaries (RFC 3629 & RFC 6455 §8.1).
 // When `is_final` is false, allows a valid 1..3 byte prefix of an incomplete multi-byte codepoint
 // at the end of `data`, returning the byte offset up to which complete codepoints were verified.
 // Immediately rejects invalid lead bytes, overlong prefixes, surrogates, and out-of-range prefixes.
+//
+// Example:
+//   data = "hello world", is_final = true
+//   returns: 11, ok = true
 fn validate_utf8_streaming(data: const u8[:], is_final: bool) -> i64, bool {
     let n = data.len;
     guard n > 0 else { return 0, true; }
@@ -139,57 +202,12 @@ fn validate_utf8_streaming(data: const u8[:], is_final: bool) -> i64, bool {
         let b0 = data[i];
         if b0 <= 0x7F {
             i++;
-        } else if (b0 & 0xE0) == 0xC0 {
-            guard b0 >= 0xC2 else { return 0, false; }
-            if i + 1 >= n {
-                if is_final { return 0, false; }
-                return i, true;
-            }
-            let b1 = data[i + 1];
-            guard (b1 & 0xC0) == 0x80 else { return 0, false; }
-            i += 2;
-        } else if (b0 & 0xF0) == 0xE0 {
-            if i + 1 >= n {
-                if is_final { return 0, false; }
-                return i, true;
-            }
-            let b1 = data[i + 1];
-            guard (b1 & 0xC0) == 0x80 else { return 0, false; }
-            if b0 == 0xE0 && b1 < 0xA0 { return 0, false; }
-            if b0 == 0xED && b1 >= 0xA0 { return 0, false; }
-            if i + 2 >= n {
-                if is_final { return 0, false; }
-                return i, true;
-            }
-            let b2 = data[i + 2];
-            guard (b2 & 0xC0) == 0x80 else { return 0, false; }
-            i += 3;
-        } else if (b0 & 0xF8) == 0xF0 {
-            guard b0 <= 0xF4 else { return 0, false; }
-            if i + 1 >= n {
-                if is_final { return 0, false; }
-                return i, true;
-            }
-            let b1 = data[i + 1];
-            guard (b1 & 0xC0) == 0x80 else { return 0, false; }
-            if b0 == 0xF0 && b1 < 0x90 { return 0, false; }
-            if b0 == 0xF4 && b1 > 0x8F { return 0, false; }
-            if i + 2 >= n {
-                if is_final { return 0, false; }
-                return i, true;
-            }
-            let b2 = data[i + 2];
-            guard (b2 & 0xC0) == 0x80 else { return 0, false; }
-            if i + 3 >= n {
-                if is_final { return 0, false; }
-                return i, true;
-            }
-            let b3 = data[i + 3];
-            guard (b3 & 0xC0) == 0x80 else { return 0, false; }
-            i += 4;
-        } else {
-            return 0, false;
+            continue;
         }
+        let next_i, ok = step_utf8_multibyte(data, n, i, b0, is_final);
+        guard ok else { return 0, false; }
+        if next_i == i { return i, true; }
+        i = next_i;
     }
     return i, true;
 }

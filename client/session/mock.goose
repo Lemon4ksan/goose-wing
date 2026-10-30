@@ -13,15 +13,15 @@ import client.session.ssrf;
 // ---- mock exchange model ---------------------------------------------------
 
 struct MockExchange {
-    pattern_url: u8[..256] = [],
-    method: u8[..16] = [],
-    status_code: i32 = 200,
-    headers: HeaderItem[..16] = [],
-    set_cookies: u8[..256][..8] = [],
-    resolved_ips: u8[..64][..4] = [],
-    body: u8[..1024] = [],
-    protocol: u8[..16] = [],
-    simulate_quic_blocked: bool = false,
+    pattern_url:           u8[..256]        = [],
+    method:                u8[..16]         = [],
+    status_code:           i32              = 200,
+    headers:               HeaderItem[..16] = [],
+    set_cookies:           u8[..256][..8]   = [],
+    resolved_ips:          u8[..64][..4]    = [],
+    body:                  u8[..1024]       = [],
+    protocol:              u8[..16]         = [],
+    simulate_quic_blocked: bool             = false,
 }
 
 // crap:ignore
@@ -77,7 +77,7 @@ fn format_url_origin<B>(url_val: const core::Url&, out: B&) {
 
 fn target_has_scheme(target: const u8[:]) -> bool {
     guard target.len >= 8 else { return false; }
-    return core::index_of_slice(target, "://") >= 0;
+    return find(target, "://") >= 0;
 }
 
 fn resolve_target_origin<B>(target: const u8[:], out: B&) {
@@ -93,12 +93,12 @@ fn resolve_target_origin<B>(target: const u8[:], out: B&) {
 
 // Synthesizes an HTTP Response from a matched MockExchange.
 fn build_mock_response(
-    route: const MockExchange&,
-    current_url: const core::Url&,
+    route:        const MockExchange&,
+    current_url:  const core::Url&,
     sent_headers: const HeaderItem[:],
 ) -> Response {
     var resp = Response {
-        status_code: route.status_code,
+        status_code:   route.status_code,
         effective_url: copy(current_url.href),
         ..
     };

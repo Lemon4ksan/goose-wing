@@ -51,11 +51,6 @@ fn last_index_of_byte(s: const u8[:], b: u8) -> i64 {
     return -1;
 }
 
-// Returns the 0-based index of the first occurrence of needle in haystack, or -1 if not found.
-fn index_of_slice(haystack: const u8[:], needle: const u8[:]) -> i64 {
-    return find(haystack, needle);
-}
-
 // Counts the number of non-overlapping occurrences of byte b in s.
 fn count_byte(s: const u8[:], b: u8) -> i64 {
     var count: i64 = 0;

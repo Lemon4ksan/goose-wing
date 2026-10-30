@@ -61,13 +61,13 @@ fn test_redirect_stale_host_header_leakage(t: core::T&) {
         let origin_target = core::new_url("https://evil-phishing.com/harvest");
 
         var rinfo = wing::RedirectInfo {
-            status_code: 302,
-            new_url: origin_target,
-            is_cross_origin: true,
+            status_code:         302,
+            new_url:             origin_target,
+            is_cross_origin:     true,
             is_scheme_downgrade: false,
-            is_port_changed: false,
-            clear_body: true,
-            new_referrer: [],
+            is_port_changed:     false,
+            clear_body:          true,
+            new_referrer:        [],
         };
 
         wing::sanitize_headers_on_redirect(headers, rinfo, false, false, false, false);
@@ -195,7 +195,7 @@ fn test_status_204_body_suppression_on_wire(t: core::T&) {
         var wire_out: u8[..1024] = [];
         wing::serialize_http1_response(res, "GooseWing", wire_out);
 
-        let has_body = core::index_of_slice(wire_out[..], "LEAKED_PAYLOAD_SMUGGLING") >= 0;
+        let has_body = find(wire_out[..], "LEAKED_PAYLOAD_SMUGGLING") >= 0;
         sub.assert_false(has_body, "Status 204 response MUST NOT emit message body to wire per RFC 9110 §8.6");
     };
 }
@@ -455,7 +455,7 @@ fn test_ws_handshake_empty_path_defaults_to_slash(t: core::T&) {
 
         wing::build_handshake_request(ws, "example.com", "", "dGhlIHNhbXBsZSBub25jZQ==", wire_out);
 
-        let has_double_space = core::index_of_slice(wire_out[..], "GET  HTTP/1.1") >= 0;
+        let has_double_space = find(wire_out[..], "GET  HTTP/1.1") >= 0;
         sub.assert_false(has_double_space, "Must NOT format malformed 'GET  HTTP/1.1' with double space");
 
         let starts_with_get_slash = core::starts_with(wire_out[..], "GET / HTTP/1.1\r\n");
@@ -514,7 +514,7 @@ fn test_forbidden_trailer_fields(t: core::T&) {
         // "A sender MUST NOT generate a trailer that contains any of the following fields:
         // ... Content-Encoding, Content-Type, Content-Range."
         // A recipient MUST NOT process forbidden fields as metadata of the payload.
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
         let chunk_wire: const u8[:] = "5\r\nHello\r\n0\r\nContent-Type: text/html\r\n\r\n";
 
@@ -523,7 +523,7 @@ fn test_forbidden_trailer_fields(t: core::T&) {
     };
 
     t.run("Content-Encoding in chunked trailer must be rejected as DisallowedTrailer") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
         let chunk_wire: const u8[:] = "5\r\nHello\r\n0\r\nContent-Encoding: gzip\r\n\r\n";
 
@@ -747,7 +747,7 @@ fn test_dns_decode_label_length_and_reserved_bits(t: core::T&) {
         wire.push(0); // Zero root label
 
         var out_name: u8[..256] = [];
-        var off: i64 = 0;
+        var off:      i64       = 0;
         let ok = wing::dns_decode_name(wire[..], off, out_name);
         sub.assert_false(ok, "dns_decode_name MUST reject label with length 70 (> 63)");
     };
@@ -755,9 +755,9 @@ fn test_dns_decode_label_length_and_reserved_bits(t: core::T&) {
     t.run("DNS wire decode MUST reject reserved high-order label bits (0x40 or 0x80)") { sub =>
         // RFC 1035 Section 4.1.4: "The 10 and 01 combinations are reserved for future use."
         // Only 00 (uncompressed label <= 63) and 11 (0xC0 compression pointer) are valid.
-        var wire: u8[..16] = [0x44, 't', 'e', 's', 't', 0x00]; // 0x44 has bits 01_000100
+        var wire:     u8[..16]  = [0x44, 't', 'e', 's', 't', 0x00]; // 0x44 has bits 01_000100
         var out_name: u8[..256] = [];
-        var off: i64 = 0;
+        var off:      i64       = 0;
         let ok = wing::dns_decode_name(wire[..], off, out_name);
         sub.assert_false(ok, "dns_decode_name MUST reject label starting with reserved bits 01 (0x40)");
     };

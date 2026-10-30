@@ -10,17 +10,17 @@ import core.io.types;
 
 struct RingBuffer {
     storage: u8[4096] = [0; 4096],
-    head: i64 = 0, // Read position
-    tail: i64 = 0, // Write position
-    count: i64 = 0, // Current bytes stored
+    head:    i64      = 0, // Read position
+    tail:    i64      = 0, // Write position
+    count:   i64      = 0, // Current bytes stored
 }
 
 fn new_ring_buffer() -> RingBuffer {
     return RingBuffer {
         storage: [0; 4096],
-        head: 0,
-        tail: 0,
-        count: 0,
+        head:    0,
+        tail:    0,
+        count:   0,
     };
 }
 
@@ -173,11 +173,6 @@ fn commit_written(rb: RingBuffer&, n: i64) -> IoError {
     rb.tail = (rb.tail + n) % 4096;
     rb.count += n;
     return IoError.None;
-}
-
-// Commits n bytes read/consumed from the ring buffer after zero-copy inspection.
-fn commit_read(rb: RingBuffer&, n: i64) -> i64 {
-    return discard(rb, n);
 }
 
 // Yields the largest single contiguous readable slice starting from head.

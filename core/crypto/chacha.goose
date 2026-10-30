@@ -31,9 +31,12 @@ fn store_u32_le(bytes: u8[:], offset: i64, val: u32) {
 fn hchacha20(key: const u8[32]&, nonce16: const u8[16]&) -> u8[32] {
     var s: u32[16] = [
         0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
-        load_u32_le(key[..], 0), load_u32_le(key[..], 4), load_u32_le(key[..], 8), load_u32_le(key[..], 12),
-        load_u32_le(key[..], 16), load_u32_le(key[..], 20), load_u32_le(key[..], 24), load_u32_le(key[..], 28),
-        load_u32_le(nonce16[..], 0), load_u32_le(nonce16[..], 4), load_u32_le(nonce16[..], 8), load_u32_le(nonce16[..], 12),
+        load_u32_le(key[..], 0), load_u32_le(key[..], 4),
+        load_u32_le(key[..], 8), load_u32_le(key[..], 12),
+        load_u32_le(key[..], 16), load_u32_le(key[..], 20),
+        load_u32_le(key[..], 24), load_u32_le(key[..], 28),
+        load_u32_le(nonce16[..], 0), load_u32_le(nonce16[..], 4),
+        load_u32_le(nonce16[..], 8), load_u32_le(nonce16[..], 12),
     ];
 
     for r in 10 {
@@ -86,7 +89,13 @@ fn chacha20_block(key: const u8[32]&, counter: u32, nonce12: const u8[12]&) -> u
     return blk;
 }
 
-fn chacha20_xor(key: const u8[32]&, counter: u32, nonce12: const u8[12]&, input: const u8[:], out: u8[>..]&) {
+fn chacha20_xor(
+    key:     const u8[32]&,
+    counter: u32,
+    nonce12: const u8[12]&,
+    input:   const u8[:],
+    out:     u8[>..]&,
+) {
     var cur_ctr = counter;
     var offset = 0;
     while offset < input.len {
@@ -103,7 +112,7 @@ fn chacha20_xor(key: const u8[32]&, counter: u32, nonce12: const u8[12]&, input:
 
 // Poly1305 one-time MAC over GF(2^130 - 5) using 26-bit limbs for pure 64-bit arithmetic.
 fn poly1305_process_block(
-    m: const u8[17]&,
+    m:  const u8[17]&,
     r0: u64, r1: u64, r2: u64, r3: u64, r4: u64,
     s1: u64, s2: u64, s3: u64, s4: u64,
     h0: u64&, h1: u64&, h2: u64&, h3: u64&, h4: u64&,
@@ -213,10 +222,10 @@ fn poly1305_mac(key32: const u8[32]&, msg: const u8[:]) -> u8[16] {
 
 // XChaCha20-Poly1305 AEAD (24-byte nonce)
 fn xchacha20_poly1305_seal(
-    key: const u8[32]&,
-    nonce24: const u8[24]&,
-    plaintext: const u8[:],
-    aad: const u8[:],
+    key:            const u8[32]&,
+    nonce24:        const u8[24]&,
+    plaintext:      const u8[:],
+    aad:            const u8[:],
     out_ciphertext: u8[>..]&,
 ) -> u8[16] {
     var nonce16: u8[16] = [0; 16];
@@ -250,11 +259,11 @@ fn xchacha20_poly1305_seal(
 }
 
 fn xchacha20_poly1305_open(
-    key: const u8[32]&,
-    nonce24: const u8[24]&,
-    ciphertext: const u8[:],
-    aad: const u8[:],
-    tag: const u8[16]&,
+    key:           const u8[32]&,
+    nonce24:       const u8[24]&,
+    ciphertext:    const u8[:],
+    aad:           const u8[:],
+    tag:           const u8[16]&,
     out_plaintext: u8[>..]&,
 ) -> bool {
     var nonce16: u8[16] = [0; 16];
@@ -291,10 +300,10 @@ fn xchacha20_poly1305_open(
 
 // ChaCha20-Poly1305 AEAD (IETF RFC 8439, 12-byte nonce)
 fn chacha20_poly1305_seal(
-    key: const u8[32]&,
-    nonce12: const u8[12]&,
-    plaintext: const u8[:],
-    aad: const u8[:],
+    key:            const u8[32]&,
+    nonce12:        const u8[12]&,
+    plaintext:      const u8[:],
+    aad:            const u8[:],
     out_ciphertext: u8[>..]&,
 ) -> u8[16] {
     let ot_block = chacha20_block(key, 0, nonce12);
@@ -321,11 +330,11 @@ fn chacha20_poly1305_seal(
 }
 
 fn chacha20_poly1305_open(
-    key: const u8[32]&,
-    nonce12: const u8[12]&,
-    ciphertext: const u8[:],
-    aad: const u8[:],
-    tag: const u8[16]&,
+    key:           const u8[32]&,
+    nonce12:       const u8[12]&,
+    ciphertext:    const u8[:],
+    aad:           const u8[:],
+    tag:           const u8[16]&,
     out_plaintext: u8[>..]&,
 ) -> bool {
     let ot_block = chacha20_block(key, 0, nonce12);

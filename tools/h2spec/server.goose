@@ -98,9 +98,9 @@ fn main() {
             }
 
             // 2. Check for HTTP/1 shutdown or fallback
-            let hdr_end = core::index_of_slice(in_buf[..], "\r\n\r\n");
+            let hdr_end = find(in_buf[..], "\r\n\r\n");
             if hdr_end >= 0 {
-                if core::index_of_slice(in_buf[..], "GET /shutdown") >= 0 {
+                if find(in_buf[..], "GET /shutdown") >= 0 {
                     let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
                     wing::tcp_send(conn, resp);
                     is_running = false;

@@ -235,10 +235,10 @@ fn ::next_u32(rng: core::WyRand&) -> u32 { return core::next_u32(rng); }
 fn ::next_u32(rng: core::Xoroshiro64StarStar&) -> u32 { return core::next_u32(rng); }
 
 fn ::on_rtt_sample(
-    est: core::JacobsonRttEstimator&,
-    latest_rtt_us: u64,
-    ack_delay_us: u64 = 0,
-    max_ack_delay_us: u64 = 25000,
+    est:                 core::JacobsonRttEstimator&,
+    latest_rtt_us:       u64,
+    ack_delay_us:        u64  = 0,
+    max_ack_delay_us:    u64  = 25000,
     handshake_confirmed: bool = false,
 ) {
     core::on_rtt_sample(est, latest_rtt_us, ack_delay_us, max_ack_delay_us, handshake_confirmed);
@@ -305,7 +305,6 @@ fn ::clear(rb: core::RingBuffer&) { core::clear(rb); }
 fn ::read_slices(rb: const core::RingBuffer&) -> const u8[:], const u8[:] { return core::read_slices(rb); }
 fn ::write_slices(rb: core::RingBuffer&) -> u8[:], u8[:] { return core::write_slices(rb); }
 fn ::commit_written(rb: core::RingBuffer&, n: i64) -> core::IoError { return core::commit_written(rb, n); }
-fn ::commit_read(rb: core::RingBuffer&, n: i64) -> i64 { return core::commit_read(rb, n); }
 fn ::contiguous_readable(rb: const core::RingBuffer&) -> const u8[:] { return core::contiguous_readable(rb); }
 
 // ---- pipe & cork buffer ufcs bridges ---------------------------------------
@@ -366,7 +365,6 @@ fn ::trim_end_bytes(s: const u8[:], set: const u8[:]) -> const u8[:] { return co
 fn ::contains_byte(s: const u8[:], b: u8) -> bool { return core::contains_byte(s, b); }
 fn ::index_of_byte(s: const u8[:], b: u8) -> i64 { return core::index_of_byte(s, b); }
 fn ::last_index_of_byte(s: const u8[:], b: u8) -> i64 { return core::last_index_of_byte(s, b); }
-fn ::index_of_slice(haystack: const u8[:], needle: const u8[:]) -> i64 { return core::index_of_slice(haystack, needle); }
 fn ::count_byte(s: const u8[:], b: u8) -> i64 { return core::count_byte(s, b); }
 
 fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool { return core::split_once_byte(s, delim); }

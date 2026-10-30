@@ -148,7 +148,8 @@ fn fast_u64toa(val: u64, dst: u8[:]) -> i64 {
     return native_fast_u64toa(val, dst);
 }
 
-// Fast 32-bit integer hexadecimal serialization into a pre-allocated slice without heap allocations (uWebSockets Utilities.h)
+// Fast 32-bit integer hexadecimal serialization into a pre-allocated slice without heap allocations
+// (uWebSockets Utilities.h).
 // Returns number of bytes written.
 fn fast_u32toa_hex(val: u32, dst: u8[:]) -> i64 {
     return native_fast_u32toa_hex(val, dst);

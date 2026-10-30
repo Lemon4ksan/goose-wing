@@ -112,7 +112,7 @@ fn main() {
     let payload_te_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n0\r\n\r\n";
     let _, _, ok1, _ = wing::handle_connection_wire_pipelined_stream(srv_te_cl, "127.0.0.1", payload_te_cl, 0, out_wire1);
     assert(!ok1);
-    assert(core::index_of_slice(out_wire1[..], "400 Bad Request") >= 0);
+    assert(find(out_wire1[..], "400 Bad Request") >= 0);
     print("PIPELINE_TE_CL_SMUGGLE: REJECTED");
 
     // 11. Pipelined stream demarcation rejection of CL.TE smuggling (RFC 9112 §6.1, §6.3)
@@ -121,7 +121,7 @@ fn main() {
     let payload_cl_te = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
     let _, _, ok2, _ = wing::handle_connection_wire_pipelined_stream(srv_cl_te, "127.0.0.1", payload_cl_te, 0, out_wire2);
     assert(!ok2);
-    assert(core::index_of_slice(out_wire2[..], "400 Bad Request") >= 0);
+    assert(find(out_wire2[..], "400 Bad Request") >= 0);
     print("PIPELINE_CL_TE_SMUGGLE: REJECTED");
 
     // 12. Pipelined stream demarcation rejection of duplicate differing CL (RFC 9112 §6.3)
@@ -130,7 +130,7 @@ fn main() {
     let payload_cl_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\nContent-Length: 60\r\n\r\nhello";
     let _, _, ok3, _ = wing::handle_connection_wire_pipelined_stream(srv_cl_cl, "127.0.0.1", payload_cl_cl, 0, out_wire3);
     assert(!ok3);
-    assert(core::index_of_slice(out_wire3[..], "400 Bad Request") >= 0);
+    assert(find(out_wire3[..], "400 Bad Request") >= 0);
     print("PIPELINE_DUP_CL_DIFF: REJECTED");
 
     // 13. Reverse proxy Content-Length stripping when Transfer-Encoding present (RFC 9112 §6.3)
