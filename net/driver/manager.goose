@@ -68,31 +68,34 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
     }
 
     if effective_kind == TransportDriverKind.IoUring {
-        if plat == TargetPlatform.Linux {
-            let host = detect_target_platform();
-            if host == TargetPlatform.Linux {
-                let probe_code = native_uring_probe();
-                res.available = (probe_code == ERR_SUCCESS);
-                res.error_code = probe_code;
-            } else {
-                res.available = true;
-                res.error_code = ERR_SUCCESS;
-            }
-            if res.available {
-                res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
-                res.reason.clear();
-                res.reason.append("Linux io_uring active via kernel submission/completion ring queues");
-            } else {
-                res.capabilities = CAP_NONE;
-                res.reason.clear();
-                res.reason.append("Linux io_uring probe failed on current kernel");
-            }
-        } else {
+        guard plat == TargetPlatform.Linux else {
             res.available = false;
             res.capabilities = CAP_NONE;
             res.error_code = ERR_ENOSYS;
             res.reason.clear();
             res.reason.append("io_uring requires Linux 6.1+ kernel (io_uring_queue_init)");
+            return res;
+        }
+
+        let host = detect_target_platform();
+        if host == TargetPlatform.Linux {
+            let probe_code = native_uring_probe();
+            res.available = (probe_code == ERR_SUCCESS);
+            res.error_code = probe_code;
+        } else {
+            res.available = true;
+            res.error_code = ERR_SUCCESS;
+        }
+
+        if res.available {
+            res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO |
+                CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
+            res.reason.clear();
+            res.reason.append("Linux io_uring active via kernel submission/completion ring queues");
+        } else {
+            res.capabilities = CAP_NONE;
+            res.reason.clear();
+            res.reason.append("Linux io_uring probe failed on current kernel");
         }
         return res;
     }
@@ -293,11 +296,14 @@ fn init_transport_driver(cfg: TransportDriverConfig&) -> bool {
 }
 
 // Constructs an optimized automatic transport driver configuration for the current host OS
-fn auto_transport_driver_config(ring_size: u32 = DEFAULT_RING_SIZE, reg_buf_size: u32 = DEFAULT_REGISTERED_BUFFER_SIZE) -> TransportDriverConfig {
+fn auto_transport_driver_config(
+    ring_size:    u32 = DEFAULT_RING_SIZE,
+    reg_buf_size: u32 = DEFAULT_REGISTERED_BUFFER_SIZE,
+) -> TransportDriverConfig {
     var cfg = TransportDriverConfig {
-        preferred_kind: TransportDriverKind.Auto,
-        ring_size: ring_size,
-        enable_kernel_bypass: true,
+        preferred_kind:         TransportDriverKind.Auto,
+        ring_size:              ring_size,
+        enable_kernel_bypass:   true,
         registered_buffer_size: reg_buf_size,
         ..
     };

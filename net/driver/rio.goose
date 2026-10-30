@@ -13,28 +13,44 @@ extern fn native_rio_register_buffer(ptr: u64, len: u32) -> u64 = "wing_rio_regi
 extern fn native_rio_deregister_buffer(buf_id: u64) = "wing_rio_deregister_buffer";
 extern fn native_rio_create_cq(queue_size: u32) -> u64 = "wing_rio_create_cq";
 extern fn native_rio_close_cq(cq_id: u64) = "wing_rio_close_cq";
-extern fn native_rio_dequeue_completion(cq_id: u64, results_ptr: u64, count: u32) -> u32 = "wing_rio_dequeue_completion";
+extern fn native_rio_dequeue_completion(
+    cq_id:       u64,
+    results_ptr: u64,
+    count:       u32,
+) -> u32 = "wing_rio_dequeue_completion";
 extern fn native_rio_create_rq(sock_fd: i64, cq_id: u64, max_recv: u32, max_send: u32) -> u64 = "wing_rio_create_rq";
-extern fn native_rio_receive(rq_id: u64, buf_id: u64, offset: u32, length: u32, req_context: u64) -> i32 = "wing_rio_receive";
-extern fn native_rio_send(rq_id: u64, buf_id: u64, offset: u32, length: u32, req_context: u64) -> i32 = "wing_rio_send";
+extern fn native_rio_receive(
+    rq_id:       u64,
+    buf_id:      u64,
+    offset:      u32,
+    length:      u32,
+    req_context: u64,
+) -> i32 = "wing_rio_receive";
+extern fn native_rio_send(
+    rq_id:       u64,
+    buf_id:      u64,
+    offset:      u32,
+    length:      u32,
+    req_context: u64,
+) -> i32 = "wing_rio_send";
 
 // Page-locked registered memory buffer slice descriptor for Windows RIO
 struct RioBufferDescriptor {
-    buffer_id: u64 = 0,
-    offset: u64 = 0,
-    length: u32 = 0,
+    buffer_id:     u64  = 0,
+    offset:        u64  = 0,
+    length:        u32  = 0,
     is_registered: bool = false,
-    page_locked: bool = false,
+    page_locked:   bool = false,
 }
 
 // Registers a contiguous page-locked buffer with the kernel/NIC
 fn new_rio_buffer(id: u64, len: u32) -> RioBufferDescriptor {
     return RioBufferDescriptor {
-        buffer_id: id,
-        offset: 0,
-        length: len,
+        buffer_id:     id,
+        offset:        0,
+        length:        len,
         is_registered: true,
-        page_locked: true,
+        page_locked:   true,
     };
 }
 
@@ -44,11 +60,11 @@ fn rio_sub_buffer(parent: const RioBufferDescriptor&, off: u64, len: u32) -> Rio
         return RioBufferDescriptor { .. };
     }
     return RioBufferDescriptor {
-        buffer_id: parent.buffer_id,
-        offset: off,
-        length: len,
+        buffer_id:     parent.buffer_id,
+        offset:        off,
+        length:        len,
         is_registered: true,
-        page_locked: parent.page_locked,
+        page_locked:   parent.page_locked,
     };
 }
 

@@ -477,11 +477,17 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     if c.capsule_type == CAPSULE_ADDRESS_ASSIGN || c.capsule_type == CAPSULE_DRAFT_ADDRESS_ASSIGN {
         return apply_assigned_ip(tunnel, c.payload);
     }
+
+    out_packet.clear();
     return false;
 }
 
 // Ingests an incoming QUIC DATAGRAM frame from the tunnel.
-fn receive_quic_datagram<B>(tunnel: MasqueTunnelSession&, datagram_frame_payload: const u8[:], out_packet: B&) -> bool {
+fn receive_quic_datagram<B>(
+    tunnel:                 MasqueTunnelSession&,
+    datagram_frame_payload: const u8[:],
+    out_packet:             B&,
+) -> bool {
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let q_id, ctx_id, pkt, ok = decode_http_datagram(datagram_frame_payload);

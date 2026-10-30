@@ -9,30 +9,37 @@ import std;
 // Native macOS kqueue C shims (sys/event.h)
 extern fn native_kqueue_probe() -> i32 = "wing_kqueue_probe";
 extern fn native_kqueue_create() -> i64 = "wing_kqueue_create";
-extern fn native_kqueue_kevent(kq: i64, changelist: u64, nchanges: i32, eventlist: u64, nevents: i32, timeout_ns: i64) -> i32 = "wing_kqueue_kevent";
+extern fn native_kqueue_kevent(
+    kq:         i64,
+    changelist: u64,
+    nchanges:   i32,
+    eventlist:  u64,
+    nevents:    i32,
+    timeout_ns: i64,
+) -> i32 = "wing_kqueue_kevent";
 extern fn native_kqueue_close(kq: i64) = "wing_kqueue_close";
 
 // kqueue filter constants
-const EVFILT_READ: i16 = -1;
+const EVFILT_READ:  i16 = -1;
 const EVFILT_WRITE: i16 = -2;
 const EVFILT_TIMER: i16 = -7;
 
 // kqueue action and event flags
-const EV_ADD: u16 = 0x0001;
-const EV_DELETE: u16 = 0x0002;
-const EV_ENABLE: u16 = 0x0004;
+const EV_ADD:     u16 = 0x0001;
+const EV_DELETE:  u16 = 0x0002;
+const EV_ENABLE:  u16 = 0x0004;
 const EV_DISABLE: u16 = 0x0008;
 const EV_ONESHOT: u16 = 0x0010;
-const EV_CLEAR: u16 = 0x0020;    // Edge-triggered notification
-const EV_EOF: u16 = 0x8000;      // Connection disconnected / EOF
+const EV_CLEAR:   u16 = 0x0020;  // Edge-triggered notification
+const EV_EOF:     u16 = 0x8000;  // Connection disconnected / EOF
 
 struct Kevent {
-    ident: u64 = 0,
+    ident:  u64 = 0,
     filter: i16 = 0,
-    flags: u16 = 0,
+    flags:  u16 = 0,
     fflags: u32 = 0,
-    data: i64 = 0,
-    udata: u64 = 0,
+    data:   i64 = 0,
+    udata:  u64 = 0,
 }
 
 // Prepares a kqueue event for socket read notification
