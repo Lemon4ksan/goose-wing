@@ -1757,6 +1757,384 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: core::T&) {
     t.assert_ne(err_tok, wing::ChunkedDecodeError.None, "Invalid token character '@' in extension name MUST be rejected");
 }
 
+// --- Test 50: uWebSockets PreparedMessage & publishPrepared ---
+fn test_uweb_prepared_message(t: core::T&) {
+    var tree = wing::TopicTree { .. };
+    wing::subscribe(tree, 101, "broadcast/tickers");
+    wing::subscribe(tree, 102, "broadcast/+");
+
+    var msg = wing::PreparedMessage { .. };
+    let ok_prep = wing::prepare_message(msg, "{\"ticker\":\"BTC\",\"price\":92500}", wing::WS_OPCODE_TEXT);
+    t.assert_true(ok_prep, "prepare_message succeeded");
+    t.assert_gt(msg.wire.len, 0, "Wire frame encoded");
+    t.assert_false(msg.has_compressed, "Raw prepared message has_compressed is false");
+
+    // Header validation
+    let hdr, ok_h = wing::parse_ws_frame_header(msg.wire[..]);
+    t.assert_true(ok_h, "Parsed prepared frame header");
+    t.assert_eq(hdr.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+    t.assert_true(hdr.fin, "FIN bit set");
+    t.assert_false(hdr.masked, "Server frame unmasked per RFC 6455");
+
+    // Prepared message with compression
+    var comp_msg = wing::PreparedMessage { .. };
+    var shared_comp = wing::SharedWsCompressor { .. };
+    let long_payload = "REPEAT_KEY_DATA_FIELD_VALUE_12345_REPEAT_KEY_DATA_FIELD_VALUE_12345_REPEAT_KEY_DATA_FIELD_VALUE_12345";
+    let ok_c = wing::prepare_message_compressed(comp_msg, long_payload, shared_comp, wing::WS_OPCODE_TEXT);
+    t.assert_true(ok_c, "prepare_message_compressed succeeded");
+    t.assert_true(comp_msg.has_compressed, "Compressible payload marked has_compressed");
+    t.assert_lt(comp_msg.compressed_wire.len, comp_msg.wire.len, "Compressed wire smaller than uncompressed");
+
+    // Verify compressed header has RSV1
+    let c_hdr, ok_ch = wing::parse_ws_frame_header(comp_msg.compressed_wire[..]);
+    t.assert_true(ok_ch, "Parsed compressed frame header");
+    t.assert_true(c_hdr.rsv1, "RSV1 bit set on compressed frame per RFC 7692");
+
+    // Verify find_subscribers matches subscribers
+    var matched: i64[..512] = [];
+    let count = tree.find_subscribers("broadcast/tickers", matched);
+    t.assert_eq(count, 2, "2 subscribers match broadcast/tickers");
+
+    // Dispatches pre-encoded message to topic subscribers
+    let pub_count = wing::publish_prepared(tree, "broadcast/tickers", msg);
+    t.assert_eq(pub_count, 0, "No bytes sent to offline test fds");
+    t.assert_eq(tree.total_publishes, 1, "TopicTree total_publishes tracked");
+}
+
+// --- Test 51: uWebSockets WebSocket maxLifetime Session Timeout ---
+fn test_uweb_max_lifetime_sweeper(t: core::T&) {
+    var wheel = wing::new_tick_timer_wheel(10);
+    var ws = wing::new_websocket_session(false);
+    ws.idle_timeout_s = 10;
+    ws.max_lifetime_s = 20; // 20 seconds maximum lifetime
+    ws.arm_heartbeat(wheel);
+
+    // Advance 8s, then touch (client active)
+    wing::tick_timer_advance(wheel, 8);
+    wing::ws_advance_lifetime(ws, 8);
+    ws.touch(wheel);
+
+    t.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No expiry after touch at 8s");
+
+    // Advance another 8s, touch again (total 16s lifetime, idle was reset)
+    wing::tick_timer_advance(wheel, 8);
+    wing::ws_advance_lifetime(ws, 8);
+    ws.touch(wheel);
+
+    t.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No expiry after touch at 16s");
+    t.assert_false(ws.is_closed, "Session still open at 16s");
+
+    // Advance another 5s (total 21s, exceeds max_lifetime_s = 20)
+    wing::tick_timer_advance(wheel, 5);
+    wing::ws_advance_lifetime(ws, 5);
+
+    // Despite being touched at 16s (idle would not expire until 26s), maxLifetime forces CloseMaxLifetime
+    let act = ws.check_heartbeat(wheel);
+    t.assert_true(act == wing::WsHeartbeatAction.CloseMaxLifetime, "CloseMaxLifetime action triggered");
+
+    var wire_close: u8[..256] = [];
+    let act_tick = ws.tick_heartbeat(wheel, wire_close);
+    t.assert_true(act_tick == wing::WsHeartbeatAction.CloseMaxLifetime, "tick_heartbeat executed CloseMaxLifetime");
+    t.assert_true(ws.is_closed, "Session closed by maxLifetime");
+    t.assert_eq(ws.close_code, wing::WS_STATUS_NORMAL, "Close status code 1000");
+}
+
+// --- Test 52: uWS #1347 Safari 15.0-15.3 Broken Compression Workaround ---
+fn test_uweb_safari_15_broken_compression(t: core::T&) {
+    // Safari 15.0..15.3 should return true
+    let ua_15_0 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15";
+    t.assert_true(wing::ws_has_broken_compression(ua_15_0), "Safari 15.0 detected as broken");
+
+    let ua_15_1 = "Mozilla/5.0 (iPhone; CPU iPhone OS 15_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Mobile/15E148 Safari/604.1";
+    t.assert_true(wing::ws_has_broken_compression(ua_15_1), "Safari 15.1 detected as broken");
+
+    let ua_15_2 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Safari/605.1.15";
+    t.assert_true(wing::ws_has_broken_compression(ua_15_2), "Safari 15.2 detected as broken");
+
+    let ua_15_3 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15";
+    t.assert_true(wing::ws_has_broken_compression(ua_15_3), "Safari 15.3 detected as broken");
+
+    // Safari 15.4+ fixed the bug
+    let ua_15_4 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15";
+    t.assert_false(wing::ws_has_broken_compression(ua_15_4), "Safari 15.4 NOT broken");
+
+    let ua_16_0 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15";
+    t.assert_false(wing::ws_has_broken_compression(ua_16_0), "Safari 16.0 NOT broken");
+
+    // Chrome and Firefox
+    let ua_chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    t.assert_false(wing::ws_has_broken_compression(ua_chrome), "Chrome NOT broken");
+
+    let ua_firefox = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0";
+    t.assert_false(wing::ws_has_broken_compression(ua_firefox), "Firefox NOT broken");
+
+    // Edge cases / empty
+    t.assert_false(wing::ws_has_broken_compression(""), "Empty UA NOT broken");
+    t.assert_false(wing::ws_has_broken_compression("curl/7.88.1"), "curl NOT broken");
+}
+
+// Global test state for streaming chunk capture
+var g_stream_received_bytes: i64 = 0;
+var g_stream_chunk_count: i32 = 0;
+var g_stream_last_chunk_is_final: bool = false;
+
+fn stream_chunk_collector(chunk: const u8[:], is_last: bool) {
+    g_stream_received_bytes += chunk.len;
+    g_stream_chunk_count += 1;
+    g_stream_last_chunk_is_final = is_last;
+}
+
+// Global test state for async abort / writable callbacks
+var g_async_aborted_fd: i64 = -1;
+var g_async_aborted_tag: u64 = 0;
+var g_async_writable_called: bool = false;
+
+fn on_test_client_aborted(fd: i64, tag: u64) {
+    g_async_aborted_fd = fd;
+    g_async_aborted_tag = tag;
+}
+
+fn on_test_socket_writable(fd: i64, total_written: u64, tag: u64) -> bool {
+    g_async_writable_called = true;
+    return true;
+}
+
+fn test_missing_sni_fallback(hostname: const u8[:]) -> wing::SniCredentials {
+    if core::contains(hostname, "fallback") {
+        return wing::SniCredentials {
+            cert_pem: "FALLBACK_CERT_PEM",
+            key_pem: "FALLBACK_KEY_PEM",
+        };
+    }
+    return wing::SniCredentials { .. };
+}
+
+// --- Test 53: uWebSockets endWithoutBody & HEAD/304 Content-Length Spoofing ---
+fn test_uweb_end_without_body(t: core::T&) {
+    var res = wing::Response { status_code: 200, .. };
+    var wire: u8[..1024] = [];
+
+    // 1. Standard end_without_body with reported Content-Length (HEAD request)
+    wing::end_without_body(res, "goose-wing", wire, 1048576, false);
+    t.assert_gt(wire.len, 0, "Wire headers serialized");
+    t.assert_true(core::contains(wire[..], "Content-Length: 1048576\r\n"), "Content-Length present in header block");
+    t.assert_true(core::contains(wire[..], "\r\n\r\n"), "Double CRLF terminator present");
+
+    let sent_bytes = wing::send_http1_end_without_body(0, res, "goose-wing", wire, 1048576, false);
+    t.assert_eq(sent_bytes, 0, "send_http1_end_without_body returns 0 on non-positive fd");
+
+    // Verify wire has exactly 0 body bytes after \r\n\r\n
+    let pos_end = core::index_of_slice(wire[..], "\r\n\r\n");
+    t.assert_eq(pos_end + 4, wire.len, "Zero body bytes emitted on wire after header end");
+
+    // 2. end_without_body with close_connection = true
+    wire.clear();
+    var res2 = wing::Response { status_code: 304, .. };
+    wing::end_without_body(res2, "goose-wing", wire, -1, true);
+    t.assert_true(core::contains(wire[..], "Connection: close\r\n"), "Connection: close added");
+    t.assert_false(core::contains(wire[..], "Content-Length"), "Content-Length omitted when negative");
+}
+
+// --- Test 54: uWebSockets Streaming Ingress onData / onDataV2 ---
+fn test_uweb_streaming_on_data(t: core::T&) {
+    var req = wing::new_request("POST", "/upload/stream");
+    var consumer = wing::HttpStreamConsumer { .. };
+
+    let wire_headers = "POST /upload/stream HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\n\r\n";
+    let ok_beg, hdr_len = wing::begin_http_stream_request(wire_headers, req, consumer);
+    t.assert_true(ok_beg, "begin_http_stream_request succeeded");
+    t.assert_eq(consumer.content_length, 100, "Content-Length parsed as 100");
+    t.assert_true(consumer.is_headers_parsed, "Headers marked parsed");
+    t.assert_false(consumer.is_finished, "Consumer not finished yet");
+    t.assert_eq(hdr_len, wire_headers.len, "Header length points past headers");
+
+    g_stream_received_bytes = 0;
+    g_stream_chunk_count = 0;
+    g_stream_last_chunk_is_final = false;
+
+    // Chunk 1: 40 bytes
+    let chunk1 = "1234567890123456789012345678901234567890";
+    let c1, is_last1, ok1 = wing::feed_http_stream_chunk(consumer, chunk1, stream_chunk_collector);
+    t.assert_true(ok1, "Chunk 1 fed successfully");
+    t.assert_eq(c1, 40, "Consumed 40 bytes");
+    t.assert_false(is_last1, "Chunk 1 is not last");
+    t.assert_false(consumer.is_finished, "Consumer not finished");
+    t.assert_eq(g_stream_received_bytes, 40, "40 bytes received by callback");
+
+    // Chunk 2: 60 bytes (completes the 100 bytes)
+    let chunk2 = "123456789012345678901234567890123456789012345678901234567890";
+    let c2, is_last2, ok2 = wing::feed_http_stream_chunk(consumer, chunk2, stream_chunk_collector);
+    t.assert_true(ok2, "Chunk 2 fed successfully");
+    t.assert_eq(c2, 60, "Consumed 60 bytes");
+    t.assert_true(is_last2, "Chunk 2 is last");
+    t.assert_true(consumer.is_finished, "Consumer is finished");
+    t.assert_eq(g_stream_received_bytes, 100, "100 total bytes received");
+    t.assert_eq(g_stream_chunk_count, 2, "2 chunks delivered");
+    t.assert_true(g_stream_last_chunk_is_final, "Last chunk marked final in collector");
+}
+
+// --- Test 55: uWebSockets Async Backpressure (onWritable) & Abort (onAborted) ---
+fn test_uweb_async_backpressure_and_aborted(t: core::T&) {
+    var ctx = wing::HttpAsyncContext {
+        sock_fd: 42,
+        user_tag: 999,
+        is_backpressured: true,
+        in_use: true,
+        ..
+    };
+
+    g_async_writable_called = false;
+    g_async_aborted_fd = -1;
+    g_async_aborted_tag = 0;
+
+    // 1. Socket drains: triggers onWritable
+    let drained = wing::notify_socket_writable(ctx, on_test_socket_writable);
+    t.assert_true(drained, "notify_socket_writable returned true");
+    t.assert_true(g_async_writable_called, "onWritable callback executed");
+    t.assert_false(ctx.is_backpressured, "Backpressured state cleared on drain");
+
+    // 2. Client terminates prematurely: triggers onAborted
+    wing::notify_client_aborted(ctx, on_test_client_aborted);
+    t.assert_true(ctx.is_aborted, "Context marked is_aborted");
+    t.assert_eq(g_async_aborted_fd, 42, "onAborted received correct fd");
+    t.assert_eq(g_async_aborted_tag, 999, "onAborted received correct user tag");
+
+    // Further writable notifications MUST be ignored after abort
+    g_async_writable_called = false;
+    let blocked = wing::notify_socket_writable(ctx, on_test_socket_writable);
+    t.assert_false(blocked, "Writable notification rejected when connection aborted");
+    t.assert_false(g_async_writable_called, "onWritable not called when connection aborted");
+}
+
+// --- Test 56: uWebSockets Dynamic Runtime SNI Multi-Certificate Registry ---
+fn test_uweb_dynamic_sni_registry(t: core::T&) {
+    var server = wing::new_http_server("test-sni");
+
+    let cert_main: const u8[:] = "-----BEGIN CERTIFICATE-----\nMAIN\n-----END CERTIFICATE-----";
+    let key_main: const u8[:] = "-----BEGIN PRIVATE KEY-----\nMAIN_KEY\n-----END PRIVATE KEY-----";
+
+    let cert_wildcard: const u8[:] = "-----BEGIN CERTIFICATE-----\nWILDCARD\n-----END CERTIFICATE-----";
+    let key_wildcard: const u8[:] = "-----BEGIN PRIVATE KEY-----\nWILDCARD_KEY\n-----END PRIVATE KEY-----";
+
+    let cert_special: const u8[:] = "-----BEGIN CERTIFICATE-----\nSPECIAL\n-----END CERTIFICATE-----";
+    let key_special: const u8[:] = "-----BEGIN PRIVATE KEY-----\nSPECIAL_KEY\n-----END PRIVATE KEY-----";
+
+    // 1. Direct SNI pattern matcher compliance (RFC 6125 §6.4.3)
+    t.assert_true(wing::sni_pattern_matches("example.com", "example.com"), "Exact domain matches");
+    t.assert_true(wing::sni_pattern_matches("example.com", "EXAMPLE.COM"), "Exact domain case-insensitive");
+    t.assert_true(wing::sni_pattern_matches("*.example.com", "api.example.com"), "Wildcard matches subdomain");
+    t.assert_true(wing::sni_pattern_matches("*.example.com", "API.EXAMPLE.COM"), "Wildcard case-insensitive");
+    t.assert_false(wing::sni_pattern_matches("*.example.com", "example.com"), "Wildcard does NOT match apex domain");
+    t.assert_false(wing::sni_pattern_matches("*.example.com", "deep.sub.example.com"), "Wildcard does NOT match multi-level subdomain");
+    t.assert_false(wing::sni_pattern_matches("*.example.com", "other.org"), "Wildcard does NOT match different domain");
+
+    // 2. Register domains (app.addServerName)
+    let ok_add1 = wing::add_server_name(server, "api.example.com", cert_main, key_main);
+    t.assert_true(ok_add1, "Added exact domain api.example.com");
+
+    let ok_add2 = wing::add_server_name(server, "*.wildcard.org", cert_wildcard, key_wildcard);
+    t.assert_true(ok_add2, "Added wildcard domain *.wildcard.org");
+
+    let ok_add3 = wing::add_server_name(server, "special.wildcard.org", cert_special, key_special);
+    t.assert_true(ok_add3, "Added special override domain special.wildcard.org");
+
+    t.assert_eq(server.sni_registry.count, 3, "3 SNI domain entries registered");
+
+    // 3. Resolve exact match
+    let cred1, ok1 = wing::resolve_sni_credentials(server, "api.example.com");
+    t.assert_true(ok1, "Resolved api.example.com");
+    t.assert_eq(cred1.cert_pem, cert_main, "Exact match returned correct cert");
+    t.assert_eq(cred1.key_pem, key_main, "Exact match returned correct key");
+
+    // 4. Resolve exact match case-insensitive
+    let cred1_case, ok1_case = wing::resolve_sni_credentials(server, "API.EXAMPLE.COM");
+    t.assert_true(ok1_case, "Resolved API.EXAMPLE.COM case-insensitive");
+    t.assert_eq(cred1_case.cert_pem, cert_main, "Case-insensitive matched correct cert");
+
+    // 5. Resolve wildcard match
+    let cred2, ok2 = wing::resolve_sni_credentials(server, "sub.wildcard.org");
+    t.assert_true(ok2, "Resolved sub.wildcard.org via wildcard");
+    t.assert_eq(cred2.cert_pem, cert_wildcard, "Wildcard returned wildcard cert");
+
+    // 6. Exact match priority over wildcard
+    let cred3, ok3 = wing::resolve_sni_credentials(server, "special.wildcard.org");
+    t.assert_true(ok3, "Resolved special.wildcard.org");
+    t.assert_eq(cred3.cert_pem, cert_special, "Exact priority returned special cert, not wildcard cert");
+
+    // 7. Non-matching queries
+    let _, ok_apex = wing::resolve_sni_credentials(server, "wildcard.org");
+    t.assert_false(ok_apex, "Apex domain rejected by wildcard SNI");
+
+    let _, ok_multi = wing::resolve_sni_credentials(server, "deep.sub.wildcard.org");
+    t.assert_false(ok_multi, "Multi-level subdomain rejected by wildcard SNI");
+
+    let _, ok_unreg = wing::resolve_sni_credentials(server, "unregistered.net");
+    t.assert_false(ok_unreg, "Unregistered domain returns false");
+
+    // 8. Fallback for missing server name (app.missingServerName)
+    let cred_fb, ok_fb = wing::resolve_sni_credentials_with_fallback(server, "dynamic.fallback.io", test_missing_sni_fallback);
+    t.assert_true(ok_fb, "Fallback handler resolved missing server name");
+    t.assert_eq(cred_fb.cert_pem, "FALLBACK_CERT_PEM", "Fallback cert returned");
+
+    // 9. Remove server name (app.removeServerName)
+    let ok_rem = wing::remove_server_name(server, "api.example.com");
+    t.assert_true(ok_rem, "remove_server_name succeeded");
+    t.assert_eq(server.sni_registry.count, 2, "SNI registry count decremented to 2");
+
+    let _, ok_post_rem = wing::resolve_sni_credentials(server, "api.example.com");
+    t.assert_false(ok_post_rem, "api.example.com no longer resolves after removal");
+}
+
+// --- Test 57: uWebSockets Unix Domain Sockets (AF_UNIX) & Socket Adoption ---
+fn test_uweb_unix_domain_sockets_and_adopt_socket(t: core::T&) {
+    var server = wing::new_http_server("test-uds");
+
+    // 1. Socket Adoption (us_adopt_accepted_socket)
+    let raw_sock = wing::tcp_listen("127.0.0.1", 0, 16);
+    t.assert_gt(raw_sock, 0, "Created raw listener socket");
+
+    let adopted = wing::adopt_socket(server, raw_sock);
+    t.assert_eq(adopted, raw_sock, "Socket adopted successfully and matches descriptor");
+
+    let bad_adopted = wing::adopt_socket(server, -1);
+    t.assert_eq(bad_adopted, -1, "Invalid descriptor adoption rejected with -1");
+
+    wing::tcp_close(raw_sock);
+
+    // 2. Unix Domain Sockets (AF_UNIX) Listen & Connect
+    let uds_path: const u8[:] = "./test_uweb_uds.sock";
+    let uds_listener = wing::listen_unix(server, uds_path, 16);
+    t.assert_gt(uds_listener, 0, "listen_unix created AF_UNIX listener");
+
+    let uds_client = wing::tcp_connect_unix(uds_path);
+    t.assert_gt(uds_client, 0, "tcp_connect_unix connected to AF_UNIX socket");
+
+    let uds_conn = wing::tcp_accept(uds_listener, 2000);
+    t.assert_gt(uds_conn, 0, "Accepted AF_UNIX client connection");
+
+    // Full duplex data transfer over AF_UNIX socket
+    let sent = wing::tcp_send(uds_client, "PING_UDS");
+    t.assert_eq(sent, 8, "Sent 8 bytes over AF_UNIX client");
+
+    var srv_buf: u8[..64] = [];
+    let recvd = wing::tcp_recv(uds_conn, srv_buf, 2000);
+    t.assert_eq(recvd, 8, "Server received 8 bytes over AF_UNIX");
+    t.assert_eq(srv_buf[..8], "PING_UDS", "Server received authentic payload");
+
+    let replied = wing::tcp_send(uds_conn, "PONG_UDS");
+    t.assert_eq(replied, 8, "Server replied 8 bytes over AF_UNIX");
+
+    var client_buf: u8[..64] = [];
+    let recvd_cli = wing::tcp_recv(uds_client, client_buf, 2000);
+    t.assert_eq(recvd_cli, 8, "Client received 8 bytes over AF_UNIX");
+    t.assert_eq(client_buf[..8], "PONG_UDS", "Client received authentic reply");
+
+    // Clean up
+    wing::tcp_close(uds_client);
+    wing::tcp_close(uds_conn);
+    wing::tcp_close(uds_listener);
+}
+
 fn main() {
     var runner = core::new_runner("uWebSockets Behavioral Compatibility Suite", core::Verbosity.Verbose);
 
@@ -1809,6 +2187,14 @@ fn main() {
     core::run_case(runner, "47. uSockets #258 Windows Connect RST Immediate Failure via exceptfds", test_usock_258_windows_connect_rst_immediate_failure);
     core::run_case(runner, "48. uWS #1941 Transfer-Encoding List & Final Chunked Requirement", test_uweb_1941_transfer_encoding_list_and_final_chunked);
     core::run_case(runner, "49. uWS #1936 Chunk Extension & Size Whitespace Validation (RFC 9112 §7.1.1)", test_uweb_1936_chunk_extension_and_size_whitespace_validation);
+    core::run_case(runner, "50. uWebSockets PreparedMessage & publishPrepared", test_uweb_prepared_message);
+    core::run_case(runner, "51. uWebSockets WebSocket maxLifetime Session Timeout", test_uweb_max_lifetime_sweeper);
+    core::run_case(runner, "52. uWS #1347 Safari 15.0-15.3 Broken Compression Workaround", test_uweb_safari_15_broken_compression);
+    core::run_case(runner, "53. uWebSockets endWithoutBody & HEAD/304 Content-Length Spoofing", test_uweb_end_without_body);
+    core::run_case(runner, "54. uWebSockets Streaming Ingress onData / onDataV2", test_uweb_streaming_on_data);
+    core::run_case(runner, "55. uWebSockets Async Backpressure (onWritable) & Abort (onAborted)", test_uweb_async_backpressure_and_aborted);
+    core::run_case(runner, "56. uWebSockets Dynamic Runtime SNI Multi-Certificate Registry", test_uweb_dynamic_sni_registry);
+    core::run_case(runner, "57. uWebSockets Unix Domain Sockets (AF_UNIX) & Socket Adoption", test_uweb_unix_domain_sockets_and_adopt_socket);
 
     let ok = core::finish(runner);
     assert(ok);

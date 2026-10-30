@@ -679,6 +679,7 @@ struct WsBehavior {
     compression: u16 = WS_COMPRESS_DISABLED, // WS_COMPRESS_SHARED_COMPRESSOR
     max_payload_length: u64 = 65536,
     idle_timeout_s: u32 = 120,
+    max_lifetime_s: u32 = 0, // Maximum session duration in seconds (0 = unlimited)
     max_backpressure: u64 = 1048576, // 1 MB default
     close_on_backpressure_limit: bool = false,
     reset_idle_timeout_on_send: bool = true,
@@ -689,6 +690,40 @@ struct WsBehavior {
 
 fn new_ws_behavior(handler_id: i32 = -1) -> WsBehavior {
     return WsBehavior { handler_id: handler_id, .. };
+}
+
+// Detects Safari 15.0 - 15.3 user-agents with broken permessage-deflate implementations (uWebSockets #1347).
+//
+// Example:
+//   ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/15.2 Safari/605.1.15"
+//   returns: true
+//
+// Example:
+//   ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/15.4 Safari/605.1.15"
+//   returns: false
+fn ws_has_broken_compression(user_agent: const u8[:]) -> bool {
+    let marker = " Version/15.";
+    let pos = core::index_of_slice(user_agent, marker);
+    guard pos >= 0 else { return false; }
+
+    var idx = pos + marker.len;
+    guard idx < user_agent.len else { return false; }
+
+    var minor: u32 = 0;
+    var has_digits = false;
+    while idx < user_agent.len && user_agent[idx] >= '0' && user_agent[idx] <= '9' {
+        minor = minor * 10 + (user_agent[idx] - '0');
+        has_digits = true;
+        idx++;
+    }
+    guard has_digits && idx < user_agent.len && user_agent[idx] == ' ' else { return false; }
+
+    // Safari 15.0 - 15.3 were affected; 15.4+ fixed the bug
+    guard minor <= 3 else { return false; }
+
+    let safari_marker = " Safari/";
+    let safari_pos = core::index_of_slice(user_agent[idx..], safari_marker);
+    return safari_pos >= 0;
 }
 
 struct WebSocketSession {
@@ -725,6 +760,8 @@ struct WebSocketSession {
 
     // Keep-Alive & Auto-Ping Heartbeat (uWebSockets sendPingsAutomatically & idleTimeout)
     idle_timeout_s: u32 = 120,
+    max_lifetime_s: u32 = 0,
+    elapsed_lifetime_s: u32 = 0,
     send_pings_automatically: bool = false,
     reset_idle_timeout_on_send: bool = true,
     timeout_slot: u8 = TICK_TIMER_DISARMED,
@@ -778,6 +815,7 @@ enum WsHeartbeatAction {
     None,
     SendPing,
     CloseIdle,
+    CloseMaxLifetime,
 }
 
 // Arms connection slot timeouts in modular tick wheel (uSockets loop.c / uWebSockets pattern)
@@ -803,6 +841,11 @@ fn disarm_heartbeat(ws: WebSocketSession&) {
     ws.ping_slot = TICK_TIMER_DISARMED;
 }
 
+// Advances session lifetime counter by elapsed_seconds (uWebSockets maxLifetime sweeper).
+fn ws_advance_lifetime(ws: WebSocketSession&, elapsed_seconds: u32 = 1) {
+    ws.elapsed_lifetime_s += elapsed_seconds;
+}
+
 // Touches the session to reset idle timeout on incoming frame or send
 fn touch(ws: WebSocketSession&, wheel: const TickTimerWheel&) {
     if ws.timeout_slot != TICK_TIMER_DISARMED {
@@ -813,6 +856,9 @@ fn touch(ws: WebSocketSession&, wheel: const TickTimerWheel&) {
 // Evaluates heartbeat tick without serializing wire bytes
 fn check_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) -> WsHeartbeatAction {
     if ws.is_closed { return WsHeartbeatAction.None; }
+    if ws.max_lifetime_s > 0 && ws.elapsed_lifetime_s >= ws.max_lifetime_s {
+        return WsHeartbeatAction.CloseMaxLifetime;
+    }
     if ws.timeout_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.timeout_slot) {
         return WsHeartbeatAction.CloseIdle;
     }
@@ -831,6 +877,10 @@ fn tick_heartbeat<B>(ws: WebSocketSession&, wheel: const TickTimerWheel&, out_wi
         ws.ping_slot = tick_timer_arm(wheel, ping_delay);
     } else if action == WsHeartbeatAction.CloseIdle {
         close(ws, WS_STATUS_NORMAL, "Idle timeout", out_wire);
+        ws.is_closed = true;
+        ws.close_code = WS_STATUS_NORMAL;
+    } else if action == WsHeartbeatAction.CloseMaxLifetime {
+        close(ws, WS_STATUS_NORMAL, "Max lifetime reached", out_wire);
         ws.is_closed = true;
         ws.close_code = WS_STATUS_NORMAL;
     }

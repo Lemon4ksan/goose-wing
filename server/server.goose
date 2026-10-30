@@ -110,15 +110,128 @@ fn collect_transfer_encoding_headers<H>(headers: const H&, out_te: u8[..64]&) ->
     return true;
 }
 
-// Parses an incoming raw HTTP/1.1 request wire stream.
-// Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
-// Enforces RFC 9112 Section 6.1 Smuggling Defense (TE/CL conflict detection).
-// Returns (ok, total_bytes_consumed).
-fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 {
-    guard wire.len >= 4 else { return false, 0; }
+fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
+    for b in path_slice {
+        guard b >= 0x21 && b <= 0x7E else { return false; }
+    }
+    return true;
+}
+
+// Parses the HTTP/1.x request line (Method SP Request-URI SP HTTP-Version).
+//
+// Example:
+//   req_line = "GET /index.html HTTP/1.1"
+//   returns: true, out_req.method = "GET", out_req.url = "/index.html"
+fn parse_http1_request_line<Req>(
+    req_line: const u8[:],
+    out_req: Req&,
+) -> bool {
+    let sp1 = core::index_of_byte(req_line, ' ');
+    guard sp1 > 0 else { return false; }
+    let method_slice = req_line[..sp1];
+    guard is_valid_header_name(method_slice) && method_slice.len <= out_req.method.cap else { return false; }
+    out_req.method.clear();
+    out_req.method.append(method_slice);
+
+    let rest = req_line[(sp1 + 1)..];
+    let sp2_rel = core::index_of_byte(rest, ' ');
+    guard sp2_rel > 0 else { return false; }
+    let path_slice = rest[..sp2_rel];
+    guard path_slice.len > 0 && path_slice.len <= out_req.url.cap else { return false; }
+    guard validate_request_target_chars(path_slice) else { return false; }
+
+    if method_slice == "CONNECT" {
+        guard path_slice != "*" && path_slice[0] != '/' else { return false; }
+        let col = core::index_of_byte(path_slice, ':');
+        guard col > 0 && col + 1 < path_slice.len else { return false; }
+        let port_num, port_ok = core::parse_port_number(path_slice[(col + 1)..]);
+        guard port_ok && port_num > 0 else { return false; }
+    } else if path_slice == "*" {
+        guard method_slice == "OPTIONS" else { return false; }
+    } else {
+        guard path_slice[0] == '/' else { return false; }
+    }
+
+    out_req.url.clear();
+    out_req.url.append(path_slice);
+
+    let proto_slice = rest[(sp2_rel + 1)..];
+    guard proto_slice == "HTTP/1.1" || proto_slice == "HTTP/1.0" else { return false; }
+    out_req.is_http10 = (proto_slice == "HTTP/1.0");
+    return true;
+}
+
+fn validate_host_header_chars(host_val: const u8[:]) -> bool {
+    for b in host_val {
+        guard b != '/' && b != '?' && b != '#' && b != '@' && b != ',' && b != ' ' && b != '\t' else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Parses raw HTTP/1.x header lines into HeaderItem entries and tracks presence bitmask.
+//
+// Example:
+//   rest_headers = "Host: localhost\r\nUser-Agent: test\r\n\r\n"
+//   returns: true, out_req.headers.len = 2
+fn parse_http1_headers_stream<Req>(
+    rest_headers: const u8[:],
+    out_req: Req&,
+    presence_tracker: HeaderPresenceTracker&,
+) -> bool {
+    var cursor: i64 = 0;
+    while cursor < rest_headers.len {
+        let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
+        if rel_end <= 0 { break; }
+
+        let line = rest_headers[cursor..(cursor + rel_end)];
+        let colon = core::index_of_byte(line, ':');
+        guard colon > 0 else { return false; }
+        let hname = line[..colon];
+        guard is_valid_header_name(hname) else { return false; }
+
+        let hval = trim_lws(line[(colon + 1)..]);
+        guard is_valid_header_value(hval) else { return false; }
+
+        let cur_hdr_idx = out_req.headers.len as i16;
+        guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
+            return false;
+        }
+
+        var item = HeaderItem { .. };
+        guard hname.len <= item.name.cap && hval.len <= item.value.cap else {
+            return false;
+        }
+        item.name.append(hname);
+        item.value.append(hval);
+        guard out_req.headers.len < out_req.headers.cap else {
+            return false;
+        }
+        out_req.headers.push(item);
+        add_header(out_req.bloom_filter, hname);
+        cursor += rel_end + 2;
+    }
+    return true;
+}
+
+// Parses HTTP/1.1 request-line and headers up to the body boundary.
+// Enforces RFC 9112 Section 3.1, 3.2, 5.1 and Section 6.1 (smuggling protection).
+// Returns true on valid headers, populating `presence_tracker` and `body_start_idx`.
+//
+// Example:
+//   wire = "POST /api HTTP/1.1\r\nHost: loc\r\n\r\n..."
+//   returns: ok = true, body_start_idx = 33
+fn parse_http1_request_headers<Req>(
+    wire: const u8[:],
+    out_req: Req&,
+    presence_tracker: HeaderPresenceTracker&,
+    body_start_idx: i64&,
+) -> bool {
+    guard wire.len >= 4 else { return false; }
 
     // RFC 9112 Section 3.1: No whitespace is allowed before the method name
-    guard wire[0] != ' ' && wire[0] != '\t' else { return false, 0; }
+    guard wire[0] != ' ' && wire[0] != '\t' else { return false; }
 
     // RFC 9112 Section 2.2: A server that is expecting to receive a request-line
     // SHOULD ignore at least one empty line (CRLF) received prior to any request-line.
@@ -126,9 +239,9 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     var req_offset: i64 = 0;
     if wire.len >= 2 && wire[0] == '\r' && wire[1] == '\n' {
         req_offset = 2;
-        guard req_offset < wire.len else { return false, 0; }
+        guard req_offset < wire.len else { return false; }
         guard wire[req_offset] != '\r' && wire[req_offset] != '\n' &&
-              wire[req_offset] != ' ' && wire[req_offset] != '\t' else { return false, 0; }
+              wire[req_offset] != ' ' && wire[req_offset] != '\t' else { return false; }
     }
 
     let active_wire = wire[req_offset..];
@@ -137,147 +250,56 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     let hdr_end = core::fast_find_crlfcrlf(active_wire);
     // RFC 9112 Section 2.1 & uWS #1658: Total header block must not exceed 8192 bytes
     if hdr_end > 8192 || (hdr_end < 0 && active_wire.len > 8192) {
-        return false, 0;
+        return false;
     }
-    guard hdr_end >= 0 else { return false, 0; }
+    guard hdr_end >= 0 else { return false; }
     let header_end_idx = hdr_end + 4;
-    guard header_end_idx <= 8192 else { return false, 0; }
+    guard header_end_idx <= 8192 else { return false; }
     let header_bytes = active_wire[..header_end_idx];
 
     // Find end of request line
     let line_end = core::index_of_slice(header_bytes, "\r\n");
-    guard line_end > 0 else { return false, 0; }
-    let req_line = header_bytes[..line_end];
-
-    // Parse method (first space)
-    let sp1 = core::index_of_byte(req_line, ' ');
-    guard sp1 > 0 else { return false, 0; }
-    let method_slice = req_line[..sp1];
-    guard is_valid_header_name(method_slice) && method_slice.len <= out_req.method.cap else { return false, 0; }
-    out_req.method.clear();
-    out_req.method.append(method_slice);
-
-    // Parse path (second space)
-    let rest = req_line[(sp1 + 1)..];
-    let sp2_rel = core::index_of_byte(rest, ' ');
-    guard sp2_rel > 0 else { return false, 0; }
-    let path_slice = rest[..sp2_rel];
-    guard path_slice.len > 0 && path_slice.len <= out_req.url.cap else { return false, 0; }
-
-    // RFC 9110 Section 4.1 & RFC 9112 Section 3.2 (uWS #1951):
-    // Request target must only consist of visible ASCII characters (0x21..0x7E).
-    // Reject CTLs (0x00..0x1F, 0x7F) and non-ASCII raw UTF-8 / binary bytes (>= 0x80).
-    for b in path_slice {
-        guard b >= 0x21 && b <= 0x7E else { return false, 0; }
-    }
-
-    // RFC 9112 Section 3.2.3 & Section 9.3.6:
-    // Authority-form ("host:port") is ONLY valid for CONNECT requests.
-    // Asterisk-form ("*") is ONLY valid for OPTIONS requests.
-    // Origin-form requests for other methods must start with '/'.
-    if method_slice == "CONNECT" {
-        guard path_slice != "*" && path_slice[0] != '/' else { return false, 0; }
-        let col = core::index_of_byte(path_slice, ':');
-        guard col > 0 && col + 1 < path_slice.len else { return false, 0; }
-        let port_num, port_ok = core::parse_port_number(path_slice[(col + 1)..]);
-        guard port_ok && port_num > 0 else { return false, 0; }
-    } else if path_slice == "*" {
-        guard method_slice == "OPTIONS" else { return false, 0; }
-    } else {
-        guard path_slice[0] == '/' else { return false, 0; }
-    }
-
-    out_req.url.clear();
-    out_req.url.append(path_slice);
-
-    // Parse protocol version
-    let proto_slice = rest[(sp2_rel + 1)..];
-    guard proto_slice == "HTTP/1.1" || proto_slice == "HTTP/1.0" else { return false, 0; }
-    out_req.is_http10 = (proto_slice == "HTTP/1.0");
+    guard line_end > 0 else { return false; }
+    guard parse_http1_request_line(header_bytes[..line_end], out_req) else { return false; }
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
-    var cursor: i64 = 0;
-
     out_req.headers.clear();
     clear(out_req.bloom_filter);
-    var presence_tracker = HeaderPresenceTracker { .. };
-
-    while cursor < rest_headers.len {
-        let rel_end = core::index_of_slice(rest_headers[cursor..], "\r\n");
-        if rel_end < 0 { break; }
-        if rel_end == 0 { break; } // Empty line reached
-
-        let line = rest_headers[cursor..(cursor + rel_end)];
-        let colon = core::index_of_byte(line, ':');
-        // RFC 9112 Section 5.1 & Go #34540 / CVE-2019-16276:
-        // Reject header field names with leading whitespace, spaces before colon, or non-tchar bytes.
-        guard colon > 0 else { out_req.headers.clear(); return false, 0; }
-        let hname = line[..colon];
-        guard is_valid_header_name(hname) else { out_req.headers.clear(); return false, 0; }
-
-        let hval = trim_lws(line[(colon + 1)..]);
-        guard is_valid_header_value(hval) else { out_req.headers.clear(); return false, 0; }
-
-        // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
-        let cur_hdr_idx = out_req.headers.len as i16;
-        guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
-            out_req.headers.clear();
-            return false, 0;
-        }
-
-        var item = HeaderItem { .. };
-        guard hname.len <= item.name.cap && hval.len <= item.value.cap else {
-            out_req.headers.clear();
-            return false, 0;
-        }
-        item.name.append(hname);
-        item.value.append(hval);
-        guard out_req.headers.len < out_req.headers.cap else {
-            out_req.headers.clear();
-            return false, 0;
-        }
-        out_req.headers.push(item);
-        add_header(out_req.bloom_filter, hname);
-        cursor += rel_end + 2;
+    presence_tracker = HeaderPresenceTracker { .. };
+    guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker) else {
+        out_req.headers.clear();
+        return false;
     }
 
     out_req.trailers.clear();
     out_req.body.clear();
 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
-    if proto_slice == "HTTP/1.1" {
+    if !out_req.is_http10 {
         // Must have exactly one Host header in HTTP/1.1 (verified via bitmask presence)
         guard (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 else {
             out_req.headers.clear();
-            return false, 0;
+            return false;
         }
     }
     if (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 {
         let host_idx = presence_tracker.host_idx as i64;
         guard host_idx >= 0 && host_idx < out_req.headers.len else {
             out_req.headers.clear();
-            return false, 0;
+            return false;
         }
 
         let host_val = out_req.headers[host_idx].value[..];
-        guard host_val.len > 0 else {
+        guard host_val.len > 0 && validate_host_header_chars(host_val) else {
             out_req.headers.clear();
-            return false, 0;
-        }
-        // RFC 9112 Section 3.2, 7.2 & 9.5: Authority in Host MUST NOT contain path ('/'),
-        // query ('?'), fragment ('#'), userinfo ('@'), multiple values (','), or whitespace
-        for b in host_val {
-            guard b != '/' && b != '?' && b != '#' && b != '@' && b != ',' && b != ' ' && b != '\t' else {
-                out_req.headers.clear();
-                return false, 0;
-            }
+            return false;
         }
 
         // Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Structural IP-literal Host validation
         guard validate_host_header_structure(host_val) else {
             out_req.headers.clear();
-            return false, 0;
+            return false;
         }
     }
 
@@ -289,8 +311,30 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     // If both Transfer-Encoding and Content-Length are present, reject as smuggling attempt.
     if has_te && has_cl {
         out_req.headers.clear();
+        return false;
+    }
+
+    body_start_idx = req_offset + header_end_idx;
+    return true;
+}
+
+// Parses an incoming raw HTTP/1.1 request wire stream.
+// Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
+// Enforces RFC 9112 Section 6.1 Smuggling Defense (TE/CL conflict detection).
+// Returns (ok, total_bytes_consumed).
+//
+// Example:
+//   wire = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+//   returns: true, consumed = 35
+fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 {
+    var presence_tracker = HeaderPresenceTracker { .. };
+    var body_start_idx: i64 = 0;
+    guard parse_http1_request_headers(wire, out_req, presence_tracker, body_start_idx) else {
         return false, 0;
     }
+
+    let has_te = (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (presence_tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
 
     var cl_len: i64 = 0;
     if has_cl {
@@ -304,8 +348,6 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
             return false, 0;
         }
     }
-
-    let body_start_idx = req_offset + header_end_idx;
 
     if has_te {
         // Must validate transfer encoding value per RFC 9112 Section 6.3 & 7.1
@@ -704,6 +746,47 @@ fn send_http1_response_iov<Res, B>(fd: i64, res: const Res&, server_name: const 
     return tcp_sendv(fd, arr);
 }
 
+// Ends the response without emitting a body payload (RFC 9110 §9.3.2 / §15.4.5 & uWebSockets endWithoutBody pattern).
+// Serializes headers with an optional reported Content-Length (e.g. for HEAD requests or 304 Not Modified).
+// If `close_connection` is true, sets Connection: close.
+//
+// Example:
+//   res.status_code = 200, reported_content_length = 1048576, close_connection = false
+//   out_wire populated with "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n"
+fn end_without_body<Res, B>(
+    res: Res&,
+    server_name: const u8[:],
+    out_wire: B&,
+    reported_content_length: i64 = -1,
+    close_connection: bool = false,
+) {
+    if reported_content_length >= 0 {
+        var len_buf: u8[..32] = [];
+        core::format_i64_dec(reported_content_length, len_buf);
+        set_header(res, "Content-Length", len_buf[..]);
+    }
+    if close_connection {
+        set_header(res, "Connection", "close");
+    }
+    serialize_http1_headers(res, server_name, out_wire);
+}
+
+// Sends an HTTP/1.1 response without body directly over a socket descriptor
+// (uWebSockets endWithoutBody socket pattern).
+fn send_http1_end_without_body<Res, B>(
+    fd: i64,
+    res: Res&,
+    server_name: const u8[:],
+    wire_headers: B&,
+    reported_content_length: i64 = -1,
+    close_connection: bool = false,
+) -> i32 {
+    wire_headers.clear();
+    end_without_body(res, server_name, wire_headers, reported_content_length, close_connection);
+    guard fd > 0 else { return 0; }
+    return tcp_send(fd, wire_headers[..]);
+}
+
 // Outbound Cork Buffer Manager for TCP connections (uWebSockets 16 KB Cork Buffer pattern).
 // Aggregates headers, frames, and small payload chunks into a single 16384-byte buffer
 // before flushing via 1 system call.
@@ -747,7 +830,154 @@ fn server_cork_flush(sc: ServerCork&) -> i32 {
     return tcp_flush_cork(sc.sock_fd, sc.buffer);
 }
 
+// State of a streaming HTTP/1.1 request body consumer (uWebSockets onData / onDataV2 pattern)
+struct HttpStreamConsumer {
+    content_length: i64 = -1,
+    bytes_received: i64 = 0,
+    header_end_idx: i64 = 0,
+    is_chunked: bool = false,
+    is_headers_parsed: bool = false,
+    is_finished: bool = false,
+}
+
+// Parses request headers and prepares a streaming body reader without buffering the entire body.
+// Returns (ok, header_end_offset).
+//
+// Example:
+//   wire = "POST /upload HTTP/1.1\r\nHost: api\r\nContent-Length: 1048576\r\n\r\n<data>"
+//   returns: ok = true, header_end_idx = points to start of body, consumer.content_length = 1048576
+fn begin_http_stream_request<Req>(
+    wire: const u8[:],
+    out_req: Req&,
+    consumer: HttpStreamConsumer&,
+) -> bool, i64 {
+    consumer.is_headers_parsed = false;
+    consumer.is_finished = false;
+    consumer.bytes_received = 0;
+
+    var tracker = HeaderPresenceTracker { .. };
+    var body_start_idx: i64 = 0;
+    guard parse_http1_request_headers(wire, out_req, tracker, body_start_idx) else {
+        return false, 0;
+    }
+
+    consumer.header_end_idx = body_start_idx;
+    consumer.is_headers_parsed = true;
+
+    let has_te = (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
+
+    if has_te {
+        consumer.is_chunked = true;
+        consumer.content_length = -1;
+    } else if has_cl {
+        consumer.is_chunked = false;
+        consumer.content_length = tracker.parsed_cl;
+        if consumer.content_length == 0 {
+            consumer.is_finished = true;
+        }
+    } else {
+        consumer.is_chunked = false;
+        consumer.content_length = 0;
+        consumer.is_finished = true;
+    }
+
+    return true, body_start_idx;
+}
+
+// Feeds incoming wire slice chunks to an onData callback (uWebSockets onData(chunk, is_last) pattern).
+// Invokes `Callback(chunk, is_last)` as data arrives across packet boundaries.
+// Returns (consumed_bytes, is_last, ok).
+//
+// Example:
+//   consumer initialized with content_length = 10, chunk = "0123456789"
+//   calls Callback("0123456789", true), returns: 10, true, true
+fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
+    consumer: HttpStreamConsumer&,
+    incoming: const u8[:],
+) -> i64, bool, bool {
+    guard consumer.is_headers_parsed && !consumer.is_finished else { return 0, false, false; }
+    guard incoming.len > 0 else { return 0, false, true; }
+
+    if consumer.content_length >= 0 {
+        let remaining = consumer.content_length - consumer.bytes_received;
+        guard remaining > 0 else {
+            consumer.is_finished = true;
+            return 0, true, true;
+        }
+
+        let chunk_len = if incoming.len <= remaining { incoming.len } else { remaining };
+        let chunk = incoming[..chunk_len];
+        consumer.bytes_received += chunk_len;
+        let is_last = consumer.bytes_received >= consumer.content_length;
+        if is_last {
+            consumer.is_finished = true;
+        }
+
+        Callback(chunk, is_last);
+        return chunk_len, is_last, true;
+    }
+
+    // Chunked streaming pass-through
+    consumer.bytes_received += incoming.len;
+    Callback(incoming, false);
+    return incoming.len, false, true;
+}
+
+// Connection lifecycle context for asynchronous streaming backpressure and abort notifications
+// (uWebSockets res->onWritable & res->onAborted pattern).
+struct HttpAsyncContext {
+    sock_fd: i64 = -1,
+    is_aborted: bool = false,
+    is_backpressured: bool = false,
+    total_written: u64 = 0,
+    user_tag: u64 = 0,
+    in_use: bool = false,
+}
+
+// Dispatches a client abort event if the client disconnected during async processing
+fn notify_client_aborted<Callback: fn(i64, u64)>(
+    ctx: HttpAsyncContext&,
+) {
+    if !ctx.is_aborted && ctx.in_use {
+        ctx.is_aborted = true;
+        Callback(ctx.sock_fd, ctx.user_tag);
+    }
+}
+
+// Dispatches a writable notification when socket drains after backpressure (uWebSockets onWritable)
+fn notify_socket_writable<Callback: fn(i64, u64, u64) -> bool>(
+    ctx: HttpAsyncContext&,
+) -> bool {
+    guard ctx.in_use && !ctx.is_aborted else { return false; }
+    let ok = Callback(ctx.sock_fd, ctx.total_written, ctx.user_tag);
+    if ok {
+        ctx.is_backpressured = false;
+    }
+    return ok;
+}
+
 // ---- 4. HttpServer Container and Session Coordinator -----------------------
+
+// Dynamic Runtime SNI multi-certificate credentials (uWebSockets addServerName / removeServerName pattern).
+struct SniCertEntry {
+    pattern: u8[..128] = [],
+    cert_pem: const u8[:] = "",
+    key_pem: const u8[:] = "",
+    in_use: bool = false,
+}
+
+const MAX_SNI_DOMAINS: i64 = 32;
+
+struct SniRegistry {
+    entries: SniCertEntry[32] = [SniCertEntry { .. }; 32],
+    count: i32 = 0,
+}
+
+struct SniCredentials {
+    cert_pem: const u8[:] = "",
+    key_pem: const u8[:] = "",
+}
 
 struct WsRouteEntry {
     path: u8[..128] = [],
@@ -770,6 +1000,7 @@ struct HttpServer {
     ws_routes: WsRouteEntry[..16] = [WsRouteEntry { .. }; 16],
     ws_route_count: i32 = 0,
     shared_compressor: SharedWsCompressor = SharedWsCompressor { .. },
+    sni_registry: SniRegistry = SniRegistry { .. },
 }
 
 fn new_http_server(
@@ -848,6 +1079,131 @@ fn find_ws_route(server: const HttpServer&, path: const u8[:]) -> i32 {
         }
     }
     return -1;
+}
+
+// ---- Dynamic Runtime SNI Multi-Certificate Engine (uWebSockets app.addServerName pattern) ----
+
+// Matches a hostname against an SNI domain pattern (RFC 6125 §6.4.3 & uWebSockets pattern).
+// Supports exact domains ("example.com") and wildcard patterns ("*.example.com").
+// Case-insensitive.
+//
+// Example:
+//   pattern = "*.example.com", hostname = "api.example.com"
+//   returns: true
+fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
+    guard pattern.len > 0 && hostname.len > 0 else { return false; }
+    if eq_ascii_fold(pattern, hostname) {
+        return true;
+    }
+    if pattern.len >= 3 && pattern[0] == '*' && pattern[1] == '.' {
+        return match_dns_san(pattern, hostname);
+    }
+    return false;
+}
+
+// Registers or updates an SNI domain pattern with certificate and private key credentials.
+// Supports exact domains and wildcard patterns (uWebSockets app.addServerName).
+fn add_server_name(
+    server: HttpServer&,
+    pattern: const u8[:],
+    cert_pem: const u8[:],
+    key_pem: const u8[:],
+) -> bool {
+    guard pattern.len > 0 && pattern.len <= 128 else { return false; }
+
+    // Check if pattern already registered: update in place
+    for i in server.sni_registry.entries.len {
+        if server.sni_registry.entries[i].in_use && eq_ascii_fold(server.sni_registry.entries[i].pattern[..], pattern) {
+            server.sni_registry.entries[i].cert_pem = cert_pem;
+            server.sni_registry.entries[i].key_pem = key_pem;
+            return true;
+        }
+    }
+
+    // Find first empty slot
+    guard server.sni_registry.count < server.sni_registry.entries.len as i32 else { return false; }
+    for i in server.sni_registry.entries.len {
+        if !server.sni_registry.entries[i].in_use {
+            server.sni_registry.entries[i].pattern.clear();
+            server.sni_registry.entries[i].pattern.append(pattern);
+            server.sni_registry.entries[i].cert_pem = cert_pem;
+            server.sni_registry.entries[i].key_pem = key_pem;
+            server.sni_registry.entries[i].in_use = true;
+            server.sni_registry.count += 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Removes a previously registered SNI domain pattern (uWebSockets app.removeServerName).
+fn remove_server_name(server: HttpServer&, pattern: const u8[:]) -> bool {
+    guard pattern.len > 0 && server.sni_registry.count > 0 else { return false; }
+    for i in server.sni_registry.entries.len {
+        let entry = &server.sni_registry.entries[i];
+        if entry.in_use && eq_ascii_fold(entry.pattern[..], pattern) {
+            entry.in_use = false;
+            entry.pattern.clear();
+            entry.cert_pem = "";
+            entry.key_pem = "";
+            server.sni_registry.count -= 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Resolves TLS credentials for an SNI hostname using exact match first, then wildcard (RFC 6125 §6.4.3).
+// Returns (SniCredentials, ok).
+fn resolve_sni_credentials(
+    server: const HttpServer&,
+    sni_hostname: const u8[:],
+) -> SniCredentials, bool {
+    guard server.sni_registry.count > 0 && sni_hostname.len > 0 else {
+        return SniCredentials { .. }, false;
+    }
+
+    // Phase 1: Exact match priority
+    for i in server.sni_registry.entries.len {
+        let entry = &server.sni_registry.entries[i];
+        if entry.in_use && eq_ascii_fold(entry.pattern[..], sni_hostname) {
+            return SniCredentials {
+                cert_pem: entry.cert_pem,
+                key_pem: entry.key_pem,
+            }, true;
+        }
+    }
+
+    // Phase 2: Wildcard match (*.domain.com)
+    for i in server.sni_registry.entries.len {
+        let entry = &server.sni_registry.entries[i];
+        guard entry.in_use else { continue; }
+        let pat = entry.pattern[..];
+        guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { continue; }
+        if match_dns_san(pat, sni_hostname) {
+            return SniCredentials {
+                cert_pem: entry.cert_pem,
+                key_pem: entry.key_pem,
+            }, true;
+        }
+    }
+
+    return SniCredentials { .. }, false;
+}
+
+// Resolves TLS credentials for an SNI hostname with fallback handler for missing server names
+// (uWebSockets app.missingServerName pattern).
+fn resolve_sni_credentials_with_fallback<Fallback: fn(const u8[:]) -> SniCredentials>(
+    server: const HttpServer&,
+    sni_hostname: const u8[:],
+) -> SniCredentials, bool {
+    let creds, ok = resolve_sni_credentials(server, sni_hostname);
+    if ok { return creds, true; }
+    let fb_creds = Fallback(sni_hostname);
+    if fb_creds.cert_pem.len > 0 {
+        return fb_creds, true;
+    }
+    return SniCredentials { .. }, false;
 }
 
 // ---- Server Pub/Sub Broadcast Engine (uWebSockets TopicTree pattern) --------
@@ -989,6 +1345,7 @@ fn complete_ws_upgrade<B>(
     session.max_backpressure = route_behavior.max_backpressure;
     session.close_on_backpressure_limit = route_behavior.close_on_backpressure_limit;
     session.idle_timeout_s = route_behavior.idle_timeout_s;
+    session.max_lifetime_s = route_behavior.max_lifetime_s;
     session.send_pings_automatically = route_behavior.send_pings_automatically;
     session.reset_idle_timeout_on_send = route_behavior.reset_idle_timeout_on_send;
 
@@ -1075,6 +1432,39 @@ fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool
     return false;
 }
 
+fn complete_ws_upgrade<Req, B>(
+    server: HttpServer&,
+    req: const Req&,
+    entry: const WebSocketRoute&,
+    wire_out: B&,
+) -> bool {
+    let subproto = entry.behavior.subprotocol[..];
+    var ws_res = Response { .. };
+    var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
+    guard ok_upg else { return false; }
+
+    sess.max_backpressure = entry.behavior.max_backpressure;
+    sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
+    sess.idle_timeout_s = entry.behavior.idle_timeout_s;
+    sess.max_lifetime_s = entry.behavior.max_lifetime_s;
+    sess.send_pings_automatically = entry.behavior.send_pings_automatically;
+    sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
+
+    let ua_upg = req.header("user-agent");
+    let allow_comp = entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR
+        && !ws_has_broken_compression(ua_upg);
+    if allow_comp {
+        let client_ext = req.header("sec-websocket-extensions");
+        if core::contains_fold(client_ext, "permessage-deflate") {
+            ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
+            enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
+        }
+    }
+    serialize_http1_response(ws_res, server.server_name[..], wire_out);
+    server.requests_processed++;
+    return true;
+}
+
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline, and serializing the wire response.
 fn handle_connection_wire<B>(
@@ -1098,25 +1488,8 @@ fn handle_connection_wire<B>(
         if is_websocket_upgrade_request(req) {
             let ws_idx = find_ws_route(server, req.url[..]);
             if ws_idx >= 0 {
-                let entry = &server.ws_routes[ws_idx as i64];
-                let subproto = entry.behavior.subprotocol[..];
-                var ws_res = Response { .. };
-                var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
+                let ok_upg = complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
                 if ok_upg {
-                    sess.max_backpressure = entry.behavior.max_backpressure;
-                    sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
-                    sess.idle_timeout_s = entry.behavior.idle_timeout_s;
-                    sess.send_pings_automatically = entry.behavior.send_pings_automatically;
-                    sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
-                    if entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR {
-                        let client_ext = req.header("sec-websocket-extensions");
-                        if core::contains_fold(client_ext, "permessage-deflate") {
-                            ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-                            enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
-                        }
-                    }
-                    serialize_http1_response(ws_res, server.server_name[..], wire_out);
-                    server.requests_processed++;
                     return PipelineOutcome.Handled, true;
                 }
             }
@@ -1181,25 +1554,8 @@ fn handle_connection_wire<B>(
     if is_websocket_upgrade_request(req) {
         let ws_idx = find_ws_route(server, req.url[..]);
         if ws_idx >= 0 {
-            let entry = &server.ws_routes[ws_idx as i64];
-            let subproto = entry.behavior.subprotocol[..];
-            var ws_res = Response { .. };
-            var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
+            let ok_upg = complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
             if ok_upg {
-                sess.max_backpressure = entry.behavior.max_backpressure;
-                sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
-                sess.idle_timeout_s = entry.behavior.idle_timeout_s;
-                sess.send_pings_automatically = entry.behavior.send_pings_automatically;
-                sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
-                if entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR {
-                    let client_ext = req.header("sec-websocket-extensions");
-                    if core::contains_fold(client_ext, "permessage-deflate") {
-                        ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-                        enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
-                    }
-                }
-                serialize_http1_response(ws_res, server.server_name[..], wire_out);
-                server.requests_processed++;
                 return PipelineOutcome.Handled, true;
             }
         }
@@ -1360,25 +1716,8 @@ fn handle_connection_wire_pipelined_stream<B>(
         if is_websocket_upgrade_request(req) {
             let ws_idx = find_ws_route(server, req.url[..]);
             if ws_idx >= 0 {
-                let entry = &server.ws_routes[ws_idx as i64];
-                let subproto = entry.behavior.subprotocol[..];
-                var ws_res = Response { .. };
-                var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
+                let ok_upg = complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
                 if ok_upg {
-                    sess.max_backpressure = entry.behavior.max_backpressure;
-                    sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
-                    sess.idle_timeout_s = entry.behavior.idle_timeout_s;
-                    sess.send_pings_automatically = entry.behavior.send_pings_automatically;
-                    sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
-                    if entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR {
-                        let client_ext = req.header("sec-websocket-extensions");
-                        if core::contains_fold(client_ext, "permessage-deflate") {
-                            ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-                            enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
-                        }
-                    }
-                    serialize_http1_response(ws_res, server.server_name[..], wire_out);
-                    server.requests_processed++;
                     total_handled++;
                     total_consumed += consumed;
                     return total_handled, total_consumed, true;
@@ -1547,6 +1886,19 @@ fn handle_connection_pipe<B>(
 ) -> i64, bool {
     var dummy_sess = internal::new_h2_server_session(server.server_name[..]);
     return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, dummy_sess);
+}
+
+// Binds and listens on a Unix Domain Socket (AF_UNIX) path (uWebSockets app.listen(path) pattern).
+// Eliminates network stack TCP overhead for local IPC and sidecar communication.
+// Returns listening socket handle, or -1 on error.
+fn listen_unix(server: HttpServer&, path: const u8[:], backlog: i32 = 128) -> i64 {
+    return tcp_listen_unix(path, backlog);
+}
+
+// Adopts an externally accepted or inherited socket descriptor into the server environment
+// (uWebSockets us_adopt_accepted_socket pattern).
+fn adopt_socket(server: HttpServer&, raw_fd: i64) -> i64 {
+    return adopt_socket(raw_fd);
 }
 
 // Executes a live TCP accept and dispatch loop.

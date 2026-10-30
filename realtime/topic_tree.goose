@@ -84,6 +84,16 @@ struct TopicPaletteMessage {
     in_use: bool = false,
 }
 
+// Pre-formatted RFC 6455 WebSocket frame buffer for zero-copy multi-subscriber broadcast
+// (uWebSockets PreparedMessage pattern). Pre-encodes raw and optionally compressed wire frames
+// once, avoiding per-subscriber serialization passes.
+struct PreparedMessage {
+    wire: u8[..16384] = [],
+    compressed_wire: u8[..16384] = [],
+    has_compressed: bool = false,
+    opcode: u8 = WS_OPCODE_TEXT,
+}
+
 struct SubscriptionNode {
     sock_fd: i64 = -1,
     next_sub: i32 = -1,
@@ -656,6 +666,115 @@ fn publish_text(tree: TopicTree&, topic: const u8[:], text: const u8[:]) -> i64 
 // Convenience helper to publish binary message to a topic.
 fn publish_binary(tree: TopicTree&, topic: const u8[:], data: const u8[:]) -> i64 {
     return publish(tree, topic, data, WS_OPCODE_BINARY);
+}
+
+// Encodes an unmasked RFC 6455 server frame once for PreparedMessage broadcast
+// (uWebSockets Loop::prepareMessage pattern).
+//
+// Example:
+//   payload = "{\"ticker\":\"AAPL\",\"price\":182.50}", opcode = WS_OPCODE_TEXT
+//   returns: true, out_msg.wire populated with [0x81, 0x22, ...], out_msg.has_compressed = false
+fn prepare_message(
+    out_msg: PreparedMessage&,
+    payload: const u8[:],
+    opcode: u8 = WS_OPCODE_TEXT,
+) -> bool {
+    guard payload.len + 14 <= out_msg.wire.cap else { return false; }
+    out_msg.wire.clear();
+    out_msg.compressed_wire.clear();
+    out_msg.has_compressed = false;
+    out_msg.opcode = opcode;
+
+    let no_mask: u8[4] = [0, 0, 0, 0];
+    encode_ws_frame(out_msg.wire, opcode, payload, false, no_mask, true);
+    return true;
+}
+
+// Pre-encodes both uncompressed and RFC 7692 compressed frames into a PreparedMessage
+// (uWebSockets Loop::prepareMessage pattern). If compression yields a smaller wire frame,
+// sets `has_compressed = true`.
+//
+// Example:
+//   payload = "long repetitive json text ...", opcode = WS_OPCODE_TEXT
+//   returns: true, out_msg.has_compressed = true, out_msg.compressed_wire.len < out_msg.wire.len
+fn prepare_message_compressed(
+    out_msg: PreparedMessage&,
+    payload: const u8[:],
+    shared_comp: SharedWsCompressor&,
+    opcode: u8 = WS_OPCODE_TEXT,
+) -> bool {
+    guard prepare_message(out_msg, payload, opcode) else { return false; }
+
+    if payload.len > 0 {
+        let comp_slice, ok_c = ws_deflate_message_slice(shared_comp, payload, true);
+        if ok_c && comp_slice.len > 0 {
+            guard comp_slice.len + 14 <= out_msg.compressed_wire.cap else { return false; }
+            let no_mask: u8[4] = [0, 0, 0, 0];
+            encode_ws_frame_compressed(out_msg.compressed_wire, opcode, comp_slice, false, no_mask, true);
+            if out_msg.compressed_wire.len < out_msg.wire.len {
+                out_msg.has_compressed = true;
+            }
+        }
+    }
+    return true;
+}
+
+// Publishes a pre-framed PreparedMessage to all subscribers of a topic (uWebSockets publishPrepared pattern).
+// Returns the number of distinct sockets the message was dispatched to.
+fn publish_prepared(
+    tree: TopicTree&,
+    topic: const u8[:],
+    msg: const PreparedMessage&,
+) -> i64 {
+    guard is_valid_publish_topic(topic) && msg.wire.len > 0 else { return 0; }
+
+    var matched_fds: i64[..512] = [];
+    find_subscribers(tree, topic, matched_fds);
+
+    var delivered: i64 = 0;
+    for fd in matched_fds {
+        let sent = tcp_send(fd, msg.wire[..]);
+        if sent > 0 {
+            delivered += 1;
+        }
+    }
+
+    tree.total_publishes += 1;
+    tree.total_messages_delivered += delivered as u64;
+    return delivered;
+}
+
+// Publishes a PreparedMessage with selective compression support (uWebSockets sendPrepared pattern).
+// Dispatches `msg.compressed_wire` if `msg.has_compressed` is true and `supports_compression(fd)` returns true;
+// otherwise dispatches `msg.wire`.
+fn publish_prepared_selective<LookupFn: fn(i64) -> bool>(
+    tree: TopicTree&,
+    topic: const u8[:],
+    msg: const PreparedMessage&,
+    supports_compression: LookupFn,
+) -> i64 {
+    guard is_valid_publish_topic(topic) && msg.wire.len > 0 else { return 0; }
+
+    var matched_fds: i64[..512] = [];
+    find_subscribers(tree, topic, matched_fds);
+
+    var delivered: i64 = 0;
+    for fd in matched_fds {
+        let wire_to_send = if msg.has_compressed && supports_compression(fd) {
+            msg.compressed_wire[..]
+        } else {
+            msg.wire[..]
+        };
+
+        let sent = tcp_send(fd, wire_to_send);
+        if sent > 0 {
+            delivered += 1;
+        }
+    }
+
+    tree.total_publishes += 1;
+    tree.total_messages_delivered += delivered as u64;
+    return delivered;
 }
 
 // ---- uWebSockets TopicTree Batch Drainage & Message Palette Engine ---------

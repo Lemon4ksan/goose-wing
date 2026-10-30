@@ -51,8 +51,11 @@ fn tick_timer_advance(wheel: TickTimerWheel&, elapsed_seconds: u32 = 1) -> u8 {
 }
 
 inline fn is_slot_in_elapsed_range(slot: u8, prev: u8, elapsed: u32) -> bool {
-    guard elapsed < TICK_TIMER_MODULO else { return true; }
-    let dist = (slot + TICK_TIMER_MODULO - prev) % TICK_TIMER_MODULO;
+    let m = TICK_TIMER_MODULO as u32;
+    guard elapsed < m else { return true; }
+    let s = slot as u32;
+    let p = prev as u32;
+    let dist = (s + m - p) % m;
     return dist > 0 && dist <= elapsed;
 }
 

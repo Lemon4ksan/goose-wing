@@ -19,6 +19,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
+#include <afunix.h>
 #include <windows.h>
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
@@ -34,6 +35,7 @@ typedef int SOCKET;
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
@@ -151,6 +153,18 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
         }
     }
     return -1;
+}
+
+int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) {
+    return wing_tcp_listen(path, 0, backlog);
+}
+
+int64_t wing_tcp_connect_unix(wing_bytes_ro path) {
+    return wing_tcp_connect(path, 0, 500);
+}
+
+int64_t wing_adopt_socket(int64_t raw_fd) {
+    return raw_fd > 0 ? raw_fd : -1;
 }
 
 uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
@@ -456,6 +470,109 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
         closesocket(s);
         return -1;
     }
+
+    return (int64_t)s;
+}
+
+// Unix Domain Sockets (AF_UNIX) Listener (uWebSockets us_socket_context_listen_unix pattern).
+int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) {
+    wing_tcp_init();
+
+    char path_str[108];
+    slice_to_cstr(path, path_str, sizeof(path_str));
+    if (path_str[0] == '\0') {
+        return -1;
+    }
+
+#ifdef _WIN32
+    DeleteFileA(path_str);
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+#else
+    unlink(path_str);
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+#endif
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path_str, sizeof(addr.sun_path) - 1);
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        closesocket(s);
+        return -1;
+    }
+
+    if (listen(s, backlog > 0 ? backlog : 128) == SOCKET_ERROR) {
+        closesocket(s);
+        return -1;
+    }
+
+    return (int64_t)s;
+}
+
+// Unix Domain Sockets (AF_UNIX) Client Connector (uWebSockets us_socket_context_connect_unix pattern).
+int64_t wing_tcp_connect_unix(wing_bytes_ro path) {
+    wing_tcp_init();
+
+    char path_str[108];
+    slice_to_cstr(path, path_str, sizeof(path_str));
+    if (path_str[0] == '\0') {
+        return -1;
+    }
+
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+#endif
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path_str, sizeof(addr.sun_path) - 1);
+
+    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        closesocket(s);
+        return -1;
+    }
+
+    return (int64_t)s;
+}
+
+// Adopts an externally accepted or inherited socket descriptor (uWebSockets us_adopt_accepted_socket pattern).
+// Sanitizes the handle, sets non-blocking mode, disables inheritance, and configures TCP_NODELAY & SO_KEEPALIVE.
+int64_t wing_adopt_socket(int64_t raw_fd) {
+    if (raw_fd <= 0) return -1;
+    wing_tcp_init();
+
+    SOCKET s = (SOCKET)raw_fd;
+
+#ifdef _WIN32
+    // uSockets #263: Do not inherit socket handles into child processes
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    u_long mode = 1;
+    ioctlsocket(s, FIONBIO, &mode);
+#else
+    int flags = fcntl(s, F_GETFL, 0);
+    if (flags != -1) {
+        fcntl(s, F_SETFL, flags | O_NONBLOCK);
+    }
+#endif
+
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
+    int keepalive = 1;
+    setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, (const char *)&keepalive, sizeof(keepalive));
 
     return (int64_t)s;
 }

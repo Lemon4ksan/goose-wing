@@ -13,6 +13,9 @@ import core from "..";
 extern fn native_tcp_init() -> i32 = "wing_tcp_init";
 extern fn native_tcp_cleanup() = "wing_tcp_cleanup";
 extern fn native_tcp_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_tcp_listen";
+extern fn native_tcp_listen_unix(path: const u8[:], backlog: i32) -> i64 = "wing_tcp_listen_unix";
+extern fn native_tcp_connect_unix(path: const u8[:]) -> i64 = "wing_tcp_connect_unix";
+extern fn native_adopt_socket(raw_fd: i64) -> i64 = "wing_adopt_socket";
 extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
 extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
 extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
@@ -89,6 +92,28 @@ fn tcp_cleanup() {
 fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64 {
     tcp_init();
     return native_tcp_listen(host, port, backlog);
+}
+
+// Listens on a Unix Domain Socket (AF_UNIX) path (uWebSockets us_socket_context_listen_unix pattern).
+// Returns listening socket handle, or -1 on error.
+fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64 {
+    tcp_init();
+    return native_tcp_listen_unix(path, backlog);
+}
+
+// Connects to a Unix Domain Socket (AF_UNIX) path (uWebSockets us_socket_context_connect_unix pattern).
+// Returns connected socket handle (> 0), or -1 on error.
+fn tcp_connect_unix(path: const u8[:]) -> i64 {
+    tcp_init();
+    return native_tcp_connect_unix(path);
+}
+
+// Adopts an externally accepted or inherited socket descriptor (uWebSockets us_adopt_accepted_socket pattern).
+// Sets non-blocking mode, disables handle inheritance, and configures TCP_NODELAY & SO_KEEPALIVE.
+// Returns sanitized socket handle, or -1 on error.
+fn adopt_socket(raw_fd: i64) -> i64 {
+    tcp_init();
+    return native_adopt_socket(raw_fd);
 }
 
 // Retrieves the locally bound port for a socket.
