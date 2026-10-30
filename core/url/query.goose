@@ -9,13 +9,13 @@ import std;
 // ---- query parameter parsing & whatwg search params -------------------------
 
 struct QueryParamItem {
-    key: u8[..64] = [],
+    key: u8[..64]  = [],
     val: u8[..256] = [],
 }
 
 struct QueryParamsList {
-    items: QueryParamItem[..128] = [],
-    overflow: bool = false,
+    items:    QueryParamItem[..128] = [],
+    overflow: bool                  = false,
 }
 
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
@@ -46,6 +46,10 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
 
 // Parses a query string into key-value pairs, decoding percent sequences.
 // Only '&' is treated as a parameter delimiter; ';' is kept as literal content.
+//
+// Example:
+//   raw_search = "?foo=bar&baz=qux"
+//   returns: QueryParamsList with 2 items: ("foo", "bar"), ("baz", "qux")
 fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
     var list = QueryParamsList { .. };
     var input = raw_search;
@@ -68,31 +72,28 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
             }
         }
         let pair = input[start..end];
-        if pair.len > 0 {
-            var eq_pos = -1;
-            for i in pair.len {
-                if pair[i] == '=' {
-                    eq_pos = i;
-                    break;
-                }
-            }
-            var item = QueryParamItem { .. };
-            if eq_pos >= 0 {
-                let k = pair[..eq_pos];
-                let v = pair[eq_pos + 1..];
-                let ok_k = percent_decode_query(k, item.key);
-                let ok_v = percent_decode_query(v, item.val);
-                if !ok_k || !ok_v {
-                    list.overflow = true;
-                }
-            } else {
-                let ok_k = percent_decode_query(pair, item.key);
-                if !ok_k {
-                    list.overflow = true;
-                }
-            }
-            list.items.push(item);
+        guard pair.len > 0 else {
+            start = end + 1;
+            continue;
         }
+
+        let eq_pos = core::index_of_byte(pair, '=');
+        var item = QueryParamItem { .. };
+        if eq_pos >= 0 {
+            let k = pair[..eq_pos];
+            let v = pair[eq_pos + 1..];
+            let ok_k = percent_decode_query(k, item.key);
+            let ok_v = percent_decode_query(v, item.val);
+            if !ok_k || !ok_v {
+                list.overflow = true;
+            }
+        } else {
+            let ok_k = percent_decode_query(pair, item.key);
+            if !ok_k {
+                list.overflow = true;
+            }
+        }
+        list.items.push(item);
         start = end + 1;
     }
     if start < input.len {
@@ -125,7 +126,7 @@ fn has_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> bool {
 // verify total count does not exceed limit, and enforce per-token length limit (256 bytes)
 // to prevent fixed-buffer parser overflow.
 const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 128;
-const MAX_URL_QUERY_TOKEN_LIMIT: i64 = 256;
+const MAX_URL_QUERY_TOKEN_LIMIT:  i64 = 256;
 
 fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUERY_PARAMS_LIMIT) -> bool {
     guard query.len > 0 else { return true; }
@@ -138,7 +139,7 @@ fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUE
         q = q[..hash_idx];
     }
     guard q.len > 0 else { return true; }
-    var count: i64 = 1;
+    var count:     i64 = 1;
     var token_len: i64 = 0;
     for b in q {
         if b == '&' {

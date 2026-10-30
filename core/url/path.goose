@@ -47,8 +47,10 @@ fn percent_encode_path_segment<B>(raw_segment: const u8[:], out: B&) -> bool {
             guard out.try_push('%') else { return false; }
             let high_val = (char_byte >> 4) & 0x0F;
             let low_val = char_byte & 0x0F;
-            guard out.try_push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 }) else { return false; }
-            guard out.try_push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 }) else { return false; }
+            let hi_char = if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 };
+            guard out.try_push(hi_char) else { return false; }
+            let lo_char = if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 };
+            guard out.try_push(lo_char) else { return false; }
         } else {
             guard out.try_push(char_byte) else { return false; }
         }
@@ -72,8 +74,10 @@ fn append_encoded_subpath<B>(raw_subpath: const u8[:], out: B&) -> bool {
             guard out.try_push('%') else { return false; }
             let high_val = (char_byte >> 4) & 0x0F;
             let low_val = char_byte & 0x0F;
-            guard out.try_push(if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 }) else { return false; }
-            guard out.try_push(if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 }) else { return false; }
+            let hi_char = if high_val < 10 { ('0' + high_val) as u8 } else { ('A' + high_val - 10) as u8 };
+            guard out.try_push(hi_char) else { return false; }
+            let lo_char = if low_val < 10 { ('0' + low_val) as u8 } else { ('A' + low_val - 10) as u8 };
+            guard out.try_push(lo_char) else { return false; }
         } else {
             guard out.try_push(char_byte) else { return false; }
         }
@@ -98,7 +102,10 @@ fn new_file_url(file_path: const u8[:]) -> Url {
     }
 
     // Windows UNC path (e.g. \\server\share\file.txt or //server/share/file.txt)
-    if file_path.len >= 2 && (file_path[0] == '\\' || file_path[0] == '/') && (file_path[1] == '\\' || file_path[1] == '/') {
+    let is_unc_prefix = file_path.len >= 2 &&
+        (file_path[0] == '\\' || file_path[0] == '/') &&
+        (file_path[1] == '\\' || file_path[1] == '/');
+    if is_unc_prefix {
         guard append_encoded_subpath(file_path[2..], raw_href) else {
             return Url { valid: false, .. };
         }
@@ -235,7 +242,8 @@ fn path_extension(url_val: const Url&) -> const u8[:] {
     return component[last_dot_idx + 1..];
 }
 
-// Returns a new URL with the path extension removed from the last path component (like Swift url.deletingPathExtension()).
+// Returns a new URL with the path extension removed from the last path component
+// (like Swift url.deletingPathExtension()).
 // Example: file:///a/b/report.pdf -> file:///a/b/report
 fn deleting_path_extension(url_val: Url) -> Url {
     guard url_val.valid else { return url_val; }
@@ -424,7 +432,8 @@ fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
 
 // ---- dual-mode url resolution (rfc reference vs backend endpoint) ---------
 
-// Resolves a relative URL reference against a base URL strictly conforming to RFC 3986 / WHATWG URL Standard (Browser behavior).
+// Resolves a relative URL reference against a base URL strictly conforming to RFC 3986
+// / WHATWG URL Standard (Browser behavior).
 // If `base_url` path does not end with '/' (e.g. "http://example.com/api"), resolving "/v1" or "v1" will replace "/api"
 // with "/v1", exactly as web browsers, HTML links, and RFC specifications dictate.
 // Examples:
@@ -441,8 +450,8 @@ fn parse_reference(base_url: const Url&, relative_ref: const u8[:]) -> Url, UrlP
 }
 
 // Resolves an API endpoint against a base URL using Backend / Service semantics (API Client behavior).
-// Unlike RFC 3986 reference resolution, the base URL's pathname is treated as a permanent route prefix (e.g. "/api" or "/v1")
-// regardless of whether `base_url` ends with a trailing slash.
+// Unlike RFC 3986 reference resolution, the base URL's pathname is treated as a permanent route prefix
+// (e.g. "/api" or "/v1") regardless of whether `base_url` ends with a trailing slash.
 // Examples:
 //   "http://example.com/api"  + "/v1"       -> "http://example.com/api/v1"
 //   "http://example.com/api"  + "v1"        -> "http://example.com/api/v1"
@@ -454,8 +463,31 @@ fn resolve_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url {
     return res_url;
 }
 
-fn join_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url {
-    return resolve_endpoint(base_url, endpoint);
+inline fn find_scheme_colon(s: const u8[:]) -> i64 {
+    for scan_idx in s.len {
+        let char_byte = s[scan_idx];
+        if char_byte == ':' { return scan_idx; }
+        if char_byte == '/' || char_byte == '\\' || char_byte == '?' || char_byte == '#' { break; }
+    }
+    return -1;
+}
+
+inline fn find_query_or_hash_start(s: const u8[:]) -> i64 {
+    for scan_idx in s.len {
+        let char_byte = s[scan_idx];
+        if char_byte == '?' || char_byte == '#' {
+            return scan_idx;
+        }
+    }
+    return s.len;
+}
+
+inline fn skip_leading_slashes(s: const u8[:]) -> i64 {
+    var sub_start = 0;
+    while sub_start < s.len && (s[sub_start] == '/' || s[sub_start] == '\\') {
+        sub_start++;
+    }
+    return sub_start;
 }
 
 // parse_endpoint resolves an API endpoint against base_url using API Client / Microservice semantics.
@@ -471,6 +503,10 @@ fn join_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url {
 // - Protocol-Relative Inheritance: Endpoints starting with "//" inherit scheme from base_url.
 // - Query and Fragment Isolation: Endpoint queries and fragments are appended/merged cleanly
 //   without delimiter corruption.
+//
+// Example:
+//   base_url = "http://example.com/api", endpoint = "/v1/users?p=1"
+//   returns: url with href "http://example.com/api/v1/users?p=1", err = UrlParseError.None
 fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseError {
     guard base_url.valid else {
         return Url { valid: false, .. }, UrlParseError.RelativeWithoutBase;
@@ -489,12 +525,7 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
     let ep_str = cleaned_endpoint[..];
 
     // If endpoint is an absolute URL (e.g. https://... or custom://...), it overrides base completely
-    var colon_pos = -1;
-    for scan_idx in ep_str.len {
-        let char_byte = ep_str[scan_idx];
-        if char_byte == ':' { colon_pos = scan_idx; break; }
-        if char_byte == '/' || char_byte == '\\' || char_byte == '?' || char_byte == '#' { break; }
-    }
+    let colon_pos = find_scheme_colon(ep_str);
     if colon_pos > 0 {
         let abs_url, abs_err = parse_url(ep_str);
         if abs_url.valid {
@@ -513,19 +544,7 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
     }
 
     // Split endpoint into path vs query/hash
-    var q_pos = -1;
-    var h_pos = -1;
-    for scan_idx in ep_str.len {
-        let char_byte = ep_str[scan_idx];
-        if char_byte == '?' && q_pos < 0 && h_pos < 0 {
-            q_pos = scan_idx;
-        } else if char_byte == '#' && h_pos < 0 {
-            h_pos = scan_idx;
-            break;
-        }
-    }
-
-    let path_end = if q_pos >= 0 { q_pos } else if h_pos >= 0 { h_pos } else { ep_str.len };
+    let path_end = find_query_or_hash_start(ep_str);
     let raw_subpath = ep_str[..path_end];
     let query_and_hash = ep_str[path_end..];
 
@@ -542,10 +561,7 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
         }
     }
 
-    var sub_start = 0;
-    while sub_start < raw_subpath.len && (raw_subpath[sub_start] == '/' || raw_subpath[sub_start] == '\\') {
-        sub_start++;
-    }
+    let sub_start = skip_leading_slashes(raw_subpath);
     guard combined.try_append(raw_subpath[sub_start..]) else {
         return Url { valid: false, .. }, UrlParseError.InputTooLong;
     }

@@ -1169,7 +1169,7 @@ fn update_match_skip_hashes(
     prev:       i32[32768]&,
 ) {
     for k in 1..count {
-        let skip_pos = start_pos + (k as i64);
+        let skip_pos = start_pos + k;
         update_skip_hash(skip_pos, total_len, dict_slice, dict_len, src, head, prev);
     }
 }
@@ -1190,7 +1190,7 @@ fn match_len_at_offset(
     let c_off = cand - dict_len;
     if c_off >= 0 {
         while l + 8 <= max_l {
-            let diff = read_le_u64(src, s_off + (l as i64)) ^ read_le_u64(src, c_off + (l as i64));
+            let diff = read_le_u64(src, s_off + l) ^ read_le_u64(src, c_off + l);
             if diff != 0 {
                 l += (ctz(diff) >> 3) as i32;
                 break;
@@ -1200,8 +1200,8 @@ fn match_len_at_offset(
     }
 
     while l < max_l {
-        let p_s = pos + (l as i64);
-        let p_c = cand + (l as i64);
+        let p_s = pos + l;
+        let p_c = cand + l;
         let byte_s = get_deflate_byte(p_s, dict_slice, dict_len, src);
         let byte_c = get_deflate_byte(p_c, dict_slice, dict_len, src);
         if byte_s != byte_c { break; }
@@ -1220,9 +1220,9 @@ inline fn match_endpoint_mismatch(
     src:        const u8[:],
 ) -> bool {
     guard cur_len > 0 else { return false; }
-    let p_s_check = pos + (cur_len as i64);
+    let p_s_check = pos + cur_len;
     guard p_s_check < total_len else { return false; }
-    let p_c_check = cand + (cur_len as i64);
+    let p_c_check = cand + cur_len;
     let b_s = get_deflate_byte(p_s_check, dict_slice, dict_len, src);
     let b_c = get_deflate_byte(p_c_check, dict_slice, dict_len, src);
     return b_s != b_c;
@@ -1248,13 +1248,13 @@ fn find_longest_match(
         let dist = (pos as i32) - cand;
         if dist > 32768 || dist <= 0 { break; }
 
-        if match_endpoint_mismatch(pos, cand as i64, cur_len, total_len, dict_slice, dict_len, src) {
+        if match_endpoint_mismatch(pos, cand, cur_len, total_len, dict_slice, dict_len, src) {
             cand = prev[cand & 32767];
             chain_count++;
             continue;
         }
 
-        let l = match_len_at_offset(pos, cand as i64, dict_slice, dict_len, src, total_len);
+        let l = match_len_at_offset(pos, cand, dict_slice, dict_len, src, total_len);
         if l > cur_len {
             cur_len = l;
             cur_dist = dist;
@@ -1347,10 +1347,10 @@ fn process_greedy_token(
     if cur_len >= 3 {
         push_match_token(cur_len, cur_dist, tokens, lit_count, dist_count);
         update_match_skip_hashes(pos, cur_len, total_len, dict_slice, dict_len, src, head, prev);
-        pos += cur_len as i64;
+        pos += cur_len;
     } else {
         let b = get_deflate_byte(pos, dict_slice, dict_len, src);
-        push_literal_token(b as u16, tokens, lit_count);
+        push_literal_token(b, tokens, lit_count);
         pos++;
     }
 }
@@ -1380,14 +1380,14 @@ fn process_lazy_match_available(
 ) {
     if cur_len > prev_len {
         let b = get_deflate_byte(pos - 1, dict_slice, dict_len, src);
-        push_literal_token(b as u16, tokens, lit_count);
+        push_literal_token(b, tokens, lit_count);
         prev_len = cur_len;
         prev_dist = cur_dist;
 
         if cur_len >= cfg.max_lazy || cur_len >= 258 {
             push_match_token(prev_len, prev_dist, tokens, lit_count, dist_count);
             update_match_skip_hashes(pos, prev_len, total_len, dict_slice, dict_len, src, head, prev);
-            pos += prev_len as i64;
+            pos += prev_len;
             match_available = false;
         } else {
             match_available = true;
@@ -1395,7 +1395,7 @@ fn process_lazy_match_available(
         }
     } else {
         push_match_token(prev_len, prev_dist, tokens, lit_count, dist_count);
-        let match_end = (pos - 1) + (prev_len as i64);
+        let match_end = (pos - 1) + prev_len;
         var k = pos + 1;
         while k < match_end {
             update_skip_hash(k, total_len, dict_slice, dict_len, src, head, prev);
@@ -1435,14 +1435,14 @@ fn process_lazy_match_unavailable(
         if cur_len >= cfg.max_lazy || cur_len >= 258 {
             push_match_token(prev_len, prev_dist, tokens, lit_count, dist_count);
             update_match_skip_hashes(pos, prev_len, total_len, dict_slice, dict_len, src, head, prev);
-            pos += prev_len as i64;
+            pos += prev_len;
         } else {
             match_available = true;
             pos++;
         }
     } else {
         let b = get_deflate_byte(pos, dict_slice, dict_len, src);
-        push_literal_token(b as u16, tokens, lit_count);
+        push_literal_token(b, tokens, lit_count);
         pos++;
     }
 }
@@ -1533,11 +1533,11 @@ fn calc_fixed_bits(tokens: const LzToken[:]) -> i64 {
         let sym_idx = tok.sym as i64;
         if tok.is_match {
             let dsym_idx = tok.dist_sym as i64;
-            let m_cost = (FIXED_LIT_LEN[sym_idx] as i64) + (tok.extra_bits as i64);
-            let d_cost = (5 as i64) + (tok.dist_extra_bits as i64);
+            let m_cost = (FIXED_LIT_LEN[sym_idx] as i64) + tok.extra_bits;
+            let d_cost = (5 as i64) + tok.dist_extra_bits;
             fixed_bits += m_cost + d_cost;
         } else {
-            fixed_bits += FIXED_LIT_LEN[sym_idx] as i64;
+            fixed_bits += FIXED_LIT_LEN[sym_idx];
         }
     }
     return fixed_bits;
@@ -1576,18 +1576,18 @@ fn calc_dynamic_bit_cost(
     var dyn_bits: i64 = 3 + 5 + 5 + 4 + (ncode as i64) * 3;
     for &rt in rle_tokens {
         let sym_idx = rt.sym as i64;
-        dyn_bits += (hclen_lens[sym_idx] as i64) + (rt.extra_bits as i64);
+        dyn_bits += (hclen_lens[sym_idx] as i64) + rt.extra_bits;
     }
     for &tok in tokens {
         if tok.is_match {
             let sym_idx = tok.sym as i64;
             let dsym_idx = tok.dist_sym as i64;
-            let m_cost = (dyn_lit_lens[sym_idx] as i64) + (tok.extra_bits as i64);
-            let d_cost = (dyn_dist_lens[dsym_idx] as i64) + (tok.dist_extra_bits as i64);
+            let m_cost = (dyn_lit_lens[sym_idx] as i64) + tok.extra_bits;
+            let d_cost = (dyn_dist_lens[dsym_idx] as i64) + tok.dist_extra_bits;
             dyn_bits += m_cost + d_cost;
         } else {
             let sym_idx = tok.sym as i64;
-            dyn_bits += dyn_lit_lens[sym_idx] as i64;
+            dyn_bits += dyn_lit_lens[sym_idx];
         }
     }
     return dyn_bits;

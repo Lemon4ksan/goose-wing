@@ -81,14 +81,22 @@ fn ::round(time_val: core::Time, dur: core::Duration) -> core::Time { return cor
 // Timezones
 
 fn ::utc(time_val: core::Time) -> core::Time { return core::utc(time_val); }
-fn ::in_offset(time_val: core::Time, tz_offset_seconds: i32) -> core::Time { return core::in_offset(time_val, tz_offset_seconds); }
-fn ::in_tz(time_val: core::Time, hours_offset: i64, minutes_offset: i64 = 0) -> core::Time { return core::in_tz(time_val, hours_offset, minutes_offset); }
+fn ::in_offset(time_val: core::Time, tz_offset_seconds: i32) -> core::Time {
+    return core::in_offset(time_val, tz_offset_seconds);
+}
+fn ::in_tz(time_val: core::Time, hours_offset: i64, minutes_offset: i64 = 0) -> core::Time {
+    return core::in_tz(time_val, hours_offset, minutes_offset);
+}
 fn ::tz_offset(time_val: core::Time) -> i32 { return core::tz_offset(time_val); }
 
 // Calendar Math & Navigation
 
-fn ::add_months_clamped(time_val: core::Time, months_count: i64) -> core::Time { return core::add_months_clamped(time_val, months_count); }
-fn ::add_years_clamped(time_val: core::Time, years_count: i64) -> core::Time { return core::add_years_clamped(time_val, years_count); }
+fn ::add_months_clamped(time_val: core::Time, months_count: i64) -> core::Time {
+    return core::add_months_clamped(time_val, months_count);
+}
+fn ::add_years_clamped(time_val: core::Time, years_count: i64) -> core::Time {
+    return core::add_years_clamped(time_val, years_count);
+}
 fn ::days_in_month(time_val: core::Time) -> i64 { return core::days_in_month(time_val); }
 fn ::days_in_month(year_val: i64, month_val: i64) -> i64 { return core::days_in_month(year_val, month_val); }
 fn ::days_in_year(time_val: core::Time) -> i64 { return core::days_in_year(time_val); }
@@ -133,16 +141,30 @@ fn ::hash(url_val: const core::Url&) -> const u8[:] { return core::hash(url_val)
 fn ::origin(url_val: const core::Url&) -> core::Origin { return core::origin_from_url(url_val); }
 fn ::is_special(url_val: const core::Url&) -> bool { return core::is_special(url_val); }
 fn ::is_secure_scheme(url_val: const core::Url&) -> bool { return core::is_secure_scheme(url_val); }
-fn ::registrable_site(url_val: const core::Url&) -> core::RegistrableSite { return core::registrable_site_from_url(url_val); }
-fn ::is_same_origin(origin_a: core::Origin, origin_b: core::Origin) -> bool { return core::is_same_origin(origin_a, origin_b); }
-fn ::is_same_origin_url(url_a: const core::Url&, url_b: const core::Url&) -> bool { return core::is_same_origin_url(url_a, url_b); }
+fn ::registrable_site(url_val: const core::Url&) -> core::RegistrableSite {
+    return core::registrable_site_from_url(url_val);
+}
+fn ::is_same_origin(origin_a: core::Origin, origin_b: core::Origin) -> bool {
+    return core::is_same_origin(origin_a, origin_b);
+}
+fn ::is_same_origin_url(url_a: const core::Url&, url_b: const core::Url&) -> bool {
+    return core::is_same_origin_url(url_a, url_b);
+}
 fn ::serialize_origin<B>(origin_val: core::Origin, out: B&) { core::serialize_origin(origin_val, out); }
 fn ::extract_etld_plus_one<B>(host: const u8[:], out: B&) { core::extract_etld_plus_one(host, out); }
-fn ::compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool { return core::compute_public_suffix(clean_domain, out); }
-fn ::public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool { return core::public_suffix_with_icann(domain, out_suffix); }
+fn ::compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
+    return core::compute_public_suffix(clean_domain, out);
+}
+fn ::public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
+    return core::public_suffix_with_icann(domain, out_suffix);
+}
 fn ::is_ip_address_literal(host: const u8[:]) -> bool { return core::is_ip_address_literal(host); }
-fn ::is_schemeful_same_site_urls(url_a: const core::Url&, url_b: const core::Url&) -> bool { return core::is_schemeful_same_site_urls(url_a, url_b); }
-fn ::is_same_site_origin_url(origin_val: const core::Origin&, url_val: const core::Url&) -> bool { return core::is_same_site_origin_url(origin_val, url_val); }
+fn ::is_schemeful_same_site_urls(url_a: const core::Url&, url_b: const core::Url&) -> bool {
+    return core::is_schemeful_same_site_urls(url_a, url_b);
+}
+fn ::is_same_site_origin_url(origin_val: const core::Origin&, url_val: const core::Url&) -> bool {
+    return core::is_same_site_origin_url(origin_val, url_val);
+}
 
 // ---- file & path ufcs bridges -----------------------------------------------
 
@@ -151,21 +173,36 @@ fn ::file_path<B>(url_val: const core::Url&, out: B&) -> bool { return core::fil
 fn ::last_path_component(url_val: const core::Url&) -> const u8[:] { return core::last_path_component(url_val); }
 fn ::path_extension(url_val: const core::Url&) -> const u8[:] { return core::path_extension(url_val); }
 fn ::deleting_path_extension(url_val: core::Url) -> core::Url { return core::deleting_path_extension(url_val); }
-fn ::deleting_last_path_component(url_val: core::Url) -> core::Url { return core::deleting_last_path_component(url_val); }
-fn ::appending_path_component(url_val: core::Url, component: const u8[:]) -> core::Url { return core::appending_path_component(url_val, component); }
-fn ::appending(url_val: core::Url, component: const u8[:]) -> core::Url { return core::appending_path_component(url_val, component); }
-fn ::appending_path(url_val: core::Url, subpath: const u8[:]) -> core::Url { return core::appending_path(url_val, subpath); }
-fn ::appending_path_extension(url_val: core::Url, ext: const u8[:]) -> core::Url { return core::appending_path_extension(url_val, ext); }
+fn ::deleting_last_path_component(url_val: core::Url) -> core::Url {
+    return core::deleting_last_path_component(url_val);
+}
+fn ::appending_path_component(url_val: core::Url, component: const u8[:]) -> core::Url {
+    return core::appending_path_component(url_val, component);
+}
+fn ::appending(url_val: core::Url, component: const u8[:]) -> core::Url {
+    return core::appending_path_component(url_val, component);
+}
+fn ::appending_path(url_val: core::Url, subpath: const u8[:]) -> core::Url {
+    return core::appending_path(url_val, subpath);
+}
+fn ::appending_path_extension(url_val: core::Url, ext: const u8[:]) -> core::Url {
+    return core::appending_path_extension(url_val, ext);
+}
 
 // ---- dual-mode resolution ufcs bridges -------------------------------------
 
-fn ::resolve_reference(base_url: const core::Url&, relative_ref: const u8[:]) -> core::Url { return core::resolve_reference(base_url, relative_ref); }
-fn ::resolve_endpoint(base_url: const core::Url&, endpoint: const u8[:]) -> core::Url { return core::resolve_endpoint(base_url, endpoint); }
-fn ::join_endpoint(base_url: const core::Url&, endpoint: const u8[:]) -> core::Url { return core::join_endpoint(base_url, endpoint); }
+fn ::resolve_reference(base_url: const core::Url&, relative_ref: const u8[:]) -> core::Url {
+    return core::resolve_reference(base_url, relative_ref);
+}
+fn ::resolve_endpoint(base_url: const core::Url&, endpoint: const u8[:]) -> core::Url {
+    return core::resolve_endpoint(base_url, endpoint);
+}
 
 // ---- url view ufcs bridges -------------------------------------------------
 
-fn ::parse_url_view(raw_input: const u8[:]) -> core::UrlView, core::UrlParseError { return core::parse_url_view(raw_input); }
+fn ::parse_url_view(raw_input: const u8[:]) -> core::UrlView, core::UrlParseError {
+    return core::parse_url_view(raw_input);
+}
 fn ::new_url_view(raw_input: const u8[:]) -> core::UrlView { return core::new_url_view(raw_input); }
 fn ::href(view: const core::UrlView&) -> const u8[:] { return core::href(view); }
 fn ::scheme(view: const core::UrlView&) -> const u8[:] { return core::scheme(view); }
@@ -197,35 +234,59 @@ fn ::pop_next_in_order(r: core::Reassembler&) -> core::ReassemblerItem, bool { r
 fn ::pending_count(r: const core::Reassembler&) -> i64 { return core::pending_count(r); }
 
 fn ::stash(sb: core::StashBuffer&, env: core::StashedEnvelope) { core::stash(sb, env); }
-fn ::unstash_all(sb: core::StashBuffer&, out_pending: core::StashedEnvelope[>..]&) -> i64 { return core::unstash_all(sb, out_pending); }
+fn ::unstash_all(sb: core::StashBuffer&, out_pending: core::StashedEnvelope[>..]&) -> i64 {
+    return core::unstash_all(sb, out_pending);
+}
 fn ::stash_count(sb: const core::StashBuffer&) -> i64 { return core::stash_count(sb); }
 fn ::is_empty(sb: const core::StashBuffer&) -> bool { return core::is_empty(sb); }
 
-fn ::push(mb: core::PriorityMailbox&, priority: u32, payload_type: u16, val: i64) { core::push(mb, priority, payload_type, val); }
+fn ::push(mb: core::PriorityMailbox&, priority: u32, payload_type: u16, val: i64) {
+    core::push(mb, priority, payload_type, val);
+}
 fn ::pop(mb: core::PriorityMailbox&) -> core::PriorityItem, bool { return core::pop(mb); }
 fn ::count(mb: const core::PriorityMailbox&) -> i64 { return core::count(mb); }
 
 fn ::add_worker(sup: core::Supervisor&, worker_id: i64) -> bool { return core::add_worker(sup, worker_id); }
-fn ::add_child(sup: core::Supervisor&, spec: core::ChildSpec, worker_id: i64) -> bool { return core::add_child(sup, spec, worker_id); }
+fn ::add_child(sup: core::Supervisor&, spec: core::ChildSpec, worker_id: i64) -> bool {
+    return core::add_child(sup, spec, worker_id);
+}
 fn ::child_count(sup: const core::Supervisor&) -> i64 { return core::child_count(sup); }
 fn ::wait_all(sup: core::Supervisor&) -> bool { return core::wait_all(sup); }
-fn ::wait_all(sup: core::Supervisor&, out_diagnostics: u8[>..]&) -> bool { return core::wait_all(sup, out_diagnostics); }
+fn ::wait_all(sup: core::Supervisor&, out_diagnostics: u8[>..]&) -> bool {
+    return core::wait_all(sup, out_diagnostics);
+}
 fn ::failed_count(sup: const core::Supervisor&) -> i64 { return core::failed_count(sup); }
 fn ::success_count(sup: const core::Supervisor&) -> i64 { return core::success_count(sup); }
 fn ::is_auto_shutdown(sup: const core::Supervisor&) -> bool { return core::is_auto_shutdown(sup); }
-fn ::should_restart_child(sup: const core::Supervisor&, child_idx: i64, reason: const core::ExitReason&) -> bool { return core::should_restart_child(sup, child_idx, reason); }
-fn ::record_failure(sup: core::Supervisor&, child_idx: i64, current_time_s: i64) -> bool { return core::record_failure(sup, child_idx, current_time_s); }
+fn ::should_restart_child(sup: const core::Supervisor&, child_idx: i64, reason: const core::ExitReason&) -> bool {
+    return core::should_restart_child(sup, child_idx, reason);
+}
+fn ::record_failure(sup: core::Supervisor&, child_idx: i64, current_time_s: i64) -> bool {
+    return core::record_failure(sup, child_idx, current_time_s);
+}
 
 // ---- singleflight group ufcs bridges ---------------------------------------
 
-fn ::start_or_join(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool { return core::start_or_join(g, key_str); }
-fn ::finish_call(g: core::SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 { return core::finish_call(g, key_str, val, ok); }
+fn ::start_or_join(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
+    return core::start_or_join(g, key_str);
+}
+fn ::finish_call(g: core::SingleflightGroup&, key_str: const u8[:], val: i64, ok: bool = true) -> bool, i32 {
+    return core::finish_call(g, key_str, val, ok);
+}
 fn ::forget(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::forget(g, key_str); }
-fn ::forget_unshared(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::forget_unshared(g, key_str); }
-fn ::is_in_flight(g: const core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::is_in_flight(g, key_str); }
-fn ::waiter_count(g: const core::SingleflightGroup&, key_str: const u8[:]) -> i32 { return core::waiter_count(g, key_str); }
+fn ::forget_unshared(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool {
+    return core::forget_unshared(g, key_str);
+}
+fn ::is_in_flight(g: const core::SingleflightGroup&, key_str: const u8[:]) -> bool {
+    return core::is_in_flight(g, key_str);
+}
+fn ::waiter_count(g: const core::SingleflightGroup&, key_str: const u8[:]) -> i32 {
+    return core::waiter_count(g, key_str);
+}
 fn ::is_shared(g: const core::SingleflightGroup&, key_str: const u8[:]) -> bool { return core::is_shared(g, key_str); }
-fn ::result_value(g: const core::SingleflightGroup&, key_str: const u8[:]) -> i64, bool { return core::result_value(g, key_str); }
+fn ::result_value(g: const core::SingleflightGroup&, key_str: const u8[:]) -> i64, bool {
+    return core::result_value(g, key_str);
+}
 
 // ---- math & rtt estimator ufcs bridges -------------------------------------
 
@@ -289,7 +350,9 @@ fn ::remaining(lr: const core::LimitReader&) -> i64 { return core::remaining(lr)
 fn ::is_eof(lr: const core::LimitReader&) -> bool { return core::is_eof(lr); }
 fn ::is_exhausted(lr: const core::LimitReader&) -> bool { return core::is_exhausted(lr); }
 fn ::read(lr: core::LimitReader&, dst: u8[:]) -> i64, core::IoError { return core::read(lr, dst); }
-fn ::read_slice(lr: core::LimitReader&, count: i64) -> const u8[:], core::IoError { return core::read_slice(lr, count); }
+fn ::read_slice(lr: core::LimitReader&, count: i64) -> const u8[:], core::IoError {
+    return core::read_slice(lr, count);
+}
 
 fn ::len(rb: const core::RingBuffer&) -> i64 { return core::len(rb); }
 fn ::cap(rb: const core::RingBuffer&) -> i64 { return core::cap(rb); }
@@ -314,9 +377,15 @@ fn ::readable_len(p: const core::PipeBuffer&) -> i64 { return core::readable_len
 fn ::unexamined_len(p: const core::PipeBuffer&) -> i64 { return core::unexamined_len(p); }
 fn ::write_space(p: const core::PipeBuffer&) -> i64 { return core::write_space(p); }
 fn ::total_available(p: const core::PipeBuffer&) -> i64 { return core::total_available(p); }
-fn ::advance_to(p: core::PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> core::IoError { return core::advance_to(p, consumed_delta, examined_delta); }
-fn ::get_write_span(p: core::PipeBuffer&, min_size: i64 = 1) -> u8[:], core::IoError { return core::get_write_span(p, min_size); }
-fn ::commit_write(p: core::PipeBuffer&, bytes_written: i64) -> core::IoError { return core::commit_write(p, bytes_written); }
+fn ::advance_to(p: core::PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> core::IoError {
+    return core::advance_to(p, consumed_delta, examined_delta);
+}
+fn ::get_write_span(p: core::PipeBuffer&, min_size: i64 = 1) -> u8[:], core::IoError {
+    return core::get_write_span(p, min_size);
+}
+fn ::commit_write(p: core::PipeBuffer&, bytes_written: i64) -> core::IoError {
+    return core::commit_write(p, bytes_written);
+}
 fn ::write(p: core::PipeBuffer&, src: const u8[:]) -> i64, core::IoError { return core::write(p, src); }
 fn ::complete_pipe(p: core::PipeBuffer&) { core::complete_pipe(p); }
 fn ::reset(p: core::PipeBuffer&) { core::reset(p); }
@@ -328,7 +397,9 @@ fn ::cork_is_empty(cb: const core::CorkBuffer&) -> bool { return core::cork_is_e
 fn ::cork_is_full(cb: const core::CorkBuffer&) -> bool { return core::cork_is_full(cb); }
 fn ::cork_as_slice(cb: const core::CorkBuffer&) -> const u8[:] { return core::cork_as_slice(cb); }
 fn ::cork_write(cb: core::CorkBuffer&, src: const u8[:]) -> i64, core::IoError { return core::cork_write(cb, src); }
-fn ::cork_write_exact(cb: core::CorkBuffer&, src: const u8[:]) -> core::IoError { return core::cork_write_exact(cb, src); }
+fn ::cork_write_exact(cb: core::CorkBuffer&, src: const u8[:]) -> core::IoError {
+    return core::cork_write_exact(cb, src);
+}
 fn ::cork_write_u8(cb: core::CorkBuffer&, b: u8) -> core::IoError { return core::cork_write_u8(cb, b); }
 fn ::cork_write_u16_be(cb: core::CorkBuffer&, v: u16) -> core::IoError { return core::cork_write_u16_be(cb, v); }
 fn ::cork_write_u24_be(cb: core::CorkBuffer&, v: u32) -> core::IoError { return core::cork_write_u24_be(cb, v); }
@@ -366,11 +437,21 @@ fn ::index_of_byte(s: const u8[:], b: u8) -> i64 { return core::index_of_byte(s,
 fn ::last_index_of_byte(s: const u8[:], b: u8) -> i64 { return core::last_index_of_byte(s, b); }
 fn ::count_byte(s: const u8[:], b: u8) -> i64 { return core::count_byte(s, b); }
 
-fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool { return core::split_once_byte(s, delim); }
-fn ::rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool { return core::rsplit_once_byte(s, delim); }
-fn ::split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool { return core::split_once(s, delim); }
-fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool { return core::split_once_fold(s, delim); }
-fn ::make_byte_tokenizer(src: const u8[:], delim: u8) -> core::ByteTokenizer { return core::make_byte_tokenizer(src, delim); }
+fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
+    return core::split_once_byte(s, delim);
+}
+fn ::rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
+    return core::rsplit_once_byte(s, delim);
+}
+fn ::split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
+    return core::split_once(s, delim);
+}
+fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
+    return core::split_once_fold(s, delim);
+}
+fn ::make_byte_tokenizer(src: const u8[:], delim: u8) -> core::ByteTokenizer {
+    return core::make_byte_tokenizer(src, delim);
+}
 fn ::token_next(tok: core::ByteTokenizer&) -> const u8[:], bool { return core::token_next(tok); }
 
 fn ::parse_u64_dec(s: const u8[:]) -> u64, bool { return core::parse_u64_dec(s); }

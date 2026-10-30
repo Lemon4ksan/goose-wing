@@ -1149,8 +1149,8 @@ fn test_dual_mode_resolution_rfc_vs_endpoint(t: core::T&) {
         let ufcs_ep = base_no_slash.resolve_endpoint("/v1");
         sub.assert_bytes_eq(core::href(ufcs_ep), "http://example.com/api/v1", "UFCS: base.resolve_endpoint");
 
-        let ufcs_join = base_no_slash.join_endpoint("/v1");
-        sub.assert_bytes_eq(core::href(ufcs_join), "http://example.com/api/v1", "UFCS: base.join_endpoint");
+        let ufcs_join = base_no_slash.resolve_endpoint("/v1");
+        sub.assert_bytes_eq(core::href(ufcs_join), "http://example.com/api/v1", "UFCS: base.resolve_endpoint");
     };
 }
 

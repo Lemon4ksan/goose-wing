@@ -293,7 +293,7 @@ fn update_sliding_window(d: ZStreamDecompressor&, temp_out: const u8[:]) {
     if temp_out.len >= 32768 {
         let start = temp_out.len - 32768;
         for i in 32768 {
-            d.window[i] = temp_out[start + (i as i64)];
+            d.window[i] = temp_out[start + i];
         }
         d.window_len = 32768;
         return;
@@ -308,7 +308,7 @@ fn update_sliding_window(d: ZStreamDecompressor&, temp_out: const u8[:]) {
         }
     }
     for i in temp_out.len {
-        d.window[(to_keep as i64) + i] = temp_out[i];
+        d.window[to_keep + i] = temp_out[i];
     }
     d.window_len = to_keep + nlen;
 }

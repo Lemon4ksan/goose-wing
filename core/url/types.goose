@@ -53,43 +53,43 @@ let URL_FORBIDDEN_HOST_SET = make_forbidden_host_set();
 // Url represents a canonical WHATWG URL with a single normalized contiguous buffer
 // (href) and compact index offsets, eliminating substring heap allocations.
 struct Url {
-    href: u8[..2048] = [],
-    scheme_end: i32 = -1,     // Index of ':' separating scheme
-    username_start: i32 = -1,
-    username_end: i32 = -1,
-    password_start: i32 = -1,
-    password_end: i32 = -1,
-    host_start: i32 = -1,
-    host_end: i32 = -1,
-    port_start: i32 = -1,
-    port_end: i32 = -1,
-    pathname_start: i32 = -1,
-    pathname_end: i32 = -1,
-    search_start: i32 = -1,
-    search_end: i32 = -1,
-    hash_start: i32 = -1,
-    hash_end: i32 = -1,
-    port: i32 = -1,           // -1 if omitted or default
-    is_special: bool = false,
-    has_opaque_path: bool = false,
-    valid: bool = false,
+    href:            u8[..2048] = [],
+    scheme_end:      i32        = -1, // Index of ':' separating scheme
+    username_start:  i32        = -1,
+    username_end:    i32        = -1,
+    password_start:  i32        = -1,
+    password_end:    i32        = -1,
+    host_start:      i32        = -1,
+    host_end:        i32        = -1,
+    port_start:      i32        = -1,
+    port_end:        i32        = -1,
+    pathname_start:  i32        = -1,
+    pathname_end:    i32        = -1,
+    search_start:    i32        = -1,
+    search_end:      i32        = -1,
+    hash_start:      i32        = -1,
+    hash_end:        i32        = -1,
+    port:            i32        = -1, // -1 if omitted or default
+    is_special:      bool       = false,
+    has_opaque_path: bool       = false,
+    valid:           bool       = false,
 }
 
 // UrlView represents a zero-copy, non-owning view of a URL of arbitrary length.
 // It holds slices directly pointing into the original input without buffer capacity limits,
 // making it suitable for streaming inspection and arbitrarily long URLs (e.g. data URIs or huge tokens).
 struct UrlView {
-    raw: const u8[:] = "",
-    scheme: const u8[:] = "",
-    username: const u8[:] = "",
-    password: const u8[:] = "",
-    host: const u8[:] = "",
-    port: i32 = -1,
-    pathname: const u8[:] = "",
-    search: const u8[:] = "",
-    hash: const u8[:] = "",
-    is_special: bool = false,
-    valid: bool = false,
+    raw:        const u8[:] = "",
+    scheme:     const u8[:] = "",
+    username:   const u8[:] = "",
+    password:   const u8[:] = "",
+    host:       const u8[:] = "",
+    port:       i32         = -1,
+    pathname:   const u8[:] = "",
+    search:     const u8[:] = "",
+    hash:       const u8[:] = "",
+    is_special: bool        = false,
+    valid:      bool        = false,
 }
 
 fn href(view: const UrlView&) -> const u8[:] { return view.raw; }
@@ -118,15 +118,15 @@ enum OriginKind {
 }
 
 struct Origin {
-    kind: OriginKind = OriginKind.Tuple,
-    scheme: u8[..16] = [],
-    host: u8[..256] = [],
-    port: i32 = -1,
-    nonce: u64 = 0,
+    kind:   OriginKind = OriginKind.Tuple,
+    scheme: u8[..16]   = [],
+    host:   u8[..256]  = [],
+    port:   i32        = -1,
+    nonce:  u64        = 0,
 }
 
 struct RegistrableSite {
-    scheme: u8[..16] = [],
+    scheme:             u8[..16]  = [],
     registrable_domain: u8[..256] = [],
 }
 
@@ -172,6 +172,10 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
 // Parses an absolute URL into a normalized Url. Schemes and hosts are
 // lowercased, default ports are omitted, IPv6 literals use canonical
 // compression (RFC 5952), and path dot-segments are normalized in place.
+//
+// Example:
+//   raw_input = "https://example.com/path"
+//   returns: Url { ... }, UrlParseError.None
 fn parse_url(raw_input: const u8[:]) -> Url, UrlParseError {
     let dummy_base = Url { valid: false, .. };
     return parse_url_internal(raw_input, dummy_base, false);
@@ -181,6 +185,10 @@ fn parse_url(raw_input: const u8[:]) -> Url, UrlParseError {
 //
 // If raw_input is an absolute URL, base_url is ignored. If raw_input is relative and base_url.valid
 // is false, returns UrlParseError.RelativeWithoutBase.
+//
+// Example:
+//   raw_input = "/path", base_url = Url { ... }
+//   returns: Url { ... }, UrlParseError.None
 fn parse_url_with_base(raw_input: const u8[:], base_url: const Url&) -> Url, UrlParseError {
     return parse_url_internal(raw_input, base_url, base_url.valid);
 }
@@ -211,12 +219,16 @@ fn scheme(url_val: const Url&) -> const u8[:] {
 }
 
 fn username(url_val: const Url&) -> const u8[:] {
-    guard url_val.valid && url_val.username_start >= 0 && url_val.username_end >= url_val.username_start else { return ""; }
+    let valid_user = url_val.valid && url_val.username_start >= 0 &&
+        url_val.username_end >= url_val.username_start;
+    guard valid_user else { return ""; }
     return url_val.href[url_val.username_start..url_val.username_end];
 }
 
 fn password(url_val: const Url&) -> const u8[:] {
-    guard url_val.valid && url_val.password_start >= 0 && url_val.password_end >= url_val.password_start else { return ""; }
+    let valid_pass = url_val.valid && url_val.password_start >= 0 &&
+        url_val.password_end >= url_val.password_start;
+    guard valid_pass else { return ""; }
     return url_val.href[url_val.password_start..url_val.password_end];
 }
 

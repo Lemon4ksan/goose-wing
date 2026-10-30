@@ -837,18 +837,18 @@ fn read_direct_huf_weights(
 ) -> i32, bool {
     let num_symbols = (header_byte as i32) - 127;
     let num_bytes = (num_symbols + 1) / 2;
-    guard offset + (num_bytes as i64) <= src.len else { return 0, false; }
+    guard offset + num_bytes <= src.len else { return 0, false; }
 
     var n: i32 = 0;
     while n < num_symbols {
-        let b = src[offset + ((n / 2) as i64)];
+        let b = src[offset + (n / 2)];
         weights[n] = (b >> 4) & 0x0F;
         if n + 1 < num_symbols {
             weights[n + 1] = b & 0x0F;
         }
         n += 2;
     }
-    offset += num_bytes as i64;
+    offset += num_bytes;
     return num_symbols, true;
 }
 
@@ -1310,7 +1310,7 @@ fn parse_raw_rle_literals_header(
     var lh_size: i64 = 1;
     if size_format == 0 || size_format == 2 {
         lh_size = 1;
-        regenerated_size = (header_byte >> 3) as i64;
+        regenerated_size = header_byte >> 3;
     } else if size_format == 1 {
         lh_size = 2;
         guard offset + 2 <= block_end else { return false; }
@@ -1349,24 +1349,24 @@ fn parse_compressed_literals_header(
         lh_size = 3;
         guard offset + 3 <= block_end else { return false; }
         let val = read_le_u24(src, offset);
-        regenerated_size = ((val >> 4) & 0x3FF) as i64;
-        compressed_size = ((val >> 14) & 0x3FF) as i64;
+        regenerated_size = (val >> 4) & 0x3FF;
+        compressed_size = (val >> 14) & 0x3FF;
         guard compressed_size >= 1 else { return false; }
     } else if size_format == 1 {
         single_stream = false;
         lh_size = 3;
         guard offset + 3 <= block_end else { return false; }
         let val = read_le_u24(src, offset);
-        regenerated_size = ((val >> 4) & 0x3FF) as i64;
-        compressed_size = ((val >> 14) & 0x3FF) as i64;
+        regenerated_size = (val >> 4) & 0x3FF;
+        compressed_size = (val >> 14) & 0x3FF;
         guard compressed_size >= 10 && regenerated_size >= 6 else { return false; }
     } else if size_format == 2 {
         single_stream = false;
         lh_size = 4;
         guard offset + 4 <= block_end else { return false; }
         let val = read_le_u32(src, offset);
-        regenerated_size = ((val >> 4) & 0x3FFF) as i64;
-        compressed_size = ((val >> 18) & 0x3FFF) as i64;
+        regenerated_size = (val >> 4) & 0x3FFF;
+        compressed_size = (val >> 18) & 0x3FFF;
         guard compressed_size >= 10 && regenerated_size >= 6 else { return false; }
     } else {
         single_stream = false;
@@ -1374,8 +1374,8 @@ fn parse_compressed_literals_header(
         guard offset + 5 <= block_end else { return false; }
         let val = read_le_u32(src, offset);
         let b4 = src[offset + 4] as u32;
-        regenerated_size = ((val >> 4) & 0x3FFFF) as i64;
-        compressed_size = (((val >> 22) & 0x3FF) | (b4 << 10)) as i64;
+        regenerated_size = (val >> 4) & 0x3FFFF;
+        compressed_size = ((val >> 22) & 0x3FF) | (b4 << 10);
         guard compressed_size >= 10 && regenerated_size >= 6 else { return false; }
     }
     offset += lh_size;
@@ -1717,17 +1717,17 @@ fn update_fast_fse_states(
     let ll_nb = ll_entry.nb_bits as u32;
     let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
     bits_consumed += ll_nb;
-    state_ll = (ll_entry.new_state as i64) + ll_bits;
+    state_ll = ll_entry.new_state + ll_bits;
 
     let ml_nb = ml_entry.nb_bits as u32;
     let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
     bits_consumed += ml_nb;
-    state_ml = (ml_entry.new_state as i64) + ml_bits;
+    state_ml = ml_entry.new_state + ml_bits;
 
     let of_nb = of_entry.nb_bits as u32;
     let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
     bits_consumed += of_nb;
-    state_of = (of_entry.new_state as i64) + of_bits;
+    state_of = of_entry.new_state + of_bits;
 }
 
 // Decodes slow sequence parameters using bit reader.
@@ -1764,14 +1764,14 @@ fn update_slow_fse_states(
     state_ml: i64&,
     state_of: i64&,
 ) {
-    let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits as i32) } else { 0 };
-    state_ll = (ll_entry.new_state as i64) + (ll_bits as i64);
+    let ll_bits = if ll_entry.nb_bits > 0 { zstd_read_bits(r, ll_entry.nb_bits) } else { 0 };
+    state_ll = (ll_entry.new_state as i64) + ll_bits;
 
-    let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits as i32) } else { 0 };
-    state_ml = (ml_entry.new_state as i64) + (ml_bits as i64);
+    let ml_bits = if ml_entry.nb_bits > 0 { zstd_read_bits(r, ml_entry.nb_bits) } else { 0 };
+    state_ml = (ml_entry.new_state as i64) + ml_bits;
 
-    let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits as i32) } else { 0 };
-    state_of = (of_entry.new_state as i64) + (of_bits as i64);
+    let of_bits = if of_entry.nb_bits > 0 { zstd_read_bits(r, of_entry.nb_bits) } else { 0 };
+    state_of = (of_entry.new_state as i64) + of_bits;
 }
 
 // Parses number of sequences header from src and advances offset.
@@ -1792,7 +1792,7 @@ fn parse_number_of_sequences(
         return 0, true;
     }
     if b0 < 128 {
-        return b0 as i64, true;
+        return b0, true;
     }
     if b0 < 255 {
         guard offset < block_end else { return 0, false; }
@@ -2297,14 +2297,14 @@ fn parse_zstd_frame_header(
     if single_segment == 1 {
         if fcs_flag == 0 {
             if offset >= src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = src[offset] as i64; offset += 1;
+            frame_content_size = src[offset]; offset += 1;
         } else if fcs_flag == 1 {
             if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = ((src[offset] as i64) | ((src[offset + 1] as i64) << 8)) + 256;
+            frame_content_size = (src[offset] | ((src[offset + 1] as i64) << 8)) + 256;
             offset += 2;
         } else if fcs_flag == 2 {
             if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = read_le_u32(src, offset) as i64;
+            frame_content_size = read_le_u32(src, offset);
             offset += 4;
         } else {
             if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
@@ -2315,11 +2315,11 @@ fn parse_zstd_frame_header(
     } else {
         if fcs_flag == 1 {
             if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = ((src[offset] as i64) | ((src[offset + 1] as i64) << 8)) + 256;
+            frame_content_size = (src[offset] | ((src[offset + 1] as i64) << 8)) + 256;
             offset += 2;
         } else if fcs_flag == 2 {
             if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = read_le_u32(src, offset) as i64;
+            frame_content_size = read_le_u32(src, offset);
             offset += 4;
         } else if fcs_flag == 3 {
             if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
