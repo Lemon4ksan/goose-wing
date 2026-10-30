@@ -49,6 +49,61 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
 
 // ---- 2. HTTP/1.1 Wire Request Parser ---------------------------------------
 
+// RFC 3986 §3.2.2 & RFC 9112 §3.2: Validates structural host header integrity.
+//
+// Example:
+//   host_val = "[::1]:8080"
+//   returns: true
+fn validate_host_header_structure(host_val: const u8[:]) -> bool {
+    guard host_val.len > 0 else { return true; }
+    if host_val[0] != '[' {
+        for b in host_val {
+            guard b != '[' && b != ']' else { return false; }
+        }
+        return true;
+    }
+    let close_idx = core::index_of_byte(host_val, ']');
+    guard close_idx > 1 else { return false; }
+    var comp_buf: u8[..64] = [];
+    guard core::parse_and_compress_ipv6(host_val[1..close_idx], comp_buf) else {
+        return false;
+    }
+    if close_idx + 1 >= host_val.len {
+        return true;
+    }
+    guard host_val[close_idx + 1] == ':' else { return false; }
+    let port_part = host_val[close_idx + 2..];
+    guard port_part.len > 0 && port_part.len <= 5 else { return false; }
+    for pb in port_part {
+        guard pb >= '0' && pb <= '9' else { return false; }
+    }
+    let p_num, p_ok = core::parse_u64_dec(port_part);
+    return p_ok && p_num <= 65535;
+}
+
+// Appends transfer-encoding header value with comma delimiter.
+fn append_te_header_value(te_buf: u8[..64]&, val: const u8[:]) -> bool {
+    if te_buf.len > 0 {
+        guard te_buf.len + 2 + val.len <= te_buf.cap else { return false; }
+        te_buf.append(", ");
+        te_buf.append(val);
+        return true;
+    }
+    guard val.len <= te_buf.cap else { return false; }
+    te_buf.append(val);
+    return true;
+}
+
+// Collects transfer-encoding headers into single buffer.
+fn collect_transfer_encoding_headers<H>(headers: const H&, out_te: u8[..64]&) -> bool {
+    for &hdr in headers {
+        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+            guard append_te_header_value(out_te, hdr.value[..]) else { return false; }
+        }
+    }
+    return true;
+}
+
 // Parses an incoming raw HTTP/1.1 request wire stream.
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Enforces RFC 9112 Section 6.1 Smuggling Defense (TE/CL conflict detection).
@@ -150,22 +205,31 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         let colon = core::index_of_byte(line, ':');
         // RFC 9112 Section 5.1 & Go #34540 / CVE-2019-16276:
         // Reject header field names with leading whitespace, spaces before colon, or non-tchar bytes.
-        guard colon > 0 else { return false, 0; }
+        guard colon > 0 else { out_req.headers.clear(); return false, 0; }
         let hname = line[..colon];
-        guard is_valid_header_name(hname) else { return false, 0; }
+        guard is_valid_header_name(hname) else { out_req.headers.clear(); return false, 0; }
 
         let hval = trim_lws(line[(colon + 1)..]);
-        guard is_valid_header_value(hval) else { return false, 0; }
+        guard is_valid_header_value(hval) else { out_req.headers.clear(); return false, 0; }
 
         // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
         let cur_hdr_idx = out_req.headers.len as i16;
-        guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else { return false, 0; }
+        guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
+            out_req.headers.clear();
+            return false, 0;
+        }
 
         var item = HeaderItem { .. };
-        guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false, 0; }
+        guard hname.len <= item.name.cap && hval.len <= item.value.cap else {
+            out_req.headers.clear();
+            return false, 0;
+        }
         item.name.append(hname);
         item.value.append(hval);
-        guard out_req.headers.len < out_req.headers.cap else { return false, 0; }
+        guard out_req.headers.len < out_req.headers.cap else {
+            out_req.headers.clear();
+            return false, 0;
+        }
         out_req.headers.push(item);
         add_header(out_req.bloom_filter, hname);
         cursor += rel_end + 2;
@@ -177,38 +241,36 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
     if proto_slice == "HTTP/1.1" {
         // Must have exactly one Host header in HTTP/1.1 (verified via bitmask presence)
-        guard (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 else { return false, 0; }
+        guard (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 else {
+            out_req.headers.clear();
+            return false, 0;
+        }
     }
     if (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 {
         let host_idx = presence_tracker.host_idx as i64;
-        guard host_idx >= 0 && host_idx < out_req.headers.len else { return false, 0; }
+        guard host_idx >= 0 && host_idx < out_req.headers.len else {
+            out_req.headers.clear();
+            return false, 0;
+        }
 
         let host_val = out_req.headers[host_idx].value[..];
-        guard host_val.len > 0 else { return false, 0; }
+        guard host_val.len > 0 else {
+            out_req.headers.clear();
+            return false, 0;
+        }
         // RFC 9112 Section 3.2, 7.2 & 9.5: Authority in Host MUST NOT contain path ('/'),
         // query ('?'), fragment ('#'), userinfo ('@'), multiple values (','), or whitespace
         for b in host_val {
-            guard b != '/' && b != '?' && b != '#' && b != '@' && b != ',' && b != ' ' && b != '\t' else { return false, 0; }
+            guard b != '/' && b != '?' && b != '#' && b != '@' && b != ',' && b != ' ' && b != '\t' else {
+                out_req.headers.clear();
+                return false, 0;
+            }
         }
 
         // Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Structural IP-literal Host validation
-        if host_val[0] == '[' {
-            let close_idx = core::index_of_byte(host_val, ']');
-            guard close_idx > 1 else { return false, 0; }
-            var comp_buf: u8[..64] = [];
-            guard core::parse_and_compress_ipv6(host_val[1..close_idx], comp_buf) else { return false, 0; }
-            if close_idx + 1 < host_val.len {
-                guard host_val[close_idx + 1] == ':' else { return false, 0; }
-                let port_part = host_val[close_idx + 2..];
-                guard port_part.len > 0 && port_part.len <= 5 else { return false, 0; }
-                for pb in port_part { guard pb >= '0' && pb <= '9' else { return false, 0; } }
-                let p_num, p_ok = core::parse_u64_dec(port_part);
-                guard p_ok && p_num <= 65535 else { return false, 0; }
-            }
-        } else {
-            for b in host_val {
-                guard b != '[' && b != ']' else { return false, 0; }
-            }
+        guard validate_host_header_structure(host_val) else {
+            out_req.headers.clear();
+            return false, 0;
         }
     }
 
@@ -219,6 +281,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     // RFC 9112 Section 6.1 Smuggling Protection:
     // If both Transfer-Encoding and Content-Length are present, reject as smuggling attempt.
     if has_te && has_cl {
+        out_req.headers.clear();
         return false, 0;
     }
 
@@ -229,17 +292,9 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     var te_buf: u8[..64] = [];
     if has_te {
-        for &hdr in out_req.headers {
-            if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-                if te_buf.len > 0 {
-                    guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
-                    te_buf.append(", ");
-                    te_buf.append(hdr.value[..]);
-                } else {
-                    guard hdr.value.len <= te_buf.cap else { return false, 0; }
-                    te_buf.append(hdr.value[..]);
-                }
-            }
+        guard collect_transfer_encoding_headers(out_req.headers, te_buf) else {
+            out_req.headers.clear();
+            return false, 0;
         }
     }
 
@@ -247,14 +302,22 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     if has_te {
         // Must validate transfer encoding value per RFC 9112 Section 6.3 & 7.1
-        guard validate_transfer_encoding_value(te_buf[..]) else { return false, 0; }
+        guard validate_transfer_encoding_value(te_buf[..]) else {
+            out_req.headers.clear();
+            return false, 0;
+        }
 
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
             wire[body_start_idx..],
             out_req.body,
             out_req.trailers,
         );
-        guard dec_err == ChunkedDecodeError.None else { return false, 0; }
+        if dec_err != ChunkedDecodeError.None {
+            if dec_err != ChunkedDecodeError.UnexpectedEof {
+                out_req.headers.clear();
+            }
+            return false, 0;
+        }
 
         let total_consumed = body_start_idx + chunked_consumed;
         return true, total_consumed;
@@ -1150,6 +1213,77 @@ fn is_possible_http_method_prefix(stream: const u8[:]) -> bool {
     return false;
 }
 
+// Checks if pipelined stream body with Content-Length is incomplete or exceeds payload limits.
+fn check_pipelined_content_length<B>(
+    stream: const u8[:],
+    hdr_end: i64,
+    cl_str: const u8[:],
+    server_name: const u8[:],
+    wire_out: B&,
+    out_keep: bool&,
+) -> bool {
+    guard cl_str.len > 0 else { return false; }
+    let cl_val, cl_ok = core::parse_i64_dec(trim(cl_str));
+    guard cl_ok && cl_val >= 0 else { return false; }
+    if cl_val > MAX_SERVER_BODY_LIMIT {
+        // RFC 9110 Section 15.5.14: Payload Too Large
+        serialize_payload_too_large_error(server_name, wire_out);
+        out_keep = false;
+        return true;
+    }
+    if stream.len < (hdr_end + 4 + cl_val) {
+        out_keep = true;
+        return true;
+    }
+    return false;
+}
+
+// Handles incomplete pipelined HTTP stream or syntax errors.
+fn handle_pipelined_parse_failure<B>(
+    server_name: const u8[:],
+    stream: const u8[:],
+    req: const Request&,
+    wire_out: B&,
+    out_keep_stream: bool&,
+) -> bool {
+    let hdr_end = core::fast_find_crlfcrlf(stream);
+    let is_valid_prefix = is_possible_http_method_prefix(stream);
+
+    if hdr_end >= 0 && stream.len <= 8192 && is_valid_prefix && req.headers.len > 0 {
+        // If both TE and CL are present, reject immediately as smuggling attempt (RFC 9112 §6.1, §6.3)
+        let te_str = req.header("transfer-encoding");
+        let cl_str = req.header("content-length");
+        if te_str.len > 0 && cl_str.len > 0 {
+            serialize_bad_request_error(server_name, wire_out);
+            out_keep_stream = false;
+            return false;
+        }
+
+        // Headers are complete; check if Content-Length body is still incomplete
+        var cl_handled_keep = false;
+        if check_pipelined_content_length(stream, hdr_end, cl_str, server_name, wire_out, cl_handled_keep) {
+            out_keep_stream = cl_handled_keep;
+            return cl_handled_keep;
+        }
+        if core::contains_fold(te_str, "chunked") {
+            // Chunked body not finished (awaiting final 0\r\n\r\n)
+            out_keep_stream = true;
+            return true;
+        }
+    }
+
+    if hdr_end >= 0 || stream.len > 8192 || !is_valid_prefix {
+        // Complete headers but invalid syntax, or header overflow > 8192,
+        // or trailing unparseable poison bytes: 400 Bad Request
+        serialize_bad_request_error(server_name, wire_out);
+        out_keep_stream = false;
+        return false;
+    }
+    // Legitimate incomplete request across packet boundary: return so caller preserves stream in leftover
+    out_keep_stream = true;
+    return true;
+}
+
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
 // Returns (total_requests_processed, total_bytes_consumed, ok).
 fn handle_connection_wire_pipelined_stream<B>(
@@ -1175,41 +1309,15 @@ fn handle_connection_wire_pipelined_stream<B>(
         var req = new_request("GET", "");
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
         guard ok_parse && consumed > 0 else {
-            let hdr_end = core::fast_find_crlfcrlf(stream);
-            let is_valid_prefix = is_possible_http_method_prefix(stream);
-
-            if hdr_end >= 0 && stream.len <= 8192 && is_valid_prefix {
-                // Headers are complete; check if Content-Length body is still incomplete
-                let cl_str = req.header("content-length");
-                if cl_str.len > 0 {
-                    let cl_val, cl_ok = core::parse_i64_dec(trim(cl_str));
-                    if cl_ok && cl_val >= 0 {
-                        if cl_val > MAX_SERVER_BODY_LIMIT {
-                            // RFC 9110 Section 15.5.14: Payload Too Large
-                            serialize_payload_too_large_error(server.server_name[..], wire_out);
-                            return total_handled, total_consumed, false;
-                        }
-                        if stream.len < (hdr_end + 4 + cl_val) {
-                            // Body incomplete: keep stream in leftover and await remaining packets
-                            return total_handled, total_consumed, true;
-                        }
-                    }
-                }
-                let te_str = req.header("transfer-encoding");
-                if core::contains_fold(te_str, "chunked") {
-                    // Chunked body not finished (awaiting final 0\r\n\r\n)
-                    return total_handled, total_consumed, true;
-                }
-            }
-
-            if hdr_end >= 0 || stream.len > 8192 || !is_valid_prefix {
-                // Complete headers but invalid syntax, or header overflow > 8192,
-                // or trailing unparseable poison bytes: 400 Bad Request
-                serialize_bad_request_error(server.server_name[..], wire_out);
-                return total_handled, total_consumed, false;
-            }
-            // Legitimate incomplete request across packet boundary: return so caller preserves stream in leftover
-            return total_handled, total_consumed, true;
+            var keep_stream = false;
+            let _ = handle_pipelined_parse_failure(
+                server.server_name[..],
+                stream,
+                req,
+                wire_out,
+                keep_stream,
+            );
+            return total_handled, total_consumed, keep_stream;
         }
 
         // WebSocket Upgrade Interception on Pipelined Stream

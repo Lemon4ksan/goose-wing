@@ -13,6 +13,7 @@ import .packet;
 // ---- 1. Frame Constants & Stream Flags (RFC 9000 Section 19) ----------------
 
 const QUIC_VARINT_MAX: u64 = 0x3FFFFFFFFFFFFFFF;
+const QUIC_MAX_STREAMS_LIMIT: u64 = 0x1000000000000000; // 2^60 (RFC 9000 §19.11, §19.14)
 
 const QUIC_STREAM_FLAG_FIN: u64 = 0x01;
 const QUIC_STREAM_FLAG_LEN: u64 = 0x02;
@@ -262,7 +263,7 @@ fn encode_max_stream_data_frame<B>(
 
 // Encodes a MAX_STREAMS frame (0x12: bidi, 0x13: uni) (RFC 9000 Section 19.11).
 fn encode_max_streams_frame<B>(out: B&, max_streams: u64, is_bidi: bool) -> bool {
-    guard max_streams <= QUIC_VARINT_MAX else { return false; }
+    guard max_streams <= QUIC_MAX_STREAMS_LIMIT else { return false; }
     let ftype = if is_bidi { QUIC_FRAME_MAX_STREAMS_BIDI } else { QUIC_FRAME_MAX_STREAMS_UNI };
     guard quic_encode_varint(out, ftype) else { return false; }
     guard quic_encode_varint(out, max_streams) else { return false; }
@@ -288,10 +289,49 @@ fn encode_stream_data_blocked_frame<B>(out: B&, stream_id: u64, limit: u64) -> b
 
 // Encodes a STREAMS_BLOCKED frame (0x16: bidi, 0x17: uni) (RFC 9000 Section 19.14).
 fn encode_streams_blocked_frame<B>(out: B&, stream_limit: u64, is_bidi: bool) -> bool {
-    guard stream_limit <= QUIC_VARINT_MAX else { return false; }
+    guard stream_limit <= QUIC_MAX_STREAMS_LIMIT else { return false; }
     let ftype = if is_bidi { QUIC_FRAME_STREAMS_BLOCKED_BIDI } else { QUIC_FRAME_STREAMS_BLOCKED_UNI };
     guard quic_encode_varint(out, ftype) else { return false; }
     guard quic_encode_varint(out, stream_limit) else { return false; }
+    return true;
+}
+
+// Encodes a NEW_TOKEN frame (0x07) (RFC 9000 Section 19.7).
+// The token MUST NOT be empty.
+fn encode_new_token_frame<B>(out: B&, token: const u8[:]) -> bool {
+    guard token.len > 0 else { return false; }
+    guard quic_encode_varint(out, QUIC_FRAME_NEW_TOKEN) else { return false; }
+    guard quic_encode_varint(out, token.len as u64) else { return false; }
+    out.append(token);
+    return true;
+}
+
+// Encodes a NEW_CONNECTION_ID frame (0x18) (RFC 9000 Section 19.15).
+fn encode_new_conn_id_frame<B>(
+    out: B&,
+    seq: u64,
+    retire_prior_to: u64,
+    conn_id: const u8[:],
+    stateless_reset_token: const u8[16]&,
+) -> bool {
+    guard seq <= QUIC_VARINT_MAX && retire_prior_to <= seq else { return false; }
+    guard conn_id.len >= 1 && conn_id.len <= 20 else { return false; }
+    guard quic_encode_varint(out, QUIC_FRAME_NEW_CONNECTION_ID) else { return false; }
+    guard quic_encode_varint(out, seq) else { return false; }
+    guard quic_encode_varint(out, retire_prior_to) else { return false; }
+    out.push(conn_id.len as u8);
+    out.append(conn_id);
+    for i in 16 {
+        out.push(stateless_reset_token[i]);
+    }
+    return true;
+}
+
+// Encodes a RETIRE_CONNECTION_ID frame (0x19) (RFC 9000 Section 19.16).
+fn encode_retire_conn_id_frame<B>(out: B&, seq: u64) -> bool {
+    guard seq <= QUIC_VARINT_MAX else { return false; }
+    guard quic_encode_varint(out, QUIC_FRAME_RETIRE_CONNECTION_ID) else { return false; }
+    guard quic_encode_varint(out, seq) else { return false; }
     return true;
 }
 
@@ -435,13 +475,14 @@ inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool) -> 
 }
 
 // Decodes a NEW_TOKEN frame (0x07) directly from slice with cursor (RFC 9000 §19.7).
+// The Token field MUST NOT be empty; empty token yields false (FRAME_ENCODING_ERROR).
 //
 // Example:
 //   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
 //   returns: QuicFrame { frame_type: NewToken, length: 4, payload: "tokn" }, ok = true, idx = 5
 inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
     let tlen, ok_len = quic_decode_varint_cursor(src, idx);
-    guard ok_len else { return QuicFrame { .. }, false; }
+    guard ok_len && tlen > 0 else { return QuicFrame { .. }, false; }
     let ilen = tlen as i64;
     guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
     let token = src[idx..idx + ilen];
@@ -839,6 +880,7 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool 
 }
 
 // Dispatches stream count limit frames (0x12, 0x13, 0x16, 0x17).
+// Limits cannot exceed 2^60 (RFC 9000 §19.11, §19.14).
 //
 // Example:
 //   src = [varint(100)], idx = 0, ftype = QUIC_FRAME_MAX_STREAMS_BIDI (0x12)
@@ -846,7 +888,7 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool 
 fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == QUIC_FRAME_MAX_STREAMS_BIDI || ftype == QUIC_FRAME_MAX_STREAMS_UNI {
         let limit, ok = quic_decode_varint_cursor(src, idx);
-        guard ok else { return QuicFrame { .. }, false; }
+        guard ok && limit <= QUIC_MAX_STREAMS_LIMIT else { return QuicFrame { .. }, false; }
         let k = if ftype == QUIC_FRAME_MAX_STREAMS_BIDI {
             QuicFrameType.MaxStreamsBidi
         } else {
@@ -856,7 +898,7 @@ fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFra
     }
     if ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == QUIC_FRAME_STREAMS_BLOCKED_UNI {
         let lim, ok = quic_decode_varint_cursor(src, idx);
-        guard ok else { return QuicFrame { .. }, false; }
+        guard ok && lim <= QUIC_MAX_STREAMS_LIMIT else { return QuicFrame { .. }, false; }
         let k = if ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI {
             QuicFrameType.StreamsBlockedBidi
         } else {

@@ -76,6 +76,11 @@ fn should_forward_header(
     if is_forwarded_metadata_header(name) {
         return false;
     }
+    // RFC 9112 Section 6.3: Transfer-Encoding overrides Content-Length.
+    // An intermediary MUST remove Content-Length before forwarding if Transfer-Encoding is present.
+    if eq_ascii_fold(name, "content-length") && has_header(in_headers, "transfer-encoding") {
+        return false;
+    }
     guard strip_hop else { return true; }
 
     if is_hop_by_hop_header_name(name) {
@@ -90,7 +95,43 @@ fn should_forward_header(
     return true;
 }
 
+// Checks a single Content-Length entry against previously recorded value (RFC 9112 §6.3).
+inline fn check_cl_match(val: const u8[:], first_found: bool&, target_val: i64&) -> bool {
+    var parsed_cl: i64 = 0;
+    guard validate_content_length_value(val, parsed_cl) else { return false; }
+    if !first_found {
+        target_val = parsed_cl;
+        first_found = true;
+        return true;
+    }
+    return parsed_cl == target_val;
+}
+
+// RFC 9112 Section 6.3 & Section 6.1: Validates framing header integrity before forwarding.
+// Duplicate differing Content-Length headers or duplicate Transfer-Encoding headers are rejected.
+fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
+    var first_cl_found = false;
+    var first_cl_val: i64 = 0;
+    var has_te = false;
+
+    for i in in_headers.entries.len {
+        let entry = in_headers.entries[i];
+        let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
+
+        if eq_ascii_fold(name, "content-length") {
+            let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
+            guard check_cl_match(val, first_cl_found, first_cl_val) else { return false; }
+        }
+        if eq_ascii_fold(name, "transfer-encoding") {
+            guard !has_te else { return false; }
+            has_te = true;
+        }
+    }
+    return true;
+}
+
 // Copies filtered client headers into proxy request header map.
+// Enforces RFC 9112 §6.3: deduplicates identical Content-Length headers into a single occurrence.
 fn copy_filtered_headers(
     in_headers: const HeaderMap&,
     out_headers: HeaderMap&,
@@ -101,6 +142,10 @@ fn copy_filtered_headers(
         let entry = in_headers.entries[i];
         let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
         let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
+
+        if eq_ascii_fold(name, "content-length") && has_header(out_headers, "content-length") {
+            continue;
+        }
 
         if should_forward_header(name, val, in_headers, preserve_host, strip_hop) {
             append_header(out_headers, name, val);
@@ -172,6 +217,7 @@ fn filter_and_forward_headers(
     upstream_host: const u8[:],
     config: const ProxyConfig&,
 ) -> bool {
+    guard has_consistent_framing_headers(in_headers) else { return false; }
     reset_for_keep_alive(out_headers);
 
     copy_filtered_headers(in_headers, out_headers, config.preserve_host, config.strip_hop_by_hop);

@@ -105,6 +105,70 @@ fn main() {
     assert(wire_kit::parse_hex("7FFFFFFFFFFFFFFF0D0A", raw_hex_ovf));
     assert(parse_chunk_step(raw_hex_ovf[..]) == -2);
     print("CHUNK_HEX_OVERFLOW: REJECTED");
+
+    // 10. Pipelined stream demarcation rejection of TE.CL smuggling (RFC 9112 §6.1, §6.3)
+    var srv_te_cl = wing::new_http_server();
+    var out_wire1: u8[..4096] = [];
+    let payload_te_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n0\r\n\r\n";
+    let _, _, ok1 = wing::handle_connection_wire_pipelined_stream(srv_te_cl, "127.0.0.1", payload_te_cl, 0, out_wire1);
+    assert(!ok1);
+    assert(core::index_of_slice(out_wire1[..], "400 Bad Request") >= 0);
+    print("PIPELINE_TE_CL_SMUGGLE: REJECTED");
+
+    // 11. Pipelined stream demarcation rejection of CL.TE smuggling (RFC 9112 §6.1, §6.3)
+    var srv_cl_te = wing::new_http_server();
+    var out_wire2: u8[..4096] = [];
+    let payload_cl_te = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
+    let _, _, ok2 = wing::handle_connection_wire_pipelined_stream(srv_cl_te, "127.0.0.1", payload_cl_te, 0, out_wire2);
+    assert(!ok2);
+    assert(core::index_of_slice(out_wire2[..], "400 Bad Request") >= 0);
+    print("PIPELINE_CL_TE_SMUGGLE: REJECTED");
+
+    // 12. Pipelined stream demarcation rejection of duplicate differing CL (RFC 9112 §6.3)
+    var srv_cl_cl = wing::new_http_server();
+    var out_wire3: u8[..4096] = [];
+    let payload_cl_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\nContent-Length: 60\r\n\r\nhello";
+    let _, _, ok3 = wing::handle_connection_wire_pipelined_stream(srv_cl_cl, "127.0.0.1", payload_cl_cl, 0, out_wire3);
+    assert(!ok3);
+    assert(core::index_of_slice(out_wire3[..], "400 Bad Request") >= 0);
+    print("PIPELINE_DUP_CL_DIFF: REJECTED");
+
+    // 13. Reverse proxy Content-Length stripping when Transfer-Encoding present (RFC 9112 §6.3)
+    var in_proxy_te = wing::HeaderMap { .. };
+    wing::append_header(in_proxy_te, "Host", "example.com");
+    wing::append_header(in_proxy_te, "Transfer-Encoding", "chunked");
+    wing::append_header(in_proxy_te, "Content-Length", "42");
+    var out_proxy_te = wing::HeaderMap { .. };
+    var cfg = wing::ProxyConfig { .. };
+    cfg.strip_hop_by_hop = false;
+    wing::filter_and_forward_headers(in_proxy_te, out_proxy_te, "127.0.0.1", "http", "backend:80", cfg);
+    assert(!wing::has_header(out_proxy_te, "Content-Length"));
+    print("PROXY_TE_CL_STRIP_CL: PASS");
+
+    // 14. Reverse proxy duplicate Content-Length rejection / consolidation (RFC 9112 §6.3)
+    var in_p_diff = wing::HeaderMap { .. };
+    wing::append_header(in_p_diff, "Host", "example.com");
+    wing::append_header(in_p_diff, "Content-Length", "10");
+    wing::append_header(in_p_diff, "Content-Length", "20");
+    var out_p_diff = wing::HeaderMap { .. };
+    let ok_p_diff = wing::filter_and_forward_headers(in_p_diff, out_p_diff, "127.0.0.1", "http", "backend:80", cfg);
+    assert(!ok_p_diff);
+
+    var in_p_same = wing::HeaderMap { .. };
+    wing::append_header(in_p_same, "Host", "example.com");
+    wing::append_header(in_p_same, "Content-Length", "42");
+    wing::append_header(in_p_same, "Content-Length", "42");
+    var out_p_same = wing::HeaderMap { .. };
+    let ok_p_same = wing::filter_and_forward_headers(in_p_same, out_p_same, "127.0.0.1", "http", "backend:80", cfg);
+    assert(ok_p_same);
+    var p_cl_count: i64 = 0;
+    for i in out_p_same.entries.len {
+        let entry = out_p_same.entries[i];
+        let name = out_p_same.raw_buf[entry.name_begin..entry.name_end];
+        if core::eq_ascii_fold(name, "content-length") { p_cl_count++; }
+    }
+    assert(p_cl_count == 1);
+    print("PROXY_DUP_CL_RESOLVED: PASS");
 }
 
 // CHECK-LABEL: === HTTP1_SMUGGLE_DEFENSES ===
@@ -117,3 +181,8 @@ fn main() {
 // CHECK-NEXT: DUP_TE_HEADERS: REJECTED
 // CHECK-NEXT: CHUNK_SPLIT_AND_FUZZ: PASS
 // CHECK-NEXT: CHUNK_HEX_OVERFLOW: REJECTED
+// CHECK-NEXT: PIPELINE_TE_CL_SMUGGLE: REJECTED
+// CHECK-NEXT: PIPELINE_CL_TE_SMUGGLE: REJECTED
+// CHECK-NEXT: PIPELINE_DUP_CL_DIFF: REJECTED
+// CHECK-NEXT: PROXY_TE_CL_STRIP_CL: PASS
+// CHECK-NEXT: PROXY_DUP_CL_RESOLVED: PASS

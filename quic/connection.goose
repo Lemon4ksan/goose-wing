@@ -355,6 +355,16 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         return true, true;
     }
 
+    if frame.frame_type == QuicFrameType.StreamDataBlocked {
+        // RFC 9000 §19.13: "An endpoint that receives a STREAM_DATA_BLOCKED frame for a send-only
+        // stream MUST terminate the connection with error STREAM_STATE_ERROR."
+        guard quic_stream_can_recv(frame.stream_id, conn.role) else {
+            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
+        return true, true;
+    }
+
     return true, true;
 }
 
@@ -369,6 +379,15 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
             return false, false;
         }
         conn.state = QuicConnState.Established;
+        return true, true;
+    }
+    if frame.frame_type == QuicFrameType.NewToken {
+        // RFC 9000 §19.7: "Clients MUST NOT send NEW_TOKEN frames. A server MUST treat receipt
+        // of a NEW_TOKEN frame as a connection error of type PROTOCOL_VIOLATION."
+        if conn.role == QuicRole.Server {
+            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            return false, false;
+        }
         return true, true;
     }
     if frame.frame_type == QuicFrameType.PathChallenge {
@@ -404,7 +423,9 @@ fn dispatch_inbound_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
     if frame.frame_type == QuicFrameType.StopSending {
         return dispatch_stop_sending_inbound(conn, frame);
     }
-    if frame.frame_type == QuicFrameType.MaxData || frame.frame_type == QuicFrameType.MaxStreamData {
+    if frame.frame_type == QuicFrameType.MaxData
+        || frame.frame_type == QuicFrameType.MaxStreamData
+        || frame.frame_type == QuicFrameType.StreamDataBlocked {
         return dispatch_flow_control_inbound(conn, frame);
     }
     return dispatch_session_frame(conn, frame);
@@ -425,7 +446,36 @@ fn quic_conn_on_probe_lost(conn: QuicConnection&, lost_size: u32) -> bool {
     return dplpmtud_on_probe_lost(conn.dplpmtud, lost_size);
 }
 
-fn quic_conn_process_payload(conn: QuicConnection&, payload: const u8[:]) -> bool, bool {
+// RFC 9000 Section 12.5 (Table 3): Validates whether a frame type is permitted in a packet type.
+inline fn quic_is_frame_allowed_in_packet(ftype: QuicFrameType, htype: QuicHeaderType) -> bool {
+    if htype == QuicHeaderType.Initial || htype == QuicHeaderType.Handshake {
+        return ftype == QuicFrameType.Padding
+            || ftype == QuicFrameType.Ping
+            || ftype == QuicFrameType.Ack
+            || ftype == QuicFrameType.AckEcn
+            || ftype == QuicFrameType.Crypto
+            || ftype == QuicFrameType.ConnectionClose;
+    }
+    if htype == QuicHeaderType.ZeroRtt {
+        if ftype == QuicFrameType.Ack
+            || ftype == QuicFrameType.AckEcn
+            || ftype == QuicFrameType.Crypto
+            || ftype == QuicFrameType.HandshakeDone
+            || ftype == QuicFrameType.NewToken
+            || ftype == QuicFrameType.PathResponse
+            || ftype == QuicFrameType.RetireConnectionId {
+            return false;
+        }
+        return true;
+    }
+    return true;
+}
+
+fn quic_conn_process_payload(
+    conn: QuicConnection&,
+    payload: const u8[:],
+    htype: QuicHeaderType = QuicHeaderType.OneRtt,
+) -> bool, bool {
     guard payload.len > 0 else { return true, false; }
     var idx: i64 = 0;
     var any_ack_el = false;
@@ -434,6 +484,11 @@ fn quic_conn_process_payload(conn: QuicConnection&, payload: const u8[:]) -> boo
         let frame, ok = decode_quic_frame_cursor(payload, idx);
         guard ok else {
             quic_conn_close(conn, QUIC_ERR_FRAME_ENCODING);
+            return false, false;
+        }
+
+        guard quic_is_frame_allowed_in_packet(frame.frame_type, htype) else {
+            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
 
@@ -472,7 +527,7 @@ fn quic_conn_process_datagram(
     if hdr.payload_length > hdr.pn_length && payload.len == 0 {
         return false, false;
     }
-    let handled_frames, frame_ack_el = quic_conn_process_payload(conn, payload);
+    let handled_frames, frame_ack_el = quic_conn_process_payload(conn, payload, hdr.header_type);
     guard handled_frames else { return false, false; }
 
     let final_needs_ack = needs_ack_pkt || frame_ack_el;
