@@ -30,6 +30,20 @@ const PMTU_INTERMEDIATE: u32 = 1420;
 // RFC 8899 Section 5.1.2: The Searching State - Standard Ethernet MTU
 const PMTU_ETHERNET: u32 = 1500;
 
+// RFC 8899 Section 3 / RFC 9000 Section 14: Network and header encapsulation overheads.
+// IPv4 (20) + UDP (8) + QUIC 1-RTT Short Header (~5) + AEAD Tag (16) ~= 49 bytes.
+// IPv6 (40) + UDP (8) + QUIC 1-RTT Short Header (~5) + AEAD Tag (16) ~= 69 bytes.
+const DPLPMTUD_OVERHEAD_IPV4: u32 = 49;
+const DPLPMTUD_OVERHEAD_IPV6: u32 = 69;
+
+// Calculates maximum probe payload bytes given target link MTU and header encapsulation overhead.
+inline fn calc_dplpmtud_probe_payload_size(target_mtu: u32, overhead_bytes: u32) -> u32 {
+    if target_mtu > overhead_bytes {
+        return target_mtu - overhead_bytes;
+    }
+    return target_mtu;
+}
+
 const CANDIDATE_PMTU_COUNT: u32 = 4;
 
 // RFC 8899 Section 5.1.2: The Searching State - Table of candidate PMTU probe sizes

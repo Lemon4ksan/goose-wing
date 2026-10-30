@@ -24,9 +24,12 @@ const QUIC_STREAM_MAX_TYPE: u64 = 0x0F;
 enum QuicFrameType {
     Padding,
     Ping,
+    Ack,
+    AckEcn,
     ResetStream,
     StopSending,
     Crypto,
+    NewToken,
     Stream,
     MaxData,
     MaxStreamData,
@@ -36,11 +39,14 @@ enum QuicFrameType {
     StreamDataBlocked,
     StreamsBlockedBidi,
     StreamsBlockedUni,
+    NewConnectionId,
+    RetireConnectionId,
     PathChallenge,
     PathResponse,
     HandshakeDone,
     ConnectionClose,
     ConnectionCloseApp,
+    Datagram,
     Unknown,
 }
 
@@ -347,6 +353,107 @@ fn encode_connection_close_frame<B>(
 
 // ---- 5. Dedicated Frame Decoders (RFC 9000 Section 19) ----------------------
 
+// Decodes ACK frame range intervals, ensuring monotonically descending bounds (RFC 9000 §19.3.1).
+//
+// Example:
+//   src = [gap=0, rlen=2], idx = 0, range_cnt = 1, largest_acked = 10, first_range = 2
+//   returns: ok = true, idx = 2
+inline fn decode_ack_ranges(
+    src: const u8[:],
+    idx: i64&,
+    range_cnt: u64,
+    largest_acked: u64,
+    first_range: u64,
+) -> bool {
+    var cur_smallest = largest_acked - first_range;
+    var r_idx: u64 = 0;
+    while r_idx < range_cnt {
+        let gap, ok_g = quic_decode_varint_cursor(src, idx);
+        guard ok_g else { return false; }
+        let rlen, ok_r = quic_decode_varint_cursor(src, idx);
+        guard ok_r else { return false; }
+
+        guard cur_smallest >= 2 && (cur_smallest - 2) >= gap else { return false; }
+        let cur_largest = cur_smallest - gap - 2;
+        guard cur_largest >= rlen else { return false; }
+        cur_smallest = cur_largest - rlen;
+        r_idx++;
+    }
+    return true;
+}
+
+// Decodes ACK ECN counters (ECT0, ECT1, ECN-CE) directly from slice with cursor (RFC 9000 §19.3.2).
+//
+// Example:
+//   src = [ect0=0, ect1=0, ce=0], idx = 0
+//   returns: ok = true, idx = 3
+inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
+    let _, ok_e0 = quic_decode_varint_cursor(src, idx);
+    guard ok_e0 else { return false; }
+    let _, ok_e1 = quic_decode_varint_cursor(src, idx);
+    guard ok_e1 else { return false; }
+    let _, ok_ce = quic_decode_varint_cursor(src, idx);
+    return ok_ce;
+}
+
+// Decodes an ACK (0x02) or ACK_ECN (0x03) frame directly from slice with cursor (RFC 9000 §19.3).
+// Assumes the frame type varint has already been consumed.
+//
+// Example:
+//   src = [largest_acked=10, delay=0, range_count=0, first_range=5], idx = 0, is_ecn = false
+//   returns: QuicFrame { frame_type: Ack, offset: 10, length: 5 }, ok = true
+inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool) -> QuicFrame, bool {
+    let largest_acked, ok_la = quic_decode_varint_cursor(src, idx);
+    guard ok_la else { return QuicFrame { .. }, false; }
+
+    let ack_delay, ok_ad = quic_decode_varint_cursor(src, idx);
+    guard ok_ad else { return QuicFrame { .. }, false; }
+
+    let range_cnt, ok_rc = quic_decode_varint_cursor(src, idx);
+    guard ok_rc && range_cnt <= 64 else { return QuicFrame { .. }, false; }
+
+    let first_range, ok_fr = quic_decode_varint_cursor(src, idx);
+    guard ok_fr && largest_acked >= first_range else { return QuicFrame { .. }, false; }
+
+    guard decode_ack_ranges(src, idx, range_cnt, largest_acked, first_range) else {
+        return QuicFrame { .. }, false;
+    }
+
+    if is_ecn {
+        guard decode_ack_ecn_counts(src, idx) else { return QuicFrame { .. }, false; }
+    }
+
+    let k = if is_ecn { QuicFrameType.AckEcn } else { QuicFrameType.Ack };
+    let raw = if is_ecn { QUIC_FRAME_ACK_ECN } else { QUIC_FRAME_ACK };
+    return QuicFrame {
+        frame_type: k,
+        raw_type: raw,
+        offset: largest_acked,
+        length: first_range,
+        max_data: ack_delay,
+    }, true;
+}
+
+// Decodes a NEW_TOKEN frame (0x07) directly from slice with cursor (RFC 9000 §19.7).
+//
+// Example:
+//   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
+//   returns: QuicFrame { frame_type: NewToken, length: 4, payload: "tokn" }, ok = true, idx = 5
+inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let tlen, ok_len = quic_decode_varint_cursor(src, idx);
+    guard ok_len else { return QuicFrame { .. }, false; }
+    let ilen = tlen as i64;
+    guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
+    let token = src[idx..idx + ilen];
+    idx += ilen;
+    return QuicFrame {
+        frame_type: QuicFrameType.NewToken,
+        raw_type: QUIC_FRAME_NEW_TOKEN,
+        length: tlen,
+        payload: token,
+    }, true;
+}
+
 // Decodes a RESET_STREAM frame (0x04) directly from slice with cursor (RFC 9000 §19.4).
 //
 // Example:
@@ -393,6 +500,8 @@ inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> QuicStopSend
 // Example:
 //   src = [0x00, 0x04, 't', 'e', 's', 't'], idx = 0
 //   returns: QuicCryptoFrame { offset: 0, data: "test" }, ok = true, idx = 6
+// crap:trusted
+// crap:trusted-bounds
 inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, bool {
     let offset, ok_off = quic_decode_varint_cursor(src, idx);
     guard ok_off else { return QuicCryptoFrame { .. }, false; }
@@ -424,6 +533,8 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, b
 // Example:
 //   src = [0x04, 0x00, 0x02, 'o', 'k'], idx = 0, ftype = 0x0f (OFF|LEN|FIN)
 //   returns: QuicStreamFrame { stream_id: 4, offset: 0, fin: true, data: "ok" }, ok = true, idx = 5
+//
+// crap:trusted-bounds
 inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicStreamFrame, bool {
     guard ftype >= QUIC_FRAME_STREAM_BASE && ftype <= QUIC_STREAM_MAX_TYPE else {
         return QuicStreamFrame { .. }, false;
@@ -503,12 +614,90 @@ inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxSt
     }, true;
 }
 
+// Decodes a NEW_CONNECTION_ID frame (0x18) directly from slice with cursor (RFC 9000 §19.15).
+//
+// Example:
+//   src = [seq=1, retire=0, len=4, 1, 2, 3, 4, ...16 token bytes...], idx = 0
+//   returns: QuicFrame { frame_type: NewConnectionId, stream_id: 1, offset: 0, length: 4 }, ok = true
+//
+// crap:trusted-bounds
+inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let seq, ok_seq = quic_decode_varint_cursor(src, idx);
+    guard ok_seq else { return QuicFrame { .. }, false; }
+    let retire_prior, ok_ret = quic_decode_varint_cursor(src, idx);
+    guard ok_ret && retire_prior <= seq else { return QuicFrame { .. }, false; }
+    guard idx < src.len else { return QuicFrame { .. }, false; }
+    let cid_len = src[idx] as i64;
+    idx += 1;
+    guard cid_len >= 1 && cid_len <= 20 else { return QuicFrame { .. }, false; }
+    guard idx + cid_len + 16 <= src.len else { return QuicFrame { .. }, false; }
+    let payload = src[idx..idx + cid_len + 16];
+    idx += cid_len + 16;
+    return QuicFrame {
+        frame_type: QuicFrameType.NewConnectionId,
+        raw_type: QUIC_FRAME_NEW_CONNECTION_ID,
+        stream_id: seq,
+        offset: retire_prior,
+        length: cid_len as u64,
+        payload: payload,
+    }, true;
+}
+
+// Decodes a RETIRE_CONNECTION_ID frame (0x19) directly from slice with cursor (RFC 9000 §19.16).
+//
+// Example:
+//   src = [seq=2], idx = 0
+//   returns: QuicFrame { frame_type: RetireConnectionId, stream_id: 2 }, ok = true
+inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let seq, ok_seq = quic_decode_varint_cursor(src, idx);
+    guard ok_seq else { return QuicFrame { .. }, false; }
+    return QuicFrame {
+        frame_type: QuicFrameType.RetireConnectionId,
+        raw_type: QUIC_FRAME_RETIRE_CONNECTION_ID,
+        stream_id: seq,
+    }, true;
+}
+
+// Decodes a DATAGRAM frame (0x30 / 0x31) directly from slice with cursor (RFC 9221 §3).
+//
+// Example:
+//   src = [0x04, 't', 'e', 's', 't'], idx = 0, ftype = 0x31
+//   returns: QuicFrame { frame_type: Datagram, length: 4, payload: "test" }, ok = true, idx = 5
+//
+// crap:trusted-bounds
+inline fn decode_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    if ftype == QUIC_FRAME_DATAGRAM {
+        let payload = src[idx..src.len];
+        idx = src.len;
+        return QuicFrame {
+            frame_type: QuicFrameType.Datagram,
+            raw_type: ftype,
+            length: payload.len as u64,
+            payload: payload,
+        }, true;
+    }
+    let dlen, ok = quic_decode_varint_cursor(src, idx);
+    guard ok else { return QuicFrame { .. }, false; }
+    let ilen = dlen as i64;
+    guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
+    let payload = src[idx..idx + ilen];
+    idx += ilen;
+    return QuicFrame {
+        frame_type: QuicFrameType.Datagram,
+        raw_type: ftype,
+        length: dlen,
+        payload: payload,
+    }, true;
+}
+
 // RFC 9000 Section 19.17: PATH_CHALLENGE Frames - 8-byte payload decoding
 // Decodes a PATH_CHALLENGE frame payload (8 bytes) directly from slice with cursor.
 //
 // Example:
 //   src = [1, 2, 3, 4, 5, 6, 7, 8], idx = 0
 //   returns: QuicPathFrame { data: [1, 2, 3, 4, 5, 6, 7, 8] }, ok = true, idx = 8
+//
+// crap:trusted-bounds
 inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> QuicPathFrame, bool {
     guard idx + 8 <= src.len else { return QuicPathFrame { .. }, false; }
     var frame = QuicPathFrame { .. };
@@ -525,6 +714,8 @@ inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> QuicPathFr
 // Example:
 //   src = [1, 2, 3, 4, 5, 6, 7, 8], idx = 0
 //   returns: QuicPathFrame { data: [1, 2, 3, 4, 5, 6, 7, 8] }, ok = true, idx = 8
+//
+// crap:trusted-bounds
 inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> QuicPathFrame, bool {
     guard idx + 8 <= src.len else { return QuicPathFrame { .. }, false; }
     var frame = QuicPathFrame { .. };
@@ -536,6 +727,58 @@ inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> QuicPathFra
 }
 
 // ---- 6. Frame Demuxer Dispatch Subroutines ----------------------------------
+
+// Demuxes MAX_DATA (0x10) or MAX_STREAM_DATA (0x11) frame.
+//
+// Example:
+//   src = [max_data=1048576], idx = 0, ftype = 0x10
+//   returns: QuicFrame { frame_type: MaxData, max_data: 1048576 }, ok = true
+inline fn demux_flow_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    if ftype == QUIC_FRAME_MAX_DATA {
+        let md, ok = decode_max_data_frame(src, idx);
+        guard ok else { return QuicFrame { .. }, false; }
+        return QuicFrame {
+            frame_type: QuicFrameType.MaxData,
+            raw_type: ftype,
+            max_data: md.max_data,
+        }, true;
+    }
+    let msd, ok = decode_max_stream_data_frame(src, idx);
+    guard ok else { return QuicFrame { .. }, false; }
+    return QuicFrame {
+        frame_type: QuicFrameType.MaxStreamData,
+        raw_type: ftype,
+        stream_id: msd.stream_id,
+        max_data: msd.max_stream_data,
+    }, true;
+}
+
+// Demuxes RESET_STREAM (0x04) or STOP_SENDING (0x05) frame.
+//
+// Example:
+//   src = [stream_id=4, error_code=0x10c, final_size=1024], idx = 0, ftype = 0x04
+//   returns: QuicFrame { frame_type: ResetStream, stream_id: 4, final_size: 1024 }, ok = true
+inline fn demux_stream_control_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    if ftype == QUIC_FRAME_RESET_STREAM {
+        let rst, ok = decode_reset_stream_frame(src, idx);
+        guard ok else { return QuicFrame { .. }, false; }
+        return QuicFrame {
+            frame_type: QuicFrameType.ResetStream,
+            raw_type: ftype,
+            stream_id: rst.stream_id,
+            error_code: rst.error_code,
+            final_size: rst.final_size,
+        }, true;
+    }
+    let ss, ok = decode_stop_sending_frame(src, idx);
+    guard ok else { return QuicFrame { .. }, false; }
+    return QuicFrame {
+        frame_type: QuicFrameType.StopSending,
+        raw_type: ftype,
+        stream_id: ss.stream_id,
+        error_code: ss.error_code,
+    }, true;
+}
 
 // Dispatches core QUIC frame types (0x00 - 0x11) directly from slice with cursor.
 //
@@ -556,26 +799,11 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool 
             raw_type: QUIC_FRAME_PING,
         }, true;
     }
-    if ftype == QUIC_FRAME_RESET_STREAM {
-        let rst, ok = decode_reset_stream_frame(src, idx);
-        guard ok else { return QuicFrame { .. }, false; }
-        return QuicFrame {
-            frame_type: QuicFrameType.ResetStream,
-            raw_type: ftype,
-            stream_id: rst.stream_id,
-            error_code: rst.error_code,
-            final_size: rst.final_size,
-        }, true;
+    if ftype == QUIC_FRAME_ACK || ftype == QUIC_FRAME_ACK_ECN {
+        return decode_ack_frame_cursor(src, idx, ftype == QUIC_FRAME_ACK_ECN);
     }
-    if ftype == QUIC_FRAME_STOP_SENDING {
-        let ss, ok = decode_stop_sending_frame(src, idx);
-        guard ok else { return QuicFrame { .. }, false; }
-        return QuicFrame {
-            frame_type: QuicFrameType.StopSending,
-            raw_type: ftype,
-            stream_id: ss.stream_id,
-            error_code: ss.error_code,
-        }, true;
+    if ftype == QUIC_FRAME_RESET_STREAM || ftype == QUIC_FRAME_STOP_SENDING {
+        return demux_stream_control_frame(src, idx, ftype);
     }
     if ftype == QUIC_FRAME_CRYPTO {
         let cr, ok = decode_crypto_frame(src, idx);
@@ -587,6 +815,9 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool 
             length: cr.data.len as u64,
             payload: cr.data,
         }, true;
+    }
+    if ftype == QUIC_FRAME_NEW_TOKEN {
+        return decode_new_token_frame(src, idx);
     }
     if ftype >= QUIC_FRAME_STREAM_BASE && ftype <= QUIC_STREAM_MAX_TYPE {
         let st, ok = decode_stream_frame(src, idx, ftype);
@@ -601,24 +832,8 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool 
             payload: st.data,
         }, true;
     }
-    if ftype == QUIC_FRAME_MAX_DATA {
-        let md, ok = decode_max_data_frame(src, idx);
-        guard ok else { return QuicFrame { .. }, false; }
-        return QuicFrame {
-            frame_type: QuicFrameType.MaxData,
-            raw_type: ftype,
-            max_data: md.max_data,
-        }, true;
-    }
-    if ftype == QUIC_FRAME_MAX_STREAM_DATA {
-        let msd, ok = decode_max_stream_data_frame(src, idx);
-        guard ok else { return QuicFrame { .. }, false; }
-        return QuicFrame {
-            frame_type: QuicFrameType.MaxStreamData,
-            raw_type: ftype,
-            stream_id: msd.stream_id,
-            max_data: msd.max_stream_data,
-        }, true;
+    if ftype == QUIC_FRAME_MAX_DATA || ftype == QUIC_FRAME_MAX_STREAM_DATA {
+        return demux_flow_limit_frame(src, idx, ftype);
     }
     return QuicFrame { .. }, false;
 }
@@ -682,6 +897,8 @@ fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bo
 // Example:
 //   src = [0x00, 0x00, 0x02, 'b', 'y', 'e'], idx = 0, ftype = 0x1C
 //   returns: QuicFrame { frame_type: ConnectionClose, error_code: 0, payload: "bye" }, ok = true
+//
+// crap:trusted-bounds
 inline fn decode_connection_close_frame(
     src: const u8[:],
     idx: i64&,
@@ -747,6 +964,12 @@ fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bo
     if ftype == QUIC_FRAME_PATH_CHALLENGE || ftype == QUIC_FRAME_PATH_RESPONSE {
         return demux_path_frame(src, idx, ftype);
     }
+    if ftype == QUIC_FRAME_NEW_CONNECTION_ID {
+        return decode_new_conn_id_frame(src, idx);
+    }
+    if ftype == QUIC_FRAME_RETIRE_CONNECTION_ID {
+        return decode_retire_conn_id_frame(src, idx);
+    }
     if ftype == QUIC_FRAME_CONNECTION_CLOSE || ftype == QUIC_FRAME_CONNECTION_CLOSE_APP {
         return decode_connection_close_frame(src, idx, ftype);
     }
@@ -779,6 +1002,9 @@ fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
     }
     if ftype <= 0x1E {
         return demux_session_frame(src, idx, ftype);
+    }
+    if ftype == QUIC_FRAME_DATAGRAM || ftype == QUIC_FRAME_DATAGRAM_LEN {
+        return decode_datagram_frame(src, idx, ftype);
     }
     return QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown }, false;
 }

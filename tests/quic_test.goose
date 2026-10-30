@@ -1706,6 +1706,193 @@ fn test_dplpmtud(t: core::T&) {
     };
 }
 
+fn test_quic_cross_module_bug_fixes(t: core::T&) {
+    t.run("FIX-01: Flow Control & ResetStream field mapping (RFC 9000)") { sub =>
+        let scid: u8[4] = [0x11, 0x22, 0x33, 0x44];
+        var conn = wing::new_quic_server_connection(scid[..]);
+
+        // 1. MAX_DATA datagram updates conn.flow_ctrl.max_data_remote
+        var dgram_md: u8[..64] = [];
+        dgram_md.push(0x40);
+        dgram_md.append(scid[..]);
+        dgram_md.push(0x01);
+        wing::encode_max_data_frame(dgram_md, 750000);
+
+        var ack_out = wing::AckFrame { .. };
+        let handled_md, _ = wing::quic_conn_process_datagram(conn, dgram_md[..], 1000, ack_out);
+        sub.assert_true(handled_md, "max_data datagram handled");
+        sub.assert_eq(conn.flow_ctrl.max_data_remote, 750000, "remote max_data updated to 750000");
+
+        // 2. Open stream 0 first
+        var dgram_st: u8[..64] = [];
+        dgram_st.push(0x40);
+        dgram_st.append(scid[..]);
+        dgram_st.push(0x02);
+        wing::encode_stream_frame(dgram_st, 0, 0, "ping", wing::QuicStreamFlags { fin: false, with_len: true });
+        let handled_st, _ = wing::quic_conn_process_datagram(conn, dgram_st[..], 1001, ack_out);
+        sub.assert_true(handled_st, "stream 0 created");
+
+        // 3. MAX_STREAM_DATA datagram updates stream.flow_ctrl.max_data_remote
+        var dgram_msd: u8[..64] = [];
+        dgram_msd.push(0x40);
+        dgram_msd.append(scid[..]);
+        dgram_msd.push(0x03);
+        wing::encode_max_stream_data_frame(dgram_msd, 0, 350000);
+        let handled_msd, _ = wing::quic_conn_process_datagram(conn, dgram_msd[..], 1002, ack_out);
+        sub.assert_true(handled_msd, "max_stream_data datagram handled");
+        let st_idx = wing::quic_table_find_stream(conn.stream_table, 0);
+        sub.assert_true(st_idx >= 0, "found stream 0");
+        sub.assert_eq(
+            conn.stream_table.streams[st_idx as i64].send_max_data,
+            350000,
+            "stream send_max_data updated to 350000",
+        );
+
+        // 4. RESET_STREAM updates final_size and bytes_recv_total
+        var dgram_rst: u8[..64] = [];
+        dgram_rst.push(0x40);
+        dgram_rst.append(scid[..]);
+        dgram_rst.push(0x04);
+        wing::encode_reset_stream_frame(dgram_rst, 0, 0x99, 1200);
+        let handled_rst, _ = wing::quic_conn_process_datagram(conn, dgram_rst[..], 1003, ack_out);
+        sub.assert_true(handled_rst, "reset_stream datagram handled");
+        sub.assert_eq(conn.stream_table.streams[st_idx as i64].recv_final_size, 1200, "stream recv_final_size set to 1200");
+        sub.assert_eq(conn.flow_ctrl.bytes_recv_total, 1200, "flow control bytes_recv_total reflects final_size");
+    };
+
+    t.run("FIX-02: Multiplexed ACK and STREAM payload processing & Frame Error") { sub =>
+        let scid: u8[4] = [0x21, 0x22, 0x23, 0x24];
+        var conn = wing::new_quic_server_connection(scid[..]);
+
+        // Synthesize datagram containing ACK frame followed by STREAM frame
+        var dgram: u8[..128] = [];
+        dgram.push(0x40);
+        dgram.append(scid[..]);
+        dgram.push(0x01); // PN = 1
+
+        let ack = wing::AckFrame {
+            is_ecn: false,
+            largest_acked: 0,
+            ack_delay: 5,
+            first_ack_range: 0,
+            ..
+        };
+        wing::encode_ack_frame(dgram, ack);
+        wing::encode_stream_frame(dgram, 0, 0, "ACK+STREAM", wing::QuicStreamFlags { fin: true, with_len: true });
+
+        var ack_out = wing::AckFrame { .. };
+        let handled, needs_ack = wing::quic_conn_process_datagram(conn, dgram[..], 2000, ack_out);
+        sub.assert_true(handled, "multiplexed ACK+STREAM datagram handled successfully");
+        sub.assert_true(needs_ack, "trailing STREAM frame elicited ACK requirement");
+        let idx = wing::quic_table_find_stream(conn.stream_table, 0);
+        sub.assert_true(idx >= 0, "stream 0 found and populated from trailing frame");
+        sub.assert_eq(conn.stream_table.streams[idx as i64].bytes_recv, 10, "stream 0 received payload after ACK");
+
+        // Corrupt frame: truncated varint inside payload
+        var bad_dgram: u8[..32] = [];
+        bad_dgram.push(0x40);
+        bad_dgram.append(scid[..]);
+        bad_dgram.push(0x02);
+        // Varint with 2-bit prefix 11 (requires 8 bytes) but only 1 byte present
+        bad_dgram.push(0xC0);
+
+        let bad_handled, _ = wing::quic_conn_process_datagram(conn, bad_dgram[..], 2001, ack_out);
+        sub.assert_false(bad_handled, "corrupt frame payload rejected");
+        sub.assert_true(conn.state == wing::QuicConnState.Closing, "connection moved to Closing on corrupt frame");
+        sub.assert_eq(conn.close_code, wing::QUIC_ERR_FRAME_ENCODING, "closed with FRAME_ENCODING_ERROR (0x07)");
+    };
+
+    t.run("FIX-03: Peer Stream Limit Enforcement (RFC 9000 §4.6)") { sub =>
+        let scid: u8[4] = [0x31, 0x32, 0x33, 0x34];
+        var conn = wing::new_quic_server_connection(scid[..]);
+        conn.stream_table.max_streams_bidi = 5; // Allow streams 0, 4, 8, 12, 16 (stream_idx 0..4)
+
+        // Stream ID 20 corresponds to stream_idx 5 -> exceeds limit 5!
+        var dgram: u8[..64] = [];
+        dgram.push(0x40);
+        dgram.append(scid[..]);
+        dgram.push(0x01);
+        wing::encode_stream_frame(dgram, 20, 0, "limit-exceeded", wing::QuicStreamFlags { fin: false, with_len: true });
+
+        var ack_out = wing::AckFrame { .. };
+        let handled, _ = wing::quic_conn_process_datagram(conn, dgram[..], 3000, ack_out);
+        sub.assert_false(handled, "stream ID exceeding max_streams_bidi rejected");
+        sub.assert_true(conn.state == wing::QuicConnState.Closing, "connection in Closing state");
+        sub.assert_eq(conn.close_code, wing::QUIC_ERR_STREAM_LIMIT, "closed with STREAM_LIMIT_ERROR (0x04)");
+    };
+
+    t.run("FIX-04: HANDSHAKE_DONE server rejection and PATH_CHALLENGE accounting") { sub =>
+        let scid: u8[4] = [0x41, 0x42, 0x43, 0x44];
+        var conn = wing::new_quic_server_connection(scid[..]);
+
+        // Server receives HANDSHAKE_DONE frame (0x1E)
+        var dgram_hd: u8[..32] = [];
+        dgram_hd.push(0x40);
+        dgram_hd.append(scid[..]);
+        dgram_hd.push(0x01);
+        wing::encode_handshake_done_frame(dgram_hd);
+
+        var ack_out = wing::AckFrame { .. };
+        let handled_hd, _ = wing::quic_conn_process_datagram(conn, dgram_hd[..], 4000, ack_out);
+        sub.assert_false(handled_hd, "server rejects HANDSHAKE_DONE");
+        sub.assert_true(conn.state == wing::QuicConnState.Closing, "connection Closing");
+        sub.assert_eq(conn.close_code, wing::QUIC_ERR_PROTOCOL_VIOLATION, "closed with PROTOCOL_VIOLATION (0x0A)");
+
+        // Fresh connection: PATH_CHALLENGE byte accounting
+        var conn2 = wing::new_quic_server_connection(scid[..]);
+        var dgram_pc: u8[..32] = [];
+        dgram_pc.push(0x40);
+        dgram_pc.append(scid[..]);
+        dgram_pc.push(0x02);
+        let challenge_data: const u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        wing::encode_path_challenge_frame(dgram_pc, challenge_data);
+
+        let initial_bytes = conn2.bytes_received;
+        let handled_pc, _ = wing::quic_conn_process_datagram(conn2, dgram_pc[..], 4001, ack_out);
+        sub.assert_true(handled_pc, "path challenge processed");
+        sub.assert_eq(
+            conn2.bytes_received - initial_bytes,
+            dgram_pc.len as u64,
+            "bytes_received incremented exactly once by datagram len",
+        );
+    };
+
+    t.run("FIX-05: BBR inflight_hi clamp & CUBIC millisecond scaling") { sub =>
+        var bbr = wing::new_bbr_state();
+        bbr.bw_hi_bps = 800000000; // 800 Mbps -> high BDP
+        bbr.min_rtt_us = 100000;    // 100 ms
+        bbr.mode = wing::BbrMode.ProbeBwCruise;
+        bbr.inflight_hi_bytes = 15000; // low cap
+        wing::bbr_update_pacing_and_cwnd(bbr);
+        sub.assert_eq(bbr.cwnd_bytes, 15000, "cwnd clamped to inflight_hi_bytes");
+
+        // CUBIC millisecond scaling:
+        // 1. Verify K precision: for w_max = 100, K = cbrt(75) s = 4217 ms (old code truncated to 4s)
+        let k_ms = wing::cubic_compute_k(100);
+        sub.assert_eq(k_ms, 4217, "cubic_compute_k achieves millisecond precision (exactly 4217ms)");
+
+        // 2. Verify sub-second growth: at t = 1400ms (1.4s), delta = 1 segment
+        // Old integer-seconds code stayed flat at delta = 0 until t = 2s
+        var cubic = wing::CubicState { .. };
+        cubic.cwnd_segments = 50;
+        cubic.w_max_segments = 50;
+        cubic.epoch_start_us = 1000000;
+        cubic.last_update_us = 1000000;
+
+        let cwnd_1400ms = wing::cubic_on_ack(cubic, 2400000, 50000, 60000, 1200);
+        sub.assert_eq(cubic.cwnd_segments, 51, "cubic cwnd incremented by 1 segment at 1.4s");
+        sub.assert_eq(cwnd_1400ms, 51 * 1200, "cubic window grew at 1.4s without waiting for 2s integer floor");
+    };
+
+    t.run("FIX-06: DPLPMTUD IP overheads and payload size calculation") { sub =>
+        let p_v4 = wing::calc_dplpmtud_probe_payload_size(1500, wing::DPLPMTUD_OVERHEAD_IPV4);
+        sub.assert_eq(p_v4, 1500 - wing::DPLPMTUD_OVERHEAD_IPV4, "IPv4 payload equals 1500 - 49 = 1451");
+
+        let p_v6 = wing::calc_dplpmtud_probe_payload_size(1500, wing::DPLPMTUD_OVERHEAD_IPV6);
+        sub.assert_eq(p_v6, 1500 - wing::DPLPMTUD_OVERHEAD_IPV6, "IPv6 payload equals 1500 - 69 = 1431");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("QUIC Protocol, Framing, Flow Control & ACK Verification Suite", core::Verbosity.Verbose);
 
@@ -1737,6 +1924,7 @@ fn main() {
     core::run_case(runner, "26. QUIC PATH_CHALLENGE & PATH_RESPONSE Codecs (RFC 9000)", test_quic_path_frames);
     core::run_case(runner, "27. Connection Migration FSM & Anti-Amplification (RFC 9000)", test_connection_migration);
     core::run_case(runner, "28. DPLPMTUD Probe Generator & State Machine (RFC 8899)", test_dplpmtud);
+    core::run_case(runner, "29. Cross-Module QUIC Integration & RFC Conformance Fixes", test_quic_cross_module_bug_fixes);
 
     let ok = core::finish(runner);
     assert(ok);

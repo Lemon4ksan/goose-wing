@@ -112,9 +112,8 @@ fn record_space_sent_packet(space: PnSpaceState&, meta: const SentPacketMeta&) {
     if meta.pn > space.largest_sent_pn || space.sent_packets.len == 0 {
         space.largest_sent_pn = meta.pn;
     }
-    if space.sent_packets.len < space.sent_packets.cap {
-        space.sent_packets.push(meta);
-    }
+    guard space.sent_packets.len < space.sent_packets.cap else { return; }
+    space.sent_packets.push(meta);
 }
 
 fn record_space_recv_packet(space: PnSpaceState&, pn: u64) {
@@ -232,13 +231,23 @@ inline fn calc_payload_end(start: i64, bounded_len: i64, dgram_len: i64) -> i64 
     return dgram_len;
 }
 
+inline fn get_bounded_payload(
+    dgram: const u8[:],
+    start: i64,
+    payload_len: u64,
+    pn_len: u8,
+) -> u8[:] {
+    let blen = calc_bounded_payload_len(payload_len, pn_len);
+    let end = start + blen;
+    guard end <= dgram.len else { return dgram[..0]; }
+    return dgram[start..end];
+}
+
 fn get_packet_payload(dgram: const u8[:], hdr: const QuicHeader&) -> u8[:] {
     let start = calc_payload_offset(hdr.header_len);
     guard start <= dgram.len else { return dgram[..0]; }
     if hdr.payload_length > hdr.pn_length {
-        let blen = calc_bounded_payload_len(hdr.payload_length, hdr.pn_length);
-        let end = calc_payload_end(start, blen, dgram.len);
-        return dgram[start..end];
+        return get_bounded_payload(dgram, start, hdr.payload_length, hdr.pn_length);
     }
     return dgram[start..];
 }
@@ -292,13 +301,13 @@ fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         return false, false;
     }
 
-    let fc_ok, fc_err = quic_fc_record_recv_reset(conn.flow_ctrl, conn.stream_table.streams[idx], frame.length);
+    let fc_ok, fc_err = quic_fc_record_recv_reset(conn.flow_ctrl, conn.stream_table.streams[idx], frame.final_size);
     guard fc_ok else {
         quic_conn_close(conn, fc_err);
         return false, false;
     }
 
-    let st_ok, st_err = quic_stream_on_recv_reset(conn.stream_table.streams[idx], frame.error_code, frame.length);
+    let st_ok, st_err = quic_stream_on_recv_reset(conn.stream_table.streams[idx], frame.error_code, frame.final_size);
     guard st_ok else {
         quic_conn_close(conn, st_err);
         return false, false;
@@ -330,7 +339,7 @@ fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&)
 
 fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     if frame.frame_type == QuicFrameType.MaxData {
-        quic_fc_update_remote_max_data(conn.flow_ctrl, frame.length);
+        quic_fc_update_remote_max_data(conn.flow_ctrl, frame.max_data);
         return true, true;
     }
 
@@ -341,11 +350,38 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         }
         let idx = quic_table_find_stream(conn.stream_table, frame.stream_id);
         if idx >= 0 {
-            quic_fc_update_stream_send_max_data(conn.stream_table.streams[idx], frame.length);
+            quic_fc_update_stream_send_max_data(conn.stream_table.streams[idx], frame.max_data);
         }
         return true, true;
     }
 
+    return true, true;
+}
+
+fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    if frame.frame_type == QuicFrameType.ConnectionClose || frame.frame_type == QuicFrameType.ConnectionCloseApp {
+        quic_conn_close(conn, frame.error_code);
+        return true, false;
+    }
+    if frame.frame_type == QuicFrameType.HandshakeDone {
+        if conn.role == QuicRole.Server {
+            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            return false, false;
+        }
+        conn.state = QuicConnState.Established;
+        return true, true;
+    }
+    if frame.frame_type == QuicFrameType.PathChallenge {
+        return true, true;
+    }
+    if frame.frame_type == QuicFrameType.PathResponse {
+        let ok = quic_migration_on_path_response(conn.migration, frame.payload);
+        if ok {
+            quic_migration_complete(conn.migration);
+            conn.validated_address = true;
+        }
+        return true, true;
+    }
     return true, true;
 }
 
@@ -355,6 +391,9 @@ fn dispatch_inbound_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
     }
     if frame.frame_type == QuicFrameType.Ping {
         return true, true;
+    }
+    if frame.frame_type == QuicFrameType.Ack || frame.frame_type == QuicFrameType.AckEcn {
+        return true, false;
     }
     if frame.frame_type == QuicFrameType.Stream {
         return dispatch_stream_inbound(conn, frame);
@@ -368,30 +407,7 @@ fn dispatch_inbound_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
     if frame.frame_type == QuicFrameType.MaxData || frame.frame_type == QuicFrameType.MaxStreamData {
         return dispatch_flow_control_inbound(conn, frame);
     }
-    if frame.frame_type == QuicFrameType.ConnectionClose || frame.frame_type == QuicFrameType.ConnectionCloseApp {
-        quic_conn_close(conn, frame.error_code);
-        return true, false;
-    }
-    if frame.frame_type == QuicFrameType.HandshakeDone {
-        if conn.role == QuicRole.Client {
-            conn.state = QuicConnState.Established;
-        }
-        return true, true;
-    }
-    if frame.frame_type == QuicFrameType.PathChallenge {
-        conn.bytes_received += frame.length;
-        return true, true;
-    }
-    if frame.frame_type == QuicFrameType.PathResponse {
-        let ok = quic_migration_on_path_response(conn.migration, frame.payload);
-        if ok {
-            quic_migration_complete(conn.migration);
-            conn.validated_address = true;
-        }
-        return true, true;
-    }
-
-    return true, true;
+    return dispatch_session_frame(conn, frame);
 }
 
 // RFC 9000 Section 9.1: Initiates connection migration toward new remote endpoint
@@ -416,7 +432,10 @@ fn quic_conn_process_payload(conn: QuicConnection&, payload: const u8[:]) -> boo
 
     while idx < payload.len {
         let frame, ok = decode_quic_frame_cursor(payload, idx);
-        guard ok else { break; }
+        guard ok else {
+            quic_conn_close(conn, QUIC_ERR_FRAME_ENCODING);
+            return false, false;
+        }
 
         let handled, ack_el = dispatch_inbound_frame(conn, frame);
         guard handled else { return false, false; }
@@ -450,6 +469,9 @@ fn quic_conn_process_datagram(
     guard handled_pkt else { return false, false; }
 
     let payload = get_packet_payload(dgram, hdr);
+    if hdr.payload_length > hdr.pn_length && payload.len == 0 {
+        return false, false;
+    }
     let handled_frames, frame_ack_el = quic_conn_process_payload(conn, payload);
     guard handled_frames else { return false, false; }
 

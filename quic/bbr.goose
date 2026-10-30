@@ -11,11 +11,11 @@ import std;
 
 // ---- 1. integer math helpers & cube root ------------------------------------
 
-// Computes floor(cbrt(val)) using integer binary search up to 2,000,000.
+// Computes floor(cbrt(val)) using integer binary search up to 2,642,245.
 fn int_cbrt(val: u64) -> u64 {
     guard val > 0 else { return 0; }
     var low: u64 = 1;
-    var high: u64 = 2000000; // 2_000_000^3 = 8 * 10^18 <= u64::MAX
+    var high: u64 = 2642245; // 2_642_245^3 = 18_446_742_000_000_000_000 <= u64::MAX
     var ans: u64 = 1;
 
     while low <= high {
@@ -193,7 +193,11 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
     if bbr.mode != BbrMode.ProbeRtt {
         let bdp = bbr_bdp(eff_bw, bbr.min_rtt_us);
         let target_cwnd = (bdp * 2); // 2 * BDP headroom
-        bbr.cwnd_bytes = if target_cwnd > BBR_MIN_CWND_BYTES { target_cwnd } else { BBR_MIN_CWND_BYTES };
+        var cwnd = if target_cwnd > BBR_MIN_CWND_BYTES { target_cwnd } else { BBR_MIN_CWND_BYTES };
+        if bbr.inflight_hi_bytes > 0 && cwnd > bbr.inflight_hi_bytes {
+            cwnd = if bbr.inflight_hi_bytes > BBR_MIN_CWND_BYTES { bbr.inflight_hi_bytes } else { BBR_MIN_CWND_BYTES };
+        }
+        bbr.cwnd_bytes = cwnd;
     }
 }
 
@@ -272,9 +276,9 @@ struct CubicState {
 // Computes K = cbrt(w_max * beta / C) in milliseconds (RFC 9438 Section 4.1).
 fn cubic_compute_k(w_max: u64) -> u64 {
     // K = cbrt((w_max * (1 - 0.7)) / 0.4) = cbrt((w_max * 3) / 4)
+    // Multiplied by 10^9 before cbrt to obtain millisecond precision
     let w_diff = (w_max * 3) / 4;
-    let k_sec = int_cbrt(w_diff);
-    return k_sec * 1000;
+    return int_cbrt(w_diff * 1000000000);
 }
 
 // Updates CUBIC window with app-limited freeze (draft-ietf-ccwg-ratelimited-increase-11).
@@ -306,17 +310,23 @@ fn cubic_on_ack(
     let t_ms = (now_us - cubic.epoch_start_us) / 1000;
     var w_cubic: u64 = cubic.w_max_segments;
 
+    let diff_ms = if t_ms < cubic.k_ms { cubic.k_ms - t_ms } else { t_ms - cubic.k_ms };
+    var delta: u64 = 0;
+    if diff_ms <= 1664000 {
+        let d3 = diff_ms * diff_ms * diff_ms;
+        delta = (4 * d3) / 10000000000;
+    } else {
+        let diff_sec = diff_ms / 1000;
+        delta = (4 * diff_sec * diff_sec * diff_sec) / 10;
+    }
+
     if t_ms < cubic.k_ms {
-        let diff_sec = (cubic.k_ms - t_ms) / 1000;
-        let delta = (4 * diff_sec * diff_sec * diff_sec) / 10;
         if cubic.w_max_segments > delta {
             w_cubic = cubic.w_max_segments - delta;
         } else {
             w_cubic = 1;
         }
     } else {
-        let diff_sec = (t_ms - cubic.k_ms) / 1000;
-        let delta = (4 * diff_sec * diff_sec * diff_sec) / 10;
         w_cubic = cubic.w_max_segments + delta;
     }
 

@@ -293,8 +293,8 @@ fn quic_stream_on_recv_stop_sending(
 
     // Transition sending side to ResetSent if active
     let is_active = s.send_state == QuicSendState.Ready ||
-                    s.send_state == QuicSendState.Send ||
-                    s.send_state == QuicSendState.DataSent;
+        s.send_state == QuicSendState.Send ||
+        s.send_state == QuicSendState.DataSent;
     if is_active {
         s.send_state = QuicSendState.ResetSent;
         s.send_error_code = error_code;
@@ -400,7 +400,45 @@ fn quic_table_push_stream(tbl: QuicStreamTable&, st: QuicStream) {
     tbl.streams.push(st);
 }
 
+// Helper to determine if a stream was initiated by peer (RFC 9000 §2.1).
+inline fn is_peer_initiated_stream(stream_id: u64, role: QuicRole) -> bool {
+    let init_bit = stream_id & 1;
+    if role == QuicRole.Server {
+        return init_bit == 0;
+    }
+    return init_bit == 1;
+}
+
+// Validates stream ordinal against configured peer stream limits (RFC 9000 Section 4.6).
+inline fn validate_peer_stream_limit(tbl: const QuicStreamTable&, stream_id: u64) -> bool {
+    guard is_peer_initiated_stream(stream_id, tbl.role) else { return true; }
+    let stream_idx = stream_id >> 2;
+    if (stream_id & 2) != 0 {
+        return stream_idx < tbl.max_streams_uni;
+    }
+    return stream_idx < tbl.max_streams_bidi;
+}
+
+// Helper to check table capacity and peer stream limit before opening stream.
+inline fn can_open_ingress_stream(tbl: const QuicStreamTable&, stream_id: u64) -> bool {
+    guard tbl.streams.len < tbl.streams.cap else { return false; }
+    return validate_peer_stream_limit(tbl, stream_id);
+}
+
+// Appends and initializes new stream into table.
+inline fn quic_table_insert_stream(
+    tbl: QuicStreamTable&,
+    stream_id: u64,
+    default_recv_flow: u64,
+) -> i32 {
+    let new_idx = tbl.streams.len as i32;
+    let st = new_quic_stream(stream_id, default_recv_flow);
+    quic_table_push_stream(tbl, st);
+    return new_idx;
+}
+
 // Looks up existing stream or inserts new stream.
+// Enforces MAX_STREAMS limits for peer-initiated streams (RFC 9000 Section 4.6).
 // Returns (stream_index: i32, ok: bool).
 fn quic_table_get_or_open_stream(
     tbl: QuicStreamTable&,
@@ -411,14 +449,10 @@ fn quic_table_get_or_open_stream(
     if existing >= 0 {
         return existing, true;
     }
-
-    guard tbl.streams.len < tbl.streams.cap else {
+    guard can_open_ingress_stream(tbl, stream_id) else {
         return 0, false;
     }
-
-    let new_idx = tbl.streams.len as i32;
-    let st = new_quic_stream(stream_id, default_recv_flow);
-    quic_table_push_stream(tbl, st);
+    let new_idx = quic_table_insert_stream(tbl, stream_id, default_recv_flow);
     return new_idx, true;
 }
 
