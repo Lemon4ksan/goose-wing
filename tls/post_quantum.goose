@@ -110,13 +110,19 @@ struct SecP384r1MLKEM1024ServerShare {
 // ---- 3. Wire Formatting and Parsing (RFC 10024 §3) ---------------------------
 
 // Formats a KeyShareEntry for ClientHello:
-// group (2 bytes) + key_exchange_len (2 bytes) + [32B X25519 || 1152B ML-KEM-768]
+// For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1152B) || Classical (32B).
+// For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1152B).
 fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
     guard is_post_quantum_group(share.group) else { return; }
     core::write_be_u16(out, share.group);
     core::write_be_u16(out, HYBRID_CLIENT_SHARE_LEN as u16);
-    out.append(share.x25519_public[..]);
-    out.append(share.mlkem768_public[..]);
+    if share.group == GROUP_X25519_MLKEM768 {
+        out.append(share.mlkem768_public[..]);
+        out.append(share.x25519_public[..]);
+    } else {
+        out.append(share.x25519_public[..]);
+        out.append(share.mlkem768_public[..]);
+    }
 }
 
 // Parses a hybrid ClientHello KeyShareEntry from raw bytes.
@@ -130,20 +136,31 @@ fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == HYBRID_CLIENT_SHARE_LEN else { return false; }
 
-    core::ct_copy_bytes(share.x25519_public[..], raw[4..36]);
-    core::ct_copy_bytes(share.mlkem768_public[..], raw[36..1188]);
+    if share.group == GROUP_X25519_MLKEM768 {
+        core::ct_copy_bytes(share.mlkem768_public[..], raw[4..1156]);
+        core::ct_copy_bytes(share.x25519_public[..], raw[1156..1188]);
+    } else {
+        core::ct_copy_bytes(share.x25519_public[..], raw[4..36]);
+        core::ct_copy_bytes(share.mlkem768_public[..], raw[36..1188]);
+    }
 
     return true;
 }
 
 // Formats a KeyShareEntry for ServerHello:
-// group (2 bytes) + key_exchange_len (2 bytes) + [32B X25519 || 1088B ML-KEM-768 ciphertext]
+// For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1088B) || Classical (32B).
+// For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1088B).
 fn format_hybrid_server_key_share<B>(share: const PostQuantumServerShare&, out: B&) {
     guard is_post_quantum_group(share.group) else { return; }
     core::write_be_u16(out, share.group);
     core::write_be_u16(out, HYBRID_SERVER_SHARE_LEN as u16);
-    out.append(share.x25519_public[..]);
-    out.append(share.mlkem768_ciphertext[..]);
+    if share.group == GROUP_X25519_MLKEM768 {
+        out.append(share.mlkem768_ciphertext[..]);
+        out.append(share.x25519_public[..]);
+    } else {
+        out.append(share.x25519_public[..]);
+        out.append(share.mlkem768_ciphertext[..]);
+    }
 }
 
 // Parses a hybrid ServerHello KeyShareEntry from raw bytes.
@@ -157,8 +174,13 @@ fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == HYBRID_SERVER_SHARE_LEN else { return false; }
 
-    core::ct_copy_bytes(share.x25519_public[..], raw[4..36]);
-    core::ct_copy_bytes(share.mlkem768_ciphertext[..], raw[36..1124]);
+    if share.group == GROUP_X25519_MLKEM768 {
+        core::ct_copy_bytes(share.mlkem768_ciphertext[..], raw[4..1092]);
+        core::ct_copy_bytes(share.x25519_public[..], raw[1092..1124]);
+    } else {
+        core::ct_copy_bytes(share.x25519_public[..], raw[4..36]);
+        core::ct_copy_bytes(share.mlkem768_ciphertext[..], raw[36..1124]);
+    }
 
     return true;
 }
@@ -307,6 +329,47 @@ fn derive_secp384r1_mlkem1024_shared_secret(
     core::ct_copy_bytes(combined[0..48], classical_ss[..]);
     core::ct_copy_bytes(combined[48..80], pq_ss[..]);
     return core::sha384(combined[..]);
+}
+
+// RFC 10024 Section 7.1 / draft-ietf-tls-ecdhe-mlkem: X25519 + ML-KEM-768 Shared Secret Combiner
+// Combines post-quantum and classical shared secrets: SHA-256(ss_pq || ss_classical)
+fn derive_x25519_mlkem768_shared_secret(
+    classical_ss: const u8[32]&,
+    pq_ss: const u8[32]&,
+) -> u8[32] {
+    var combined: u8[64] = [0; 64];
+    core::ct_copy_bytes(combined[0..32], pq_ss[..]);
+    core::ct_copy_bytes(combined[32..64], classical_ss[..]);
+    return core::sha256(combined[..]);
+}
+
+// Validates non-zero entropy and derives X25519+ML-KEM-768 shared secret (PQ || Classical).
+fn derive_x25519_mlkem768_shared_secret_checked(
+    classical_ss: const u8[:],
+    pq_ss: const u8[:],
+    out: u8[:],
+) -> bool {
+    guard classical_ss.len == 32 && pq_ss.len == 32 else { return false; }
+    guard out.len >= 32 else { return false; }
+
+    var classical_has_nonzero = false;
+    for b in classical_ss {
+        if b != 0 { classical_has_nonzero = true; break; }
+    }
+    guard classical_has_nonzero else { return false; }
+
+    var pq_has_nonzero = false;
+    for b in pq_ss {
+        if b != 0 { pq_has_nonzero = true; break; }
+    }
+    guard pq_has_nonzero else { return false; }
+
+    var combined: u8[64] = [0; 64];
+    core::ct_copy_bytes(combined[0..32], pq_ss[0..32]);
+    core::ct_copy_bytes(combined[32..64], classical_ss[0..32]);
+    let h = core::sha256(combined[..]);
+    core::ct_copy_bytes(out[0..32], h[..]);
+    return true;
 }
 
 // Combines the classical X25519 shared secret and the post-quantum shared secret:

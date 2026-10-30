@@ -48,7 +48,7 @@ fn test_openssl_cve_2009_2408_uri_nul() {
 
 fn test_uwebsockets_1876_backpressure_priority() {
     var ws = wing::WebSocketSession { .. };
-    wing::set_max_backpressure(ws, 100, false);
+    wing::set_max_backpressure(ws, 80, false);
 
     var out_wire: u8[>..] = [];
     let _ = wing::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);

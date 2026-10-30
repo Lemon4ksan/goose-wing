@@ -638,7 +638,10 @@ fn validate_ticket_age(
     guard expected_age_ms >= 0 && tolerance_ms >= 0 else { return false; }
     guard expected_age_ms <= MAX_TICKET_LIFETIME_MS else { return false; }
 
-    let raw_age = (obfuscated_ticket_age - ticket_age_add) as i64;
+    // RFC 8446 Section 4.2.11.1: ticket age is obfuscated via wrapping addition mod 2^32.
+    // Unobfuscation performs wrapping unsigned subtraction mod 2^32.
+    let raw_age_u32: u32 = obfuscated_ticket_age - ticket_age_add;
+    let raw_age = raw_age_u32 as i64;
     guard raw_age <= MAX_TICKET_LIFETIME_MS else { return false; }
 
     let diff = if raw_age > expected_age_ms {

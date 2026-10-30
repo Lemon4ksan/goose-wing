@@ -64,6 +64,11 @@ enum HsState {
     Closed,
 }
 
+enum EarlyDataAccepted {
+    Rejected,
+    Accepted,
+}
+
 fn client_wait_pre_transition(current: HsState, incoming_msg_type: u8, is_hrr: bool) -> HsState, bool {
     if current == HsState.ClientWaitSH {
         if incoming_msg_type == HS_MSG_SERVER_HELLO {
@@ -152,8 +157,16 @@ fn validate_client_handshake_transition(
     return client_wait_post_transition(current, incoming_msg_type);
 }
 
-fn server_wait_initial_transition(current: HsState, incoming_msg_type: u8, client_auth_requested: bool) -> HsState, bool {
+fn server_wait_initial_transition(
+    current: HsState,
+    incoming_msg_type: u8,
+    client_auth_requested: bool,
+    early_data_accepted: EarlyDataAccepted = EarlyDataAccepted.Rejected,
+) -> HsState, bool {
     if current == HsState.ServerWaitCH && incoming_msg_type == HS_MSG_CLIENT_HELLO {
+        if early_data_accepted == EarlyDataAccepted.Accepted {
+            return HsState.ServerWaitEOED, true;
+        }
         if client_auth_requested { return HsState.ServerWaitCert, true; }
         return HsState.ServerWaitFinished, true;
     }
@@ -224,8 +237,22 @@ fn validate_server_handshake_transition(
     current: HsState,
     incoming_msg_type: u8,
     client_auth_requested: bool,
+    early_data_accepted: EarlyDataAccepted = EarlyDataAccepted.Rejected,
 ) -> HsState, bool {
-    return validate_server_handshake_transition_auth(current, incoming_msg_type, client_auth_requested, false);
+    if current == HsState.ServerWaitCH || current == HsState.ServerWaitEOED {
+        return server_wait_initial_transition(
+            current,
+            incoming_msg_type,
+            client_auth_requested,
+            early_data_accepted,
+        );
+    }
+    return validate_server_handshake_transition_auth(
+        current,
+        incoming_msg_type,
+        client_auth_requested,
+        false,
+    );
 }
 
 fn can_client_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
@@ -864,7 +891,13 @@ fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len
 fn decompress_incoming_certificate<B>(payload: const u8[:], out_cert: B&) -> bool {
     var comp_msg = CompressedCertificate { .. };
     guard parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
-    return decompress_certificate_message(comp_msg, MAX_UNCOMPRESSED_CERT_LEN, out_cert);
+    guard comp_msg.uncompressed_length <= MAX_UNCOMPRESSED_CERT_LEN else { return false; }
+    return decompress_certificate_payload(
+        comp_msg.compressed_certificate_message,
+        comp_msg.algorithm,
+        comp_msg.uncompressed_length,
+        out_cert,
+    );
 }
 
 // RFC 8446 Section 4.2.7: Supported Groups - Encodes supported_groups extension (type 10)

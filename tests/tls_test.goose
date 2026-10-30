@@ -406,10 +406,10 @@ fn test_quic_crypto_gateway(t: core::T&) {
         let alert2 = wing::provide_quic_data(conn, wing::QuicEncryptionLevel.Initial, valid_data[..]);
         sub.assert_eq(wing::tls_alert_to_u8(alert2), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "wrong level rejected");
 
-        // ChangeCipherSpec (0x14) frame strictly forbidden in QUIC
-        let ccs_data: u8[3] = [0x01, 0x14, 0x02];
-        let alert3 = wing::provide_quic_data(conn, wing::QuicEncryptionLevel.Handshake, ccs_data[..]);
-        sub.assert_eq(wing::tls_alert_to_u8(alert3), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "CCS in QUIC strictly rejected");
+        // Handshake Finished (0x14) and payload containing 0x14 byte are valid in QUIC CRYPTO frames
+        let finished_data: u8[3] = [0x14, 0x00, 0x04];
+        let alert3 = wing::provide_quic_data(conn, wing::QuicEncryptionLevel.Handshake, finished_data[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert3), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "Finished (0x14) in QUIC accepted");
     };
 
     t.run("TLS-09: QUIC Header Protection Sample Extraction") { sub =>
@@ -783,6 +783,12 @@ fn test_anti_replay_and_psk(t: core::T&) {
         // Exceeding 7-day maximum ticket lifetime (604800000 ms, RFC 8446 §4.6.1)
         let ok_exp_max = internal::validate_ticket_age(ticket_age_add + 604800001, ticket_age_add, 604800001, tolerance_ms);
         sub.assert_false(ok_exp_max, "age exceeding 7 days rejected");
+
+        // Wrapping u32 subtraction when ticket_age_add causes uint32 overflow (RFC 8446 §4.2.11.1)
+        let large_add: u32 = 0xFFFFFFFF;
+        // If age = 5000ms, obfuscated = (0xFFFFFFFF + 5000) mod 2^32 = 4999
+        let ok_wrap = internal::validate_ticket_age(4999, large_add, 5000, 1000);
+        sub.assert_true(ok_wrap, "wrapping u32 ticket age calculation succeeds");
     };
 
     t.run("TLS-15: PSK Binder Constant-Time Verification") { sub =>
@@ -2283,6 +2289,149 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         let alert_expired = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], parsed_ok.next_update + 1000);
         sub.assert_eq(wing::tls_alert_to_u8(alert_expired), wing::tls_alert_to_u8(wing::TlsAlert.CertificateExpired), "expired OCSP returns CertificateExpired");
     };
+
+    t.run("TLS-40: Ed25519 X.509 Cryptographic Signature Chain Verification & Tamper Detection") { sub =>
+        let root_seed: u8[32] = [0x55; 32];
+        let root_kp = core::ed25519_keypair(root_seed);
+        let leaf_seed: u8[32] = [0x77; 32];
+        let leaf_kp = core::ed25519_keypair(leaf_seed);
+
+        // 1. Build TBSCertificate payload for leaf
+        var b_tbs_body = wing::builder_init();
+        // serialNumber (INTEGER: 0x42)
+        wing::put_u8(b_tbs_body, 0x02);
+        wing::put_u8(b_tbs_body, 1);
+        wing::put_u8(b_tbs_body, 0x42);
+        // signature (AlgorithmIdentifier: OID_ED25519)
+        wing::put_u8(b_tbs_body, 0x30);
+        wing::put_u8(b_tbs_body, 5);
+        wing::put_u8(b_tbs_body, 0x06);
+        wing::put_u8(b_tbs_body, 3);
+        wing::put_bytes(b_tbs_body, "\x2B\x65\x70");
+        // issuer (SEQUENCE "ROOT")
+        wing::put_u8(b_tbs_body, 0x30);
+        wing::put_u8(b_tbs_body, 6);
+        wing::put_u8(b_tbs_body, 0x13);
+        wing::put_u8(b_tbs_body, 4);
+        wing::put_bytes(b_tbs_body, "ROOT");
+        // validity (240101000000Z to 260101000000Z: 1704067200 to 1767225600)
+        wing::put_u8(b_tbs_body, 0x30);
+        wing::put_u8(b_tbs_body, 30);
+        wing::put_u8(b_tbs_body, 0x17);
+        wing::put_u8(b_tbs_body, 13);
+        wing::put_bytes(b_tbs_body, "240101000000Z");
+        wing::put_u8(b_tbs_body, 0x17);
+        wing::put_u8(b_tbs_body, 13);
+        wing::put_bytes(b_tbs_body, "260101000000Z");
+        // subject (SEQUENCE "LEAF")
+        wing::put_u8(b_tbs_body, 0x30);
+        wing::put_u8(b_tbs_body, 6);
+        wing::put_u8(b_tbs_body, 0x13);
+        wing::put_u8(b_tbs_body, 4);
+        wing::put_bytes(b_tbs_body, "LEAF");
+        // SPKI
+        wing::put_u8(b_tbs_body, 0x30);
+        wing::put_u8(b_tbs_body, 42);
+        wing::put_u8(b_tbs_body, 0x30);
+        wing::put_u8(b_tbs_body, 5);
+        wing::put_u8(b_tbs_body, 0x06);
+        wing::put_u8(b_tbs_body, 3);
+        wing::put_bytes(b_tbs_body, "\x2B\x65\x70");
+        wing::put_u8(b_tbs_body, 0x03);
+        wing::put_u8(b_tbs_body, 33);
+        wing::put_u8(b_tbs_body, 0x00);
+        wing::put_bytes(b_tbs_body, leaf_kp.public_key[..]);
+
+        // Wrap in TBSCertificate SEQUENCE
+        var b_tbs_full = wing::builder_init();
+        wing::put_u8(b_tbs_full, 0x30);
+        wing::put_u8(b_tbs_full, b_tbs_body.buf.len as u8);
+        wing::put_bytes(b_tbs_full, b_tbs_body.buf[..]);
+
+        // Compute Ed25519 signature over TBSCertificate DER
+        let leaf_sig = core::ed25519_sign(root_kp.seed, b_tbs_full.buf[..]);
+
+        // Build outer Certificate SEQUENCE
+        var b_cert_inner = wing::builder_init();
+        wing::put_bytes(b_cert_inner, b_tbs_full.buf[..]);
+        // outer signatureAlgorithm
+        wing::put_u8(b_cert_inner, 0x30);
+        wing::put_u8(b_cert_inner, 5);
+        wing::put_u8(b_cert_inner, 0x06);
+        wing::put_u8(b_cert_inner, 3);
+        wing::put_bytes(b_cert_inner, "\x2B\x65\x70");
+        // outer signatureValue (BIT STRING: len 65 = 1 unused bits octet + 64 sig bytes)
+        wing::put_u8(b_cert_inner, 0x03);
+        wing::put_u8(b_cert_inner, 65);
+        wing::put_u8(b_cert_inner, 0x00);
+        wing::put_bytes(b_cert_inner, leaf_sig[..]);
+
+        var b_leaf_cert = wing::builder_init();
+        wing::put_u8(b_leaf_cert, 0x30);
+        wing::put_u8(b_leaf_cert, 0x81);
+        wing::put_u8(b_leaf_cert, b_cert_inner.buf.len as u8);
+        wing::put_bytes(b_leaf_cert, b_cert_inner.buf[..]);
+
+        // Parse leaf certificate with zero-copy DER parser
+        var parsed_leaf = wing::ParsedCert { .. };
+        let ok_parse = wing::parse_x509_certificate(b_leaf_cert.buf[..], parsed_leaf);
+        sub.assert_true(ok_parse, "Leaf certificate successfully parsed by parse_x509_certificate");
+        sub.assert_eq(parsed_leaf.signature_value.length as i64, 64, "Extracted 64-byte signatureValue");
+        sub.assert_eq(parsed_leaf.tbs_cert.length as i64, b_tbs_full.buf.len, "TBSCertificate span matches signed data");
+
+        // Construct Root CA ParsedCert
+        let leaf_issuer = wing::span_slice(b_leaf_cert.buf[..], parsed_leaf.issuer_raw);
+        var raw_root: u8[>..] = [];
+        raw_root.append(leaf_issuer);
+        raw_root.append(root_kp.public_key[..]);
+
+        var parsed_root = wing::ParsedCert {
+            raw_len: raw_root.len as u32,
+            tbs_cert: wing::Span16 { offset: 0, length: raw_root.len as u16 },
+            serial_number: wing::Span16 { offset: 0, length: 1 },
+            sig_alg_oid: wing::Span16 { offset: 0, length: 1 },
+            issuer_raw: wing::Span16 { offset: 0, length: leaf_issuer.len as u16 },
+            validity_not_before: 1704067200,
+            validity_not_after: 1767225600,
+            subject_raw: wing::Span16 { offset: 0, length: leaf_issuer.len as u16 },
+            spki_raw: wing::Span16 { offset: leaf_issuer.len as u16, length: 32 },
+            spki_pubkey: wing::Span16 { offset: leaf_issuer.len as u16, length: 32 },
+            extensions_raw: wing::Span16 { offset: 0, length: 0 },
+            is_ca: true,
+            has_basic_constraints: true,
+            path_len_constraint: -1,
+            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage: true,
+        };
+
+        var store = wing::TrustAnchorStore { anchors: [] };
+        sub.assert_true(wing::add_trust_anchor(store, leaf_issuer, root_kp.public_key[..]), "Root trust anchor added");
+
+        var chain: wing::ParsedCert[..8] = [];
+        chain.push(parsed_leaf);
+        chain.push(parsed_root);
+
+        var raw_chain: const u8[:][..8] = [];
+        raw_chain.push(b_leaf_cert.buf[..]);
+        raw_chain.push(raw_root[..]);
+
+        // Verify chain with valid timestamp (2025-01-01 -> 1735689600)
+        let alert_ok = wing::verify_certificate_chain(chain, raw_chain, store, 1735689600);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "Valid Ed25519 signature chain verified");
+
+        // Tamper test: corrupt 1 byte of the leaf certificate signature
+        var tampered_cert: u8[>..] = [];
+        tampered_cert.append(b_leaf_cert.buf[..]);
+        let sig_pos = (parsed_leaf.signature_value.offset as i64) + 10;
+        tampered_cert[sig_pos] ^= 0x01;
+
+        var tampered_raw_chain: const u8[:][..8] = [];
+        tampered_raw_chain.push(tampered_cert[..]);
+        tampered_raw_chain.push(raw_root[..]);
+
+        let alert_tampered = wing::verify_certificate_chain(chain, tampered_raw_chain, store, 1735689600);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_tampered), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "Tampered signature rejected with BadCertificate");
+    };
 }
 
 // 8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)
@@ -2302,6 +2451,25 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         var parsed = wing::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Client hybrid key share parsed");
+        sub.assert_bytes_eq(wire[4..1156], client_share.mlkem768_public[..], "0x11EC wire starts with ML-KEM-768 public key (PQ || Classical)");
+        sub.assert_bytes_eq(wire[1156..1188], client_share.x25519_public[..], "0x11EC wire ends with X25519 public key");
+
+        // Draft 0x6399 (Classical || PQ) ordering verification
+        var draft_share = wing::PostQuantumKeyShare {
+            group: wing::GROUP_X25519_KYBER768_DRAFT00,
+            ..
+        };
+        for i in 32 { draft_share.x25519_public[i] = (i + 1) as u8; }
+        for i in 1152 { draft_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
+        var draft_wire: u8[>..] = [];
+        draft_share.format_hybrid_key_share(draft_wire);
+        sub.assert_eq(draft_wire.len, 1188, "Draft 0x6399 wire length 1188");
+        sub.assert_bytes_eq(draft_wire[4..36], draft_share.x25519_public[..], "0x6399 starts with X25519 (Classical || PQ)");
+        sub.assert_bytes_eq(draft_wire[36..1188], draft_share.mlkem768_public[..], "0x6399 ends with PQ key");
+        var parsed_draft = wing::PostQuantumKeyShare { .. };
+        sub.assert_true(parsed_draft.parse_hybrid_key_share(draft_wire[..]), "Draft share parsed");
+        sub.assert_eq(parsed_draft.group, wing::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
+        sub.assert_bytes_eq(parsed_draft.x25519_public[..], draft_share.x25519_public[..], "Draft x25519 matches");
 
         // Smuggling attempt: Appending trailing unparsed bytes to KeyShareEntry must fail
         var smuggled_wire: u8[>..] = [];
@@ -2324,6 +2492,8 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
 
         var parsed_server = wing::PostQuantumServerShare { .. };
         sub.assert_true(parsed_server.parse_hybrid_server_key_share(server_wire[..]), "Server share parsed");
+        sub.assert_bytes_eq(server_wire[4..1092], server_share.mlkem768_ciphertext[..], "0x11EC server wire starts with ML-KEM-768 ciphertext (PQ || Classical)");
+        sub.assert_bytes_eq(server_wire[1092..1124], server_share.x25519_public[..], "0x11EC server wire ends with X25519 public key");
 
         var smuggled_server: u8[>..] = [];
         smuggled_server.append(server_wire[..]);
@@ -2340,6 +2510,12 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         // Valid derivation succeeds
         let ok_comb = wing::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
         sub.assert_true(ok_comb, "valid hybrid shared secret derived");
+
+        var out_x25519_mlkem: u8[32] = [0; 32];
+        let ok_mlkem_comb = wing::derive_x25519_mlkem768_shared_secret_checked(classical_ss[..], pq_ss[..], out_x25519_mlkem[..]);
+        sub.assert_true(ok_mlkem_comb, "valid x25519_mlkem768 shared secret derived (PQ || Classical)");
+        let direct_sec = wing::derive_x25519_mlkem768_shared_secret(classical_ss, pq_ss);
+        sub.assert_bytes_eq(out_x25519_mlkem[..], direct_sec[..], "direct derivation matches checked");
 
         // Contributory attack defense: all-zero classical X25519 secret rejected (RFC 7748 §6.1)
         let zero_classical: u8[32] = [0x00; 32];
@@ -2949,6 +3125,24 @@ fn test_handshake_r2_invariants(t: core::T&) {
         let st_auth, ok_auth = wing::validate_server_handshake_transition(wing::HsState.ServerWaitCH, wing::HS_MSG_CLIENT_HELLO, true);
         sub.assert_true(ok_auth, "server accepts CH with client auth");
         sub.assert_true(st_auth == wing::HsState.ServerWaitCert, "server transitions to ServerWaitCert when client auth requested");
+
+        // 6. Server state machine: 0-RTT early data acceptance (ServerWaitCH -> ServerWaitEOED)
+        let st_0rtt, ok_0rtt = wing::validate_server_handshake_transition(
+            wing::HsState.ServerWaitCH,
+            wing::HS_MSG_CLIENT_HELLO,
+            false,
+            wing::EarlyDataAccepted.Accepted,
+        );
+        sub.assert_true(ok_0rtt, "server accepts CH with early data accepted");
+        sub.assert_true(st_0rtt == wing::HsState.ServerWaitEOED, "server transitions to ServerWaitEOED on early data acceptance");
+
+        let st_eoed, ok_eoed = wing::validate_server_handshake_transition(
+            wing::HsState.ServerWaitEOED,
+            wing::HS_MSG_END_OF_EARLY_DATA,
+            false,
+        );
+        sub.assert_true(ok_eoed, "server accepts EndOfEarlyData in ServerWaitEOED");
+        sub.assert_true(st_eoed == wing::HsState.ServerWaitFinished, "server transitions to ServerWaitFinished after EOED");
     };
 
     t.run("TLS-32: RFC 8446 §4.1.4 HelloRetryRequest Single HRR Limit & Transcript message_hash") { sub =>
@@ -3701,13 +3895,16 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         let ok_c = core::brotli_compress(cert_plaintext, compressed_data, 0);
         sub.assert_true(ok_c, "Brotli level 0 compression of certificate succeeds");
 
+        var decomp2: u8[>..] = [];
+        var decomp_zlib: u8[>..] = [];
+        var decomp_zstd: u8[>..] = [];
+
         var test_cert_msg = wing::CompressedCertificate {
             algorithm: wing::CERT_COMPRESSION_BROTLI,
             uncompressed_length: cert_plaintext.len as u32,
             compressed_certificate_message: compressed_data[..],
         };
 
-        var decompressed: u8[>..] = [];
         var wire: u8[>..] = [];
         let ok_enc = wing::encode_compressed_certificate(test_cert_msg, wire);
         sub.assert_true(ok_enc, "CompressedCertificate encoded");
@@ -3715,27 +3912,58 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         sub.assert_eq(wire[0], 0, "Algorithm high byte is 0");
         sub.assert_eq(wire[1], 2, "Algorithm low byte is 2 (Brotli)");
 
-        var parsed = wing::CompressedCertificate { .. };
-        let ok_dec = wing::parse_compressed_certificate_msg(wire[..], parsed);
-        sub.assert_true(ok_dec, "CompressedCertificate parsed");
-        sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
-        sub.assert_eq(parsed.uncompressed_length, cert_plaintext.len as u32, "Parsed length matches plaintext");
-        sub.assert_true(parsed.compressed_certificate_message == compressed_data[..], "Compressed bytes match");
+        {
+            var parsed = wing::CompressedCertificate { .. };
+            let ok_dec = wing::parse_compressed_certificate_msg(wire[..], parsed);
+            sub.assert_true(ok_dec, "CompressedCertificate parsed");
+            sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
+            sub.assert_eq(parsed.uncompressed_length, cert_plaintext.len as u32, "Parsed length matches plaintext");
+            sub.assert_true(parsed.compressed_certificate_message == compressed_data[..], "Compressed bytes match");
 
-        // Safe decompression via handler interface
-        let ok_decomp = wing::decompress_certificate_message(parsed, 10000, decompressed);
-        sub.assert_true(ok_decomp, "Safe decompression succeeds");
-        sub.assert_bytes_eq(decompressed[..], cert_plaintext, "Decompressed certificate matches original exactly");
+            // Safe decompression via handler interface
+            var decompressed: u8[>..] = [];
+            let ok_decomp = wing::decompress_certificate_message(parsed, 10000, decompressed);
+            sub.assert_true(ok_decomp, "Safe decompression succeeds");
+            sub.assert_bytes_eq(decompressed[..], cert_plaintext, "Decompressed certificate matches original exactly");
+        }
 
-        var decomp2: u8[>..] = [];
         let ok_brotli = wing::decompress_certificate_brotli(compressed_data[..], cert_plaintext.len as u32, decomp2);
         sub.assert_true(ok_brotli, "decompress_certificate_brotli succeeds");
         sub.assert_bytes_eq(decomp2[..], cert_plaintext, "decomp2 matches original exactly");
 
+        var wire_copy: u8[..4096] = [];
+        wire_copy.append(wire[..]);
         var decomp3: u8[>..] = [];
-        let ok_incoming = wing::decompress_incoming_certificate(wire[..], decomp3);
+        let ok_incoming = wing::decompress_incoming_certificate(wire_copy[..], decomp3);
         sub.assert_true(ok_incoming, "decompress_incoming_certificate succeeds on handshake wire payload");
         sub.assert_bytes_eq(decomp3[..], cert_plaintext, "decomp3 matches original plaintext");
+
+        // Zlib compression/decompression verification
+        var zlib_comp: u8[>..] = [];
+        let ok_zcomp = core::zlib_compress(cert_plaintext, zlib_comp);
+        sub.assert_true(ok_zcomp, "zlib compression succeeds");
+
+        var zlib_msg = wing::CompressedCertificate {
+            algorithm: wing::CERT_COMPRESSION_ZLIB,
+            uncompressed_length: cert_plaintext.len as u32,
+            compressed_certificate_message: zlib_comp[..],
+        };
+        let ok_zdecomp = wing::decompress_certificate_message(zlib_msg, 10000, decomp_zlib);
+        sub.assert_true(ok_zdecomp, "zlib certificate decompression succeeds");
+        sub.assert_bytes_eq(decomp_zlib[..], cert_plaintext, "decompressed zlib matches plaintext");
+
+        // Zstandard (IANA 3) compression/decompression verification
+        var zstd_comp: u8[>..] = [];
+        let ok_zstd_comp = core::zstd_compress(cert_plaintext, zstd_comp);
+        sub.assert_true(ok_zstd_comp, "zstd compression succeeds");
+        var zstd_msg = wing::CompressedCertificate {
+            algorithm: wing::CERT_COMPRESSION_ZSTD_IANA,
+            uncompressed_length: cert_plaintext.len as u32,
+            compressed_certificate_message: zstd_comp[..],
+        };
+        let ok_zstd_decomp = wing::decompress_certificate_message(zstd_msg, 10000, decomp_zstd);
+        sub.assert_true(ok_zstd_decomp, "zstd certificate decompression succeeds");
+        sub.assert_bytes_eq(decomp_zstd[..], cert_plaintext, "decompressed zstd matches plaintext");
     };
 
     t.run("3. Enterprise Decompression Bomb and Boundary Protection") { sub =>

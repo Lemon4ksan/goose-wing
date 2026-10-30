@@ -676,8 +676,8 @@ fn new_quic_crypto_conn() -> QuicCryptoConn {
 
 // Validates RFC 9001 invariants on incoming QUIC handshake bytes:
 // 1. Encryption level must match current read_level.
-// 2. ChangeCipherSpec is strictly forbidden in QUIC streams.
-// 3. CRYPTO frames cannot be empty (DecodeError) or exceed quota (RecordOverflow).
+// 2. CRYPTO frames cannot be empty (DecodeError) or exceed quota (RecordOverflow).
+// Handshake messages (e.g. Finished with type 20 / 0x14) and payload data are valid in QUIC CRYPTO.
 fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: const u8[:]) -> TlsAlert {
     guard quic_encryption_level_to_u8(level) == quic_encryption_level_to_u8(conn.read_level) else {
         return TlsAlert.UnexpectedMessage;
@@ -687,11 +687,6 @@ fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: co
     }
     guard data.len <= MAX_QUIC_CRYPTO_BUFFER_LEN else {
         return TlsAlert.RecordOverflow;
-    }
-    for b in data {
-        if b == CONTENT_TYPE_CHANGE_CIPHER_SPEC {
-            return TlsAlert.UnexpectedMessage;
-        }
     }
     return TlsAlert.CloseNotify;
 }

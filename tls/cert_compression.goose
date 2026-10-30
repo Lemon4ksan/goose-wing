@@ -31,7 +31,8 @@ inline fn is_within_decompression_ratio(uncompressed_len: u32, compressed_len: u
 fn is_valid_compression_algorithm(algo: u16) -> bool {
     return algo == CERT_COMPRESSION_BROTLI
         || algo == CERT_COMPRESSION_ZSTD
-        || algo == CERT_COMPRESSION_ZSTD_IANA;
+        || algo == CERT_COMPRESSION_ZSTD_IANA
+        || algo == CERT_COMPRESSION_ZLIB;
 }
 
 // ---- 2. CompressedCertificate Message Model ---------------------------------
@@ -104,13 +105,37 @@ fn decompress_certificate_message<B>(
     guard is_within_decompression_ratio(msg.uncompressed_length, comp_len) else {
         return false;
     }
+    return decompress_certificate_payload(
+        msg.compressed_certificate_message,
+        msg.algorithm,
+        msg.uncompressed_length,
+        out_cert,
+    );
+}
 
-    let expected_len = msg.uncompressed_length;
-    let algo = msg.algorithm;
-    let comp_data = msg.compressed_certificate_message;
-
+fn decompress_certificate_payload<B>(
+    comp_data: const u8[:],
+    algo: u16,
+    expected_len: u32,
+    out_cert: B&,
+) -> bool {
     if algo == CERT_COMPRESSION_BROTLI {
         let ok, _ = core::brotli_decompress_with_limit(
+            comp_data,
+            out_cert,
+            expected_len as i64,
+        );
+        guard ok && (out_cert.len as u32) == expected_len else { return false; }
+        return true;
+    } else if algo == CERT_COMPRESSION_ZLIB {
+        let ok, _ = core::zlib_decompress(
+            comp_data,
+            out_cert,
+        );
+        guard ok && (out_cert.len as u32) == expected_len else { return false; }
+        return true;
+    } else if algo == CERT_COMPRESSION_ZSTD_IANA {
+        let ok, _ = core::zstd_decompress_with_limit(
             comp_data,
             out_cert,
             expected_len as i64,

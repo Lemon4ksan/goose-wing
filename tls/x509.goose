@@ -412,6 +412,7 @@ struct ParsedCert {
     name_constraints_raw: Span16 = Span16 { offset: 0, length: 0 },
     has_name_constraints: bool = false,
     has_malformed_policy_constraints: bool = false,
+    signature_value: Span16 = Span16 { offset: 0, length: 0 },
 }
 
 fn parse_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
@@ -486,28 +487,64 @@ fn parse_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: Parsed
     }
 }
 
-// Parses raw X.509 certificate DER into zero-allocation ParsedCert descriptor.
+fn x509_read_outer_sequence(raw_cert: const u8[:], cert_seq: ByteCursor&) -> bool {
+    var cert_cursor = cursor_from(raw_cert);
+    if !get_asn1_element(cert_cursor, ASN1_TAG_SEQUENCE, cert_seq) { return false; }
+    return cursor_len(cert_cursor) == 0;
+}
+
+inline fn calc_consumed_span_len(start_len: i64, remaining_len: i64) -> i64 {
+    return start_len - remaining_len;
+}
+
+// Parses raw X.509 certificate DER into zero-allocation ParsedCert descriptor (RFC 5280 Section 4.1).
+// Extracts spans for tbsCertificate, serial, issuer, validity, subject, SPKI, and signature.
+//
+// Example:
+//   raw_cert = "\x30\x82\x01\x20\x30\x81\xC8..." (valid X.509 DER Certificate)
+//   returns: true, out.raw_len = 292, out.signature_value.length = 64
 fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     out.raw_len = raw_cert.len as u32;
-    var cert_cursor = cursor_from(raw_cert);
-
-    // Outer Certificate SEQUENCE
     var cert_seq = cursor_from(raw_cert[..0]);
-    if !get_asn1_element(cert_cursor, ASN1_TAG_SEQUENCE, cert_seq) { return false; }
-    // No trailing bytes allowed in canonical DER certificate
-    guard cursor_len(cert_cursor) == 0 else { return false; }
+    guard x509_read_outer_sequence(raw_cert, cert_seq) else { return false; }
 
     // TBSCertificate SEQUENCE
+    let tbs_raw_start = cert_seq.buf;
     var tbs_seq = cursor_from(raw_cert[..0]);
-    let tbs_start_remaining = cursor_len(cert_seq);
     if !get_asn1_element(cert_seq, ASN1_TAG_SEQUENCE, tbs_seq) { return false; }
-    out.tbs_cert = make_span(raw_cert, tbs_seq.buf);
+    let tbs_tlv_len = calc_consumed_span_len(tbs_raw_start.len, cert_seq.buf.len);
+    out.tbs_cert = make_span(raw_cert, tbs_raw_start[..tbs_tlv_len]);
 
+    guard x509_read_tbs_components(raw_cert, tbs_seq, out) else { return false; }
+    return x509_read_outer_signature(raw_cert, cert_seq, out);
+}
+
+fn x509_read_tbs_components(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     guard x509_skip_tbs_version(tbs_seq) else { return false; }
-
     if !parse_tbs_serial(raw_cert, tbs_seq, out) { return false; }
     if !parse_tbs_sig_alg(raw_cert, tbs_seq, out) { return false; }
     return parse_tbs_identity(raw_cert, tbs_seq, out);
+}
+
+fn x509_read_outer_signature(raw_cert: const u8[:], cert_seq: ByteCursor&, out: ParsedCert&) -> bool {
+    guard cursor_len(cert_seq) > 0 else { return true; }
+    var outer_sig_alg = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(cert_seq, ASN1_TAG_SEQUENCE, outer_sig_alg) { return false; }
+    var outer_sig_oid = cursor_from(raw_cert[..0]);
+    if !get_asn1_element(outer_sig_alg, ASN1_TAG_OID, outer_sig_oid) { return false; }
+
+    // RFC 5280 §4.1.2.3: Outer and inner signature algorithms MUST match
+    let inner_sig_oid = span_slice(raw_cert, out.sig_alg_oid);
+    guard outer_sig_oid.buf == inner_sig_oid else { return false; }
+
+    var sig_bits = cursor_from(raw_cert[..0]);
+    var unused_bits: u8 = 0;
+    if !get_asn1_bit_string(cert_seq, sig_bits, unused_bits) { return false; }
+    guard unused_bits == 0 else { return false; }
+    out.signature_value = make_span(raw_cert, sig_bits.buf);
+
+    guard cursor_len(cert_seq) == 0 else { return false; }
+    return true;
 }
 
 fn x509_skip_tbs_version(tbs_seq: ByteCursor&) -> bool {
@@ -1441,6 +1478,41 @@ fn x509_validate_single_chain_cert(
     return TlsAlert.CloseNotify;
 }
 
+fn x509_verify_cert_signature(
+    child_cert: const ParsedCert&,
+    child_raw: const u8[:],
+    parent_cert: const ParsedCert&,
+    parent_raw: const u8[:],
+) -> TlsAlert {
+    guard child_cert.signature_value.length > 0 else { return TlsAlert.CloseNotify; }
+
+    let sig_oid = span_slice(child_raw, child_cert.sig_alg_oid);
+    let tbs_data = span_slice(child_raw, child_cert.tbs_cert);
+    let sig_bytes = span_slice(child_raw, child_cert.signature_value);
+    var parent_pubkey = span_slice(parent_raw, parent_cert.spki_pubkey);
+
+    if parent_pubkey.len == 33 && parent_pubkey[0] == 0 {
+        parent_pubkey = parent_pubkey[1..];
+    }
+
+    if sig_oid == OID_ED25519[..] {
+        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
+            return TlsAlert.BadCertificate;
+        }
+        var pub_arr: u8[32] = [0; 32];
+        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
+        var sig_arr: u8[64] = [0; 64];
+        for k in 64 { sig_arr[k] = sig_bytes[k]; }
+
+        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
+            return TlsAlert.BadCertificate;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    return TlsAlert.CloseNotify;
+}
+
 fn x509_validate_chain_linkage(
     chain_certs: const ParsedCert[..8]&,
     raw_certs: const u8[:][..8]&,
@@ -1463,6 +1535,15 @@ fn x509_validate_chain_linkage(
         }
     }
     return TlsAlert.CloseNotify;
+}
+
+fn x509_validate_link_signature(
+    chain_certs: const ParsedCert[..8]&,
+    raw_certs: const u8[:][..8]&,
+    i: i64,
+) -> TlsAlert {
+    guard i + 1 < chain_certs.len else { return TlsAlert.CloseNotify; }
+    return x509_verify_cert_signature(chain_certs[i], raw_certs[i], chain_certs[i + 1], raw_certs[i + 1]);
 }
 
 fn x509_check_child_sans_against_nc(
@@ -1528,11 +1609,20 @@ fn verify_certificate_chain(
     let is_direct_trust_anchor = (chain_certs.len == 1 && matches_trust_anchor(trust_store, chain_certs[0], raw_certs[0]));
 
     for i in chain_certs.len {
-        let cert_alert = x509_validate_single_chain_cert(chain_certs[i], raw_certs[i], i, is_direct_trust_anchor, now_unix);
+        let cert_alert = x509_validate_single_chain_cert(
+            chain_certs[i],
+            raw_certs[i],
+            i,
+            is_direct_trust_anchor,
+            now_unix,
+        );
         guard cert_alert == TlsAlert.CloseNotify else { return cert_alert; }
 
         let link_alert = x509_validate_chain_linkage(chain_certs, raw_certs, i);
         guard link_alert == TlsAlert.CloseNotify else { return link_alert; }
+
+        let sig_alert = x509_validate_link_signature(chain_certs, raw_certs, i);
+        guard sig_alert == TlsAlert.CloseNotify else { return sig_alert; }
     }
 
     let nc_alert = x509_enforce_chain_name_constraints(chain_certs, raw_certs);
