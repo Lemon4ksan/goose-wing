@@ -32,6 +32,13 @@ fn main() {
     assert(!bp.is_active);
     assert(bp.len == 0);
 
+    // Verify large payload buffering up to 16 KB
+    var large_msg: u8[8192] = ['X'; 8192];
+    assert(wing::buffer_backpressure(bp, large_msg[..]));
+    assert(bp.len == 8192);
+    wing::clear_backpressure_slot(bp);
+    assert(!bp.is_active);
+
     print("BACKPRESSURE_FSM: OK");
 }
 // CHECK: BACKPRESSURE_FSM: OK

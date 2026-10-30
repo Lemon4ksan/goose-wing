@@ -885,7 +885,7 @@ fn push_free_slot(stack: FreeSlotStack&, slot: i64) -> bool {
 // Bounded zero-allocation backpressure slot for non-blocking reactor connection.
 // Buffers partial socket writes when send() returns EAGAIN/EWOULDBLOCK.
 struct BackpressureSlot {
-    buf: u8[4096] = [0; 4096],
+    buf: u8[16384] = [0; 16384],
     len: i64 = 0,
     offset: i64 = 0,
     is_active: bool = false,
@@ -899,13 +899,13 @@ fn clear_backpressure_slot(bp: BackpressureSlot&) {
 }
 
 // Buffers unsent payload bytes when socket send() cannot complete immediately.
-// Returns true if buffered, false if unsent data exceeds 4096 buffer capacity.
+// Returns true if buffered, false if unsent data exceeds 16384 buffer capacity.
 //
 // Example:
 //   unsent = "HTTP/1.1 200 OK\r\n\r\nHello"
 //   returns: ok = true, bp.len = 24, bp.is_active = true
 fn buffer_backpressure(bp: BackpressureSlot&, unsent: const u8[:]) -> bool {
-    guard unsent.len > 0 && unsent.len <= 4096 else { return false; }
+    guard unsent.len > 0 && unsent.len <= 16384 else { return false; }
     for i in unsent.len {
         bp.buf[i] = unsent[i];
     }
@@ -923,7 +923,7 @@ fn buffer_backpressure(bp: BackpressureSlot&, unsent: const u8[:]) -> bool {
 //   returns: bytes_written = 24, ok = true (fully drained)
 fn drain_backpressure(bp: BackpressureSlot&, sock_fd: i64) -> i64, bool {
     guard bp.is_active else { return 0, true; }
-    guard bp.offset < bp.len && bp.len <= 4096 else {
+    guard bp.offset < bp.len && bp.len <= 16384 else {
         clear_backpressure_slot(bp);
         return 0, true;
     }

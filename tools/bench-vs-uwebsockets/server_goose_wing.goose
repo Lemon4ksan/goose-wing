@@ -95,12 +95,12 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
     var slots: ConnSlot[1024] = [ConnSlot { .. }; 1024];
     var free_slots = wing::FreeSlotStack { .. };
     wing::init_free_slots(free_slots, 1024);
-    var bp_pool: wing::BackpressureSlot[32] = [wing::BackpressureSlot { .. }; 32];
-    var bp_free: i64[32] = [0; 32];
-    for b in 32 {
-        bp_free[b] = 31 - b;
+    var bp_pool: wing::BackpressureSlot[16] = [wing::BackpressureSlot { .. }; 16];
+    var bp_free: i64[16] = [0; 16];
+    for b in 16 {
+        bp_free[b] = 15 - b;
     }
-    var bp_free_top: i64 = 32;
+    var bp_free_top: i64 = 16;
 
     var ready_fds: i64[0] = [];
     var ready_udata: u64[1024] = [0; 1024];
@@ -162,10 +162,10 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             // Drain active backpressure if registered for EPOLLOUT
             if slots[slot_idx].bp_idx >= 0 {
                 let bp_i = slots[slot_idx].bp_idx as i64;
-                if bp_i >= 0 && bp_i < 32 {
+                if bp_i >= 0 && bp_i < 16 {
                     let drained, ok = wing::drain_backpressure(bp_pool[bp_i], conn);
                     if ok {
-                        if bp_free_top < 32 {
+                        if bp_free_top < 16 {
                             bp_free[bp_free_top] = bp_i;
                             bp_free_top++;
                         }
@@ -419,30 +419,36 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 continue;
             }
 
-            // Flush cork buffer batch in 1 single tcp_send syscall
+            // Flush cork buffer batch in bounded send loop with fallback to backpressure
             if cork_len > 0 && cork_len <= cork_buf.len {
-                let sent = wing::tcp_send(conn, cork_buf[..cork_len]);
-                if sent < 0 {
-                    if sent == -2 && slots[slot_idx].bp_idx == -1 && bp_free_top > 0 {
-                        bp_free_top--;
-                        let bp_i = bp_free[bp_free_top];
-                        slots[slot_idx].bp_idx = bp_i as i16;
-                        wing::buffer_backpressure(bp_pool[bp_i], cork_buf[..cork_len]);
-                        wing::epoll_mod(epfd, conn, wing::EPOLL_READ | wing::EPOLL_WRITE, slot_idx as u64);
-                    } else {
-                        client_alive = false;
+                var total_sent: i64 = 0;
+                var send_attempts: i64 = 0;
+                while total_sent < cork_len && send_attempts < 4 {
+                    let sent = wing::tcp_send(conn, cork_buf[total_sent..cork_len]);
+                    if sent <= 0 {
+                        break;
                     }
-                } else if sent < cork_len {
+                    total_sent += sent;
+                    send_attempts += 1;
+                }
+
+                if total_sent < cork_len {
+                    let unsent = cork_buf[total_sent..cork_len];
                     if slots[slot_idx].bp_idx == -1 && bp_free_top > 0 {
                         bp_free_top--;
                         let bp_i = bp_free[bp_free_top];
-                        slots[slot_idx].bp_idx = bp_i as i16;
-                        wing::buffer_backpressure(bp_pool[bp_i], cork_buf[sent..cork_len]);
-                        wing::epoll_mod(epfd, conn, wing::EPOLL_READ | wing::EPOLL_WRITE, slot_idx as u64);
+                        let buffered = wing::buffer_backpressure(bp_pool[bp_i], unsent);
+                        if buffered {
+                            slots[slot_idx].bp_idx = bp_i as i16;
+                            wing::epoll_mod(epfd, conn, wing::EPOLL_READ | wing::EPOLL_WRITE, slot_idx as u64);
+                        } else {
+                            client_alive = false;
+                        }
                     } else {
                         client_alive = false;
                     }
                 }
+
                 if !client_alive {
                     cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
                     continue;
