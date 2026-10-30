@@ -118,6 +118,7 @@ def main() -> int:
                     f"{os.sep}vendor{os.sep}",
                     f"{os.sep}scratch{os.sep}",
                     f"{os.sep}.gemini{os.sep}",
+                    f"{os.sep}.worktrees{os.sep}",
                     f"{os.sep}.git{os.sep}",
                     f"{os.sep}bin{os.sep}",
                     f"{os.sep}build{os.sep}",

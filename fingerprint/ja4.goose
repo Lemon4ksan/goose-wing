@@ -116,18 +116,69 @@ fn ja4_alpn_string<B>(alpn_protocol: const u8[:], out: B&) {
 
 // ---- ja4 tls client fingerprint calculation --------------------------------
 
+fn append_ja4_ciphers_hash<B>(filtered_ciphers: u16[>..]&, out: B&) {
+    if filtered_ciphers.len == 0 {
+        out.append("000000000000");
+        return;
+    }
+    sort_u16(filtered_ciphers);
+    var cipher_buf: u8[>..] = [];
+    for i in filtered_ciphers.len {
+        if i > 0 { cipher_buf.push(','); }
+        append_hex4(filtered_ciphers[i], cipher_buf);
+    }
+    hash_12_hex(cipher_buf[..], out);
+}
+
+fn append_ja4_extensions_hash<B>(
+    filtered_exts:  const u16[:],
+    sig_algorithms: const u16[:],
+    out:            B&,
+) {
+    var hash_exts: u16[>..] = [];
+    for e in filtered_exts {
+        if e != 0x0000 && e != 0x0010 { // Exclude SNI and ALPN per JA4 standard
+            hash_exts.push(e);
+        }
+    }
+
+    var filtered_sigs: u16[>..] = [];
+    filter_grease_u16(sig_algorithms, filtered_sigs);
+
+    if hash_exts.len == 0 && filtered_sigs.len == 0 {
+        out.append("000000000000");
+        return;
+    }
+    sort_u16(hash_exts);
+    var ext_buf: u8[>..] = [];
+    for i in hash_exts.len {
+        if i > 0 { ext_buf.push(','); }
+        append_hex4(hash_exts[i], ext_buf);
+    }
+    if filtered_sigs.len > 0 {
+        if hash_exts.len > 0 {
+            ext_buf.push('_');
+        }
+        for i in filtered_sigs.len {
+            if i > 0 { ext_buf.push(','); }
+            append_hex4(filtered_sigs[i], ext_buf);
+        }
+    }
+    hash_12_hex(ext_buf[..], out);
+}
+
 // Computes the FoxIO JA4 TLS client fingerprint in format:
 // {protocol}{version}{sni}{cipher_count}{ext_count}{alpn}_{cipher_hash}_{ext_hash}
 // E.g.: "t13d1516h2_8daaf6152771_e5627efa2ab1"
 fn compute_ja4<B>(
-    ciphers: const u16[:],
-    extensions: const u16[:],
+    ciphers:            const u16[:],
+    extensions:         const u16[:],
     supported_versions: const u16[:],
-    sni: bool,
-    alpn_protocol: const u8[:],
-    sig_algorithms: const u16[:],
-    is_quic: bool,
-    out: B&,
+    sni:                bool,
+    alpn_protocol:      const u8[:],
+    sig_algorithms:     const u16[:],
+    is_quic:            bool,
+    out:                B&,
 ) {
     // 1. Protocol prefix: 't' for TCP TLS, 'q' for QUIC
     out.push(if is_quic { 'q' } else { 't' });
@@ -153,65 +204,24 @@ fn compute_ja4<B>(
 
     out.push('_');
 
-    // 7. Cipher Hash: sorted non-GREASE ciphers as comma-separated 4-hex values
-    if filtered_ciphers.len == 0 {
-        out.append("000000000000");
-    } else {
-        sort_u16(filtered_ciphers);
-        var cipher_buf: u8[>..] = [];
-        for i in filtered_ciphers.len {
-            if i > 0 { cipher_buf.push(','); }
-            append_hex4(filtered_ciphers[i], cipher_buf);
-        }
-        hash_12_hex(cipher_buf[..], out);
-    }
+    // 7. Cipher Hash
+    append_ja4_ciphers_hash(filtered_ciphers, out);
 
     out.push('_');
 
-    // 8. Extension Hash: sorted non-GREASE extensions (excluding SNI 0x0000 and ALPN 0x0010)
-    // followed by '_' and raw signature algorithms if present
-    var hash_exts: u16[>..] = [];
-    for e in filtered_exts {
-        if e != 0x0000 && e != 0x0010 { // Exclude SNI and ALPN per JA4 standard
-            hash_exts.push(e);
-        }
-    }
-
-    // Filter GREASE from signature algorithms per FoxIO JA4 spec
-    var filtered_sigs: u16[>..] = [];
-    filter_grease_u16(sig_algorithms, filtered_sigs);
-
-    if hash_exts.len == 0 && filtered_sigs.len == 0 {
-        out.append("000000000000");
-    } else {
-        sort_u16(hash_exts);
-        var ext_buf: u8[>..] = [];
-        for i in hash_exts.len {
-            if i > 0 { ext_buf.push(','); }
-            append_hex4(hash_exts[i], ext_buf);
-        }
-        if filtered_sigs.len > 0 {
-            if hash_exts.len > 0 {
-                ext_buf.push('_');
-            }
-            for i in filtered_sigs.len {
-                if i > 0 { ext_buf.push(','); }
-                append_hex4(filtered_sigs[i], ext_buf);
-            }
-        }
-        hash_12_hex(ext_buf[..], out);
-    }
+    // 8. Extension Hash
+    append_ja4_extensions_hash(filtered_exts[..], sig_algorithms, out);
 }
 
 // Convenience wrapper returning a fixed-capacity buffer.
 fn compute_ja4(
-    ciphers: const u16[:],
-    extensions: const u16[:],
+    ciphers:            const u16[:],
+    extensions:         const u16[:],
     supported_versions: const u16[:],
-    sni: bool = true,
-    alpn_protocol: const u8[:] = "h2",
-    sig_algorithms: const u16[:] = [],
-    is_quic: bool = false,
+    sni:                bool         = true,
+    alpn_protocol:      const u8[:]  = "h2",
+    sig_algorithms:     const u16[:] = [],
+    is_quic:            bool         = false,
 ) -> u8[..64] {
     var out: u8[..64] = [];
     compute_ja4(ciphers, extensions, supported_versions, sni, alpn_protocol, sig_algorithms, is_quic, out);
@@ -274,19 +284,73 @@ fn append_ja4h_language<B>(accept_lang: const u8[:], out: B&) {
     }
 }
 
+struct Ja4hFlags {
+    has_cookie:  bool = false,
+    has_referer: bool = false,
+}
+
+fn append_ja4h_headers_hash<B>(filtered_headers: const u8[:][:], out: B&) {
+    if filtered_headers.len == 0 {
+        out.append("000000000000");
+        return;
+    }
+    var hbuf: u8[>..] = [];
+    for i in filtered_headers.len {
+        if i > 0 { hbuf.push(','); }
+        core::to_lower_ascii(filtered_headers[i], hbuf);
+    }
+    hash_12_hex(hbuf[..], out);
+}
+
+fn append_ja4h_cookies_hash<B>(
+    cookie_names:  const u8[:][:],
+    cookie_values: const u8[:][:],
+    out:           B&,
+) {
+    if cookie_names.len == 0 {
+        out.append("000000000000_000000000000");
+        return;
+    }
+    var order: i64[>..] = [];
+    for i in cookie_names.len { order.push(i); }
+    sort_cookie_indices(cookie_names, order);
+
+    // 8. Cookie Names Hash
+    var cbuf: u8[>..] = [];
+    for i in order.len {
+        if i > 0 { cbuf.push(','); }
+        cbuf.append(cookie_names[order[i]]);
+    }
+    hash_12_hex(cbuf[..], out);
+
+    out.push('_');
+
+    // 9. Cookie Values Hash (sorted name=value pairs)
+    var vbuf: u8[>..] = [];
+    for i in order.len {
+        if i > 0 { vbuf.push(','); }
+        let idx = order[i];
+        vbuf.append(cookie_names[idx]);
+        vbuf.push('=');
+        if idx < cookie_values.len {
+            vbuf.append(cookie_values[idx]);
+        }
+    }
+    hash_12_hex(vbuf[..], out);
+}
+
 // Computes the FoxIO JA4H HTTP client fingerprint in format:
 // {method}{version}{cookie}{referer}{header_count}{lang}_{headers_hash}_{cookie_names}_{cookie_values}
 // E.g.: "ge20cn04enus_1c8f3b0e29d1_000000000000_000000000000"
 fn compute_ja4h<B>(
-    method: const u8[:],
-    proto: const u8[:],
-    header_names: const u8[:][:],
-    has_cookie: bool,
-    has_referer: bool,
+    method:          const u8[:],
+    proto:           const u8[:],
+    header_names:    const u8[:][:],
+    flags:           Ja4hFlags,
     accept_language: const u8[:],
-    cookie_names: const u8[:][:],
-    cookie_values: const u8[:][:],
-    out: B&,
+    cookie_names:    const u8[:][:],
+    cookie_values:   const u8[:][:],
+    out:             B&,
 ) {
     // 1. Method (2 chars lowercased)
     if method.len >= 2 {
@@ -310,10 +374,10 @@ fn compute_ja4h<B>(
     }
 
     // 3. Cookie present ('c' / 'n')
-    out.push(if has_cookie { 'c' } else { 'n' });
+    out.push(if flags.has_cookie { 'c' } else { 'n' });
 
     // 4. Referer present ('r' / 'n')
-    out.push(if has_referer { 'r' } else { 'n' });
+    out.push(if flags.has_referer { 'r' } else { 'n' });
 
     // 5. Header count (excluding Cookie and Referer, 2 digits)
     var filtered_headers: const u8[:][>..] = [];
@@ -329,65 +393,35 @@ fn compute_ja4h<B>(
 
     out.push('_');
 
-    // 7. Headers Hash (wire-order lowercase header names joined by comma per FoxIO JA4H)
-    if filtered_headers.len == 0 {
-        out.append("000000000000");
-    } else {
-        var hbuf: u8[>..] = [];
-        for i in filtered_headers.len {
-            if i > 0 { hbuf.push(','); }
-            core::to_lower_ascii(filtered_headers[i], hbuf);
-        }
-        hash_12_hex(hbuf[..], out);
-    }
+    // 7. Headers Hash
+    append_ja4h_headers_hash(filtered_headers[..], out);
 
     out.push('_');
 
-    // 8. Cookie Names & 9. Cookie Values (sorted alphabetically by cookie name per FoxIO JA4H)
-    if cookie_names.len == 0 {
-        out.append("000000000000_000000000000");
-    } else {
-        var order: i64[>..] = [];
-        for i in cookie_names.len { order.push(i); }
-        sort_cookie_indices(cookie_names, order);
-
-        // 8. Cookie Names Hash
-        var cbuf: u8[>..] = [];
-        for i in order.len {
-            if i > 0 { cbuf.push(','); }
-            cbuf.append(cookie_names[order[i]]);
-        }
-        hash_12_hex(cbuf[..], out);
-
-        out.push('_');
-
-        // 9. Cookie Values Hash (sorted name=value pairs)
-        var vbuf: u8[>..] = [];
-        for i in order.len {
-            if i > 0 { vbuf.push(','); }
-            let idx = order[i];
-            vbuf.append(cookie_names[idx]);
-            vbuf.push('=');
-            if idx < cookie_values.len {
-                vbuf.append(cookie_values[idx]);
-            }
-        }
-        hash_12_hex(vbuf[..], out);
-    }
+    // 8. Cookie Names & 9. Cookie Values
+    append_ja4h_cookies_hash(cookie_names, cookie_values, out);
 }
 
 // Convenience wrapper for JA4H returning a fixed-capacity buffer.
 fn compute_ja4h(
-    method: const u8[:],
-    proto: const u8[:],
-    header_names: const u8[:][:],
-    has_cookie: bool,
-    has_referer: bool,
-    accept_language: const u8[:] = "",
-    cookie_names: const u8[:][:] = [],
-    cookie_values: const u8[:][:] = [],
+    method:          const u8[:],
+    proto:           const u8[:],
+    header_names:    const u8[:][:],
+    flags:           Ja4hFlags      = Ja4hFlags { .. },
+    accept_language: const u8[:]    = "",
+    cookie_names:    const u8[:][:] = [],
+    cookie_values:   const u8[:][:] = [],
 ) -> u8[..64] {
     var out: u8[..64] = [];
-    compute_ja4h(method, proto, header_names, has_cookie, has_referer, accept_language, cookie_names, cookie_values, out);
+    compute_ja4h(
+        method,
+        proto,
+        header_names,
+        flags,
+        accept_language,
+        cookie_names,
+        cookie_values,
+        out,
+    );
     return out;
 }

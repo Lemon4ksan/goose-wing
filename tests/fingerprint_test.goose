@@ -6,7 +6,7 @@ import std;
 import core from "..";
 import wing from "..";
 
-// ============================================================================// Verification Suite for FoxIO JA4 (TLS) / JA4H (HTTP) fingerprinting and Wing Profile System.
+// Verification Suite for FoxIO JA4 (TLS) / JA4H (HTTP) fingerprinting and Wing Profile System.
 
 fn test_ja4_tls_fingerprint(t: core::T&) {
     t.run("1. FoxIO JA4 Specification Conformance & Vector Verification") { sub =>
@@ -19,7 +19,7 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
             0x0015, 0x0017, 0x001b, 0x0023, 0x002b, 0x002d, 0x0033, 0x4469, 0xff01,
         ];
         let supported_versions: u16[1] = [0x0304];
-        let sig_algos: u16[8] = [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601];
+        let sig_algos:          u16[8] = [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601];
 
         let ja4_result = wing::compute_ja4(
             ciphers[..],
@@ -50,13 +50,13 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
         sub.assert_false(wing::is_grease_u16(0x0a1a), "0x0a1a has mismatched nibbles, not GREASE");
 
         // JA4 must be identical with or without GREASE injection (ciphers, extensions, and signature algorithms)
-        let base_ciphers: u16[3] = [0x1301, 0x1302, 0x1303];
+        let base_ciphers:   u16[3] = [0x1301, 0x1302, 0x1303];
         let grease_ciphers: u16[5] = [0x0a0a, 0x1301, 0x2a2a, 0x1302, 0x1303];
-        let base_exts: u16[2] = [0x0000, 0x002b];
-        let grease_exts: u16[3] = [0x0000, 0x3a3a, 0x002b];
-        let vers: u16[1] = [0x0304];
-        let base_sigs: u16[2] = [0x0403, 0x0804];
-        let grease_sigs: u16[4] = [0x0a0a, 0x0403, 0x1a1a, 0x0804];
+        let base_exts:      u16[2] = [0x0000, 0x002b];
+        let grease_exts:    u16[3] = [0x0000, 0x3a3a, 0x002b];
+        let vers:           u16[1] = [0x0304];
+        let base_sigs:      u16[2] = [0x0403, 0x0804];
+        let grease_sigs:    u16[4] = [0x0a0a, 0x0403, 0x1a1a, 0x0804];
 
         let fp_clean = wing::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, "h2", base_sigs[..]);
         let fp_grease = wing::compute_ja4(grease_ciphers[..], grease_exts[..], vers[..], true, "h2", grease_sigs[..]);
@@ -70,8 +70,8 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
 
     t.run("3. QUIC Protocol Code and DTLS Support") { sub =>
         let ciphers: u16[3] = [0x1301, 0x1302, 0x1303];
-        let exts: u16[2] = [0x0000, 0x002b];
-        let vers: u16[1] = [0x0304];
+        let exts:    u16[2] = [0x0000, 0x002b];
+        let vers:    u16[1] = [0x0304];
 
         let ja4_quic = wing::compute_ja4(ciphers[..], exts[..], vers[..], true, "h3", [], true);
         sub.assert_bytes_eq(ja4_quic[..11], "q13d0302h3_", "QUIC JA4 prefix (q=QUIC, 13=v1.3, d=SNI, 03 ciphers, 02 exts, h3 ALPN)");
@@ -80,16 +80,15 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
 
 fn test_ja4h_http_fingerprint(t: core::T&) {
     t.run("1. FoxIO JA4H HTTP Request Vector Verification") { sub =>
-        let headers: const u8[:][4] = ["Accept", "Accept-Encoding", "Accept-Language", "User-Agent"];
-        let cookie_names: const u8[:][2] = ["session_id", "csrf_token"];
+        let headers:       const u8[:][4] = ["Accept", "Accept-Encoding", "Accept-Language", "User-Agent"];
+        let cookie_names:  const u8[:][2] = ["session_id", "csrf_token"];
         let cookie_values: const u8[:][2] = ["abc123xyz", "tok456"];
 
         let ja4h_result = wing::compute_ja4h(
             "GET",
             "HTTP/2",
             headers[..],
-            true,
-            false,
+            wing::Ja4hFlags { has_cookie: true, has_referer: false },
             "en-US,en;q=0.9",
             cookie_names[..],
             cookie_values[..],
@@ -106,22 +105,22 @@ fn test_ja4h_http_fingerprint(t: core::T&) {
         // Headers preserve wire transmission order in section b
         let h_order1: const u8[:][2] = ["Accept", "User-Agent"];
         let h_order2: const u8[:][2] = ["User-Agent", "Accept"];
-        let ja4h_1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], false, false);
-        let ja4h_2 = wing::compute_ja4h("GET", "HTTP/2", h_order2[..], false, false);
+        let ja4h_1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], wing::Ja4hFlags { has_cookie: false, has_referer: false });
+        let ja4h_2 = wing::compute_ja4h("GET", "HTTP/2", h_order2[..], wing::Ja4hFlags { has_cookie: false, has_referer: false });
         sub.assert_false(ja4h_1[13..25] == ja4h_2[13..25], "Different header arrival order produces distinct JA4H_b hash");
 
         // Cookies are sorted alphabetically in section c & d regardless of arrival order
         let c_names1: const u8[:][2] = ["zebra", "apple"];
-        let c_vals1: const u8[:][2] = ["z1", "a1"];
+        let c_vals1:  const u8[:][2] = ["z1", "a1"];
         let c_names2: const u8[:][2] = ["apple", "zebra"];
-        let c_vals2: const u8[:][2] = ["a1", "z1"];
-        let ja4h_c1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], true, false, "", c_names1[..], c_vals1[..]);
-        let ja4h_c2 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], true, false, "", c_names2[..], c_vals2[..]);
+        let c_vals2:  const u8[:][2] = ["a1", "z1"];
+        let ja4h_c1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], wing::Ja4hFlags { has_cookie: true, has_referer: false }, "", c_names1[..], c_vals1[..]);
+        let ja4h_c2 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], wing::Ja4hFlags { has_cookie: true, has_referer: false }, "", c_names2[..], c_vals2[..]);
         sub.assert_bytes_eq(ja4h_c1[26..38], ja4h_c2[26..38], "Cookie names hash JA4H_c is invariant under permutation");
         sub.assert_bytes_eq(ja4h_c1[39..51], ja4h_c2[39..51], "Cookie values hash JA4H_d is invariant under permutation");
 
         let mixed_headers: const u8[:][5] = ["User-Agent", "accept-language", "ACCEPT", "Cookie", "Referer"];
-        let ja4h = wing::compute_ja4h("POST", "HTTP/1.1", mixed_headers[..], true, true, "ru-RU", [], []);
+        let ja4h = wing::compute_ja4h("POST", "HTTP/1.1", mixed_headers[..], wing::Ja4hFlags { has_cookie: true, has_referer: true }, "ru-RU", [], []);
 
         // 3 headers counted (Cookie and Referer excluded from count), ruru language, c=cookie, r=referer
         sub.assert_bytes_eq(ja4h[..12], "po11cr03ruru", "PO=post, 11=HTTP/1.1, c=cookie, r=referer, 03 headers, ruru=lang");

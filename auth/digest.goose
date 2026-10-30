@@ -11,14 +11,14 @@ import core from "..";
 
 // ---- 1. RFC 7616 & RFC 2617 Protocol Constants ------------------------------
 
-const DIGEST_ALGO_MD5: const u8[:] = "MD5";
-const DIGEST_ALGO_MD5_SESS: const u8[:] = "MD5-sess";
-const DIGEST_ALGO_SHA256: const u8[:] = "SHA-256";
-const DIGEST_ALGO_SHA256_SESS: const u8[:] = "SHA-256-sess";
-const DIGEST_ALGO_SHA512_256: const u8[:] = "SHA-512-256";
+const DIGEST_ALGO_MD5:             const u8[:] = "MD5";
+const DIGEST_ALGO_MD5_SESS:        const u8[:] = "MD5-sess";
+const DIGEST_ALGO_SHA256:          const u8[:] = "SHA-256";
+const DIGEST_ALGO_SHA256_SESS:     const u8[:] = "SHA-256-sess";
+const DIGEST_ALGO_SHA512_256:      const u8[:] = "SHA-512-256";
 const DIGEST_ALGO_SHA512_256_SESS: const u8[:] = "SHA-512-256-sess";
 
-const DIGEST_QOP_AUTH: const u8[:] = "auth";
+const DIGEST_QOP_AUTH:     const u8[:] = "auth";
 const DIGEST_QOP_AUTH_INT: const u8[:] = "auth-int";
 
 // Validates whether the algorithm is officially supported by RFC 7616 / RFC 2617.
@@ -34,15 +34,15 @@ inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
 // ---- 2. Digest Models -------------------------------------------------------
 
 struct DigestChallenge {
-    realm: u8[..128] = [],
-    nonce: u8[..128] = [],
-    algorithm: u8[..32] = "MD5", // RFC 7616 §3.4 default when omitted
-    qop: u8[..32] = [],          // Empty by default (RFC 2069 legacy mode when omitted)
-    opaque: u8[..128] = [],
-    domain: u8[..128] = [],
-    stale: bool = false,
-    userhash: bool = false,
-    valid: bool = false,
+    realm:     u8[..128] = [],
+    nonce:     u8[..128] = [],
+    algorithm: u8[..32]  = "MD5", // RFC 7616 §3.4 default when omitted
+    qop:       u8[..32]  = [],    // Empty by default (RFC 2069 legacy mode when omitted)
+    opaque:    u8[..128] = [],
+    domain:    u8[..128] = [],
+    stale:     bool      = false,
+    userhash:  bool      = false,
+    valid:     bool      = false,
 }
 
 struct DigestCredentials {
@@ -120,6 +120,11 @@ inline fn scan_digest_token_len(s: const u8[:]) -> i64 {
     return n;
 }
 
+inline fn commit_digest_param_val<B>(val: const u8[:], out_val: B&) {
+    out_val.clear();
+    out_val.append(val);
+}
+
 // Parses a parameter value, which can be quoted ("value") or an unquoted token (RFC 7616 §3.3).
 // Advances `idx` past the parsed value on success.
 //
@@ -135,18 +140,16 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
 
     if rem[0] == '"' {
         var tmp: u8[..128] = [];
-        let consumed, ok = parse_quoted_param(rem, tmp);
+        let q_consumed, ok = parse_quoted_param(rem, tmp);
         guard ok && tmp.len <= out_val.cap else { return false; }
-        out_val.clear();
-        out_val.append(tmp[..]);
-        idx = new_idx + consumed;
+        commit_digest_param_val(tmp[..], out_val);
+        idx = new_idx + q_consumed;
         return true;
     }
 
     let token_len = scan_digest_token_len(rem);
     guard token_len <= out_val.cap else { return false; }
-    out_val.clear();
-    out_val.append(rem[..token_len]);
+    commit_digest_param_val(rem[..token_len], out_val);
     idx = new_idx + token_len;
     return true;
 }
@@ -298,12 +301,12 @@ fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
 //   algo = "SHA-256", username = "Mufasa", realm = "myrealm", password = "SecretPassword"
 //   returns: "66b23d060da48775017ec881db093beec3b1028307e3210250052b4111421008"
 fn calculate_digest_ha1(
-    algo: const u8[:],
+    algo:     const u8[:],
     username: const u8[:],
-    realm: const u8[:],
+    realm:    const u8[:],
     password: const u8[:],
-    nonce: const u8[:],
-    cnonce: const u8[:],
+    nonce:    const u8[:],
+    cnonce:   const u8[:],
 ) -> u8[..64] {
     var a1: u8[>..] = [];
     a1.append(username);
@@ -334,11 +337,11 @@ fn calculate_digest_ha1(
 //   algo = "SHA-256", method = "GET", uri = "/dir/index.html", is_auth_int = false, body = ""
 //   returns: "39f363da7850af35b22440f6f8493fb60822d0bceb67218c51e37d9c53bc4e0e"
 fn calculate_digest_ha2(
-    algo: const u8[:],
-    method: const u8[:],
-    uri: const u8[:],
+    algo:        const u8[:],
+    method:      const u8[:],
+    uri:         const u8[:],
     is_auth_int: bool,
-    body: const u8[:],
+    body:        const u8[:],
 ) -> u8[..64] {
     var a2: u8[>..] = [];
     a2.append(method);
@@ -360,13 +363,13 @@ fn calculate_digest_ha2(
 //   algo = "SHA-256", ha1_hex = "66b2...", nonce = "xyz", nc_str = "00000001", ...
 //   returns: "86049f1f1000e540362c603f50b9cf140d0371f68682d4577da4e0610a29ea83"
 fn calculate_digest_response(
-    algo: const u8[:],
-    ha1_hex: const u8[:],
-    nonce: const u8[:],
-    nc_str: const u8[:],
-    cnonce: const u8[:],
+    algo:       const u8[:],
+    ha1_hex:    const u8[:],
+    nonce:      const u8[:],
+    nc_str:     const u8[:],
+    cnonce:     const u8[:],
     active_qop: const u8[:],
-    ha2_hex: const u8[:],
+    ha2_hex:    const u8[:],
 ) -> u8[..64] {
     var a3: u8[>..] = [];
     a3.append(ha1_hex);
@@ -393,98 +396,94 @@ fn calculate_digest_response(
 //
 // Example:
 //   val = "hello \"world\""
-//   appends: "hello \\\"world\\\"" to `out`, returns: true
-fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
+//   appends: "hello \\\"world\\\"" to `sink`, returns: true
+fn append_escaped_digest_param<B>(sink: B&, val: const u8[:]) -> bool {
     for b in val {
-        if b == '\r' || b == '\n' || b == 0 {
-            return false;
-        }
+        guard b != '\r' && b != '\n' && b != 0 else { return false; }
         if b == '"' || b == '\\' {
-            guard out.len < out.cap else { return false; }
-            out.push('\\');
+            guard sink.len < sink.cap else { return false; }
+            sink.push('\\');
         }
-        guard out.len < out.cap else { return false; }
-        out.push(b);
+        guard sink.len < sink.cap else { return false; }
+        sink.push(b);
     }
     return true;
 }
 
 // Appends a digest URI without backslash escaping (RFC 7616 §3.4 / RFC 3986).
 // Rejects control characters (\r, \n, \0) and unencoded quotes to prevent header breakout.
-fn append_digest_uri<B>(out: B&, uri: const u8[:]) -> bool {
+fn append_digest_uri<B>(sink: B&, uri: const u8[:]) -> bool {
     for b in uri {
-        if b == '\r' || b == '\n' || b == '\0' || b == '"' {
-            return false;
-        }
-        guard out.len < out.cap else { return false; }
-        out.push(b);
+        guard b != '\r' && b != '\n' && b != '\0' && b != '"' else { return false; }
+        guard sink.len < sink.cap else { return false; }
+        sink.push(b);
     }
     return true;
 }
 
 // Appends mandatory RFC 7616 Digest key-value pairs (username, realm, nonce, uri, response).
 fn serialize_digest_core_kv<B>(
-    out: B&,
+    sink:           B&,
     effective_user: const u8[:],
-    realm: const u8[:],
-    nonce: const u8[:],
-    uri: const u8[:],
-    algo: const u8[:],
-    response_hex: const u8[:],
+    realm:          const u8[:],
+    nonce:          const u8[:],
+    uri:            const u8[:],
+    algo:           const u8[:],
+    response_hex:   const u8[:],
 ) -> bool {
-    guard out.len + 17 <= out.cap else { return false; }
-    out.append("Digest username=\"");
-    guard append_escaped_digest_param(out, effective_user) else { return false; }
-    guard out.len + 10 <= out.cap else { return false; }
-    out.append("\", realm=\"");
-    guard append_escaped_digest_param(out, realm) else { return false; }
-    guard out.len + 10 <= out.cap else { return false; }
-    out.append("\", nonce=\"");
-    guard append_escaped_digest_param(out, nonce) else { return false; }
-    guard out.len + 8 <= out.cap else { return false; }
-    out.append("\", uri=\"");
-    guard append_digest_uri(out, uri) else { return false; }
-    guard out.len + 13 + algo.len + 13 + response_hex.len + 1 <= out.cap else { return false; }
-    out.append("\", algorithm=");
-    out.append(algo);
-    out.append(", response=\"");
-    out.append(response_hex);
-    out.append("\"");
+    guard sink.len + 17 <= sink.cap else { return false; }
+    sink.append("Digest username=\"");
+    guard append_escaped_digest_param(sink, effective_user) else { return false; }
+    guard sink.len + 10 <= sink.cap else { return false; }
+    sink.append("\", realm=\"");
+    guard append_escaped_digest_param(sink, realm) else { return false; }
+    guard sink.len + 10 <= sink.cap else { return false; }
+    sink.append("\", nonce=\"");
+    guard append_escaped_digest_param(sink, nonce) else { return false; }
+    guard sink.len + 8 <= sink.cap else { return false; }
+    sink.append("\", uri=\"");
+    guard append_digest_uri(sink, uri) else { return false; }
+    guard sink.len + 13 + algo.len + 13 + response_hex.len + 1 <= sink.cap else { return false; }
+    sink.append("\", algorithm=");
+    sink.append(algo);
+    sink.append(", response=\"");
+    sink.append(response_hex);
+    sink.append("\"");
     return true;
 }
 
 // Appends optional RFC 7616 Digest key-value pairs (qop, nc, cnonce, opaque, userhash).
 fn serialize_digest_opt_kv<B>(
-    out: B&,
+    sink:       B&,
     active_qop: const u8[:],
-    nc_str: const u8[:],
-    cnonce: const u8[:],
-    opaque: const u8[:],
-    userhash: bool,
+    nc_str:     const u8[:],
+    cnonce:     const u8[:],
+    opaque:     const u8[:],
+    userhash:   bool,
 ) -> bool {
     if active_qop.len > 0 {
-        guard out.len + 6 + active_qop.len + 5 + nc_str.len + 10 <= out.cap else { return false; }
-        out.append(", qop=");
-        out.append(active_qop);
-        out.append(", nc=");
-        out.append(nc_str);
-        out.append(", cnonce=\"");
-        guard append_escaped_digest_param(out, cnonce) else { return false; }
-        guard out.len + 1 <= out.cap else { return false; }
-        out.push('"');
+        guard sink.len + 6 + active_qop.len + 5 + nc_str.len + 10 <= sink.cap else { return false; }
+        sink.append(", qop=");
+        sink.append(active_qop);
+        sink.append(", nc=");
+        sink.append(nc_str);
+        sink.append(", cnonce=\"");
+        guard append_escaped_digest_param(sink, cnonce) else { return false; }
+        guard sink.len + 1 <= sink.cap else { return false; }
+        sink.push('"');
     }
 
     if opaque.len > 0 {
-        guard out.len + 10 <= out.cap else { return false; }
-        out.append(", opaque=\"");
-        guard append_escaped_digest_param(out, opaque) else { return false; }
-        guard out.len + 1 <= out.cap else { return false; }
-        out.push('"');
+        guard sink.len + 10 <= sink.cap else { return false; }
+        sink.append(", opaque=\"");
+        guard append_escaped_digest_param(sink, opaque) else { return false; }
+        guard sink.len + 1 <= sink.cap else { return false; }
+        sink.push('"');
     }
 
     if userhash {
-        guard out.len + 16 <= out.cap else { return false; }
-        out.append(", userhash=true");
+        guard sink.len + 16 <= sink.cap else { return false; }
+        sink.append(", userhash=true");
     }
 
     return true;
@@ -497,21 +496,21 @@ fn serialize_digest_opt_kv<B>(
 //   returns: true, out_header = "Digest username=\"Mufasa\", realm=\"myrealm\", ..."
 fn serialize_digest_auth<B>(
     effective_user: const u8[:],
-    realm: const u8[:],
-    nonce: const u8[:],
-    uri: const u8[:],
-    algo: const u8[:],
-    response_hex: const u8[:],
-    active_qop: const u8[:],
-    nc_str: const u8[:],
-    cnonce: const u8[:],
-    opaque: const u8[:],
-    userhash: bool,
-    out_header: B&,
+    realm:          const u8[:],
+    nonce:          const u8[:],
+    uri:            const u8[:],
+    algo:           const u8[:],
+    response_hex:   const u8[:],
+    active_qop:     const u8[:],
+    nc_str:         const u8[:],
+    cnonce:         const u8[:],
+    opaque:         const u8[:],
+    userhash:       bool,
+    sink:           B&,
 ) -> bool {
-    out_header.clear();
+    sink.clear();
     let ok_core = serialize_digest_core_kv(
-        out_header,
+        sink,
         effective_user,
         realm,
         nonce,
@@ -521,7 +520,7 @@ fn serialize_digest_auth<B>(
     );
     guard ok_core else { return false; }
     let ok_opt = serialize_digest_opt_kv(
-        out_header,
+        sink,
         active_qop,
         nc_str,
         cnonce,
@@ -542,9 +541,9 @@ fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]
 
 fn resolve_digest_user(
     username: const u8[:],
-    realm: const u8[:],
+    realm:    const u8[:],
     userhash: bool,
-    algo: const u8[:],
+    algo:     const u8[:],
 ) -> u8[..128] {
     if userhash {
         let h = resolve_userhash(username, realm, algo);
@@ -620,13 +619,13 @@ inline fn resolve_active_qop(raw_qop: const u8[:]) -> const u8[:] {
 //   challenge = { realm: "test", nonce: "abc", algorithm: "SHA-256" }, creds = { username: "user", password: "pwd" }
 //   returns: true, out_header = "Digest username=\"user\", realm=\"test\", ..."
 fn compute_digest_response<B>(
-    challenge: const DigestChallenge&,
-    creds: const DigestCredentials&,
-    method: const u8[:],
-    uri: const u8[:],
-    nc: u32,
-    cnonce: const u8[:],
-    body: const u8[:],
+    challenge:  const DigestChallenge&,
+    creds:      const DigestCredentials&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    nc:         u32,
+    cnonce:     const u8[:],
+    body:       const u8[:],
     out_header: B&,
 ) -> bool {
     guard challenge.valid else { return false; }

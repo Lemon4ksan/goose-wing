@@ -10,7 +10,7 @@ import core from "..";
 
 // ---- 1. PKCE Constants -------------------------------------------------------
 
-const PKCE_METHOD_S256: const u8[:] = "S256";
+const PKCE_METHOD_S256:  const u8[:] = "S256";
 const PKCE_METHOD_PLAIN: const u8[:] = "plain";
 
 const PKCE_MIN_VERIFIER_LEN: i64 = 43;
@@ -19,9 +19,9 @@ const PKCE_MAX_VERIFIER_LEN: i64 = 128;
 // ---- 2. PKCE Challenge Pair Model -------------------------------------------
 
 struct PkcePair {
-    verifier: u8[..128] = [],
+    verifier:  u8[..128] = [],
     challenge: u8[..128] = [],
-    method: u8[..16] = "S256",
+    method:    u8[..16]  = "S256",
 }
 
 // Checks whether character belongs to RFC 7636 Section 4.1 unreserved set:
@@ -95,7 +95,7 @@ fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
     }
 
     var raw_entropy: u8[32] = [0; 32];
-    var state: u64 = (clock_ns() as u64) ^ 0x56e8feb86659fd93;
+    var state:       u64    = (clock_ns() as u64) ^ 0x56e8feb86659fd93;
     for i in 4 {
         state = state * 6364136223846793005 + 1442695040888963407;
         for j in 8 {
@@ -110,21 +110,21 @@ fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
 // S256: BASE64URL-ENCODE(SHA256(ASCII(code_verifier))) without padding.
 // Method MUST be case-sensitive ("S256" or "plain", RFC 7636 Section 4.3).
 fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&) -> bool {
-    out.clear();
     guard is_valid_code_verifier(verifier) else {
         return false;
     }
+    guard method == PKCE_METHOD_S256 || method == PKCE_METHOD_PLAIN else {
+        return false;
+    }
 
+    out.clear();
     if method == PKCE_METHOD_S256 {
         let digest = core::sha256(verifier);
         core::base64url_encode(digest[..], out);
-        return true;
-    } else if method == PKCE_METHOD_PLAIN {
+    } else {
         out.append(verifier);
-        return true;
     }
-
-    return false; // Unsupported or case-mismatched method
+    return true;
 }
 
 // Constant-time validation of code_verifier against code_challenge (RFC 7636 Section 4.6).

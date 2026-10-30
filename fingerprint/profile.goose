@@ -16,46 +16,46 @@ import fingerprint.akamai;
 
 // HTTP/2 protocol settings for the persona.
 struct H2Settings {
-    header_table_size: u32 = 65536,
-    enable_push: u32 = 0,
+    header_table_size:      u32 = 65536,
+    enable_push:            u32 = 0,
     max_concurrent_streams: u32 = 100,
-    initial_window_size: u32 = 6291456,
-    max_frame_size: u32 = 16384,
-    max_header_list_size: u32 = 262144,
+    initial_window_size:    u32 = 6291456,
+    max_frame_size:         u32 = 16384,
+    max_header_list_size:   u32 = 262144,
 }
 
 // HTTP/3 protocol settings for the persona.
 struct H3Settings {
     qpack_max_table_capacity: u64 = 4096,
-    max_field_section_size: u64 = 65536,
-    qpack_blocked_streams: u64 = 16,
-    enable_connect_protocol: u64 = 1,
+    max_field_section_size:   u64 = 65536,
+    qpack_blocked_streams:    u64 = 16,
+    enable_connect_protocol:  u64 = 1,
 }
 
 // TLS ClientHello specification for JA4 fingerprinting and transport configuration.
 struct TlsFingerprintSpec {
-    ciphers: u16[..32] = [],
-    extensions: u16[..32] = [],
-    supported_versions: u16[..8] = [],
-    sig_algorithms: u16[..16] = [],
-    alpn: u8[..16] = [],
+    ciphers:            u16[..32] = [],
+    extensions:         u16[..32] = [],
+    supported_versions: u16[..8]  = [],
+    sig_algorithms:     u16[..16] = [],
+    alpn:               u8[..16]  = [],
 }
 
 // Client profile specification governing outbound request appearance and wire fingerprint.
 struct ClientProfile {
-    kind: Profile = Profile.Wing,
-    user_agent: u8[..256] = [],
-    accept: u8[..192] = [],
-    accept_encoding: u8[..64] = [],
-    accept_language: u8[..64] = [],
-    upgrade_insecure_requests: u8[..8] = [],
-    extra_headers: HeaderItem[..16] = [],
-    header_order: u8[..32][..64] = [],
-    h2: H2Settings = H2Settings { .. },
-    h3: H3Settings = H3Settings { .. },
-    tls: TlsFingerprintSpec = TlsFingerprintSpec { .. },
-    p0f: P0fSignature = P0fSignature { .. },
-    akamai: AkamaiFingerprint = AkamaiFingerprint { .. },
+    kind:                      Profile            = Profile.Wing,
+    user_agent:                u8[..256]          = [],
+    accept:                    u8[..192]          = [],
+    accept_encoding:           u8[..64]           = [],
+    accept_language:           u8[..64]           = [],
+    upgrade_insecure_requests: u8[..8]            = [],
+    extra_headers:             HeaderItem[..16]   = [],
+    header_order:              u8[..32][..64]     = [],
+    h2:                        H2Settings         = H2Settings { .. },
+    h3:                        H3Settings         = H3Settings { .. },
+    tls:                       TlsFingerprintSpec = TlsFingerprintSpec { .. },
+    p0f:                       P0fSignature       = P0fSignature { .. },
+    akamai:                    AkamaiFingerprint  = AkamaiFingerprint { .. },
 }
 
 // Backward-compatible alias for existing callers
@@ -67,11 +67,11 @@ type BrowserProfile = ClientProfile;
 // browser and presents a clean, recognizable systems stack fingerprint.
 fn wing_default_profile() -> ClientProfile {
     var p = ClientProfile {
-        kind: Profile.Wing,
-        h2: H2Settings { .. },
-        h3: H3Settings { .. },
-        tls: TlsFingerprintSpec { .. },
-        p0f: wing_p0f_signature(),
+        kind:   Profile.Wing,
+        h2:     H2Settings { .. },
+        h3:     H3Settings { .. },
+        tls:    TlsFingerprintSpec { .. },
+        p0f:    wing_p0f_signature(),
         akamai: akamai_wing_preset(),
         ..
     };
@@ -161,43 +161,45 @@ fn new_client_profile(kind: Profile) -> ClientProfile {
     return wing_default_profile();
 }
 
-// Backward-compatible alias
-fn new_browser_profile(kind: Profile) -> ClientProfile {
-    return new_client_profile(kind);
-}
-
 // ---- profile manipulation & builder functions -------------------------------
 
 fn push_header_order(profile: BrowserProfile&, header_name: const u8[:]) {
-    guard header_name.len <= 32 else { return; }
-    if profile.header_order.len < profile.header_order.cap {
-        var entry: u8[..32] = [];
-        entry.append(header_name);
-        profile.header_order.push(entry);
-    }
+    guard header_name.len <= 32 && profile.header_order.len < profile.header_order.cap else { return; }
+    var entry: u8[..32] = [];
+    entry.append(header_name);
+    profile.header_order.push(entry);
+}
+
+struct Ja4Options {
+    is_quic: bool = false,
+    sni:     bool = true,
 }
 
 // Computes the FoxIO JA4 TLS fingerprint for this profile.
-fn ja4(profile: const BrowserProfile&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
+fn ja4(profile: const BrowserProfile&, opts: Ja4Options = Ja4Options { .. }) -> u8[..64] {
     return compute_ja4(
         profile.tls.ciphers[..],
         profile.tls.extensions[..],
         profile.tls.supported_versions[..],
-        sni,
+        opts.sni,
         profile.tls.alpn[..],
         profile.tls.sig_algorithms[..],
-        is_quic,
+        opts.is_quic,
     );
+}
+
+struct Ja4hOptions {
+    has_cookie:  bool = false,
+    has_referer: bool = false,
 }
 
 // Computes the FoxIO JA4H HTTP client fingerprint for this profile under given method and parameters.
 fn ja4h(
-    profile: const BrowserProfile&,
-    method: const u8[:],
-    proto: const u8[:],
-    has_cookie: bool = false,
-    has_referer: bool = false,
-    cookie_names: const u8[:][:] = [],
+    profile:       const BrowserProfile&,
+    method:        const u8[:],
+    proto:         const u8[:],
+    opts:          Ja4hOptions    = Ja4hOptions { .. },
+    cookie_names:  const u8[:][:] = [],
     cookie_values: const u8[:][:] = [],
 ) -> u8[..64] {
     var header_names: const u8[:][>..] = [];
@@ -215,8 +217,7 @@ fn ja4h(
         method,
         proto,
         header_names[..],
-        has_cookie,
-        has_referer,
+        Ja4hFlags { has_cookie: opts.has_cookie, has_referer: opts.has_referer },
         profile.accept_language[..],
         cookie_names,
         cookie_values,
@@ -253,9 +254,8 @@ fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
             return;
         }
     }
-    if profile.extra_headers.len < profile.extra_headers.cap {
-        profile.extra_headers.push(make_header(name, value));
-    }
+    guard profile.extra_headers.len < profile.extra_headers.cap else { return; }
+    profile.extra_headers.push(make_header(name, value));
 }
 
 // Sets a custom User-Agent in the profile.

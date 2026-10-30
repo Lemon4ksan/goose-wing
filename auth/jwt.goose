@@ -11,8 +11,8 @@ import json;
 import core from "..";
 
 // Cryptographic key and signature sizes
-const ED25519_KEY_LEN: i64 = 32;
-const ED25519_SIG_LEN: i64 = 64;
+const ED25519_KEY_LEN:     i64 = 32;
+const ED25519_SIG_LEN:     i64 = 64;
 const HMAC_SHA256_MAC_LEN: i64 = 32;
 const HMAC_SHA384_MAC_LEN: i64 = 48;
 const HMAC_SHA512_MAC_LEN: i64 = 64;
@@ -105,10 +105,10 @@ struct CritParam {
 }
 
 struct JwtHeader {
-    alg: JwtAlg = JwtAlg.HS256,
-    typ: u8[..32] = "JWT",
-    kid: u8[..64] = [],
-    cty: u8[..32] = [],
+    alg:  JwtAlg         = JwtAlg.HS256,
+    typ:  u8[..32]       = "JWT",
+    kid:  u8[..64]       = [],
+    cty:  u8[..32]       = [],
     crit: CritParam[..8] = [],
 }
 
@@ -181,9 +181,9 @@ struct SeenHeaderKey {
 //   reader at "[\"b64\",\"claim\"]", scratch = []
 //   returns: out_crit with 2 elements, had_error = false
 inline fn parse_crit_header_elements(
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    out_crit: CritParam[..8]&,
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    out_crit:  CritParam[..8]&,
     had_error: bool&,
 ) {
     json::each_element(reader) {
@@ -223,17 +223,17 @@ inline fn is_header_key_present(name: const u8[:], seen: const SeenHeaderKey[..8
 //   key = "alg", reader at "\"HS256\"", scratch = []
 //   returns: out_header.alg = JwtAlg.HS256, seen_alg = true
 inline fn parse_jwt_header_member(
-    key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    out_header: JwtHeader&,
-    seen_alg: bool&,
-    seen_typ: bool&,
-    seen_kid: bool&,
-    seen_cty: bool&,
-    seen_crit: bool&,
+    key:         const u8[:],
+    reader:      json::Reader&,
+    scratch:     u8[>..]&,
+    out_header:  JwtHeader&,
+    seen_alg:    bool&,
+    seen_typ:    bool&,
+    seen_kid:    bool&,
+    seen_cty:    bool&,
+    seen_crit:   bool&,
     seen_others: SeenHeaderKey[..8]&,
-    had_error: bool&,
+    had_error:   bool&,
 ) {
     if key == "alg" {
         if seen_alg { had_error = true; }
@@ -329,23 +329,23 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
 // ---- 3. JWT Claims Model & Parser -------------------------------------------
 
 struct JwtClaimItem {
-    key: u8[..64] = [],
-    val_str: u8[..256] = [],
-    val_num: i64 = 0,
-    val_bool: bool = false,
-    is_num: bool = false,
-    is_bool: bool = false,
+    key:      u8[..64]  = [],
+    val_str:  u8[..256] = [],
+    val_num:  i64       = 0,
+    val_bool: bool      = false,
+    is_num:   bool      = false,
+    is_bool:  bool      = false,
 }
 
 struct JwtClaims {
-    iss: u8[..128] = [],
-    sub: u8[..128] = [],
-    aud: u8[..128] = [],
-    audiences: u8[..128][..8] = [],
-    jti: u8[..64] = [],
-    exp: i64 = -1,
-    nbf: i64 = -1,
-    iat: i64 = -1,
+    iss:           u8[..128]          = [],
+    sub:           u8[..128]          = [],
+    aud:           u8[..128]          = [],
+    audiences:     u8[..128][..8]     = [],
+    jti:           u8[..64]           = [],
+    exp:           i64                = -1,
+    nbf:           i64                = -1,
+    iat:           i64                = -1,
     custom_claims: JwtClaimItem[..16] = [],
 }
 
@@ -468,10 +468,22 @@ fn set_claim_bool(claims: JwtClaims&, key: const u8[:], val: bool) -> bool {
 }
 
 fn claim_str(claims: const JwtClaims&, key: const u8[:]) -> const u8[:] {
-    if key == "iss" { return claims.iss[..]; }
-    if key == "sub" { return claims.sub[..]; }
-    if key == "aud" { return claims.aud[..]; }
-    if key == "jti" { return claims.jti[..]; }
+    if key == "iss" {
+        let s = claims.iss[..];
+        return s;
+    }
+    if key == "sub" {
+        let s = claims.sub[..];
+        return s;
+    }
+    if key == "aud" {
+        let s = claims.aud[..];
+        return s;
+    }
+    if key == "jti" {
+        let s = claims.jti[..];
+        return s;
+    }
     for &c in claims.custom_claims {
         if c.key[..] == key && !c.is_num && !c.is_bool {
             return c.val_str[..];
@@ -600,8 +612,8 @@ fn serialize_jwt_claims<B>(claims: const JwtClaims&, out: B&) {
 }
 
 inline fn try_append_audience_element(
-    reader: json::Reader&,
-    scratch: u8[>..]&,
+    reader:     json::Reader&,
+    scratch:    u8[>..]&,
     out_claims: JwtClaims&,
 ) -> bool {
     guard json::peek(reader) == '"' else {
@@ -628,10 +640,10 @@ inline fn try_append_audience_element(
 //   reader at "\"https://api.example.com\"", scratch = []
 //   returns: out_claims.aud = "https://api.example.com", had_error = false
 inline fn parse_aud_claim(
-    reader: json::Reader&,
-    scratch: u8[>..]&,
+    reader:     json::Reader&,
+    scratch:    u8[>..]&,
     out_claims: JwtClaims&,
-    had_error: bool&,
+    had_error:  bool&,
 ) {
     let p = json::peek(reader);
     if p == '"' {
@@ -668,11 +680,11 @@ inline fn parse_aud_claim(
 //   key = "role", reader at "\"admin\"", scratch = []
 //   returns: out_claims.custom_claims includes ("role", "admin")
 inline fn parse_custom_claim_entry(
-    key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
+    key:        const u8[:],
+    reader:     json::Reader&,
+    scratch:    u8[>..]&,
     out_claims: JwtClaims&,
-    had_error: bool&,
+    had_error:  bool&,
 ) {
     for &c in out_claims.custom_claims {
         if c.key[..] == key {
@@ -734,18 +746,18 @@ inline fn seen_custom_keys_contains(key: const u8[:], seen: const SeenCustomKey[
 //   key = "sub", reader at "\"user_42\"", scratch = []
 //   returns: true (handled), out_claims.sub = "user_42"
 inline fn parse_jwt_standard_claim(
-    key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
+    key:        const u8[:],
+    reader:     json::Reader&,
+    scratch:    u8[>..]&,
     out_claims: JwtClaims&,
-    seen_iss: bool&,
-    seen_sub: bool&,
-    seen_aud: bool&,
-    seen_jti: bool&,
-    seen_exp: bool&,
-    seen_nbf: bool&,
-    seen_iat: bool&,
-    had_error: bool&,
+    seen_iss:   bool&,
+    seen_sub:   bool&,
+    seen_aud:   bool&,
+    seen_jti:   bool&,
+    seen_exp:   bool&,
+    seen_nbf:   bool&,
+    seen_iat:   bool&,
+    had_error:  bool&,
 ) -> bool {
     if key == "iss" {
         if seen_iss { had_error = true; }
@@ -871,24 +883,24 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
 // ---- 4. JWT Validation Options ----------------------------------------------
 
 struct JwtValidationOptions {
-    expected_alg: JwtAlg = JwtAlg.HS256,
-    expected_issuer: u8[..128] = [],
-    expected_audience: u8[..128] = [],
-    expected_subject: u8[..128] = [],
-    expected_typ: u8[..32] = [], // RFC 8725 §3.11 & RFC 9068: Explicit type verification
-    supported_crit: CritParam[..8] = [], // RFC 7515 §4.1.11 / RFC 8725 §3.8: Supported critical parameters
-    leeway_seconds: i64 = DEFAULT_JWT_LEEWAY_SECONDS,
-    require_exp: bool = true,
-    require_nbf: bool = false,
-    allow_none_alg: bool = false, // RFC 8725 §3.1: Strictly false by default
+    expected_alg:      JwtAlg         = JwtAlg.HS256,
+    expected_issuer:   u8[..128]      = [],
+    expected_audience: u8[..128]      = [],
+    expected_subject:  u8[..128]      = [],
+    expected_typ:      u8[..32]       = [], // RFC 8725 §3.11 & RFC 9068: Explicit type verification
+    supported_crit:    CritParam[..8] = [], // RFC 7515 §4.1.11 / RFC 8725 §3.8: Supported critical parameters
+    leeway_seconds:    i64            = DEFAULT_JWT_LEEWAY_SECONDS,
+    require_exp:       bool           = true,
+    require_nbf:       bool           = false,
+    allow_none_alg:    bool           = false, // RFC 8725 §3.1: Strictly false by default
 }
 
 fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtValidationOptions {
     return JwtValidationOptions {
-        expected_alg: expected_alg,
+        expected_alg:   expected_alg,
         leeway_seconds: DEFAULT_JWT_LEEWAY_SECONDS,
-        require_exp: true,
-        require_nbf: false,
+        require_exp:    true,
+        require_nbf:    false,
         allow_none_alg: false,
         ..
     };
@@ -913,8 +925,8 @@ fn add_supported_crit(opts: JwtValidationOptions&, name: const u8[:]) -> bool {
 
 // Serializes Header and Claims into Base64URL-encoded signing input: `<hdr_b64>.<clm_b64>`
 fn build_jwt_signing_input<B>(
-    header: const JwtHeader&,
-    claims: const JwtClaims&,
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
     out_token: B&,
 ) {
     var hdr_json: u8[>..] = [];
@@ -930,10 +942,10 @@ fn build_jwt_signing_input<B>(
 }
 
 fn append_jwt_hmac_signature<B>(
-    alg: JwtAlg,
-    secret_key: const u8[:],
+    alg:           JwtAlg,
+    secret_key:    const u8[:],
     signing_input: const u8[:],
-    out_token: B&,
+    out_token:     B&,
 ) {
     out_token.push('.');
     if alg == JwtAlg.HS256 {
@@ -950,10 +962,10 @@ fn append_jwt_hmac_signature<B>(
 
 // Signs a JWT using symmetric HMAC (HS256, HS384, HS512 per RFC 7518)
 fn sign_jwt_hmac<B>(
-    header: const JwtHeader&,
-    claims: const JwtClaims&,
+    header:     const JwtHeader&,
+    claims:     const JwtClaims&,
     secret_key: const u8[:],
-    out_token: B&,
+    out_token:  B&,
 ) -> bool {
     guard header.alg == JwtAlg.HS256 || header.alg == JwtAlg.HS384 || header.alg == JwtAlg.HS512 else {
         return false;
@@ -968,9 +980,9 @@ fn sign_jwt_hmac<B>(
 }
 
 fn append_jwt_eddsa_signature<B>(
-    seed_key: const u8[32],
+    seed_key:      const u8[32],
     signing_input: const u8[:],
-    out_token: B&,
+    out_token:     B&,
 ) {
     let sig64 = core::ed25519_sign(seed_key, signing_input);
     out_token.push('.');
@@ -979,9 +991,9 @@ fn append_jwt_eddsa_signature<B>(
 
 // Signs a JWT using asymmetric Ed25519 (EdDSA per RFC 8037)
 fn sign_jwt_eddsa<B>(
-    header: const JwtHeader&,
-    claims: const JwtClaims&,
-    seed_key: const u8[32],
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    seed_key:  const u8[32],
     out_token: B&,
 ) -> bool {
     guard header.alg == JwtAlg.EdDSA else { return false; }
@@ -996,14 +1008,14 @@ fn sign_jwt_eddsa<B>(
 // ---- 6. JWT Verification & Claim Validation ---------------------------------
 
 // Hard bounds on raw token and component sizes to prevent parser DoS and memory exhaustion
-const MAX_JWT_TOKEN_LEN: i64 = 8192;
+const MAX_JWT_TOKEN_LEN:       i64 = 8192;
 const MAX_JWT_HEADER_PART_LEN: i64 = 2048;
 const MAX_JWT_CLAIMS_PART_LEN: i64 = 4096;
 
 fn split_jwt_parts(
     token: const u8[:],
-    dot1: i64&,
-    dot2: i64&,
+    dot1:  i64&,
+    dot2:  i64&,
 ) -> bool {
     guard token.len > 0 && token.len <= MAX_JWT_TOKEN_LEN else { return false; }
     dot1 = -1;
@@ -1075,8 +1087,8 @@ fn validate_jwt_identity_claims(claims: const JwtClaims&, options: const JwtVali
 
 // Validates time and identity claims against options
 fn validate_jwt_claims_rules(
-    claims: const JwtClaims&,
-    options: const JwtValidationOptions&,
+    claims:       const JwtClaims&,
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
 ) -> JwtError {
     if !validate_jwt_expiration(claims.exp, options.require_exp, options.leeway_seconds, now_unix_sec) {
@@ -1126,7 +1138,7 @@ fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
 //   token = "header_b64.claims_b64.signature_b64"
 //   returns: JwtError.None, out_header and out_claims populated
 fn parse_jwt_unverified(
-    token: const u8[:],
+    token:      const u8[:],
     out_header: JwtHeader&,
     out_claims: JwtClaims&,
 ) -> JwtError {
@@ -1204,10 +1216,10 @@ fn verify_jwt_header_rules(header: const JwtHeader&, options: const JwtValidatio
 }
 
 fn verify_jwt_hmac_signature(
-    alg: JwtAlg,
-    secret_key: const u8[:],
+    alg:           JwtAlg,
+    secret_key:    const u8[:],
     signing_input: const u8[:],
-    sig_bytes: const u8[:],
+    sig_bytes:     const u8[:],
 ) -> bool {
     if alg == JwtAlg.HS256 {
         guard sig_bytes.len == HMAC_SHA256_MAC_LEN else { return false; }
@@ -1227,12 +1239,12 @@ fn verify_jwt_hmac_signature(
 
 // Verifies a JWT signed with HMAC (HS256, HS384, HS512)
 fn verify_jwt_hmac(
-    token: const u8[:],
-    secret_key: const u8[:],
-    options: const JwtValidationOptions&,
+    token:        const u8[:],
+    secret_key:   const u8[:],
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
-    out_header: JwtHeader&,
-    out_claims: JwtClaims&,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
@@ -1263,9 +1275,9 @@ fn verify_jwt_hmac(
 }
 
 fn verify_jwt_eddsa_signature(
-    public_key: const u8[32],
+    public_key:    const u8[32],
     signing_input: const u8[:],
-    sig_bytes: const u8[:],
+    sig_bytes:     const u8[:],
 ) -> bool {
     guard sig_bytes.len == ED25519_SIG_LEN else { return false; }
     var sig64: u8[64] = [0; 64];
@@ -1277,12 +1289,12 @@ fn verify_jwt_eddsa_signature(
 
 // Verifies a JWT signed with Ed25519 (EdDSA)
 fn verify_jwt_eddsa(
-    token: const u8[:],
-    public_key: const u8[32],
-    options: const JwtValidationOptions&,
+    token:        const u8[:],
+    public_key:   const u8[32],
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
-    out_header: JwtHeader&,
-    out_claims: JwtClaims&,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;

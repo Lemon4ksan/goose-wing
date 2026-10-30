@@ -39,15 +39,15 @@ fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
 }
 
 struct JwksKey {
-    kty: JwkKeyType = JwkKeyType.Unknown,
-    crv: u8[..32] = "",
-    alg: JwtAlg = JwtAlg.Unspecified,
-    use: u8[..16] = "",
-    kid: u8[..64] = [],
-    symmetric_key: u8[..64] = [],
-    public_key: u8[32] = [0; 32],
-    valid: bool = false,
-    has_invalid_type: bool = false,
+    kty:              JwkKeyType = JwkKeyType.Unknown,
+    crv:              u8[..32]   = "",
+    alg:              JwtAlg     = JwtAlg.Unspecified,
+    use:              u8[..16]   = "",
+    kid:              u8[..64]   = [],
+    symmetric_key:    u8[..64]   = [],
+    public_key:       u8[32]     = [0; 32],
+    valid:            bool       = false,
+    has_invalid_type: bool       = false,
 }
 
 struct Jwks {
@@ -56,19 +56,19 @@ struct Jwks {
 
 // Registers an asymmetric Ed25519 public key in the key set
 fn add_ed25519_key(
-    jwks: Jwks&,
-    kid: const u8[:],
+    jwks:    Jwks&,
+    kid:     const u8[:],
     pub_key: const u8[32],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
     guard kid.len <= 64 else { return false; }
     var key = JwksKey {
-        kty: JwkKeyType.OKP,
-        crv: "Ed25519",
-        alg: JwtAlg.EdDSA,
-        use: "sig",
+        kty:        JwkKeyType.OKP,
+        crv:        "Ed25519",
+        alg:        JwtAlg.EdDSA,
+        use:        "sig",
         public_key: pub_key,
-        valid: true,
+        valid:      true,
         ..
     };
     key.kid.append(kid);
@@ -78,19 +78,19 @@ fn add_ed25519_key(
 
 // Registers a symmetric HMAC secret key in the key set
 fn add_symmetric_key(
-    jwks: Jwks&,
-    kid: const u8[:],
-    alg: JwtAlg,
+    jwks:       Jwks&,
+    kid:        const u8[:],
+    alg:        JwtAlg,
     secret_key: const u8[:],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
     guard kid.len <= 64 else { return false; }
     guard secret_key.len >= 16 && secret_key.len <= 64 else { return false; }
     var key = JwksKey {
-        kty: JwkKeyType.Oct,
-        crv: "",
-        alg: alg,
-        use: "sig",
+        kty:   JwkKeyType.Oct,
+        crv:   "",
+        alg:   alg,
+        use:   "sig",
         valid: true,
         ..
     };
@@ -120,9 +120,12 @@ fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
 // - oct (RFC 7638 §3.2): "k", "kty"
 // - Ignores optional members (alg, use, kid)
 fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
+    let is_okp = key.kty == JwkKeyType.OKP && key.crv.len > 0;
+    let is_oct = key.kty == JwkKeyType.Oct && key.symmetric_key.len > 0;
+    guard is_okp || is_oct else { return false; }
+
     out.clear();
-    if key.kty == JwkKeyType.OKP {
-        guard key.crv.len > 0 else { return false; }
+    if is_okp {
         out.append("{\"crv\":\"");
         out.append(key.crv[..]);
         out.append("\",\"kty\":\"OKP\",\"x\":\"");
@@ -130,17 +133,14 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
         core::base64url_encode(key.public_key[..], x_b64);
         out.append(x_b64[..]);
         out.append("\"}");
-        return true;
-    } else if key.kty == JwkKeyType.Oct {
-        guard key.symmetric_key.len > 0 else { return false; }
+    } else {
         out.append("{\"k\":\"");
         var k_b64: u8[..128] = [];
         core::base64url_encode(key.symmetric_key[..], k_b64);
         out.append(k_b64[..]);
         out.append("\",\"kty\":\"oct\"}");
-        return true;
     }
-    return false;
+    return true;
 }
 
 // Computes the RFC 7638 JWK Thumbprint:
@@ -209,9 +209,9 @@ fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
 //   sets: key_item.kty = OKP, returns: true
 fn parse_jwk_key_core_type(
     field_key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    key_item: JwksKey&,
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    key_item:  JwksKey&,
 ) -> bool {
     if field_key == "kty" {
         let kty_str = json::read_string(reader, scratch);
@@ -250,9 +250,9 @@ fn parse_jwk_key_core_type(
 //   sets: key_item.kid = "key-1", returns: true
 fn parse_jwk_key_ident(
     field_key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    key_item: JwksKey&,
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    key_item:  JwksKey&,
 ) -> bool {
     if field_key == "use" {
         let use_str = json::read_string(reader, scratch);
@@ -286,11 +286,11 @@ fn parse_jwk_key_ident(
 //   stores in raw_x, returns: true
 fn parse_jwk_key_material(
     field_key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    raw_x: u8[..128]&,
-    raw_k: u8[..128]&,
-    key_item: JwksKey&,
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    raw_x:     u8[..128]&,
+    raw_k:     u8[..128]&,
+    key_item:  JwksKey&,
 ) -> bool {
     if field_key == "x" {
         let x_str = json::read_string(reader, scratch);
@@ -324,11 +324,11 @@ fn parse_jwk_key_material(
 //   routes to parse_jwk_key_core_type
 fn parse_jwk_key_field(
     field_key: const u8[:],
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    raw_x: u8[..128]&,
-    raw_k: u8[..128]&,
-    key_item: JwksKey&,
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    raw_x:     u8[..128]&,
+    raw_k:     u8[..128]&,
+    key_item:  JwksKey&,
 ) {
     if parse_jwk_key_core_type(field_key, reader, scratch, key_item) {
         // Matched kty, crv, or alg
@@ -347,10 +347,10 @@ fn parse_jwk_key_field(
 //   reader positioned at {"kty":"OKP", ...}
 //   populates key_item, raw_x, raw_k
 fn parse_jwk_key_fields(
-    reader: json::Reader&,
-    scratch: u8[>..]&,
-    raw_x: u8[..128]&,
-    raw_k: u8[..128]&,
+    reader:   json::Reader&,
+    scratch:  u8[>..]&,
+    raw_x:    u8[..128]&,
+    raw_k:    u8[..128]&,
     key_item: JwksKey&,
 ) {
     json::each_member(reader) { field_key =>
@@ -388,8 +388,8 @@ fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
 }
 
 fn finalize_jwk_key(
-    raw_x: const u8[:],
-    raw_k: const u8[:],
+    raw_x:    const u8[:],
+    raw_k:    const u8[:],
     key_item: JwksKey&,
 ) -> bool {
     guard !key_item.has_invalid_type else { return false; }
@@ -406,8 +406,8 @@ fn finalize_jwk_key(
 //   reader positioned at {"kty":"OKP", ...}
 //   appends validated key to out_jwks
 fn parse_single_jwk_element(
-    reader: json::Reader&,
-    scratch: u8[>..]&,
+    reader:   json::Reader&,
+    scratch:  u8[>..]&,
     out_jwks: Jwks&,
 ) {
     guard out_jwks.keys.len < out_jwks.keys.cap else {
@@ -473,7 +473,7 @@ fn is_valid_key_use(use: const u8[:]) -> bool {
 }
 
 fn validate_jwks_key_compatibility(
-    key: const JwksKey&,
+    key:        const JwksKey&,
     header_alg: JwtAlg,
     allow_none: bool,
 ) -> JwtError {
@@ -497,12 +497,12 @@ fn validate_jwks_key_compatibility(
 }
 
 fn verify_jwks_okp(
-    token: const u8[:],
-    key: const JwksKey&,
-    options: const JwtValidationOptions&,
+    token:        const u8[:],
+    key:          const JwksKey&,
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
-    out_header: JwtHeader&,
-    out_claims: JwtClaims&,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
 ) -> JwtError {
     guard out_header.alg == JwtAlg.EdDSA else {
         return JwtError.AlgorithmMismatch;
@@ -511,12 +511,12 @@ fn verify_jwks_okp(
 }
 
 fn verify_jwks_oct(
-    token: const u8[:],
-    key: const JwksKey&,
-    options: const JwtValidationOptions&,
+    token:        const u8[:],
+    key:          const JwksKey&,
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
-    out_header: JwtHeader&,
-    out_claims: JwtClaims&,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
 ) -> JwtError {
     guard out_header.alg != JwtAlg.EdDSA else {
         return JwtError.AlgorithmMismatch;
@@ -525,12 +525,12 @@ fn verify_jwks_oct(
 }
 
 fn dispatch_jwks_verification(
-    token: const u8[:],
-    key: const JwksKey&,
-    options: const JwtValidationOptions&,
+    token:        const u8[:],
+    key:          const JwksKey&,
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
-    out_header: JwtHeader&,
-    out_claims: JwtClaims&,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
 ) -> JwtError {
     let compat_err = validate_jwks_key_compatibility(key, out_header.alg, options.allow_none_alg);
     guard compat_err == JwtError.None else { return compat_err; }
@@ -545,12 +545,12 @@ fn dispatch_jwks_verification(
 // Verifies a JWT against a JWKS key set.
 // Uses the `kid` in the JWT header to locate the active key and performs signature & claims validation.
 fn verify(
-    token: const u8[:],
-    jwks: const Jwks&,
-    options: const JwtValidationOptions&,
+    token:        const u8[:],
+    jwks:         const Jwks&,
+    options:      const JwtValidationOptions&,
     now_unix_sec: i64,
-    out_header: JwtHeader&,
-    out_claims: JwtClaims&,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
 ) -> JwtError {
     let parse_err = parse_jwt_unverified(token, out_header, out_claims);
     guard parse_err == JwtError.None else { return parse_err; }
