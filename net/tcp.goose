@@ -871,7 +871,7 @@ fn pop_free_slot(stack: FreeSlotStack&) -> i64 {
     guard top > 0 && top <= 1024 else { return -1; }
     let next_top = top - 1;
     stack.top = next_top;
-    return stack.indices[next_top] as i64;
+    return stack.indices[next_top];
 }
 
 // Restores slot index back into the free stack in O(1).
@@ -930,9 +930,9 @@ fn drain_backpressure(bp: BackpressureSlot&, sock_fd: i64) -> i64, bool {
     guard sock_fd > 0 else { return -1, false; }
     let pending = bp.buf[bp.offset..bp.len];
     let sent = tcp_send(sock_fd, pending);
-    guard sent > 0 else { return sent as i64, false; }
-    bp.offset += sent as i64;
-    guard bp.offset >= bp.len else { return sent as i64, false; }
+    guard sent > 0 else { return sent, false; }
+    bp.offset += sent;
+    guard bp.offset >= bp.len else { return sent, false; }
     clear_backpressure_slot(bp);
-    return sent as i64, true;
+    return sent, true;
 }
