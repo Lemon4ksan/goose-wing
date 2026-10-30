@@ -58,10 +58,14 @@ fn is_grpc_request(req: const Request&) -> bool {
 
 // Parses standard gRPC URI path: `/{service}/{method}` or `/{package}.{service}/{method}`.
 // Returns (ok) and populates out_service and out_method.
+//
+// Example:
+//   path = "/helloworld.Greeter/SayHello"
+//   returns: ok = true, out_service = "helloworld.Greeter", out_method = "SayHello"
 fn parse_grpc_path(
-    path: const u8[:],
+    path:        const u8[:],
     out_service: u8[..64]&,
-    out_method: u8[..64]&,
+    out_method:  u8[..64]&,
 ) -> bool {
     out_service.clear();
     out_method.clear();
@@ -90,14 +94,14 @@ fn parse_grpc_path(
 // ---- 2. Server Invocation Context ------------------------------------------
 
 struct GrpcServerContext {
-    service: u8[..64] = [],
-    method: u8[..64] = [],
-    peer_ip: u8[..48] = [],
-    timeout_ms: u64 = 0,
-    deadline_mono_ns: u64 = 0,
-    is_web: bool = false,
-    is_web_text: bool = false,
-    metadata: GrpcMetadata[..16] = [],
+    service:           u8[..64]           = [],
+    method:            u8[..64]           = [],
+    peer_ip:           u8[..48]           = [],
+    timeout_ms:        u64                = 0,
+    deadline_mono_ns:  u64                = 0,
+    is_web:            bool               = false,
+    is_web_text:       bool               = false,
+    metadata:          GrpcMetadata[..16] = [],
     response_metadata: GrpcMetadata[..16] = [],
     response_trailers: GrpcMetadata[..16] = [],
 }
@@ -146,38 +150,38 @@ enum GrpcMethodType {
 }
 
 struct GrpcMethodEntry {
-    service: u8[..64] = [],
-    method: u8[..64] = [],
-    full_path: u8[..128] = [],
+    service:     u8[..64]       = [],
+    method:      u8[..64]       = [],
+    full_path:   u8[..128]      = [],
     method_type: GrpcMethodType = GrpcMethodType.Unary,
-    handler_id: u16 = 0,
+    handler_id:  u16            = 0,
 }
 
 struct GrpcServerDispatcher {
-    methods: GrpcMethodEntry[..64] = [],
-    max_message_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
-    enable_web: bool = true,
+    methods:          GrpcMethodEntry[..64] = [],
+    max_message_size: u32                   = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    enable_web:       bool                  = true,
 }
 
 fn new_grpc_server_dispatcher(max_msg_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcServerDispatcher {
     return GrpcServerDispatcher {
-        methods: [],
+        methods:          [],
         max_message_size: max_msg_size,
-        enable_web: true,
+        enable_web:       true,
     };
 }
 
 fn register_method(
-    d: GrpcServerDispatcher&,
-    service: const u8[:],
-    method: const u8[:],
+    d:           GrpcServerDispatcher&,
+    service:     const u8[:],
+    method:      const u8[:],
     method_type: GrpcMethodType,
-    handler_id: u16,
+    handler_id:  u16,
 ) -> bool {
     guard d.methods.len < d.methods.cap else { return false; }
     var entry = GrpcMethodEntry {
         method_type: method_type,
-        handler_id: handler_id,
+        handler_id:  handler_id,
         ..
     };
     entry.service.append(service);
@@ -193,36 +197,36 @@ fn register_method(
 }
 
 fn register_unary(
-    d: GrpcServerDispatcher&,
-    service: const u8[:],
-    method: const u8[:],
+    d:          GrpcServerDispatcher&,
+    service:    const u8[:],
+    method:     const u8[:],
     handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.Unary, handler_id);
 }
 
 fn register_server_streaming(
-    d: GrpcServerDispatcher&,
-    service: const u8[:],
-    method: const u8[:],
+    d:          GrpcServerDispatcher&,
+    service:    const u8[:],
+    method:     const u8[:],
     handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.ServerStreaming, handler_id);
 }
 
 fn register_client_streaming(
-    d: GrpcServerDispatcher&,
-    service: const u8[:],
-    method: const u8[:],
+    d:          GrpcServerDispatcher&,
+    service:    const u8[:],
+    method:     const u8[:],
     handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.ClientStreaming, handler_id);
 }
 
 fn register_bidi_streaming(
-    d: GrpcServerDispatcher&,
-    service: const u8[:],
-    method: const u8[:],
+    d:          GrpcServerDispatcher&,
+    service:    const u8[:],
+    method:     const u8[:],
     handler_id: u16,
 ) -> bool {
     return register_method(d, service, method, GrpcMethodType.BidiStreaming, handler_id);
@@ -248,11 +252,22 @@ fn find_method_by_name(d: const GrpcServerDispatcher&, service: const u8[:], met
 
 // ---- 4. Wire Response Builders ---------------------------------------------
 
+// Appends gRPC metadata entries into a response header or trailer list.
+fn append_grpc_metadata_headers<H>(target: H&, metadata: const GrpcMetadata[:]) {
+    for &m in metadata {
+        guard target.len < target.cap else { break; }
+        var item = HeaderItem { .. };
+        item.name.append(m.key[..]);
+        item.value.append(m.value[..]);
+        target.push(item);
+    }
+}
+
 // Builds a Trailers-Only response (used for immediate errors or zero-data failures)
 fn build_grpc_trailers_only_response(
-    status: GrpcStatusCode,
+    status:  GrpcStatusCode,
     message: const u8[:],
-    ctx: const GrpcServerContext&,
+    ctx:     const GrpcServerContext&,
     out_res: Response&,
 ) {
     out_res.status_code = HTTP_STATUS_OK;
@@ -271,12 +286,7 @@ fn build_grpc_trailers_only_response(
         }
         out_res.headers.push(ct);
 
-        for &m in ctx.response_metadata {
-            var item = HeaderItem { .. };
-            item.name.append(m.key[..]);
-            item.value.append(m.value[..]);
-            out_res.headers.push(item);
-        }
+        append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
 
         var raw_trailers: u8[>..] = [];
         encode_grpc_web_trailers_with_meta(status, message, ctx.response_trailers[..], raw_trailers);
@@ -305,29 +315,18 @@ fn build_grpc_trailers_only_response(
             out_res.headers.push(msg_item);
         }
 
-        for &m in ctx.response_metadata {
-            var item = HeaderItem { .. };
-            item.name.append(m.key[..]);
-            item.value.append(m.value[..]);
-            out_res.headers.push(item);
-        }
-
-        for &m in ctx.response_trailers {
-            var item = HeaderItem { .. };
-            item.name.append(m.key[..]);
-            item.value.append(m.value[..]);
-            out_res.headers.push(item);
-        }
+        append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
+        append_grpc_metadata_headers(out_res.headers, ctx.response_trailers[..]);
     }
 }
 
 // Builds a standard gRPC wire response (Headers + Body LPM + Trailers)
 fn build_grpc_wire_response(
-    status: GrpcStatusCode,
-    message: const u8[:],
+    status:       GrpcStatusCode,
+    message:      const u8[:],
     raw_lpm_body: const u8[:],
-    ctx: const GrpcServerContext&,
-    out_res: Response&,
+    ctx:          const GrpcServerContext&,
+    out_res:      Response&,
 ) {
     out_res.status_code = HTTP_STATUS_OK;
     out_res.headers.clear();
@@ -345,12 +344,7 @@ fn build_grpc_wire_response(
         }
         out_res.headers.push(ct);
 
-        for &m in ctx.response_metadata {
-            var item = HeaderItem { .. };
-            item.name.append(m.key[..]);
-            item.value.append(m.value[..]);
-            out_res.headers.push(item);
-        }
+        append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
 
         var web_body: u8[>..] = [];
         web_body.append(raw_lpm_body);
@@ -373,12 +367,7 @@ fn build_grpc_wire_response(
         enc_item.value.append("identity,gzip");
         out_res.headers.push(enc_item);
 
-        for &m in ctx.response_metadata {
-            var item = HeaderItem { .. };
-            item.name.append(m.key[..]);
-            item.value.append(m.value[..]);
-            out_res.headers.push(item);
-        }
+        append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
 
         out_res.body.append(raw_lpm_body);
 
@@ -395,12 +384,7 @@ fn build_grpc_wire_response(
             out_res.trailers.push(msg_item);
         }
 
-        for &m in ctx.response_trailers {
-            var item = HeaderItem { .. };
-            item.name.append(m.key[..]);
-            item.value.append(m.value[..]);
-            out_res.trailers.push(item);
-        }
+        append_grpc_metadata_headers(out_res.trailers, ctx.response_trailers[..]);
     }
 }
 
@@ -416,10 +400,15 @@ inline fn compute_safe_grpc_deadline(base_ns: u64, ms: u64) -> u64 {
     return base_ns + safe_nanos;
 }
 
+// Extracts service, method, timeout, and metadata from incoming HTTP request.
+//
+// Example:
+//   req.url = "/echo.Echo/Ping", req.headers = [content-type: application/grpc]
+//   returns: ok = true, out_ctx.service = "echo.Echo", out_ctx.method = "Ping"
 fn extract_grpc_server_context(
-    req: const Request&,
-    out_ctx: GrpcServerContext&,
-    now_mono_ns: u64 = 0,
+    req:               const Request&,
+    out_ctx:           GrpcServerContext&,
+    now_mono_ns:       u64 = 0,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     out_ctx.service.clear();
@@ -470,20 +459,25 @@ fn extract_grpc_server_context(
 // ---- 6. Streaming Primitives -----------------------------------------------
 
 struct GrpcMessageSpan {
-    offset: u32 = 0,
-    len: u32 = 0,
+    offset:     u32  = 0,
+    len:        u32  = 0,
     compressed: bool = false,
 }
 
 struct GrpcClientStreamReader {
     spans: GrpcMessageSpan[..32] = [],
-    wire: u8[>..] = [],
+    wire:  u8[>..]               = [],
 }
 
+// Parses sequential client stream LPM frames into message spans.
+//
+// Example:
+//   raw_body = "\x00\x00\x00\x00\x04ping\x00\x00\x00\x00\x04pong", is_web_text = false
+//   returns: ok = true, out_reader.spans.len = 2
 fn parse_client_stream(
-    raw_body: const u8[:],
+    raw_body:    const u8[:],
     is_web_text: bool,
-    out_reader: GrpcClientStreamReader&,
+    out_reader:  GrpcClientStreamReader&,
 ) -> bool {
     out_reader.wire.clear();
     out_reader.spans.clear();
@@ -511,8 +505,8 @@ fn parse_client_stream(
         guard out_reader.spans.len < out_reader.spans.cap else { return false; }
 
         let span = GrpcMessageSpan {
-            offset: payload_offset,
-            len: len_val,
+            offset:     payload_offset,
+            len:        len_val,
             compressed: is_comp,
         };
         out_reader.spans.push(span);
@@ -520,10 +514,6 @@ fn parse_client_stream(
 
     guard reader.remaining() == 0 else { return false; }
     return true;
-}
-
-fn client_stream_count(reader: const GrpcClientStreamReader&) -> i64 {
-    return reader.spans.len;
 }
 
 fn get_client_stream_message(reader: const GrpcClientStreamReader&, idx: i64) -> const u8[:] {
@@ -536,13 +526,13 @@ fn get_client_stream_message(reader: const GrpcClientStreamReader&, idx: i64) ->
 }
 
 struct GrpcServerStreamWriter {
-    message_count: u32 = 0,
-    body: u8[>..] = [],
+    message_count: u32     = 0,
+    body:          u8[>..] = [],
 }
 
 fn write_stream_message(
-    writer: GrpcServerStreamWriter&,
-    payload: const u8[:],
+    writer:     GrpcServerStreamWriter&,
+    payload:    const u8[:],
     compressed: bool = false,
 ) {
     encode_grpc_lpm(payload, writer.body, compressed);
@@ -554,10 +544,10 @@ fn write_stream_message(
 // Unary RPC Dispatcher:
 // Executes a single Request-Response RPC cycle conforming to RFC gRPC over HTTP/2 and gRPC-Web.
 fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&)>(
-    d: const GrpcServerDispatcher&,
-    req: const Request&,
-    now_mono_ns: u64,
-    res: Response&,
+    d:                 const GrpcServerDispatcher&,
+    req:               const Request&,
+    now_mono_ns:       u64,
+    res:               Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     // 1. Validate gRPC Content-Type
@@ -670,10 +660,10 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
 fn dispatch_grpc_server_streaming<
     HandlerFn: fn(u16, GrpcServerContext&, const u8[:], GrpcServerStreamWriter&, GrpcStatusCode&, u8[..256]&),
 >(
-    d: const GrpcServerDispatcher&,
-    req: const Request&,
-    now_mono_ns: u64,
-    res: Response&,
+    d:                 const GrpcServerDispatcher&,
+    req:               const Request&,
+    now_mono_ns:       u64,
+    res:               Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
@@ -770,10 +760,10 @@ fn dispatch_grpc_server_streaming<
 }
 
 fn validate_client_stream_spans(
-    reader: const GrpcClientStreamReader&,
+    reader:   const GrpcClientStreamReader&,
     max_size: u32,
-    ctx: const GrpcServerContext&,
-    res: Response&,
+    ctx:      const GrpcServerContext&,
+    res:      Response&,
 ) -> bool {
     for span in reader.spans {
         if span.len > max_size {
@@ -797,10 +787,10 @@ fn validate_client_stream_spans(
 fn dispatch_grpc_client_streaming<
     HandlerFn: fn(u16, GrpcServerContext&, const GrpcClientStreamReader&, u8[>..]&, GrpcStatusCode&, u8[..256]&),
 >(
-    d: const GrpcServerDispatcher&,
-    req: const Request&,
-    now_mono_ns: u64,
-    res: Response&,
+    d:                 const GrpcServerDispatcher&,
+    req:               const Request&,
+    now_mono_ns:       u64,
+    res:               Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard is_grpc_request(req) else { return false; }

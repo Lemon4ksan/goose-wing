@@ -15,16 +15,16 @@ import proxy.load_balancer;
 const PROXY_TARGET_NONE: i32 = -1;
 
 struct ProxyConfig {
-    strip_hop_by_hop: bool = true,
-    append_forwarded: bool = true,
-    preserve_host: bool = false,
-    trust_incoming_xff: bool = false,
-    max_active_conns_per_target: i32 = 1024,
-    enable_rate_limiting: bool = false,
-    rate_limit_rps: u64 = 100,
-    rate_limit_burst: u64 = 20,
-    via_pseudonym: u8[..32] = "wing",
-    http_version: u8[..8] = "HTTP/1.1",
+    strip_hop_by_hop:            bool     = true,
+    append_forwarded:            bool     = true,
+    preserve_host:               bool     = false,
+    trust_incoming_xff:          bool     = false,
+    max_active_conns_per_target: i32      = 1024,
+    enable_rate_limiting:        bool     = false,
+    rate_limit_rps:              u64      = 100,
+    rate_limit_burst:            u64      = 20,
+    via_pseudonym:               u8[..32] = "wing",
+    http_version:                u8[..8]  = "HTTP/1.1",
 }
 
 // Helper to format chained X-Forwarded-For value without in-branch bounded buffer operations.
@@ -64,14 +64,13 @@ inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
 
 // Determines if an incoming header should be forwarded to upstream.
 fn should_forward_header(
-    name: const u8[:],
-    val: const u8[:],
+    name:       const u8[:],
+    val:        const u8[:],
     in_headers: const HeaderMap&,
-    preserve_host: bool,
-    strip_hop: bool,
+    config:     const ProxyConfig&,
 ) -> bool {
     if eq_ascii_fold(name, "host") {
-        return preserve_host;
+        return config.preserve_host;
     }
     if is_forwarded_metadata_header(name) {
         return false;
@@ -81,7 +80,7 @@ fn should_forward_header(
     if eq_ascii_fold(name, "content-length") && has_header(in_headers, "transfer-encoding") {
         return false;
     }
-    guard strip_hop else { return true; }
+    guard config.strip_hop_by_hop else { return true; }
 
     if is_hop_by_hop_header_name(name) {
         // RFC 9110: TE may only be forwarded if the value is trailers
@@ -133,10 +132,9 @@ fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
 // Copies filtered client headers into proxy request header map.
 // Enforces RFC 9112 §6.3: deduplicates identical Content-Length headers into a single occurrence.
 fn copy_filtered_headers(
-    in_headers: const HeaderMap&,
+    in_headers:  const HeaderMap&,
     out_headers: HeaderMap&,
-    preserve_host: bool,
-    strip_hop: bool,
+    config:      const ProxyConfig&,
 ) {
     for i in in_headers.entries.len {
         let entry = in_headers.entries[i];
@@ -147,7 +145,7 @@ fn copy_filtered_headers(
             continue;
         }
 
-        if should_forward_header(name, val, in_headers, preserve_host, strip_hop) {
+        if should_forward_header(name, val, in_headers, config) {
             append_header(out_headers, name, val);
         }
     }
@@ -170,9 +168,9 @@ fn inject_via_header(out_headers: HeaderMap&, pseudonym: const u8[:]) {
 
 // Injects forwarded client IP into X-Forwarded-For, respecting trust boundary.
 fn append_forwarded_metadata_xff(
-    out_headers: HeaderMap&,
-    in_headers: const HeaderMap&,
-    client_ip: const u8[:],
+    out_headers:        HeaderMap&,
+    in_headers:         const HeaderMap&,
+    client_ip:          const u8[:],
     trust_incoming_xff: bool,
 ) {
     if !trust_incoming_xff {
@@ -191,36 +189,35 @@ fn append_forwarded_metadata_xff(
 // Injects standard proxy forwarding headers (RFC 7239 / de facto).
 fn inject_forwarded_metadata(
     out_headers: HeaderMap&,
-    in_headers: const HeaderMap&,
-    client_ip: const u8[:],
-    proto: const u8[:],
-    preserve_host: bool,
-    trust_incoming_xff: bool = false,
+    in_headers:  const HeaderMap&,
+    client_ip:   const u8[:],
+    proto:       const u8[:],
+    config:      const ProxyConfig&,
 ) {
-    append_forwarded_metadata_xff(out_headers, in_headers, client_ip, trust_incoming_xff);
+    append_forwarded_metadata_xff(out_headers, in_headers, client_ip, config.trust_incoming_xff);
 
     let orig_host = get_header(in_headers, "Host");
     if proto.len > 0 {
         append_header(out_headers, "X-Forwarded-Proto", proto);
     }
-    if orig_host.len > 0 && !preserve_host {
+    if orig_host.len > 0 && !config.preserve_host {
         append_header(out_headers, "X-Forwarded-Host", orig_host);
     }
 }
 
 // Filters incoming request headers and populates outgoing proxy request headers.
 fn filter_and_forward_headers(
-    in_headers: const HeaderMap&,
-    out_headers: HeaderMap&,
-    client_ip: const u8[:],
-    proto: const u8[:],
+    in_headers:    const HeaderMap&,
+    out_headers:   HeaderMap&,
+    client_ip:     const u8[:],
+    proto:         const u8[:],
     upstream_host: const u8[:],
-    config: const ProxyConfig&,
+    config:        const ProxyConfig&,
 ) -> bool {
     guard has_consistent_framing_headers(in_headers) else { return false; }
     reset_for_keep_alive(out_headers);
 
-    copy_filtered_headers(in_headers, out_headers, config.preserve_host, config.strip_hop_by_hop);
+    copy_filtered_headers(in_headers, out_headers, config);
 
     if !config.preserve_host && upstream_host.len > 0 {
         append_header(out_headers, "Host", upstream_host);
@@ -232,8 +229,7 @@ fn filter_and_forward_headers(
             in_headers,
             client_ip,
             proto,
-            config.preserve_host,
-            config.trust_incoming_xff,
+            config,
         );
     }
 
@@ -243,11 +239,11 @@ fn filter_and_forward_headers(
 
 // Formats upstream wire HTTP/1.1 request buffer ready for transmission.
 fn serialize_upstream_request(
-    method: const u8[:],
-    uri: const u8[:],
+    method:  const u8[:],
+    uri:     const u8[:],
     headers: const HeaderMap&,
-    body: const u8[:],
-    out: u8[>..]&,
+    body:    const u8[:],
+    out:     u8[>..]&,
 ) {
     out.clear();
     out.append(method);
@@ -273,19 +269,19 @@ fn serialize_upstream_request(
 
 // Layer 7 Reverse Proxy Gateway instance managing an UpstreamCluster.
 struct ReverseProxy {
-    cluster: UpstreamCluster = UpstreamCluster { .. },
-    config: ProxyConfig = ProxyConfig { .. },
-    rate_limiter: GatewayRateLimiter = GatewayRateLimiter { .. },
-    total_forwarded: u64 = 0,
-    total_dropped: u64 = 0,
-    total_rate_limited: u64 = 0,
-    total_overloaded: u64 = 0,
+    cluster:            UpstreamCluster    = UpstreamCluster { .. },
+    config:             ProxyConfig        = ProxyConfig { .. },
+    rate_limiter:       GatewayRateLimiter = GatewayRateLimiter { .. },
+    total_forwarded:    u64                = 0,
+    total_dropped:      u64                = 0,
+    total_rate_limited: u64                = 0,
+    total_overloaded:   u64                = 0,
 }
 
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy {
     return ReverseProxy {
-        cluster: new_upstream_cluster(policy),
-        config: ProxyConfig { .. },
+        cluster:      new_upstream_cluster(policy),
+        config:       ProxyConfig { .. },
         rate_limiter: new_gateway_rate_limiter(100, 20),
         ..
     };
@@ -342,15 +338,15 @@ fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64) {
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
 // rewrites headers, and serializes forward wire request.
 fn prepare_proxy_request_at(
-    proxy: ReverseProxy&,
-    method: const u8[:],
-    uri: const u8[:],
+    proxy:      ReverseProxy&,
+    method:     const u8[:],
+    uri:        const u8[:],
     in_headers: const HeaderMap&,
-    client_ip: const u8[:],
-    proto: const u8[:],
-    body: const u8[:],
-    out_wire: u8[>..]&,
-    now_ns: u64,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    body:       const u8[:],
+    out_wire:   u8[>..]&,
+    now_ns:     u64,
 ) -> i32, bool {
     let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
 
@@ -401,14 +397,14 @@ fn prepare_proxy_request_at(
 
 // Compatibility wrapper for prepare_proxy_request without explicit timestamp.
 fn prepare_proxy_request(
-    proxy: ReverseProxy&,
-    method: const u8[:],
-    uri: const u8[:],
+    proxy:      ReverseProxy&,
+    method:     const u8[:],
+    uri:        const u8[:],
     in_headers: const HeaderMap&,
-    client_ip: const u8[:],
-    proto: const u8[:],
-    body: const u8[:],
-    out_wire: u8[>..]&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    body:       const u8[:],
+    out_wire:   u8[>..]&,
 ) -> i32, bool {
     let now_ns = core::as_nanos(core::monotonic_now());
     return prepare_proxy_request_at(

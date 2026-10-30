@@ -100,8 +100,8 @@ fn test_grpc_lpm_framing(t: core::T&) {
 
         var offset: u32 = 0;
         var count = 0;
-        var payloads: u8[..64][..4] = [];
-        var comp_flags: bool[..4] = [];
+        var payloads:   u8[..64][..4] = [];
+        var comp_flags: bool[..4]     = [];
 
         while offset < (stream_bytes.len as u32) {
             var msg_buf: u8[..64] = [];
@@ -406,7 +406,7 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
         // Register mock route
         var mock = wing::MockExchange {
             pattern_url: "https://api.example.com/order.OrderService/CreateOrder",
-            method: "POST",
+            method:      "POST",
             status_code: 200,
             ..
         };
@@ -463,7 +463,7 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
     };
 
     t.run("5. Streaming RPC Session (write_stream_message & feed_stream_chunk)") { sub =>
-        var client_stream = wing::new_grpc_client_stream(1, false, false);
+        var client_stream = wing::new_grpc_client_stream(1);
 
         var wire_out: u8[>..] = [];
         wing::write_stream_message(client_stream, "Streaming Request 1", wire_out);

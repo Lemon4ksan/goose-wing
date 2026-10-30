@@ -10,11 +10,11 @@ import wing from "..";
 
 // Dummy handler router for test suites
 fn test_unary_handler(
-    handler_id: u16,
-    ctx: wing::GrpcServerContext&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-    out_status: wing::GrpcStatusCode&,
+    out_status:  wing::GrpcStatusCode&,
     out_message: u8[..256]&,
 ) {
     if handler_id == 1 {
@@ -204,11 +204,11 @@ fn test_grpc_server_unary_web(t: core::T&) {
 // 3. Server-Streaming RPC Dispatch
 // ----------------------------------------------------------------------------
 fn test_server_streaming_handler(
-    handler_id: u16,
-    ctx: wing::GrpcServerContext&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
-    writer: wing::GrpcServerStreamWriter&,
-    out_status: wing::GrpcStatusCode&,
+    writer:      wing::GrpcServerStreamWriter&,
+    out_status:  wing::GrpcStatusCode&,
     out_message: u8[..256]&,
 ) {
     if handler_id == 2 {
@@ -272,15 +272,15 @@ fn test_grpc_server_streaming(t: core::T&) {
 // 4. Client-Streaming RPC Dispatch
 // ----------------------------------------------------------------------------
 fn test_client_streaming_handler(
-    handler_id: u16,
-    ctx: wing::GrpcServerContext&,
-    reader: const wing::GrpcClientStreamReader&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
+    reader:      const wing::GrpcClientStreamReader&,
     res_payload: u8[>..]&,
-    out_status: wing::GrpcStatusCode&,
+    out_status:  wing::GrpcStatusCode&,
     out_message: u8[..256]&,
 ) {
     if handler_id == 3 {
-        let count = wing::client_stream_count(reader);
+        let count = reader.spans.len;
         res_payload.append("Received ");
         format(res_payload, count);
         res_payload.append(" items");

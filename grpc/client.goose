@@ -18,13 +18,13 @@ import client.client;
 // ---- 1. gRPC Request & Response Models -------------------------------------
 
 struct GrpcCallConfig {
-    service: u8[..128] = [],
-    method: u8[..128] = [],
-    timeout_ms: u64 = 0,
-    is_web: bool = false,
-    is_web_text: bool = false,
-    use_compression: bool = false,
-    metadata: GrpcMetadata[..16] = [],
+    service:         u8[..128]          = [],
+    method:          u8[..128]          = [],
+    timeout_ms:      u64                = 0,
+    is_web:          bool               = false,
+    is_web_text:     bool               = false,
+    use_compression: bool               = false,
+    metadata:        GrpcMetadata[..16] = [],
 }
 
 fn new_grpc_call_config(service: const u8[:], method: const u8[:]) -> GrpcCallConfig {
@@ -35,11 +35,11 @@ fn new_grpc_call_config(service: const u8[:], method: const u8[:]) -> GrpcCallCo
 }
 
 struct GrpcResponse {
-    status: GrpcStatusCode = GrpcStatusCode.Ok,
-    message: u8[..256] = [],
-    is_compressed: bool = false,
-    is_trailers_only: bool = false,
-    payload: u8[>..] = [],
+    status:           GrpcStatusCode = GrpcStatusCode.Ok,
+    message:          u8[..256]      = [],
+    is_compressed:    bool           = false,
+    is_trailers_only: bool           = false,
+    payload:          u8[>..]        = [],
 }
 
 fn is_grpc_success(res: const GrpcResponse&) -> bool {
@@ -50,9 +50,9 @@ fn is_grpc_success(res: const GrpcResponse&) -> bool {
 
 // Builds a low-level HeaderMap for native HTTP/2 or HTTP/3 framing.
 fn build_grpc_request_headers(
-    cfg: const GrpcCallConfig&,
-    host: const u8[:],
-    scheme: const u8[:],
+    cfg:         const GrpcCallConfig&,
+    host:        const u8[:],
+    scheme:      const u8[:],
     out_headers: HeaderMap&,
 ) {
     reset_for_keep_alive(out_headers);
@@ -97,10 +97,10 @@ fn build_grpc_request_headers(
 
 // Builds a high-level Client Request object for dispatch through Session / Client.
 fn build_grpc_http_request(
-    cfg: const GrpcCallConfig&,
-    base_url: const u8[:],
+    cfg:            const GrpcCallConfig&,
+    base_url:       const u8[:],
     serialized_msg: const u8[:],
-    out_req: Request&,
+    out_req:        Request&,
 ) {
     out_req.method.clear();
     out_req.method.append("POST");
@@ -155,12 +155,17 @@ fn build_grpc_http_request(
 
 // ---- 3. Unary Response Parser ----------------------------------------------
 
+// Parses a unary gRPC or gRPC-Web response from headers, trailers, and body bytes.
+//
+// Example:
+//   body = "\x00\x00\x00\x00\x05hello", is_web = false
+//   returns: ok = true, out_resp.payload = "hello", out_resp.status = Ok
 fn parse_grpc_unary_response(
-    res_headers: const HeaderMap&,
+    res_headers:  const HeaderMap&,
     res_trailers: const HeaderMap&,
-    body: const u8[:],
-    is_web: bool,
-    out_resp: GrpcResponse&,
+    body:         const u8[:],
+    is_web:       bool,
+    out_resp:     GrpcResponse&,
 ) -> bool {
     out_resp.payload.clear();
     out_resp.message.clear();
@@ -222,14 +227,59 @@ fn parse_grpc_unary_response(
 
 // ---- 4. High-Level RPC Invocation via Client -------------------------------
 
+// Parses a numeric gRPC status code from string.
+//
+// Example:
+//   status_val = "0"
+//   returns: 0
+fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
+    var status_int: u32 = 0;
+    for b in trim_lws(status_val) {
+        if b >= '0' && b <= '9' {
+            status_int = status_int * 10 + (b - '0');
+        }
+    }
+    return status_int;
+}
+
+// Processes incoming gRPC-Web response body and trailers.
+fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcResponse&) -> bool {
+    var wire_bytes: u8[>..] = [];
+    if starts_with_fold(ct, GRPC_WEB_TEXT_CONTENT_TYPE) {
+        decode_grpc_web_text(body, wire_bytes);
+    } else {
+        wire_bytes.append(body);
+    }
+
+    var offset:        u32     = 0;
+    var frame_payload: u8[>..] = [];
+    while offset < (wire_bytes.len as u32) {
+        frame_payload.clear();
+        var is_trailers = false;
+        var is_comp = false;
+        let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
+        guard ok_frame else { break; }
+
+        if is_trailers {
+            parse_grpc_web_trailers(frame_payload[..], out_resp.status, out_resp.message);
+        } else {
+            out_resp.payload.clear();
+            out_resp.payload.append(frame_payload[..]);
+            out_resp.is_compressed = is_comp;
+        }
+        offset += consumed;
+    }
+    return true;
+}
+
 // Dispatches a Unary RPC through a client session, handling URL construction,
 // LPM serialization, and response parsing.
 fn grpc_unary_call(
-    session: Session&,
-    base_url: const u8[:],
-    cfg: const GrpcCallConfig&,
+    session:     Session&,
+    base_url:    const u8[:],
+    cfg:         const GrpcCallConfig&,
     request_msg: const u8[:],
-    out_resp: GrpcResponse&,
+    out_resp:    GrpcResponse&,
 ) -> bool {
     var req = new_request("POST", "");
     build_grpc_http_request(cfg, base_url, request_msg, req);
@@ -251,12 +301,7 @@ fn grpc_unary_call(
     }
 
     if status_val.len > 0 {
-        var status_int: u32 = 0;
-        for b in trim_lws(status_val) {
-            if b >= '0' && b <= '9' {
-                status_int = status_int * 10 + (b - '0');
-            }
-        }
+        let status_int = parse_grpc_status_code(status_val);
         out_resp.status = grpc_status_from_code(status_int);
 
         if msg_val.len > 0 {
@@ -267,33 +312,8 @@ fn grpc_unary_call(
     }
 
     if cfg.is_web {
-        var wire_bytes: u8[>..] = [];
         let ct = header(res, "content-type");
-        if starts_with_fold(ct, GRPC_WEB_TEXT_CONTENT_TYPE) {
-            decode_grpc_web_text(res.body[..], wire_bytes);
-        } else {
-            wire_bytes.append(res.body[..]);
-        }
-
-        var offset: u32 = 0;
-        var frame_payload: u8[>..] = [];
-        while offset < (wire_bytes.len as u32) {
-            frame_payload.clear();
-            var is_trailers = false;
-            var is_comp = false;
-            let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
-            guard ok_frame else { break; }
-
-            if is_trailers {
-                parse_grpc_web_trailers(frame_payload[..], out_resp.status, out_resp.message);
-            } else {
-                out_resp.payload.clear();
-                out_resp.payload.append(frame_payload[..]);
-                out_resp.is_compressed = is_comp;
-            }
-            offset += consumed;
-        }
-        return true;
+        return process_grpc_web_response(res.body[..], ct, out_resp);
     }
 
     // Native gRPC body
@@ -309,21 +329,29 @@ fn grpc_unary_call(
 
 // ---- 5. Streaming RPC Client Session (Bidi & Server Streaming) --------------
 
-struct GrpcClientStream {
-    stream_id: u32 = 0,
-    is_active: bool = true,
-    is_web: bool = false,
+struct GrpcClientStreamOptions {
+    is_web:          bool = false,
     use_compression: bool = false,
-    parser: GrpcStreamParser = GrpcStreamParser { .. },
 }
 
-fn new_grpc_client_stream(stream_id: u32, is_web: bool = false, use_compression: bool = false) -> GrpcClientStream {
+struct GrpcClientStream {
+    stream_id:       u32              = 0,
+    is_active:       bool             = true,
+    is_web:          bool             = false,
+    use_compression: bool             = false,
+    parser:          GrpcStreamParser = GrpcStreamParser { .. },
+}
+
+fn new_grpc_client_stream(
+    stream_id: u32,
+    opts:      GrpcClientStreamOptions = GrpcClientStreamOptions { .. },
+) -> GrpcClientStream {
     return GrpcClientStream {
-        stream_id: stream_id,
-        is_active: true,
-        is_web: is_web,
-        use_compression: use_compression,
-        parser: new_grpc_stream_parser(),
+        stream_id:       stream_id,
+        is_active:       true,
+        is_web:          opts.is_web,
+        use_compression: opts.use_compression,
+        parser:          new_grpc_stream_parser(),
     };
 }
 
