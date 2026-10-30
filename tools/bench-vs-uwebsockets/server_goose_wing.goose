@@ -313,12 +313,12 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
     var slots: ConnSlot[1024] = [ConnSlot { .. }; 1024];
     var free_slots = wing::FreeSlotStack { .. };
     wing::init_free_slots(free_slots, 1024);
-    var bp_pool: wing::BackpressureSlot[16] = [wing::BackpressureSlot { .. }; 16];
-    var bp_free: i64[16] = [0; 16];
-    for b in 16 {
-        bp_free[b] = 15 - b;
+    var bp_pool: wing::BackpressureSlot[64] = [wing::BackpressureSlot { .. }; 64];
+    var bp_free: i64[64] = [0; 64];
+    for b in 64 {
+        bp_free[b] = 63 - b;
     }
-    var bp_free_top: i64 = 16;
+    var bp_free_top: i64 = 64;
 
     var ready_fds: i64[0] = [];
     var ready_udata: u64[1024] = [0; 1024];
@@ -353,7 +353,13 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
 
             // Drain active backpressure if registered for EPOLLOUT
-            check_drain_backpressure(epfd, conn, slots[slot_idx], slot_idx, bp_pool[..], bp_free[..], bp_free_top);
+            if slots[slot_idx].bp_idx >= 0 {
+                let drained = check_drain_backpressure(epfd, conn, slots[slot_idx], slot_idx, bp_pool[..], bp_free[..], bp_free_top);
+                if !drained {
+                    // TX buffer still congested; skip reading new requests
+                    continue;
+                }
+            }
 
             var active_len: i64 = 0;
             let prev_len = slots[slot_idx].leftover_len;
