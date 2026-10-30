@@ -44,7 +44,7 @@ struct ConnSlot {
     is_ws: bool = false,
     timeout_tick: u8 = 255,
     _pad: u8[6] = [0; 6],
-    leftover: u8[1024] = [0; 1024],
+    leftover: u8[232] = [0; 232],
 }
 
 // Core Share-Nothing Reactor Event Loop:
@@ -69,7 +69,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 
     wing::epoll_add(epfd, listener, wing::EPOLL_READ, wing::EPOLL_LISTENER_TAG);
 
-    var slots: ConnSlot[2048] = [ConnSlot { .. }; 2048];
+    var slots: ConnSlot[1024] = [ConnSlot { .. }; 1024];
     var ready_fds: i64[0] = [];
     var ready_udata: u64[1024] = [0; 1024];
     var raw_recv: u8[65536] = [0; 65536];
@@ -145,7 +145,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 
             var active_len: i64 = 0;
             let prev_len = slots[slot_idx].leftover_len;
-            if prev_len > 0 && prev_len <= 1024 {
+            if prev_len > 0 && prev_len <= 232 {
                 for p in prev_len {
                     raw_recv[p] = slots[slot_idx].leftover[p];
                 }
@@ -178,7 +178,6 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 continue;
             }
             let in_buf = raw_recv[..active_len];
-            wing::tcp_set_quickack(conn, true);
 
             if slots[slot_idx].is_ws {
                 // WebSocket Frame Ingress (RFC 6455)
@@ -281,7 +280,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 if slots[slot_idx].fd > 0 && ws_cursor >= 0 && ws_cursor < in_buf.len {
                     let rem = in_buf[ws_cursor..];
                     let rlen = rem.len;
-                    if rlen > 0 && rlen <= 1024 {
+                    if rlen > 0 && rlen <= 232 {
                         slots[slot_idx].leftover_len = rlen;
                         for r in rlen {
                             slots[slot_idx].leftover[r] = rem[r];
@@ -422,7 +421,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             if !upgraded_ws && slots[slot_idx].fd > 0 && cursor >= 0 && cursor < in_buf.len {
                 let rem = in_buf[cursor..];
                 let rlen = rem.len;
-                if rlen > 0 && rlen <= 1024 {
+                if rlen > 0 && rlen <= 232 {
                     slots[slot_idx].leftover_len = rlen;
                     for r in rlen {
                         slots[slot_idx].leftover[r] = rem[r];

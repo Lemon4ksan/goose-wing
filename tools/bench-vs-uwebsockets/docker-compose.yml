@@ -10,6 +10,9 @@ services:
       - ./web:/app/web
       - ./orchestrator.py:/app/orchestrator.py
       - ./run_cli.py:/app/run_cli.py
+      - ./bench_core.py:/app/bench_core.py
+      - ./pipeline.lua:/app/pipeline.lua
+      - ./pipeline_64.lua:/app/pipeline_64.lua
       - ./pipeline_128.lua:/app/pipeline_128.lua
     ports:
       - "8080:8080"   # Web Benchmark Dashboard
