@@ -426,10 +426,11 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             var upgraded_ws = false;
 
             while cursor >= 0 && cursor < in_buf.len {
-                let active = in_buf[cursor..];
+                var active = in_buf[cursor..];
 
                 // 0. Ultra-fast 4x Pipelined Benchmark Request Dispatch (4x 81 bytes = 324 bytes)
-                if active.len >= 324 &&
+                var burst_4x = true;
+                while burst_4x && active.len >= 324 &&
                     active[0] == 'G' && active[5] == 'p' && active[77] == '\r' && active[80] == '\n' &&
                     active[81] == 'G' && active[86] == 'p' && active[158] == '\r' && active[161] == '\n' &&
                     active[162] == 'G' && active[167] == 'p' && active[239] == '\r' && active[242] == '\n' &&
@@ -437,8 +438,14 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                     cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT_4X);
                     if cork_len < 0 { client_alive = false; break; }
                     cursor += 324;
-                    continue;
+                    if cursor < in_buf.len {
+                        active = in_buf[cursor..];
+                    } else {
+                        burst_4x = false;
+                    }
                 }
+                guard client_alive else { break; }
+                guard cursor < in_buf.len else { break; }
 
                 // 1. Ultra-fast 1x Pipelined Benchmark Request Dispatch (81 bytes)
                 if active.len >= 81 && active[0] == 'G' && active[5] == 'p' && active[77] == '\r' && active[80] == '\n' {
