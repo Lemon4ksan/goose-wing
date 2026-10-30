@@ -70,6 +70,222 @@ fn cleanup_slot(
     wing::push_free_slot(free_slots, slot_idx);
 }
 
+// Accepts and registers all pending connections from the listener queue.
+fn drain_listener(
+    epfd: i64,
+    listener: i64,
+    timer_wheel: wing::TickTimerWheel&,
+    slots: ConnSlot[:],
+    free_slots: wing::FreeSlotStack&,
+) {
+    while true {
+        let client_fd = wing::tcp_accept_nonblocking(listener);
+        if client_fd <= 0 {
+            break;
+        }
+
+        let slot_idx = wing::pop_free_slot(free_slots);
+        if slot_idx >= 0 && slot_idx < slots.len {
+            slots[slot_idx].fd = client_fd;
+            slots[slot_idx].is_ws = false;
+            slots[slot_idx].leftover_len = 0;
+            slots[slot_idx].bp_idx = -1;
+            slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
+            wing::epoll_add(epfd, client_fd, wing::EPOLL_READ, slot_idx as u64);
+        } else {
+            wing::tcp_close(client_fd);
+        }
+    }
+}
+
+// Flushes the accumulated cork buffer via bounded send loop with fallback to backpressure.
+// Returns true if connection remains alive, false on unbuffered write failure.
+fn flush_cork_batch(
+    epfd: i64,
+    conn: i64,
+    slot: ConnSlot&,
+    slot_idx: i64,
+    cork_buf: const u8[:],
+    cork_len: i64,
+    bp_pool: wing::BackpressureSlot[:],
+    bp_free: i64[:],
+    bp_free_top: i64&,
+) -> bool {
+    guard cork_len > 0 && cork_len <= cork_buf.len else { return true; }
+    var total_sent: i64 = 0;
+    var send_attempts: i64 = 0;
+    while total_sent < cork_len && send_attempts < 4 {
+        let sent = wing::tcp_send(conn, cork_buf[total_sent..cork_len]);
+        if sent <= 0 {
+            break;
+        }
+        total_sent += sent;
+        send_attempts += 1;
+    }
+
+    guard total_sent < cork_len else { return true; }
+    let unsent = cork_buf[total_sent..cork_len];
+    guard slot.bp_idx == -1 && bp_free_top > 0 else { return false; }
+    bp_free_top--;
+    let bp_i = bp_free[bp_free_top];
+    let buffered = wing::buffer_backpressure(bp_pool[bp_i], unsent);
+    guard buffered else { return false; }
+    slot.bp_idx = bp_i as i16;
+    wing::epoll_mod(epfd, conn, wing::EPOLL_READ | wing::EPOLL_WRITE, slot_idx as u64);
+    return true;
+}
+
+// Periodic sweep to close expired idle connections and free resources.
+fn sweep_expired_slots(
+    epfd: i64,
+    timer_wheel: wing::TickTimerWheel&,
+    slots: ConnSlot[:],
+    free_slots: wing::FreeSlotStack&,
+    bp_free: i64[:],
+    bp_free_top: i64&,
+) {
+    wing::tick_timer_advance(timer_wheel, 1);
+    for s in slots.len {
+        if slots[s].fd > 0 && wing::tick_timer_is_expired(timer_wheel, slots[s].timeout_tick) {
+            cleanup_slot(epfd, slots[s], s, free_slots, bp_free, bp_free_top);
+        }
+    }
+}
+
+// Drains active backpressure bytes on socket if previously registered for EPOLLOUT.
+fn check_drain_backpressure(
+    epfd: i64,
+    conn: i64,
+    slot: ConnSlot&,
+    slot_idx: i64,
+    bp_pool: wing::BackpressureSlot[:],
+    bp_free: i64[:],
+    bp_free_top: i64&,
+) {
+    guard slot.bp_idx >= 0 else { return; }
+    let bp_i = slot.bp_idx as i64;
+    guard bp_i >= 0 && bp_i < bp_pool.len else { return; }
+    let drained, ok = wing::drain_backpressure(bp_pool[bp_i], conn);
+    guard ok else { return; }
+    if bp_free_top < bp_free.len {
+        bp_free[bp_free_top] = bp_i;
+        bp_free_top++;
+    }
+    slot.bp_idx = -1;
+    wing::epoll_mod(epfd, conn, wing::EPOLL_READ, slot_idx as u64);
+}
+
+// Processes incoming WebSocket wire frames (RFC 6455).
+// Returns true if connection remains active, false if closed.
+fn handle_ws_ingress(
+    conn: i64,
+    in_buf: u8[:],
+    slot: ConnSlot&,
+    ws_cork: u8[..65536]&,
+) -> bool {
+    ws_cork.clear();
+    var ws_cursor: i64 = 0;
+    var ws_alive = true;
+
+    while ws_cursor >= 0 && ws_cursor < in_buf.len {
+        if ws_cursor + 2 > in_buf.len {
+            break;
+        }
+        let b0 = in_buf[ws_cursor];
+        let b1 = in_buf[ws_cursor + 1];
+        let opcode = b0 & 0x0F;
+        let raw_len = (b1 & 0x7F) as i64;
+
+        var need_hdr: i64 = 6; // 2 base + 4 mask
+        if raw_len == 126 { need_hdr += 2; }
+        if raw_len == 127 { need_hdr += 8; }
+        if ws_cursor + need_hdr > in_buf.len {
+            break;
+        }
+
+        let active_ws = in_buf[ws_cursor..];
+
+        let hdr, ok_hdr = wing::parse_ws_frame_header(active_ws);
+        if !ok_hdr {
+            ws_alive = false;
+            break;
+        }
+
+        let total_len = (hdr.header_len + hdr.payload_len) as i64;
+        if active_ws.len < total_len {
+            break;
+        }
+
+        // In-place zero-copy unmasking overwriting the frame header (uWebSockets unmaskImprecise8)
+        let h_len = hdr.header_len as i64;
+        let payload = if hdr.masked {
+            wing::unmask_websocket_shifted(active_ws, hdr.header_len, hdr.payload_len as i64, hdr.mask_key)
+        } else if h_len <= total_len && total_len <= active_ws.len {
+            active_ws[h_len..total_len]
+        } else {
+            active_ws[..0]
+        };
+
+        if opcode == wing::WS_OPCODE_TEXT || opcode == wing::WS_OPCODE_BINARY {
+            // Fast server frame header: unmasked 2-byte header for payload <= 125
+            if payload.len <= 125 {
+                ws_cork.push(0x80 | opcode);
+                ws_cork.push(payload.len as u8);
+                ws_cork.append(payload);
+            } else {
+                wing::encode_ws_frame(ws_cork, opcode, payload, false);
+            }
+            if ws_cork.len > 60000 {
+                let sent = wing::tcp_send(conn, ws_cork[..]);
+                if sent <= 0 { ws_alive = false; break; }
+                ws_cork.clear();
+            }
+        } else if opcode == wing::WS_OPCODE_PING {
+            ws_cork.push(0x80 | wing::WS_OPCODE_PONG);
+            ws_cork.push(payload.len as u8);
+            ws_cork.append(payload);
+        } else if opcode == wing::WS_OPCODE_CLOSE {
+            wing::encode_ws_frame(ws_cork, wing::WS_OPCODE_CLOSE, payload, false);
+            if ws_cork.len > 0 {
+                wing::tcp_send(conn, ws_cork[..]);
+                ws_cork.clear();
+            }
+            ws_alive = false;
+            break;
+        }
+
+        ws_cursor += total_len;
+    }
+
+    if ws_alive && ws_cork.len > 0 {
+        var total_sent: i64 = 0;
+        var send_attempts: i64 = 0;
+        let target_len = ws_cork.len;
+        while total_sent < target_len && send_attempts < 16 {
+            let sent = wing::tcp_send(conn, ws_cork[total_sent..target_len]);
+            if sent <= 0 { ws_alive = false; break; }
+            total_sent += sent;
+            send_attempts += 1;
+        }
+        if total_sent < target_len { ws_alive = false; }
+        ws_cork.clear();
+    }
+
+    guard ws_alive else { return false; }
+
+    if slot.fd > 0 && ws_cursor >= 0 && ws_cursor < in_buf.len {
+        let rem = in_buf[ws_cursor..];
+        let rlen = rem.len;
+        if rlen > 0 && rlen <= 232 {
+            slot.leftover_len = rlen;
+            for r in rlen {
+                slot.leftover[r] = rem[r];
+            }
+        }
+    }
+    return true;
+}
+
 // Core Share-Nothing Reactor Event Loop:
 // Multiplexes hundreds/thousands of sockets within 1 worker thread via epoll/WSAPoll.
 // Reuses single stack in_buf and single 16 KB stack CorkBuffer.
@@ -112,13 +328,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
     while true {
         let n = wing::epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], 1000);
         if n <= 0 {
-            // Periodic 1-second timeout sweep (uSockets loop.c)
-            wing::tick_timer_advance(timer_wheel, 1);
-            for s in slots.len {
-                if slots[s].fd > 0 && wing::tick_timer_is_expired(timer_wheel, slots[s].timeout_tick) {
-                    cleanup_slot(epfd, slots[s], s, free_slots, bp_free[..], bp_free_top);
-                }
-            }
+            sweep_expired_slots(epfd, timer_wheel, slots[..], free_slots, bp_free[..], bp_free_top);
             continue;
         }
 
@@ -129,26 +339,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             let udata = ready_udata[ev_idx];
 
             if udata == wing::EPOLL_LISTENER_TAG {
-                // Drain incoming connections (non-blocking accept loop)
-                while true {
-                    let client_fd = wing::tcp_accept_nonblocking(listener);
-                    if client_fd <= 0 {
-                        break;
-                    }
-
-                    let slot_idx = wing::pop_free_slot(free_slots);
-                    if slot_idx >= 0 && slot_idx < slots.len {
-                        slots[slot_idx].fd = client_fd;
-                        slots[slot_idx].is_ws = false;
-                        slots[slot_idx].leftover_len = 0;
-                        slots[slot_idx].bp_idx = -1;
-                        slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
-                        wing::epoll_add(epfd, client_fd, wing::EPOLL_READ, slot_idx as u64);
-                    } else {
-                        // Max concurrency limit reached on this worker, reject
-                        wing::tcp_close(client_fd);
-                    }
-                }
+                drain_listener(epfd, listener, timer_wheel, slots[..], free_slots);
                 continue;
             }
 
@@ -160,20 +351,7 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
             slots[slot_idx].timeout_tick = wing::tick_timer_arm(timer_wheel, 15);
 
             // Drain active backpressure if registered for EPOLLOUT
-            if slots[slot_idx].bp_idx >= 0 {
-                let bp_i = slots[slot_idx].bp_idx as i64;
-                if bp_i >= 0 && bp_i < 16 {
-                    let drained, ok = wing::drain_backpressure(bp_pool[bp_i], conn);
-                    if ok {
-                        if bp_free_top < 16 {
-                            bp_free[bp_free_top] = bp_i;
-                            bp_free_top++;
-                        }
-                        slots[slot_idx].bp_idx = -1;
-                        wing::epoll_mod(epfd, conn, wing::EPOLL_READ, slot_idx as u64);
-                    }
-                }
-            }
+            check_drain_backpressure(epfd, conn, slots[slot_idx], slot_idx, bp_pool[..], bp_free[..], bp_free_top);
 
             var active_len: i64 = 0;
             let prev_len = slots[slot_idx].leftover_len;
@@ -185,285 +363,212 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                 active_len = prev_len;
             }
 
-            guard active_len >= 0 && active_len <= raw_recv.len else {
-                continue;
-            }
-
-            let recvd = wing::tcp_recv_nonblocking_slice(conn, raw_recv[active_len..]);
-            if recvd == 0 || recvd == -1 {
-                // Client closed (EOF) or connection error
-                cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
-                continue;
-            }
-            if recvd == -2 {
-                // EAGAIN / EWOULDBLOCK: restore previous leftover bytes if any
-                if prev_len > 0 {
-                    slots[slot_idx].leftover_len = prev_len;
-                }
-                continue;
-            }
-            active_len += recvd;
-            if active_len <= 0 || active_len > raw_recv.len {
-                continue;
-            }
-            core::fence_wire_slice(raw_recv[..], active_len);
-            let in_buf = raw_recv[..active_len];
-
-            if slots[slot_idx].is_ws {
-                // WebSocket Frame Ingress (RFC 6455)
-                ws_cork.clear();
-                var ws_cursor: i64 = 0;
-                var ws_alive = true;
-
-                while ws_cursor >= 0 && ws_cursor < in_buf.len {
-                    if ws_cursor + 2 > in_buf.len {
-                        break;
-                    }
-                    let b0 = in_buf[ws_cursor];
-                    let b1 = in_buf[ws_cursor + 1];
-                    let opcode = b0 & 0x0F;
-                    let raw_len = (b1 & 0x7F) as i64;
-
-                    var need_hdr: i64 = 6; // 2 base + 4 mask
-                    if raw_len == 126 { need_hdr += 2; }
-                    if raw_len == 127 { need_hdr += 8; }
-                    if ws_cursor + need_hdr > in_buf.len {
-                        break;
-                    }
-
-                    let active_ws = in_buf[ws_cursor..];
-
-                    let hdr, ok_hdr = wing::parse_ws_frame_header(active_ws);
-                    if !ok_hdr {
-                        ws_alive = false;
-                        break;
-                    }
-
-                    let total_len = (hdr.header_len + hdr.payload_len) as i64;
-                    if active_ws.len < total_len {
-                        break;
-                    }
-
-                    // In-place zero-copy unmasking overwriting the frame header (uWebSockets unmaskImprecise8)
-                    let h_len = hdr.header_len as i64;
-                    let payload = if hdr.masked {
-                        wing::unmask_websocket_shifted(active_ws, hdr.header_len, hdr.payload_len as i64, hdr.mask_key)
-                    } else if h_len <= total_len && total_len <= active_ws.len {
-                        active_ws[h_len..total_len]
-                    } else {
-                        active_ws[..0]
-                    };
-
-                    if opcode == wing::WS_OPCODE_TEXT || opcode == wing::WS_OPCODE_BINARY {
-                        // Fast server frame header: unmasked 2-byte header for payload <= 125
-                        if payload.len <= 125 {
-                            ws_cork.push(0x80 | opcode);
-                            ws_cork.push(payload.len as u8);
-                            ws_cork.append(payload);
-                        } else {
-                            wing::encode_ws_frame(ws_cork, opcode, payload, false);
-                        }
-                        if ws_cork.len > 60000 {
-                            let sent = wing::tcp_send(conn, ws_cork[..]);
-                            if sent <= 0 { ws_alive = false; break; }
-                            ws_cork.clear();
-                        }
-                    } else if opcode == wing::WS_OPCODE_PING {
-                        ws_cork.push(0x80 | wing::WS_OPCODE_PONG);
-                        ws_cork.push(payload.len as u8);
-                        ws_cork.append(payload);
-                    } else if opcode == wing::WS_OPCODE_CLOSE {
-                        wing::encode_ws_frame(ws_cork, wing::WS_OPCODE_CLOSE, payload, false);
-                        if ws_cork.len > 0 {
-                            wing::tcp_send(conn, ws_cork[..]);
-                            ws_cork.clear();
-                        }
-                        ws_alive = false;
-                        break;
-                    }
-
-                    ws_cursor += total_len;
-                }
-
-                if ws_alive && ws_cork.len > 0 {
-                    var total_sent: i64 = 0;
-                    var send_attempts: i64 = 0;
-                    let target_len = ws_cork.len;
-                    while total_sent < target_len && send_attempts < 16 {
-                        let sent = wing::tcp_send(conn, ws_cork[total_sent..target_len]);
-                        if sent <= 0 { ws_alive = false; break; }
-                        total_sent += sent;
-                        send_attempts += 1;
-                    }
-                    if total_sent < target_len { ws_alive = false; }
-                    ws_cork.clear();
-                }
-
-                guard ws_alive else {
-                    cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
-                    continue;
-                }
-
-                if slots[slot_idx].fd > 0 && ws_cursor >= 0 && ws_cursor < in_buf.len {
-                    let rem = in_buf[ws_cursor..];
-                    let rlen = rem.len;
-                    if rlen > 0 && rlen <= 232 {
-                        slots[slot_idx].leftover_len = rlen;
-                        for r in rlen {
-                            slots[slot_idx].leftover[r] = rem[r];
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // HTTP/1.1 Pipelined Request Batch Processing
-            var cork_len: i64 = 0;
-            var cursor: i64 = 0;
-            var upgraded_ws = false;
             var client_alive = true;
+            var upgraded_ws = false;
 
-            while cursor >= 0 && cursor < in_buf.len {
-                let active = in_buf[cursor..];
-                let hdr_end = core::fast_find_crlfcrlf(active);
-                if hdr_end < 0 {
-                    break;
-                }
-                let req_end = hdr_end + 4;
-                if req_end > active.len {
+            for turn in 4 {
+                guard active_len >= 0 && active_len <= raw_recv.len && client_alive else {
                     break;
                 }
 
-                let req_bytes = active[..req_end];
-
-                // 1. Single-instruction O(1) URL route dispatch via fast byte check!
-                // "GET /plaintext" -> 'p' at index 5
-                // "GET /"          -> ' ' at index 5
-                // "GET /json"      -> 'j' at index 5
-                // "GET /metrics"   -> 'm' at index 5
-                if req_bytes.len >= 6 && req_bytes[0] == 'G' && req_bytes[4] == '/' {
-                    let route_char = req_bytes[5];
-                    if route_char == 'p' || route_char == ' ' {
-                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                        if cork_len < 0 { client_alive = false; break; }
-                        cursor += req_end;
-                        continue;
-                    } else if route_char == 'j' {
-                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
-                        if cork_len < 0 { client_alive = false; break; }
-                        cursor += req_end;
-                        continue;
-                    } else if route_char == 'm' {
-                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
-                        if cork_len < 0 { client_alive = false; break; }
-                        cursor += req_end;
-                        continue;
-                    }
+                let available = raw_recv.len - active_len;
+                let recvd = wing::tcp_recv_nonblocking_slice(conn, raw_recv[active_len..]);
+                if recvd == -2 {
+                    // EAGAIN / EWOULDBLOCK: kernel socket queue fully drained
+                    break;
                 }
-
-                // Fast request-line fallback
-                let line_end = core::index_of_slice(req_bytes, "\r\n");
-                let req_line = if line_end > 0 && line_end <= req_bytes.len { req_bytes[..line_end] } else { req_bytes };
-
-                if core::index_of_slice(req_line, " /plaintext") >= 0 {
-                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                    if cork_len < 0 { client_alive = false; break; }
-                } else if core::index_of_slice(req_line, " /json") >= 0 {
-                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
-                    if cork_len < 0 { client_alive = false; break; }
-                } else if core::index_of_slice(req_line, " /metrics") >= 0 {
-                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
-                    if cork_len < 0 { client_alive = false; break; }
-                } else if core::index_of_slice(req_line, " /ws") >= 0 || core::index_of_slice(req_bytes, "Upgrade:") >= 0 || core::index_of_slice(req_bytes, "upgrade:") >= 0 {
-                    // Check WebSocket Upgrade ONLY for /ws or if Upgrade header present
-                    let upgrade_val, has_upgrade = extract_header_val(req_bytes, "upgrade");
-                    if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
-                        let sec_key, has_key = extract_header_val(req_bytes, "sec-websocket-key");
-                        if has_key {
-                            if cork_len > 0 {
-                                wing::tcp_send(conn, cork_buf[..cork_len]);
-                                cork_len = 0;
-                            }
-                            var accept_key: u8[..64] = [];
-                            wing::compute_websocket_accept(sec_key, accept_key);
-
-                            var handshake_resp: u8[..512] = [];
-                            format(
-                                handshake_resp,
-                                "HTTP/1.1 101 Switching Protocols\r\n",
-                                "Upgrade: websocket\r\n",
-                                "Connection: Upgrade\r\n",
-                                "Sec-WebSocket-Accept: ",
-                                accept_key[..],
-                                "\r\n\r\n",
-                            );
-                            wing::tcp_send(conn, handshake_resp[..]);
-                            slots[slot_idx].is_ws = true;
-                            cursor += hdr_end + 4;
-                            upgraded_ws = true;
-                            break;
-                        }
-                    }
-                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                    if cork_len < 0 { client_alive = false; break; }
-                } else {
-                    cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
-                    if cork_len < 0 { client_alive = false; break; }
+                if recvd == 0 || recvd == -1 {
+                    // Client closed (EOF) or connection error
+                    cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
+                    client_alive = false;
+                    break;
                 }
-
-                cursor += hdr_end + 4;
-            }
-
-            guard client_alive else {
-                cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
-                continue;
-            }
-
-            // Flush cork buffer batch in bounded send loop with fallback to backpressure
-            if cork_len > 0 && cork_len <= cork_buf.len {
-                var total_sent: i64 = 0;
-                var send_attempts: i64 = 0;
-                while total_sent < cork_len && send_attempts < 4 {
-                    let sent = wing::tcp_send(conn, cork_buf[total_sent..cork_len]);
-                    if sent <= 0 {
-                        break;
-                    }
-                    total_sent += sent;
-                    send_attempts += 1;
+                active_len += recvd;
+                guard active_len > 0 && active_len <= raw_recv.len else {
+                    break;
                 }
+                core::fence_wire_slice(raw_recv[..], active_len);
+                let in_buf = raw_recv[..active_len];
 
-                if total_sent < cork_len {
-                    let unsent = cork_buf[total_sent..cork_len];
-                    if slots[slot_idx].bp_idx == -1 && bp_free_top > 0 {
-                        bp_free_top--;
-                        let bp_i = bp_free[bp_free_top];
-                        let buffered = wing::buffer_backpressure(bp_pool[bp_i], unsent);
-                        if buffered {
-                            slots[slot_idx].bp_idx = bp_i as i16;
-                            wing::epoll_mod(epfd, conn, wing::EPOLL_READ | wing::EPOLL_WRITE, slot_idx as u64);
-                        } else {
-                            client_alive = false;
-                        }
-                    } else {
+                if slots[slot_idx].is_ws {
+                    let ws_alive = handle_ws_ingress(conn, in_buf, slots[slot_idx], ws_cork);
+                    if !ws_alive {
+                        cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
                         client_alive = false;
                     }
+                    active_len = 0;
+                    break;
                 }
 
-                if !client_alive {
+                // HTTP/1.1 Pipelined Request Batch Processing
+                var cork_len: i64 = 0;
+                var cursor: i64 = 0;
+
+                while cursor >= 0 && cursor < in_buf.len {
+                    let active = in_buf[cursor..];
+                    let hdr_end = core::fast_find_crlfcrlf(active);
+                    if hdr_end < 0 {
+                        break;
+                    }
+                    let req_end = hdr_end + 4;
+                    if req_end > active.len {
+                        break;
+                    }
+
+                    let req_bytes = active[..req_end];
+
+                    // 1. Single-instruction O(1) URL route dispatch via fast byte check!
+                    // "GET /plaintext" -> 'p' at index 5
+                    // "GET /"          -> ' ' at index 5
+                    // "GET /json"      -> 'j' at index 5
+                    // "GET /metrics"   -> 'm' at index 5
+                    if req_bytes.len >= 6 && req_bytes[0] == 'G' && req_bytes[4] == '/' {
+                        let route_char = req_bytes[5];
+                        if route_char == 'p' || route_char == ' ' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += req_end;
+                            continue;
+                        } else if route_char == 'j' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += req_end;
+                            continue;
+                        } else if route_char == 'm' {
+                            cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
+                            if cork_len < 0 { client_alive = false; break; }
+                            cursor += req_end;
+                            continue;
+                        }
+                    }
+
+                    // Fast request-line fallback
+                    let line_end = core::index_of_slice(req_bytes, "\r\n");
+                    let req_line = if line_end > 0 && line_end <= req_bytes.len { req_bytes[..line_end] } else { req_bytes };
+
+                    if core::index_of_slice(req_line, " /plaintext") >= 0 {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                        if cork_len < 0 { client_alive = false; break; }
+                    } else if core::index_of_slice(req_line, " /json") >= 0 {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_JSON);
+                        if cork_len < 0 { client_alive = false; break; }
+                    } else if core::index_of_slice(req_line, " /metrics") >= 0 {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_METRICS);
+                        if cork_len < 0 { client_alive = false; break; }
+                    } else if core::index_of_slice(req_line, " /ws") >= 0 || core::index_of_slice(req_bytes, "Upgrade:") >= 0 || core::index_of_slice(req_bytes, "upgrade:") >= 0 {
+                        // Check WebSocket Upgrade ONLY for /ws or if Upgrade header present
+                        let upgrade_val, has_upgrade = extract_header_val(req_bytes, "upgrade");
+                        if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
+                            let sec_key, has_key = extract_header_val(req_bytes, "sec-websocket-key");
+                            if has_key {
+                                if cork_len > 0 {
+                                    wing::tcp_send(conn, cork_buf[..cork_len]);
+                                    cork_len = 0;
+                                }
+                                var accept_key: u8[..64] = [];
+                                wing::compute_websocket_accept(sec_key, accept_key);
+
+                                var handshake_resp: u8[..512] = [];
+                                format(
+                                    handshake_resp,
+                                    "HTTP/1.1 101 Switching Protocols\r\n",
+                                    "Upgrade: websocket\r\n",
+                                    "Connection: Upgrade\r\n",
+                                    "Sec-WebSocket-Accept: ",
+                                    accept_key[..],
+                                    "\r\n\r\n",
+                                );
+                                wing::tcp_send(conn, handshake_resp[..]);
+                                slots[slot_idx].is_ws = true;
+                                cursor += hdr_end + 4;
+                                upgraded_ws = true;
+                                break;
+                            }
+                        }
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                        if cork_len < 0 { client_alive = false; break; }
+                    } else {
+                        cork_len = wing::fast_cork_append(conn, cork_buf[..], cork_len, RESP_PLAINTEXT);
+                        if cork_len < 0 { client_alive = false; break; }
+                    }
+
+                    cursor += hdr_end + 4;
+                }
+
+                guard client_alive else {
                     cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
-                    continue;
+                    break;
+                }
+
+                // Flush cork buffer batch in bounded send loop with fallback to backpressure
+                if cork_len > 0 {
+                    let flushed = flush_cork_batch(
+                        epfd, conn, slots[slot_idx], slot_idx,
+                        cork_buf[..], cork_len, bp_pool[..], bp_free[..], bp_free_top,
+                    );
+                    if !flushed {
+                        cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
+                        client_alive = false;
+                        break;
+                    }
+                }
+
+                // If backpressure engaged or connection upgraded to WS, save unparsed slice and exit turn
+                if slots[slot_idx].bp_idx >= 0 || upgraded_ws {
+                    if cursor >= 0 && cursor < in_buf.len {
+                        let rem_len = in_buf.len - cursor;
+                        if rem_len > 0 && rem_len <= 232 {
+                            slots[slot_idx].leftover_len = rem_len;
+                            for r in rem_len {
+                                slots[slot_idx].leftover[r] = in_buf[cursor + r];
+                            }
+                        }
+                    }
+                    active_len = 0;
+                    break;
+                }
+
+                // If socket queue was completely emptied by previous recv (recvd < available),
+                // do NOT loop again — next recv() would waste a syscall returning EAGAIN.
+                if recvd < available {
+                    if cursor >= 0 && cursor < in_buf.len {
+                        let rem_len = in_buf.len - cursor;
+                        if rem_len > 0 && rem_len <= 232 {
+                            active_len = rem_len;
+                            for r in rem_len {
+                                raw_recv[r] = in_buf[cursor + r];
+                            }
+                        } else {
+                            active_len = 0;
+                        }
+                    } else {
+                        active_len = 0;
+                    }
+                    break;
+                }
+
+                // Shift any incomplete unparsed request bytes to index 0 of raw_recv for next turn
+                if cursor >= 0 && cursor < in_buf.len {
+                    let rem_len = in_buf.len - cursor;
+                    if rem_len > 0 && rem_len <= 232 {
+                        for r in rem_len {
+                            raw_recv[r] = in_buf[cursor + r];
+                        }
+                        active_len = rem_len;
+                    } else {
+                        active_len = 0;
+                        break;
+                    }
+                } else {
+                    active_len = 0;
                 }
             }
 
-            // Preserve incomplete request fragmentation bytes for the next epoll read turn
-            if !upgraded_ws && slots[slot_idx].fd > 0 && cursor >= 0 && cursor < in_buf.len {
-                let rem = in_buf[cursor..];
-                let rlen = rem.len;
-                if rlen > 0 && rlen <= 232 {
-                    slots[slot_idx].leftover_len = rlen;
-                    for r in rlen {
-                        slots[slot_idx].leftover[r] = rem[r];
-                    }
+            // Save leftover fragmentation on loop completion
+            if client_alive && !upgraded_ws && slots[slot_idx].fd > 0 && active_len > 0 && active_len <= 232 {
+                slots[slot_idx].leftover_len = active_len;
+                for r in active_len {
+                    slots[slot_idx].leftover[r] = raw_recv[r];
                 }
             }
         }
