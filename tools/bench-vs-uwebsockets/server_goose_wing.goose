@@ -114,7 +114,7 @@ fn flush_cork_batch(
     guard cork_len > 0 && cork_len <= cork_buf.len else { return true; }
     var total_sent: i64 = 0;
     var send_attempts: i64 = 0;
-    while total_sent < cork_len && send_attempts < 4 {
+    while total_sent < cork_len && send_attempts < 16 {
         let sent = wing::tcp_send(conn, cork_buf[total_sent..cork_len]);
         if sent <= 0 {
             break;
@@ -131,7 +131,7 @@ fn flush_cork_batch(
     let buffered = wing::buffer_backpressure(bp_pool[bp_i], unsent);
     guard buffered else { return false; }
     slot.bp_idx = bp_i as i16;
-    wing::epoll_mod(epfd, conn, wing::EPOLL_READ | wing::EPOLL_WRITE, slot_idx as u64);
+    wing::epoll_mod(epfd, conn, wing::EPOLL_WRITE, slot_idx as u64);
     return true;
 }
 
@@ -153,6 +153,7 @@ fn sweep_expired_slots(
 }
 
 // Drains active backpressure bytes on socket if previously registered for EPOLLOUT.
+// Returns true if backpressure is completely drained (or inactive), false if still congested.
 fn check_drain_backpressure(
     epfd: i64,
     conn: i64,
@@ -161,18 +162,19 @@ fn check_drain_backpressure(
     bp_pool: wing::BackpressureSlot[:],
     bp_free: i64[:],
     bp_free_top: i64&,
-) {
-    guard slot.bp_idx >= 0 else { return; }
+) -> bool {
+    guard slot.bp_idx >= 0 else { return true; }
     let bp_i = slot.bp_idx as i64;
-    guard bp_i >= 0 && bp_i < bp_pool.len else { return; }
+    guard bp_i >= 0 && bp_i < bp_pool.len else { return true; }
     let drained, ok = wing::drain_backpressure(bp_pool[bp_i], conn);
-    guard ok else { return; }
+    guard ok else { return false; }
     if bp_free_top < bp_free.len {
         bp_free[bp_free_top] = bp_i;
         bp_free_top++;
     }
     slot.bp_idx = -1;
     wing::epoll_mod(epfd, conn, wing::EPOLL_READ, slot_idx as u64);
+    return true;
 }
 
 // Processes incoming WebSocket wire frames (RFC 6455).
