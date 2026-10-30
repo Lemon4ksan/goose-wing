@@ -263,7 +263,6 @@ def run_suite_wrk(
             unit="MB/s",
         )
     )
-    print(format_row("Heap Allocations", "0 B", "Dynamic", "0 mallocs"))
     print("=" * 93 + "\n")
     return gw, uws
 
@@ -323,7 +322,6 @@ def run_suite_burst(name, threads=6, conns=384, pipeline=64, duration=4):
             unit="MB/s",
         )
     )
-    print(format_row("Heap Allocations", "0 B", "Dynamic", "0 mallocs"))
     print("=" * 93 + "\n")
     return gw, uws
 

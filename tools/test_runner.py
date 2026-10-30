@@ -128,8 +128,10 @@ def main() -> int:
 
     print(cyan(bold(" goose-wing test runner")))
 
+    total_steps = 2 if args.check_only else 3
+
     # 1. Typecheck core, wing and examples
-    print(f"\n{yellow('[1/3] Typechecking core, wing, and examples...')}")
+    print(f"\n{yellow(f'[1/{total_steps}] Typechecking core, wing, and examples...')}")
     t0_core = time.perf_counter()
 
     for target in [core_file, wing_file]:
