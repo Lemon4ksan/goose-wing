@@ -50,8 +50,17 @@ fn main() {
     assert(payload[3] == 108); // 'l'
     assert(payload[4] == 111); // 'o'
     print("RESTORED: ", payload[0], " ", payload[1], " ", payload[2], " ", payload[3], " ", payload[4]);
+
+    // Verify fenced wire slice padding
+    var fence_buf: u8[16] = [0; 16];
+    assert(!core::fence_wire_slice(fence_buf[..], 15));
+    assert(core::fence_wire_slice(fence_buf[..], 10));
+    assert(fence_buf[10] == 13);
+    assert(fence_buf[11] == 97);
+    print("FENCE_PADDED: OK");
 }
 
 // CHECK: SIMD_SLASH_MASK: 2320
 // CHECK: CRLFCRLF_OFFSET: 46
 // CHECK: RESTORED: 72 101 108 108 111
+// CHECK: FENCE_PADDED: OK
