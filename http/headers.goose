@@ -259,6 +259,35 @@ const HEADER_FLAG_NON_CACHEABLE: u8 = 128;
 
 const HEADER_INVALID_IDX: u8 = 0xFF;
 
+// Storage source indicator for HeaderEntry.reserved
+const HEADER_SRC_STACK: u8 = 0;
+const HEADER_SRC_ARENA: u8 = 1;
+
+// Storage root for oversized HTTP headers and URLs that exceed fixed stack limits.
+// Allocated once per connection/session driver on the data stack.
+root struct OverflowArena {
+    spill_raw:     u8[>..]          = [],
+    spill_entries: HeaderEntry[>..] = [],
+    spill_url:     u8[>..]          = [],
+}
+
+fn reset_overflow_arena(arena: OverflowArena&) {
+    arena.spill_raw.clear();
+    arena.spill_entries.clear();
+    arena.spill_url.clear();
+}
+
+// Parses an arbitrary-length URL using the arena's spill_url storage.
+//
+// Example:
+//   raw_input = "https://example.com/long?token=...", arena = OverflowArena { .. }
+//   returns: view.host = "example.com", view.valid = true, err = None
+fn parse_url_with_overflow(raw_input: const u8[:], arena: OverflowArena&) -> core::UrlView, core::UrlParseError {
+    arena.spill_url.clear();
+    arena.spill_url.append(raw_input);
+    return core::parse_url_view(arena.spill_url[..]);
+}
+
 // Cache Persistence Filter Flags (Chromium net/http/http_response_headers.h)
 const PERSIST_ALL:                 u32 = 0;
 const PERSIST_SANS_COOKIES:        u32 = 1;
@@ -1038,6 +1067,89 @@ fn parse_single_header_line(
     return HeaderParseError.None;
 }
 
+// Parses a single wire header line into HeaderMap or OverflowArena.
+//
+// Example:
+//   line = "Host: example.com", cursor = 0, src_type = HEADER_SRC_STACK
+//   returns: HeaderParseError.None
+fn parse_single_overflow_header_line(
+    line:      const u8[:],
+    cursor:    i64,
+    map:       HeaderMap&,
+    arena:     OverflowArena&,
+    src_type:  u8,
+    is_dup_cl: i32&,
+) -> HeaderParseError {
+    is_dup_cl = 0;
+    let colon_pos = find_any(line, COLON_SET);
+    guard colon_pos > 0 else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderName;
+    }
+
+    let raw_name = line[..colon_pos];
+    if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderName;
+    }
+    guard is_valid_header_name(raw_name) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderName;
+    }
+
+    let raw_val = line[colon_pos + 1..];
+    let val_trimmed = trim_lws(raw_val);
+    guard is_valid_header_value(val_trimmed) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderValue;
+    }
+
+    let wk_id = classify_well_known_header(raw_name);
+    var dup_cl_bool = false;
+    let conflict_err = validate_header_framing_conflicts(map, wk_id, val_trimmed, dup_cl_bool);
+    guard is_ok(conflict_err) else { return conflict_err; }
+
+    if dup_cl_bool {
+        is_dup_cl = 1;
+        return HeaderParseError.None;
+    }
+
+    let name_begin_off = cursor as u16;
+    let name_end_off = (cursor + colon_pos) as u16;
+
+    let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
+    let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
+    let val_end_off = (val_start_off + val_trimmed.len) as u16;
+
+    let flags = well_known_header_flags(wk_id, raw_name);
+    let hname = hash_header_name(raw_name);
+
+    let contains_comma = slice_contains_comma(val_trimmed);
+    let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
+
+    let new_entry = HeaderEntry {
+        name_begin:    name_begin_off,
+        name_end:      name_end_off,
+        values_begin:  val_start_off,
+        values_end:    val_end_off,
+        next_idx:      0xFF,
+        flags:         entry_flags,
+        well_known_id: if wk_id != WellKnownHeader.Unknown { well_known_to_slot(wk_id) as u8 } else { 0xFF },
+        reserved:      src_type,
+        name_hash:     hname,
+    };
+
+    if map.entries.len < 128 {
+        let new_idx = map.entries.len as u8;
+        link_header_entry(map, wk_id, raw_name, hname, new_idx);
+        map.entries.push(new_entry);
+        map.header_contains_comma.push(contains_comma);
+    } else {
+        arena.spill_entries.push(new_entry);
+    }
+    return HeaderParseError.None;
+}
+
 // Parses an HTTP/1.x header block into map (RFC 9112 Section 5.2).
 // Header names and values are indexed as offsets into the map's buffer.
 // Obsolete line folding (obs-fold) is rejected unless allow_obs_fold is set.
@@ -1108,6 +1220,101 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
 
     map.valid = true;
     return HeaderParseError.None;
+}
+
+// Iterates and parses headers from active_buf into map or arena.
+//
+// Example:
+//   active_buf = "Host: api\r\n\r\n", src_type = HEADER_SRC_STACK
+//   returns: HeaderParseError.None
+fn parse_overflow_headers_loop(
+    active_buf:     const u8[:],
+    src_type:       u8,
+    map:            HeaderMap&,
+    arena:          OverflowArena&,
+    allow_obs_fold: bool,
+) -> HeaderParseError {
+    var cursor: i64 = 0;
+    let buf_len = active_buf.len;
+    var is_first_header = true;
+
+    while cursor < buf_len {
+        if active_buf[cursor] == '\r' {
+            if cursor + 1 < buf_len && active_buf[cursor + 1] == '\n' {
+                cursor += 2;
+                break;
+            }
+            map.valid = false;
+            return HeaderParseError.InvalidHeaderValue;
+        }
+        if active_buf[cursor] == '\n' {
+            cursor += 1;
+            break;
+        }
+
+        let rel_end = find_any(active_buf[cursor..], CRLF_SET);
+        let line_end = if rel_end >= 0 { cursor + rel_end } else { buf_len };
+        let line = active_buf[cursor..line_end];
+
+        if is_line_whitespace_only(line) {
+            map.valid = false;
+            return HeaderParseError.WhitespaceOnlyLine;
+        }
+
+        let is_lead_ws = active_buf[cursor] == ' ' || active_buf[cursor] == '\t';
+        if is_lead_ws {
+            let policy = ObsFoldPolicy { is_first_header: is_first_header, allow_obs_fold: allow_obs_fold };
+            let fold_err = handle_obs_fold(line, policy, map);
+            guard is_ok(fold_err) else { return fold_err; }
+        } else {
+            var is_dup_cl: i32 = 0;
+            let line_err = parse_single_overflow_header_line(line, cursor, map, arena, src_type, is_dup_cl);
+            guard is_ok(line_err) else { return line_err; }
+            if is_dup_cl == 0 {
+                is_first_header = false;
+            }
+        }
+
+        guard advance_crlf(active_buf, cursor, line_end) else {
+            map.valid = false;
+            return HeaderParseError.InvalidHeaderValue;
+        }
+    }
+
+    map.valid = true;
+    return HeaderParseError.None;
+}
+
+// Parses an HTTP/1.x header block into map, spilling into arena if headers exceed 8192 B or 128 entries.
+//
+// Example:
+//   raw_input = "Host: api\r\nAuthorization: Bearer <jwt...>\r\n\r\n"
+//   returns: HeaderParseError.None, headers stored in map (or arena if oversized)
+fn parse_headers_with_overflow(
+    raw_input:      const u8[:],
+    map:            HeaderMap&,
+    arena:          OverflowArena&,
+    allow_obs_fold: bool = false,
+) -> HeaderParseError {
+    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    if has_embedded_nulls(raw_input) {
+        map.valid = false;
+        return HeaderParseError.EmbeddedNull;
+    }
+
+    reset_for_keep_alive(map);
+    reset_overflow_arena(arena);
+
+    let use_arena_buf = raw_input.len > 8192;
+    if use_arena_buf {
+        arena.spill_raw.append(raw_input);
+    } else {
+        map.raw_buf.append(raw_input);
+    }
+
+    let src_type:   u8          = if use_arena_buf { HEADER_SRC_ARENA } else { HEADER_SRC_STACK };
+    let active_buf: const u8[:] = if use_arena_buf { arena.spill_raw[..] } else { map.raw_buf[..] };
+    return parse_overflow_headers_loop(active_buf, src_type, map, arena, allow_obs_fold);
 }
 
 // Parses an HTTP status line into major/minor versions and status code.
@@ -1200,6 +1407,55 @@ fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fol
     return err;
 }
 
+// Parses full HTTP/1.1 response status line and header block with overflow spill fallback.
+//
+// Example:
+//   raw_input = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+//   returns: HeaderParseError.None, map.status_code = 200
+fn parse_response_headers_with_overflow(
+    raw_input:      const u8[:],
+    map:            HeaderMap&,
+    arena:          OverflowArena&,
+    allow_obs_fold: bool = false,
+) -> HeaderParseError {
+    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    if has_embedded_nulls(raw_input) {
+        map.valid = false;
+        return HeaderParseError.EmbeddedNull;
+    }
+
+    var line_end: i64 = 0;
+    while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
+        line_end++;
+    }
+
+    var major: i32 = 0;
+    var minor: i32 = 0;
+    var code:  i32 = 0;
+    let st_err = parse_http_status_line(raw_input[..line_end], major, minor, code);
+    guard is_ok(st_err) else {
+        map.valid = false;
+        return st_err;
+    }
+
+    var header_start = line_end;
+    if header_start < raw_input.len && raw_input[header_start] == '\r' {
+        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
+            map.valid = false;
+            return HeaderParseError.MalformedStatusLine;
+        }
+        header_start += 2;
+    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
+        header_start++;
+    }
+
+    let err = parse_headers_with_overflow(raw_input[header_start..], map, arena, allow_obs_fold);
+    map.status_code = code;
+    map.http_major = major;
+    map.http_minor = minor;
+    return err;
+}
+
 // Parses full HTTP/1.1 request line (METHOD /path HTTP/1.1) and header block
 //
 // Example:
@@ -1229,6 +1485,42 @@ fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold
     }
 
     return parse_headers(raw_input[header_start..], map, allow_obs_fold);
+}
+
+// Parses full HTTP/1.1 request line and header block with overflow spill fallback.
+//
+// Example:
+//   raw_input = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+//   returns: HeaderParseError.None
+fn parse_request_headers_with_overflow(
+    raw_input:      const u8[:],
+    map:            HeaderMap&,
+    arena:          OverflowArena&,
+    allow_obs_fold: bool = false,
+) -> HeaderParseError {
+    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    if has_embedded_nulls(raw_input) {
+        map.valid = false;
+        return HeaderParseError.EmbeddedNull;
+    }
+
+    var line_end: i64 = 0;
+    while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
+        line_end++;
+    }
+
+    var header_start = line_end;
+    if header_start < raw_input.len && raw_input[header_start] == '\r' {
+        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
+            map.valid = false;
+            return HeaderParseError.MalformedStatusLine;
+        }
+        header_start += 2;
+    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
+        header_start++;
+    }
+
+    return parse_headers_with_overflow(raw_input[header_start..], map, arena, allow_obs_fold);
 }
 
 // ---- headermap accessors & mutations ---------------------------------------
@@ -1273,6 +1565,62 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
         }
     }
     return "";
+}
+
+fn resolve_entry_value(entry: const HeaderEntry&, map: const HeaderMap&, arena: const OverflowArena&) -> const u8[:] {
+    if entry.reserved == HEADER_SRC_ARENA {
+        return arena.spill_raw[entry.values_begin..entry.values_end];
+    }
+    return map.raw_buf[entry.values_begin..entry.values_end];
+}
+
+fn resolve_entry_name(entry: const HeaderEntry&, map: const HeaderMap&, arena: const OverflowArena&) -> const u8[:] {
+    if entry.reserved == HEADER_SRC_ARENA {
+        return arena.spill_raw[entry.name_begin..entry.name_end];
+    }
+    return map.raw_buf[entry.name_begin..entry.name_end];
+}
+
+fn find_entry_in_entries(
+    entries: const HeaderEntry[:],
+    name:    const u8[:],
+    hname:   u32,
+    map:     const HeaderMap&,
+    arena:   const OverflowArena&,
+) -> const u8[:] {
+    for &entry in entries {
+        if entry.name_hash == hname {
+            let entry_name = resolve_entry_name(entry, map, arena);
+            if eq_ascii_fold(entry_name, name) {
+                return resolve_entry_value(entry, map, arena);
+            }
+        }
+    }
+    return "";
+}
+
+// Case-insensitive header lookup resolving from either stack map or arena spill storage.
+fn get_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> const u8[:] {
+    let wk_id = classify_well_known_header(name);
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let idx = map.inline_slots[slot];
+        if idx != 0xFF && idx < map.entries.len {
+            return resolve_entry_value(map.entries[idx as i64], map, arena);
+        }
+        return "";
+    }
+
+    let hname = hash_header_name(name);
+    let val1 = find_entry_in_entries(map.entries[..], name, hname, map, arena);
+    if val1.len > 0 { return val1; }
+    return find_entry_in_entries(arena.spill_entries[..], name, hname, map, arena);
+}
+
+// Case-insensitive presence check for a header resolving from either stack map or arena spill storage.
+fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> bool {
+    let val = get_header_spill(map, arena, name);
+    return val.len > 0;
 }
 
 fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
@@ -1474,6 +1822,40 @@ fn get_all_values(map: const HeaderMap&, name: const u8[:], out_values: u8[..256
     }
 }
 
+// Retrieves all header values across both stack map and overflow arena
+fn get_all_values_spill(
+    map:        const HeaderMap&,
+    arena:      const OverflowArena&,
+    name:       const u8[:],
+    out_values: u8[..256][>..]&,
+) {
+    let hname = hash_header_name(name);
+    for &entry in map.entries {
+        if entry.name_hash == hname {
+            let entry_name = resolve_entry_name(entry, map, arena);
+            if eq_ascii_fold(entry_name, name) {
+                let val = resolve_entry_value(entry, map, arena);
+                var item: u8[..256] = [];
+                let v_len = core::ct_min_i64(val.len, item.cap);
+                item.append(val[..v_len]);
+                out_values.push(item);
+            }
+        }
+    }
+    for &entry in arena.spill_entries {
+        if entry.name_hash == hname {
+            let entry_name = resolve_entry_name(entry, map, arena);
+            if eq_ascii_fold(entry_name, name) {
+                let val = resolve_entry_value(entry, map, arena);
+                var item: u8[..256] = [];
+                let v_len = core::ct_min_i64(val.len, item.cap);
+                item.append(val[..v_len]);
+                out_values.push(item);
+            }
+        }
+    }
+}
+
 // Zero-allocation retrieval of Set-Cookie header lines
 fn get_set_cookie(map: const HeaderMap&, out_cookies: u8[..1024][>..]&) {
     let slot = well_known_to_slot(WellKnownHeader.SetCookie);
@@ -1494,6 +1876,29 @@ fn raw_headers(map: const HeaderMap&, out: u8[>..]&) {
     for &entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
         let val = map.raw_buf[entry.values_begin..entry.values_end];
+        out.append(name);
+        out.push(':');
+        out.push(' ');
+        out.append(val);
+        out.push(0);
+    }
+    out.push(0);
+}
+
+// Chromium raw_headers_ format with overflow arena support
+fn raw_headers_spill(map: const HeaderMap&, arena: const OverflowArena&, out: u8[>..]&) {
+    for &entry in map.entries {
+        let name = resolve_entry_name(entry, map, arena);
+        let val = resolve_entry_value(entry, map, arena);
+        out.append(name);
+        out.push(':');
+        out.push(' ');
+        out.append(val);
+        out.push(0);
+    }
+    for &entry in arena.spill_entries {
+        let name = resolve_entry_name(entry, map, arena);
+        let val = resolve_entry_value(entry, map, arena);
         out.append(name);
         out.push(':');
         out.push(' ');

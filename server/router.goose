@@ -14,16 +14,16 @@ enum NodeType {
 }
 
 struct ParamSpan {
-    name: u8[..32] = [],
-    key_start: u16 = 0,
-    key_end: u16 = 0,
-    val_start: u16 = 0,
-    val_end: u16 = 0,
+    name:      u8[..32] = [],
+    key_start: u16      = 0,
+    key_end:   u16      = 0,
+    val_start: u16      = 0,
+    val_end:   u16      = 0,
 }
 
 struct ZeroAllocParams {
     spans: ParamSpan[8] = [ParamSpan { .. }; 8],
-    len: i64 = 0,
+    len:   i64          = 0,
 }
 
 fn clear(params: ZeroAllocParams&) {
@@ -31,39 +31,39 @@ fn clear(params: ZeroAllocParams&) {
 }
 
 fn add_param(
-    params: ZeroAllocParams&,
+    params:  ZeroAllocParams&,
     k_start: u16,
-    k_end: u16,
+    k_end:   u16,
     v_start: u16,
-    v_end: u16,
+    v_end:   u16,
 ) -> bool {
     guard params.len < params.spans.len else { return false; }
     params.spans[params.len] = ParamSpan {
-        name: [],
+        name:      [],
         key_start: k_start,
-        key_end: k_end,
+        key_end:   k_end,
         val_start: v_start,
-        val_end: v_end,
+        val_end:   v_end,
     };
     params.len += 1;
     return true;
 }
 
 fn add_param(
-    params: ZeroAllocParams&,
-    name: const u8[:],
+    params:  ZeroAllocParams&,
+    name:    const u8[:],
     k_start: u16,
-    k_end: u16,
+    k_end:   u16,
     v_start: u16,
-    v_end: u16,
+    v_end:   u16,
 ) -> bool {
     guard params.len < params.spans.len else { return false; }
     params.spans[params.len] = ParamSpan {
-        name: [],
+        name:      [],
         key_start: k_start,
-        key_end: k_end,
+        key_end:   k_end,
         val_start: v_start,
-        val_end: v_end,
+        val_end:   v_end,
     };
     guard name.len <= params.spans[params.len].name.cap else { return false; }
     params.spans[params.len].name.append(name);
@@ -91,10 +91,10 @@ fn param_key(params: const ZeroAllocParams&, idx: i64, route_template: const u8[
 }
 
 fn param_by_name(
-    params: const ZeroAllocParams&,
-    name: const u8[:],
+    params:         const ZeroAllocParams&,
+    name:           const u8[:],
     route_template: const u8[:],
-    req_path: const u8[:],
+    req_path:       const u8[:],
 ) -> const u8[:], bool {
     for idx in params.len {
         let k = params.param_key(idx, route_template);
@@ -106,8 +106,8 @@ fn param_by_name(
 }
 
 fn param_by_name(
-    params: const ZeroAllocParams&,
-    name: const u8[:],
+    params:   const ZeroAllocParams&,
+    name:     const u8[:],
     req_path: const u8[:],
 ) -> const u8[:], bool {
     for idx in params.len {
@@ -121,23 +121,23 @@ fn param_by_name(
 // ---- radix trie node & arena storage ---------------------------------------
 
 struct RadixNode {
-    prefix: u8[..64] = [],
-    indices: u8[..16] = [],
-    children: i32[..16] = [],
-    priority: u32 = 0,
-    wild_child: bool = false,
-    param_child: i32 = -1,
-    catch_all_child: i32 = -1,
-    node_type: NodeType = NodeType.Static,
-    handler_id: i32 = -1,
-    entries_mask: u32 = 0,
-    param_name: u8[..32] = [],
-    static_suffix: u8[..32] = [],
+    prefix:          u8[..64]  = [],
+    indices:         u8[..16]  = [],
+    children:        i32[..16] = [],
+    priority:        u32       = 0,
+    wild_child:      bool      = false,
+    param_child:     i32       = -1,
+    catch_all_child: i32       = -1,
+    node_type:       NodeType  = NodeType.Static,
+    handler_id:      i32       = -1,
+    entries_mask:    u32       = 0,
+    param_name:      u8[..32]  = [],
+    static_suffix:   u8[..32]  = [],
 }
 
 struct RadixTree {
-    nodes: RadixNode[..128] = [],
-    root_idx: i32 = -1,
+    nodes:    RadixNode[..128] = [],
+    root_idx: i32              = -1,
 }
 
 fn new_radix_tree() -> RadixTree {
@@ -178,9 +178,9 @@ fn find_child_by_byte(tree: const RadixTree&, cur_idx: i32, b: u8) -> i32 {
 
 // Splits an existing node at common_len, creating a child node with the remaining prefix and edges.
 fn split_radix_node(
-    tree: RadixTree&,
-    cur_idx: i32,
-    common_len: i64,
+    tree:          RadixTree&,
+    cur_idx:       i32,
+    common_len:    i64,
     common_prefix: const u8[:],
 ) -> bool {
     let split_child_idx = alloc_node(tree, tree.nodes[cur_idx as i64].node_type);
@@ -286,10 +286,10 @@ fn find_param_delimiter(rem: const u8[:], param_start: i64&, param_end: i64&, is
 
 // Inserts a catch-all route node '{*param}', marking it as a wild child.
 fn insert_catch_all_child(
-    tree: RadixTree&,
-    cur_idx: i32,
-    name: const u8[:],
-    handler_id: i32,
+    tree:         RadixTree&,
+    cur_idx:      i32,
+    name:         const u8[:],
+    handler_id:   i32,
     entries_mask: u32,
 ) -> bool {
     let ca_idx = alloc_node(tree, NodeType.CatchAll);
@@ -307,10 +307,10 @@ fn insert_catch_all_child(
 
 // Inserts or updates a parameterized route node '{param}' with suffix preservation.
 fn insert_or_update_param_child(
-    tree: RadixTree&,
-    cur_idx: i32,
-    name: const u8[:],
-    suffix_after: const u8[:],
+    tree:          RadixTree&,
+    cur_idx:       i32,
+    name:          const u8[:],
+    suffix_after:  const u8[:],
     out_param_idx: i32&,
 ) -> bool {
     let has_suffix = (suffix_after.len > 0 && suffix_after != "/");
@@ -340,9 +340,9 @@ fn insert_or_update_param_child(
 //
 // Invariant: Insertion order does not alter matching precedence; static routes always precede dynamic parameters.
 fn insert_route(
-    tree: RadixTree&,
-    path: const u8[:],
-    handler_id: i32,
+    tree:         RadixTree&,
+    path:         const u8[:],
+    handler_id:   i32,
     entries_mask: u32 = 0,
 ) -> bool {
     guard path.len > 0 && path[0] == '/' else { return false; }
@@ -503,11 +503,11 @@ enum RouteMatchResult {
 
 // Extracts a dynamic parameter segment and records its span into params.
 fn match_param_child(
-    tree: const RadixTree&,
-    p_idx: i32,
-    rem: const u8[:],
-    cursor: u16,
-    params: ZeroAllocParams&,
+    tree:    const RadixTree&,
+    p_idx:   i32,
+    rem:     const u8[:],
+    cursor:  u16,
+    params:  ZeroAllocParams&,
     val_len: i64&,
 ) -> bool {
     let is_suffix = match tree.nodes[p_idx as i64].node_type {
@@ -543,9 +543,9 @@ fn match_param_child(
 
 // Captures remainder path into catch-all parameter and yields handler result.
 fn match_catch_all_child(
-    tree: const RadixTree&,
+    tree:   const RadixTree&,
     ca_idx: i32,
-    rem: const u8[:],
+    rem:    const u8[:],
     cursor: u16,
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
@@ -559,7 +559,7 @@ fn match_catch_all_child(
     let hid = tree.nodes[ca_idx as i64].handler_id;
     if hid >= 0 {
         return RouteMatchResult.Found {
-            handler_id: hid,
+            handler_id:   hid,
             entries_mask: tree.nodes[ca_idx as i64].entries_mask,
         };
     }
@@ -568,9 +568,9 @@ fn match_catch_all_child(
 
 // Matches path against the RadixTree, recording parameter spans into params.
 fn match_path<B>(
-    tree: const RadixTree&,
-    path: const u8[:],
-    params: ZeroAllocParams&,
+    tree:           const RadixTree&,
+    path:           const u8[:],
+    params:         ZeroAllocParams&,
     out_canon_path: B&,
 ) -> RouteMatchResult {
     out_canon_path.clear();
@@ -633,8 +633,8 @@ fn match_path<B>(
 }
 
 fn match_path(
-    tree: const RadixTree&,
-    path: const u8[:],
+    tree:   const RadixTree&,
+    path:   const u8[:],
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
     var canon_path: u8[..512] = [];
@@ -645,8 +645,8 @@ fn match_path(
 
 // Method-segregated radix routing table supporting static, parameterized, and wildcard routes.
 struct MethodTree {
-    method: u8[..8] = "GET",
-    tree: RadixTree = RadixTree { .. },
+    method: u8[..8]   = "GET",
+    tree:   RadixTree = RadixTree { .. },
 }
 
 struct RadixRouter {
@@ -668,10 +668,10 @@ fn new_radix_router() -> RadixRouter {
 // Registers a route pattern for an HTTP method in the router.
 // Supports static routes ("/users"), parameters ("/:id" or "/{id}"), and wildcards ("/*path").
 fn add_route(
-    router: RadixRouter&,
-    method: const u8[:],
-    path: const u8[:],
-    handler_id: i32,
+    router:       RadixRouter&,
+    method:       const u8[:],
+    path:         const u8[:],
+    handler_id:   i32,
     entries_mask: u32 = 0,
 ) -> bool {
     for idx in router.trees.len {
@@ -686,10 +686,10 @@ fn add_route(
 // Automatically canonicalizes path before matching.
 // Returns RouteMatchResult: Found with handler_id, NotFound, or MethodNotAllowed with Allow header.
 fn match_route<B>(
-    router: const RadixRouter&,
-    method: const u8[:],
-    path: const u8[:],
-    params: ZeroAllocParams&,
+    router:         const RadixRouter&,
+    method:         const u8[:],
+    path:           const u8[:],
+    params:         ZeroAllocParams&,
     out_canon_path: B&,
 ) -> RouteMatchResult {
     var target_tree_idx: i32 = -1;
@@ -737,7 +737,7 @@ fn match_route<B>(
 fn match_route(
     router: const RadixRouter&,
     method: const u8[:],
-    path: const u8[:],
+    path:   const u8[:],
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
     var canon_path: u8[..512] = [];

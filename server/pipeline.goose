@@ -10,33 +10,33 @@ import .router;
 import .pool;
 
 struct ServerPipelineConfig {
-    limiter: ShardedGcraLimiter = ShardedGcraLimiter { .. },
-    csrf_guard: CrossOriginGuard = CrossOriginGuard { .. },
-    cors_policy: CorsPolicy = CorsPolicy { .. },
-    router: RadixRouter = RadixRouter { .. },
-    private_jar: PrivateJar = PrivateJar { .. },
-    header_pool: internal::HeaderMapPool = internal::HeaderMapPool { .. },
-    ext_pool: internal::ExtensionsPool = internal::ExtensionsPool { .. },
-    target_host: u8[..128] = "example.com",
-    deadline_ns: u64 = 30000000000, // 30s
-    enable_rate_limiter: bool = true,
-    enable_csrf_guard: bool = true,
-    enable_cors: bool = true,
-    enable_slowloris_timer: bool = true,
-    trust_proxy_headers: bool = false,
+    limiter:                ShardedGcraLimiter       = ShardedGcraLimiter { .. },
+    csrf_guard:             CrossOriginGuard         = CrossOriginGuard { .. },
+    cors_policy:            CorsPolicy               = CorsPolicy { .. },
+    router:                 RadixRouter              = RadixRouter { .. },
+    private_jar:            PrivateJar               = PrivateJar { .. },
+    header_pool:            internal::HeaderMapPool  = internal::HeaderMapPool { .. },
+    ext_pool:               internal::ExtensionsPool = internal::ExtensionsPool { .. },
+    target_host:            u8[..128]                = "example.com",
+    deadline_ns:            u64                      = 30000000000, // 30s
+    enable_rate_limiter:    bool                     = true,
+    enable_csrf_guard:      bool                     = true,
+    enable_cors:            bool                     = true,
+    enable_slowloris_timer: bool                     = true,
+    trust_proxy_headers:    bool                     = false,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
     var cfg = ServerPipelineConfig {
-        limiter: new_sharded_limiter(quota),
-        csrf_guard: CrossOriginGuard { .. },
-        cors_policy: CorsPolicy { .. },
-        router: new_radix_router(),
-        private_jar: new_private_jar(KeyStore { .. }),
-        header_pool: internal::HeaderMapPool { .. },
-        ext_pool: internal::ExtensionsPool { .. },
-        target_host: [],
-        deadline_ns: 30000000000,
+        limiter:             new_sharded_limiter(quota),
+        csrf_guard:          CrossOriginGuard { .. },
+        cors_policy:         CorsPolicy { .. },
+        router:              new_radix_router(),
+        private_jar:         new_private_jar(KeyStore { .. }),
+        header_pool:         internal::HeaderMapPool { .. },
+        ext_pool:            internal::ExtensionsPool { .. },
+        target_host:         [],
+        deadline_ns:         30000000000,
         trust_proxy_headers: false,
     };
     cfg.target_host.append(target_host);
@@ -134,9 +134,9 @@ fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
 
 // Decrypts encrypted session cookie from request headers into private jar if enabled.
 fn decrypt_pipeline_session_cookie(
-    cfg: ServerPipelineConfig&,
-    req: const Request&,
-    ext: internal::RequestExtensions&,
+    cfg:    ServerPipelineConfig&,
+    req:    const Request&,
+    ext:    internal::RequestExtensions&,
     now_ns: u64,
 ) {
     let now_sec = (now_ns / 1000000000) as i64;
@@ -156,12 +156,12 @@ fn decrypt_pipeline_session_cookie(
 }
 
 fn dispatch_matched_route(
-    cfg: ServerPipelineConfig&,
-    req: const Request&,
-    now_ns: u64,
-    res: Response&,
-    out_future: internal::InlineHandlerFuture&,
-    match_res: RouteMatchResult,
+    cfg:          ServerPipelineConfig&,
+    req:          const Request&,
+    now_ns:       u64,
+    res:          Response&,
+    out_future:   internal::InlineHandlerFuture&,
+    match_res:    RouteMatchResult,
     ext_slot_idx: i32,
 ) -> PipelineOutcome {
     let e_idx = ext_slot_idx as i64;
@@ -269,8 +269,8 @@ fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
 //   returns: "192.0.2.60"
 fn extract_effective_client_ip(
     trust_proxy_headers: bool,
-    client_ip: const u8[:],
-    req: const Request&,
+    client_ip:           const u8[:],
+    req:                 const Request&,
 ) -> const u8[:] {
     if !trust_proxy_headers && client_ip != "127.0.0.1" && client_ip != "::1" {
         return client_ip;
@@ -311,12 +311,12 @@ fn extract_effective_client_ip(
 // 5. Radix trie route matching & extension acquisition
 // 6. Authenticated session cookie decryption & inline handler dispatch
 fn execute_pipeline(
-    cfg: ServerPipelineConfig&,
+    cfg:        ServerPipelineConfig&,
     conn_timer: internal::ConnectionTimer&,
-    client_ip: const u8[:],
-    req: const Request&,
-    now_ns: u64,
-    res: Response&,
+    client_ip:  const u8[:],
+    req:        const Request&,
+    now_ns:     u64,
+    res:        Response&,
     out_future: internal::InlineHandlerFuture&,
 ) -> PipelineOutcome {
     let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
