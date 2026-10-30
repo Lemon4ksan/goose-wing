@@ -24,6 +24,10 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
 
 // Decodes a single LPM frame starting at offset in wire bytes without buffer copying.
 // Returns (payload_slice, is_compressed, bytes_consumed, ok).
+//
+// Example:
+//   wire = [0x00, 0x00, 0x00, 0x00, 0x05, "hello"], offset = 0
+//   returns: payload = "hello", is_comp = false, consumed = 10, ok = true
 fn decode_grpc_lpm_slice(wire: const u8[:], offset: u32) -> const u8[:], bool, u32, bool {
     let off = offset as i64;
     guard off >= 0 && off <= wire.len else { return "", false, 0, false; }
@@ -43,6 +47,10 @@ fn decode_grpc_lpm_slice(wire: const u8[:], offset: u32) -> const u8[:], bool, u
 
 // Decodes a single LPM frame starting at offset in wire bytes.
 // Target buffer is cleared only after wire format validation succeeds.
+//
+// Example:
+//   wire = [0x00, 0x00, 0x00, 0x00, 0x05, "hello"], offset = 0
+//   returns: ok = true, consumed = 10, out_payload = "hello", out_compressed = false
 fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compressed: bool&) -> bool, u32 {
     let payload_slice, is_comp, consumed, ok = decode_grpc_lpm_slice(wire, offset);
     guard ok else { return false, 0; }
@@ -56,14 +64,14 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
 
 // Reassembles LPM messages arriving across fragmented HTTP/2 or HTTP/3 DATA chunks.
 struct GrpcStreamParser {
-    max_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
-    buf: u8[>..] = [],
+    max_size: u32     = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    buf:      u8[>..] = [],
 }
 
 fn new_grpc_stream_parser(max_msg_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcStreamParser {
     return GrpcStreamParser {
         max_size: max_msg_size,
-        buf: [],
+        buf:      [],
     };
 }
 
@@ -111,10 +119,10 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
 // Encodes gRPC-Web trailers frame into body payload with flag 0x80.
 // Trailer format: "grpc-status: <status>\r\ngrpc-message: <message>\r\n[custom-trailers]\r\n"
 fn encode_grpc_web_trailers_with_meta<B>(
-    status: GrpcStatusCode,
-    message: const u8[:],
+    status:         GrpcStatusCode,
+    message:        const u8[:],
     extra_trailers: const GrpcMetadata[:],
-    out: B&,
+    out:            B&,
 ) {
     var trailer_body: u8[..1024] = [];
     trailer_body.append("grpc-status: ");
@@ -159,12 +167,16 @@ fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out
 }
 
 // Decodes a gRPC-Web frame (distinguishing data messages from trailer frames).
+//
+// Example:
+//   wire = [0x80, 0x00, 0x00, 0x00, 0x0B, "grpc-status"], offset = 0
+//   returns: ok = true, total_len = 16, out_is_trailers = true, out_compressed = false
 fn decode_grpc_web_frame<B>(
-    wire: const u8[:],
-    offset: u32,
-    out_payload: B&,
+    wire:            const u8[:],
+    offset:          u32,
+    out_payload:     B&,
     out_is_trailers: bool&,
-    out_compressed: bool&,
+    out_compressed:  bool&,
 ) -> bool, u32 {
     let off = offset as i64;
     guard off >= 0 && (wire.len - off) >= 5 else { return false, 0; }
@@ -187,9 +199,13 @@ fn decode_grpc_web_frame<B>(
 }
 
 // Parses a single gRPC-Web trailer header line ("name: value").
+//
+// Example:
+//   line = "grpc-status: 0"
+//   returns: true, out_status = GrpcStatusCode.Ok
 fn parse_grpc_web_trailer_line(
-    line: const u8[:],
-    out_status: GrpcStatusCode&,
+    line:        const u8[:],
+    out_status:  GrpcStatusCode&,
     out_message: u8[..256]&,
 ) -> bool {
     let name, raw_val, ok_split = core::split_once_byte(line, ':');
@@ -209,10 +225,14 @@ fn parse_grpc_web_trailer_line(
 }
 
 // Parses gRPC-Web body trailers block (HTTP/1-style headers) to extract status and message.
+//
+// Example:
+//   trailer_bytes = "grpc-status: 0\r\ngrpc-message: OK\r\n"
+//   returns: true, out_status = GrpcStatusCode.Ok, out_message = "OK"
 fn parse_grpc_web_trailers(
     trailer_bytes: const u8[:],
-    out_status: GrpcStatusCode&,
-    out_message: u8[..256]&,
+    out_status:    GrpcStatusCode&,
+    out_message:   u8[..256]&,
 ) -> bool {
     out_status = GrpcStatusCode.Ok;
     out_message.clear();
@@ -247,6 +267,10 @@ fn encode_grpc_web_text<B>(binary_lpm: const u8[:], out: B&) {
 }
 
 // Decodes application/grpc-web-text Base64 stream into raw binary LPM stream.
+//
+// Example:
+//   b64_stream = "AAAAAAA="
+//   returns: true, out = [0, 0, 0, 0, 0]
 fn decode_grpc_web_text<B>(b64_stream: const u8[:], out: B&) -> bool {
     return core::base64_decode(b64_stream, out);
 }

@@ -395,7 +395,7 @@ def main() -> int:
                             break
                     body_text = " ".join(body_span)
                     m_getter = re.search(
-                        rf"\{{\s*return\s+({param_name}\.[A-Za-z0-9_.]+)(?:\[[^\]]*\])?\s*;\s*\}}",
+                        rf"^[^{{]*\{{\s*return\s+({param_name}\.[A-Za-z0-9_.]+)(?:\[[^\]]*\])?\s*;\s*\}}$",
                         body_text,
                     )
                     if m_getter:

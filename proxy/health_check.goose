@@ -20,39 +20,39 @@ enum HealthState {
 }
 
 struct HealthCheckConfig {
-    interval_ms: u64 = 5000,
-    timeout_ms: u64 = 2000,
-    healthy_threshold: u32 = 2,
-    unhealthy_threshold: u32 = 3,
-    expected_status: u16 = 200,
-    path: u8[..64] = "/healthz",
+    interval_ms:         u64      = 5000,
+    timeout_ms:          u64      = 2000,
+    healthy_threshold:   u32      = 2,
+    unhealthy_threshold: u32      = 3,
+    expected_status:     u16      = 200,
+    path:                u8[..64] = "/healthz",
 }
 
 // Configures health check probing parameters with safety bounds.
 fn new_health_check_config(
-    interval_ms: u64 = 5000,
-    timeout_ms: u64 = 2000,
-    healthy_thresh: u32 = 2,
+    interval_ms:      u64 = 5000,
+    timeout_ms:       u64 = 2000,
+    healthy_thresh:   u32 = 2,
     unhealthy_thresh: u32 = 3,
 ) -> HealthCheckConfig {
     return HealthCheckConfig {
-        interval_ms: if interval_ms > 0 { interval_ms } else { 5000 },
-        timeout_ms: if timeout_ms > 0 { timeout_ms } else { 2000 },
-        healthy_threshold: if healthy_thresh > 0 { healthy_thresh } else { 2 },
+        interval_ms:         if interval_ms > 0 { interval_ms } else { 5000 },
+        timeout_ms:          if timeout_ms > 0 { timeout_ms } else { 2000 },
+        healthy_threshold:   if healthy_thresh > 0 { healthy_thresh } else { 2 },
         unhealthy_threshold: if unhealthy_thresh > 0 { unhealthy_thresh } else { 3 },
-        expected_status: 200,
+        expected_status:     200,
         ..
     };
 }
 
 struct UpstreamHealth {
-    state: HealthState = HealthState.Up,
-    consecutive_successes: u32 = 0,
-    consecutive_failures: u32 = 0,
-    last_probe_time_ms: u64 = 0,
-    last_rtt_us: u32 = 0,
-    total_probes: u64 = 0,
-    failed_probes: u64 = 0,
+    state:                 HealthState = HealthState.Up,
+    consecutive_successes: u32         = 0,
+    consecutive_failures:  u32         = 0,
+    last_probe_time_ms:    u64         = 0,
+    last_rtt_us:           u32         = 0,
+    total_probes:          u64         = 0,
+    failed_probes:         u64         = 0,
 }
 
 inline fn inc_consecutive_successes(h: UpstreamHealth&) -> u32 {
@@ -151,6 +151,10 @@ fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..
 }
 
 // Extracts 3-digit HTTP status code from HTTP/1.x response wire buffer without allocations.
+//
+// Example:
+//   wire = "HTTP/1.1 200 OK\r\n"
+//   returns: 200, true
 fn parse_probe_status_code(wire: const u8[:]) -> u16, bool {
     guard wire.len >= 12 else { return 0, false; }
     guard wire[0] == 'H' && wire[1] == 'T' && wire[2] == 'T' && wire[3] == 'P' && wire[4] == '/' else {
@@ -172,17 +176,17 @@ fn evaluate_probe_response(wire: const u8[:], expected_status: u16) -> bool {
 
 // Active background prober managing up to 16 upstream cluster targets
 struct TargetProbeSlot {
-    target_idx: i32 = HEALTH_SLOT_NONE,
-    health: UpstreamHealth = UpstreamHealth { .. },
-    active_in_flight: bool = false,
-    probe_start_ms: u64 = 0,
-    in_use: bool = false,
+    target_idx:       i32            = HEALTH_SLOT_NONE,
+    health:           UpstreamHealth = UpstreamHealth { .. },
+    active_in_flight: bool           = false,
+    probe_start_ms:   u64            = 0,
+    in_use:           bool           = false,
 }
 
 struct ClusterHealthChecker {
-    config: HealthCheckConfig = HealthCheckConfig { .. },
-    slots: TargetProbeSlot[..16] = [],
-    total_checks_dispatched: u64 = 0,
+    config:                  HealthCheckConfig     = HealthCheckConfig { .. },
+    slots:                   TargetProbeSlot[..16] = [],
+    total_checks_dispatched: u64                   = 0,
 }
 
 fn new_cluster_health_checker(config: HealthCheckConfig) -> ClusterHealthChecker {
@@ -228,10 +232,10 @@ inline fn inc_checks_dispatched(checker: ClusterHealthChecker&) {
 
 // Prepares active probe request for target if probe is due and not in flight.
 inline fn try_dispatch_probe_slot(
-    slot: TargetProbeSlot&,
-    checker: ClusterHealthChecker&,
-    cluster: const UpstreamCluster&,
-    now_ms: u64,
+    slot:     TargetProbeSlot&,
+    checker:  ClusterHealthChecker&,
+    cluster:  const UpstreamCluster&,
+    now_ms:   u64,
     out_wire: u8[>..]&,
 ) -> bool {
     let is_in_flight = slot.active_in_flight;
@@ -253,9 +257,9 @@ inline fn try_dispatch_probe_slot(
 
 // Selects next target due for probing and prepares wire request.
 fn poll_next_probe(
-    checker: ClusterHealthChecker&,
-    cluster: const UpstreamCluster&,
-    now_ms: u64,
+    checker:  ClusterHealthChecker&,
+    cluster:  const UpstreamCluster&,
+    now_ms:   u64,
     out_wire: u8[>..]&,
 ) -> i32, bool {
     let n = checker.slots.len as i32;
@@ -306,10 +310,10 @@ inline fn sync_slot_from_cluster(slot: TargetProbeSlot&, cluster_state: Upstream
 
 // Handles successful probe completion.
 fn on_probe_success(
-    checker: ClusterHealthChecker&,
-    cluster: UpstreamCluster&,
+    checker:    ClusterHealthChecker&,
+    cluster:    UpstreamCluster&,
     target_idx: i32,
-    rtt_us: u32,
+    rtt_us:     u32,
 ) -> HealthState {
     let slot_idx = find_probe_slot(checker, target_idx);
     guard slot_idx != HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
@@ -325,8 +329,8 @@ fn on_probe_success(
 
 // Handles failed probe completion.
 fn on_probe_failure(
-    checker: ClusterHealthChecker&,
-    cluster: UpstreamCluster&,
+    checker:    ClusterHealthChecker&,
+    cluster:    UpstreamCluster&,
     target_idx: i32,
 ) -> HealthState {
     let slot_idx = find_probe_slot(checker, target_idx);
@@ -348,7 +352,7 @@ inline fn inc_timeouts_count(cnt: i32&) {
 fn check_probe_timeouts(
     checker: ClusterHealthChecker&,
     cluster: UpstreamCluster&,
-    now_ms: u64,
+    now_ms:  u64,
 ) -> i32 {
     var timed_out_count: i32 = 0;
     let n = checker.slots.len as i32;

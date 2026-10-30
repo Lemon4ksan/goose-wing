@@ -621,6 +621,10 @@ fn process_akamai_priority_frame(
 }
 
 // Extracts an AkamaiFingerprint from binary HTTP/2 connection wire frames.
+//
+// Example:
+//   wire_bytes = [H2_CLIENT_PREFACE, SETTINGS frame, WINDOW_UPDATE frame], pseudo_headers_order = "m,a,s,p"
+//   returns: AkamaiFingerprint { ... }, ok = true
 fn extract_akamai_from_wire(
     wire_bytes:           const u8[:],
     pseudo_headers_order: const u8[:],

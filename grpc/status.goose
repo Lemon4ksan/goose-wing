@@ -37,6 +37,10 @@ fn encode_grpc_message<B>(raw: const u8[:], out: B&) {
 }
 
 // Percent-decodes `grpc-message` header value into raw message bytes.
+//
+// Example:
+//   encoded = "unknown%20error"
+//   returns: out = "unknown error"
 fn decode_grpc_message<B>(encoded: const u8[:], out: B&) {
     out.clear();
     var i = 0;
@@ -78,6 +82,10 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
 
 // Parses standard gRPC timeout string into milliseconds.
 // Supports H (Hours), M (Minutes), S (Seconds), m (Millis), u (Micros), n (Nanos).
+//
+// Example:
+//   val = "100m"
+//   returns: 100, true
 fn parse_grpc_timeout(val: const u8[:]) -> u64, bool {
     let trimmed = trim_lws(val);
     guard trimmed.len >= 2 else { return 0, false; }
@@ -116,10 +124,14 @@ fn parse_grpc_timeout(val: const u8[:]) -> u64, bool {
 // Extracts gRPC status and message from trailers (or headers in Trailers-Only responses).
 // Returns true if a wire grpc-status header was explicitly found.
 // If absent, falls back to mapping the HTTP status code and returns false.
+//
+// Example:
+//   headers = { ":status": "200" }, trailers = { "grpc-status": "0" }
+//   returns: true, out_status = GrpcStatusCode.Ok
 fn extract_grpc_status(
-    headers: const HeaderMap&,
-    trailers: const HeaderMap&,
-    out_status: GrpcStatusCode&,
+    headers:     const HeaderMap&,
+    trailers:    const HeaderMap&,
+    out_status:  GrpcStatusCode&,
     out_message: u8[..256]&,
 ) -> bool {
     out_message.clear();
