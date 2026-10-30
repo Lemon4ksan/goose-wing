@@ -804,6 +804,31 @@ fn test_nginx_harmony_invariants(t: core::T&) {
         sub.assert_true(outcome2 == wing::PipelineOutcome.RateLimited, "same original client IP in XFF is rate limited");
     };
 
+    t.run("2b. RFC 7239 Forwarded header extraction and precedence") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        server.pipeline.enable_rate_limiter = true;
+        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, core::secs(1), 0));
+        wing::add_route(server.pipeline.router, "GET", "/fwd-check", 1, 0);
+
+        var req1: u8[..256] = [];
+        req1.append("GET /fwd-check HTTP/1.1\r\nHost: localhost\r\nForwarded: for=\"192.0.2.60:4711\";proto=http\r\n\r\n");
+        var out1: u8[..1024] = [];
+        let outcome1, _ = wing::handle_connection_wire(server, "127.0.0.1", req1[..], 1000000000, out1);
+        sub.assert_true(outcome1 == wing::PipelineOutcome.Handled, "first request handled");
+
+        var req2: u8[..256] = [];
+        req2.append("GET /fwd-check HTTP/1.1\r\nHost: localhost\r\nForwarded: for=192.0.2.60\r\nX-Real-IP: 10.0.0.1\r\n\r\n");
+        var out2: u8[..1024] = [];
+        let outcome2, _ = wing::handle_connection_wire(server, "127.0.0.1", req2[..], 1000000000, out2);
+        sub.assert_true(outcome2 == wing::PipelineOutcome.RateLimited, "Forwarded header takes precedence and triggers rate limit");
+
+        var req3: u8[..256] = [];
+        req3.append("GET /fwd-check HTTP/1.1\r\nHost: localhost\r\nForwarded: for=\"[2001:db8:cafe::17]:8080\"\r\n\r\n");
+        var out3: u8[..1024] = [];
+        let outcome3, _ = wing::handle_connection_wire(server, "127.0.0.1", req3[..], 1000000000, out3);
+        sub.assert_true(outcome3 == wing::PipelineOutcome.Handled, "IPv6 in Forwarded handled");
+    };
+
     t.run("3. Untrusted remote IP ignores proxy headers when trust_proxy_headers is false") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         server.pipeline.enable_rate_limiter = true;

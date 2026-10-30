@@ -200,12 +200,73 @@ fn dispatch_matched_route(
     };
 }
 
-// Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
-// Prefers X-Real-IP, falling back to the first IP in X-Forwarded-For.
+// Normalizes an RFC 7239 forwarded IP value, stripping quotes, brackets, and ports.
 //
 // Example:
-//   trust = true, client_ip = "127.0.0.1", req header "x-real-ip: 203.0.113.195"
-//   returns: "203.0.113.195"
+//   raw_val = "\"[2001:db8:cafe::17]:4711\""
+//   returns: "2001:db8:cafe::17"
+fn normalize_forwarded_ip(raw_val: const u8[:]) -> const u8[:] {
+    var val = raw_val;
+    if core::starts_with(val, "\"") && core::ends_with(val, "\"") && val.len >= 2 {
+        val = val[1..(val.len - 1)];
+    }
+    guard val.len > 0 else { return ""; }
+
+    if core::starts_with(val, "[") {
+        let close_br = core::index_of_byte(val, ']');
+        guard close_br > 1 else { return ""; }
+        return val[1..close_br];
+    }
+
+    let col1 = core::index_of_byte(val, ':');
+    guard col1 > 0 else { return val; }
+    let col2 = core::index_of_byte(val[(col1 + 1)..], ':');
+    guard col2 < 0 else { return val; }
+    return val[..col1];
+}
+
+// Parses a single key=value pair from a Forwarded header element.
+//
+// Example:
+//   pair = "for=\"192.0.2.60:4711\""
+//   returns: "192.0.2.60"
+fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
+    let trimmed = core::trim_lws(pair);
+    let eq_idx = core::index_of_byte(trimmed, '=');
+    guard eq_idx > 0 else { return ""; }
+    let key = core::trim_lws(trimmed[..eq_idx]);
+    guard eq_ascii_fold(key, "for") else { return ""; }
+    return normalize_forwarded_ip(core::trim_lws(trimmed[(eq_idx + 1)..]));
+}
+
+// Extracts the client IP from the first element of an RFC 7239 Forwarded header.
+//
+// Example:
+//   fwd = "for=\"192.0.2.60:4711\";proto=http, for=198.51.100.17"
+//   returns: "192.0.2.60"
+fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
+    guard fwd.len > 0 else { return ""; }
+    let comma_idx = core::index_of_byte(fwd, ',');
+    let elem = if comma_idx >= 0 { fwd[..comma_idx] } else { fwd };
+
+    var pos: i64 = 0;
+    while pos < elem.len {
+        let sc = core::index_of_byte(elem[pos..], ';');
+        let pair = if sc >= 0 { elem[pos..(pos + sc)] } else { elem[pos..] };
+        pos = if sc >= 0 { pos + sc + 1 } else { elem.len };
+
+        let ip = parse_forwarded_pair(pair);
+        guard ip.len == 0 else { return ip; }
+    }
+    return "";
+}
+
+// Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
+// Priority: RFC 7239 Forwarded ("for=..."), X-Real-IP, X-Forwarded-For, client_ip.
+//
+// Example:
+//   trust = true, client_ip = "127.0.0.1", req header "Forwarded: for=192.0.2.60"
+//   returns: "192.0.2.60"
 fn extract_effective_client_ip(
     trust_proxy_headers: bool,
     client_ip: const u8[:],
@@ -213,6 +274,13 @@ fn extract_effective_client_ip(
 ) -> const u8[:] {
     if !trust_proxy_headers && client_ip != "127.0.0.1" && client_ip != "::1" {
         return client_ip;
+    }
+    let fwd = header(req, "forwarded");
+    if fwd.len > 0 {
+        let fwd_ip = extract_rfc7239_forwarded_for(fwd);
+        if fwd_ip.len > 0 {
+            return fwd_ip;
+        }
     }
     let real_ip = core::trim_lws(header(req, "x-real-ip"));
     if real_ip.len > 0 {
