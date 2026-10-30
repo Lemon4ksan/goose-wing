@@ -449,6 +449,13 @@ fn quic_table_get_or_open_stream(
     if existing >= 0 {
         return existing, true;
     }
+    for i in tbl.streams.len {
+        if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
+            guard validate_peer_stream_limit(tbl, stream_id) else { return 0, false; }
+            tbl.streams[i] = new_quic_stream(stream_id, default_recv_flow);
+            return i as i32, true;
+        }
+    }
     guard can_open_ingress_stream(tbl, stream_id) else {
         return 0, false;
     }

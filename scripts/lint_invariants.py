@@ -192,6 +192,10 @@ def main() -> int:
         in_wire_struct = False
         wire_struct_name = ""
         wire_struct_depth = 0
+        fn_has_out_param = False
+        fn_out_param_name = ""
+        fn_returns_bool = False
+        fn_wrote_to_out = False
 
         for i, line in enumerate(lines):
             line_num = i + 1
@@ -492,6 +496,14 @@ def main() -> int:
                     sig_params = m_jsig.group(2)
                     sig_ret = m_jsig.group(3).strip() if m_jsig.group(3) else ""
                     is_multiline_sig = sig_end_idx > i
+                    m_out = re.search(
+                        r"\b(out(?:_[A-Za-z0-9_]+)?|dst)\s*:\s*(?:B&|u8\[:\]&|u8\[\.\.\d+\]&)",
+                        sig_params,
+                    )
+                    fn_has_out_param = bool(m_out)
+                    fn_out_param_name = m_out.group(1) if m_out else ""
+                    fn_returns_bool = bool(re.search(r"(?:->\s*|\b)bool\b", sig_ret))
+                    fn_wrote_to_out = False
 
             # Rule 1d: Dead code detection for staged or scanned production functions
             if (
@@ -802,6 +814,46 @@ def main() -> int:
                         record_violation(
                             f"[LINT] {rel_path}:{line_num} -> Miniature auth buffer '{buf_name}: u8[..{buf_cap}]' (< 1024 bytes). "
                             f"Enterprise JWTs and auth headers require >= 2048..4096 bytes.",
+                            "red",
+                        )
+
+            # Rule 18: Dirty Out-Buffer Hygiene (Anti-state leak)
+            if not is_test_or_example and in_function and fn_has_out_param and fn_returns_bool and not is_fn_start:
+                code_no_c18 = re.sub(r"//.*$", "", line)
+                if fn_out_param_name:
+                    if re.search(rf"\b{re.escape(fn_out_param_name)}\.(?:push|append)\b", code_no_c18) or re.search(
+                        rf"\bencode_\w+_to\([^,]+,\s*{re.escape(fn_out_param_name)}\b", code_no_c18
+                    ):
+                        fn_wrote_to_out = True
+                    elif re.search(rf"\b{re.escape(fn_out_param_name)}\.clear\(\)", code_no_c18):
+                        fn_wrote_to_out = False
+                    elif fn_wrote_to_out:
+                        m_err_ret = re.search(
+                            r"\bguard\b.*else\s*\{\s*return\s+(?:false|0,\s*false|\w+,\s*false)\s*;\s*\}",
+                            code_no_c18,
+                        ) or re.search(r"^\s*return\s+(?:false|0,\s*false|\w+,\s*false)\s*;", code_no_c18)
+                        if m_err_ret:
+                            record_violation(
+                                f"[LINT] {rel_path}:{line_num} -> Dirty out-buffer leak in '{fn_name}': writes to '{fn_out_param_name}' "
+                                f"prior to error exit 'return ... false;'. Validate preconditions before mutating out-buffer or roll back on error.",
+                                "red",
+                            )
+
+            # Rule 19: Request Bloom Filter Consistency
+            if not is_test_or_example and not re.match(r"^\s*//", line):
+                code_only_19 = re.sub(r"//.*$", "", line)
+                if re.search(r"\b(out_req|req)\.headers\.push\(", code_only_19):
+                    has_bloom = False
+                    for offset in range(1, 4):
+                        if i + offset < len(lines):
+                            next_l = re.sub(r"//.*$", "", lines[i + offset])
+                            if "bloom_filter" in next_l or "add_header(" in next_l:
+                                has_bloom = True
+                                break
+                    if not has_bloom:
+                        record_violation(
+                            f"[LINT] {rel_path}:{line_num} -> Request bloom filter desynchronization: "
+                            f"'headers.push(...)' without corresponding 'add_header(...bloom_filter, ...)'.",
                             "red",
                         )
 
