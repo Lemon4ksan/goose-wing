@@ -1029,6 +1029,23 @@ fn serialize_bad_request_error<B>(server_name: const u8[:], wire_out: B&) {
     serialize_http1_response(err_resp, server_name, wire_out);
 }
 
+// Dispatches a request against the server router in fast-path mode.
+fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res: Response&) {
+    var params = ZeroAllocParams { .. };
+    let match_res = match_route(router, req.method[..], req.url[..], params);
+    let is_invalid_query = req.method[..] == "QUERY" && header(req, "Content-Type").len == 0;
+    match match_res {
+        Found f => { res.status_code = if is_invalid_query { 400 } else { 200 }; },
+        MethodNotAllowed mna => {
+            res.status_code = 405;
+            res.headers.push(make_header("Allow", mna.allow_header[..]));
+        },
+        NotFound => {
+            res.status_code = 404;
+        },
+    };
+}
+
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline, and serializing the wire response.
 fn handle_connection_wire<B>(
@@ -1077,20 +1094,7 @@ fn handle_connection_wire<B>(
         }
 
         var res = Response { .. };
-        var params = ZeroAllocParams { .. };
-        let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
-        match match_res {
-            Found f => {
-                res.status_code = 200;
-            },
-            MethodNotAllowed mna => {
-                res.status_code = 405;
-                res.headers.push(make_header("Allow", mna.allow_header[..]));
-            },
-            NotFound => {
-                res.status_code = 404;
-            },
-        };
+        dispatch_fast_path_route(server.pipeline.router, req, res);
 
         serialize_http1_response(res, server.server_name[..], wire_out);
         server.requests_processed++;
@@ -1352,16 +1356,7 @@ fn handle_connection_wire_pipelined_stream<B>(
 
         var res = Response { .. };
         if server.fast_path {
-            var params = ZeroAllocParams { .. };
-            let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
-            match match_res {
-                Found f => { res.status_code = 200; },
-                MethodNotAllowed mna => {
-                    res.status_code = 405;
-                    res.headers.push(make_header("Allow", mna.allow_header[..]));
-                },
-                NotFound => { res.status_code = 404; },
-            };
+            dispatch_fast_path_route(server.pipeline.router, req, res);
         } else {
             var future = internal::new_inline_handler_future(0);
             let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
@@ -1463,40 +1458,7 @@ fn handle_connection_pipe<B>(
         var req = new_request("GET", "");
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
-        if ok_parse && consumed > 0 {
-            var res = Response { .. };
-            if server.fast_path {
-                var params = ZeroAllocParams { .. };
-                let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
-                match match_res {
-                    Found f => { res.status_code = 200; },
-                    MethodNotAllowed mna => {
-                        res.status_code = 405;
-                        res.headers.push(make_header("Allow", mna.allow_header[..]));
-                    },
-                    NotFound => { res.status_code = 404; },
-                };
-            } else {
-                var future = internal::new_inline_handler_future(0);
-                let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
-            }
-
-            if req.method[..] == "CONNECT" {
-                set_header(res, "Connection", "close");
-            }
-
-            serialize_http1_response(res, server.server_name[..], wire_out);
-            server.requests_processed++;
-            total_handled++;
-
-            core::advance_to(pipe, consumed, consumed);
-
-            // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
-            if req.method[..] == "CONNECT" {
-                core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
-                break;
-            }
-        } else {
+        if !ok_parse || consumed <= 0 {
             // Check if headers are complete via fast scanner
             let hdr_end = core::fast_find_crlfcrlf(stream);
             if hdr_end >= 0 {
@@ -1511,6 +1473,30 @@ fn handle_connection_pipe<B>(
                 core::advance_to(pipe, 0, pipe.readable_len());
                 break;
             }
+        }
+
+        var res = Response { .. };
+        if server.fast_path {
+            dispatch_fast_path_route(server.pipeline.router, req, res);
+        } else {
+            var future = internal::new_inline_handler_future(0);
+            let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+        }
+
+        if req.method[..] == "CONNECT" {
+            set_header(res, "Connection", "close");
+        }
+
+        serialize_http1_response(res, server.server_name[..], wire_out);
+        server.requests_processed++;
+        total_handled++;
+
+        core::advance_to(pipe, consumed, consumed);
+
+        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
+        if req.method[..] == "CONNECT" {
+            core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
+            break;
         }
     }
 

@@ -176,6 +176,13 @@ fn dispatch_matched_route(
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
+            // RFC 10008 Section 2: Servers MUST fail QUERY requests if Content-Type is missing
+            if req.method[..] == "QUERY" && header(req, "Content-Type").len == 0 {
+                internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+                res.status_code = 400; // Bad Request
+                return PipelineOutcome.Handled;
+            }
+
             // Stage 6: Cookie decryption & handler dispatch
             if (f.entries_mask & internal::ENTRY_COOKIES) != 0 {
                 decrypt_pipeline_session_cookie(cfg, req, cfg.ext_pool.slots[e_idx], now_ns);

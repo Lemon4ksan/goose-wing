@@ -17,12 +17,13 @@ enum EarlyDataDecision {
     RetryOn1Rtt,    // Server returned 425 Too Early, must retry on full 1-RTT
 }
 
-// Determines if an HTTP method is safe for transmission in 0-RTT Early Data (RFC 8470 Section 5.2)
+// Determines if an HTTP method is safe for transmission in 0-RTT Early Data (RFC 8470 Section 5.2, RFC 10008 Section 2)
 fn is_safe_for_early_data(method: const u8[:]) -> bool {
     return method == "GET" ||
            method == "HEAD" ||
            method == "OPTIONS" ||
-           method == "TRACE";
+           method == "TRACE" ||
+           method == "QUERY";
 }
 
 // Inspects outbound request for 0-RTT early data eligibility

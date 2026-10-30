@@ -39,6 +39,7 @@ import http.headers.chunked;
 import http.headers.chunked_fsm;
 import http.sfv;
 import http.priority;
+import http.incremental;
 
 // ---- client session and application layer ----------------------------------
 

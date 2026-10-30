@@ -16,6 +16,8 @@ import .sfv;
 
 const HEADER_CONTENT_DIGEST: const u8[:] = "Content-Digest";
 const HEADER_REPR_DIGEST: const u8[:] = "Repr-Digest";
+const HEADER_WANT_CONTENT_DIGEST: const u8[:] = "Want-Content-Digest"; // RFC 9530 Section 4
+const HEADER_WANT_REPR_DIGEST: const u8[:] = "Want-Repr-Digest"; // RFC 9530 Section 4
 
 const DIGEST_ALG_SHA256: const u8[:] = "sha-256";
 const DIGEST_ALG_SHA512: const u8[:] = "sha-512";
@@ -84,6 +86,25 @@ fn set_repr_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool {
     guard format_digest_field_value(alg, req.body[..], field_val) else { return false; }
     set_header(req, HEADER_REPR_DIGEST, field_val[..]);
     return true;
+}
+
+// Formats an RFC 9530 Section 4 Want-Content-Digest or Want-Repr-Digest header value.
+fn format_want_digest_header<B>(out: B&, want_algorithms: const u8[:] = "sha-256=10") {
+    out.append(want_algorithms);
+}
+
+// Attaches RFC 9530 Want-Content-Digest header to Request.
+fn set_want_content_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
+    var val: u8[..64] = [];
+    format_want_digest_header(val, want_algorithms);
+    set_header(req, HEADER_WANT_CONTENT_DIGEST, val[..]);
+}
+
+// Attaches RFC 9530 Want-Repr-Digest header to Request.
+fn set_want_repr_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
+    var val: u8[..64] = [];
+    format_want_digest_header(val, want_algorithms);
+    set_header(req, HEADER_WANT_REPR_DIGEST, val[..]);
 }
 
 // Computes and attaches RFC 9530 Content-Digest header to Response.

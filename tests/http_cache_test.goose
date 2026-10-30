@@ -1072,6 +1072,18 @@ fn test_rfc9530_content_digest(t: core::T&) {
         let ok_verify = wing::verify_request_repr_digest(req);
         sub.assert_true(ok_verify, "Repr-Digest verifies against body");
     };
+
+    t.run("RFC 9530 Want-Content-Digest and Want-Repr-Digest") { sub =>
+        var req = wing::Request {
+            method: "GET",
+            url: "https://api.gateway.org/data",
+            ..
+        };
+        wing::set_want_content_digest(req, "sha-256=10, sha-512=5");
+        sub.assert_bytes_eq(req.header("Want-Content-Digest"), "sha-256=10, sha-512=5", "Want-Content-Digest set");
+        wing::set_want_repr_digest(req, "sha-256=10");
+        sub.assert_bytes_eq(req.header("Want-Repr-Digest"), "sha-256=10", "Want-Repr-Digest set");
+    };
 }
 
 fn test_rfc9530_with_rfc9421_signatures(t: core::T&) {

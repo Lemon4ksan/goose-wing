@@ -395,7 +395,9 @@ fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> Fetc
     if req.method.len <= ctx.method.cap {
         ctx.method.append(req.method[..]);
     }
-    ctx.method_is_safe = (req.method[..] == "GET" || req.method[..] == "HEAD" || req.method[..] == "OPTIONS");
+    // RFC 9110 Section 9.2.1 & RFC 10008 Section 2: safe methods
+    let m = req.method[..];
+    ctx.method_is_safe = (m == "GET" || m == "HEAD" || m == "OPTIONS" || m == "QUERY");
     ctx.target_host.clear();
     if target_host.len <= ctx.target_host.cap {
         ctx.target_host.append(target_host);

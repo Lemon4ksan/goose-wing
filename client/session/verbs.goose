@@ -109,6 +109,24 @@ fn delete<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Err
     return do(session, req);
 }
 
+// Executes an HTTP QUERY request (RFC 10008 Section 2).
+// Servers MUST fail the request if Content-Type is missing or inconsistent.
+fn query(session: Session&, url: const u8[:], body: const u8[:], content_type: const u8[:]) -> Response, Error {
+    var req = new_query(url, body, content_type);
+    return do(session, req);
+}
+
+fn query<F: fn(Request&)>(
+    session: Session&,
+    url: const u8[:],
+    body: const u8[:],
+    content_type: const u8[:],
+) -> Response, Error {
+    var req = new_query(url, body, content_type);
+    F(&req);
+    return do(session, req);
+}
+
 // ---- chunked uploads and download streaming --------------------------------
 
 fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Response, Error {
@@ -196,7 +214,7 @@ fn ws_perform_handshake(
         return new_websocket_session(true), resp, err;
     }
 
-    // Validate 101 Switching Protocols
+    // Validate 101 Switching Protocols (RFC 6455 Section 4.2.2, RFC 9931 Section 3)
     if resp.status_code != 101 {
         return new_websocket_session(true), resp, make_error(
             resp.status_code,

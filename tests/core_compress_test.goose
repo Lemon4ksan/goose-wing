@@ -1711,6 +1711,12 @@ fn test_dictionary_header_parsing_and_matching(t: core::T&) {
         sub.assert_true(wing::url_path_matches_pattern("/exact.js", "/exact.js"), "exact match works");
         sub.assert_false(wing::url_path_matches_pattern("/other.js", "/exact.js"), "mismatch works");
     };
+
+    t.run("RFC 9842 Dictionary-ID Formatting") { sub =>
+        var id_buf: u8[..64] = [];
+        wing::format_dictionary_id_header(id_buf, "dict-v1");
+        sub.assert_bytes_eq(id_buf[..], "\"dict-v1\"", "Formatted Dictionary-ID header value");
+    };
 }
 
 fn test_dcz_frame_codec(t: core::T&) {

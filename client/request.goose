@@ -94,6 +94,21 @@ fn new_post<F: fn(Request&)>(url: const u8[:]) -> Request {
     return new_request("POST", url, F);
 }
 
+// Creates a new HTTP QUERY request (RFC 10008 Section 2).
+// Servers MUST fail the request if Content-Type is missing or inconsistent.
+fn new_query(url: const u8[:], body: const u8[:], content_type: const u8[:]) -> Request {
+    var req = new_request("QUERY", url);
+    req.body.append(body);
+    set_header(req, "Content-Type", content_type);
+    return req;
+}
+
+fn new_query<F: fn(Request&)>(url: const u8[:], body: const u8[:], content_type: const u8[:]) -> Request {
+    var req = new_query(url, body, content_type);
+    F(&req);
+    return req;
+}
+
 // Returns the value of a request header by name (case-insensitive lookup with 256-bit Bloom filter)
 fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
     if !might_have_header(req.bloom_filter, name) {

@@ -10,6 +10,8 @@ import std;
 import core from "..";
 import .headers.lexical;
 
+const HEADER_ACCEPT_QUERY: const u8[:] = "Accept-Query"; // RFC 10008 Section 3
+
 // ---- header items & ascii helpers (RFC 9110 Section 5.6.3) ------------------
 
 // Individual parsed or constructed HTTP header item.

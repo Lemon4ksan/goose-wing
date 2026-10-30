@@ -655,7 +655,8 @@ struct RadixRouter {
 
 fn new_radix_router() -> RadixRouter {
     var r = RadixRouter { .. };
-    let methods: const u8[:][7] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+    // RFC 9110 Section 9.3 & RFC 10008 Section 2 standard HTTP methods
+    let methods: const u8[:][8] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "QUERY"];
     for m in methods {
         var mt = MethodTree { method: [], tree: new_radix_tree() };
         mt.method.append(m);

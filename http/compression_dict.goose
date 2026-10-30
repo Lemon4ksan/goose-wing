@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Compression Dictionary Transport (IETF draft-ietf-httpbis-compression-dictionary).
-// Implements Chrome 123+ shared dictionary transport for HTTP:
+// RFC 9842: Compression Dictionary Transport (September 2025).
+// Implements shared dictionary transport for HTTP:
 // - `Use-As-Dictionary` response header parser and cache manager
-// - `Available-Dictionary` request header generator (RFC 8941 Structured Field Byte Sequence)
-// - `dcz` (Dictionary-Compressed Zstandard) frame codec and validator
-// - `dcb` (Dictionary-Compressed Brotli) frame header codec
+// - `Available-Dictionary` request header generator (RFC 9651 Structured Field Byte Sequence)
+// - `Dictionary-ID` request header generator (RFC 9842 Section 2.3)
+// - `dcz` (Dictionary-Compressed Zstandard) frame codec and validator (RFC 9842 Section 5)
+// - `dcb` (Dictionary-Compressed Brotli) frame header codec (RFC 9842 Section 4)
 namespace wing;
 
 import std;
 import core from "..";
+import http.headers;
 
-// ---- 1. Normative Constants & Wire Magics -----------------------------------
+// ---- 1. Normative Constants & Wire Magics (RFC 9842) ------------------------
 
-// 4-byte magic headers per IETF draft Section 7:
+// 4-byte magic headers per RFC 9842 Section 4 (DCB) and Section 5 (DCZ):
 // DCZ: 0xFF, 'D', 'C', 'Z' (0xFF, 0x44, 0x43, 0x5A)
 // DCB: 0xFF, 'D', 'C', 'B' (0xFF, 0x44, 0x43, 0x42)
 const DCZ_MAGIC_BYTE0: u8 = 0xFF;
@@ -29,6 +31,7 @@ const DCB_MAGIC_BYTE3: u8 = 0x42; // 'B'
 
 const HEADER_USE_AS_DICTIONARY: const u8[:] = "use-as-dictionary";
 const HEADER_AVAILABLE_DICTIONARY: const u8[:] = "available-dictionary";
+const HEADER_DICTIONARY_ID: const u8[:] = "dictionary-id"; // RFC 9842 Section 2.3
 const ENCODING_DCZ: const u8[:] = "dcz";
 const ENCODING_DCB: const u8[:] = "dcb";
 
@@ -150,6 +153,13 @@ fn format_available_dictionary_header<B>(out: B&, sha256_hash: const u8[32]&) {
     out.push(':');
     core::base64_encode(sha256_hash[..], out);
     out.push(':');
+}
+
+// Formats `Dictionary-ID` header string (RFC 9842 Section 2.3)
+fn format_dictionary_id_header<B>(out: B&, id_str: const u8[:]) {
+    out.push('"');
+    out.append(id_str);
+    out.push('"');
 }
 
 // ---- 5. DCZ / DCB Wire Format Codec (draft Section 7) -----------------------

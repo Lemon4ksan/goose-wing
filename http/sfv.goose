@@ -19,6 +19,7 @@ enum SfType {
     Binary,
     Boolean,
     Date,
+    DisplayString,
 }
 
 struct SfItem {
@@ -341,12 +342,32 @@ fn sf_parse_date(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) 
     return true;
 }
 
-// Parses any bare RFC 8941 item
+// Parses an RFC 9651 Section 3.3.4 Display String: %"..."
+fn sf_parse_display_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
+    guard pos + 1 < src.len && src[pos] == '%' && src[pos + 1] == '"' else { return false; }
+    var p = sf_step(pos, 2);
+    while p < src.len {
+        let ch = src[p];
+        if ch == '"' {
+            out_item.kind = SfType.DisplayString;
+            out_item.str_val = src[sf_step(pos, 2)..p];
+            out_next = sf_next(p);
+            return true;
+        }
+        p = sf_next(p);
+    }
+    return false;
+}
+
+// Parses any bare RFC 8941 & RFC 9651 item
 fn sf_parse_bare_item(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
     if pos >= src.len {
         return false;
     }
     let ch = src[pos];
+    if ch == '%' {
+        return sf_parse_display_string(src, pos, out_item, out_next);
+    }
     if ch == '?' {
         return sf_parse_boolean(src, pos, out_item, out_next);
     }
@@ -701,6 +722,10 @@ fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
     } else if item.kind == SfType.Date {
         out.push('@' as u8);
         core::format_i64_dec(item.int_val, out);
+    } else if item.kind == SfType.DisplayString {
+        out.append("%\"");
+        out.append(item.str_val);
+        out.push('"' as u8);
     }
 }
 
