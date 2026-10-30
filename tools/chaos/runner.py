@@ -11,6 +11,7 @@ slowloris drips, boundary splits, and pipelining across MTU boundaries.
 
 import argparse
 import io
+import os
 import socket
 import subprocess
 import sys
@@ -43,6 +44,12 @@ TOOLS_DIR = ROOT_DIR / "tools"
 BIN_DIR = TOOLS_DIR / "bin"
 SERVER_SRC = TOOLS_DIR / "chaos" / "server.goose"
 SERVER_EXE = BIN_DIR / ("chaos_server.exe" if sys.platform == "win32" else "chaos_server")
+
+# Ensure 16-byte stack alignment and 32MB stack on Windows x64
+if sys.platform == "win32":
+    gcc_noavx = TOOLS_DIR / "gcc_noavx.cmd"
+    if gcc_noavx.exists():
+        os.environ.setdefault("GOOSE_CC", str(gcc_noavx))
 
 
 def ensure_server_binary(force_rebuild: bool = False) -> Path:

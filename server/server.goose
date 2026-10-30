@@ -1606,6 +1606,194 @@ struct ReactorConnSlot {
     leftover: u8[4096] = [0; 4096],
 }
 
+// Cleans up a connection slot, removes from epoll, closes fd, and returns slot to free stack.
+fn reactor_cleanup_slot(
+    epfd: i64,
+    slot: ReactorConnSlot&,
+    slot_idx: i64,
+    free_slots: FreeSlotStack&,
+) {
+    if slot.fd > 0 {
+        epoll_del(epfd, slot.fd);
+        tcp_close(slot.fd);
+        slot.fd = -1;
+        slot.leftover_len = 0;
+        slot.timeout_tick = 255;
+    }
+    push_free_slot(free_slots, slot_idx);
+}
+
+// 1-second Tick Wheel Connection Timeout Sweeper (Slowloris defense & slot reclamation).
+fn reactor_sweep_timeouts(
+    epfd: i64,
+    active_slots: ReactorConnSlot[:],
+    free_slots: FreeSlotStack&,
+    timer_wheel: TickTimerWheel&,
+    last_sweep_sec: i64&,
+    total_served: i64&,
+) {
+    let now_sec = (core::as_nanos(core::monotonic_now()) / 1000000000) as i64;
+    guard now_sec > last_sweep_sec else { return; }
+    let elapsed = if last_sweep_sec == 0 { 1 } else { (now_sec - last_sweep_sec) as u32 };
+    last_sweep_sec = now_sec;
+    tick_timer_advance(timer_wheel, elapsed);
+
+    for s in active_slots.len {
+        if active_slots[s].fd > 0 && tick_timer_is_expired(timer_wheel, active_slots[s].timeout_tick) {
+            reactor_cleanup_slot(epfd, active_slots[s], s, free_slots);
+            total_served++;
+        }
+    }
+}
+
+// Reclaims one expired connection slot during emergency saturation.
+fn reactor_evict_stale_slot(
+    epfd: i64,
+    active_slots: ReactorConnSlot[:],
+    free_slots: FreeSlotStack&,
+    timer_wheel: TickTimerWheel&,
+    total_served: i64&,
+) -> i64 {
+    for s in active_slots.len {
+        if active_slots[s].fd > 0 && tick_timer_is_expired(timer_wheel, active_slots[s].timeout_tick) {
+            reactor_cleanup_slot(epfd, active_slots[s], s, free_slots);
+            total_served++;
+            return pop_free_slot(free_slots);
+        }
+    }
+    return -1;
+}
+
+// Drains non-blocking listener queue and accepts ready incoming connections into free slots.
+fn reactor_drain_listener(
+    listener_fd: i64,
+    epfd: i64,
+    active_slots: ReactorConnSlot[:],
+    free_slots: FreeSlotStack&,
+    timer_wheel: TickTimerWheel&,
+    total_served: i64&,
+) {
+    while true {
+        let client_fd = tcp_accept_nonblocking(listener_fd);
+        if client_fd <= 0 { break; }
+        tcp_set_nonblocking(client_fd, true);
+
+        var slot = pop_free_slot(free_slots);
+        if slot < 0 {
+            slot = reactor_evict_stale_slot(epfd, active_slots, free_slots, timer_wheel, total_served);
+        }
+        if slot >= 0 {
+            active_slots[slot].fd = client_fd;
+            active_slots[slot].leftover_len = 0;
+            active_slots[slot].timeout_tick = tick_timer_arm(timer_wheel, 15);
+            epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
+        } else {
+            tcp_close(client_fd);
+        }
+    }
+}
+
+// Drains up to 4 turns of non-blocking TCP ingress into chunk buffer.
+// Returns (any_recvd, is_closed).
+fn reactor_read_bounded_turns(conn: i64, chunk: u8[..65536]&) -> bool, bool {
+    var any_recvd = false;
+    for turn in 4 {
+        let available = chunk.cap - chunk.len;
+        guard available > 0 else { break; }
+        let recvd = tcp_recv_nonblocking(conn, chunk);
+        if recvd == 0 || recvd == -1 {
+            return false, true;
+        }
+        if recvd < 0 {
+            break;
+        }
+        any_recvd = true;
+        if recvd < available {
+            break;
+        }
+    }
+    return any_recvd, false;
+}
+
+// Restores buffered leftover bytes into active chunk.
+fn reactor_load_leftover(slot: ReactorConnSlot&, chunk: u8[..65536]&) {
+    let prev_len = slot.leftover_len;
+    guard prev_len > 0 && prev_len <= 4096 else { return; }
+    for p in prev_len {
+        chunk.push(slot.leftover[p]);
+    }
+    slot.leftover_len = 0;
+}
+
+// Copies leftover bytes into slot preservation buffer.
+fn reactor_save_leftover(slot: ReactorConnSlot&, rem: const u8[:]) -> bool {
+    guard rem.len <= 4096 else { return false; }
+    slot.leftover_len = rem.len;
+    for m in rem.len {
+        slot.leftover[m] = rem[m];
+    }
+    return true;
+}
+
+// Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
+fn reactor_handle_ingress(
+    server: HttpServer&,
+    epfd: i64,
+    active_slots: ReactorConnSlot[:],
+    slot: i64,
+    free_slots: FreeSlotStack&,
+    timer_wheel: TickTimerWheel&,
+    chunk: u8[..65536]&,
+    cork_wire: u8[..16384]&,
+    total_served: i64&,
+) {
+    let conn = active_slots[slot].fd;
+    let prev_len = active_slots[slot].leftover_len;
+    active_slots[slot].timeout_tick = tick_timer_arm(timer_wheel, 15);
+
+    chunk.clear();
+    reactor_load_leftover(active_slots[slot], chunk);
+
+    let any_recvd, is_closed = reactor_read_bounded_turns(conn, chunk);
+    if is_closed {
+        reactor_cleanup_slot(epfd, active_slots[slot], slot, free_slots);
+        total_served++;
+        return;
+    }
+    if !any_recvd && prev_len == 0 {
+        return;
+    }
+
+    cork_wire.clear();
+    let now_ns = core::as_nanos(core::monotonic_now());
+    let count, consumed, ok = handle_connection_wire_pipelined_stream(
+        server, "127.0.0.1", chunk[..], now_ns, cork_wire,
+    );
+
+    let should_close = !ok || core::contains_fold(cork_wire[..], "connection: close");
+    if cork_wire.len > 0 {
+        let sent = tcp_send(conn, cork_wire[..]);
+        if sent <= 0 || should_close {
+            reactor_cleanup_slot(epfd, active_slots[slot], slot, free_slots);
+            total_served++;
+            return;
+        }
+    }
+    if should_close {
+        reactor_cleanup_slot(epfd, active_slots[slot], slot, free_slots);
+        total_served++;
+        return;
+    }
+
+    // Preserve unconsumed bytes for the next epoll turn
+    if consumed < chunk.len {
+        if !reactor_save_leftover(active_slots[slot], chunk[consumed..]) {
+            reactor_cleanup_slot(epfd, active_slots[slot], slot, free_slots);
+            total_served++;
+        }
+    }
+}
+
 // Executes a share-nothing reactor loop with epoll.
 // Multiplexes all accepted connections within 1 thread, maintaining ~3.1 MB RSS footprint.
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
@@ -1617,83 +1805,29 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
     defer epoll_close(epfd);
     epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
 
-    var ready_fds: i64[..128] = [];
-    var ready_udata: u64[..128] = [];
+    var ready_fds: i64[128] = [0; 128];
+    var ready_udata: u64[128] = [0; 128];
     var cork_wire: u8[..16384] = [];
     var chunk: u8[..65536] = [];
     var total_served: i64 = 0;
 
     var active_slots: ReactorConnSlot[128] = [ReactorConnSlot { .. }; 128];
-    var next_free_slot: i64 = 0;
+    var free_slots = FreeSlotStack { .. };
+    init_free_slots(free_slots, active_slots.len);
     var timer_wheel = new_tick_timer_wheel(15);
     var last_sweep_sec: i64 = 0;
 
     while max_connections == 0 || total_served < max_connections {
-        let n = epoll_wait(epfd, ready_fds, ready_udata, 1000);
+        let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], 1000);
 
-        // 1-second Tick Wheel Connection Timeout Sweeper (Slowloris defense & slot reclamation)
-        let now_sec = (core::as_nanos(core::monotonic_now()) / 1000000000) as i64;
-        if now_sec > last_sweep_sec {
-            let elapsed = if last_sweep_sec == 0 { 1 } else { (now_sec - last_sweep_sec) as u32 };
-            last_sweep_sec = now_sec;
-            tick_timer_advance(timer_wheel, elapsed);
-
-            for s in active_slots.len {
-                if active_slots[s].fd > 0 && tick_timer_is_expired(timer_wheel, active_slots[s].timeout_tick) {
-                    epoll_del(epfd, active_slots[s].fd);
-                    tcp_close(active_slots[s].fd);
-                    active_slots[s].fd = -1;
-                    active_slots[s].leftover_len = 0;
-                    active_slots[s].timeout_tick = 255;
-                    total_served++;
-                    if s < next_free_slot { next_free_slot = s; }
-                }
-            }
-        }
+        reactor_sweep_timeouts(epfd, active_slots[..], free_slots, timer_wheel, last_sweep_sec, total_served);
 
         if n <= 0 { continue; }
 
         for i in n {
             let udata = ready_udata[i];
             if udata == EPOLL_LISTENER_TAG {
-                while true {
-                    let client_fd = tcp_accept_nonblocking(listener_fd);
-                    if client_fd <= 0 { break; }
-                    tcp_set_nonblocking(client_fd, true);
-
-                    var slot: i64 = -1;
-                    for k in active_slots.len {
-                        let s = (next_free_slot + k) % active_slots.len;
-                        if active_slots[s].fd == -1 {
-                            slot = s;
-                            next_free_slot = (s + 1) % active_slots.len;
-                            break;
-                        }
-                    }
-                    if slot < 0 {
-                        // Emergency sweep if slots are full: evict any expired or stale connection
-                        for s in active_slots.len {
-                            if active_slots[s].fd > 0 && tick_timer_is_expired(timer_wheel, active_slots[s].timeout_tick) {
-                                epoll_del(epfd, active_slots[s].fd);
-                                tcp_close(active_slots[s].fd);
-                                active_slots[s].fd = -1;
-                                active_slots[s].leftover_len = 0;
-                                active_slots[s].timeout_tick = 255;
-                                total_served++;
-                                slot = s;
-                                break;
-                            }
-                        }
-                    }
-                    if slot >= 0 {
-                        active_slots[slot].fd = client_fd;
-                        active_slots[slot].leftover_len = 0;
-                        active_slots[slot].timeout_tick = tick_timer_arm(timer_wheel, 15);
-                        epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
-                    } else {
-                        tcp_close(client_fd);
-                    }
-                }
+                reactor_drain_listener(listener_fd, epfd, active_slots[..], free_slots, timer_wheel, total_served);
                 continue;
             }
 
@@ -1701,95 +1835,16 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
             if slot < 0 || slot >= active_slots.len || active_slots[slot].fd <= 0 {
                 continue;
             }
-            let conn = active_slots[slot].fd;
-            let prev_len = active_slots[slot].leftover_len;
-            active_slots[slot].timeout_tick = tick_timer_arm(timer_wheel, 15);
 
-            chunk.clear();
-            if prev_len > 0 && prev_len <= 4096 {
-                for p in prev_len {
-                    chunk.push(active_slots[slot].leftover[p]);
-                }
-                active_slots[slot].leftover_len = 0;
-            }
-
-            let recvd = tcp_recv_nonblocking(conn, chunk);
-            if recvd == 0 || recvd == -1 {
-                epoll_del(epfd, conn);
-                tcp_close(conn);
-                active_slots[slot].fd = -1;
-                active_slots[slot].leftover_len = 0;
-                active_slots[slot].timeout_tick = 255;
-                next_free_slot = slot;
-                total_served++;
-                continue;
-            }
-            if recvd < 0 {
-                if prev_len > 0 {
-                    active_slots[slot].leftover_len = prev_len;
-                }
-                continue;
-            }
-
-            cork_wire.clear();
-            let now_ns = core::as_nanos(core::monotonic_now());
-            let count, consumed, ok = handle_connection_wire_pipelined_stream(
-                server, "127.0.0.1", chunk[..], now_ns, cork_wire,
+            reactor_handle_ingress(
+                server, epfd, active_slots[..], slot, free_slots, timer_wheel, chunk, cork_wire, total_served,
             );
-
-            let should_close = !ok || core::contains_fold(cork_wire[..], "connection: close");
-            if cork_wire.len > 0 {
-                let sent = tcp_send(conn, cork_wire[..]);
-                if sent <= 0 || should_close {
-                    epoll_del(epfd, conn);
-                    tcp_close(conn);
-                    active_slots[slot].fd = -1;
-                    active_slots[slot].leftover_len = 0;
-                    active_slots[slot].timeout_tick = 255;
-                    next_free_slot = slot;
-                    total_served++;
-                    continue;
-                }
-            }
-            if should_close {
-                epoll_del(epfd, conn);
-                tcp_close(conn);
-                active_slots[slot].fd = -1;
-                active_slots[slot].leftover_len = 0;
-                active_slots[slot].timeout_tick = 255;
-                next_free_slot = slot;
-                total_served++;
-                continue;
-            }
-
-            // Preserve unconsumed bytes for the next epoll turn
-            if consumed < chunk.len {
-                let rem = chunk[consumed..];
-                if rem.len <= 4096 {
-                    active_slots[slot].leftover_len = rem.len;
-                    for m in rem.len {
-                        active_slots[slot].leftover[m] = rem[m];
-                    }
-                } else {
-                    epoll_del(epfd, conn);
-                    tcp_close(conn);
-                    active_slots[slot].fd = -1;
-                    active_slots[slot].leftover_len = 0;
-                    active_slots[slot].timeout_tick = 255;
-                    next_free_slot = slot;
-                    total_served++;
-                }
-            }
         }
     }
 
     for s in active_slots.len {
         if active_slots[s].fd > 0 {
-            epoll_del(epfd, active_slots[s].fd);
-            tcp_close(active_slots[s].fd);
-            active_slots[s].fd = -1;
-            active_slots[s].leftover_len = 0;
-            active_slots[s].timeout_tick = 255;
+            reactor_cleanup_slot(epfd, active_slots[s], s, free_slots);
         }
     }
 
