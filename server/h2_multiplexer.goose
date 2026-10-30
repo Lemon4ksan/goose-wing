@@ -140,7 +140,7 @@ fn emit_server_settings<B>(out: B&) {
     encode_frame_header_to(hdr, out);
 
     core::append_u16_be(out, SETTING_MAX_CONCURRENT_STREAMS);
-    core::append_u32_be(out, 128);
+    core::append_u32_be(out, 16);
 
     core::append_u16_be(out, SETTING_INITIAL_WINDOW_SIZE);
     core::append_u32_be(out, 65535);
@@ -969,9 +969,9 @@ fn handle_h2_server_ingress<B>(
             // Construct Request
             var req = new_request(sess.streams[i].method[..], sess.streams[i].path[..]);
             for &hdr_item in sess.streams[i].headers {
-                if req.headers.len < 32 {
-                    req.headers.push(hdr_item);
-                }
+                guard req.headers.len < 32 else { break; }
+                req.headers.push(hdr_item);
+                add_header(req.bloom_filter, hdr_item.name[..]);
             }
             for &tr_item in sess.streams[i].trailers {
                 if req.trailers.len < 16 {

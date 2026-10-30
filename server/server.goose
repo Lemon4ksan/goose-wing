@@ -887,10 +887,13 @@ fn complete_ws_upgrade<B>(
         WsBehavior { .. }
     };
 
-    let subproto = if pending.subprotocol.len > 0 {
-        pending.subprotocol[..]
-    } else {
+    let has_subproto = route_behavior.subprotocol.len > 0
+        && pending.subprotocol.len > 0
+        && has_subprotocol_token(pending.subprotocol[..], route_behavior.subprotocol[..]);
+    let subproto = if has_subproto {
         route_behavior.subprotocol[..]
+    } else {
+        ""
     };
 
     if subproto.len > 0 {
@@ -1288,6 +1291,28 @@ fn handle_connection_wire_pipelined<B>(
     return count, ok;
 }
 
+inline fn handle_h2_pipe_ingress<B>(
+    server: HttpServer&,
+    client_ip: const u8[:],
+    pipe: core::PipeBuffer&,
+    h2_sess: H2ServerSession&,
+    now_ms: u64,
+    unread_len: i64,
+    wire_out: B&,
+) -> i64, bool {
+    let stream = core::readable_slice(pipe);
+    let consumed_h2, ok_h2 = handle_h2_server_ingress(
+        h2_sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out,
+    );
+    if ok_h2 {
+        core::advance_to(pipe, consumed_h2, consumed_h2);
+        server.requests_processed++;
+        return 1, true;
+    }
+    core::advance_to(pipe, consumed_h2, unread_len);
+    return 0, false;
+}
+
 // Incremental Sans-IO pipeline handler using PipeBuffer (RFC 9112 & System.IO.Pipelines model).
 // Reads from the pipe buffer, processes all complete pipelined requests, and updates
 // pipe cursors (consumed, examined) with strict monotonicity.
@@ -1298,11 +1323,17 @@ fn handle_connection_pipe<B>(
     pipe: core::PipeBuffer&,
     now_ns: u64,
     wire_out: B&,
+    h2_sess: H2ServerSession&,
 ) -> i64, bool {
     let unread_len = pipe.readable_len();
     guard unread_len > 0 else { return 0, true; }
 
+    let now_ms = (now_ns / 1000000) as u64;
     var total_handled: i64 = 0;
+
+    if h2_sess.preface_handled {
+        return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ms, unread_len, wire_out);
+    }
 
     // Sliced H2 preface: wait for the remaining bytes instead of parsing as HTTP/1.1
     if pipe.consumed == 0 && is_partial_h2_client_preface(core::readable_slice(pipe)) {
@@ -1313,16 +1344,7 @@ fn handle_connection_pipe<B>(
     if pipe.consumed == 0 && unread_len >= 24 {
         let stream = core::readable_slice(pipe);
         if is_h2_client_preface(stream) {
-            let now_ms = (now_ns / 1000000) as u64;
-            var sess = new_h2_server_session(server.server_name[..], now_ms);
-            let consumed_h2, ok_h2 = handle_h2_server_ingress(sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out);
-            if ok_h2 {
-                core::advance_to(pipe, consumed_h2, consumed_h2);
-                server.requests_processed++;
-                return 1, true;
-            }
-            core::advance_to(pipe, consumed_h2, unread_len);
-            return 0, false;
+            return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ms, unread_len, wire_out);
         }
     }
 
@@ -1385,6 +1407,17 @@ fn handle_connection_pipe<B>(
     return total_handled, true;
 }
 
+fn handle_connection_pipe<B>(
+    server: HttpServer&,
+    client_ip: const u8[:],
+    pipe: core::PipeBuffer&,
+    now_ns: u64,
+    wire_out: B&,
+) -> i64, bool {
+    var dummy_sess = new_h2_server_session(server.server_name[..]);
+    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, dummy_sess);
+}
+
 // Executes a live TCP accept and dispatch loop.
 // Uses pipelined ingestion and automatic CorkBuffer batching.
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
@@ -1402,6 +1435,7 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 
         pipe.pipe_reset();
         cork.cork_reset();
+        var h2_sess = new_h2_server_session(server.server_name[..]);
 
         while true {
             let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);
@@ -1410,7 +1444,7 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
             }
 
             let now_ns = core::as_nanos(core::monotonic_now());
-            let count, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork);
+            let count, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork, h2_sess);
             if !ok {
                 if cork.cork_pending() > 0 {
                     tcp_flush_cork(conn, cork);

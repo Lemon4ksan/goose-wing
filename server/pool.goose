@@ -52,6 +52,8 @@ struct RequestExtensions {
     conn_id: u64 = 0,
     request_seq: u64 = 0,
     params: wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
+    session_data: u8[..512] = [],
+    canon_url: u8[..512] = [],
     populated_entries: u32 = 0,
     in_use: bool = false,
 }
@@ -67,6 +69,8 @@ fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
             pool.slots[idx].peer_ip.clear();
             pool.slots[idx].matched_route.clear();
             pool.slots[idx].params.clear();
+            pool.slots[idx].session_data.clear();
+            pool.slots[idx].canon_url.clear();
             pool.slots[idx].populated_entries = 0;
             return idx as i32;
         }
@@ -81,6 +85,8 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[s_idx].peer_ip.clear();
     pool.slots[s_idx].matched_route.clear();
     pool.slots[s_idx].params.clear();
+    pool.slots[s_idx].session_data.clear();
+    pool.slots[s_idx].canon_url.clear();
     pool.slots[s_idx].populated_entries = 0;
     pool.slots[s_idx].in_use = false;
 }
@@ -140,7 +146,7 @@ struct ConnectionTimer {
 }
 
 fn new_connection_timer(deadline_ns: u64, now_ns: u64) -> ConnectionTimer {
-    let half_ns = if deadline_ns > 0 { deadline_ns / 2 } else { 15000000000 as u64 };
+    let half_ns = if deadline_ns == 0 { 15000000000 } else { deadline_ns >> 1 };
     return ConnectionTimer {
         active_req_seq: 0,
         last_observed_seq: 0,
@@ -162,29 +168,29 @@ fn notify_request_end(timer: ConnectionTimer&) {
     timer.last_observed_seq = timer.active_req_seq;
 }
 
+inline fn is_connection_tick_due(timer: const ConnectionTimer&, now_ns: u64) -> bool {
+    return (now_ns - timer.last_tick_mono_ns) >= timer.half_deadline_ns;
+}
+
+inline fn advance_connection_tick(timer: ConnectionTimer&) -> bool {
+    if timer.active_req_seq != timer.last_observed_seq {
+        timer.last_observed_seq = timer.active_req_seq;
+        timer.missed_ticks = 0;
+        return true;
+    }
+    timer.missed_ticks += 1;
+    return timer.missed_ticks < 2;
+}
+
 // Checks connection liveliness every half-deadline.
 // Returns false if connection should be closed as Slowloris/timed out.
 fn check_connection_tick(timer: ConnectionTimer&, now_ns: u64) -> bool {
-    guard (now_ns - timer.last_tick_mono_ns) >= timer.half_deadline_ns else {
+    guard is_connection_tick_due(timer, now_ns) else {
         return true;
     }
     timer.last_tick_mono_ns = now_ns;
-
-    // Never terminate an active in-flight handler
-    if timer.in_flight_handler {
+    guard !timer.in_flight_handler else {
         return true;
     }
-
-    if timer.active_req_seq == timer.last_observed_seq {
-        timer.missed_ticks += 1;
-        // Evicts between 1.0x and 1.5x deadline (2 ticks)
-        if timer.missed_ticks >= 2 {
-            return false;
-        }
-    } else {
-        timer.last_observed_seq = timer.active_req_seq;
-        timer.missed_ticks = 0;
-    }
-
-    return true;
+    return advance_connection_tick(timer);
 }

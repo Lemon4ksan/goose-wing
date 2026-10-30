@@ -97,20 +97,98 @@ fn evaluate_pipeline_cors_and_csrf(
     return PipelineOutcome.Handled, false;
 }
 
+// Extracts value of session cookie parameter (RFC 6265 §4.2.1).
+//
+// Example:
+//   cookie_hdr = "id=123; session=abc456; theme=dark"
+//   returns: "abc456"
+fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
+    var pos = 0;
+    while pos < cookie_hdr.len {
+        while pos < cookie_hdr.len && (cookie_hdr[pos] == ' ' || cookie_hdr[pos] == '\t') {
+            pos++;
+        }
+        let pair_start = pos;
+        while pos < cookie_hdr.len && cookie_hdr[pos] != ';' {
+            pos++;
+        }
+        let pair = cookie_hdr[pair_start..pos];
+        if pos < cookie_hdr.len && cookie_hdr[pos] == ';' {
+            pos++;
+        }
+        var eq_idx = -1;
+        for i in pair.len {
+            if pair[i] == '=' {
+                eq_idx = i;
+                break;
+            }
+        }
+        if eq_idx > 0 && core::trim_lws(pair[..eq_idx]) == "session" {
+            return core::trim_lws(pair[eq_idx + 1..]);
+        }
+    }
+    return "";
+}
+
 // Decrypts encrypted session cookie from request headers into private jar if enabled.
 fn decrypt_pipeline_session_cookie(
     cfg: ServerPipelineConfig&,
     req: const Request&,
+    ext: internal::RequestExtensions&,
     now_ns: u64,
 ) {
+    let now_sec = (now_ns / 1000000000) as i64;
+    var plain_cookie: u8[>..] = [];
     for idx in req.headers.len {
-        if eq_ascii_fold(req.headers[idx].name[..], "Cookie") {
-            var plain_cookie: u8[>..] = [];
-            let now_sec = (now_ns / 1000000000) as i64;
-            private_jar_open(cfg.private_jar, "session", req.headers[idx].value[..], now_sec, plain_cookie);
-            break;
-        }
+        guard eq_ascii_fold(req.headers[idx].name[..], "Cookie") else { continue; }
+        let session_val = extract_session_cookie_value(req.headers[idx].value[..]);
+        guard session_val.len > 0 else { return; }
+        plain_cookie.clear();
+        guard private_jar_open(cfg.private_jar, "session", session_val, now_sec, plain_cookie) else { return; }
+        ext.session_data.clear();
+        guard plain_cookie.len <= ext.session_data.cap else { return; }
+        ext.session_data.append(plain_cookie[..]);
+        ext.populated_entries |= internal::ENTRY_COOKIES;
+        return;
     }
+}
+
+fn dispatch_matched_route(
+    cfg: ServerPipelineConfig&,
+    req: const Request&,
+    now_ns: u64,
+    res: Response&,
+    out_future: internal::InlineHandlerFuture&,
+    match_res: RouteMatchResult,
+    ext_slot_idx: i32,
+) -> PipelineOutcome {
+    let e_idx = ext_slot_idx as i64;
+    match match_res {
+        NotFound => {
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            res.status_code = 404; // Not Found
+            return PipelineOutcome.RouteNotFound;
+        },
+        MethodNotAllowed mna => {
+            res.status_code = 405; // Method Not Allowed
+            res.headers.push(make_header("Allow", mna.allow_header[..]));
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            return PipelineOutcome.MethodNotAllowed;
+        },
+        Found f => {
+            // Stage 6: Cookie decryption & handler dispatch
+            if (f.entries_mask & internal::ENTRY_COOKIES) != 0 {
+                decrypt_pipeline_session_cookie(cfg, req, cfg.ext_pool.slots[e_idx], now_ns);
+            }
+
+            out_future = internal::new_inline_handler_future(f.handler_id as u16);
+            internal::poll_future(out_future);
+
+            res.status_code = 200;
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            return PipelineOutcome.Handled;
+        },
+    };
 }
 
 // Executes an incoming request through the configured pipeline stages.
@@ -170,38 +248,24 @@ fn execute_pipeline(
 
     // Stage 5: Radix trie route matching
     let ext_slot_idx = internal::acquire_extensions(cfg.ext_pool);
+    guard ext_slot_idx >= 0 else {
+        if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+        res.status_code = 503; // Service Unavailable / Pool Exhausted
+        return PipelineOutcome.RateLimited;
+    }
     let e_idx = ext_slot_idx as i64;
     cfg.ext_pool.slots[e_idx].peer_ip.append(client_ip);
+    cfg.ext_pool.slots[e_idx].canon_url.clear();
 
-    let match_res = match_route(cfg.router, req.method[..], req.url[..], cfg.ext_pool.slots[e_idx].params);
+    let match_res = match_route(
+        cfg.router,
+        req.method[..],
+        req.url[..],
+        cfg.ext_pool.slots[e_idx].params,
+        cfg.ext_pool.slots[e_idx].canon_url,
+    );
 
-    match match_res {
-        NotFound => {
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
-            res.status_code = 404; // Not Found
-            return PipelineOutcome.RouteNotFound;
-        },
-        MethodNotAllowed mna => {
-            res.status_code = 405; // Method Not Allowed
-            res.headers.push(make_header("Allow", mna.allow_header[..]));
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
-            return PipelineOutcome.MethodNotAllowed;
-        },
-        Found f => {
-            // Stage 6: Cookie decryption & handler dispatch
-            if (f.entries_mask & internal::ENTRY_COOKIES) != 0 {
-                decrypt_pipeline_session_cookie(cfg, req, now_ns);
-            }
-
-            out_future = internal::new_inline_handler_future(f.handler_id as u16);
-            internal::poll_future(out_future);
-
-            res.status_code = 200;
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
-            return PipelineOutcome.Handled;
-        },
-    };
+    let outcome = dispatch_matched_route(cfg, req, now_ns, res, out_future, match_res, ext_slot_idx);
+    if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+    return outcome;
 }

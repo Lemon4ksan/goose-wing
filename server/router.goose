@@ -14,6 +14,7 @@ enum NodeType {
 }
 
 struct ParamSpan {
+    name: u8[..32] = [],
     key_start: u16 = 0,
     key_end: u16 = 0,
     val_start: u16 = 0,
@@ -29,14 +30,43 @@ fn clear(params: ZeroAllocParams&) {
     params.len = 0;
 }
 
-fn add_param(params: ZeroAllocParams&, k_start: u16, k_end: u16, v_start: u16, v_end: u16) -> bool {
+fn add_param(
+    params: ZeroAllocParams&,
+    k_start: u16,
+    k_end: u16,
+    v_start: u16,
+    v_end: u16,
+) -> bool {
     guard params.len < params.spans.len else { return false; }
     params.spans[params.len] = ParamSpan {
+        name: [],
         key_start: k_start,
         key_end: k_end,
         val_start: v_start,
         val_end: v_end,
     };
+    params.len += 1;
+    return true;
+}
+
+fn add_param(
+    params: ZeroAllocParams&,
+    name: const u8[:],
+    k_start: u16,
+    k_end: u16,
+    v_start: u16,
+    v_end: u16,
+) -> bool {
+    guard params.len < params.spans.len else { return false; }
+    params.spans[params.len] = ParamSpan {
+        name: [],
+        key_start: k_start,
+        key_end: k_end,
+        val_start: v_start,
+        val_end: v_end,
+    };
+    guard name.len <= params.spans[params.len].name.cap else { return false; }
+    params.spans[params.len].name.append(name);
     params.len += 1;
     return true;
 }
@@ -50,9 +80,14 @@ fn param_val(params: const ZeroAllocParams&, idx: i64, req_path: const u8[:]) ->
 
 fn param_key(params: const ZeroAllocParams&, idx: i64, route_template: const u8[:]) -> const u8[:] {
     guard idx >= 0 && idx < params.len else { return ""; }
-    let span = params.spans[idx];
-    guard span.key_end <= route_template.len && span.key_start <= span.key_end else { return ""; }
-    return route_template[(span.key_start as i64)..(span.key_end as i64)];
+    let span = &params.spans[idx];
+    if span.key_end <= route_template.len && span.key_start < span.key_end {
+        return route_template[(span.key_start as i64)..(span.key_end as i64)];
+    }
+    if span.name.len > 0 {
+        return span.name[..];
+    }
+    return "";
 }
 
 fn param_by_name(
@@ -64,6 +99,19 @@ fn param_by_name(
     for idx in params.len {
         let k = params.param_key(idx, route_template);
         if k == name {
+            return params.param_val(idx, req_path), true;
+        }
+    }
+    return "", false;
+}
+
+fn param_by_name(
+    params: const ZeroAllocParams&,
+    name: const u8[:],
+    req_path: const u8[:],
+) -> const u8[:], bool {
+    for idx in params.len {
+        if params.spans[idx].name[..] == name {
             return params.param_val(idx, req_path), true;
         }
     }
@@ -422,13 +470,12 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
         }
 
         if is_dot_dot_segment(seg) {
-            if out.len > 0 {
-                var last_slash: i64 = out.len - 1;
-                while last_slash > 0 && out[last_slash] != '/' {
-                    last_slash--;
-                }
-                out.resize(last_slash);
+            guard out.len > 0 else { continue; }
+            var last_slash: i64 = out.len - 1;
+            while last_slash > 0 && out[last_slash] != '/' {
+                last_slash--;
             }
+            out.resize(last_slash);
             continue;
         }
 
@@ -488,7 +535,8 @@ fn match_param_child(
     if val_end < 0 { val_end = rem.len; }
     guard val_end > 0 else { return false; }
 
-    add_param(params, 0, 0, cursor, cursor + (val_end as u16));
+    let pname = tree.nodes[p_idx as i64].param_name[..];
+    add_param(params, pname, 0, 0, cursor, cursor + (val_end as u16));
     val_len = val_end;
     return true;
 }
@@ -505,7 +553,8 @@ fn match_catch_all_child(
     guard catch_val.len > 0 else { return RouteMatchResult.NotFound; }
 
     let start_off = if rem[0] == '/' { cursor + 1 } else { cursor };
-    add_param(params, 0, 0, start_off, start_off + (catch_val.len as u16));
+    let pname = tree.nodes[ca_idx as i64].param_name[..];
+    add_param(params, pname, 0, 0, start_off, start_off + (catch_val.len as u16));
 
     let hid = tree.nodes[ca_idx as i64].handler_id;
     if hid >= 0 {
@@ -518,14 +567,15 @@ fn match_catch_all_child(
 }
 
 // Matches path against the RadixTree, recording parameter spans into params.
-fn match_path(
+fn match_path<B>(
     tree: const RadixTree&,
     path: const u8[:],
     params: ZeroAllocParams&,
+    out_canon_path: B&,
 ) -> RouteMatchResult {
-    var canon_path: u8[..512] = [];
-    guard canonicalize_route_path(path, canon_path) else { return RouteMatchResult.NotFound; }
-    let eff_path = canon_path[..];
+    out_canon_path.clear();
+    guard canonicalize_route_path(path, out_canon_path) else { return RouteMatchResult.NotFound; }
+    let eff_path = out_canon_path[..];
 
     guard tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
     params.clear();
@@ -538,22 +588,16 @@ fn match_path(
         let prefix = tree.nodes[cur_idx as i64].prefix[..];
 
         if prefix.len > 0 {
-            guard rem.len >= prefix.len && rem[..prefix.len] == prefix else {
-                return RouteMatchResult.NotFound;
-            }
+            guard rem.len >= prefix.len && rem[..prefix.len] == prefix else { return RouteMatchResult.NotFound; }
             cursor += prefix.len as u16;
             rem = rem[prefix.len..];
         }
 
         if rem.len == 0 {
             let hid = tree.nodes[cur_idx as i64].handler_id;
-            if hid >= 0 {
-                return RouteMatchResult.Found {
-                    handler_id: hid,
-                    entries_mask: tree.nodes[cur_idx as i64].entries_mask,
-                };
-            }
-            return RouteMatchResult.NotFound;
+            guard hid >= 0 else { return RouteMatchResult.NotFound; }
+            let mask = tree.nodes[cur_idx as i64].entries_mask;
+            return RouteMatchResult.Found { handler_id: hid, entries_mask: mask };
         }
 
         // Try static children first (O(1) index lookup)
@@ -586,6 +630,15 @@ fn match_path(
     }
 
     return RouteMatchResult.NotFound;
+}
+
+fn match_path(
+    tree: const RadixTree&,
+    path: const u8[:],
+    params: ZeroAllocParams&,
+) -> RouteMatchResult {
+    var canon_path: u8[..512] = [];
+    return match_path(tree, path, params, canon_path);
 }
 
 // ---- multi-method radix router ---------------------------------------------
@@ -631,11 +684,12 @@ fn add_route(
 // Matches a request method and path against registered routes.
 // Automatically canonicalizes path before matching.
 // Returns RouteMatchResult: Found with handler_id, NotFound, or MethodNotAllowed with Allow header.
-fn match_route(
+fn match_route<B>(
     router: const RadixRouter&,
     method: const u8[:],
     path: const u8[:],
     params: ZeroAllocParams&,
+    out_canon_path: B&,
 ) -> RouteMatchResult {
     var target_tree_idx: i32 = -1;
     for idx in router.trees.len {
@@ -646,7 +700,7 @@ fn match_route(
     }
 
     if target_tree_idx >= 0 {
-        let res = match_path(router.trees[target_tree_idx as i64].tree, path, params);
+        let res = match_path(router.trees[target_tree_idx as i64].tree, path, params, out_canon_path);
         match res {
             Found _ => { return res; },
             _ => {},
@@ -657,19 +711,19 @@ fn match_route(
     var allow_buf: u8[..64] = [];
     var matched_other = false;
     var dummy_params = ZeroAllocParams { .. };
+    var dummy_canon: u8[..512] = [];
 
     for idx in router.trees.len {
-        if (idx as i32) != target_tree_idx {
-            let res_other = match_path(router.trees[idx].tree, path, dummy_params);
-            match res_other {
-                Found _ => {
-                    if matched_other { allow_buf.append(", "); }
-                    allow_buf.append(router.trees[idx].method[..]);
-                    matched_other = true;
-                },
-                _ => {},
-            };
-        }
+        guard (idx as i32) != target_tree_idx else { continue; }
+        let res_other = match_path(router.trees[idx].tree, path, dummy_params, dummy_canon);
+        match res_other {
+            Found _ => {
+                if matched_other { allow_buf.append(", "); }
+                allow_buf.append(router.trees[idx].method[..]);
+                matched_other = true;
+            },
+            _ => {},
+        };
     }
 
     if matched_other {
@@ -677,4 +731,14 @@ fn match_route(
     }
 
     return RouteMatchResult.NotFound;
+}
+
+fn match_route(
+    router: const RadixRouter&,
+    method: const u8[:],
+    path: const u8[:],
+    params: ZeroAllocParams&,
+) -> RouteMatchResult {
+    var canon_path: u8[..512] = [];
+    return match_route(router, method, path, params, canon_path);
 }
