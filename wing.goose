@@ -40,6 +40,8 @@ import http.headers.chunked_fsm;
 import http.sfv;
 import http.priority;
 import http.incremental;
+import http.forwarded;
+import http.problem;
 
 // ---- client session and application layer ----------------------------------
 

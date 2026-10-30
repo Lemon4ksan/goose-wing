@@ -37,12 +37,18 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
         408 => "Request Timeout",
         413 => "Payload Too Large",
         417 => "Expectation Failed",
+        422 => "Unprocessable Content",
+        425 => "Too Early",
+        428 => "Precondition Required",
         429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
+        451 => "Unavailable For Legal Reasons",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         504 => "Gateway Timeout",
+        511 => "Network Authentication Required",
         _ => "Unknown",
     };
 }
