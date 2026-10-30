@@ -103,20 +103,20 @@ fn test_backpressure_and_drain(t: core::T&) {
         sub.assert_false(ws.is_backpressured, "Initially not backpressured");
 
         var out: u8[..1024] = [];
-        // Send small message (40 bytes payload + 10 bytes overhead = 50 bytes)
+        // Send small message (40 bytes payload + 2 bytes server frame header = 42 bytes)
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
         sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "Status is Backpressure when queued bytes > 0");
-        sub.assert_eq(ws.get_buffered_amount(), 50, "50 bytes buffered");
+        sub.assert_eq(ws.get_buffered_amount(), 42, "42 bytes buffered");
         sub.assert_true(ws.is_backpressured, "Marked as backpressured");
 
         // Partial drain
         let drained_part = ws.notify_drained(20);
         sub.assert_false(drained_part, "Partial drain does not trigger drain event");
-        sub.assert_eq(ws.get_buffered_amount(), 30, "30 bytes remaining");
+        sub.assert_eq(ws.get_buffered_amount(), 22, "22 bytes remaining");
         sub.assert_true(ws.is_backpressured, "Still backpressured");
 
         // Full drain
-        let drained_full = ws.notify_drained(30);
+        let drained_full = ws.notify_drained(22);
         sub.assert_true(drained_full, "Full drain to 0 triggers drain event!");
         sub.assert_eq(ws.get_buffered_amount(), 0, "Buffered amount is 0");
         sub.assert_false(ws.is_backpressured, "No longer backpressured");
@@ -131,13 +131,13 @@ fn test_backpressure_and_drain(t: core::T&) {
         ws.set_max_backpressure(60, false); // Limit 60 bytes, close_on_limit = false
 
         var out: u8[..1024] = [];
-        // 1st message: 40 + 10 = 50 bytes <= 60
+        // 1st message: 40 + 2 = 42 bytes <= 60
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
         sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "First send accepted");
-        sub.assert_eq(ws.get_buffered_amount(), 50, "50 bytes buffered");
+        sub.assert_eq(ws.get_buffered_amount(), 42, "42 bytes buffered");
         let initial_out_len = out.len;
 
-        // 2nd message: 50 + 50 = 100 > 60 -> Must be DROPPED
+        // 2nd message: 42 + 42 = 84 > 60 -> Must be DROPPED
         let st2 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
         sub.assert_true(st2 == wing::WsSendStatus.Dropped, "Status is Dropped when limit exceeded");
         sub.assert_eq(ws.dropped_messages_count, 1, "Dropped message counter incremented");
@@ -1266,6 +1266,17 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
     t.assert_eq(queued, 1, "publish_batch must queue message once per distinct socket across overlapping buckets");
     t.assert_true(wing::subscriber_needs_drain(tree, 77), "Socket 77 needs drain");
     t.assert_eq(wing::subscriber_queued_messages(tree, 77), 1, "Socket 77 has exactly 1 queued message");
+
+    // Queue up to 32 messages without resetting palette_len mid-broadcast
+    for i in 31 {
+        wing::publish_batch(tree, "chat/room1", "msg");
+    }
+    t.assert_eq(wing::subscriber_queued_messages(tree, 77), 32, "Socket 77 has 32 queued messages");
+    t.assert_eq(tree.palette_len, 32, "Palette length is 32");
+
+    // 33rd message triggers drain_subscriber inside publish_batch
+    wing::publish_batch(tree, "chat/room1", "msg33");
+    t.assert_eq(tree.palette_len, 33, "Palette length must NOT be wiped by drain_subscriber mid-broadcast");
 }
 
 fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: core::T&) {

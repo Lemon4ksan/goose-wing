@@ -1530,6 +1530,7 @@ fn test_webtransport_stream_demuxing(t: core::T&) {
         sub.assert_eq(demuxer.total_dispatched, 3, "Total dispatched frames is 3");
         sub.assert_eq(demuxer.sessions[0].streams_count, 2, "2 streams initiated for session 100");
         sub.assert_eq(demuxer.sessions[0].frames_received, 3, "3 frames received for session 100");
+        sub.assert_eq(demuxer.sessions[0].bytes_received, 22, "22 bytes received for session 100 (7 + 5 + 10)");
 
         // 5. Drain session 100 (draft Section 8.2: new streams rejected)
         sub.assert_true(wing::drain_webtransport_demuxer_session(demuxer, 100), "Drained session 100");

@@ -683,9 +683,6 @@ fn drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
         }
     }
 
-    if tree.drainable_head < 0 {
-        tree.palette_len = 0;
-    }
     return sent_total;
 }
 

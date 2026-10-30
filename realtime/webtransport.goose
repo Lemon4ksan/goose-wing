@@ -715,6 +715,7 @@ inline fn record_new_stream_route(
     stream_id: u64,
     session_id: u64,
     kind: WebTransportStreamKind,
+    bytes_delivered: u64,
 ) {
     guard demuxer.streams.len < demuxer.streams.cap else { return; }
     var route = WebTransportStreamRoute {
@@ -722,8 +723,17 @@ inline fn record_new_stream_route(
         session_id: session_id,
         kind: kind,
         is_open: true,
+        bytes_delivered: bytes_delivered,
     };
     demuxer.streams.push(route);
+}
+
+inline fn record_session_bytes(entry: WebTransportSessionEntry&, n: u64) {
+    entry.bytes_received += n;
+}
+
+inline fn record_stream_bytes(route: WebTransportStreamRoute&, n: u64) {
+    route.bytes_delivered += n;
 }
 
 inline fn record_dropped_frame(demuxer: WebTransportDemuxer&) {
@@ -743,6 +753,11 @@ inline fn record_session_stream(entry: WebTransportSessionEntry&) {
     entry.frames_received += 1;
 }
 
+// Routes incoming data chunks to an existing open WebTransport stream.
+//
+// Example:
+//   wire = "chunk", fin = false
+//   returns: true, out.payload = "chunk", out.fin = false
 fn route_existing_stream(
     demuxer: WebTransportDemuxer&,
     route_idx: i64,
@@ -775,10 +790,18 @@ fn route_existing_stream(
     out.payload = wire;
     out.fin = fin;
 
+    record_session_bytes(demuxer.sessions[s_idx], wire.len as u64);
+    record_stream_bytes(demuxer.streams[route_idx], wire.len as u64);
+
     record_dispatched_frame(demuxer);
     return true;
 }
 
+// Demuxes stream header and routes a new WebTransport stream.
+//
+// Example:
+//   stream_id = 4, wire = [0x40, 0x64, 'a', 'b', 'c'], fin = false
+//   returns: true, out.session_id = 100, out.payload = "abc"
 fn route_new_stream(
     demuxer: WebTransportDemuxer&,
     stream_id: u64,
@@ -809,8 +832,9 @@ fn route_new_stream(
 
     record_session_stream(demuxer.sessions[s_idx]);
 
+    record_session_bytes(demuxer.sessions[s_idx], payload.len as u64);
     if !fin {
-        record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind);
+        record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind, payload.len as u64);
     }
 
     out.kind = hdr.kind;

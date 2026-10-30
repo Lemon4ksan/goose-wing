@@ -263,6 +263,13 @@ fn encode_ws_frame<B>(
     }
 }
 
+// Computes exact WebSocket frame wire length including header, extended length, mask key, and payload
+fn calc_ws_frame_len(payload_len: u64, is_client: bool) -> u64 {
+    let ext_len: u64 = if payload_len > 65535 { 8 } else if payload_len > 125 { 2 } else { 0 };
+    let mask_len: u64 = if is_client { 4 } else { 0 };
+    return 2 + ext_len + mask_len + payload_len;
+}
+
 // ---- PerMessageDeflate Shared Compressor Engine (RFC 7692 / uWebSockets pattern)
 
 // Compression options matching uWebSockets CompressOptions
@@ -283,14 +290,17 @@ struct SharedWsCompressor {
 }
 
 // Compresses raw payload using raw Deflate (RFC 1951) and strips trailing 0x00 0x00 0xFF 0xFF (RFC 7692 §7.2.1).
-// With reset_window=true (Z_FULL_FLUSH equivalent), clears dictionary between messages to prevent cross-connection leak.
-fn ws_deflate_message<B>(
+// Returns a zero-copy slice to shared.compress_buf containing the compressed bytes.
+//
+// Example:
+//   raw = "hello", reset_window = true
+//   returns: comp_slice = [0xca, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00], ok = true
+fn ws_deflate_message_slice(
     shared: SharedWsCompressor&,
     raw: const u8[:],
-    out_wire: B&,
     reset_window: bool = true,
-) -> bool {
-    guard raw.len > 0 else { return false; }
+) -> const u8[:], bool {
+    guard raw.len > 0 else { return "", false; }
     shared.compress_buf.clear();
     let ok = core::deflate(raw, shared.compress_buf, 6);
     guard ok && shared.compress_buf.len > 0 else {
@@ -298,7 +308,7 @@ fn ws_deflate_message<B>(
             shared.compress_buf.clear();
             shared.decompress_buf.clear();
         }
-        return false;
+        return "", false;
     }
 
     var eff_len = shared.compress_buf.len;
@@ -313,14 +323,22 @@ fn ws_deflate_message<B>(
         }
     }
 
-    out_wire.append(shared.compress_buf[..eff_len]);
     shared.total_compressed += eff_len as u64;
     shared.total_uncompressed += raw.len as u64;
 
-    if reset_window {
-        shared.compress_buf.clear();
-        shared.decompress_buf.clear();
-    }
+    return shared.compress_buf[..eff_len], true;
+}
+
+// Appends compressed message to caller-supplied buffer out_wire
+fn ws_deflate_message<B>(
+    shared: SharedWsCompressor&,
+    raw: const u8[:],
+    out_wire: B&,
+    reset_window: bool = true,
+) -> bool {
+    let comp_slice, ok = ws_deflate_message_slice(shared, raw, reset_window);
+    guard ok else { return false; }
+    out_wire.append(comp_slice);
     return true;
 }
 
@@ -1016,7 +1034,7 @@ fn send_text_with_status<B>(
     compress: bool = false,
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
-    let frame_len = (text.len + 10) as u64;
+    let frame_len = calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -1038,21 +1056,20 @@ fn send_text_compressed_with_status<B>(
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
 
     if compress && ws.permessage_deflate && text.len > 0 {
-        var comp_wire: u8[..16384] = [];
         let reset_win = ws_should_reset_compressor(ws);
-        let ok_comp = ws_deflate_message(shared_comp, text, comp_wire, reset_win);
+        let comp_wire, ok_comp = ws_deflate_message_slice(shared_comp, text, reset_win);
         if ok_comp && comp_wire.len < text.len {
-            let frame_len = (comp_wire.len + 10) as u64;
+            let frame_len = calc_ws_frame_len(comp_wire.len as u64, ws.is_client);
             let status = notify_buffered(ws, frame_len, out);
             if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
                 return status;
             }
-            encode_ws_frame_compressed(out, WS_OPCODE_TEXT, comp_wire[..], ws.is_client, mask, true);
+            encode_ws_frame_compressed(out, WS_OPCODE_TEXT, comp_wire, ws.is_client, mask, true);
             return status;
         }
     }
 
-    let frame_len = (text.len + 10) as u64;
+    let frame_len = calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -1077,7 +1094,7 @@ fn send_binary_with_status<B>(
     compress: bool = false,
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
-    let frame_len = (data.len + 10) as u64;
+    let frame_len = calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -1099,21 +1116,20 @@ fn send_binary_compressed_with_status<B>(
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
 
     if compress && ws.permessage_deflate && data.len > 0 {
-        var comp_wire: u8[..16384] = [];
         let reset_win = ws_should_reset_compressor(ws);
-        let ok_comp = ws_deflate_message(shared_comp, data, comp_wire, reset_win);
+        let comp_wire, ok_comp = ws_deflate_message_slice(shared_comp, data, reset_win);
         if ok_comp && comp_wire.len < data.len {
-            let frame_len = (comp_wire.len + 10) as u64;
+            let frame_len = calc_ws_frame_len(comp_wire.len as u64, ws.is_client);
             let status = notify_buffered(ws, frame_len, out);
             if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
                 return status;
             }
-            encode_ws_frame_compressed(out, WS_OPCODE_BINARY, comp_wire[..], ws.is_client, mask, true);
+            encode_ws_frame_compressed(out, WS_OPCODE_BINARY, comp_wire, ws.is_client, mask, true);
             return status;
         }
     }
 
-    let frame_len = (data.len + 10) as u64;
+    let frame_len = calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;

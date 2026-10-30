@@ -71,14 +71,32 @@ fn test_sse_comments_and_bom() {
     print("SSE_COMMENTS_AND_BOM: OK");
 }
 
+fn test_sse_4096_byte_payload() {
+    var big_wire: u8[>..] = [];
+    big_wire.append("data: ");
+    for i in 4096 {
+        big_wire.push('A');
+    }
+    big_wire.append("\n\n");
+
+    var p = wing::SseParser { .. };
+    var events: wing::SseEvent[..4] = [];
+    wing::sse_feed(p, big_wire[..], events);
+    assert(events.len == 1);
+    assert(events[0].data.len == 4096);
+    print("SSE_4096_PAYLOAD: OK");
+}
+
 fn main() {
     test_sse_event_formatting_and_feed();
     test_sse_split_stream_and_fuzz();
     test_sse_comments_and_bom();
+    test_sse_4096_byte_payload();
     print("SSE_WIRE: ALL INVARIANTS PASS");
 }
 
 // CHECK: SSE_FORMAT_AND_FEED: OK
 // CHECK: SSE_SPLIT_AND_FUZZ: OK
 // CHECK: SSE_COMMENTS_AND_BOM: OK
+// CHECK: SSE_4096_PAYLOAD: OK
 // CHECK: SSE_WIRE: ALL INVARIANTS PASS

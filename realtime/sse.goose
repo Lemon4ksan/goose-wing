@@ -28,7 +28,7 @@ struct SseParser {
     cur_data: u8[..4096] = [],
     last_event_id: u8[..128] = [],
     retry_ms: u32 = 3000,
-    line_buf: u8[..4096] = [],
+    line_buf: u8[..4112] = [],
     prev_was_cr: bool = false,
     has_data: bool = false,
     bom_checked: bool = false,
@@ -173,7 +173,7 @@ fn sse_feed<E>(p: SseParser&, chunk: const u8[:], out_events: E&) {
             }
         } else {
             p.prev_was_cr = false;
-            if p.line_buf.len < 4096 {
+            if p.line_buf.len < 4112 {
                 p.line_buf.push(b);
             }
         }
