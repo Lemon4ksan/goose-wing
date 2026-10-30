@@ -34,68 +34,68 @@ import client.session.mock;
 // ---- client configuration and state ----------------------------------------
 
 struct ClientConfig {
-    base_url: const u8[:] = "",
-    profile: Profile = Profile.Wing,
-    proxy_url: const u8[:] = "",
-    timeout_ms: i64 = 15000,
-    follow_redirects: bool = true,
-    cookie_jar: bool = true,
-    enable_cache: bool = false,
-    cache_options: CacheOptions = CacheOptions { .. },
-    enable_altsvc: bool = true,
-    enable_protocol_racing: bool = true,
-    quic_race_delay_ms: i64 = 200,
-    enable_compression_dict: bool = true,
+    base_url:                const u8[:]  = "",
+    profile:                 Profile      = Profile.Wing,
+    proxy_url:               const u8[:]  = "",
+    timeout_ms:              i64          = 15000,
+    follow_redirects:        bool         = true,
+    cookie_jar:              bool         = true,
+    enable_cache:            bool         = false,
+    cache_options:           CacheOptions = CacheOptions { .. },
+    enable_altsvc:           bool         = true,
+    enable_protocol_racing:  bool         = true,
+    quic_race_delay_ms:      i64          = 200,
+    enable_compression_dict: bool         = true,
 }
 
 type SessionConfig = ClientConfig;
 
 struct ClientCredentials {
-    username: u8[..64] = [],
-    password: u8[..64] = [],
-    has_credentials: bool = false,
-    nonce_counter: u32 = 1,
-    cnonce: u8[..32] = "f2/IZUnWe0rEzWeA",
+    username:        u8[..64] = [],
+    password:        u8[..64] = [],
+    has_credentials: bool     = false,
+    nonce_counter:   u32      = 1,
+    cnonce:          u8[..32] = "f2/IZUnWe0rEzWeA",
 }
 
 struct Client {
-    base_url: u8[..256] = [],
-    profile: Profile = Profile.Wing,
-    profile_spec: BrowserProfile = BrowserProfile { .. },
-    proxy_url: u8[..256] = [],
-    timeout_ms: i64 = 15000,
-    follow_redirects: bool = true,
-    redirect_mode: RedirectMode = RedirectMode.Follow,
-    max_redirects: i64 = 10,
-    https_only: bool = false,
-    enable_referer: bool = true,
-    default_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    default_headers: HeaderItem[..16] = [],
-    ssrf_guard: SsrfGuardPolicy = SsrfGuardPolicy { .. },
-    virtual_clock_us: i64 = 1700000000000000,
-    trusted_location_hosts: u8[..128][..8] = [],
-    mock_routes: MockExchange[..8] = [],
+    base_url:                u8[..256]         = [],
+    profile:                 Profile           = Profile.Wing,
+    profile_spec:            BrowserProfile    = BrowserProfile { .. },
+    proxy_url:               u8[..256]         = [],
+    timeout_ms:              i64               = 15000,
+    follow_redirects:        bool              = true,
+    redirect_mode:           RedirectMode      = RedirectMode.Follow,
+    max_redirects:           i64               = 10,
+    https_only:              bool              = false,
+    enable_referer:          bool              = true,
+    default_referrer_policy: ReferrerPolicy    = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    default_headers:         HeaderItem[..16]  = [],
+    ssrf_guard:              SsrfGuardPolicy   = SsrfGuardPolicy { .. },
+    virtual_clock_us:        i64               = 1700000000000000,
+    trusted_location_hosts:  u8[..128][..8]    = [],
+    mock_routes:             MockExchange[..8] = [],
 
     // RFC 9111 HTTP Cache Engine
-    cache: HttpCache = HttpCache { .. },
-    enable_cache: bool = false,
+    cache:        HttpCache = HttpCache { .. },
+    enable_cache: bool      = false,
 
     // RFC 8484 DNS-over-HTTPS (DoH) & RFC 9460 Automated ECH Discovery
-    doh: DohResolver = DohResolver { .. },
-    enable_doh: bool = false,
-    enable_ech: bool = false,
-    auto_ech_discovery: bool = false,
-    dns_cache: DnsCache = DnsCache { .. },
+    doh:                DohResolver = DohResolver { .. },
+    enable_doh:         bool        = false,
+    enable_ech:         bool        = false,
+    auto_ech_discovery: bool        = false,
+    dns_cache:          DnsCache    = DnsCache { .. },
 
     // RFC 7838 Alt-Svc & Chromium Protocol Racing
-    altsvc: AltSvcCache = AltSvcCache { .. },
-    enable_altsvc: bool = true,
-    enable_protocol_racing: bool = true,
-    quic_race_delay_ms: i64 = 200,
+    altsvc:                 AltSvcCache = AltSvcCache { .. },
+    enable_altsvc:          bool        = true,
+    enable_protocol_racing: bool        = true,
+    quic_race_delay_ms:     i64         = 200,
 
     // Compression Dictionary Transport (Chrome 123+ dcz/dcb)
-    dict_cache: DictionaryCache = DictionaryCache { .. },
-    enable_compression_dict: bool = true,
+    dict_cache:              DictionaryCache = DictionaryCache { .. },
+    enable_compression_dict: bool            = true,
 
     // OkHttp/Tower-style 2-tier Interceptor Pipeline (Application & Network)
     pipeline: InterceptorPipeline = InterceptorPipeline { .. },
@@ -104,8 +104,8 @@ struct Client {
     creds: ClientCredentials = ClientCredentials { .. },
 
     // RFC 6797 HTTP Strict Transport Security (HSTS)
-    hsts: HstsCache = HstsCache { .. },
-    enable_hsts: bool = true,
+    hsts:        HstsCache = HstsCache { .. },
+    enable_hsts: bool      = true,
 
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
@@ -117,20 +117,20 @@ type Session = Client;
 
 fn new_client() -> Client {
     var c = Client {
-        profile: Profile.Wing,
-        ssrf_guard: SsrfGuardPolicy { .. },
-        cache: new_http_cache(),
-        enable_cache: false,
-        altsvc: AltSvcCache { .. },
-        enable_altsvc: true,
-        enable_protocol_racing: true,
-        quic_race_delay_ms: 200,
-        dict_cache: DictionaryCache { .. },
+        profile:                 Profile.Wing,
+        ssrf_guard:              SsrfGuardPolicy { .. },
+        cache:                   new_http_cache(),
+        enable_cache:            false,
+        altsvc:                  AltSvcCache { .. },
+        enable_altsvc:           true,
+        enable_protocol_racing:  true,
+        quic_race_delay_ms:      200,
+        dict_cache:              DictionaryCache { .. },
         enable_compression_dict: true,
-        pipeline: InterceptorPipeline { .. },
-        hsts: HstsCache { .. },
-        enable_hsts: true,
-        jar: CanonicalCookieJar { .. },
+        pipeline:                InterceptorPipeline { .. },
+        hsts:                    HstsCache { .. },
+        enable_hsts:             true,
+        jar:                     CanonicalCookieJar { .. },
         ..
     };
     let def_p = wing_default_profile();
@@ -140,23 +140,23 @@ fn new_client() -> Client {
 
 fn new_client(cfg: ClientConfig) -> Client {
     var client = Client {
-        profile: cfg.profile,
-        timeout_ms: cfg.timeout_ms,
-        follow_redirects: cfg.follow_redirects,
-        redirect_mode: if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
-        ssrf_guard: SsrfGuardPolicy { .. },
-        cache: new_http_cache(cfg.cache_options),
-        enable_cache: cfg.enable_cache,
-        altsvc: AltSvcCache { .. },
-        enable_altsvc: cfg.enable_altsvc,
-        enable_protocol_racing: cfg.enable_protocol_racing,
-        quic_race_delay_ms: cfg.quic_race_delay_ms,
-        dict_cache: DictionaryCache { .. },
+        profile:                 cfg.profile,
+        timeout_ms:              cfg.timeout_ms,
+        follow_redirects:        cfg.follow_redirects,
+        redirect_mode:           if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
+        ssrf_guard:              SsrfGuardPolicy { .. },
+        cache:                   new_http_cache(cfg.cache_options),
+        enable_cache:            cfg.enable_cache,
+        altsvc:                  AltSvcCache { .. },
+        enable_altsvc:           cfg.enable_altsvc,
+        enable_protocol_racing:  cfg.enable_protocol_racing,
+        quic_race_delay_ms:      cfg.quic_race_delay_ms,
+        dict_cache:              DictionaryCache { .. },
         enable_compression_dict: cfg.enable_compression_dict,
-        pipeline: InterceptorPipeline { .. },
-        hsts: HstsCache { .. },
-        enable_hsts: true,
-        jar: CanonicalCookieJar { .. },
+        pipeline:                InterceptorPipeline { .. },
+        hsts:                    HstsCache { .. },
+        enable_hsts:             true,
+        jar:                     CanonicalCookieJar { .. },
         ..
     };
     client.base_url.append(cfg.base_url);
@@ -226,9 +226,8 @@ fn apply_profile(client: Client&, profile: const BrowserProfile&) {
         client.default_headers.push(make_header("Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]));
     }
     for &h in profile.extra_headers {
-        if client.default_headers.len < client.default_headers.cap {
-            client.default_headers.push(copy(h));
-        }
+        guard client.default_headers.len < client.default_headers.cap else { break; }
+        client.default_headers.push(copy(h));
     }
 }
 
@@ -260,8 +259,8 @@ fn user_agent(session: const Session&) -> const u8[:] {
     return profile_user_agent(session.profile);
 }
 
-fn ja4(session: const Session&, is_quic: bool = false, sni: bool = true) -> u8[..64] {
-    return ja4(session.profile_spec, is_quic, sni);
+fn ja4(session: const Session&) -> u8[..64] {
+    return ja4(session.profile_spec);
 }
 
 fn p0f(session: const Session&) -> u8[..128] {
@@ -332,10 +331,10 @@ fn enable_ech(session: Session&, auto_discover: bool = true) {
 // Dispatches a DNS-over-HTTPS wire query using an isolated HTTP client transport
 // to ensure application credentials, custom headers, and interceptors do not leak to public resolvers.
 fn doh_query(
-    session: Session&,
-    domain: const u8[:],
-    qtype: u16,
-    tx_id: u16,
+    session:  Session&,
+    domain:   const u8[:],
+    qtype:    u16,
+    tx_id:    u16,
     out_resp: DnsResponse&,
 ) -> bool {
     var req = new_request(if session.doh.use_post { "POST" } else { "GET" }, "");
@@ -365,9 +364,9 @@ fn doh_query(
 
 fn lookup_cached_ech_config(
     dns_cache: const DnsCache&,
-    domain: const u8[:],
-    now_sec: i64,
-    out_ech: u8[..512]&,
+    domain:    const u8[:],
+    now_sec:   i64,
+    out_ech:   u8[..512]&,
 ) -> bool {
     var cached = DnsCacheEntry { .. };
     let cache_status = dns_cache_lookup(dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
@@ -379,12 +378,13 @@ fn lookup_cached_ech_config(
             }
         }
     }
+    out_ech.clear();
     return false;
 }
 
 fn discover_and_cache_ech_config(
     session: Session&,
-    domain: const u8[:],
+    domain:  const u8[:],
     now_sec: i64,
     out_ech: u8[..512]&,
 ) -> bool {
@@ -395,10 +395,10 @@ fn discover_and_cache_ech_config(
     guard doh_query(session, domain, DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
 
     var cache_entry = DnsCacheEntry {
-        qtype: DNS_QTYPE_HTTPS,
+        qtype:           DNS_QTYPE_HTTPS,
         inserted_at_sec: now_sec,
-        ttl_sec: 300,
-        valid: true,
+        ttl_sec:         300,
+        valid:           true,
         ..
     };
     cache_entry.domain.append(domain);
@@ -422,7 +422,7 @@ fn discover_and_cache_ech_config(
 // First checks local DnsCache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
 fn resolve_ech_config(
     session: Session&,
-    domain: const u8[:],
+    domain:  const u8[:],
     now_sec: i64,
     out_ech: u8[..512]&,
 ) -> bool {
@@ -444,6 +444,7 @@ fn resolve_ech_config(
             }
         }
     }
+    out_ech.clear();
     return false;
 }
 
@@ -532,14 +533,6 @@ fn add_network_metrics(session: Session&) -> bool {
     return add_metrics(session.pipeline);
 }
 
-fn network_metrics(session: const Session&) -> const NetworkMetrics& {
-    return session.pipeline.metrics;
-}
-
-fn pipeline_logs(session: const Session&) -> const u8[..128][:] {
-    return session.pipeline.log_entries[..];
-}
-
 fn clear_pipeline_logs(session: Session&) {
     session.pipeline.log_entries.clear();
 }
@@ -553,14 +546,6 @@ fn set_credentials(session: Session&, username: const u8[:], password: const u8[
     session.creds.password.append(password);
     session.creds.has_credentials = true;
     session.creds.nonce_counter = 1;
-}
-
-fn set_digest_credentials(session: Session&, username: const u8[:], password: const u8[:]) {
-    set_credentials(session, username, password);
-}
-
-fn set_basic_credentials(session: Session&, username: const u8[:], password: const u8[:]) {
-    set_credentials(session, username, password);
 }
 
 fn clear_credentials(session: Session&) {
@@ -617,11 +602,11 @@ fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> 
 // ---- mock route registration methods ---------------------------------------
 
 fn mock_route(
-    session: Session&,
-    method: const u8[:],
+    session:     Session&,
+    method:      const u8[:],
     pattern_url: const u8[:],
     status_code: i32,
-    body_str: const u8[:],
+    body_str:    const u8[:],
 ) -> MockExchange& {
     var route = MockExchange {
         status_code: status_code,

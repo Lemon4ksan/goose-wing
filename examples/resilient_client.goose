@@ -35,18 +35,18 @@ fn main() {
     // are automatically retried without sleeping if idempotent or has Idempotency-Key.
     let is_reused_conn = true;
     let headers_received = false;
-    let tier1_allowed = wing::should_retry_tier1_stale_socket(is_reused_conn, headers_received, req);
+    let tier1_allowed = wing::should_retry_tier1_stale_socket(is_reused_conn, req, headers_received);
     print("\n[2] Tier 1 Zero-Delay Stale Socket Recovery:");
     print("    Reused Connection: ", is_reused_conn, ", Headers Received: ", headers_received);
     print("    Eligible for Instant Stale Re-dial: ", tier1_allowed);
 
     // 3. Tier 2: Exponential Backoff with AWS Jitter Algorithms
     var b_cfg = wing::BackoffConfig {
-        base_ms: 100,
-        cap_ms: 2000,
+        base_ms:  100,
+        cap_ms:   2000,
         strategy: wing::JitterStrategy.EqualJitter,
     };
-    var rng_seed: u64 = 133742;
+    var rng_seed:   u64 = 133742;
     var prev_sleep: i64 = 0;
 
     print("\n[3] Tier 2 Exponential Backoff with AWS Equal Jitter:");

@@ -36,8 +36,8 @@ fn has_idempotency_key<Req>(req: const Req&) -> bool {
 // 4. Request has no body OR body is rewindable with GetBody (prevents one-shot stream bug).
 fn should_retry_tier1_stale_socket<Req>(
     reused_connection: bool,
-    headers_received: bool,
-    req: const Req&,
+    req:               const Req&,
+    headers_received:  bool = false,
 ) -> bool {
     // Invariant 1: Only reused connections are retried at Tier 1; fresh dials fail fast
     guard reused_connection else { return false; }
@@ -59,28 +59,28 @@ fn should_retry_tier1_stale_socket<Req>(
 }
 
 struct Tier1Decision {
-    retry_immediately: bool = false,
+    retry_immediately:            bool = false,
     disable_alternative_services: bool = false, // Disables QUIC/Alt-Svc on retry
 }
 
 // Evaluates Tier 1 network errors, including Chromium ERR_QUIC_PROTOCOL_ERROR fallback.
 fn evaluate_tier1_retry<Req>(
-    err_code: i32,
+    err_code:          i32,
     reused_connection: bool,
-    headers_received: bool,
-    req: const Req&,
+    req:               const Req&,
+    headers_received:  bool = false,
 ) -> Tier1Decision {
     // Chromium QUIC protocol fallback: automatically retry over TCP/TLS before headers
     if err_code == ERR_QUIC_PROTOCOL_ERROR && !headers_received {
         return Tier1Decision {
-            retry_immediately: true,
+            retry_immediately:            true,
             disable_alternative_services: true,
         };
     }
 
-    let retry_ok = should_retry_tier1_stale_socket(reused_connection, headers_received, req);
+    let retry_ok = should_retry_tier1_stale_socket(reused_connection, req, headers_received);
     return Tier1Decision {
-        retry_immediately: retry_ok,
+        retry_immediately:            retry_ok,
         disable_alternative_services: false,
     };
 }
@@ -95,19 +95,19 @@ enum JitterStrategy {
 }
 
 struct BackoffConfig {
-    base_ms: i64 = 100,
-    cap_ms: i64 = 10000,
+    base_ms:  i64            = 100,
+    cap_ms:   i64            = 10000,
     strategy: JitterStrategy = JitterStrategy.FullJitter,
 }
 
 fn new_backoff_config(
-    base: i64 = 100,
-    cap: i64 = 10000,
+    base:  i64            = 100,
+    cap:   i64            = 10000,
     strat: JitterStrategy = JitterStrategy.FullJitter,
 ) -> BackoffConfig {
     return BackoffConfig {
-        base_ms: base,
-        cap_ms: cap,
+        base_ms:  base,
+        cap_ms:   cap,
         strategy: strat,
     };
 }
@@ -124,10 +124,10 @@ inline fn uniform_random(seed: u64&, min_val: i64, max_val: i64) -> i64 {
 
 // Computes backoff duration using specified Jitter algorithm (AWS Architecture parity).
 fn compute_backoff_jitter_ms(
-    cfg: const BackoffConfig&,
-    attempt: i64,
+    cfg:           const BackoffConfig&,
+    attempt:       i64,
     prev_sleep_ms: i64&,
-    rng_seed: u64&,
+    rng_seed:      u64&,
 ) -> i64 {
     // Compute capped deterministic exponential target t = min(c, b * 2^a)
     let safe_attempt = if attempt < 0 { 0 } else if attempt > 60 { 60 } else { attempt };
@@ -199,8 +199,12 @@ fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64,
 
 // Strict parser for RFC 9110 Retry-After header:
 // Supports delay-seconds (1*DIGIT without signs/decimals/units) and IMF-fixdate with exact UTC round-trip check.
+//
+// Example:
+//   header_raw = "120", now_unix_ms = 1000
+//   returns: 120000, true
 fn parse_retry_after_ms(
-    header_raw: const u8[:],
+    header_raw:  const u8[:],
     now_unix_ms: i64,
 ) -> i64, bool {
     let clean = trim(header_raw);
@@ -216,14 +220,14 @@ fn parse_retry_after_ms(
 
 // Local Host Circuit Breaker registry entry for excessive Retry-After windows
 struct HostCircuitBreakerEntry {
-    host: u8[..256] = [],
-    blocked_until_mono_ns: i64 = 0,
-    is_blocked: bool = false,
+    host:                  u8[..256] = [],
+    blocked_until_mono_ns: i64       = 0,
+    is_blocked:            bool      = false,
 }
 
 struct HostCircuitBreaker {
-    hosts: HostCircuitBreakerEntry[..16] = [],
-    max_retry_after_ms: i64 = 60000, // 60s interactive agent ceiling (or 24h for crawler)
+    hosts:              HostCircuitBreakerEntry[..16] = [],
+    max_retry_after_ms: i64                           = 60000, // 60s interactive agent ceiling (or 24h for crawler)
 }
 
 fn new_host_circuit_breaker(max_wait_ms: i64 = 60000) -> HostCircuitBreaker {
@@ -235,10 +239,10 @@ fn new_host_circuit_breaker(max_wait_ms: i64 = 60000) -> HostCircuitBreaker {
 
 // Records or trips circuit breaker when Retry-After exceeds max allowable wait.
 fn trip_circuit_breaker_if_exceeded(
-    breaker: HostCircuitBreaker&,
-    host_str: const u8[:],
+    breaker:        HostCircuitBreaker&,
+    host_str:       const u8[:],
     retry_after_ms: i64,
-    now_mono_ns: i64,
+    now_mono_ns:    i64,
 ) -> bool {
     guard retry_after_ms > breaker.max_retry_after_ms else { return false; }
 
@@ -264,7 +268,7 @@ fn trip_circuit_breaker_if_exceeded(
     if breaker.hosts.len < 16 {
         var entry = HostCircuitBreakerEntry {
             blocked_until_mono_ns: unblock_at,
-            is_blocked: true,
+            is_blocked:            true,
             ..
         };
         entry.host.append(host_str);
@@ -277,20 +281,18 @@ fn trip_circuit_breaker_if_exceeded(
 
 // Checks whether requests to host are currently blocked by circuit breaker.
 fn is_host_circuit_broken(
-    breaker: HostCircuitBreaker&,
-    host_str: const u8[:],
+    breaker:     HostCircuitBreaker&,
+    host_str:    const u8[:],
     now_mono_ns: i64,
 ) -> bool {
     for &h in breaker.hosts {
-        if core::eq_ascii_fold(h.host[..], host_str) {
-            if h.is_blocked {
-                if now_mono_ns >= h.blocked_until_mono_ns {
-                    h.is_blocked = false;
-                    return false;
-                }
-                return true;
-            }
+        guard core::eq_ascii_fold(h.host[..], host_str) else { continue; }
+        guard h.is_blocked else { return false; }
+        if now_mono_ns >= h.blocked_until_mono_ns {
+            h.is_blocked = false;
+            return false;
         }
+        return true;
     }
     return false;
 }
@@ -300,20 +302,20 @@ fn is_host_circuit_broken(
 // Rate-limiting container capping retry traffic as a fixed percentage of total requests.
 struct AdaptiveRetryBudget {
     window_start_mono_ns: i64 = 0,
-    window_duration_ns: i64 = 10000000000, // 10s sliding window
-    total_requests: i64 = 0,
-    retried_requests: i64 = 0,
-    max_retry_ratio_pct: i64 = 20,         // Max 20% retry ratio
-    min_retries_per_sec: i64 = 2,          // 2 retries/sec minimum floor for low-traffic clients
+    window_duration_ns:   i64 = 10000000000, // 10s sliding window
+    total_requests:       i64 = 0,
+    retried_requests:     i64 = 0,
+    max_retry_ratio_pct:  i64 = 20,        // Max 20% retry ratio
+    min_retries_per_sec:  i64 = 2,         // 2 retries/sec minimum floor for low-traffic clients
 }
 
 fn new_adaptive_retry_budget(
-    ratio_pct: i64 = 20,
-    min_per_sec: i64 = 2,
+    ratio_pct:      i64 = 20,
+    min_per_sec:    i64 = 2,
     window_dur_sec: i64 = 10,
 ) -> AdaptiveRetryBudget {
     return AdaptiveRetryBudget {
-        window_duration_ns: window_dur_sec * 1000000000,
+        window_duration_ns:  window_dur_sec * 1000000000,
         max_retry_ratio_pct: ratio_pct,
         min_retries_per_sec: min_per_sec,
         ..

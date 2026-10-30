@@ -10,21 +10,21 @@ import core from "..";
 
 // ---- 1. RFC 8305 and HEv3 normative constants ------------------------------
 
-const HE_RESOLUTION_DELAY_MS: i64 = 50;              // 50 ms DNS resolution delay (RD)
-const HE_FIRST_ADDRESS_FAMILY_COUNT: i32 = 1;        // Step for address family interleaving
-const HE_DEFAULT_CAD_MS: i64 = 250;                  // 250 ms default Connection Attempt Delay
-const HE_MIN_CAD_MS: i64 = 100;                      // 100 ms recommended minimum dynamic CAD
-const HE_ABSOLUTE_FLOOR_CAD_MS: i64 = 10;            // Strict absolute floor (>= 10 ms to prevent congestion collapse)
-const HE_MAX_CAD_MS: i64 = 2000;                     // 2000 ms maximum CAD
+const HE_RESOLUTION_DELAY_MS:            i64 = 50;   // 50 ms DNS resolution delay (RD)
+const HE_FIRST_ADDRESS_FAMILY_COUNT:     i32 = 1;    // Step for address family interleaving
+const HE_DEFAULT_CAD_MS:                 i64 = 250;  // 250 ms default Connection Attempt Delay
+const HE_MIN_CAD_MS:                     i64 = 100;  // 100 ms recommended minimum dynamic CAD
+const HE_ABSOLUTE_FLOOR_CAD_MS:          i64 = 10;   // Strict absolute floor (>= 10 ms to prevent congestion collapse)
+const HE_MAX_CAD_MS:                     i64 = 2000; // 2000 ms maximum CAD
 const HE_LAST_RESORT_SYNTHESIS_DELAY_MS: i64 = 2000; // 2000 ms Last Resort Local Synthesis Delay
-const HE_ADDRESS_FAMILY_CACHE_TTL_SEC: i64 = 600;    // 600 seconds (10 minutes) winner cache TTL
+const HE_ADDRESS_FAMILY_CACHE_TTL_SEC:   i64 = 600;  // 600 seconds (10 minutes) winner cache TTL
 
 // Computes Connection Attempt Delay (CAD) strictly enforcing the >= 10 ms absolute floor.
 fn compute_effective_cad_ms(
     observed_rtt_ms: i64,
-    rtt_known: bool,
-    min_cad_ms: i64 = HE_MIN_CAD_MS,
-    max_cad_ms: i64 = HE_MAX_CAD_MS,
+    rtt_known:       bool,
+    min_cad_ms:      i64 = HE_MIN_CAD_MS,
+    max_cad_ms:      i64 = HE_MAX_CAD_MS,
 ) -> i64 {
     let eff_min = core::ct_max_i64(min_cad_ms, HE_ABSOLUTE_FLOOR_CAD_MS);
     let eff_max = core::ct_max_i64(max_cad_ms, eff_min);
@@ -65,36 +65,36 @@ enum SvcbMode {
 
 // Metadata parsed from HTTPS/SVCB DNS resource records.
 struct ConnectionEndpointMetadata {
-    mode: SvcbMode = SvcbMode.None,
-    alias_target: u8[..256] = [],
-    target_name: u8[..256] = [],
-    alpn_h3: bool = false,
-    alpn_h2: bool = false,
-    ech_config_present: bool = false,
-    ipv6_hints: u8[..64][..4] = [],
-    ipv4_hints: u8[..64][..4] = [],
+    mode:               SvcbMode      = SvcbMode.None,
+    alias_target:       u8[..256]     = [],
+    target_name:        u8[..256]     = [],
+    alpn_h3:            bool          = false,
+    alpn_h2:            bool          = false,
+    ech_config_present: bool          = false,
+    ipv6_hints:         u8[..64][..4] = [],
+    ipv4_hints:         u8[..64][..4] = [],
 }
 
 struct DnsCandidate {
-    family: AddressFamily = AddressFamily.IPv6,
-    l4_proto: L4Protocol = L4Protocol.Tcp,
-    ip: u8[..64] = [],
-    port: u16 = 80,
-    scope_id: i32 = 0,
-    precedence: i32 = 40,
+    family:     AddressFamily = AddressFamily.IPv6,
+    l4_proto:   L4Protocol    = L4Protocol.Tcp,
+    ip:         u8[..64]      = [],
+    port:       u16           = 80,
+    scope_id:   i32           = 0,
+    precedence: i32           = 40,
 }
 
 fn new_dns_candidate(
-    fam: AddressFamily,
-    ip_str: const u8[:],
+    fam:      AddressFamily,
+    ip_str:   const u8[:],
     port_num: u16,
-    proto: L4Protocol = L4Protocol.Tcp,
-    prec: i32 = 40,
+    proto:    L4Protocol = L4Protocol.Tcp,
+    prec:     i32        = 40,
 ) -> DnsCandidate {
     var c = DnsCandidate {
-        family: fam,
-        l4_proto: proto,
-        port: port_num,
+        family:     fam,
+        l4_proto:   proto,
+        port:       port_num,
         precedence: prec,
         ..
     };
@@ -106,9 +106,9 @@ fn new_dns_candidate(
 
 // Interleaves candidate addresses enforcing First Address Family Count = 1 (IPv6_1 -> IPv4_1 -> IPv6_2 -> IPv4_2).
 fn interleave_candidates_he(
-    ipv6_list: const DnsCandidate[:],
-    ipv4_list: const DnsCandidate[:],
-    out: DnsCandidate[..32]&,
+    ipv6_list:          const DnsCandidate[:],
+    ipv4_list:          const DnsCandidate[:],
+    out:                DnsCandidate[..32]&,
     first_family_count: i32 = HE_FIRST_ADDRESS_FAMILY_COUNT,
 ) {
     out.clear();
@@ -158,21 +158,21 @@ fn interleave_protocols_hev3(candidates: const DnsCandidate[:], out: DnsCandidat
 // ---- 4. Phase 1: DNS race task & 50 ms Resolution Delay (RD) ---------------
 
 struct DnsRaceTask {
-    aaaa_status: DnsQueryStatus = DnsQueryStatus.Pending,
-    a_status: DnsQueryStatus = DnsQueryStatus.Pending,
-    https_status: DnsQueryStatus = DnsQueryStatus.Pending,
-    rd_timer_armed: bool = false,
-    rd_deadline_ms: i64 = 0,
-    ipv6_candidates: DnsCandidate[..8] = [],
-    ipv4_candidates: DnsCandidate[..8] = [],
-    metadata: ConnectionEndpointMetadata = ConnectionEndpointMetadata { .. },
-    ready_to_connect: bool = false,
+    aaaa_status:      DnsQueryStatus             = DnsQueryStatus.Pending,
+    a_status:         DnsQueryStatus             = DnsQueryStatus.Pending,
+    https_status:     DnsQueryStatus             = DnsQueryStatus.Pending,
+    rd_timer_armed:   bool                       = false,
+    rd_deadline_ms:   i64                        = 0,
+    ipv6_candidates:  DnsCandidate[..8]          = [],
+    ipv4_candidates:  DnsCandidate[..8]          = [],
+    metadata:         ConnectionEndpointMetadata = ConnectionEndpointMetadata { .. },
+    ready_to_connect: bool                       = false,
 }
 
 fn new_dns_race_task() -> DnsRaceTask {
     return DnsRaceTask {
-        aaaa_status: DnsQueryStatus.InFlight,
-        a_status: DnsQueryStatus.InFlight,
+        aaaa_status:  DnsQueryStatus.InFlight,
+        a_status:     DnsQueryStatus.InFlight,
         https_status: DnsQueryStatus.InFlight,
         ..
     };
@@ -239,7 +239,7 @@ fn check_dns_resolution_delay_tick(task: DnsRaceTask&, now_ms: i64) -> bool {
 
 // Injects late DNS responses into an already running candidate list.
 fn inject_late_dns_candidates(
-    pending_queue: DnsCandidate[..32]&,
+    pending_queue:  DnsCandidate[..32]&,
     new_candidates: const DnsCandidate[:],
 ) {
     for &nc in new_candidates {
@@ -261,32 +261,32 @@ enum AttemptState {
 }
 
 struct ConnectionAttempt {
-    attempt_id: i32 = 0,
-    candidate: DnsCandidate = DnsCandidate { .. },
-    start_time_ms: i64 = 0,
-    state: AttemptState = AttemptState.Queued,
+    attempt_id:    i32          = 0,
+    candidate:     DnsCandidate = DnsCandidate { .. },
+    start_time_ms: i64          = 0,
+    state:         AttemptState = AttemptState.Queued,
 }
 
 // Winner address family cache (TTL = 600s)
 struct AddressFamilyCacheEntry {
-    host: u8[..256] = [],
+    host:             u8[..256]     = [],
     preferred_family: AddressFamily = AddressFamily.IPv6,
-    expires_at_sec: i64 = 0,
+    expires_at_sec:   i64           = 0,
 }
 
 struct AttemptManager {
-    attempts: ConnectionAttempt[..16] = [],
-    pending_candidates: DnsCandidate[..32] = [],
-    effective_cad_ms: i64 = HE_DEFAULT_CAD_MS,
-    next_attempt_start_ms: i64 = 0,
-    current_attempt_idx: i64 = 0,
-    winner_attempt_id: i32 = -1,
-    has_winner: bool = false,
-    alt_svc_broken: bool = false,
-    last_resort_armed: bool = false,
-    last_resort_deadline_ms: i64 = 0,
-    last_resort_triggered: bool = false,
-    next_id: i32 = 1,
+    attempts:                ConnectionAttempt[..16] = [],
+    pending_candidates:      DnsCandidate[..32]      = [],
+    effective_cad_ms:        i64                     = HE_DEFAULT_CAD_MS,
+    next_attempt_start_ms:   i64                     = 0,
+    current_attempt_idx:     i64                     = 0,
+    winner_attempt_id:       i32                     = -1,
+    has_winner:              bool                    = false,
+    alt_svc_broken:          bool                    = false,
+    last_resort_armed:       bool                    = false,
+    last_resort_deadline_ms: i64                     = 0,
+    last_resort_triggered:   bool                    = false,
+    next_id:                 i32                     = 1,
 }
 
 fn new_attempt_manager(cad_ms: i64 = HE_DEFAULT_CAD_MS) -> AttemptManager {
@@ -324,10 +324,10 @@ fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool 
     manager.next_id++;
 
     var attempt = ConnectionAttempt {
-        attempt_id: aid,
-        candidate: copy(cand),
+        attempt_id:    aid,
+        candidate:     copy(cand),
         start_time_ms: now_ms,
-        state: AttemptState.Connecting,
+        state:         AttemptState.Connecting,
     };
     manager.attempts.push(attempt);
 
@@ -427,23 +427,26 @@ fn bind_winner_attempt(manager: AttemptManager&, winner_id: i32, is_alternative_
     return found;
 }
 
+// Options controlling HTTP/3 DNS ALPN racing job creation.
+struct H3JobOptions {
+    is_https:                   bool = false,
+    quic_enabled:               bool = false,
+    uses_proxy:                 bool = false,
+    has_available_quic_session: bool = false,
+}
+
 // Chromium JobController parity: rules governing the creation of dns_alpn_h3_job.
-fn should_create_dns_alpn_h3_job(
-    is_https: bool,
-    quic_enabled: bool,
-    uses_proxy: bool,
-    has_available_quic_session: bool,
-) -> bool {
+fn should_create_dns_alpn_h3_job(opts: H3JobOptions) -> bool {
     // Only created on HTTPS, when QUIC is enabled, no proxy is configured,
     // and no existing QUIC session can be synchronously reused.
-    return is_https && quic_enabled && !uses_proxy && !has_available_quic_session;
+    return opts.is_https && opts.quic_enabled && !opts.uses_proxy && !opts.has_available_quic_session;
 }
 
 // Computes main_job handicap delay: cancelled (0 ms) if an open TCP socket is already in pool.
 fn compute_main_job_waiting_delay_ms(
-    has_open_tcp_in_pool: bool,
-    dns_alpn_h3_failed_no_match: bool,
-    configured_quic_delay_ms: i64 = 200,
+    has_open_tcp_in_pool:        bool,
+    configured_quic_delay_ms:    i64,
+    dns_alpn_h3_failed_no_match: bool = false,
 ) -> i64 {
     // Optimization: if TCP socket already exists or ALPN confirms no HTTP/3, cancel waiting delay
     if has_open_tcp_in_pool || dns_alpn_h3_failed_no_match {

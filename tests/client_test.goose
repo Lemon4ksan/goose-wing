@@ -652,7 +652,7 @@ fn test_application_interceptors(t: core::T&) {
         let resp, err = wing::get(client, "https://api.site.com/ping");
         sub.assert_true(wing::ok(err), "ping ok");
 
-        let logs = wing::pipeline_logs(client);
+        let logs = client.pipeline.log_entries[..];
         sub.assert_true(logs.len >= 2, "at least 2 log entries recorded");
         sub.assert_bytes_eq(logs[0][..10], "--> GET ht", "First log line is request line");
         sub.assert_bytes_eq(logs[logs.len - 1][..6], "<-- 20", "Last log line is response status");
@@ -678,14 +678,14 @@ fn test_network_interceptors_and_metrics(t: core::T&) {
         sub.assert_bytes_eq(resp.body[..], "destination reached", "final body arrived");
 
         // Verify Network Metrics
-        let metrics = wing::network_metrics(client);
+        let metrics = &client.pipeline.metrics;
         sub.assert_eq(metrics.total_requests, 1 as u64, "1 logical application request");
         sub.assert_eq(metrics.network_hops, 2 as u64, "2 physical network hops traversed");
         sub.assert_eq(metrics.redirect_hops, 1 as u64, "1 redirect hop recorded");
         sub.assert_true(metrics.total_bytes_received > 0, "bytes received tracked");
 
         // Verify Network Logging captured both hops
-        let logs = wing::pipeline_logs(client);
+        let logs = client.pipeline.log_entries[..];
         var found_hop0 = false;
         var found_hop1 = false;
         for &line in logs {
@@ -712,7 +712,7 @@ fn test_cache_interceptor_boundary(t: core::T&) {
         sub.assert_true(wing::ok(err1), "initial get ok");
         sub.assert_eq(wing::status(resp1), 200, "200 OK");
 
-        let m1 = wing::network_metrics(client);
+        let m1 = &client.pipeline.metrics;
         sub.assert_eq(m1.total_requests, 1 as u64, "1 app request");
         sub.assert_eq(m1.network_hops, 1 as u64, "1 network hop on miss");
 
@@ -723,13 +723,13 @@ fn test_cache_interceptor_boundary(t: core::T&) {
         sub.assert_eq(wing::status(resp2), 200, "200 OK");
         sub.assert_bytes_eq(resp2.body[..], "cached-content", "body from cache");
 
-        let m2 = wing::network_metrics(client);
+        let m2 = &client.pipeline.metrics;
         sub.assert_eq(m2.total_requests, 2 as u64, "2 logical app requests");
         // OkHttp invariant: Network hops did not increase on cache hit.
         sub.assert_eq(m2.network_hops, 1 as u64, "Network hops remained 1 (network bypassed!)");
 
         // But Application Logging DID run for the cached request!
-        let logs = wing::pipeline_logs(client);
+        let logs = client.pipeline.log_entries[..];
         sub.assert_true(logs.len >= 2, "Application logs fired for cache hit");
     };
 }
@@ -747,7 +747,7 @@ fn test_retry_policy_interceptor(t: core::T&) {
         sub.assert_true(wing::ok(err), "request finished");
         sub.assert_eq(wing::status(resp), 503, "503 returned after exhaustion");
 
-        let m = wing::network_metrics(client);
+        let m = &client.pipeline.metrics;
         // Initial attempt (0) + Retry 1 + Retry 2 = 3 total attempts!
         sub.assert_eq(m.network_hops, 3 as u64, "Retried up to max_retries (3 attempts total)");
     };
@@ -841,7 +841,7 @@ fn test_ed25519_signatures_helpers(t: core::T&) {
 
         var req = wing::Request {
             method: "POST",
-            url: "https://api.example.com/v1/orders?item=book",
+            url:    "https://api.example.com/v1/orders?item=book",
             ..
         };
         wing::set_header(req, "content-type", "application/json");
@@ -871,7 +871,7 @@ fn test_ed25519_signatures_helpers(t: core::T&) {
 
         var req = wing::Request {
             method: "GET",
-            url: "https://api.example.com/v1/status",
+            url:    "https://api.example.com/v1/status",
             ..
         };
 

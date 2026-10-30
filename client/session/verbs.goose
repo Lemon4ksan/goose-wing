@@ -32,11 +32,11 @@ fn do<F: fn(Request&)>(session: Session&, req: const Request&) -> Response, Erro
 // ---- okhttp/tower-style interceptor execution ------------------------------
 
 struct InterceptorChain {
-    request: Request&,
-    response: Response&,
-    err: Error = Error { .. },
-    proceeded: bool = false,
-    short_circuited: bool = false,
+    request:         Request&,
+    response:        Response&,
+    err:             Error = Error { .. },
+    proceeded:       bool  = false,
+    short_circuited: bool  = false,
 }
 
 fn proceed(chain: InterceptorChain&, session: Session&) {
@@ -50,7 +50,7 @@ fn do_intercepted<F: fn(InterceptorChain&, Session&)>(session: Session&, req: co
     var req_copy = copy(req);
     var resp = Response { .. };
     var chain = InterceptorChain {
-        request: req_copy,
+        request:  req_copy,
         response: resp,
         ..
     };
@@ -117,9 +117,9 @@ fn query(session: Session&, url: const u8[:], body: const u8[:], content_type: c
 }
 
 fn query<F: fn(Request&)>(
-    session: Session&,
-    url: const u8[:],
-    body: const u8[:],
+    session:      Session&,
+    url:          const u8[:],
+    body:         const u8[:],
     content_type: const u8[:],
 ) -> Response, Error {
     var req = new_query(url, body, content_type);
@@ -135,7 +135,7 @@ fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Res
     finish_chunk_writer(writer);
 
     var req = new_request("POST", url);
-    req.headers.push(make_header("Transfer-Encoding", "chunked"));
+    set_header(req, "Transfer-Encoding", "chunked");
     req.body.append(writer.buffer[..]);
     return do(session, req);
 }
@@ -146,16 +146,16 @@ fn put_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Resp
     finish_chunk_writer(writer);
 
     var req = new_request("PUT", url);
-    req.headers.push(make_header("Transfer-Encoding", "chunked"));
+    set_header(req, "Transfer-Encoding", "chunked");
     req.body.append(writer.buffer[..]);
     return do(session, req);
 }
 
 fn download_stream<F: fn(const StreamProgress&)>(
-    session: Session&,
-    url: const u8[:],
+    session:    Session&,
+    url:        const u8[:],
     chunk_size: i64,
-    out_body: u8[>..]&,
+    out_body:   u8[>..]&,
 ) -> Response, Error {
     let resp, err = get(session, url);
     guard ok(err) else { return resp, err; }
@@ -205,8 +205,8 @@ fn connection_has_upgrade(conn: const u8[:]) -> bool {
 }
 
 fn ws_perform_handshake(
-    session: Session&,
-    req: Request&,
+    session:    Session&,
+    req:        Request&,
     client_key: const u8[:],
 ) -> WebSocketSession, Response, Error {
     let resp, err = do(session, req);
@@ -273,7 +273,7 @@ fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error 
     set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
-    var seed: u64 = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
+    var seed:  u64    = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
     for i in 16 {
         seed = seed * 6364136223846793005 + 1442695040888963407;
         nonce[i] = ((seed >> 33) & 0xFF) as u8;
@@ -296,7 +296,7 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
     set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
-    var seed: u64 = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
+    var seed:  u64    = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
     for i in 16 {
         seed = seed * 6364136223846793005 + 1442695040888963407;
         nonce[i] = ((seed >> 33) & 0xFF) as u8;
@@ -312,8 +312,8 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
 
 fn sse_perform_connect(
     session: Session&,
-    sub: SseSubscription,
-    req: Request&,
+    sub:     SseSubscription,
+    req:     Request&,
 ) -> SseSubscription, Response, Error {
     var eff_sub = sub;
     let resp, err = do(session, req);
@@ -397,17 +397,17 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
 // ---- masque connect-udp & connect-ip tunnels (rfc 9298, rfc 9484) -----------
 
 fn connect_udp(
-    session: Session&,
-    proxy_url: const u8[:],
-    target_host: const u8[:],
-    target_port: u16,
-    stream_id: u64 = 0,
+    session:       Session&,
+    proxy_url:     const u8[:],
+    target_host:   const u8[:],
+    target_port:   u16,
+    stream_id:     u64  = 0,
     use_datagrams: bool = true,
 ) -> MasqueTunnelSession, Response, Error {
     var tunnel = new_connect_udp_tunnel(proxy_url, target_host, target_port, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;
 
-    var req_path: u8[..256] = [];
+    var req_path:    u8[..256]        = [];
     var req_headers: HeaderItem[..16] = [];
     build_masque_connect_request(tunnel, req_headers, req_path);
 
@@ -421,6 +421,7 @@ fn connect_udp(
     var req = new_request("CONNECT", full_url[..]);
     for &h in req_headers {
         req.headers.push(copy(h));
+        add_header(req.bloom_filter, h.name[..]);
     }
 
     let resp, err = do(session, req);
@@ -445,15 +446,15 @@ fn connect_udp(
 }
 
 fn connect_ip(
-    session: Session&,
-    proxy_url: const u8[:],
-    stream_id: u64 = 0,
+    session:       Session&,
+    proxy_url:     const u8[:],
+    stream_id:     u64  = 0,
     use_datagrams: bool = true,
 ) -> MasqueTunnelSession, Response, Error {
     var tunnel = new_connect_ip_tunnel(proxy_url, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;
 
-    var req_path: u8[..256] = [];
+    var req_path:    u8[..256]        = [];
     var req_headers: HeaderItem[..16] = [];
     build_masque_connect_request(tunnel, req_headers, req_path);
 
@@ -467,6 +468,7 @@ fn connect_ip(
     var req = new_request("CONNECT", full_url[..]);
     for &h in req_headers {
         req.headers.push(copy(h));
+        add_header(req.bloom_filter, h.name[..]);
     }
 
     let resp, err = do(session, req);

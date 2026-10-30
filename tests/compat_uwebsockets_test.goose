@@ -388,7 +388,7 @@ fn test_loop_defer_and_dedicated_compressor(t: core::T&) {
         sub.assert_true(ok1, "First task deferred");
         sub.assert_true(ok2, "Second task deferred");
         sub.assert_true(el.has_deferred_tasks(), "Has deferred tasks");
-        sub.assert_eq(el.deferred_task_count(), 2, "Count is 2");
+        sub.assert_eq(el.deferred_count, 2, "Count is 2");
 
         var count_dispatched: u32 = 0;
         let drained = wing::drain_deferred_tasks(el) { tag, udata, tid, loop_ref =>
@@ -782,7 +782,7 @@ fn test_epoll_reactor_multiplexer(t: core::T&) {
         sub.assert_gt(c2, 0, "Client 2 connected");
 
         // Harvest accept readiness
-        var ready_fds: i64[..16] = [];
+        var ready_fds:   i64[..16] = [];
         var ready_udata: u64[..16] = [];
         let n_accept = wing::epoll_wait(epfd, ready_fds, ready_udata, 2000);
         sub.assert_gt(n_accept, 0, "Accept readiness harvested by epoll_wait");
@@ -964,7 +964,7 @@ fn test_chunked_fsm_decoder(t: core::T&) {
 
         let raw = "4\r\nWiki\r\n7\r\npedia  \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\n\r\n";
         var total_body: u8[..128] = [];
-        var cursor: i64 = 0;
+        var cursor:     i64       = 0;
 
         while cursor < raw.len {
             let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw[cursor..]);
@@ -985,8 +985,8 @@ fn test_chunked_fsm_decoder(t: core::T&) {
         // Chunk extensions
         var dec_ext = internal::new_chunk_fsm_decoder();
         let raw_ext = "5;token=val;foo=\"quoted;val\"\r\nHello\r\n0\r\n\r\n";
-        var ext_body: u8[..64] = [];
-        var ext_cursor: i64 = 0;
+        var ext_body:   u8[..64] = [];
+        var ext_cursor: i64      = 0;
 
         while ext_cursor < raw_ext.len {
             let st, consumed, chunk = internal::chunk_fsm_feed(dec_ext, raw_ext[ext_cursor..]);
@@ -1174,7 +1174,7 @@ fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
     t.assert_false(core::index_of_slice(wire_str, "Content-Length: 0\r\n") >= 0, "Must NOT contain conflicting Content-Length: 0");
 
     // Count occurrences of 'Content-Length:'
-    var count: i64 = 0;
+    var count:  i64 = 0;
     var cursor: i64 = 0;
     while cursor < wire_str.len {
         let idx = core::index_of_slice(wire_str[cursor..], "Content-Length:");
@@ -1712,7 +1712,7 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: core::T&) {
     // 5) Non-token characters in extension name ("5;foo@bar=1\r\n") MUST be rejected.
     // 6) Legitimate extensions ("5;name=value;flag\r\n" and "5;name=\"quoted val\"\r\n") MUST succeed.
 
-    var body: u8[>..] = [];
+    var body:     u8[>..]                = [];
     var trailers: wing::HeaderItem[..16] = [];
 
     // 1. Valid extensions
@@ -1874,8 +1874,8 @@ fn test_uweb_safari_15_broken_compression(t: core::T&) {
 }
 
 // Global test state for streaming chunk capture
-var g_stream_received_bytes: i64 = 0;
-var g_stream_chunk_count: i32 = 0;
+var g_stream_received_bytes:      i64  = 0;
+var g_stream_chunk_count:         i32  = 0;
 var g_stream_last_chunk_is_final: bool = false;
 
 fn stream_chunk_collector(chunk: const u8[:], is_last: bool) {
@@ -1885,8 +1885,8 @@ fn stream_chunk_collector(chunk: const u8[:], is_last: bool) {
 }
 
 // Global test state for async abort / writable callbacks
-var g_async_aborted_fd: i64 = -1;
-var g_async_aborted_tag: u64 = 0;
+var g_async_aborted_fd:      i64  = -1;
+var g_async_aborted_tag:     u64  = 0;
 var g_async_writable_called: bool = false;
 
 fn on_test_client_aborted(fd: i64, tag: u64) {
@@ -1903,7 +1903,7 @@ fn test_missing_sni_fallback(hostname: const u8[:]) -> wing::SniCredentials {
     if core::contains(hostname, "fallback") {
         return wing::SniCredentials {
             cert_pem: "FALLBACK_CERT_PEM",
-            key_pem: "FALLBACK_KEY_PEM",
+            key_pem:  "FALLBACK_KEY_PEM",
         };
     }
     return wing::SniCredentials { .. };
@@ -1976,10 +1976,10 @@ fn test_uweb_streaming_on_data(t: core::T&) {
 // --- Test 55: uWebSockets Async Backpressure (onWritable) & Abort (onAborted) ---
 fn test_uweb_async_backpressure_and_aborted(t: core::T&) {
     var ctx = wing::HttpAsyncContext {
-        sock_fd: 42,
-        user_tag: 999,
+        sock_fd:          42,
+        user_tag:         999,
         is_backpressured: true,
-        in_use: true,
+        in_use:           true,
         ..
     };
 
@@ -2011,13 +2011,13 @@ fn test_uweb_dynamic_sni_registry(t: core::T&) {
     var server = wing::new_http_server("test-sni");
 
     let cert_main: const u8[:] = "-----BEGIN CERTIFICATE-----\nMAIN\n-----END CERTIFICATE-----";
-    let key_main: const u8[:] = "-----BEGIN PRIVATE KEY-----\nMAIN_KEY\n-----END PRIVATE KEY-----";
+    let key_main:  const u8[:] = "-----BEGIN PRIVATE KEY-----\nMAIN_KEY\n-----END PRIVATE KEY-----";
 
     let cert_wildcard: const u8[:] = "-----BEGIN CERTIFICATE-----\nWILDCARD\n-----END CERTIFICATE-----";
-    let key_wildcard: const u8[:] = "-----BEGIN PRIVATE KEY-----\nWILDCARD_KEY\n-----END PRIVATE KEY-----";
+    let key_wildcard:  const u8[:] = "-----BEGIN PRIVATE KEY-----\nWILDCARD_KEY\n-----END PRIVATE KEY-----";
 
     let cert_special: const u8[:] = "-----BEGIN CERTIFICATE-----\nSPECIAL\n-----END CERTIFICATE-----";
-    let key_special: const u8[:] = "-----BEGIN PRIVATE KEY-----\nSPECIAL_KEY\n-----END PRIVATE KEY-----";
+    let key_special:  const u8[:] = "-----BEGIN PRIVATE KEY-----\nSPECIAL_KEY\n-----END PRIVATE KEY-----";
 
     // 1. Direct SNI pattern matcher compliance (RFC 6125 §6.4.3)
     t.assert_true(wing::sni_pattern_matches("example.com", "example.com"), "Exact domain matches");

@@ -30,7 +30,12 @@ extern fn native_tcp_set_reuseaddr(sock_fd: i64, enable: i32) -> i32 = "wing_tcp
 extern fn native_tcp_set_reuseport(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_reuseport";
 extern fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32 = "wing_tcp_set_defer_accept";
 extern fn native_tcp_set_user_timeout(sock_fd: i64, timeout_ms: u32) -> i32 = "wing_tcp_set_user_timeout";
-extern fn native_tcp_set_keepalive_params(sock_fd: i64, idle_sec: i32, intvl_sec: i32, cnt: i32) -> i32 = "wing_tcp_set_keepalive_params";
+extern fn native_tcp_set_keepalive_params(
+    sock_fd:   i64,
+    idle_sec:  i32,
+    intvl_sec: i32,
+    cnt:       i32,
+) -> i32 = "wing_tcp_set_keepalive_params";
 extern fn native_tcp_set_syn_retries(sock_fd: i64, count: i32) -> i32 = "wing_tcp_set_syn_retries";
 extern fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64 = "wing_tcp_get_notsent_bytes";
 extern fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64 = "wing_tcp_get_readable_bytes";
@@ -47,7 +52,12 @@ extern fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> 
 extern fn native_epoll_del(epfd: i64, sock_fd: i64) -> i32 = "wing_epoll_del";
 extern fn native_epoll_wait(epfd: i64, out_fds: i64[:], out_udata: u64[:], timeout_ms: i32) -> i32 = "wing_epoll_wait";
 extern fn native_epoll_close(epfd: i64) = "wing_epoll_close";
-extern fn native_fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64 = "wing_fast_cork_append";
+extern fn native_fast_cork_append(
+    conn:     i64,
+    cork_buf: u8[:],
+    cork_len: i64,
+    resp:     const u8[:],
+) -> i64 = "wing_fast_cork_append";
 extern fn native_set_cpu_affinity(cpu_id: i64) -> i32 = "wing_set_cpu_affinity";
 extern fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32 = "wing_tcp_set_incoming_cpu";
 extern fn native_tcp_set_fastopen(sock_fd: i64, qlen: i32) -> i32 = "wing_tcp_set_fastopen";
@@ -56,11 +66,11 @@ extern fn native_tcp_set_tos(sock_fd: i64, tos: i32) -> i32 = "wing_tcp_set_tos"
 extern fn native_tcp_set_tclass(sock_fd: i64, tclass: i32) -> i32 = "wing_tcp_set_tclass";
 
 // Event flags for epoll multiplexer
-const EPOLL_READ: u32 = 1;
-const EPOLL_WRITE: u32 = 4;
-const EPOLL_ERR: u32 = 8;
-const EPOLL_HUP: u32 = 16;
-const EPOLL_ET: u32 = 0x80000000;
+const EPOLL_READ:         u32 = 1;
+const EPOLL_WRITE:        u32 = 4;
+const EPOLL_ERR:          u32 = 8;
+const EPOLL_HUP:          u32 = 16;
+const EPOLL_ET:           u32 = 0x80000000;
 const EPOLL_LISTENER_TAG: u64 = 0xFFFFFFFFFFFFFFFF;
 
 // Global initialization flag
@@ -216,7 +226,13 @@ fn tcp_recv_slice(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
 // Returns (bytes_received, readable_slice).
 fn tcp_recv_shared(fd: i64, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32, const u8[:] {
     guard fd > 0 else { return -1, ""; }
-    let eff_max = if max_len > RECV_BUFFER_CAP as i32 { RECV_BUFFER_CAP as i32 } else if max_len < 1 { 1 } else { max_len };
+    let eff_max = if max_len > RECV_BUFFER_CAP as i32 {
+        RECV_BUFFER_CAP as i32
+    } else if max_len < 1 {
+        1
+    } else {
+        max_len
+    };
     let recvd = native_tcp_recv(fd, g_shared_recv_buf[..eff_max], timeout_ms);
     if recvd > 0 {
         return recvd, g_shared_recv_buf[..recvd];
@@ -232,7 +248,13 @@ fn tcp_recv_shared(fd: i64, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32
 //    -1 : socket error (e.g. connection reset)
 fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 else { return -1; }
-    let eff_max = if max_len > RECV_BUFFER_CAP as i32 { RECV_BUFFER_CAP as i32 } else if max_len < 1 { 1 } else { max_len };
+    let eff_max = if max_len > RECV_BUFFER_CAP as i32 {
+        RECV_BUFFER_CAP as i32
+    } else if max_len < 1 {
+        1
+    } else {
+        max_len
+    };
     let recvd = native_tcp_recv(fd, g_shared_recv_buf[..eff_max], timeout_ms);
     if recvd > 0 {
         out.append(g_shared_recv_buf[..recvd]);
@@ -257,8 +279,8 @@ fn tcp_abort(fd: i64) -> bool {
 }
 
 // Channel shutdown modes
-const SHUT_RD: i32 = 0;
-const SHUT_WR: i32 = 1;
+const SHUT_RD:   i32 = 0;
+const SHUT_WR:   i32 = 1;
 const SHUT_RDWR: i32 = 2;
 
 // Shuts down socket send/receive channels.
@@ -326,10 +348,10 @@ const MSG_FASTOPEN: i32 = 0x20000000;
 
 // RFC 3168 Section 5: The ECN Field in IP - Explicit Congestion Notification codepoints
 const ECN_NOT_ECT: u8 = 0x00; // Not ECN-Capable Transport
-const ECN_ECT_1: u8 = 0x01;   // ECN-Capable Transport (1)
-const ECN_ECT_0: u8 = 0x02;   // ECN-Capable Transport (0)
-const ECN_CE: u8 = 0x03;      // Congestion Experienced
-const ECN_MASK: u8 = 0x03;    // Bitmask for ECN field in IP TOS / TCLASS
+const ECN_ECT_1:   u8 = 0x01; // ECN-Capable Transport (1)
+const ECN_ECT_0:   u8 = 0x02; // ECN-Capable Transport (0)
+const ECN_CE:      u8 = 0x03; // Congestion Experienced
+const ECN_MASK:    u8 = 0x03; // Bitmask for ECN field in IP TOS / TCLASS
 
 // RFC 7413 Section 5.1: TCP Fast Open Server Configuration - Enables TFO on listening socket
 fn tcp_set_fastopen(fd: i64, qlen: i32 = TCP_FASTOPEN_DEFAULT_QLEN) -> bool {
@@ -410,14 +432,14 @@ fn tcp_flush_cork(fd: i64, cb: core::CorkBuffer&) -> i32 {
 // Bounded zero-allocation backpressure queue for outbound socket traffic.
 // Matches uWebSockets AsyncSocketData / BackPressure amortized compaction pattern.
 struct BackPressure {
-    data: u8[..65536] = [],
-    pending_removal: i64 = 0,
-    total_buffered: u64 = 0,
-    total_drained: u64 = 0,
-    drop_count: u64 = 0,
-    shutdown_pending: bool = false,
-    write_shut: bool = false,
-    peer_fin_received: bool = false,
+    data:              u8[..65536] = [],
+    pending_removal:   i64         = 0,
+    total_buffered:    u64         = 0,
+    total_drained:     u64         = 0,
+    drop_count:        u64         = 0,
+    shutdown_pending:  bool        = false,
+    write_shut:        bool        = false,
+    peer_fin_received: bool        = false,
 }
 
 fn backpressure_len(bp: const BackPressure&) -> i64 {
@@ -486,9 +508,9 @@ fn backpressure_erase(bp: BackPressure&, n: i64) {
 
 // Attempts to drain active backpressure during write. Returns (handled, bytes_written, needs_poll).
 fn async_write_drain_existing(
-    fd: i64,
-    bp: BackPressure&,
-    data: const u8[:],
+    fd:         i64,
+    bp:         BackPressure&,
+    data:       const u8[:],
     optionally: bool,
 ) -> bool, i32, bool {
     guard backpressure_len(bp) > 0 else { return false, 0, false; }
@@ -508,10 +530,10 @@ fn async_write_drain_existing(
 
 // Flushes cork buffer during write. If cork cannot be fully sent, spills cork and optional data to backpressure.
 fn async_write_spill_cork(
-    fd: i64,
-    cork: core::CorkBuffer&,
-    bp: BackPressure&,
-    data: const u8[:],
+    fd:         i64,
+    cork:       core::CorkBuffer&,
+    bp:         BackPressure&,
+    data:       const u8[:],
     optionally: bool,
 ) -> bool, i32, bool {
     guard core::cork_pending(cork) > 0 else { return false, 0, false; }
@@ -535,9 +557,9 @@ fn async_write_spill_cork(
 
 // Writes unsent wire remainder directly to socket or queues to backpressure.
 fn async_write_direct(
-    fd: i64,
-    bp: BackPressure&,
-    data: const u8[:],
+    fd:         i64,
+    bp:         BackPressure&,
+    data:       const u8[:],
     optionally: bool,
 ) -> i32, bool {
     let sent = tcp_send(fd, data);
@@ -560,10 +582,10 @@ fn async_write_direct(
 // 3. Otherwise flush cork and send directly via syscall. Any unsent remainder spills into BackPressure.
 // Returns (bytes_written, needs_writable_poll).
 fn async_socket_write(
-    fd: i64,
-    cork: core::CorkBuffer&,
-    bp: BackPressure&,
-    data: const u8[:],
+    fd:         i64,
+    cork:       core::CorkBuffer&,
+    bp:         BackPressure&,
+    data:       const u8[:],
     optionally: bool = false,
 ) -> i32, bool {
     guard fd > 0 else { return 0, false; }
@@ -654,7 +676,8 @@ fn check_execute_deferred_shutdown(fd: i64, bp: BackPressure&) {
 
 // Drains backpressure queue upon writable event (POLL_WRITE).
 // If a shutdown was deferred, executes tcp_shutdown(SHUT_WR) once the queue is fully drained.
-// If an I/O error occurs (sent < 0), aborts socket and clears backpressure to prevent poll deadlock (RFC 1122 §4.2.2.13).
+// If an I/O error occurs (sent < 0), aborts socket and clears backpressure
+// to prevent poll deadlock (RFC 1122 §4.2.2.13).
 // Returns (bytes_drained, is_fully_empty).
 fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     guard fd > 0 else { return 0, true; }
@@ -838,7 +861,7 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
     guard epfd >= 0 else { return 0; }
     out_fds.clear();
     out_udata.clear();
-    var raw_fds: i64[256] = [0; 256];
+    var raw_fds:   i64[256] = [0; 256];
     var raw_udata: u64[256] = [0; 256];
     let n = native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
     for i in n {
@@ -875,9 +898,9 @@ fn tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> bool {
 // Deterministic O(1) connection slot index allocator for reactor loops.
 // Bounded to 1024 slots without dynamic heap allocations.
 struct FreeSlotStack {
-    indices: u16[1024] = [0; 1024],
-    top: i64 = 0,
-    capacity: i64 = 1024,
+    indices:  u16[1024] = [0; 1024],
+    top:      i64       = 0,
+    capacity: i64       = 1024,
 }
 
 // Pre-populates the stack so slot 0 is popped first.
@@ -910,10 +933,10 @@ fn push_free_slot(stack: FreeSlotStack&, slot: i64) -> bool {
 // Bounded zero-allocation backpressure slot for non-blocking reactor connection.
 // Buffers partial socket writes when send() returns EAGAIN/EWOULDBLOCK.
 struct BackpressureSlot {
-    buf: u8[16384] = [0; 16384],
-    len: i64 = 0,
-    offset: i64 = 0,
-    is_active: bool = false,
+    buf:       u8[16384] = [0; 16384],
+    len:       i64       = 0,
+    offset:    i64       = 0,
+    is_active: bool      = false,
 }
 
 // Resets the backpressure slot state.

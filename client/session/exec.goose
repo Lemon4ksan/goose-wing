@@ -34,7 +34,7 @@ import net.retry;
 
 // Appends query parameters to a URL buffer, preserving trailing fragment if present (RFC 3986 Section 4.1).
 fn append_query_params_preserving_fragment(
-    out: u8[..2048]&,
+    out:          u8[..2048]&,
     query_params: const QueryItem[:],
 ) {
     guard query_params.len > 0 else { return; }
@@ -72,10 +72,10 @@ fn append_query_params_preserving_fragment(
 // Builds the effective request URL from base_url, req_url, and query_params.
 // Fragments are preserved and appended after query parameters (RFC 3986 Section 4.1).
 fn build_effective_url(
-    base_url: const u8[:],
-    req_url: const u8[:],
+    base_url:     const u8[:],
+    req_url:      const u8[:],
     query_params: const QueryItem[:],
-    out: u8[..2048]&,
+    out:          u8[..2048]&,
 ) {
     out.clear();
     let parsed_base = core::new_url(base_url);
@@ -98,29 +98,29 @@ fn build_effective_url(
 // ---- 6-phase execution context & orchestration ------------------------------
 
 struct RequestExecutionContext {
-    url_chain: core::Url[..16] = [],
-    current_method: u8[..16] = [],
-    headers: HeaderItem[..32] = [],
-    rewind_buf: u8[..4096] = [],
-    rewindable: bool = true,
-    body_consumed: bool = false,
-    initiator: core::Origin = core::Origin { .. },
-    has_initiator: bool = false,
-    top_frame_origin: core::Origin = core::Origin { .. },
-    site_for_cookies: SiteForCookies = SiteForCookies { .. },
-    first_party_policy: FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
-    is_main_frame: bool = true,
-    is_reload: bool = false,
-    redirect_mode: RedirectMode = RedirectMode.Follow,
-    redirect_count: i64 = 0,
-    max_redirects: i64 = 10,
-    tainted_origin: bool = false,
-    had_cross_site_hop: bool = false,
-    cors_mode: bool = false,
-    auth_retried: bool = false,
-    current_referrer: u8[..2048] = [],
-    current_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    body: u8[>..] = [],
+    url_chain:               core::Url[..16]     = [],
+    current_method:          u8[..16]            = [],
+    headers:                 HeaderItem[..32]    = [],
+    rewind_buf:              u8[..4096]          = [],
+    rewindable:              bool                = true,
+    body_consumed:           bool                = false,
+    initiator:               core::Origin        = core::Origin { .. },
+    has_initiator:           bool                = false,
+    top_frame_origin:        core::Origin        = core::Origin { .. },
+    site_for_cookies:        SiteForCookies      = SiteForCookies { .. },
+    first_party_policy:      FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+    is_main_frame:           bool                = true,
+    is_reload:               bool                = false,
+    redirect_mode:           RedirectMode        = RedirectMode.Follow,
+    redirect_count:          i64                 = 0,
+    max_redirects:           i64                 = 10,
+    tainted_origin:          bool                = false,
+    had_cross_site_hop:      bool                = false,
+    cors_mode:               bool                = false,
+    auth_retried:            bool                = false,
+    current_referrer:        u8[..2048]          = [],
+    current_referrer_policy: ReferrerPolicy      = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    body:                    u8[>..]             = [],
 }
 
 fn validate_hop_prerequisites(session: const Session&, current_url: const core::Url&) -> Error {
@@ -147,8 +147,8 @@ fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response
 }
 
 fn apply_redirect_transition(
-    session: const Session&,
-    ctx: RequestExecutionContext&,
+    session:       const Session&,
+    ctx:           RequestExecutionContext&,
     redirect_info: const RedirectInfo&,
 ) -> Error {
     ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
@@ -185,10 +185,10 @@ fn apply_redirect_transition(
 }
 
 fn merge_session_and_request_headers(
-    headers: HeaderItem[..32]&,
+    headers:         HeaderItem[..32]&,
     default_headers: const HeaderItem[..16]&,
-    req_headers: const HeaderItem[..32]&,
-    profile: Profile,
+    req_headers:     const HeaderItem[..32]&,
+    profile:         Profile,
 ) {
     for &default_hdr in default_headers {
         headers.push(copy(default_hdr));
@@ -206,22 +206,22 @@ fn merge_session_and_request_headers(
 }
 
 fn init_execution_context(
-    session: const Session&,
-    req: const Request&,
+    session:        const Session&,
+    req:            const Request&,
     parsed_initial: const core::Url&,
 ) -> RequestExecutionContext {
     var ctx = RequestExecutionContext {
-        current_method: copy(req.method),
-        rewindable: req.rewindable,
-        body_consumed: false,
-        cors_mode: req.cors_mode,
-        tainted_origin: req.tainted_origin,
-        is_main_frame: req.is_main_frame,
-        is_reload: req.is_reload,
-        redirect_mode: session.redirect_mode,
-        redirect_count: 0,
-        max_redirects: session.max_redirects,
-        first_party_policy: req.first_party_policy,
+        current_method:          copy(req.method),
+        rewindable:              req.rewindable,
+        body_consumed:           false,
+        cors_mode:               req.cors_mode,
+        tainted_origin:          req.tainted_origin,
+        is_main_frame:           req.is_main_frame,
+        is_reload:               req.is_reload,
+        redirect_mode:           session.redirect_mode,
+        redirect_count:          0,
+        max_redirects:           session.max_redirects,
+        first_party_policy:      req.first_party_policy,
         current_referrer_policy: session.default_referrer_policy,
         ..
     };
@@ -263,11 +263,11 @@ fn init_execution_context(
 }
 
 fn process_redirect_hop(
-    session: Session&,
-    ctx: RequestExecutionContext&,
-    resp: Response&,
+    session:     Session&,
+    ctx:         RequestExecutionContext&,
+    resp:        Response&,
     current_url: const core::Url&,
-    loc_hdr: const u8[:],
+    loc_hdr:     const u8[:],
 ) -> bool, Error {
     if ctx.redirect_mode == RedirectMode.Manual {
         return false, Error { .. };
@@ -340,13 +340,13 @@ fn append_available_dict_header(headers: HeaderItem[..32]&, dict_b64: const u8[:
 }
 
 fn resolve_mock_protocol_racing(
-    session: Session&,
-    route: const MockExchange&,
-    is_https: bool,
+    session:    Session&,
+    route:      const MockExchange&,
+    is_https:   bool,
     origin_buf: const u8[:],
-    has_h3: bool,
-    now_sec: i64,
-    resp: Response&,
+    has_h3:     bool,
+    now_sec:    i64,
+    resp:       Response&,
 ) {
     if !has_h3 {
         if route.protocol.len > 0 {
@@ -356,12 +356,12 @@ fn resolve_mock_protocol_racing(
         return;
     }
 
-    let race_eligible = should_create_dns_alpn_h3_job(
-        is_https,
-        session.enable_protocol_racing,
-        session.proxy_url.len > 0,
-        false,
-    );
+    let race_eligible = should_create_dns_alpn_h3_job(H3JobOptions {
+        is_https:                   is_https,
+        quic_enabled:               session.enable_protocol_racing,
+        uses_proxy:                 session.proxy_url.len > 0,
+        has_available_quic_session: false,
+    });
     if race_eligible || session.enable_altsvc {
         if route.simulate_quic_blocked {
             record_failure(session.altsvc, origin_buf, now_sec);
@@ -379,9 +379,9 @@ fn resolve_mock_protocol_racing(
 fn ingest_compression_dict_header(
     dict_cache: DictionaryCache&,
     origin_buf: const u8[:],
-    curr_path: const u8[:],
-    now_sec: i64,
-    resp: Response&,
+    curr_path:  const u8[:],
+    now_sec:    i64,
+    resp:       Response&,
 ) {
     let dict_hdr = header(resp, "Use-As-Dictionary");
     guard dict_hdr.len > 0 else { return; }
@@ -404,13 +404,13 @@ fn ingest_compression_dict_header(
 }
 
 fn ingest_transport_response_headers(
-    session: Session&,
+    session:     Session&,
     current_url: const core::Url&,
-    is_https: bool,
-    origin_buf: const u8[:],
-    curr_path: const u8[:],
-    now_sec: i64,
-    resp: Response&,
+    is_https:    bool,
+    origin_buf:  const u8[:],
+    curr_path:   const u8[:],
+    now_sec:     i64,
+    resp:        Response&,
 ) {
     if session.enable_altsvc && is_https {
         let alt_svc_val = header(resp, "Alt-Svc");
@@ -437,15 +437,15 @@ fn ingest_transport_response_headers(
 }
 
 fn try_match_mock_route(
-    session: Session&,
-    ctx: RequestExecutionContext&,
+    session:     Session&,
+    ctx:         RequestExecutionContext&,
     current_url: const core::Url&,
-    has_h3: bool,
-    origin_buf: const u8[:],
-    curr_path: const u8[:],
-    now_sec: i64,
+    has_h3:      bool,
+    origin_buf:  const u8[:],
+    curr_path:   const u8[:],
+    now_sec:     i64,
     out_dns_err: RedirectError&,
-    out_resp: Response&,
+    out_resp:    Response&,
 ) -> bool {
     let curr_href = href(current_url);
     let curr_method = ctx.current_method[..];
@@ -460,7 +460,7 @@ fn try_match_mock_route(
         if dns_err != RedirectError.None {
             out_dns_err = dns_err;
             out_resp = Response {
-                status_code: 403,
+                status_code:   403,
                 effective_url: copy(current_url.href),
                 ..
             };
@@ -492,8 +492,8 @@ fn copy_sent_headers(headers: const HeaderItem[..32]&, sent_headers: HeaderItem[
 
 // Executes a mock or echo response hop, verifying IP addresses against SSRF policies.
 fn execute_mock_or_echo_hop(
-    session: Session&,
-    ctx: RequestExecutionContext&,
+    session:     Session&,
+    ctx:         RequestExecutionContext&,
     current_url: const core::Url&,
     out_dns_err: RedirectError&,
 ) -> Response {
@@ -565,10 +565,10 @@ fn execute_mock_or_echo_hop(
 }
 
 fn compute_401_auth_header(
-    session: Client&,
-    ctx: RequestExecutionContext&,
-    current_url: const core::Url&,
-    www_auth: const u8[:],
+    session:         Client&,
+    ctx:             RequestExecutionContext&,
+    current_url:     const core::Url&,
+    www_auth:        const u8[:],
     auth_header_val: u8[..512]&,
 ) -> bool {
     if starts_with_fold(www_auth, "Digest") {
@@ -618,12 +618,12 @@ fn compute_401_auth_header(
 }
 
 fn handle_401_auth_retry(
-    session: Client&,
-    ctx: RequestExecutionContext&,
-    current_url: const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
-    safe_method: bool,
-    resp: Response&,
+    session:           Client&,
+    ctx:               RequestExecutionContext&,
+    current_url:       const core::Url&,
+    samesite_eval:     const SameSiteCookieContext&,
+    safe_method:       bool,
+    resp:              Response&,
     dns_rebinding_err: RedirectError&,
 ) -> bool, Error {
     guard resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried else {
@@ -652,12 +652,12 @@ fn handle_401_auth_retry(
 }
 
 fn execute_single_hop(
-    session: Client&,
-    ctx: RequestExecutionContext&,
-    req: const Request&,
-    cache_ts: CacheTimestamps&,
+    session:              Client&,
+    ctx:                  RequestExecutionContext&,
+    req:                  const Request&,
+    cache_ts:             CacheTimestamps&,
     cache_revalidate_idx: i64,
-    out_resp: Response&,
+    out_resp:             Response&,
 ) -> bool, Error {
     var current_url = ctx.url_chain[ctx.url_chain.len - 1];
 
@@ -749,13 +749,13 @@ fn execute_single_hop(
 }
 
 fn check_cache_and_inject_headers(
-    session: Client&,
-    req: const Request&,
-    raw_eff_url: const u8[:],
-    cache_ts: const CacheTimestamps&,
-    ctx: RequestExecutionContext&,
-    out_resp: Response&,
-    out_err: Error&,
+    session:        Client&,
+    req:            const Request&,
+    raw_eff_url:    const u8[:],
+    cache_ts:       const CacheTimestamps&,
+    ctx:            RequestExecutionContext&,
+    out_resp:       Response&,
+    out_err:        Error&,
     revalidate_idx: i64&,
 ) -> bool {
     guard session.enable_cache else { return false; }
@@ -814,7 +814,7 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
     let req_time_ns = ((session.virtual_clock_us % 1000000) * 1000) as u32;
     var cache_ts = CacheTimestamps {
         request_time: core::unix(req_time, req_time_ns),
-        now: core::unix(req_time, req_time_ns),
+        now:          core::unix(req_time, req_time_ns),
     };
 
     var ctx = init_execution_context(session, req, parsed_initial);
@@ -864,8 +864,8 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     var active_req = copy(req);
     apply_app_interceptors_request(session.pipeline, active_req, start_us);
 
-    var max_retries: i32 = 0;
-    var retry_5xx: bool = false;
+    var max_retries: i32  = 0;
+    var retry_5xx:   bool = false;
     let has_retry = find_retry_policy(session.pipeline, max_retries, retry_5xx);
 
     var attempts: i32 = 0;

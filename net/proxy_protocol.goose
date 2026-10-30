@@ -36,34 +36,34 @@ enum ProxyTransportProtocol {
 }
 
 struct ProxySslInfo {
-    has_ssl: bool = false,
-    client_flags: u8 = 0,
-    verify_result: u32 = 0,
-    version: u8[..16] = [],
-    cipher: u8[..64] = [],
-    client_cn: u8[..128] = [],
-    sig_alg: u8[..32] = [],
-    key_alg: u8[..32] = [],
+    has_ssl:       bool      = false,
+    client_flags:  u8        = 0,
+    verify_result: u32       = 0,
+    version:       u8[..16]  = [],
+    cipher:        u8[..64]  = [],
+    client_cn:     u8[..128] = [],
+    sig_alg:       u8[..32]  = [],
+    key_alg:       u8[..32]  = [],
 }
 
 struct ProxyHeader {
-    version: ProxyProtocolVersion = ProxyProtocolVersion.None,
-    command: ProxyCommand = ProxyCommand.Proxy,
-    family: ProxyAddressFamily = ProxyAddressFamily.Unspec,
-    transport: ProxyTransportProtocol = ProxyTransportProtocol.Stream,
-    src_ip_str: u8[..64] = [],
-    dst_ip_str: u8[..64] = [],
-    src_ipv4: u8[4] = [0; 4],
-    dst_ipv4: u8[4] = [0; 4],
-    src_ipv6: u8[16] = [0; 16],
-    dst_ipv6: u8[16] = [0; 16],
-    src_port: u16 = 0,
-    dst_port: u16 = 0,
-    alpn: u8[..32] = [],
-    authority: u8[..128] = [],
-    unique_id: u8[..64] = [],
-    netns: u8[..64] = [],
-    ssl: ProxySslInfo = ProxySslInfo { .. },
+    version:    ProxyProtocolVersion   = ProxyProtocolVersion.None,
+    command:    ProxyCommand           = ProxyCommand.Proxy,
+    family:     ProxyAddressFamily     = ProxyAddressFamily.Unspec,
+    transport:  ProxyTransportProtocol = ProxyTransportProtocol.Stream,
+    src_ip_str: u8[..64]               = [],
+    dst_ip_str: u8[..64]               = [],
+    src_ipv4:   u8[4]                  = [0; 4],
+    dst_ipv4:   u8[4]                  = [0; 4],
+    src_ipv6:   u8[16]                 = [0; 16],
+    dst_ipv6:   u8[16]                 = [0; 16],
+    src_port:   u16                    = 0,
+    dst_port:   u16                    = 0,
+    alpn:       u8[..32]               = [],
+    authority:  u8[..128]              = [],
+    unique_id:  u8[..64]               = [],
+    netns:      u8[..64]               = [],
+    ssl:        ProxySslInfo           = ProxySslInfo { .. },
 }
 
 // ---- 3. Helper Codecs -------------------------------------------------------
@@ -79,32 +79,41 @@ fn format_ipv4<B>(ip: const u8[4]&, out: B&) {
     format(out, ip[3] as i64);
 }
 
+// Appends 4-nibble hex string for a 16-bit integer without leading zeros unless zero.
+fn push_hex_u16<B>(val: u16, out: B&) {
+    if val == 0 {
+        out.push('0');
+        return;
+    }
+    const hex: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
+    var shift: i32 = 12;
+    var started = false;
+    while shift >= 0 {
+        let nibble = ((val >> shift) & 0x0F) as i64;
+        if nibble != 0 || started || shift == 0 {
+            out.push(hex[nibble]);
+            started = true;
+        }
+        shift -= 4;
+    }
+}
+
 // Formats an IPv6 address into hex notation
 fn format_ipv6<B>(ip: const u8[16]&, out: B&) {
-    let hex: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
     for i in 8 {
         if i > 0 { out.push(':'); }
         let hi = ip[i * 2];
         let lo = ip[i * 2 + 1];
         let val = ((hi as u16) << 8) | lo;
-        if val == 0 {
-            out.push('0');
-        } else {
-            var shift: i32 = 12;
-            var started = false;
-            while shift >= 0 {
-                let nibble = ((val >> shift) & 0x0F) as i64;
-                if nibble != 0 || started || shift == 0 {
-                    out.push(hex[nibble]);
-                    started = true;
-                }
-                shift -= 4;
-            }
-        }
+        push_hex_u16(val, out);
     }
 }
 
-// Parses decimal u16 port (0..65535)
+// Parses decimal u16 port (0..65535).
+//
+// Example:
+//   str = "8080"
+//   returns: ok = true, out_port = 8080
 fn parse_port_decimal(str: const u8[:], out_port: u16&) -> bool {
     guard str.len > 0 && str.len <= 5 else { return false; }
     var acc: u32 = 0;
@@ -117,11 +126,15 @@ fn parse_port_decimal(str: const u8[:], out_port: u16&) -> bool {
     return true;
 }
 
-// Parses decimal IPv4 octets into u8[4]
+// Parses decimal IPv4 octets into u8[4].
+//
+// Example:
+//   str = "192.168.0.1"
+//   returns: ok = true, out_ip = [192, 168, 0, 1]
 fn parse_ipv4_decimal(str: const u8[:], out_ip: u8[4]&) -> bool {
     var octet_idx: i64 = 0;
-    var current: u32 = 0;
-    var digits: i64 = 0;
+    var current:   u32 = 0;
+    var digits:    i64 = 0;
 
     for i in str.len {
         let b = str[i];
@@ -262,22 +275,50 @@ struct ProxyTokenSpan {
 
 fn proxy_span_slice(raw: const u8[:], span: ProxyTokenSpan) -> const u8[:] {
     let start: i64 = span.offset;
-    let end: i64 = start + span.length;
+    let end:   i64 = start + span.length;
     guard start <= raw.len && end <= raw.len else { return raw[..0]; }
     return raw[start..end];
 }
 
+// Tokenizes space-separated spans in a PROXY v1 line.
+//
+// Example:
+//   line = "TCP4 1.2.3.4 5.6.7.8 123 456"
+//   returns: ok = true, tokens has 5 spans
+fn tokenize_proxy_v1_spans(line: const u8[:], tokens: ProxyTokenSpan[..8]&) -> bool {
+    var tok_start: i64 = 0;
+    var in_tok = false;
+
+    for i in line.len {
+        if line[i] == ' ' {
+            if in_tok {
+                guard tokens.len < tokens.cap else { return false; }
+                tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (i - tok_start) as u16 });
+                in_tok = false;
+            }
+        } else {
+            if !in_tok {
+                tok_start = i;
+                in_tok = true;
+            }
+        }
+    }
+    if in_tok {
+        guard tokens.len < tokens.cap else { return false; }
+        tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
+    }
+    return true;
+}
+
 // Parses an incoming PROXY v1 line:
 // PROXY <INET_PROTOCOL> <SRC_IP> <DST_IP> <SRC_PORT> <DST_PORT>\r\n
-// Returns (ProxyHeader, bytes_consumed, success)
+//
+// Example:
+//   wire = "PROXY TCP4 1.2.3.4 5.6.7.8 443 80\r\n"
+//   returns: hdr.family = Inet4, consumed = 33, ok = true
 fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     var hdr = ProxyHeader { version: ProxyProtocolVersion.V1, .. };
-    guard wire.len >= 8 else { return hdr, 0, false; }
-
-    // Must start with "PROXY "
-    for i in 6 {
-        guard wire[i] == internal::PROXY_V1_PREFIX[i] else { return hdr, 0, false; }
-    }
+    guard wire.len >= 8 && wire[..6] == internal::PROXY_V1_PREFIX[..] else { return hdr, 0, false; }
 
     // Locate CRLF terminator within maximum allowed length (107 bytes)
     var crlf_idx: i64 = -1;
@@ -302,27 +343,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
     // Tokenize space-separated tokens: PROTO SRC_IP DST_IP SRC_PORT DST_PORT
     var tokens: ProxyTokenSpan[..8] = [];
-    var tok_start: i64 = 0;
-    var in_tok = false;
-
-    for i in line.len {
-        if line[i] == ' ' {
-            if in_tok {
-                guard tokens.len < tokens.cap else { return hdr, 0, false; }
-                tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (i - tok_start) as u16 });
-                in_tok = false;
-            }
-        } else {
-            if !in_tok {
-                tok_start = i;
-                in_tok = true;
-            }
-        }
-    }
-    if in_tok {
-        guard tokens.len < tokens.cap else { return hdr, 0, false; }
-        tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
-    }
+    guard tokenize_proxy_v1_spans(line, tokens) else { return hdr, 0, false; }
 
     // Must have exactly 5 tokens for TCP4 / TCP6
     guard tokens.len == 5 else { return hdr, 0, false; }
@@ -359,9 +380,14 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
 // Formats a PROXY protocol v1 text header
 fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
+    let is_local_or_unspec = hdr.command == ProxyCommand.Local || hdr.family == ProxyAddressFamily.Unspec;
+    guard is_local_or_unspec || hdr.family == ProxyAddressFamily.Inet4 || hdr.family == ProxyAddressFamily.Inet6 else {
+        return false;
+    }
+
     out.append("PROXY ");
 
-    if hdr.command == ProxyCommand.Local || hdr.family == ProxyAddressFamily.Unspec {
+    if is_local_or_unspec {
         out.append("UNKNOWN\r\n");
         return true;
     }
@@ -387,28 +413,24 @@ fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
         return true;
     }
 
-    if hdr.family == ProxyAddressFamily.Inet6 {
-        out.append("TCP6 ");
-        if hdr.src_ip_str.len > 0 {
-            out.append(hdr.src_ip_str[..]);
-        } else {
-            format_ipv6(hdr.src_ipv6, out);
-        }
-        out.push(' ');
-        if hdr.dst_ip_str.len > 0 {
-            out.append(hdr.dst_ip_str[..]);
-        } else {
-            format_ipv6(hdr.dst_ipv6, out);
-        }
-        out.push(' ');
-        format(out, hdr.src_port as i64);
-        out.push(' ');
-        format(out, hdr.dst_port as i64);
-        out.append("\r\n");
-        return true;
+    out.append("TCP6 ");
+    if hdr.src_ip_str.len > 0 {
+        out.append(hdr.src_ip_str[..]);
+    } else {
+        format_ipv6(hdr.src_ipv6, out);
     }
-
-    return false;
+    out.push(' ');
+    if hdr.dst_ip_str.len > 0 {
+        out.append(hdr.dst_ip_str[..]);
+    } else {
+        format_ipv6(hdr.dst_ipv6, out);
+    }
+    out.push(' ');
+    format(out, hdr.src_port as i64);
+    out.push(' ');
+    format(out, hdr.dst_port as i64);
+    out.append("\r\n");
+    return true;
 }
 
 // ---- 5. PROXY Protocol v2 Parser & Serializer (Binary) ----------------------
@@ -423,6 +445,11 @@ fn validate_proxy_v2_preamble(wire: const u8[:]) -> bool {
     return true;
 }
 
+// Parses the 4-bit command nibble of a PROXY v2 header (HAProxy §2.2).
+//
+// Example:
+//   ver_cmd = 0x21 (version 2, command PROXY)
+//   returns: ok = true, out_cmd = ProxyCommand.Proxy
 fn parse_proxy_v2_command(ver_cmd: u8, out_cmd: ProxyCommand&) -> bool {
     let ver = (ver_cmd >> 4) & 0x0F;
     guard ver == 0x2 else { return false; }
@@ -437,9 +464,14 @@ fn parse_proxy_v2_command(ver_cmd: u8, out_cmd: ProxyCommand&) -> bool {
     return false;
 }
 
+// Parses family and transport protocol nibbles of a PROXY v2 header (HAProxy §2.2).
+//
+// Example:
+//   fam_trans = 0x11 (AF_INET, STREAM)
+//   returns: ok = true, out_fam = Inet4, out_trans = Stream
 fn parse_proxy_v2_family_transport(
     fam_trans: u8,
-    out_fam: ProxyAddressFamily&,
+    out_fam:   ProxyAddressFamily&,
     out_trans: ProxyTransportProtocol&,
 ) -> bool {
     // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
@@ -477,11 +509,16 @@ fn parse_proxy_v2_family_transport(
     return false;
 }
 
+// Parses IP addresses and ports from PROXY v2 address block (HAProxy §2.2).
+//
+// Example:
+//   wire = "\x01\x02\x03\x04\x05\x06\x07\x08\x00\x50\x01\xbb", fam = Inet4
+//   returns: ok = true, out_addr_len = 12
 fn parse_proxy_v2_addresses(
-    wire: const u8[:],
-    payload_len: i64,
-    fam: ProxyAddressFamily,
-    hdr: ProxyHeader&,
+    wire:         const u8[:],
+    payload_len:  i64,
+    fam:          ProxyAddressFamily,
+    hdr:          ProxyHeader&,
     out_addr_len: i64&,
 ) -> bool {
     // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
@@ -532,7 +569,108 @@ fn parse_proxy_v2_addresses(
     return true;
 }
 
-// Returns (ProxyHeader, bytes_consumed, success)
+// Parses SSL TLV and its sub-TLVs (HAProxy §2.2).
+//
+// Example:
+//   val = "\x01\x00\x00\x00\x00\x21\x00\x07TLSv1.3"
+//   returns: ok = true, ssl.has_ssl = true, ssl.version = "TLSv1.3"
+fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
+    guard val.len >= 5 else { return false; }
+    ssl.has_ssl = true;
+    ssl.client_flags = val[0];
+    var ssl_r = core::new_slice_reader(val[1..]);
+    let v_res, _ = ssl_r.read_u32_be();
+    ssl.verify_result = v_res;
+
+    var sub_offset: i64 = 5;
+    while sub_offset + 3 <= val.len {
+        let sub_type = val[sub_offset];
+        var sub_r = core::new_slice_reader(val[(sub_offset + 1)..]);
+        let sub_len_u16, _ = sub_r.read_u16_be();
+        let sub_len = sub_len_u16 as i64;
+        let sub_start = sub_offset + 3;
+        let sub_end = sub_start + sub_len;
+        guard sub_end <= val.len else { return false; }
+
+        let sub_val = val[sub_start..sub_end];
+        if sub_type == internal::PP2_SUBTYPE_SSL_VERSION {
+            guard sub_val.len <= ssl.version.cap else { return false; }
+            ssl.version.clear();
+            ssl.version.append(sub_val);
+        } else if sub_type == internal::PP2_SUBTYPE_SSL_CN {
+            guard sub_val.len <= ssl.client_cn.cap else { return false; }
+            ssl.client_cn.clear();
+            ssl.client_cn.append(sub_val);
+        } else if sub_type == internal::PP2_SUBTYPE_SSL_CIPHER {
+            guard sub_val.len <= ssl.cipher.cap else { return false; }
+            ssl.cipher.clear();
+            ssl.cipher.append(sub_val);
+        } else if sub_type == internal::PP2_SUBTYPE_SSL_SIG_ALG {
+            guard sub_val.len <= ssl.sig_alg.cap else { return false; }
+            ssl.sig_alg.clear();
+            ssl.sig_alg.append(sub_val);
+        } else if sub_type == internal::PP2_SUBTYPE_SSL_KEY_ALG {
+            guard sub_val.len <= ssl.key_alg.cap else { return false; }
+            ssl.key_alg.clear();
+            ssl.key_alg.append(sub_val);
+        }
+        sub_offset = sub_end;
+    }
+    return sub_offset == val.len;
+}
+
+// Parses PROXY v2 TLV vector from tlv_offset up to tlv_limit (HAProxy §2.2).
+//
+// Example:
+//   wire = "\x01\x00\x02h2", tlv_offset = 0, tlv_limit = 5
+//   returns: ok = true, hdr.alpn = "h2", tlv_offset = 5
+fn parse_proxy_v2_tlvs(
+    wire:       const u8[:],
+    tlv_offset: i64&,
+    tlv_limit:  i64,
+    hdr:        ProxyHeader&,
+) -> bool {
+    while tlv_offset + 3 <= tlv_limit {
+        let tlv_type = wire[tlv_offset];
+        var tlv_r = core::new_slice_reader(wire[(tlv_offset + 1)..]);
+        let tlv_len_u16, _ = tlv_r.read_u16_be();
+        let tlv_len = tlv_len_u16 as i64;
+        let val_start = tlv_offset + 3;
+        let val_end = val_start + tlv_len;
+        guard val_end <= tlv_limit else { return false; }
+
+        let val = wire[val_start..val_end];
+
+        if tlv_type == internal::PP2_TYPE_ALPN {
+            guard val.len <= hdr.alpn.cap else { return false; }
+            hdr.alpn.clear();
+            hdr.alpn.append(val);
+        } else if tlv_type == internal::PP2_TYPE_AUTHORITY {
+            guard val.len <= hdr.authority.cap else { return false; }
+            hdr.authority.clear();
+            hdr.authority.append(val);
+        } else if tlv_type == internal::PP2_TYPE_UNIQUE_ID {
+            guard val.len <= hdr.unique_id.cap else { return false; }
+            hdr.unique_id.clear();
+            hdr.unique_id.append(val);
+        } else if tlv_type == internal::PP2_TYPE_NETNS {
+            guard val.len <= hdr.netns.cap else { return false; }
+            hdr.netns.clear();
+            hdr.netns.append(val);
+        } else if tlv_type == internal::PP2_TYPE_SSL {
+            guard parse_proxy_v2_ssl_tlv(val, hdr.ssl) else { return false; }
+        }
+
+        tlv_offset = val_end;
+    }
+    return tlv_offset == tlv_limit;
+}
+
+// Parses an incoming PROXY v2 binary header (HAProxy §2.2).
+//
+// Example:
+//   wire = "\x0d\x0a\x0d\x0a\x00\x0d\x0a\x51\x55\x49\x54\x0a\x21\x11\x00\x0c..."
+//   returns: hdr.version = V2, consumed = 28, ok = true
 fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
     var hdr = ProxyHeader { version: ProxyProtocolVersion.V2, .. };
     guard validate_proxy_v2_preamble(wire) else { return hdr, 0, false; }
@@ -553,96 +691,9 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
     var tlv_offset = 16 + addr_len;
     let tlv_limit = 16 + payload_len;
 
-    while tlv_offset + 3 <= tlv_limit {
-        let tlv_type = wire[tlv_offset];
-        var tlv_r = core::new_slice_reader(wire[(tlv_offset + 1)..]);
-        let tlv_len_u16, _ = tlv_r.read_u16_be();
-        let tlv_len = tlv_len_u16 as i64;
-        let val_start = tlv_offset + 3;
-        let val_end = val_start + tlv_len;
-        guard val_end <= tlv_limit else { return hdr, 0, false; }
-
-        let val = wire[val_start..val_end];
-
-        if tlv_type == internal::PP2_TYPE_ALPN {
-            if val.len <= hdr.alpn.cap {
-                hdr.alpn.clear();
-                hdr.alpn.append(val);
-            }
-        } else if tlv_type == internal::PP2_TYPE_AUTHORITY {
-            if val.len <= hdr.authority.cap {
-                hdr.authority.clear();
-                hdr.authority.append(val);
-            }
-        } else if tlv_type == internal::PP2_TYPE_UNIQUE_ID {
-            if val.len <= hdr.unique_id.cap {
-                hdr.unique_id.clear();
-                hdr.unique_id.append(val);
-            }
-        } else if tlv_type == internal::PP2_TYPE_NETNS {
-            if val.len <= hdr.netns.cap {
-                hdr.netns.clear();
-                hdr.netns.append(val);
-            }
-        } else if tlv_type == internal::PP2_TYPE_SSL {
-            guard val.len >= 5 else { return hdr, 0, false; }
-            hdr.ssl.has_ssl = true;
-            hdr.ssl.client_flags = val[0];
-            var ssl_r = core::new_slice_reader(val[1..]);
-            let v_res, _ = ssl_r.read_u32_be();
-            hdr.ssl.verify_result = v_res;
-
-            // Parse SSL Sub-TLVs
-            var sub_offset: i64 = 5;
-            while sub_offset + 3 <= val.len {
-                let sub_type = val[sub_offset];
-                var sub_r = core::new_slice_reader(val[(sub_offset + 1)..]);
-                let sub_len_u16, _ = sub_r.read_u16_be();
-                let sub_len = sub_len_u16 as i64;
-                let sub_start = sub_offset + 3;
-                let sub_end = sub_start + sub_len;
-                guard sub_end <= val.len else { return hdr, 0, false; }
-
-                let sub_val = val[sub_start..sub_end];
-                if sub_type == internal::PP2_SUBTYPE_SSL_VERSION {
-                    if sub_val.len <= hdr.ssl.version.cap {
-                        hdr.ssl.version.clear();
-                        hdr.ssl.version.append(sub_val);
-                    }
-                } else if sub_type == internal::PP2_SUBTYPE_SSL_CN {
-                    if sub_val.len <= hdr.ssl.client_cn.cap {
-                        hdr.ssl.client_cn.clear();
-                        hdr.ssl.client_cn.append(sub_val);
-                    }
-                } else if sub_type == internal::PP2_SUBTYPE_SSL_CIPHER {
-                    if sub_val.len <= hdr.ssl.cipher.cap {
-                        hdr.ssl.cipher.clear();
-                        hdr.ssl.cipher.append(sub_val);
-                    }
-                } else if sub_type == internal::PP2_SUBTYPE_SSL_SIG_ALG {
-                    if sub_val.len <= hdr.ssl.sig_alg.cap {
-                        hdr.ssl.sig_alg.clear();
-                        hdr.ssl.sig_alg.append(sub_val);
-                    }
-                } else if sub_type == internal::PP2_SUBTYPE_SSL_KEY_ALG {
-                    if sub_val.len <= hdr.ssl.key_alg.cap {
-                        hdr.ssl.key_alg.clear();
-                        hdr.ssl.key_alg.append(sub_val);
-                    }
-                }
-                sub_offset = sub_end;
-            }
-            // HAProxy PROXY Protocol v2 §2.2 & uWS #1927: Truncated SSL sub-TLVs must reject
-            guard sub_offset == val.len else { return hdr, 0, false; }
-        }
-
-        tlv_offset = val_end;
+    guard parse_proxy_v2_tlvs(wire, tlv_offset, tlv_limit, hdr) else {
+        return hdr, 0, false;
     }
-
-    // HAProxy PROXY Protocol v2 §2.2 & uWS #1927 / #1948:
-    // Total length of address block and TLVs must strictly equal payload_len.
-    // Trailing unparsed bytes or truncated TLVs MUST be rejected immediately.
-    guard tlv_offset == tlv_limit else { return hdr, 0, false; }
 
     return hdr, total_required, true;
 }
@@ -728,7 +779,11 @@ fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
 fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     for b in internal::PROXY_V2_PREAMBLE { out.push(b); }
 
-    let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local { internal::PP2_CMD_LOCAL } else { internal::PP2_CMD_PROXY };
+    let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local {
+        internal::PP2_CMD_LOCAL
+    } else {
+        internal::PP2_CMD_PROXY
+    };
     out.push(0x20 | cmd_nibble);
 
     var fam_nibble: u8 = internal::PP2_FAM_UNSPEC;
@@ -788,6 +843,10 @@ fn detect_proxy_protocol(wire: const u8[:]) -> ProxyProtocolVersion {
 
 // Parses an incoming wire stream, automatically determining if it is PROXY v1 or v2.
 // Returns (ProxyHeader, bytes_consumed, success)
+//
+// Example:
+//   wire = "PROXY TCP4 1.2.3.4 5.6.7.8 443 80\r\n"
+//   returns: hdr.family = Inet4, consumed = 33, ok = true
 fn parse_proxy_header(wire: const u8[:]) -> ProxyHeader, i64, bool {
     let ver = detect_proxy_protocol(wire);
     if ver == ProxyProtocolVersion.V2 {

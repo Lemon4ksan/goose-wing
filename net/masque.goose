@@ -9,36 +9,40 @@ import std;
 
 // ---- 1. Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
-const CAPSULE_DATAGRAM: u64 = 0x00;                   // RFC 9297 Section 3.5 (DATAGRAM Capsule)
-const CAPSULE_PADDING: u64 = 0x01;                    // RFC 9297 Section 3.2 (Capsule padding)
-const CAPSULE_ADDRESS_ASSIGN: u64 = 0x1E;             // RFC 9484 CONNECT-IP Section 4.1
-const CAPSULE_ADDRESS_REQUEST: u64 = 0x1F;            // RFC 9484 CONNECT-IP Section 4.2
+const CAPSULE_DATAGRAM:            u64 = 0x00;        // RFC 9297 Section 3.5 (DATAGRAM Capsule)
+const CAPSULE_PADDING:             u64 = 0x01;        // RFC 9297 Section 3.2 (Capsule padding)
+const CAPSULE_ADDRESS_ASSIGN:      u64 = 0x1E;        // RFC 9484 CONNECT-IP Section 4.1
+const CAPSULE_ADDRESS_REQUEST:     u64 = 0x1F;        // RFC 9484 CONNECT-IP Section 4.2
 const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x20;        // RFC 9484 CONNECT-IP Section 4.3
-const CAPSULE_WT_RESET_STREAM: u64 = 0x2841;          // WebTransport
-const CAPSULE_WT_STOP_SENDING: u64 = 0x2842;          // WebTransport
-const CAPSULE_CLOSE_WEBTRANSPORT: u64 = 0x2843;       // WebTransport
-const CAPSULE_DRAIN_WEBTRANSPORT: u64 = 0x78AE;       // WebTransport
+const CAPSULE_WT_RESET_STREAM:     u64 = 0x2841;      // WebTransport
+const CAPSULE_WT_STOP_SENDING:     u64 = 0x2842;      // WebTransport
+const CAPSULE_CLOSE_WEBTRANSPORT:  u64 = 0x2843;      // WebTransport
+const CAPSULE_DRAIN_WEBTRANSPORT:  u64 = 0x78AE;      // WebTransport
 
 // Legacy draft backward-compatibility constants
-const CAPSULE_DRAFT_ADDRESS_ASSIGN: u64 = 0x3861;
-const CAPSULE_DRAFT_ADDRESS_REQUEST: u64 = 0x3862;
+const CAPSULE_DRAFT_ADDRESS_ASSIGN:      u64 = 0x3861;
+const CAPSULE_DRAFT_ADDRESS_REQUEST:     u64 = 0x3862;
 const CAPSULE_DRAFT_ROUTE_ADVERTISEMENT: u64 = 0x3863;
 
 const MASQUE_PROTOCOL_CONNECT_UDP: const u8[:] = "connect-udp";
-const MASQUE_PROTOCOL_CONNECT_IP: const u8[:] = "connect-ip";
-const MASQUE_CAPSULE_HEADER: const u8[:] = "capsule-protocol";
-const MASQUE_CAPSULE_VALUE: const u8[:] = "?1";
+const MASQUE_PROTOCOL_CONNECT_IP:  const u8[:] = "connect-ip";
+const MASQUE_CAPSULE_HEADER:       const u8[:] = "capsule-protocol";
+const MASQUE_CAPSULE_VALUE:        const u8[:] = "?1";
 
 struct HttpCapsule {
-    capsule_type: u64 = 0,
-    payload: const u8[:] = [],
-    header_len: u64 = 0,
+    capsule_type: u64         = 0,
+    payload:      const u8[:] = [],
+    header_len:   u64         = 0,
 }
 
 // ---- 2. Capsule Codec (RFC 9297 Section 3.1) -------------------------------
 
-// Parses an HTTP Capsule header and value from wire stream:
+// Parses an HTTP Capsule header and value from wire stream (RFC 9297 §3.1).
 // Capsule format: Type (VarInt) || Length (VarInt) || Value (bytes)
+//
+// Example:
+//   src = "\x00\x05hello"
+//   returns: capsule_type = 0, payload = "hello", ok = true
 fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
     var c = HttpCapsule { payload: src[..0], .. };
     guard src.len > 0 else { return c, false; }
@@ -104,8 +108,12 @@ fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, pay
     return true;
 }
 
-// Decodes an HTTP Datagram payload from QUIC DATAGRAM frame:
+// Decodes an HTTP Datagram payload from QUIC DATAGRAM frame (RFC 9297 §2.1).
 // Returns (Quarter Stream ID, Context ID, Payload, Ok)
+//
+// Example:
+//   wire = "\x00\x00data"
+//   returns: quarter_stream_id = 0, context_id = 0, payload = "data", ok = true
 fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool {
     guard wire.len > 0 else { return 0, 0, wire[..0], false; }
     let q_id, off1, ok1 = internal::quic_decode_varint(wire, 0);
@@ -128,10 +136,14 @@ fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u1
     out.push('/');
 }
 
-// Parses a MASQUE CONNECT-UDP URI template path into (host, port, ok)
+// Parses a MASQUE CONNECT-UDP URI template path into (host, port, ok) (RFC 9298 §2).
+//
+// Example:
+//   path = "/.well-known/masque/udp/1.1.1.1/53/"
+//   returns: host = "1.1.1.1", port = 53, ok = true
 fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
     var out_host: u8[..128] = [];
-    var out_port: u16 = 0;
+    var out_port: u16       = 0;
     let prefix = "/.well-known/masque/udp/";
     guard starts_with(path, prefix) else { return out_host, 0, false; }
 
@@ -170,7 +182,11 @@ fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: 
     return encode_http_capsule(out, CAPSULE_DATAGRAM, datagram_body[..]);
 }
 
-// Parses a DATAGRAM capsule payload into (context_id, udp_packet, ok)
+// Parses a DATAGRAM capsule payload into (context_id, udp_packet, ok) (RFC 9298 §5).
+//
+// Example:
+//   capsule_payload = "\x00dns-wire-bytes"
+//   returns: context_id = 0, packet = "dns-wire-bytes", ok = true
 fn parse_connect_udp_datagram(capsule_payload: const u8[:]) -> u64, const u8[:], bool {
     guard capsule_payload.len > 0 else { return 0, capsule_payload[..0], false; }
     let context_id, off, ok = internal::quic_decode_varint(capsule_payload, 0);
@@ -183,23 +199,23 @@ fn parse_connect_udp_datagram(capsule_payload: const u8[:]) -> u64, const u8[:],
 // ---- 5. MASQUE CONNECT-IP (RFC 9484) ---------------------------------------
 
 struct IpAddressRequest {
-    request_id: u64 = 0,
-    ip_version: u8 = 4,
-    prefix_len: u8 = 32,
+    request_id:   u64      = 0,
+    ip_version:   u8       = 4,
+    prefix_len:   u8       = 32,
     requested_ip: u8[..16] = [],
 }
 
 struct IpAddressAssign {
-    request_id: u64 = 0,
-    ip_version: u8 = 4,
-    prefix_len: u8 = 32,
+    request_id:  u64      = 0,
+    ip_version:  u8       = 4,
+    prefix_len:  u8       = 32,
     assigned_ip: u8[..16] = [],
 }
 
 struct RouteAdvertisement {
-    ip_version: u8 = 4,
-    prefix_len: u8 = 0,
-    ip_prefix: u8[..16] = [],
+    ip_version: u8       = 4,
+    prefix_len: u8       = 0,
+    ip_prefix:  u8[..16] = [],
 }
 
 // Encodes an ADDRESS_REQUEST Capsule (RFC 9484 Section 4.2):
@@ -213,7 +229,11 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
     return encode_http_capsule(out, CAPSULE_ADDRESS_REQUEST, body[..]);
 }
 
-// Decodes an ADDRESS_REQUEST Capsule payload
+// Decodes an ADDRESS_REQUEST Capsule payload (RFC 9484 §4.2).
+//
+// Example:
+//   payload = "\x01\x04\x20\x0a\x00\x00\x01"
+//   returns: req.request_id = 1, req.ip_version = 4, req.prefix_len = 32, ok = true
 fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, bool {
     var req = IpAddressRequest { .. };
     guard payload.len >= 2 else { return req, false; }
@@ -252,7 +272,11 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
     return encode_http_capsule(out, CAPSULE_ADDRESS_ASSIGN, body[..]);
 }
 
-// Decodes an ADDRESS_ASSIGN Capsule payload
+// Decodes an ADDRESS_ASSIGN Capsule payload (RFC 9484 §4.1).
+//
+// Example:
+//   payload = "\x01\x04\x20\x0a\x00\x00\x01"
+//   returns: assign.request_id = 1, assign.ip_version = 4, assign.prefix_len = 32, ok = true
 fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool {
     var assign = IpAddressAssign { .. };
     guard payload.len >= 2 else { return assign, false; }
@@ -287,7 +311,11 @@ fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisemen
     return encode_http_capsule(out, CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
 }
 
-// Decodes a ROUTE_ADVERTISEMENT Capsule payload
+// Decodes a ROUTE_ADVERTISEMENT Capsule payload (RFC 9484 §4.3).
+//
+// Example:
+//   payload = "\x04\x18\x0a\x00\x00\x00"
+//   returns: route.ip_version = 4, route.prefix_len = 24, ok = true
 fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisement, bool {
     var route = RouteAdvertisement { .. };
     guard payload.len >= 2 else { return route, false; }
@@ -309,16 +337,6 @@ fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisemen
     return route, true;
 }
 
-// Encapsulates an IP packet into a stream DATAGRAM capsule (Context ID = 0)
-fn encode_connect_ip_datagram_capsule<B>(out: B&, context_id: u64, ip_packet: const u8[:]) -> bool {
-    return encode_connect_udp_datagram_capsule(out, context_id, ip_packet);
-}
-
-// Parses an IP packet from a stream DATAGRAM capsule
-fn parse_connect_ip_datagram(capsule_payload: const u8[:]) -> u64, const u8[:], bool {
-    return parse_connect_udp_datagram(capsule_payload);
-}
-
 // ---- 6. MASQUE Tunnel Session Manager ---------------------------------------
 
 enum MasqueTunnelState {
@@ -335,37 +353,37 @@ enum MasqueProtocolMode {
 }
 
 struct MasqueTunnelConfig {
-    proxy_url: u8[..256] = [],
-    mode: MasqueProtocolMode = MasqueProtocolMode.ConnectUdp,
-    target_host: u8[..128] = [],
-    target_port: u16 = 53,
-    use_quic_datagrams: bool = true,
+    proxy_url:          u8[..256]          = [],
+    mode:               MasqueProtocolMode = MasqueProtocolMode.ConnectUdp,
+    target_host:        u8[..128]          = [],
+    target_port:        u16                = 53,
+    use_quic_datagrams: bool               = true,
 }
 
 struct MasqueTunnelSession {
-    config: MasqueTunnelConfig = MasqueTunnelConfig { .. },
-    stream_id: u64 = 0,
-    quarter_stream_id: u64 = 0,
-    state: MasqueTunnelState = MasqueTunnelState.Idle,
-    assigned_ip: u8[..16] = [],
-    assigned_prefix_len: u8 = 32,
-    packets_sent: u64 = 0,
-    packets_received: u64 = 0,
-    bytes_sent: u64 = 0,
-    bytes_received: u64 = 0,
+    config:              MasqueTunnelConfig = MasqueTunnelConfig { .. },
+    stream_id:           u64                = 0,
+    quarter_stream_id:   u64                = 0,
+    state:               MasqueTunnelState  = MasqueTunnelState.Idle,
+    assigned_ip:         u8[..16]           = [],
+    assigned_prefix_len: u8                 = 32,
+    packets_sent:        u64                = 0,
+    packets_received:    u64                = 0,
+    bytes_sent:          u64                = 0,
+    bytes_received:      u64                = 0,
 }
 
 fn new_connect_udp_tunnel(
-    proxy_url: const u8[:],
-    target_host: const u8[:],
-    target_port: u16,
-    stream_id: u64 = 0,
+    proxy_url:     const u8[:],
+    target_host:   const u8[:],
+    target_port:   u16,
+    stream_id:     u64  = 0,
     use_datagrams: bool = true,
 ) -> MasqueTunnelSession {
     var s = MasqueTunnelSession {
-        stream_id: stream_id,
+        stream_id:         stream_id,
         quarter_stream_id: stream_id / 4,
-        state: MasqueTunnelState.Idle,
+        state:             MasqueTunnelState.Idle,
         ..
     };
     s.config.proxy_url.append(proxy_url);
@@ -377,14 +395,14 @@ fn new_connect_udp_tunnel(
 }
 
 fn new_connect_ip_tunnel(
-    proxy_url: const u8[:],
-    stream_id: u64 = 0,
+    proxy_url:     const u8[:],
+    stream_id:     u64  = 0,
     use_datagrams: bool = true,
 ) -> MasqueTunnelSession {
     var s = MasqueTunnelSession {
-        stream_id: stream_id,
+        stream_id:         stream_id,
         quarter_stream_id: stream_id / 4,
-        state: MasqueTunnelState.Idle,
+        state:             MasqueTunnelState.Idle,
         ..
     };
     s.config.proxy_url.append(proxy_url);
@@ -395,9 +413,9 @@ fn new_connect_ip_tunnel(
 
 // Builds the HTTP Extended CONNECT request headers and path for MASQUE handshake
 fn build_masque_connect_request(
-    tunnel: const MasqueTunnelSession&,
+    tunnel:      const MasqueTunnelSession&,
     out_headers: HeaderItem[..16]&,
-    out_path: u8[..256]&,
+    out_path:    u8[..256]&,
 ) {
     out_headers.clear();
     out_headers.set_header(":method", "CONNECT");
@@ -431,6 +449,15 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
     return ok;
 }
 
+fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool {
+    let assign, ok_a = decode_address_assign_capsule(payload);
+    guard ok_a else { return false; }
+    tunnel.assigned_ip.clear();
+    tunnel.assigned_ip.append(assign.assigned_ip[..]);
+    tunnel.assigned_prefix_len = assign.prefix_len;
+    return true;
+}
+
 // Ingests an incoming in-stream Capsule from the tunnel wire stream.
 fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
@@ -445,13 +472,10 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
         tunnel.packets_received++;
         tunnel.bytes_received += pkt.len as u64;
         return true;
-    } else if c.capsule_type == CAPSULE_ADDRESS_ASSIGN || c.capsule_type == CAPSULE_DRAFT_ADDRESS_ASSIGN {
-        let assign, ok_a = decode_address_assign_capsule(c.payload);
-        guard ok_a else { return false; }
-        tunnel.assigned_ip.clear();
-        tunnel.assigned_ip.append(assign.assigned_ip[..]);
-        tunnel.assigned_prefix_len = assign.prefix_len;
-        return true;
+    }
+
+    if c.capsule_type == CAPSULE_ADDRESS_ASSIGN || c.capsule_type == CAPSULE_DRAFT_ADDRESS_ASSIGN {
+        return apply_assigned_ip(tunnel, c.payload);
     }
     return false;
 }

@@ -14,7 +14,7 @@ import wing from "..";
 fn test_socks5_greeting_and_rfc1929(t: core::T&) {
     t.run("SOCKS5 Phase 1 Greeting and Negotiation") { sub =>
         var greeting_buf: u8[..16] = [];
-        wing::build_socks5_greeting(true, true, greeting_buf);
+        wing::build_socks5_greeting(wing::Socks5GreetingOptions { has_credentials: true, enable_gssapi: true }, greeting_buf);
 
         sub.assert_eq(greeting_buf[0], 0x05, "Greeting version is 0x05");
         sub.assert_eq(greeting_buf[1], 3, "3 auth methods announced (None, UserPass, GSSAPI)");
@@ -24,7 +24,7 @@ fn test_socks5_greeting_and_rfc1929(t: core::T&) {
 
         // Greeting without credentials and without GSSAPI (None only)
         var greet_none: u8[..16] = [];
-        wing::build_socks5_greeting(false, false, greet_none);
+        wing::build_socks5_greeting(wing::Socks5GreetingOptions { has_credentials: false, enable_gssapi: false }, greet_none);
         sub.assert_eq(greet_none.len, 3, "Greeting len == 3 (ver, nmethods=1, none)");
         sub.assert_eq(greet_none[1], 1, "1 auth method announced");
         sub.assert_eq(greet_none[2], 0x00, "Method is None");
@@ -417,14 +417,14 @@ fn test_proxy_v1_conformance(t: core::T&) {
 
     t.run("PROXY-v1-04: Serialization round-trip") { sub =>
         var hdr = wing::ProxyHeader {
-            version: wing::ProxyProtocolVersion.V1,
-            command: wing::ProxyCommand.Proxy,
-            family: wing::ProxyAddressFamily.Inet4,
+            version:   wing::ProxyProtocolVersion.V1,
+            command:   wing::ProxyCommand.Proxy,
+            family:    wing::ProxyAddressFamily.Inet4,
             transport: wing::ProxyTransportProtocol.Stream,
-            src_ipv4: [172, 16, 1, 25],
-            dst_ipv4: [10, 0, 0, 2],
-            src_port: 41234,
-            dst_port: 8080,
+            src_ipv4:  [172, 16, 1, 25],
+            dst_ipv4:  [10, 0, 0, 2],
+            src_port:  41234,
+            dst_port:  8080,
             ..
         };
         hdr.src_ip_str.append("172.16.1.25");
@@ -565,14 +565,14 @@ fn test_proxy_v2_conformance(t: core::T&) {
 fn test_proxy_v2_tlvs(t: core::T&) {
     t.run("PROXY-v2-TLV-01: ALPN, Authority, and Unique ID") { sub =>
         var hdr = wing::ProxyHeader {
-            version: wing::ProxyProtocolVersion.V2,
-            command: wing::ProxyCommand.Proxy,
-            family: wing::ProxyAddressFamily.Inet4,
+            version:   wing::ProxyProtocolVersion.V2,
+            command:   wing::ProxyCommand.Proxy,
+            family:    wing::ProxyAddressFamily.Inet4,
             transport: wing::ProxyTransportProtocol.Stream,
-            src_ipv4: [192, 168, 1, 100],
-            dst_ipv4: [10, 0, 0, 1],
-            src_port: 45678,
-            dst_port: 443,
+            src_ipv4:  [192, 168, 1, 100],
+            dst_ipv4:  [10, 0, 0, 1],
+            src_port:  45678,
+            dst_port:  443,
             ..
         };
         hdr.alpn.append("h2");
@@ -596,14 +596,14 @@ fn test_proxy_v2_tlvs(t: core::T&) {
 
     t.run("PROXY-v2-TLV-02: SSL/TLS Metadata & Sub-TLVs") { sub =>
         var hdr = wing::ProxyHeader {
-            version: wing::ProxyProtocolVersion.V2,
-            command: wing::ProxyCommand.Proxy,
-            family: wing::ProxyAddressFamily.Inet4,
+            version:   wing::ProxyProtocolVersion.V2,
+            command:   wing::ProxyCommand.Proxy,
+            family:    wing::ProxyAddressFamily.Inet4,
             transport: wing::ProxyTransportProtocol.Stream,
-            src_ipv4: [10, 20, 30, 40],
-            dst_ipv4: [10, 0, 0, 2],
-            src_port: 33445,
-            dst_port: 8443,
+            src_ipv4:  [10, 20, 30, 40],
+            dst_ipv4:  [10, 0, 0, 2],
+            src_port:  33445,
+            dst_port:  8443,
             ..
         };
         hdr.ssl.has_ssl = true;
@@ -929,7 +929,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
 
         var wire: u8[>..] = [];
         let client_ip: u8[..16] = "198.51.100.77";
-        let now_ns: u64 = 1000000000;
+        let now_ns:    u64      = 1000000000;
 
         let _, ok1 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
         let _, ok2 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
@@ -1020,7 +1020,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
 
         var wire: u8[>..] = [];
         let client_ip: u8[..16] = "198.51.100.88";
-        let now_ns: u64 = 2000000000;
+        let now_ns:    u64      = 2000000000;
 
         let _, ok1 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
         let _, ok2 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
@@ -1130,7 +1130,7 @@ fn test_gateway_rate_limiter(t: core::T&) {
         var limiter = wing::new_gateway_rate_limiter(10, 2);
         let client_a: u8[..16] = "192.168.1.100";
         let client_b: u8[..16] = "10.0.0.1";
-        let now_ns: u64 = 1000000000;
+        let now_ns:   u64      = 1000000000;
 
         // Client A consumes all 3 burst tokens
         let da1 = wing::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
@@ -1153,7 +1153,7 @@ fn test_gateway_rate_limiter(t: core::T&) {
     t.run("Idle Client Eviction and Table Reset") { sub =>
         var limiter = wing::new_gateway_rate_limiter(5, 1);
         let client_old: u8[..16] = "172.16.0.5";
-        let now_ns: u64 = 1000000000;
+        let now_ns:     u64      = 1000000000;
 
         wing::check_gateway_rate_limit(limiter, client_old[..], 1, now_ns);
         sub.assert_eq(limiter.entries.len, 1, "1 client slot registered");
@@ -1344,8 +1344,8 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
         let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         let dec: wing::RateLimitDecision = wing::RateLimitDecision.Allowed {
             remaining_burst: 8,
-            new_tat_ns: 1200000000,
-            reset_after_ns: 200000000,
+            new_tat_ns:      1200000000,
+            reset_after_ns:  200000000,
         };
 
         var res = wing::Response { .. };
@@ -1495,7 +1495,7 @@ fn test_rfc9297_capsules_and_datagrams(t: core::T&) {
         var dgram_wire: u8[>..] = [];
         let udp_sample = "dns_query_udp_payload";
         let quarter_stream_id: u64 = 2; // Stream ID 8 / 4 = 2
-        let context_id: u64 = 0;        // Default uncompressed context
+        let context_id:        u64 = 0; // Default uncompressed context
 
         let enc_ok = wing::encode_http_datagram(dgram_wire, quarter_stream_id, context_id, udp_sample);
         sub.assert_true(enc_ok, "encode_http_datagram ok");

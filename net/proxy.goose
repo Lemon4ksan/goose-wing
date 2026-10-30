@@ -20,30 +20,30 @@ enum ProxyScheme {
     Socks5h,
 }
 
-let SOCKS5_VER: u8 = 0x05;
+let SOCKS5_VER:         u8 = 0x05;
 let SOCKS5_RFC1929_VER: u8 = 0x01; // First byte of RFC 1929 subnegotiation MUST be 0x01
 
-let SOCKS5_AUTH_NONE: u8 = 0x00;
-let SOCKS5_AUTH_GSSAPI: u8 = 0x01;
-let SOCKS5_AUTH_USERPASS: u8 = 0x02;
+let SOCKS5_AUTH_NONE:          u8 = 0x00;
+let SOCKS5_AUTH_GSSAPI:        u8 = 0x01;
+let SOCKS5_AUTH_USERPASS:      u8 = 0x02;
 let SOCKS5_AUTH_NO_ACCEPTABLE: u8 = 0xFF;
 
-let SOCKS5_CMD_CONNECT: u8 = 0x01;
-let SOCKS5_CMD_BIND: u8 = 0x02;
+let SOCKS5_CMD_CONNECT:       u8 = 0x01;
+let SOCKS5_CMD_BIND:          u8 = 0x02;
 let SOCKS5_CMD_UDP_ASSOCIATE: u8 = 0x03;
 
-let SOCKS5_ATYP_IPV4: u8 = 0x01;
+let SOCKS5_ATYP_IPV4:   u8 = 0x01;
 let SOCKS5_ATYP_DOMAIN: u8 = 0x03;
-let SOCKS5_ATYP_IPV6: u8 = 0x04;
+let SOCKS5_ATYP_IPV6:   u8 = 0x04;
 
-let SOCKS5_REP_SUCCEEDED: u8 = 0x00;
-let SOCKS5_REP_GENERAL_FAILURE: u8 = 0x01;
-let SOCKS5_REP_NOT_ALLOWED: u8 = 0x02;
-let SOCKS5_REP_NET_UNREACHABLE: u8 = 0x03;
-let SOCKS5_REP_HOST_UNREACHABLE: u8 = 0x04;
-let SOCKS5_REP_CONN_REFUSED: u8 = 0x05;
-let SOCKS5_REP_TTL_EXPIRED: u8 = 0x06;
-let SOCKS5_REP_CMD_NOT_SUPPORTED: u8 = 0x07;
+let SOCKS5_REP_SUCCEEDED:          u8 = 0x00;
+let SOCKS5_REP_GENERAL_FAILURE:    u8 = 0x01;
+let SOCKS5_REP_NOT_ALLOWED:        u8 = 0x02;
+let SOCKS5_REP_NET_UNREACHABLE:    u8 = 0x03;
+let SOCKS5_REP_HOST_UNREACHABLE:   u8 = 0x04;
+let SOCKS5_REP_CONN_REFUSED:       u8 = 0x05;
+let SOCKS5_REP_TTL_EXPIRED:        u8 = 0x06;
+let SOCKS5_REP_CMD_NOT_SUPPORTED:  u8 = 0x07;
 let SOCKS5_REP_ATYP_NOT_SUPPORTED: u8 = 0x08;
 
 enum Socks5Error {
@@ -66,29 +66,38 @@ enum Socks5Error {
 
 // ---- 2. SOCKS5 frame builders & parsers ------------------------------------
 
+// Options for SOCKS5 greeting negotiation.
+struct Socks5GreetingOptions {
+    has_credentials: bool = false,
+    enable_gssapi:   bool = false,
+}
+
 // Builds Phase 1 Greeting frame [VER, NAUTH, AUTH...].
 fn build_socks5_greeting(
-    has_credentials: bool,
-    enable_gssapi: bool,
-    out: u8[..16]&,
+    opts: Socks5GreetingOptions,
+    out:  u8[..16]&,
 ) {
     out.clear();
     out.push(SOCKS5_VER);
     var auth_count: u8 = 1;
-    if has_credentials { auth_count++; }
-    if enable_gssapi { auth_count++; }
+    if opts.has_credentials { auth_count++; }
+    if opts.enable_gssapi { auth_count++; }
 
     out.push(auth_count);
     out.push(SOCKS5_AUTH_NONE);
-    if has_credentials {
+    if opts.has_credentials {
         out.push(SOCKS5_AUTH_USERPASS);
     }
-    if enable_gssapi {
+    if opts.enable_gssapi {
         out.push(SOCKS5_AUTH_GSSAPI);
     }
 }
 
 // Parses Phase 1 Server Greeting Reply [VER, METHOD].
+//
+// Example:
+//   buf = [0x05, 0x00]
+//   returns: 0x00, Socks5Error.None
 fn parse_socks5_greeting_reply(buf: const u8[:]) -> u8, Socks5Error {
     guard buf.len >= 2 else { return 0xFF, Socks5Error.BufferTruncated; }
     guard buf[0] == SOCKS5_VER else { return 0xFF, Socks5Error.InvalidVersion; }
@@ -104,7 +113,7 @@ fn parse_socks5_greeting_reply(buf: const u8[:]) -> u8, Socks5Error {
 fn build_socks5_rfc1929_auth(
     username: const u8[:],
     password: const u8[:],
-    out: u8[..520]&,
+    out:      u8[..520]&,
 ) -> Socks5Error {
     out.clear();
     guard username.len >= 1 && username.len <= 255 else { return Socks5Error.AuthFailed; }
@@ -120,6 +129,10 @@ fn build_socks5_rfc1929_auth(
 }
 
 // Parses Phase 2 RFC 1929 Reply [0x01, STATUS].
+//
+// Example:
+//   buf = [0x01, 0x00]
+//   returns: Socks5Error.None
 fn parse_socks5_rfc1929_reply(buf: const u8[:]) -> Socks5Error {
     guard buf.len >= 2 else { return Socks5Error.BufferTruncated; }
     guard buf[0] == SOCKS5_RFC1929_VER else { return Socks5Error.InvalidAuthResponse; }
@@ -132,12 +145,12 @@ fn parse_socks5_rfc1929_reply(buf: const u8[:]) -> Socks5Error {
 // Builds Phase 3 Connect Request [VER=0x05, CMD=0x01, RSV=0x00, ATYP, DST.ADDR, DST.PORT].
 // Enforces socks5:// (local DNS ATYP=0x01/0x04) vs socks5h:// (proxy DNS ATYP=0x03) distinction.
 fn build_socks5_connect_request(
-    scheme: ProxyScheme,
-    host_str: const u8[:],
+    scheme:        ProxyScheme,
+    host_str:      const u8[:],
     resolved_ipv4: const u8[4]&,
-    has_ipv4: bool,
-    port: u16,
-    out: u8[..300]&,
+    has_ipv4:      bool,
+    port:          u16,
+    out:           u8[..300]&,
 ) -> Socks5Error {
     out.clear();
     out.push(SOCKS5_VER);
@@ -169,9 +182,9 @@ fn build_socks5_connect_request(
 }
 
 struct Socks5Reply {
-    reply_code: u8 = 0,
-    atyp: u8 = 0,
-    bound_port: u16 = 0,
+    reply_code:     u8  = 0,
+    atyp:           u8  = 0,
+    bound_port:     u16 = 0,
     bytes_consumed: i64 = 0,
 }
 
@@ -209,6 +222,10 @@ fn socks5_rep_to_error(rep: u8) -> Socks5Error {
 
 // Parses Phase 4 Server Connect Reply [VER=0x05, REP, RSV=0x00, ATYP, BND.ADDR, BND.PORT].
 // Completely consumes bound address and port to ensure no leftover protocol bytes.
+//
+// Example:
+//   buf = [0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x1f, 0x90]
+//   returns: Socks5Reply { reply_code: 0, bound_port: 8080 }, Socks5Error.None
 fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     guard buf.len >= 4 else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
     guard buf[0] == SOCKS5_VER else { return Socks5Reply { .. }, Socks5Error.InvalidVersion; }
@@ -222,9 +239,9 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     let bnd_port = core::read_be_u16(buf, needed_len - 2);
 
     let res = Socks5Reply {
-        reply_code: rep,
-        atyp: atyp,
-        bound_port: bnd_port,
+        reply_code:     rep,
+        atyp:           atyp,
+        bound_port:     bnd_port,
         bytes_consumed: needed_len,
     };
 
@@ -246,12 +263,13 @@ enum ConnectTunnelError {
 fn build_http_connect_request(
     target_host: const u8[:],
     target_port: u16,
-    proxy_auth: const u8[:],
-    user_agent: const u8[:],
-    out: u8[..1024]&,
+    proxy_auth:  const u8[:],
+    user_agent:  const u8[:],
+    out:         u8[..1024]&,
 ) {
     out.clear();
-    format(out, "CONNECT ", target_host, ":", target_port, " HTTP/1.1\r\nHost: ", target_host, ":", target_port, "\r\n");
+    format(out, "CONNECT ", target_host, ":", target_port, " HTTP/1.1\r\n");
+    format(out, "Host: ", target_host, ":", target_port, "\r\n");
 
     if proxy_auth.len > 0 {
         out.append("Proxy-Authorization: ");
@@ -270,23 +288,27 @@ fn build_http_connect_request(
 
 fn is_token_in_connection_headers<H>(headers: const H&, target_name: const u8[:]) -> bool {
     for &h in headers {
-        if eq_ascii_fold(h.name[..], "connection") {
-            var rest: const u8[:] = h.value[..];
-            while rest.len > 0 {
-                let token_raw, remaining, has_comma = core::split_once_byte(rest, ',');
-                let token = trim_lws(token_raw);
-                if token.len > 0 && eq_ascii_fold(token, target_name) {
-                    return true;
-                }
-                if !has_comma { break; }
-                rest = remaining;
+        guard eq_ascii_fold(h.name[..], "connection") else { continue; }
+        var rest: const u8[:] = h.value[..];
+        while rest.len > 0 {
+            let token_raw, remaining, has_comma = core::split_once_byte(rest, ',');
+            let token = trim_lws(token_raw);
+            if token.len > 0 && eq_ascii_fold(token, target_name) {
+                return true;
             }
+            if !has_comma { break; }
+            rest = remaining;
         }
     }
     return false;
 }
 
-// Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers, and Connection tokens so credentials never leak to origin (RFC 9110 Section 7.6.1 & Go #16875).
+// Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers,
+// and Connection tokens so credentials never leak to origin (RFC 9110 §7.6.1 & Go #16875).
+//
+// Example:
+//   headers contains [("Proxy-Authorization", "Basic ..."), ("Host", "example.com")]
+//   after: headers contains only [("Host", "example.com")]
 fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
     var write_idx = 0;
     for read_idx in headers.len {
@@ -305,7 +327,7 @@ fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
 // Inspects HTTP CONNECT response and defends against data injection before TLS handshake.
 // OkHttp RealConnection parity: "TLS tunnel buffered too many bytes".
 fn verify_connect_tunnel_response(
-    raw_response: const u8[:],
+    raw_response:        const u8[:],
     sink_buffered_bytes: i64 = 0,
 ) -> ConnectTunnelError {
     guard raw_response.len >= 12 else { return ConnectTunnelError.InvalidStatusLine; }
@@ -363,25 +385,25 @@ enum SlowlorisViolation {
 }
 
 struct SlowlorisDefenseConfig {
-    response_header_timeout_ns: i64 = 10000000000, // 10 seconds monotonic cumulative deadline
-    expect_continue_timeout_ns: i64 = 1000000000,  // 1 second Expect: 100-continue ceiling
-    max_response_header_bytes: i64 = 65536,         // 64 KB hard memory ceiling
+    response_header_timeout_ns:  i64 = 10000000000, // 10 seconds monotonic cumulative deadline
+    expect_continue_timeout_ns:  i64 = 1000000000,  // 1 second Expect: 100-continue ceiling
+    max_response_header_bytes:   i64 = 65536,       // 64 KB hard memory ceiling
     min_header_ingress_rate_bps: i64 = 256,         // 256 B/s minimum streaming rate
-    max_header_count: i32 = 100,                    // 100 header fields cap
+    max_header_count:            i32 = 100,         // 100 header fields cap
 }
 
 struct HeaderReader {
-    config: SlowlorisDefenseConfig = SlowlorisDefenseConfig { .. },
-    header_read_start_ns: i64 = 0,
-    cumulative_header_bytes: i64 = 0,
-    header_lines_count: i32 = 0,
-    headers_complete: bool = false,
-    poison_connection: bool = false,
+    config:                  SlowlorisDefenseConfig = SlowlorisDefenseConfig { .. },
+    header_read_start_ns:    i64                    = 0,
+    cumulative_header_bytes: i64                    = 0,
+    header_lines_count:      i32                    = 0,
+    headers_complete:        bool                   = false,
+    poison_connection:       bool                   = false,
 }
 
 fn new_header_reader(cfg: SlowlorisDefenseConfig, start_mono_ns: i64) -> HeaderReader {
     return HeaderReader {
-        config: cfg,
+        config:               cfg,
         header_read_start_ns: start_mono_ns,
         ..
     };
@@ -389,8 +411,8 @@ fn new_header_reader(cfg: SlowlorisDefenseConfig, start_mono_ns: i64) -> HeaderR
 
 // Feeds incoming header chunk and verifies all 4 Slowloris defense invariants.
 fn feed_header_bytes(
-    reader: HeaderReader&,
-    chunk: const u8[:],
+    reader:      HeaderReader&,
+    chunk:       const u8[:],
     now_mono_ns: i64,
 ) -> SlowlorisViolation {
     if reader.headers_complete { return SlowlorisViolation.None; }
@@ -413,9 +435,9 @@ fn feed_header_bytes(
 
     // Barrier 4: Byte-Drip Gate (minimum ingress rate check on windows >= 1s)
     if elapsed_ns >= 1000000000 {
-        let elapsed_sec: f64 = elapsed_ns / 1000000000.0;
+        let elapsed_sec:  f64 = elapsed_ns / 1000000000.0;
         let current_rate: f64 = reader.cumulative_header_bytes / elapsed_sec;
-        let min_rate: f64 = reader.config.min_header_ingress_rate_bps;
+        let min_rate:     f64 = reader.config.min_header_ingress_rate_bps;
         if current_rate < min_rate {
             reader.poison_connection = true;
             return SlowlorisViolation.MinIngressRateViolated;

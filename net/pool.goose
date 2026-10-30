@@ -37,7 +37,7 @@ fn normalize_preconnect_scheme(scheme_val: PoolScheme) -> PoolScheme {
 // Target origin endpoint (canonical host and TCP/UDP port).
 struct OriginEndpoint {
     host: u8[..256] = [],
-    port: u16 = 80,
+    port: u16       = 80,
 }
 
 fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint {
@@ -54,8 +54,8 @@ fn origin_endpoint_equals(a: const OriginEndpoint&, b: const OriginEndpoint&) ->
 // Specification of a single proxy node.
 struct ProxyServer {
     scheme: ProxyScheme = ProxyScheme.Direct,
-    host: u8[..256] = [],
-    port: u16 = 0,
+    host:   u8[..256]   = [],
+    port:   u16         = 0,
 }
 
 fn new_proxy_server(scheme_val: ProxyScheme, host_str: const u8[:], port_num: u16) -> ProxyServer {
@@ -71,8 +71,8 @@ fn proxy_server_equals(a: const ProxyServer&, b: const ProxyServer&) -> bool {
 
 // Ordered proxy chain (direct or multi-hop forwarding route).
 struct ProxyChain {
-    servers: ProxyServer[..4] = [],
-    is_direct: bool = true,
+    servers:   ProxyServer[..4] = [],
+    is_direct: bool             = true,
 }
 
 fn new_direct_proxy_chain() -> ProxyChain {
@@ -99,25 +99,25 @@ fn proxy_chain_equals(a: const ProxyChain&, b: const ProxyChain&) -> bool {
 // All 4 components (top_frame_site, is_cross_site, nonce, network_isolation_partition)
 // and optional worker_session_id must be compared to prevent cross-site side-channel leaks.
 struct NetworkAnonymizationKey {
-    top_frame_site: u8[..128] = [],
-    is_cross_site: bool = false,
-    nonce: u64 = 0,
-    network_isolation_partition: u32 = 0,
-    worker_session_id: u32 = 0,
+    top_frame_site:              u8[..128] = [],
+    is_cross_site:               bool      = false,
+    nonce:                       u64       = 0,
+    network_isolation_partition: u32       = 0,
+    worker_session_id:           u32       = 0,
 }
 
 fn new_network_anonymization_key(
-    top_site: const u8[:],
-    cross_site: bool = false,
-    nonce_val: u64 = 0,
-    partition_id: u32 = 0,
-    worker_id: u32 = 0,
+    top_site:     const u8[:],
+    cross_site:   bool = false,
+    nonce_val:    u64  = 0,
+    partition_id: u32  = 0,
+    worker_id:    u32  = 0,
 ) -> NetworkAnonymizationKey {
     var nak = NetworkAnonymizationKey {
-        is_cross_site: cross_site,
-        nonce: nonce_val,
+        is_cross_site:               cross_site,
+        nonce:                       nonce_val,
         network_isolation_partition: partition_id,
-        worker_session_id: worker_id,
+        worker_session_id:           worker_id,
         ..
     };
     nak.top_frame_site.append(top_site);
@@ -150,10 +150,10 @@ enum SecureDnsPolicy {
 
 // TLS and DNS security policies affecting connection compatibility.
 struct TlsAndDnsPolicy {
-    privacy_mode: PrivacyMode = PrivacyMode.Disabled,
-    secure_dns_policy: SecureDnsPolicy = SecureDnsPolicy.Allow,
-    disable_cert_network_fetches: bool = false,
-    target_network_id: u64 = 0,
+    privacy_mode:                 PrivacyMode     = PrivacyMode.Disabled,
+    secure_dns_policy:            SecureDnsPolicy = SecureDnsPolicy.Allow,
+    disable_cert_network_fetches: bool            = false,
+    target_network_id:            u64             = 0,
 }
 
 fn tls_and_dns_policy_equals(a: const TlsAndDnsPolicy&, b: const TlsAndDnsPolicy&) -> bool {
@@ -165,26 +165,26 @@ fn tls_and_dns_policy_equals(a: const TlsAndDnsPolicy&, b: const TlsAndDnsPolicy
 
 // 5-dimensional composite key isolating sockets in the connection pool.
 struct PoolKey {
-    scheme: PoolScheme = PoolScheme.Http,
-    origin_endpoint: OriginEndpoint = OriginEndpoint { .. },
-    proxy_chain: ProxyChain = ProxyChain { .. },
-    partition_key: NetworkAnonymizationKey = NetworkAnonymizationKey { .. },
-    tls_and_dns_policy: TlsAndDnsPolicy = TlsAndDnsPolicy { .. },
+    scheme:             PoolScheme              = PoolScheme.Http,
+    origin_endpoint:    OriginEndpoint          = OriginEndpoint { .. },
+    proxy_chain:        ProxyChain              = ProxyChain { .. },
+    partition_key:      NetworkAnonymizationKey = NetworkAnonymizationKey { .. },
+    tls_and_dns_policy: TlsAndDnsPolicy         = TlsAndDnsPolicy { .. },
 }
 
 fn new_pool_key(
-    scheme_val: PoolScheme,
-    host_str: const u8[:],
-    port_num: u16,
-    proxy_val: ProxyChain,
+    scheme_val:    PoolScheme,
+    host_str:      const u8[:],
+    port_num:      u16,
+    proxy_val:     ProxyChain,
     partition_val: NetworkAnonymizationKey,
-    policy_val: TlsAndDnsPolicy,
+    policy_val:    TlsAndDnsPolicy,
 ) -> PoolKey {
     return PoolKey {
-        scheme: scheme_val,
-        origin_endpoint: new_origin_endpoint(host_str, port_num),
-        proxy_chain: proxy_val,
-        partition_key: partition_val,
+        scheme:             scheme_val,
+        origin_endpoint:    new_origin_endpoint(host_str, port_num),
+        proxy_chain:        proxy_val,
+        partition_key:      partition_val,
         tls_and_dns_policy: policy_val,
     };
 }
@@ -218,7 +218,8 @@ fn pool_key_hash(k: const PoolKey&) -> u64 {
         h = core::hash_combine_u64(h, sh);
     }
     h = core::hash_combine_u64(h, k.partition_key.nonce);
-    h = core::hash_combine_u64(h, core::wyhash64(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition));
+    let part_h = core::wyhash64(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition);
+    h = core::hash_combine_u64(h, part_h);
     h = core::hash_combine_u64(h, k.tls_and_dns_policy.target_network_id);
     return h;
 }
@@ -226,22 +227,22 @@ fn pool_key_hash(k: const PoolKey&) -> u64 {
 // ---- 2. two-slice want_conn_queue (Go transport wantConnQueue parity) ------
 
 struct WantConn {
-    req_id: u64 = 0,
-    key: PoolKey = PoolKey { .. },
-    ready: bool = false,
-    cancelled: bool = false,
-    assigned_conn_id: i32 = -1,
-    reused: bool = false,
-    err_code: i32 = 0,
+    req_id:           u64     = 0,
+    key:              PoolKey = PoolKey { .. },
+    ready:            bool    = false,
+    cancelled:        bool    = false,
+    assigned_conn_id: i32     = -1,
+    reused:           bool    = false,
+    err_code:         i32     = 0,
 }
 
 // Zero-reallocation dual-slice queue avoiding shifts during frequent push/pop operations.
 // Separates consumer (head, head_pos) and producer (tail) cache lines to prevent false sharing.
 struct WantQueue {
-    head: WantConn[..32] = [],
-    head_pos: i64 = 0,
-    _pad_consumer: u8[56] = [0; 56],
-    tail: WantConn[..32] = [],
+    head:          WantConn[..32] = [],
+    head_pos:      i64            = 0,
+    _pad_consumer: u8[56]         = [0; 56],
+    tail:          WantConn[..32] = [],
 }
 
 fn queue_len(q: const WantQueue&) -> i64 {
@@ -330,40 +331,40 @@ enum NegotiatedProtocol {
 
 // Active or idle pooled TCP/TLS/QUIC connection representation.
 struct PooledConnection {
-    conn_id: i32 = -1,
-    key: PoolKey = PoolKey { .. },
-    protocol: NegotiatedProtocol = NegotiatedProtocol.Http11,
-    resolved_ip: u8[..64] = [],
-    san_hosts: u8[..128][..8] = [],
-    cert_valid: bool = true,
-    active_allocations: i32 = 0,
-    max_concurrent_streams: i32 = 1,
-    idle_at_ns: i64 = 0,
-    created_at_ns: i64 = 0,
-    use_count: i64 = 0,
-    source_exhausted: bool = false, // Simulates MSG_PEEK | MSG_DONTWAIT detection of EOF/FIN
-    remote_rst: bool = false,
-    no_new_exchanges: bool = false,
-    closed: bool = false,
+    conn_id:                i32                = -1,
+    key:                    PoolKey            = PoolKey { .. },
+    protocol:               NegotiatedProtocol = NegotiatedProtocol.Http11,
+    resolved_ip:            u8[..64]           = [],
+    san_hosts:              u8[..128][..8]     = [],
+    cert_valid:             bool               = true,
+    active_allocations:     i32                = 0,
+    max_concurrent_streams: i32                = 1,
+    idle_at_ns:             i64                = 0,
+    created_at_ns:          i64                = 0,
+    use_count:              i64                = 0,
+    source_exhausted:       bool               = false, // Simulates MSG_PEEK | MSG_DONTWAIT detection of EOF/FIN
+    remote_rst:             bool               = false,
+    no_new_exchanges:       bool               = false,
+    closed:                 bool               = false,
 }
 
-let IDLE_CONNECTION_HEALTHY_NS: i64 = 1000000000; // 1 second threshold for extensive checks
+let IDLE_CONNECTION_HEALTHY_NS:   i64 = 1000000000; // 1 second threshold for extensive checks
 let DEFAULT_IDLE_CONN_TIMEOUT_NS: i64 = 90000000000; // 90 seconds
-let DEFAULT_DIAL_TIMEOUT_NS: i64 = 30000000000; // 30 seconds
-let DEFAULT_KEEP_ALIVE_NS: i64 = 30000000000; // 30 seconds
+let DEFAULT_DIAL_TIMEOUT_NS:      i64 = 30000000000; // 30 seconds
+let DEFAULT_KEEP_ALIVE_NS:        i64 = 30000000000; // 30 seconds
 
-let DEFAULT_MAX_SOCKETS_PER_GROUP: i32 = 6;
+let DEFAULT_MAX_SOCKETS_PER_GROUP:       i32 = 6;
 let DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN: i32 = 32;
-let DEFAULT_SOCKET_SOFT_CAP_PER_POOL: i32 = 256;
+let DEFAULT_SOCKET_SOFT_CAP_PER_POOL:    i32 = 256;
 
 // OkHttp RealConnection.isHealthy parity: validates whether an idle or active socket
 // is still alive, performing non-blocking peek when idle duration exceeds threshold.
 fn is_connection_healthy(
-    conn: PooledConnection&,
-    now_ns: i64,
-    do_extensive_checks: bool = false,
-    healthy_threshold_ns: i64 = IDLE_CONNECTION_HEALTHY_NS,
-    max_idle_ns: i64 = DEFAULT_IDLE_CONN_TIMEOUT_NS,
+    conn:                 PooledConnection&,
+    now_ns:               i64,
+    do_extensive_checks:  bool = false,
+    healthy_threshold_ns: i64  = IDLE_CONNECTION_HEALTHY_NS,
+    max_idle_ns:          i64  = DEFAULT_IDLE_CONN_TIMEOUT_NS,
 ) -> bool {
     if conn.closed || conn.no_new_exchanges || conn.remote_rst {
         return false;
@@ -424,8 +425,8 @@ fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
 // Reuses an existing HTTP/2 session to domain B if its resolved IP matches domain A,
 // its TLS certificate covers domain B, and its partition key, privacy mode, and proxy match.
 fn can_coalesce_h2_connection(
-    conn: const PooledConnection&,
-    target_key: const PoolKey&,
+    conn:               const PooledConnection&,
+    target_key:         const PoolKey&,
     target_resolved_ip: const u8[:],
 ) -> bool, bool {
     // Both must be HTTPS over HTTP/2
@@ -471,35 +472,35 @@ enum RespectLimits {
 }
 
 struct ConnectionGroup {
-    key: PoolKey = PoolKey { .. },
-    key_hash: u64 = 0,
-    active_conns: i32 = 0,
-    idle_conns: i32 = 0,
-    dials_in_progress: i32 = 0,
-    wait_queue: WantQueue = WantQueue { .. },
+    key:               PoolKey   = PoolKey { .. },
+    key_hash:          u64       = 0,
+    active_conns:      i32       = 0,
+    idle_conns:        i32       = 0,
+    dials_in_progress: i32       = 0,
+    wait_queue:        WantQueue = WantQueue { .. },
 }
 
 struct StreamPool {
-    conns: PooledConnection[..64] = [],
-    groups: ConnectionGroup[..32] = [],
-    max_sockets_per_group: i32 = DEFAULT_MAX_SOCKETS_PER_GROUP,
-    max_sockets_per_proxy: i32 = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
-    socket_soft_cap: i32 = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
-    idle_timeout_ns: i64 = DEFAULT_IDLE_CONN_TIMEOUT_NS,
-    enable_ip_coalescing_h2: bool = true,
-    negative_ip_pool_result_count: i64 = 0,
-    next_conn_id: i32 = 1,
+    conns:                         PooledConnection[..64] = [],
+    groups:                        ConnectionGroup[..32]  = [],
+    max_sockets_per_group:         i32                    = DEFAULT_MAX_SOCKETS_PER_GROUP,
+    max_sockets_per_proxy:         i32                    = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
+    socket_soft_cap:               i32                    = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
+    idle_timeout_ns:               i64                    = DEFAULT_IDLE_CONN_TIMEOUT_NS,
+    enable_ip_coalescing_h2:       bool                   = true,
+    negative_ip_pool_result_count: i64                    = 0,
+    next_conn_id:                  i32                    = 1,
 }
 
 fn new_stream_pool(
     max_per_group: i32 = DEFAULT_MAX_SOCKETS_PER_GROUP,
     max_per_proxy: i32 = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
-    soft_cap: i32 = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
+    soft_cap:      i32 = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
 ) -> StreamPool {
     return StreamPool {
         max_sockets_per_group: max_per_group,
         max_sockets_per_proxy: max_per_proxy,
-        socket_soft_cap: soft_cap,
+        socket_soft_cap:       soft_cap,
         ..
     };
 }
@@ -524,8 +525,8 @@ fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
     let kh = pool_key_hash(key);
     if pool.groups.len < 32 {
         var grp = ConnectionGroup {
-            key: copy(key),
-            key_hash: kh,
+            key:        copy(key),
+            key_hash:   kh,
             wait_queue: WantQueue { .. },
             ..
         };
@@ -620,10 +621,10 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
 // OkHttp RealRoutePlanner priority rule: always prefer reusing an already-bound
 // or pooled healthy connection over launching delayed/new connection plans.
 fn acquire_pooled_connection(
-    pool: StreamPool&,
-    key: const PoolKey&,
-    target_resolved_ip: const u8[:],
-    now_ns: i64,
+    pool:                StreamPool&,
+    key:                 const PoolKey&,
+    target_resolved_ip:  const u8[:],
+    now_ns:              i64,
     do_extensive_checks: bool = false,
 ) -> i32, bool {
     // 1. Direct pool match for exact key
@@ -677,12 +678,12 @@ fn acquire_pooled_connection(
 // Inserts a newly dialed connection into the pool after quota and soft-cap checks.
 // Reclaims closed or evicted slots when pool reaches capacity, preventing starvation (RFC 9110 §9.3.1).
 fn register_connection(
-    pool: StreamPool&,
-    key: const PoolKey&,
-    proto: NegotiatedProtocol,
-    resolved_ip: const u8[:],
-    max_streams: i32,
-    now_ns: i64,
+    pool:           StreamPool&,
+    key:            const PoolKey&,
+    proto:          NegotiatedProtocol,
+    resolved_ip:    const u8[:],
+    max_streams:    i32,
+    now_ns:         i64,
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> i32 {
     if respect_limits == RespectLimits.Enabled && pool.conns.len >= pool.socket_soft_cap {
@@ -696,15 +697,15 @@ fn register_connection(
     pool.next_conn_id++;
 
     var conn = PooledConnection {
-        conn_id: cid,
-        key: copy(key),
-        protocol: proto,
+        conn_id:                cid,
+        key:                    copy(key),
+        protocol:               proto,
         max_concurrent_streams: max_streams,
-        active_allocations: 1,
-        idle_at_ns: 0,
-        created_at_ns: now_ns,
-        use_count: 1,
-        cert_valid: true,
+        active_allocations:     1,
+        idle_at_ns:             0,
+        created_at_ns:          now_ns,
+        use_count:              1,
+        cert_valid:             true,
         ..
     };
     conn.resolved_ip.append(resolved_ip);

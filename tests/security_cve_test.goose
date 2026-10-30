@@ -217,7 +217,7 @@ fn test_cve_cookie_url_and_query_ordering(t: core::T&) {
     };
 
     t.run("build_effective_url: Query Parameters Must Precede Fragment") { sub =>
-        var out: u8[..2048] = [];
+        var out:    u8[..2048]           = [];
         var params: wing::QueryItem[..2] = [];
         var q1 = wing::QueryItem { .. };
         q1.key.append("tab");
@@ -280,9 +280,9 @@ fn test_cve_2026_94441_h2_scheme_isolation(t: core::T&) {
         let key_h2c = wing::new_pool_key(wing::PoolScheme.H2c, "secure.com", 80, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
 
         var conn_unencrypted = wing::PooledConnection {
-            conn_id: 1,
-            key: key_h2c,
-            protocol: wing::NegotiatedProtocol.Http2,
+            conn_id:    1,
+            key:        key_h2c,
+            protocol:   wing::NegotiatedProtocol.Http2,
             cert_valid: false,
             ..
         };
@@ -334,9 +334,9 @@ fn test_cve_connect_tunnel_security(t: core::T&) {
 
         // Connection must be marked closed and never returned to pool
         var conn = wing::PooledConnection {
-            conn_id: 42,
+            conn_id:          42,
             no_new_exchanges: true,
-            closed: true,
+            closed:           true,
             ..
         };
         sub.assert_false(wing::is_connection_healthy(conn, 1000000000, false), "Failed CONNECT connection is strictly unhealthy");
@@ -412,12 +412,12 @@ fn test_go_81671_query_method_replayable(t: core::T&) {
         wing::text(req, "{\"filter\": \"status=active\"}");
 
         // On reused socket before response headers arrived, QUERY is replayable
-        let can_retry = wing::should_retry_tier1_stale_socket(true, false, req);
+        let can_retry = wing::should_retry_tier1_stale_socket(true, req);
         sub.assert_true(can_retry, "QUERY request replayable on stale Keep-Alive connection drop (Go #81671)");
 
         // If body is unrewindable, must NOT retry (protecting payload integrity)
         req.rewindable = false;
-        let cant_retry_unrewind = wing::should_retry_tier1_stale_socket(true, false, req);
+        let cant_retry_unrewind = wing::should_retry_tier1_stale_socket(true, req);
         sub.assert_false(cant_retry_unrewind, "Unrewindable QUERY request must not be retried");
     };
 }

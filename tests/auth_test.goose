@@ -78,7 +78,7 @@ fn test_rfc7616_official_ietf_vector(t: core::T&) {
 fn test_401_authenticator_loop(t: core::T&) {
     t.run("Client Automatically Resolves 401 Challenge with RFC 7616 Digest") { sub =>
         var client = wing::new_client();
-        wing::set_digest_credentials(client, "Mufasa", "Circle of Life");
+        wing::set_credentials(client, "Mufasa", "Circle of Life");
 
         // First attempt (no Authorization header sent yet) returns 401 with Digest challenge
         wing::mock_route(client, "GET", "https://api.corp.com/protected/doc", 401, "{\"error\":\"unauthorized\"}");
@@ -105,7 +105,7 @@ fn test_401_authenticator_loop(t: core::T&) {
 
     t.run("Client Automatically Resolves 401 Challenge with RFC 7617 Basic Auth") { sub =>
         var client = wing::new_client();
-        wing::set_basic_credentials(client, "admin", "secret123");
+        wing::set_credentials(client, "admin", "secret123");
 
         wing::mock_route(client, "GET", "https://api.corp.com/admin", 401, "unauthorized");
         wing::add_mock_header(client, "WWW-Authenticate", "Basic realm=\"admin-area\"");
@@ -121,7 +121,7 @@ fn test_401_authenticator_loop(t: core::T&) {
 
     t.run("Loop Prevention: Persistent 401 Returns to Caller Without Infinite Loop") { sub =>
         var client = wing::new_client();
-        wing::set_basic_credentials(client, "wrong_user", "wrong_pass");
+        wing::set_credentials(client, "wrong_user", "wrong_pass");
 
         wing::mock_route(client, "GET", "https://api.corp.com/secure", 401, "invalid credentials");
         wing::add_mock_header(client, "WWW-Authenticate", "Basic realm=\"test\"");
@@ -671,12 +671,12 @@ fn test_jwt_verification_against_jwks(t: core::T&) {
     t.run("JWKS Key Usage Constraint: enc key rejected for verification (RFC 7517 §4.2)") { sub =>
         var jwks_enc = wing::Jwks { .. };
         var key = wing::JwksKey {
-            kty: wing::JwkKeyType.OKP,
-            crv: "Ed25519",
-            alg: wing::JwtAlg.EdDSA,
-            use: "enc",
+            kty:        wing::JwkKeyType.OKP,
+            crv:        "Ed25519",
+            alg:        wing::JwtAlg.EdDSA,
+            use:        "enc",
             public_key: ed_pub,
-            valid: true,
+            valid:      true,
             ..
         };
         key.kid.append("enc-key-1");
@@ -827,10 +827,10 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
     t.run("RFC 7638 JWK Thumbprint calculation canonical JSON ordering (OKP / Ed25519 & Oct)") { sub =>
         // OKP Key (RFC 8037 §4): canonical order "crv", "kty", "x"
         var okp_key = wing::JwksKey {
-            kty: wing::JwkKeyType.OKP,
-            crv: "Ed25519",
-            alg: wing::JwtAlg.EdDSA, // optional member - must be excluded from canonical JSON
-            use: "sig",             // optional member - must be excluded from canonical JSON
+            kty:   wing::JwkKeyType.OKP,
+            crv:   "Ed25519",
+            alg:   wing::JwtAlg.EdDSA, // optional member - must be excluded from canonical JSON
+            use:   "sig",           // optional member - must be excluded from canonical JSON
             valid: true,
             ..
         };
@@ -855,8 +855,8 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
 
         // Oct Key (RFC 7638 §3.2): canonical order "k", "kty"
         var oct_key = wing::JwksKey {
-            kty: wing::JwkKeyType.Oct,
-            alg: wing::JwtAlg.HS256,
+            kty:   wing::JwkKeyType.Oct,
+            alg:   wing::JwtAlg.HS256,
             valid: true,
             ..
         };
@@ -1835,7 +1835,7 @@ fn test_privacypass_headers_and_cache(t: core::T&) {
 
         var parsed_ch = wing::TokenChallenge { .. };
         var token_key: u8[..128] = [];
-        var max_age: i64 = 0;
+        var max_age:   i64       = 0;
         let ok = wing::parse_private_token_challenge(header_val[..], parsed_ch, token_key, max_age);
         sub.assert_true(ok, "PrivateToken challenge header parsed");
         sub.assert_bytes_eq(parsed_ch.issuer_name[..], "issuer.example.com", "Issuer name parsed");
@@ -2212,11 +2212,11 @@ fn test_hpke_rfc9180(t: core::T&) {
         ];
 
         let info: const u8[:] = "Ode on a Grecian Urn";
-        let pt: const u8[:] = "Beauty is truth, truth beauty";
-        let aad: const u8[:] = "Count-0";
+        let pt:   const u8[:] = "Beauty is truth, truth beauty";
+        let aad:  const u8[:] = "Count-0";
 
-        var enc: u8[32] = [0; 32];
-        var ct: u8[>..] = [];
+        var enc: u8[32]  = [0; 32];
+        var ct:  u8[>..] = [];
 
         let ok_seal = wing::hpke_seal_base(
             pkRm,
@@ -2301,11 +2301,11 @@ fn test_hpke_rfc9180(t: core::T&) {
         let bob_pk = core::x25519_base_scalarmult(bob_sk);
 
         let info: const u8[:] = "Wing Systems Zero-Heap ECH";
-        let pt: const u8[:] = "EncryptedClientHelloInner message payload";
-        let aad: const u8[:] = "ClientHelloOuterAAD";
+        let pt:   const u8[:] = "EncryptedClientHelloInner message payload";
+        let aad:  const u8[:] = "ClientHelloOuterAAD";
 
-        var enc: u8[32] = [0; 32];
-        var ct: u8[>..] = [];
+        var enc: u8[32]  = [0; 32];
+        var ct:  u8[>..] = [];
 
         let ok_seal = wing::hpke_seal_base(
             bob_pk,

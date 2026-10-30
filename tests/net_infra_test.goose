@@ -143,7 +143,7 @@ fn test_driver_fallback_and_selection(t: core::T&) {
 
     t.run("Windows Auto-Selection: io_uring preferred with kernel bypass") { sub =>
         var cfg = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.IoUring,
+            preferred_kind:       internal::TransportDriverKind.IoUring,
             enable_kernel_bypass: true,
             ..
         };
@@ -154,7 +154,7 @@ fn test_driver_fallback_and_selection(t: core::T&) {
 
     t.run("Windows Graceful Fallback: io_uring preferred without bypass") { sub =>
         var cfg = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.IoUring,
+            preferred_kind:       internal::TransportDriverKind.IoUring,
             enable_kernel_bypass: false,
             ..
         };
@@ -330,8 +330,8 @@ fn test_kqueue_event_lifecycle(t: core::T&) {
 fn test_driver_summary_formatter(t: core::T&) {
     t.run("Summary String Formatting") { sub =>
         var cfg_rio = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.WindowsRIO,
-            ring_size: 2048,
+            preferred_kind:         internal::TransportDriverKind.WindowsRIO,
+            ring_size:              2048,
             registered_buffer_size: 131072,
             ..
         };
@@ -373,10 +373,10 @@ fn test_driver_summary_formatter(t: core::T&) {
 fn test_af_xdp_and_dpdk_kernel_bypass(t: core::T&) {
     t.run("AF_XDP UMEM Descriptor Lifecycle") { sub =>
         var umem = internal::AfXdpUmem {
-            addr: 0x10000000,
-            len: 8388608, // 8 MB UMEM
-            chunk_size: 2048,
-            headroom: 0,
+            addr:          0x10000000,
+            len:           8388608, // 8 MB UMEM
+            chunk_size:    2048,
+            headroom:      0,
             is_registered: true,
         };
         sub.assert_true(umem.is_registered, "UMEM registered");
@@ -384,8 +384,8 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: core::T&) {
 
         // Verify XdpDesc packet descriptor
         var desc = internal::XdpDesc {
-            addr: 0x10000800,
-            len: 1460, // MSS payload
+            addr:    0x10000800,
+            len:     1460, // MSS payload
             options: 0,
         };
         sub.assert_eq(desc.addr, 0x10000800, "Packet buffer offset mapped");
@@ -397,12 +397,12 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: core::T&) {
         sub.assert_false(dev.is_initialized, "starts uninitialized");
 
         var pcfg = internal::DpdkPortConfig {
-            port_id: 0,
-            rx_queues: 4,
-            tx_queues: 4,
+            port_id:      0,
+            rx_queues:    4,
+            tx_queues:    4,
             rx_ring_size: 1024,
             tx_ring_size: 1024,
-            promiscuous: true,
+            promiscuous:  true,
         };
         let init_res = internal::dpdk_init_port(dev, pcfg);
         sub.assert_eq(init_res, 0, "dpdk_init_port succeeded");
@@ -430,9 +430,9 @@ fn test_smartnic_ktls_offload(t: core::T&) {
 
     t.run("SmartNIC AES-GCM-128 / 256 Key Offload Configuration") { sub =>
         let key128: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let iv: u8[4] = [0xA1, 0xB2, 0xC3, 0xD4];
-        let salt: u8[4] = [0xE5, 0xF6, 0x07, 0x18];
-        let seq: u8[8] = [0, 0, 0, 0, 0, 0, 0, 1];
+        let iv:     u8[4]  = [0xA1, 0xB2, 0xC3, 0xD4];
+        let salt:   u8[4]  = [0xE5, 0xF6, 0x07, 0x18];
+        let seq:    u8[8]  = [0, 0, 0, 0, 0, 0, 0, 1];
 
         // Attach to socket (dummy fd = 100 for test)
         let sess, err = internal::smartnic_attach_hardware_tls(
@@ -629,11 +629,11 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
         let key = wing::new_pool_key(wing::PoolScheme.Https, "example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
 
         var conn = wing::PooledConnection {
-            conn_id: 1,
-            key: copy(key),
-            protocol: wing::NegotiatedProtocol.Http11,
+            conn_id:            1,
+            key:                copy(key),
+            protocol:           wing::NegotiatedProtocol.Http11,
             active_allocations: 0,
-            idle_at_ns: 1000000000, // Idle at 1.0s
+            idle_at_ns:         1000000000, // Idle at 1.0s
             ..
         };
 
@@ -654,8 +654,8 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
 
         // Remote RST received
         var conn_rst = wing::PooledConnection {
-            conn_id: 2,
-            key: copy(key),
+            conn_id:    2,
+            key:        copy(key),
             remote_rst: true,
             ..
         };
@@ -663,8 +663,8 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
 
         // Marked no_new_exchanges (e.g. Connection: close header received)
         var conn_no_new = wing::PooledConnection {
-            conn_id: 3,
-            key: copy(key),
+            conn_id:          3,
+            key:              copy(key),
             no_new_exchanges: true,
             ..
         };
@@ -672,9 +672,9 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
 
         // Active multiplexed streams on HTTP/2 remain healthy while active
         var conn_h2 = wing::PooledConnection {
-            conn_id: 4,
-            key: copy(key),
-            protocol: wing::NegotiatedProtocol.Http2,
+            conn_id:            4,
+            key:                copy(key),
+            protocol:           wing::NegotiatedProtocol.Http2,
             active_allocations: 5,
             ..
         };
@@ -682,10 +682,10 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
 
         // Idle connection past 90 seconds timeout becomes unhealthy
         var conn_idle_timeout = wing::PooledConnection {
-            conn_id: 5,
-            key: copy(key),
+            conn_id:            5,
+            key:                copy(key),
             active_allocations: 0,
-            idle_at_ns: 1000000000,
+            idle_at_ns:         1000000000,
             ..
         };
         sub.assert_false(wing::is_connection_healthy(conn_idle_timeout, 96000000000, false), "Connection idle > 90s is unhealthy");
@@ -706,12 +706,12 @@ fn test_http2_ip_coalescing_and_san_matching(t: core::T&) {
         let key_http_plaintext = wing::new_pool_key(wing::PoolScheme.Http, "beta.example.com", 80, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
 
         var conn = wing::PooledConnection {
-            conn_id: 10,
-            key: copy(key_a),
-            protocol: wing::NegotiatedProtocol.Http2,
+            conn_id:                10,
+            key:                    copy(key_a),
+            protocol:               wing::NegotiatedProtocol.Http2,
             max_concurrent_streams: 100,
-            active_allocations: 1,
-            cert_valid: true,
+            active_allocations:     1,
+            cert_valid:             true,
             ..
         };
         conn.resolved_ip.append("93.184.216.34");
@@ -824,11 +824,11 @@ fn test_cve_2026_56866_connect_rejection_pool_safety(t: core::T&) {
 
         // Simulate a socket where CONNECT tunnel was rejected (e.g. 407 Proxy Auth or 502 Bad Gateway)
         var failed_tunnel_conn = wing::PooledConnection {
-            conn_id: 101,
-            key: copy(key),
-            protocol: wing::NegotiatedProtocol.Http11,
+            conn_id:          101,
+            key:              copy(key),
+            protocol:         wing::NegotiatedProtocol.Http11,
             no_new_exchanges: true, // Marked immediately on CONNECT rejection
-            closed: true,           // Marked closed to prevent reuse
+            closed:           true, // Marked closed to prevent reuse
             ..
         };
 
@@ -1344,7 +1344,7 @@ fn test_rfc6724_and_hev3_interleaving(t: core::T&) {
         sub.assert_true(res_v6[1].family == wing::AddressFamily.IPv6, "Res 1 is IPv6");
 
         var empty_ipv6: wing::DnsCandidate[..8] = [];
-        var ipv4_only: wing::DnsCandidate[..8] = [];
+        var ipv4_only:  wing::DnsCandidate[..8] = [];
         ipv4_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "1.1.1.1", 80));
         var res_v4: wing::DnsCandidate[..32] = [];
         wing::interleave_candidates_he(empty_ipv6[..], ipv4_only[..], res_v4, 1);
@@ -1499,22 +1499,22 @@ fn test_attempt_manager_racing_and_winner(t: core::T&) {
 
     t.run("Chromium JobController Creation Rules and Waiting Delay") { sub =>
         // dns_alpn_h3_job rules: HTTPS + QUIC + no proxy + no active QUIC session
-        sub.assert_true(wing::should_create_dns_alpn_h3_job(true, true, false, false), "Created on HTTPS, QUIC, direct, no active session");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(false, true, false, false), "Not created on plain HTTP");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(true, false, false, false), "Not created when QUIC disabled");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(true, true, true, false), "Not created when proxy is configured");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(true, true, false, true), "Not created when active QUIC session can be reused");
+        sub.assert_true(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: false, has_available_quic_session: false }), "Created on HTTPS, QUIC, direct, no active session");
+        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: false, quic_enabled: true, uses_proxy: false, has_available_quic_session: false }), "Not created on plain HTTP");
+        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: false, uses_proxy: false, has_available_quic_session: false }), "Not created when QUIC disabled");
+        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: true, has_available_quic_session: false }), "Not created when proxy is configured");
+        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: false, has_available_quic_session: true }), "Not created when active QUIC session can be reused");
 
         // Waiting delay cancelled when open TCP socket already exists in pool
-        let delay_open_tcp = wing::compute_main_job_waiting_delay_ms(true, false, 200);
+        let delay_open_tcp = wing::compute_main_job_waiting_delay_ms(true, 200, false);
         sub.assert_eq(delay_open_tcp, 0, "Waiting delay cancelled (0 ms) when open TCP socket exists");
 
         // Waiting delay cancelled when DNS confirms no HTTP/3 ALPN support
-        let delay_no_h3 = wing::compute_main_job_waiting_delay_ms(false, true, 200);
+        let delay_no_h3 = wing::compute_main_job_waiting_delay_ms(false, 200, true);
         sub.assert_eq(delay_no_h3, 0, "Waiting delay cancelled (0 ms) when DNS confirms no HTTP/3");
 
         // Default waiting delay when cold
-        let delay_cold = wing::compute_main_job_waiting_delay_ms(false, false, 200);
+        let delay_cold = wing::compute_main_job_waiting_delay_ms(false, 200, false);
         sub.assert_eq(delay_cold, 200, "Default waiting delay applied when cold");
     };
 }
@@ -1529,45 +1529,45 @@ fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
     t.run("Tier 1 4-Condition Invariant Evaluation") { sub =>
         // 1. Standard idempotent GET on reused Keep-Alive connection before headers
         var req_get = wing::new_request("GET", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_get), "Reused GET before headers approved for immediate Tier 1 retry");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_get), "Reused GET before headers approved for immediate Tier 1 retry");
 
         // 2. Fresh dial connection failure: MUST NOT retry at Tier 1 (fails fast)
-        sub.assert_false(wing::should_retry_tier1_stale_socket(false, false, req_get), "Fresh connection failure rejected for Tier 1 retry");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(false, req_get), "Fresh connection failure rejected for Tier 1 retry");
 
         // 3. Response headers already received: MUST NOT retry at Tier 1
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, true, req_get), "Failure after response headers rejected for Tier 1 retry");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_get, true), "Failure after response headers rejected for Tier 1 retry");
 
         // 4. Non-idempotent POST without Idempotency-Key: MUST NOT retry
         var req_post = wing::new_request("POST", "https://api.io/payments");
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_post), "Non-idempotent POST without Idempotency-Key rejected");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_post), "Non-idempotent POST without Idempotency-Key rejected");
 
         // 5. Non-idempotent POST WITH Idempotency-Key: approved for retry
         wing::set_header(req_post, "Idempotency-Key", "uuid-v4-998811-aabbcc");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_post), "POST with Idempotency-Key approved for Tier 1 retry");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_post), "POST with Idempotency-Key approved for Tier 1 retry");
 
         // 6. Non-idempotent PATCH without Idempotency-Key: rejected
         var req_patch = wing::new_request("PATCH", "https://api.io/items/1");
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_patch), "PATCH without Idempotency-Key rejected");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_patch), "PATCH without Idempotency-Key rejected");
 
         // 7. Non-idempotent PATCH WITH Idempotency-Key: approved
         wing::set_header(req_patch, "Idempotency-Key", "patch-key-1");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_patch), "PATCH with Idempotency-Key approved");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_patch), "PATCH with Idempotency-Key approved");
 
         // 8. Idempotent RFC methods sweep
         var req_head = wing::new_request("HEAD", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_head), "HEAD is idempotent");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_head), "HEAD is idempotent");
 
         var req_put = wing::new_request("PUT", "https://api.io/items/1");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_put), "PUT is idempotent");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_put), "PUT is idempotent");
 
         var req_del = wing::new_request("DELETE", "https://api.io/items/1");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_del), "DELETE is idempotent");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_del), "DELETE is idempotent");
 
         var req_opt = wing::new_request("OPTIONS", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_opt), "OPTIONS is idempotent");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_opt), "OPTIONS is idempotent");
 
         var req_trace = wing::new_request("TRACE", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_trace), "TRACE is idempotent");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_trace), "TRACE is idempotent");
     };
 
     t.run("Go #81671 & RFC 9110: QUERY Method Safe & Replayable") { sub =>
@@ -1577,7 +1577,7 @@ fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
         var req_query = wing::new_request("QUERY", "https://api.io/search");
         wing::text(req_query, "SELECT id, name FROM users WHERE active = true");
         sub.assert_true(wing::is_idempotent_method("QUERY"), "QUERY recognized as idempotent");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_query), "QUERY with rewindable body replayable on stale socket drop");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_query), "QUERY with rewindable body replayable on stale socket drop");
     };
 
     t.run("Defense against One-Shot Stream Retry Bug (Go #41907 / #41913)") { sub =>
@@ -1587,43 +1587,43 @@ fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
         req_stream.rewindable = false;
         req_stream.body_consumed = true;
 
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_stream), "Unrewindable consumed body stream rejected (prevents sending empty body)");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_stream), "Unrewindable consumed body stream rejected (prevents sending empty body)");
 
         // Non-empty body with rewindable = false but body_consumed = false
         var req_unrewind = wing::new_request("PUT", "https://api.io/upload");
         req_unrewind.body.append("data");
         req_unrewind.rewindable = false;
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_unrewind), "Unrewindable body rejected");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_unrewind), "Unrewindable body rejected");
 
         // Non-empty body with rewindable = true and body_consumed = true
         var req_consumed = wing::new_request("PUT", "https://api.io/upload");
         req_consumed.body.append("data");
         req_consumed.rewindable = true;
         req_consumed.body_consumed = true;
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, false, req_consumed), "Already-consumed rewindable body rejected");
+        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_consumed), "Already-consumed rewindable body rejected");
 
         // Request with rewindable body buffer (GetBody pattern)
         var req_rewindable = wing::new_request("PUT", "https://api.io/upload");
         wing::text(req_rewindable, "rewindable-payload-data");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, false, req_rewindable), "Rewindable body approved for retry");
+        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_rewindable), "Rewindable body approved for retry");
     };
 
     t.run("Chromium ERR_QUIC_PROTOCOL_ERROR Automatic TCP Fallback") { sub =>
         var req = wing::new_request("GET", "https://quic.example.com");
-        let dec = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, false, req);
+        let dec = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, req);
 
         sub.assert_true(dec.retry_immediately, "Immediate retry on ERR_QUIC_PROTOCOL_ERROR");
         sub.assert_true(dec.disable_alternative_services, "disable_alternative_services flagged to force reliable TCP/TLS");
 
         // If headers were already received, cannot fallback immediately
-        let dec_headers = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, true, req);
+        let dec_headers = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, req, true);
         sub.assert_false(dec_headers.retry_immediately, "QUIC error after headers received does not trigger blind retry");
     };
 }
 
 fn test_tier2_exponential_backoff_and_jitter(t: core::T&) {
     t.run("Deterministic Backoff and 3 Jitter Strategies") { sub =>
-        var seed: u64 = 123456789;
+        var seed:       u64 = 123456789;
         var prev_sleep: i64 = 0;
 
         let cfg_full = wing::new_backoff_config(100, 5000, wing::JitterStrategy.FullJitter);

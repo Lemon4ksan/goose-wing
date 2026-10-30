@@ -11,51 +11,51 @@ import core from "..";
 
 // ---- 1. DNS Wire Constants & Record Types -----------------------------------
 
-const DNS_QTYPE_A: u16 = 1;
-const DNS_QTYPE_AAAA: u16 = 28;
-const DNS_QTYPE_SVCB: u16 = 64;  // RFC 9460
+const DNS_QTYPE_A:     u16 = 1;
+const DNS_QTYPE_AAAA:  u16 = 28;
+const DNS_QTYPE_SVCB:  u16 = 64; // RFC 9460
 const DNS_QTYPE_HTTPS: u16 = 65; // RFC 9460
 
 const DNS_QCLASS_IN: u16 = 1;
 
-const DNS_RCODE_NOERROR: u8 = 0;
-const DNS_RCODE_FORMERR: u8 = 1;
+const DNS_RCODE_NOERROR:  u8 = 0;
+const DNS_RCODE_FORMERR:  u8 = 1;
 const DNS_RCODE_SERVFAIL: u8 = 2;
 const DNS_RCODE_NXDOMAIN: u8 = 3;
 
 // RFC 9460 SvcParamKey Registrations (Section 14.3)
-const SVC_PARAM_MANDATORY: u16 = 0;
-const SVC_PARAM_ALPN: u16 = 1;
+const SVC_PARAM_MANDATORY:       u16 = 0;
+const SVC_PARAM_ALPN:            u16 = 1;
 const SVC_PARAM_NO_DEFAULT_ALPN: u16 = 2;
-const SVC_PARAM_PORT: u16 = 3;
-const SVC_PARAM_IPV4HINT: u16 = 4;
-const SVC_PARAM_ECH: u16 = 5; // Encrypted Client Hello ECHConfigList
-const SVC_PARAM_IPV6HINT: u16 = 6;
+const SVC_PARAM_PORT:            u16 = 3;
+const SVC_PARAM_IPV4HINT:        u16 = 4;
+const SVC_PARAM_ECH:             u16 = 5; // Encrypted Client Hello ECHConfigList
+const SVC_PARAM_IPV6HINT:        u16 = 6;
 
 // ---- 2. Data Structures ----------------------------------------------------
 
 struct HttpsRecord {
-    priority: u16 = 0,               // 0 = AliasMode, >0 = ServiceMode
-    target_name: u8[..255] = [],
-    alpns: u8[..16][..8] = [],
-    port: u16 = 443,
-    no_default_alpn: bool = false,
-    ipv4_hints: u32[..8] = [],
-    ipv6_hints: u8[16][..8] = [],
-    ech_config_list: u8[..512] = [], // Raw wire bytes of ECHConfigList
-    has_ech: bool = false,
+    priority:        u16           = 0, // 0 = AliasMode, >0 = ServiceMode
+    target_name:     u8[..255]     = [],
+    alpns:           u8[..16][..8] = [],
+    port:            u16           = 443,
+    no_default_alpn: bool          = false,
+    ipv4_hints:      u32[..8]      = [],
+    ipv6_hints:      u8[16][..8]   = [],
+    ech_config_list: u8[..512]     = [], // Raw wire bytes of ECHConfigList
+    has_ech:         bool          = false,
 }
 
 struct DnsResponse {
-    tx_id: u16 = 0,
-    rcode: u8 = DNS_RCODE_NOERROR,
-    is_response: bool = false,
-    question_count: u16 = 0,
-    answer_count: u16 = 0,
-    a_records: u32[..8] = [],
-    aaaa_records: u8[16][..8] = [],
-    https_records: HttpsRecord[..4] = [],
-    min_ttl_sec: u32 = 0,
+    tx_id:          u16              = 0,
+    rcode:          u8               = DNS_RCODE_NOERROR,
+    is_response:    bool             = false,
+    question_count: u16              = 0,
+    answer_count:   u16              = 0,
+    a_records:      u32[..8]         = [],
+    aaaa_records:   u8[16][..8]      = [],
+    https_records:  HttpsRecord[..4] = [],
+    min_ttl_sec:    u32              = 0,
 }
 
 // ---- 3. DNS Name Encoding and Compression Decoding (RFC 1035) --------------
@@ -143,7 +143,11 @@ fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool {
 }
 
 // Decodes a DNS domain name from raw wire format, resolving compression pointers (0xC0).
-fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
+//
+// Example:
+//   raw = "\x07example\x03com\x00", offset = 0
+//   returns: true, offset = 13, domain = "example.com"
+fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
     var jumps = 0;
     var current_off = offset;
     var advanced_original = false;
@@ -183,15 +187,15 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
         current_off += 1;
         guard current_off + label_len <= raw.len else { return false; }
 
-        if out.len > 0 {
-            guard out.len + 1 + (label_len as i64) <= 253 else { return false; }
-            out.push('.');
+        if domain.len > 0 {
+            guard domain.len + 1 + (label_len as i64) <= 253 else { return false; }
+            domain.push('.');
         } else {
             guard (label_len as i64) <= 253 else { return false; }
         }
         for i in current_off..current_off + label_len {
-            guard out.len < 253 else { return false; }
-            out.push(raw[i]);
+            guard domain.len < 253 else { return false; }
+            domain.push(raw[i]);
         }
         current_off += label_len;
 
@@ -203,7 +207,11 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, out: B&) -> bool {
 }
 
 // RFC 9460 §2.5.1 & RFC 3597 §4: TargetName in HTTPS/SVCB records MUST NOT use compression pointers (0xC0).
-fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i64, out: B&) -> bool {
+//
+// Example:
+//   raw = "\x07example\x03com\x00", offset = 0, max_offset = 13
+//   returns: true, offset = 13, domain = "example.com"
+fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i64, domain: B&) -> bool {
     var current_off = offset;
     while current_off < max_offset {
         let b = raw[current_off];
@@ -219,15 +227,15 @@ fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i
         current_off += 1;
         guard current_off + label_len <= max_offset else { return false; }
 
-        if out.len > 0 {
-            guard out.len + 1 + label_len <= 253 else { return false; }
-            out.push('.');
+        if domain.len > 0 {
+            guard domain.len + 1 + label_len <= 253 else { return false; }
+            domain.push('.');
         } else {
             guard label_len <= 253 else { return false; }
         }
         for i in current_off..current_off + label_len {
-            guard out.len < 253 else { return false; }
-            out.push(raw[i]);
+            guard domain.len < 253 else { return false; }
+            domain.push(raw[i]);
         }
         current_off += label_len;
     }
@@ -265,10 +273,38 @@ fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> b
 
 // ---- 5. RFC 9460 HTTPS/SVCB RDATA Parser -----------------------------------
 
-// Parses SvcParams list from HTTPS/SVCB RDATA according to RFC 9460 Section 2.1 & 2.2.
+// Extracts ALPN parameter tokens into HttpsRecord (RFC 9460 §7.1).
+//
+// Example:
+//   val = "\x02h2\x05h3-29"
+//   returns: ok = true, rec.alpns contains ["h2", "h3-29"]
+fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
+    guard val.len > 0 else { return false; }
+    var alpn_off: i64 = 0;
+    while alpn_off < val.len {
+        let slen = val[alpn_off] as i64;
+        alpn_off += 1;
+        guard slen > 0 && alpn_off + slen <= val.len else { return false; }
+        let s = val[alpn_off..alpn_off + slen];
+        guard rec.alpns.len < rec.alpns.cap && s.len <= 16 else { return false; }
+        var entry: u8[..16] = [];
+        for i in s.len {
+            entry.push(s[i]);
+        }
+        rec.alpns.push(entry);
+        alpn_off += slen;
+    }
+    return alpn_off == val.len;
+}
+
+// Parses SvcParams list from HTTPS/SVCB RDATA according to RFC 9460 §2.1 & §2.2.
 // Keys MUST be in strictly ascending order with valid lengths; truncated records are rejected.
+//
+// Example:
+//   rdata = "\x00\x01\x00\x03\x02h2"
+//   returns: ok = true, rec.alpns = ["h2"]
 fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
-    var off: i64 = 0;
+    var off:      i64 = 0;
     var last_key: i32 = -1;
 
     while off + 4 <= rdata.len {
@@ -278,7 +314,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
         guard off + val_len <= rdata.len else { return false; }
 
         let k_i32 = key as i32;
-        // RFC 9460 Section 2.2: SvcParamKeys MUST be in strictly increasing order
+        // RFC 9460 §2.2: SvcParamKeys MUST be in strictly increasing order
         guard k_i32 > last_key else { return false; }
         last_key = k_i32;
 
@@ -286,23 +322,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
         off += val_len;
 
         if key == SVC_PARAM_ALPN {
-            guard val.len > 0 else { return false; }
-            var alpn_off: i64 = 0;
-            while alpn_off < val.len {
-                let slen = val[alpn_off] as i64;
-                alpn_off += 1;
-                guard slen > 0 && alpn_off + slen <= val.len else { return false; }
-                let s = val[alpn_off..alpn_off + slen];
-                if rec.alpns.len < rec.alpns.cap {
-                    var entry: u8[..16] = [];
-                    for i in s.len {
-                        if entry.len < entry.cap { entry.push(s[i]); }
-                    }
-                    rec.alpns.push(entry);
-                }
-                alpn_off += slen;
-            }
-            guard alpn_off == val.len else { return false; }
+            guard parse_alpn_svc_param(val, rec) else { return false; }
         } else if key == SVC_PARAM_NO_DEFAULT_ALPN {
             guard val.len == 0 else { return false; }
             rec.no_default_alpn = true;
@@ -312,25 +332,25 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
         } else if key == SVC_PARAM_IPV4HINT {
             guard val.len > 0 && (val.len % 4) == 0 else { return false; }
             var ip_off: i64 = 0;
-            while ip_off + 4 <= val.len && rec.ipv4_hints.len < rec.ipv4_hints.cap {
-                let ip = ((val[ip_off] as u32) << 24) |
-                         ((val[ip_off + 1] as u32) << 16) |
-                         ((val[ip_off + 2] as u32) << 8) |
-                         val[ip_off + 3];
-                rec.ipv4_hints.push(ip);
+            while ip_off + 4 <= val.len {
+                guard rec.ipv4_hints.len < rec.ipv4_hints.cap else { return false; }
+                let hi = ((val[ip_off] as u32) << 24) | ((val[ip_off + 1] as u32) << 16);
+                let lo = ((val[ip_off + 2] as u32) << 8) | val[ip_off + 3];
+                rec.ipv4_hints.push(hi | lo);
                 ip_off += 4;
             }
         } else if key == SVC_PARAM_IPV6HINT {
             guard val.len > 0 && (val.len % 16) == 0 else { return false; }
             var ip_off: i64 = 0;
-            while ip_off + 16 <= val.len && rec.ipv6_hints.len < rec.ipv6_hints.cap {
+            while ip_off + 16 <= val.len {
+                guard rec.ipv6_hints.len < rec.ipv6_hints.cap else { return false; }
                 var ip6: u8[16] = [0; 16];
                 for i in 16 { ip6[i] = val[ip_off + i]; }
                 rec.ipv6_hints.push(ip6);
                 ip_off += 16;
             }
         } else if key == SVC_PARAM_ECH {
-            // Raw wire bytes of ECHConfigList (RFC 9460 Section 5)
+            // Raw wire bytes of ECHConfigList (RFC 9460 §5)
             guard val.len <= rec.ech_config_list.cap else { return false; }
             rec.has_ech = true;
             for i in val.len {
@@ -344,7 +364,51 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
 
 // ---- 6. Response Parser ----------------------------------------------------
 
-// Parses a complete DNS response wire message.
+// Parses a single DNS Resource Record RDATA into DnsResponse.
+//
+// Example:
+//   raw = "...", rtype = 1, rdlength = 4, rdata_start = 12
+//   returns: ok = true, out.a_records contains IPv4 address
+fn parse_dns_answer_record(
+    raw:         const u8[:],
+    rtype:       u16,
+    rdlength:    i64,
+    rdata_start: i64,
+    out:         DnsResponse&,
+) -> bool {
+    let rdata = raw[rdata_start..rdata_start + rdlength];
+    if rtype == DNS_QTYPE_A {
+        guard rdlength == 4 && out.a_records.len < out.a_records.cap else { return false; }
+        let ip4 = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16) |
+                  ((rdata[2] as u32) << 8) | rdata[3];
+        out.a_records.push(ip4);
+    } else if rtype == DNS_QTYPE_AAAA {
+        guard rdlength == 16 && out.aaaa_records.len < out.aaaa_records.cap else { return false; }
+        var ip6: u8[16] = [0; 16];
+        for i in 16 { ip6[i] = rdata[i]; }
+        out.aaaa_records.push(ip6);
+    } else if rtype == DNS_QTYPE_HTTPS || rtype == DNS_QTYPE_SVCB {
+        guard rdlength >= 3 && out.https_records.len < out.https_records.cap else { return false; }
+        var rec = HttpsRecord { .. };
+        rec.priority = ((rdata[0] as u16) << 8) | rdata[1];
+        var target_off = rdata_start + 2;
+        let rdata_end = rdata_start + rdlength;
+        guard dns_decode_uncompressed_name(raw, target_off, rdata_end, rec.target_name) else { return false; }
+        guard target_off <= rdata_end else { return false; }
+        if target_off < rdata_end {
+            let svc_params = raw[target_off..rdata_end];
+            guard parse_https_svc_params(svc_params, rec) else { return false; }
+        }
+        out.https_records.push(rec);
+    }
+    return true;
+}
+
+// Parses a complete DNS response wire message (RFC 1035 §4.1.2).
+//
+// Example:
+//   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
+//   returns: ok = true, out.rcode = 0, out.answer_count = 1
 fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
     guard raw.len >= 12 else { return false; }
 
@@ -386,40 +450,8 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
         off += 10;
         guard off + rdlength <= raw.len else { return false; }
 
-        let rdata_start = off;
-        let rdata = raw[off..off + rdlength];
+        guard parse_dns_answer_record(raw, rtype, rdlength, off, out) else { return false; }
         off += rdlength;
-
-        if rtype == DNS_QTYPE_A {
-            guard rdlength == 4 else { return false; }
-            if out.a_records.len < out.a_records.cap {
-                let ip4 = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16) |
-                          ((rdata[2] as u32) << 8) | rdata[3];
-                out.a_records.push(ip4);
-            }
-        } else if rtype == DNS_QTYPE_AAAA {
-            guard rdlength == 16 else { return false; }
-            if out.aaaa_records.len < out.aaaa_records.cap {
-                var ip6: u8[16] = [0; 16];
-                for i in 16 { ip6[i] = rdata[i]; }
-                out.aaaa_records.push(ip6);
-            }
-        } else if rtype == DNS_QTYPE_HTTPS || rtype == DNS_QTYPE_SVCB {
-            guard rdlength >= 3 else { return false; }
-            if out.https_records.len < out.https_records.cap {
-                var rec = HttpsRecord { .. };
-                rec.priority = ((rdata[0] as u16) << 8) | rdata[1];
-                var target_off = rdata_start + 2;
-                let rdata_end = rdata_start + rdlength;
-                guard dns_decode_uncompressed_name(raw, target_off, rdata_end, rec.target_name) else { return false; }
-                guard target_off <= rdata_end else { return false; }
-                if target_off < rdata_end {
-                    let svc_params = raw[target_off..rdata_end];
-                    guard parse_https_svc_params(svc_params, rec) else { return false; }
-                }
-                out.https_records.push(rec);
-            }
-        }
     }
 
     return true;
@@ -446,7 +478,7 @@ fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16
 // Configurable DNS-over-HTTPS (DoH RFC 8484) Resolver configuration.
 struct DohResolver {
     endpoint: u8[..256] = "https://cloudflare-dns.com/dns-query",
-    use_post: bool = true,
+    use_post: bool      = true,
 }
 
 fn new_doh_resolver(endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) -> DohResolver {
@@ -464,15 +496,15 @@ enum DnsCacheStatus {
 }
 
 struct DnsCacheEntry {
-    domain: u8[..255] = [],
-    qtype: u16 = DNS_QTYPE_A,
-    ipv4_hints: u32[..8] = [],
-    ipv6_hints: u8[16][..8] = [],
-    https_records: HttpsRecord[..4] = [],
-    inserted_at_sec: i64 = 0,
-    ttl_sec: u32 = 300,
-    stale_ttl_sec: u32 = 86400, // 24-hour max stale grace period
-    valid: bool = false,
+    domain:          u8[..255]        = [],
+    qtype:           u16              = DNS_QTYPE_A,
+    ipv4_hints:      u32[..8]         = [],
+    ipv6_hints:      u8[16][..8]      = [],
+    https_records:   HttpsRecord[..4] = [],
+    inserted_at_sec: i64              = 0,
+    ttl_sec:         u32              = 300,
+    stale_ttl_sec:   u32              = 86400, // 24-hour max stale grace period
+    valid:           bool             = false,
 }
 
 struct DnsCache {
@@ -480,10 +512,10 @@ struct DnsCache {
 }
 
 fn dns_cache_lookup(
-    cache: const DnsCache&,
-    domain: const u8[:],
-    qtype: u16,
-    now_sec: i64,
+    cache:     const DnsCache&,
+    domain:    const u8[:],
+    qtype:     u16,
+    now_sec:   i64,
     out_entry: DnsCacheEntry&,
 ) -> DnsCacheStatus {
     for &e in cache.entries {
@@ -506,7 +538,10 @@ fn dns_cache_lookup(
 fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
     // Check if domain and qtype already exist
     for i in cache.entries.len {
-        if cache.entries[i].valid && cache.entries[i].qtype == entry.qtype && cache.entries[i].domain[..] == entry.domain[..] {
+        let is_match = cache.entries[i].valid &&
+            cache.entries[i].qtype == entry.qtype &&
+            cache.entries[i].domain[..] == entry.domain[..];
+        if is_match {
             cache.entries[i] = entry;
             cache.entries[i].valid = true;
             return;
