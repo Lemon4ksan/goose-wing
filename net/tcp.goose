@@ -846,3 +846,38 @@ fn tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> bool {
     guard sock_fd > 0 && cpu_id >= 0 else { return false; }
     return native_tcp_set_incoming_cpu(sock_fd, cpu_id) == 0;
 }
+
+// Deterministic O(1) connection slot index allocator for reactor loops.
+// Bounded to 1024 slots without dynamic heap allocations.
+struct FreeSlotStack {
+    indices: u16[1024] = [0; 1024],
+    top: i64 = 0,
+    capacity: i64 = 1024,
+}
+
+// Pre-populates the stack so slot 0 is popped first.
+fn init_free_slots(stack: FreeSlotStack&, count: i64) {
+    let n = if count < 0 { 0 } else if count > 1024 { 1024 } else { count };
+    stack.top = n;
+    stack.capacity = n;
+    for i in n {
+        stack.indices[i] = ((n - 1 - i) as u16);
+    }
+}
+
+// Pops next free slot index in O(1). Returns -1 if no slots available.
+fn pop_free_slot(stack: FreeSlotStack&) -> i64 {
+    let top = stack.top;
+    guard top > 0 && top <= 1024 else { return -1; }
+    let next_top = top - 1;
+    stack.top = next_top;
+    return stack.indices[next_top] as i64;
+}
+
+// Restores slot index back into the free stack in O(1).
+fn push_free_slot(stack: FreeSlotStack&, slot: i64) -> bool {
+    guard slot >= 0 && slot < 1024 && stack.top < stack.capacity else { return false; }
+    stack.indices[stack.top] = slot as u16;
+    stack.top++;
+    return true;
+}
