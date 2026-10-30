@@ -501,6 +501,13 @@ enum RouteMatchResult {
     MethodNotAllowed { allow_header: u8[..64] },
 }
 
+fn is_match_found(res: const RouteMatchResult&) -> bool {
+    return match res {
+        Found _ => true,
+        _ => false,
+    };
+}
+
 // Extracts a dynamic parameter segment and records its span into params.
 fn match_param_child(
     tree:    const RadixTree&,
@@ -667,6 +674,7 @@ fn new_radix_router() -> RadixRouter {
 
 // Registers a route pattern for an HTTP method in the router.
 // Supports static routes ("/users"), parameters ("/:id" or "/{id}"), and wildcards ("/*path").
+// Route paths are canonicalized consistently with request matching (RFC 3986 §5.2.4).
 fn add_route(
     router:       RadixRouter&,
     method:       const u8[:],
@@ -674,16 +682,75 @@ fn add_route(
     handler_id:   i32,
     entries_mask: u32 = 0,
 ) -> bool {
+    var canon_path: u8[..512] = [];
+    guard canonicalize_route_path(path, canon_path) else { return false; }
     for idx in router.trees.len {
         if router.trees[idx].method[..] == method {
-            return insert_route(router.trees[idx].tree, path, handler_id, entries_mask);
+            return insert_route(router.trees[idx].tree, canon_path[..], handler_id, entries_mask);
         }
     }
     return false;
 }
 
+fn build_allow_header(
+    router:          const RadixRouter&,
+    target_tree_idx: i32,
+    method:          const u8[:],
+    path:            const u8[:],
+    allow_buf:       u8[..64]&,
+) -> bool {
+    var matched_other = false;
+    var dummy_params = ZeroAllocParams { .. };
+    var dummy_canon: u8[..512] = [];
+    var has_get = false;
+    var has_head = false;
+    var has_options = false;
+
+    if path == "*" {
+        for idx in router.trees.len {
+            let tree_nodes_len = router.trees[idx].tree.nodes.len;
+            if tree_nodes_len > 1 || router.trees[idx].tree.nodes[0].children.len > 0 {
+                let m = router.trees[idx].method[..];
+                if m == "GET" { has_get = true; }
+                if m == "HEAD" { has_head = true; }
+                if m == "OPTIONS" { has_options = true; }
+                if matched_other { allow_buf.append(", "); }
+                allow_buf.append(m);
+                matched_other = true;
+            }
+        }
+    } else {
+        for idx in router.trees.len {
+            guard (idx as i32) != target_tree_idx else { continue; }
+            let res_other = match_path(router.trees[idx].tree, path, dummy_params, dummy_canon);
+            guard is_match_found(res_other) else { continue; }
+            let m = router.trees[idx].method[..];
+            if m == "GET" { has_get = true; }
+            if m == "HEAD" { has_head = true; }
+            if m == "OPTIONS" { has_options = true; }
+            if matched_other { allow_buf.append(", "); }
+            allow_buf.append(m);
+            matched_other = true;
+        }
+    }
+
+    if matched_other {
+        // RFC 9110 §9.3.2: Allow header MUST include HEAD if GET is supported
+        if has_get && !has_head {
+            allow_buf.append(", HEAD");
+        }
+        // RFC 9110 §9.3.7: Allow header MUST include OPTIONS if capability probe
+        let is_capability_probe = (method == "OPTIONS" || path == "*");
+        if is_capability_probe && !has_options {
+            allow_buf.append(", OPTIONS");
+        }
+    }
+    return matched_other;
+}
+
 // Matches a request method and path against registered routes.
 // Automatically canonicalizes path before matching.
+// Automatic HEAD routing: if a route matches GET, HEAD requests route to GET handler (RFC 9110 §9.3.2).
 // Returns RouteMatchResult: Found with handler_id, NotFound, or MethodNotAllowed with Allow header.
 fn match_route<B>(
     router:         const RadixRouter&,
@@ -693,10 +760,14 @@ fn match_route<B>(
     out_canon_path: B&,
 ) -> RouteMatchResult {
     var target_tree_idx: i32 = -1;
+    var get_tree_idx:    i32 = -1;
     for idx in router.trees.len {
-        if router.trees[idx].method[..] == method {
+        let m = router.trees[idx].method[..];
+        if m == method {
             target_tree_idx = idx as i32;
-            break;
+        }
+        if m == "GET" {
+            get_tree_idx = idx as i32;
         }
     }
 
@@ -708,26 +779,18 @@ fn match_route<B>(
         };
     }
 
-    // Check if matched by another method (405 Method Not Allowed)
-    var allow_buf: u8[..64] = [];
-    var matched_other = false;
-    var dummy_params = ZeroAllocParams { .. };
-    var dummy_canon: u8[..512] = [];
-
-    for idx in router.trees.len {
-        guard (idx as i32) != target_tree_idx else { continue; }
-        let res_other = match_path(router.trees[idx].tree, path, dummy_params, dummy_canon);
-        match res_other {
-            Found _ => {
-                if matched_other { allow_buf.append(", "); }
-                allow_buf.append(router.trees[idx].method[..]);
-                matched_other = true;
-            },
+    // Automatic HEAD routing: if method is HEAD and no explicit HEAD route matched,
+    // route to GET handler if a GET route matches (RFC 9110 §9.3.2).
+    if method == "HEAD" && get_tree_idx >= 0 {
+        let res_get = match_path(router.trees[get_tree_idx as i64].tree, path, params, out_canon_path);
+        match res_get {
+            Found _ => { return res_get; },
             _ => {},
         };
     }
 
-    if matched_other {
+    var allow_buf: u8[..64] = [];
+    if build_allow_header(router, target_tree_idx, method, path, allow_buf) {
         return RouteMatchResult.MethodNotAllowed { allow_header: allow_buf };
     }
 

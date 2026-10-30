@@ -194,10 +194,22 @@ fn dispatch_matched_route(
             internal::poll_future(out_future);
 
             res.status_code = 200;
+            handle_head_method_suppression(req.method[..], res);
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             return PipelineOutcome.Handled;
         },
     };
+}
+
+// RFC 9110 §9.3.2: Suppress body for HEAD requests while preserving Content-Length.
+fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
+    guard req_method == "HEAD" else { return; }
+    if header(res, "content-length").len == 0 && res.body.len > 0 {
+        var cl_buf: u8[..32] = [];
+        core::format_i64_dec(res.body.len, cl_buf);
+        res.headers.push(make_header("Content-Length", cl_buf[..]));
+    }
+    res.body.clear();
 }
 
 // Normalizes an RFC 7239 forwarded IP value, stripping quotes, brackets, and ports.
@@ -379,5 +391,8 @@ fn execute_pipeline(
 
     let outcome = dispatch_matched_route(cfg, req, now_ns, res, out_future, match_res, ext_slot_idx);
     if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+    if req.method[..] == "HEAD" {
+        res.body.clear();
+    }
     return outcome;
 }

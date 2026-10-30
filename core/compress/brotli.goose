@@ -723,8 +723,6 @@ fn decode_brotli_window_bits(r: BrotliBitReader&, out_wbits: u32&) -> CompressEr
         out_wbits = wbits;
         return CompressError.None;
     }
-    let bit = brotli_read_bits(r, 1);
-    guard bit == 0 else { return CompressError.InvalidHeader; }
     out_wbits = 17;
     return CompressError.None;
 }

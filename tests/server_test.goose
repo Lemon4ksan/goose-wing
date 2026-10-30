@@ -143,13 +143,45 @@ fn test_radix_trie_routing(t: core::T&) {
         };
         sub.assert_true(ok_post, "POST /api/items found");
 
-        // PUT is not allowed -> returns 405 with Allow: GET, POST
+        // PUT is not allowed -> returns 405 with Allow: GET, POST, HEAD
         let m_put = wing::match_route(router, "PUT", "/api/items", params);
         let ok_put = match m_put {
-            MethodNotAllowed mna => find(mna.allow_header[..], "GET") >= 0 && find(mna.allow_header[..], "POST") >= 0,
+            MethodNotAllowed mna => find(mna.allow_header[..], "GET") >= 0 && find(mna.allow_header[..], "POST") >= 0 && find(mna.allow_header[..], "HEAD") >= 0,
             _ => false,
         };
-        sub.assert_true(ok_put, "PUT /api/items returns MethodNotAllowed with Allow header containing GET and POST");
+        sub.assert_true(ok_put, "PUT /api/items returns MethodNotAllowed with Allow header containing GET, POST, and HEAD");
+
+        // RFC 9110 §9.3.2: HEAD automatically routes to GET handler when GET is registered
+        let m_head = wing::match_route(router, "HEAD", "/api/items", params);
+        let ok_head = match m_head {
+            Found f => f.handler_id == 10,
+            _ => false,
+        };
+        sub.assert_true(ok_head, "HEAD /api/items automatically matches GET route handler 10");
+
+        // OPTIONS capability probe includes OPTIONS in Allow header
+        let m_opt = wing::match_route(router, "OPTIONS", "/api/items", params);
+        let ok_opt_allow = match m_opt {
+            MethodNotAllowed mna => find(mna.allow_header[..], "OPTIONS") >= 0,
+            _ => false,
+        };
+        sub.assert_true(ok_opt_allow, "OPTIONS capability probe contains OPTIONS in Allow header");
+
+        // Route path canonicalization: registering with trailing slash matches without trailing slash
+        wing::add_route(router, "GET", "/trailing/slash/", 99);
+        let m_ts1 = wing::match_route(router, "GET", "/trailing/slash", params);
+        let ok_ts1 = match m_ts1 {
+            Found f => f.handler_id == 99,
+            _ => false,
+        };
+        sub.assert_true(ok_ts1, "GET /trailing/slash matches route registered as /trailing/slash/");
+
+        let m_ts2 = wing::match_route(router, "GET", "/trailing/slash/", params);
+        let ok_ts2 = match m_ts2 {
+            Found f => f.handler_id == 99,
+            _ => false,
+        };
+        sub.assert_true(ok_ts2, "GET /trailing/slash/ matches route registered as /trailing/slash/");
 
         // Completely unknown route returns NotFound (404)
         let m_none = wing::match_route(router, "GET", "/unknown/path", params);
@@ -307,6 +339,18 @@ fn test_unified_server_pipeline(t: core::T&) {
 
         sub.assert_true(res.has_header("Allow"), "Allow header returned");
         sub.assert_contains(res.header("Allow"), "GET", "Allow header indicates GET");
+        sub.assert_contains(res.header("Allow"), "HEAD", "Allow header indicates HEAD when GET is supported");
+
+        // Automatic HEAD routing in pipeline: executes GET handler and suppresses body (RFC 9110 §9.3.2)
+        var req_head = wing::new_request("HEAD", "/api/data");
+        req_head.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        var res_head = wing::Response { .. };
+        res_head.body.append("Should be suppressed");
+        var fut_head = internal::new_inline_handler_future(0);
+        let out_head = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_head, 1000000000, res_head, fut_head);
+        sub.assert_true(out_head == wing::PipelineOutcome.Handled, "HEAD request handled by GET route in pipeline");
+        sub.assert_eq(res_head.status_code, 200, "HEAD status code 200");
+        sub.assert_eq(res_head.body.len, 0, "HEAD response body is completely suppressed (len == 0)");
     };
 
     t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 Section 10.1.1)") { sub =>

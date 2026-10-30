@@ -153,13 +153,17 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
 
 // ---- freshness lifetime helpers --------------------------------------------
 
-// Computes freshness lifetime from Expires header relative to ref_time (RFC 9111 §4.2.1).
+// Computes freshness lifetime from Expires header relative to ref_time (RFC 9111 §4.2.1 & §5.3).
+// If Expires is "0" or invalid date format, lifetime is 0 and immediately stale (RFC 9111 §5.3 & §4.2.2).
 fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: core::Time) -> i64, bool {
     let expires_raw = get_header(resp_headers, "expires");
-    guard expires_raw.len > 0 else { return 0, false; }
+    let trimmed = trim_lws(expires_raw);
+    guard trimmed.len > 0 else { return 0, false; }
 
-    let exp_time, ok_exp = core::parse_http_date(expires_raw);
-    guard ok_exp else { return 0, false; }
+    let exp_time, ok_exp = core::parse_http_date(trimmed);
+    // RFC 9111 §5.3 & §4.2.2: An invalid date format (or "0") means immediately stale (lifetime = 0)
+    // and prevents fallback to heuristic freshness from Last-Modified.
+    guard ok_exp else { return 0, true; }
 
     let date_raw = get_header(resp_headers, "date");
     var base_time = ref_time;

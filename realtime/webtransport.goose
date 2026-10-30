@@ -23,7 +23,7 @@ const STREAM_TYPE_WEBTRANSPORT: u64 = 0x54;
 const WEBTRANSPORT_BIDI_SIGNAL: u64 = 0x41;
 
 // WebTransport Capsules (draft-16 Section 8 & RFC 9297) are defined in net/masque.goose:
-// CAPSULE_WT_RESET_STREAM (0x2841), CAPSULE_WT_STOP_SENDING (0x2842),
+// CAPSULE_WT_RESET_STREAM (0x190B4D39), CAPSULE_WT_STOP_SENDING (0x190B4D3A),
 // CAPSULE_CLOSE_WEBTRANSPORT (0x2843), CAPSULE_DRAIN_WEBTRANSPORT (0x78AE).
 
 // HTTP/3 Error Code Mapping bounds (draft-16 Section 4.3)
@@ -249,32 +249,35 @@ fn decode_webtransport_bidi_stream_header(
 
 // ---- 6. Datagram Framing (draft-16 Section 5 & RFC 9221) ---------------------
 
-// Encodes a WebTransport datagram:
-// Quarter-Stream-ID / Session ID (varint) || Datagram Payload
+// Encodes a WebTransport datagram (RFC 9297 / draft-ietf-webtrans-http3 §5):
+// Quarter Stream ID (varint = session_id / 4) || Context ID (varint = 0) || Datagram Payload
 fn encode_webtransport_datagram<B>(
     session_id: u64,
     payload:    const u8[:],
     out:        B&,
 ) {
-    write_varint(out, session_id);
+    write_varint(out, session_id / 4);
+    write_varint(out, 0);
     out.append(payload);
 }
 
-// Decodes a WebTransport datagram from wire bytes.
+// Decodes a WebTransport datagram from wire bytes (RFC 9297 / draft-ietf-webtrans-http3 §5).
 //
 // Example:
-//   wire = [0x01, 'p', 'i', 'n', 'g']
-//   returns: true, out.session_id = 1, out.payload = "ping"
+//   wire = [0x01, 0x00, 'p', 'i', 'n', 'g']
+//   returns: true, out.session_id = 4, out.payload = "ping"
 fn decode_webtransport_datagram(
     wire: const u8[:],
     out:  WebTransportDatagram&,
 ) -> bool {
     out.payload.clear();
     var idx: i64 = 0;
-    let s_id, ok = read_varint(wire, idx);
-    guard ok else { return false; }
+    let quarter_id, ok1 = read_varint(wire, idx);
+    guard ok1 else { return false; }
+    let ctx_id, ok2 = read_varint(wire, idx);
+    guard ok2 && ctx_id == 0 else { return false; }
 
-    out.session_id = s_id;
+    out.session_id = quarter_id * 4;
     guard idx <= wire.len && (wire.len - idx) <= out.payload.cap else { return false; }
 
     for i in (wire.len - idx) {
@@ -412,8 +415,8 @@ fn decode_webtransport_drain_session(payload: const u8[:]) -> bool {
     return payload.len == 0;
 }
 
-// Encodes a WT_RESET_STREAM capsule:
-// Capsule Type (varint 0x2841) || Length (varint) || Stream ID (varint) || Error Code (4B BE)
+// Encodes a WT_RESET_STREAM capsule (draft-ietf-webtrans-http3-16 / draft-ietf-webtrans-http2):
+// Capsule Type (varint 0x190B4D39) || Length (varint) || Stream ID (varint) || Error Code (varint)
 fn encode_webtransport_reset_stream<B>(
     stream_id:  u64,
     error_code: u32,
@@ -422,10 +425,7 @@ fn encode_webtransport_reset_stream<B>(
     write_varint(out, CAPSULE_WT_RESET_STREAM);
     var tmp_body: u8[..32] = [];
     write_varint(tmp_body, stream_id);
-    tmp_body.push(((error_code >> 24) & 0xFF) as u8);
-    tmp_body.push(((error_code >> 16) & 0xFF) as u8);
-    tmp_body.push(((error_code >> 8) & 0xFF) as u8);
-    tmp_body.push((error_code & 0xFF) as u8);
+    write_varint(tmp_body, error_code as u64);
 
     write_varint(out, tmp_body.len as u64);
     out.append(tmp_body[..]);
@@ -434,27 +434,26 @@ fn encode_webtransport_reset_stream<B>(
 // Decodes a WT_RESET_STREAM capsule from its payload.
 //
 // Example:
-//   payload = [0x01, 0x00, 0x00, 0x00, 0x00]
+//   payload = [0x01, 0x00]
 //   returns: true, out.stream_id = 1, out.error_code = 0
 fn decode_webtransport_reset_stream(
     payload: const u8[:],
     out:     WebTransportStreamReset&,
 ) -> bool {
     var idx: i64 = 0;
-    let sid, ok = read_varint(payload, idx);
-    guard ok && payload.len == idx + 4 else { return false; }
+    let sid, ok1 = read_varint(payload, idx);
+    guard ok1 else { return false; }
+
+    let code, ok2 = read_varint(payload, idx);
+    guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else { return false; }
 
     out.stream_id = sid;
-    var code: u32 = (payload[idx] as u32) << 24;
-    code |= (payload[idx + 1] as u32) << 16;
-    code |= (payload[idx + 2] as u32) << 8;
-    code |= payload[idx + 3];
-    out.error_code = code;
+    out.error_code = code as u32;
     return true;
 }
 
-// Encodes a WT_STOP_SENDING capsule:
-// Capsule Type (varint 0x2842) || Length (varint) || Stream ID (varint) || Error Code (4B BE)
+// Encodes a WT_STOP_SENDING capsule (draft-ietf-webtrans-http3-16 / draft-ietf-webtrans-http2):
+// Capsule Type (varint 0x190B4D3A) || Length (varint) || Stream ID (varint) || Error Code (varint)
 fn encode_webtransport_stop_sending<B>(
     stream_id:  u64,
     error_code: u32,
@@ -463,10 +462,7 @@ fn encode_webtransport_stop_sending<B>(
     write_varint(out, CAPSULE_WT_STOP_SENDING);
     var tmp_body: u8[..32] = [];
     write_varint(tmp_body, stream_id);
-    tmp_body.push(((error_code >> 24) & 0xFF) as u8);
-    tmp_body.push(((error_code >> 16) & 0xFF) as u8);
-    tmp_body.push(((error_code >> 8) & 0xFF) as u8);
-    tmp_body.push((error_code & 0xFF) as u8);
+    write_varint(tmp_body, error_code as u64);
 
     write_varint(out, tmp_body.len as u64);
     out.append(tmp_body[..]);
@@ -475,22 +471,21 @@ fn encode_webtransport_stop_sending<B>(
 // Decodes a WT_STOP_SENDING capsule from its payload.
 //
 // Example:
-//   payload = [0x01, 0x00, 0x00, 0x00, 0x00]
+//   payload = [0x01, 0x00]
 //   returns: true, out.stream_id = 1, out.error_code = 0
 fn decode_webtransport_stop_sending(
     payload: const u8[:],
     out:     WebTransportStreamStopSending&,
 ) -> bool {
     var idx: i64 = 0;
-    let sid, ok = read_varint(payload, idx);
-    guard ok && payload.len == idx + 4 else { return false; }
+    let sid, ok1 = read_varint(payload, idx);
+    guard ok1 else { return false; }
+
+    let code, ok2 = read_varint(payload, idx);
+    guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else { return false; }
 
     out.stream_id = sid;
-    var code: u32 = (payload[idx] as u32) << 24;
-    code |= (payload[idx + 1] as u32) << 16;
-    code |= (payload[idx + 2] as u32) << 8;
-    code |= payload[idx + 3];
-    out.error_code = code;
+    out.error_code = code as u32;
     return true;
 }
 
@@ -567,8 +562,9 @@ struct WebTransportDemuxer {
 }
 
 // draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - WebTransport Bidirectional Stream Header Demux
+// draft-ietf-webtrans-http3 Section 4.2: Bidirectional Streams - WebTransport Bidirectional Stream Header Demux
 // Demuxes a WebTransport bidirectional stream opening frame.
-// Supports both direct Session ID varint (draft-overview) and 0x41 signal + Session ID varint (draft-http3).
+// Requires 0x41 signal + Session ID varint (draft-http3 §4.2); streams lacking 0x41 signal are rejected.
 //
 // Example:
 //   wire = [0x40, 0x41, 0x05, 'd', 'a', 't', 'a']
@@ -578,16 +574,12 @@ fn demux_webtransport_bidi_stream(
 ) -> u64, const u8[:], bool {
     guard wire.len > 0 else { return 0, wire[..0], false; }
     var idx: i64 = 0;
-    let first, ok1 = read_varint(wire, idx);
-    guard ok1 else { return 0, wire[..0], false; }
+    let signal, ok1 = read_varint(wire, idx);
+    guard ok1 && signal == WEBTRANSPORT_BIDI_SIGNAL else { return 0, wire[..0], false; }
 
-    if first == WEBTRANSPORT_BIDI_SIGNAL {
-        let sid, ok2 = read_varint(wire, idx);
-        guard ok2 else { return 0, wire[..0], false; }
-        return sid, wire[idx..], true;
-    }
-
-    return first, wire[idx..], true;
+    let sid, ok2 = read_varint(wire, idx);
+    guard ok2 else { return 0, wire[..0], false; }
+    return sid, wire[idx..], true;
 }
 
 // draft-ietf-webtrans-http3 Section 4.1: Unidirectional Streams - WebTransport Stream Type and Session ID Demux
@@ -629,20 +621,13 @@ fn demux_webtransport_stream_header(
 
     if is_bidi {
         var idx: i64 = 0;
-        let first, ok1 = read_varint(wire, idx);
-        guard ok1 else { return false; }
+        let signal, ok1 = read_varint(wire, idx);
+        guard ok1 && signal == WEBTRANSPORT_BIDI_SIGNAL else { return false; }
 
-        if first == WEBTRANSPORT_BIDI_SIGNAL {
-            let sid, ok2 = read_varint(wire, idx);
-            guard ok2 else { return false; }
-            out.kind = WebTransportStreamKind.Bidirectional;
-            out.session_id = sid;
-            out.header_len = idx;
-            return true;
-        }
-
+        let sid, ok2 = read_varint(wire, idx);
+        guard ok2 else { return false; }
         out.kind = WebTransportStreamKind.Bidirectional;
-        out.session_id = first;
+        out.session_id = sid;
         out.header_len = idx;
         return true;
     }

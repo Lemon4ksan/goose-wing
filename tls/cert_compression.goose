@@ -11,10 +11,10 @@ import core from "..";
 // ---- 1. RFC 8879 Compression Algorithm Identifiers -------------------------
 
 // RFC 8879 Section 3: Negotiating Certificate Compression - Compression Algorithm Identifiers
-const CERT_COMPRESSION_BROTLI:    u16 = 2; // RFC 8879 Section 3 (brotli)
-const CERT_COMPRESSION_ZSTD:      u16 = 1; // RFC 8879 Section 3 (assigned in specification)
-const CERT_COMPRESSION_ZSTD_IANA: u16 = 3; // RFC 8879 Section 3 official IANA codepoint
 const CERT_COMPRESSION_ZLIB:      u16 = 1; // RFC 8879 Section 3 (zlib)
+const CERT_COMPRESSION_BROTLI:    u16 = 2; // RFC 8879 Section 3 (brotli)
+const CERT_COMPRESSION_ZSTD:      u16 = 3; // RFC 8879 Section 3 (zstd)
+const CERT_COMPRESSION_ZSTD_IANA: u16 = 3; // RFC 8879 Section 3 official IANA codepoint
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Decompression Ceiling
 const MAX_UNCOMPRESSED_CERT_SIZE: u32 = 65536; // 64 KB decompression ceiling (bomb defense)
@@ -53,7 +53,7 @@ fn encode_compressed_certificate<B>(
 ) -> bool {
     guard msg.uncompressed_length > 0 && msg.uncompressed_length <= MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
     let comp_len = msg.compressed_certificate_message.len as u32;
-    guard msg.compressed_certificate_message.len >= 1 && comp_len <= MAX_UNCOMPRESSED_CERT_SIZE else {
+    guard comp_len >= 1 && comp_len <= 0xFFFFFF && comp_len <= MAX_UNCOMPRESSED_CERT_SIZE else {
         return false;
     }
     guard is_valid_compression_algorithm(msg.algorithm) else { return false; }
@@ -63,6 +63,10 @@ fn encode_compressed_certificate<B>(
     out.push(((msg.uncompressed_length >> 16) & 0xFF) as u8);
     out.push(((msg.uncompressed_length >> 8) & 0xFF) as u8);
     out.push((msg.uncompressed_length & 0xFF) as u8);
+    // RFC 8879 §4 / RFC 8446 §3.4: opaque compressed_certificate_message<1..2^24-1>
+    out.push(((comp_len >> 16) & 0xFF) as u8);
+    out.push(((comp_len >> 8) & 0xFF) as u8);
+    out.push((comp_len & 0xFF) as u8);
     out.append(msg.compressed_certificate_message);
     return true;
 }
@@ -70,20 +74,26 @@ fn encode_compressed_certificate<B>(
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Parser
 //
 // Example:
-//   raw = [0x00, 0x02, 0x00, 0x01, 0x00, ... (compressed data)]
+//   raw = [0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, ... (compressed data)]
 //   returns: ok = true, msg.algorithm = 2, msg.uncompressed_length = 256, msg.compressed_certificate_message = slice
 fn parse_compressed_certificate_msg(
     raw: const u8[:],
     out: CompressedCertificate&,
 ) -> bool {
-    guard raw.len >= 6 else { return false; }
+    guard raw.len >= 8 else { return false; }
 
     let algo = core::read_be_u16(raw, 0);
     guard is_valid_compression_algorithm(algo) else { return false; }
 
     let ulen = core::read_be_u24(raw, 2);
-    let comp_data = raw[5..];
-    guard is_within_decompression_ratio(ulen, comp_data.len as u32) else { return false; }
+    guard ulen > 0 && ulen <= MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
+
+    let comp_len = core::read_be_u24(raw, 5);
+    guard comp_len >= 1 else { return false; }
+    guard (raw.len - 8) as u32 == comp_len else { return false; }
+
+    let comp_data = raw[8..8 + (comp_len as i64)];
+    guard is_within_decompression_ratio(ulen, comp_len) else { return false; }
 
     out.algorithm = algo;
     out.uncompressed_length = ulen;
@@ -134,7 +144,7 @@ fn decompress_certificate_payload<B>(
         );
         guard ok && (out_cert.len as u32) == expected_len else { return false; }
         return true;
-    } else if algo == CERT_COMPRESSION_ZSTD_IANA {
+    } else if algo == CERT_COMPRESSION_ZSTD || algo == CERT_COMPRESSION_ZSTD_IANA {
         let ok, _ = core::zstd_decompress_with_limit(
             comp_data,
             out_cert,
@@ -153,6 +163,7 @@ fn decompress_certificate_brotli<B>(
     uncompressed_len: u32,
     out_cert:         B&,
 ) -> bool {
+    guard uncompressed_len > 0 else { return false; }
     guard is_within_decompression_ratio(uncompressed_len, compressed_data.len as u32) else {
         return false;
     }

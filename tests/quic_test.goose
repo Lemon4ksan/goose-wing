@@ -1030,6 +1030,20 @@ fn test_quic_stream_state_machine_recv(t: core::T&) {
     t.assert_eq(err_rst_ign, internal::QUIC_ERR_NO_ERROR, "no error");
     t.assert_eq(s.recv_state, internal::QuicRecvState.DataRead, "state remains DataRead");
 
+    // 5b. RFC 9000 §3.2: Duplicate RESET_STREAM arriving on ResetRead state MUST NOT reopen stream
+    var s_rst = internal::new_quic_stream(0, 10000);
+    let ok_r1, _ = internal::quic_stream_on_recv_reset(s_rst, 0x123, 500);
+    t.assert_true(ok_r1, "first reset stream accepted");
+    t.assert_eq(s_rst.recv_state, internal::QuicRecvState.ResetRecvd, "state is ResetRecvd");
+    internal::quic_stream_on_app_read_reset(s_rst);
+    t.assert_eq(s_rst.recv_state, internal::QuicRecvState.ResetRead, "state is ResetRead (terminal)");
+    t.assert_true(internal::quic_stream_is_recv_closed(s_rst), "recv is closed");
+    let ok_r2, err_r2 = internal::quic_stream_on_recv_reset(s_rst, 0x123, 500);
+    t.assert_true(ok_r2, "duplicate reset stream accepted without error");
+    t.assert_eq(err_r2, internal::QUIC_ERR_NO_ERROR, "no error on duplicate reset");
+    t.assert_eq(s_rst.recv_state, internal::QuicRecvState.ResetRead, "stream remains ResetRead, does NOT reopen");
+    t.assert_true(internal::quic_stream_is_recv_closed(s_rst), "stream remains closed");
+
     // 6. Receiving STOP_SENDING on send-capable stream
     var s_bidi = internal::new_quic_stream(0, 10000);
     let ok_ss, _ = internal::quic_stream_on_recv_stop_sending(s_bidi, 0x55, internal::QuicRole.Server);
@@ -1268,6 +1282,15 @@ fn test_window_update_thresholds(t: core::T&) {
     // Immediately checking again returns false (already advertised)
     let need_update3, _ = internal::quic_fc_check_conn_window_update(fc);
     t.assert_false(need_update3, "subsequent check does not re-trigger without more reads");
+
+    // RFC 9000 §4.1: Received bytes trigger MAX_DATA update preventing deadlock without app reads
+    var fc_rx = internal::new_quic_flow_control(65536, 65536);
+    var s_rx = internal::new_quic_stream(0, 65536);
+    let ok_rx, _ = internal::quic_fc_record_recv_stream(fc_rx, s_rx, 0, 35000);
+    t.assert_true(ok_rx, "record receive 35000 bytes ok");
+    let need_update_rx, new_max_rx = internal::quic_fc_check_conn_window_update(fc_rx);
+    t.assert_true(need_update_rx, "MAX_DATA update triggered by received bytes preventing deadlock");
+    t.assert_eq(new_max_rx, 100536, "new MAX_DATA calculated from received bytes (35000 + 65536)");
 
     // Stream window update threshold test
     var s_up = internal::new_quic_stream(0, 1000);

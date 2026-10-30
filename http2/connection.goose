@@ -420,6 +420,24 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
     return ERR_NO_ERROR;
 }
 
+// RFC 9113 §6.6: Tracks CONTINUATION state machine when PUSH_PROMISE has END_HEADERS cleared.
+fn handle_h2_push_promise_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
+    let rule_err = validate_frame_header_rules(hdr, s.local_max_frame_size);
+    guard rule_err == ERR_NO_ERROR else { return rule_err; }
+
+    if hdr.length > s.max_header_list_size || hdr.length > MAX_HEADER_BLOCK_SIZE_LIMIT {
+        return ERR_ENHANCE_YOUR_CALM;
+    }
+
+    if (hdr.flags & FLAG_END_HEADERS) == 0 {
+        s.continuation_stream_id = hdr.stream_id;
+        s.continuation_frames_cnt = 0;
+        s.accumulated_header_size = hdr.length;
+        s.continuation_start_ms = now_ms;
+    }
+    return ERR_NO_ERROR;
+}
+
 fn check_h2_control_frame_flood(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
     if (hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS) && (hdr.flags & FLAG_ACK) == 0 {
         s.pending_control_frames++;
@@ -451,6 +469,10 @@ fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u6
 
     if hdr.frame_type == FRAME_HEADERS {
         return handle_h2_headers_frame_header(s, hdr, now_ms);
+    }
+
+    if hdr.frame_type == FRAME_PUSH_PROMISE {
+        return handle_h2_push_promise_frame_header(s, hdr, now_ms);
     }
 
     let ctrl_err = check_h2_control_frame_flood(s, hdr);

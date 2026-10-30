@@ -915,7 +915,11 @@ fn dispatch_ingress_frame<B>(
             emit_ping_ack(opaque, out_wire);
         }
     } else if hdr.frame_type == FRAME_PRIORITY {
-        guard frame_payload.len == 5 else { return true; }
+        if frame_payload.len != 5 {
+            // RFC 9113 §6.3: PRIORITY with length other than 5 is stream error FRAME_SIZE_ERROR
+            emit_rst_stream(hdr.stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+            return true;
+        }
         let b0 = frame_payload[0] as u32;
         let b1 = frame_payload[1] as u32;
         let b2 = frame_payload[2] as u32;
@@ -1076,7 +1080,8 @@ fn handle_ingress_header_error<B>(
     offset:          i64&,
     out_wire:        B&,
 ) -> bool {
-    if err == ERR_STREAM_CLOSED || err == ERR_REFUSED_STREAM {
+    let is_prio_size_err = (hdr.frame_type == FRAME_PRIORITY && err == ERR_FRAME_SIZE_ERROR);
+    if err == ERR_STREAM_CLOSED || err == ERR_REFUSED_STREAM || is_prio_size_err {
         emit_rst_stream(hdr.stream_id, err, out_wire);
         terminate_server_stream(sess, hdr.stream_id);
         offset += total_frame_len;

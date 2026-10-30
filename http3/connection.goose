@@ -283,13 +283,6 @@ fn send_request_data<B>(
 
 // Handles frames received on the peer control stream.
 fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, payload: const u8[:]) -> u64 {
-    // Strictly forbidden frames on control stream take precedence (RFC 9114 §7.2.1, §7.2.2, §7.2.5, §7.2.8)
-    guard is_allowed_on_control_stream(hdr.frame_type) else {
-        conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
-    }
-
     // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
     if !conn.peer_settings_received {
         if hdr.frame_type != H3_FRAME_SETTINGS {
@@ -306,6 +299,13 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
         conn.peer_settings_received = true;
         conn.state = H3ConnState.Active;
         return H3_ERR_NO_ERROR;
+    }
+
+    // Subsequent strictly forbidden frames on control stream (RFC 9114 §7.2.1, §7.2.2, §7.2.5, §7.2.8)
+    guard is_allowed_on_control_stream(hdr.frame_type) else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+        return H3_ERR_FRAME_UNEXPECTED;
     }
 
     // Subsequent frames must not be SETTINGS

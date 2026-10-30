@@ -456,11 +456,19 @@ fn test_qpack_table_and_codec(t: core::T&) {
     t.run("QPACK-04: Decoder Stream Instruction Parsing") { sub =>
         var tbl = internal::new_qpack_table(4096, 16);
 
+        // Track unacknowledged section for stream 4 with RIC=1 (RFC 9204 §4.4.1)
+        sub.assert_true(internal::qpack_track_unacked_stream(tbl, 4, 1), "track unacked stream 4");
+
         // 1. Section Acknowledgment (1xxxxxxx) for stream 4
         var dec_ack: u8[..8] = [];
         dec_ack.push(0x84); // 1000 0100 -> stream 4
         let _, err_d1 = internal::qpack_process_decoder_instruction(tbl, dec_ack[..], 0);
         sub.assert_eq(err_d1, internal::QpackError.None, "section ack succeeds");
+        sub.assert_eq(tbl.known_rcvd_count, 1, "known_rcvd_count updated to 1");
+
+        // Duplicate Section Acknowledgment for already-acknowledged stream MUST fail (RFC 9204 §4.4.1)
+        let _, err_dup = internal::qpack_process_decoder_instruction(tbl, dec_ack[..], 0);
+        sub.assert_eq(err_dup, internal::QpackError.DecoderStreamError, "duplicate section ack triggers DecoderStreamError");
 
         // 2. Stream Cancellation (01xxxxxx) for stream 4
         var dec_canc: u8[..8] = [];
@@ -469,6 +477,7 @@ fn test_qpack_table_and_codec(t: core::T&) {
         sub.assert_eq(err_d2, internal::QpackError.None, "stream cancellation succeeds");
 
         // 3. Insert Count Increment (00xxxxxx) with increment 3 (RFC 9204 Section 4.4.3)
+        tbl.known_rcvd_count = 0;
         tbl.insert_count = 3;
         var dec_inc: u8[..8] = [];
         dec_inc.push(0x03); // 0000 0011 -> inc 3
@@ -869,6 +878,17 @@ fn test_round2_qpackstrike_suite(t: core::T&) {
         let ok_unpinned = internal::qpack_insert_literal(tbl, "x-third", "val3");
         sub.assert_true(ok_unpinned, "insertion succeeds after unpinning");
 
+        // Test A2: Stream Cancellation releases dynamic entry references and allows eviction (RFC 9204 §2.2.2.2)
+        var tbl_canc = internal::new_qpack_table(100, 4);
+        internal::qpack_insert_literal(tbl_canc, "x-first", "v1");
+        sub.assert_true(internal::qpack_track_stream_ref(tbl_canc, 10, 0), "stream 10 pins entry 0");
+        internal::qpack_insert_literal(tbl_canc, "x-second", "v2");
+        let ok_blocked2 = internal::qpack_insert_literal(tbl_canc, "x-third", "v3");
+        sub.assert_false(ok_blocked2, "eviction blocked while stream 10 holds reference");
+        internal::qpack_cancel_stream(tbl_canc, 10);
+        let ok_canc = internal::qpack_insert_literal(tbl_canc, "x-third", "v3");
+        sub.assert_true(ok_canc, "eviction succeeds after stream cancellation releases reference");
+
         // Test B: Blocked streams manager helpers
         var tbl_b = internal::new_qpack_table(512, 2);
         sub.assert_true(internal::qpack_can_block_stream(tbl_b), "can block stream when under max_blocked");
@@ -1241,7 +1261,7 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
 
     t.run("WebTransport Datagram Framing") { sub =>
         let payload = "RAW_UNRELIABLE_TELEMETRY_SAMPLE";
-        let session_id: u64 = 42;
+        let session_id: u64 = 40;
 
         var wire: u8[>..] = [];
         wing::encode_webtransport_datagram(session_id, payload, wire);
@@ -1250,7 +1270,7 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
         var decoded = wing::WebTransportDatagram { .. };
         let ok_dec = wing::decode_webtransport_datagram(wire[..], decoded);
         sub.assert_true(ok_dec, "Datagram decoded");
-        sub.assert_eq(decoded.session_id, 42, "Session ID is 42");
+        sub.assert_eq(decoded.session_id, 40, "Session ID is 40");
         sub.assert_bytes_eq(decoded.payload[..], payload, "Payload matches original bytes");
     };
 
@@ -1268,7 +1288,8 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
 
         // Oversized datagram (> 1500B) rejection without panic
         var huge_dgram: u8[>..] = [];
-        huge_dgram.push(0x01); // session_id = 1
+        huge_dgram.push(0x01); // quarter_stream_id = 1 (session_id = 4)
+        huge_dgram.push(0x00); // context_id = 0
         for i in 1600 { huge_dgram.push('X'); }
         var dec_huge = wing::WebTransportDatagram { .. };
         sub.assert_false(wing::decode_webtransport_datagram(huge_dgram[..], dec_huge), "Oversized >1500B datagram rejected safely");
@@ -1447,16 +1468,14 @@ fn test_webtransport_stream_demuxing(t: core::T&) {
         sub.assert_eq(sid_a, 26, "Session ID is 26");
         sub.assert_bytes_eq(payload_a, "TELEMETRY", "Extracted payload matches");
 
-        // Case B: draft-ietf-webtrans-overview Section 4.2 with direct Session ID varint
-        // Wire: 0x1A (session ID 26) || payload "DIRECT_DATA"
+        // Case B: draft-ietf-webtrans-http3 Section 4.2 requires 0x41 signal; streams lacking it are rejected
+        // Wire: 0x1A (session ID 26) without 0x41 signal || payload "DIRECT_DATA"
         let bidi_wire_direct: u8[12] = [
             0x1A,
             'D', 'I', 'R', 'E', 'C', 'T', '_', 'D', 'A', 'T', 'A',
         ];
-        let sid_b, payload_b, ok_b = wing::demux_webtransport_bidi_stream(bidi_wire_direct[..]);
-        sub.assert_true(ok_b, "Demuxed bidi stream with direct session ID");
-        sub.assert_eq(sid_b, 26, "Session ID is 26");
-        sub.assert_bytes_eq(payload_b, "DIRECT_DATA", "Payload matches");
+        let _, _, ok_b = wing::demux_webtransport_bidi_stream(bidi_wire_direct[..]);
+        sub.assert_false(ok_b, "Demuxing bidi stream lacking 0x41 signal is rejected");
 
         // Negative check: empty wire
         let empty_wire: u8[0] = [];
@@ -1491,8 +1510,9 @@ fn test_webtransport_stream_demuxing(t: core::T&) {
         sub.assert_eq(st1, wing::WebTransportSessionState.Active, "Session 100 is Active");
 
         // 2. Dispatch bidirectional initial stream on QUIC Stream 4 (client bidi: stream_id & 0x02 == 0)
-        // Wire: direct session ID (100 is encoded as 0x40, 0x64 in 2-byte varint) || payload "FRAME_1"
-        var bidi_pkt1: u8[9] = [
+        // Wire: 0x40, 0x41 (signal 65) || 0x40, 0x64 (session 100) || payload "FRAME_1"
+        var bidi_pkt1: u8[11] = [
+            0x40, 0x41,
             0x40, 0x64,
             'F', 'R', 'A', 'M', 'E', '_', '1',
         ];
@@ -1538,7 +1558,12 @@ fn test_webtransport_stream_demuxing(t: core::T&) {
         sub.assert_eq(st2, wing::WebTransportSessionState.Draining, "Session 100 is Draining");
 
         // Attempting to open a NEW stream on draining session MUST be rejected
-        var new_bidi: u8[8] = [0x40, 0x64, 'N', 'E', 'W', '!', '!', '!'];
+        // Wire: 0x40, 0x41 (signal 65) || 0x40, 0x64 (session 100) || payload "NEW!!!"
+        var new_bidi: u8[10] = [
+            0x40, 0x41,
+            0x40, 0x64,
+            'N', 'E', 'W', '!', '!', '!',
+        ];
         var out_reject = wing::WebTransportStreamPayload { .. };
         let ok_reject = wing::demux_webtransport_stream(demuxer, 8, new_bidi[..], false, out_reject);
         sub.assert_false(ok_reject, "New stream rejected on draining session");

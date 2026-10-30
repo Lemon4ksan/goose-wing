@@ -174,7 +174,9 @@ fn download_stream<F: fn(const StreamProgress&)>(
             break;
         }
     }
-    return resp, Error { .. };
+    var resp_out = resp;
+    copy_trailers_to_response(reader, resp_out);
+    return copy(resp_out), Error { .. };
 }
 
 // ---- realtime & streaming (aoni-style ergonomics) -------------------------

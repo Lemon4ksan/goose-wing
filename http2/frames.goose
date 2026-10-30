@@ -142,7 +142,8 @@ fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> H2AltSvcFrame, u3
     }
     let valid_origin = if stream_id == 0 { origin_len > 0 } else { origin_len == 0 };
     guard valid_origin else {
-        return H2AltSvcFrame { .. }, ERR_PROTOCOL_ERROR;
+        // RFC 7838 §4: An ALTSVC frame with invalid origin information MUST be ignored
+        return H2AltSvcFrame { .. }, ERR_NO_ERROR;
     }
     return H2AltSvcFrame {
         origin:        payload[2..origin_end],

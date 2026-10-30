@@ -429,23 +429,46 @@ fn test_smartnic_ktls_offload(t: core::T&) {
     };
 
     t.run("SmartNIC AES-GCM-128 / 256 Key Offload Configuration") { sub =>
-        let key128: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let iv:     u8[4]  = [0xA1, 0xB2, 0xC3, 0xD4];
-        let salt:   u8[4]  = [0xE5, 0xF6, 0x07, 0x18];
-        let seq:    u8[8]  = [0, 0, 0, 0, 0, 0, 0, 1];
+        let tx_key:  u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let tx_iv:   u8[4]  = [0xA1, 0xB2, 0xC3, 0xD4];
+        let tx_salt: u8[4]  = [0xE5, 0xF6, 0x07, 0x18];
+        let tx_seq:  u8[8]  = [0, 0, 0, 0, 0, 0, 0, 1];
 
-        // Attach to socket (dummy fd = 100 for test)
+        let rx_key:  u8[16] = [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
+        let rx_iv:   u8[4]  = [0x1A, 0x2B, 0x3C, 0x4D];
+        let rx_salt: u8[4]  = [0x5E, 0x6F, 0x70, 0x81];
+        let rx_seq:  u8[8]  = [0, 0, 0, 0, 0, 0, 0, 1];
+
+        // Attach to socket (dummy fd = 100 for test) with separate TX and RX contexts
         let sess, err = internal::smartnic_attach_hardware_tls(
             100,
             internal::SmartNicCipherSuite.AesGcm128,
-            key128[..],
-            iv[..],
-            salt[..],
-            seq[..],
+            tx_key[..],
+            tx_iv[..],
+            tx_salt[..],
+            tx_seq[..],
+            rx_key[..],
+            rx_iv[..],
+            rx_salt[..],
+            rx_seq[..],
         );
         sub.assert_eq(err, 0, "smartnic_attach_hardware_tls succeeded");
         sub.assert_true(sess.ktls_active, "kTLS active");
+        sub.assert_true(sess.tx_offloaded, "TX offloaded");
+        sub.assert_true(sess.rx_offloaded, "RX offloaded");
         sub.assert_eq(sess.fd, 100, "Target fd retained");
+
+        // Verify invalid fd rejects immediately with error
+        let sess_bad, err_bad = internal::smartnic_attach_hardware_tls(
+            -1,
+            internal::SmartNicCipherSuite.AesGcm128,
+            tx_key[..],
+            tx_iv[..],
+            tx_salt[..],
+            tx_seq[..],
+        );
+        sub.assert_true(err_bad != 0, "Invalid fd rejects offload");
+        sub.assert_false(sess_bad.tx_offloaded, "TX not offloaded on invalid fd");
     };
 }
 

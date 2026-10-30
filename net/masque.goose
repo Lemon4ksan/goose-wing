@@ -10,12 +10,11 @@ import std;
 // ---- 1. Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
 const CAPSULE_DATAGRAM:            u64 = 0x00;        // RFC 9297 Section 3.5 (DATAGRAM Capsule)
-const CAPSULE_PADDING:             u64 = 0x01;        // RFC 9297 Section 3.2 (Capsule padding)
-const CAPSULE_ADDRESS_ASSIGN:      u64 = 0x1E;        // RFC 9484 CONNECT-IP Section 4.1
-const CAPSULE_ADDRESS_REQUEST:     u64 = 0x1F;        // RFC 9484 CONNECT-IP Section 4.2
-const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x20;        // RFC 9484 CONNECT-IP Section 4.3
-const CAPSULE_WT_RESET_STREAM:     u64 = 0x2841;      // WebTransport
-const CAPSULE_WT_STOP_SENDING:     u64 = 0x2842;      // WebTransport
+const CAPSULE_ADDRESS_ASSIGN:      u64 = 0x01;        // RFC 9484 Section 4.7.1 & 12.4
+const CAPSULE_ADDRESS_REQUEST:     u64 = 0x02;        // RFC 9484 Section 4.7.2 & 12.4
+const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x03;        // RFC 9484 Section 4.7.3 & 12.4
+const CAPSULE_WT_RESET_STREAM:     u64 = 0x190B4D39;  // draft-ietf-webtrans-http3-16
+const CAPSULE_WT_STOP_SENDING:     u64 = 0x190B4D3A;  // draft-ietf-webtrans-http3-16
 const CAPSULE_CLOSE_WEBTRANSPORT:  u64 = 0x2843;      // WebTransport
 const CAPSULE_DRAIN_WEBTRANSPORT:  u64 = 0x78AE;      // WebTransport
 
@@ -213,128 +212,174 @@ struct IpAddressAssign {
 }
 
 struct RouteAdvertisement {
-    ip_version: u8       = 4,
-    prefix_len: u8       = 0,
-    ip_prefix:  u8[..16] = [],
+    ip_version:  u8       = 4,
+    start_ip:    u8[..16] = [],
+    end_ip:      u8[..16] = [],
+    ip_protocol: u8       = 0,
 }
 
-// Encodes an ADDRESS_REQUEST Capsule (RFC 9484 Section 4.2):
-// Format: Request ID (VarInt) || IP Version (u8) || Prefix Len (u8) || IP bytes (optional)
+// Encodes an ADDRESS_REQUEST Capsule (RFC 9484 Section 4.7.2):
+// Format: Request ID (VarInt) || IP Version (u8) || IP bytes (4 or 16) || Prefix Len (u8)
 fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> bool {
     var body: u8[..128] = [];
     guard internal::quic_encode_varint(body, req.request_id) else { return false; }
     body.push(req.ip_version);
+    if req.ip_version == 4 {
+        guard req.prefix_len <= 32 else { return false; }
+        if req.requested_ip.len == 4 {
+            body.append(req.requested_ip[..]);
+        } else if req.requested_ip.len == 0 {
+            let zeros: u8[4] = [0, 0, 0, 0];
+            body.append(zeros[..]);
+        } else {
+            return false;
+        }
+    } else if req.ip_version == 6 {
+        guard req.prefix_len <= 128 else { return false; }
+        if req.requested_ip.len == 16 {
+            body.append(req.requested_ip[..]);
+        } else if req.requested_ip.len == 0 {
+            let zeros: u8[16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            body.append(zeros[..]);
+        } else {
+            return false;
+        }
+    } else {
+        return false;
+    }
     body.push(req.prefix_len);
-    body.append(req.requested_ip[..]);
     return encode_http_capsule(out, CAPSULE_ADDRESS_REQUEST, body[..]);
 }
 
-// Decodes an ADDRESS_REQUEST Capsule payload (RFC 9484 §4.2).
+// Decodes an ADDRESS_REQUEST Capsule payload (RFC 9484 §4.7.2).
 //
 // Example:
-//   payload = "\x01\x04\x20\x0a\x00\x00\x01"
-//   returns: req.request_id = 1, req.ip_version = 4, req.prefix_len = 32, ok = true
+//   payload = "\x01\x04\x0a\x00\x00\x01\x20"
+//   returns: req.request_id = 1, req.ip_version = 4, req.requested_ip = [10, 0, 0, 1], req.prefix_len = 32, ok = true
 fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, bool {
     var req = IpAddressRequest { .. };
     guard payload.len >= 2 else { return req, false; }
     let req_id, off, ok = internal::quic_decode_varint(payload, 0);
-    guard ok && (payload.len as u64) >= (off + 2) else { return req, false; }
+    guard ok && (payload.len as u64) >= (off + 1) else { return req, false; }
 
     req.request_id = req_id;
-    req.ip_version = payload[off as i64];
-    req.prefix_len = payload[(off + 1) as i64];
-    let ip_bytes = payload[((off + 2) as i64)..];
-    guard ip_bytes.len <= req.requested_ip.cap else { return req, false; }
+    let ver_idx = off as i64;
+    req.ip_version = payload[ver_idx];
+    let ip_start = ver_idx + 1;
 
-    // RFC 9484: Validate IP version and bounds
     if req.ip_version == 4 {
-        guard req.prefix_len <= 32 && (ip_bytes.len == 0 || ip_bytes.len == 4) else { return req, false; }
+        guard payload.len == (ip_start + 4 + 1) else { return req, false; }
+        req.requested_ip.append(payload[ip_start..(ip_start + 4)]);
+        req.prefix_len = payload[ip_start + 4];
+        guard req.prefix_len <= 32 else { return req, false; }
     } else if req.ip_version == 6 {
-        guard req.prefix_len <= 128 && (ip_bytes.len == 0 || ip_bytes.len == 16) else { return req, false; }
-    } else if req.ip_version == 0 {
-        guard ip_bytes.len == 0 else { return req, false; }
+        guard payload.len == (ip_start + 16 + 1) else { return req, false; }
+        req.requested_ip.append(payload[ip_start..(ip_start + 16)]);
+        req.prefix_len = payload[ip_start + 16];
+        guard req.prefix_len <= 128 else { return req, false; }
     } else {
         return req, false;
     }
 
-    req.requested_ip.append(ip_bytes);
     return req, true;
 }
 
-// Encodes an ADDRESS_ASSIGN Capsule (RFC 9484 Section 4.1):
-// Format: Request ID (VarInt) || IP Version (u8) || Prefix Len (u8) || Assigned IP (4 or 16 bytes)
+// Encodes an ADDRESS_ASSIGN Capsule (RFC 9484 Section 4.7.1):
+// Format: Request ID (VarInt) || IP Version (u8) || Assigned IP (4 or 16 bytes) || Prefix Len (u8)
 fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> bool {
     var body: u8[..128] = [];
     guard internal::quic_encode_varint(body, assign.request_id) else { return false; }
     body.push(assign.ip_version);
+    if assign.ip_version == 4 {
+        guard assign.prefix_len <= 32 && assign.assigned_ip.len == 4 else { return false; }
+        body.append(assign.assigned_ip[..]);
+    } else if assign.ip_version == 6 {
+        guard assign.prefix_len <= 128 && assign.assigned_ip.len == 16 else { return false; }
+        body.append(assign.assigned_ip[..]);
+    } else {
+        return false;
+    }
     body.push(assign.prefix_len);
-    body.append(assign.assigned_ip[..]);
     return encode_http_capsule(out, CAPSULE_ADDRESS_ASSIGN, body[..]);
 }
 
-// Decodes an ADDRESS_ASSIGN Capsule payload (RFC 9484 §4.1).
+// Decodes an ADDRESS_ASSIGN Capsule payload (RFC 9484 §4.7.1).
 //
 // Example:
-//   payload = "\x01\x04\x20\x0a\x00\x00\x01"
-//   returns: assign.request_id = 1, assign.ip_version = 4, assign.prefix_len = 32, ok = true
+//   payload = "\x01\x04\x0a\x00\x00\x01\x20"
+//   returns: assign.request_id = 1, assign.ip_version = 4,
+//            assign.assigned_ip = [10, 0, 0, 1], assign.prefix_len = 32, ok = true
 fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool {
     var assign = IpAddressAssign { .. };
     guard payload.len >= 2 else { return assign, false; }
     let req_id, off, ok = internal::quic_decode_varint(payload, 0);
-    guard ok && (payload.len as u64) >= (off + 2) else { return assign, false; }
+    guard ok && (payload.len as u64) >= (off + 1) else { return assign, false; }
 
     assign.request_id = req_id;
-    assign.ip_version = payload[off as i64];
-    assign.prefix_len = payload[(off + 1) as i64];
-    let ip_bytes = payload[((off + 2) as i64)..];
-    guard ip_bytes.len <= assign.assigned_ip.cap else { return assign, false; }
+    let ver_idx = off as i64;
+    assign.ip_version = payload[ver_idx];
+    let ip_start = ver_idx + 1;
 
-    // RFC 9484 §4.1: Assigned IP address must match version size
     if assign.ip_version == 4 {
-        guard assign.prefix_len <= 32 && ip_bytes.len == 4 else { return assign, false; }
+        guard payload.len == (ip_start + 4 + 1) else { return assign, false; }
+        assign.assigned_ip.append(payload[ip_start..(ip_start + 4)]);
+        assign.prefix_len = payload[ip_start + 4];
+        guard assign.prefix_len <= 32 else { return assign, false; }
     } else if assign.ip_version == 6 {
-        guard assign.prefix_len <= 128 && ip_bytes.len == 16 else { return assign, false; }
+        guard payload.len == (ip_start + 16 + 1) else { return assign, false; }
+        assign.assigned_ip.append(payload[ip_start..(ip_start + 16)]);
+        assign.prefix_len = payload[ip_start + 16];
+        guard assign.prefix_len <= 128 else { return assign, false; }
     } else {
         return assign, false;
     }
 
-    assign.assigned_ip.append(ip_bytes);
     return assign, true;
 }
 
-// Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.3)
+// Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.7.3):
+// Format: IP Version (u8) || Start IP (4 or 16) || End IP (4 or 16) || IP Protocol (u8)
 fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisement&) -> bool {
     var body: u8[..128] = [];
     body.push(route.ip_version);
-    body.push(route.prefix_len);
-    body.append(route.ip_prefix[..]);
+    if route.ip_version == 4 {
+        guard route.start_ip.len == 4 && route.end_ip.len == 4 else { return false; }
+        body.append(route.start_ip[..]);
+        body.append(route.end_ip[..]);
+    } else if route.ip_version == 6 {
+        guard route.start_ip.len == 16 && route.end_ip.len == 16 else { return false; }
+        body.append(route.start_ip[..]);
+        body.append(route.end_ip[..]);
+    } else {
+        return false;
+    }
+    body.push(route.ip_protocol);
     return encode_http_capsule(out, CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
 }
 
-// Decodes a ROUTE_ADVERTISEMENT Capsule payload (RFC 9484 §4.3).
+// Decodes a ROUTE_ADVERTISEMENT Capsule payload (RFC 9484 §4.7.3).
 //
 // Example:
-//   payload = "\x04\x18\x0a\x00\x00\x00"
-//   returns: route.ip_version = 4, route.prefix_len = 24, ok = true
+//   payload = "\x04\x0a\x00\x00\x00\x0a\x00\x00\xff\x00"
+//   returns: route.ip_version = 4, start_ip = 10.0.0.0, end_ip = 10.0.0.255, ip_protocol = 0, ok = true
 fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisement, bool {
     var route = RouteAdvertisement { .. };
     guard payload.len >= 2 else { return route, false; }
     route.ip_version = payload[0];
-    route.prefix_len = payload[1];
-    let p_bytes = payload[2..];
-    guard p_bytes.len <= route.ip_prefix.cap else { return route, false; }
-
-    // RFC 9484 §4.3: Validate prefix length and version
     if route.ip_version == 4 {
-        guard route.prefix_len <= 32 && p_bytes.len == 4 else { return route, false; }
+        guard payload.len == 10 else { return route, false; }
+        route.start_ip.append(payload[1..5]);
+        route.end_ip.append(payload[5..9]);
+        route.ip_protocol = payload[9];
+        return route, true;
     } else if route.ip_version == 6 {
-        guard route.prefix_len <= 128 && p_bytes.len == 16 else { return route, false; }
-    } else {
-        return route, false;
+        guard payload.len == 34 else { return route, false; }
+        route.start_ip.append(payload[1..17]);
+        route.end_ip.append(payload[17..33]);
+        route.ip_protocol = payload[33];
+        return route, true;
     }
-
-    route.ip_prefix.append(p_bytes);
-    return route, true;
+    return route, false;
 }
 
 // ---- 6. MASQUE Tunnel Session Manager ---------------------------------------
@@ -411,21 +456,48 @@ fn new_connect_ip_tunnel(
     return s;
 }
 
-// Builds the HTTP Extended CONNECT request headers and path for MASQUE handshake
+// Builds the HTTP Extended CONNECT request headers and path for MASQUE handshake (RFC 9298 & RFC 9484)
 fn build_masque_connect_request(
     tunnel:      const MasqueTunnelSession&,
     out_headers: HeaderItem[..16]&,
     out_path:    u8[..256]&,
 ) {
     out_headers.clear();
+    out_path.clear();
+    if tunnel.config.mode == MasqueProtocolMode.ConnectUdp {
+        format_connect_udp_path(out_path, tunnel.config.target_host[..], tunnel.config.target_port);
+    } else {
+        out_path.append("/.well-known/masque/ip/");
+    }
+
+    let view, err = core::parse_url_view(tunnel.config.proxy_url[..]);
+    var scheme_buf: u8[..16]  = [];
+    var auth_buf:   u8[..256] = [];
+    if view.valid && view.scheme.len > 0 {
+        scheme_buf.append(view.scheme);
+    } else {
+        scheme_buf.append("https");
+    }
+
+    if view.valid && view.host.len > 0 {
+        auth_buf.append(view.host);
+        if view.port > 0 {
+            auth_buf.push(':');
+            core::format_u64_dec(view.port as u64, auth_buf);
+        }
+    } else if tunnel.config.proxy_url.len > 0 {
+        auth_buf.append(tunnel.config.proxy_url[..]);
+    }
+
     out_headers.set_header(":method", "CONNECT");
     if tunnel.config.mode == MasqueProtocolMode.ConnectUdp {
         out_headers.set_header(":protocol", MASQUE_PROTOCOL_CONNECT_UDP);
-        format_connect_udp_path(out_path, tunnel.config.target_host[..], tunnel.config.target_port);
     } else {
         out_headers.set_header(":protocol", MASQUE_PROTOCOL_CONNECT_IP);
-        out_path.append("/.well-known/masque/ip/");
     }
+    out_headers.set_header(":scheme", scheme_buf[..]);
+    out_headers.set_header(":authority", auth_buf[..]);
+    out_headers.set_header(":path", out_path[..]);
     out_headers.set_header("capsule-protocol", MASQUE_CAPSULE_VALUE);
 }
 
@@ -478,8 +550,14 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
         return apply_assigned_ip(tunnel, c.payload);
     }
 
+    if c.capsule_type == CAPSULE_ROUTE_ADVERTISEMENT || c.capsule_type == CAPSULE_DRAFT_ROUTE_ADVERTISEMENT {
+        out_packet.clear();
+        return true;
+    }
+
+    // RFC 9297 §3.2: Endpoints which receive a capsule with an unknown capsule type MUST silently ignore that capsule.
     out_packet.clear();
-    return false;
+    return true;
 }
 
 // Ingests an incoming QUIC DATAGRAM frame from the tunnel.

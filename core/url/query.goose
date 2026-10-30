@@ -33,10 +33,6 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
                 scan_idx += 3;
                 continue;
             }
-        } else if b == '+' {
-            out.push(' ');
-            scan_idx++;
-            continue;
         }
         out.push(b);
         scan_idx++;
@@ -197,7 +193,7 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
         let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
 
         var matches = (raw_stmt_key == key);
-        if !matches && (core::index_of_byte(raw_stmt_key, '%') >= 0 || core::index_of_byte(raw_stmt_key, '+') >= 0) {
+        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
             var decoded_stmt_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
             matches = dec_ok && (decoded_stmt_key[..] == key);
@@ -249,7 +245,7 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
         let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
 
         var matches = (raw_stmt_key == key);
-        if !matches && (core::index_of_byte(raw_stmt_key, '%') >= 0 || core::index_of_byte(raw_stmt_key, '+') >= 0) {
+        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
             var decoded_stmt_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
             matches = dec_ok && (decoded_stmt_key[..] == key);

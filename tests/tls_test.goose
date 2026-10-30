@@ -3878,12 +3878,12 @@ fn test_handshake_r3_invariants(t: core::T&) {
 fn test_rfc8879_brotli_cert_compression(t: core::T&) {
     t.run("1. RFC 8879 Algorithm Identifiers & Models") { sub =>
         sub.assert_eq(internal::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
-        sub.assert_eq(internal::CERT_COMPRESSION_ZSTD, 1, "Zstandard ID is 1 in specification");
+        sub.assert_eq(internal::CERT_COMPRESSION_ZSTD, 3, "Zstandard ID is 3 in specification (RFC 8879 §3)");
         sub.assert_eq(internal::CERT_COMPRESSION_ZSTD_IANA, 3, "Zstandard IANA official ID is 3");
         sub.assert_eq(internal::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
 
         sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_BROTLI), "Brotli valid");
-        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD), "Zstd 1 valid");
+        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
         sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD_IANA), "Zstd 3 valid");
         sub.assert_false(internal::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
         sub.assert_false(internal::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
@@ -3908,7 +3908,7 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         var wire: u8[>..] = [];
         let ok_enc = internal::encode_compressed_certificate(test_cert_msg, wire);
         sub.assert_true(ok_enc, "CompressedCertificate encoded");
-        sub.assert_eq(wire.len, 5 + compressed_data.len, "Wire length matches 5 + compressed len");
+        sub.assert_eq(wire.len, 8 + compressed_data.len, "Wire length matches 8 + compressed len");
         sub.assert_eq(wire[0], 0, "Algorithm high byte is 0");
         sub.assert_eq(wire[1], 2, "Algorithm low byte is 2 (Brotli)");
 
@@ -3989,9 +3989,10 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
 
         // 4. Decompression bomb ratio sanity check (> 1024x expansion ratio)
         let tiny_comp: u8[2] = [0x5B, 0x00];
-        var bad_ratio_wire: u8[7] = [
+        var bad_ratio_wire: u8[10] = [
             0x00, 0x02,             // algo: 2
             0x00, 0xFA, 0x00,       // uncompressed_length: 64000 (ratio = 32000x > 1024x)
+            0x00, 0x00, 0x02,       // compressed_length: 2 (uint24 vector prefix)
             tiny_comp[0], tiny_comp[1],
         ];
         var parsed_bad = internal::CompressedCertificate { .. };

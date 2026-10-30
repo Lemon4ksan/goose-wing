@@ -50,15 +50,9 @@ fn test_quic_role_polarity() {
 // 2. HTTP/3 Role Polarity (RFC 9114 Section 7.2.7 & RFC 9218 Section 7)
 // Client MUST NOT receive MAX_PUSH_ID or PRIORITY_UPDATE -> H3_FRAME_UNEXPECTED.
 // Server MUST NOT receive PUSH_PROMISE -> H3_FRAME_UNEXPECTED.
-fn test_h3_role_polarity() {
-    let settings = wing::H3Settings {
-        qpack_max_table_capacity: 4096,
-        max_field_section_size:   65536,
-        qpack_blocked_streams:    16,
-        enable_connect_protocol:  1,
-    };
 
-    // Case A: Client receives PRIORITY_UPDATE_REQUEST on Control Stream (RFC 9218 §7)
+// Case A: Client receives PRIORITY_UPDATE_REQUEST on Control Stream (RFC 9218 §7)
+fn test_h3_role_polarity_case_a(settings: wing::H3Settings) {
     var client_conn = internal::new_h3_client_connection(settings);
     // First, establish control stream with valid SETTINGS frame
     var ctrl_init: u8[..64] = [];
@@ -75,8 +69,10 @@ fn test_h3_role_polarity() {
     let err_prio = client_conn.handle_stream_data(3, false, prio_frame[..], false);
     assert(err_prio == internal::H3_ERR_FRAME_UNEXPECTED);
     assert(client_conn.state == internal::H3ConnState.Closed);
+}
 
-    // Case B: Client receives MAX_PUSH_ID on Control Stream (RFC 9114 §7.2.7)
+// Case B: Client receives MAX_PUSH_ID on Control Stream (RFC 9114 §7.2.7)
+fn test_h3_role_polarity_case_b(settings: wing::H3Settings) {
     var client_conn2 = internal::new_h3_client_connection(settings);
     // First, establish control stream with valid SETTINGS frame
     var ctrl_init2: u8[..64] = [];
@@ -92,8 +88,10 @@ fn test_h3_role_polarity() {
     let err_push = client_conn2.handle_stream_data(3, false, max_push_frame[..], false);
     assert(err_push == internal::H3_ERR_FRAME_UNEXPECTED);
     assert(client_conn2.state == internal::H3ConnState.Closed);
+}
 
-    // Case C: Server receives PUSH_PROMISE on Request Stream (RFC 9114 §7.2.5)
+// Case C: Server receives PUSH_PROMISE on Request Stream (RFC 9114 §7.2.5)
+fn test_h3_role_polarity_case_c(settings: wing::H3Settings) {
     var server_conn = internal::new_h3_server_connection(settings);
     var push_promise_frame: u8[..32] = [];
     assert(internal::encode_h3_frame_header(push_promise_frame, internal::H3_FRAME_PUSH_PROMISE, 3));
@@ -104,6 +102,19 @@ fn test_h3_role_polarity() {
     let err_pp = server_conn.handle_stream_data(0, true, push_promise_frame[..], false);
     assert(err_pp == internal::H3_ERR_FRAME_UNEXPECTED);
     assert(server_conn.state == internal::H3ConnState.Closed);
+}
+
+fn test_h3_role_polarity() {
+    let settings = wing::H3Settings {
+        qpack_max_table_capacity: 4096,
+        max_field_section_size:   65536,
+        qpack_blocked_streams:    16,
+        enable_connect_protocol:  1,
+    };
+
+    test_h3_role_polarity_case_a(settings);
+    test_h3_role_polarity_case_b(settings);
+    test_h3_role_polarity_case_c(settings);
 
     print("H3_ROLE_POLARITY: OK");
 }

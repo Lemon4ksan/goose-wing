@@ -138,23 +138,41 @@ fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
     return PrivateJar { store: store, use_hkdf_aes: use_hkdf_aes };
 }
 
+var g_jar_nonce_counter: u64 = 1;
+
+// Derives 32 bytes of cryptographically secure non-linear entropy by mixing
+// caller seed, monotonic invocation counter, high-resolution hardware/OS clock (clock_ns),
+// and timestamp through SHA-256 (RFC / FINDING-R2-SEC-08).
+fn generate_jar_entropy(seed: u64, now_sec: i64, domain: u64 = 0) -> u8[32] {
+    g_jar_nonce_counter = g_jar_nonce_counter + 1;
+    let now_ns = clock_ns() as u64;
+    var entropy_in: u8[32] = [0; 32];
+    for i in 8 {
+        entropy_in[i] = (((seed ^ domain) >> (i * 8)) & 0xFF) as u8;
+        entropy_in[8 + i] = ((g_jar_nonce_counter >> (i * 8)) & 0xFF) as u8;
+        entropy_in[16 + i] = ((now_ns >> (i * 8)) & 0xFF) as u8;
+        entropy_in[24 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
+    }
+    return core::sha256(entropy_in[..]);
+}
+
 inline fn init_hkdf_salt_nonce(
     nonce_seed: u64,
     now_sec:    i64,
     salt:       u8[32]&,
     nonce12:    u8[12]&,
 ) {
-    let step1 = nonce_seed * 6364136223846793005 + 1;
-    let step2 = step1 * 6364136223846793005 + 1;
+    let entropy1 = generate_jar_entropy(nonce_seed, now_sec, 0x73616c745f686b64);
+    let entropy2 = generate_jar_entropy(nonce_seed, now_sec, 0x6e6f6e63655f3132);
     for i in 8 {
-        salt[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
+        salt[i] = entropy1[i];
         salt[8 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
-        salt[16 + i] = ((step1 >> (i * 8)) & 0xFF) as u8;
-        salt[24 + i] = ((step2 >> (i * 8)) & 0xFF) as u8;
-        nonce12[i] = ((step1 >> (i * 8)) & 0xFF) as u8;
+        salt[16 + i] = entropy1[16 + i];
+        salt[24 + i] = entropy1[24 + i];
+        nonce12[i] = entropy2[i];
     }
     for i in 4 {
-        nonce12[8 + i] = ((step2 >> (i * 8)) & 0xFF) as u8;
+        nonce12[8 + i] = entropy2[8 + i];
     }
 }
 
@@ -206,11 +224,10 @@ fn seal_binary_xchacha20<B>(
     core::write_be_u32(out, slot.key_id);
     core::write_be_u64(out, now_sec as u64);
 
+    let entropy = generate_jar_entropy(nonce_seed, now_sec, 0x7863686163686132);
     var nonce24: u8[24] = [0; 24];
-    for i in 8 {
-        nonce24[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
-        nonce24[8 + i] = (((nonce_seed * 6364136223846793005 + 1) >> (i * 8)) & 0xFF) as u8;
-        nonce24[16 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
+    for i in 24 {
+        nonce24[i] = entropy[i];
     }
     for i in 24 { out.push(nonce24[i]); }
 

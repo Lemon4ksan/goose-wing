@@ -1330,6 +1330,29 @@ fn test_rfc3986_whatwg_standards_edge_cases(t: core::T&) {
 
         let v_bad = core::new_url_view("http://[ff0e::1%25eth0]:9000/metrics");
         sub.assert_false(v_bad.valid, "UrlView rejects global multicast with Zone ID");
+
+        // RFC 6874 §2: Zone ID grammar permits unreserved (including . and ~) and pct-encoded
+        let u_dot = core::new_url("http://[fe80::1%25eth0.1]/");
+        sub.assert_true(u_dot.valid, "Zone ID with dot allowed");
+        let u_tilde = core::new_url("http://[fe80::1%25eth~1]/");
+        sub.assert_true(u_tilde.valid, "Zone ID with tilde allowed");
+        let u_pct = core::new_url("http://[fe80::1%25eth%201]/");
+        sub.assert_true(u_pct.valid, "Zone ID with pct-encoded character allowed");
+
+        // RFC 6874 §4: Outgoing Host and Origin serialization MUST strip Zone ID
+        var out_host: u8[..128] = [];
+        core::format_outgoing_host(u_fe80, out_host);
+        sub.assert_bytes_eq(out_host[..], "[fe80::1]", "format_outgoing_host strips Zone ID");
+
+        let u_fe80_port = core::new_url("http://[fe80::1%25eth0]:8080/data");
+        var out_host_p: u8[..128] = [];
+        core::format_outgoing_host(u_fe80_port, out_host_p);
+        sub.assert_bytes_eq(out_host_p[..], "[fe80::1]:8080", "format_outgoing_host with port strips Zone ID");
+
+        let orig = core::origin_from_url(u_fe80_port);
+        var orig_str: u8[..128] = [];
+        core::serialize_origin(orig, orig_str);
+        sub.assert_bytes_eq(orig_str[..], "http://[fe80::1]:8080", "serialize_origin strips Zone ID");
     };
 }
 
@@ -1360,11 +1383,11 @@ fn test_semicolon_query_splitting_defense(t: core::T&) {
         sub.assert_bytes_eq(core::get_query_param(q, "num"), "42");
     };
 
-    t.run("QUERY-03: Percent-decoding and '+' space normalization in query keys and values") { sub =>
+    t.run("QUERY-03: Percent-decoding in query keys and values per RFC 3986 §3.4 ('+' preserved verbatim)") { sub =>
         let raw = "?search=hello+world%21&user%5Fid=alice%40example.com";
         let q = core::parse_query_params(raw);
         sub.assert_eq(q.items.len, 2);
-        sub.assert_bytes_eq(core::get_query_param(q, "search"), "hello world!", "+ decoded to space and %21 to !");
+        sub.assert_bytes_eq(core::get_query_param(q, "search"), "hello+world!", "+ preserved verbatim per RFC 3986 §3.4 and %21 to !");
         sub.assert_bytes_eq(core::get_query_param(q, "user_id"), "alice@example.com", "%5F decoded to _ and %40 to @");
     };
 

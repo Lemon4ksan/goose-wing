@@ -1232,6 +1232,10 @@ fn test_pkce_rfc7636(t: core::T&) {
         sub.assert_true(wing::validate_code_challenge(rfc_verifier, challenge_s256[..], "S256"), "Validation succeeds for valid S256");
         sub.assert_false(wing::validate_code_challenge(rfc_verifier, "invalid_challenge_hash_123456789012345678901", "S256"), "Validation fails for wrong challenge");
 
+        // RFC 7636 §4.3: code_challenge_method defaults to 'plain' when omitted
+        sub.assert_true(wing::validate_code_challenge(rfc_verifier, challenge_plain[..]), "Validation defaults to plain when method omitted");
+        sub.assert_true(wing::is_valid_code_challenge(challenge_plain[..]), "is_valid_code_challenge defaults to plain when method omitted");
+
         // RFC 7636 §4.2: S256 challenge MUST be unpadded base64url (no '=' padding)
         let padded_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM=";
         sub.assert_false(wing::is_valid_code_challenge(padded_challenge, "S256"), "Padded S256 challenge rejected by is_valid_code_challenge");
@@ -1285,6 +1289,52 @@ fn test_pkce_rfc7636(t: core::T&) {
         let pair_bad_m, ok_m = wing::create_pkce_pair("", "invalid_method");
         sub.assert_false(ok_m, "create_pkce_pair rejects invalid method");
     };
+}
+
+// Helper to construct a signed EdDSA DPoP proof token with RFC 9449 compliant JWK header.
+fn make_test_dpop_token<B>(
+    key:           const u8[:],
+    claims_json:   const u8[:],
+    out:           B&,
+    custom_header: const u8[:] = "",
+) {
+    out.clear();
+    var seed: u8[32] = [0; 32];
+    for i in 32 {
+        if i < key.len {
+            seed[i] = key[i];
+        }
+    }
+    let pub_key = core::ed25519_public_key(seed);
+    var x_b64: u8[..64] = [];
+    core::base64url_encode(pub_key[..], x_b64);
+
+    var h_b64: u8[..384] = [];
+    if custom_header.len > 0 {
+        core::base64url_encode(custom_header, h_b64);
+    } else {
+        var header_json: u8[..256] = [];
+        header_json.append("{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"");
+        header_json.append(x_b64[..]);
+        header_json.append("\"}}");
+        core::base64url_encode(header_json[..], h_b64);
+    }
+
+    var c_b64: u8[..768] = [];
+    core::base64url_encode(claims_json, c_b64);
+
+    var signing_input: u8[..1152] = [];
+    signing_input.append(h_b64[..]);
+    signing_input.push('.' as u8);
+    signing_input.append(c_b64[..]);
+
+    let sig = core::ed25519_sign(seed, signing_input[..]);
+    var sig_b64: u8[..128] = [];
+    core::base64url_encode(sig[..], sig_b64);
+
+    out.append(signing_input[..]);
+    out.push('.' as u8);
+    out.append(sig_b64[..]);
 }
 
 fn test_dpop_rfc9449(t: core::T&) {
@@ -1416,21 +1466,9 @@ fn test_dpop_rfc9449(t: core::T&) {
 
     t.run("DPoP Proof Replay: missing iat claim must be rejected (RFC 9449 §4.2)") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
-        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
         let c_json = "{\"jti\":\"jti-no-iat-01\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\"}";
-        var c_b64: u8[..256] = [];
-        core::base64url_encode(c_json, c_b64);
-        var signing_input: u8[..512] = [];
-        signing_input.append(h_b64);
-        signing_input.push('.' as u8);
-        signing_input.append(c_b64[..]);
-        let sig = core::hmac_sha256(key, signing_input[..]);
-        var sig_b64: u8[..64] = [];
-        core::base64url_encode(sig[..], sig_b64);
         var token: u8[..1024] = [];
-        token.append(signing_input[..]);
-        token.push('.' as u8);
-        token.append(sig_b64[..]);
+        make_test_dpop_token(key, c_json, token);
 
         let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok, "Proof without iat MUST be rejected when now_sec > 0");
@@ -1438,21 +1476,9 @@ fn test_dpop_rfc9449(t: core::T&) {
 
     t.run("DPoP Nonce Substring Injection: expected nonce in jti must not bypass missing nonce claim (RFC 9449 §4.3)") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
-        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
         let c_json = "{\"jti\":\"expected_srv_nonce_999\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
-        var c_b64: u8[..256] = [];
-        core::base64url_encode(c_json, c_b64);
-        var signing_input: u8[..512] = [];
-        signing_input.append(h_b64);
-        signing_input.push('.' as u8);
-        signing_input.append(c_b64[..]);
-        let sig = core::hmac_sha256(key, signing_input[..]);
-        var sig_b64: u8[..64] = [];
-        core::base64url_encode(sig[..], sig_b64);
         var token: u8[..1024] = [];
-        token.append(signing_input[..]);
-        token.push('.' as u8);
-        token.append(sig_b64[..]);
+        make_test_dpop_token(key, c_json, token);
 
         let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "expected_srv_nonce_999", 1714000000);
         sub.assert_false(ok, "Proof with nonce in jti instead of nonce claim MUST be rejected");
@@ -1469,20 +1495,8 @@ fn test_dpop_rfc9449(t: core::T&) {
         c_json.append(exp_ath[..]);
         c_json.append("\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}");
 
-        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
-        var c_b64: u8[..256] = [];
-        core::base64url_encode(c_json[..], c_b64);
-        var signing_input: u8[..512] = [];
-        signing_input.append(h_b64);
-        signing_input.push('.' as u8);
-        signing_input.append(c_b64[..]);
-        let sig = core::hmac_sha256(key, signing_input[..]);
-        var sig_b64: u8[..64] = [];
-        core::base64url_encode(sig[..], sig_b64);
         var token: u8[..1024] = [];
-        token.append(signing_input[..]);
-        token.push('.' as u8);
-        token.append(sig_b64[..]);
+        make_test_dpop_token(key, c_json[..], token);
 
         let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", access_tok, "", 1714000000);
         sub.assert_false(ok, "Proof with ath in jti instead of ath claim MUST be rejected");
@@ -1497,20 +1511,8 @@ fn test_dpop_rfc9449(t: core::T&) {
         c_json.append(expected_jkt);
         c_json.append("\"}");
 
-        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
-        var c_b64: u8[..256] = [];
-        core::base64url_encode(c_json[..], c_b64);
-        var signing_input: u8[..512] = [];
-        signing_input.append(h_b64);
-        signing_input.push('.' as u8);
-        signing_input.append(c_b64[..]);
-        let sig = core::hmac_sha256(key, signing_input[..]);
-        var sig_b64: u8[..64] = [];
-        core::base64url_encode(sig[..], sig_b64);
         var token: u8[..1024] = [];
-        token.append(signing_input[..]);
-        token.push('.' as u8);
-        token.append(sig_b64[..]);
+        make_test_dpop_token(key, c_json[..], token);
 
         // Direct claim verification
         sub.assert_true(wing::verify_dpop_jkt(c_json[..], expected_jkt), "verify_dpop_jkt succeeds on matching thumbprint");
@@ -1534,40 +1536,15 @@ fn test_dpop_rfc9449(t: core::T&) {
         sub.assert_true(wing::verify_dpop_method("{\"htm\":\"POST\"}", "POST"), "Uppercase matching method accepted");
 
         // Proof with lowercase method MUST be rejected
-        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
-        let c_json = "{\"jti\":\"jti-lc-method\",\"htm\":\"post\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
-        var c_b64: u8[..256] = [];
-        core::base64url_encode(c_json, c_b64);
-        var signing_input: u8[..512] = [];
-        signing_input.append(h_b64);
-        signing_input.push('.' as u8);
-        signing_input.append(c_b64[..]);
-        let sig = core::hmac_sha256(key, signing_input[..]);
-        var sig_b64: u8[..64] = [];
-        core::base64url_encode(sig[..], sig_b64);
         var token: u8[..1024] = [];
-        token.append(signing_input[..]);
-        token.push('.' as u8);
-        token.append(sig_b64[..]);
+        make_test_dpop_token(key, "{\"jti\":\"jti-lc-method\",\"htm\":\"post\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}", token);
 
         let fail_lc = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(fail_lc, "Proof with lowercase htm MUST be rejected");
 
         // Header with alg:none or fake typ must be rejected (RFC 9449 §4.2)
-        let h_bad = "{\"typ\":\"jwt\",\"alg\":\"HS256\",\"p\":\"dpop+jwt\"}";
-        var h_bad_b64: u8[..256] = [];
-        core::base64url_encode(h_bad, h_bad_b64);
-        var signing_bad: u8[..512] = [];
-        signing_bad.append(h_bad_b64[..]);
-        signing_bad.push('.' as u8);
-        signing_bad.append(c_b64[..]);
-        let sig_bad = core::hmac_sha256(key, signing_bad[..]);
-        var sig_bad_b64: u8[..64] = [];
-        core::base64url_encode(sig_bad[..], sig_bad_b64);
         var tok_bad: u8[..1024] = [];
-        tok_bad.append(signing_bad[..]);
-        tok_bad.push('.' as u8);
-        tok_bad.append(sig_bad_b64[..]);
+        make_test_dpop_token(key, "{\"jti\":\"jti-fake-typ\",\"htm\":\"POST\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}", tok_bad, "{\"typ\":\"jwt\",\"alg\":\"EdDSA\",\"p\":\"dpop+jwt\"}");
         let ok_fake_typ = wing::verify_dpop_proof(tok_bad[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_fake_typ, "Proof with fake typ must be rejected even if dpop+jwt is in extra property");
     };
@@ -1603,42 +1580,19 @@ fn test_dpop_rfc9449(t: core::T&) {
 
     t.run("DPoP Claims JSON Parser defends against duplicate keys & claim smuggling") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
-        let h_b64 = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkhTMjU2In0";
 
         // Duplicate htm claim
         let c_dup_htm = "{\"jti\":\"jti-dup\",\"htm\":\"POST\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
-        var c_dup_b64: u8[..256] = [];
-        core::base64url_encode(c_dup_htm, c_dup_b64);
-        var sign_dup: u8[..512] = [];
-        sign_dup.append(h_b64);
-        sign_dup.push('.' as u8);
-        sign_dup.append(c_dup_b64[..]);
-        let sig_dup = core::hmac_sha256(key, sign_dup[..]);
-        var sig_dup_b64: u8[..64] = [];
-        core::base64url_encode(sig_dup[..], sig_dup_b64);
         var tok_dup: u8[..1024] = [];
-        tok_dup.append(sign_dup[..]);
-        tok_dup.push('.' as u8);
-        tok_dup.append(sig_dup_b64[..]);
+        make_test_dpop_token(key, c_dup_htm, tok_dup);
 
         let ok_dup = wing::verify_dpop_proof(tok_dup[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_dup, "Proof with duplicate htm claim MUST be rejected (JSON smuggling defense)");
 
         // Substring spoofing in custom claim value
         let c_spoof = "{\"jti\":\"jti-spoof\",\"custom\":\"hello \\\"htm\\\":\\\"GET\\\"\",\"htm\":\"POST\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
-        var c_spoof_b64: u8[..256] = [];
-        core::base64url_encode(c_spoof, c_spoof_b64);
-        var sign_spoof: u8[..512] = [];
-        sign_spoof.append(h_b64);
-        sign_spoof.push('.' as u8);
-        sign_spoof.append(c_spoof_b64[..]);
-        let sig_spoof = core::hmac_sha256(key, sign_spoof[..]);
-        var sig_spoof_b64: u8[..64] = [];
-        core::base64url_encode(sig_spoof[..], sig_spoof_b64);
         var tok_spoof: u8[..1024] = [];
-        tok_spoof.append(sign_spoof[..]);
-        tok_spoof.push('.' as u8);
-        tok_spoof.append(sig_spoof_b64[..]);
+        make_test_dpop_token(key, c_spoof, tok_spoof);
 
         let ok_spoof_get = wing::verify_dpop_proof(tok_spoof[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_spoof_get, "Fake htm inside custom string value MUST NOT fool method verification");

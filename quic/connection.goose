@@ -30,35 +30,35 @@ enum QuicConnState {
 }
 
 struct QuicConnection {
-    role: QuicRole = QuicRole.Server,
-    state: QuicConnState = QuicConnState.Initial,
-    scid: u8[..20] = [],
-    dcid: u8[..20] = [],
-    original_dcid: u8[..20] = [],
-    initial_space: PnSpaceState = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    handshake_space: PnSpaceState = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    app_space: PnSpaceState = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    rtt: RttState = RttState { .. },
-    pacer: Pacer = Pacer { .. },
-    stream_table: QuicStreamTable = QuicStreamTable { .. },
-    flow_ctrl: QuicFlowControl = QuicFlowControl { .. },
-    bytes_received: u64 = 0,
-    bytes_sent: u64 = 0,
-    validated_address: bool = false,
-    packets_rx: u64 = 0,
-    packets_tx: u64 = 0,
-    close_code: u64 = 0,
-    migration: QuicMigrationManager = QuicMigrationManager { .. },
-    dplpmtud: Dplpmtud = Dplpmtud { .. },
+    role:              QuicRole             = QuicRole.Server,
+    state:             QuicConnState        = QuicConnState.Initial,
+    scid:              u8[..20]             = [],
+    dcid:              u8[..20]             = [],
+    original_dcid:     u8[..20]             = [],
+    initial_space:     PnSpaceState         = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    handshake_space:   PnSpaceState         = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    app_space:         PnSpaceState         = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    rtt:               RttState             = RttState { .. },
+    pacer:             Pacer                = Pacer { .. },
+    stream_table:      QuicStreamTable      = QuicStreamTable { .. },
+    flow_ctrl:         QuicFlowControl      = QuicFlowControl { .. },
+    bytes_received:    u64                  = 0,
+    bytes_sent:        u64                  = 0,
+    validated_address: bool                 = false,
+    packets_rx:        u64                  = 0,
+    packets_tx:        u64                  = 0,
+    close_code:        u64                  = 0,
+    migration:         QuicMigrationManager = QuicMigrationManager { .. },
+    dplpmtud:          Dplpmtud             = Dplpmtud { .. },
 }
 
 fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
     var conn = QuicConnection {
-        role: QuicRole.Server,
-        state: QuicConnState.Initial,
+        role:              QuicRole.Server,
+        state:             QuicConnState.Initial,
         validated_address: false,
-        stream_table: new_quic_stream_table(QuicRole.Server),
-        flow_ctrl: new_quic_flow_control(65536, 65536),
+        stream_table:      new_quic_stream_table(QuicRole.Server),
+        flow_ctrl:         new_quic_flow_control(65536, 65536),
         ..
     };
     conn.scid.append(scid);
@@ -67,11 +67,11 @@ fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
 
 fn new_quic_client_connection(server_dcid: const u8[:], client_scid: const u8[:]) -> QuicConnection {
     var conn = QuicConnection {
-        role: QuicRole.Client,
-        state: QuicConnState.Initial,
+        role:              QuicRole.Client,
+        state:             QuicConnState.Initial,
         validated_address: true, // Client address validation is implicit
-        stream_table: new_quic_stream_table(QuicRole.Client),
-        flow_ctrl: new_quic_flow_control(65536, 65536),
+        stream_table:      new_quic_stream_table(QuicRole.Client),
+        flow_ctrl:         new_quic_flow_control(65536, 65536),
         ..
     };
     conn.dcid.append(server_dcid);
@@ -144,22 +144,22 @@ inline fn inc_conn_tx_packets(conn: QuicConnection&) {
 
 // Records an egress packet for loss recovery and anti-amplification tracking
 fn quic_conn_record_sent(
-    conn: QuicConnection&,
-    space_id: PnSpaceId,
-    pn: u64,
-    size_bytes: u64,
+    conn:          QuicConnection&,
+    space_id:      PnSpaceId,
+    pn:            u64,
+    size_bytes:    u64,
     ack_eliciting: bool,
-    now_us: u64,
+    now_us:        u64,
 ) {
     inc_conn_sent_bytes(conn, size_bytes);
     inc_conn_tx_packets(conn);
 
     let meta = SentPacketMeta {
-        pn: pn,
-        time_sent_us: now_us,
-        size_bytes: size_bytes,
+        pn:            pn,
+        time_sent_us:  now_us,
+        size_bytes:    size_bytes,
         ack_eliciting: ack_eliciting,
-        in_flight: ack_eliciting,
+        in_flight:     ack_eliciting,
     };
 
     match space_id {
@@ -232,10 +232,10 @@ inline fn calc_payload_end(start: i64, bounded_len: i64, dgram_len: i64) -> i64 
 }
 
 inline fn get_bounded_payload(
-    dgram: const u8[:],
-    start: i64,
+    dgram:       const u8[:],
+    start:       i64,
     payload_len: u64,
-    pn_len: u8,
+    pn_len:      u8,
 ) -> u8[:] {
     let blen = calc_bounded_payload_len(payload_len, pn_len);
     let end = start + blen;
@@ -256,6 +256,15 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
     guard quic_stream_can_recv(frame.stream_id, conn.role) else {
         quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
         return false, false;
+    }
+
+    // RFC 9000 §19.8: Ingress STREAM frame for unopened locally-initiated stream is STREAM_STATE_ERROR
+    if !is_peer_initiated_stream(frame.stream_id, conn.role) {
+        let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
+        guard sid_found >= 0 else {
+            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
     }
 
     let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
@@ -295,6 +304,15 @@ fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         return false, false;
     }
 
+    // RFC 9000 §19.4: Ingress RESET_STREAM frame for unopened locally-initiated stream is STREAM_STATE_ERROR
+    if !is_peer_initiated_stream(frame.stream_id, conn.role) {
+        let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
+        guard sid_found >= 0 else {
+            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
+    }
+
     let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
     guard ok else {
         quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
@@ -322,6 +340,15 @@ fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         return false, false;
     }
 
+    // RFC 9000 §19.5: Ingress STOP_SENDING frame for unopened locally-initiated stream is STREAM_STATE_ERROR
+    if !is_peer_initiated_stream(frame.stream_id, conn.role) {
+        let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
+        guard sid_found >= 0 else {
+            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
+    }
+
     let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
     guard ok else {
         quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
@@ -347,6 +374,14 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         guard quic_stream_can_send(frame.stream_id, conn.role) else {
             quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
             return false, false;
+        }
+        // RFC 9000 §19.10: Ingress MAX_STREAM_DATA frame for unopened locally-initiated stream is STREAM_STATE_ERROR
+        if !is_peer_initiated_stream(frame.stream_id, conn.role) {
+            let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
+            guard sid_found >= 0 else {
+                quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+                return false, false;
+            }
         }
         let idx = quic_table_find_stream(conn.stream_table, frame.stream_id);
         if idx >= 0 {
@@ -472,9 +507,9 @@ inline fn quic_is_frame_allowed_in_packet(ftype: QuicFrameType, htype: QuicHeade
 }
 
 fn quic_conn_process_payload(
-    conn: QuicConnection&,
+    conn:    QuicConnection&,
     payload: const u8[:],
-    htype: QuicHeaderType = QuicHeaderType.OneRtt,
+    htype:   QuicHeaderType = QuicHeaderType.OneRtt,
 ) -> bool, bool {
     guard payload.len > 0 else { return true, false; }
     var idx: i64 = 0;
@@ -505,9 +540,9 @@ fn quic_conn_process_payload(
 // Processes an inbound UDP datagram containing QUIC packets.
 // Returns (handled: bool, needs_ack: bool).
 fn quic_conn_process_datagram(
-    conn: QuicConnection&,
-    dgram: const u8[:],
-    now_us: u64,
+    conn:    QuicConnection&,
+    dgram:   const u8[:],
+    now_us:  u64,
     out_ack: AckFrame&,
 ) -> bool, bool {
     guard dgram.len > 0 else { return false, false; }

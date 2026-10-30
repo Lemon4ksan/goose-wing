@@ -169,7 +169,7 @@ fn test_http1_response_serialization_empty_status(t: core::T&) {
 fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
     t.run("H3 request: reject conflicting :authority and host headers") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = internal::new_h3_client_connection(settings);
+        var conn = internal::new_h3_server_connection(settings);
 
         // Establish control stream (Stream 2)
         var ctrl_wire: u8[..64] = [];
@@ -194,7 +194,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
 
     t.run("H3 request: reject duplicate host headers and invalid host syntax") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = internal::new_h3_client_connection(settings);
+        var conn = internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
@@ -216,7 +216,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
         sub.assert_eq(err_dup, internal::H3_ERR_GENERAL_PROTOCOL, "duplicate host headers MUST return H3_ERR_GENERAL_PROTOCOL");
 
         // Invalid host syntax (containing '/')
-        var conn2 = internal::new_h3_client_connection(settings);
+        var conn2 = internal::new_h3_server_connection(settings);
         conn2.handle_stream_data(2, false, ctrl_wire[..], false);
 
         var sec_bad: u8[..256] = [0x00, 0x00];
@@ -232,7 +232,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
         sub.assert_eq(err_bad, internal::H3_ERR_GENERAL_PROTOCOL, "host with slash MUST return H3_ERR_GENERAL_PROTOCOL");
 
         // Empty :authority
-        var conn3 = internal::new_h3_client_connection(settings);
+        var conn3 = internal::new_h3_server_connection(settings);
         conn3.handle_stream_data(2, false, ctrl_wire[..], false);
 
         var sec_empty: u8[..256] = [0x00, 0x00];
@@ -250,7 +250,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
 
     t.run("H3 request: matching case-insensitive :authority and host succeed") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = internal::new_h3_client_connection(settings);
+        var conn = internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
@@ -1408,12 +1408,12 @@ fn test_proxy_protocol_overflow(t: core::T&) {
 }
 
 fn test_masque_address_capsule_bounds(t: core::T&) {
-    // Address capsule with oversized IP bytes (>16 bytes)
+    // Address capsule with oversized IP bytes (>16 bytes) per RFC 9484 §4.7.2
     var payload: u8[..32] = [];
     payload.push(1);  // request_id = 1
     payload.push(4);  // ip_version = 4
-    payload.push(32); // prefix_len = 32
     for i in 20 { payload.push(0xAA); } // 20 bytes (> 16 cap)
+    payload.push(32); // prefix_len = 32
 
     let req, ok = wing::decode_address_request_capsule(payload[..]);
     t.assert_false(ok, "Address request capsule with >16 IP bytes must fail without panic");

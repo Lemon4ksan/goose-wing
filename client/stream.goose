@@ -289,18 +289,26 @@ fn step_chunk_trailer(dec: ChunkedStreamDecoder&, b: u8) -> bool {
 
 // Feeds incoming wire slice into incremental decoder.
 // Emits decoded chunk body payload bytes directly into out_body.
+// When max_emit >= 0, pauses consumption once max_emit bytes have been emitted.
 // Returns (ok, bytes_consumed_from_input).
 fn feed_chunked_stream<B>(
     dec:      ChunkedStreamDecoder&,
     input:    const u8[:],
     out_body: B&,
+    max_emit: i64 = -1,
 ) -> bool, i64 {
     guard dec.state != ChunkedStreamState.Error && dec.state != ChunkedStreamState.Complete else {
         return dec.state == ChunkedStreamState.Complete, 0;
     }
 
     var cursor: i64 = 0;
+    let initial_out_len = out_body.len;
+
     while cursor < input.len && dec.state != ChunkedStreamState.Complete && dec.state != ChunkedStreamState.Error {
+        if max_emit >= 0 && (out_body.len - initial_out_len) >= max_emit {
+            break;
+        }
+
         if dec.state == ChunkedStreamState.ChunkSizeLine {
             let b = input[cursor];
             cursor++;
@@ -308,7 +316,12 @@ fn feed_chunked_stream<B>(
         } else if dec.state == ChunkedStreamState.ChunkData {
             let avail = input.len - cursor;
             let needed = dec.chunk_bytes_remaining as i64;
-            let to_take = if avail < needed { avail } else { needed };
+            var to_take = if avail < needed { avail } else { needed };
+            if max_emit >= 0 {
+                let emitted = out_body.len - initial_out_len;
+                let cap_rem = max_emit - emitted;
+                to_take = if to_take < cap_rem { to_take } else { cap_rem };
+            }
 
             out_body.append(input[cursor..(cursor + to_take)]);
             cursor += to_take;
@@ -379,35 +392,45 @@ fn new_stream_reader(resp: const Response&) -> StreamReader {
 }
 
 // Reads the next chunk from the stream (up to max_bytes).
+// Retains unconsumed chunk remainder across calls so small max_bytes reads
+// do not truncate or discard chunk data.
 // Returns (has_bytes, is_eof).
 fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> bool, bool {
     guard !reader.finished else { return false, true; }
 
     let remaining = reader.raw_data.len - reader.cursor;
-    guard remaining > 0 else {
+    let dec_active = !is_complete(reader.chunk_decoder) && !has_error(reader.chunk_decoder);
+    let has_chunk_work = reader.is_chunked && dec_active;
+    guard remaining > 0 || has_chunk_work else {
         reader.finished = true;
         return false, true;
     }
 
     out.clear();
     if reader.is_chunked {
-        var temp_body: u8[>..] = [];
-        let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], temp_body);
+        let prev_len = out.len;
+        let limit = if max_bytes > 0 { max_bytes } else { -1 };
+        let ok_dec, consumed = feed_chunked_stream(
+            reader.chunk_decoder,
+            reader.raw_data[reader.cursor..],
+            out,
+            limit,
+        );
         reader.cursor += consumed;
-        let to_take = if max_bytes > 0 && temp_body.len > max_bytes { max_bytes } else { temp_body.len };
-        if to_take > 0 {
-            out.append(temp_body[..to_take]);
-            reader.bytes_read += to_take as! u64;
-        }
-        if is_complete(reader.chunk_decoder) || !ok_dec || reader.cursor >= reader.raw_data.len {
+        let emitted = (out.len - prev_len) as! u64;
+        reader.bytes_read += emitted;
+
+        let rem_zero = reader.chunk_decoder.chunk_bytes_remaining == 0;
+        let at_wire_end = reader.cursor >= reader.raw_data.len && rem_zero;
+        let is_eof = is_complete(reader.chunk_decoder) || !ok_dec || at_wire_end;
+        if is_eof {
             reader.finished = true;
-            return to_take > 0, true;
         }
-        return to_take > 0, false;
+        return emitted > 0, is_eof;
     }
 
-    let to_read = if remaining < max_bytes { remaining } else { max_bytes };
-    out.append(reader.raw_data[reader.cursor..reader.cursor + to_read]);
+    let to_read = if max_bytes > 0 && remaining > max_bytes { max_bytes } else { remaining };
+    out.append(reader.raw_data[reader.cursor..(reader.cursor + to_read)]);
     reader.cursor += to_read;
     reader.bytes_read += to_read as! u64;
 
@@ -422,18 +445,20 @@ fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> bool, bool {
 fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
     guard !reader.finished else { return 0; }
     let remaining = reader.raw_data.len - reader.cursor;
-    guard remaining > 0 else {
+    guard remaining > 0 || (reader.is_chunked && !is_complete(reader.chunk_decoder)) else {
         reader.finished = true;
         return 0;
     }
 
     if reader.is_chunked {
         let prev_len = out.len;
-        let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], out);
+        let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], out, -1);
         reader.cursor += consumed;
         let emitted = (out.len - prev_len) as! u64;
         reader.bytes_read += emitted;
-        reader.finished = true;
+        if is_complete(reader.chunk_decoder) || !ok_dec || reader.cursor >= reader.raw_data.len {
+            reader.finished = true;
+        }
         return emitted;
     }
 
@@ -442,6 +467,19 @@ fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
     reader.bytes_read += remaining as! u64;
     reader.finished = true;
     return remaining as! u64;
+}
+
+// Looks up a decoded chunk trailer by case-insensitive name.
+fn trailer(reader: const StreamReader&, name: const u8[:]) -> const u8[:] {
+    return find_header(reader.chunk_decoder.trailers[..], name);
+}
+
+// Copies decoded chunk trailers to a target Response object.
+fn copy_trailers_to_response(reader: const StreamReader&, resp: Response&) {
+    for &t in reader.chunk_decoder.trailers {
+        guard resp.trailers.len < resp.trailers.cap else { break; }
+        resp.trailers.push(t);
+    }
 }
 
 // Calculates current stream progress

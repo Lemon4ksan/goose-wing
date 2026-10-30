@@ -396,6 +396,9 @@ fn is_line_whitespace_only(line: const u8[:]) -> bool {
 fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
     cursor = line_end;
     let buf_len = buf.len;
+    if cursor == buf_len {
+        return true;
+    }
     if cursor < buf_len && buf[cursor] == '\r' {
         guard cursor + 1 < buf_len && buf[cursor + 1] == '\n' else {
             return false;

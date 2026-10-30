@@ -10,7 +10,17 @@ import core from "..";
 import http.headers;
 import http.cache.cache_control;
 
+fn is_empty_or_whitespace_value(val: const u8[:]) -> bool {
+    for b in val {
+        if b != ' ' && b != '\t' && b != ',' && b != '\r' && b != '\n' {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Helper to parse all instances of a specific header name from HeaderMap into CacheControl.
+// If the header value is empty or contains only whitespace/commas, it is ignored (RFC 9213 §2.1 & §2.2).
 //
 // Example:
 //   header_name = "cdn-cache-control", map contains "CDN-Cache-Control: max-age=600"
@@ -25,9 +35,11 @@ fn parse_named_cache_control(
     for entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
         if eq_ascii_fold(name, header_name) {
-            found = true;
             let val = map.raw_buf[entry.values_begin..entry.values_end];
-            parse_cache_control_str(val, cc, ignore_cargo_cult);
+            if !is_empty_or_whitespace_value(val) {
+                found = true;
+                parse_cache_control_str(val, cc, ignore_cargo_cult);
+            }
         }
     }
     return found;
@@ -41,7 +53,8 @@ fn check_target_cache_control(
 ) -> bool {
     guard target_name.len > 0 && !target_name.eq_ascii_fold("cdn") else { return false; }
     guard target_name.len <= 48 else { return false; }
-    var target_hdr: u8[>..] = [];
+    var target_hdr: u8[..64] = [];
+    guard target_hdr.len + target_name.len + 14 <= target_hdr.cap else { return false; }
     target_hdr.append(target_name);
     target_hdr.append("-cache-control");
     return parse_named_cache_control(map, target_hdr[..], cc, ignore_cargo_cult);

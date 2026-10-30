@@ -12,13 +12,61 @@ inline fn is_tuple_origin_scheme(s: const u8[:]) -> bool {
     return s == "http" || s == "https" || s == "ws" || s == "wss" || s == "ftp";
 }
 
+inline fn find_substring(s: const u8[:], needle: const u8[:]) -> i64 {
+    guard needle.len <= s.len else { return -1; }
+    for i in (s.len - needle.len + 1) {
+        if s[i..i + needle.len] == needle {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Strips IPv6 ZoneID (%25...) from host strings (RFC 6874 §4).
+//
+// Example:
+//   host_str = "[fe80::1%25eth0]"
+//   returns: out = "[fe80::1]"
+fn strip_ipv6_zone_id<B>(host_str: const u8[:], out: B&) {
+    out.clear();
+    let pct_idx = find_substring(host_str, "%25");
+    if pct_idx >= 0 {
+        out.append(host_str[..pct_idx]);
+        let close_b = core::index_of_byte(host_str[pct_idx..], ']');
+        if close_b >= 0 {
+            out.append(host_str[(pct_idx + close_b)..]);
+        }
+    } else {
+        out.append(host_str);
+    }
+}
+
+// Formats an outgoing Host header wire string from a URL, stripping any IPv6 ZoneID (RFC 6874 §4).
+//
+// Example:
+//   url_val = "http://[fe80::1%25eth0]:8080/path"
+//   returns: out = "[fe80::1]:8080"
+fn format_outgoing_host<B>(url_val: const Url&, out: B&) {
+    out.clear();
+    guard url_val.valid else { return; }
+    let raw_h = hostname(url_val);
+    strip_ipv6_zone_id(raw_h, out);
+    let p_str = port_str(url_val);
+    if p_str.len > 0 {
+        out.push(':');
+        out.append(p_str);
+    }
+}
+
 fn origin_from_url(url_val: const Url&) -> Origin {
     guard url_val.valid else { return new_opaque_origin(); }
     let scheme_str = scheme(url_val);
 
     if is_tuple_origin_scheme(scheme_str) {
         let eff_port = effective_port(url_val);
-        return new_origin_tuple(scheme_str, hostname(url_val), eff_port);
+        var clean_h: u8[..256] = [];
+        strip_ipv6_zone_id(hostname(url_val), clean_h);
+        return new_origin_tuple(scheme_str, clean_h[..], eff_port);
     }
 
     if scheme_str == "blob" {
@@ -29,7 +77,9 @@ fn origin_from_url(url_val: const Url&) -> Origin {
         let inner_scheme = scheme(inner_url);
         if is_tuple_origin_scheme(inner_scheme) {
             let eff_port = effective_port(inner_url);
-            return new_origin_tuple(inner_scheme, hostname(inner_url), eff_port);
+            var clean_inner_h: u8[..256] = [];
+            strip_ipv6_zone_id(hostname(inner_url), clean_inner_h);
+            return new_origin_tuple(inner_scheme, clean_inner_h[..], eff_port);
         }
         return new_opaque_origin();
     }
@@ -397,7 +447,9 @@ fn serialize_origin<B>(origin_val: Origin, out: B&) {
     out.append(origin_val.scheme[..]);
     out.append("://");
 
-    let host_str = origin_val.host[..];
+    var clean_host: u8[..256] = [];
+    strip_ipv6_zone_id(origin_val.host[..], clean_host);
+    let host_str = clean_host[..];
     if contains_byte(host_str, ':') && (host_str.len < 2 || host_str[0] != '[' || host_str[host_str.len - 1] != ']') {
         out.push('[');
         out.append(host_str);

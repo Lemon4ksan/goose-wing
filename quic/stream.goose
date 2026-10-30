@@ -69,25 +69,25 @@ enum QuicRecvState {
 
 // Unified QUIC Stream State Model
 struct QuicStream {
-    stream_id: u64 = 0,
+    stream_id:   u64            = 0,
     stream_type: QuicStreamType = QuicStreamType.ClientBidi,
-    send_state: QuicSendState = QuicSendState.Ready,
-    recv_state: QuicRecvState = QuicRecvState.Receive,
+    send_state:  QuicSendState  = QuicSendState.Ready,
+    recv_state:  QuicRecvState  = QuicRecvState.Receive,
 
     // Flow control & Send progress
-    bytes_sent: u64 = 0,
-    send_final_size: u64 = 0,
+    bytes_sent:          u64  = 0,
+    send_final_size:     u64  = 0,
     has_send_final_size: bool = false,
-    send_max_data: u64 = 65536,
-    send_error_code: u64 = 0,
+    send_max_data:       u64  = 65536,
+    send_error_code:     u64  = 0,
 
     // Flow control & Recv progress
-    bytes_recv: u64 = 0,
-    recv_consumed: u64 = 0,
-    recv_final_size: u64 = 0,
+    bytes_recv:          u64  = 0,
+    recv_consumed:       u64  = 0,
+    recv_final_size:     u64  = 0,
     has_recv_final_size: bool = false,
-    recv_max_data: u64 = 65536,
-    recv_error_code: u64 = 0,
+    recv_max_data:       u64  = 65536,
+    recv_error_code:     u64  = 0,
 
     // STOP_SENDING signaling
     stop_sending_sent: bool = false,
@@ -97,8 +97,8 @@ struct QuicStream {
 fn new_quic_stream(stream_id: u64, max_recv_flow: u64 = 65536) -> QuicStream {
     let stype = quic_stream_type(stream_id);
     return QuicStream {
-        stream_id: stream_id,
-        stream_type: stype,
+        stream_id:     stream_id,
+        stream_type:   stype,
         recv_max_data: max_recv_flow,
     };
 }
@@ -123,10 +123,10 @@ inline fn calc_max_u64(a: u64, b: u64) -> u64 {
 
 // Records transmission of stream data and updates sender state.
 fn quic_stream_on_send_data(
-    s: QuicStream&,
+    s:      QuicStream&,
     offset: u64,
-    len: u64,
-    fin: bool,
+    len:    u64,
+    fin:    bool,
 ) -> bool, u64 {
     guard s.send_state == QuicSendState.Ready || s.send_state == QuicSendState.Send else {
         return false, QUIC_ERR_STREAM_STATE;
@@ -151,7 +151,7 @@ fn quic_stream_on_send_data(
 
 // Initiates stream reset on sender side (RFC 9000 Section 3.1).
 fn quic_stream_on_send_reset(
-    s: QuicStream&,
+    s:          QuicStream&,
     error_code: u64,
     final_size: u64,
 ) -> bool, u64 {
@@ -189,11 +189,11 @@ fn quic_stream_on_send_ack(s: QuicStream&, all_data_acked: bool) -> bool {
 
 // Validates final size invariants upon receiving FIN or RESET_STREAM (RFC 9000 Section 4.5).
 inline fn validate_recv_final_size(
-    has_final: bool,
+    has_final:         bool,
     established_final: u64,
-    new_final: u64,
-    bytes_recv: u64,
-    consumed: u64,
+    new_final:         u64,
+    bytes_recv:        u64,
+    consumed:          u64,
 ) -> bool {
     if has_final {
         return established_final == new_final;
@@ -205,10 +205,10 @@ inline fn validate_recv_final_size(
 
 // Processes incoming STREAM frame fragments and enforces final size invariants.
 fn quic_stream_on_recv_stream_frame(
-    s: QuicStream&,
+    s:      QuicStream&,
     offset: u64,
-    len: u64,
-    fin: bool,
+    len:    u64,
+    fin:    bool,
 ) -> bool, u64 {
     let end_offset = calc_sum_u64(offset, len);
 
@@ -251,12 +251,24 @@ fn quic_stream_on_recv_stream_frame(
 
 // Processes an incoming RESET_STREAM frame from peer (RFC 9000 Section 3.2).
 fn quic_stream_on_recv_reset(
-    s: QuicStream&,
+    s:          QuicStream&,
     error_code: u64,
     final_size: u64,
 ) -> bool, u64 {
     // RFC 9000 Section 3.2: RESET_STREAM on DataRecvd / DataRead is ignored
     if s.recv_state == QuicRecvState.DataRecvd || s.recv_state == QuicRecvState.DataRead {
+        return true, QUIC_ERR_NO_ERROR;
+    }
+    // RFC 9000 Section 3.2: Receiving RESET_STREAM on terminal closed stream ResetRead MUST NOT reopen stream
+    if s.recv_state == QuicRecvState.ResetRead {
+        let valid_fs = validate_recv_final_size(
+            s.has_recv_final_size,
+            s.recv_final_size,
+            final_size,
+            s.bytes_recv,
+            s.recv_consumed,
+        );
+        guard valid_fs else { return false, QUIC_ERR_FINAL_SIZE; }
         return true, QUIC_ERR_NO_ERROR;
     }
     guard final_size <= QUIC_VARINT_MAX else { return false, QUIC_ERR_FINAL_SIZE; }
@@ -280,9 +292,9 @@ fn quic_stream_on_recv_reset(
 
 // Processes an incoming STOP_SENDING frame from peer (RFC 9000 Section 3.5 & 19.5).
 fn quic_stream_on_recv_stop_sending(
-    s: QuicStream&,
+    s:          QuicStream&,
     error_code: u64,
-    role: QuicRole,
+    role:       QuicRole,
 ) -> bool, u64 {
     // STOP_SENDING cannot be received on a stream where endpoint cannot send (RFC 9000 Section 19.5)
     guard quic_stream_can_send(s.stream_id, role) else {
@@ -367,21 +379,21 @@ fn quic_stream_is_terminal(s: const QuicStream&, role: QuicRole) -> bool {
 // ---- 8. Zero-Allocation Stream Table ----------------------------------------
 
 struct QuicStreamTable {
-    streams: QuicStream[..128] = [],
-    max_streams_bidi: u64 = 100,
-    max_streams_uni: u64 = 100,
-    next_local_bidi_id: u64 = 0,
-    next_local_uni_id: u64 = 0,
-    role: QuicRole = QuicRole.Server,
+    streams:            QuicStream[..128] = [],
+    max_streams_bidi:   u64               = 100,
+    max_streams_uni:    u64               = 100,
+    next_local_bidi_id: u64               = 0,
+    next_local_uni_id:  u64               = 0,
+    role:               QuicRole          = QuicRole.Server,
 }
 
 fn new_quic_stream_table(role: QuicRole) -> QuicStreamTable {
     let init_bidi: u64 = if role == QuicRole.Client { 0 } else { 1 };
-    let init_uni: u64 = if role == QuicRole.Client { 2 } else { 3 };
+    let init_uni:  u64 = if role == QuicRole.Client { 2 } else { 3 };
     return QuicStreamTable {
-        role: role,
+        role:               role,
         next_local_bidi_id: init_bidi,
-        next_local_uni_id: init_uni,
+        next_local_uni_id:  init_uni,
     };
 }
 
@@ -427,8 +439,8 @@ inline fn can_open_ingress_stream(tbl: const QuicStreamTable&, stream_id: u64) -
 
 // Appends and initializes new stream into table.
 inline fn quic_table_insert_stream(
-    tbl: QuicStreamTable&,
-    stream_id: u64,
+    tbl:               QuicStreamTable&,
+    stream_id:         u64,
     default_recv_flow: u64,
 ) -> i32 {
     let new_idx = tbl.streams.len as i32;
@@ -441,8 +453,8 @@ inline fn quic_table_insert_stream(
 // Enforces MAX_STREAMS limits for peer-initiated streams (RFC 9000 Section 4.6).
 // Returns (stream_index: i32, ok: bool).
 fn quic_table_get_or_open_stream(
-    tbl: QuicStreamTable&,
-    stream_id: u64,
+    tbl:               QuicStreamTable&,
+    stream_id:         u64,
     default_recv_flow: u64 = 65536,
 ) -> i32, bool {
     let existing = quic_table_find_stream(tbl, stream_id);
@@ -477,8 +489,8 @@ inline fn advance_stream_counter(tbl: QuicStreamTable&, is_bidi: bool) -> u64 {
 
 // Opens next local stream ID, advancing stream counter.
 fn quic_table_open_local_stream(
-    tbl: QuicStreamTable&,
-    is_bidi: bool,
+    tbl:               QuicStreamTable&,
+    is_bidi:           bool,
     default_recv_flow: u64 = 65536,
 ) -> u64, i32, bool {
     guard tbl.streams.len < tbl.streams.cap else {

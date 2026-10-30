@@ -1408,6 +1408,63 @@ fn test_h2_protocol_invariants(t: core::T&) {
         sub.assert_eq(rst_hdr.stream_id, 3, "RST_STREAM on stream 3");
     };
 
+    t.run("H2-16b: PRIORITY Frame Size Error Triggers RST_STREAM(FRAME_SIZE_ERROR) Not GOAWAY (RFC 9113 §5.4.2 & §6.3)") { sub =>
+        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        var wire: u8[>..] = [];
+        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        // Invalid PRIORITY frame with length 4 (must be 5)
+        let prio_hdr = internal::FrameHeader {
+            length:     4,
+            frame_type: internal::FRAME_PRIORITY,
+            flags:      0,
+            stream_id:  5,
+        };
+        internal::encode_frame_header_to(prio_hdr, wire);
+        let prio_payload: u8[4] = [0x00, 0x00, 0x00, 0x01];
+        for b in prio_payload { wire.push(b); }
+
+        var out_wire: u8[>..] = [];
+        let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
+
+        sub.assert_true(ok, "Connection remains open on PRIORITY size error");
+        sub.assert_gt(out_wire.len, 33, "Output contains server preface/settings + RST_STREAM");
+        let rst_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
+        sub.assert_eq(rst_hdr.frame_type, internal::FRAME_RST_STREAM, "Frame is RST_STREAM");
+        sub.assert_eq(rst_hdr.stream_id, 5, "RST_STREAM on stream 5");
+        let err_code = ((out_wire[42] as u32) << 24) | ((out_wire[43] as u32) << 16) | ((out_wire[44] as u32) << 8) | (out_wire[45] as u32);
+        sub.assert_eq(err_code, internal::ERR_FRAME_SIZE_ERROR, "RST error code is FRAME_SIZE_ERROR");
+    };
+
+    t.run("H2-CONTINUATION: PUSH_PROMISE with END_HEADERS cleared allows subsequent CONTINUATION (RFC 9113 §6.6, §6.10)") { sub =>
+        var s = internal::new_h2_connection();
+        s.local_max_frame_size = 16384;
+
+        // PUSH_PROMISE on stream 1 with END_HEADERS cleared
+        let pp_hdr = internal::FrameHeader {
+            length:     8,
+            frame_type: internal::FRAME_PUSH_PROMISE,
+            flags:      0,
+            stream_id:  1,
+        };
+        let err_pp = internal::on_ingress_frame_header(s, pp_hdr, 1000);
+        sub.assert_eq(err_pp, internal::ERR_NO_ERROR, "PUSH_PROMISE header accepted");
+        sub.assert_eq(s.continuation_stream_id, 1, "continuation stream id tracked for PUSH_PROMISE");
+
+        // Subsequent CONTINUATION frame on same stream 1
+        let cont_hdr = internal::FrameHeader {
+            length:     10,
+            frame_type: internal::FRAME_CONTINUATION,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
+        };
+        let err_cont = internal::on_ingress_frame_header(s, cont_hdr, 1000);
+        sub.assert_eq(err_cont, internal::ERR_NO_ERROR, "subsequent CONTINUATION frame accepted");
+        sub.assert_eq(s.continuation_stream_id, 0, "continuation state cleared after END_HEADERS");
+    };
+
     t.run("H2-17: HEADERS on Closed Stream Triggers RST_STREAM(STREAM_CLOSED) Not GOAWAY (RFC 9113 §5.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -2840,16 +2897,18 @@ fn test_h2_extension_frames(t: core::T&) {
         sub.assert_eq(altsvc.alt_svc_value, "h3=\":443\"", "alt_svc_value matched");
     };
 
-    t.run("ALTSVC-03: Empty origin on stream 0 triggers PROTOCOL_ERROR") { sub =>
+    t.run("ALTSVC-03: Empty origin on stream 0 is ignored per RFC 7838 §4") { sub =>
         let payload: u8[6] = [0x00, 0x00, 'h', '3', '=', '1'];
-        let _, err = internal::parse_altsvc_frame(payload[..], 0);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "empty origin on stream 0 is PROTOCOL_ERROR");
+        let altsvc, err = internal::parse_altsvc_frame(payload[..], 0);
+        sub.assert_eq(err, internal::ERR_NO_ERROR, "empty origin on stream 0 is ignored");
+        sub.assert_eq(altsvc.alt_svc_value.len, 0, "ignored frame has empty value");
     };
 
-    t.run("ALTSVC-04: Non-zero origin on stream > 0 triggers PROTOCOL_ERROR") { sub =>
+    t.run("ALTSVC-04: Non-zero origin on stream > 0 is ignored per RFC 7838 §4") { sub =>
         let payload: u8[8] = [0x00, 0x02, 'o', 'k', 'h', '3', '=', '1'];
-        let _, err = internal::parse_altsvc_frame(payload[..], 1);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "non-empty origin on stream 1 is PROTOCOL_ERROR");
+        let altsvc, err = internal::parse_altsvc_frame(payload[..], 1);
+        sub.assert_eq(err, internal::ERR_NO_ERROR, "non-empty origin on stream 1 is ignored");
+        sub.assert_eq(altsvc.alt_svc_value.len, 0, "ignored frame has empty value");
     };
 
     t.run("ALTSVC-05: Server Ingress handles ORIGIN and ALTSVC extension frames") { sub =>

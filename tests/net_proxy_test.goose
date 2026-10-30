@@ -1578,7 +1578,7 @@ fn test_rfc9484_connect_ip(t: core::T&) {
 
         let c_req, c_req_ok = wing::parse_http_capsule(req_wire[..]);
         sub.assert_true(c_req_ok, "parse request capsule ok");
-        sub.assert_eq(c_req.capsule_type, wing::CAPSULE_ADDRESS_REQUEST, "Type is ADDRESS_REQUEST (0x1F)");
+        sub.assert_eq(c_req.capsule_type, wing::CAPSULE_ADDRESS_REQUEST, "Type is ADDRESS_REQUEST (0x02)");
 
         let dec_req, dec_req_ok = wing::decode_address_request_capsule(c_req.payload);
         sub.assert_true(dec_req_ok, "decode_address_request_capsule ok");
@@ -1602,7 +1602,7 @@ fn test_rfc9484_connect_ip(t: core::T&) {
 
         let c_assign, c_assign_ok = wing::parse_http_capsule(assign_wire[..]);
         sub.assert_true(c_assign_ok, "parse assign capsule ok");
-        sub.assert_eq(c_assign.capsule_type, wing::CAPSULE_ADDRESS_ASSIGN, "Type is ADDRESS_ASSIGN (0x1E)");
+        sub.assert_eq(c_assign.capsule_type, wing::CAPSULE_ADDRESS_ASSIGN, "Type is ADDRESS_ASSIGN (0x01)");
 
         let dec_assign, dec_assign_ok = wing::decode_address_assign_capsule(c_assign.payload);
         sub.assert_true(dec_assign_ok, "decode_address_assign_capsule ok");
@@ -1613,11 +1613,12 @@ fn test_rfc9484_connect_ip(t: core::T&) {
 
     t.run("ROUTE_ADVERTISEMENT Capsule") { sub =>
         var route = wing::RouteAdvertisement {
-            ip_version: 4,
-            prefix_len: 8,
+            ip_version:  4,
+            ip_protocol: 0,
             ..
         };
-        route.ip_prefix.append([10, 0, 0, 0]);
+        route.start_ip.append([10, 0, 0, 0]);
+        route.end_ip.append([10, 0, 0, 255]);
 
         var route_wire: u8[>..] = [];
         let enc_ok = wing::encode_route_advertisement_capsule(route_wire, route);
@@ -1625,13 +1626,14 @@ fn test_rfc9484_connect_ip(t: core::T&) {
 
         let c, c_ok = wing::parse_http_capsule(route_wire[..]);
         sub.assert_true(c_ok, "parse route capsule ok");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_ROUTE_ADVERTISEMENT, "Type is ROUTE_ADVERTISEMENT (0x20)");
+        sub.assert_eq(c.capsule_type, wing::CAPSULE_ROUTE_ADVERTISEMENT, "Type is ROUTE_ADVERTISEMENT (0x03)");
 
         let dec_route, dec_route_ok = wing::decode_route_advertisement_capsule(c.payload);
         sub.assert_true(dec_route_ok, "decode_route_advertisement_capsule ok");
         sub.assert_eq(dec_route.ip_version, 4, "IPv4");
-        sub.assert_eq(dec_route.prefix_len, 8, "Prefix len 8");
-        sub.assert_bytes_eq(dec_route.ip_prefix[..], [10, 0, 0, 0], "Prefix 10.0.0.0/8 matches");
+        sub.assert_bytes_eq(dec_route.start_ip[..], [10, 0, 0, 0], "Start IP 10.0.0.0 matches");
+        sub.assert_bytes_eq(dec_route.end_ip[..], [10, 0, 0, 255], "End IP 10.0.0.255 matches");
+        sub.assert_eq(dec_route.ip_protocol, 0, "IP Protocol 0 (all)");
     };
 }
 
@@ -1782,17 +1784,17 @@ fn test_masque_capsule_codecs(t: core::T&) {
 
     // 3. CONNECT-IP ADDRESS_ASSIGN invalid versions / bounds
     // Invalid IP version 5
-    let bad_ver_wire: u8[7] = [0x01, 0x05, 0x20, 10, 0, 0, 1];
+    let bad_ver_wire: u8[7] = [0x01, 0x05, 10, 0, 0, 1, 0x20];
     let _, bad_ver_ok = wing::decode_address_assign_capsule(bad_ver_wire[..]);
     t.assert_false(bad_ver_ok, "invalid IP version 5 must be rejected");
 
     // IPv4 prefix length > 32
-    let bad_pre_wire: u8[7] = [0x01, 0x04, 0x21, 10, 0, 0, 1];
+    let bad_pre_wire: u8[7] = [0x01, 0x04, 10, 0, 0, 1, 0x21];
     let _, bad_pre_wire_ok = wing::decode_address_assign_capsule(bad_pre_wire[..]);
     t.assert_false(bad_pre_wire_ok, "IPv4 prefix length > 32 must be rejected");
 
     // IPv4 with wrong byte count (3 bytes instead of 4)
-    let bad_len_wire: u8[6] = [0x01, 0x04, 0x20, 10, 0, 1];
+    let bad_len_wire: u8[6] = [0x01, 0x04, 10, 0, 1, 0x20];
     let _, bad_len_ok = wing::decode_address_assign_capsule(bad_len_wire[..]);
     t.assert_false(bad_len_ok, "IPv4 address with rdlength != 4 must be rejected");
 }

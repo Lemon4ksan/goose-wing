@@ -741,7 +741,7 @@ fn test_fast_query_parser(t: core::T&) {
         let found_search, is_valueless_search = core::get_query_param_fast(query_str, "search", search_val);
         sub.assert_true(found_search, "Found 'search'");
         sub.assert_false(is_valueless_search, "'search' has a value");
-        sub.assert_bytes_eq(search_val[..], "hello world!", "+ decoded to space and %21 to !");
+        sub.assert_bytes_eq(search_val[..], "hello+world!", "+ preserved verbatim per RFC 3986 and %21 to !");
 
         // 2. Valueless query parameter ("?debug") vs empty value ("?empty=")
         var debug_val: u8[..64] = [];

@@ -111,6 +111,19 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
         wing::append_header(map_plain, "Cache-Control", "max-age=1800");
         let cc_plain = wing::parse_targeted_cache_control_headers(map_plain, "Edge");
         sub.assert_eq(cc_plain.max_age, 1800, "Fallback to standard Cache-Control when target missing");
+
+        // RFC 9213 §2.1 & §2.2: Empty or whitespace CDN-Cache-Control falls back to standard Cache-Control
+        var map_empty_cdn = wing::HeaderMap { .. };
+        wing::append_header(map_empty_cdn, "Cache-Control", "max-age=1200");
+        wing::append_header(map_empty_cdn, "CDN-Cache-Control", "");
+        let cc_empty_cdn = wing::parse_targeted_cache_control_headers(map_empty_cdn, "CDN");
+        sub.assert_eq(cc_empty_cdn.max_age, 1200, "Empty CDN-Cache-Control falls back to standard Cache-Control");
+
+        var map_ws_cdn = wing::HeaderMap { .. };
+        wing::append_header(map_ws_cdn, "Cache-Control", "max-age=2400");
+        wing::append_header(map_ws_cdn, "CDN-Cache-Control", "   ,  ");
+        let cc_ws_cdn = wing::parse_targeted_cache_control_headers(map_ws_cdn, "CDN");
+        sub.assert_eq(cc_ws_cdn.max_age, 2400, "Whitespace/comma CDN-Cache-Control falls back to standard Cache-Control");
     };
 }
 
@@ -196,6 +209,24 @@ fn test_freshness_math_and_clock_skew(t: core::T&) {
         wing::append_header(hdrs_lm, "Last-Modified", "Sun, 06 Nov 1994 08:00:00 GMT"); // 3600s delta
         let lt_heur = wing::compute_freshness_lifetime(cc_empty, hdrs_lm, ts);
         sub.assert_eq(lt_heur, 360, "Heuristic is 10% of 3600s = 360s");
+
+        // 6. RFC 9111 §5.3 & §4.2.2: Expires: 0 or invalid date format marks response immediately stale (lifetime = 0)
+        // and does NOT fall back to Last-Modified heuristic
+        var hdrs_exp0 = wing::HeaderMap { .. };
+        hdrs_exp0.status_code = 200;
+        wing::append_header(hdrs_exp0, "Expires", "0");
+        wing::append_header(hdrs_exp0, "Date", "Sun, 06 Nov 1994 09:00:00 GMT");
+        wing::append_header(hdrs_exp0, "Last-Modified", "Sun, 06 Nov 1994 08:00:00 GMT");
+        let lt_exp0 = wing::compute_freshness_lifetime(cc_empty, hdrs_exp0, ts);
+        sub.assert_eq(lt_exp0, 0, "Expires: 0 yields 0 freshness lifetime without falling back to Last-Modified heuristic");
+
+        var hdrs_exp_inv = wing::HeaderMap { .. };
+        hdrs_exp_inv.status_code = 200;
+        wing::append_header(hdrs_exp_inv, "Expires", "invalid-date-format");
+        wing::append_header(hdrs_exp_inv, "Date", "Sun, 06 Nov 1994 09:00:00 GMT");
+        wing::append_header(hdrs_exp_inv, "Last-Modified", "Sun, 06 Nov 1994 08:00:00 GMT");
+        let lt_exp_inv = wing::compute_freshness_lifetime(cc_empty, hdrs_exp_inv, ts);
+        sub.assert_eq(lt_exp_inv, 0, "Invalid Expires yields 0 freshness lifetime without falling back to Last-Modified heuristic");
 
         let ts_mono = wing::with_monotonic(ts, core::monotonic_now(), core::monotonic_now(), core::monotonic_now());
         sub.assert_true(ts_mono.has_monotonic, "with_monotonic sets has_monotonic");
@@ -1509,6 +1540,39 @@ fn test_incremental_stream_reader(t: core::T&) {
         sub.assert_eq(p3.bytes_processed, 26 as u64, "26 bytes processed");
         sub.assert_eq(p3.percent, 100.0, "100% final progress");
         sub.assert_true(p3.is_finished, "is_finished is true");
+
+        // Chunked stream with small max_bytes reads retaining unconsumed remainder and exposing trailers
+        var resp_chunked = wing::Response { status_code: 200, .. };
+        resp_chunked.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        resp_chunked.body.append("10\r\n0123456789abcdef\r\n0\r\nExpires: 0\r\nX-Checksum: sha256-abc\r\n\r\n");
+
+        var reader_ch = wing::new_stream_reader(resp_chunked);
+        var part1: u8[>..] = [];
+        let has_c1, eof_c1 = wing::read_chunk(reader_ch, 6, part1);
+        sub.assert_true(has_c1, "read part 1 (6 bytes)");
+        sub.assert_false(eof_c1, "not EOF after 6 bytes of 16");
+        sub.assert_bytes_eq(part1[..], "012345", "first 6 bytes retained");
+
+        var part2: u8[>..] = [];
+        let has_c2, eof_c2 = wing::read_chunk(reader_ch, 6, part2);
+        sub.assert_true(has_c2, "read part 2 (6 bytes)");
+        sub.assert_false(eof_c2, "not EOF after 12 bytes of 16");
+        sub.assert_bytes_eq(part2[..], "6789ab", "next 6 bytes from retained chunk remainder");
+
+        var part3: u8[>..] = [];
+        let has_c3, eof_c3 = wing::read_chunk(reader_ch, 6, part3);
+        sub.assert_true(has_c3, "read part 3 (remainder 4 bytes)");
+        sub.assert_true(eof_c3, "EOF reached after reading all chunk bytes and trailers");
+        sub.assert_bytes_eq(part3[..], "cdef", "final 4 bytes of chunk");
+
+        // Verify decoded trailers exposed to caller
+        let tr_val = wing::trailer(reader_ch, "x-checksum");
+        sub.assert_bytes_eq(tr_val, "sha256-abc", "decoded trailer exposed via trailer helper");
+
+        var resp_target = wing::Response { status_code: 200, .. };
+        wing::copy_trailers_to_response(reader_ch, resp_target);
+        sub.assert_eq(resp_target.trailers.len, 2, "trailers copied to Response object");
+        sub.assert_bytes_eq(wing::trailer(resp_target, "expires"), "0", "Response has expires trailer");
     };
 }
 

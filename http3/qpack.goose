@@ -90,6 +90,12 @@ struct BlockedStreamEntry {
     encoded_data:     u8[..4096] = [],
 }
 
+struct UnackedSection {
+    stream_id:   u64      = 0,
+    ric:         u64      = 0,
+    ref_entries: u64[..8] = [],
+}
+
 struct QpackTable {
     head_idx:              u32                       = 0,
     capacity_bytes:        u64                       = 0,
@@ -104,6 +110,7 @@ struct QpackTable {
     decoder_stream_opened: bool                      = false,
     control_stream_opened: bool                      = false,
     blocked_streams:       BlockedStreamEntry[..128] = [],
+    unacked_sections:      UnackedSection[..16]      = [],
     entries:               DynamicEntry[>..<]        = [], // Must be last!
 }
 
@@ -351,7 +358,8 @@ fn encode_ric(ric: u64, max_cap: u64) -> u64 {
 }
 
 // Decodes Base index from sign bit S and DeltaBase (RFC 9204 Section 4.5.1.2).
-// RFC 9204 §4.5.1.2: If Required Insert Count is 0, the Base is 0. If Sign is 1, or Delta Base is non-zero, this is an error.
+// RFC 9204 §4.5.1.2: If Required Insert Count is 0, any non-negative Base is valid.
+// Sign bit 1 is invalid when RIC is 0 since Base would be negative.
 //
 // Example:
 //   sign_bit = 0, delta_base = 0, ric = 0
@@ -361,10 +369,13 @@ fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
         return 0, QpackError.DecompressionFailed;
     }
     if ric == 0 {
-        guard sign_bit == 0 && delta_base == 0 else {
+        guard sign_bit == 0 else {
             return 0, QpackError.DecompressionFailed;
         }
-        return 0, QpackError.None;
+        guard delta_base <= 0x3FFFFFFFFFFFFFFF else {
+            return 0, QpackError.DecompressionFailed;
+        }
+        return delta_base, QpackError.None;
     }
     if sign_bit == 0 {
         guard (0xFFFFFFFFFFFFFFFF - ric) >= delta_base else {
@@ -400,8 +411,9 @@ fn new_qpack_table(
     max_blocked:      u32 = 16,
     initial_capacity: u64 = 4096,
 ) -> QpackTable {
+    let eff_cap = if initial_capacity < max_capacity { initial_capacity } else { max_capacity };
     return QpackTable {
-        capacity_bytes:     initial_capacity,
+        capacity_bytes:     eff_cap,
         max_capacity_bytes: max_capacity,
         max_blocked:        max_blocked,
         ..
@@ -526,32 +538,140 @@ fn qpack_lookup_absolute(
     return false;
 }
 
-// Section Acknowledgment instruction handler (Decoder -> Encoder).
-fn qpack_ack_section(tbl: QpackTable&, stream_id: u64, ric: u64 = 0) {
-    if ric > tbl.known_rcvd_count {
-        tbl.known_rcvd_count = ric;
-    }
-    // Remove stream from blocked streams if pending
-    var i = 0;
-    while i < tbl.blocked_streams.len {
-        if tbl.blocked_streams[i].stream_id == stream_id {
-            tbl.blocked_streams.remove_at(i);
-            continue;
+// Pins an entry in the dynamic table to prevent eviction while in active use (RFC 9204 §2.1.1).
+fn qpack_pin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
+    for i in tbl.entries.len {
+        if tbl.entries[i].abs_index == abs_idx {
+            tbl.entries[i].ref_count++;
+            return true;
         }
-        i++;
+    }
+    return false;
+}
+
+// Unpins an entry in the dynamic table after active reference is released.
+fn qpack_unpin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
+    for i in tbl.entries.len {
+        if tbl.entries[i].abs_index == abs_idx {
+            if tbl.entries[i].ref_count > 0 {
+                tbl.entries[i].ref_count--;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// Tracks an unacknowledged stream section with its Required Insert Count (RFC 9204 §4.4.1).
+fn qpack_track_unacked_stream(tbl: QpackTable&, stream_id: u64, ric: u64) -> bool {
+    for i in tbl.unacked_sections.len {
+        if tbl.unacked_sections[i].stream_id == stream_id {
+            if ric > tbl.unacked_sections[i].ric {
+                tbl.unacked_sections[i].ric = ric;
+            }
+            return true;
+        }
+    }
+    guard tbl.unacked_sections.len < tbl.unacked_sections.cap else {
+        return false;
+    }
+    var entry = UnackedSection {
+        stream_id:   stream_id,
+        ric:         ric,
+        ref_entries: [],
+    };
+    tbl.unacked_sections.push(entry);
+    return true;
+}
+
+// Associates a dynamic table entry reference with an unacknowledged stream (RFC 9204 §2.1.1, §4.4.2).
+// Pins the dynamic table entry and records the reference for subsequent ACK or cancellation release.
+fn qpack_track_stream_ref(tbl: QpackTable&, stream_id: u64, abs_idx: u64) -> bool {
+    guard qpack_pin_entry(tbl, abs_idx) else {
+        return false;
+    }
+    for i in tbl.unacked_sections.len {
+        if tbl.unacked_sections[i].stream_id == stream_id {
+            if tbl.unacked_sections[i].ref_entries.len < tbl.unacked_sections[i].ref_entries.cap {
+                tbl.unacked_sections[i].ref_entries.push(abs_idx);
+            }
+            return true;
+        }
+    }
+    guard tbl.unacked_sections.len < tbl.unacked_sections.cap else {
+        qpack_unpin_entry(tbl, abs_idx);
+        return false;
+    }
+    var entry = UnackedSection {
+        stream_id:   stream_id,
+        ric:         0,
+        ref_entries: [],
+    };
+    entry.ref_entries.push(abs_idx);
+    tbl.unacked_sections.push(entry);
+    return true;
+}
+
+inline fn find_unacked_stream_idx(tbl: const QpackTable&, stream_id: u64) -> i64 {
+    for i in tbl.unacked_sections.len {
+        if tbl.unacked_sections[i].stream_id == stream_id {
+            return i;
+        }
+    }
+    return -1;
+}
+
+inline fn release_section_refs(tbl: QpackTable&, refs: const u64[:]) {
+    for ref_abs in refs {
+        qpack_unpin_entry(tbl, ref_abs);
     }
 }
 
-// Stream Cancellation instruction handler (Decoder -> Encoder).
-fn qpack_cancel_stream(tbl: QpackTable&, stream_id: u64) {
-    var i = 0;
-    while i < tbl.blocked_streams.len {
-        if tbl.blocked_streams[i].stream_id == stream_id {
-            tbl.blocked_streams.remove_at(i);
+inline fn release_and_remove_unacked(tbl: QpackTable&, stream_id: u64) {
+    var u_idx = 0;
+    while u_idx < tbl.unacked_sections.len {
+        if tbl.unacked_sections[u_idx].stream_id == stream_id {
+            release_section_refs(tbl, tbl.unacked_sections[u_idx].ref_entries[..]);
+            tbl.unacked_sections.remove_at(u_idx);
             continue;
         }
-        i++;
+        u_idx++;
     }
+}
+
+// Section Acknowledgment instruction handler (Decoder -> Encoder) (RFC 9204 §4.4.1).
+// Updates known_rcvd_count to max(known_rcvd_count, section.ric), releases dynamic table
+// entry references, and removes the unacknowledged stream entry.
+// Returns QpackError.DecoderStreamError if stream was not unacknowledged or had ric == 0.
+fn qpack_ack_section(tbl: QpackTable&, stream_id: u64, ric: u64 = 0) -> QpackError {
+    let found_idx = find_unacked_stream_idx(tbl, stream_id);
+    var effective_ric = ric;
+    if found_idx >= 0 {
+        let u_ric = tbl.unacked_sections[found_idx].ric;
+        if u_ric > effective_ric {
+            effective_ric = u_ric;
+        }
+        release_section_refs(tbl, tbl.unacked_sections[found_idx].ref_entries[..]);
+        tbl.unacked_sections.remove_at(found_idx as i32);
+    } else {
+        guard effective_ric > 0 else {
+            return QpackError.DecoderStreamError;
+        }
+    }
+
+    if effective_ric > tbl.known_rcvd_count {
+        tbl.known_rcvd_count = effective_ric;
+    }
+
+    qpack_unblock_stream(tbl, stream_id);
+    return QpackError.None;
+}
+
+// Stream Cancellation instruction handler (Decoder -> Encoder) (RFC 9204 §4.4.2).
+// Releases all dynamic table entry references held by the identified stream.
+fn qpack_cancel_stream(tbl: QpackTable&, stream_id: u64) {
+    release_and_remove_unacked(tbl, stream_id);
+    qpack_unblock_stream(tbl, stream_id);
 }
 
 // Insert Count Increment instruction handler (Decoder -> Encoder).
@@ -603,30 +723,6 @@ fn qpack_unblock_stream(tbl: QpackTable&, stream_id: u64) -> bool {
             return true;
         }
         i++;
-    }
-    return false;
-}
-
-// Pins an entry in the dynamic table to prevent eviction while in active use (RFC 9204 §2.1.1).
-fn qpack_pin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
-    for &e in tbl.entries {
-        if e.abs_index == abs_idx {
-            e.ref_count++;
-            return true;
-        }
-    }
-    return false;
-}
-
-// Unpins an entry in the dynamic table after active reference is released.
-fn qpack_unpin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
-    for &e in tbl.entries {
-        if e.abs_index == abs_idx {
-            if e.ref_count > 0 {
-                e.ref_count--;
-            }
-            return true;
-        }
     }
     return false;
 }
@@ -733,7 +829,8 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
     if (b & 0x80) != 0 {
         let stream_id, next_off, ok = qpack_decode_int(src, offset, 7);
         guard ok else { return offset, QpackError.DecoderStreamError; }
-        qpack_ack_section(tbl, stream_id, 0);
+        let ack_err = qpack_ack_section(tbl, stream_id, 0);
+        guard ack_err == QpackError.None else { return offset, ack_err; }
         return next_off, QpackError.None;
     }
 

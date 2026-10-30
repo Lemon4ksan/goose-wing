@@ -757,13 +757,13 @@ fn test_url_query_delimiter_and_decoding_defenses(t: core::T&) {
         sub.assert_true(core::validate_query_param_count("?a=1#&b=2&c=3&d=4", 1), "validate_query_param_count must only count pre-fragment parameters");
     };
 
-    t.run("Plus-as-space decoding in fast query key lookup") { sub =>
+    t.run("URI query key lookup per RFC 3986 §3.4 ('+' preserved verbatim)") { sub =>
         let query_str = "?user+name=Alice&order+by=desc";
         var out_name: u8[..64] = [];
-        let found_name, _ = core::get_query_param_fast(query_str, "user name", out_name);
-        sub.assert_true(found_name, "get_query_param_fast must decode '+' as space in key");
+        let found_name, _ = core::get_query_param_fast(query_str, "user+name", out_name);
+        sub.assert_true(found_name, "get_query_param_fast must find 'user+name' verbatim");
         sub.assert_bytes_eq(out_name[..], "Alice", "Matched param value must be 'Alice'");
-        sub.assert_true(core::has_query_param_fast(query_str, "user name"), "has_query_param_fast must find plus-encoded key");
+        sub.assert_true(core::has_query_param_fast(query_str, "user+name"), "has_query_param_fast must find plus key");
     };
 
     t.run("Query parameter lookup into undersized buffer fails safely without truncation") { sub =>
@@ -1505,18 +1505,20 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: core::T&) {
 // 31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds
 // ----------------------------------------------------------------------------
 fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: core::T&) {
-    t.run("RFC 9204 §4.5.1.2: decode_base strictly enforces Base == 0 when RIC == 0") { sub =>
+    t.run("RFC 9204 §4.5.1.2: decode_base correctly computes Base when RIC == 0") { sub =>
         // 1. Valid: ric == 0, sign == 0, delta_base == 0 => Base == 0
         let base0, err0 = internal::decode_base(0, 0, 0);
         sub.assert_eq(err0, internal::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
         sub.assert_eq(base0, 0, "Base must be 0 when RIC is 0");
 
-        // 2. Invalid: ric == 0 with delta_base > 0 MUST fail with DecompressionFailed
-        let _, err_delta = internal::decode_base(0, 1, 0);
-        sub.assert_eq(err_delta, internal::QpackError.DecompressionFailed, "ric=0 with delta_base=1 MUST fail");
+        // 2. Valid: ric == 0 with sign == 0 and delta_base > 0 produces non-negative Base
+        let base1, err_delta = internal::decode_base(0, 1, 0);
+        sub.assert_eq(err_delta, internal::QpackError.None, "ric=0 with delta_base=1 is valid");
+        sub.assert_eq(base1, 1, "Base must be 1");
 
-        let _, err_delta5 = internal::decode_base(0, 5, 0);
-        sub.assert_eq(err_delta5, internal::QpackError.DecompressionFailed, "ric=0 with delta_base=5 MUST fail");
+        let base5, err_delta5 = internal::decode_base(0, 5, 0);
+        sub.assert_eq(err_delta5, internal::QpackError.None, "ric=0 with delta_base=5 is valid");
+        sub.assert_eq(base5, 5, "Base must be 5");
 
         // 3. Invalid: ric == 0 with sign == 1 MUST fail with DecompressionFailed
         let _, err_sign = internal::decode_base(1, 0, 0);
@@ -1530,16 +1532,21 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: core::T&) {
         sub.assert_eq(err_bad_sign, internal::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
     };
 
-    t.run("RFC 9204 §4.5.1.2: decode_qpack_section rejects wire header blocks with RIC == 0 and DeltaBase > 0") { sub =>
+    t.run("RFC 9204 §4.5.1.2: decode_qpack_section allows non-zero DeltaBase with Sign=0 when RIC==0") { sub =>
         var tbl = internal::new_qpack_table(4096, 16);
         var out_fields: internal::HeaderField[>..] = [];
 
-        // Malicious header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 5 (0x05), Static :path="/" (0xC1)
-        let malformed_block: u8[3] = [0x00, 0x05, 0xC1];
-        let err_mal = internal::decode_qpack_section(tbl, malformed_block[..], out_fields, 4096);
-        sub.assert_eq(err_mal, internal::QpackError.DecompressionFailed, "Header block with RIC=0 and DeltaBase=5 MUST trigger DecompressionFailed");
+        // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 5 (0x05), Static :path="/" (0xC1)
+        // RFC 9204 §4.5.1.2: Any non-negative Base is valid when dynamic table references are absent
+        let valid_deltabase_block: u8[3] = [0x00, 0x05, 0xC1];
+        let err_db = internal::decode_qpack_section(tbl, valid_deltabase_block[..], out_fields, 4096);
+        sub.assert_eq(err_db, internal::QpackError.None, "Header block with RIC=0, Sign=0, DeltaBase=5 succeeds");
+        sub.assert_eq(out_fields.len, 1, "One field decoded");
+        sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
+        sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
 
-        // Malicious header block: enc_ric = 0 (0x00), Sign = 1 & DeltaBase = 0 (0x80), Static :path="/" (0xC1)
+        // Invalid header block: enc_ric = 0 (0x00), Sign = 1 & DeltaBase = 0 (0x80), Static :path="/" (0xC1)
+        // Sign 1 yields negative Base when RIC=0, which MUST trigger DecompressionFailed
         let malformed_sign_block: u8[3] = [0x00, 0x80, 0xC1];
         let err_sign = internal::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
         sub.assert_eq(err_sign, internal::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
@@ -1984,7 +1991,7 @@ fn test_rfc9112_chunk_fsm_split_crlf_terminator_validation(t: core::T&) {
 // 35. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants
 // ----------------------------------------------------------------------------
 fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: core::T&) {
-    let key = "dpop_secret_test_key_32_bytes!!";
+    let key = "super_secret_dpop_key_32_bytes!!";
     let now_sec: i64 = 1714000000;
 
     t.run("RFC 9449 §4.3 Rule 4: Proof omitting jti or containing empty jti MUST be rejected") { sub =>
@@ -2014,8 +2021,8 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: core::T&) {
         sub.assert_false(wing::verify_dpop_jti(c_empty_jti), "verify_dpop_jti fails when jti is empty string");
     };
 
-    t.run("RFC 9449 §4.3 Rule 2 & RFC 8725 §3.1: Algorithm confusion defense rejects mismatched alg in header") { sub =>
-        // Header specifies alg: "EdDSA" while server verifies with HMAC key
+    t.run("RFC 9449 §4.3 & RFC 8725 §3.1: Strict asymmetric alg & JWK requirement (FINDING-SEC-01)") { sub =>
+        // Header specifies alg: "EdDSA" without mandatory jwk public key
         let h_bad_alg = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\"}";
         var h_bad_b64: u8[..256] = [];
         core::base64url_encode(h_bad_alg, h_bad_b64);
@@ -2035,12 +2042,22 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: core::T&) {
         token.append(sig_b64[..]);
 
         let ok_conf = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
-        sub.assert_false(ok_conf, "DPoP proof specifying EdDSA alg rejected when HS256 expected");
+        sub.assert_false(ok_conf, "DPoP proof without jwk rejected");
 
-        // Direct header check: mismatched alg rejected
-        sub.assert_false(wing::verify_dpop_header(h_bad_alg, "HS256"), "verify_dpop_header rejects alg mismatch");
-        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"none\"}", "HS256"), "none alg rejected");
-        sub.assert_true(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}", "HS256"), "matching HS256 alg accepted");
+        // Direct header check: symmetric HMAC algorithms (HS256, HS384, HS512) MUST be rejected (RFC 9449 §4.3 Rule 3)
+        sub.assert_false(wing::verify_dpop_header(h_bad_alg, "EdDSA"), "header missing jwk rejected");
+        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"none\"}", "EdDSA"), "none alg rejected");
+        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}", "HS256"), "symmetric HS256 rejected per RFC 9449 §4.3");
+        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS384\"}", "HS384"), "symmetric HS384 rejected per RFC 9449 §4.3");
+        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS512\"}", "HS512"), "symmetric HS512 rejected per RFC 9449 §4.3");
+
+        // Mandatory JWK presence and rejection of private key parameters (RFC 9449 §4.3 Rule 4)
+        let h_valid = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}}";
+        sub.assert_true(wing::verify_dpop_header(h_valid, "EdDSA"), "valid asymmetric header with jwk accepted");
+        let h_private = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"d\":\"secret_private_d\"}}";
+        sub.assert_false(wing::verify_dpop_header(h_private, "EdDSA"), "jwk with private key d rejected per RFC 9449 §4.3");
+        let h_oct = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"oct\",\"k\":\"symmetric_secret\"}}";
+        sub.assert_false(wing::verify_dpop_header(h_oct, "EdDSA"), "symmetric oct jwk rejected per RFC 9449 §4.3");
     };
 
     t.run("RFC 3986 §6.2.3 & RFC 9449 §4.3: URI Scheme & Userinfo Rejection in Target Normalization") { sub =>

@@ -21,37 +21,50 @@ import wing from "../..";
 fn test_control_stream_forbidden_frames_precedence(conn: internal::H3Connection&, settings: const wing::H3Settings&) {
     conn = internal::new_h3_server_connection(settings);
 
-    // A. DATA frame sent on peer control stream before SETTINGS
-    // Must return H3_ERR_FRAME_UNEXPECTED (0x0105), NOT H3_ERR_MISSING_SETTINGS (0x010A)
+    // A. DATA frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
+    // If the first frame is any other frame type, connection error H3_MISSING_SETTINGS (0x010A)
     var data_wire: u8[..64] = [];
     internal::quic_encode_varint(data_wire, internal::H3_STREAM_CONTROL);
     assert(internal::encode_h3_data_frame(data_wire, "test"));
     let err_data = internal::handle_stream_data(conn, 2, false, data_wire[..], false);
-    assert(err_data == internal::H3_ERR_FRAME_UNEXPECTED);
+    assert(err_data == internal::H3_ERR_MISSING_SETTINGS);
 
-    // B. HEADERS frame sent on peer control stream before SETTINGS
+    // B. HEADERS frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
     conn = internal::new_h3_server_connection(settings);
     var headers_wire: u8[..64] = [];
     internal::quic_encode_varint(headers_wire, internal::H3_STREAM_CONTROL);
     assert(internal::encode_h3_headers_frame(headers_wire, "head"));
     let err_hdr = internal::handle_stream_data(conn, 2, false, headers_wire[..], false);
-    assert(err_hdr == internal::H3_ERR_FRAME_UNEXPECTED);
+    assert(err_hdr == internal::H3_ERR_MISSING_SETTINGS);
 
-    // C. HTTP/2 reserved frame (0x02 PRIORITY) sent on control stream before SETTINGS
+    // C. HTTP/2 reserved frame (0x02 PRIORITY) sent on control stream before SETTINGS (RFC 9114 §6.2.1)
     conn = internal::new_h3_server_connection(settings);
     var h2_wire: u8[..64] = [];
     internal::quic_encode_varint(h2_wire, internal::H3_STREAM_CONTROL);
     assert(internal::encode_h3_frame_header(h2_wire, 0x02, 0));
     let err_h2 = internal::handle_stream_data(conn, 2, false, h2_wire[..], false);
-    assert(err_h2 == internal::H3_ERR_FRAME_UNEXPECTED);
+    assert(err_h2 == internal::H3_ERR_MISSING_SETTINGS);
 
-    // D. GOAWAY frame (allowed on control stream) sent before SETTINGS -> H3_ERR_MISSING_SETTINGS
+    // D. GOAWAY frame (allowed on control stream) sent before SETTINGS -> H3_ERR_MISSING_SETTINGS (RFC 9114 §6.2.1)
     conn = internal::new_h3_server_connection(settings);
     var ga_wire: u8[..64] = [];
     internal::quic_encode_varint(ga_wire, internal::H3_STREAM_CONTROL);
     assert(internal::encode_h3_goaway_frame(ga_wire, 0));
     let err_ga = internal::handle_stream_data(conn, 2, false, ga_wire[..], false);
     assert(err_ga == internal::H3_ERR_MISSING_SETTINGS);
+
+    // E. DATA frame sent on peer control stream after SETTINGS -> H3_ERR_FRAME_UNEXPECTED (RFC 9114 §7.2.1)
+    conn = internal::new_h3_server_connection(settings);
+    var init_wire: u8[..64] = [];
+    internal::quic_encode_varint(init_wire, internal::H3_STREAM_CONTROL);
+    assert(internal::encode_h3_settings_frame(init_wire, settings));
+    let err_init = internal::handle_stream_data(conn, 2, false, init_wire[..], false);
+    assert(err_init == internal::H3_ERR_NO_ERROR);
+
+    var post_data: u8[..64] = [];
+    assert(internal::encode_h3_data_frame(post_data, "bad"));
+    let err_post = internal::handle_stream_data(conn, 2, false, post_data[..], false);
+    assert(err_post == internal::H3_ERR_FRAME_UNEXPECTED);
 
     print("CONTROL_STREAM_FORBIDDEN_PRECEDENCE: OK");
 }

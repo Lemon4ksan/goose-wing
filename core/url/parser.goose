@@ -483,11 +483,25 @@ fn is_scoped_ipv6_for_zone_id(comp_ipv6: const u8[:]) -> bool {
 }
 
 inline fn validate_zone_id(zone_id: const u8[:]) -> bool {
-    guard zone_id.len > 0 && zone_id.len <= 32 else { return false; }
-    for b in zone_id {
-        let is_unreserved = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
-            (b >= '0' && b <= '9') || b == '-' || b == '_';
-        guard is_unreserved else { return false; }
+    guard zone_id.len > 0 && zone_id.len <= 64 else { return false; }
+    var idx: i64 = 0;
+    while idx < zone_id.len {
+        let b = zone_id[idx];
+        let is_unres = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+            (b >= '0' && b <= '9') || b == '-' || b == '.' || b == '_' || b == '~';
+        if is_unres {
+            idx += 1;
+        } else if b == '%' {
+            guard idx + 2 < zone_id.len else { return false; }
+            let h1 = zone_id[idx + 1];
+            let h2 = zone_id[idx + 2];
+            let is_h1 = (h1 >= '0' && h1 <= '9') || (h1 >= 'a' && h1 <= 'f') || (h1 >= 'A' && h1 <= 'F');
+            let is_h2 = (h2 >= '0' && h2 <= '9') || (h2 >= 'a' && h2 <= 'f') || (h2 >= 'A' && h2 <= 'F');
+            guard is_h1 && is_h2 else { return false; }
+            idx += 3;
+        } else {
+            return false;
+        }
     }
     return true;
 }

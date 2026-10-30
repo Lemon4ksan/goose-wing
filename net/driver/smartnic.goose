@@ -13,17 +13,17 @@ import net.driver.types;
 extern fn wing_smartnic_probe() -> i32;
 extern fn wing_smartnic_enable_ktls(fd: i64) -> i32;
 extern fn wing_smartnic_set_hardware_tls_tx(
-    fd: i64, version: u16, cipher_type: u16,
-    key: const u8[:],
-    iv: const u8[:],
-    salt: const u8[:],
+    fd:      i64, version: u16, cipher_type: u16,
+    key:     const u8[:],
+    iv:      const u8[:],
+    salt:    const u8[:],
     rec_seq: const u8[:],
 ) -> i32;
 extern fn wing_smartnic_set_hardware_tls_rx(
-    fd: i64, version: u16, cipher_type: u16,
-    key: const u8[:],
-    iv: const u8[:],
-    salt: const u8[:],
+    fd:      i64, version: u16, cipher_type: u16,
+    key:     const u8[:],
+    iv:      const u8[:],
+    salt:    const u8[:],
     rec_seq: const u8[:],
 ) -> i32;
 
@@ -57,44 +57,51 @@ enum SmartNicCipherSuite {
 
 const TLS_CIPHER_AES_GCM_128_ID: u16 = 51;
 const TLS_CIPHER_AES_GCM_256_ID: u16 = 52;
-const TLS_1_3_WIRE_VERSION: u16 = 0x0304;
+const TLS_1_3_WIRE_VERSION:      u16 = 0x0304;
 
 struct SmartNicConfig {
-    model: SmartNicModel = SmartNicModel.Generic,
-    enable_hardware_tls: bool = true,
-    enable_tcp_chimney: bool = true,
-    rx_coalesce_usecs: u32 = 10,
-    tx_coalesce_usecs: u32 = 10,
+    model:               SmartNicModel = SmartNicModel.Generic,
+    enable_hardware_tls: bool          = true,
+    enable_tcp_chimney:  bool          = true,
+    rx_coalesce_usecs:   u32           = 10,
+    tx_coalesce_usecs:   u32           = 10,
 }
 
 struct SmartNicSession {
-    fd: i64 = -1,
-    ktls_active: bool = false,
-    tx_offloaded: bool = false,
-    rx_offloaded: bool = false,
-    cipher: SmartNicCipherSuite = SmartNicCipherSuite.AesGcm128,
+    fd:           i64                 = -1,
+    ktls_active:  bool                = false,
+    tx_offloaded: bool                = false,
+    rx_offloaded: bool                = false,
+    cipher:       SmartNicCipherSuite = SmartNicCipherSuite.AesGcm128,
 }
 
 fn new_smartnic_session(fd: i64 = -1) -> SmartNicSession {
     return SmartNicSession {
-        fd: fd,
-        ktls_active: false,
+        fd:           fd,
+        ktls_active:  false,
         tx_offloaded: false,
         rx_offloaded: false,
-        cipher: SmartNicCipherSuite.AesGcm128,
+        cipher:       SmartNicCipherSuite.AesGcm128,
     };
 }
 
 // Configures hardware SmartNIC TLS crypto offload on a socket.
 // Plaintext buffers sent via tcp_send / recv are automatically encrypted/decrypted
 // on the NIC chip without CPU cycle consumption.
+//
+// RFC / FINDING-R6-FRAME-05: Uses separate TX and RX key/IV contexts.
+// Returns an error if TX offload fails to strictly prevent unencrypted wire leaks.
 fn smartnic_attach_hardware_tls(
-    fd: i64,
-    cipher: SmartNicCipherSuite,
-    key: const u8[:],
-    iv: const u8[:],
-    salt: const u8[:],
-    seq: const u8[:],
+    fd:      i64,
+    cipher:  SmartNicCipherSuite,
+    tx_key:  const u8[:],
+    tx_iv:   const u8[:],
+    tx_salt: const u8[:],
+    tx_seq:  const u8[:],
+    rx_key:  const u8[:] = "",
+    rx_iv:   const u8[:] = "",
+    rx_salt: const u8[:] = "",
+    rx_seq:  const u8[:] = "",
 ) -> SmartNicSession, i32 {
     guard fd > 0 else { return new_smartnic_session(), -1; }
 
@@ -109,28 +116,37 @@ fn smartnic_attach_hardware_tls(
     };
 
     var sess = SmartNicSession {
-        fd: fd,
-        ktls_active: true,
+        fd:           fd,
+        ktls_active:  true,
         tx_offloaded: false,
         rx_offloaded: false,
-        cipher: cipher,
+        cipher:       cipher,
     };
 
     let tx_err = wing_smartnic_set_hardware_tls_tx(
         fd, TLS_1_3_WIRE_VERSION, cipher_id,
-        key, iv, salt, seq,
+        tx_key, tx_iv, tx_salt, tx_seq,
     );
-    if tx_err == 0 {
-        sess.tx_offloaded = true;
+    // RFC / FINDING-R6-FRAME-05: Return error if TX offload fails.
+    // Silent fallback to unencrypted wire data is strictly forbidden.
+    guard tx_err == 0 else {
+        return sess, tx_err;
     }
+    sess.tx_offloaded = true;
+
+    let eff_rx_key = if rx_key.len > 0 { rx_key } else { tx_key };
+    let eff_rx_iv = if rx_iv.len > 0 { rx_iv } else { tx_iv };
+    let eff_rx_salt = if rx_salt.len > 0 { rx_salt } else { tx_salt };
+    let eff_rx_seq = if rx_seq.len > 0 { rx_seq } else { tx_seq };
 
     let rx_err = wing_smartnic_set_hardware_tls_rx(
         fd, TLS_1_3_WIRE_VERSION, cipher_id,
-        key, iv, salt, seq,
+        eff_rx_key, eff_rx_iv, eff_rx_salt, eff_rx_seq,
     );
-    if rx_err == 0 {
-        sess.rx_offloaded = true;
+    guard rx_err == 0 else {
+        return sess, rx_err;
     }
+    sess.rx_offloaded = true;
 
-    return sess, if (tx_err == 0 || rx_err == 0) { 0 } else { tx_err };
+    return sess, 0;
 }

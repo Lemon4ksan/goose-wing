@@ -41,6 +41,14 @@ inline fn calc_advertised_window_candidate(base: u64, window_size: u64) -> u64 {
     return candidate;
 }
 
+// Returns the effective consumed or received byte marker for flow control accounting (RFC 9000 §4.1).
+inline fn calc_effective_credit_usage(recv: u64, read: u64) -> u64 {
+    if recv > read {
+        return recv;
+    }
+    return read;
+}
+
 // Computes flow control window renewal trigger threshold (RFC 9000 §4.2).
 inline fn calc_window_renewal_threshold(window_size: u64) -> u64 {
     return window_size >> 1;
@@ -58,27 +66,27 @@ inline fn calc_safe_accumulate_bytes(current: u64, delta: u64) -> u64 {
 // Flow control state for connection-level limits (RFC 9000 §4.1).
 struct QuicFlowControl {
     // Egress (remote limit advertised by peer via MAX_DATA)
-    max_data_remote: u64 = 0,
-    bytes_sent_total: u64 = 0,
-    is_data_blocked: bool = false,
+    max_data_remote:  u64  = 0,
+    bytes_sent_total: u64  = 0,
+    is_data_blocked:  bool = false,
 
     // Ingress (local limit advertised to peer via MAX_DATA)
-    max_data_local: u64 = 0,
-    bytes_recv_total: u64 = 0,
-    bytes_read_total: u64 = 0,
-    local_window_size: u64 = 65536,
+    max_data_local:           u64 = 0,
+    bytes_recv_total:         u64 = 0,
+    bytes_read_total:         u64 = 0,
+    local_window_size:        u64 = 65536,
     last_advertised_max_data: u64 = 0,
 }
 
 fn new_quic_flow_control(initial_max_data_remote: u64, local_window: u64) -> QuicFlowControl {
     return QuicFlowControl {
-        max_data_remote: initial_max_data_remote,
-        bytes_sent_total: 0,
-        is_data_blocked: false,
-        max_data_local: local_window,
-        bytes_recv_total: 0,
-        bytes_read_total: 0,
-        local_window_size: local_window,
+        max_data_remote:          initial_max_data_remote,
+        bytes_sent_total:         0,
+        is_data_blocked:          false,
+        max_data_local:           local_window,
+        bytes_recv_total:         0,
+        bytes_read_total:         0,
+        local_window_size:        local_window,
         last_advertised_max_data: local_window,
     };
 }
@@ -96,10 +104,10 @@ fn quic_fc_remaining_stream_credit(s: const QuicStream&) -> u64 {
 // Evaluates whether sending (offset + len) is permitted by both connection and stream limits.
 // Returns (can_send: bool, blocked_on_stream: bool, blocked_on_conn: bool).
 fn quic_fc_can_send(
-    fc: const QuicFlowControl&,
-    s: const QuicStream&,
+    fc:     const QuicFlowControl&,
+    s:      const QuicStream&,
     offset: u64,
-    len: u64,
+    len:    u64,
 ) -> bool, bool, bool {
     guard quic_valid_offset_len(offset, len) else {
         return false, true, true;
@@ -126,10 +134,10 @@ fn quic_fc_can_send(
 // Records egress data sent on a stream and updates cumulative connection send count.
 // Sets is_data_blocked if connection limit is reached.
 fn quic_fc_record_send(
-    fc: QuicFlowControl&,
-    s: QuicStream&,
+    fc:     QuicFlowControl&,
+    s:      QuicStream&,
     offset: u64,
-    len: u64,
+    len:    u64,
 ) -> bool {
     guard quic_valid_offset_len(offset, len) else {
         return false;
@@ -161,10 +169,10 @@ fn quic_fc_record_send(
 // Records ingress STREAM frame data and validates against flow control limits.
 // Returns (ok: bool, err_code: u64). On violation, returns (false, QUIC_ERR_FLOW_CONTROL).
 fn quic_fc_record_recv_stream(
-    fc: QuicFlowControl&,
-    s: QuicStream&,
+    fc:     QuicFlowControl&,
+    s:      QuicStream&,
     offset: u64,
-    len: u64,
+    len:    u64,
 ) -> bool, u64 {
     // RFC 9000 §4.1, §4.5, §19.8: Enforce 62-bit VarInt ceiling and arithmetic wrap prevention
     guard quic_valid_offset_len(offset, len) else {
@@ -199,8 +207,8 @@ fn quic_fc_record_recv_stream(
 // Final size counts toward connection flow control and cannot exceed 2^62 - 1.
 // Returns (ok: bool, err_code: u64).
 fn quic_fc_record_recv_reset(
-    fc: QuicFlowControl&,
-    s: QuicStream&,
+    fc:         QuicFlowControl&,
+    s:          QuicStream&,
     final_size: u64,
 ) -> bool, u64 {
     // RFC 9000 §4.5: Final size cannot exceed 2^62 - 1 or the advertised stream limit
@@ -227,8 +235,8 @@ fn quic_fc_record_recv_reset(
 
 // Records bytes consumed by application, advancing read markers with wrap protection.
 fn quic_fc_on_app_read(
-    fc: QuicFlowControl&,
-    s: QuicStream&,
+    fc:         QuicFlowControl&,
+    s:          QuicStream&,
     bytes_read: u64,
 ) {
     s.recv_consumed = calc_safe_accumulate_bytes(s.recv_consumed, bytes_read);
@@ -258,16 +266,18 @@ fn quic_fc_update_stream_send_max_data(s: QuicStream&, new_limit: u64) -> bool {
 
 // Evaluates whether a connection-level MAX_DATA frame should be sent (RFC 9000 §4.2).
 // Triggers when available credit falls below half the configured window.
+// Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns (should_send: bool, new_max_data: u64).
 fn quic_fc_check_conn_window_update(fc: QuicFlowControl&) -> bool, u64 {
-    let available = calc_unspent_credit(fc.max_data_local, fc.bytes_read_total);
+    let consumed = calc_effective_credit_usage(fc.bytes_recv_total, fc.bytes_read_total);
+    let available = calc_unspent_credit(fc.max_data_local, consumed);
     let threshold = calc_window_renewal_threshold(fc.local_window_size);
 
     guard available < threshold else {
         return false, 0;
     }
 
-    let candidate_max = calc_advertised_window_candidate(fc.bytes_read_total, fc.local_window_size);
+    let candidate_max = calc_advertised_window_candidate(consumed, fc.local_window_size);
     guard candidate_max > fc.last_advertised_max_data else {
         return false, 0;
     }
@@ -279,16 +289,18 @@ fn quic_fc_check_conn_window_update(fc: QuicFlowControl&) -> bool, u64 {
 
 // Evaluates whether a stream-level MAX_STREAM_DATA frame should be sent (RFC 9000 §4.2).
 // Triggers when available stream credit falls below half the stream window size.
+// Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns (should_send: bool, new_max_stream_data: u64).
 fn quic_fc_check_stream_window_update(s: QuicStream&, stream_window_size: u64) -> bool, u64 {
-    let available = calc_unspent_credit(s.recv_max_data, s.recv_consumed);
+    let consumed = calc_effective_credit_usage(s.bytes_recv, s.recv_consumed);
+    let available = calc_unspent_credit(s.recv_max_data, consumed);
     let threshold = calc_window_renewal_threshold(stream_window_size);
 
     guard available < threshold else {
         return false, 0;
     }
 
-    let candidate_max = calc_advertised_window_candidate(s.recv_consumed, stream_window_size);
+    let candidate_max = calc_advertised_window_candidate(consumed, stream_window_size);
     guard candidate_max > s.recv_max_data else {
         return false, 0;
     }
