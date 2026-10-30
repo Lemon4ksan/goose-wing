@@ -179,3 +179,11 @@ import proxy.gcra;
 import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;
+
+// ---- wire subsystem (vulkan-style explicit networking) --------------------
+
+import wire.types;
+import wire.hpack;
+import wire.h2;
+import wire.cmd;
+import wire.submit;
