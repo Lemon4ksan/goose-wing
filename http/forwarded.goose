@@ -12,10 +12,10 @@ import .headers;
 
 // RFC 7239 Section 4: A single forwarded-element item.
 struct ForwardedElement {
-    by: u8[..128] = [],
+    by:       u8[..128] = [],
     for_node: u8[..128] = [],
-    host: u8[..128] = [],
-    proto: u8[..16] = [],
+    host:     u8[..128] = [],
+    proto:    u8[..16]  = [],
 }
 
 // Appends an RFC 7239 node identifier with quotes if it contains IPv6 or non-token characters.

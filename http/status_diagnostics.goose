@@ -12,47 +12,71 @@ import core from "..";
 // ---- 1. RFC 9211 Cache-Status Model -----------------------------------------
 
 struct CacheStatusEntry {
-    cache_name: u8[..64] = [],
-    hit: bool = false,
-    fwd: u8[..32] = [],
-    fwd_status: i32 = 0,
-    ttl: i64 = 0,
-    stored: bool = false,
-    collapsed: bool = false,
-    key: u8[..128] = [],
-    detail: u8[..128] = [],
+    cache_name: u8[..64]  = [],
+    hit:        bool      = false,
+    fwd:        u8[..32]  = [],
+    fwd_status: i32       = 0,
+    ttl:        i64       = 0,
+    stored:     bool      = false,
+    collapsed:  bool      = false,
+    key:        u8[..128] = [],
+    detail:     u8[..128] = [],
 }
 
 // ---- 2. RFC 9209 Proxy-Status Model -----------------------------------------
 
 struct ProxyStatusEntry {
-    proxy_name: u8[..64] = [],
-    error_type: u8[..64] = [],
-    next_hop: u8[..64] = [],
-    details: u8[..256] = [],
-    received_status: i32 = 0,
+    proxy_name:      u8[..64]  = [],
+    error_type:      u8[..64]  = [],
+    next_hop:        u8[..64]  = [],
+    details:         u8[..256] = [],
+    received_status: i32       = 0,
 }
 
 // ---- 3. Diagnostics Parser Helpers ------------------------------------------
 
+// Skips leading whitespace and comma delimiters.
+// Advances `idx` past the skipped bytes.
+//
+// Example:
+//   raw = ",  item", idx = 0
+//   idx becomes 3 (pointing to 'i')
 fn skip_status_list_delims(raw: const u8[:], idx: i64&) {
     let rem = raw[idx..];
     let trimmed = core::trim_start_bytes(rem, " \t,");
     idx += rem.len - trimmed.len;
 }
 
+// Skips semicolon, space, and tab parameter delimiters.
+// Advances `idx` past the skipped bytes.
+//
+// Example:
+//   raw = ";  foo=bar", idx = 0
+//   idx becomes 3 (pointing to 'f')
 fn skip_status_param_delims(raw: const u8[:], idx: i64&) {
     let rem = raw[idx..];
     let trimmed = core::trim_start_bytes(rem, "; \t");
     idx += rem.len - trimmed.len;
 }
 
+// Skips linear whitespace spaces and tabs.
+// Advances `idx` past the whitespace.
+//
+// Example:
+//   raw = "  token", idx = 0
+//   idx becomes 2 (pointing to 't')
 fn skip_lws_at(raw: const u8[:], idx: i64&) {
     let rem = raw[idx..];
     let trimmed = core::trim_lws_start(rem);
     idx += rem.len - trimmed.len;
 }
 
+// Reads target name token up to delimiter.
+// Advances `idx` past the token.
+//
+// Example:
+//   raw = "OriginCache; hit", idx = 0
+//   returns: "OriginCache", idx becomes 11
 fn read_status_target_name(raw: const u8[:], idx: i64&) -> const u8[:] {
     let start = idx;
     while idx < raw.len {
@@ -65,6 +89,12 @@ fn read_status_target_name(raw: const u8[:], idx: i64&) -> const u8[:] {
     return raw[start..idx];
 }
 
+// Reads parameter name token up to '=' or delimiter.
+// Advances `idx` past the token.
+//
+// Example:
+//   raw = "ttl=120", idx = 0
+//   returns: "ttl", idx becomes 3
 fn read_status_param_name(raw: const u8[:], idx: i64&) -> const u8[:] {
     let start = idx;
     while idx < raw.len {
@@ -77,6 +107,12 @@ fn read_status_param_name(raw: const u8[:], idx: i64&) -> const u8[:] {
     return raw[start..idx];
 }
 
+// Reads double-quoted parameter string value.
+// Advances `idx` past closing quote.
+//
+// Example:
+//   raw = "\"xyzzy\"", idx = 0
+//   returns: "xyzzy", idx becomes 7
 fn read_quoted_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
     idx += 1; // skip opening quote
     let v_start = idx;
@@ -91,6 +127,12 @@ fn read_quoted_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
     return val;
 }
 
+// Reads unquoted token parameter value.
+// Advances `idx` past the token.
+//
+// Example:
+//   raw = "120; next", idx = 0
+//   returns: "120", idx becomes 3
 fn read_token_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
     let v_start = idx;
     while idx < raw.len {
@@ -103,6 +145,12 @@ fn read_token_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
     return raw[v_start..idx];
 }
 
+// Reads parameter key-value pair.
+// Advances `idx` past consumed parameter.
+//
+// Example:
+//   raw = "; ttl=120", idx = 0
+//   returns: p_name="ttl", p_val="120", ok=true
 fn read_status_param(raw: const u8[:], idx: i64&) -> const u8[:], const u8[:], bool {
     skip_status_param_delims(raw, idx);
     guard idx < raw.len && raw[idx] != ',' else { return raw[..0], raw[..0], false; }
@@ -162,6 +210,12 @@ fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: co
     }
 }
 
+// Parses a single cache-status entry into out_entry.
+// Advances `idx` past the entry.
+//
+// Example:
+//   raw = "OriginCache; hit; ttl=120", idx = 0
+//   returns: true, out_entry populated, idx points to end
 fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: CacheStatusEntry&) -> bool {
     skip_status_list_delims(raw, idx);
     guard idx < raw.len else { return false; }
@@ -178,9 +232,13 @@ fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: Cache
     return true;
 }
 
-// Parses a `Cache-Status: OriginCache; hit; ttl=120; key="xyz"` header
+// Parses a `Cache-Status: OriginCache; hit; ttl=120; key="xyz"` header.
+//
+// Example:
+//   raw = "OriginCache; hit; ttl=120"
+//   returns: 1, out_entries contains 1 parsed entry
 fn parse_cache_status_header(
-    raw: const u8[:],
+    raw:         const u8[:],
     out_entries: CacheStatusEntry[..8]&,
 ) -> i64 {
     var idx = 0;
@@ -254,6 +312,12 @@ fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: co
     }
 }
 
+// Parses a single proxy-status entry into out_entry.
+// Advances `idx` past the entry.
+//
+// Example:
+//   raw = "edge1; error=connection_refused", idx = 0
+//   returns: true, out_entry populated, idx points to end
 fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: ProxyStatusEntry&) -> bool {
     skip_status_list_delims(raw, idx);
     guard idx < raw.len else { return false; }
@@ -270,9 +334,13 @@ fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: Proxy
     return true;
 }
 
-// Parses a `Proxy-Status: edge1; error=connection_refused; details="upstream tcp rst"` header
+// Parses a `Proxy-Status: edge1; error=connection_refused; details="upstream tcp rst"` header.
+//
+// Example:
+//   raw = "edge1; error=connection_refused"
+//   returns: 1, out_entries contains 1 parsed entry
 fn parse_proxy_status_header(
-    raw: const u8[:],
+    raw:         const u8[:],
     out_entries: ProxyStatusEntry[..8]&,
 ) -> i64 {
     var idx = 0;

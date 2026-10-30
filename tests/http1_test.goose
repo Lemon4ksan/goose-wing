@@ -159,6 +159,14 @@ fn test_lexical_validation_and_swar(t: core::T&) {
         sub.assert_eq(err, wing::HeaderParseError.InvalidHeaderName, "Space before colon rejected");
     };
 
+    t.run("parse_response_headers status line and headers") { sub =>
+        var map = wing::HeaderMap { .. };
+        let raw = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let err = wing::parse_response_headers(raw, map);
+        sub.assert_eq(err, wing::HeaderParseError.None, "Response headers parsed");
+        sub.assert_eq(map.status_code, 200, "Status code is 200");
+    };
+
     t.run("HeaderPresenceTracker Duplicate Transfer-Encoding Smuggling Rejection") { sub =>
         var tracker = wing::HeaderPresenceTracker { .. };
         sub.assert_true(wing::track_header_presence(tracker, "Transfer-Encoding", "chunked", 0), "First TE accepted");
@@ -287,7 +295,7 @@ fn test_chromium_net_parity(t: core::T&) {
 fn test_oneshot_chunked_trailers(t: core::T&) {
     t.run("Single and multi-chunk decoding with byte count accuracy") { sub =>
         let raw = "4\r\nWiki\r\n6\r\n pedia\r\n0\r\n\r\n";
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -299,7 +307,7 @@ fn test_oneshot_chunked_trailers(t: core::T&) {
 
     t.run("Chunk extension ignored and parsed cleanly") { sub =>
         let raw = "5;ext_name=ext_value;flag\r\nHello\r\n0;last=1\r\n\r\n";
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -310,7 +318,7 @@ fn test_oneshot_chunked_trailers(t: core::T&) {
 
     t.run("Extraction of multiple custom trailers") { sub =>
         let raw = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123xyz\r\nX-Timing: dur=15.4\r\n\r\n";
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -330,7 +338,7 @@ fn test_oneshot_chunked_trailers(t: core::T&) {
 
     t.run("Pipelined keep-alive requests separation") { sub =>
         let raw = "4\r\nBody\r\n0\r\n\r\nGET /next HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -346,7 +354,7 @@ fn test_oneshot_chunked_trailers(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunked_smuggling_defenses(t: core::T&) {
     t.run("Bare LF in chunk size rejection (CVE-2025-22871)") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let raw = "4\nWiki\r\n0\r\n\r\n";
@@ -355,7 +363,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("Bare LF in chunk data terminator rejection") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let raw = "4\r\nWiki\n0\r\n\r\n";
@@ -364,7 +372,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("Bare LF in chunk data terminator at exact buffer end") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let raw = "4\r\nWiki\n";
@@ -373,7 +381,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("Bare LF in trailer line rejection") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let raw = "4\r\nWiki\r\n0\r\nX-Check: val\n\r\n";
@@ -382,7 +390,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("Bare LF terminating trailer section rejection") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let raw = "0\r\n\n";
@@ -391,7 +399,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("RFC 9110 Section 6.5.1: Full Forbidden Trailer Fields Enforcement") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         let disallowed_cases: const u8[:][20] = [
@@ -463,7 +471,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("Trailer flood protection (> 16 fields or > 4096 bytes)") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         // 17 trailer headers
@@ -490,7 +498,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("RFC 9112 Section 7.1: Chunk size 64-bit integer overflow rejection") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         // 1. 0xffffffffffffffff (16 hex digits: 2^64 - 1, signed overflow)
@@ -521,7 +529,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
     };
 
     t.run("RFC 9112 Section 7.1: Leading zeros in chunk size accepted") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
 
         // Chunk size with leading zeros > 16 characters total, but small value
@@ -723,8 +731,8 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
     };
 
     t.run("Fixed-size chunk serialization with encode_chunked_payload") { sub =>
-        var body_data: u8[..64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        var trs: wing::HeaderItem[..16] = [];
+        var body_data: u8[..64]               = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        var trs:       wing::HeaderItem[..16] = [];
         var item = wing::HeaderItem { .. };
         item.name.append("X-Complete");
         item.value.append("true");
@@ -733,8 +741,8 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
         var encoded_wire: u8[>..] = [];
         wing::encode_chunked_payload(body_data[..], trs, 10, encoded_wire);
 
-        var parsed_body: u8[>..] = [];
-        var parsed_trs: wing::HeaderItem[..16] = [];
+        var parsed_body: u8[>..]                = [];
+        var parsed_trs:  wing::HeaderItem[..16] = [];
         let err, consumed = wing::decode_chunked_body_with_trailers(encoded_wire[..], parsed_body, parsed_trs);
         sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded segmented chunks");
         sub.assert_eq(consumed, encoded_wire.len, "Exact bytes consumed");
@@ -1067,7 +1075,7 @@ fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
     };
 
     t.run("CHUNK-08: Trailer Flooding Attack Defense ") { sub =>
-        var out_body: u8[>..] = [];
+        var out_body:  u8[>..]    = [];
         var flood_buf: u8[..4096] = [];
         flood_buf.append("4\r\ntest\r\n0\r\n");
         // Inject 20 valid non-disallowed trailer lines (exceeding max_trailers = 16)
@@ -1084,7 +1092,7 @@ fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
 
     t.run("CHUNK-09: Trailer Total Byte Length Bomb Defense") { sub =>
         var out_body: u8[>..] = [];
-        var huge_tr: u8[>..] = [];
+        var huge_tr:  u8[>..] = [];
         huge_tr.append("4\r\ntest\r\n0\r\nX-Giant-Trailer: ");
         for _ in 4500 {
             huge_tr.push('A');

@@ -13,10 +13,10 @@ import .headers;
 
 // RFC 9457 Section 3: The Problem Details JSON Object.
 struct ProblemDetails {
-    status: i32 = 0,
+    status:   i32       = 0,
     type_uri: u8[..256] = [],
-    title: u8[..128] = [],
-    detail: u8[..512] = [],
+    title:    u8[..128] = [],
+    detail:   u8[..512] = [],
     instance: u8[..256] = [],
 }
 
@@ -59,10 +59,10 @@ fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
 //   key = "status", reader has integer 404
 //   stores: out.status = 404, returns: true
 fn parse_problem_core_fields(
-    key: const u8[:],
-    reader: json::Reader&,
+    key:     const u8[:],
+    reader:  json::Reader&,
     scratch: u8[>..]&,
-    out: ProblemDetails&,
+    out:     ProblemDetails&,
 ) -> bool {
     if key == "status" {
         out.status = json::read_int(reader) as i32;
@@ -84,10 +84,10 @@ fn parse_problem_core_fields(
 //   key = "title", reader has string "Not Found"
 //   stores: out.title = "Not Found", returns: true
 fn parse_problem_descriptive_fields(
-    key: const u8[:],
-    reader: json::Reader&,
+    key:     const u8[:],
+    reader:  json::Reader&,
     scratch: u8[>..]&,
-    out: ProblemDetails&,
+    out:     ProblemDetails&,
 ) -> bool {
     if key == "title" {
         let s = json::read_string(reader, scratch);

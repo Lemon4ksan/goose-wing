@@ -63,8 +63,8 @@ fn parse_dns_question(buf: const u8[:]) -> i64 {
     }
     if !saw_end { return -1; }
 
-    var decode_off: i64 = 12;
-    var name_out: u8[..256] = [];
+    var decode_off: i64       = 12;
+    var name_out:   u8[..256] = [];
     if !wing::dns_decode_name(buf, decode_off, name_out) {
         return -2;
     }

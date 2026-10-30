@@ -11,37 +11,37 @@ import core from "..";
 // ---- canonical locations and media type ------------------------------------
 
 const SECURITY_TXT_WELL_KNOWN_PATH: const u8[:] = "/.well-known/security.txt";
-const SECURITY_TXT_LEGACY_PATH: const u8[:] = "/security.txt";
-const SECURITY_TXT_CONTENT_TYPE: const u8[:] = "text/plain; charset=utf-8";
+const SECURITY_TXT_LEGACY_PATH:     const u8[:] = "/security.txt";
+const SECURITY_TXT_CONTENT_TYPE:    const u8[:] = "text/plain; charset=utf-8";
 
 // ---- error codes -----------------------------------------------------------
 
-const SEC_TXT_OK: i32 = 0;
-const SEC_TXT_ERR_MISSING_CONTACT: i32 = 1;
-const SEC_TXT_ERR_MISSING_EXPIRES: i32 = 2;
+const SEC_TXT_OK:                    i32 = 0;
+const SEC_TXT_ERR_MISSING_CONTACT:   i32 = 1;
+const SEC_TXT_ERR_MISSING_EXPIRES:   i32 = 2;
 const SEC_TXT_ERR_DUPLICATE_EXPIRES: i32 = 3;
-const SEC_TXT_ERR_INVALID_EXPIRES: i32 = 4;
-const SEC_TXT_ERR_EXPIRED: i32 = 5;
+const SEC_TXT_ERR_INVALID_EXPIRES:   i32 = 4;
+const SEC_TXT_ERR_EXPIRED:           i32 = 5;
 const SEC_TXT_ERR_INVALID_CANONICAL: i32 = 6;
-const SEC_TXT_ERR_EMPTY_VALUE: i32 = 7;
+const SEC_TXT_ERR_EMPTY_VALUE:       i32 = 7;
 
 // ---- data structures -------------------------------------------------------
 
 struct SecurityTxt {
-    contact: u8[..256][..8] = [],
-    expires: u8[..64] = "",
-    expires_unix: i64 = 0,
-    encryption: u8[..256][..4] = [],
-    canonical: u8[..256][..4] = [],
-    acknowledgments: u8[..256][..4] = [],
-    policy: u8[..256][..4] = [],
-    hiring: u8[..256][..4] = [],
-    preferred_languages: u8[..64] = "",
-    is_valid: bool = false,
-    has_contact: bool = false,
-    has_expires: bool = false,
-    is_expired: bool = false,
-    status: i32 = 0,
+    contact:             u8[..256][..8] = [],
+    expires:             u8[..64]       = "",
+    expires_unix:        i64            = 0,
+    encryption:          u8[..256][..4] = [],
+    canonical:           u8[..256][..4] = [],
+    acknowledgments:     u8[..256][..4] = [],
+    policy:              u8[..256][..4] = [],
+    hiring:              u8[..256][..4] = [],
+    preferred_languages: u8[..64]       = "",
+    is_valid:            bool           = false,
+    has_contact:         bool           = false,
+    has_expires:         bool           = false,
+    is_expired:          bool           = false,
+    status:              i32            = 0,
 }
 
 // Constructs a zero-initialized SecurityTxt structure.
@@ -137,10 +137,10 @@ fn apply_security_txt_metadata(name: const u8[:], val: const u8[:], sec: Securit
 }
 
 fn apply_security_txt_field(
-    name: const u8[:],
-    val: const u8[:],
+    name:      const u8[:],
+    val:       const u8[:],
     now_epoch: i64,
-    sec: SecurityTxt&,
+    sec:       SecurityTxt&,
 ) -> bool {
     guard val.len > 0 else {
         sec.status = SEC_TXT_ERR_EMPTY_VALUE;
@@ -178,6 +178,11 @@ fn validate_mandatory_security_fields(sec: SecurityTxt&) -> bool {
     return true;
 }
 
+// Parses a single line from security.txt (RFC 9116 §2.1).
+//
+// Example:
+//   line = "Contact: mailto:sec@example.com", now_epoch = 1700000000
+//   returns: true (Contact field populated)
 fn parse_security_txt_line(line: const u8[:], now_epoch: i64, sec: SecurityTxt&) -> bool {
     let trimmed = core::trim_ascii_space(line);
     guard !is_security_txt_comment_or_pgp(trimmed) else { return true; }
@@ -194,6 +199,10 @@ fn parse_security_txt_line(line: const u8[:], now_epoch: i64, sec: SecurityTxt&)
 // ---- parser implementation -------------------------------------------------
 
 // Parses and validates a security.txt buffer per RFC 9116.
+//
+// Example:
+//   content = "Contact: mailto:sec@example.com\nExpires: 2027-01-01T00:00:00Z\n"
+//   returns: sec with status=SEC_TXT_OK, is_valid=true
 fn parse_security_txt(content: const u8[:], now_epoch: i64 = 0) -> SecurityTxt {
     var sec = SecurityTxt { .. };
     var tok = core::make_byte_tokenizer(content, '\n');

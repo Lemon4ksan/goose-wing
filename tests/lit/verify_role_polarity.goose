@@ -53,9 +53,9 @@ fn test_quic_role_polarity() {
 fn test_h3_role_polarity() {
     let settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,
-        max_field_section_size: 65536,
-        qpack_blocked_streams: 16,
-        enable_connect_protocol: 1,
+        max_field_section_size:   65536,
+        qpack_blocked_streams:    16,
+        enable_connect_protocol:  1,
     };
 
     // Case A: Client receives PRIORITY_UPDATE_REQUEST on Control Stream (RFC 9218 §7)
@@ -112,20 +112,20 @@ fn test_h3_role_polarity() {
 fn test_h2_state_matrix() {
     // Case A: Stream 0 DATA Frame (RFC 9113 Section 5.1.1 & 6.1)
     let data_hdr = internal::FrameHeader {
-        length: 5,
+        length:     5,
         frame_type: internal::FRAME_DATA,
-        flags: 0,
-        stream_id: 0, // Forbidden!
+        flags:      0,
+        stream_id:  0, // Forbidden!
     };
     let err_data = internal::validate_frame_header_rules(data_hdr, 16384);
     assert(err_data == internal::ERR_PROTOCOL_ERROR);
 
     // Case B: SETTINGS with ACK and length != 0 (RFC 9113 Section 6.5)
     let set_ack_hdr = internal::FrameHeader {
-        length: 6, // Forbidden: ACK must be 0 length
+        length:     6, // Forbidden: ACK must be 0 length
         frame_type: internal::FRAME_SETTINGS,
-        flags: internal::FLAG_ACK,
-        stream_id: 0,
+        flags:      internal::FLAG_ACK,
+        stream_id:  0,
     };
     let err_set = internal::validate_frame_header_rules(set_ack_hdr, 16384);
     assert(err_set == internal::ERR_FRAME_SIZE_ERROR);

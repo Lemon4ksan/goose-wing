@@ -34,8 +34,8 @@ fn scan_ipv6_bracket_zone(buf: const u8[:]) -> i64 {
     let len = buf.len;
     guard len >= 3 && buf[0] == '[' else { return -1; }
     var end_bracket: i64 = -1;
-    var pct_idx: i64 = -1;
-    var i: i64 = 1;
+    var pct_idx:     i64 = -1;
+    var i:           i64 = 1;
     while i < len {
         let b = buf[i];
         if b == ']' && end_bracket < 0 { end_bracket = i; }
@@ -62,7 +62,7 @@ fn scan_final_coding_is_chunked(buf: const u8[:]) -> i32 {
     let len = buf.len;
     guard len >= 7 else { return 0; }
     var last_comma: i64 = -1;
-    var i: i64 = 0;
+    var i:          i64 = 0;
     while i < len {
         if buf[i] == ',' { last_comma = i; }
         i += 1;

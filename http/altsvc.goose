@@ -14,20 +14,20 @@ import core from "..";
 // ---- 1. Alt-Svc Models & Constants -----------------------------------------
 
 struct AltSvcEndpoint {
-    proto: u8[..16] = [],           // e.g. "h3", "h2"
-    host: u8[..128] = [],           // Alternate host (empty if same as origin)
-    port: u16 = 443,
-    max_age_sec: u32 = 86400,       // Default 24 hours per RFC 7838 Section 3.1
-    persist: bool = false,          // Survives network change if true
+    proto:       u8[..16]  = [],    // e.g. "h3", "h2"
+    host:        u8[..128] = [],    // Alternate host (empty if same as origin)
+    port:        u16       = 443,
+    max_age_sec: u32       = 86400, // Default 24 hours per RFC 7838 Section 3.1
+    persist:     bool      = false, // Survives network change if true
 }
 
 struct AltSvcOriginEntry {
-    origin: u8[..128] = [],         // e.g. "example.com:443"
-    endpoints: AltSvcEndpoint[..4] = [],
-    inserted_at_sec: i64 = 0,
-    failed_attempts: u8 = 0,        // Consecutive connection failures for backoff
-    broken_until_sec: i64 = 0,      // Exponential backoff timestamp
-    valid: bool = false,
+    origin:           u8[..128]           = [], // e.g. "example.com:443"
+    endpoints:        AltSvcEndpoint[..4] = [],
+    inserted_at_sec:  i64                 = 0,
+    failed_attempts:  u8                  = 0, // Consecutive connection failures for backoff
+    broken_until_sec: i64                 = 0, // Exponential backoff timestamp
+    valid:            bool                = false,
 }
 
 struct AltSvcCache {
@@ -46,7 +46,11 @@ fn find_origin_entry_idx(cache: const AltSvcCache&, origin: const u8[:]) -> i64 
 
 // ---- 2. RFC 7838 Header Parser ---------------------------------------------
 
-// Parses single parameter token: e.g. `ma=86400` or `persist=1`
+// Parses single parameter token: e.g. `ma=86400` or `persist=1`.
+//
+// Example:
+//   param_str = "ma=86400"
+//   mutates ep.max_age_sec to 86400
 fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
     let p_name_raw, p_val_raw, ok = param_str.split_once_byte('=');
     guard ok else { return; }
@@ -77,6 +81,11 @@ fn find_altsvc_entry_end(s: const u8[:]) -> i64 {
     return s.len;
 }
 
+// Parses semicolon-delimited parameter list for an Alt-Svc entry.
+//
+// Example:
+//   params_part = "; ma=86400; persist=1"
+//   populates ep parameters
 fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
     var p_tok = make_byte_tokenizer(params_part, ';');
     while true {
@@ -89,6 +98,11 @@ fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
     }
 }
 
+// Parses host:port authority from Alt-Svc quoted string.
+//
+// Example:
+//   authority = "alt.example.com:8443"
+//   returns: true, ep.host="alt.example.com", ep.port=8443
 fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
     guard has_colon else { return false; }
@@ -104,6 +118,11 @@ fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     return true;
 }
 
+// Parses a single Alt-Svc protocol=authority[; params] directive (RFC 7838 §3).
+//
+// Example:
+//   entry_str = "h3=\":443\"; ma=86400"
+//   returns: true, ep.proto="h3", ep.port=443, ep.max_age_sec=86400
 fn parse_single_altsvc_entry(entry_str: const u8[:], ep: AltSvcEndpoint&) -> bool {
     let proto_token_raw, rem_entry_raw, has_eq = entry_str.split_once_byte('=');
     guard has_eq && proto_token_raw.len > 0 else { return false; }
@@ -139,6 +158,10 @@ fn read_next_altsvc_entry(rem: const u8[:]) -> const u8[:], const u8[:] {
 // Parses `Alt-Svc` header value (RFC 7838 Section 3):
 // e.g. `h3=":443"; ma=86400; persist=1, h2="alt.example.com:8443"`
 // or `clear`
+//
+// Example:
+//   raw = "h3=\":443\"; ma=86400"
+//   returns: true, is_clear = false, endpoints pushed into out_endpoints
 fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
     let trimmed = trim_lws(raw);
     if trimmed == "clear" {
@@ -152,7 +175,8 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         guard entry_str.len > 0 else { break; }
 
         var ep = AltSvcEndpoint { .. };
-        if parse_single_altsvc_entry(entry_str, ep) && out_endpoints.len < out_endpoints.cap {
+        if parse_single_altsvc_entry(entry_str, ep) {
+            guard out_endpoints.len < out_endpoints.cap else { return false, false; }
             out_endpoints.push(ep);
         }
     }
@@ -163,9 +187,9 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
 // ---- 3. Alt-Svc Cache Operations -------------------------------------------
 
 fn update_altsvc_entry(
-    entry: AltSvcOriginEntry&,
+    entry:     AltSvcOriginEntry&,
     endpoints: const AltSvcEndpoint[:],
-    now_sec: i64,
+    now_sec:   i64,
 ) {
     entry.endpoints.clear();
     for &ep in endpoints { entry.endpoints.push(ep); }
@@ -191,14 +215,14 @@ fn find_oldest_altsvc_idx(cache: const AltSvcCache&) -> i64 {
 }
 
 fn insert_new_altsvc_entry(
-    cache: AltSvcCache&,
-    origin: const u8[:],
+    cache:     AltSvcCache&,
+    origin:    const u8[:],
     endpoints: const AltSvcEndpoint[:],
-    now_sec: i64,
+    now_sec:   i64,
 ) {
     var entry = AltSvcOriginEntry {
         inserted_at_sec: now_sec,
-        valid: true,
+        valid:           true,
         ..
     };
     guard origin.len <= entry.origin.cap else { return; }
@@ -207,20 +231,20 @@ fn insert_new_altsvc_entry(
 
     if cache.entries.len < cache.entries.cap {
         cache.entries.push(entry);
-        return;
-    }
-    let oldest_idx = find_oldest_altsvc_idx(cache);
-    if oldest_idx >= 0 && oldest_idx < cache.entries.len {
-        cache.entries[oldest_idx] = entry;
+    } else {
+        let oldest_idx = find_oldest_altsvc_idx(cache);
+        if oldest_idx >= 0 && oldest_idx < cache.entries.len {
+            cache.entries[oldest_idx] = entry;
+        }
     }
 }
 
 // Inserts or updates an Alt-Svc mapping for an origin (RFC 7838 Section 3)
 fn update(
-    cache: AltSvcCache&,
-    origin: const u8[:],
+    cache:      AltSvcCache&,
+    origin:     const u8[:],
     raw_altsvc: const u8[:],
-    now_sec: i64,
+    now_sec:    i64,
 ) {
     var endpoints: AltSvcEndpoint[..4] = [];
     let ok, is_clear = parse_altsvc_header(raw_altsvc, endpoints);
@@ -248,10 +272,10 @@ fn update(
 
 // Queries Alt-Svc cache for HTTP/3 ("h3") endpoint promotion
 fn lookup_h3(
-    cache: const AltSvcCache&,
-    origin: const u8[:],
+    cache:   const AltSvcCache&,
+    origin:  const u8[:],
     now_sec: i64,
-    out_ep: AltSvcEndpoint&,
+    out_ep:  AltSvcEndpoint&,
 ) -> bool {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return false; }
@@ -311,7 +335,13 @@ fn failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 {
 // ---- 4. Server-Side Serializer ---------------------------------------------
 
 // Formats standard Alt-Svc header string: e.g. `h3=":443"; ma=86400; persist=1`
-fn format_altsvc_header<B>(out: B&, proto: const u8[:], port: u16, max_age_sec: u32 = 86400, persist: bool = true) {
+fn format_altsvc_header<B>(
+    out:         B&,
+    proto:       const u8[:],
+    port:        u16,
+    max_age_sec: u32  = 86400,
+    persist:     bool = true,
+) {
     out.append(proto);
     out.append("=\":");
     core::format_u64_dec(port as u64, out);

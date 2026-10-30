@@ -42,11 +42,11 @@ fn byte_to_frame_type(b: u8) -> H2FrameType {
 
 // ---- frame flags -----------------------------------------------------------
 
-let H2_FLAG_END_STREAM: u8 = 0x01;
-let H2_FLAG_ACK: u8 = 0x01;
+let H2_FLAG_END_STREAM:  u8 = 0x01;
+let H2_FLAG_ACK:         u8 = 0x01;
 let H2_FLAG_END_HEADERS: u8 = 0x04;
-let H2_FLAG_PADDED: u8 = 0x08;
-let H2_FLAG_PRIORITY: u8 = 0x20;
+let H2_FLAG_PADDED:      u8 = 0x08;
+let H2_FLAG_PRIORITY:    u8 = 0x20;
 
 // ---- error codes -----------------------------------------------------------
 
@@ -72,16 +72,20 @@ enum H2ErrorCode {
 
 // Decoded 9-byte HTTP/2 frame header (RFC 9113 Section 4.1).
 struct H2FrameHeader {
-    payload_len: i32 = 0,     // 24-bit unsigned int
-    frame_type: H2FrameType = H2FrameType.Unknown,
-    raw_type: u8 = 0,
-    flags: u8 = 0,
-    stream_id: i32 = 0,       // 31-bit unsigned int
-    valid: bool = false,
+    payload_len: i32         = 0, // 24-bit unsigned int
+    frame_type:  H2FrameType = H2FrameType.Unknown,
+    raw_type:    u8          = 0,
+    flags:       u8          = 0,
+    stream_id:   i32         = 0, // 31-bit unsigned int
+    valid:       bool        = false,
 }
 
 // Decodes a 9-byte HTTP/2 binary frame header (RFC 9113 Section 4.1).
 // Masks out the reserved high bit of the stream identifier.
+//
+// Example:
+//   raw = [0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]
+//   returns: hdr with payload_len=4, frame_type=Data, stream_id=1, code=NoError
 fn parse_h2_frame_header(raw: const u8[:]) -> H2FrameHeader, H2ErrorCode {
     var hdr = H2FrameHeader { .. };
     guard raw.len >= 9 else {
@@ -114,21 +118,21 @@ enum H2ConnState {
 
 // Tracks HTTP/2 connection framing state and DoS flood counters (RFC 9113 Section 10.5).
 struct H2SecurityFramer {
-    state: H2ConnState = H2ConnState.Idle,
-    continuation_stream_id: i32 = 0,
-    continuation_count: i32 = 0,
-    header_block_bytes: i32 = 0,
+    state:                  H2ConnState = H2ConnState.Idle,
+    continuation_stream_id: i32         = 0,
+    continuation_count:     i32         = 0,
+    header_block_bytes:     i32         = 0,
 
-    rapid_reset_count: i32 = 0,
-    ping_flood_count: i32 = 0,
+    rapid_reset_count:    i32 = 0,
+    ping_flood_count:     i32 = 0,
     settings_flood_count: i32 = 0,
 
-    max_frame_size: i32 = 16384,          // default 16 KB
-    max_header_block_bytes: i32 = 8192,   // 8 KB cumulative limit
+    max_frame_size:          i32 = 16384, // default 16 KB
+    max_header_block_bytes:  i32 = 8192,  // 8 KB cumulative limit
     max_continuation_frames: i32 = 5,     // limit on consecutive CONTINUATION frames
-    max_rapid_resets: i32 = 100,          // reset flood threshold
-    max_unack_pings: i32 = 10,            // unacknowledged ping limit
-    max_unack_settings: i32 = 10,         // unacknowledged settings flood limit
+    max_rapid_resets:        i32 = 100,   // reset flood threshold
+    max_unack_pings:         i32 = 10,    // unacknowledged ping limit
+    max_unack_settings:      i32 = 10,    // unacknowledged settings flood limit
 }
 
 // Returns a default-initialized H2SecurityFramer with RFC 9113 baseline limits.

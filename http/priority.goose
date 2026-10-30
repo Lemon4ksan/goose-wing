@@ -13,13 +13,13 @@ import .sfv;
 // ---- 1. Urgency Constants & Model -------------------------------------------
 
 const PRIORITY_URGENCY_HIGHEST: u8 = 0;
-const PRIORITY_URGENCY_HIGH: u8 = 1;
+const PRIORITY_URGENCY_HIGH:    u8 = 1;
 const PRIORITY_URGENCY_DEFAULT: u8 = 3;
-const PRIORITY_URGENCY_LOW: u8 = 5;
-const PRIORITY_URGENCY_LOWEST: u8 = 7;
+const PRIORITY_URGENCY_LOW:     u8 = 5;
+const PRIORITY_URGENCY_LOWEST:  u8 = 7;
 
 struct PriorityParam {
-    urgency: u8 = PRIORITY_URGENCY_DEFAULT,
+    urgency:     u8   = PRIORITY_URGENCY_DEFAULT,
     incremental: bool = false,
 }
 
@@ -28,7 +28,7 @@ type HttpPriority = PriorityParam;
 // Default priority instance per RFC 9218 Section 4.
 fn priority_default(default_incremental: bool = false) -> HttpPriority {
     return HttpPriority {
-        urgency: PRIORITY_URGENCY_DEFAULT,
+        urgency:     PRIORITY_URGENCY_DEFAULT,
         incremental: default_incremental,
     };
 }
@@ -75,6 +75,10 @@ fn apply_priority_i(dict_str: const u8[:], p: HttpPriority&) -> bool {
 // Parses RFC 9218 Priority header value: e.g. "u=0, i", "u=5", "i=?0, u=2".
 // Ignores unknown parameters per RFC 9218 Section 4.
 // Returns parsed HttpPriority and true if at least one recognized parameter was parsed.
+//
+// Example:
+//   raw = "u=0, i"
+//   returns: p with urgency=0, incremental=true, ok = true
 fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> HttpPriority, bool {
     var p = priority_default(default_incremental);
     let trimmed = core::trim_ascii_space(raw);
@@ -90,11 +94,6 @@ fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> H
     let ok_u = apply_priority_u(trimmed, p);
     let ok_i = apply_priority_i(trimmed, p);
     return p, ok_u || ok_i;
-}
-
-// Backward-compatible alias for existing callers.
-fn parse_priority_param_rfc9218(raw: const u8[:], default_incremental: bool = false) -> HttpPriority, bool {
-    return parse_http_priority(raw, default_incremental);
 }
 
 // ---- 3. RFC 9218 Structured Field Serializer --------------------------------

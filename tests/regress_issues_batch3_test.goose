@@ -441,7 +441,10 @@ fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
         // Qualified private followed by unqualified private
         wing::append_header(resp_map, "Cache-Control", "private=\"X-Custom\", private");
 
-        let resp_cc = wing::parse_cache_control_headers(resp_map, false, false);
+        let resp_cc = wing::parse_cache_control_headers(
+            resp_map,
+            wing::CacheControlParseOptions { is_request: false, ignore_cargo_cult: false },
+        );
         sub.assert_true(resp_cc.is_private(), "Response has private flag");
         sub.assert_true(resp_cc.private_overflow || resp_cc.private_fields.len == 0, "Unqualified private must flag full privacy");
     };
@@ -450,7 +453,10 @@ fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
         var resp_map = wing::HeaderMap { .. };
         wing::append_header(resp_map, "Cache-Control", "private=\"\"");
 
-        let resp_cc = wing::parse_cache_control_headers(resp_map, false, false);
+        let resp_cc = wing::parse_cache_control_headers(
+            resp_map,
+            wing::CacheControlParseOptions { is_request: false, ignore_cargo_cult: false },
+        );
         sub.assert_true(resp_cc.is_private(), "private=\"\" sets private flag");
         sub.assert_true(resp_cc.private_overflow || resp_cc.private_fields.len == 0, "Empty private=\"\" must flag full privacy");
     };

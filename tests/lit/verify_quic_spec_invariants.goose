@@ -163,7 +163,7 @@ fn test_frame_encoders() {
 
     var out_ncid: u8[>..] = [];
     let reset_tok: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-    let cid: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+    let cid:       u8[4]  = [0xAA, 0xBB, 0xCC, 0xDD];
     assert(internal::encode_new_conn_id_frame(out_ncid, 1, 0, cid[..], reset_tok));
     let f_ncid, _, ok_ncid = internal::decode_quic_frame(out_ncid[..], 0);
     assert(ok_ncid);

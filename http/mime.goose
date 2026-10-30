@@ -32,21 +32,22 @@ fn strict_unquote<B>(input: const u8[:], out: B&, max_out_len: i64 = 65536) -> b
     while i < end_idx {
         let b = input[i];
         if b == '\\' {
-            guard i + 1 < end_idx else { return false; }
+            guard i + 1 < end_idx else { out.clear(); return false; }
             let next_b = input[i + 1];
             // Quoted-pair allows visible ASCII and space
-            guard (next_b >= 0x20 && next_b <= 0x7E) || next_b == '\t' else { return false; }
-            guard out.len < max_out_len else { return false; }
+            guard (next_b >= 0x20 && next_b <= 0x7E) || next_b == '\t' else { out.clear(); return false; }
+            guard out.len < max_out_len else { out.clear(); return false; }
             out.push(next_b);
             i += 2;
         } else {
             // Rejects CTLs except HTAB
             if b < 0x20 {
-                guard b == '\t' else { return false; }
+                guard b == '\t' else { out.clear(); return false; }
             } else if b == 0x7F {
+                out.clear();
                 return false;
             }
-            guard out.len < max_out_len else { return false; }
+            guard out.len < max_out_len else { out.clear(); return false; }
             out.push(b);
             i++;
         }
@@ -63,21 +64,45 @@ fn unquote<B>(input: const u8[:], out: B&) -> bool {
     return strict_unquote(input, out);
 }
 
+fn count_preceding_slashes(s: const u8[:], idx: i64) -> i64 {
+    var slash_count: i64 = 0;
+    var j = idx - 1;
+    while j >= 0 && s[j] == '\\' {
+        slash_count++;
+        j--;
+    }
+    return slash_count;
+}
+
+fn has_param_name(params: const MediaTypeParam[..16]&, name: const u8[:]) -> bool {
+    for &p in params {
+        if p.name[..] == name {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---- media type parsing ----------------------------------------------------
 
 struct MediaTypeParam {
-    name: u8[..64] = [],
+    name:  u8[..64]  = [],
     value: u8[..256] = [],
 }
 
 struct MediaType {
-    mime_type: u8[..64] = [],
-    type_name: u8[..32] = [],
-    subtype: u8[..32] = [],
-    params: MediaTypeParam[..16] = [],
-    valid: bool = false,
+    mime_type: u8[..64]             = [],
+    type_name: u8[..32]             = [],
+    subtype:   u8[..32]             = [],
+    params:    MediaTypeParam[..16] = [],
+    valid:     bool                 = false,
 }
 
+// Parses a single MIME media parameter (RFC 9110 Section 8.3).
+//
+// Example:
+//   p_trim = "charset=\"utf-8\"", p_item = MediaTypeParam { .. }
+//   returns: true, p_item.name = "charset", p_item.value = "utf-8"
 fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> bool {
     let p_name_raw, p_val_raw, ok = p_trim.split_once_byte('=');
     guard ok && p_name_raw.len > 0 else { return false; }
@@ -100,6 +125,11 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
     return true;
 }
 
+// Parses semicolon-separated MIME parameters (RFC 9110 Section 8.3).
+//
+// Example:
+//   rem_in = "; charset=utf-8; boundary=something", mt = MediaType { .. }
+//   returns: true, populates mt.params
 fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
     var rem = rem_in;
     while rem.len > 0 {
@@ -107,16 +137,8 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
         var in_quotes = false;
         for i in rem.len {
             let b = rem[i];
-            if b == '"' {
-                var slash_count: i64 = 0;
-                var j = i - 1;
-                while j >= 0 && rem[j] == '\\' {
-                    slash_count++;
-                    j--;
-                }
-                if (slash_count % 2) == 0 {
-                    in_quotes = !in_quotes;
-                }
+            if b == '"' && (count_preceding_slashes(rem, i) % 2) == 0 {
+                in_quotes = !in_quotes;
             } else if b == ';' && !in_quotes {
                 next_semi = i;
                 break;
@@ -138,12 +160,8 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
         }
 
         // RFC 2046 / Go #82343: Duplicate boundary parameter MUST be rejected
-        if p_item.name[..] == "boundary" {
-            for &existing in mt.params {
-                if existing.name[..] == "boundary" {
-                    return false;
-                }
-            }
+        if p_item.name[..] == "boundary" && has_param_name(mt.params, "boundary") {
+            return false;
         }
 
         guard mt.params.len < mt.params.cap else { return false; }
@@ -152,6 +170,11 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
     return true;
 }
 
+// Parses a Content-Type or media type header value (RFC 9110 Section 8.3).
+//
+// Example:
+//   raw = "text/html; charset=utf-8"
+//   returns: MediaType { type_name: "text", subtype: "html", valid: true, .. }, true
 fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     var mt = MediaType { .. };
     let trimmed = trim_lws(raw);
@@ -184,6 +207,10 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
 
 // RFC 6266 / RFC 7578: Content-Disposition parser
 // disposition = disposition-type *( ";" disposition-parm )
+//
+// Example:
+//   raw = "form-data; name=\"upload\"; filename=\"file.txt\""
+//   returns: MediaType { type_name: "form-data", valid: true, .. }, true
 fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
     var mt = MediaType { .. };
     let trimmed = trim_lws(raw);
@@ -251,42 +278,42 @@ enum SfvType {
 }
 
 struct SfvBareItem {
-    kind: SfvType = SfvType.Boolean,
-    int_val: i64 = 0,               // For Integer, Date, and Decimal (scaled * 1000 in milliths)
-    bool_val: bool = false,         // For Boolean
-    text: u8[..1088] = [],          // For String, Token, ByteSequence, DisplayString (>= 1024 bytes per RFC 8941)
+    kind:     SfvType    = SfvType.Boolean,
+    int_val:  i64        = 0,       // For Integer, Date, and Decimal (scaled * 1000 in milliths)
+    bool_val: bool       = false,   // For Boolean
+    text:     u8[..1088] = [],      // For String, Token, ByteSequence, DisplayString (>= 1024 bytes per RFC 8941)
 }
 
 struct SfvParam {
-    key: u8[..64] = [],
+    key:   u8[..64]    = [],
     value: SfvBareItem = SfvBareItem { .. },
 }
 
 struct SfvItem {
-    bare: SfvBareItem = SfvBareItem { .. },
+    bare:   SfvBareItem    = SfvBareItem { .. },
     params: SfvParam[..16] = [],
 }
 
 struct SfvMember {
-    is_inner_list: bool = false,
-    item: SfvItem = SfvItem { .. },
-    inner_list: SfvItem[..32] = [],
-    inner_params: SfvParam[..16] = [],
+    is_inner_list: bool           = false,
+    item:          SfvItem        = SfvItem { .. },
+    inner_list:    SfvItem[..32]  = [],
+    inner_params:  SfvParam[..16] = [],
 }
 
 struct SfvList {
     members: SfvMember[..64] = [],
-    valid: bool = true,
+    valid:   bool            = true,
 }
 
 struct SfvDictEntry {
-    key: u8[..64] = [],
+    key:    u8[..64]  = [],
     member: SfvMember = SfvMember { .. },
 }
 
 struct SfvDict {
     entries: SfvDictEntry[..64] = [],
-    valid: bool = true,
+    valid:   bool               = true,
 }
 
 // Helper: skips optional ASCII whitespace SP and HTAB
@@ -300,6 +327,11 @@ fn is_sfv_key_char(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.' || b == '*';
 }
 
+// Scans the length of an RFC 8941 SFV key token.
+//
+// Example:
+//   rem = "foo-bar_1; baz"
+//   returns: 9, true
 fn scan_sfv_key_len(rem: const u8[:]) -> i64, bool {
     var k_len: i64 = 1;
     while k_len < rem.len {
@@ -317,6 +349,10 @@ fn scan_sfv_key_len(rem: const u8[:]) -> i64, bool {
 
 // RFC 8941 Section 3.1.2: Dictionary key parser
 // key = ( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )
+//
+// Example:
+//   raw = "key_name=123", cursor = 0, out_key = []
+//   returns: true, cursor = 8, out_key = "key_name"
 fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     guard cursor < raw.len else { return false; }
     let rem = raw[cursor..];
@@ -333,14 +369,26 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     return true;
 }
 
-fn parse_sfv_decimal_tail(raw: const u8[:], cursor: i64&, num_val: i64, int_digit_count: i64, is_neg: bool, out_bare: SfvBareItem&) -> bool {
+// Parses fractional digits of an SFV decimal number.
+//
+// Example:
+//   raw = "12.345", cursor = 2, num_val = 12, int_digit_count = 2, is_neg = false
+//   returns: true, cursor = 6, out_bare.kind = SfvType.Decimal, out_bare.int_val = 12345
+fn parse_sfv_decimal_tail(
+    raw:             const u8[:],
+    cursor:          i64&,
+    num_val:         i64,
+    int_digit_count: i64,
+    is_neg:          bool,
+    out_bare:        SfvBareItem&,
+) -> bool {
     // sf-decimal: up to 12 int digits, 1..3 frac digits (RFC 8941 Section 3.3.2)
     guard int_digit_count >= 1 && int_digit_count <= 12 else { return false; }
     cursor++; // skip '.'
     guard cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' else { return false; }
 
     var frac_digits: i64 = 0;
-    var frac_val: i64 = 0;
+    var frac_val:    i64 = 0;
     while cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' {
         frac_digits++;
         guard frac_digits <= 3 else { return false; }
@@ -360,6 +408,10 @@ fn parse_sfv_decimal_tail(raw: const u8[:], cursor: i64&, num_val: i64, int_digi
 }
 
 // RFC 8941 Section 3.3.1: sf-integer & Section 3.3.2: sf-decimal
+//
+// Example:
+//   raw = "-42; param", cursor = 0
+//   returns: true, cursor = 3, out_bare.kind = SfvType.Integer, out_bare.int_val = -42
 fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
     var is_neg = false;
@@ -370,7 +422,7 @@ fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBar
         guard cursor < raw.len else { return false; }
     }
 
-    var num_val: i64 = 0;
+    var num_val:         i64 = 0;
     var int_digit_count: i64 = 0;
     guard cursor < raw.len && raw[cursor] >= '0' && raw[cursor] <= '9' else { return false; }
 
@@ -397,6 +449,10 @@ fn parse_sfv_integer_or_decimal(raw: const u8[:], cursor: i64&, out_bare: SfvBar
 
 // RFC 8941 Section 3.3.3: sf-string
 // DQUOTE *chr DQUOTE, printable ASCII %x20-7E, escaped only as \" or \\
+//
+// Example:
+//   raw = "\"hello world\"", cursor = 0
+//   returns: true, cursor = 13, out_bare.kind = SfvType.String, out_bare.text = "hello world"
 fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len && raw[cursor] == '"' else { return false; }
     cursor++; // skip initial '"'
@@ -429,6 +485,10 @@ fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
 
 // RFC 8941 Section 3.3.4: sf-token
 // ( ALPHA / "*" ) *( tchar / ":" / "/" )
+//
+// Example:
+//   raw = "application/json; q=1", cursor = 0
+//   returns: true, cursor = 16, out_bare.kind = SfvType.Token, out_bare.text = "application/json"
 fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
     let first = raw[cursor];
@@ -454,6 +514,10 @@ fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bo
 
 // RFC 8941 Section 3.3.5: sf-binary
 // ":" *(base64) ":"
+//
+// Example:
+//   raw = ":aGVsbG8=:", cursor = 0
+//   returns: true, cursor = 10, out_bare.kind = SfvType.ByteSequence, out_bare.text = "hello"
 fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len && raw[cursor] == ':' else { return false; }
     cursor++; // skip initial ':'
@@ -464,9 +528,9 @@ fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
     var b64_bytes: u8[..1088] = [];
     while cursor < raw.len && raw[cursor] != ':' {
         let b = raw[cursor];
-        guard (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '+' || b == '/' || b == '=' else {
-            return false;
-        }
+        let is_b64 = (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+            (b >= '0' && b <= '9') || b == '+' || b == '/' || b == '=';
+        guard is_b64 else { return false; }
         guard b64_bytes.len < b64_bytes.cap else { return false; }
         b64_bytes.push(b);
         cursor++;
@@ -488,6 +552,11 @@ fn b64_val(c: u8) -> i32 {
     return -1;
 }
 
+// Decodes a base64 encoded byte slice into output buffer.
+//
+// Example:
+//   src = "aGVsbG8=", out = []
+//   returns: true, out = "hello"
 fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
     guard (src.len % 4) == 0 else { return false; }
     var i: i64 = 0;
@@ -499,26 +568,26 @@ fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
 
         let v0 = b64_val(c0);
         let v1 = b64_val(c1);
-        guard v0 >= 0 && v1 >= 0 else { return false; }
+        guard v0 >= 0 && v1 >= 0 else { out.clear(); return false; }
 
         if c2 == '=' {
-            guard c3 == '=' && i + 4 == src.len else { return false; }
-            guard (v1 & 0x0F) == 0 else { return false; } // non-zero pad bits
-            guard out.len < out.cap else { return false; }
+            guard c3 == '=' && i + 4 == src.len else { out.clear(); return false; }
+            guard (v1 & 0x0F) == 0 else { out.clear(); return false; } // non-zero pad bits
+            guard out.len < out.cap else { out.clear(); return false; }
             out.push(((v0 << 2) | (v1 >> 4)) as u8);
         } else if c3 == '=' {
-            guard i + 4 == src.len else { return false; }
+            guard i + 4 == src.len else { out.clear(); return false; }
             let v2 = b64_val(c2);
-            guard v2 >= 0 else { return false; }
-            guard (v2 & 0x03) == 0 else { return false; } // non-zero pad bits
-            guard out.len + 2 <= out.cap else { return false; }
+            guard v2 >= 0 else { out.clear(); return false; }
+            guard (v2 & 0x03) == 0 else { out.clear(); return false; } // non-zero pad bits
+            guard out.len + 2 <= out.cap else { out.clear(); return false; }
             out.push(((v0 << 2) | (v1 >> 4)) as u8);
             out.push(((v1 << 4) | (v2 >> 2)) as u8);
         } else {
             let v2 = b64_val(c2);
             let v3 = b64_val(c3);
-            guard v2 >= 0 && v3 >= 0 else { return false; }
-            guard out.len + 3 <= out.cap else { return false; }
+            guard v2 >= 0 && v3 >= 0 else { out.clear(); return false; }
+            guard out.len + 3 <= out.cap else { out.clear(); return false; }
             out.push(((v0 << 2) | (v1 >> 4)) as u8);
             out.push(((v1 << 4) | (v2 >> 2)) as u8);
             out.push(((v2 << 6) | v3) as u8);
@@ -529,6 +598,10 @@ fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
 }
 
 // RFC 8941 Section 3.3.6: sf-boolean ("?0" or "?1")
+//
+// Example:
+//   raw = "?1; foo", cursor = 0
+//   returns: true, cursor = 2, out_bare.kind = SfvType.Boolean, out_bare.bool_val = true
 fn parse_sfv_boolean(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor + 1 < raw.len && raw[cursor] == '?' else { return false; }
     let b = raw[cursor + 1];
@@ -540,6 +613,10 @@ fn parse_sfv_boolean(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> 
 }
 
 // RFC 9651 Section 3.3.7: sf-date ("@" sf-integer)
+//
+// Example:
+//   raw = "@1659578233", cursor = 0
+//   returns: true, cursor = 11, out_bare.kind = SfvType.Date, out_bare.int_val = 1659578233
 fn parse_sfv_date(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len && raw[cursor] == '@' else { return false; }
     cursor++; // skip '@'
@@ -558,6 +635,10 @@ inline fn lower_hex_val(b: u8) -> i32 {
 }
 
 // RFC 9651 Section 3.3.8: sf-displaystring (%" DQUOTE *(unescaped / pct-encoded) DQUOTE)
+//
+// Example:
+//   raw = "%\"hello\"", cursor = 0
+//   returns: true, cursor = 8, out_bare.kind = SfvType.DisplayString, out_bare.text = "hello"
 fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor + 1 < raw.len && raw[cursor] == '%' && raw[cursor + 1] == '"' else { return false; }
     cursor += 2; // skip %"
@@ -630,6 +711,10 @@ fn validate_utf8(data: const u8[:]) -> bool {
 }
 
 // RFC 8941 Section 3.3: Bare item dispatcher
+//
+// Example:
+//   raw = "123; param", cursor = 0
+//   returns: true, out_bare.kind = SfvType.Integer, out_bare.int_val = 123
 fn parse_sfv_bare_item(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
     let b = raw[cursor];
@@ -659,6 +744,10 @@ fn parse_sfv_bare_item(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -
 }
 
 // RFC 8941 Section 3.1.2: Parameters parser (*( ";" *SP key [ "=" bare-item ] ))
+//
+// Example:
+//   raw = "; q=0.5; v=?1", cursor = 0, out_params = []
+//   returns: true, cursor advances past parameters
 fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..16]&) -> bool {
     while cursor < raw.len && raw[cursor] == ';' {
         cursor++; // skip ';'
@@ -692,6 +781,10 @@ fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..1
 }
 
 // RFC 8941 Section 3.3: Item parser
+//
+// Example:
+//   raw = "123; q=1", out = SfvItem { .. }
+//   returns: true, out.bare.int_val = 123
 fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
     var cursor: i64 = 0;
     sfv_skip_ows(raw, cursor);
@@ -712,6 +805,11 @@ fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
     return true;
 }
 
+// RFC 8941 Section 3.1.1: Inner list parser
+//
+// Example:
+//   raw = "(1 2 3); q=0.5", cursor = 0, member = SfvMember { .. }
+//   returns: true, cursor advances past inner list
 fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
     member.is_inner_list = true;
     cursor++; // skip '('
@@ -731,6 +829,11 @@ fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> b
     return parse_sfv_parameters(raw, cursor, member.inner_params);
 }
 
+// Parses a single member item within an SFV list or dict.
+//
+// Example:
+//   raw = "token; q=1", cursor = 0, member = SfvMember { .. }
+//   returns: true, cursor advances past member
 fn parse_sfv_member_item(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
     member.is_inner_list = false;
     guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
@@ -752,6 +855,10 @@ fn sfv_advance_comma(raw: const u8[:], cursor: i64&, has_more: bool&) -> bool {
 }
 
 // RFC 8941 Section 3.1: List parser (supports items and inner lists)
+//
+// Example:
+//   raw = "a, b, (c d)", out = SfvList { .. }
+//   returns: true, out.members has parsed elements
 fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
     out.members.clear();
     out.valid = false;
@@ -784,6 +891,10 @@ fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
 }
 
 // RFC 8941 Section 3.2: Dictionary parser
+//
+// Example:
+//   raw = "en=\"English\", de=\"German\"", out = SfvDict { .. }
+//   returns: true, out.entries has dictionary entries
 fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
     out.entries.clear();
     out.valid = false;

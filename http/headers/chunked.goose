@@ -70,6 +70,12 @@ fn skip_bws(s: const u8[:], cursor: i64&) {
     }
 }
 
+// Parses a quoted string value in a chunk extension.
+// Advances cursor past the closing quote.
+//
+// Example:
+//   s = "\";foo=\\\"bar\\\"\"", cursor = 5
+//   returns: true, cursor advances past quote
 fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
     cursor++; // skip opening quote
     while cursor < s.len {
@@ -90,6 +96,12 @@ fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
     return false;
 }
 
+// Parses a token name in a chunk extension.
+// Advances cursor past the name.
+//
+// Example:
+//   s = "ext_name=val", cursor = 0
+//   returns: true, cursor = 8
 fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
     let name_start = cursor;
     while cursor < s.len && is_tchar(s[cursor]) {
@@ -98,6 +110,11 @@ fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
     return cursor > name_start;
 }
 
+// Parses a parameter value (token or quoted string) in a chunk extension.
+//
+// Example:
+//   s = "token; next", cursor = 0
+//   returns: ChunkedDecodeError.None
 fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     guard cursor < s.len else { return ChunkedDecodeError.InvalidChunkExtension; }
     if s[cursor] == '"' {
@@ -116,6 +133,11 @@ fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> ChunkedDecodeError
     return ChunkedDecodeError.None;
 }
 
+// Parses a single chunk extension parameter: ;name[=val]
+//
+// Example:
+//   s = ";name=val", cursor = 0
+//   returns: ChunkedDecodeError.None, cursor = 9
 fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     guard cursor < s.len && s[cursor] == ';' else {
         return ChunkedDecodeError.InvalidChunkExtension;
@@ -138,6 +160,11 @@ fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     return ChunkedDecodeError.None;
 }
 
+// Parses all chunk extensions following the chunk size hex.
+//
+// Example:
+//   s = ";ext1;ext2=val", cursor = 0
+//   returns: ChunkedDecodeError.None
 fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     skip_bws(s, cursor);
     guard cursor < s.len && s[cursor] == ';' else {
@@ -150,7 +177,17 @@ fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     return ChunkedDecodeError.None;
 }
 
-fn parse_hex_chunk_value(chunk_size_line: const u8[:], sig_start: i64, hex_len: i64, out_size: u64&) -> ChunkedDecodeError {
+// Parses hex digits into an integer chunk size.
+//
+// Example:
+//   chunk_size_line = "1a;ext", sig_start = 0, hex_len = 2
+//   returns: ChunkedDecodeError.None, out_size = 26
+fn parse_hex_chunk_value(
+    chunk_size_line: const u8[:],
+    sig_start:       i64,
+    hex_len:         i64,
+    out_size:        u64&,
+) -> ChunkedDecodeError {
     var chunk_size: u64 = 0;
     for b in chunk_size_line[sig_start..hex_len] {
         let val = core::hex_digit_to_val(b);
@@ -188,6 +225,11 @@ fn is_hex_char(b: u8) -> bool {
     return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F');
 }
 
+// Scans contiguous hex digits from cursor.
+//
+// Example:
+//   s = "1a2b;ext", cursor = 0
+//   returns: 4, cursor = 4
 fn scan_hex_digits(s: const u8[:], cursor: i64&) -> i64 {
     while cursor < s.len && is_hex_char(s[cursor]) {
         cursor++;
@@ -203,6 +245,11 @@ fn find_significant_hex_start(s: const u8[:], hex_len: i64) -> i64 {
     return sig_start;
 }
 
+// Parses hex chunk size line, validating extensions and bounds.
+//
+// Example:
+//   chunk_size_line = "1a;ext=1"
+//   returns: ChunkedDecodeError.None, out_size = 26
 fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError {
     let char_err = validate_chunk_size_line_chars(chunk_size_line);
     guard char_err == ChunkedDecodeError.None else { return char_err; }
@@ -231,6 +278,11 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
     return ChunkedDecodeError.None;
 }
 
+// Parses a single trailer field line into out_trailers.
+//
+// Example:
+//   tr_line = "ETag: \"xyzzy\""
+//   returns: ChunkedDecodeError.None, trailer appended
 fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..16]&) -> ChunkedDecodeError {
     let col_idx = core::index_of_byte(tr_line, ':');
     guard col_idx > 0 else {
@@ -258,9 +310,17 @@ fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..1
     return ChunkedDecodeError.None;
 }
 
-// RFC 9112 Section 7.1.2: Parse chunked trailers and populate out_trailers list
-fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers: HeaderItem[..16]&) -> ChunkedDecodeError {
-    var trailer_count: i32 = 0;
+// RFC 9112 Section 7.1.2: Parse chunked trailers and populate out_trailers list.
+//
+// Example:
+//   raw = "ETag: 123\r\n\r\n", cursor = 0
+//   returns: ChunkedDecodeError.None, out_trailers populated
+fn parse_chunked_trailers_with_out(
+    raw:          const u8[:],
+    cursor:       i64&,
+    out_trailers: HeaderItem[..16]&,
+) -> ChunkedDecodeError {
+    var trailer_count:       i32 = 0;
     var total_trailer_bytes: i64 = 0;
 
     while cursor < raw.len {
@@ -292,6 +352,11 @@ fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers:
     return ChunkedDecodeError.UnexpectedEof;
 }
 
+// Parses chunked trailers discarding output fields.
+//
+// Example:
+//   raw = "\r\n", cursor = 0
+//   returns: ChunkedDecodeError.None, cursor = 2
 fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     var dummy: HeaderItem[..16] = [];
     return parse_chunked_trailers_with_out(raw, cursor, dummy);
@@ -346,9 +411,13 @@ fn read_chunk_size_line(raw: const u8[:], cursor: i64&, out_size: u64&) -> Chunk
 
 // Decodes a chunked transfer-encoded payload into out_body and extracts trailers (RFC 9112 Section 7.1).
 // Returns (status_error, total_bytes_consumed_from_raw).
+//
+// Example:
+//   raw = "4\r\nWiki\r\n0\r\n\r\n"
+//   returns: ChunkedDecodeError.None, consumed = 14, out_body = "Wiki"
 fn decode_chunked_body_with_trailers(
-    raw: const u8[:],
-    out_body: u8[>..]&,
+    raw:          const u8[:],
+    out_body:     u8[>..]&,
     out_trailers: HeaderItem[..16]&,
 ) -> ChunkedDecodeError, i64 {
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput, 0; }
@@ -376,6 +445,10 @@ fn decode_chunked_body_with_trailers(
 
 // Decodes a chunked transfer-encoded payload into out_body (RFC 9112 Section 7.1).
 // Chunk size lines and data chunks must end with CRLF; bare LF returns an error.
+//
+// Example:
+//   raw = "4\r\nWiki\r\n0\r\n\r\n"
+//   returns: ChunkedDecodeError.None, out_body = "Wiki"
 fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
     var dummy: HeaderItem[..16] = [];
     let err, _ = decode_chunked_body_with_trailers(raw, out_body, dummy);

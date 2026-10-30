@@ -65,9 +65,9 @@ fn test_h3_settings_conformance(t: core::T&) {
     t.run("H3-03: SETTINGS Frame Encoding & Parsing") { sub =>
         var set_out = wing::H3Settings {
             qpack_max_table_capacity: 4096,
-            max_field_section_size: 32768,
-            qpack_blocked_streams: 16,
-            enable_connect_protocol: 1,
+            max_field_section_size:   32768,
+            qpack_blocked_streams:    16,
+            enable_connect_protocol:  1,
         };
 
         var frame_buf: u8[..128] = [];
@@ -126,15 +126,15 @@ fn test_h3_unidirectional_streams(t: core::T&) {
     t.run("H3-06: Client Preambles for Control and QPACK Streams") { sub =>
         let settings = wing::H3Settings {
             qpack_max_table_capacity: 4096,
-            max_field_section_size: 65536,
-            qpack_blocked_streams: 16,
-            enable_connect_protocol: 1,
+            max_field_section_size:   65536,
+            qpack_blocked_streams:    16,
+            enable_connect_protocol:  1,
         };
         var conn = internal::new_h3_client_connection(settings);
 
         var ctrl_buf: u8[..128] = [];
-        var qenc_buf: u8[..16] = [];
-        var qdec_buf: u8[..16] = [];
+        var qenc_buf: u8[..16]  = [];
+        var qdec_buf: u8[..16]  = [];
 
         sub.assert_true(
             internal::encode_client_preambles(conn, ctrl_buf, qenc_buf, qdec_buf),
@@ -377,8 +377,8 @@ fn test_qpack_table_and_codec(t: core::T&) {
         sub.assert_eq(tbl.insert_count, 1, "insert count incremented to 1");
 
         // Lookup absolute
-        var name_buf: u8[..256] = [];
-        var val_buf: u8[..4096] = [];
+        var name_buf: u8[..256]  = [];
+        var val_buf:  u8[..4096] = [];
         let ok_lookup = internal::qpack_lookup_absolute(tbl, 0, name_buf, val_buf);
         sub.assert_true(ok_lookup, "lookup absolute 0");
         sub.assert_eq(name_buf[..], "custom-key", "key matches");
@@ -885,8 +885,8 @@ fn test_round2_qpackstrike_suite(t: core::T&) {
         // Test C: decode_qpack_section with ric > tbl.insert_count triggers BlockedStreamsExhausted
         var tbl_c = internal::new_qpack_table(4096, 0); // max_blocked = 0
         // Header block requesting RIC = 1 (encoded as enc_ric = 2) when insert_count = 0
-        var qpack_block: u8[..32] = [0x02, 0x00, 0xD1];
-        var out_fields: internal::HeaderField[>..] = [];
+        var qpack_block: u8[..32]                   = [0x02, 0x00, 0xD1];
+        var out_fields:  internal::HeaderField[>..] = [];
         let dec_err = internal::decode_qpack_section(tbl_c, qpack_block[..], out_fields);
         sub.assert_eq(dec_err, internal::QpackError.BlockedStreamsExhausted, "ric > insert_count with max_blocked 0 returns BlockedStreamsExhausted");
     };
@@ -962,14 +962,14 @@ fn test_round2_qpackstrike_suite(t: core::T&) {
 fn test_round3_qpackstrike_suite(t: core::T&) {
     t.run("QPACK-R3-01: Huffman Padding Bounds and All-1s Validation (RFC 9204 §4.1.2, RFC 7541 §5.2)") { sub =>
         // Test A: Non-empty input with only padding (0xFF) MUST fail (8 bits of padding > 7 bits)
-        var bad_huff1: u8[..4] = [0xFF];
-        var out1: u8[..64] = [];
+        var bad_huff1: u8[..4]  = [0xFF];
+        var out1:      u8[..64] = [];
         let ok1 = internal::huff_decode_bytes(bad_huff1[..], out1);
         sub.assert_false(ok1, "Huffman string of pure 0xFF (8 bits padding) MUST fail per RFC 9204 §4.1.2");
 
         // Test B: 16 bits of pure padding (0xFF, 0xFF) MUST fail
-        var bad_huff2: u8[..4] = [0xFF, 0xFF];
-        var out2: u8[..64] = [];
+        var bad_huff2: u8[..4]  = [0xFF, 0xFF];
+        var out2:      u8[..64] = [];
         let ok2 = internal::huff_decode_bytes(bad_huff2[..], out2);
         sub.assert_false(ok2, "Huffman string of 0xFFFF (16 bits padding) MUST fail");
 
@@ -1037,16 +1037,16 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
 
         // Test A: Server receiving PUSH_PROMISE frame on request stream MUST fail with H3_FRAME_UNEXPECTED
         var srv_conn = internal::H3Connection {
-            role: internal::H3ConnRole.Server,
+            role:  internal::H3ConnRole.Server,
             state: internal::H3ConnState.Active,
             ..
         };
         // Add open request stream 0
         srv_conn.streams.push(internal::H3StreamEntry {
             stream_id: 0,
-            kind: internal::H3StreamKind.Request,
-            state: internal::H3StreamState.Open,
-            is_bidi: true,
+            kind:      internal::H3StreamKind.Request,
+            state:     internal::H3StreamState.Open,
+            is_bidi:   true,
             ..
         });
 
@@ -1092,7 +1092,7 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
 
         // Test F: MAX_PUSH_ID monotonicity violation (decreasing max_push_id) returns H3_ERR_ID_ERROR
         var srv_ctrl_conn = internal::H3Connection {
-            role: internal::H3ConnRole.Server,
+            role:  internal::H3ConnRole.Server,
             state: internal::H3ConnState.Active,
             ..
         };
@@ -1126,8 +1126,8 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
         internal::qpack_insert_literal(tbl_ric, "x-header", "v1"); // abs_idx 0
         // Encoded block with only static table field (:status 200, 0xD9), but declaring RIC=1 (encoded as 2)
         // Since no dynamic entries were referenced, min_ric == 0, so RIC=1 MUST fail
-        var sec_bad_ric: u8[..16] = [0x02, 0x00, 0xD9];
-        var out_f: internal::HeaderField[>..] = [];
+        var sec_bad_ric: u8[..16]                   = [0x02, 0x00, 0xD9];
+        var out_f:       internal::HeaderField[>..] = [];
         let err_bad_ric = internal::decode_qpack_section(tbl_ric, sec_bad_ric[..], out_f);
         sub.assert_eq(err_bad_ric, internal::QpackError.DecompressionFailed, "RIC > min_ric MUST fail decompression");
 
@@ -1186,7 +1186,7 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
         var cli_with_meth = internal::new_h3_client_connection(settings);
         let sid_wm, _ = cli_with_meth.open_request_stream();
         var with_meth_wire: u8[..64] = [];
-        var qpack_wm: u8[..64] = [0x00, 0x00, 0xD9]; // :status 200
+        var qpack_wm:       u8[..64] = [0x00, 0x00, 0xD9]; // :status 200
         internal::encode_qpack_field(qpack_wm, ":method", "GET", true);
         internal::encode_h3_headers_frame(with_meth_wire, qpack_wm[..]);
         let err_with_meth = cli_with_meth.handle_stream_data(sid_wm, true, with_meth_wire[..], false);

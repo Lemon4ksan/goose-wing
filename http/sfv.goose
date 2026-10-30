@@ -23,29 +23,29 @@ enum SfType {
 }
 
 struct SfItem {
-    kind: SfType = SfType.Token,
-    int_val: i64 = 0,
-    dec_val: f64 = 0.0,
-    str_val: const u8[:] = "",
-    bool_val: bool = false,
+    kind:     SfType      = SfType.Token,
+    int_val:  i64         = 0,
+    dec_val:  f64         = 0.0,
+    str_val:  const u8[:] = "",
+    bool_val: bool        = false,
 }
 
 struct SfParameter {
-    key: const u8[:] = "",
-    item: SfItem = SfItem { .. },
+    key:  const u8[:] = "",
+    item: SfItem      = SfItem { .. },
 }
 
 struct SfParameterizedItem {
-    item: SfItem = SfItem { .. },
+    item:   SfItem           = SfItem { .. },
     params: SfParameter[..8] = [],
 }
 
 struct SfDictEntry {
-    key: const u8[:] = "",
-    is_inner_list: bool = false,
-    item: SfItem = SfItem { .. },
-    params: SfParameter[..8] = [],
-    inner_items: SfItem[..8] = [],
+    key:           const u8[:]      = "",
+    is_inner_list: bool             = false,
+    item:          SfItem           = SfItem { .. },
+    params:        SfParameter[..8] = [],
+    inner_items:   SfItem[..8]      = [],
 }
 
 // ---- 2. Safe Arithmetic & Index Helpers -------------------------------------
@@ -175,7 +175,7 @@ fn sf_parse_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
         return false;
     }
     let start = sf_next(pos);
-    var p = start;
+    var p = sf_next(pos);
     while p < src.len {
         let ch = src[p];
         if ch == '\\' {
@@ -204,7 +204,7 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
         return false;
     }
     let start = sf_next(pos);
-    var p = start;
+    var p = sf_next(pos);
     while p < src.len {
         let ch = src[p];
         if ch == ':' {
@@ -244,7 +244,14 @@ fn sf_parse_token(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&)
 }
 
 // Scans an integer digit sequence into an accumulator
-fn sf_scan_digits(src: const u8[:], pos: i64, max_digits: i32, out_accum: i64&, out_count: i32&, out_next: i64&) -> bool {
+fn sf_scan_digits(
+    src:        const u8[:],
+    pos:        i64,
+    max_digits: i32,
+    out_accum:  i64&,
+    out_count:  i32&,
+    out_next:   i64&,
+) -> bool {
     var p = pos;
     var accum: i64 = 0;
     var count: i32 = 0;
@@ -264,10 +271,17 @@ fn sf_scan_digits(src: const u8[:], pos: i64, max_digits: i32, out_accum: i64&, 
 }
 
 // Parses fractional component of decimal
-fn sf_parse_fraction(src: const u8[:], dot_pos: i64, int_accum: i64, is_neg: bool, out_item: SfItem&, out_next: i64&) -> bool {
+fn sf_parse_fraction(
+    src:       const u8[:],
+    dot_pos:   i64,
+    int_accum: i64,
+    is_neg:    bool,
+    out_item:  SfItem&,
+    out_next:  i64&,
+) -> bool {
     var frac_accum: i64 = 0;
     var frac_count: i32 = 0;
-    var frac_end: i64 = 0;
+    var frac_end:   i64 = 0;
     let next_p = sf_next(dot_pos);
     let ok = sf_scan_digits(src, next_p, 3, frac_accum, frac_count, frac_end);
     if !ok {
@@ -304,9 +318,9 @@ fn sf_parse_number(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
         }
     }
 
-    var int_accum: i64 = 0;
+    var int_accum:  i64 = 0;
     var int_digits: i32 = 0;
-    var int_end: i64 = 0;
+    var int_end:    i64 = 0;
     if !sf_scan_digits(src, p, 15, int_accum, int_digits, int_end) {
         return false;
     }
@@ -390,6 +404,10 @@ fn sf_parse_bare_item(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i
 }
 
 // Parses an RFC 8941 Key: lcalpha, digit, _, -, ., *
+//
+// Example:
+//   src = "foo_bar=1", pos = 0
+//   returns: "foo_bar", next_pos = 7, ok = true
 fn sf_parse_key(src: const u8[:], pos: i64) -> const u8[:], i64, bool {
     if pos >= src.len {
         return "", pos, false;
@@ -435,7 +453,7 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
 
         if out_params.len < 8 {
             out_params.push(SfParameter {
-                key: key,
+                key:  key,
                 item: val_item,
             });
         }
@@ -446,7 +464,11 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
 
 // ---- 6. Item, List, & Dictionary High-Level Parsers -------------------------
 
-// Parses a standalone parameterized item (RFC 8941 Section 3.3)
+// Parses a standalone parameterized item (RFC 8941 Section 3.3).
+//
+// Example:
+//   input = "123; foo=bar"
+//   returns: result with item kind Integer, value 123, ok = true
 fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
     var result = SfParameterizedItem { .. };
     let trimmed = core::trim_ascii_space(input);
@@ -547,6 +569,10 @@ fn sf_parse_single_dict_entry(src: const u8[:], pos: i64, entry: SfDictEntry&, o
 }
 
 // Parses an RFC 8941 Dictionary (Section 3.2): key=val, key2, key3=(a b);param
+//
+// Example:
+//   input = "a=1, b=2"
+//   returns: true, out_entries has 2 dictionary entries
 fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
     out_entries.clear();
     let trimmed = core::trim_ascii_space(input);
@@ -600,6 +626,10 @@ fn sf_parse_single_list_entry(src: const u8[:], pos: i64, p_item: SfParameterize
 }
 
 // Parses an RFC 8941 List (Section 3.1): item1, item2, "string", ?1
+//
+// Example:
+//   input = "1, 2, \"three\""
+//   returns: true, out_items has 3 elements
 fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> bool {
     out_items.clear();
     let trimmed = core::trim_ascii_space(input);

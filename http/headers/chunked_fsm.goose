@@ -10,18 +10,18 @@ namespace internal;
 import std;
 import core from "../..";
 
-const CHUNK_STATE_HAS_SIZE: u64 = 0x8000000000000000;
-const CHUNK_STATE_IS_CHUNKED: u64 = 0x4000000000000000;
-const CHUNK_STATE_EXTENSION_MODE: u64 = 0x2000000000000000;
-const CHUNK_STATE_TRAILER_MODE: u64 = 0x1000000000000000;
+const CHUNK_STATE_HAS_SIZE:               u64 = 0x8000000000000000;
+const CHUNK_STATE_IS_CHUNKED:             u64 = 0x4000000000000000;
+const CHUNK_STATE_EXTENSION_MODE:         u64 = 0x2000000000000000;
+const CHUNK_STATE_TRAILER_MODE:           u64 = 0x1000000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_NAME: u64 = 0x0800000000000000;
-const CHUNK_STATE_EXTENSION_QUOTED: u64 = 0x0400000000000000;
-const CHUNK_STATE_EXTENSION_EXPECTS_LF: u64 = 0x0200000000000000;
-const CHUNK_STATE_EXTENSION_IN_NAME: u64 = 0x0100000000000000;
-const CHUNK_STATE_EXTENSION_EXPECTS_VAL: u64 = 0x0020000000000000;
-const CHUNK_STATE_EXTENSION_ESCAPED: u64 = 0x0010000000000000;
-const CHUNK_STATE_SEEN_HEX: u64 = 0x0080000000000000;
-const CHUNK_STATE_SEEN_BWS: u64 = 0x0040000000000000;
+const CHUNK_STATE_EXTENSION_QUOTED:       u64 = 0x0400000000000000;
+const CHUNK_STATE_EXTENSION_EXPECTS_LF:   u64 = 0x0200000000000000;
+const CHUNK_STATE_EXTENSION_IN_NAME:      u64 = 0x0100000000000000;
+const CHUNK_STATE_EXTENSION_EXPECTS_VAL:  u64 = 0x0020000000000000;
+const CHUNK_STATE_EXTENSION_ESCAPED:      u64 = 0x0010000000000000;
+const CHUNK_STATE_SEEN_HEX:               u64 = 0x0080000000000000;
+const CHUNK_STATE_SEEN_BWS:               u64 = 0x0040000000000000;
 
 const CHUNK_STATE_EXTENSION_ALL_FLAGS: u64 =
     CHUNK_STATE_EXTENSION_MODE |
@@ -40,9 +40,9 @@ const CHUNK_STATE_EXTENSION_INCOMPLETE_FLAGS: u64 =
     CHUNK_STATE_EXTENSION_QUOTED |
     CHUNK_STATE_EXTENSION_ESCAPED;
 
-const CHUNK_STATE_SIZE_MASK: u64 = 0x0000FFFFFFFFFFFF;
+const CHUNK_STATE_SIZE_MASK:     u64 = 0x0000FFFFFFFFFFFF;
 const CHUNK_STATE_SIZE_OVERFLOW: u64 = 0x0000F00000000000;
-const CHUNK_STATE_IS_ERROR: u64 = 0xFFFFFFFFFFFFFFFF;
+const CHUNK_STATE_IS_ERROR:      u64 = 0xFFFFFFFFFFFFFFFF;
 
 enum ChunkFsmStatus {
     NeedMore,
@@ -52,8 +52,8 @@ enum ChunkFsmStatus {
 }
 
 struct ChunkFsmDecoder {
-    state: u64 = 0,
-    ext_bytes: u32 = 0,
+    state:         u64 = 0,
+    ext_bytes:     u32 = 0,
     trailer_bytes: u32 = 0,
 }
 
@@ -92,8 +92,8 @@ inline fn is_chunk_token_char(c: u8) -> bool {
 //   data = "Trailer-Key: val\r\n\r\n", offset = 0
 //   returns: Complete, offset = 20
 fn feed_chunk_trailer(
-    dec: ChunkFsmDecoder&,
-    data: const u8[:],
+    dec:    ChunkFsmDecoder&,
+    data:   const u8[:],
     offset: i64&,
 ) -> ChunkFsmStatus {
     while offset < data.len {
@@ -329,8 +329,8 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
 //   data = "1A;ext=val\r\n", offset = 0
 //   returns: NeedMore (header ready), offset = 12
 fn feed_chunk_header(
-    dec: ChunkFsmDecoder&,
-    data: const u8[:],
+    dec:    ChunkFsmDecoder&,
+    data:   const u8[:],
     offset: i64&,
 ) -> ChunkFsmStatus {
     while offset < data.len {
@@ -370,10 +370,10 @@ fn feed_chunk_header(
 //   data = "hello\r\n", offset = 0, size = 7
 //   returns: YieldChunk, chunk = "hello"
 inline fn feed_chunk_body_full(
-    dec: ChunkFsmDecoder&,
-    data: const u8[:],
+    dec:    ChunkFsmDecoder&,
+    data:   const u8[:],
     offset: i64&,
-    size: u64,
+    size:   u64,
 ) -> ChunkFsmStatus, const u8[:] {
     if size > 2 {
         let chunk_len = (size - 2) as i64;
@@ -414,10 +414,10 @@ inline fn feed_chunk_body_full(
 //   data = "hel", offset = 0, size = 7, rem_data = 3
 //   returns: YieldChunk, chunk = "hel"
 inline fn feed_chunk_body_partial(
-    dec: ChunkFsmDecoder&,
-    data: const u8[:],
-    offset: i64&,
-    size: u64,
+    dec:      ChunkFsmDecoder&,
+    data:     const u8[:],
+    offset:   i64&,
+    size:     u64,
     rem_data: i64,
 ) -> ChunkFsmStatus, const u8[:] {
     var chunk_slice: const u8[:] = data[..0];
@@ -456,8 +456,8 @@ inline fn feed_chunk_body_partial(
 //   data = "hello\r\n", offset = 0, size = 7 (5 + 2)
 //   returns: YieldChunk, chunk = "hello", offset = 7
 fn feed_chunk_body(
-    dec: ChunkFsmDecoder&,
-    data: const u8[:],
+    dec:    ChunkFsmDecoder&,
+    data:   const u8[:],
     offset: i64&,
 ) -> ChunkFsmStatus, const u8[:] {
     let size = chunk_fsm_size(dec.state);
@@ -476,7 +476,7 @@ fn feed_chunk_body(
 //   data = "5\r\nhello\r\n", dec = new_chunk_fsm_decoder()
 //   returns: YieldChunk, offset = 10, chunk = "hello"
 fn chunk_fsm_feed(
-    dec: ChunkFsmDecoder&,
+    dec:  ChunkFsmDecoder&,
     data: const u8[:],
 ) -> ChunkFsmStatus, i64, const u8[:] {
     if dec.state == CHUNK_STATE_IS_ERROR {

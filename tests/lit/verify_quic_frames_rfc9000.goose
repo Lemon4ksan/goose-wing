@@ -17,21 +17,21 @@ import wire_kit from ".";
 // ---- RFC 9000 §19.8 STREAM Frame Representation ----------------------------
 
 struct QuicStreamFrame {
-    stream_id: u64 = 0,
-    offset: u64 = 0,
-    length: u64 = 0,
-    is_fin: bool = false,
-    has_explicit_len: bool = false,
-    data: const u8[:] = "",
+    stream_id:        u64         = 0,
+    offset:           u64         = 0,
+    length:           u64         = 0,
+    is_fin:           bool        = false,
+    has_explicit_len: bool        = false,
+    data:             const u8[:] = "",
 }
 
 // Parses header fields of an RFC 9000 §19.8 STREAM frame (0x08..0x0F).
 // Returns (stream_id, stream_off, data_len, is_fin, has_len, payload_off, ok).
 // crap:trusted-bounds
 fn parse_quic_stream_header(
-    src: const u8[:],
+    src:    const u8[:],
     offset: u64,
-    limit: u64,
+    limit:  u64,
 ) -> u64, u64, u64, bool, bool, u64, bool {
     var cur = offset;
     guard cur < limit else { return 0, 0, 0, false, false, offset, false; }
@@ -100,12 +100,12 @@ fn parse_quic_stream_frame(src: const u8[:], offset: u64, packet_end: u64 = 0) -
     let data_slice = src[st_idx..en_idx];
 
     return QuicStreamFrame {
-        stream_id: sid,
-        offset: soff,
-        length: dlen,
-        is_fin: is_fin,
+        stream_id:        sid,
+        offset:           soff,
+        length:           dlen,
+        is_fin:           is_fin,
         has_explicit_len: has_len,
-        data: data_slice,
+        data:             data_slice,
     }, end_off, true;
 }
 
@@ -113,11 +113,11 @@ fn parse_quic_stream_frame(src: const u8[:], offset: u64, packet_end: u64 = 0) -
 // flags: lower 3 bits represent OFF (0x04), LEN (0x02), FIN (0x01).
 // crap:trusted-bounds
 fn encode_quic_stream_frame<B>(
-    out: B&,
-    flags: u8,
+    out:       B&,
+    flags:     u8,
     stream_id: u64,
-    offset: u64,
-    payload: const u8[:],
+    offset:    u64,
+    payload:   const u8[:],
 ) -> bool {
     let ftype: u64 = 0x08 | ((flags & 0x07) as u64);
     guard internal::quic_encode_varint(out, ftype) else { return false; }
@@ -210,7 +210,7 @@ fn test_quic_varint_pathological() {
 fn verify_single_stream_flag(flags: u8, payload: const u8[:]) {
     var wire: u8[>..] = [];
     let stream_id: u64 = (flags as u64) << 2;
-    let offset: u64 = if (flags & 0x04) != 0 { 1024 } else { 0 };
+    let offset:    u64 = if (flags & 0x04) != 0 { 1024 } else { 0 };
     assert(encode_quic_stream_frame(wire, flags, stream_id, offset, payload));
 
     let frame, next_off, dec_ok = parse_quic_stream_frame(wire[..], 0);

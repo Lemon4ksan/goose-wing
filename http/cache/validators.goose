@@ -14,14 +14,18 @@ import http.cache.cache_control;
 
 // Parsed entity tag with weakness indicator and opaque ASCII token.
 struct EntityTag {
-    is_weak: bool = false,
-    tag: u8[..128] = [],
-    valid: bool = false,
+    is_weak: bool      = false,
+    tag:     u8[..128] = [],
+    valid:   bool      = false,
 }
 
 // Constructs a zero-initialized invalid EntityTag.
 // Parses an ETag header value into an EntityTag struct (RFC 9110 §8.8.3).
 // Handles case-sensitive "W/" weak prefix and strips enclosing double quotes.
+//
+// Example:
+//   raw = "W/\"xyzzy\""
+//   returns: etag with tag="xyzzy", is_weak=true, valid=true
 fn parse_etag(raw: const u8[:]) -> EntityTag {
     var etag = EntityTag { .. };
     var s = trim_lws(raw);
@@ -124,7 +128,11 @@ fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> b
 }
 
 // Evaluates an If-Range header as either a strong entity-tag or an exact HTTP-date (RFC 9110 §13.1.5).
-fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityTag&, cached_last_modified: core::Time) -> bool {
+fn evaluate_cache_if_range(
+    raw_if_range:         const u8[:],
+    cached_etag:          const EntityTag&,
+    cached_last_modified: core::Time,
+) -> bool {
     var s = trim_lws(raw_if_range);
     guard s.len > 0 else { return false; }
 
@@ -143,16 +151,16 @@ fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityT
 
 // Single request header field recorded in a Vary snapshot.
 struct VaryItem {
-    name: u8[..64] = [],
-    value: u8[..256] = [],
-    is_absent: bool = false,
+    name:      u8[..64]  = [],
+    value:     u8[..256] = [],
+    is_absent: bool      = false,
 }
 
 // Complete Vary snapshot captured from the original request/response exchange.
 struct VarySnapshot {
-    items: VaryItem[..16] = [],
-    has_star: bool = false,
-    valid: bool = true,
+    items:    VaryItem[..16] = [],
+    has_star: bool           = false,
+    valid:    bool           = true,
 }
 
 // Constructs a zero-initialized VarySnapshot.
@@ -165,7 +173,16 @@ fn has_vary_field(items: const VaryItem[..16]&, field_name: const u8[:]) -> bool
 }
 
 // Extracts canonical header value from request headers for Vary recording.
-fn extract_vary_value(req_headers: const HeaderMap&, field_name: const u8[:], out_val: u8[..256]&, is_oversized: bool&) -> bool {
+//
+// Example:
+//   field_name = "Accept-Encoding", req_headers has "Accept-Encoding: gzip"
+//   returns: true, out_val="gzip", is_oversized=false
+fn extract_vary_value(
+    req_headers:  const HeaderMap&,
+    field_name:   const u8[:],
+    out_val:      u8[..256]&,
+    is_oversized: bool&,
+) -> bool {
     var val_buf: u8[>..] = [];
     let ok_c = get_combined(req_headers, field_name, val_buf);
     let raw = if ok_c && val_buf.len > 0 {
@@ -229,6 +246,7 @@ fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderM
 fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap&) -> bool {
     guard !snap.has_star && snap.valid else { return false; }
 
+    var incoming_buf: u8[>..] = [];
     for &item in snap.items {
         let field_name = item.name[..];
         let incoming_present = has_header(incoming_req_headers, field_name);
@@ -240,7 +258,7 @@ fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap
 
         if !incoming_present { return false; }
 
-        var incoming_buf: u8[>..] = [];
+        incoming_buf.clear();
         let ok_c = get_combined(incoming_req_headers, field_name, incoming_buf);
         let incoming_val = if ok_c && incoming_buf.len > 0 {
             trim_lws(incoming_buf[..])
@@ -284,7 +302,16 @@ fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc:
 
 // Strips hop-by-hop headers, challenges, cookies (shared), security state headers,
 // and qualified private/no-cache fields prior to cache storage. Rejects embedded NULs/CRLF.
-fn sanitize_for_storage(src: const HeaderMap&, dst: HeaderMap&, shared: bool = false, cc: const CacheControl& = CacheControl { .. }) {
+//
+// Example:
+//   src = headers with "Connection: close", "ETag: 123"
+//   populates dst with sanitized headers without hop-by-hop
+fn sanitize_for_storage(
+    src:    const HeaderMap&,
+    dst:    HeaderMap&,
+    shared: bool                = false,
+    cc:     const CacheControl& = CacheControl { .. },
+) {
     reset_for_keep_alive(dst);
 
     var intermediate = HeaderMap { .. };

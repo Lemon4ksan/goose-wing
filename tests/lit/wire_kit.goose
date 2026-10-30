@@ -40,9 +40,9 @@ fn parse_hex(hex_str: const u8[:], out: u8[>..]&) -> bool {
 // For all prefix lengths 1..(payload.len - 1), prefix_fn must return incomplete_code.
 // For the full payload, prefix_fn must return ok_code.
 fn verify_split_stream<F: fn(const u8[:]) -> i64>(
-    payload: const u8[:],
+    payload:         const u8[:],
     incomplete_code: i64,
-    ok_code: i64,
+    ok_code:         i64,
 ) -> bool {
     guard payload.len > 0 else { return false; }
     var p: i64 = 1;
@@ -69,11 +69,11 @@ fn xorshift64(state: u64&) -> u64 {
 // Fuzzes a wire payload with random single-bit flips, boundary byte injections, and byte deletions.
 // Ensures parser never aborts or crashes on corrupted inputs.
 fn fuzz_payload<F: fn(const u8[:]) -> i64>(
-    seed: const u8[:],
+    seed:       const u8[:],
     iterations: i64,
 ) -> bool {
     guard seed.len > 0 else { return true; }
-    var rng: u64 = 0x853c49e6748fea9b;
+    var rng:     u64     = 0x853c49e6748fea9b;
     var mut_buf: u8[>..] = [];
 
     for _ in iterations {

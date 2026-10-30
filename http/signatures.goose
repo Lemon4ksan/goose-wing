@@ -16,20 +16,20 @@ import .sfv;
 // ---- 1. RFC 9421 Constants --------------------------------------------------
 
 const HEADER_SIGNATURE_INPUT: const u8[:] = "Signature-Input";
-const HEADER_SIGNATURE: const u8[:] = "Signature";
+const HEADER_SIGNATURE:       const u8[:] = "Signature";
 
 const SIG_ALG_HMAC_SHA256: const u8[:] = "hmac-sha256";
-const SIG_ALG_ED25519: const u8[:] = "ed25519";
+const SIG_ALG_ED25519:     const u8[:] = "ed25519";
 
 // ---- 2. Signature Models ----------------------------------------------------
 
 struct HttpSignatureParams {
-    label: u8[..32] = "sig1",
-    key_id: u8[..64] = [],
-    alg: u8[..32] = "hmac-sha256",
-    created: i64 = 0,
-    expires: i64 = 0,
-    nonce: u8[..64] = [],
+    label:      u8[..32]       = "sig1",
+    key_id:     u8[..64]       = [],
+    alg:        u8[..32]       = "hmac-sha256",
+    created:    i64            = 0,
+    expires:    i64            = 0,
+    nonce:      u8[..64]       = [],
     components: u8[..32][..16] = [],
 }
 
@@ -47,6 +47,11 @@ fn sig_sub_len(total: i64, sub: i64) -> i64 {
     return total - sub;
 }
 
+// Extracts special URL components (@authority, @path, @query, @scheme) per RFC 9421 §2.2.6.
+//
+// Example:
+//   url_str = "https://example.com/foo?bar=1", comp = "@authority"
+//   returns: true, out populated with "example.com"
 fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024]&) -> bool {
     let view, err = core::parse_url_view(url_str);
     guard view.valid else { return false; }
@@ -66,6 +71,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         out.append(view.scheme);
         return true;
     }
+    out.clear();
     return false;
 }
 
@@ -88,7 +94,11 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
     return true;
 }
 
-// Extracts component value per RFC 9421 Section 2
+// Extracts component value per RFC 9421 Section 2.
+//
+// Example:
+//   req has method "GET", comp = "@method"
+//   returns: true, out populated with "GET"
 fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..1024]&) -> bool {
     out.clear();
     if eq_ascii_fold(comp, "@method") {
@@ -114,7 +124,16 @@ fn strip_req_component_suffix(comp: const u8[:]) -> const u8[:], bool {
 }
 
 // Extracts component value from Response (RFC 9421 §2.2), supporting @status and ";req" parameters.
-fn extract_response_component_value(res: const Response&, req: const Request&, comp: const u8[:], out: u8[..1024]&) -> bool {
+//
+// Example:
+//   res has status 200, comp = "@status"
+//   returns: true, out populated with "200"
+fn extract_response_component_value(
+    res:  const Response&,
+    req:  const Request&,
+    comp: const u8[:],
+    out:  u8[..1024]&,
+) -> bool {
     out.clear();
     if eq_ascii_fold(comp, "@status") {
         core::format_i64_dec(res.status_code, out);
@@ -169,9 +188,9 @@ fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
 // ---- 4. Signature Base Generation (RFC 9421 Section 2.5) --------------------
 
 fn build_signature_base<B>(
-    req: const Request&,
+    req:    const Request&,
     params: const HttpSignatureParams&,
-    out: B&,
+    out:    B&,
 ) -> bool {
     out.clear();
     for idx in params.components.len {
@@ -193,10 +212,10 @@ fn build_signature_base<B>(
 }
 
 fn build_response_signature_base<B>(
-    res: const Response&,
-    req: const Request&,
+    res:    const Response&,
+    req:    const Request&,
     params: const HttpSignatureParams&,
-    out: B&,
+    out:    B&,
 ) -> bool {
     out.clear();
     for idx in params.components.len {
@@ -220,10 +239,10 @@ fn build_response_signature_base<B>(
 // ---- 5. Cryptographic Engine (HMAC-SHA256 & Ed25519) ------------------------
 
 fn compute_signature_b64(
-    alg: const u8[:],
+    alg:        const u8[:],
     secret_key: const u8[:],
-    sig_base: const u8[:],
-    out: u8[..256]&,
+    sig_base:   const u8[:],
+    out:        u8[..256]&,
 ) -> bool {
     if alg == SIG_ALG_ED25519 {
         guard secret_key.len == 32 else { return false; }
@@ -239,9 +258,9 @@ fn compute_signature_b64(
 }
 
 fn verify_crypto_signature(
-    alg: const u8[:],
-    key_bytes: const u8[:],
-    sig_base: const u8[:],
+    alg:          const u8[:],
+    key_bytes:    const u8[:],
+    sig_base:     const u8[:],
     received_sig: const u8[:],
 ) -> bool {
     if alg == SIG_ALG_ED25519 {
@@ -258,6 +277,10 @@ fn verify_crypto_signature(
 }
 
 // Parses an RFC 8941 Structured Fields Dictionary for Signature header using SfType.Binary.
+//
+// Example:
+//   header_val = "sig1=:ZXhhbXBsZQ==:", label = "sig1"
+//   returns: "ZXhhbXBsZQ==", ok = true
 fn extract_signature_value(header_val: const u8[:], label: const u8[:]) -> const u8[:], bool {
     var entries: SfDictEntry[..16] = [];
     guard parse_sf_dict(header_val, entries) else { return "", false; }
@@ -330,8 +353,8 @@ fn attach_response_signature_headers(res: Response&, params: const HttpSignature
 
 // Signs an HTTP request according to RFC 9421 and attaches Signature-Input and Signature headers.
 fn sign_http_request(
-    req: Request&,
-    params: const HttpSignatureParams&,
+    req:        Request&,
+    params:     const HttpSignatureParams&,
     secret_key: const u8[:],
 ) -> bool {
     var sig_base: u8[>..] = [];
@@ -348,11 +371,11 @@ fn sign_http_request(
 
 // Verifies an RFC 9421 signature on a Request (HMAC-SHA256 or Ed25519).
 fn verify_http_signature(
-    req: const Request&,
-    label: const u8[:],
-    params: const HttpSignatureParams&,
+    req:       const Request&,
+    label:     const u8[:],
+    params:    const HttpSignatureParams&,
     key_bytes: const u8[:],
-    now_sec: i64 = 0,
+    now_sec:   i64 = 0,
 ) -> bool {
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
@@ -375,9 +398,9 @@ fn verify_http_signature(
 
 // Signs an HTTP response according to RFC 9421.
 fn sign_http_response(
-    res: Response&,
-    req: const Request&,
-    params: const HttpSignatureParams&,
+    res:        Response&,
+    req:        const Request&,
+    params:     const HttpSignatureParams&,
     secret_key: const u8[:],
 ) -> bool {
     var sig_base: u8[>..] = [];
@@ -394,12 +417,12 @@ fn sign_http_response(
 
 // Verifies an RFC 9421 signature on a Response.
 fn verify_http_response_signature(
-    res: const Response&,
-    req: const Request&,
-    label: const u8[:],
-    params: const HttpSignatureParams&,
+    res:       const Response&,
+    req:       const Request&,
+    label:     const u8[:],
+    params:    const HttpSignatureParams&,
     key_bytes: const u8[:],
-    now_sec: i64 = 0,
+    now_sec:   i64 = 0,
 ) -> bool {
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
@@ -453,7 +476,12 @@ fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: 
 
 // Signs response with RFC 9421 HTTP Message Signatures using Ed25519.
 // Automatically configures standard component identifiers (@status, content-type).
-fn sign_response_ed25519(res: Response&, req: const Request&, key_id: const u8[:], private_key: const u8[:]) -> bool {
+fn sign_response_ed25519(
+    res:         Response&,
+    req:         const Request&,
+    key_id:      const u8[:],
+    private_key: const u8[:],
+) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
         params.key_id.append(key_id);
@@ -466,7 +494,12 @@ fn sign_response_ed25519(res: Response&, req: const Request&, key_id: const u8[:
 }
 
 // Verifies response signature using Ed25519 public key and key_id.
-fn verify_response_ed25519(res: const Response&, req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool {
+fn verify_response_ed25519(
+    res:        const Response&,
+    req:        const Request&,
+    key_id:     const u8[:],
+    public_key: const u8[:],
+) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
         params.key_id.append(key_id);

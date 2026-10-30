@@ -13,20 +13,26 @@ import core from "..";
 // ---- 1. No-Vary-Search Model -----------------------------------------------
 
 struct NoVarySearch {
-    ignore_all_params: bool = false,       // `params` without argument
-    params: u8[..64][..16] = [],           // Explicit list of ignored parameters
-    except_params: u8[..64][..16] = [],    // Parameters that MUST NOT be ignored
-    key_order_matters: bool = true,        // Default true (W3C No-Vary-Search §2.1)
-    is_valid: bool = false,
+    ignore_all_params: bool           = false, // `params` without argument
+    params:            u8[..64][..16] = [],    // Explicit list of ignored parameters
+    except_params:     u8[..64][..16] = [],    // Parameters that MUST NOT be ignored
+    key_order_matters: bool           = true,  // Default true (W3C No-Vary-Search §2.1)
+    is_valid:          bool           = false,
 }
 
 struct QueryParam {
-    key: u8[..64] = [],
+    key: u8[..64]  = [],
     val: u8[..256] = [],
 }
 
 // ---- 2. Header Parser ------------------------------------------------------
 
+// Reads a Structured Field item or inner list value for No-Vary-Search.
+// Advances `cursor` past the consumed value slice.
+//
+// Example:
+//   raw = "params=(\"a\" \"b\")", cursor = 7
+//   returns: "(\"a\" \"b\")", ok = true, cursor = 16
 fn read_nvs_value(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
     while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
     guard cursor < raw.len else { return "", false; }
@@ -98,7 +104,8 @@ fn read_nvs_token(raw: const u8[:], cursor: i64&) -> const u8[:] {
     guard rem.len > 0 else { return ""; }
 
     var tok_len: i64 = 0;
-    while tok_len < rem.len && rem[tok_len] != '=' && rem[tok_len] != ',' && rem[tok_len] != ' ' && rem[tok_len] != '\t' {
+    while tok_len < rem.len && rem[tok_len] != '=' && rem[tok_len] != ',' &&
+          rem[tok_len] != ' ' && rem[tok_len] != '\t' {
         tok_len++;
     }
     let token = rem[..tok_len];
@@ -107,6 +114,11 @@ fn read_nvs_token(raw: const u8[:], cursor: i64&) -> const u8[:] {
     return token;
 }
 
+// Reads next directive name, value presence, and raw value slice.
+//
+// Example:
+//   raw = "params, key-order", cursor = 0
+//   returns: token = "params", has_val = false, val = "", ok = true
 fn read_next_nvs_directive(raw: const u8[:], cursor: i64&) -> const u8[:], bool, const u8[:], bool {
     let token = read_nvs_token(raw, cursor);
     guard token.len > 0 else { return "", false, "", true; }
@@ -124,6 +136,10 @@ fn read_next_nvs_directive(raw: const u8[:], cursor: i64&) -> const u8[:], bool,
 }
 
 // Parses `No-Vary-Search: params, except=("id"), key-order`
+//
+// Example:
+//   raw = "params, key-order"
+//   returns: nvs with ignore_all_params=true, key_order_matters=false, ok = true
 fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
     var nvs = NoVarySearch { is_valid: true, .. };
     var cursor: i64 = 0;
@@ -141,6 +157,12 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
     return nvs, true;
 }
 
+// Reads the next double-quoted string from an inner list slice.
+// Advances cursor past the closing quote.
+//
+// Example:
+//   s = "(\"a\" \"b\")", cursor = 1
+//   returns: "a", has_item = true, ok = true, cursor = 4
 fn read_next_quoted_string(s: const u8[:], cursor: i64&) -> const u8[:], bool, bool {
     while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t' || s[cursor] == '(') {
         cursor++;
@@ -157,6 +179,11 @@ fn read_next_quoted_string(s: const u8[:], cursor: i64&) -> const u8[:], bool, b
     return s[start..end], true, true;
 }
 
+// Parses space-separated quoted strings enclosed in parentheses.
+//
+// Example:
+//   inner_list = "(\"a\" \"b\")"
+//   returns: true, out populated with "a" and "b"
 fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) -> bool {
     var cursor: i64 = 0;
     while cursor < inner_list.len {
@@ -206,6 +233,11 @@ fn bytes_less_than(a: const u8[:], b: const u8[:]) -> bool {
     return a.len < b.len;
 }
 
+// Parses a single key=value query string parameter.
+//
+// Example:
+//   pair = "key=value"
+//   returns: true, p.key="key", p.val="value"
 fn parse_single_query_param(pair: const u8[:], p: QueryParam&) -> bool {
     let k, v, has_eq = pair.split_once_byte('=');
     guard k.len <= p.key.cap else { return false; }
@@ -217,6 +249,11 @@ fn parse_single_query_param(pair: const u8[:], p: QueryParam&) -> bool {
     return true;
 }
 
+// Parses query string and applies No-Vary-Search filtering rules.
+//
+// Example:
+//   raw_query = "?a=1&b=2", nvs ignores "a"
+//   returns: true, params contains only "b=2"
 fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch&, params: QueryParam[..128]&) -> bool {
     let trimmed = if raw_query.len > 0 && raw_query[0] == '?' { raw_query[1..] } else { raw_query };
     var tok = make_byte_tokenizer(trimmed, '&');

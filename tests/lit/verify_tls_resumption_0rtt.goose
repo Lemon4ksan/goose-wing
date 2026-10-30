@@ -16,7 +16,7 @@ import wire_kit from ".";
 
 fn test_new_session_ticket_codec() {
     var raw_nst: u8[>..] = [];
-    let nonce: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+    let nonce:       u8[8]       = [1, 2, 3, 4, 5, 6, 7, 8];
     let ticket_body: const u8[:] = "encrypted_session_ticket_payload_bytes";
 
     // Encode NST with 1 hour lifetime (3600s), age_add = 0x12345678, max_early_data = 16384
@@ -64,7 +64,7 @@ fn test_strike_register_anti_replay() {
 
 fn test_ticket_age_validation() {
     let ticket_age_add: u32 = 0x50000000;
-    let actual_age_ms: i64 = 5000; // 5 seconds
+    let actual_age_ms:  i64 = 5000; // 5 seconds
     let obfuscated_age: u32 = (actual_age_ms as u32) + ticket_age_add;
 
     // Expected age matches actual age within 2000ms tolerance
@@ -80,9 +80,9 @@ fn test_ticket_age_validation() {
 
 fn test_0rtt_controller_lifecycle() {
     var ctrl = wing::EarlyDataController {
-        state: wing::EarlyDataState.Offered,
-        max_early_data_size: 1000,
-        psk_cipher_suite: wing::TLS_CIPHER_AES_128_GCM_SHA256,
+        state:                   wing::EarlyDataState.Offered,
+        max_early_data_size:     1000,
+        psk_cipher_suite:        wing::TLS_CIPHER_AES_128_GCM_SHA256,
         negotiated_cipher_suite: wing::TLS_CIPHER_AES_128_GCM_SHA256,
         ..
     };
@@ -104,9 +104,9 @@ fn test_0rtt_controller_lifecycle() {
 
     // Test OpenSSL Bug #31406: Cipher mismatch between PSK and server selection MUST be rejected
     var ctrl_mismatch = wing::EarlyDataController {
-        state: wing::EarlyDataState.Offered,
-        max_early_data_size: 1000,
-        psk_cipher_suite: wing::TLS_CIPHER_AES_128_GCM_SHA256,
+        state:                   wing::EarlyDataState.Offered,
+        max_early_data_size:     1000,
+        psk_cipher_suite:        wing::TLS_CIPHER_AES_128_GCM_SHA256,
         negotiated_cipher_suite: wing::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
         ..
     };

@@ -15,8 +15,8 @@ import wing from "../..";
 import wire_kit from ".";
 
 fn bench_crlfcrlf_throughput() {
-    let req: const u8[:] = "GET /v1/telemetry HTTP/1.1\r\nHost: api.example.com\r\nUser-Agent: wing/1.0\r\nAccept: */*\r\n\r\n";
-    let iters: i64 = 5000;
+    let req:   const u8[:] = "GET /v1/telemetry HTTP/1.1\r\nHost: api.example.com\r\nUser-Agent: wing/1.0\r\nAccept: */*\r\n\r\n";
+    let iters: i64         = 5000;
 
     // Warm-up
     for _ in 100 {
@@ -39,7 +39,7 @@ fn bench_crlfcrlf_throughput() {
 
 fn bench_tls_record_parsing() {
     let raw_rec: u8[5] = [0x17, 0x03, 0x03, 0x01, 0x00]; // 256 bytes payload
-    let iters: i64 = 5000;
+    let iters:   i64   = 5000;
 
     for _ in 100 {
         let _ = wing::parse_tls_record_header(raw_rec[..]);
@@ -61,7 +61,7 @@ fn bench_tls_record_parsing() {
 
 fn bench_grpc_lpm_decoding() {
     let raw_lpm: u8[13] = [0x00, 0x00, 0x00, 0x00, 0x08, 1, 2, 3, 4, 5, 6, 7, 8];
-    let iters: i64 = 5000;
+    let iters:   i64    = 5000;
 
     for _ in 100 {
         let _ = wing::decode_grpc_lpm_slice(raw_lpm[..], 0);
@@ -83,7 +83,7 @@ fn bench_grpc_lpm_decoding() {
 
 fn bench_chunk_fsm_feed() {
     let raw_chunk: const u8[:] = "A\r\n0123456789\r\n";
-    let iters: i64 = 5000;
+    let iters:     i64         = 5000;
 
     for _ in 100 {
         var dec = internal::new_chunk_fsm_decoder();

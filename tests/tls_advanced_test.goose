@@ -78,9 +78,9 @@ fn test_wireframer_cursor_and_builder_framing(t: core::T&) {
 
 fn test_wireframer_tls_record_invariants(t: core::T&) {
     t.run("Sequence number 2^64 - 1 exhaustion yields unexpected_message (RFC 8446 §5.3)") { sub =>
-        let key: u8[16] = [0x01; 16];
-        let iv: u8[12] = [0x02; 12];
-        let hdr: u8[5] = [0x17, 0x03, 0x03, 0x00, 0x11];
+        let key:     u8[16] = [0x01; 16];
+        let iv:      u8[12] = [0x02; 12];
+        let hdr:     u8[5]  = [0x17, 0x03, 0x03, 0x00, 0x11];
         let payload: u8[17] = [0xAA; 17];
         var out: u8[>..] = [];
 
@@ -102,8 +102,8 @@ fn test_wireframer_tls_record_invariants(t: core::T&) {
 
     t.run("TLSCiphertext payload < 17 bytes rejected with DecodeError (RFC 8446 §5.2, §5.4)") { sub =>
         let key: u8[16] = [0x01; 16];
-        let iv: u8[12] = [0x02; 12];
-        let hdr: u8[5] = [0x17, 0x03, 0x03, 0x00, 0x10];
+        let iv:  u8[12] = [0x02; 12];
+        let hdr: u8[5]  = [0x17, 0x03, 0x03, 0x00, 0x10];
         // 16-byte payload has AEAD tag but 0 bytes of TLSInnerPlaintext (missing ContentType)
         let payload_16: u8[16] = [0xAA; 16];
         var out: u8[>..] = [];
@@ -231,7 +231,7 @@ fn test_round2_framing_and_dos_invariants(t: core::T&) {
 
         // Integer overflow attack: early_data_skipped_bytes close to i64::MAX wrapping to negative
         var filter_overflow = wing::RecordFilterState {
-            empty_records_count: 0,
+            empty_records_count:      0,
             early_data_skipped_bytes: 0x7FFFFFFFFFFFFFFF - 10,
         };
         let res_overflow = wing::check_record_payload_length(filter_overflow, 100, true);
@@ -270,9 +270,9 @@ fn test_round3_ccs_and_protected_record_invariants(t: core::T&) {
 
     t.run("RFC 8446 Appendix D.4 & OpenSSL #10065 / CVE-2020-1967: CCS phase and flooding protection") { sub =>
         var filter = wing::RecordFilterState {
-            empty_records_count: 0,
+            empty_records_count:      0,
             early_data_skipped_bytes: 0,
-            ccs_count: 0,
+            ccs_count:                0,
         };
         let valid_ccs: u8[1] = [0x01];
 
@@ -586,7 +586,7 @@ fn test_ech_protocol(t: core::T&) {
         config.raw_bytes.append("synthetic-ech-config-raw-bytes");
 
         let cs = wing::EchCipherSuite {
-            kdf_id: wing::HPKE_KDF_HKDF_SHA256,
+            kdf_id:  wing::HPKE_KDF_HKDF_SHA256,
             aead_id: wing::HPKE_AEAD_AES_128_GCM,
         };
 
@@ -614,7 +614,7 @@ fn test_ech_protocol(t: core::T&) {
             0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a,
         ];
 
-        var enc: u8[32] = [0; 32];
+        var enc:        u8[32]  = [0; 32];
         var ciphertext: u8[>..] = [];
         let ok_seal = wing::seal_ech_inner(
             config,
@@ -738,7 +738,7 @@ fn test_doh_and_automated_ech_discovery(t: core::T&) {
         // Register mock DoH endpoint
         var mock = wing::MockExchange {
             pattern_url: "https://mock-dns.local/dns-query",
-            method: "POST",
+            method:      "POST",
             status_code: 200,
             ..
         };
@@ -1075,10 +1075,10 @@ fn test_dns_cache_and_stale_revalidate(t: core::T&) {
         var cache = wing::DnsCache { .. };
 
         var entry = wing::DnsCacheEntry {
-            qtype: wing::DNS_QTYPE_A,
+            qtype:           wing::DNS_QTYPE_A,
             inserted_at_sec: 1000,
-            ttl_sec: 300,        // 5 minutes
-            stale_ttl_sec: 3600, // 1 hour grace period
+            ttl_sec:         300,  // 5 minutes
+            stale_ttl_sec:   3600, // 1 hour grace period
             ..
         };
         entry.domain.append("example.com");
@@ -1485,7 +1485,7 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_aead_ciphers(t: core::T&) {
     t.run("XChaCha20-Poly1305 Round-Trip & Tamper Resistance") { sub =>
-        var key: u8[32] = [0x42; 32];
+        var key:   u8[32] = [0x42; 32];
         var nonce: u8[24] = [0x19; 24];
         let aad = "cookie_name=session_id";
         let plaintext = "user_id=12345&role=admin";
@@ -1514,7 +1514,7 @@ fn test_aead_ciphers(t: core::T&) {
 
     t.run("AES-256-GCM Round-Trip & Tamper Resistance") { sub =>
         var key: u8[32] = [0x77; 32];
-        var iv: u8[12] = [0x12; 12];
+        var iv:  u8[12] = [0x12; 12];
         let aad = "cookie_name=auth_token";
         let plaintext = "secret_session_token_xyz987";
 

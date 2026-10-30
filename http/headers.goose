@@ -10,20 +10,20 @@ import std;
 import core from "..";
 import .headers.lexical;
 
-const HEADER_ACCEPT_QUERY: const u8[:] = "Accept-Query"; // RFC 10008 Section 3
-const HEADER_FORWARDED: const u8[:] = "Forwarded"; // RFC 7239 Section 4
-const HEADER_EARLY_DATA: const u8[:] = "Early-Data"; // RFC 8470 Section 5.1
+const HEADER_ACCEPT_QUERY:        const u8[:] = "Accept-Query"; // RFC 10008 Section 3
+const HEADER_FORWARDED:           const u8[:] = "Forwarded"; // RFC 7239 Section 4
+const HEADER_EARLY_DATA:          const u8[:] = "Early-Data"; // RFC 8470 Section 5.1
 const HEADER_CONTENT_DISPOSITION: const u8[:] = "Content-Disposition"; // RFC 6266 Section 4
-const MIME_PROBLEM_JSON: const u8[:] = "application/problem+json"; // RFC 9457 Section 3
-const MIME_PROBLEM_XML: const u8[:] = "application/problem+xml"; // RFC 9457 Section 3
+const MIME_PROBLEM_JSON:          const u8[:] = "application/problem+json"; // RFC 9457 Section 3
+const MIME_PROBLEM_XML:           const u8[:] = "application/problem+xml"; // RFC 9457 Section 3
 
 // ---- header items & ascii helpers (RFC 9110 Section 5.6.3) ------------------
 
 // Individual parsed or constructed HTTP header item.
 struct HeaderItem {
-    name: u8[..64] = [],
-    value: u8[..384] = [],
-    is_sensitive: bool = false,
+    name:         u8[..64]  = [],
+    value:        u8[..384] = [],
+    is_sensitive: bool      = false,
 }
 
 // Whether name is a credential or session header that should be stripped on
@@ -44,6 +44,10 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
 }
 
 // Appends src to out with CR, LF, and NUL bytes omitted, clamped to out.cap (RFC 9110 Section 5.5).
+//
+// Example:
+//   src = "header\r\nvalue\0", out = []
+//   out becomes "headervalue"
 fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     for b in src {
         if b != '\r' && b != '\n' && b != 0 {
@@ -55,6 +59,10 @@ fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
 
 // CVE-2026-42507 & Go #79346: Escapes control characters (< 0x20 and >= 0x7F) in untrusted
 // header and protocol tokens for safe diagnostic logging without CRLF injection.
+//
+// Example:
+//   input = "foo\r\nbar\x01", out = []
+//   out becomes "foo\\r\\nbar\\x01"
 fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
     for b in input {
         if b == '\r' {
@@ -193,9 +201,8 @@ fn set_header<H>(headers: H&, name: const u8[:], value: const u8[:], is_sensitiv
             return;
         }
     }
-    if headers.len < headers.cap {
-        headers.push(hdr);
-    }
+    guard headers.len < headers.cap else { return; }
+    headers.push(hdr);
 }
 
 // Removes all occurrences of a header by name (case-insensitively) in-place.
@@ -237,22 +244,26 @@ fn remove_sensitive_headers<H>(headers: H&) {
 // ---- header bitmask flags & persistence constants --------------------------
 
 const HEADER_FLAG_NONE: u8 = 0;
-const HEADER_FLAG_NO_COMMA_FOLD: u8 = 1;    // 0x01: Set-Cookie, WWW-Authenticate, Proxy-Authenticate (RFC 9110 Section 5.3 / RFC 6265bis)
-const HEADER_FLAG_SENSITIVE: u8 = 2;        // 0x02: Authorization, Cookie, API Keys, etc.
-const HEADER_FLAG_CONTINUATION: u8 = 4;     // 0x04: Virtual continuation node (name_begin == name_end)
+// 0x01: Set-Cookie, WWW-Authenticate, Proxy-Authenticate (RFC 9110 Section 5.3 / RFC 6265bis)
+const HEADER_FLAG_NO_COMMA_FOLD:  u8 = 1;
+const HEADER_FLAG_SENSITIVE:      u8 = 2;   // 0x02: Authorization, Cookie, API Keys, etc.
+const HEADER_FLAG_CONTINUATION:   u8 = 4;   // 0x04: Virtual continuation node (name_begin == name_end)
 const HEADER_FLAG_CONTAINS_COMMA: u8 = 8;   // 0x08: Value contains comma (absl::InlinedVector<bool, 100> equivalent)
-const HEADER_FLAG_COOKIE_STATE: u8 = 16;    // 0x10: kCookieResponseHeaders (stripped on PERSIST_SANS_COOKIES & 304 merge)
-const HEADER_FLAG_CHALLENGE: u8 = 32;       // 0x20: kChallengeResponseHeaders (stripped on PERSIST_SANS_CHALLENGES)
-const HEADER_FLAG_SECURITY_STATE: u8 = 64;  // 0x40: kSecurityStateHeaders (Strict-Transport-Security, x-content-*, x-webkit-*)
-const HEADER_FLAG_NON_CACHEABLE: u8 = 128;  // 0x80: Hop-by-hop / transient headers (connection, transfer-encoding, etc.)
+// 0x10: kCookieResponseHeaders (stripped on PERSIST_SANS_COOKIES & 304 merge)
+const HEADER_FLAG_COOKIE_STATE: u8 = 16;
+const HEADER_FLAG_CHALLENGE:    u8 = 32;    // 0x20: kChallengeResponseHeaders (stripped on PERSIST_SANS_CHALLENGES)
+// 0x40: kSecurityStateHeaders (Strict-Transport-Security, x-content-*, x-webkit-*)
+const HEADER_FLAG_SECURITY_STATE: u8 = 64;
+// 0x80: Hop-by-hop / transient headers (connection, transfer-encoding, etc.)
+const HEADER_FLAG_NON_CACHEABLE: u8 = 128;
 
 const HEADER_INVALID_IDX: u8 = 0xFF;
 
 // Cache Persistence Filter Flags (Chromium net/http/http_response_headers.h)
-const PERSIST_ALL: u32 = 0;
-const PERSIST_SANS_COOKIES: u32 = 1;
-const PERSIST_SANS_CHALLENGES: u32 = 2;
-const PERSIST_SANS_NON_CACHEABLE: u32 = 4;
+const PERSIST_ALL:                 u32 = 0;
+const PERSIST_SANS_COOKIES:        u32 = 1;
+const PERSIST_SANS_CHALLENGES:     u32 = 2;
+const PERSIST_SANS_NON_CACHEABLE:  u32 = 4;
 const PERSIST_SANS_SECURITY_STATE: u32 = 8;
 
 // ---- header error enumeration ----------------------------------------------
@@ -278,6 +289,10 @@ fn is_ok(err: HeaderParseError) -> bool {
 
 // CVE-2026-42507 defense: Sanitize untrusted user input before formatting into error strings or logs.
 // Replaces control characters (< 0x20, CR, LF, DEL) and non-printable bytes with safe visual representation '?'.
+//
+// Example:
+//   input = "bad\x00input\r\n", out = []
+//   out becomes "bad?input??"
 fn sanitize_untrusted_for_error<B>(input: const u8[:], out: B&) {
     out.clear();
     for b in input {
@@ -688,7 +703,10 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
     }
 
     // Security state & prefix matching (Strict-Transport-Security, x-content-*, x-webkit-*)
-    if id == WellKnownHeader.StrictTransportSecurity || id == WellKnownHeader.XContentTypeOptions || id == WellKnownHeader.XWebkitCsp {
+    let is_sec_id = id == WellKnownHeader.StrictTransportSecurity ||
+        id == WellKnownHeader.XContentTypeOptions ||
+        id == WellKnownHeader.XWebkitCsp;
+    if is_sec_id {
         flags |= HEADER_FLAG_SECURITY_STATE;
     } else if name.len >= 10 && (starts_with_fold(name, "x-content-") || starts_with_fold(name, "x-webkit-")) {
         flags |= HEADER_FLAG_SECURITY_STATE;
@@ -709,15 +727,15 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
 // ---- header entry (16 bytes aligned) ---------------------------------------
 
 struct HeaderEntry {
-    name_begin: u16 = 0,
-    name_end: u16 = 0,
-    values_begin: u16 = 0,
-    values_end: u16 = 0,
-    next_idx: u8 = 0xFF,
-    flags: u8 = 0,
-    well_known_id: u8 = 0xFF,
-    reserved: u8 = 0,
-    name_hash: u32 = 0,
+    name_begin:    u16 = 0,
+    name_end:      u16 = 0,
+    values_begin:  u16 = 0,
+    values_end:    u16 = 0,
+    next_idx:      u8  = 0xFF,
+    flags:         u8  = 0,
+    well_known_id: u8  = 0xFF,
+    reserved:      u8  = 0,
+    name_hash:     u32 = 0,
 }
 
 fn is_continuation(entry: const HeaderEntry&) -> bool {
@@ -751,14 +769,14 @@ fn is_non_cacheable(entry: const HeaderEntry&) -> bool {
 // ---- headermap data structure (two-phase zero-heap container) ---------------
 
 struct HeaderMap {
-    raw_buf: u8[..8192] = [],
-    entries: HeaderEntry[..128] = [],
-    inline_slots: u8[64] = [0xFF; 64],
-    header_contains_comma: bool[..128] = [],
-    status_code: i32 = 200,
-    http_major: i32 = 1,
-    http_minor: i32 = 1,
-    valid: bool = true,
+    raw_buf:               u8[..8192]         = [],
+    entries:               HeaderEntry[..128] = [],
+    inline_slots:          u8[64]             = [0xFF; 64],
+    header_contains_comma: bool[..128]        = [],
+    status_code:           i32                = 200,
+    http_major:            i32                = 1,
+    http_minor:            i32                = 1,
+    valid:                 bool               = true,
 }
 
 fn reset_for_keep_alive(map: HeaderMap&) {
@@ -776,13 +794,19 @@ fn reset_for_keep_alive(map: HeaderMap&) {
 
 // ---- wire parser -----------------------------------------------------------
 
-fn link_header_entry(map: HeaderMap&, wk_id: WellKnownHeader, raw_name: const u8[:], hname: u32, new_idx: u8) {
+fn link_header_entry(
+    map:      HeaderMap&,
+    wk_id:    WellKnownHeader,
+    raw_name: const u8[:],
+    hname:    u32,
+    new_idx:  u8,
+) {
     if wk_id != WellKnownHeader.Unknown {
         let slot = well_known_to_slot(wk_id);
         let existing = map.inline_slots[slot];
         if existing == 0xFF {
             map.inline_slots[slot] = new_idx;
-            return
+            return;
         }
 
         var cur = existing;
@@ -791,31 +815,39 @@ fn link_header_entry(map: HeaderMap&, wk_id: WellKnownHeader, raw_name: const u8
         }
 
         map.entries[cur as i64].next_idx = new_idx;
-        return
+        return;
     }
 
     for prev_i in map.entries.len {
         let pe = map.entries[prev_i];
-        if pe.name_hash == hname {
-            let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
-            if eq_ascii_fold(prev_name, raw_name) {
-                var cur = prev_i as u8;
-                while map.entries[cur as i64].next_idx != 0xFF {
-                    cur = map.entries[cur as i64].next_idx;
-                }
-                map.entries[cur as i64].next_idx = new_idx;
-                break;
-            }
+        guard pe.name_hash == hname else { continue; }
+        let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
+        guard eq_ascii_fold(prev_name, raw_name) else { continue; }
+
+        var cur = prev_i as u8;
+        while map.entries[cur as i64].next_idx != 0xFF {
+            cur = map.entries[cur as i64].next_idx;
         }
+        map.entries[cur as i64].next_idx = new_idx;
+        break;
     }
 }
 
-fn handle_obs_fold(line: const u8[:], is_first_header: bool, allow_obs_fold: bool, map: HeaderMap&) -> HeaderParseError {
-    if is_first_header || map.entries.len == 0 {
+struct ObsFoldPolicy {
+    is_first_header: bool = false,
+    allow_obs_fold:  bool = false,
+}
+
+fn handle_obs_fold(
+    line:   const u8[:],
+    policy: ObsFoldPolicy,
+    map:    HeaderMap&,
+) -> HeaderParseError {
+    if policy.is_first_header || map.entries.len == 0 {
         map.valid = false;
         return HeaderParseError.LeadingWhitespaceOnFirstHeader;
     }
-    guard allow_obs_fold else {
+    guard policy.allow_obs_fold else {
         map.valid = false;
         return HeaderParseError.ObsFoldForbidden;
     }
@@ -864,7 +896,12 @@ fn handle_obs_fold(line: const u8[:], is_first_header: bool, allow_obs_fold: boo
     return HeaderParseError.None;
 }
 
-fn validate_header_framing_conflicts(map: HeaderMap&, wk_id: WellKnownHeader, val_trimmed: const u8[:], is_dup_cl: bool&) -> HeaderParseError {
+fn validate_header_framing_conflicts(
+    map:         HeaderMap&,
+    wk_id:       WellKnownHeader,
+    val_trimmed: const u8[:],
+    is_dup_cl:   bool&,
+) -> HeaderParseError {
     is_dup_cl = false;
     if wk_id == WellKnownHeader.ContentLength {
         if has_header(map, "transfer-encoding") {
@@ -918,9 +955,96 @@ fn validate_header_framing_conflicts(map: HeaderMap&, wk_id: WellKnownHeader, va
     return HeaderParseError.None;
 }
 
+inline fn slice_contains_comma(s: const u8[:]) -> bool {
+    for b in s {
+        if b == ',' { return true; }
+    }
+    return false;
+}
+
+// Parses a single wire header line (name: value) into HeaderMap.
+//
+// Example:
+//   line = "Host: example.com", cursor = 0, map = HeaderMap { .. }, is_dup_cl = false
+//   returns: HeaderParseError.None
+fn parse_single_header_line(
+    line:      const u8[:],
+    cursor:    i64,
+    map:       HeaderMap&,
+    is_dup_cl: bool&,
+) -> HeaderParseError {
+    let colon_pos = find_any(line, COLON_SET);
+    guard colon_pos > 0 else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderName;
+    }
+
+    let raw_name = line[..colon_pos];
+    if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderName;
+    }
+    guard is_valid_header_name(raw_name) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderName;
+    }
+
+    let raw_val = line[colon_pos + 1..];
+    let val_trimmed = trim_lws(raw_val);
+    guard is_valid_header_value(val_trimmed) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderValue;
+    }
+    guard map.entries.len < 128 else {
+        map.valid = false;
+        return HeaderParseError.CapacityExceeded;
+    }
+
+    let wk_id = classify_well_known_header(raw_name);
+    let conflict_err = validate_header_framing_conflicts(map, wk_id, val_trimmed, is_dup_cl);
+    guard is_ok(conflict_err) else { return conflict_err; }
+
+    guard !is_dup_cl else { return HeaderParseError.None; }
+
+    let name_begin_off = cursor as u16;
+    let name_end_off = (cursor + colon_pos) as u16;
+
+    let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
+    let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
+    let val_end_off = (val_start_off + val_trimmed.len) as u16;
+
+    let flags = well_known_header_flags(wk_id, raw_name);
+    let hname = hash_header_name(raw_name);
+
+    let contains_comma = slice_contains_comma(val_trimmed);
+    let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
+
+    let new_entry = HeaderEntry {
+        name_begin:    name_begin_off,
+        name_end:      name_end_off,
+        values_begin:  val_start_off,
+        values_end:    val_end_off,
+        next_idx:      0xFF,
+        flags:         entry_flags,
+        well_known_id: if wk_id != WellKnownHeader.Unknown { well_known_to_slot(wk_id) as u8 } else { 0xFF },
+        reserved:      0,
+        name_hash:     hname,
+    };
+
+    let new_idx = map.entries.len as u8;
+    link_header_entry(map, wk_id, raw_name, hname, new_idx);
+    map.entries.push(new_entry);
+    map.header_contains_comma.push(contains_comma);
+    return HeaderParseError.None;
+}
+
 // Parses an HTTP/1.x header block into map (RFC 9112 Section 5.2).
 // Header names and values are indexed as offsets into the map's buffer.
 // Obsolete line folding (obs-fold) is rejected unless allow_obs_fold is set.
+//
+// Example:
+//   raw_input = "Host: example.com\r\nContent-Length: 0\r\n\r\n", map = HeaderMap { .. }
+//   returns: HeaderParseError.None, populates map.entries
 fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
     if has_embedded_nulls(raw_input) {
@@ -964,82 +1088,16 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
 
         let is_lead_ws = map.raw_buf[cursor] == ' ' || map.raw_buf[cursor] == '\t';
         if is_lead_ws {
-            let fold_err = handle_obs_fold(line, is_first_header, allow_obs_fold, map);
+            let policy = ObsFoldPolicy { is_first_header: is_first_header, allow_obs_fold: allow_obs_fold };
+            let fold_err = handle_obs_fold(line, policy, map);
             guard is_ok(fold_err) else { return fold_err; }
         } else {
-            let colon_pos = find_any(line, COLON_SET);
-            guard colon_pos > 0 else {
-                map.valid = false;
-                return HeaderParseError.InvalidHeaderName;
-            }
-
-            let raw_name = line[..colon_pos];
-            if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
-                map.valid = false;
-                return HeaderParseError.InvalidHeaderName;
-            }
-            guard is_valid_header_name(raw_name) else {
-                map.valid = false;
-                return HeaderParseError.InvalidHeaderName;
-            }
-
-            let raw_val = line[colon_pos + 1..];
-            let val_trimmed = trim_lws(raw_val);
-            guard is_valid_header_value(val_trimmed) else {
-                map.valid = false;
-                return HeaderParseError.InvalidHeaderValue;
-            }
-            guard map.entries.len < 128 else {
-                map.valid = false;
-                return HeaderParseError.CapacityExceeded;
-            }
-
-            let wk_id = classify_well_known_header(raw_name);
             var is_dup_cl = false;
-            let conflict_err = validate_header_framing_conflicts(map, wk_id, val_trimmed, is_dup_cl);
-            guard is_ok(conflict_err) else { return conflict_err; }
-
-            if is_dup_cl {
-                guard advance_crlf(map.raw_buf[..], cursor, line_end) else {
-                    map.valid = false;
-                    return HeaderParseError.InvalidHeaderValue;
-                }
-                continue;
+            let line_err = parse_single_header_line(line, cursor, map, is_dup_cl);
+            guard is_ok(line_err) else { return line_err; }
+            if !is_dup_cl {
+                is_first_header = false;
             }
-
-            let name_begin_off = cursor as u16;
-            let name_end_off = (cursor + colon_pos) as u16;
-
-            let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
-            let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
-            let val_end_off = (val_start_off + val_trimmed.len) as u16;
-
-            let flags = well_known_header_flags(wk_id, raw_name);
-            let hname = hash_header_name(raw_name);
-
-            var contains_comma = false;
-            for b in val_trimmed {
-                if b == ',' { contains_comma = true; break; }
-            }
-            let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
-
-            let new_entry = HeaderEntry {
-                name_begin: name_begin_off,
-                name_end: name_end_off,
-                values_begin: val_start_off,
-                values_end: val_end_off,
-                next_idx: 0xFF,
-                flags: entry_flags,
-                well_known_id: if wk_id != WellKnownHeader.Unknown { well_known_to_slot(wk_id) as u8 } else { 0xFF },
-                reserved: 0,
-                name_hash: hname,
-            };
-
-            let new_idx = map.entries.len as u8;
-            link_header_entry(map, wk_id, raw_name, hname, new_idx);
-            map.entries.push(new_entry);
-            map.header_contains_comma.push(contains_comma);
-            is_first_header = false;
         }
 
         guard advance_crlf(map.raw_buf[..], cursor, line_end) else {
@@ -1052,7 +1110,56 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
     return HeaderParseError.None;
 }
 
+// Parses an HTTP status line into major/minor versions and status code.
+//
+// Example:
+//   status_line = "HTTP/1.1 200 OK"
+//   returns: HeaderParseError.None, major = 1, minor = 1, code = 200
+fn parse_http_status_line(
+    status_line: const u8[:],
+    major:       i32&,
+    minor:       i32&,
+    code:        i32&,
+) -> HeaderParseError {
+    guard status_line.len >= 12 else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    guard eq_ascii_fold(status_line[..5], "HTTP/") else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    let maj = status_line[5] - '0';
+    let dot = status_line[6];
+    let min = status_line[7] - '0';
+    guard dot == '.' && maj >= 0 && maj <= 9 && min >= 0 && min <= 9 else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    var sp_idx: i64 = 8;
+    while sp_idx < status_line.len && status_line[sp_idx] == ' ' { sp_idx++; }
+    guard sp_idx + 3 <= status_line.len else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    let c0 = status_line[sp_idx] - '0';
+    let c1 = status_line[sp_idx + 1] - '0';
+    let c2 = status_line[sp_idx + 2] - '0';
+    guard c0 >= 0 && c0 <= 9 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    major = maj;
+    minor = min;
+    code = c0 * 100 + c1 * 10 + c2;
+    return HeaderParseError.None;
+}
+
 // Parses full HTTP/1.1 response status line and header block
+//
+// Example:
+//   raw_input = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", map = HeaderMap { .. }
+//   returns: HeaderParseError.None, map.status_code = 200
 fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
     if has_embedded_nulls(raw_input) {
@@ -1066,41 +1173,14 @@ fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fol
         line_end++;
     }
 
-    let status_line = raw_input[..line_end];
-    guard status_line.len >= 12 else {
+    var major: i32 = 0;
+    var minor: i32 = 0;
+    var code:  i32 = 0;
+    let st_err = parse_http_status_line(raw_input[..line_end], major, minor, code);
+    guard is_ok(st_err) else {
         map.valid = false;
-        return HeaderParseError.MalformedStatusLine;
+        return st_err;
     }
-
-    guard eq_ascii_fold(status_line[..5], "HTTP/") else {
-        map.valid = false;
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    let major = status_line[5] - '0';
-    let dot = status_line[6];
-    let minor = status_line[7] - '0';
-    guard dot == '.' && major >= 0 && major <= 9 && minor >= 0 && minor <= 9 else {
-        map.valid = false;
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    // Skip spaces to status code
-    var sp_idx: i64 = 8;
-    while sp_idx < status_line.len && status_line[sp_idx] == ' ' { sp_idx++; }
-    guard sp_idx + 3 <= status_line.len else {
-        map.valid = false;
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    let c0 = status_line[sp_idx] - '0';
-    let c1 = status_line[sp_idx + 1] - '0';
-    let c2 = status_line[sp_idx + 2] - '0';
-    guard c0 >= 0 && c0 <= 9 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else {
-        map.valid = false;
-        return HeaderParseError.MalformedStatusLine;
-    }
-    let code = (c0 * 100 + c1 * 10 + c2) as i32;
 
     var header_start = line_end;
     if header_start < raw_input.len && raw_input[header_start] == '\r' {
@@ -1121,6 +1201,10 @@ fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fol
 }
 
 // Parses full HTTP/1.1 request line (METHOD /path HTTP/1.1) and header block
+//
+// Example:
+//   raw_input = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n", map = HeaderMap { .. }
+//   returns: HeaderParseError.None, populates map.entries
 fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
     if has_embedded_nulls(raw_input) {
@@ -1231,15 +1315,15 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
 
     let new_idx = map.entries.len as u8;
     let entry = HeaderEntry {
-        name_begin: n_begin,
-        name_end: n_end,
-        values_begin: v_begin,
-        values_end: v_end,
-        next_idx: 0xFF,
-        flags: entry_flags,
+        name_begin:    n_begin,
+        name_end:      n_end,
+        values_begin:  v_begin,
+        values_end:    v_end,
+        next_idx:      0xFF,
+        flags:         entry_flags,
         well_known_id: if wk_id != WellKnownHeader.Unknown { well_known_to_slot(wk_id) as u8 } else { 0xFF },
-        reserved: 0,
-        name_hash: hname,
+        reserved:      0,
+        name_hash:     hname,
     };
 
     link_header_entry(map, wk_id, name, hname, new_idx);
@@ -1265,9 +1349,45 @@ fn set_inline(map: HeaderMap&, id: WellKnownHeader, value: const u8[:]) -> bool 
     return map.insert_header(name, value);
 }
 
+fn link_rebuilt_entry(
+    inline_slots: u8[64]&,
+    new_entries:  HeaderEntry[..128]&,
+    raw_buf:      const u8[:],
+    ename:        const u8[:],
+    copy_e:       const HeaderEntry&,
+    new_idx:      u8,
+) {
+    let cur_wk = if copy_e.well_known_id != 0xFF { copy_e.well_known_id as i64 } else { -1 };
+    if cur_wk >= 0 && cur_wk < 64 {
+        let ex = inline_slots[cur_wk];
+        if ex == 0xFF {
+            inline_slots[cur_wk] = new_idx;
+            return;
+        }
+        var cur = ex;
+        while new_entries[cur as i64].next_idx != 0xFF {
+            cur = new_entries[cur as i64].next_idx;
+        }
+        new_entries[cur as i64].next_idx = new_idx;
+        return;
+    }
+
+    for prev_i in new_entries.len {
+        guard new_entries[prev_i].name_hash == copy_e.name_hash else { continue; }
+        let prev_n = raw_buf[new_entries[prev_i].name_begin..new_entries[prev_i].name_end];
+        guard eq_ascii_fold(prev_n, ename) else { continue; }
+
+        var cur = prev_i as u8;
+        while new_entries[cur as i64].next_idx != 0xFF {
+            cur = new_entries[cur as i64].next_idx;
+        }
+        new_entries[cur as i64].next_idx = new_idx;
+        break;
+    }
+}
+
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     let wk_id = classify_well_known_header(name);
-    let hname = hash_header_name(name);
     var found = false;
 
     if wk_id != WellKnownHeader.Unknown {
@@ -1281,7 +1401,7 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     // Prune entries by rebuilding or marking
     // In bounded static array, filter entries that do not match name
     var new_entries: HeaderEntry[..128] = [];
-    var new_commas: bool[..128] = [];
+    var new_commas:  bool[..128]        = [];
     for i in 64 { map.inline_slots[i] = 0xFF; }
 
     for &e, i in map.entries {
@@ -1295,33 +1415,7 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
         var copy_e = e;
         copy_e.next_idx = 0xFF;
 
-        let cur_wk = if copy_e.well_known_id != 0xFF { copy_e.well_known_id as i64 } else { -1 };
-        if cur_wk >= 0 && cur_wk < 64 {
-            let ex = map.inline_slots[cur_wk];
-            if ex == 0xFF {
-                map.inline_slots[cur_wk] = new_idx;
-            } else {
-                var cur = ex;
-                while new_entries[cur as i64].next_idx != 0xFF {
-                    cur = new_entries[cur as i64].next_idx;
-                }
-                new_entries[cur as i64].next_idx = new_idx;
-            }
-        } else {
-            for prev_i in new_entries.len {
-                if new_entries[prev_i].name_hash == copy_e.name_hash {
-                    let prev_n = map.raw_buf[new_entries[prev_i].name_begin..new_entries[prev_i].name_end];
-                    if eq_ascii_fold(prev_n, ename) {
-                        var cur = prev_i as u8;
-                        while new_entries[cur as i64].next_idx != 0xFF {
-                            cur = new_entries[cur as i64].next_idx;
-                        }
-                        new_entries[cur as i64].next_idx = new_idx;
-                        break;
-                    }
-                }
-            }
-        }
+        link_rebuilt_entry(map.inline_slots, new_entries, map.raw_buf[..], ename, copy_e, new_idx);
 
         new_entries.push(copy_e);
         new_commas.push(map.header_contains_comma[i]);
@@ -1349,19 +1443,17 @@ fn get_combined(map: const HeaderMap&, name: const u8[:], out: u8[>..]&) -> bool
     let hname = hash_header_name(name);
 
     for entry in map.entries {
-        if entry.name_hash == hname {
-            let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
-            if eq_ascii_fold(entry_name, name) {
-                found = true;
-                if !first {
-                    out.push(',');
-                    out.push(' ');
-                }
-                first = false;
-                let val = map.raw_buf[entry.values_begin..entry.values_end];
-                out.append(val);
-            }
+        guard entry.name_hash == hname else { continue; }
+        let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
+        guard eq_ascii_fold(entry_name, name) else { continue; }
+        found = true;
+        if !first {
+            out.push(',');
+            out.push(' ');
         }
+        first = false;
+        let val = map.raw_buf[entry.values_begin..entry.values_end];
+        out.append(val);
     }
     return found;
 }
@@ -1411,6 +1503,30 @@ fn raw_headers(map: const HeaderMap&, out: u8[>..]&) {
     out.push(0);
 }
 
+fn append_folded_header_values(
+    map:       const HeaderMap&,
+    start_idx: i64,
+    entry:     const HeaderEntry&,
+    name:      const u8[:],
+    visited:   bool[128]&,
+    out:       u8[>..]&,
+) {
+    var first = true;
+    for j in start_idx..map.entries.len {
+        let other = map.entries[j];
+        guard other.name_hash == entry.name_hash else { continue; }
+        let other_name = map.raw_buf[other.name_begin..other.name_end];
+        guard eq_ascii_fold(other_name, name) else { continue; }
+        if !first {
+            out.append(", ");
+        }
+        first = false;
+        let val = map.raw_buf[other.values_begin..other.values_end];
+        out.append(val);
+        visited[j] = true;
+    }
+}
+
 // Wire serialization with RFC 9110 comma folding for list fields and separate lines for Set-Cookie
 fn serialize_headers(map: const HeaderMap&, out: u8[>..]&) {
     var visited: bool[128] = [false; 128];
@@ -1433,22 +1549,7 @@ fn serialize_headers(map: const HeaderMap&, out: u8[>..]&) {
             // Combine comma-foldable headers
             out.append(name);
             out.append(": ");
-            var first = true;
-            for j in i..map.entries.len {
-                let other = map.entries[j];
-                if other.name_hash == entry.name_hash {
-                    let other_name = map.raw_buf[other.name_begin..other.name_end];
-                    if eq_ascii_fold(other_name, name) {
-                        if !first {
-                            out.append(", ");
-                        }
-                        first = false;
-                        let val = map.raw_buf[other.values_begin..other.values_end];
-                        out.append(val);
-                        visited[j] = true;
-                    }
-                }
-            }
+            append_folded_header_values(map, i, entry, name, visited, out);
             out.append("\r\n");
         }
     }
@@ -1459,7 +1560,9 @@ fn serialize_headers(map: const HeaderMap&, out: u8[>..]&) {
 fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
     // RFC 9110 Section 15.4.5, RFC 9111 Section 3.2 & Chromium HttpResponseHeaders::ShouldUpdateHeader
     // Never update cookies, auth challenges, security state, or hop-by-hop headers
-    if (entry_flags & (HEADER_FLAG_COOKIE_STATE | HEADER_FLAG_CHALLENGE | HEADER_FLAG_SECURITY_STATE | HEADER_FLAG_NON_CACHEABLE)) != 0 {
+    let blocked_flags = HEADER_FLAG_COOKIE_STATE | HEADER_FLAG_CHALLENGE |
+        HEADER_FLAG_SECURITY_STATE | HEADER_FLAG_NON_CACHEABLE;
+    if (entry_flags & blocked_flags) != 0 {
         return false;
     }
     if eq_ascii_fold(name, "content-range") ||
@@ -1527,25 +1630,25 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
 fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&) {
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
-        if eq_ascii_fold(name, "connection") {
-            let val = src.raw_buf[entry.values_begin..entry.values_end];
-            var cursor: i64 = 0;
-            while cursor < val.len {
-                var comma_idx = cursor;
-                while comma_idx < val.len && val[comma_idx] != ',' {
-                    comma_idx++;
-                }
-                let token = trim_lws(val[cursor..comma_idx]);
-                // Empty connection token (e.g. trailing comma or empty header #46313) is skipped without aborting
-                if token.len > 0 && !is_hop_by_hop_header_name(token) && !eq_ascii_fold(token, "close") {
-                    if out_tokens.len < out_tokens.cap && token.len <= 64 {
-                        var tok_buf: u8[..64] = [];
-                        tok_buf.append(token);
-                        out_tokens.push(tok_buf);
-                    }
-                }
-                cursor = comma_idx + 1;
+        guard eq_ascii_fold(name, "connection") else { continue; }
+
+        let val = src.raw_buf[entry.values_begin..entry.values_end];
+        var cursor: i64 = 0;
+        while cursor < val.len {
+            var comma_idx = cursor;
+            while comma_idx < val.len && val[comma_idx] != ',' {
+                comma_idx++;
             }
+            let token = trim_lws(val[cursor..comma_idx]);
+            cursor = comma_idx + 1;
+            let is_valid_token = token.len > 0 &&
+                !is_hop_by_hop_header_name(token) &&
+                !eq_ascii_fold(token, "close");
+            guard is_valid_token else { continue; }
+            guard out_tokens.len < out_tokens.cap && token.len <= 64 else { continue; }
+            var tok_buf: u8[..64] = [];
+            tok_buf.append(token);
+            out_tokens.push(tok_buf);
         }
     }
 }
@@ -1553,19 +1656,19 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&)
 fn is_token_in_connection_header_map(src: const HeaderMap&, target_name: const u8[:]) -> bool {
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
-        if eq_ascii_fold(name, "connection") {
-            let val = src.raw_buf[entry.values_begin..entry.values_end];
-            var cursor: i64 = 0;
-            while cursor < val.len {
-                var comma_idx = cursor;
-                while comma_idx < val.len && val[comma_idx] != ',' {
-                    comma_idx++;
-                }
-                let token = trim_lws(val[cursor..comma_idx]);
-                if token.len > 0 && eq_ascii_fold(token, target_name) {
-                    return true;
-                }
-                cursor = comma_idx + 1;
+        guard eq_ascii_fold(name, "connection") else { continue; }
+
+        let val = src.raw_buf[entry.values_begin..entry.values_end];
+        var cursor: i64 = 0;
+        while cursor < val.len {
+            var comma_idx = cursor;
+            while comma_idx < val.len && val[comma_idx] != ',' {
+                comma_idx++;
+            }
+            let token = trim_lws(val[cursor..comma_idx]);
+            cursor = comma_idx + 1;
+            if token.len > 0 && eq_ascii_fold(token, target_name) {
+                return true;
             }
         }
     }

@@ -13,7 +13,7 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-const U64_MAX_LIMIT: u64 = 0xFFFFFFFFFFFFFFFF;
+const U64_MAX_LIMIT:   u64 = 0xFFFFFFFFFFFFFFFF;
 const NEAR_MAX_OFFSET: u64 = 20000000000;
 
 // ---- Section 1: GCRA Burst Limit Precision & Fractional Recovery -----------

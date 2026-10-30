@@ -16,15 +16,19 @@ import core from "..";
 // ---- 1. HSTS Directive Model ------------------------------------------------
 
 struct HstsDirective {
-    max_age_sec: i64 = 0,
+    max_age_sec:        i64  = 0,
     include_subdomains: bool = false,
-    preload: bool = false,
-    valid: bool = false,
+    preload:            bool = false,
+    valid:              bool = false,
 }
 
 // ---- 2. Header Parsing (RFC 6797 Section 6.1) -------------------------------
 
 // Parses delta-seconds from max-age directive, supporting optional quotes.
+//
+// Example:
+//   val = "31536000"
+//   returns: 31536000, ok = true
 fn parse_hsts_max_age(val: const u8[:]) -> i64, bool {
     guard val.len > 0 else { return 0, false; }
     var unquoted = val;
@@ -59,6 +63,10 @@ fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
 }
 
 // Parses `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`
+//
+// Example:
+//   raw = "max-age=31536000; includeSubDomains"
+//   returns: d with max_age_sec=31536000, include_subdomains=true, ok = true
 fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
     var d = HstsDirective { .. };
     guard raw.len > 0 else { return d, false; }
@@ -78,16 +86,16 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
 // ---- 3. HSTS Cache & Preload List -------------------------------------------
 
 struct HstsEntry {
-    host: u8[..256] = [],
-    expiry_epoch_sec: i64 = 0,
-    include_subdomains: bool = false,
-    is_preload: bool = false,
-    valid: bool = false,
+    host:               u8[..256] = [],
+    expiry_epoch_sec:   i64       = 0,
+    include_subdomains: bool      = false,
+    is_preload:         bool      = false,
+    valid:              bool      = false,
 }
 
 struct HstsCache {
-    entries: HstsEntry[..16] = [],
-    enable_preload_list: bool = true,
+    entries:             HstsEntry[..16] = [],
+    enable_preload_list: bool            = true,
 }
 
 fn host_matches_domain(sub: const u8[:], domain: const u8[:]) -> bool {
@@ -187,11 +195,11 @@ fn find_hsts_evict_index(cache: const HstsCache&, now_sec: i64) -> i64 {
 fn store_hsts_entry(cache: HstsCache&, entry: const HstsEntry&, now_sec: i64) {
     if cache.entries.len < cache.entries.cap {
         cache.entries.push(entry);
-        return;
-    }
-    let evict_idx = find_hsts_evict_index(cache, now_sec);
-    if evict_idx >= 0 && evict_idx < cache.entries.len {
-        cache.entries[evict_idx] = entry;
+    } else {
+        let evict_idx = find_hsts_evict_index(cache, now_sec);
+        if evict_idx >= 0 && evict_idx < cache.entries.len {
+            cache.entries[evict_idx] = entry;
+        }
     }
 }
 
@@ -203,10 +211,10 @@ inline fn is_valid_hsts_hostname(name: const u8[:]) -> bool {
 // Ingests a validated Strict-Transport-Security header into the HSTS cache
 // RFC 6797 Section 8.1: Must ONLY be called for secure HTTPS connections!
 fn hsts_cache_update(
-    cache: HstsCache&,
-    hostname: const u8[:],
+    cache:      HstsCache&,
+    hostname:   const u8[:],
     raw_header: const u8[:],
-    now_sec: i64,
+    now_sec:    i64,
 ) -> bool {
     let clean = hostname.trim_end_byte('.');
     guard is_valid_hsts_hostname(clean) else { return false; }
@@ -235,10 +243,10 @@ fn hsts_cache_update(
 
     // Insert new entry
     var new_entry = HstsEntry {
-        expiry_epoch_sec: expiry,
+        expiry_epoch_sec:   expiry,
         include_subdomains: dir.include_subdomains,
-        is_preload: dir.preload,
-        valid: true,
+        is_preload:         dir.preload,
+        valid:              true,
         ..
     };
     new_entry.host.append(clean);
@@ -272,7 +280,7 @@ fn split_http_url(raw_url: const u8[:]) -> const u8[:], const u8[:], const u8[:]
 // Automatically upgrades `http://` URL to `https://` if the host is a Known HSTS Host.
 // Returns true if URL was upgraded, false if left unchanged.
 fn hsts_upgrade_url<B>(
-    cache: const HstsCache&,
+    cache:   const HstsCache&,
     raw_url: const u8[:],
     now_sec: i64,
     out_url: B&,

@@ -52,10 +52,10 @@ fn main() {
     print("EDGE_WS_FRAME: OK");
 
     var hdr_orig = internal::FrameHeader {
-        length: 8,
+        length:     8,
         frame_type: internal::FRAME_HEADERS,
-        flags: internal::FLAG_END_STREAM | internal::FLAG_END_HEADERS,
-        stream_id: 3,
+        flags:      internal::FLAG_END_STREAM | internal::FLAG_END_HEADERS,
+        stream_id:  3,
     };
     var enc_hdr: u8[9] = [0; 9];
     internal::encode_frame_header(hdr_orig, enc_hdr);

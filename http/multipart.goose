@@ -28,28 +28,24 @@ fn is_ok(err: MultipartError) -> bool {
 }
 
 struct MultipartOptions {
-    max_parts: i32 = 64,
-    max_memory_bytes: i64 = 12582912,       // 12 MB in-memory field buffering quota (ovr framework style)
+    max_parts:         i32 = 64,
+    max_memory_bytes:  i64 = 12582912,      // 12 MB in-memory field buffering quota (ovr framework style)
     max_payload_bytes: i64 = 67108864,      // 64 MB maximum overall payload
-    max_header_bytes: i64 = 8192,           // 8 KB per-part header block
-}
-
-fn default_multipart_options() -> MultipartOptions {
-    return MultipartOptions { .. };
+    max_header_bytes:  i64 = 8192,          // 8 KB per-part header block
 }
 
 // ---- multipart part and message model --------------------------------------
 
 struct MultipartPart {
-    name: u8[..64] = [],
-    filename: u8[..256] = [],
-    content_type: u8[..128] = [],
-    headers: HeaderMap = HeaderMap { .. },
-    data: const u8[:] = "",
+    name:         u8[..64]    = [],
+    filename:     u8[..256]   = [],
+    content_type: u8[..128]   = [],
+    headers:      HeaderMap   = HeaderMap { .. },
+    data:         const u8[:] = "",
 }
 
 struct MultipartMessage {
-    valid: bool = true,
+    valid: bool               = true,
     parts: MultipartPart[>..] = [],
 }
 
@@ -161,12 +157,11 @@ fn is_closing_boundary_at(body: const u8[:], cursor: i64) -> bool {
 fn find_initial_boundary(body: const u8[:], init_delim: const u8[:]) -> i64 {
     var cursor: i64 = 0;
     while cursor + init_delim.len <= body.len {
-        if body[cursor..cursor + init_delim.len] == init_delim[..] {
-            if cursor == 0 || body[cursor - 1] == '\n' {
-                let post_init = cursor + init_delim.len;
-                if is_valid_delimiter_suffix(body, post_init) {
-                    return cursor;
-                }
+        let is_line_start = cursor == 0 || body[cursor - 1] == '\n';
+        if is_line_start && body[cursor..cursor + init_delim.len] == init_delim[..] {
+            let post_init = cursor + init_delim.len;
+            if is_valid_delimiter_suffix(body, post_init) {
+                return cursor;
             }
         }
         cursor++;
@@ -177,7 +172,8 @@ fn find_initial_boundary(body: const u8[:], init_delim: const u8[:]) -> i64 {
 fn find_header_end(body: const u8[:], cursor: i64, max_scan: i64, delim_len: i64&) -> i64 {
     var scan_h = cursor;
     while scan_h < max_scan {
-        if scan_h + 4 <= body.len && body[scan_h] == '\r' && body[scan_h + 1] == '\n' && body[scan_h + 2] == '\r' && body[scan_h + 3] == '\n' {
+        if scan_h + 4 <= body.len && body[scan_h] == '\r' && body[scan_h + 1] == '\n' &&
+           body[scan_h + 2] == '\r' && body[scan_h + 3] == '\n' {
             delim_len = 4;
             return scan_h;
         }
@@ -191,7 +187,12 @@ fn find_header_end(body: const u8[:], cursor: i64, max_scan: i64, delim_len: i64
     return -1;
 }
 
-fn find_next_boundary_delim(body: const u8[:], cursor: i64, part_delim: const u8[:], shift_table: const u16[256]&) -> i64 {
+fn find_next_boundary_delim(
+    body:        const u8[:],
+    cursor:      i64,
+    part_delim:  const u8[:],
+    shift_table: const u16[256]&,
+) -> i64 {
     var search_pos = cursor;
     while search_pos < body.len {
         let found = bmh_find(body, part_delim[..], shift_table, search_pos);
@@ -263,10 +264,108 @@ fn format_content_disposition<B>(name: const u8[:], filename: const u8[:], out: 
     return true;
 }
 
+// Parses a single multipart body part after the initial or preceding boundary delimiter.
+//
+// Example:
+//   body = "\r\nContent-Type: text/plain\r\n\r\nHello\r\n--boundary--", cursor = 0
+//   returns: MultipartError.Ok, advances cursor to end of part body
+fn parse_multipart_part(
+    body:              const u8[:],
+    cursor:            i64&,
+    part_delim:        const u8[:],
+    shift_table:       const u16[256]&,
+    options:           const MultipartOptions&,
+    total_memory_used: i64&,
+    msg:               MultipartMessage&,
+) -> MultipartError {
+    if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
+        cursor += 2;
+    } else if cursor < body.len && body[cursor] == '\n' {
+        cursor += 1;
+    } else {
+        return MultipartError.PrematureEOF;
+    }
+
+    guard cursor < body.len else {
+        return MultipartError.PrematureEOF;
+    }
+
+    guard msg.parts.len < options.max_parts else {
+        return MultipartError.ExceededMaxParts;
+    }
+
+    var header_delim_len: i64 = 0;
+    let max_h_scan = if cursor + options.max_header_bytes < body.len {
+        cursor + options.max_header_bytes
+    } else {
+        body.len
+    };
+    let header_end = find_header_end(body, cursor, max_h_scan, header_delim_len);
+    guard header_end >= 0 else {
+        return MultipartError.InvalidPartHeaders;
+    }
+
+    let raw_part_headers = body[cursor..header_end];
+    // Go #81741 / CVE-2026-94440 & Go #65383: Account for header memory to prevent limit bypass
+    guard options.max_memory_bytes - total_memory_used >= raw_part_headers.len else {
+        return MultipartError.ExceededMaxMemory;
+    }
+    total_memory_used += raw_part_headers.len;
+
+    var part_headers = HeaderMap { .. };
+    let h_err = parse_headers(raw_part_headers, part_headers);
+    guard is_ok(h_err) else {
+        return MultipartError.InvalidPartHeaders;
+    }
+
+    // RFC 7578 Section 4.7 & Go #66434 / #63855: Content-Transfer-Encoding is deprecated and MUST be rejected
+    if has_header(part_headers, "content-transfer-encoding") {
+        return MultipartError.InvalidPartHeaders;
+    }
+
+    cursor = header_end + header_delim_len;
+
+    let next_delim_pos = find_next_boundary_delim(body, cursor, part_delim[..], shift_table);
+    guard next_delim_pos >= 0 else {
+        return MultipartError.PrematureEOF;
+    }
+
+    var part_end = next_delim_pos;
+    if next_delim_pos > cursor && body[next_delim_pos - 1] == '\r' {
+        part_end = next_delim_pos - 1;
+    }
+
+    let part_data = body[cursor..part_end];
+    guard options.max_memory_bytes - total_memory_used >= part_data.len else {
+        return MultipartError.ExceededMaxMemory;
+    }
+    total_memory_used += part_data.len;
+
+    var part = MultipartPart { headers: part_headers, .. };
+    part.data = part_data;
+    let meta_ok = populate_part_metadata(part_headers, part);
+    guard meta_ok else {
+        return MultipartError.InvalidPartHeaders;
+    }
+    msg.parts.push(part);
+
+    cursor = next_delim_pos + part_delim.len;
+    return MultipartError.None;
+}
+
 // Delimiters are matched using a 16-bit Boyer-Moore-Horspool shift table,
 // requiring CRLF, LF, or '--' immediately after the boundary to avoid prefix
 // collisions. Total memory and part counts are bounded by options.
-fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartOptions = default_multipart_options()) -> MultipartMessage, MultipartError {
+//
+// Example:
+//   body = "--boundary\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\nval\r\n--boundary--\r\n"
+//   boundary = "boundary"
+//   returns: msg with 1 part, err = MultipartError.None
+fn parse_multipart(
+    body:     const u8[:],
+    boundary: const u8[:],
+    options:  MultipartOptions = MultipartOptions { .. },
+) -> MultipartMessage, MultipartError {
     var msg = MultipartMessage { .. };
     guard body.len > 0 else { return msg, MultipartError.EmptyInput; }
 
@@ -326,84 +425,13 @@ fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartO
             break; // Valid closing boundary reached
         }
 
-        if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
-            cursor += 2;
-        } else if cursor < body.len && body[cursor] == '\n' {
-            cursor += 1;
-        } else {
+        let p_err = parse_multipart_part(
+            body, cursor, part_delim[..], shift_table, options, total_memory_used, msg,
+        );
+        guard p_err == MultipartError.None else {
             msg.valid = false;
-            return msg, MultipartError.PrematureEOF;
+            return msg, p_err;
         }
-
-        guard cursor < body.len else {
-            msg.valid = false;
-            return msg, MultipartError.PrematureEOF;
-        }
-
-        guard msg.parts.len < options.max_parts else {
-            msg.valid = false;
-            return msg, MultipartError.ExceededMaxParts;
-        }
-
-        var header_delim_len: i64 = 0;
-        let max_h_scan = if cursor + options.max_header_bytes < body.len { cursor + options.max_header_bytes } else { body.len };
-        let header_end = find_header_end(body, cursor, max_h_scan, header_delim_len);
-        guard header_end >= 0 else {
-            msg.valid = false;
-            return msg, MultipartError.InvalidPartHeaders;
-        }
-
-        let raw_part_headers = body[cursor..header_end];
-        // Go #81741 / CVE-2026-94440 & Go #65383: Account for header memory to prevent limit bypass
-        guard options.max_memory_bytes - total_memory_used >= raw_part_headers.len else {
-            msg.valid = false;
-            return msg, MultipartError.ExceededMaxMemory;
-        }
-        total_memory_used += raw_part_headers.len;
-
-        var part_headers = HeaderMap { .. };
-        let h_err = parse_headers(raw_part_headers, part_headers);
-        guard is_ok(h_err) else {
-            msg.valid = false;
-            return msg, MultipartError.InvalidPartHeaders;
-        }
-
-        // RFC 7578 Section 4.7 & Go #66434 / #63855: Content-Transfer-Encoding is deprecated and MUST be rejected
-        if has_header(part_headers, "content-transfer-encoding") {
-            msg.valid = false;
-            return msg, MultipartError.InvalidPartHeaders;
-        }
-
-        cursor = header_end + header_delim_len;
-
-        let next_delim_pos = find_next_boundary_delim(body, cursor, part_delim[..], shift_table);
-        guard next_delim_pos >= 0 else {
-            msg.valid = false;
-            return msg, MultipartError.PrematureEOF;
-        }
-
-        var part_end = next_delim_pos;
-        if next_delim_pos > cursor && body[next_delim_pos - 1] == '\r' {
-            part_end = next_delim_pos - 1;
-        }
-
-        let part_data = body[cursor..part_end];
-        guard options.max_memory_bytes - total_memory_used >= part_data.len else {
-            msg.valid = false;
-            return msg, MultipartError.ExceededMaxMemory;
-        }
-        total_memory_used += part_data.len;
-
-        var part = MultipartPart { headers: part_headers, .. };
-        part.data = part_data;
-        let meta_ok = populate_part_metadata(part_headers, part);
-        guard meta_ok else {
-            msg.valid = false;
-            return msg, MultipartError.InvalidPartHeaders;
-        }
-        msg.parts.push(part);
-
-        cursor = next_delim_pos + part_delim.len;
     }
 
     guard has_closing_delimiter else {
@@ -438,24 +466,29 @@ enum RangeForm {
 }
 
 struct RangeSpec {
-    form: RangeForm = RangeForm.Explicit,
-    start: i64 = 0,
-    end_pos: i64 = 0,
-    has_end: bool = true,
+    form:    RangeForm = RangeForm.Explicit,
+    start:   i64       = 0,
+    end_pos: i64       = 0,
+    has_end: bool      = true,
 }
 
 struct NormalizedRange {
-    start: i64 = 0,
+    start:   i64 = 0,
     end_pos: i64 = 0,
 }
 
 struct RangeSet {
-    ranges: NormalizedRange[..16] = [],
-    is_satisfiable: bool = true,
-    coalesced: bool = false,
-    resource_length: i64 = 0,
+    ranges:          NormalizedRange[..16] = [],
+    is_satisfiable:  bool                  = true,
+    coalesced:       bool                  = false,
+    resource_length: i64                   = 0,
 }
 
+// Parses a decimal integer from a slice, returning the value and success status.
+//
+// Example:
+//   s = "12345"
+//   returns: val = 12345, ok = true
 fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     guard s.len > 0 else { return 0, false; }
     for b in s {
@@ -466,6 +499,11 @@ fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     return val as! i64, true;
 }
 
+// Parses a single HTTP range specification token (e.g. "0-499", "500-", "-500").
+//
+// Example:
+//   item = "0-499", spec = RangeSpec { .. }
+//   returns: RangeError.None, populates spec with form and offsets
 fn parse_single_range_spec(item: const u8[:], spec: RangeSpec&) -> RangeError {
     let pre_raw, post_raw, has_dash = item.split_once_byte('-');
     guard has_dash else { return RangeError.MalformedRange; }
@@ -533,7 +571,9 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
     guard raw_ranges.len > 0 else { return; }
     for i in 1..raw_ranges.len {
         var j = i;
-        while j > 0 && (raw_ranges[j].start < raw_ranges[j - 1].start || (raw_ranges[j].start == raw_ranges[j - 1].start && raw_ranges[j].end_pos < raw_ranges[j - 1].end_pos)) {
+        while j > 0 && (raw_ranges[j].start < raw_ranges[j - 1].start ||
+            (raw_ranges[j].start == raw_ranges[j - 1].start &&
+             raw_ranges[j].end_pos < raw_ranges[j - 1].end_pos)) {
             let temp = raw_ranges[j];
             raw_ranges[j] = raw_ranges[j - 1];
             raw_ranges[j - 1] = temp;
@@ -544,7 +584,9 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
     var merged = raw_ranges[0];
     for i in 1..raw_ranges.len {
         let next_r = raw_ranges[i];
-        if next_r.start <= merged.end_pos || (merged.end_pos < 9223372036854775807 && next_r.start <= merged.end_pos + 1) {
+        let can_merge = next_r.start <= merged.end_pos ||
+            (merged.end_pos < 9223372036854775807 && next_r.start <= merged.end_pos + 1);
+        if can_merge {
             merged.end_pos = core::ct_max_i64(merged.end_pos, next_r.end_pos);
         } else {
             if out_ranges.len < 16 {
@@ -558,29 +600,17 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
     }
 }
 
-// Parses an HTTP Range header into normalized intervals (RFC 9110 Section 14.1.2).
-// When with_coalesce is true, overlapping and adjacent ranges are merged.
-fn parse_range_header(
-    header_val: const u8[:],
-    resource_len: i64,
-    with_coalesce: bool = true,
-    max_ranges: i32 = 16,
-) -> RangeSet, RangeError {
-    var rs = RangeSet { resource_length: resource_len, is_satisfiable: true, coalesced: false, .. };
-    let trimmed = trim_lws(header_val);
-    guard trimmed.len > 0 else { return rs, RangeError.EmptyRange; }
-    // CVE-2026-78667: Limit maximum size of parsed Range header to prevent CPU exhaustion DoS
-    guard trimmed.len <= 1024 else { return rs, RangeError.ExceededMaxRanges; }
-
-    guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes=") else {
-        return rs, RangeError.InvalidUnit;
-    }
-
-    let spec_list = trimmed[6..];
-    var specs: RangeSpec[..32] = [];
-    var raw_ranges: NormalizedRange[..32] = [];
-
-    var cursor: i64 = 0;
+// Parses a comma-separated list of range specifications.
+//
+// Example:
+//   spec_list = "0-499, 500-999", max_ranges = 16
+//   returns: RangeError.None, populates specs
+fn parse_range_spec_list(
+    spec_list:  const u8[:],
+    max_ranges: i32,
+    specs:      RangeSpec[..32]&,
+) -> RangeError {
+    var cursor:         i64 = 0;
     var empty_elements: i32 = 0;
     let max_empty: i32 = 16;
 
@@ -595,21 +625,51 @@ fn parse_range_header(
 
         if item.len == 0 {
             empty_elements++;
-            guard empty_elements <= max_empty else { return rs, RangeError.TooManyEmptyElements; }
+            guard empty_elements <= max_empty else { return RangeError.TooManyEmptyElements; }
             continue;
         }
 
         guard specs.len < max_ranges else {
-            return rs, RangeError.ExceededMaxRanges;
+            return RangeError.ExceededMaxRanges;
         }
 
         var spec = RangeSpec { .. };
         let spec_err = parse_single_range_spec(item, spec);
-        guard is_ok(spec_err) else { return rs, spec_err; }
+        guard is_ok(spec_err) else { return spec_err; }
 
         specs.push(spec);
     }
+    return RangeError.None;
+}
 
+// Parses an HTTP Range header into normalized intervals (RFC 9110 Section 14.1.2).
+// When with_coalesce is true, overlapping and adjacent ranges are merged.
+//
+// Example:
+//   header_val = "bytes=0-499, 1000-1499", resource_len = 2000
+//   returns: RangeSet with parsed ranges, RangeError.None
+fn parse_range_header(
+    header_val:    const u8[:],
+    resource_len:  i64,
+    with_coalesce: bool = true,
+    max_ranges:    i32  = 16,
+) -> RangeSet, RangeError {
+    var rs = RangeSet { resource_length: resource_len, is_satisfiable: true, coalesced: false, .. };
+    let trimmed = trim_lws(header_val);
+    guard trimmed.len > 0 else { return rs, RangeError.EmptyRange; }
+    // CVE-2026-78667: Limit maximum size of parsed Range header to prevent CPU exhaustion DoS
+    guard trimmed.len <= 1024 else { return rs, RangeError.ExceededMaxRanges; }
+
+    guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes=") else {
+        return rs, RangeError.InvalidUnit;
+    }
+
+    let spec_list = trimmed[6..];
+    var specs:      RangeSpec[..32]       = [];
+    var raw_ranges: NormalizedRange[..32] = [];
+
+    let parse_err = parse_range_spec_list(spec_list, max_ranges, specs);
+    guard is_ok(parse_err) else { return rs, parse_err; }
     guard specs.len > 0 else { return rs, RangeError.EmptyRange; }
 
     for spec in specs {
@@ -663,8 +723,8 @@ fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&)
 // Weak ETags are rejected; date comparisons truncate to whole seconds (RFC 9110 Section 13.1.5).
 fn evaluate_if_range(
     if_range_header: const u8[:],
-    etag: const u8[:],
-    mod_time: core::Time,
+    etag:            const u8[:],
+    mod_time:        core::Time,
 ) -> bool {
     let trimmed = trim_lws(if_range_header);
     guard trimmed.len > 0 else { return false; }
@@ -740,14 +800,14 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
 // Serves an HTTP GET range request, writing status code, headers, and payload (RFC 9110 Section 14).
 fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     req_range_header: const u8[:],
-    if_range_header: const u8[:],
-    etag: const u8[:],
-    mod_time: core::Time,
-    resource_len: i64,
-    content_type: const u8[:],
-    out_status: i32&,
-    out_headers: HeaderMap&,
-    out_body: u8[>..]&,
+    if_range_header:  const u8[:],
+    etag:             const u8[:],
+    mod_time:         core::Time,
+    resource_len:     i64,
+    content_type:     const u8[:],
+    out_status:       i32&,
+    out_headers:      HeaderMap&,
+    out_body:         u8[>..]&,
 ) {
     reset_for_keep_alive(out_headers);
     insert_header(out_headers, "accept-ranges", "bytes");
@@ -792,33 +852,64 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     };
 }
 
-// Handles a pre-parsed RangeSet, validating 64-bit integer overflow and writing status, headers, and body slices.
-fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
-    rs: const RangeSet&,
+fn validate_range_set_bounds(ranges: const NormalizedRange[..16]&) -> bool {
+    for r in ranges {
+        if r.end_pos < r.start || r.start < 0 || r.end_pos - r.start >= 9223372036854775807 {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn serve_multipart_ranges<OpenFn: fn(i64, i64, u8[>..]&)>(
+    ranges:       const NormalizedRange[..16]&,
     resource_len: i64,
     content_type: const u8[:],
-    out_status: i32&,
-    out_headers: HeaderMap&,
-    out_body: u8[>..]&,
+    boundary:     const u8[:],
+    out_body:     u8[>..]&,
 ) {
-    if !rs.is_satisfiable || rs.ranges.len == 0 {
+    var cr_val: u8[>..] = [];
+    for r in ranges {
+        out_body.append("--");
+        out_body.append(boundary);
+        out_body.append("\r\n");
+
+        out_body.append("Content-Type: ");
+        out_body.append(content_type);
+        out_body.append("\r\n");
+
+        out_body.append("Content-Range: ");
+        cr_val.clear();
+        format_content_range(r.start, r.end_pos, resource_len, cr_val);
+        out_body.append(cr_val[..]);
+        out_body.append("\r\n\r\n");
+
+        let part_len = r.end_pos - r.start + 1;
+        OpenFn(r.start, part_len, out_body);
+        out_body.append("\r\n");
+    }
+
+    out_body.append("--");
+    out_body.append(boundary);
+    out_body.append("--\r\n");
+}
+
+// Handles a pre-parsed RangeSet, validating 64-bit integer overflow and writing status, headers, and body slices.
+fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
+    rs:           const RangeSet&,
+    resource_len: i64,
+    content_type: const u8[:],
+    out_status:   i32&,
+    out_headers:  HeaderMap&,
+    out_body:     u8[>..]&,
+) {
+    if !rs.is_satisfiable || rs.ranges.len == 0 || !validate_range_set_bounds(rs.ranges) {
         out_status = 416;
         var cr_val: u8[>..] = [];
         format_content_range(-1, -1, resource_len, cr_val);
         insert_header(out_headers, "content-range", cr_val[..]);
         insert_header(out_headers, "content-length", "0");
         return;
-    }
-
-    for r in rs.ranges {
-        if r.end_pos < r.start || r.start < 0 || r.end_pos - r.start >= 9223372036854775807 {
-            out_status = 416;
-            var cr_val: u8[>..] = [];
-            format_content_range(-1, -1, resource_len, cr_val);
-            insert_header(out_headers, "content-range", cr_val[..]);
-            insert_header(out_headers, "content-length", "0");
-            return;
-        }
     }
 
     if rs.ranges.len == 1 {
@@ -844,29 +935,9 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
         ct_val.append(boundary);
         insert_header(out_headers, "content-type", ct_val[..]);
 
-        for r in rs.ranges {
-            out_body.append("--");
-            out_body.append(boundary);
-            out_body.append("\r\n");
-
-            out_body.append("Content-Type: ");
-            out_body.append(content_type);
-            out_body.append("\r\n");
-
-            out_body.append("Content-Range: ");
-            var cr_val: u8[>..] = [];
-            format_content_range(r.start, r.end_pos, resource_len, cr_val);
-            out_body.append(cr_val[..]);
-            out_body.append("\r\n\r\n");
-
-            let part_len = r.end_pos - r.start + 1;
-            OpenFn(r.start, part_len, out_body);
-            out_body.append("\r\n");
-        }
-
-        out_body.append("--");
-        out_body.append(boundary);
-        out_body.append("--\r\n");
+        serve_multipart_ranges(rs.ranges, resource_len, content_type, boundary, out_body) { off, len, out =>
+            OpenFn(off, len, out);
+        };
 
         var len_str: u8[..32] = [];
         format(len_str, out_body.len as i64);

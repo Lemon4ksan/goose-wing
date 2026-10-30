@@ -18,10 +18,10 @@ import wing from "../..";
 fn test_rfc9457_problem_details() {
     // 1. Serialization with explicit type URI
     var prob = wing::ProblemDetails {
-        status: 403,
+        status:   403,
         type_uri: "https://example.com/probs/out-of-credit",
-        title: "You do not have enough credit.",
-        detail: "Your current balance is 30, but that costs 50.",
+        title:    "You do not have enough credit.",
+        detail:   "Your current balance is 30, but that costs 50.",
         instance: "/account/12345/msgs/abc",
     };
     var json_out: u8[..1024] = [];
@@ -36,7 +36,7 @@ fn test_rfc9457_problem_details() {
     // 2. Default type URI "about:blank" (RFC 9457 §4.2.1)
     var blank_prob = wing::ProblemDetails {
         status: 404,
-        title: "Item Not Found",
+        title:  "Item Not Found",
         ..
     };
     var blank_out: u8[..512] = [];
@@ -67,8 +67,8 @@ fn test_rfc7239_forwarded() {
     // 1. Format IPv4 Forwarded element
     var elem4 = wing::ForwardedElement {
         for_node: "192.0.2.60",
-        proto: "https",
-        host: "api.example.com",
+        proto:    "https",
+        host:     "api.example.com",
         ..
     };
     var fwd_buf: u8[..512] = [];
@@ -81,9 +81,9 @@ fn test_rfc7239_forwarded() {
 
     // 2. Format IPv6 Forwarded element with mandatory double quotes (RFC 7239 §4)
     var elem6 = wing::ForwardedElement {
-        by: "203.0.113.43",
+        by:       "203.0.113.43",
         for_node: "[2001:db8:cafe::17]:4711",
-        proto: "http",
+        proto:    "http",
         ..
     };
     var fwd_buf6: u8[..512] = [];

@@ -18,12 +18,12 @@ import http.cache.validators;
 
 // Configuration options governing cache storage limits, heuristics, and sharing mode.
 struct CacheOptions {
-    shared: bool = false,
-    cache_private: bool = false,
-    heuristic_fraction: i64 = 10,
-    immutable_min_ttl_sec: i64 = 31536000,
-    ignore_cargo_cult: bool = true,
-    max_entry_size: i64 = 4096,
+    shared:                bool = false,
+    cache_private:         bool = false,
+    heuristic_fraction:    i64  = 10,
+    immutable_min_ttl_sec: i64  = 31536000,
+    ignore_cargo_cult:     bool = true,
+    max_entry_size:        i64  = 4096,
 }
 
 // Constructs CacheOptions with RFC 9111 baseline defaults.
@@ -31,22 +31,22 @@ struct CacheOptions {
 
 // Cached HTTP representation including headers, body, Vary invariants, and intrusive LRU pointers.
 struct CachedEntry {
-    url_hash: u32 = 0,
-    url: u8[..2048] = [],
-    method: u8[..16] = "GET",
-    status_code: i32 = 200,
-    headers: HeaderMap = HeaderMap { .. },
-    cc: CacheControl = CacheControl { .. },
-    etag: EntityTag = EntityTag { .. },
-    last_modified: core::Time = core::Time { .. },
-    timestamps: CacheTimestamps = CacheTimestamps { .. },
-    vary: VarySnapshot = VarySnapshot { .. },
-    body: u8[..4096] = [],
-    head_only: bool = false,
-    security_zeroed: bool = false,
-    is_valid: bool = false,
-    prev_lru: i32 = -1,
-    next_lru: i32 = -1,
+    url_hash:        u32             = 0,
+    url:             u8[..2048]      = [],
+    method:          u8[..16]        = "GET",
+    status_code:     i32             = 200,
+    headers:         HeaderMap       = HeaderMap { .. },
+    cc:              CacheControl    = CacheControl { .. },
+    etag:            EntityTag       = EntityTag { .. },
+    last_modified:   core::Time      = core::Time { .. },
+    timestamps:      CacheTimestamps = CacheTimestamps { .. },
+    vary:            VarySnapshot    = VarySnapshot { .. },
+    body:            u8[..4096]      = [],
+    head_only:       bool            = false,
+    security_zeroed: bool            = false,
+    is_valid:        bool            = false,
+    prev_lru:        i32             = -1,
+    next_lru:        i32             = -1,
 }
 
 // Constructs an empty, uninitialized CachedEntry.
@@ -116,12 +116,12 @@ enum LookupResultKind {
 
 // Result of a cache lookup operation.
 struct LookupDecision {
-    kind: LookupResultKind = LookupResultKind.Miss,
-    entry_idx: i64 = -1,
-    conditional_headers: HeaderMap = HeaderMap { .. },
-    status_code: i32 = 0,
-    revalidate_in_background: bool = false,
-    cached_response: Response = Response { .. },
+    kind:                     LookupResultKind = LookupResultKind.Miss,
+    entry_idx:                i64              = -1,
+    conditional_headers:      HeaderMap        = HeaderMap { .. },
+    status_code:              i32              = 0,
+    revalidate_in_background: bool             = false,
+    cached_response:          Response         = Response { .. },
 }
 
 // Classification of on_response cache action.
@@ -133,26 +133,26 @@ enum ResponseDecisionKind {
 
 // Result of evaluating a network response against caching policies.
 struct ResponseDecision {
-    kind: ResponseDecisionKind = ResponseDecisionKind.PassThrough,
-    entry_idx: i64 = -1,
-    response: Response = Response { .. },
+    kind:      ResponseDecisionKind = ResponseDecisionKind.PassThrough,
+    entry_idx: i64                  = -1,
+    response:  Response             = Response { .. },
 }
 
 // ---- writers / single-flight request collapsing ----------------------------
 
 struct CacheWriterFlight {
-    key: u8[..256] = [],
-    is_active: bool = false,
-    waiter_count: i32 = 0,
-    total_bytes: i64 = 0,
-    completed: bool = false,
-    aborted: bool = false,
+    key:          u8[..256] = [],
+    is_active:    bool      = false,
+    waiter_count: i32       = 0,
+    total_bytes:  i64       = 0,
+    completed:    bool      = false,
+    aborted:      bool      = false,
 }
 
 // Single-flight coordinator for concurrent network transactions (Chromium HttpCache::Writers parity).
 struct CacheWriters {
     flights: CacheWriterFlight[..16] = [],
-    group: core::SingleflightGroup = core::SingleflightGroup { .. },
+    group:   core::SingleflightGroup = core::SingleflightGroup { .. },
 }
 
 // Constructs a zero-initialized CacheWriters container.
@@ -184,11 +184,11 @@ fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
     guard writers.flights.len < writers.flights.cap else { return true, -1; }
 
     var flight = CacheWriterFlight {
-        is_active: true,
+        is_active:    true,
         waiter_count: 0,
-        total_bytes: 0,
-        completed: false,
-        aborted: false,
+        total_bytes:  0,
+        completed:    false,
+        aborted:      false,
         ..
     };
     guard key.len <= flight.key.cap else { return false, -1; }
@@ -215,16 +215,16 @@ fn abort_writer(writers: CacheWriters&, flight_idx: i64) {
 
 // HTTP cache coordinator with intrusive O(1) LRU list.
 struct HttpCache {
-    options: CacheOptions = CacheOptions { .. },
-    entries: CachedEntry[..16] = [],
-    writers: CacheWriters = CacheWriters { .. },
-    lru_head: i32 = -1,
-    lru_tail: i32 = -1,
-    total_hits: i64 = 0,
-    total_misses: i64 = 0,
-    total_revalidations: i64 = 0,
-    total_stores: i64 = 0,
-    total_invalidations: i64 = 0,
+    options:             CacheOptions      = CacheOptions { .. },
+    entries:             CachedEntry[..16] = [],
+    writers:             CacheWriters      = CacheWriters { .. },
+    lru_head:            i32               = -1,
+    lru_tail:            i32               = -1,
+    total_hits:          i64               = 0,
+    total_misses:        i64               = 0,
+    total_revalidations: i64               = 0,
+    total_stores:        i64               = 0,
+    total_invalidations: i64               = 0,
 }
 
 // Constructs a new HttpCache engine with specified options.
@@ -306,13 +306,13 @@ fn is_same_origin_url(target_url: const u8[:], base_url_raw: const u8[:]) -> boo
 // Searches cache entries for matching URL and valid Vary variant.
 // Returns entry index or -1 on miss.
 fn find_matching_entry(
-    cache: const HttpCache&,
-    req_url: const u8[:],
-    req_hash: u32,
+    cache:       const HttpCache&,
+    req_url:     const u8[:],
+    req_hash:    u32,
     req_headers: const HeaderMap&,
-    is_get: bool,
+    is_get:      bool,
 ) -> i64 {
-    var matched_idx: i64 = -1;
+    var matched_idx:      i64 = -1;
     var newest_date_unix: i64 = -1;
 
     for &entry, idx in cache.entries {
@@ -357,9 +357,9 @@ fn build_revalidation_headers(entry: const CachedEntry&) -> HeaderMap {
 // Performs cache lookup for an incoming request (RFC 9111 Section 4).
 // Evaluates freshness, Vary matching, and returns Hit, Revalidate, Miss, or Fail504.
 fn lookup(
-    cache: HttpCache&,
-    req: const Request&,
-    cur_now: core::Time,
+    cache:    HttpCache&,
+    req:      const Request&,
+    cur_now:  core::Time,
     cur_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
@@ -373,7 +373,10 @@ fn lookup(
     }
 
     let req_headers = req.request_headers_to_map();
-    let req_cc = parse_cache_control_headers(req_headers, true, cache.options.ignore_cargo_cult);
+    let req_cc = parse_cache_control_headers(
+        req_headers,
+        CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
 
     if req_cc.is_no_store() {
         cache.total_misses++;
@@ -407,9 +410,13 @@ fn lookup(
     }
 
     let metrics = evaluate_freshness(
-        matched_entry.cc, req_cc, matched_entry.headers, ts,
-        cache.options.shared, matched_entry.security_zeroed,
-        cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec,
+        matched_entry.cc,
+        req_cc,
+        matched_entry.headers,
+        ts,
+        FreshnessPolicy { shared: cache.options.shared, security_zeroed: matched_entry.security_zeroed },
+        cache.options.heuristic_fraction,
+        cache.options.immutable_min_ttl_sec,
     );
 
     let can_serve = (metrics.is_fresh || metrics.stale_allowed) && !metrics.requires_revalidation;
@@ -440,10 +447,10 @@ fn lookup(
 
 // Handles 304 Not Modified response by merging fresh headers into cached entry.
 fn freshen_cached_entry_304(
-    cache: HttpCache&,
+    cache:                HttpCache&,
     revalidate_entry_idx: i64,
-    resp: const Response&,
-    ts: const CacheTimestamps&,
+    resp:                 const Response&,
+    ts:                   const CacheTimestamps&,
 ) -> ResponseDecision {
     var dec = ResponseDecision { .. };
     guard revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len else {
@@ -463,7 +470,10 @@ fn freshen_cached_entry_304(
     if ts.has_monotonic {
         entry.timestamps.has_monotonic = true;
     }
-    entry.cc = parse_cache_control_headers(entry.headers, false, cache.options.ignore_cargo_cult);
+    entry.cc = parse_cache_control_headers(
+        entry.headers,
+        CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
 
     let etag_raw = entry.headers.get_header("etag");
     if etag_raw.len > 0 {
@@ -484,11 +494,11 @@ fn freshen_cached_entry_304(
 
 // Evaluates whether a network response is permissible for storage under RFC 9111 rules.
 fn is_response_cacheable(
-    cache: const HttpCache&,
-    req_cc: const CacheControl&,
+    cache:       const HttpCache&,
+    req_cc:      const CacheControl&,
     req_headers: const HeaderMap&,
-    resp: const Response&,
-    resp_cc: const CacheControl&,
+    resp:        const Response&,
+    resp_cc:     const CacheControl&,
 ) -> bool {
     if req_cc.is_no_store() || resp_cc.is_no_store() { return false; }
     if resp_cc.is_must_understand() && !is_heuristically_cacheable_status(resp.status_code) { return false; }
@@ -560,10 +570,10 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
 
 // Coordinates post-network response caching, 304 revalidations, and unsafe invalidations (RFC 9111).
 fn on_response(
-    cache: HttpCache&,
-    req: const Request&,
-    resp: const Response&,
-    ts: const CacheTimestamps&,
+    cache:                HttpCache&,
+    req:                  const Request&,
+    resp:                 const Response&,
+    ts:                   const CacheTimestamps&,
     revalidate_entry_idx: i64 = -1,
 ) -> ResponseDecision {
     var dec = ResponseDecision { response: copy(resp), .. };
@@ -591,7 +601,10 @@ fn on_response(
         let entry = cache.entries[revalidate_entry_idx];
         if entry.is_valid {
             let req_headers = req.request_headers_to_map();
-            let req_cc = parse_cache_control_headers(req_headers, true, cache.options.ignore_cargo_cult);
+            let req_cc = parse_cache_control_headers(
+                req_headers,
+                CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+            );
             let age_hdr = parse_age_header(get_header(entry.headers, "age"));
 
             var eval_ts = entry.timestamps;
@@ -614,7 +627,11 @@ fn on_response(
                 cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec,
             );
             let can_stale_err = evaluate_stale_if_error(
-                entry.cc, req_cc, cur_age, lifetime, cache.options.shared, entry.security_zeroed,
+                entry.cc,
+                req_cc,
+                cur_age,
+                lifetime,
+                FreshnessPolicy { shared: cache.options.shared, security_zeroed: entry.security_zeroed },
             );
             if can_stale_err {
                 dec.kind = ResponseDecisionKind.FreshenAndReturn;
@@ -631,9 +648,15 @@ fn on_response(
     }
 
     let req_headers = req.request_headers_to_map();
-    let req_cc = parse_cache_control_headers(req_headers, true, cache.options.ignore_cargo_cult);
+    let req_cc = parse_cache_control_headers(
+        req_headers,
+        CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
     let resp_headers = resp.response_headers_to_map();
-    let resp_cc = parse_cache_control_headers(resp_headers, false, cache.options.ignore_cargo_cult);
+    let resp_cc = parse_cache_control_headers(
+        resp_headers,
+        CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
 
     guard cache.is_response_cacheable(req_cc, req_headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;
@@ -660,17 +683,17 @@ fn on_response(
     }
 
     var entry = CachedEntry {
-        url_hash: hash_fnv1a(req.url[..]),
-        status_code: resp.status_code,
-        headers: sanitized,
-        cc: resp_cc,
-        etag: parse_etag(resp_headers.get_header("etag")),
-        last_modified: lm_time,
-        timestamps: ts,
-        vary: vary_snap,
-        head_only: is_head,
+        url_hash:        hash_fnv1a(req.url[..]),
+        status_code:     resp.status_code,
+        headers:         sanitized,
+        cc:              resp_cc,
+        etag:            parse_etag(resp_headers.get_header("etag")),
+        last_modified:   lm_time,
+        timestamps:      ts,
+        vary:            vary_snap,
+        head_only:       is_head,
         security_zeroed: false,
-        is_valid: true,
+        is_valid:        true,
         ..
     };
     entry.url.append(req.url[..]);
@@ -705,10 +728,10 @@ fn invalidate_matching_url(cache: HttpCache&, target_url: const u8[:]) -> i64 {
 
 // Invalidates a target header URL (Location or Content-Location) if valid and same-origin.
 fn invalidate_target_if_same_origin(
-    cache: HttpCache&,
+    cache:      HttpCache&,
     header_raw: const u8[:],
-    base_url: const core::Url&,
-    base_orig: core::Origin,
+    base_url:   const core::Url&,
+    base_orig:  core::Origin,
 ) -> i64 {
     guard header_raw.len > 0 && base_url.valid else { return 0; }
     let target_url, err = core::parse_url_with_base(header_raw, base_url);

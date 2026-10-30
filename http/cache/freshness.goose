@@ -14,30 +14,35 @@ import http.cache.cache_control;
 
 // Wall-clock and monotonic timestamps captured across request/response lifecycle.
 struct CacheTimestamps {
-    request_time: core::Time = core::Time { .. },
-    response_time: core::Time = core::Time { .. },
-    now: core::Time = core::Time { .. },
-    request_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
-    response_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
-    now_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
-    has_monotonic: bool = false,
-    clock_available: bool = true,
+    request_time:    core::Time             = core::Time { .. },
+    response_time:   core::Time             = core::Time { .. },
+    now:             core::Time             = core::Time { .. },
+    request_mono:    core::MonotonicInstant = core::MonotonicInstant { .. },
+    response_mono:   core::MonotonicInstant = core::MonotonicInstant { .. },
+    now_mono:        core::MonotonicInstant = core::MonotonicInstant { .. },
+    has_monotonic:   bool                   = false,
+    clock_available: bool                   = true,
 }
 
 // Constructs a zero-initialized CacheTimestamps structure.
 // Constructs CacheTimestamps with specified wall-clock times.
 fn new_cache_timestamps(req_time: core::Time, resp_time: core::Time, cur_now: core::Time) -> CacheTimestamps {
     return CacheTimestamps {
-        request_time: req_time,
-        response_time: resp_time,
-        now: cur_now,
+        request_time:    req_time,
+        response_time:   resp_time,
+        now:             cur_now,
         clock_available: true,
         ..
     };
 }
 
 // Returns a copy of ts with monotonic clock instants recorded.
-fn with_monotonic(ts: CacheTimestamps, req_mono: core::MonotonicInstant, resp_mono: core::MonotonicInstant, cur_mono: core::MonotonicInstant) -> CacheTimestamps {
+fn with_monotonic(
+    ts:        CacheTimestamps,
+    req_mono:  core::MonotonicInstant,
+    resp_mono: core::MonotonicInstant,
+    cur_mono:  core::MonotonicInstant,
+) -> CacheTimestamps {
     var updated = ts;
     updated.request_mono = req_mono;
     updated.response_mono = resp_mono;
@@ -50,13 +55,13 @@ fn with_monotonic(ts: CacheTimestamps, req_mono: core::MonotonicInstant, resp_mo
 
 // Freshness evaluation metrics and decision flags.
 struct FreshnessMetrics {
-    current_age_sec: i64 = 0,
-    freshness_lifetime_sec: i64 = 0,
-    is_fresh: bool = false,
-    requires_revalidation: bool = false,
-    stale_allowed: bool = false,
+    current_age_sec:                i64  = 0,
+    freshness_lifetime_sec:         i64  = 0,
+    is_fresh:                       bool = false,
+    requires_revalidation:          bool = false,
+    stale_allowed:                  bool = false,
     stale_while_revalidate_allowed: bool = false,
-    stale_if_error_allowed: bool = false,
+    stale_if_error_allowed:         bool = false,
 }
 
 // ---- status code heuristic cacheability ------------------------------------
@@ -73,6 +78,10 @@ fn is_heuristically_cacheable_status(status_code: i32) -> bool {
 
 // Parses Age header delta-seconds, selecting the first member if multiple present (RFC 9111 §5.1).
 // Clamps values exceeding i32::MAX to 2147483647. Returns 0 for negative or malformed values.
+//
+// Example:
+//   raw_age = "120"
+//   returns: 120
 fn parse_age_header(raw_age: const u8[:]) -> i64 {
     var s = trim_lws(raw_age);
     guard s.len > 0 else { return 0; }
@@ -164,7 +173,11 @@ fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: core::Time
 }
 
 // Computes heuristic freshness lifetime (default 10% of Date - Last-Modified) (RFC 9111 §4.2.2).
-fn compute_last_modified_heuristic(resp_headers: const HeaderMap&, ref_time: core::Time, heuristic_fraction: i64) -> i64 {
+fn compute_last_modified_heuristic(
+    resp_headers:       const HeaderMap&,
+    ref_time:           core::Time,
+    heuristic_fraction: i64,
+) -> i64 {
     guard is_heuristically_cacheable_status(resp_headers.status_code) else { return 0; }
 
     let lm_raw = get_header(resp_headers, "last-modified");
@@ -190,12 +203,12 @@ fn compute_last_modified_heuristic(resp_headers: const HeaderMap&, ref_time: cor
 // Computes freshness lifetime according to RFC 9111 priority hierarchy.
 // Evaluates s-maxage (shared) > max-age > Expires > immutable > Last-Modified heuristic.
 fn compute_freshness_lifetime(
-    resp_cc: const CacheControl&,
-    resp_headers: const HeaderMap&,
-    ts: const CacheTimestamps&,
-    shared: bool = false,
-    heuristic_fraction: i64 = 10,
-    immutable_min_ttl_sec: i64 = 31536000,
+    resp_cc:               const CacheControl&,
+    resp_headers:          const HeaderMap&,
+    ts:                    const CacheTimestamps&,
+    shared:                bool = false,
+    heuristic_fraction:    i64  = 10,
+    immutable_min_ttl_sec: i64  = 31536000,
 ) -> i64 {
     guard !has_invalid_freshness(resp_cc) else { return 0; }
 
@@ -218,27 +231,32 @@ fn compute_freshness_lifetime(
 
 // ---- freshness evaluation against request & response directives -------------
 
+// Policy options governing cache freshness, max-stale allowance, and security overrides.
+struct FreshnessPolicy {
+    shared:          bool = false,
+    security_zeroed: bool = false,
+}
+
 // Checks whether max-stale serving is strictly prohibited by RFC 9111 or CVE-2026-93748 defense.
-fn is_max_stale_blocked(resp_cc: const CacheControl&, shared: bool, security_zeroed: bool) -> bool {
+fn is_max_stale_blocked(resp_cc: const CacheControl&, policy: FreshnessPolicy) -> bool {
     if is_must_revalidate(resp_cc) { return true; }
-    if shared && is_proxy_revalidate(resp_cc) { return true; }
+    if policy.shared && is_proxy_revalidate(resp_cc) { return true; }
     if has_s_maxage(resp_cc) { return true; }
-    if security_zeroed { return true; }
+    if policy.security_zeroed { return true; }
     return false;
 }
 
 // Evaluates whether serving stale response is permitted under max-stale or stale-while-revalidate.
 fn evaluate_stale_allowance(
-    resp_cc: const CacheControl&,
-    req_cc: const CacheControl&,
+    resp_cc:     const CacheControl&,
+    req_cc:      const CacheControl&,
     current_age: i64,
-    lifetime: i64,
-    shared: bool,
-    security_zeroed: bool,
-    out_swr: bool&,
+    lifetime:    i64,
+    policy:      FreshnessPolicy,
+    out_swr:     bool&,
 ) -> bool {
     out_swr = false;
-    guard !is_max_stale_blocked(resp_cc, shared, security_zeroed) else { return false; }
+    guard !is_max_stale_blocked(resp_cc, policy) else { return false; }
 
     let stale_sec = current_age - lifetime;
 
@@ -262,14 +280,13 @@ fn evaluate_stale_allowance(
 
 // Evaluates whether a stale cached response can be served during upstream error (RFC 5861 Section 4).
 fn evaluate_stale_if_error(
-    resp_cc: const CacheControl&,
-    req_cc: const CacheControl&,
+    resp_cc:     const CacheControl&,
+    req_cc:      const CacheControl&,
     current_age: i64,
-    lifetime: i64,
-    shared: bool,
-    security_zeroed: bool,
+    lifetime:    i64,
+    policy:      FreshnessPolicy,
 ) -> bool {
-    guard !is_max_stale_blocked(resp_cc, shared, security_zeroed) else { return false; }
+    guard !is_max_stale_blocked(resp_cc, policy) else { return false; }
     let stale_sec = current_age - lifetime;
 
     var max_sie: i32 = -1;
@@ -288,14 +305,13 @@ fn evaluate_stale_if_error(
 // Evaluates whether cached response satisfies request freshness constraints or requires revalidation.
 // Enforces max-age, min-fresh, and max-stale with CVE-2026-93748 defense.
 fn evaluate_freshness(
-    resp_cc: const CacheControl&,
-    req_cc: const CacheControl&,
-    resp_headers: const HeaderMap&,
-    ts: const CacheTimestamps&,
-    shared: bool = false,
-    security_zeroed: bool = false,
-    heuristic_fraction: i64 = 10,
-    immutable_min_ttl_sec: i64 = 31536000,
+    resp_cc:               const CacheControl&,
+    req_cc:                const CacheControl&,
+    resp_headers:          const HeaderMap&,
+    ts:                    const CacheTimestamps&,
+    policy:                FreshnessPolicy = FreshnessPolicy { .. },
+    heuristic_fraction:    i64             = 10,
+    immutable_min_ttl_sec: i64             = 31536000,
 ) -> FreshnessMetrics {
     var metrics = FreshnessMetrics { .. };
 
@@ -310,7 +326,7 @@ fn evaluate_freshness(
 
     metrics.current_age_sec = compute_current_age(apparent_age, age_hdr, ts);
     metrics.freshness_lifetime_sec = compute_freshness_lifetime(
-        resp_cc, resp_headers, ts, shared, heuristic_fraction, immutable_min_ttl_sec,
+        resp_cc, resp_headers, ts, policy.shared, heuristic_fraction, immutable_min_ttl_sec,
     );
 
     let basic_fresh = metrics.current_age_sec < metrics.freshness_lifetime_sec;
@@ -330,11 +346,11 @@ fn evaluate_freshness(
     if !metrics.is_fresh {
         var is_swr = false;
         metrics.stale_allowed = evaluate_stale_allowance(
-            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed, is_swr,
+            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, policy, is_swr,
         );
         metrics.stale_while_revalidate_allowed = is_swr;
         metrics.stale_if_error_allowed = evaluate_stale_if_error(
-            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, shared, security_zeroed,
+            resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, policy,
         );
     }
 

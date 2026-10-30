@@ -327,25 +327,25 @@ fn test_binary_framing_and_rfc9218(t: core::T&) {
 
     t.run("FRAME-03: RFC 9218 Priority Dictionary Parser") { sub =>
         // Vector 1: "u=0, i"
-        let p1, ok1 = wing::parse_priority_param_rfc9218("u=0, i");
+        let p1, ok1 = wing::parse_http_priority("u=0, i");
         sub.assert_true(ok1, "parse u=0, i succeeds");
         sub.assert_eq(p1.urgency, 0, "urgency is 0");
         sub.assert_true(p1.incremental, "incremental is true");
 
         // Vector 2: "u=5"
-        let p2, ok2 = wing::parse_priority_param_rfc9218("u=5");
+        let p2, ok2 = wing::parse_http_priority("u=5");
         sub.assert_true(ok2, "parse u=5 succeeds");
         sub.assert_eq(p2.urgency, 5, "urgency is 5");
         sub.assert_false(p2.incremental, "incremental defaults to false");
 
         // Vector 3: "i=?0, u=2"
-        let p3, ok3 = wing::parse_priority_param_rfc9218("i=?0, u=2");
+        let p3, ok3 = wing::parse_http_priority("i=?0, u=2");
         sub.assert_true(ok3, "parse i=?0, u=2 succeeds");
         sub.assert_eq(p3.urgency, 2, "urgency is 2");
         sub.assert_false(p3.incremental, "incremental is explicitly false");
 
         // Vector 4: Forward compatibility - ignore unknown parameters
-        let p4, ok4 = wing::parse_priority_param_rfc9218("future_param=123, u=7");
+        let p4, ok4 = wing::parse_http_priority("future_param=123, u=7");
         sub.assert_true(ok4, "parse with unknown param succeeds");
         sub.assert_eq(p4.urgency, 7, "urgency is 7");
     };

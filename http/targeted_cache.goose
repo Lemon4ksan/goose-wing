@@ -11,10 +11,14 @@ import http.headers;
 import http.cache.cache_control;
 
 // Helper to parse all instances of a specific header name from HeaderMap into CacheControl.
+//
+// Example:
+//   header_name = "cdn-cache-control", map contains "CDN-Cache-Control: max-age=600"
+//   returns: true, cc populated with max_age=600
 fn parse_named_cache_control(
-    map: const HeaderMap&,
-    header_name: const u8[:],
-    cc: CacheControl&,
+    map:               const HeaderMap&,
+    header_name:       const u8[:],
+    cc:                CacheControl&,
     ignore_cargo_cult: bool,
 ) -> bool {
     var found = false;
@@ -30,9 +34,9 @@ fn parse_named_cache_control(
 }
 
 fn check_target_cache_control(
-    map: const HeaderMap&,
-    target_name: const u8[:],
-    cc: CacheControl&,
+    map:               const HeaderMap&,
+    target_name:       const u8[:],
+    cc:                CacheControl&,
     ignore_cargo_cult: bool,
 ) -> bool {
     guard target_name.len > 0 && !target_name.eq_ascii_fold("cdn") else { return false; }
@@ -48,26 +52,29 @@ fn check_target_cache_control(
 // 1. <target_name>-cache-control (e.g. "fastly-cache-control") if target_name is non-empty and not "cdn"
 // 2. cdn-cache-control (RFC 9213 Section 2.1)
 // 3. Fallback to standard cache-control (and Pragma fallback)
+//
+// Example:
+//   target_name = "fastly", map has "Fastly-Cache-Control: max-age=60"
+//   returns: cc with max_age=60
 fn parse_targeted_cache_control_headers(
-    map: const HeaderMap&,
-    target_name: const u8[:] = "",
-    is_request: bool = false,
-    ignore_cargo_cult: bool = true,
+    map:         const HeaderMap&,
+    target_name: const u8[:]              = "",
+    opts:        CacheControlParseOptions = CacheControlParseOptions { .. },
 ) -> CacheControl {
     var cc = CacheControl { .. };
 
     // 1. Specific target header (e.g. "fastly-cache-control")
-    if check_target_cache_control(map, target_name, cc, ignore_cargo_cult) {
+    if check_target_cache_control(map, target_name, cc, opts.ignore_cargo_cult) {
         return cc;
     }
 
     // 2. General CDN-Cache-Control (RFC 9213 Section 2.1)
     if target_name.len > 0 {
-        if parse_named_cache_control(map, "cdn-cache-control", cc, ignore_cargo_cult) {
+        if parse_named_cache_control(map, "cdn-cache-control", cc, opts.ignore_cargo_cult) {
             return cc;
         }
     }
 
     // 3. Fallback to standard Cache-Control
-    return parse_cache_control_headers(map, is_request, ignore_cargo_cult);
+    return parse_cache_control_headers(map, opts);
 }

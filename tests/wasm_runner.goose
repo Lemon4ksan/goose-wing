@@ -138,7 +138,7 @@ fn main() {
     // Scenario 7: RFC 9218 Extensible Prioritization Scheme
     // ------------------------------------------------------------------------
     print("\n[7/11] RFC 9218 HTTP Priority Parsing...\n");
-    let prio, ok_prio = wing::parse_priority_param_rfc9218("u=1, i");
+    let prio, ok_prio = wing::parse_http_priority("u=1, i");
     print("  Priority parsed:     ", ok_prio, "\n");
     print("  Urgency level:       ", prio.urgency, "\n");
     print("  Incremental:         ", prio.incremental, "\n");

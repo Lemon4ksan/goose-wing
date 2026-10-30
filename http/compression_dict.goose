@@ -29,32 +29,35 @@ const DCB_MAGIC_BYTE1: u8 = 0x44; // 'D'
 const DCB_MAGIC_BYTE2: u8 = 0x43; // 'C'
 const DCB_MAGIC_BYTE3: u8 = 0x42; // 'B'
 
-const HEADER_USE_AS_DICTIONARY: const u8[:] = "use-as-dictionary";
+const HEADER_USE_AS_DICTIONARY:    const u8[:] = "use-as-dictionary";
 const HEADER_AVAILABLE_DICTIONARY: const u8[:] = "available-dictionary";
-const HEADER_DICTIONARY_ID: const u8[:] = "dictionary-id"; // RFC 9842 Section 2.3
-const ENCODING_DCZ: const u8[:] = "dcz";
-const ENCODING_DCB: const u8[:] = "dcb";
+const HEADER_DICTIONARY_ID:        const u8[:] = "dictionary-id"; // RFC 9842 Section 2.3
+const ENCODING_DCZ:                const u8[:] = "dcz";
+const ENCODING_DCB:                const u8[:] = "dcb";
 
 // ---- 2. Dictionary Models & Cache ------------------------------------------
 
 struct DictionaryParams {
     match_pattern: u8[..128] = [],
-    id: u8[..64] = [],
-    ttl_sec: u32 = 86400,
-    dict_type: u8[..16] = "raw",
-    valid: bool = false,
+    id:            u8[..64]  = [],
+    ttl_sec:       u32       = 86400,
+    dict_type:     u8[..16]  = "raw",
+    valid:         bool      = false,
 }
 
 struct DictionaryEntry {
-    origin: u8[..128] = [],
+    origin:        u8[..128] = [],
     match_pattern: u8[..128] = [],
-    id: u8[..64] = [],
-    sha256_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    sha256_base64: u8[..64] = [], // RFC 8941 Structured Field Byte Sequence: `:<base64>:`
-    content: u8[..2048] = [],
-    inserted_at_sec: i64 = 0,
-    ttl_sec: u32 = 86400,
-    valid: bool = false,
+    id:            u8[..64]  = [],
+    sha256_hash: u8[32] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ],
+    sha256_base64:   u8[..64]   = [], // RFC 8941 Structured Field Byte Sequence: `:<base64>:`
+    content:         u8[..2048] = [],
+    inserted_at_sec: i64        = 0,
+    ttl_sec:         u32        = 86400,
+    valid:           bool       = false,
 }
 
 struct DictionaryCache {
@@ -112,7 +115,11 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) {
     }
 }
 
-// Parses `Use-As-Dictionary` header value (e.g. `match="/assets/*", id="v1", ttl=86400, type=raw`)
+// Parses `Use-As-Dictionary` header value (e.g. `match="/assets/*", id="v1", ttl=86400, type=raw`).
+//
+// Example:
+//   header_val = "match=\"/assets/*\", id=\"v1\""
+//   returns: p with match_pattern="/assets/*", id="v1", ok = true
 fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, bool {
     var p = DictionaryParams { .. };
     var rem = header_val.trim_lws();
@@ -133,7 +140,12 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
 }
 
 // Formats `Use-As-Dictionary` header string
-fn format_use_as_dictionary_header<B>(out: B&, match_pattern: const u8[:], id_str: const u8[:] = "", ttl_sec: u32 = 86400) {
+fn format_use_as_dictionary_header<B>(
+    out:           B&,
+    match_pattern: const u8[:],
+    id_str:        const u8[:] = "",
+    ttl_sec:       u32         = 86400,
+) {
     out.append("match=\"");
     out.append(match_pattern);
     out.append("\"");
@@ -194,6 +206,10 @@ fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
 
 // Decodes a DCZ header from wire bytes:
 // Verifies 4-byte magic, extracts 32-byte dict hash and returns the compressed payload slice.
+//
+// Example:
+//   wire = [0xFF, 'D', 'C', 'Z', ...32 hash bytes..., ...payload...]
+//   returns: payload slice, out_hash populated, ok = true
 fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
     guard wire.len >= 36 else { return wire[..0], false; }
     guard wire[0] == DCZ_MAGIC_BYTE0 && wire[1] == DCZ_MAGIC_BYTE1 &&
@@ -207,7 +223,11 @@ fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool 
     return wire[36..], true;
 }
 
-// Decodes a DCB header from wire bytes
+// Decodes a DCB header from wire bytes.
+//
+// Example:
+//   wire = [0xFF, 'D', 'C', 'B', ...32 hash bytes..., ...payload...]
+//   returns: payload slice, out_hash populated, ok = true
 fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
     guard wire.len >= 36 else { return wire[..0], false; }
     guard wire[0] == DCB_MAGIC_BYTE0 && wire[1] == DCB_MAGIC_BYTE1 &&
@@ -224,9 +244,9 @@ fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool 
 // ---- 6. Dictionary Cache Operations -----------------------------------------
 
 fn find_matching_dict_entry_index(
-    cache: const DictionaryCache&,
-    origin: const u8[:],
-    id_str: const u8[:],
+    cache:         const DictionaryCache&,
+    origin:        const u8[:],
+    id_str:        const u8[:],
     match_pattern: const u8[:],
 ) -> i64 {
     for i in cache.entries.len {
@@ -257,15 +277,15 @@ fn find_oldest_dict_entry_index(cache: const DictionaryCache&) -> i64 {
 }
 
 fn populate_dict_entry(
-    entry: DictionaryEntry&,
-    origin: const u8[:],
+    entry:         DictionaryEntry&,
+    origin:        const u8[:],
     match_pattern: const u8[:],
-    id_str: const u8[:],
-    body: const u8[:],
-    hash: const u8[32]&,
-    b64_hash: const u8[:],
-    ttl_sec: u32,
-    now_sec: i64,
+    id_str:        const u8[:],
+    body:          const u8[:],
+    hash:          const u8[32]&,
+    b64_hash:      const u8[:],
+    ttl_sec:       u32,
+    now_sec:       i64,
 ) {
     entry.valid = true;
     entry.origin.clear();
@@ -285,13 +305,13 @@ fn populate_dict_entry(
 
 // Inserts a new dictionary into the cache
 fn dictionary_cache_insert(
-    cache: DictionaryCache&,
-    origin: const u8[:],
+    cache:         DictionaryCache&,
+    origin:        const u8[:],
     match_pattern: const u8[:],
-    id_str: const u8[:],
-    body: const u8[:],
-    ttl_sec: u32,
-    now_sec: i64,
+    id_str:        const u8[:],
+    body:          const u8[:],
+    ttl_sec:       u32,
+    now_sec:       i64,
 ) -> bool {
     guard body.len > 0 else { return false; }
 
@@ -301,25 +321,36 @@ fn dictionary_cache_insert(
 
     let match_idx = find_matching_dict_entry_index(cache, origin, id_str, match_pattern);
     if match_idx >= 0 && match_idx < cache.entries.len {
-        populate_dict_entry(cache.entries[match_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec);
+        populate_dict_entry(
+            cache.entries[match_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec,
+        );
         return true;
     }
 
     if cache.entries.len < 8 {
         var entry = DictionaryEntry { .. };
-        populate_dict_entry(entry, origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec);
+        populate_dict_entry(
+            entry, origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec,
+        );
         cache.entries.push(entry);
         return true;
     }
 
     let oldest_idx = find_oldest_dict_entry_index(cache);
     if oldest_idx >= 0 && oldest_idx < cache.entries.len {
-        populate_dict_entry(cache.entries[oldest_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec);
+        populate_dict_entry(
+            cache.entries[oldest_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec,
+        );
     }
     return true;
 }
 
-fn dict_entry_matches_request(entry: const DictionaryEntry&, origin: const u8[:], url_path: const u8[:], now_sec: i64) -> bool {
+fn dict_entry_matches_request(
+    entry:    const DictionaryEntry&,
+    origin:   const u8[:],
+    url_path: const u8[:],
+    now_sec:  i64,
+) -> bool {
     guard entry.valid && entry.origin[..] == origin else { return false; }
     let elapsed = now_sec - entry.inserted_at_sec;
     guard elapsed >= 0 && elapsed < entry.ttl_sec else { return false; }
@@ -328,10 +359,10 @@ fn dict_entry_matches_request(entry: const DictionaryEntry&, origin: const u8[:]
 
 // Queries dictionary cache for a matching entry for outgoing request
 fn dictionary_lookup_for_request(
-    cache: const DictionaryCache&,
-    origin: const u8[:],
-    url_path: const u8[:],
-    now_sec: i64,
+    cache:           const DictionaryCache&,
+    origin:          const u8[:],
+    url_path:        const u8[:],
+    now_sec:         i64,
     out_base64_hash: u8[..64]&,
 ) -> bool {
     for &entry in cache.entries {
@@ -341,13 +372,14 @@ fn dictionary_lookup_for_request(
             return true;
         }
     }
+    out_base64_hash.clear();
     return false;
 }
 
 // Queries dictionary cache by its 32-byte SHA-256 hash
 fn dictionary_lookup_by_hash(
-    cache: const DictionaryCache&,
-    hash: const u8[32]&,
+    cache:     const DictionaryCache&,
+    hash:      const u8[32]&,
     out_entry: DictionaryEntry&,
 ) -> bool {
     for &entry in cache.entries {
@@ -363,7 +395,7 @@ fn dictionary_lookup_by_hash(
 fn decompress_dcz_payload<B>(
     compressed_payload: const u8[:],
     dictionary_content: const u8[:],
-    out_buf: B&,
+    out_buf:            B&,
 ) -> bool {
     var decompressed: u8[>..] = [];
     let ok_z, _ = core::zstd_decompress(compressed_payload, decompressed);
@@ -371,13 +403,14 @@ fn decompress_dcz_payload<B>(
         out_buf.append(decompressed[..]);
         return true;
     }
+    out_buf.clear();
     return false;
 }
 
 // High-level helper to encode a test server response with DCZ
 fn encode_dcz_response<B>(
-    out: B&,
-    dict_hash: const u8[32]&,
+    out:         B&,
+    dict_hash:   const u8[32]&,
     raw_content: const u8[:],
 ) -> bool {
     var compressed_zstd: u8[>..] = [];
@@ -389,7 +422,7 @@ fn encode_dcz_response<B>(
 fn decompress_dcb_payload<B>(
     compressed_payload: const u8[:],
     dictionary_content: const u8[:],
-    out_buf: B&,
+    out_buf:            B&,
 ) -> bool {
     var decompressed: u8[>..] = [];
     let ok_b, _ = core::brotli_decompress(compressed_payload, decompressed);
@@ -397,13 +430,14 @@ fn decompress_dcb_payload<B>(
         out_buf.append(decompressed[..]);
         return true;
     }
+    out_buf.clear();
     return false;
 }
 
 // High-level helper to encode a test server response with DCB
 fn encode_dcb_response<B>(
-    out: B&,
-    dict_hash: const u8[32]&,
+    out:         B&,
+    dict_hash:   const u8[32]&,
     raw_content: const u8[:],
 ) -> bool {
     var compressed_brotli: u8[>..] = [];

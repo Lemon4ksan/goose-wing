@@ -12,15 +12,15 @@ import core from "..";
 // ---- 1. traceparent model & invariants -------------------------------------
 
 struct Traceparent {
-    version: u8 = 0,
-    trace_id: u8[16] = [0; 16],
-    parent_id: u8[8] = [0; 8],
-    trace_flags: u8 = 1,
-    valid: bool = false,
+    version:     u8     = 0,
+    trace_id:    u8[16] = [0; 16],
+    parent_id:   u8[8]  = [0; 8],
+    trace_flags: u8     = 1,
+    valid:       bool   = false,
 }
 
 // Bitmask flags for trace_flags (Section 3.2.2)
-const TRACE_FLAG_NONE: u8 = 0x00;
+const TRACE_FLAG_NONE:    u8 = 0x00;
 const TRACE_FLAG_SAMPLED: u8 = 0x01; // Bit 0: parent recorded / sampled
 
 inline fn hex_val(c: u8) -> i32 {
@@ -30,7 +30,11 @@ inline fn hex_val(c: u8) -> i32 {
     return -1;
 }
 
-// Parses 2 hex characters into a u8
+// Parses 2 hex characters into a u8.
+//
+// Example:
+//   src = "002a", offset = 2
+//   returns: 42, ok = true
 fn parse_hex_u8(src: const u8[:], offset: i64) -> u8, bool {
     guard offset + 2 <= src.len else { return 0, false; }
     let h0 = hex_val(src[offset]);
@@ -128,11 +132,11 @@ fn format_traceparent<B>(tp: const Traceparent&, out: B&) {
 // Constructs a new valid Traceparent
 fn new_traceparent(trace_id: const u8[16]&, parent_id: const u8[8]&, sampled: bool = true) -> Traceparent {
     return Traceparent {
-        version: 0,
-        trace_id: trace_id,
-        parent_id: parent_id,
+        version:     0,
+        trace_id:    trace_id,
+        parent_id:   parent_id,
         trace_flags: if sampled { TRACE_FLAG_SAMPLED } else { TRACE_FLAG_NONE },
-        valid: true,
+        valid:       true,
     };
 }
 
@@ -149,7 +153,7 @@ struct TracestateMember {
 
 struct Tracestate {
     members: TracestateMember[..32] = [],
-    valid: bool = true,
+    valid:   bool                   = true,
 }
 
 // Key validation conforming to W3C Section 3.3:
@@ -163,11 +167,11 @@ fn is_valid_tracestate_key(key: const u8[:]) -> bool {
         if b == '@' {
             guard at_pos < 0 else { return false; } // only one '@' allowed
             at_pos = i;
-        } else {
-            let valid_char = (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
-                             b == '_' || b == '-' || b == '*' || b == '/';
-            guard valid_char else { return false; }
+            continue;
         }
+        let is_alpha_num = (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9');
+        let valid_char = is_alpha_num || b == '_' || b == '-' || b == '*' || b == '/';
+        guard valid_char else { return false; }
     }
     if at_pos >= 0 {
         let tenant_len = at_pos;
@@ -194,7 +198,11 @@ fn is_valid_tracestate_val(val: const u8[:]) -> bool {
     return true;
 }
 
-// Parses W3C `tracestate` header: comma-separated list of key=val pairs
+// Parses W3C `tracestate` header: comma-separated list of key=val pairs.
+//
+// Example:
+//   raw = "rojo=1,congo=2"
+//   returns: ts with 2 members, ok = true
 fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
     var ts = Tracestate { .. };
     var cursor: i64 = 0;
@@ -206,7 +214,7 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
         if cursor == raw.len { break; }
 
         // Find end of entry or next comma
-        var eq_pos: i64 = -1;
+        var eq_pos:    i64 = -1;
         var comma_pos: i64 = -1;
         var i = cursor;
         while i < raw.len {

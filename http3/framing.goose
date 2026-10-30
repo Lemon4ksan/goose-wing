@@ -10,9 +10,9 @@ import std;
 // ---- 1. Frame Headers and Settings Structures -------------------------------
 
 struct H3FrameHeader {
-    frame_type: u64 = 0,
+    frame_type:  u64 = 0,
     payload_len: u64 = 0,
-    header_len: u64 = 0,
+    header_len:  u64 = 0,
 }
 
 // Checks if a frame type is a reserved GREASE frame (RFC 9114 Section 7.2.8: 0x1f * N + 0x21).
@@ -53,6 +53,10 @@ fn is_allowed_on_request_stream(frame_type: u64) -> bool {
 // ---- 2. Frame Header Encoding & Decoding -----------------------------------
 
 // Parses an HTTP/3 frame header (Type: VarInt, Length: VarInt).
+//
+// Example:
+//   src = [0x00, 0x05], offset = 0
+//   returns: H3FrameHeader { frame_type: 0, payload_len: 5, header_len: 2 }, true
 fn parse_h3_frame_header(src: const u8[:], offset: u64) -> H3FrameHeader, bool {
     let ftype, off1, ok1 = quic_decode_varint(src, offset);
     guard ok1 else { return H3FrameHeader { .. }, false; }
@@ -61,9 +65,9 @@ fn parse_h3_frame_header(src: const u8[:], offset: u64) -> H3FrameHeader, bool {
     guard ok2 else { return H3FrameHeader { .. }, false; }
 
     return H3FrameHeader {
-        frame_type: ftype,
+        frame_type:  ftype,
         payload_len: plen,
-        header_len: off2 - offset,
+        header_len:  off2 - offset,
     }, true;
 }
 
@@ -158,6 +162,10 @@ fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
 // Returns H3_ERR_NO_ERROR (0x0100) on success, or appropriate error code:
 // - H3_ERR_SETTINGS_ERROR (0x0109) on duplicate settings or forbidden HTTP/2 settings (0x02..0x05)
 // - H3_ERR_FRAME_ERROR (0x0106) on truncated payload.
+//
+// Example:
+//   payload = [0x06, 0x40, 0x00], out_settings = H3Settings { .. }
+//   returns: H3_ERR_NO_ERROR (0x0100), populates out_settings
 fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u64 {
     var offset: u64 = 0;
     let total = payload.len as u64;
@@ -214,6 +222,10 @@ fn encode_h3_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
 }
 
 // Parses a GOAWAY frame payload.
+//
+// Example:
+//   payload = [0x04]
+//   returns: stream_id = 4, true
 fn parse_h3_goaway_frame(payload: const u8[:]) -> u64, bool {
     let stream_id, off, ok = quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
@@ -231,6 +243,10 @@ fn encode_h3_cancel_push<B>(out: B&, push_id: u64) -> bool {
 }
 
 // Parses a CANCEL_PUSH frame payload.
+//
+// Example:
+//   payload = [0x02]
+//   returns: push_id = 2, true
 fn parse_h3_cancel_push(payload: const u8[:]) -> u64, bool {
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
@@ -248,6 +264,10 @@ fn encode_h3_max_push_id<B>(out: B&, push_id: u64) -> bool {
 }
 
 // Parses a MAX_PUSH_ID frame payload.
+//
+// Example:
+//   payload = [0x08]
+//   returns: push_id = 8, true
 fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
@@ -273,7 +293,7 @@ fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const win
 //   payload = [0x04, 'u', '=', '3']
 //   returns: stream_id = 4, prio = { urgency: 3, incremental: false }, ok = true
 fn parse_h3_priority_update_request(
-    payload: const u8[:],
+    payload:             const u8[:],
     default_incremental: bool = false,
 ) -> u64, wing::PriorityParam, bool {
     var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
@@ -281,7 +301,7 @@ fn parse_h3_priority_update_request(
     let stream_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
-    let parsed, _ = wing::parse_priority_param_rfc9218(field_value, default_incremental);
+    let parsed, _ = wing::parse_http_priority(field_value, default_incremental);
     return stream_id, parsed, true;
 }
 
@@ -301,7 +321,7 @@ fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::Pr
 //   payload = [0x01, 'u', '=', '5']
 //   returns: push_id = 1, prio = { urgency: 5, incremental: false }, ok = true
 fn parse_h3_priority_update_push(
-    payload: const u8[:],
+    payload:             const u8[:],
     default_incremental: bool = false,
 ) -> u64, wing::PriorityParam, bool {
     var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
@@ -309,6 +329,6 @@ fn parse_h3_priority_update_push(
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
-    let parsed, _ = wing::parse_priority_param_rfc9218(field_value, default_incremental);
+    let parsed, _ = wing::parse_http_priority(field_value, default_incremental);
     return push_id, parsed, true;
 }

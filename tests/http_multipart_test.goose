@@ -317,7 +317,7 @@ fn test_streaming_multipart_parsing(t: core::T&) {
         body.append("--test_boundary--\r\n");
 
         // Limit to max 2 parts
-        var opts = wing::default_multipart_options();
+        var opts = wing::MultipartOptions { .. };
         opts.max_parts = 2;
         let msg, err = wing::parse_multipart(body[..], boundary, opts);
         sub.assert_eq(err, wing::MultipartError.ExceededMaxParts, "ExceededMaxParts triggered");
@@ -638,12 +638,12 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: core::T&) {
         // Construct a synthetic RangeSet where end_pos - start + 1 would overflow signed 64-bit int
         var rs = wing::RangeSet {
             resource_length: 9223372036854775807,
-            is_satisfiable: true,
-            coalesced: false,
+            is_satisfiable:  true,
+            coalesced:       false,
             ..
         };
         rs.ranges.push(wing::NormalizedRange {
-            start: 0,
+            start:   0,
             end_pos: 9223372036854775807,
         });
 
@@ -810,7 +810,7 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: core::T&) {
         body_3parts.append("--QuotaBnd--\r\n");
 
         // Exactly max_parts: 3 parts with max_parts = 3 succeeds
-        var opts_exact = wing::default_multipart_options();
+        var opts_exact = wing::MultipartOptions { .. };
         opts_exact.max_parts = 3;
         let msg_exact, err_exact = wing::parse_multipart(body_3parts[..], boundary, opts_exact);
         sub.assert_eq(err_exact, wing::MultipartError.None, "Exactly max_parts (3 of 3) succeeds");
@@ -818,14 +818,14 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: core::T&) {
         sub.assert_eq(msg_exact.parts.len, 3, "All 3 parts parsed");
 
         // Exceeding max_parts by 1: 3 parts with max_parts = 2 rejected
-        var opts_exceed = wing::default_multipart_options();
+        var opts_exceed = wing::MultipartOptions { .. };
         opts_exceed.max_parts = 2;
         let msg_exceed, err_exceed = wing::parse_multipart(body_3parts[..], boundary, opts_exceed);
         sub.assert_eq(err_exceed, wing::MultipartError.ExceededMaxParts, "max_parts + 1 rejected with ExceededMaxParts");
         sub.assert_false(msg_exceed.valid, "Exceeded parts invalid");
 
         // max_parts = 0 rejected immediately
-        var opts_zero = wing::default_multipart_options();
+        var opts_zero = wing::MultipartOptions { .. };
         opts_zero.max_parts = 0;
         let msg_zero, err_zero = wing::parse_multipart(body_3parts[..], boundary, opts_zero);
         sub.assert_eq(err_zero, wing::MultipartError.ExceededMaxParts, "max_parts = 0 rejected with ExceededMaxParts");
@@ -833,7 +833,7 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: core::T&) {
 
         // Memory quota boundary: calculate total header + body bytes of first part
         // Content-Disposition: form-data; name="p1"\r\n (45 bytes) + v1 (2 bytes) = 47 bytes
-        var opts_mem = wing::default_multipart_options();
+        var opts_mem = wing::MultipartOptions { .. };
         opts_mem.max_memory_bytes = 46; // 1 byte less than part 1 requires
         let msg_mem, err_mem = wing::parse_multipart(body_3parts[..], boundary, opts_mem);
         sub.assert_eq(err_mem, wing::MultipartError.ExceededMaxMemory, "Memory quota boundary enforced with ExceededMaxMemory");
@@ -1049,7 +1049,7 @@ fn test_mime_headers_memory_limit_bypass(t: core::T&) {
 
         // Quota: 25 bytes total memory. Part 1 takes 14 bytes. Remaining budget is 11 bytes (< 400 bytes).
         // Part 2 has 43 bytes, which exceeds remaining 11 bytes.
-        var opts = wing::default_multipart_options();
+        var opts = wing::MultipartOptions { .. };
         opts.max_memory_bytes = 25;
 
         let msg, err = wing::parse_multipart(body[..], boundary, opts);
@@ -1071,7 +1071,7 @@ fn test_mime_headers_memory_limit_bypass(t: core::T&) {
         body.append("payload\r\n");
         body.append("--GooseHdrBnd--\r\n");
 
-        var opts = wing::default_multipart_options();
+        var opts = wing::MultipartOptions { .. };
         opts.max_header_bytes = 500; // Small limit to test bounded scan
 
         let msg, err = wing::parse_multipart(body[..], boundary, opts);
@@ -1087,7 +1087,7 @@ fn test_mime_headers_memory_limit_bypass(t: core::T&) {
         body.append("x\r\n");
         body.append("--GooseZeroMem--\r\n");
 
-        var opts = wing::default_multipart_options();
+        var opts = wing::MultipartOptions { .. };
         opts.max_memory_bytes = 0;
 
         let msg, err = wing::parse_multipart(body[..], boundary, opts);
@@ -1228,7 +1228,7 @@ fn test_multipart_part_count_fuzzing(t: core::T&) {
         }
         body.append("--MemFloodBnd--\r\n");
 
-        var opts = wing::default_multipart_options();
+        var opts = wing::MultipartOptions { .. };
         opts.max_parts = 500;
         opts.max_memory_bytes = 500; // Cap memory at 500 bytes (exceeded around part 31)
 
@@ -1247,7 +1247,7 @@ fn test_multipart_part_count_fuzzing(t: core::T&) {
         }
         body.append("--EmptyPartsBnd--\r\n");
 
-        var opts = wing::default_multipart_options();
+        var opts = wing::MultipartOptions { .. };
         opts.max_parts = 64;
 
         let msg, err = wing::parse_multipart(body[..], boundary, opts);

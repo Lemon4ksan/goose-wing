@@ -80,7 +80,7 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
         // Pragma: no-cache fallback
         var map = wing::HeaderMap { .. };
         wing::append_header(map, "Pragma", "no-cache");
-        let cc_pragma = wing::parse_cache_control_headers(map, true);
+        let cc_pragma = wing::parse_cache_control_headers(map, wing::CacheControlParseOptions { is_request: true, .. });
         sub.assert_true(wing::is_no_cache(cc_pragma), "Pragma: no-cache promoted to CacheControl::no-cache");
     };
 
@@ -196,6 +196,9 @@ fn test_freshness_math_and_clock_skew(t: core::T&) {
         wing::append_header(hdrs_lm, "Last-Modified", "Sun, 06 Nov 1994 08:00:00 GMT"); // 3600s delta
         let lt_heur = wing::compute_freshness_lifetime(cc_empty, hdrs_lm, ts);
         sub.assert_eq(lt_heur, 360, "Heuristic is 10% of 3600s = 360s");
+
+        let ts_mono = wing::with_monotonic(ts, core::monotonic_now(), core::monotonic_now(), core::monotonic_now());
+        sub.assert_true(ts_mono.has_monotonic, "with_monotonic sets has_monotonic");
     };
 }
 
@@ -242,6 +245,9 @@ fn test_etag_validators(t: core::T&) {
         let cached_weak = wing::parse_etag("W/\"v2.0\"");
         sub.assert_false(wing::match_if_match("W/\"v2.0\"", cached_weak), "If-Match rejects weak cached tag");
         sub.assert_true(wing::match_if_match("\"v2.0\"", cached), "If-Match succeeds for strong match");
+
+        let ir_ok = wing::evaluate_cache_if_range("\"v2.0\"", cached, core::unix(0, 0));
+        sub.assert_true(ir_ok, "evaluate_cache_if_range matches cached etag");
     };
 }
 
@@ -324,18 +330,24 @@ fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
         cc_s_max.flags |= wing::CC_HAS_MAX_AGE | wing::CC_HAS_S_MAXAGE;
         cc_s_max.max_age = 100;
         cc_s_max.s_maxage = 100;
-        let m_s_max = wing::evaluate_freshness(cc_s_max, req_cc, hdrs, ts, true);
+        let m_s_max = wing::evaluate_freshness(cc_s_max, req_cc, hdrs, ts, wing::FreshnessPolicy { shared: true, .. });
         sub.assert_false(m_s_max.stale_allowed, "max-stale strictly blocked when s-maxage is present");
 
         // Case D: proxy-revalidate in shared cache -> max-stale STRICTLY BLOCKED!
         var cc_proxy_rev = wing::CacheControl { .. };
         cc_proxy_rev.flags |= wing::CC_HAS_MAX_AGE | wing::CC_PROXY_REVALIDATE;
         cc_proxy_rev.max_age = 100;
-        let m_proxy = wing::evaluate_freshness(cc_proxy_rev, req_cc, hdrs, ts, true);
+        let m_proxy = wing::evaluate_freshness(cc_proxy_rev, req_cc, hdrs, ts, wing::FreshnessPolicy { shared: true, .. });
         sub.assert_false(m_proxy.stale_allowed, "max-stale strictly blocked when proxy-revalidate in shared cache");
 
         // Case E: security_zeroed = true -> max-stale STRICTLY BLOCKED!
-        let m_zeroed = wing::evaluate_freshness(cc_normal, req_cc, hdrs, ts, false, true);
+        let m_zeroed = wing::evaluate_freshness(
+            cc_normal,
+            req_cc,
+            hdrs,
+            ts,
+            wing::FreshnessPolicy { security_zeroed: true, .. },
+        );
         sub.assert_false(m_zeroed.stale_allowed, "max-stale strictly blocked on security_zeroed invalidated entry");
     };
 }
@@ -750,7 +762,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
     t.run("1. RFC 5861 Section 3: stale-while-revalidate Cache Decision") { sub =>
         var cache = wing::new_http_cache();
         var ts = wing::CacheTimestamps {
-            request_time: core::unix(1700000000, 0),
+            request_time:  core::unix(1700000000, 0),
             response_time: core::unix(1700000001, 0),
             ..
         };
@@ -788,7 +800,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
     t.run("2. RFC 5861 Section 4: stale-if-error Fallback on 5xx Origin Failure") { sub =>
         var cache = wing::new_http_cache();
         var ts = wing::CacheTimestamps {
-            request_time: core::unix(1700000000, 0),
+            request_time:  core::unix(1700000000, 0),
             response_time: core::unix(1700000001, 0),
             ..
         };
@@ -814,7 +826,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
         var resp_503 = wing::Response { .. };
         resp_503.status_code = 503;
         var ts_503 = wing::CacheTimestamps {
-            request_time: t_reval,
+            request_time:  t_reval,
             response_time: t_reval,
             ..
         };
@@ -826,7 +838,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
         // At t = +500s, beyond max-age (60) + stale-if-error (300) = 360s
         let t_expired_err = core::unix(1700000500, 0);
         var ts_500 = wing::CacheTimestamps {
-            request_time: t_expired_err,
+            request_time:  t_expired_err,
             response_time: t_expired_err,
             ..
         };
@@ -979,7 +991,7 @@ fn test_sfv_serialization(t: core::T&) {
         // Serialize Dict Entry: u=5
         out.clear();
         var entry = wing::SfDictEntry {
-            key: "u",
+            key:  "u",
             item: wing::SfItem { kind: wing::SfType.Integer, int_val: 5, .. },
             ..
         };
@@ -989,12 +1001,16 @@ fn test_sfv_serialization(t: core::T&) {
         // Serialize Boolean ?1 in Dict Entry: i (RFC 8941 omits =?1 for boolean true in dicts)
         out.clear();
         var entry_bool = wing::SfDictEntry {
-            key: "i",
+            key:  "i",
             item: wing::SfItem { kind: wing::SfType.Boolean, bool_val: true, .. },
             ..
         };
         wing::sf_serialize_dict_entry(entry_bool, out);
         sub.assert_eq(out[..], "i", "Dict entry matches 'i'");
+
+        var dict_hdr: u8[..128] = [];
+        wing::format_use_as_dictionary_header(dict_hdr, "/app/*", "v1", 3600);
+        sub.assert_true(dict_hdr.len > 0, "Use-As-Dictionary header formatted");
     };
 }
 
@@ -1011,7 +1027,7 @@ fn test_rfc9530_content_digest(t: core::T&) {
     t.run("Content-Digest sha-256 Generation & Verification") { sub =>
         var req = wing::Request {
             method: "POST",
-            url: "https://api.gateway.org/items",
+            url:    "https://api.gateway.org/items",
             ..
         };
         req.body.clear();
@@ -1057,7 +1073,7 @@ fn test_rfc9530_content_digest(t: core::T&) {
     t.run("Repr-Digest Generation & Verification") { sub =>
         var req = wing::Request {
             method: "PUT",
-            url: "https://api.gateway.org/data",
+            url:    "https://api.gateway.org/data",
             ..
         };
         req.body.clear();
@@ -1076,7 +1092,7 @@ fn test_rfc9530_content_digest(t: core::T&) {
     t.run("RFC 9530 Want-Content-Digest and Want-Repr-Digest") { sub =>
         var req = wing::Request {
             method: "GET",
-            url: "https://api.gateway.org/data",
+            url:    "https://api.gateway.org/data",
             ..
         };
         wing::set_want_content_digest(req, "sha-256=10, sha-512=5");
@@ -1098,7 +1114,7 @@ fn test_rfc9530_with_rfc9421_signatures(t: core::T&) {
 
         var req = wing::Request {
             method: "POST",
-            url: "https://payment.bank.org/transfers",
+            url:    "https://payment.bank.org/transfers",
             ..
         };
         req.body.clear();
@@ -1110,9 +1126,9 @@ fn test_rfc9530_with_rfc9421_signatures(t: core::T&) {
 
         // 2. Sign message including content-digest
         var params = wing::HttpSignatureParams {
-            label: "sig1",
+            label:  "sig1",
             key_id: "bank-key-1",
-            alg: "ed25519",
+            alg:    "ed25519",
             ..
         };
         params.components.push("@method");
@@ -1167,16 +1183,16 @@ fn test_http_signatures(t: core::T&) {
     t.run("Canonical Signature Base Construction (RFC 9421 §2.5)") { sub =>
         var req = wing::Request {
             method: "POST",
-            url: "https://example.com/api/orders?status=active",
+            url:    "https://example.com/api/orders?status=active",
             ..
         };
         wing::set_header(req, "Content-Type", "application/json");
         wing::set_header(req, "Digest", "SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=");
 
         var params = wing::HttpSignatureParams {
-            label: "sig1",
-            key_id: "test-key-rsa-pss",
-            alg: "hmac-sha256",
+            label:   "sig1",
+            key_id:  "test-key-rsa-pss",
+            alg:     "hmac-sha256",
             created: 1618884475,
             ..
         };
@@ -1200,15 +1216,15 @@ fn test_http_signatures(t: core::T&) {
     t.run("End-to-End Signing and Verification") { sub =>
         var req = wing::Request {
             method: "GET",
-            url: "https://api.bank.com/v1/accounts/12345",
+            url:    "https://api.bank.com/v1/accounts/12345",
             ..
         };
         wing::set_header(req, "Host", "api.bank.com");
         wing::set_header(req, "Accept", "application/json");
 
         var params = wing::HttpSignatureParams {
-            label: "sig-bank",
-            key_id: "k-prod-01",
+            label:   "sig-bank",
+            key_id:  "k-prod-01",
             created: 1700000000,
             expires: 1700000300,
             ..
@@ -1250,13 +1266,13 @@ fn test_http_signatures(t: core::T&) {
     t.run("RFC 9421 Timing Defense, Created/Expires Bounds & @query") { sub =>
         var req = wing::Request {
             method: "GET",
-            url: "https://api.example.com/items?filter=active&sort=desc",
+            url:    "https://api.example.com/items?filter=active&sort=desc",
             ..
         };
         wing::set_header(req, "X-Custom", "  spaced   value  ");
 
         var params = wing::HttpSignatureParams {
-            label: "sig1",
+            label:   "sig1",
             created: 1700000000,
             expires: 1700000300,
             ..
@@ -1311,16 +1327,16 @@ fn test_ed25519_signatures(t: core::T&) {
 
         var req = wing::Request {
             method: "POST",
-            url: "https://api.gateway.org/transfers",
+            url:    "https://api.gateway.org/transfers",
             ..
         };
         wing::set_header(req, "Content-Type", "application/json");
         wing::set_header(req, "Digest", "SHA-256=abcdef1234567890");
 
         var params = wing::HttpSignatureParams {
-            label: "sig-ed",
-            key_id: "ed25519-key-1",
-            alg: "ed25519",
+            label:   "sig-ed",
+            key_id:  "ed25519-key-1",
+            alg:     "ed25519",
             created: 1700000000,
             ..
         };
@@ -1355,7 +1371,7 @@ fn test_response_signatures(t: core::T&) {
     t.run("HTTP Response Signatures with @status & ;req component chaining") { sub =>
         var req = wing::Request {
             method: "GET",
-            url: "https://shop.com/orders/42",
+            url:    "https://shop.com/orders/42",
             ..
         };
         wing::set_header(req, "X-Client-Id", "client-999");
@@ -1366,9 +1382,9 @@ fn test_response_signatures(t: core::T&) {
         res.set_header("ETag", "\"v42-alpha\"");
 
         var params = wing::HttpSignatureParams {
-            label: "res-sig",
-            key_id: "res-key-01",
-            alg: "hmac-sha256",
+            label:   "res-sig",
+            key_id:  "res-key-01",
+            alg:     "hmac-sha256",
             created: 1700000100,
             ..
         };
@@ -1503,9 +1519,9 @@ fn test_download_stream_with_progress(t: core::T&) {
         wing::mock_route(client, "GET", "https://cdn.site.com/large.bin", 200, payload);
         wing::add_mock_header(client, "Content-Length", "48");
 
-        var downloaded: u8[>..] = [];
-        var callback_count: i64 = 0;
-        var last_percent: f64 = 0.0;
+        var downloaded:     u8[>..] = [];
+        var callback_count: i64     = 0;
+        var last_percent:   f64     = 0.0;
 
         let resp, err = wing::download_stream(client, "https://cdn.site.com/large.bin", 16, downloaded) { progress =>
             callback_count += 1;
@@ -1565,8 +1581,8 @@ fn test_w3c_traceparent(t: core::T&) {
     };
 
     t.run("3. Programmatic Constructor & Bitmask Flags") { sub =>
-        var trace_id: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        var parent_id: u8[8] = [17, 18, 19, 20, 21, 22, 23, 24];
+        var trace_id:  u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        var parent_id: u8[8]  = [17, 18, 19, 20, 21, 22, 23, 24];
 
         let tp = wing::new_traceparent(trace_id, parent_id, true);
         sub.assert_true(tp.valid, "New traceparent must be marked valid");

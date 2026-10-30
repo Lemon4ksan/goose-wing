@@ -16,7 +16,7 @@ import client.response;
 const HEADER_INCREMENTAL: const u8[:] = "Incremental";
 
 // Proxy-Status error parameter values (RFC 10036 Section 3)
-const PROXY_ERROR_INCREMENTAL_REFUSED: const u8[:] = "incremental_refused";
+const PROXY_ERROR_INCREMENTAL_REFUSED:      const u8[:] = "incremental_refused";
 const PROXY_ERROR_CONNECTION_LIMIT_REACHED: const u8[:] = "connection_limit_reached";
 
 // ---- 2. Header Parsing & Serialization ---------------------------------------

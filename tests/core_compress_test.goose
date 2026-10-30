@@ -527,7 +527,7 @@ fn test_lazy_matching_and_stored_cost_selection(t: core::T&) {
 
     t.run("Incompressible Data Stored Block Selection") { sub =>
         var random_data: u8[1024] = [0; 1024];
-        var seed: u32 = 123456789;
+        var seed:        u32      = 123456789;
         for i in 1024 {
             seed = seed * 1664525 + 1013904223;
             random_data[i] = ((seed >> 16) & 0xFF) as u8;
@@ -677,7 +677,7 @@ fn test_resumable_streaming_chunk_by_chunk(t: core::T&) {
         var restored: u8[>..] = [];
 
         var offset: i64 = 0;
-        var step: i64 = 3;
+        var step:   i64 = 3;
         while offset < wire.len {
             let rem = wire.len - offset;
             let take = if rem < step { rem } else { step };
@@ -882,7 +882,7 @@ fn test_zstandard_rfc8878(t: core::T&) {
         // Feed arbitrary chunks (13 bytes at a time) to ZStreamDecompressor in Auto mode
         var dec = core::new_zstream_decompressor(core::ContainerFormat.Auto);
         var restored: u8[>..] = [];
-        var offset: i64 = 0;
+        var offset:   i64     = 0;
         let chunk_size: i64 = 13;
 
         while offset < wire.len {
@@ -1460,7 +1460,7 @@ fn test_rfc1951_bounds_and_error_handling(t: core::T&) {
 // ---- Official Google Brotli Test Vectors -------------------------------------
 
 // empty raw_len=0 c_len=1
-const VEC_EMPTY_RAW: const u8[0] = [];
+const VEC_EMPTY_RAW:  const u8[0] = [];
 const VEC_EMPTY_COMP: const u8[1] = [59];
 
 // hello raw_len=23 c_len=27
@@ -1623,21 +1623,21 @@ fn test_brotli_quota_and_error_handling(t: core::T&) {
         sub.assert_true(err_trunc == core::CompressError.InputBufferTruncated, "Returns InputBufferTruncated");
 
         // 3. Corrupted header
-        var bad_bytes: u8[4] = [0xFF, 0xFF, 0xFF, 0xFF];
-        var out_bad: u8[>..] = [];
+        var bad_bytes: u8[4]   = [0xFF, 0xFF, 0xFF, 0xFF];
+        var out_bad:   u8[>..] = [];
         let ok_bad, _ = core::brotli_decompress(bad_bytes[..], out_bad);
         sub.assert_false(ok_bad, "Corrupted header is rejected");
 
         // 4. RFC 7932 Section 3.4: Duplicate symbols in simple prefix code must be rejected
-        var dup_simple_bytes: u8[10] = [2, 0, 0, 0, 84, 80, 80, 32, 16, 0];
-        var out_dup: u8[>..] = [];
+        var dup_simple_bytes: u8[10]  = [2, 0, 0, 0, 84, 80, 80, 32, 16, 0];
+        var out_dup:          u8[>..] = [];
         let ok_dup, err_dup = core::brotli_decompress(dup_simple_bytes[..], out_dup);
         sub.assert_false(ok_dup, "Simple prefix code with duplicate symbols is rejected");
         sub.assert_true(err_dup == core::CompressError.InvalidHuffmanCode, "Returns InvalidHuffmanCode");
 
         // 5. RFC 7932 Section 8 & Section 9.2: Static dictionary transformed word length exceeding MLEN must be rejected
-        var dict_overflow_bytes: u8[10] = [98, 0, 0, 0, 4, 64, 8, 18, 32, 1];
-        var out_dict_overflow: u8[>..] = [];
+        var dict_overflow_bytes: u8[10]  = [98, 0, 0, 0, 4, 64, 8, 18, 32, 1];
+        var out_dict_overflow:   u8[>..] = [];
         let ok_do, err_do = core::brotli_decompress(dict_overflow_bytes[..], out_dict_overflow);
         sub.assert_false(ok_do, "Dictionary transformed word exceeding MLEN is rejected");
         sub.assert_true(err_do == core::CompressError.CorruptedBitstream, "Returns CorruptedBitstream on MLEN overflow");
@@ -1648,8 +1648,8 @@ fn test_brotli_quota_and_error_handling(t: core::T&) {
         sub.assert_false(ok_qd, "Decompression quota defense rejects dictionary word exceeding limit");
 
         // 7. RFC 7932 Section 9.2: Metadata meta-blocks must be parsed and skipped cleanly without corrupting stream
-        var metadata_stream: u8[15] = [172, 1, 77, 69, 84, 65, 32, 0, 8, 71, 111, 111, 115, 101, 3];
-        var out_meta: u8[>..] = [];
+        var metadata_stream: u8[15]  = [172, 1, 77, 69, 84, 65, 32, 0, 8, 71, 111, 111, 115, 101, 3];
+        var out_meta:        u8[>..] = [];
         let ok_meta, err_meta = core::brotli_decompress(metadata_stream[..], out_meta);
         sub.assert_true(ok_meta, "Metadata meta-block decompress succeeded");
         sub.assert_eq(out_meta[..], "Goose", "Payload decompressed matches 'Goose'");

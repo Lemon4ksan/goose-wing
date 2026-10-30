@@ -42,11 +42,11 @@ fn test_quic_loss_detection_thresholds() {
     space.largest_sent_pn = 4;
     for pn in 5 {
         space.sent_packets.push(internal::SentPacketMeta {
-            pn: pn as u64,
-            time_sent_us: 10000,
-            size_bytes: 1200,
+            pn:            pn as u64,
+            time_sent_us:  10000,
+            size_bytes:    1200,
             ack_eliciting: true,
-            in_flight: true,
+            in_flight:     true,
         });
     }
 
@@ -73,9 +73,9 @@ fn test_quic_loss_detection_thresholds() {
 
 fn test_optimistic_ack_rejection() {
     var space = internal::PnSpaceState {
-        space_id: internal::PnSpaceId.ApplicationData,
+        space_id:         internal::PnSpaceId.ApplicationData,
         has_sent_packets: true,
-        largest_sent_pn: 10,
+        largest_sent_pn:  10,
         ..
     };
 
@@ -101,8 +101,8 @@ fn test_optimistic_ack_rejection() {
 
 fn test_pto_backoff_calculations() {
     var rtt = internal::RttState {
-        smoothed_rtt_us: 100000,
-        rttvar_us: 20000,
+        smoothed_rtt_us:  100000,
+        rttvar_us:        20000,
         max_ack_delay_us: 25000,
         ..
     };

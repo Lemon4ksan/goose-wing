@@ -15,10 +15,10 @@ enum SocketState {
 }
 
 struct L4Socket {
-    id: i32 = 0,
-    port: u16 = 0,
-    state: SocketState = SocketState.Closed,
-    peer_id: i32 = 0,
+    id:      i32              = 0,
+    port:    u16              = 0,
+    state:   SocketState      = SocketState.Closed,
+    peer_id: i32              = 0,
     rx_ring: core::RingBuffer = core::RingBuffer { .. },
 }
 
@@ -91,14 +91,14 @@ fn test_proxy_protocol_wire_ingress() {
 
     // PROXY v2 binary ingress
     var v2_hdr_orig = wing::ProxyHeader {
-        version: wing::ProxyProtocolVersion.V2,
-        command: wing::ProxyCommand.Proxy,
-        family: wing::ProxyAddressFamily.Inet4,
+        version:   wing::ProxyProtocolVersion.V2,
+        command:   wing::ProxyCommand.Proxy,
+        family:    wing::ProxyAddressFamily.Inet4,
         transport: wing::ProxyTransportProtocol.Stream,
-        src_ipv4: [192, 168, 1, 50],
-        dst_ipv4: [10, 0, 0, 1],
-        src_port: 8080,
-        dst_port: 80,
+        src_ipv4:  [192, 168, 1, 50],
+        dst_ipv4:  [10, 0, 0, 1],
+        src_port:  8080,
+        dst_port:  80,
     };
     var v2_wire: u8[>..] = [];
     assert(wing::format_proxy_v2(v2_hdr_orig, v2_wire));

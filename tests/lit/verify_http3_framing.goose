@@ -73,9 +73,9 @@ fn test_h3_grease_and_h2_reserved() {
 fn test_h3_settings_frame() {
     var settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,
-        max_field_section_size: 16384,
-        qpack_blocked_streams: 16,
-        enable_connect_protocol: 1,
+        max_field_section_size:   16384,
+        qpack_blocked_streams:    16,
+        enable_connect_protocol:  1,
     };
     var wire_out: u8[>..] = [];
     assert(internal::encode_h3_settings_frame(wire_out, settings));

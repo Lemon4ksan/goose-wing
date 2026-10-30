@@ -580,7 +580,7 @@ fn test_cve_2026_94440_multipart_memory_header_accounting(t: core::T&) {
         for i in 1200 { body.push('X'); }
         body.append("\r\n\r\nsmall_payload\r\n--bound999--\r\n");
 
-        var options = wing::default_multipart_options();
+        var options = wing::MultipartOptions { .. };
         options.max_memory_bytes = 1000; // Small limit: 1000 bytes
 
         let msg, err = wing::parse_multipart(body[..], boundary, options);

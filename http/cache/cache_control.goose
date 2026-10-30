@@ -10,24 +10,24 @@ import http.headers;
 
 // ---- cache-control bitmask flags -------------------------------------------
 
-const CC_FLAG_NONE: u32 = 0x0000;
-const CC_NO_STORE: u32 = 0x0001;                // no-store
-const CC_NO_CACHE: u32 = 0x0002;                // no-cache (unqualified or qualified)
-const CC_MUST_REVALIDATE: u32 = 0x0004;         // must-revalidate
-const CC_PROXY_REVALIDATE: u32 = 0x0008;        // proxy-revalidate
-const CC_MUST_UNDERSTAND: u32 = 0x0010;         // must-understand (RFC 9111 Section 5.2.2.3)
-const CC_PRIVATE: u32 = 0x0020;                 // private (unqualified or qualified)
-const CC_PUBLIC: u32 = 0x0040;                  // public
-const CC_IMMUTABLE: u32 = 0x0080;               // immutable (RFC 8246)
-const CC_ONLY_IF_CACHED: u32 = 0x0100;          // only-if-cached (RFC 9111 Section 5.2.1)
-const CC_NO_TRANSFORM: u32 = 0x0200;            // no-transform
-const CC_INVALID_FRESHNESS: u32 = 0x0400;       // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
-const CC_HAS_MAX_AGE: u32 = 0x0800;             // max-age=delta-seconds
-const CC_HAS_S_MAXAGE: u32 = 0x1000;            // s-maxage=delta-seconds
-const CC_HAS_MAX_STALE: u32 = 0x2000;           // max-stale[=delta-seconds]
-const CC_HAS_MIN_FRESH: u32 = 0x4000;           // min-fresh=delta-seconds
+const CC_FLAG_NONE:              u32 = 0x0000;
+const CC_NO_STORE:               u32 = 0x0001;  // no-store
+const CC_NO_CACHE:               u32 = 0x0002;  // no-cache (unqualified or qualified)
+const CC_MUST_REVALIDATE:        u32 = 0x0004;  // must-revalidate
+const CC_PROXY_REVALIDATE:       u32 = 0x0008;  // proxy-revalidate
+const CC_MUST_UNDERSTAND:        u32 = 0x0010;  // must-understand (RFC 9111 Section 5.2.2.3)
+const CC_PRIVATE:                u32 = 0x0020;  // private (unqualified or qualified)
+const CC_PUBLIC:                 u32 = 0x0040;  // public
+const CC_IMMUTABLE:              u32 = 0x0080;  // immutable (RFC 8246)
+const CC_ONLY_IF_CACHED:         u32 = 0x0100;  // only-if-cached (RFC 9111 Section 5.2.1)
+const CC_NO_TRANSFORM:           u32 = 0x0200;  // no-transform
+const CC_INVALID_FRESHNESS:      u32 = 0x0400;  // corrupted/non-digit max-age/s-maxage/min-fresh -> lifetime = 0
+const CC_HAS_MAX_AGE:            u32 = 0x0800;  // max-age=delta-seconds
+const CC_HAS_S_MAXAGE:           u32 = 0x1000;  // s-maxage=delta-seconds
+const CC_HAS_MAX_STALE:          u32 = 0x2000;  // max-stale[=delta-seconds]
+const CC_HAS_MIN_FRESH:          u32 = 0x4000;  // min-fresh=delta-seconds
 const CC_STALE_WHILE_REVALIDATE: u32 = 0x8000;  // stale-while-revalidate=delta-seconds (RFC 5861 Section 3)
-const CC_STALE_IF_ERROR: u32 = 0x10000;         // stale-if-error=delta-seconds (RFC 5861 Section 4)
+const CC_STALE_IF_ERROR:         u32 = 0x10000; // stale-if-error=delta-seconds (RFC 5861 Section 4)
 
 const MAX_DELTA_SECONDS: i32 = 2147483647; // i32::MAX overflow clamp per RFC 9111 Section 1.2.2
 
@@ -35,17 +35,17 @@ const MAX_DELTA_SECONDS: i32 = 2147483647; // i32::MAX overflow clamp per RFC 91
 
 // Structured representation of parsed HTTP Cache-Control directives.
 struct CacheControl {
-    flags: u32 = 0,
-    max_age: i32 = -1,
-    s_maxage: i32 = -1,
-    max_stale: i32 = -1, // -1 with CC_HAS_MAX_STALE means unbounded max-stale
-    min_fresh: i32 = -1,
-    stale_while_revalidate: i32 = -1,
-    stale_if_error: i32 = -1,
-    private_overflow: bool = false,
-    no_cache_overflow: bool = false,
-    private_fields: u8[..64][..16] = [],
-    no_cache_fields: u8[..64][..16] = [],
+    flags:                  u32            = 0,
+    max_age:                i32            = -1,
+    s_maxage:               i32            = -1,
+    max_stale:              i32            = -1, // -1 with CC_HAS_MAX_STALE means unbounded max-stale
+    min_fresh:              i32            = -1,
+    stale_while_revalidate: i32            = -1,
+    stale_if_error:         i32            = -1,
+    private_overflow:       bool           = false,
+    no_cache_overflow:      bool           = false,
+    private_fields:         u8[..64][..16] = [],
+    no_cache_fields:        u8[..64][..16] = [],
 }
 
 // Constructs a zero-initialized CacheControl structure with default unset values (-1).
@@ -169,6 +169,10 @@ fn is_no_cache_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
 
 // Parses a non-negative decimal delta-seconds token, clamping overflow to i32::MAX.
 // Strips optional surrounding double quotes.
+//
+// Example:
+//   raw_val = "3600"
+//   returns: 3600, ok = true
 fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
     let s = raw_val.trim_lws().trim_byte('"').trim_lws();
     guard s.len > 0 else { return 0, false; }
@@ -185,6 +189,10 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
 }
 
 // Extracts comma-separated or quoted field names into an inline fixed-capacity array.
+//
+// Example:
+//   raw_val = "\"Set-Cookie\", \"Private-Token\""
+//   appends names to out_fields, sets overflow=false
 fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow: bool&) {
     let s = raw_val.trim_lws().trim_byte('"').trim_lws();
     guard s.len > 0 else { return; }
@@ -328,6 +336,10 @@ fn apply_directive(name: const u8[:], val: const u8[:], cc: CacheControl&, ignor
 // ---- cache-control string parser -------------------------------------------
 
 // Parses a single Cache-Control header line or comma-separated token stream.
+//
+// Example:
+//   raw = "max-age=3600, no-transform"
+//   populates cc.max_age=3600, sets CC_NO_TRANSFORM flag
 fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cult: bool = true) {
     var cursor: i64 = 0;
     let len = raw.len;
@@ -375,8 +387,21 @@ fn contains_pragma_no_cache(pragma_val: const u8[:]) -> bool {
     return false;
 }
 
+// Options for parsing cache-control headers across requests and responses.
+struct CacheControlParseOptions {
+    is_request:        bool = false,
+    ignore_cargo_cult: bool = true,
+}
+
 // Parses all Cache-Control (and optional Pragma fallback) headers from HeaderMap.
-fn parse_cache_control_headers(map: const HeaderMap&, is_request: bool = false, ignore_cargo_cult: bool = true) -> CacheControl {
+//
+// Example:
+//   map = headers with "Cache-Control: max-age=60"
+//   returns: cc with max_age=60
+fn parse_cache_control_headers(
+    map:  const HeaderMap&,
+    opts: CacheControlParseOptions = CacheControlParseOptions { .. },
+) -> CacheControl {
     var cc = CacheControl { .. };
     var has_cc_header = false;
 
@@ -385,7 +410,7 @@ fn parse_cache_control_headers(map: const HeaderMap&, is_request: bool = false, 
         if eq_ascii_fold(name, "cache-control") {
             has_cc_header = true;
             let val = map.raw_buf[entry.values_begin..entry.values_end];
-            parse_cache_control_str(val, cc, ignore_cargo_cult);
+            parse_cache_control_str(val, cc, opts.ignore_cargo_cult);
         }
     }
 

@@ -372,10 +372,10 @@ fn test_h2_connection_trailers_end_stream_requirement(t: core::T&) {
 
         // 1. Initial HEADERS frame on stream 1 (without END_STREAM) -> opens stream
         let h_initial = internal::FrameHeader {
-            length: 16,
+            length:     16,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS, // no END_STREAM
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS, // no END_STREAM
+            stream_id:  1,
         };
         let err1 = internal::on_ingress_frame_header(conn, h_initial, 0);
         sub.assert_eq(err1, internal::ERR_NO_ERROR, "initial HEADERS frame accepted");
@@ -383,10 +383,10 @@ fn test_h2_connection_trailers_end_stream_requirement(t: core::T&) {
         // 2. Second HEADERS frame on stream 1 WITHOUT FLAG_END_STREAM (non-final trailers)
         // Per RFC 9113 §8.1: A HEADERS frame for trailers MUST carry FLAG_END_STREAM.
         let h_second_bad = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS, // no END_STREAM!
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS, // no END_STREAM!
+            stream_id:  1,
         };
         let err2 = internal::on_ingress_frame_header(conn, h_second_bad, 0);
         sub.assert_eq(err2, internal::ERR_PROTOCOL_ERROR, "second HEADERS without END_STREAM MUST trigger PROTOCOL_ERROR");
@@ -396,29 +396,29 @@ fn test_h2_connection_trailers_end_stream_requirement(t: core::T&) {
         var conn = internal::new_h2_connection(0);
 
         let h_initial = internal::FrameHeader {
-            length: 16,
+            length:     16,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
         };
         internal::on_ingress_frame_header(conn, h_initial, 0);
 
         // Valid trailer frame with END_STREAM
         let h_trailers = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            stream_id:  1,
         };
         let err_tr = internal::on_ingress_frame_header(conn, h_trailers, 0);
         sub.assert_eq(err_tr, internal::ERR_NO_ERROR, "valid trailers with END_STREAM accepted");
 
         // Third HEADERS frame after trailers received MUST be rejected
         let h_third = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            stream_id:  1,
         };
         let err3 = internal::on_ingress_frame_header(conn, h_third, 0);
         sub.assert_true(err3 == internal::ERR_STREAM_CLOSED || err3 == internal::ERR_PROTOCOL_ERROR, "third HEADERS after trailers rejected");
@@ -775,29 +775,29 @@ fn test_h2_data_frame_after_trailers_rejection(t: core::T&) {
 
         // Open stream 1
         let h_initial = internal::FrameHeader {
-            length: 16,
+            length:     16,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
         };
         internal::on_ingress_frame_header(conn, h_initial, 0);
 
         // Receive trailers with END_STREAM
         let h_trailers = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            stream_id:  1,
         };
         let err_tr = internal::on_ingress_frame_header(conn, h_trailers, 0);
         sub.assert_eq(err_tr, internal::ERR_NO_ERROR, "trailers accepted");
 
         // Now attempt to feed a DATA frame on stream 1
         let h_data = internal::FrameHeader {
-            length: 10,
+            length:     10,
             frame_type: internal::FRAME_DATA,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         let err_data = internal::on_data_frame_received(conn, h_data, 10);
         sub.assert_eq(err_data, internal::ERR_STREAM_CLOSED, "DATA frame after trailers MUST return ERR_STREAM_CLOSED");
@@ -1353,14 +1353,14 @@ fn test_chunked_cve_2019_16276(t: core::T&) {
     var wire: u8[..64] = [];
     wire.append("Content-Length : 100\r\n\r\n");
     var out_trailers: wing::HeaderItem[..16] = [];
-    var cursor: i64 = 0;
+    var cursor:       i64                    = 0;
     let err = wing::parse_chunked_trailers_with_out(wire[..], cursor, out_trailers);
     t.assert_true(err != wing::ChunkedDecodeError.None, "Space before colon in trailer must fail per CVE-2019-16276");
 
     // Negative / overflow chunk size
     var bad_chunk: u8[..64] = [];
     bad_chunk.append("FFFFFFFFFFFFFFFF\r\n");
-    var out_body: u8[>..] = [];
+    var out_body: u8[>..]                = [];
     var trailers: wing::HeaderItem[..16] = [];
     let b_err, b_consumed = wing::decode_chunked_body_with_trailers(bad_chunk[..], out_body, trailers);
     t.assert_true(b_err != wing::ChunkedDecodeError.None, "Overflow chunk size FFFFFFFFFFFFFFFF must be rejected");

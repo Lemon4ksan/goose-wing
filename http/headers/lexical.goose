@@ -7,13 +7,13 @@ namespace wing;
 import std;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
-let CRLF_SET: ByteSet = byte_set(CRLF_BYTES[..]);
+let CRLF_SET:   ByteSet     = byte_set(CRLF_BYTES[..]);
 
 let COLON_BYTES: const u8[1] = [':'];
-let COLON_SET: ByteSet = byte_set(COLON_BYTES[..]);
+let COLON_SET:   ByteSet     = byte_set(COLON_BYTES[..]);
 
 let NULL_BYTES: const u8[1] = [0];
-let NULL_SET: ByteSet = byte_set(NULL_BYTES[..]);
+let NULL_SET:   ByteSet     = byte_set(NULL_BYTES[..]);
 
 // ---- lexical validation & fast word operations -----------------------------
 
@@ -46,34 +46,34 @@ inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
 }
 
 // Header presence bitmask constants (O(1) duplicate & smuggling detector)
-const HDR_PRESENCE_NONE: u32 = 0;
-const HDR_PRESENCE_HOST: u32 = 1 << 0;
-const HDR_PRESENCE_CONTENT_LENGTH: u32 = 1 << 1;
+const HDR_PRESENCE_NONE:              u32 = 0;
+const HDR_PRESENCE_HOST:              u32 = 1 << 0;
+const HDR_PRESENCE_CONTENT_LENGTH:    u32 = 1 << 1;
 const HDR_PRESENCE_TRANSFER_ENCODING: u32 = 1 << 2;
-const HDR_PRESENCE_CONNECTION: u32 = 1 << 3;
-const HDR_PRESENCE_UPGRADE: u32 = 1 << 4;
+const HDR_PRESENCE_CONNECTION:        u32 = 1 << 3;
+const HDR_PRESENCE_UPGRADE:           u32 = 1 << 4;
 const HDR_PRESENCE_SEC_WEBSOCKET_KEY: u32 = 1 << 5;
-const HDR_PRESENCE_SMUGGLING_MASK: u32 = (1 << 1) | (1 << 2);
+const HDR_PRESENCE_SMUGGLING_MASK:    u32 = (1 << 1) | (1 << 2);
 
 struct HeaderPresenceTracker {
-    mask: u32 = 0,
-    host_idx: i16 = -1,
-    cl_idx: i16 = -1,
-    te_idx: i16 = -1,
-    conn_idx: i16 = -1,
-    upgrade_idx: i16 = -1,
-    parsed_cl: i64 = -1,
-    has_duplicate_host: bool = false,
-    has_duplicate_cl: bool = false,
-    has_duplicate_te: bool = false,
+    mask:                   u32  = 0,
+    host_idx:               i16  = -1,
+    cl_idx:                 i16  = -1,
+    te_idx:                 i16  = -1,
+    conn_idx:               i16  = -1,
+    upgrade_idx:            i16  = -1,
+    parsed_cl:              i64  = -1,
+    has_duplicate_host:     bool = false,
+    has_duplicate_cl:       bool = false,
+    has_duplicate_te:       bool = false,
     has_smuggling_conflict: bool = false,
 }
 
 // Tracks header presence and detects duplicates/smuggling in O(1) via bitmask (uWebSockets pattern)
 fn track_header_presence(
     tracker: HeaderPresenceTracker&,
-    name: const u8[:],
-    val: const u8[:],
+    name:    const u8[:],
+    val:     const u8[:],
     hdr_idx: i16,
 ) -> bool {
     if eq_ascii_fold(name, "host") {
@@ -217,7 +217,7 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
 
     var first_parsed = false;
     var target_val: i64 = 0;
-    var cursor: i64 = 0;
+    var cursor:     i64 = 0;
 
     while cursor < trimmed.len {
         var comma_idx = cursor;
@@ -297,8 +297,8 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
     guard trimmed.len > 0 else { return false; }
     guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return false; }
 
-    var cursor: i64 = 0;
-    var count: i32 = 0;
+    var cursor:        i64 = 0;
+    var count:         i32 = 0;
     var chunked_count: i32 = 0;
     var last_is_chunked = false;
 

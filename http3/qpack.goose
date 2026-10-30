@@ -10,54 +10,54 @@ import std;
 
 // ---- 1. constants, error codes and limits -----------------------------------
 
-const QPACK_STATIC_TABLE_SIZE: u64 = 99;
-const QPACK_ENTRY_OVERHEAD: u64 = 32; // RFC 9204 Section 3.2.1 (+32 bytes per entry)
-const QPACK_DEFAULT_MAX_TABLE: u64 = 4096;
+const QPACK_STATIC_TABLE_SIZE:   u64 = 99;
+const QPACK_ENTRY_OVERHEAD:      u64 = 32; // RFC 9204 Section 3.2.1 (+32 bytes per entry)
+const QPACK_DEFAULT_MAX_TABLE:   u64 = 4096;
 const QPACK_MAX_BLOCKED_STREAMS: u32 = 128;
 
 // HTTP/3 Error Codes (RFC 9114 Section 8.1 & RFC 9204 Section 2.2.3)
-const H3_ERR_NO_ERROR: u64 = 0x0100;
-const H3_ERR_GENERAL_PROTOCOL: u64 = 0x0101;
-const H3_ERR_INTERNAL: u64 = 0x0102;
-const H3_ERR_STREAM_CREATION: u64 = 0x0103;
-const H3_ERR_CLOSED_CRITICAL_STREAM: u64 = 0x0104;
-const H3_ERR_FRAME_UNEXPECTED: u64 = 0x0105;
-const H3_ERR_FRAME_ERROR: u64 = 0x0106;
-const H3_ERR_EXCESSIVE_LOAD: u64 = 0x0107;
-const H3_ERR_ID_ERROR: u64 = 0x0108;
-const H3_ERR_SETTINGS_ERROR: u64 = 0x0109;
-const H3_ERR_MISSING_SETTINGS: u64 = 0x010A;
-const H3_ERR_REQUEST_REJECTED: u64 = 0x010B;
-const H3_ERR_REQUEST_CANCELLED: u64 = 0x010C;
-const H3_ERR_REQUEST_INCOMPLETE: u64 = 0x010D;
-const H3_ERR_CONNECT_ERROR: u64 = 0x010F;
-const H3_ERR_VERSION_FALLBACK: u64 = 0x0110;
+const H3_ERR_NO_ERROR:                   u64 = 0x0100;
+const H3_ERR_GENERAL_PROTOCOL:           u64 = 0x0101;
+const H3_ERR_INTERNAL:                   u64 = 0x0102;
+const H3_ERR_STREAM_CREATION:            u64 = 0x0103;
+const H3_ERR_CLOSED_CRITICAL_STREAM:     u64 = 0x0104;
+const H3_ERR_FRAME_UNEXPECTED:           u64 = 0x0105;
+const H3_ERR_FRAME_ERROR:                u64 = 0x0106;
+const H3_ERR_EXCESSIVE_LOAD:             u64 = 0x0107;
+const H3_ERR_ID_ERROR:                   u64 = 0x0108;
+const H3_ERR_SETTINGS_ERROR:             u64 = 0x0109;
+const H3_ERR_MISSING_SETTINGS:           u64 = 0x010A;
+const H3_ERR_REQUEST_REJECTED:           u64 = 0x010B;
+const H3_ERR_REQUEST_CANCELLED:          u64 = 0x010C;
+const H3_ERR_REQUEST_INCOMPLETE:         u64 = 0x010D;
+const H3_ERR_CONNECT_ERROR:              u64 = 0x010F;
+const H3_ERR_VERSION_FALLBACK:           u64 = 0x0110;
 const H3_ERR_QPACK_DECOMPRESSION_FAILED: u64 = 0x0200;
 const H3_ERR_QPACK_ENCODER_STREAM_ERROR: u64 = 0x0201;
 const H3_ERR_QPACK_DECODER_STREAM_ERROR: u64 = 0x0202;
 
 // HTTP/3 Frame Types (RFC 9114 Section 7.2)
-const H3_FRAME_DATA: u64 = 0x00;
-const H3_FRAME_HEADERS: u64 = 0x01;
-const H3_FRAME_CANCEL_PUSH: u64 = 0x03;
-const H3_FRAME_SETTINGS: u64 = 0x04;
-const H3_FRAME_PUSH_PROMISE: u64 = 0x05;
-const H3_FRAME_GOAWAY: u64 = 0x07;
-const H3_FRAME_MAX_PUSH_ID: u64 = 0x0D;
+const H3_FRAME_DATA:                    u64 = 0x00;
+const H3_FRAME_HEADERS:                 u64 = 0x01;
+const H3_FRAME_CANCEL_PUSH:             u64 = 0x03;
+const H3_FRAME_SETTINGS:                u64 = 0x04;
+const H3_FRAME_PUSH_PROMISE:            u64 = 0x05;
+const H3_FRAME_GOAWAY:                  u64 = 0x07;
+const H3_FRAME_MAX_PUSH_ID:             u64 = 0x0D;
 const H3_FRAME_PRIORITY_UPDATE_REQUEST: u64 = 0xF0700; // RFC 9218 Section 7.2
-const H3_FRAME_PRIORITY_UPDATE_PUSH: u64 = 0xF0701;    // RFC 9218 Section 7.2
+const H3_FRAME_PRIORITY_UPDATE_PUSH:    u64 = 0xF0701; // RFC 9218 Section 7.2
 
 // HTTP/3 Unidirectional Stream Types (RFC 9114 Section 6.2)
-const H3_STREAM_CONTROL: u64 = 0x00;
-const H3_STREAM_PUSH: u64 = 0x01;
+const H3_STREAM_CONTROL:       u64 = 0x00;
+const H3_STREAM_PUSH:          u64 = 0x01;
 const H3_STREAM_QPACK_ENCODER: u64 = 0x02;
 const H3_STREAM_QPACK_DECODER: u64 = 0x03;
 
 // HTTP/3 Settings Identifiers (RFC 9114 Section 7.2.4.1 & RFC 9204 Section 5)
 const H3_SETTING_QPACK_MAX_TABLE_CAPACITY: u64 = 0x01; // default 0
-const H3_SETTING_MAX_FIELD_SECTION_SIZE: u64 = 0x06;   // unlimited default
-const H3_SETTING_QPACK_BLOCKED_STREAMS: u64 = 0x07; // default 0
-const H3_SETTING_ENABLE_CONNECT_PROTOCOL: u64 = 0x08; // RFC 9220 Extended CONNECT
+const H3_SETTING_MAX_FIELD_SECTION_SIZE:   u64 = 0x06; // unlimited default
+const H3_SETTING_QPACK_BLOCKED_STREAMS:    u64 = 0x07; // default 0
+const H3_SETTING_ENABLE_CONNECT_PROTOCOL:  u64 = 0x08; // RFC 9220 Extended CONNECT
 
 enum QpackError {
     None,
@@ -72,39 +72,39 @@ enum QpackError {
 }
 
 struct HeaderField {
-    name: u8[..256] = [],
-    value: u8[..4096] = [],
-    never_index: bool = false,
+    name:        u8[..256]  = [],
+    value:       u8[..4096] = [],
+    never_index: bool       = false,
 }
 
 struct DynamicEntry {
-    abs_index: u64 = 0,
-    ref_count: u32 = 0,
-    name: u8[..256] = [],
-    value: u8[..4096] = [],
+    abs_index: u64        = 0,
+    ref_count: u32        = 0,
+    name:      u8[..256]  = [],
+    value:     u8[..4096] = [],
 }
 
 struct BlockedStreamEntry {
-    stream_id: u64 = 0,
-    req_insert_count: u64 = 0,
-    encoded_data: u8[..4096] = [],
+    stream_id:        u64        = 0,
+    req_insert_count: u64        = 0,
+    encoded_data:     u8[..4096] = [],
 }
 
 struct QpackTable {
-    head_idx: u32 = 0,
-    capacity_bytes: u64 = 0,
-    max_capacity_bytes: u64 = 0,
-    used_bytes: u64 = 0,
-    insert_count: u64 = 0,       // TotalNumberOfInserts
-    known_rcvd_count: u64 = 0,   // Known Received Count
-    draining_index: u64 = 0,     // Active indexing lower bound
-    max_blocked: u32 = 16,
-    max_field_section: u64 = 16384,
-    encoder_stream_opened: bool = false,
-    decoder_stream_opened: bool = false,
-    control_stream_opened: bool = false,
-    blocked_streams: BlockedStreamEntry[..128] = [],
-    entries: DynamicEntry[>..<] = [], // Must be last!
+    head_idx:              u32                       = 0,
+    capacity_bytes:        u64                       = 0,
+    max_capacity_bytes:    u64                       = 0,
+    used_bytes:            u64                       = 0,
+    insert_count:          u64                       = 0, // TotalNumberOfInserts
+    known_rcvd_count:      u64                       = 0, // Known Received Count
+    draining_index:        u64                       = 0, // Active indexing lower bound
+    max_blocked:           u32                       = 16,
+    max_field_section:     u64                       = 16384,
+    encoder_stream_opened: bool                      = false,
+    decoder_stream_opened: bool                      = false,
+    control_stream_opened: bool                      = false,
+    blocked_streams:       BlockedStreamEntry[..128] = [],
+    entries:               DynamicEntry[>..<]        = [], // Must be last!
 }
 
 // Calculates RFC 9204 Section 3.2.1 protocol weight (+32 byte overhead).
@@ -116,7 +116,7 @@ fn qpack_entry_cost(name_len: u64, val_len: u64) -> u64 {
 
 struct QpackStaticEntry {
     name: const u8[:] = "",
-    val: const u8[:] = "",
+    val:  const u8[:] = "",
 }
 
 const QPACK_STATIC_TABLE: QpackStaticEntry[99] = [
@@ -258,6 +258,10 @@ const QPACK_MAX_INT_VAL: u64 = 0x3FFFFFFFFFFFFFFF; // 62 bits (RFC 9204 Section 
 // Decodes a QPACK prefixed integer up to 62 bits (RFC 9204 Section 4.1.1).
 // Returns (value, next_offset, ok).
 // Guarantees zero allocation, 62-bit boundary checks, and overflow detection.
+//
+// Example:
+//   src = [0x0A], offset = 0, prefix_bits = 5
+//   returns: 10, 1, true
 fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64, bool {
     guard offset < (src.len as u64) else { return 0, offset, false; }
     guard prefix_bits >= 1 && prefix_bits <= 8 else { return 0, offset, false; }
@@ -298,6 +302,10 @@ fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64,
 }
 
 // Decodes Required Insert Count per RFC 9204 Section 4.5.1.1.
+//
+// Example:
+//   enc_ric = 0, total_inserts = 0, max_cap = 4096
+//   returns: 0, QpackError.None
 fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError {
     if enc_ric == 0 {
         return 0, QpackError.None;
@@ -344,6 +352,10 @@ fn encode_ric(ric: u64, max_cap: u64) -> u64 {
 
 // Decodes Base index from sign bit S and DeltaBase (RFC 9204 Section 4.5.1.2).
 // RFC 9204 §4.5.1.2: If Required Insert Count is 0, the Base is 0. If Sign is 1, or Delta Base is non-zero, this is an error.
+//
+// Example:
+//   sign_bit = 0, delta_base = 0, ric = 0
+//   returns: 0, QpackError.None
 fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
     guard sign_bit == 0 || sign_bit == 1 else {
         return 0, QpackError.DecompressionFailed;
@@ -384,14 +396,14 @@ fn encode_base(base: u64, ric: u64) -> u8, u64 {
 // ---- 4. dynamic table management & eviction --------------------------------
 
 fn new_qpack_table(
-    max_capacity: u64 = 4096,
-    max_blocked: u32 = 16,
+    max_capacity:     u64 = 4096,
+    max_blocked:      u32 = 16,
     initial_capacity: u64 = 4096,
 ) -> QpackTable {
     return QpackTable {
-        capacity_bytes: initial_capacity,
+        capacity_bytes:     initial_capacity,
         max_capacity_bytes: max_capacity,
-        max_blocked: max_blocked,
+        max_blocked:        max_blocked,
         ..
     };
 }
@@ -478,7 +490,7 @@ fn qpack_duplicate(tbl: QpackTable&, rel_idx: u64) -> bool {
     guard tbl.insert_count > rel_idx else { return false; }
     let target_abs = tbl.insert_count - rel_idx - 1;
 
-    var n_buf: u8[..256] = [];
+    var n_buf: u8[..256]  = [];
     var v_buf: u8[..4096] = [];
     var found = false;
     for &e in tbl.entries {
@@ -495,10 +507,10 @@ fn qpack_duplicate(tbl: QpackTable&, rel_idx: u64) -> bool {
 
 // Looks up an entry by absolute index in dynamic table.
 fn qpack_lookup_absolute(
-    tbl: const QpackTable&,
-    abs_idx: u64,
+    tbl:      const QpackTable&,
+    abs_idx:  u64,
     out_name: u8[..256]&,
-    out_val: u8[..4096]&,
+    out_val:  u8[..4096]&,
 ) -> bool {
     out_name.clear();
     out_val.clear();
@@ -509,6 +521,8 @@ fn qpack_lookup_absolute(
             return true;
         }
     }
+    out_name.clear();
+    out_val.clear();
     return false;
 }
 
@@ -560,7 +574,7 @@ fn qpack_block_stream(tbl: QpackTable&, stream_id: u64, ric: u64, data: const u8
         }
     }
     var entry = BlockedStreamEntry {
-        stream_id: stream_id,
+        stream_id:        stream_id,
         req_insert_count: ric,
         ..
     };
@@ -620,6 +634,10 @@ fn qpack_unpin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
 // ---- 5. encoder / decoder instruction dispatch ------------------------------
 
 // Decodes string literal with Huffman or raw octets (RFC 9204 Section 4.1.2).
+//
+// Example:
+//   src = [0x05, 0x68, 0x65, 0x6C, 0x6C, 0x6F], offset = 0, prefix_bits = 7, out = []
+//   returns: 6, true, out = "hello"
 fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B&) -> u64, bool {
     guard offset < (src.len as u64) else { return offset, false; }
     let is_huff = (src[offset] & ((1 as u8) << prefix_bits)) != 0;
@@ -752,10 +770,10 @@ inline fn is_qpack_token_char(c: u8) -> bool {
 
 // Emits a parsed field line, enforcing SETTINGS_MAX_FIELD_SECTION_SIZE + 32-byte overhead.
 fn emit_field_checked(
-    out_fields: HeaderField[>..]&,
+    out_fields:  HeaderField[>..]&,
     budget_left: u64&,
-    name: const u8[:],
-    val: const u8[:],
+    name:        const u8[:],
+    val:         const u8[:],
     never_index: bool = false,
 ) -> QpackError {
     // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase valid token chars or pseudo-header
@@ -790,13 +808,168 @@ fn emit_field_checked(
     return QpackError.None;
 }
 
+inline fn record_dynamic_abs_used(abs_idx: u64, max_dyn_abs_used: u64&, used_any_dyn: bool&) {
+    if !used_any_dyn || abs_idx > max_dyn_abs_used {
+        max_dyn_abs_used = abs_idx;
+        used_any_dyn = true;
+    }
+}
+
+// Decodes a single QPACK field line representation.
+//
+// Example:
+//   src = [0xD1], offset = 0
+//   returns: QpackError.None, offset = 1, out_fields has decoded field
+fn decode_qpack_field_line(
+    tbl:              const QpackTable&,
+    src:              const u8[:],
+    offset:           u64&,
+    base:             u64,
+    ric:              u64,
+    budget:           u64&,
+    out_fields:       HeaderField[>..]&,
+    max_dyn_abs_used: u64&,
+    used_any_dyn:     bool&,
+) -> QpackError {
+    let b = src[offset];
+
+    // Case A: Indexed Field Line: 1Txxxxxx (6-bit prefix)
+    if (b & 0x80) != 0 {
+        let is_static = (b & 0x40) != 0;
+        let idx, next_off, ok = qpack_decode_int(src, offset, 6);
+        guard ok else { return QpackError.DecompressionFailed; }
+
+        if is_static {
+            let s_ent, s_ok = get_qpack_static_field(idx);
+            guard s_ok else { return QpackError.DecompressionFailed; }
+            let err = emit_field_checked(out_fields, budget, s_ent.name, s_ent.val, false);
+            guard err == QpackError.None else { return err; }
+        } else {
+            guard base > idx else { return QpackError.DecompressionFailed; }
+            let abs_idx = base - idx - 1;
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.2
+            var n: u8[..256]  = [];
+            var v: u8[..4096] = [];
+            guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
+                return QpackError.DecompressionFailed;
+            }
+            let err = emit_field_checked(out_fields, budget, n[..], v[..], false);
+            guard err == QpackError.None else { return err; }
+            record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+        }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    // Case B: Indexed Field Line With Post-Base Index: 0001xxxx (4-bit prefix)
+    if (b & 0xF0) == 0x10 {
+        let post_idx, next_off, ok = qpack_decode_int(src, offset, 4);
+        guard ok else { return QpackError.DecompressionFailed; }
+        guard (0xFFFFFFFFFFFFFFFF - base) >= post_idx else { return QpackError.DecompressionFailed; }
+        let abs_idx = base + post_idx;
+        guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.3
+        var n: u8[..256]  = [];
+        var v: u8[..4096] = [];
+        guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
+            return QpackError.DecompressionFailed;
+        }
+        let err = emit_field_checked(out_fields, budget, n[..], v[..], false);
+        guard err == QpackError.None else { return err; }
+        record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    // Case C: Literal Field Line With Name Reference: 01NTxxxx (4-bit prefix)
+    if (b & 0xC0) == 0x40 {
+        let is_never_index = (b & 0x20) != 0;
+        let is_static = (b & 0x10) != 0;
+        let name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 4);
+        guard ok_idx else { return QpackError.DecompressionFailed; }
+
+        var n: u8[..256] = [];
+        if is_static {
+            let s_ent, s_ok = get_qpack_static_field(name_idx);
+            guard s_ok else { return QpackError.DecompressionFailed; }
+            n.append(s_ent.name);
+        } else {
+            guard base > name_idx else { return QpackError.DecompressionFailed; }
+            let abs_idx = base - name_idx - 1;
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.4
+            var dummy_v: u8[..4096] = [];
+            guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+                return QpackError.DecompressionFailed;
+            }
+            record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+        }
+
+        var v: u8[..4096] = [];
+        let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
+        guard ok_val else { return QpackError.DecompressionFailed; }
+
+        let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
+        guard err == QpackError.None else { return err; }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    // Case D: Literal Field Line With Post-Base Name Reference: 0000Nxxx (3-bit prefix)
+    if (b & 0xF0) == 0x00 {
+        let is_never_index = (b & 0x08) != 0;
+        let post_name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 3);
+        guard ok_idx else { return QpackError.DecompressionFailed; }
+        guard (0xFFFFFFFFFFFFFFFF - base) >= post_name_idx else { return QpackError.DecompressionFailed; }
+        let abs_idx = base + post_name_idx;
+        guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.5
+
+        var n:       u8[..256]  = [];
+        var dummy_v: u8[..4096] = [];
+        guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+            return QpackError.DecompressionFailed;
+        }
+        record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+
+        var v: u8[..4096] = [];
+        let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
+        guard ok_val else { return QpackError.DecompressionFailed; }
+
+        let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
+        guard err == QpackError.None else { return err; }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    // Case E: Literal Field Line With Literal Name: 001NHxxx (3-bit prefix name)
+    if (b & 0xE0) == 0x20 {
+        let is_never_index = (b & 0x10) != 0;
+        var n: u8[..256] = [];
+        let val_start, ok_name = decode_qpack_string(src, offset, 3, n);
+        guard ok_name else { return QpackError.DecompressionFailed; }
+
+        var v: u8[..4096] = [];
+        let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
+        guard ok_val else { return QpackError.DecompressionFailed; }
+
+        let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
+        guard err == QpackError.None else { return err; }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    return QpackError.DecompressionFailed;
+}
+
 // Decodes a complete QPACK Encoded Field Section (RFC 9204 Section 4.5).
 // Enforces Header Accordion defenses (CVE-2026-12523 / CVE-2026-40898),
 // post-decode RIC validation (ric == max_abs_used + 1), and flow-control limits.
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1], out_fields = []
+//   returns: QpackError.None, out_fields has decoded entries
 fn decode_qpack_section(
-    tbl: const QpackTable&,
-    src: const u8[:],
-    out_fields: HeaderField[>..]&,
+    tbl:               const QpackTable&,
+    src:               const u8[:],
+    out_fields:        HeaderField[>..]&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
@@ -832,144 +1005,18 @@ fn decode_qpack_section(
 
     // 3. Decode Field Lines
     while offset < (src.len as u64) {
-        let b = src[offset];
-
-        // Case A: Indexed Field Line: 1Txxxxxx (6-bit prefix)
-        if (b & 0x80) != 0 {
-            let is_static = (b & 0x40) != 0;
-            let idx, next_off, ok = qpack_decode_int(src, offset, 6);
-            guard ok else { return QpackError.DecompressionFailed; }
-
-            if is_static {
-                let s_ent, s_ok = get_qpack_static_field(idx);
-                guard s_ok else { return QpackError.DecompressionFailed; }
-                let err = emit_field_checked(out_fields, budget, s_ent.name, s_ent.val, false);
-                guard err == QpackError.None else { return err; }
-            } else {
-                guard base > idx else { return QpackError.DecompressionFailed; }
-                let abs_idx = base - idx - 1;
-                guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.2
-                var n: u8[..256] = [];
-                var v: u8[..4096] = [];
-                guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
-                    return QpackError.DecompressionFailed;
-                }
-                let err = emit_field_checked(out_fields, budget, n[..], v[..], false);
-                guard err == QpackError.None else { return err; }
-                if !used_any_dyn || abs_idx > max_dyn_abs_used {
-                    max_dyn_abs_used = abs_idx;
-                    used_any_dyn = true;
-                }
-            }
-            offset = next_off;
-            continue;
-        }
-
-        // Case B: Indexed Field Line With Post-Base Index: 0001xxxx (4-bit prefix)
-        if (b & 0xF0) == 0x10 {
-            let post_idx, next_off, ok = qpack_decode_int(src, offset, 4);
-            guard ok else { return QpackError.DecompressionFailed; }
-            guard (0xFFFFFFFFFFFFFFFF - base) >= post_idx else { return QpackError.DecompressionFailed; }
-            let abs_idx = base + post_idx;
-            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.3
-            var n: u8[..256] = [];
-            var v: u8[..4096] = [];
-            guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
-                return QpackError.DecompressionFailed;
-            }
-            let err = emit_field_checked(out_fields, budget, n[..], v[..], false);
-            guard err == QpackError.None else { return err; }
-            if !used_any_dyn || abs_idx > max_dyn_abs_used {
-                max_dyn_abs_used = abs_idx;
-                used_any_dyn = true;
-            }
-            offset = next_off;
-            continue;
-        }
-
-        // Case C: Literal Field Line With Name Reference: 01NTxxxx (4-bit prefix)
-        if (b & 0xC0) == 0x40 {
-            let is_never_index = (b & 0x20) != 0;
-            let is_static = (b & 0x10) != 0;
-            let name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 4);
-            guard ok_idx else { return QpackError.DecompressionFailed; }
-
-            var n: u8[..256] = [];
-            if is_static {
-                let s_ent, s_ok = get_qpack_static_field(name_idx);
-                guard s_ok else { return QpackError.DecompressionFailed; }
-                n.append(s_ent.name);
-            } else {
-                guard base > name_idx else { return QpackError.DecompressionFailed; }
-                let abs_idx = base - name_idx - 1;
-                guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.4
-                var dummy_v: u8[..4096] = [];
-                guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
-                    return QpackError.DecompressionFailed;
-                }
-                if !used_any_dyn || abs_idx > max_dyn_abs_used {
-                    max_dyn_abs_used = abs_idx;
-                    used_any_dyn = true;
-                }
-            }
-
-            var v: u8[..4096] = [];
-            let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
-            guard ok_val else { return QpackError.DecompressionFailed; }
-
-            let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
-            guard err == QpackError.None else { return err; }
-            offset = next_off;
-            continue;
-        }
-
-        // Case D: Literal Field Line With Post-Base Name Reference: 0000Nxxx (3-bit prefix)
-        if (b & 0xF0) == 0x00 {
-            let is_never_index = (b & 0x08) != 0;
-            let post_name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 3);
-            guard ok_idx else { return QpackError.DecompressionFailed; }
-            guard (0xFFFFFFFFFFFFFFFF - base) >= post_name_idx else { return QpackError.DecompressionFailed; }
-            let abs_idx = base + post_name_idx;
-            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.5
-
-            var n: u8[..256] = [];
-            var dummy_v: u8[..4096] = [];
-            guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
-                return QpackError.DecompressionFailed;
-            }
-            if !used_any_dyn || abs_idx > max_dyn_abs_used {
-                max_dyn_abs_used = abs_idx;
-                used_any_dyn = true;
-            }
-
-            var v: u8[..4096] = [];
-            let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
-            guard ok_val else { return QpackError.DecompressionFailed; }
-
-            let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
-            guard err == QpackError.None else { return err; }
-            offset = next_off;
-            continue;
-        }
-
-        // Case E: Literal Field Line With Literal Name: 001NHxxx (3-bit prefix name)
-        if (b & 0xE0) == 0x20 {
-            let is_never_index = (b & 0x10) != 0;
-            var n: u8[..256] = [];
-            let val_start, ok_name = decode_qpack_string(src, offset, 3, n);
-            guard ok_name else { return QpackError.DecompressionFailed; }
-
-            var v: u8[..4096] = [];
-            let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
-            guard ok_val else { return QpackError.DecompressionFailed; }
-
-            let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
-            guard err == QpackError.None else { return err; }
-            offset = next_off;
-            continue;
-        }
-
-        return QpackError.DecompressionFailed;
+        let f_err = decode_qpack_field_line(
+            tbl,
+            src,
+            offset,
+            base,
+            ric,
+            budget,
+            out_fields,
+            max_dyn_abs_used,
+            used_any_dyn,
+        );
+        guard f_err == QpackError.None else { return f_err; }
     }
 
     // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must equal min required insert count and <= insert_count.
@@ -983,9 +1030,9 @@ fn decode_qpack_section(
 
 // Encodes a single field line with optional static index lookup.
 fn encode_qpack_field<B>(
-    out: B&,
-    name: const u8[:],
-    val: const u8[:],
+    out:         B&,
+    name:        const u8[:],
+    val:         const u8[:],
     use_huffman: bool = true,
 ) {
     let s_idx, exact_s = find_qpack_static_field(name, val);

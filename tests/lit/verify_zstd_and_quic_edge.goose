@@ -139,9 +139,9 @@ fn test_quic_vn_boundaries() {
 
 fn test_quic_ack_offset_chaining() {
     var ack1 = internal::AckFrame {
-        is_ecn: false,
-        largest_acked: 200,
-        ack_delay: 15,
+        is_ecn:          false,
+        largest_acked:   200,
+        ack_delay:       15,
         first_ack_range: 5,
         ..
     };

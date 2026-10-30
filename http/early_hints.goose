@@ -16,20 +16,24 @@ import core from "..";
 const STATUS_EARLY_HINTS: u16 = 103;
 
 struct EarlyHintLink {
-    uri: u8[..256] = [],
-    rel: u8[..32] = [],          // "preload", "preconnect", "dns-prefetch"
-    as_type: u8[..32] = [],      // "style", "script", "font", "image", "fetch"
-    crossorigin: bool = false,
+    uri:         u8[..256] = [],
+    rel:         u8[..32]  = [], // "preload", "preconnect", "dns-prefetch"
+    as_type:     u8[..32]  = [], // "style", "script", "font", "image", "fetch"
+    crossorigin: bool      = false,
 }
 
 struct EarlyHintsResponse {
-    links: EarlyHintLink[..8] = [],
-    is_valid: bool = false,
+    links:    EarlyHintLink[..8] = [],
+    is_valid: bool               = false,
 }
 
 // ---- 2. RFC 8288 / RFC 8297 Link Header Parser -----------------------------
 
-// Parses single Link parameter: e.g. `rel=preload` or `as=style`
+// Parses single Link parameter: e.g. `rel=preload` or `as=style` (RFC 8288 §3).
+//
+// Example:
+//   param_str = "rel=preload"
+//   mutates link.rel to "preload"
 fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
     let p_name_raw, p_val_raw, has_eq = param_str.split_once_byte('=');
     if !has_eq {
@@ -74,6 +78,11 @@ fn find_link_entry_end(s: const u8[:]) -> i64 {
     return s.len;
 }
 
+// Parses a single Link element enclosed in angle brackets with parameters.
+//
+// Example:
+//   entry_str = "</style.css>; rel=preload; as=style"
+//   returns: true, link populated with uri="/style.css", rel="preload", as_type="style"
 fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
     guard entry_str.len > 2 && entry_str[0] == '<' else { return false; }
     let rel_close = core::index_of_byte(entry_str[1..], '>');
@@ -102,6 +111,10 @@ fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
 }
 
 // Parses RFC 8288 `Link` header: `<uri>; rel=...; as=...`
+//
+// Example:
+//   raw = "</style.css>; rel=preload, </app.js>; rel=preload"
+//   returns: true, out_links has 2 entries
 fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
     var rem = raw;
     while rem.len > 0 {
@@ -120,7 +133,11 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
     return true;
 }
 
-// Parses a 103 Early Hints informational block
+// Parses a 103 Early Hints informational block (RFC 8297 §2).
+//
+// Example:
+//   status = 103, raw_link_header = "</style.css>; rel=preload"
+//   returns: resp with 1 link, ok = true
 fn parse_early_hints(status: u16, raw_link_header: const u8[:]) -> EarlyHintsResponse, bool {
     var resp = EarlyHintsResponse { .. };
     guard status == STATUS_EARLY_HINTS else { return resp, false; }

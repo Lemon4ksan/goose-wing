@@ -213,11 +213,11 @@ fn test_h2_continuation_flood_and_interleaving() {
     // 1. Initial HEADERS frame on stream 1 without END_HEADERS
     let h_hdr = internal::H2FrameHeader {
         payload_len: 128,
-        frame_type: internal::H2FrameType.Headers,
-        raw_type: 0x1,
-        flags: 0x0,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.Headers,
+        raw_type:    0x1,
+        flags:       0x0,
+        stream_id:   1,
+        valid:       true,
     };
     let err0 = internal::process_incoming_frame(framer, h_hdr);
     assert(err0 == internal::H2ErrorCode.NoError);
@@ -228,11 +228,11 @@ fn test_h2_continuation_flood_and_interleaving() {
     // 2. Interleaved PING frame on stream 0 -> ProtocolError
     let ping_hdr = internal::H2FrameHeader {
         payload_len: 8,
-        frame_type: internal::H2FrameType.Ping,
-        raw_type: 0x6,
-        flags: 0x0,
-        stream_id: 0,
-        valid: true,
+        frame_type:  internal::H2FrameType.Ping,
+        raw_type:    0x6,
+        flags:       0x0,
+        stream_id:   0,
+        valid:       true,
     };
     let err_ping = internal::process_incoming_frame(framer, ping_hdr);
     assert(err_ping == internal::H2ErrorCode.ProtocolError);
@@ -244,11 +244,11 @@ fn test_h2_continuation_flood_and_interleaving() {
     internal::process_incoming_frame(framer_data, h_hdr);
     let data_hdr = internal::H2FrameHeader {
         payload_len: 64,
-        frame_type: internal::H2FrameType.Data,
-        raw_type: 0x0,
-        flags: 0x0,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.Data,
+        raw_type:    0x0,
+        flags:       0x0,
+        stream_id:   1,
+        valid:       true,
     };
     let err_data = internal::process_incoming_frame(framer_data, data_hdr);
     assert(err_data == internal::H2ErrorCode.ProtocolError);
@@ -260,11 +260,11 @@ fn test_h2_continuation_flood_and_interleaving() {
     internal::process_incoming_frame(framer_mismatch, h_hdr);
     let cont_bad_sid = internal::H2FrameHeader {
         payload_len: 64,
-        frame_type: internal::H2FrameType.Continuation,
-        raw_type: 0x9,
-        flags: 0x0,
-        stream_id: 3,
-        valid: true,
+        frame_type:  internal::H2FrameType.Continuation,
+        raw_type:    0x9,
+        flags:       0x0,
+        stream_id:   3,
+        valid:       true,
     };
     let err_bad_sid = internal::process_incoming_frame(framer_mismatch, cont_bad_sid);
     assert(err_bad_sid == internal::H2ErrorCode.ProtocolError);
@@ -275,11 +275,11 @@ fn test_h2_continuation_flood_and_interleaving() {
     var framer_idle = internal::H2SecurityFramer { .. };
     let cont_unsolicited = internal::H2FrameHeader {
         payload_len: 64,
-        frame_type: internal::H2FrameType.Continuation,
-        raw_type: 0x9,
-        flags: internal::H2_FLAG_END_HEADERS,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.Continuation,
+        raw_type:    0x9,
+        flags:       internal::H2_FLAG_END_HEADERS,
+        stream_id:   1,
+        valid:       true,
     };
     let err_unsolicited = internal::process_incoming_frame(framer_idle, cont_unsolicited);
     assert(err_unsolicited == internal::H2ErrorCode.ProtocolError);
@@ -291,22 +291,22 @@ fn test_h2_continuation_flood_and_interleaving() {
     for _ in 5 {
         let cont_ok = internal::H2FrameHeader {
             payload_len: 10,
-            frame_type: internal::H2FrameType.Continuation,
-            raw_type: 0x9,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Continuation,
+            raw_type:    0x9,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         let st_ok = internal::process_incoming_frame(framer_flood, cont_ok);
         assert(st_ok == internal::H2ErrorCode.NoError);
     }
     let cont_6th = internal::H2FrameHeader {
         payload_len: 10,
-        frame_type: internal::H2FrameType.Continuation,
-        raw_type: 0x9,
-        flags: 0x0,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.Continuation,
+        raw_type:    0x9,
+        flags:       0x0,
+        stream_id:   1,
+        valid:       true,
     };
     let err_flood = internal::process_incoming_frame(framer_flood, cont_6th);
     assert(err_flood == internal::H2ErrorCode.EnhanceYourCalm);
@@ -317,20 +317,20 @@ fn test_h2_continuation_flood_and_interleaving() {
     var framer_size = internal::H2SecurityFramer { .. };
     let big_h_hdr = internal::H2FrameHeader {
         payload_len: 8000,
-        frame_type: internal::H2FrameType.Headers,
-        raw_type: 0x1,
-        flags: 0x0,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.Headers,
+        raw_type:    0x1,
+        flags:       0x0,
+        stream_id:   1,
+        valid:       true,
     };
     internal::process_incoming_frame(framer_size, big_h_hdr);
     let big_cont_hdr = internal::H2FrameHeader {
         payload_len: 500,
-        frame_type: internal::H2FrameType.Continuation,
-        raw_type: 0x9,
-        flags: 0x0,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.Continuation,
+        raw_type:    0x9,
+        flags:       0x0,
+        stream_id:   1,
+        valid:       true,
     };
     let err_size = internal::process_incoming_frame(framer_size, big_cont_hdr);
     assert(err_size == internal::H2ErrorCode.EnhanceYourCalm);
@@ -344,22 +344,22 @@ fn test_h2_dos_and_stream_parity() {
     for _ in 100 {
         let rst_hdr = internal::H2FrameHeader {
             payload_len: 4,
-            frame_type: internal::H2FrameType.RstStream,
-            raw_type: 0x3,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.RstStream,
+            raw_type:    0x3,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         let st_rst = internal::process_incoming_frame(framer_rr, rst_hdr);
         assert(st_rst == internal::H2ErrorCode.NoError);
     }
     let rst_101 = internal::H2FrameHeader {
         payload_len: 4,
-        frame_type: internal::H2FrameType.RstStream,
-        raw_type: 0x3,
-        flags: 0x0,
-        stream_id: 1,
-        valid: true,
+        frame_type:  internal::H2FrameType.RstStream,
+        raw_type:    0x3,
+        flags:       0x0,
+        stream_id:   1,
+        valid:       true,
     };
     let err_rr = internal::process_incoming_frame(framer_rr, rst_101);
     assert(err_rr == internal::H2ErrorCode.EnhanceYourCalm);
@@ -371,22 +371,22 @@ fn test_h2_dos_and_stream_parity() {
     for _ in 10 {
         let ping_hdr = internal::H2FrameHeader {
             payload_len: 8,
-            frame_type: internal::H2FrameType.Ping,
-            raw_type: 0x6,
-            flags: 0x0,
-            stream_id: 0,
-            valid: true,
+            frame_type:  internal::H2FrameType.Ping,
+            raw_type:    0x6,
+            flags:       0x0,
+            stream_id:   0,
+            valid:       true,
         };
         let st_p = internal::process_incoming_frame(framer_ping, ping_hdr);
         assert(st_p == internal::H2ErrorCode.NoError);
     }
     let ping_11 = internal::H2FrameHeader {
         payload_len: 8,
-        frame_type: internal::H2FrameType.Ping,
-        raw_type: 0x6,
-        flags: 0x0,
-        stream_id: 0,
-        valid: true,
+        frame_type:  internal::H2FrameType.Ping,
+        raw_type:    0x6,
+        flags:       0x0,
+        stream_id:   0,
+        valid:       true,
     };
     let err_ping_flood = internal::process_incoming_frame(framer_ping, ping_11);
     assert(err_ping_flood == internal::H2ErrorCode.EnhanceYourCalm);
@@ -396,11 +396,11 @@ fn test_h2_dos_and_stream_parity() {
     var framer_parity = internal::H2SecurityFramer { .. };
     let even_hdr = internal::H2FrameHeader {
         payload_len: 32,
-        frame_type: internal::H2FrameType.Headers,
-        raw_type: 0x1,
-        flags: internal::H2_FLAG_END_HEADERS,
-        stream_id: 2,
-        valid: true,
+        frame_type:  internal::H2FrameType.Headers,
+        raw_type:    0x1,
+        flags:       internal::H2_FLAG_END_HEADERS,
+        stream_id:   2,
+        valid:       true,
     };
     let err_parity = internal::process_incoming_frame(framer_parity, even_hdr);
     assert(err_parity == internal::H2ErrorCode.ProtocolError);

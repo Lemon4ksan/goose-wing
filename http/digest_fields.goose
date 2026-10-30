@@ -14,10 +14,10 @@ import .sfv;
 
 // ---- 1. RFC 9530 Constants --------------------------------------------------
 
-const HEADER_CONTENT_DIGEST: const u8[:] = "Content-Digest";
-const HEADER_REPR_DIGEST: const u8[:] = "Repr-Digest";
+const HEADER_CONTENT_DIGEST:      const u8[:] = "Content-Digest";
+const HEADER_REPR_DIGEST:         const u8[:] = "Repr-Digest";
 const HEADER_WANT_CONTENT_DIGEST: const u8[:] = "Want-Content-Digest"; // RFC 9530 Section 4
-const HEADER_WANT_REPR_DIGEST: const u8[:] = "Want-Repr-Digest"; // RFC 9530 Section 4
+const HEADER_WANT_REPR_DIGEST:    const u8[:] = "Want-Repr-Digest"; // RFC 9530 Section 4
 
 const DIGEST_ALG_SHA256: const u8[:] = "sha-256";
 const DIGEST_ALG_SHA512: const u8[:] = "sha-512";
