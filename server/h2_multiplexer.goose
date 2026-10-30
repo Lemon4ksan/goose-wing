@@ -394,6 +394,479 @@ inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) 
     return cancelled.contains(stream_id);
 }
 
+inline fn terminate_server_stream(sess: H2ServerSession&, stream_id: u32) {
+    reset_session_stream(sess.conn, stream_id);
+    let s_idx, found = find_server_stream_idx(sess, stream_id);
+    if found {
+        reset_server_stream(sess.streams[s_idx]);
+    }
+}
+
+inline fn validate_request_pseudo_headers(dec_list: const DecodedH2HeaderList&, end_stream: bool) -> bool {
+    var has_method = false;
+    var has_scheme = false;
+    var has_path = false;
+    var is_connect = false;
+    for &f in dec_list.fields {
+        if f.name[..] == ":method" {
+            has_method = true;
+            if f.value[..] == "CONNECT" { is_connect = true; }
+        } else if f.name[..] == ":scheme" {
+            has_scheme = true;
+        } else if f.name[..] == ":path" {
+            has_path = true;
+        }
+    }
+    if !has_method || (!is_connect && (!has_scheme || !has_path)) {
+        return false;
+    }
+    if end_stream && dec_list.has_content_length && dec_list.content_length_val != 0 {
+        return false;
+    }
+    return true;
+}
+
+fn process_ingress_window_update<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire: B&,
+) -> bool {
+    guard frame_payload.len == 4 else { return true; }
+    var wu_r = core::new_slice_reader(frame_payload);
+    let raw_inc, _ = wu_r.read_u32_be();
+    let inc = raw_inc & 0x7FFFFFFF;
+    if hdr.stream_id != 0 && hdr.stream_id > sess.conn.last_peer_stream_id {
+        // RFC 9113 §5.1: Frame other than HEADERS or PRIORITY on idle stream is connection error PROTOCOL_ERROR
+        // RFC 9113 §6.4: RST_STREAM frames MUST NOT be sent for an idle stream
+        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+        return false;
+    }
+    let wu_err = apply_window_update(sess.conn, hdr.stream_id, inc);
+    guard wu_err != ERR_NO_ERROR else { return true; }
+    if hdr.stream_id == 0 {
+        emit_goaway(sess.conn.last_peer_stream_id, wu_err, out_wire);
+        return false;
+    }
+    emit_rst_stream(hdr.stream_id, wu_err, out_wire);
+    terminate_server_stream(sess, hdr.stream_id);
+    return true;
+}
+
+fn process_ingress_origin<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire: B&,
+) -> bool {
+    if hdr.stream_id != 0 {
+        emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+        return false;
+    }
+    var origins: const u8[:][..16] = [];
+    let _, p_err = parse_origin_frame(frame_payload, hdr.stream_id, origins);
+    if p_err != ERR_NO_ERROR {
+        emit_goaway(sess.conn.last_peer_stream_id, p_err, out_wire);
+        return false;
+    }
+    return true;
+}
+
+fn process_ingress_altsvc<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire: B&,
+) -> bool {
+    let _, p_err = parse_altsvc_frame(frame_payload, hdr.stream_id);
+    if p_err != ERR_NO_ERROR {
+        emit_goaway(sess.conn.last_peer_stream_id, p_err, out_wire);
+        return false;
+    }
+    return true;
+}
+
+fn process_ingress_settings<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire: B&,
+) -> bool {
+    if (hdr.flags & FLAG_ACK) != 0 {
+        // RFC 9113 §6.5: SETTINGS with ACK and length != 0 MUST trigger FRAME_SIZE_ERROR
+        if hdr.length != 0 {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+            return false;
+        }
+        // RFC 9113 §6.5 & §10.5: Reject unexpected or duplicate SETTINGS ACK
+        if !sess.pending_settings_ack {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            return false;
+        }
+        sess.pending_settings_ack = false;
+        sess.client_settings_acked = true;
+        ack_control_frame_flushed(sess.conn);
+        return true;
+    }
+
+    // Parse client settings (pairs of u16 identifier + u32 value)
+    guard (frame_payload.len % 6) == 0 else {
+        emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+        return false;
+    }
+    var settings_r = core::new_slice_reader(frame_payload);
+    while settings_r.remaining() >= 6 {
+        let param_id, _ = settings_r.read_u16_be();
+        let param_val, _ = settings_r.read_u32_be();
+
+        let val_err = validate_settings_parameter(param_id, param_val, false);
+        if val_err != ERR_NO_ERROR {
+            emit_goaway(sess.conn.last_peer_stream_id, val_err, out_wire);
+            return false;
+        }
+
+        if param_id == SETTING_INITIAL_WINDOW_SIZE {
+            let win_err = apply_peer_initial_window_size_delta(sess.conn, param_val);
+            if win_err != ERR_NO_ERROR {
+                emit_goaway(sess.conn.last_peer_stream_id, win_err, out_wire);
+                return false;
+            }
+        } else if param_id == SETTING_MAX_FRAME_SIZE {
+            sess.conn.peer_max_frame_size = param_val;
+        } else if param_id == SETTING_HEADER_TABLE_SIZE {
+            let pv_u64 = param_val as u64;
+            let allowed_max: u64 = if pv_u64 < HPACK_MAX_ARENA_BYTES { pv_u64 } else { HPACK_MAX_ARENA_BYTES };
+            sess.hpack_enc.max_allowed_size = allowed_max;
+            if sess.hpack_enc.current_max_size > allowed_max {
+                sess.hpack_enc.current_max_size = allowed_max;
+                evict_until(sess.hpack_enc, allowed_max);
+            }
+        }
+    }
+    // Send SETTINGS ACK back to client
+    emit_settings_ack(out_wire);
+    return true;
+}
+
+fn process_ingress_headers<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    cancelled_streams: const u32[:],
+    out_wire: B&,
+) -> bool {
+    let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
+    var block_start: i64 = 0;
+    var block_end: i64 = frame_payload.len;
+
+    // Handle PADDED flag RFC 9113 Section 6.1 / 6.2
+    if (hdr.flags & FLAG_PADDED) != 0 {
+        if frame_payload.len < 1 {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+            return false;
+        }
+        let pad_len = frame_payload[0] as i64;
+        if pad_len >= frame_payload.len {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            return false;
+        }
+        block_start += 1;
+        block_end -= pad_len;
+    }
+
+    // Handle PRIORITY flag (RFC 9113 Section 5.3.1)
+    if (hdr.flags & FLAG_PRIORITY) != 0 {
+        if (block_end - block_start) < 5 {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+            return false;
+        }
+        let b0 = frame_payload[block_start] as u32;
+        let b1 = frame_payload[block_start + 1] as u32;
+        let b2 = frame_payload[block_start + 2] as u32;
+        let b3 = frame_payload[block_start + 3] as u32;
+        let dep_raw = ((b0 & 0x7F) << 24) | (b1 << 16) | (b2 << 8) | b3;
+        if dep_raw == hdr.stream_id {
+            // RFC 9113 §5.3.1: Stream cannot depend on itself
+            emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            terminate_server_stream(sess, hdr.stream_id);
+            return true;
+        }
+        block_start += 5;
+    }
+
+    let s_exist_idx, s_exists = find_server_stream_idx(sess, hdr.stream_id);
+    let is_trailer = s_exists && sess.streams[s_exist_idx].headers_received;
+
+    if is_trailer {
+        // If stream already completed receiving body/trailers, extra HEADERS is invalid
+        if sess.streams[s_exist_idx].body_received {
+            // RFC 9113 §5.1: Frame on half-closed (remote) stream
+            emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
+            return true;
+        }
+        // RFC 9113 §8.1.2: A HEADERS frame containing a trailer section MUST have END_STREAM set
+        if (hdr.flags & FLAG_END_STREAM) == 0 {
+            emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            terminate_server_stream(sess, hdr.stream_id);
+            return true;
+        }
+    }
+
+    guard block_start <= block_end && block_end <= frame_payload.len else { return true; }
+    let fragment = frame_payload[block_start..block_end];
+    if (hdr.flags & FLAG_END_HEADERS) == 0 {
+        // Multi-frame header block: CONTINUATION follows
+        sess.header_accumulator.clear();
+        sess.header_accum_stream_id = hdr.stream_id;
+        sess.header_accum_end_stream = (hdr.flags & FLAG_END_STREAM) != 0;
+        sess.header_accum_is_trailer = is_trailer;
+        if fragment.len <= sess.header_accumulator.cap {
+            sess.header_accumulator.append(fragment);
+            return true;
+        }
+        emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+        return false;
+    }
+
+    var dec_list = DecodedH2HeaderList { .. };
+    dec_list.is_trailer = is_trailer;
+    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, fragment, dec_list);
+    if dec_err != ERR_NO_ERROR {
+        if dec_err == ERR_COMPRESSION_ERROR {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
+            return false;
+        }
+        // Stream error (e.g. invalid pseudo-header in trailer or request)
+        emit_rst_stream(hdr.stream_id, dec_err, out_wire);
+        terminate_server_stream(sess, hdr.stream_id);
+        return true;
+    }
+
+    if is_trailer {
+        if !is_cancelled && s_exists {
+            apply_decoded_trailers_to_stream(sess.streams[s_exist_idx], dec_list);
+            let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+            if c_found {
+                sess.conn.streams[c_idx].trailers_received = true;
+                sess.conn.streams[c_idx].state = H2StreamState.HalfClosedRemote;
+            }
+        }
+        return true;
+    }
+
+    guard validate_request_pseudo_headers(dec_list, (hdr.flags & FLAG_END_STREAM) != 0) else {
+        // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
+        emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
+        terminate_server_stream(sess, hdr.stream_id);
+        return true;
+    }
+
+    guard !is_cancelled else { return true; }
+    let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
+    guard found else { return true; }
+    apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+    if dec_list.has_content_length {
+        sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
+        let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+        if c_found {
+            sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
+        }
+    }
+    if (hdr.flags & FLAG_END_STREAM) != 0 {
+        sess.streams[s_idx].body_received = true;
+    }
+    return true;
+}
+
+fn process_ingress_continuation<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    cancelled_streams: const u32[:],
+    out_wire: B&,
+) -> bool {
+    guard hdr.stream_id == sess.header_accum_stream_id else { return true; }
+    let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
+    if sess.header_accumulator.len + frame_payload.len <= sess.header_accumulator.cap {
+        sess.header_accumulator.append(frame_payload);
+    } else {
+        emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+        return false;
+    }
+    guard (hdr.flags & FLAG_END_HEADERS) != 0 else { return true; }
+
+    var dec_list = DecodedH2HeaderList { .. };
+    dec_list.is_trailer = sess.header_accum_is_trailer;
+    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, sess.header_accumulator[..], dec_list);
+    if dec_err != ERR_NO_ERROR {
+        if dec_err == ERR_COMPRESSION_ERROR {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
+            return false;
+        }
+        emit_rst_stream(hdr.stream_id, dec_err, out_wire);
+        terminate_server_stream(sess, hdr.stream_id);
+        sess.header_accum_stream_id = 0;
+        sess.header_accumulator.clear();
+        return true;
+    }
+
+    if sess.header_accum_is_trailer {
+        sess.header_accum_stream_id = 0;
+        sess.header_accumulator.clear();
+        guard !is_cancelled else { return true; }
+        let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
+        guard found else { return true; }
+        apply_decoded_trailers_to_stream(sess.streams[s_idx], dec_list);
+        let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+        if c_found {
+            sess.conn.streams[c_idx].trailers_received = true;
+            sess.conn.streams[c_idx].state = H2StreamState.HalfClosedRemote;
+        }
+        return true;
+    }
+
+    guard validate_request_pseudo_headers(dec_list, sess.header_accum_end_stream) else {
+        // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
+        emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
+        terminate_server_stream(sess, hdr.stream_id);
+        sess.header_accum_stream_id = 0;
+        sess.header_accumulator.clear();
+        return true;
+    }
+
+    sess.header_accum_stream_id = 0;
+    sess.header_accumulator.clear();
+    guard !is_cancelled else { return true; }
+    let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
+    guard found else { return true; }
+    apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+    if dec_list.has_content_length {
+        sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
+        let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+        if c_found {
+            sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
+        }
+    }
+    if sess.header_accum_end_stream {
+        sess.streams[s_idx].body_received = true;
+    }
+    return true;
+}
+
+fn process_ingress_data<B>(
+    sess: H2ServerSession&,
+    hdr: const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire: B&,
+) -> bool {
+    // Handle PADDED flag RFC 9113 Section 6.1
+    if (hdr.flags & FLAG_PADDED) != 0 {
+        if frame_payload.len < 1 {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
+            return false;
+        }
+        let pad_len = frame_payload[0] as i64;
+        if pad_len >= frame_payload.len {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            return false;
+        }
+    }
+
+    let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
+    if !found {
+        if hdr.stream_id <= sess.conn.last_peer_stream_id {
+            // RFC 9113 §5.1: Closed stream receives DATA -> stream error STREAM_CLOSED
+            emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
+            // Account for flow control connection-wide per RFC 9113 §6.9
+            sess.conn.conn_recv_window -= hdr.length as i64;
+            if sess.conn.conn_recv_window < 0 {
+                emit_goaway(sess.conn.last_peer_stream_id, ERR_FLOW_CONTROL_ERROR, out_wire);
+                return false;
+            }
+            emit_window_update(0, hdr.length, out_wire);
+            sess.conn.conn_recv_window += hdr.length as i64;
+            return true;
+        } else {
+            // Idle stream receives DATA -> connection error PROTOCOL_ERROR (RFC 9113 §5.1)
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            return false;
+        }
+    }
+
+    // Stream is found; check if stream is already half-closed (remote)
+    if sess.streams[s_idx].body_received {
+        // RFC 9113 §5.1: Receiving DATA after END_STREAM is a stream error STREAM_CLOSED
+        emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
+        sess.conn.conn_recv_window -= hdr.length as i64;
+        if sess.conn.conn_recv_window < 0 {
+            emit_goaway(sess.conn.last_peer_stream_id, ERR_FLOW_CONTROL_ERROR, out_wire);
+            return false;
+        }
+        emit_window_update(0, hdr.length, out_wire);
+        sess.conn.conn_recv_window += hdr.length as i64;
+        return true;
+    }
+
+    var d_start: i64 = 0;
+    var d_end: i64 = frame_payload.len;
+
+    if (hdr.flags & FLAG_PADDED) != 0 && frame_payload.len >= 1 {
+        let pad_len = frame_payload[0] as i64;
+        d_start += 1;
+        d_end -= pad_len;
+    }
+
+    var d_len: i64 = 0;
+    if d_start <= d_end && d_end <= frame_payload.len {
+        d_len = d_end - d_start;
+        if sess.streams[s_idx].body.len + d_len <= sess.streams[s_idx].body.cap {
+            sess.streams[s_idx].body.append(frame_payload[d_start..d_end]);
+        } else {
+            emit_rst_stream(hdr.stream_id, ERR_INTERNAL_ERROR, out_wire);
+            terminate_server_stream(sess, hdr.stream_id);
+            return true;
+        }
+    }
+
+    // RFC 9113 §8.1.1 & §8.1.2: Pass application data length (d_len) for Content-Length validation,
+    // while connection and stream flow-control windows account for the full frame payload (hdr.length).
+    let flow_err = on_data_frame_received(sess.conn, hdr, d_len as u32);
+    if flow_err != ERR_NO_ERROR {
+        if flow_err == ERR_STREAM_CLOSED || flow_err == ERR_PROTOCOL_ERROR {
+            // RFC 9113 §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
+            emit_rst_stream(hdr.stream_id, flow_err, out_wire);
+            terminate_server_stream(sess, hdr.stream_id);
+            return true;
+        }
+        emit_goaway(sess.conn.last_peer_stream_id, flow_err, out_wire);
+        return false;
+    }
+
+    // Replenish receive windows if consumed and non-zero
+    if frame_payload.len > 0 {
+        emit_window_update(0, frame_payload.len as u32, out_wire);
+        emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
+        // Replenish session tracking windows
+        sess.conn.conn_recv_window += hdr.length as i64;
+        let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+        if c_found {
+            sess.conn.streams[c_idx].recv_window += hdr.length as i64;
+        }
+    }
+
+    if (hdr.flags & FLAG_END_STREAM) != 0 {
+        let dec_cl = sess.streams[s_idx].declared_content_length;
+        if dec_cl >= 0 && dec_cl != (sess.streams[s_idx].body.len as i64) {
+            // RFC 9113 §8.1.1 & §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
+            emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
+            terminate_server_stream(sess, hdr.stream_id);
+            return true;
+        }
+        sess.streams[s_idx].body_received = true;
+    }
+    return true;
+}
+
 // ---- 4. Complete Ingress Frame Processing & Pipeline Dispatch ---------------
 
 // Processes incoming HTTP/2 wire data, executing complete streams through the server pipeline.
@@ -475,6 +948,7 @@ fn handle_h2_server_ingress<B>(
             if err == ERR_STREAM_CLOSED || err == ERR_REFUSED_STREAM {
                 // RFC 9113 §5.1 & §5.4.2: Stream error must not terminate connection
                 emit_rst_stream(hdr.stream_id, err, out_wire);
+                terminate_server_stream(sess, hdr.stream_id);
                 offset += total_frame_len;
                 continue;
             }
@@ -490,56 +964,8 @@ fn handle_h2_server_ingress<B>(
 
         // Handle Frame Types
         if hdr.frame_type == FRAME_SETTINGS {
-            if (hdr.flags & FLAG_ACK) != 0 {
-                // RFC 9113 §6.5: SETTINGS with ACK and length != 0 MUST trigger FRAME_SIZE_ERROR
-                if hdr.length != 0 {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                // RFC 9113 §6.5 & §10.5: Reject unexpected or duplicate SETTINGS ACK
-                if !sess.pending_settings_ack {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                sess.pending_settings_ack = false;
-                sess.client_settings_acked = true;
-                ack_control_frame_flushed(sess.conn);
-            } else {
-                // Parse client settings (pairs of u16 identifier + u32 value)
-                guard (frame_payload.len % 6) == 0 else {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                var settings_r = core::new_slice_reader(frame_payload);
-                while settings_r.remaining() >= 6 {
-                    let param_id, _ = settings_r.read_u16_be();
-                    let param_val, _ = settings_r.read_u32_be();
-
-                    let val_err = validate_settings_parameter(param_id, param_val, false);
-                    if val_err != ERR_NO_ERROR {
-                        emit_goaway(sess.conn.last_peer_stream_id, val_err, out_wire);
-                        return offset + total_frame_len, false;
-                    }
-
-                    if param_id == SETTING_INITIAL_WINDOW_SIZE {
-                        let win_err = apply_peer_initial_window_size_delta(sess.conn, param_val);
-                        if win_err != ERR_NO_ERROR {
-                            emit_goaway(sess.conn.last_peer_stream_id, win_err, out_wire);
-                            return offset + total_frame_len, false;
-                        }
-                    } else if param_id == SETTING_MAX_FRAME_SIZE {
-                        sess.conn.local_max_frame_size = param_val;
-                    } else if param_id == SETTING_HEADER_TABLE_SIZE {
-                        let allowed_max: u64 = if (param_val as u64) < HPACK_MAX_ARENA_BYTES { param_val as u64 } else { HPACK_MAX_ARENA_BYTES };
-                        sess.hpack_enc.max_allowed_size = allowed_max;
-                        if sess.hpack_enc.current_max_size > allowed_max {
-                            sess.hpack_enc.current_max_size = allowed_max;
-                            evict_until(sess.hpack_enc, allowed_max);
-                        }
-                    }
-                }
-                // Send SETTINGS ACK back to client
-                emit_settings_ack(out_wire);
+            guard process_ingress_settings(sess, hdr, frame_payload, out_wire) else {
+                return offset + total_frame_len, false;
             }
         } else if hdr.frame_type == FRAME_PING {
             if (hdr.flags & FLAG_ACK) == 0 && frame_payload.len == 8 {
@@ -568,44 +994,16 @@ fn handle_h2_server_ingress<B>(
             }
             apply_priority_update(sess.conn, prio_stream_id, prio_param);
         } else if hdr.frame_type == FRAME_ORIGIN {
-            // RFC 8336 Section 2: ORIGIN frame MUST be on stream 0
-            if hdr.stream_id != 0 {
-                emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                return offset + total_frame_len, false;
-            }
-            var origins: const u8[:][..16] = [];
-            let _, p_err = parse_origin_frame(frame_payload, hdr.stream_id, origins);
-            if p_err != ERR_NO_ERROR {
-                emit_goaway(sess.conn.last_peer_stream_id, p_err, out_wire);
+            guard process_ingress_origin(sess, hdr, frame_payload, out_wire) else {
                 return offset + total_frame_len, false;
             }
         } else if hdr.frame_type == FRAME_ALTSVC {
-            // RFC 7838 Section 4: The ALTSVC HTTP/2 Frame
-            let _, p_err = parse_altsvc_frame(frame_payload, hdr.stream_id);
-            if p_err != ERR_NO_ERROR {
-                emit_goaway(sess.conn.last_peer_stream_id, p_err, out_wire);
+            guard process_ingress_altsvc(sess, hdr, frame_payload, out_wire) else {
                 return offset + total_frame_len, false;
             }
         } else if hdr.frame_type == FRAME_WINDOW_UPDATE {
-            if frame_payload.len == 4 {
-                var wu_r = core::new_slice_reader(frame_payload);
-                let raw_inc, _ = wu_r.read_u32_be();
-                let inc = raw_inc & 0x7FFFFFFF;
-                let wu_err = apply_window_update(sess.conn, hdr.stream_id, inc);
-                if wu_err != ERR_NO_ERROR {
-                    if hdr.stream_id == 0 {
-                        // Connection-level window error -> connection GOAWAY (RFC 9113 §6.9)
-                        emit_goaway(sess.conn.last_peer_stream_id, wu_err, out_wire);
-                        return offset + total_frame_len, false;
-                    } else {
-                        // Stream-level window error -> stream RST_STREAM (RFC 9113 §6.9 / §6.9.1)
-                        emit_rst_stream(hdr.stream_id, wu_err, out_wire);
-                        let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
-                        if found {
-                            sess.streams[s_idx].active = false;
-                        }
-                    }
-                }
+            guard process_ingress_window_update(sess, hdr, frame_payload, out_wire) else {
+                return offset + total_frame_len, false;
             }
         } else if hdr.frame_type == FRAME_RST_STREAM {
             for i in sess.streams.len {
@@ -615,344 +1013,16 @@ fn handle_h2_server_ingress<B>(
                 }
             }
         } else if hdr.frame_type == FRAME_HEADERS {
-            let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
-            var block_start: i64 = 0;
-            var block_end: i64 = frame_payload.len;
-
-            // Handle PADDED flag RFC 9113 Section 6.1 / 6.2
-            if (hdr.flags & FLAG_PADDED) != 0 {
-                if frame_payload.len < 1 {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                let pad_len = frame_payload[0] as i64;
-                if pad_len >= frame_payload.len {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                block_start += 1;
-                block_end -= pad_len;
-            }
-
-            // Handle PRIORITY flag (RFC 9113 Section 5.3.1)
-            if (hdr.flags & FLAG_PRIORITY) != 0 {
-                if (block_end - block_start) < 5 {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                let b0 = frame_payload[block_start] as u32;
-                let b1 = frame_payload[block_start + 1] as u32;
-                let b2 = frame_payload[block_start + 2] as u32;
-                let b3 = frame_payload[block_start + 3] as u32;
-                let dep_raw = ((b0 & 0x7F) << 24) | (b1 << 16) | (b2 << 8) | b3;
-                if dep_raw == hdr.stream_id {
-                    // RFC 9113 §5.3.1: Stream cannot depend on itself
-                    emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    offset += total_frame_len;
-                    continue;
-                }
-                block_start += 5;
-            }
-
-            let s_exist_idx, s_exists = find_server_stream_idx(sess, hdr.stream_id);
-            let is_trailer = s_exists && sess.streams[s_exist_idx].headers_received;
-
-            if is_trailer {
-                // If stream already completed receiving body/trailers, extra HEADERS is invalid
-                if sess.streams[s_exist_idx].body_received {
-                    // RFC 9113 §5.1: Frame on half-closed (remote) stream
-                    emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
-                    offset += total_frame_len;
-                    continue;
-                }
-                // RFC 9113 §8.1.2: A HEADERS frame containing a trailer section MUST have END_STREAM set
-                if (hdr.flags & FLAG_END_STREAM) == 0 {
-                    emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    offset += total_frame_len;
-                    continue;
-                }
-            }
-
-            if block_start <= block_end && block_end <= frame_payload.len {
-                let fragment = frame_payload[block_start..block_end];
-                if (hdr.flags & FLAG_END_HEADERS) != 0 {
-                    var dec_list = DecodedH2HeaderList { .. };
-                    dec_list.is_trailer = is_trailer;
-                    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, fragment, dec_list);
-                    if dec_err != ERR_NO_ERROR {
-                        if dec_err == ERR_COMPRESSION_ERROR {
-                            emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
-                            return offset + total_frame_len, false;
-                        } else {
-                            // Stream error (e.g. invalid pseudo-header in trailer)
-                            emit_rst_stream(hdr.stream_id, dec_err, out_wire);
-                            if is_trailer && s_exists {
-                                sess.streams[s_exist_idx].active = false;
-                            }
-                            offset += total_frame_len;
-                            continue;
-                        }
-                    }
-
-                    if is_trailer {
-                        if !is_cancelled && s_exists {
-                            apply_decoded_trailers_to_stream(sess.streams[s_exist_idx], dec_list);
-                            let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-                            if c_found {
-                                sess.conn.streams[c_idx].trailers_received = true;
-                                sess.conn.streams[c_idx].state = H2StreamState.HalfClosedRemote;
-                            }
-                        }
-                    } else {
-                        // RFC 9113 Section 8.3.1: Mandatory request pseudo-headers
-                        var has_method = false;
-                        var has_scheme = false;
-                        var has_path = false;
-                        var is_connect = false;
-                        for &f in dec_list.fields {
-                            if f.name[..] == ":method" {
-                                has_method = true;
-                                if f.value[..] == "CONNECT" { is_connect = true; }
-                            } else if f.name[..] == ":scheme" {
-                                has_scheme = true;
-                            } else if f.name[..] == ":path" {
-                                has_path = true;
-                            }
-                        }
-                        if !has_method || (!is_connect && (!has_scheme || !has_path)) {
-                            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                            return offset + total_frame_len, false;
-                        }
-
-                        // RFC 9113 Section 8.1.1: Content-Length on END_STREAM
-                        if (hdr.flags & FLAG_END_STREAM) != 0 && dec_list.has_content_length && dec_list.content_length_val != 0 {
-                            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                            return offset + total_frame_len, false;
-                        }
-
-                        if !is_cancelled {
-                            let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
-                            if found {
-                                apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
-                                if dec_list.has_content_length {
-                                    sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
-                                    let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-                                    if c_found {
-                                        sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
-                                    }
-                                }
-                                if (hdr.flags & FLAG_END_STREAM) != 0 {
-                                    sess.streams[s_idx].body_received = true;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Multi-frame header block: CONTINUATION follows
-                    sess.header_accumulator.clear();
-                    sess.header_accum_stream_id = hdr.stream_id;
-                    sess.header_accum_end_stream = (hdr.flags & FLAG_END_STREAM) != 0;
-                    sess.header_accum_is_trailer = is_trailer;
-                    if fragment.len <= sess.header_accumulator.cap {
-                        sess.header_accumulator.append(fragment);
-                    } else {
-                        emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                        return offset + total_frame_len, false;
-                    }
-                }
-            }
-        } else if hdr.frame_type == FRAME_CONTINUATION {
-            if hdr.stream_id == sess.header_accum_stream_id {
-                let is_cancelled = is_stream_cancelled_in_batch(cancelled_streams, hdr.stream_id);
-                if sess.header_accumulator.len + frame_payload.len <= sess.header_accumulator.cap {
-                    sess.header_accumulator.append(frame_payload);
-                } else {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                if (hdr.flags & FLAG_END_HEADERS) != 0 {
-                    var dec_list = DecodedH2HeaderList { .. };
-                    dec_list.is_trailer = sess.header_accum_is_trailer;
-                    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, sess.header_accumulator[..], dec_list);
-                    if dec_err != ERR_NO_ERROR {
-                        if dec_err == ERR_COMPRESSION_ERROR {
-                            emit_goaway(sess.conn.last_peer_stream_id, ERR_COMPRESSION_ERROR, out_wire);
-                            return offset + total_frame_len, false;
-                        } else {
-                            emit_rst_stream(hdr.stream_id, dec_err, out_wire);
-                            let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
-                            if found { sess.streams[s_idx].active = false; }
-                            sess.header_accum_stream_id = 0;
-                            sess.header_accumulator.clear();
-                            offset += total_frame_len;
-                            continue;
-                        }
-                    }
-
-                    if sess.header_accum_is_trailer {
-                        if !is_cancelled {
-                            let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
-                            if found {
-                                apply_decoded_trailers_to_stream(sess.streams[s_idx], dec_list);
-                                let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-                                if c_found {
-                                    sess.conn.streams[c_idx].trailers_received = true;
-                                    sess.conn.streams[c_idx].state = H2StreamState.HalfClosedRemote;
-                                }
-                            }
-                        }
-                    } else {
-                        // RFC 9113 Section 8.3.1: Mandatory request pseudo-headers
-                        var has_method = false;
-                        var has_scheme = false;
-                        var has_path = false;
-                        var is_connect = false;
-                        for &f in dec_list.fields {
-                            if f.name[..] == ":method" {
-                                has_method = true;
-                                if f.value[..] == "CONNECT" { is_connect = true; }
-                            } else if f.name[..] == ":scheme" {
-                                has_scheme = true;
-                            } else if f.name[..] == ":path" {
-                                has_path = true;
-                            }
-                        }
-                        if !has_method || (!is_connect && (!has_scheme || !has_path)) {
-                            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                            return offset + total_frame_len, false;
-                        }
-
-                        if sess.header_accum_end_stream && dec_list.has_content_length && dec_list.content_length_val != 0 {
-                            emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                            return offset + total_frame_len, false;
-                        }
-
-                        if !is_cancelled {
-                            let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
-                            if found {
-                                apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
-                                if dec_list.has_content_length {
-                                    sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
-                                    let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-                                    if c_found {
-                                        sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
-                                    }
-                                }
-                                if sess.header_accum_end_stream {
-                                    sess.streams[s_idx].body_received = true;
-                                }
-                            }
-                        }
-                    }
-                    sess.header_accum_stream_id = 0;
-                    sess.header_accumulator.clear();
-                }
-            }
-        } else if hdr.frame_type == FRAME_DATA {
-            // Handle PADDED flag RFC 9113 Section 6.1
-            if (hdr.flags & FLAG_PADDED) != 0 {
-                if frame_payload.len < 1 {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                let pad_len = frame_payload[0] as i64;
-                if pad_len >= frame_payload.len {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-            }
-
-            let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
-            if !found {
-                if hdr.stream_id <= sess.conn.last_peer_stream_id {
-                    // RFC 9113 §5.1: Closed stream receives DATA -> stream error STREAM_CLOSED
-                    emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
-                    // Account for flow control connection-wide per RFC 9113 §6.9
-                    sess.conn.conn_recv_window -= hdr.length as i64;
-                    if sess.conn.conn_recv_window < 0 {
-                        emit_goaway(sess.conn.last_peer_stream_id, ERR_FLOW_CONTROL_ERROR, out_wire);
-                        return offset + total_frame_len, false;
-                    }
-                    emit_window_update(0, hdr.length, out_wire);
-                    sess.conn.conn_recv_window += hdr.length as i64;
-                    offset += total_frame_len;
-                    continue;
-                } else {
-                    // Idle stream receives DATA -> connection error PROTOCOL_ERROR (RFC 9113 §5.1)
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-            }
-
-            // Stream is found; check if stream is already half-closed (remote)
-            if sess.streams[s_idx].body_received {
-                // RFC 9113 §5.1: Receiving DATA after END_STREAM is a stream error STREAM_CLOSED
-                emit_rst_stream(hdr.stream_id, ERR_STREAM_CLOSED, out_wire);
-                sess.conn.conn_recv_window -= hdr.length as i64;
-                if sess.conn.conn_recv_window < 0 {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_FLOW_CONTROL_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                emit_window_update(0, hdr.length, out_wire);
-                sess.conn.conn_recv_window += hdr.length as i64;
-                offset += total_frame_len;
-                continue;
-            }
-
-            var d_start: i64 = 0;
-            var d_end: i64 = frame_payload.len;
-
-            if (hdr.flags & FLAG_PADDED) != 0 && frame_payload.len >= 1 {
-                let pad_len = frame_payload[0] as i64;
-                d_start += 1;
-                d_end -= pad_len;
-            }
-
-            var d_len: i64 = 0;
-            if d_start <= d_end && d_end <= frame_payload.len {
-                d_len = d_end - d_start;
-                if sess.streams[s_idx].body.len + d_len <= sess.streams[s_idx].body.cap {
-                    sess.streams[s_idx].body.append(frame_payload[d_start..d_end]);
-                } else {
-                    emit_rst_stream(hdr.stream_id, ERR_INTERNAL_ERROR, out_wire);
-                    sess.streams[s_idx].active = false;
-                }
-            }
-
-            // RFC 9113 §8.1.1 & §8.1.2: Pass application data length (d_len) for Content-Length validation,
-            // while connection and stream flow-control windows account for the full frame payload (hdr.length).
-            let flow_err = on_data_frame_received(sess.conn, hdr, d_len as u32);
-            if flow_err != ERR_NO_ERROR {
-                if flow_err == ERR_STREAM_CLOSED || flow_err == ERR_PROTOCOL_ERROR {
-                    // RFC 9113 §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
-                    emit_rst_stream(hdr.stream_id, flow_err, out_wire);
-                    sess.streams[s_idx].active = false;
-                    offset += total_frame_len;
-                    continue;
-                }
-                emit_goaway(sess.conn.last_peer_stream_id, flow_err, out_wire);
+            guard process_ingress_headers(sess, hdr, frame_payload, cancelled_streams, out_wire) else {
                 return offset + total_frame_len, false;
             }
-
-            // Replenish receive windows if consumed and non-zero
-            if frame_payload.len > 0 {
-                emit_window_update(0, frame_payload.len as u32, out_wire);
-                emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
-                // Replenish session tracking windows
-                sess.conn.conn_recv_window += hdr.length as i64;
-                let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-                if c_found {
-                    sess.conn.streams[c_idx].recv_window += hdr.length as i64;
-                }
+        } else if hdr.frame_type == FRAME_CONTINUATION {
+            guard process_ingress_continuation(sess, hdr, frame_payload, cancelled_streams, out_wire) else {
+                return offset + total_frame_len, false;
             }
-
-            if (hdr.flags & FLAG_END_STREAM) != 0 {
-                let dec_cl = sess.streams[s_idx].declared_content_length;
-                if dec_cl >= 0 && dec_cl != (sess.streams[s_idx].body.len as i64) {
-                    emit_goaway(sess.conn.last_peer_stream_id, ERR_PROTOCOL_ERROR, out_wire);
-                    return offset + total_frame_len, false;
-                }
-                sess.streams[s_idx].body_received = true;
+        } else if hdr.frame_type == FRAME_DATA {
+            guard process_ingress_data(sess, hdr, frame_payload, out_wire) else {
+                return offset + total_frame_len, false;
             }
         }
 
@@ -999,7 +1069,7 @@ fn handle_h2_server_ingress<B>(
             emit_response_headers(sess, target_stream_id, res, end_headers, out_wire);
             if has_body {
                 let end_data = !has_trailers;
-                emit_response_data(target_stream_id, res.body[..], sess.conn.local_max_frame_size, out_wire, end_data);
+                emit_response_data(target_stream_id, res.body[..], sess.conn.peer_max_frame_size, out_wire, end_data);
             }
             if has_trailers {
                 emit_response_trailers(sess, target_stream_id, res.trailers, out_wire);

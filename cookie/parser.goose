@@ -64,11 +64,15 @@ fn parse_canonical_set_cookie(
             return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
         }
     } else if starts_with_fold(parsed_cookie.name[..], "__host-http-") {
-        if !parsed_cookie.secure || parsed_cookie.has_domain_attr || parsed_cookie.path[..] != "/" || !parsed_cookie.httponly {
+        let bad = !parsed_cookie.secure || parsed_cookie.has_domain_attr;
+        let bad_path = !parsed_cookie.has_path_attr || parsed_cookie.path[..] != "/";
+        if bad || bad_path || !parsed_cookie.httponly {
             return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
         }
     } else if starts_with_fold(parsed_cookie.name[..], "__host-") {
-        if !parsed_cookie.secure || parsed_cookie.has_domain_attr || parsed_cookie.path[..] != "/" {
+        let bad = !parsed_cookie.secure || parsed_cookie.has_domain_attr;
+        let bad_path = !parsed_cookie.has_path_attr || parsed_cookie.path[..] != "/";
+        if bad || bad_path {
             return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
         }
     } else if starts_with_fold(parsed_cookie.name[..], "__http-") {
@@ -367,6 +371,47 @@ fn parse_cookie_month_name(token: const u8[:]) -> i64 {
     return 0;
 }
 
+// RFC 6265 Section 4.1.1 & RFC 9110 Section 5.6.2 token character validator.
+fn is_cookie_token_char(b: u8) -> bool {
+    if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+        return true;
+    }
+    return b == '!' || b == '#' || b == '$' || b == '%' || b == '&' ||
+           b == '\'' || b == '*' || b == '+' || b == '-' || b == '.' ||
+           b == '^' || b == '_' || b == '`' || b == '|' || b == '~';
+}
+
+// RFC 6265 Section 4.1.1 cookie-octet validator (%x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E).
+fn is_cookie_octet(b: u8) -> bool {
+    guard b >= 0x21 && b <= 0x7E else { return false; }
+    return b != '"' && b != ',' && b != ';' && b != '\\';
+}
+
+// RFC 6265 Section 4.1.1 cookie-value syntax validator: *cookie-octet / (DQUOTE *cookie-octet DQUOTE).
+fn is_valid_cookie_value(val: const u8[:]) -> bool {
+    let is_quoted = val.len >= 2 && val[0] == '"' && val[val.len - 1] == '"';
+    let target = if is_quoted { val[1..val.len - 1] } else { val };
+    for b in target {
+        guard is_cookie_octet(b) else { return false; }
+    }
+    return true;
+}
+
+fn validate_cookie_name(name: const u8[:]) -> bool {
+    guard name.len > 0 else { return true; }
+    for b in name {
+        guard is_cookie_token_char(b) else { return false; }
+    }
+    return true;
+}
+
+fn validate_nameless_cookie_value(val: const u8[:]) -> bool {
+    for b in val {
+        guard b != '=' else { return false; }
+    }
+    return true;
+}
+
 fn parse_cookie_payload_pair(
     header_val: const u8[:],
     cookie_ref: CanonicalCookie&,
@@ -392,12 +437,9 @@ fn parse_cookie_payload_pair(
         return "", false;
     }
 
-    if raw_name.len == 0 {
-        // Nameless cookie values must not contain '=' to prevent key shadowing
-        for char_byte in raw_val {
-            if char_byte == '=' { return "", false; }
-        }
-    }
+    guard validate_cookie_name(raw_name) else { return "", false; }
+    guard is_valid_cookie_value(raw_val) else { return "", false; }
+    guard raw_name.len > 0 || validate_nameless_cookie_value(raw_val) else { return "", false; }
 
     cookie_ref.name.append(raw_name);
     cookie_ref.value.append(raw_val);
@@ -459,6 +501,7 @@ fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u
 
 fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:], default_path: const u8[:] = "") {
     if attr_val.len == 0 || attr_val[0] != '/' {
+        cookie_ref.has_path_attr = false;
         guard default_path.len > 0 else { return; }
         guard default_path.len <= cookie_ref.path.cap else { return; }
         cookie_ref.path.clear();
@@ -466,6 +509,7 @@ fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[
         return;
     }
     guard attr_val.len <= cookie_ref.path.cap else { return; }
+    cookie_ref.has_path_attr = true;
     cookie_ref.path.clear();
     cookie_ref.path.append(attr_val);
 }

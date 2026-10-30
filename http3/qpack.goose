@@ -277,7 +277,7 @@ fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64,
         let payload = (b & 0x7F) as u64;
 
         // Up to 62 bits: maximum shift is 56
-        if shift > 56 || (shift == 56 && payload > 0x3F) {
+        if shift > 56 || (shift == 56 && (payload > 0x3F || (b & 0x80) != 0)) {
             return 0, idx, false; // Exceeds 62 bits: RFC 9204 §4.1.1 overflow
         }
 
@@ -383,9 +383,13 @@ fn encode_base(base: u64, ric: u64) -> u8, u64 {
 
 // ---- 4. dynamic table management & eviction --------------------------------
 
-fn new_qpack_table(max_capacity: u64 = 4096, max_blocked: u32 = 16) -> QpackTable {
+fn new_qpack_table(
+    max_capacity: u64 = 4096,
+    max_blocked: u32 = 16,
+    initial_capacity: u64 = 4096,
+) -> QpackTable {
     return QpackTable {
-        capacity_bytes: max_capacity,
+        capacity_bytes: initial_capacity,
         max_capacity_bytes: max_capacity,
         max_blocked: max_blocked,
         ..
@@ -844,6 +848,7 @@ fn decode_qpack_section(
             } else {
                 guard base > idx else { return QpackError.DecompressionFailed; }
                 let abs_idx = base - idx - 1;
+                guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.2
                 var n: u8[..256] = [];
                 var v: u8[..4096] = [];
                 guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
@@ -897,6 +902,7 @@ fn decode_qpack_section(
             } else {
                 guard base > name_idx else { return QpackError.DecompressionFailed; }
                 let abs_idx = base - name_idx - 1;
+                guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.4
                 var dummy_v: u8[..4096] = [];
                 guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
                     return QpackError.DecompressionFailed;

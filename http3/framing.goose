@@ -134,6 +134,26 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
     return true;
 }
 
+// Records a setting identifier into the seen list, ensuring uniqueness (RFC 9114 §7.2.4).
+//
+// Example:
+//   seen = [0x01], id = 0x06
+//   returns: true, seen = [0x01, 0x06]
+fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
+    var i: i64 = 0;
+    while i < seen.len {
+        if seen[i] == id {
+            return false;
+        }
+        i = i + 1;
+    }
+    guard seen.len < seen.cap else {
+        return false;
+    }
+    seen.push(id);
+    return true;
+}
+
 // Parses and validates a SETTINGS frame payload.
 // Returns H3_ERR_NO_ERROR (0x0100) on success, or appropriate error code:
 // - H3_ERR_SETTINGS_ERROR (0x0109) on duplicate settings or forbidden HTTP/2 settings (0x02..0x05)
@@ -141,11 +161,7 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
 fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u64 {
     var offset: u64 = 0;
     let total = payload.len as u64;
-
-    var seen_table_cap = false;
-    var seen_section_size = false;
-    var seen_blocked_streams = false;
-    var seen_connect_proto = false;
+    var seen_ids: u64[..64] = [];
 
     while offset < total {
         let id, off1, ok1 = quic_decode_varint(payload, offset);
@@ -162,23 +178,20 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
             return H3_ERR_SETTINGS_ERROR;
         }
 
-        // Duplicate checks (RFC 9114 Section 7.2.4)
+        // Duplicate checks (RFC 9114 Section 7.2.4):
+        // The same setting identifier MUST NOT occur more than once.
+        guard record_setting_identifier(seen_ids, id) else {
+            return H3_ERR_SETTINGS_ERROR;
+        }
+
         if id == H3_SETTING_QPACK_MAX_TABLE_CAPACITY {
-            if seen_table_cap { return H3_ERR_SETTINGS_ERROR; }
-            seen_table_cap = true;
             out_settings.qpack_max_table_capacity = val;
         } else if id == H3_SETTING_MAX_FIELD_SECTION_SIZE {
-            if seen_section_size { return H3_ERR_SETTINGS_ERROR; }
-            seen_section_size = true;
             out_settings.max_field_section_size = val;
         } else if id == H3_SETTING_QPACK_BLOCKED_STREAMS {
-            if seen_blocked_streams { return H3_ERR_SETTINGS_ERROR; }
-            seen_blocked_streams = true;
             out_settings.qpack_blocked_streams = val;
         } else if id == H3_SETTING_ENABLE_CONNECT_PROTOCOL {
-            if seen_connect_proto { return H3_ERR_SETTINGS_ERROR; }
             if val != 0 && val != 1 { return H3_ERR_SETTINGS_ERROR; }
-            seen_connect_proto = true;
             out_settings.enable_connect_protocol = val;
         } else {
             // Unknown or GREASE settings identifiers are ignored (RFC 9114 Section 7.2.4.1)

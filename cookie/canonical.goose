@@ -26,6 +26,7 @@ struct CanonicalCookie {
     source_port: i32 = -1,     // 1..65535 or -1 (unset/unknown)
     host_only: bool = true,
     has_domain_attr: bool = false,
+    has_path_attr: bool = false,
     persistent: bool = false,  // True if Max-Age or Expires was specified
     secure: bool = false,
     httponly: bool = false,

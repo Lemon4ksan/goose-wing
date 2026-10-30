@@ -443,10 +443,10 @@ fn run_ingestion_matrix(t: core::T&) {
             expect_persistent: false, expect_port: 443,
         },
         IngestionVector {
-            id: "LEX-15 (Semicolon inside DQUOTE splits pair)",
+            id: "LEX-15 (Semicolon inside DQUOTE splits pair; unclosed quote rejected per RFC 6265 В§4.1.1)",
             url: "https://example.com/", set_cookie: "k=\"quoted;val\"", from_http: true,
-            expect_accepted: true, expect_name: "k", expect_val: "\"quoted",
-            expect_domain: "example.com", expect_path: "/",
+            expect_accepted: false, expect_name: "", expect_val: "",
+            expect_domain: "", expect_path: "",
             expect_host_only: true, expect_secure: false, expect_httponly: false,
             expect_persistent: false, expect_port: 443,
         },

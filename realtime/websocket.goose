@@ -204,8 +204,9 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
 
 // Encodes RFC 6455 Frame Header
 fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
+    let eff_fin = if is_ws_control_opcode(hdr.opcode) { true } else { hdr.fin };
     var b0: u8 = hdr.opcode & 0x0F;
-    if hdr.fin { b0 |= 0x80; }
+    if eff_fin { b0 |= 0x80; }
     if hdr.rsv1 { b0 |= 0x40; }
     if hdr.rsv2 { b0 |= 0x20; }
     if hdr.rsv3 { b0 |= 0x10; }
@@ -651,6 +652,8 @@ fn parse_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
         return WS_STATUS_NO_STATUS, "", true;
     }
     guard payload.len >= 2 else { return 0, "", false; }
+    // RFC 6455 Section 5.5 & 5.5.1: Control frame payload must not exceed 125 bytes
+    guard payload.len <= 125 else { return 0, "", false; }
 
     let status_code = core::read_be_u16(payload, 0);
     let reason = payload[2..];

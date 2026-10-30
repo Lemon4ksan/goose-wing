@@ -95,7 +95,7 @@ fn new_h3_client_connection(settings: const wing::H3Settings&) -> H3Connection {
     return H3Connection {
         role: H3ConnRole.Client,
         local_settings: settings,
-        qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32),
+        qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32, 0),
         ..
     };
 }
@@ -104,7 +104,7 @@ fn new_h3_server_connection(settings: const wing::H3Settings&) -> H3Connection {
     return H3Connection {
         role: H3ConnRole.Server,
         local_settings: settings,
-        qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32),
+        qpack_table: new_qpack_table(settings.qpack_max_table_capacity, settings.qpack_blocked_streams as u32, 0),
         ..
     };
 }
@@ -274,6 +274,13 @@ fn send_request_data<B>(
 
 // Handles frames received on the peer control stream.
 fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, payload: const u8[:]) -> u64 {
+    // Strictly forbidden frames on control stream take precedence (RFC 9114 §7.2.1, §7.2.2, §7.2.5, §7.2.8)
+    guard is_allowed_on_control_stream(hdr.frame_type) else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
+        return H3_ERR_FRAME_UNEXPECTED;
+    }
+
     // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
     if !conn.peer_settings_received {
         if hdr.frame_type != H3_FRAME_SETTINGS {
@@ -292,12 +299,7 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
         return H3_ERR_NO_ERROR;
     }
 
-    // Subsequent frames must be allowed on control stream
-    guard is_allowed_on_control_stream(hdr.frame_type) else {
-        conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
-    }
+    // Subsequent frames must not be SETTINGS
     guard hdr.frame_type != H3_FRAME_SETTINGS else {
         conn.state = H3ConnState.Closed;
         conn.error_code = H3_ERR_FRAME_UNEXPECTED;
@@ -390,6 +392,18 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
             conn.error_code = H3_ERR_FRAME_UNEXPECTED;
             return H3_ERR_FRAME_UNEXPECTED;
         }
+        let push_id, prio, ok_pu = parse_h3_priority_update_push(payload);
+        guard ok_pu else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_FRAME_ERROR;
+            return H3_ERR_FRAME_ERROR;
+        }
+        if conn.max_push_id_sent && push_id > conn.max_push_id_advertised {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = H3_ERR_ID_ERROR;
+            return H3_ERR_ID_ERROR;
+        }
+        return H3_ERR_NO_ERROR;
     }
 
     return H3_ERR_NO_ERROR;
@@ -410,8 +424,46 @@ fn validate_h3_pseudo_headers(
     return status_count == 0 && method_count == 1 && scheme_count == 1 && path_count == 1;
 }
 
+// Handles the opening of an HTTP/3 unidirectional Push Stream (RFC 9114 §6.2.2 & §4.6).
+//
+// Example:
+//   conn.role = Server, stype = H3_STREAM_PUSH
+//   returns: H3_ERR_STREAM_CREATION (0x0103)
+fn handle_push_stream_open(
+    conn: H3Connection&,
+    stream_id: u64,
+    data: const u8[:],
+    offset: u64,
+) -> u64 {
+    if conn.role == H3ConnRole.Server {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_STREAM_CREATION;
+        return H3_ERR_STREAM_CREATION;
+    }
+
+    let push_id, _, ok_p = quic_decode_varint(data, offset);
+    guard ok_p else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+        return H3_ERR_GENERAL_PROTOCOL;
+    }
+
+    if !conn.max_push_id_sent || push_id > conn.max_push_id_advertised {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_ID_ERROR;
+        return H3_ERR_ID_ERROR;
+    }
+
+    guard conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_EXCESSIVE_LOAD;
+        return H3_ERR_EXCESSIVE_LOAD;
+    }
+    conn.ignored_uni_streams.push(stream_id);
+    return H3_ERR_NO_ERROR;
+}
+
 // Handles incoming raw bytes on a given stream.
-// Returns H3_ERR_NO_ERROR (0x0100) or appropriate HTTP/3 error code.
 fn handle_stream_data(
     conn: H3Connection&,
     stream_id: u64,
@@ -446,7 +498,11 @@ fn handle_stream_data(
 
         if !is_known && data.len > 0 {
             let stype, off1, ok_type = quic_decode_varint(data, offset);
-            guard ok_type else { return H3_ERR_GENERAL_PROTOCOL; }
+            guard ok_type else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = H3_ERR_GENERAL_PROTOCOL;
+                return H3_ERR_GENERAL_PROTOCOL;
+            }
             offset = off1;
 
             if stype == H3_STREAM_CONTROL {
@@ -473,6 +529,8 @@ fn handle_stream_data(
                 }
                 conn.peer_qpack_dec_opened = true;
                 conn.peer_qpack_dec_stream_id = stream_id;
+            } else if stype == H3_STREAM_PUSH {
+                return handle_push_stream_open(conn, stream_id, data, offset);
             } else {
                 // Unknown unidirectional stream: ignore payload (RFC 9114 Section 6.2)
                 if conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap {
@@ -561,6 +619,15 @@ fn handle_stream_data(
     // -------------------------------------------------------------------------
     // B. Bidirectional Request Streams
     // -------------------------------------------------------------------------
+    // RFC 9114 Section 6.1: HTTP/3 does not use server-initiated bidirectional streams.
+    // Client-initiated bidirectional streams have (stream_id & 0x01) == 0.
+    // Receipt of a server-initiated bidirectional stream MUST be treated as H3_STREAM_CREATION_ERROR.
+    guard (stream_id & 0x01) == 0 else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = H3_ERR_STREAM_CREATION;
+        return H3_ERR_STREAM_CREATION;
+    }
+
     var s_idx, found = find_h3_stream_idx(conn, stream_id);
     if !found {
         var reuse_slot: i32 = -1;

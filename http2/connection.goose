@@ -101,6 +101,7 @@ struct H2Connection {
     peer_initial_window_size: i64 = 65535,
     local_initial_window_size: i64 = 65535,
     local_max_frame_size: u32 = 16384,
+    peer_max_frame_size: u32 = 16384,
     max_header_list_size: u32 = 8192,
     max_concurrent_streams: u32 = 128,
     active_stream_count: u32 = 0,
@@ -231,6 +232,18 @@ fn close_local_stream(s: H2Connection&, stream_id: u32) {
         }
     } else if s.streams[s_idx].state == H2StreamState.Open {
         s.streams[s_idx].state = H2StreamState.HalfClosedLocal;
+    }
+}
+
+// Closes a stream descriptor and frees its active slot on stream error or RST_STREAM (RFC 9113 §5.1.2).
+fn reset_session_stream(s: H2Connection&, stream_id: u32) {
+    let s_idx, found = find_session_stream_idx(s, stream_id);
+    guard found else { return; }
+
+    s.streams[s_idx].state = H2StreamState.Closed;
+    s.streams[s_idx].active = false;
+    if s.active_stream_count > 0 {
+        s.active_stream_count--;
     }
 }
 
@@ -625,6 +638,41 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
 
 const MAX_HIGH_URGENCY_STREAK: u32 = 16; // Max consecutive frames before lower-urgency credit yield
 
+inline fn commit_stream_send_quota(
+    s: H2Connection&,
+    chosen_idx: i32,
+    max_frame_len: u32,
+) -> u32, u32, bool {
+    let target_stream_id = s.streams[chosen_idx].stream_id;
+    let quota = compute_stream_send_quota(s, target_stream_id);
+    guard quota > 0 else { return 0, 0, false; }
+
+    var send_len = s.streams[chosen_idx].pending_send_bytes;
+    if send_len > quota {
+        send_len = quota as u32;
+    }
+    if send_len > max_frame_len {
+        send_len = max_frame_len;
+    }
+    if send_len > s.peer_max_frame_size {
+        send_len = s.peer_max_frame_size;
+    }
+
+    // Deduct from pending and windows
+    s.streams[chosen_idx].pending_send_bytes -= send_len;
+    s.streams[chosen_idx].send_window -= send_len;
+    s.conn_send_window -= send_len;
+
+    // Update anti-starvation streak tracking
+    if s.streams[chosen_idx].priority.urgency < 3 {
+        s.urgency_streak_count++;
+    } else {
+        s.urgency_streak_count = 0;
+    }
+
+    return target_stream_id, send_len, true;
+}
+
 // Schedules next stream for DATA frame transmission according to RFC 9218 urgency 0..7.
 // Alternates between incremental and non-incremental streams to prevent starvation.
 // Implements Round-Robin fair interleaving among concurrent incremental streams within a bucket.
@@ -718,32 +766,8 @@ fn schedule_next_write(s: H2Connection&, max_frame_len: u32) -> u32, u32, bool {
             }
 
             if chosen_idx >= 0 {
-                let target_stream_id = s.streams[chosen_idx].stream_id;
-                let quota = compute_stream_send_quota(s, target_stream_id);
-                if quota > 0 {
-                    var send_len = s.streams[chosen_idx].pending_send_bytes;
-                    if send_len > quota {
-                        send_len = quota as u32;
-                    }
-                    if send_len > max_frame_len {
-                        send_len = max_frame_len;
-                    }
-                    if send_len > s.local_max_frame_size {
-                        send_len = s.local_max_frame_size;
-                    }
-
-                    // Deduct from pending and windows
-                    s.streams[chosen_idx].pending_send_bytes -= send_len;
-                    s.streams[chosen_idx].send_window -= send_len;
-                    s.conn_send_window -= send_len;
-
-                    // Update anti-starvation streak tracking
-                    if s.streams[chosen_idx].priority.urgency < 3 {
-                        s.urgency_streak_count++;
-                    } else {
-                        s.urgency_streak_count = 0;
-                    }
-
+                let target_stream_id, send_len, ok = commit_stream_send_quota(s, chosen_idx, max_frame_len);
+                if ok {
                     return target_stream_id, send_len, true;
                 }
             }
