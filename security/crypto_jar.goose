@@ -126,6 +126,26 @@ fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
     return PrivateJar { store: store, use_hkdf_aes: use_hkdf_aes };
 }
 
+inline fn init_hkdf_salt_nonce(
+    nonce_seed: u64,
+    now_sec: i64,
+    salt: u8[32]&,
+    nonce12: u8[12]&,
+) {
+    let step1 = nonce_seed * 6364136223846793005 + 1;
+    let step2 = step1 * 6364136223846793005 + 1;
+    for i in 8 {
+        salt[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
+        salt[8 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
+        salt[16 + i] = ((step1 >> (i * 8)) & 0xFF) as u8;
+        salt[24 + i] = ((step2 >> (i * 8)) & 0xFF) as u8;
+        nonce12[i] = ((step1 >> (i * 8)) & 0xFF) as u8;
+    }
+    for i in 4 {
+        nonce12[8 + i] = ((step2 >> (i * 8)) & 0xFF) as u8;
+    }
+}
+
 fn seal_binary_hkdf_aes<B>(
     slot: const core::KeySlot&,
     cookie_name: const u8[:],
@@ -139,11 +159,7 @@ fn seal_binary_hkdf_aes<B>(
 
     var salt: u8[32] = [0; 32];
     var nonce12: u8[12] = [0; 12];
-    for i in 8 {
-        salt[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
-        salt[8 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
-        nonce12[i] = ((nonce_seed >> (i * 8)) & 0xFF) as u8;
-    }
+    init_hkdf_salt_nonce(nonce_seed, now_sec, salt, nonce12);
     for i in 32 { out.push(salt[i]); }
     for i in 12 { out.push(nonce12[i]); }
 
@@ -283,7 +299,7 @@ fn open_binary_hkdf_aes(
     for i in 8 { ts |= (salt32[8 + i] as u64) << (i * 8); }
     let cookie_sec = ts as i64;
 
-    if now_sec > 0 && cookie_sec > 0 {
+    if now_sec > 0 {
         if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
         if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
     }
@@ -313,6 +329,7 @@ fn private_jar_open_binary(
     now_sec: i64,
     out_plaintext: u8[>..]&,
 ) -> bool {
+    out_plaintext.clear();
     guard raw_wire.len >= 53 else { return false; }
     let ver = raw_wire[0];
     let key_id = core::read_be_u32(raw_wire, 1);
@@ -410,6 +427,7 @@ fn signed_jar_open_binary(
     now_sec: i64,
     out_payload: u8[>..]&,
 ) -> bool {
+    out_payload.clear();
     guard raw_wire.len >= K_OVERHEAD_HMAC_SHA256 else { return false; }
     let ver = raw_wire[0];
     guard ver == WIRE_VER_HMAC_SHA256 else { return false; }

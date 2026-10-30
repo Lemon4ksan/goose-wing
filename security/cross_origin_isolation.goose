@@ -145,6 +145,10 @@ fn is_subresource_allowed(
     guard corp != CorpPolicy.SameOrigin else { return false; }
 
     if corp == CorpPolicy.SameSite {
+        // WHATWG Fetch §4.5.7: If document_origin has https scheme, subresource_origin must also be https
+        let doc_is_https = core::starts_with_fold(ctx.document_origin[..], "https://");
+        let sub_is_https = core::starts_with_fold(subresource_origin, "https://");
+        guard !doc_is_https || sub_is_https else { return false; }
         var doc_etld: u8[..128] = [];
         var sub_etld: u8[..128] = [];
         core::extract_etld_plus_one(extract_hostname_from_origin(ctx.document_origin[..]), doc_etld);

@@ -80,6 +80,12 @@ fn test_cross_origin_isolation(t: core::T&) {
             "Same-site subresource with CORP: same-site allowed",
         );
 
+        // Insecure HTTP subresource into HTTPS document with same-site CORP: BLOCKED (WHATWG Fetch §4.5.7)
+        sub.assert_false(
+            wing::is_subresource_allowed(isolated_ctx, "http://static.app.com", "same-site"),
+            "Insecure HTTP subresource into HTTPS document with same-site CORP BLOCKED",
+        );
+
         // Cross-site subresource with CORP: same-site: BLOCKED
         sub.assert_false(
             wing::is_subresource_allowed(isolated_ctx, "https://cdn.evil.com", "same-site"),
@@ -395,6 +401,28 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
         };
         sub.assert_true(is_exempt, "exempt path unconditionally allowed");
     };
+
+    t.run("Row 10: extract_fetch_context extracts URL path for exempt routing") { sub =>
+        var guard_cfg = wing::CrossOriginGuard { .. };
+        wing::add_exempt_path(guard_cfg, "/api/webhook/stripe");
+
+        var req = wing::new_request("POST", "https://api.example.com/api/webhook/stripe?signature=abc123#frag");
+        req.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
+        let ctx = wing::extract_fetch_context(req, "api.example.com");
+
+        sub.assert_bytes_eq(ctx.path[..], "/api/webhook/stripe", "path extracted cleanly without query or host");
+        let dec = wing::evaluate_fetch_metadata(guard_cfg, ctx);
+        let is_exempt = match dec {
+            AllowExempt => true,
+            _ => false,
+        };
+        sub.assert_true(is_exempt, "exempt path recognized via extract_fetch_context");
+    };
+
+    t.run("Row 11: extract_host_from_url rejects opaque 'null' origin") { sub =>
+        let host = wing::extract_host_from_url("null");
+        sub.assert_eq(host.len, 0, "opaque 'null' origin produces empty host");
+    };
 }
 
 // ----------------------------------------------------------------------------
@@ -431,6 +459,7 @@ fn test_cors_policy_and_matching(t: core::T&) {
         // Domain mismatch
         sub.assert_false(wing::match_cors_origin_pattern("https://attacker-example.com", pattern), "suffix confusion attack rejected");
         sub.assert_false(wing::match_cors_origin_pattern("https://example.com", pattern), "apex domain rejected by wildcard prefix");
+        sub.assert_false(wing::match_cors_origin_pattern("https://attacker.com", "https://*.com"), "TLD wildcard pattern rejected");
     };
 
     t.run("CORS Preflight (OPTIONS) & Actual Request Evaluation") { sub =>
@@ -456,6 +485,8 @@ fn test_cors_policy_and_matching(t: core::T&) {
         sub.assert_eq(preflight_res.header("Access-Control-Allow-Credentials"), "true", "credentials allowed");
         sub.assert_true(preflight_res.has_header("Access-Control-Max-Age"), "Access-Control-Max-Age present");
         sub.assert_eq(preflight_res.header("Access-Control-Max-Age"), "7200", "max age matches");
+        sub.assert_true(preflight_res.has_header("Vary"), "Vary header present on dynamic origin");
+        sub.assert_eq(preflight_res.header("Vary"), "Origin", "Vary mirrors Origin");
     };
 
     t.run("CORS Wildcard with Credentials Rejection") { sub =>
@@ -1444,21 +1475,124 @@ fn test_har_telemetry_and_isolation(t: core::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 22. Hardened Security Layer Invariants (Audit Findings)
+// ----------------------------------------------------------------------------
+fn test_hardened_security_invariants(t: core::T&) {
+    t.run("Sharded GCRA Limiter Saturated Shard Fail-Closed Rejection") { sub =>
+        let quota = wing::new_gcra_quota(1, core::seconds(1), 1);
+        var limiter = wing::new_sharded_limiter(quota);
+        let now_ns: u64 = 10000000000;
+
+        // Saturate shard 0 with 16 active unexpired client slots
+        for i in 16 {
+            var slot = wing::KeyedGcraSlot { active: true, .. };
+            slot.key.append("shard0_client_");
+            slot.key.push(('a' + (i as u8)));
+            slot.cell.tat_ns = now_ns + 5000000000; // unexpired in the future
+            limiter.shards[0].slots.push(slot);
+        }
+
+        var target_key: u8[..16] = [];
+        for k in 1000 {
+            var cand: u8[..16] = "key_";
+            cand.push(('0' + (((k / 100) % 10) as u8)));
+            cand.push(('0' + (((k / 10) % 10) as u8)));
+            cand.push(('0' + ((k % 10) as u8)));
+            if (core::fnv1a_64(cand[..]) & 0xFF) == 0 {
+                target_key.clear();
+                target_key.append(cand[..]);
+                break;
+            }
+        }
+        sub.assert_true(target_key.len > 0, "hash candidate found for shard 0");
+
+        let dec_overflow = wing::check_rate_limit(limiter, target_key[..], 1, now_ns);
+        sub.assert_false(wing::is_allowed(dec_overflow), "17th key in saturated shard rejected fail-closed");
+    };
+
+    t.run("Probabilistic GCRA Accurate Remaining Burst on Unsampled Requests") { sub =>
+        let quota = wing::new_gcra_quota(10, core::seconds(1), 10);
+        var pgcra = wing::new_probabilistic_gcra(quota, 100);
+        let now_ns: u64 = 1000000000;
+
+        pgcra.cell.tat_ns = now_ns + 500000000;
+
+        let dec = wing::check_rate_limit(pgcra, 1, now_ns);
+        sub.assert_true(wing::is_allowed(dec), "unsampled request allowed");
+        match dec {
+            Allowed a => {
+                sub.assert_true(a.remaining_burst < 10, "remaining_burst reflects prior TAT cell state");
+                sub.assert_eq(a.new_tat_ns, pgcra.cell.tat_ns, "new_tat_ns is current cell TAT without modification");
+            },
+            _ => { sub.assert_true(false, "expected allowed decision"); },
+        };
+    };
+
+    t.run("Privacy Pass Token Type High-Byte Preservation (RFC 9577)") { sub =>
+        var tok = wing::Token { .. };
+        tok.token_type = 0xDA5A;
+        for i in 32 { tok.nonce[i] = (i + 1) as u8; }
+        for i in 32 { tok.challenge_digest[i] = (i + 10) as u8; }
+        tok.token_key_id.append("key-id-01");
+        tok.authenticator.append("auth-sig-99");
+
+        var wire: u8[>..] = [];
+        wing::marshal_token(tok, wire);
+
+        var parsed = wing::Token { .. };
+        let ok = wing::unmarshal_token(wire[..], tok.token_key_id.len, tok.authenticator.len, parsed);
+        sub.assert_true(ok, "Token unmarshaled cleanly");
+        sub.assert_eq(parsed.token_type, 0xDA5A, "high byte 0xDA preserved without truncation");
+    };
+
+    t.run("CryptoJar Output Buffer Re-use Clean Truncation") { sub =>
+        var store = wing::KeyStore { .. };
+        var raw_key: u8[32] = [0x55; 32];
+        let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+        wing::add_key(store, slot);
+
+        var jar = wing::new_private_jar(store, false);
+        var sealed: u8[>..] = [];
+        wing::private_jar_seal_binary(jar, "sess", "user=alice", 1700000010, 0x1234567890ABCDEF, sealed);
+
+        var out: u8[>..] = [];
+        out.append("OLD_DIRTY_DATA_PREFIX_");
+        let ok = wing::private_jar_open_binary(jar, "sess", sealed[..], 1700000020, out);
+        sub.assert_true(ok, "private jar opened");
+        sub.assert_bytes_eq(out[..], "user=alice", "out buffer cleared before writing, no dirty data prepend");
+
+        var sjar = wing::new_signed_jar(store);
+        var signed: u8[>..] = [];
+        wing::signed_jar_seal_binary(sjar, "prefs", "theme=dark", 1700000010, signed);
+
+        out.clear();
+        out.append("OLD_DIRTY_DATA_PREFIX_");
+        let sok = wing::signed_jar_open_binary(sjar, "prefs", signed[..], 1700000020, out);
+        sub.assert_true(sok, "signed jar opened");
+        sub.assert_bytes_eq(out[..], "theme=dark", "out_payload cleared before appending");
+    };
+}
+
 fn main() {
-    var runner = core::new_runner("Application Perimeter Security, CSRF, HSTS, and Policy Suite", core::Verbosity.Verbose);
+    let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
+    var runner = core::new_runner(title, core::Verbosity.Verbose);
 
     core::run_case(runner, "1. Cross-Origin Isolation & Subresource Policies", test_cross_origin_isolation);
     core::run_case(runner, "2. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
     core::run_case(runner, "3. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
     core::run_case(runner, "4. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
-    core::run_case(runner, "5. Constant-Time CSRF Token Validation & OTP Mask Verification", test_csrf_constant_time_tokens);
+    core::run_case(runner, "5. Constant-Time CSRF Token Validation & OTP Mask Verification",
+        test_csrf_constant_time_tokens);
     core::run_case(runner, "6. WaitGroup Capacity Limit", test_wait_group_capacity_and_completion);
     core::run_case(runner, "7. Queue Bounds & Timeout Handling", test_queue_bounds_and_timeout);
     core::run_case(runner, "8. Crash Diagnostics & Supervisor Pattern", test_crash_diagnostics_and_supervision);
     core::run_case(runner, "9. Edge Filter Lifecycle and Evaluation", test_edge_filter_lifecycle_and_evaluation);
     core::run_case(runner, "10. HSTS Header Directive Parsing", test_hsts_header_parsing);
-    core::run_case(runner, "11. Chromium Static Preload List & .dev/.app Auto-Upgrade", test_hsts_preload_list_auto_upgrade);
-    core::run_case(runner, "12. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants", test_dynamic_hsts_cache_lifecycle);
+    core::run_case(runner, "11. Chromium Static Preload List & .dev/.app Auto-Upgrade",
+        test_hsts_preload_list_auto_upgrade);
+    core::run_case(runner, "12. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants",
+        test_dynamic_hsts_cache_lifecycle);
     core::run_case(runner, "13. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
     core::run_case(runner, "14. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
     core::run_case(runner, "15. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
@@ -1467,7 +1601,9 @@ fn main() {
     core::run_case(runner, "18. RFC 8297 Early Hints & RFC 8470 0-RTT Anti-Replay", test_early_hints_and_replay_guard);
     core::run_case(runner, "19. W3C No-Vary-Search Cache Normalization", test_no_vary_search_cache);
     core::run_case(runner, "20. RFC 9297 HTTP Capsules & MASQUE CONNECT-UDP", test_masque_capsules_and_datagrams);
-    core::run_case(runner, "21. HAR 1.2 Telemetry Waterfall & Network Isolation Keys", test_har_telemetry_and_isolation);
+    core::run_case(runner, "21. HAR 1.2 Telemetry Waterfall & Network Isolation Keys",
+        test_har_telemetry_and_isolation);
+    core::run_case(runner, "22. Hardened Security Layer Invariants", test_hardened_security_invariants);
 
     let ok = core::finish(runner);
     assert(ok);

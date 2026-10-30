@@ -156,7 +156,7 @@ fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token
     let expected_len = 2 + 32 + 32 + key_id_len + auth_len;
     guard data.len >= expected_len else { return false; }
 
-    out.token_type = (data[0] << 8) | data[1];
+    out.token_type = ((data[0] as u16) << 8) | data[1];
 
     for i in 32 {
         out.nonce[i] = data[2 + i];

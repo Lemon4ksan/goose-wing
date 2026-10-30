@@ -57,6 +57,16 @@ struct GcraCell {
 // Maximum allowable backward clock jump tolerance before clamping TAT
 const GCRA_MAX_CLOCK_DRIFT_NS: u64 = 5000000000; // 5.0s
 
+// Calculates remaining burst allowance after admission without underflow or overflow hazards.
+inline fn gcra_remaining_burst(tau: u64, t: u64, burst: u64, tat: u64, now_ns: u64) -> u64 {
+    let baseline = core::add_sat_u64(now_ns, t);
+    guard tat > baseline else { return burst; }
+    let diff = tat - baseline;
+    guard tau > diff else { return 0; }
+    let rem = (tau - diff) / t;
+    return if rem < burst { rem } else { burst };
+}
+
 // Evaluates rate limit admission for a request consuming cost_n tokens at now_ns.
 // Returns Allowed with remaining capacity, or Rejected with retry_after_ns.
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
@@ -90,16 +100,7 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
 
     cell.tat_ns = tat_new;
 
-    // Remaining burst calculation without u64 overflow
-    var rem: u64 = 0;
-    let baseline = core::add_sat_u64(now_ns, t);
-    if tat_new > baseline {
-        let diff = tat_new - baseline;
-        rem = if tau > diff { (tau - diff) / t } else { 0 };
-    } else {
-        rem = quota.burst;
-    }
-
+    let rem = gcra_remaining_burst(tau, t, quota.burst, tat_new, now_ns);
     let reset_after = core::sub_sat_u64(tat_new, now_ns);
 
     return RateLimitDecision.Allowed {
@@ -248,9 +249,19 @@ fn check_rate_limit(
         return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[slot_idx].cell, cost_n, now_ns);
     }
 
-    // Shard full fallback
-    var temp_cell = GcraCell { tat_ns: now_ns };
-    return gcra_check_n(limiter.quota, temp_cell, cost_n, now_ns);
+    // Shard full fallback: all slots active with unexpired TAT -> reject (fail-closed)
+    var min_tat: u64 = 0xFFFFFFFFFFFFFFFF;
+    for idx in limiter.shards[shard_idx].slots.len {
+        let tat = limiter.shards[shard_idx].slots[idx].cell.tat_ns;
+        if tat < min_tat {
+            min_tat = tat;
+        }
+    }
+    let retry_ns = core::sub_sat_u64(min_tat, now_ns);
+    return RateLimitDecision.Rejected {
+        retry_after_ns: if retry_ns > 0 { retry_ns } else { limiter.quota.emission_interval_ns },
+        current_tat_ns: min_tat,
+    };
 }
 
 // ---- probabilistic sampled gcra -------------------------------------------
@@ -280,10 +291,19 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
 
     let sampled = (pgcra.rng_state % pgcra.sample_rate) == 0;
     if !sampled {
+        let tat_curr = pgcra.cell.tat_ns;
+        let rem = gcra_remaining_burst(
+            pgcra.quota.delay_tolerance_ns,
+            pgcra.quota.emission_interval_ns,
+            pgcra.quota.burst,
+            tat_curr,
+            now_ns,
+        );
+        let reset_after = if tat_curr > now_ns { core::sub_sat_u64(tat_curr, now_ns) } else { 0 };
         return RateLimitDecision.Allowed {
-            remaining_burst: pgcra.quota.burst,
-            new_tat_ns: pgcra.cell.tat_ns,
-            reset_after_ns: 0,
+            remaining_burst: rem,
+            new_tat_ns: tat_curr,
+            reset_after_ns: reset_after,
         };
     }
 

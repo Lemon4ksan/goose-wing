@@ -241,11 +241,21 @@ fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]
     return false;
 }
 
-// Extracts host from URL or Origin string (e.g. "https://example.com:8080/path" -> "example.com:8080")
+// Extracts host from URL or Origin string (RFC 6454 / RFC 3986).
+// Requires valid http:// or https:// scheme prefix; returns empty slice for opaque origins (e.g. "null").
+//
+// Example:
+//   url_or_origin = "https://example.com:8080/path"
+//   returns: "example.com:8080"
 fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     var s = url_or_origin;
-    if starts_with_fold(s, "https://") { s = s[8..]; }
-    else if starts_with_fold(s, "http://") { s = s[7..]; }
+    if starts_with_fold(s, "https://") {
+        s = s[8..];
+    } else if starts_with_fold(s, "http://") {
+        s = s[7..];
+    } else {
+        return s[..0];
+    }
 
     let slash_idx = core::index_of_byte(s, '/');
     if slash_idx >= 0 { s = s[..slash_idx]; }
@@ -282,8 +292,10 @@ fn evaluate_crosssite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const Fetch
     }
 
     // Top-level navigation (GET / HEAD)
-    if ctx.mode == SecFetchMode.Navigate && (ctx.dest == SecFetchDest.Document || ctx.dest == SecFetchDest.NestedDocument) {
-        if ctx.is_sensitive_navigation_route && guard_cfg.require_user_activation_on_sensitive_nav && !ctx.user_activated {
+    let is_doc_nav = ctx.dest == SecFetchDest.Document || ctx.dest == SecFetchDest.NestedDocument;
+    if ctx.mode == SecFetchMode.Navigate && is_doc_nav {
+        if ctx.is_sensitive_navigation_route && guard_cfg.require_user_activation_on_sensitive_nav &&
+            !ctx.user_activated {
             return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.MissingUserActivationOnSensitiveNav };
         }
         return CsrfDecision.Allow;
@@ -349,6 +361,33 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
     return CsrfDecision.Allow;
 }
 
+// Extracts normalized path from relative or absolute URL (RFC 3986 §3.3).
+// Strips query parameters and fragments.
+//
+// Example:
+//   raw = "https://example.com/api/webhook?foo=bar"
+//   returns: "/api/webhook"
+fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
+    var s = raw;
+    if starts_with_fold(s, "https://") {
+        s = s[8..];
+        let slash = core::index_of_byte(s, '/');
+        s = if slash >= 0 { s[slash..] } else { "/" };
+    } else if starts_with_fold(s, "http://") {
+        s = s[7..];
+        let slash = core::index_of_byte(s, '/');
+        s = if slash >= 0 { s[slash..] } else { "/" };
+    }
+    if s.len == 0 {
+        return "/";
+    }
+    let query_idx = core::index_of_byte(s, '?');
+    if query_idx >= 0 { s = s[..query_idx]; }
+    let hash_idx = core::index_of_byte(s, '#');
+    if hash_idx >= 0 { s = s[..hash_idx]; }
+    return if s.len > 0 { s } else { "/" };
+}
+
 // Extracts FetchContext from an incoming Request.
 fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> FetchContext {
     var ctx = FetchContext { .. };
@@ -361,6 +400,10 @@ fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> Fetc
     if target_host.len <= ctx.target_host.cap {
         ctx.target_host.append(target_host);
     }
+    let req_path = extract_path_from_url(req.url[..]);
+    ctx.path.clear();
+    let copy_len = if req_path.len <= ctx.path.cap { req_path.len } else { ctx.path.cap };
+    ctx.path.append(req_path[..copy_len]);
 
     for &h in req.headers {
         let name = h.name[..];
