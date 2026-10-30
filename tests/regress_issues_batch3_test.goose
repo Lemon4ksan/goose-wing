@@ -611,25 +611,25 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
 
     t.run("validate_h2_stream_association rejects Priority and PushPromise on stream 0") { sub =>
         let hdr_prio = internal::H2FrameHeader {
-            frame_type: internal::H2FrameType.Priority,
-            flags: 0,
-            stream_id: 0,
+            frame_type:  internal::H2FrameType.Priority,
+            flags:       0,
+            stream_id:   0,
             payload_len: 5,
         };
         sub.assert_true(internal::validate_h2_stream_association(hdr_prio) == internal::H2ErrorCode.ProtocolError, "Priority on stream 0 is ProtocolError");
 
         let hdr_push = internal::H2FrameHeader {
-            frame_type: internal::H2FrameType.PushPromise,
-            flags: 0,
-            stream_id: 0,
+            frame_type:  internal::H2FrameType.PushPromise,
+            flags:       0,
+            stream_id:   0,
             payload_len: 4,
         };
         sub.assert_true(internal::validate_h2_stream_association(hdr_push) == internal::H2ErrorCode.ProtocolError, "PushPromise on stream 0 is ProtocolError");
 
         let hdr_ga = internal::H2FrameHeader {
-            frame_type: internal::H2FrameType.GoAway,
-            flags: 0,
-            stream_id: 1,
+            frame_type:  internal::H2FrameType.GoAway,
+            flags:       0,
+            stream_id:   1,
             payload_len: 8,
         };
         sub.assert_true(internal::validate_h2_stream_association(hdr_ga) == internal::H2ErrorCode.ProtocolError, "GoAway on stream 1 is ProtocolError");
@@ -641,11 +641,11 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
         // 1. Single HEADERS frame exceeding max_header_block_bytes (8192) must trigger EnhanceYourCalm
         let big_hdr = internal::H2FrameHeader {
             payload_len: 12000,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: internal::H2_FLAG_END_HEADERS,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       internal::H2_FLAG_END_HEADERS,
+            stream_id:   1,
+            valid:       true,
         };
         let err_big = internal::process_incoming_frame(framer, big_hdr);
         sub.assert_eq(err_big, internal::H2ErrorCode.EnhanceYourCalm, "Single HEADERS > 8KB triggers EnhanceYourCalm");
@@ -656,21 +656,21 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
         for _ in 10 {
             let sf = internal::H2FrameHeader {
                 payload_len: 6,
-                frame_type: internal::H2FrameType.Settings,
-                raw_type: 0x4,
-                flags: 0x0,
-                stream_id: 0,
-                valid: true,
+                frame_type:  internal::H2FrameType.Settings,
+                raw_type:    0x4,
+                flags:       0x0,
+                stream_id:   0,
+                valid:       true,
             };
             sub.assert_eq(internal::process_incoming_frame(framer_set, sf), internal::H2ErrorCode.NoError);
         }
         let sf_11 = internal::H2FrameHeader {
             payload_len: 6,
-            frame_type: internal::H2FrameType.Settings,
-            raw_type: 0x4,
-            flags: 0x0,
-            stream_id: 0,
-            valid: true,
+            frame_type:  internal::H2FrameType.Settings,
+            raw_type:    0x4,
+            flags:       0x0,
+            stream_id:   0,
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer_set, sf_11), internal::H2ErrorCode.EnhanceYourCalm, "11th SETTINGS triggers EnhanceYourCalm");
         sub.assert_true(framer_set.state == internal::H2ConnState.Closed);
@@ -728,7 +728,7 @@ fn test_h3_and_qpack_rfc9114_rfc9204(t: core::T&) {
 
     t.run("QPACK emit_field_checked rejects field names with invalid token chars") { sub =>
         var fields: internal::HeaderField[>..] = [];
-        var budget: u64 = 4096;
+        var budget: u64                        = 4096;
         let err = internal::emit_field_checked(fields, budget, "bad name", "value", false);
         sub.assert_true(err == internal::QpackError.DecompressionFailed, "QPACK field name with space MUST fail");
     };
@@ -895,10 +895,10 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
 
         let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
         let hdr = internal::FrameHeader {
-            length: hpack_block.len as u32,
+            length:     hpack_block.len as u32,
             frame_type: internal::FRAME_HEADERS,
-            flags: flags,
-            stream_id: 1,
+            flags:      flags,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(hdr, wire_in);
         wire_in.append(hpack_block[..]);
@@ -917,10 +917,10 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
 
         // PADDED frame with payload length 5, but pad_len byte = 10 (pad_len >= payload_len)
         let hdr = internal::FrameHeader {
-            length: 5,
+            length:     5,
             frame_type: internal::FRAME_DATA,
-            flags: internal::FLAG_PADDED,
-            stream_id: 1,
+            flags:      internal::FLAG_PADDED,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(hdr, wire_in);
         wire_in.push(10); // pad_len byte = 10
@@ -943,10 +943,10 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
 
         let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
         let hdr = internal::FrameHeader {
-            length: hpack_block.len as u32,
+            length:     hpack_block.len as u32,
             frame_type: internal::FRAME_HEADERS,
-            flags: flags,
-            stream_id: 1,
+            flags:      flags,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(hdr, wire_in);
         wire_in.append(hpack_block[..]);
@@ -1019,13 +1019,13 @@ fn test_client_redirect_origin_and_fragment_safety(t: core::T&) {
         headers.push(wing::make_header("Content-Type", "application/json"));
 
         var redir = wing::RedirectInfo {
-            status_code: 307,
+            status_code:     307,
             is_cross_origin: true,
-            clear_body: false, // 307 retains POST body!
+            clear_body:      false, // 307 retains POST body!
             ..
         };
 
-        wing::sanitize_headers_on_redirect(headers, redir, false, false, false);
+        wing::sanitize_headers_on_redirect(headers, redir, wing::RedirectSanitizeOptions { .. });
 
         let origin_idx = wing::find_header_index(headers[..], "Origin");
         sub.assert_ge(origin_idx, 0, "Origin header present");
@@ -1045,8 +1045,7 @@ fn test_client_redirect_origin_and_fragment_safety(t: core::T&) {
             long_target[..],
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin,
             "",
-            false,
-            true,
+            wing::RedirectOptions { is_main_frame: true },
         );
         sub.assert_true(info.error == wing::RedirectError.None || info.error == wing::RedirectError.InvalidLocationUrl, "Handled safely without crash");
     };
@@ -1209,10 +1208,10 @@ fn test_h2_multiplexer_trailers(t: core::T&) {
         internal::encode_hpack_field(dt, hpack_block, ":path", "/test", true, false);
 
         let req_hdr = internal::FrameHeader {
-            length: hpack_block.len as u32,
+            length:     hpack_block.len as u32,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(req_hdr, wire_in);
         wire_in.append(hpack_block[..]);
@@ -1392,8 +1391,8 @@ fn test_zstandard_rfc8878_invariants(t: core::T&) {
 
         // Block Header: last_block=1, block_type=RLE(1), block_size=356
         let last_bit: u32 = 1;
-        let btype: u32 = 1; // RLE
-        let bsize: u32 = 356;
+        let btype:    u32 = 1; // RLE
+        let bsize:    u32 = 356;
         let b_hdr = last_bit | (btype << 1) | (bsize << 3);
         frame.push((b_hdr & 0xFF) as u8);
         frame.push(((b_hdr >> 8) & 0xFF) as u8);
@@ -1575,10 +1574,10 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
 
     t.run("encode_quic_header enforces pn_len bounds and 20-byte CID") { sub =>
         var hdr = internal::QuicHeader {
-            header_type: internal::QuicHeaderType.Initial,
-            version: internal::QUIC_VERSION_1,
+            header_type:    internal::QuicHeaderType.Initial,
+            version:        internal::QUIC_VERSION_1,
             payload_length: 64,
-            packet_number: 1,
+            packet_number:  1,
             ..
         };
         // Valid 20-byte DCID (matches QUIC_MAX_CID_LEN = 20)
@@ -1715,7 +1714,7 @@ fn test_qpack_invariants_and_token_defenses(t: core::T&) {
 
     t.run("emit_field_checked rejects bare colon and non-token characters") { sub =>
         var fields: internal::HeaderField[>..] = [];
-        var budget: u64 = 4096;
+        var budget: u64                        = 4096;
 
         // Bare colon ":" must be rejected
         let err_colon = internal::emit_field_checked(fields, budget, ":", "val", false);
@@ -1863,7 +1862,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
 
         // Stream 0: Initial response headers (200 OK)
         var resp_hdrs: u8[..64] = [];
-        var sec1: u8[..16] = [0x00, 0x00, 0xD9]; // RIC 0, Base 0, :status 200
+        var sec1:      u8[..16] = [0x00, 0x00, 0xD9]; // RIC 0, Base 0, :status 200
         internal::encode_h3_headers_frame(resp_hdrs, sec1[..]);
         let err_h1 = conn.handle_stream_data(0, true, resp_hdrs[..], false);
         sub.assert_eq(err_h1, internal::H3_ERR_NO_ERROR, "initial 200 OK headers accepted");
@@ -1876,7 +1875,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
 
         // Stream 0: First trailer section (x-checksum: abc)
         var trailer1_frame: u8[..64] = [];
-        var sec_tr1: u8[..32] = [0x00, 0x00];
+        var sec_tr1:        u8[..32] = [0x00, 0x00];
         // Literal with literal name: name "x-chk", val "1"
         sec_tr1.push(0x25);
         sec_tr1.append("x-chk");
@@ -1929,7 +1928,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
         // 2. Disallowed content-length in trailer section MUST fail
         var conn3 = internal::new_h3_client_connection(settings);
         conn3.handle_stream_data(2, false, ctrl_wire[..], false);
-        var sec_ok: u8[..16] = [0x00, 0x00, 0xD9]; // :status 200
+        var sec_ok:  u8[..16] = [0x00, 0x00, 0xD9]; // :status 200
         var ok_hdrs: u8[..32] = [];
         internal::encode_h3_headers_frame(ok_hdrs, sec_ok[..]);
         conn3.handle_stream_data(0, true, ok_hdrs[..], false);

@@ -415,6 +415,79 @@ fn is_empty_body_status(code: i32) -> bool {
     return code == 204 || code == 304 || (code >= 100 && code < 200);
 }
 
+struct ResponseFramingInfo {
+    has_te: bool     = false,
+    te_buf: u8[..64] = [],
+    has_cl: bool     = false,
+    cl_len: i64      = 0,
+}
+
+// Parses raw HTTP/1.1 response header lines into header items (RFC 9112 Section 5).
+//
+// Example:
+//   rest_headers = "Content-Type: text/plain\r\n\r\n"
+//   returns: true (out_res.headers populated)
+fn parse_http1_response_headers_block<Res>(rest_headers: const u8[:], out_res: Res&) -> bool {
+    var cursor: i64 = 0;
+    out_res.headers.clear();
+    while cursor < rest_headers.len {
+        let rel_end = find(rest_headers[cursor..], "\r\n");
+        if rel_end < 0 || rel_end == 0 { break; }
+
+        let line = rest_headers[cursor..(cursor + rel_end)];
+        let colon = core::index_of_byte(line, ':');
+        guard colon > 0 else { return false; }
+        let hname = line[..colon];
+        guard is_valid_header_name(hname) else { return false; }
+        let hval = trim_lws(line[(colon + 1)..]);
+        guard is_valid_header_value(hval) else { return false; }
+
+        var item = HeaderItem { .. };
+        guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false; }
+        item.name.append(hname);
+        item.value.append(hval);
+        guard out_res.headers.len < out_res.headers.cap else { return false; }
+        out_res.headers.push(item);
+        cursor += rel_end + 2;
+    }
+    return true;
+}
+
+fn inspect_response_framing_headers(headers: const HeaderItem[:]) -> ResponseFramingInfo, bool {
+    var info = ResponseFramingInfo { .. };
+    var cl_count = 0;
+
+    for &hdr in headers {
+        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+            if info.has_te {
+                guard info.te_buf.len + 2 + hdr.value.len <= info.te_buf.cap else { return info, false; }
+                info.te_buf.append(", ");
+                info.te_buf.append(hdr.value[..]);
+            } else {
+                info.has_te = true;
+                guard hdr.value.len <= info.te_buf.cap else { return info, false; }
+                info.te_buf.append(hdr.value[..]);
+            }
+        } else if eq_ascii_fold(hdr.name[..], "content-length") {
+            info.has_cl = true;
+            cl_count++;
+            let val_trimmed = trim_lws(hdr.value[..]);
+            guard val_trimmed.len > 0 else { return info, false; }
+            for b in val_trimmed {
+                guard b >= '0' && b <= '9' else { return info, false; }
+            }
+            let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
+            guard ok_cl && parsed_cl >= 0 else { return info, false; }
+            if cl_count == 1 {
+                info.cl_len = parsed_cl;
+            } else if info.cl_len != parsed_cl {
+                return info, false;
+            }
+        }
+    }
+    return info, true;
+}
+
 // Parses an incoming raw HTTP/1.1 response wire stream into a Response model.
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Returns (ok, total_bytes_consumed).
@@ -456,80 +529,22 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
-    var cursor: i64 = 0;
-    out_res.headers.clear();
-    while cursor < rest_headers.len {
-        let rel_end = find(rest_headers[cursor..], "\r\n");
-        if rel_end < 0 { break; }
-        if rel_end == 0 { break; }
-
-        let line = rest_headers[cursor..(cursor + rel_end)];
-        let colon = core::index_of_byte(line, ':');
-        guard colon > 0 else { return false, 0; }
-        let hname = line[..colon];
-        guard is_valid_header_name(hname) else { return false, 0; }
-        let hval = trim_lws(line[(colon + 1)..]);
-        guard is_valid_header_value(hval) else { return false, 0; }
-
-        var item = HeaderItem { .. };
-        guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false, 0; }
-        item.name.append(hname);
-        item.value.append(hval);
-        guard out_res.headers.len < out_res.headers.cap else { return false, 0; }
-        out_res.headers.push(item);
-        cursor += rel_end + 2;
-    }
+    guard parse_http1_response_headers_block(rest_headers, out_res) else { return false, 0; }
 
     out_res.trailers.clear();
     out_res.body.clear();
 
-    // Check Transfer-Encoding
-    var has_te = false;
-    var te_buf: u8[..64] = [];
-    var has_cl = false;
-    var cl_count = 0;
-    var cl_len: i64 = 0;
-
-    for &hdr in out_res.headers {
-        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-            if has_te {
-                guard te_buf.len + 2 + hdr.value.len <= te_buf.cap else { return false, 0; }
-                te_buf.append(", ");
-                te_buf.append(hdr.value[..]);
-            } else {
-                has_te = true;
-                te_buf.clear();
-                guard hdr.value.len <= te_buf.cap else { return false, 0; }
-                te_buf.append(hdr.value[..]);
-            }
-        } else if eq_ascii_fold(hdr.name[..], "content-length") {
-            has_cl = true;
-            cl_count++;
-            let val_trimmed = trim_lws(hdr.value[..]);
-            guard val_trimmed.len > 0 else { return false, 0; }
-            // RFC 9110 §8.6: Content-Length = 1*DIGIT (no leading '+' or '-' sign)
-            for b in val_trimmed {
-                guard b >= '0' && b <= '9' else { return false, 0; }
-            }
-            let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
-            guard ok_cl && parsed_cl >= 0 else { return false, 0; }
-            if cl_count == 1 {
-                cl_len = parsed_cl;
-            } else if cl_len != parsed_cl {
-                // Conflicting multiple Content-Length headers -> reject
-                return false, 0;
-            }
-        }
-    }
+    let framing, ok_frame = inspect_response_framing_headers(out_res.headers[..]);
+    guard ok_frame else { return false, 0; }
 
     let is_empty_status = is_empty_body_status(out_res.status_code);
 
     // RFC 9112 Section 6.1 & RFC 7230 §3.3.3: In responses, Transfer-Encoding overrides Content-Length.
     // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
-    if has_te {
-        guard validate_transfer_encoding_value(te_buf[..]) else { return false, 0; }
+    if framing.has_te {
+        guard validate_transfer_encoding_value(framing.te_buf[..]) else { return false, 0; }
         // RFC 9112 Section 6.1: An intermediary or recipient processing chunked MUST remove Content-Length
-        if has_cl {
+        if framing.has_cl {
             remove_header_by_name(out_res.headers, "content-length");
         }
         // RFC 9112 §6.3 Rule 1: 1xx, 204, and 304 responses NEVER have a message body
@@ -550,12 +565,14 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         return true, header_end_idx;
     }
 
-    if has_cl {
-        guard cl_len >= 0 && cl_len <= 0x7FFFFFFF && wire.len >= header_end_idx + cl_len else { return false, 0; }
-        if cl_len > 0 {
-            out_res.body.append(wire[header_end_idx..(header_end_idx + cl_len)]);
+    if framing.has_cl {
+        guard framing.cl_len >= 0 && framing.cl_len <= 0x7FFFFFFF && wire.len >= header_end_idx + framing.cl_len else {
+            return false, 0;
         }
-        return true, header_end_idx + cl_len;
+        if framing.cl_len > 0 {
+            out_res.body.append(wire[header_end_idx..(header_end_idx + framing.cl_len)]);
+        }
+        return true, header_end_idx + framing.cl_len;
     }
 
     // Otherwise, consume remainder of stream until connection close
@@ -1732,6 +1749,95 @@ fn handle_pipelined_parse_failure<B>(
     return true;
 }
 
+enum PipeStepResult {
+    Continue,
+    Stop,
+    Error,
+}
+
+// Strips optional benign CRLFs between pipelined requests (RFC 9112 Section 2.2).
+//
+// Example:
+//   stream = "\r\nGET / HTTP/1.1", consumed_crlf = 0
+//   returns: "GET / HTTP/1.1", consumed_crlf = 2
+inline fn strip_pipelined_crlf(stream: const u8[:], consumed_crlf: i64&) -> const u8[:] {
+    var s = stream;
+    while s.len > 0 && (s[0] == '\r' || s[0] == '\n') {
+        s = s[1..];
+        consumed_crlf++;
+    }
+    return s;
+}
+
+fn try_handle_pipelined_websocket<B>(
+    server:   HttpServer&,
+    req:      const Request&,
+    wire_out: B&,
+) -> bool {
+    guard is_websocket_upgrade_request(req) else { return false; }
+    let ws_idx = find_ws_route(server, req.url[..]);
+    guard ws_idx >= 0 else { return false; }
+    return complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
+}
+
+fn dispatch_pipelined_request<B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    req:       Request&,
+    res:       Response&,
+    now_ns:    u64,
+    wire_out:  B&,
+) -> bool {
+    reset_response(res);
+    if server.fast_path {
+        dispatch_fast_path_route(server.pipeline.router, req, res);
+    } else {
+        var future = internal::new_inline_handler_future(0);
+        let _ = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+    }
+
+    let wants_close = check_and_apply_connection_close(req, res);
+    serialize_http1_response(res, server.server_name[..], wire_out);
+    server.requests_processed++;
+    return wants_close;
+}
+
+fn process_pipelined_pipe_step<B>(
+    server:        HttpServer&,
+    client_ip:     const u8[:],
+    pipe:          core::PipeBuffer&,
+    req:           Request&,
+    res:           Response&,
+    now_ns:        u64,
+    total_handled: i64&,
+    wire_out:      B&,
+) -> PipeStepResult {
+    let stream = core::readable_slice(pipe);
+    reset_request(req);
+    let ok_parse, consumed = parse_http1_wire_request(stream, req);
+
+    if !ok_parse || consumed <= 0 {
+        let hdr_end = core::fast_find_crlfcrlf(stream);
+        core::advance_to(pipe, 0, pipe.readable_len());
+        guard hdr_end >= 0 else { return PipeStepResult.Stop; }
+
+        if total_handled == 0 {
+            serialize_bad_request_error(server.server_name[..], wire_out);
+        }
+        return PipeStepResult.Error;
+    }
+
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+    total_handled++;
+    core::advance_to(pipe, consumed, consumed);
+
+    if req.method[..] == "CONNECT" || wants_close {
+        core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
+        return PipeStepResult.Stop;
+    }
+    return PipeStepResult.Continue;
+}
+
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
 // Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
 fn handle_connection_wire_pipelined_stream<B>(
@@ -1754,11 +1860,7 @@ fn handle_connection_wire_pipelined_stream<B>(
     var res = Response { .. };
 
     while stream.len > 0 {
-        // Strip optional benign CRLFs between pipelined requests (RFC 9112 §2.2)
-        while stream.len > 0 && (stream[0] == '\r' || stream[0] == '\n') {
-            stream = stream[1..];
-            total_consumed++;
-        }
+        stream = strip_pipelined_crlf(stream, total_consumed);
         if stream.len == 0 { break; }
 
         reset_request(req);
@@ -1775,41 +1877,25 @@ fn handle_connection_wire_pipelined_stream<B>(
             return total_handled, total_consumed, keep_stream, true;
         }
 
-        // WebSocket Upgrade Interception on Pipelined Stream
-        if is_websocket_upgrade_request(req) {
-            let ws_idx = find_ws_route(server, req.url[..]);
-            if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
-                total_handled++;
-                total_consumed += consumed;
-                return total_handled, total_consumed, true, false;
-            }
+        if try_handle_pipelined_websocket(server, req, wire_out) {
+            total_handled++;
+            total_consumed += consumed;
+            return total_handled, total_consumed, true, false;
         }
 
-        reset_response(res);
-        if server.fast_path {
-            dispatch_fast_path_route(server.pipeline.router, req, res);
-        } else {
-            var future = internal::new_inline_handler_future(0);
-            let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
-        }
-
-        let wants_close = check_and_apply_connection_close(req, res);
+        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
         if wants_close {
             conn_wants_close = true;
         }
 
-        serialize_http1_response(res, server.server_name[..], wire_out);
-        server.requests_processed++;
         total_handled++;
         total_consumed += consumed;
 
-        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT or Connection: close
         if req.method[..] == "CONNECT" {
             total_consumed = wire_in.len;
             conn_wants_close = true;
             break;
         }
-
         if wants_close {
             break;
         }
@@ -1897,42 +1983,10 @@ fn handle_connection_pipe<B>(
     var res = Response { .. };
 
     while pipe.readable_len() > 0 {
-        let stream = core::readable_slice(pipe);
-        reset_request(req);
-        let ok_parse, consumed = parse_http1_wire_request(stream, req);
-
-        if !ok_parse || consumed <= 0 {
-            // Incomplete frame / chunk: examine all currently readable bytes without consuming
-            let hdr_end = core::fast_find_crlfcrlf(stream);
-            core::advance_to(pipe, 0, pipe.readable_len());
-            guard hdr_end >= 0 else { break; }
-
-            // Headers are complete but parsing failed -> fatal syntax / smuggling error!
-            if total_handled == 0 {
-                serialize_bad_request_error(server.server_name[..], wire_out);
-            }
+        let res_step = process_pipelined_pipe_step(server, client_ip, pipe, req, res, now_ns, total_handled, wire_out);
+        if res_step == PipeStepResult.Error {
             return total_handled, false;
-        }
-
-        reset_response(res);
-        if server.fast_path {
-            dispatch_fast_path_route(server.pipeline.router, req, res);
-        } else {
-            var future = internal::new_inline_handler_future(0);
-            let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
-        }
-
-        let wants_close = check_and_apply_connection_close(req, res);
-
-        serialize_http1_response(res, server.server_name[..], wire_out);
-        server.requests_processed++;
-        total_handled++;
-
-        core::advance_to(pipe, consumed, consumed);
-
-        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT or Connection: close
-        if req.method[..] == "CONNECT" || wants_close {
-            core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
+        } else if res_step == PipeStepResult.Stop {
             break;
         }
     }

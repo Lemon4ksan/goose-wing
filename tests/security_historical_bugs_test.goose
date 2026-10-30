@@ -281,7 +281,7 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: core::T&) {
             ..
         };
 
-        wing::sanitize_headers_on_redirect(headers, rinfo, false, false, false, false);
+        wing::sanitize_headers_on_redirect(headers, rinfo, wing::RedirectSanitizeOptions { .. });
 
         sub.assert_false(wing::has_header(headers[..], "Authorization"), "Authorization must be stripped on cross-origin redirect");
         sub.assert_false(wing::has_header(headers[..], "Cookie"), "Cookie must be stripped on redirect");
@@ -303,7 +303,11 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: core::T&) {
         };
 
         // trusted_location_forwarding = true
-        wing::sanitize_headers_on_redirect(headers, rinfo, false, false, false, true);
+        wing::sanitize_headers_on_redirect(
+            headers,
+            rinfo,
+            wing::RedirectSanitizeOptions { trusted_location_forwarding: true },
+        );
 
         sub.assert_false(wing::has_header(headers[..], "Authorization"), "Scheme downgrade MUST strip credentials even if host is trusted");
         sub.assert_true(wing::has_header(headers[..], "X-Custom"), "Non-sensitive header preserved");

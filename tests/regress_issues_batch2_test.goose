@@ -1056,7 +1056,7 @@ fn test_redirect_sensitive_header_stripping(t: core::T&) {
             ..
         };
 
-        wing::sanitize_headers_on_redirect(headers, red_info, false, false, false, false);
+        wing::sanitize_headers_on_redirect(headers, red_info, wing::RedirectSanitizeOptions { .. });
 
         let has_auth = wing::find_header_index(headers[..], "Authorization") >= 0;
         sub.assert_false(has_auth, "Authorization header MUST be stripped on cross-origin redirect");

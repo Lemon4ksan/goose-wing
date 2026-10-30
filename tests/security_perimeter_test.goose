@@ -116,9 +116,9 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     t.run("Row 1: Direct User Navigation (Sec-Fetch-Site: none)") { sub =>
         let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
-            site: wing::SecFetchSite.None,
-            mode: wing::SecFetchMode.Navigate,
-            dest: wing::SecFetchDest.Document,
+            site:           wing::SecFetchSite.None,
+            mode:           wing::SecFetchMode.Navigate,
+            dest:           wing::SecFetchDest.Document,
             method_is_safe: true,
             ..
         };
@@ -133,9 +133,9 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     t.run("Row 2: Same-Origin SOP Requests") { sub =>
         let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
-            site: wing::SecFetchSite.SameOrigin,
-            mode: wing::SecFetchMode.Cors,
-            dest: wing::SecFetchDest.Empty,
+            site:           wing::SecFetchSite.SameOrigin,
+            mode:           wing::SecFetchMode.Cors,
+            dest:           wing::SecFetchDest.Empty,
             method_is_safe: false, // POST/PUT mutation
             ..
         };
@@ -153,7 +153,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Safe method GET across subdomains
         var ctx_safe = wing::FetchContext {
-            site: wing::SecFetchSite.SameSite,
+            site:           wing::SecFetchSite.SameSite,
             method_is_safe: true,
             ..
         };
@@ -166,7 +166,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Unsafe method POST across subdomains without allow_same_site
         var ctx_unsafe = wing::FetchContext {
-            site: wing::SecFetchSite.SameSite,
+            site:           wing::SecFetchSite.SameSite,
             method_is_safe: false,
             ..
         };
@@ -190,9 +190,9 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
     t.run("Row 4: Cross-Site State Mutation (POST/PUT/DELETE) Blocked") { sub =>
         let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
-            site: wing::SecFetchSite.CrossSite,
-            mode: wing::SecFetchMode.Cors,
-            dest: wing::SecFetchDest.Empty,
+            site:           wing::SecFetchSite.CrossSite,
+            mode:           wing::SecFetchMode.Cors,
+            dest:           wing::SecFetchDest.Empty,
             method_is_safe: false,
             ..
         };
@@ -210,10 +210,10 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Normal top-level document navigation (e.g. following a link to a blog post)
         var ctx_normal = wing::FetchContext {
-            site: wing::SecFetchSite.CrossSite,
-            mode: wing::SecFetchMode.Navigate,
-            dest: wing::SecFetchDest.Document,
-            method_is_safe: true,
+            site:                          wing::SecFetchSite.CrossSite,
+            mode:                          wing::SecFetchMode.Navigate,
+            dest:                          wing::SecFetchDest.Document,
+            method_is_safe:                true,
             is_sensitive_navigation_route: false,
             ..
         };
@@ -226,12 +226,12 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Sensitive route (e.g. /auth/login, /transfer) WITHOUT user activation (First-Login CSRF)
         var ctx_sensitive = wing::FetchContext {
-            site: wing::SecFetchSite.CrossSite,
-            mode: wing::SecFetchMode.Navigate,
-            dest: wing::SecFetchDest.Document,
-            method_is_safe: true,
+            site:                          wing::SecFetchSite.CrossSite,
+            mode:                          wing::SecFetchMode.Navigate,
+            dest:                          wing::SecFetchDest.Document,
+            method_is_safe:                true,
             is_sensitive_navigation_route: true,
-            user_activated: false,
+            user_activated:                false,
             ..
         };
         let dec_sensitive = wing::evaluate_fetch_metadata(guard_cfg, ctx_sensitive);
@@ -264,8 +264,8 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         for d in evil_dests {
             var ctx = wing::FetchContext {
-                site: wing::SecFetchSite.CrossSite,
-                dest: d,
+                site:           wing::SecFetchSite.CrossSite,
+                dest:           d,
                 method_is_safe: true,
                 ..
             };
@@ -283,8 +283,8 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
         guard_cfg.allow_cross_site_static_assets = true;
 
         var ctx_img = wing::FetchContext {
-            site: wing::SecFetchSite.CrossSite,
-            dest: wing::SecFetchDest.Image,
+            site:           wing::SecFetchSite.CrossSite,
+            dest:           wing::SecFetchDest.Image,
             method_is_safe: true,
             ..
         };
@@ -296,8 +296,8 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
         sub.assert_true(ok_img, "cross-site image allowed when configured");
 
         var ctx_other = wing::FetchContext {
-            site: wing::SecFetchSite.CrossSite,
-            dest: wing::SecFetchDest.Other,
+            site:           wing::SecFetchSite.CrossSite,
+            dest:           wing::SecFetchDest.Other,
             method_is_safe: true,
             ..
         };
@@ -315,8 +315,8 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Matching target host
         var ctx_same_host = wing::FetchContext {
-            site: wing::SecFetchSite.Missing, // missing Sec-Fetch-*
-            has_origin: true,
+            site:           wing::SecFetchSite.Missing, // missing Sec-Fetch-*
+            has_origin:     true,
             method_is_safe: false,
             ..
         };
@@ -331,8 +331,8 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Trusted partner origin
         var ctx_partner = wing::FetchContext {
-            site: wing::SecFetchSite.Missing,
-            has_origin: true,
+            site:           wing::SecFetchSite.Missing,
+            has_origin:     true,
             method_is_safe: false,
             ..
         };
@@ -347,8 +347,8 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Mismatched untrusted origin on mutation
         var ctx_attacker = wing::FetchContext {
-            site: wing::SecFetchSite.Missing,
-            has_origin: true,
+            site:           wing::SecFetchSite.Missing,
+            has_origin:     true,
             method_is_safe: false,
             ..
         };
@@ -367,11 +367,11 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 
         // Request with session cookie but ZERO browser security headers (no Sec-Fetch-*, no Origin, no Referer)
         var ctx_blind = wing::FetchContext {
-            site: wing::SecFetchSite.Missing,
-            has_origin: false,
-            has_referer: false,
+            site:               wing::SecFetchSite.Missing,
+            has_origin:         false,
+            has_referer:        false,
             has_session_cookie: true,
-            method_is_safe: false,
+            method_is_safe:     false,
             ..
         };
         let dec_blind = wing::evaluate_fetch_metadata(guard_cfg, ctx_blind);
@@ -387,7 +387,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
         wing::add_exempt_path(guard_cfg, "/api/webhook/stripe");
 
         var ctx = wing::FetchContext {
-            site: wing::SecFetchSite.CrossSite,
+            site:           wing::SecFetchSite.CrossSite,
             method_is_safe: false,
             ..
         };
@@ -1014,12 +1014,16 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/secure",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.is_scheme_downgrade, "scheme downgrade detected");
 
         // When trusted_location_forwarding is true, scheme downgrade MUST STILL strip sensitive headers per RFC 9110
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, true);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
+        );
 
         var has_auth = false;
         var has_api_key = false;
@@ -1070,13 +1074,17 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://app.client.com/data", "https://api.trusted.com/data",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://app.client.com/data",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.is_cross_origin, "cross origin redirect");
         sub.assert_false(redirect_info.is_scheme_downgrade, "no scheme downgrade");
 
         // With trusted_location_forwarding = true on HTTPS -> HTTPS, credentials are preserved
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, true);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
+        );
 
         var has_auth = false;
         for hdr in req.headers {
@@ -1422,21 +1430,21 @@ fn test_har_telemetry_and_isolation(t: core::T&) {
     t.run("1. HAR 1.2 Telemetry & Timing Waterfall Serializer") { sub =>
         let timings = wing::RequestTimings {
             blocked_us: 100,
-            dns_us: 1250,
+            dns_us:     1250,
             connect_us: 8400,
-            ssl_us: 15200,
-            send_us: 150,
-            wait_us: 25400,
+            ssl_us:     15200,
+            send_us:    150,
+            wait_us:    25400,
             receive_us: 3200,
         };
         let total_us = wing::compute_total_timing_us(timings);
         sub.assert_eq(total_us, 53700, "Total duration 53.7 ms = 53700 us");
 
         var entry = wing::HarEntry {
-            status: 200,
-            request_bytes: 450,
+            status:         200,
+            request_bytes:  450,
             response_bytes: 12500,
-            timings: timings,
+            timings:        timings,
             ..
         };
         entry.started_iso8601.append("2026-10-24T18:00:00.000Z");

@@ -72,7 +72,7 @@ fn main() {
     let r_info = wing::compute_redirect_info(
         "POST", 301, "https://api.exchange.io/v1/auth", "https://sso.other-tenant.com/login",
         wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://api.exchange.io/v1/auth",
-        false, false,
+        wing::RedirectOptions { .. },
     );
     print("  301 New Method:      ", r_info.new_method[..], "\n");
     print("  301 Clear Body:      ", r_info.clear_body, "\n");
@@ -83,7 +83,11 @@ fn main() {
     req_headers.push(wing::make_header("X-API-Key", "api_key_secret_888", true));
     req_headers.push(wing::make_header("Accept", "application/json", false));
 
-    wing::sanitize_headers_on_redirect(req_headers, r_info, false, false, true, false);
+    wing::sanitize_headers_on_redirect(
+        req_headers,
+        r_info,
+        wing::RedirectSanitizeOptions { enable_referer: true },
+    );
     var has_auth = false;
     var has_apikey = false;
     var has_accept = false;
@@ -101,7 +105,7 @@ fn main() {
     // ------------------------------------------------------------------------
     print("\n[5/11] RFC 9112 Chunked Transfer Coding & Trailers...\n");
     let chunked_wire = "5\r\nHello\r\n8\r\n, World!\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123\r\n\r\n";
-    var body_out: u8[>..] = [];
+    var body_out:     u8[>..]                = [];
     var trailers_out: wing::HeaderItem[..16] = [];
     let err_chunk, _consumed = wing::decode_chunked_body_with_trailers(chunked_wire, body_out, trailers_out);
     print("  Chunk decode ok:     ", err_chunk == wing::ChunkedDecodeError.None, "\n");
@@ -116,10 +120,10 @@ fn main() {
     // ------------------------------------------------------------------------
     print("\n[6/11] RFC 9113 HTTP/2 Framing & Stream Demux...\n");
     let h2_hdr = internal::FrameHeader {
-        length: 24,
+        length:     24,
         frame_type: internal::FRAME_HEADERS,
-        flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-        stream_id: 101,
+        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        stream_id:  101,
     };
     var h2_wire: u8[9] = [0; 9];
     internal::encode_frame_header(h2_hdr, h2_wire);
@@ -281,10 +285,10 @@ fn main() {
     print("  QUIC Varint 8B: ", dec_v8, " (ok: ", ok_v8, ", len: ", v8_wire.len, ")\n");
 
     var quic_hdr = internal::QuicHeader {
-        header_type: internal::QuicHeaderType.Initial,
-        version: internal::QUIC_VERSION_1,
+        header_type:    internal::QuicHeaderType.Initial,
+        version:        internal::QUIC_VERSION_1,
         payload_length: 1280,
-        packet_number: 99,
+        packet_number:  99,
         ..
     };
     quic_hdr.dcid.append([0xDE, 0xAD, 0xBE, 0xEF]);

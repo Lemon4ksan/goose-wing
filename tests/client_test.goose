@@ -139,7 +139,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_301 = wing::compute_redirect_info(
             "POST", 301, "https://example.com/old", "https://example.com/new",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/old",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_bytes_eq(info_301.new_method[..], "GET", "301 mutates POST to GET");
         sub.assert_true(info_301.clear_body, "body cleared on 301 POST->GET");
@@ -148,7 +148,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_302 = wing::compute_redirect_info(
             "POST", 302, "https://example.com/login", "https://example.com/dashboard",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/login",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_bytes_eq(info_302.new_method[..], "GET", "302 mutates POST to GET");
         sub.assert_true(info_302.clear_body, "body cleared on 302 POST->GET");
@@ -157,7 +157,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_303 = wing::compute_redirect_info(
             "PUT", 303, "https://example.com/item", "https://example.com/items",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/item",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_bytes_eq(info_303.new_method[..], "GET", "303 mutates PUT to GET");
         sub.assert_true(info_303.clear_body, "body cleared on 303 PUT->GET");
@@ -168,7 +168,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_307 = wing::compute_redirect_info(
             "POST", 307, "https://example.com/upload", "https://s3.example.com/upload",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/upload",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_bytes_eq(info_307.new_method[..], "POST", "307 preserves POST");
         sub.assert_false(info_307.clear_body, "307 preserves request body");
@@ -177,7 +177,7 @@ fn test_redirect_state_machine(t: core::T&) {
         let info_308 = wing::compute_redirect_info(
             "DELETE", 308, "https://example.com/res/1", "https://api.example.com/res/1",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/res/1",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_bytes_eq(info_308.new_method[..], "DELETE", "308 preserves DELETE");
         sub.assert_false(info_308.clear_body, "308 preserves request body");
@@ -194,12 +194,16 @@ fn test_redirect_state_machine(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "POST", 302, "https://api.example.com/v1/auth", "https://attacker.org/leak",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://api.example.com/v1/auth",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.is_cross_origin, "detected cross-origin redirect");
 
         // Perform cross-origin sanitization
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, false);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true },
+        );
 
         // Sensitive headers MUST be purged on cross-origin hop!
         var has_auth = false;
@@ -231,12 +235,16 @@ fn test_redirect_state_machine(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/secure",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.is_scheme_downgrade, "detected scheme downgrade");
 
         // Same host, but scheme downgraded from HTTPS to HTTP
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, false);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true },
+        );
 
         var has_auth = false;
         for hdr in req.headers {
@@ -253,12 +261,16 @@ fn test_redirect_state_machine(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com/old_endpoint", "https://example.com/new_endpoint",
             wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/old_endpoint",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_false(redirect_info.is_cross_origin, "same origin redirect");
         sub.assert_false(redirect_info.is_scheme_downgrade, "no scheme downgrade");
 
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, false);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true },
+        );
 
         var has_auth = false;
         var has_key = false;

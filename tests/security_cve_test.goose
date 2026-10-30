@@ -123,13 +123,17 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://example.com:443/login", "https://example.com:8443/admin",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com:443/login",
-            false, false,
+            wing::RedirectOptions { .. },
         );
 
         sub.assert_true(redirect_info.is_cross_origin, "different port must be cross-origin");
 
         // Even with trusted_location_forwarding = true, port change must NOT leak credentials!
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, true);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
+        );
 
         var has_auth = false;
         var has_key = false;
@@ -149,10 +153,14 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "POST", 302, "https://example.com/api", "https://other.com/api",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/api",
-            false, false,
+            wing::RedirectOptions { .. },
         );
 
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, false);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true },
+        );
 
         var has_sig = false;
         var has_csrf = false;
@@ -173,11 +181,15 @@ fn test_cve_port_change_and_representation_headers(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "POST", 303, "https://example.com/upload", "https://example.com/status",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/upload",
-            false, false,
+            wing::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.clear_body, "303 clears body");
 
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, true, false);
+        wing::sanitize_headers_on_redirect(
+            req.headers,
+            redirect_info,
+            wing::RedirectSanitizeOptions { enable_referer: true },
+        );
 
         var has_if_match = false;
         var has_if_none_match = false;
@@ -371,10 +383,10 @@ fn test_cve_proxy_authorization_leakage(t: core::T&) {
         let redirect_info = wing::compute_redirect_info(
             "GET", 302, "https://proxy.origin.com/resource", "https://other-domain.com/landing",
             wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://proxy.origin.com/resource",
-            false, false,
+            wing::RedirectOptions { .. },
         );
 
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, false, false, false, false);
+        wing::sanitize_headers_on_redirect(req.headers, redirect_info, wing::RedirectSanitizeOptions { .. });
 
         var has_proxy_auth = false;
         var has_user_auth = false;

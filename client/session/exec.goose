@@ -176,10 +176,12 @@ fn apply_redirect_transition(
     sanitize_headers_on_redirect(
         ctx.headers,
         redirect_info,
-        ctx.cors_mode,
-        ctx.tainted_origin,
-        session.enable_referer,
-        is_trusted,
+        RedirectSanitizeOptions {
+            cors_mode:                   ctx.cors_mode,
+            tainted_origin:              ctx.tainted_origin,
+            enable_referer:              session.enable_referer,
+            trusted_location_forwarding: is_trusted,
+        },
     );
     return Error { .. };
 }
@@ -292,11 +294,13 @@ fn process_redirect_hop(
         ctx.first_party_policy,
         ctx.url_chain[..],
         ctx.initiator,
-        ctx.has_initiator,
-        ctx.cors_mode,
-        ctx.tainted_origin,
-        ctx.is_main_frame,
-        ctx.had_cross_site_hop,
+        RedirectOptions {
+            has_initiator:      ctx.has_initiator,
+            cors_mode:          ctx.cors_mode,
+            tainted_origin:     ctx.tainted_origin,
+            is_main_frame:      ctx.is_main_frame,
+            had_cross_site_hop: ctx.had_cross_site_hop,
+        },
     );
 
     guard redirect_info.error == RedirectError.None else {

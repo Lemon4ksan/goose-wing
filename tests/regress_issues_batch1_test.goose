@@ -70,7 +70,7 @@ fn test_redirect_stale_host_header_leakage(t: core::T&) {
             new_referrer:        [],
         };
 
-        wing::sanitize_headers_on_redirect(headers, rinfo, false, false, false, false);
+        wing::sanitize_headers_on_redirect(headers, rinfo, wing::RedirectSanitizeOptions { .. });
 
         // Host header pointing to the previous host MUST be stripped to prevent host header injection / routing desync
         let host_idx = wing::find_header_index(headers[..], "Host");
