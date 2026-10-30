@@ -1,9 +1,12 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite
 import std;
 import core from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 import os;
 
 // --- Component: core_time ---
@@ -18,7 +21,7 @@ struct StringVector {
 // ----------------------------------------------------------------------------
 // 1. Duration Arithmetic, i64.min/max, Signs & Accessors
 // ----------------------------------------------------------------------------
-fn test_duration_arithmetic_and_bounds(t: core::T&) {
+fn test_duration_arithmetic_and_bounds(t: lit::T&) {
     t.run("Unit Scales & Conversion Accessors") { sub =>
         let d_ns = core::nanos(50);
         let d_us = core::micros(50);
@@ -108,7 +111,7 @@ fn test_duration_arithmetic_and_bounds(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Duration Truncation and Rounding
 // ----------------------------------------------------------------------------
-fn test_duration_truncation_and_rounding(t: core::T&) {
+fn test_duration_truncation_and_rounding(t: lit::T&) {
     t.run("Truncation Towards Zero") { sub =>
         // Step <= 0 returns dur unchanged
         sub.assert_eq(core::truncate(core::secs(75), core::secs(0)).as_secs(), 75);
@@ -162,7 +165,7 @@ fn test_duration_truncation_and_rounding(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Duration Formatting & Go-Compatible ParseDuration Security
 // ----------------------------------------------------------------------------
-fn test_duration_format_and_parse_security(t: core::T&) {
+fn test_duration_format_and_parse_security(t: lit::T&) {
     t.run("Format Duration Zero-Alloc") { sub =>
         var buf: u8[..64] = [];
 
@@ -264,7 +267,7 @@ fn test_duration_format_and_parse_security(t: core::T&) {
             StringVector { input: "9223372036854775807s", expect_ok: false, desc: "seconds multiplication overflow" },
         ];
 
-        core::run_table(sub, "BadDurationMatrix", bad_vectors[..]) { sub2, row, idx =>
+        lit::run_table(sub, "BadDurationMatrix", bad_vectors[..]) { sub2, row, idx =>
             let _, ok = core::parse_duration(row.input);
             sub2.assert_eq(ok, row.expect_ok, row.desc);
         };
@@ -274,7 +277,7 @@ fn test_duration_format_and_parse_security(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Monotonic Primitives: Stopwatch & Deadline (Anti-Overflow & Expiration)
 // ----------------------------------------------------------------------------
-fn test_stopwatch_and_deadline_overflow(t: core::T&) {
+fn test_stopwatch_and_deadline_overflow(t: lit::T&) {
     t.run("Stopwatch Monotonic Progress & Restart") { sub =>
         var sw = core::stopwatch();
         core::sleep(core::millis(3));
@@ -319,7 +322,7 @@ fn test_stopwatch_and_deadline_overflow(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Civil Calendar Math & Proleptic Gregorian Leap Years
 // ----------------------------------------------------------------------------
-fn test_hinnant_civil_calendar_and_leap_years(t: core::T&) {
+fn test_hinnant_civil_calendar_and_leap_years(t: lit::T&) {
     t.run("400-Year Gregorian Leap Year Rules") { sub =>
         // Standard leap years (divisible by 4, not 100)
         sub.assert_true(core::is_leap_year(2024));
@@ -406,7 +409,7 @@ fn test_hinnant_civil_calendar_and_leap_years(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Time Construction, Accessors, Projections & Pre-1970 Dates
 // ----------------------------------------------------------------------------
-fn test_time_construction_and_pre1970(t: core::T&) {
+fn test_time_construction_and_pre1970(t: lit::T&) {
     t.run("Instant Creation & Field Decomposition") { sub =>
         let tm = core::date(2026, core::Month.October, 23, 14, 30, 45, 123456789, 0);
         sub.assert_eq(tm.year(), 2026);
@@ -479,7 +482,7 @@ fn test_time_construction_and_pre1970(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. Time Arithmetic, Comparisons & ReDoS / DoS Immunity
 // ----------------------------------------------------------------------------
-fn test_time_arithmetic_and_redos_immunity(t: core::T&) {
+fn test_time_arithmetic_and_redos_immunity(t: lit::T&) {
     t.run("Point-in-Time Subtraction & Comparisons") { sub =>
         let t1 = core::unix(1000, 500);
         let t2 = core::unix(1005, 500);
@@ -568,7 +571,7 @@ fn test_time_arithmetic_and_redos_immunity(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. Time Truncation, Rounding & Timezones
 // ----------------------------------------------------------------------------
-fn test_time_truncation_rounding_and_timezones(t: core::T&) {
+fn test_time_truncation_rounding_and_timezones(t: lit::T&) {
     t.run("Time Truncate & Round Half-Up") { sub =>
         let tm = core::date(2026, core::Month.October, 23, 14, 25, 45, 0, 0);
 
@@ -629,7 +632,7 @@ fn test_time_truncation_rounding_and_timezones(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. RFC 3339 / ISO 8601 Codec & Attack Vectors
 // ----------------------------------------------------------------------------
-fn test_rfc3339_codec_and_attack_vectors(t: core::T&) {
+fn test_rfc3339_codec_and_attack_vectors(t: lit::T&) {
     t.run("RFC 3339 Formatting (UTC, Offset, Nano, Extreme Offset)") { sub =>
         var buf: u8[..64] = [];
         let tm = core::date(2026, core::Month.October, 23, 14, 30, 45, 500000000, 0);
@@ -722,7 +725,7 @@ fn test_rfc3339_codec_and_attack_vectors(t: core::T&) {
             StringVector { input: "2026-10-22T23:18:18.+03:00", expect_ok: false, desc: "Empty fraction dot before offset" },
         ];
 
-        core::run_table(sub, "RFC3339AttackMatrix", attack_vectors[..]) { sub2, row, idx =>
+        lit::run_table(sub, "RFC3339AttackMatrix", attack_vectors[..]) { sub2, row, idx =>
             let _, ok = core::parse_rfc3339(row.input);
             sub2.assert_eq(ok, row.expect_ok, row.desc);
         };
@@ -732,7 +735,7 @@ fn test_rfc3339_codec_and_attack_vectors(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 10. RFC 9110 Section 5.6.7 HTTP-Date Formatting & 3-Format Parser Security
 // ----------------------------------------------------------------------------
-fn test_http_date_rfc9110_and_attack_vectors(t: core::T&) {
+fn test_http_date_rfc9110_and_attack_vectors(t: lit::T&) {
     t.run("HTTP-Date Format Always in GMT") { sub =>
         let local_tm = core::date(2026, core::Month.October, 22, 23, 18, 18, 0, 10800); // 23:18:18 MSK = 20:18:18 GMT
         var buf: u8[..64] = [];
@@ -797,7 +800,7 @@ fn test_http_date_rfc9110_and_attack_vectors(t: core::T&) {
             StringVector { input: "Thu, 31 Apr 2026 12:00:00 GMT", expect_ok: false, desc: "April 31 in HTTP date" },
         ];
 
-        core::run_table(sub, "BadHttpDateMatrix", bad_http_vectors[..]) { sub2, row, idx =>
+        lit::run_table(sub, "BadHttpDateMatrix", bad_http_vectors[..]) { sub2, row, idx =>
             let _, ok = core::parse_http_date(row.input);
             sub2.assert_eq(ok, row.expect_ok, row.desc);
         };
@@ -818,7 +821,7 @@ fn test_http_date_rfc9110_and_attack_vectors(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Branchless Constant-Time Arithmetic & Selection
 // ----------------------------------------------------------------------------
-fn test_branchless_constant_time(t: core::T&) {
+fn test_branchless_constant_time(t: lit::T&) {
     t.run("ct_is_zero_u32 and ct_is_zero_u64") { sub =>
         sub.assert_eq(core::ct_is_zero_u32(0), 1, "0 is zero (u32)");
         sub.assert_eq(core::ct_is_zero_u32(1), 0, "1 is not zero (u32)");
@@ -898,7 +901,7 @@ fn test_branchless_constant_time(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Saturation & Checked Arithmetic
 // ----------------------------------------------------------------------------
-fn test_saturation_and_checked_arithmetic(t: core::T&) {
+fn test_saturation_and_checked_arithmetic(t: lit::T&) {
     t.run("Unsigned Saturation (add_sat, sub_sat, mul_sat)") { sub =>
         sub.assert_eq(core::add_sat_u32(0xFFFFFFFF, 1), 0xFFFFFFFF, "add_sat_u32 overflow");
         sub.assert_eq(core::add_sat_u32(100, 200), 300, "add_sat_u32 normal");
@@ -963,7 +966,7 @@ fn test_saturation_and_checked_arithmetic(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. 128-Bit Multiplication & Wymum Without u128
 // ----------------------------------------------------------------------------
-fn test_wide_multiplication_and_wymum(t: core::T&) {
+fn test_wide_multiplication_and_wymum(t: lit::T&) {
     t.run("mul_wide_u64 Standard Vectors") { sub =>
         let lo0, hi0 = core::mul_wide_u64(0, 123456789);
         sub.assert_eq(lo0, 0, "mul_wide 0 * X lo");
@@ -1002,7 +1005,7 @@ fn test_wide_multiplication_and_wymum(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Bit Manipulation & Endianness Codecs
 // ----------------------------------------------------------------------------
-fn test_bit_manipulation_and_endianness(t: core::T&) {
+fn test_bit_manipulation_and_endianness(t: lit::T&) {
     t.run("rotl32, rotr32, rotl64, rotr64") { sub =>
         let val32: u32 = 0x12345678;
         let rot8 = core::rotl32(val32, 8);
@@ -1081,7 +1084,7 @@ fn test_bit_manipulation_and_endianness(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Euclidean Division & Remainder
 // ----------------------------------------------------------------------------
-fn test_euclidean_division_and_remainder(t: core::T&) {
+fn test_euclidean_division_and_remainder(t: lit::T&) {
     t.run("rem_euclid_i64 strictly in [0, |b|)") { sub =>
         sub.assert_eq(core::rem_euclid_i64(7, 3), 1, "7 % 3 == 1");
         sub.assert_eq(core::rem_euclid_i64(-7, 3), 2, "-7 % 3 == 2 (Euclidean non-negative!)");
@@ -1113,7 +1116,7 @@ fn test_euclidean_division_and_remainder(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. PRNGs & Lemire Fast-Range Mapping
 // ----------------------------------------------------------------------------
-fn test_prng_and_lemire_range(t: core::T&) {
+fn test_prng_and_lemire_range(t: lit::T&) {
     t.run("WyRand Determinism and State Progression") { sub =>
         var rng1 = core::new_wyrand(42);
         var rng2 = core::new_wyrand(42);
@@ -1158,7 +1161,7 @@ fn test_prng_and_lemire_range(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. Backoff & Jitter Strategies (Happy Eyeballs / AWS)
 // ----------------------------------------------------------------------------
-fn test_backoff_and_jitter_strategies(t: core::T&) {
+fn test_backoff_and_jitter_strategies(t: lit::T&) {
     t.run("AWS Full and Equal Jitter Bounds") { sub =>
         var rng = core::new_wyrand(1234);
         let base_ms: u64 = 100;
@@ -1211,7 +1214,7 @@ fn test_backoff_and_jitter_strategies(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. Jacobson EWMA RTT Estimator (RFC 6298 / RFC 9002 Errata ID 7539)
 // ----------------------------------------------------------------------------
-fn test_jacobson_rtt_estimator_errata7539(t: core::T&) {
+fn test_jacobson_rtt_estimator_errata7539(t: lit::T&) {
     t.run("Initial State and First Sample") { sub =>
         var est = core::new_jacobson_rtt_estimator(333000);
         sub.assert_eq(est.has_sample, false, "init has no sample");
@@ -1282,7 +1285,7 @@ fn test_jacobson_rtt_estimator_errata7539(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. Fast Non-Cryptographic Hashing & Combinators
 // ----------------------------------------------------------------------------
-fn test_fast_non_cryptographic_hashes(t: core::T&) {
+fn test_fast_non_cryptographic_hashes(t: lit::T&) {
     t.run("FNV-1a 32-bit and 64-bit Test Vectors") { sub =>
         let empty_buf: u8[0] = [];
         sub.assert_eq(core::fnv1a_32(empty_buf[..]), 0x811C9DC5, "FNV-1a 32-bit empty offset");
@@ -1336,7 +1339,7 @@ fn test_fast_non_cryptographic_hashes(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 10. Constant-Time SOCKS5 Frame Length Validation
 // ----------------------------------------------------------------------------
-fn test_socks5_frame_validation_ct(t: core::T&) {
+fn test_socks5_frame_validation_ct(t: lit::T&) {
     t.run("SOCKS5 Address Types and Bounds") { sub =>
         // IPv4 (ATYP 0x01): [VER=5, CMD=1, RSV=0, ATYP=1, IPv4 (4B), Port (2B)] -> 10 bytes
         let buf_ipv4: u8[10] = [0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x1F, 0x90];
@@ -1438,7 +1441,7 @@ thread_fn contained_crashing_worker() {
     }
 }
 
-fn test_multithreading_and_actors(t: core::T&) {
+fn test_multithreading_and_actors(t: lit::T&) {
     t.run("Case 1: WaitGroup & Parallel Worker Pool Dispatch") { sub =>
         let num_tasks:   i64 = 8;
         let num_workers: i64 = 2;
@@ -1509,7 +1512,7 @@ thread_fn baton_worker() {
     }
 }
 
-fn test_classical_primitives(t: core::T&) {
+fn test_classical_primitives(t: lit::T&) {
     t.run("Case 1: BatonMutex Share-Nothing Mutual Exclusion") { sub =>
         core::new_baton_mutex(0 as i64);
 
@@ -1597,7 +1600,7 @@ thread_fn barrier_test_worker(worker_id: i32) {
     }
 }
 
-fn test_cyclic_barrier(t: core::T&) {
+fn test_cyclic_barrier(t: lit::T&) {
     t.run("Case 1: Two-Phase Turnstile Multi-Worker Synchronization") { sub =>
         let barrier_tid = core::barrier_start(3);
         let w1 = thread_spawn(barrier_test_worker, 1 as i32);
@@ -1631,7 +1634,7 @@ thread_fn rendezvous_server() {
     core::chan_rendezvous_reply<ChannelTagA>(req.command_id == 100);
 }
 
-fn test_csp_patterns(t: core::T&) {
+fn test_csp_patterns(t: lit::T&) {
     t.run("Case 1: Reassembler In-Order Stream Reconstruction") { sub =>
         var r = core::new_reassembler(0);
 
@@ -1679,7 +1682,7 @@ fn test_csp_patterns(t: core::T&) {
 
 // ---- suite 5: actor mailbox, stash buffer & 16-byte actor ref -------------
 
-fn test_actor_subsystem(t: core::T&) {
+fn test_actor_subsystem(t: lit::T&) {
     t.run("Case 1: PriorityMailbox Stable Binary Min-Heap Ordering") { sub =>
         var mb = core::PriorityMailbox { .. };
 
@@ -1742,7 +1745,7 @@ fn test_actor_subsystem(t: core::T&) {
 
 // ---- suite 6: otp supervision trees & fault tolerance ---------------------
 
-fn test_supervision_trees(t: core::T&) {
+fn test_supervision_trees(t: lit::T&) {
     t.run("Case 1: RestartType Specification & Restart Evaluation") { sub =>
         var sup = core::Supervisor { .. };
 
@@ -1844,7 +1847,7 @@ fn test_supervision_trees(t: core::T&) {
 // - Zero-allocation decimal and hex formatting (format.goose)
 // - Universal Function Call Syntax (UFCS) method bridges (ufcs.goose)
 
-fn test_case_folding(t: core::T&) {
+fn test_case_folding(t: lit::T&) {
     t.run("ASCII Predicates & Character Conversions") { sub =>
         sub.assert_true(core::is_ascii_upper('A' as u8), "A is upper");
         sub.assert_true(core::is_ascii_upper('Z' as u8), "Z is upper");
@@ -1911,7 +1914,7 @@ fn test_case_folding(t: core::T&) {
     };
 }
 
-fn test_trimming(t: core::T&) {
+fn test_trimming(t: lit::T&) {
     t.run("Linear White Space (RFC 9110 LWS)") { sub =>
         let raw = " \t  \tAuthorization: Bearer secret \t  ";
         sub.assert_eq(core::trim_lws_start(raw), "Authorization: Bearer secret \t  ", "trim_lws_start");
@@ -1949,7 +1952,7 @@ fn test_trimming(t: core::T&) {
     };
 }
 
-fn test_search_and_split(t: core::T&) {
+fn test_search_and_split(t: lit::T&) {
     t.run("Byte Scanning and Predicates") { sub =>
         let path = "/api/v1/metrics/prometheus";
         sub.assert_true(core::starts_with(path, "/api"), "starts_with prefix");
@@ -2046,7 +2049,7 @@ fn test_search_and_split(t: core::T&) {
     };
 }
 
-fn test_parsing_and_formatting(t: core::T&) {
+fn test_parsing_and_formatting(t: lit::T&) {
     t.run("Decimal Integer Parsing") { sub =>
         let u_val, u_ok = core::parse_u64_dec("18446744073709551615");
         sub.assert_true(u_ok, "parse u64::MAX ok");
@@ -2153,7 +2156,7 @@ fn test_parsing_and_formatting(t: core::T&) {
 // - RingBuffer circular FIFO storage, wraparound behavior, and zero-copy peeking
 // - Stream piping helpers (copy_reader_to_writer, copy_reader_all, copy_reader_n)
 
-fn test_slice_reader(t: core::T&) {
+fn test_slice_reader(t: lit::T&) {
     t.run("Sequential Reading and Exact Slices") { sub =>
         let data = "Hello, World! Systems Zero-Heap IO";
         var r = core::new_slice_reader(data);
@@ -2235,7 +2238,7 @@ fn test_slice_reader(t: core::T&) {
     };
 }
 
-fn test_slice_writer(t: core::T&) {
+fn test_slice_writer(t: lit::T&) {
     t.run("Serialization & Integer Encoding") { sub =>
         var storage: u8[32] = [0; 32];
         var w = core::new_slice_writer(storage[..]);
@@ -2296,7 +2299,7 @@ fn test_slice_writer(t: core::T&) {
     };
 }
 
-fn test_limit_reader(t: core::T&) {
+fn test_limit_reader(t: lit::T&) {
     t.run("Strict DoS Boundary & Exceed Enforcement") { sub =>
         let payload = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         // Limit reading to at most 10 bytes
@@ -2330,7 +2333,7 @@ fn test_limit_reader(t: core::T&) {
     };
 }
 
-fn test_tee_reader(t: core::T&) {
+fn test_tee_reader(t: lit::T&) {
     t.run("Stream Interception and Mirroring") { sub =>
         let data = "TLS 1.3 ClientHello Transcript Wire Message";
         var tr = core::new_tee_reader(data);
@@ -2351,7 +2354,7 @@ fn test_tee_reader(t: core::T&) {
     };
 }
 
-fn test_ring_buffer(t: core::T&) {
+fn test_ring_buffer(t: lit::T&) {
     t.run("Circular Storage, Wraparound & Discard") { sub =>
         var rb = core::new_ring_buffer();
         sub.assert_eq(rb.len(), 0, "Initial len 0");
@@ -2411,7 +2414,7 @@ fn test_ring_buffer(t: core::T&) {
     };
 }
 
-fn test_pipeline_helpers(t: core::T&) {
+fn test_pipeline_helpers(t: lit::T&) {
     t.run("Copy Reader to Writer and Buffer") { sub =>
         var r = core::new_slice_reader("Zero-Allocation Piping Engine");
         var out_storage: u8[64] = [0; 64];
@@ -2432,7 +2435,7 @@ fn test_pipeline_helpers(t: core::T&) {
     };
 }
 
-fn test_pipe_buffer(t: core::T&) {
+fn test_pipe_buffer(t: lit::T&) {
     t.run("Two-Cursor advance_to and Monotonic Examined Invariant") { sub =>
         var pipe = core::new_pipe_buffer();
         sub.assert_eq(pipe.readable_len(), 0, "Initial readable len 0");
@@ -2494,7 +2497,7 @@ fn test_pipe_buffer(t: core::T&) {
     };
 }
 
-fn test_cork_buffer(t: core::T&) {
+fn test_cork_buffer(t: lit::T&) {
     t.run("Aggregation, Binary Encoding and Partial Flush") { sub =>
         var cb = core::new_cork_buffer();
         sub.assert_true(cb.cork_is_empty(), "Cork initially empty");
@@ -2534,7 +2537,7 @@ fn test_cork_buffer(t: core::T&) {
     };
 }
 
-fn test_simd_accelerators(t: core::T&) {
+fn test_simd_accelerators(t: lit::T&) {
     t.run("SIMD Fast ASCII & CRLF Scan") { sub =>
         let ascii_str = "GET /v1/models HTTP/1.1\r\nHost: api.example.com\r\n\r\n";
         sub.assert_true(core::is_pure_ascii(ascii_str), "Pure ASCII string detected by SIMD");
@@ -2554,48 +2557,48 @@ fn test_simd_accelerators(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Duration Arithmetic, i64.min/max, Signs & Accessors", test_duration_arithmetic_and_bounds);
-    core::run_case(runner, "2. Duration Truncation and Rounding (Boundary & Half-Way)", test_duration_truncation_and_rounding);
-    core::run_case(runner, "3. Duration Format & Go-Compatible ParseDuration Security", test_duration_format_and_parse_security);
-    core::run_case(runner, "4. Monotonic Primitives: Stopwatch & Deadline (Anti-Overflow)", test_stopwatch_and_deadline_overflow);
-    core::run_case(runner, "5. Civil Calendar Math & Proleptic Gregorian Leap Years", test_hinnant_civil_calendar_and_leap_years);
-    core::run_case(runner, "6. Time Construction, Accessors, Projections & Pre-1970", test_time_construction_and_pre1970);
-    core::run_case(runner, "7. Time Arithmetic, Comparisons & ReDoS / DoS Immunity", test_time_arithmetic_and_redos_immunity);
-    core::run_case(runner, "8. Time Truncation, Rounding & Timezones", test_time_truncation_rounding_and_timezones);
-    core::run_case(runner, "9. RFC 3339 / ISO 8601 Codec & Attack Vectors", test_rfc3339_codec_and_attack_vectors);
-    core::run_case(runner, "10. RFC 9110 Section 5.6.7 HTTP-Date Formatting & 3-Format Parser Security", test_http_date_rfc9110_and_attack_vectors);
-    core::run_case(runner, "11. Branchless Constant-Time Arithmetic & Selection", test_branchless_constant_time);
-    core::run_case(runner, "12. Saturation & Checked Arithmetic", test_saturation_and_checked_arithmetic);
-    core::run_case(runner, "13. 128-Bit Multiplication & Wymum Without u128", test_wide_multiplication_and_wymum);
-    core::run_case(runner, "14. Bit Manipulation & Endianness Codecs", test_bit_manipulation_and_endianness);
-    core::run_case(runner, "15. Euclidean Division & Remainder", test_euclidean_division_and_remainder);
-    core::run_case(runner, "16. PRNGs & Lemire Fast-Range Mapping", test_prng_and_lemire_range);
-    core::run_case(runner, "17. Backoff & Jitter Strategies (Happy Eyeballs / AWS)", test_backoff_and_jitter_strategies);
-    core::run_case(runner, "18. Jacobson EWMA RTT Estimator (RFC 6298 / RFC 9002 Errata ID 7539)", test_jacobson_rtt_estimator_errata7539);
-    core::run_case(runner, "19. Fast Non-Cryptographic Hashing & Combinators", test_fast_non_cryptographic_hashes);
-    core::run_case(runner, "20. Constant-Time SOCKS5 Frame Length Validation", test_socks5_frame_validation_ct);
-    core::run_case(runner, "21. Multithreading, Actors & Crash Containment", test_multithreading_and_actors);
-    core::run_case(runner, "22. Classical Concurrency Primitives", test_classical_primitives);
-    core::run_case(runner, "23. Two-Phase CyclicBarrier Synchronization", test_cyclic_barrier);
-    core::run_case(runner, "24. CSP Patterns & In-Order Reassembly", test_csp_patterns);
-    core::run_case(runner, "25. Actor Subsystem & Priority Mailboxes", test_actor_subsystem);
-    core::run_case(runner, "26. OTP Supervision Trees & Fault Tolerance", test_supervision_trees);
-    core::run_case(runner, "27. ASCII Predicates, Case Conversions & Folding", test_case_folding);
-    core::run_case(runner, "28. Linear Whitespace, ASCII Whitespace & Byte Trimming", test_trimming);
-    core::run_case(runner, "29. Byte Search, Slice Splitting & ByteTokenizer", test_search_and_split);
-    core::run_case(runner, "30. Bounds-Checked Decimal & Hex Parsing and Formatting", test_parsing_and_formatting);
-    core::run_case(runner, "31. SliceReader Stream Cursor & Integer Decoding", test_slice_reader);
-    core::run_case(runner, "32. SliceWriter & CountingWriter Serialization", test_slice_writer);
-    core::run_case(runner, "33. LimitReader DoS Boundary Enforcement", test_limit_reader);
-    core::run_case(runner, "34. TeeReader Stream Interception & Tapping", test_tee_reader);
-    core::run_case(runner, "35. RingBuffer Circular FIFO & Wraparound", test_ring_buffer);
-    core::run_case(runner, "36. Stream Pipeline Copy Helpers", test_pipeline_helpers);
-    core::run_case(runner, "37. PipeBuffer Two-Cursor Pipelines & Monotonicity", test_pipe_buffer);
-    core::run_case(runner, "38. CorkBuffer 16KB Outbound Aggregation", test_cork_buffer);
-    core::run_case(runner, "39. SIMD Fast ASCII, UTF-8 & CRLF Scan", test_simd_accelerators);
+    lit::run_case(runner, "1. Duration Arithmetic, i64.min/max, Signs & Accessors", test_duration_arithmetic_and_bounds);
+    lit::run_case(runner, "2. Duration Truncation and Rounding (Boundary & Half-Way)", test_duration_truncation_and_rounding);
+    lit::run_case(runner, "3. Duration Format & Go-Compatible ParseDuration Security", test_duration_format_and_parse_security);
+    lit::run_case(runner, "4. Monotonic Primitives: Stopwatch & Deadline (Anti-Overflow)", test_stopwatch_and_deadline_overflow);
+    lit::run_case(runner, "5. Civil Calendar Math & Proleptic Gregorian Leap Years", test_hinnant_civil_calendar_and_leap_years);
+    lit::run_case(runner, "6. Time Construction, Accessors, Projections & Pre-1970", test_time_construction_and_pre1970);
+    lit::run_case(runner, "7. Time Arithmetic, Comparisons & ReDoS / DoS Immunity", test_time_arithmetic_and_redos_immunity);
+    lit::run_case(runner, "8. Time Truncation, Rounding & Timezones", test_time_truncation_rounding_and_timezones);
+    lit::run_case(runner, "9. RFC 3339 / ISO 8601 Codec & Attack Vectors", test_rfc3339_codec_and_attack_vectors);
+    lit::run_case(runner, "10. RFC 9110 Section 5.6.7 HTTP-Date Formatting & 3-Format Parser Security", test_http_date_rfc9110_and_attack_vectors);
+    lit::run_case(runner, "11. Branchless Constant-Time Arithmetic & Selection", test_branchless_constant_time);
+    lit::run_case(runner, "12. Saturation & Checked Arithmetic", test_saturation_and_checked_arithmetic);
+    lit::run_case(runner, "13. 128-Bit Multiplication & Wymum Without u128", test_wide_multiplication_and_wymum);
+    lit::run_case(runner, "14. Bit Manipulation & Endianness Codecs", test_bit_manipulation_and_endianness);
+    lit::run_case(runner, "15. Euclidean Division & Remainder", test_euclidean_division_and_remainder);
+    lit::run_case(runner, "16. PRNGs & Lemire Fast-Range Mapping", test_prng_and_lemire_range);
+    lit::run_case(runner, "17. Backoff & Jitter Strategies (Happy Eyeballs / AWS)", test_backoff_and_jitter_strategies);
+    lit::run_case(runner, "18. Jacobson EWMA RTT Estimator (RFC 6298 / RFC 9002 Errata ID 7539)", test_jacobson_rtt_estimator_errata7539);
+    lit::run_case(runner, "19. Fast Non-Cryptographic Hashing & Combinators", test_fast_non_cryptographic_hashes);
+    lit::run_case(runner, "20. Constant-Time SOCKS5 Frame Length Validation", test_socks5_frame_validation_ct);
+    lit::run_case(runner, "21. Multithreading, Actors & Crash Containment", test_multithreading_and_actors);
+    lit::run_case(runner, "22. Classical Concurrency Primitives", test_classical_primitives);
+    lit::run_case(runner, "23. Two-Phase CyclicBarrier Synchronization", test_cyclic_barrier);
+    lit::run_case(runner, "24. CSP Patterns & In-Order Reassembly", test_csp_patterns);
+    lit::run_case(runner, "25. Actor Subsystem & Priority Mailboxes", test_actor_subsystem);
+    lit::run_case(runner, "26. OTP Supervision Trees & Fault Tolerance", test_supervision_trees);
+    lit::run_case(runner, "27. ASCII Predicates, Case Conversions & Folding", test_case_folding);
+    lit::run_case(runner, "28. Linear Whitespace, ASCII Whitespace & Byte Trimming", test_trimming);
+    lit::run_case(runner, "29. Byte Search, Slice Splitting & ByteTokenizer", test_search_and_split);
+    lit::run_case(runner, "30. Bounds-Checked Decimal & Hex Parsing and Formatting", test_parsing_and_formatting);
+    lit::run_case(runner, "31. SliceReader Stream Cursor & Integer Decoding", test_slice_reader);
+    lit::run_case(runner, "32. SliceWriter & CountingWriter Serialization", test_slice_writer);
+    lit::run_case(runner, "33. LimitReader DoS Boundary Enforcement", test_limit_reader);
+    lit::run_case(runner, "34. TeeReader Stream Interception & Tapping", test_tee_reader);
+    lit::run_case(runner, "35. RingBuffer Circular FIFO & Wraparound", test_ring_buffer);
+    lit::run_case(runner, "36. Stream Pipeline Copy Helpers", test_pipeline_helpers);
+    lit::run_case(runner, "37. PipeBuffer Two-Cursor Pipelines & Monotonicity", test_pipe_buffer);
+    lit::run_case(runner, "38. CorkBuffer 16KB Outbound Aggregation", test_cork_buffer);
+    lit::run_case(runner, "39. SIMD Fast ASCII, UTF-8 & CRLF Scan", test_simd_accelerators);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: regress_issues_batch11 ---
 // Phase 11 RED test suite: Fixed-Capacity Truncation Smuggling, Protocol Limits & Defer Lifecycle
@@ -22,7 +25,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. SFV string & display string overflow rejection (http/mime.goose)
 // ----------------------------------------------------------------------------
-fn test_sfv_string_overflow_rejection(t: core::T&) {
+fn test_sfv_string_overflow_rejection(t: lit::T&) {
     t.run("SFV string > 1088 bytes must be rejected as syntax error") { sub =>
         var raw_str: u8[>..] = [];
         raw_str.push('"');
@@ -53,7 +56,7 @@ fn test_sfv_string_overflow_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. SFV parameter & list/dict capacity smuggling (http/mime.goose)
 // ----------------------------------------------------------------------------
-fn test_sfv_capacity_smuggling_rejection(t: core::T&) {
+fn test_sfv_capacity_smuggling_rejection(t: lit::T&) {
     t.run("SFV item with > 16 parameters must be rejected rather than dropping 17th") { sub =>
         var raw_params: u8[..1024] = [];
         raw_params.append("token");
@@ -86,7 +89,7 @@ fn test_sfv_capacity_smuggling_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 9111 Vary header > 16 fields cache poisoning defense (http/cache/validators.goose)
 // ----------------------------------------------------------------------------
-fn test_vary_snapshot_capacity_poisoning_defense(t: core::T&) {
+fn test_vary_snapshot_capacity_poisoning_defense(t: lit::T&) {
     t.run("Vary header with > 16 fields MUST invalidate snapshot to prevent cache poisoning") { sub =>
         var vary_val: u8[..512] = [];
         for i in 17 {
@@ -109,7 +112,7 @@ fn test_vary_snapshot_capacity_poisoning_defense(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. No-Vary-Search parameter capacity & key overflow safety (http/novarysearch.goose)
 // ----------------------------------------------------------------------------
-fn test_novarysearch_capacity_safety(t: core::T&) {
+fn test_novarysearch_capacity_safety(t: lit::T&) {
     t.run("normalize_query_for_cache MUST fail safely on key > 64B without truncating") { sub =>
         var raw_q: u8[..512] = [];
         for i in 70 { raw_q.push('x'); }
@@ -127,7 +130,7 @@ fn test_novarysearch_capacity_safety(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Digest challenge parameter value > 128B rejection without corruption (auth/digest.goose)
 // ----------------------------------------------------------------------------
-fn test_digest_param_overflow_safety(t: core::T&) {
+fn test_digest_param_overflow_safety(t: lit::T&) {
     t.run("Digest challenge with nonce > 128 bytes MUST NOT be silently truncated") { sub =>
         var long_chal: u8[>..] = [];
         long_chal.append("Digest realm=\"test\", nonce=\"");
@@ -142,7 +145,7 @@ fn test_digest_param_overflow_safety(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. JWT claims & header oversized field safety without runtime abort (auth/jwt.goose)
 // ----------------------------------------------------------------------------
-fn test_jwt_oversized_fields_no_abort(t: core::T&) {
+fn test_jwt_oversized_fields_no_abort(t: lit::T&) {
     t.run("JWT claims with iss > 128 bytes MUST return InvalidClaimsJson without abort") { sub =>
         var long_iss: u8[>..] = [];
         long_iss.append("{\"iss\":\"https://accounts.example.com/");
@@ -161,7 +164,7 @@ fn test_jwt_oversized_fields_no_abort(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. W3C Trace Context 256-byte key specification compliance (http/trace.goose)
 // ----------------------------------------------------------------------------
-fn test_trace_context_spec_key_length(t: core::T&) {
+fn test_trace_context_spec_key_length(t: lit::T&) {
     t.run("tracestate parser MUST accept valid 100-byte multi-tenant key without abort") { sub =>
         // Construct valid W3C key: 90 chars tenant + '@' + 9 chars system = 100 chars
         var header_val: u8[..256] = [];
@@ -179,7 +182,7 @@ fn test_trace_context_spec_key_length(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. HTTP/1.x obs-fold buffer capacity overflow safety (http/headers.goose)
 // ----------------------------------------------------------------------------
-fn test_http_headers_obs_fold_capacity_safety(t: core::T&) {
+fn test_http_headers_obs_fold_capacity_safety(t: lit::T&) {
     t.run("Oversized obs-fold continuation MUST return CapacityExceeded without abort") { sub =>
         var headers_raw: u8[>..] = [];
         headers_raw.append("Host: example.com\r\nX-Fold: start\r\n");
@@ -217,7 +220,7 @@ fn test_http_headers_obs_fold_capacity_safety(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. NoVarySearch (http/novarysearch.goose)
 // ----------------------------------------------------------------------------
-fn test_novarysearch_truncation_and_bounds(t: core::T&) {
+fn test_novarysearch_truncation_and_bounds(t: lit::T&) {
     t.run("No-Vary-Search must reject > 16 parameters rather than silently dropping 17th") { sub =>
         // Construct header with 17 except parameters: except=("p1" "p2" ... "p17")
         var raw_hdr: u8[..1024] = [];
@@ -281,7 +284,7 @@ fn test_novarysearch_truncation_and_bounds(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Chunked FSM & Extensions (http/headers/chunked_fsm.goose, chunked.goose)
 // ----------------------------------------------------------------------------
-fn test_chunked_fsm_and_extensions_rfc9112(t: core::T&) {
+fn test_chunked_fsm_and_extensions_rfc9112(t: lit::T&) {
     t.run("Chunk extension with empty value (ext=) must return Error") { sub =>
         var dec = internal::new_chunk_fsm_decoder();
         let status, _, _ = internal::chunk_fsm_feed(dec, "5;ext=\r\nhello\r\n0\r\n\r\n");
@@ -326,7 +329,7 @@ fn test_chunked_fsm_and_extensions_rfc9112(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. HTTP/1.x Headers & Smuggling (http/headers/lexical.goose, headers.goose)
 // ----------------------------------------------------------------------------
-fn test_http1_headers_cl_host_and_cookie_bounds(t: core::T&) {
+fn test_http1_headers_cl_host_and_cookie_bounds(t: lit::T&) {
     t.run("track_header_presence MUST reject invalid first Content-Length value") { sub =>
         var tracker = wing::HeaderPresenceTracker { .. };
         let ok = wing::track_header_presence(tracker, "Content-Length", "invalid", 0);
@@ -374,7 +377,7 @@ fn test_http1_headers_cl_host_and_cookie_bounds(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. MIME & Structured Field Values (http/mime.goose)
 // ----------------------------------------------------------------------------
-fn test_mime_and_sfv_truncation_smuggling(t: core::T&) {
+fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
     t.run("parse_sfv_key rejects keys exceeding 64 bytes to prevent collision smuggling") { sub =>
         // 65-byte key: 64 'a's + 'b'
         var long_key_entry: u8[..128] = [];
@@ -432,7 +435,7 @@ fn test_mime_and_sfv_truncation_smuggling(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Cache-Control & Vary (http/cache/*)
 // ----------------------------------------------------------------------------
-fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
+fn test_cache_control_and_vary_poisoning_rfc9111(t: lit::T&) {
     t.run("Unqualified private directive following qualified private must make response uncacheable in shared cache") { sub =>
         var req_map = wing::HeaderMap { .. };
         wing::append_header(req_map, ":method", "GET");
@@ -475,7 +478,7 @@ fn test_cache_control_and_vary_poisoning_rfc9111(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. URL & Origin (core/url/*)
 // ----------------------------------------------------------------------------
-fn test_url_origin_punycode_and_view_validation(t: core::T&) {
+fn test_url_origin_punycode_and_view_validation(t: lit::T&) {
     t.run("DNS label > 63 bytes in URL must return InvalidHost (CVE-2026-97044)") { sub =>
         var long_url: u8[..256] = [];
         long_url.append("http://");
@@ -533,7 +536,7 @@ fn test_url_origin_punycode_and_view_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. Signatures, HSTS, and Trace Context (http/*)
 // ----------------------------------------------------------------------------
-fn test_http_extensions_signatures_hsts_trace(t: core::T&) {
+fn test_http_extensions_signatures_hsts_trace(t: lit::T&) {
     t.run("verify_http_signature must enforce signature label match") { sub =>
         var req = wing::new_request("GET", "https://example.com/data");
         var params = wing::HttpSignatureParams { label: "sig1", .. };
@@ -591,7 +594,7 @@ fn test_http_extensions_signatures_hsts_trace(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. HTTP/2 Server Multiplexer & HPACK (server/*, http2/*, http/*)
 // ----------------------------------------------------------------------------
-fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
+fn test_h2_multiplexer_and_hpack_rfc9113(t: lit::T&) {
     t.run("H2 server ingress rejects invalid SETTINGS_MAX_FRAME_SIZE < 16384") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -686,7 +689,7 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. HTTP/3 & QPACK (http3/*)
 // ----------------------------------------------------------------------------
-fn test_h3_and_qpack_rfc9114_rfc9204(t: core::T&) {
+fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
     t.run("H3 request stream accepts 103 Early Hints followed by 200 final response (Go #80687)") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -743,7 +746,7 @@ fn test_h3_and_qpack_rfc9114_rfc9204(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 10. gRPC Stream & Status Codecs (grpc/*)
 // ----------------------------------------------------------------------------
-fn test_grpc_stream_truncation_and_status(t: core::T&) {
+fn test_grpc_stream_truncation_and_status(t: lit::T&) {
     t.run("parse_client_stream rejects > 32 messages rather than silently dropping 33rd") { sub =>
         var body: u8[>..] = [];
         for i in 33 {
@@ -783,7 +786,7 @@ fn test_grpc_stream_truncation_and_status(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 11. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)
 // ----------------------------------------------------------------------------
-fn test_auth_dpop_digest_privacypass(t: core::T&) {
+fn test_auth_dpop_digest_privacypass(t: lit::T&) {
     t.run("verify_dpop_method requires exact method claim match, preventing substring bypass") { sub =>
         // Claims JSON has DELETE method, but URL contains 'GET'
         let claims = "{\"htm\":\"DELETE\",\"htu\":\"https://example.com/GET_resource\",\"iat\":1700000000}";
@@ -810,7 +813,7 @@ fn test_auth_dpop_digest_privacypass(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 12. X.509, Server CONNECT Hygiene & Akamai (tls/*, server/*, fingerprint/*)
 // ----------------------------------------------------------------------------
-fn test_x509_critical_ext_server_connect_and_akamai(t: core::T&) {
+fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
     t.run("verify_signature_scheme_curve_binding rejects generic EC OID without curve match") { sub =>
         let ok = wing::verify_signature_scheme_curve_binding(
             wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
@@ -895,7 +898,7 @@ fn has_rst_stream_for(wire: const u8[:], stream_id: u32) -> bool {
     return false;
 }
 
-fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
+fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
     var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
@@ -982,7 +985,7 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. WebSocket Protocol Invariants (realtime/websocket.goose)
 // ----------------------------------------------------------------------------
-fn test_websocket_token_and_capacity_invariants(t: core::T&) {
+fn test_websocket_token_and_capacity_invariants(t: lit::T&) {
     t.run("ws_upgrade_request rejects Connection header with non-token substring") { sub =>
         var req = wing::new_request("GET", "https://example.com/ws");
         req.set_header("Upgrade", "websocket");
@@ -1034,7 +1037,7 @@ fn test_websocket_token_and_capacity_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Client Redirect Engine (client/redirect.goose)
 // ----------------------------------------------------------------------------
-fn test_client_redirect_origin_and_fragment_safety(t: core::T&) {
+fn test_client_redirect_origin_and_fragment_safety(t: lit::T&) {
     t.run("Cross-origin 307 redirect MUST set Origin to null to prevent leaking internal origin") { sub =>
         var headers: wing::HeaderItem[..32] = [];
         headers.push(wing::make_header("Origin", "https://internal.corp.example.com"));
@@ -1076,7 +1079,7 @@ fn test_client_redirect_origin_and_fragment_safety(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Server-Sent Events (realtime/sse.goose)
 // ----------------------------------------------------------------------------
-fn test_sse_w3c_spec_invariants(t: core::T&) {
+fn test_sse_w3c_spec_invariants(t: lit::T&) {
     t.run("W3C EventSource §9.2.6: Event without data field MUST NOT dispatch") { sub =>
         var parser = wing::SseParser { .. };
         var events: wing::SseEvent[..16] = [];
@@ -1110,7 +1113,7 @@ fn test_sse_w3c_spec_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Multipart Form-Data (http/multipart.goose)
 // ----------------------------------------------------------------------------
-fn test_multipart_boundary_and_smuggling_invariants(t: core::T&) {
+fn test_multipart_boundary_and_smuggling_invariants(t: lit::T&) {
     t.run("RFC 2046 §5.1.1: Boundary ending in space is strictly invalid") { sub =>
         let valid_space = wing::validate_boundary_string("valid-boundary ");
         sub.assert_false(valid_space, "Boundary with trailing space MUST be rejected per RFC 2046 §5.1.1");
@@ -1135,7 +1138,7 @@ fn test_multipart_boundary_and_smuggling_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Connection Pool & Proxies (net/pool.goose, net/proxy.goose)
 // ----------------------------------------------------------------------------
-fn test_pool_and_proxy_san_invariants(t: core::T&) {
+fn test_pool_and_proxy_san_invariants(t: lit::T&) {
     t.run("matches_san_pattern rejects TLD wildcard *.com") { sub =>
         let matches_tld = wing::matches_san_pattern("*.com", "example.com");
         sub.assert_false(matches_tld, "*.com wildcard MUST NOT match apex domain (RFC 6125 §6.4.3)");
@@ -1172,7 +1175,7 @@ fn test_pool_and_proxy_san_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. HTTP/2 Response Trailers Filtering & HPACK Encoding
 // ----------------------------------------------------------------------------
-fn test_h2_multiplexer_trailers(t: core::T&) {
+fn test_h2_multiplexer_trailers(t: lit::T&) {
     t.run("emit_response_trailers filters pseudo-headers, hop-by-hop, and disallowed fields") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var trailers: wing::HeaderItem[..16] = [];
@@ -1249,7 +1252,7 @@ fn test_h2_multiplexer_trailers(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. WebSocket Close UTF-8 Boundary Truncation & Subprotocol Lists
 // ----------------------------------------------------------------------------
-fn test_websocket_close_and_subprotocol(t: core::T&) {
+fn test_websocket_close_and_subprotocol(t: lit::T&) {
     t.run("encode_close_payload preserves UTF-8 integrity on 123-byte boundary") { sub =>
         // Build reason string of 122 ASCII 'A's + 3-byte Euro sign '€' (0xE2, 0x82, 0xAC)
         var reason: u8[>..] = [];
@@ -1351,7 +1354,7 @@ fn test_websocket_close_and_subprotocol(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. HTTP Chunked 64-bit FSM Error Stickiness, Bare CR & Trailer Invariants
 // ----------------------------------------------------------------------------
-fn test_chunked_fsm_invariants(t: core::T&) {
+fn test_chunked_fsm_invariants(t: lit::T&) {
     t.run("chunk_fsm_feed error state is sticky and idempotent") { sub =>
         var dec = internal::new_chunk_fsm_decoder();
         // Malformed chunk size: '1', '2' consumed, 'Z' triggers Error
@@ -1400,7 +1403,7 @@ fn test_chunked_fsm_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Zstandard RFC 8878 RLE Block, SizeMismatch & 0-Sequence Bomb Guards
 // ----------------------------------------------------------------------------
-fn test_zstandard_rfc8878_invariants(t: core::T&) {
+fn test_zstandard_rfc8878_invariants(t: lit::T&) {
     t.run("Zstandard RLE_Block decompression repeats 1 byte block_size times") { sub =>
         // Construct valid Zstandard frame containing an RLE_Block (Block_Type = 1)
         var frame: u8[>..] = [];
@@ -1477,7 +1480,7 @@ fn test_zstandard_rfc8878_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Deflate RFC 1951 Dynamic Huffman Missing EOB 256 Rejection
 // ----------------------------------------------------------------------------
-fn test_deflate_rfc1951_invariants(t: core::T&) {
+fn test_deflate_rfc1951_invariants(t: lit::T&) {
     t.run("inflate rejects Dynamic Huffman block missing EOB symbol 256 (RFC 1951 §3.2.7)") { sub =>
         // Construct minimal corrupt Dynamic Huffman bitstream where symbol 256 has code length 0.
         // Bit 0: BFINAL=1, Bits 1-2: BTYPE=10 (Dynamic)
@@ -1542,7 +1545,7 @@ fn test_deflate_rfc1951_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. QUIC Packet Headers, Header Protection & Interval Reassembly
 // ----------------------------------------------------------------------------
-fn test_quic_packet_and_reassembly(t: core::T&) {
+fn test_quic_packet_and_reassembly(t: lit::T&) {
     t.run("parse_quic_header enforces fixed bit, CID lengths, and plen >= pn_len") { sub =>
         // 1. Short header with fixed bit cleared (bit 6 = 0) MUST fail per RFC 9000 §17.3
         let bad_short: u8[16] = [
@@ -1719,7 +1722,7 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. QPACK Modular RIC, Post-Base Bounds & Bare-Colon Token Sanitization
 // ----------------------------------------------------------------------------
-fn test_qpack_invariants_and_token_defenses(t: core::T&) {
+fn test_qpack_invariants_and_token_defenses(t: lit::T&) {
     t.run("decode_base integer overflow and underflow protection") { sub =>
         // Sign bit 0: Base = ric + delta_base. Test overflow on ric + delta_base
         let _, err_ov = internal::decode_base(0, 10, 0xFFFFFFFFFFFFFFFF);
@@ -1807,7 +1810,7 @@ fn test_qpack_invariants_and_token_defenses(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. HTTP/3 Framing, Reserved 0x00 Setting & Malformed Payloads
 // ----------------------------------------------------------------------------
-fn test_h3_framing_and_settings_invariants(t: core::T&) {
+fn test_h3_framing_and_settings_invariants(t: lit::T&) {
     t.run("parse_h3_settings_frame rejects reserved setting 0x00 and duplicates") { sub =>
         // 1. Reserved setting 0x00 (from HTTP/2) MUST cause H3_SETTINGS_ERROR (RFC 9114 §7.2.4.1)
         var payload_00: u8[..16] = [];
@@ -1843,7 +1846,7 @@ fn test_h3_framing_and_settings_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. HTTP/3 Multiplexer, Unidirectional Dispatch & Trailer Defenses
 // ----------------------------------------------------------------------------
-fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
+fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
     t.run("handle_stream_data dispatches QPACK encoder stream instructions and catches errors") { sub =>
         let settings = wing::H3Settings { qpack_max_table_capacity: 4096, .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -1971,44 +1974,44 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
 // Main Runner
 
 fn main() {
-    var runner = core::new_runner("Issue Regression Suite Batch 3 (Phases 11-15)", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Issue Regression Suite Batch 3 (Phases 11-15)", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. SFV string overflow rejection (http/mime.goose)", test_sfv_string_overflow_rejection);
-    core::run_case(runner, "2. SFV capacity smuggling rejection (http/mime.goose)", test_sfv_capacity_smuggling_rejection);
-    core::run_case(runner, "3. RFC 9111 Vary cache poisoning defense (http/cache/validators.goose)", test_vary_snapshot_capacity_poisoning_defense);
-    core::run_case(runner, "4. No-Vary-Search capacity safety (http/novarysearch.goose)", test_novarysearch_capacity_safety);
-    core::run_case(runner, "5. Digest challenge parameter overflow safety (auth/digest.goose)", test_digest_param_overflow_safety);
-    core::run_case(runner, "6. JWT oversized fields safety (auth/jwt.goose)", test_jwt_oversized_fields_no_abort);
-    core::run_case(runner, "7. W3C Trace Context 256-byte key support (http/trace.goose)", test_trace_context_spec_key_length);
-    core::run_case(runner, "8. HTTP/1.x obs-fold capacity safety (http/headers.goose)", test_http_headers_obs_fold_capacity_safety);
-    core::run_case(runner, "9. NoVarySearch truncation and bounds (http/novarysearch.goose)", test_novarysearch_truncation_and_bounds);
-    core::run_case(runner, "10. Chunked FSM & extensions RFC 9112 (http/headers/*)", test_chunked_fsm_and_extensions_rfc9112);
-    core::run_case(runner, "11. HTTP/1.x headers CL, host, cookie bounds (http/headers/*)", test_http1_headers_cl_host_and_cookie_bounds);
-    core::run_case(runner, "12. MIME & SFV truncation smuggling (http/mime.goose)", test_mime_and_sfv_truncation_smuggling);
-    core::run_case(runner, "13. Cache-Control & Vary RFC 9111 (http/cache/*)", test_cache_control_and_vary_poisoning_rfc9111);
-    core::run_case(runner, "14. URL & Origin validation & bounds (core/url/*)", test_url_origin_punycode_and_view_validation);
-    core::run_case(runner, "15. Signatures, HSTS, Trace Context (http/*)", test_http_extensions_signatures_hsts_trace);
-    core::run_case(runner, "16. H2 multiplexer & HPACK RFC 9113 (server/*, http2/*, http/*)", test_h2_multiplexer_and_hpack_rfc9113);
-    core::run_case(runner, "17. HTTP/3 & QPACK RFC 9114 / RFC 9204 (http3/*)", test_h3_and_qpack_rfc9114_rfc9204);
-    core::run_case(runner, "18. gRPC stream & status codecs (grpc/*)", test_grpc_stream_truncation_and_status);
-    core::run_case(runner, "19. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)", test_auth_dpop_digest_privacypass);
-    core::run_case(runner, "20. X.509, Server CONNECT hygiene & Akamai (tls/*, server/*, fingerprint/*)", test_x509_critical_ext_server_connect_and_akamai);
-    core::run_case(runner, "21. H2 multiplexer RFC 9113 invariants (server/h2_multiplexer.goose)", test_h2_multiplexer_rfc9113_invariants);
-    core::run_case(runner, "22. WebSocket token & capacity invariants (realtime/websocket.goose)", test_websocket_token_and_capacity_invariants);
-    core::run_case(runner, "23. Client Redirect origin & fragment safety (client/redirect.goose)", test_client_redirect_origin_and_fragment_safety);
-    core::run_case(runner, "24. Server-Sent Events W3C spec invariants (realtime/sse.goose)", test_sse_w3c_spec_invariants);
-    core::run_case(runner, "25. Multipart boundary & smuggling invariants (http/multipart.goose)", test_multipart_boundary_and_smuggling_invariants);
-    core::run_case(runner, "26. Pool & Proxy SAN invariants (net/pool.goose, net/proxy.goose)", test_pool_and_proxy_san_invariants);
-    core::run_case(runner, "27. H2 multiplexer trailer encoding (server/h2_multiplexer.goose)", test_h2_multiplexer_trailers);
-    core::run_case(runner, "28. WebSocket Close UTF-8 & Subprotocols (realtime/websocket.goose)", test_websocket_close_and_subprotocol);
-    core::run_case(runner, "29. HTTP Chunked FSM invariants (http/headers/chunked_fsm.goose)", test_chunked_fsm_invariants);
-    core::run_case(runner, "30. Zstandard RFC 8878 invariants (core/compress/zstd.goose)", test_zstandard_rfc8878_invariants);
-    core::run_case(runner, "31. Deflate RFC 1951 invariants (core/compress/deflate.goose)", test_deflate_rfc1951_invariants);
-    core::run_case(runner, "32. QUIC Packet Headers, Header Protection & Interval Reassembly", test_quic_packet_and_reassembly);
-    core::run_case(runner, "33. QPACK Modular RIC, Post-Base Bounds & Bare-Colon Token Sanitization", test_qpack_invariants_and_token_defenses);
-    core::run_case(runner, "34. HTTP/3 Framing, Reserved 0x00 Setting & Malformed Payloads", test_h3_framing_and_settings_invariants);
-    core::run_case(runner, "35. HTTP/3 Multiplexer, Unidirectional Dispatch & Trailer Defenses", test_h3_multiplexer_and_stream_defenses);
+    lit::run_case(runner, "1. SFV string overflow rejection (http/mime.goose)", test_sfv_string_overflow_rejection);
+    lit::run_case(runner, "2. SFV capacity smuggling rejection (http/mime.goose)", test_sfv_capacity_smuggling_rejection);
+    lit::run_case(runner, "3. RFC 9111 Vary cache poisoning defense (http/cache/validators.goose)", test_vary_snapshot_capacity_poisoning_defense);
+    lit::run_case(runner, "4. No-Vary-Search capacity safety (http/novarysearch.goose)", test_novarysearch_capacity_safety);
+    lit::run_case(runner, "5. Digest challenge parameter overflow safety (auth/digest.goose)", test_digest_param_overflow_safety);
+    lit::run_case(runner, "6. JWT oversized fields safety (auth/jwt.goose)", test_jwt_oversized_fields_no_abort);
+    lit::run_case(runner, "7. W3C Trace Context 256-byte key support (http/trace.goose)", test_trace_context_spec_key_length);
+    lit::run_case(runner, "8. HTTP/1.x obs-fold capacity safety (http/headers.goose)", test_http_headers_obs_fold_capacity_safety);
+    lit::run_case(runner, "9. NoVarySearch truncation and bounds (http/novarysearch.goose)", test_novarysearch_truncation_and_bounds);
+    lit::run_case(runner, "10. Chunked FSM & extensions RFC 9112 (http/headers/*)", test_chunked_fsm_and_extensions_rfc9112);
+    lit::run_case(runner, "11. HTTP/1.x headers CL, host, cookie bounds (http/headers/*)", test_http1_headers_cl_host_and_cookie_bounds);
+    lit::run_case(runner, "12. MIME & SFV truncation smuggling (http/mime.goose)", test_mime_and_sfv_truncation_smuggling);
+    lit::run_case(runner, "13. Cache-Control & Vary RFC 9111 (http/cache/*)", test_cache_control_and_vary_poisoning_rfc9111);
+    lit::run_case(runner, "14. URL & Origin validation & bounds (core/url/*)", test_url_origin_punycode_and_view_validation);
+    lit::run_case(runner, "15. Signatures, HSTS, Trace Context (http/*)", test_http_extensions_signatures_hsts_trace);
+    lit::run_case(runner, "16. H2 multiplexer & HPACK RFC 9113 (server/*, http2/*, http/*)", test_h2_multiplexer_and_hpack_rfc9113);
+    lit::run_case(runner, "17. HTTP/3 & QPACK RFC 9114 / RFC 9204 (http3/*)", test_h3_and_qpack_rfc9114_rfc9204);
+    lit::run_case(runner, "18. gRPC stream & status codecs (grpc/*)", test_grpc_stream_truncation_and_status);
+    lit::run_case(runner, "19. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)", test_auth_dpop_digest_privacypass);
+    lit::run_case(runner, "20. X.509, Server CONNECT hygiene & Akamai (tls/*, server/*, fingerprint/*)", test_x509_critical_ext_server_connect_and_akamai);
+    lit::run_case(runner, "21. H2 multiplexer RFC 9113 invariants (server/h2_multiplexer.goose)", test_h2_multiplexer_rfc9113_invariants);
+    lit::run_case(runner, "22. WebSocket token & capacity invariants (realtime/websocket.goose)", test_websocket_token_and_capacity_invariants);
+    lit::run_case(runner, "23. Client Redirect origin & fragment safety (client/redirect.goose)", test_client_redirect_origin_and_fragment_safety);
+    lit::run_case(runner, "24. Server-Sent Events W3C spec invariants (realtime/sse.goose)", test_sse_w3c_spec_invariants);
+    lit::run_case(runner, "25. Multipart boundary & smuggling invariants (http/multipart.goose)", test_multipart_boundary_and_smuggling_invariants);
+    lit::run_case(runner, "26. Pool & Proxy SAN invariants (net/pool.goose, net/proxy.goose)", test_pool_and_proxy_san_invariants);
+    lit::run_case(runner, "27. H2 multiplexer trailer encoding (server/h2_multiplexer.goose)", test_h2_multiplexer_trailers);
+    lit::run_case(runner, "28. WebSocket Close UTF-8 & Subprotocols (realtime/websocket.goose)", test_websocket_close_and_subprotocol);
+    lit::run_case(runner, "29. HTTP Chunked FSM invariants (http/headers/chunked_fsm.goose)", test_chunked_fsm_invariants);
+    lit::run_case(runner, "30. Zstandard RFC 8878 invariants (core/compress/zstd.goose)", test_zstandard_rfc8878_invariants);
+    lit::run_case(runner, "31. Deflate RFC 1951 invariants (core/compress/deflate.goose)", test_deflate_rfc1951_invariants);
+    lit::run_case(runner, "32. QUIC Packet Headers, Header Protection & Interval Reassembly", test_quic_packet_and_reassembly);
+    lit::run_case(runner, "33. QPACK Modular RIC, Post-Base Bounds & Bare-Colon Token Sanitization", test_qpack_invariants_and_token_defenses);
+    lit::run_case(runner, "34. HTTP/3 Framing, Reserved 0x00 Setting & Malformed Payloads", test_h3_framing_and_settings_invariants);
+    lit::run_case(runner, "35. HTTP/3 Multiplexer, Unidirectional Dispatch & Trailer Defenses", test_h3_multiplexer_and_stream_defenses);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

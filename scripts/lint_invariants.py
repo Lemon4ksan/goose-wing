@@ -164,7 +164,7 @@ def main() -> int:
             rel_path = file_path.as_posix()
 
         is_test_or_example = bool(
-            re.match(r"^(tests|examples|bench|tools|core/test)/", rel_path)
+            re.match(r"^(tests|examples|bench|tools)/", rel_path)
             or rel_path.endswith("_test.goose")
         )
 

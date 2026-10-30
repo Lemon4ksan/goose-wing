@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,12 +7,13 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: websocket_framing_handshake ---
 // Team FrameForge Protocol Audit Suite - Round 1
 // Focus: RFC 6455 & RFC 7692 WebSocket Framing, Deflate Compression, RSV Spoofing, Masking, and Close Codes.
 
-fn test_frameforge_r1_websocket(t: core::T&) {
+fn test_frameforge_r1_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     // Bug 1: RFC 7692 Section 6.1: Compression - Premature UTF-8 validation on raw compressed text wire bytes
     // ------------------------------------------------------------------------
@@ -261,7 +264,7 @@ fn test_frameforge_r1_websocket(t: core::T&) {
 // Focus: RFC 6455 & RFC 7692 Decompression Bomb Defense, Payload Bounds Fast-Fail (1009),
 // Interleaved Control Frames in Compressed Streams, and Close Handshake Idempotence.
 
-fn test_frameforge_r2_websocket(t: core::T&) {
+fn test_frameforge_r2_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     // Bug 8: RFC 7692 §7.2 & RFC 6455 §7.4.1 (1009): Decompression Bomb Abort
     // ------------------------------------------------------------------------
@@ -568,7 +571,7 @@ fn test_frameforge_r2_websocket(t: core::T&) {
 // RFC 7692 §7.1.1 Permessage-Deflate Sliding Window Context Takeover & Dictionary Retention,
 // and Zero-Allocation SWAR 64-bit/32-bit XOR Payload Masking Loop Boundary Safety.
 
-fn test_frameforge_r3_websocket(t: core::T&) {
+fn test_frameforge_r3_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     // Item 1: RFC 6455 §5.4 & §8.1: Multibyte UTF-8 Split Across Continuation Frames
     // ------------------------------------------------------------------------
@@ -849,7 +852,7 @@ fn test_frameforge_r3_websocket(t: core::T&) {
 // 2. Control frame length limits (<= 125 bytes) and fragmentation bans (§5.5).
 // 3. Streaming UTF-8 validation across multi-byte character splits, overlong encodings, and surrogates.
 
-fn test_ws_close_payload_rfc6455_invariants(t: core::T&) {
+fn test_ws_close_payload_rfc6455_invariants(t: lit::T&) {
     t.run("WS-SEC-01: Empty Close Payload and 1-Byte Payload Bans (RFC 6455 §5.5.1)") { sub =>
         // Empty payload (0 bytes) is valid: defaults to WS_STATUS_NO_STATUS (1005)
         let empty_payload: u8[0] = [];
@@ -899,7 +902,7 @@ fn test_ws_close_payload_rfc6455_invariants(t: core::T&) {
     };
 }
 
-fn test_ws_control_frame_invariants(t: core::T&) {
+fn test_ws_control_frame_invariants(t: lit::T&) {
     t.run("WS-SEC-04: Control Frame Payload > 125 Bytes Forbidden (RFC 6455 §5.5)") { sub =>
         // PING frame with payload length 126 (0x7E) encoded with extended 16-bit length
         let bad_ping: u8[4] = [
@@ -934,7 +937,7 @@ fn test_ws_control_frame_invariants(t: core::T&) {
     };
 }
 
-fn test_ws_streaming_utf8_invariants(t: core::T&) {
+fn test_ws_streaming_utf8_invariants(t: lit::T&) {
     t.run("WS-SEC-07: Overlong Encodings and UTF-16 Surrogates Rejected") { sub =>
         // Overlong 2-byte NUL: 0xC0 0x80
         let overlong_nul: u8[2] = [0xC0, 0x80];
@@ -977,7 +980,7 @@ fn test_ws_streaming_utf8_invariants(t: core::T&) {
 // tests/websocket_h2_test.goose
 // Verification Suite for RFC 8441: Bootstrapping WebSockets with HTTP/2.
 
-fn test_rfc8441_client_formatting(t: core::T&) {
+fn test_rfc8441_client_formatting(t: lit::T&) {
     t.run("1. Client Request Formatting & Pseudo-Headers") { sub =>
         var req = wing::new_request("GET", "/");
         wing::format_h2_websocket_request(req, "/v1/chat", "api.example.com", "https", "graphql-transport-ws");
@@ -998,7 +1001,7 @@ fn test_rfc8441_client_formatting(t: core::T&) {
     };
 }
 
-fn test_rfc8441_validation_invariants(t: core::T&) {
+fn test_rfc8441_validation_invariants(t: lit::T&) {
     t.run("1. Strict RFC 8441 Rejections (Forbidden Headers & Missing Fields)") { sub =>
         // 1. Forbidden Upgrade header
         var req1 = wing::new_request("GET", "/");
@@ -1038,7 +1041,7 @@ fn test_rfc8441_validation_invariants(t: core::T&) {
     };
 }
 
-fn test_rfc8441_server_upgrade(t: core::T&) {
+fn test_rfc8441_server_upgrade(t: lit::T&) {
     t.run("1. 200 OK Response & Subprotocol Negotiation") { sub =>
         var req = wing::new_request("GET", "/");
         wing::format_h2_websocket_request(req, "/live", "stream.example.com", "https", "wamp.2.json, mqtt");
@@ -1062,7 +1065,7 @@ fn test_rfc8441_server_upgrade(t: core::T&) {
     };
 }
 
-fn test_rfc8441_data_frame_payload(t: core::T&) {
+fn test_rfc8441_data_frame_payload(t: lit::T&) {
     t.run("1. RFC 6455 Frame Encapsulation inside HTTP/2 Stream") { sub =>
         // Once connection is 200 OK, payload of HTTP/2 DATA frames contains RFC 6455 frames
         var ws_wire: u8[>..] = [];
@@ -1082,7 +1085,7 @@ fn test_rfc8441_data_frame_payload(t: core::T&) {
 // Verification Suite for WebSocket (RFC 6455 / RFC 8441), HTTP/3 PRIORITY_UPDATE (RFC 9218)
 // and Server-Sent Events (W3C EventSource).
 
-fn test_websocket_framing_and_handshake(t: core::T&) {
+fn test_websocket_framing_and_handshake(t: lit::T&) {
     t.run("1. RFC 6455 Section 1.3 Handshake Vector Verification") { sub =>
         let client_key = "dGhlIHNhbXBsZSBub25jZQ==";
         var accept_key: u8[>..] = [];
@@ -1428,7 +1431,7 @@ fn test_websocket_framing_and_handshake(t: core::T&) {
     };
 }
 
-fn test_http3_priority_update(t: core::T&) {
+fn test_http3_priority_update(t: lit::T&) {
     t.run("1. HTTP/3 PRIORITY_UPDATE Frame Codec (RFC 9218 Section 7.2)") { sub =>
         let prio = wing::PriorityParam { urgency: 1, incremental: true };
         var wire: u8[>..] = [];
@@ -1461,7 +1464,7 @@ fn test_http3_priority_update(t: core::T&) {
     };
 }
 
-fn test_server_sent_events(t: core::T&) {
+fn test_server_sent_events(t: lit::T&) {
     t.run("1. W3C EventSource Standard Streaming Parsing") { sub =>
         let stream_data = "data: first event\n\nevent: custom\ndata: second event line 1\ndata: second event line 2\nid: 42\nretry: 5000\n\n";
 
@@ -1590,22 +1593,22 @@ fn test_server_sent_events(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("WebSocket & Server-Sent Events Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("WebSocket & Server-Sent Events Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. WebSocket Invariants & Compression Audit", test_frameforge_r1_websocket);
-    core::run_case(runner, "2. WebSocket Frame Protocol Conformance", test_frameforge_r2_websocket);
-    core::run_case(runner, "3. WebSocket Exhaustive Framing Invariants", test_frameforge_r3_websocket);
-    core::run_case(runner, "4. Close Payload & Wire Status Code Invariants (§5.5.1 / §7.4)", test_ws_close_payload_rfc6455_invariants);
-    core::run_case(runner, "5. Control Frame Limits & Fragmentation Bans (§5.5)", test_ws_control_frame_invariants);
-    core::run_case(runner, "6. Streaming UTF-8 Invariants & Surrogate Rejection", test_ws_streaming_utf8_invariants);
-    core::run_case(runner, "7. RFC 8441 Client Formatting", test_rfc8441_client_formatting);
-    core::run_case(runner, "8. RFC 8441 Validation Invariants", test_rfc8441_validation_invariants);
-    core::run_case(runner, "9. RFC 8441 Server Upgrade", test_rfc8441_server_upgrade);
-    core::run_case(runner, "10. RFC 8441 Stream Data Framing", test_rfc8441_data_frame_payload);
-    core::run_case(runner, "11. WebSocket (RFC 6455 & RFC 8441) Framing and Handshake", test_websocket_framing_and_handshake);
-    core::run_case(runner, "12. HTTP/3 PRIORITY_UPDATE (RFC 9218) Frame Codec", test_http3_priority_update);
-    core::run_case(runner, "13. Server-Sent Events (SSE / W3C EventSource) Engine", test_server_sent_events);
+    lit::run_case(runner, "1. WebSocket Invariants & Compression Audit", test_frameforge_r1_websocket);
+    lit::run_case(runner, "2. WebSocket Frame Protocol Conformance", test_frameforge_r2_websocket);
+    lit::run_case(runner, "3. WebSocket Exhaustive Framing Invariants", test_frameforge_r3_websocket);
+    lit::run_case(runner, "4. Close Payload & Wire Status Code Invariants (§5.5.1 / §7.4)", test_ws_close_payload_rfc6455_invariants);
+    lit::run_case(runner, "5. Control Frame Limits & Fragmentation Bans (§5.5)", test_ws_control_frame_invariants);
+    lit::run_case(runner, "6. Streaming UTF-8 Invariants & Surrogate Rejection", test_ws_streaming_utf8_invariants);
+    lit::run_case(runner, "7. RFC 8441 Client Formatting", test_rfc8441_client_formatting);
+    lit::run_case(runner, "8. RFC 8441 Validation Invariants", test_rfc8441_validation_invariants);
+    lit::run_case(runner, "9. RFC 8441 Server Upgrade", test_rfc8441_server_upgrade);
+    lit::run_case(runner, "10. RFC 8441 Stream Data Framing", test_rfc8441_data_frame_payload);
+    lit::run_case(runner, "11. WebSocket (RFC 6455 & RFC 8441) Framing and Handshake", test_websocket_framing_and_handshake);
+    lit::run_case(runner, "12. HTTP/3 PRIORITY_UPDATE (RFC 9218) Frame Codec", test_http3_priority_update);
+    lit::run_case(runner, "13. Server-Sent Events (SSE / W3C EventSource) Engine", test_server_sent_events);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

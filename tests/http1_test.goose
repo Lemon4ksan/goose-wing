@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,11 +7,12 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: http_headers ---
 // Tests for HeaderMap, header parsing, validation, and iteration.
 
-fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
+fn test_headermap_zero_heap_and_inline_slots(t: lit::T&) {
     t.run("Basic HeaderMap Operations and O(1) WellKnown Slots") { sub =>
         var map = wing::HeaderMap { .. };
         sub.assert_true(map.valid, "Newly created map is valid");
@@ -69,7 +72,7 @@ fn test_headermap_zero_heap_and_inline_slots(t: core::T&) {
     };
 }
 
-fn test_rfc9110_and_cookie_fold_isolation(t: core::T&) {
+fn test_rfc9110_and_cookie_fold_isolation(t: lit::T&) {
     t.run("List-Based Header Comma Folding (Vary, Accept)") { sub =>
         var map = wing::HeaderMap { .. };
         wing::append_header(map, "Vary", "Accept-Encoding");
@@ -120,7 +123,7 @@ fn test_rfc9110_and_cookie_fold_isolation(t: core::T&) {
     };
 }
 
-fn test_lexical_validation_and_swar(t: core::T&) {
+fn test_lexical_validation_and_swar(t: lit::T&) {
     t.run("Valid tchar and Invalid Header Name Checks") { sub =>
         sub.assert_true(wing::is_valid_header_name("Content-Type"), "Content-Type is valid");
         sub.assert_true(wing::is_valid_header_name("x-api-key_2.0"), "x-api-key_2.0 is valid");
@@ -192,7 +195,7 @@ fn test_lexical_validation_and_swar(t: core::T&) {
     };
 }
 
-fn test_httparse_regression_and_obs_fold(t: core::T&) {
+fn test_httparse_regression_and_obs_fold(t: lit::T&) {
     t.run("httparse PR #223 / Issue #222: Whitespace-Only Line Hard Syntax Error") { sub =>
         var map = wing::HeaderMap { .. };
         // A line containing only spaces between valid headers MUST NOT silently truncate headers!
@@ -222,7 +225,7 @@ fn test_httparse_regression_and_obs_fold(t: core::T&) {
     };
 }
 
-fn test_chromium_net_parity(t: core::T&) {
+fn test_chromium_net_parity(t: lit::T&) {
     t.run("Chromium raw_headers_ \\0\\0 Format") { sub =>
         var map = wing::HeaderMap { .. };
         wing::append_header(map, "Host", "chromium.org");
@@ -292,7 +295,7 @@ fn test_chromium_net_parity(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. One-Shot Chunked Decoding with Trailer Extraction
 // ----------------------------------------------------------------------------
-fn test_oneshot_chunked_trailers(t: core::T&) {
+fn test_oneshot_chunked_trailers(t: lit::T&) {
     t.run("Single and multi-chunk decoding with byte count accuracy") { sub =>
         let raw = "4\r\nWiki\r\n6\r\n pedia\r\n0\r\n\r\n";
         var out_body:     u8[>..]                = [];
@@ -352,7 +355,7 @@ fn test_oneshot_chunked_trailers(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 9112 Smuggling & Desynchronization Defenses
 // ----------------------------------------------------------------------------
-fn test_chunked_smuggling_defenses(t: core::T&) {
+fn test_chunked_smuggling_defenses(t: lit::T&) {
     t.run("Bare LF in chunk size rejection (CVE-2025-22871)") { sub =>
         var out_body:     u8[>..]                = [];
         var out_trailers: wing::HeaderItem[..16] = [];
@@ -581,7 +584,7 @@ fn test_chunked_smuggling_defenses(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Incremental Chunked Stream Decoder (Fragmented & Torture Stream Feeding)
 // ----------------------------------------------------------------------------
-fn test_incremental_chunked_stream_decoder(t: core::T&) {
+fn test_incremental_chunked_stream_decoder(t: lit::T&) {
     t.run("Torture 1-byte incremental feeding") { sub =>
         let wire = "5\r\nHello\r\n6\r\n World\r\n0\r\nX-Checksum: c89a\r\n\r\n";
         var dec = wing::ChunkedStreamDecoder { .. };
@@ -636,7 +639,7 @@ fn test_incremental_chunked_stream_decoder(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. HttpServer Ingress with Chunked Framing & Smuggling Guards
 // ----------------------------------------------------------------------------
-fn test_httpserver_chunked_ingress(t: core::T&) {
+fn test_httpserver_chunked_ingress(t: lit::T&) {
     t.run("HttpServer handles incoming chunked POST with trailers") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         wing::add_post_route(server, "/upload/chunked", 101);
@@ -701,7 +704,7 @@ fn test_httpserver_chunked_ingress(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Server Chunked Response Serialization & Symmetrical Response Wire Parser
 // ----------------------------------------------------------------------------
-fn test_chunked_response_and_wire_parser(t: core::T&) {
+fn test_chunked_response_and_wire_parser(t: lit::T&) {
     t.run("Server response serialization automatically chunks when trailers present") { sub =>
         var res = wing::Response { .. };
         res.status_code = 200;
@@ -769,7 +772,7 @@ fn test_chunked_response_and_wire_parser(t: core::T&) {
 // --- Component: http_request_smuggling ---
 // Tests for request smuggling defenses and chunked transfer decoding (RFC 9112).
 
-fn test_te_cl_request_smuggling_defense(t: core::T&) {
+fn test_te_cl_request_smuggling_defense(t: lit::T&) {
     t.run("SMUGGLE-01: Conflicting Transfer-Encoding and Content-Length (TE.CL / CL.TE) Rejection") { sub =>
         // TE then CL
         var map1 = wing::HeaderMap { .. };
@@ -956,7 +959,7 @@ fn test_te_cl_request_smuggling_defense(t: core::T&) {
     };
 }
 
-fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
+fn test_chunked_encoding_bare_lf_defense(t: lit::T&) {
     t.run("CHUNK-01: Bare LF in Chunk-Size Line Rejection (CVE-2025-22871)") { sub =>
         var out_body: u8[>..] = [];
 
@@ -1134,7 +1137,7 @@ fn test_chunked_encoding_bare_lf_defense(t: core::T&) {
     };
 }
 
-fn test_hop_by_hop_stripping_defense(t: core::T&) {
+fn test_hop_by_hop_stripping_defense(t: lit::T&) {
     t.run("HOP-01: Standard Hop-by-Hop Headers Stripped (RFC 9110 Section 7.6.1)") { sub =>
         var src = wing::HeaderMap { .. };
         let raw = "Host: example.com\r\nConnection: close\r\nKeep-Alive: timeout=5, max=100\r\nProxy-Authenticate: Basic\r\nProxy-Authorization: Basic abc\r\nTE: gzip\r\nTrailer: X-Checksum\r\nTransfer-Encoding: chunked\r\nUpgrade: websocket\r\nProxy-Connection: keep-alive\r\nContent-Type: application/json\r\nAuthorization: Bearer token123\r\n\r\n";
@@ -1234,7 +1237,7 @@ fn test_hop_by_hop_stripping_defense(t: core::T&) {
     };
 }
 
-fn test_url_quadratic_backtrack_defense(t: core::T&) {
+fn test_url_quadratic_backtrack_defense(t: lit::T&) {
     t.run("BACKTRACK-01: Linear O(N) Execution on 100 Alternating Backtrack Segments (CVE-2026-56860)") { sub =>
         var path_buf: u8[..1024] = [];
         path_buf.append("https://example.com");
@@ -1301,7 +1304,7 @@ fn test_url_quadratic_backtrack_defense(t: core::T&) {
     };
 }
 
-fn test_sfv_integer_overflow_guard(t: core::T&) {
+fn test_sfv_integer_overflow_guard(t: lit::T&) {
     t.run("SFV-01: RFC 8941 Section 3.3.1 19+ Digit Integer Accumulation Overflow Guard") { sub =>
         var item = wing::SfvItem { .. };
 
@@ -1342,7 +1345,7 @@ fn test_sfv_integer_overflow_guard(t: core::T&) {
 // - RFC 9209 Proxy-Status header parsing (error, next-hop, details, received-status)
 // - RFC 9209 formatting and multi-proxy hop chains
 
-fn test_cache_status_rfc9211(t: core::T&) {
+fn test_cache_status_rfc9211(t: lit::T&) {
     t.run("Parse Single & Multi-Cache Status") { sub =>
         let raw = "OriginCache; hit; ttl=120; key=\"asset-hash-123\"; detail=\"memory\", EdgeCache; stored; fwd=stale; fwd-status=200";
         var entries: wing::CacheStatusEntry[..8] = [];
@@ -1379,7 +1382,7 @@ fn test_cache_status_rfc9211(t: core::T&) {
     };
 }
 
-fn test_proxy_status_rfc9209(t: core::T&) {
+fn test_proxy_status_rfc9209(t: lit::T&) {
     t.run("Parse Proxy Error Status") { sub =>
         let raw = "edge-us-east; error=connection_refused; next-hop=\"10.0.1.5\"; details=\"TCP SYN reset by peer\"; received-status=502";
         var entries: wing::ProxyStatusEntry[..8] = [];
@@ -1415,7 +1418,7 @@ fn test_proxy_status_rfc9209(t: core::T&) {
 // 1. Resumable Upload (draft-ietf-httpbis-resumable-upload-14) Structured Fields & Bounds
 // 2. Early Hints (RFC 8297) & RFC 8288 Link header invariants
 
-fn test_resumable_upload_structured_fields(t: core::T&) {
+fn test_resumable_upload_structured_fields(t: lit::T&) {
     // 1. Integer parsing (non-negative integer enforcement)
     let n1, ok1 = wing::parse_upload_int("0");
     t.assert_true(ok1, "0 is valid integer");
@@ -1451,7 +1454,7 @@ fn test_resumable_upload_structured_fields(t: core::T&) {
     t.assert_false(ok_b5, "unstructured 'true' must be rejected");
 }
 
-fn test_early_hints_link_header_security(t: core::T&) {
+fn test_early_hints_link_header_security(t: lit::T&) {
     // 1. Standard Link preload
     var links1: wing::EarlyHintLink[..4] = [];
     let ok1 = wing::parse_link_header("<https://cdn.example.com/main.js>; rel=preload; as=script", links1);
@@ -1489,28 +1492,28 @@ fn test_early_hints_link_header_security(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("HTTP/1.1 Framing, Chunked Transfer, and Smuggling Defense Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP/1.1 Framing, Chunked Transfer, and Smuggling Defense Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Zero-Heap HeaderMap & Inline Slots", test_headermap_zero_heap_and_inline_slots);
-    core::run_case(runner, "2. RFC 9110 & Set-Cookie Fold Isolation", test_rfc9110_and_cookie_fold_isolation);
-    core::run_case(runner, "3. Lexical Validation & SWAR", test_lexical_validation_and_swar);
-    core::run_case(runner, "4. httparse PR #223 Regression & obs-fold", test_httparse_regression_and_obs_fold);
-    core::run_case(runner, "5. Chromium Net Parity (raw_headers, 304 Merge, Persistence)", test_chromium_net_parity);
-    core::run_case(runner, "6. One-Shot Chunked Decoding with Trailer Extraction", test_oneshot_chunked_trailers);
-    core::run_case(runner, "7. RFC 9112 Smuggling & Desynchronization Defenses", test_chunked_smuggling_defenses);
-    core::run_case(runner, "8. Incremental Chunked Stream Decoder", test_incremental_chunked_stream_decoder);
-    core::run_case(runner, "9. HttpServer Ingress with Chunked Framing & Smuggling Guards", test_httpserver_chunked_ingress);
-    core::run_case(runner, "10. Server Chunked Response Serialization & Symmetrical Response Wire Parser", test_chunked_response_and_wire_parser);
-    core::run_case(runner, "11. TE/CL Request Smuggling & Content-Length Poisoning Defense", test_te_cl_request_smuggling_defense);
-    core::run_case(runner, "12. Chunked Encoding & Bare LF Smuggling Defense (CVE-2025-22871)", test_chunked_encoding_bare_lf_defense);
-    core::run_case(runner, "13. Hop-by-Hop Header Stripping & Gateway Isolation (RFC 9110 Section 7.6.1)", test_hop_by_hop_stripping_defense);
-    core::run_case(runner, "14. URL Path Backtrack Quadratic Complexity Defense (CVE-2026-56860)", test_url_quadratic_backtrack_defense);
-    core::run_case(runner, "15. SFV Integer & Decimal 64-Bit Overflow Protection", test_sfv_integer_overflow_guard);
-    core::run_case(runner, "16. RFC 9211 Cache-Status", test_cache_status_rfc9211);
-    core::run_case(runner, "17. RFC 9209 Proxy-Status", test_proxy_status_rfc9209);
-    core::run_case(runner, "18. Resumable Upload Structured Fields", test_resumable_upload_structured_fields);
-    core::run_case(runner, "19. Early Hints Link Header Security", test_early_hints_link_header_security);
+    lit::run_case(runner, "1. Zero-Heap HeaderMap & Inline Slots", test_headermap_zero_heap_and_inline_slots);
+    lit::run_case(runner, "2. RFC 9110 & Set-Cookie Fold Isolation", test_rfc9110_and_cookie_fold_isolation);
+    lit::run_case(runner, "3. Lexical Validation & SWAR", test_lexical_validation_and_swar);
+    lit::run_case(runner, "4. httparse PR #223 Regression & obs-fold", test_httparse_regression_and_obs_fold);
+    lit::run_case(runner, "5. Chromium Net Parity (raw_headers, 304 Merge, Persistence)", test_chromium_net_parity);
+    lit::run_case(runner, "6. One-Shot Chunked Decoding with Trailer Extraction", test_oneshot_chunked_trailers);
+    lit::run_case(runner, "7. RFC 9112 Smuggling & Desynchronization Defenses", test_chunked_smuggling_defenses);
+    lit::run_case(runner, "8. Incremental Chunked Stream Decoder", test_incremental_chunked_stream_decoder);
+    lit::run_case(runner, "9. HttpServer Ingress with Chunked Framing & Smuggling Guards", test_httpserver_chunked_ingress);
+    lit::run_case(runner, "10. Server Chunked Response Serialization & Symmetrical Response Wire Parser", test_chunked_response_and_wire_parser);
+    lit::run_case(runner, "11. TE/CL Request Smuggling & Content-Length Poisoning Defense", test_te_cl_request_smuggling_defense);
+    lit::run_case(runner, "12. Chunked Encoding & Bare LF Smuggling Defense (CVE-2025-22871)", test_chunked_encoding_bare_lf_defense);
+    lit::run_case(runner, "13. Hop-by-Hop Header Stripping & Gateway Isolation (RFC 9110 Section 7.6.1)", test_hop_by_hop_stripping_defense);
+    lit::run_case(runner, "14. URL Path Backtrack Quadratic Complexity Defense (CVE-2026-56860)", test_url_quadratic_backtrack_defense);
+    lit::run_case(runner, "15. SFV Integer & Decimal 64-Bit Overflow Protection", test_sfv_integer_overflow_guard);
+    lit::run_case(runner, "16. RFC 9211 Cache-Status", test_cache_status_rfc9211);
+    lit::run_case(runner, "17. RFC 9209 Proxy-Status", test_proxy_status_rfc9209);
+    lit::run_case(runner, "18. Resumable Upload Structured Fields", test_resumable_upload_structured_fields);
+    lit::run_case(runner, "19. Early Hints Link Header Security", test_early_hints_link_header_security);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

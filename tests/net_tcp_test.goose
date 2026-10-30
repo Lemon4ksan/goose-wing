@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,10 +7,11 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: net_tcp_live ---
 
-fn test_tcp_loopback_echo(t: core::T&) {
+fn test_tcp_loopback_echo(t: lit::T&) {
     // 1. Listen on ephemeral port
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener socket must be created successfully");
@@ -67,7 +70,7 @@ fn test_tcp_loopback_echo(t: core::T&) {
 // 2. Calling async_socket_uncork while cork is empty but backpressure is pending returns needs_poll=true.
 // 3. Optional async writes (optionally=true) never pollute the backpressure queue on partial/unaccepted sends.
 
-fn test_uncork_backpressure_fifo_ordering(t: core::T&) {
+fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
     t.run("Case 1: FIFO Stream Order Preservation on Uncork with Active Backpressure") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -136,7 +139,7 @@ fn test_uncork_backpressure_fifo_ordering(t: core::T&) {
     };
 }
 
-fn test_uncork_empty_cork_with_backpressure(t: core::T&) {
+fn test_uncork_empty_cork_with_backpressure(t: lit::T&) {
     t.run("Case 2: Uncork Empty Cork Reports Needs-Poll when Backpressure Pending") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -174,7 +177,7 @@ fn test_uncork_empty_cork_with_backpressure(t: core::T&) {
 // Operates either standalone or through an intermediate ToxiProxy.
 
 // Verifies end-to-end HTTP/1.1 request/response roundtrip with streaming wire parsing
-fn test_live_h1_roundtrip(t: core::T&) {
+fn test_live_h1_roundtrip(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener started");
     let srv_port = wing::tcp_getsockname_port(listener);
@@ -223,7 +226,7 @@ fn test_live_h1_roundtrip(t: core::T&) {
 }
 
 // Verifies server rejects malformed space-before-colon request (CVE-2019-16276)
-fn test_live_h1_space_before_colon_rejected(t: core::T&) {
+fn test_live_h1_space_before_colon_rejected(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     let srv_port = wing::tcp_getsockname_port(listener);
     let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
@@ -246,7 +249,7 @@ fn test_live_h1_space_before_colon_rejected(t: core::T&) {
 }
 
 // Verifies server rejects conflicting Content-Length headers over live TCP
-fn test_live_h1_conflicting_content_length(t: core::T&) {
+fn test_live_h1_conflicting_content_length(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     let srv_port = wing::tcp_getsockname_port(listener);
     let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
@@ -268,7 +271,7 @@ fn test_live_h1_conflicting_content_length(t: core::T&) {
 }
 
 // Verifies server detects connection reset / EOF cleanly
-fn test_live_h1_abrupt_disconnect(t: core::T&) {
+fn test_live_h1_abrupt_disconnect(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     let srv_port = wing::tcp_getsockname_port(listener);
     let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
@@ -294,7 +297,7 @@ fn test_live_h1_abrupt_disconnect(t: core::T&) {
 // - Go net #40738 (TCP connection reset vs clean shutdown semantics on unread buffered data).
 // - POSIX.1-2008 & Berkeley Sockets SO_LINGER zero-abort specification.
 
-fn test_abrupt_rst_on_unread_receive_data(t: core::T&) {
+fn test_abrupt_rst_on_unread_receive_data(t: lit::T&) {
     t.run("Case 1: RFC 1122 §4.2.2.13 Abortive RST on Unread Receive Data") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -339,7 +342,7 @@ fn test_abrupt_rst_on_unread_receive_data(t: core::T&) {
     };
 }
 
-fn test_explicit_socket_abort(t: core::T&) {
+fn test_explicit_socket_abort(t: lit::T&) {
     t.run("Case 2: Explicit tcp_abort and async_socket_abort RST Teardown") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         let port = wing::tcp_getsockname_port(listener);
@@ -367,7 +370,7 @@ fn test_explicit_socket_abort(t: core::T&) {
     };
 }
 
-fn test_keepalive_boundary_validation(t: core::T&) {
+fn test_keepalive_boundary_validation(t: lit::T&) {
     t.run("Case 3: TCP Keepalive Boundary Validation (RFC 1122 §4.2.3.6)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -390,7 +393,7 @@ fn test_keepalive_boundary_validation(t: core::T&) {
     };
 }
 
-fn test_flow_control_state_tracking(t: core::T&) {
+fn test_flow_control_state_tracking(t: lit::T&) {
     t.run("Case 4: Backpressure Flow Control State Tracking") { sub =>
         var bp = wing::BackPressure { .. };
         sub.assert_false(wing::tcp_is_flow_controlled(bp), "Empty backpressure is not flow controlled");
@@ -430,7 +433,7 @@ fn test_flow_control_state_tracking(t: core::T&) {
 // - RFC 9293 Section 3.5: TCP Close sequence & full-duplex half-closed states (CLOSE_WAIT / FIN_WAIT_2).
 // - RFC 1122 Section 4.2.2.13: TCP close and lingering options (SO_LINGER).
 
-fn test_half_close_deferred_shutdown(t: core::T&) {
+fn test_half_close_deferred_shutdown(t: lit::T&) {
     t.run("Case 1: Deferred Shutdown on Active Backpressure & Re-entrant Send Block") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -499,7 +502,7 @@ fn test_half_close_deferred_shutdown(t: core::T&) {
     };
 }
 
-fn test_peer_fin_half_closed_response(t: core::T&) {
+fn test_peer_fin_half_closed_response(t: lit::T&) {
     t.run("Case 2: Peer FIN Handling & Server Response in CLOSE_WAIT State") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         let port = wing::tcp_getsockname_port(listener);
@@ -548,7 +551,7 @@ fn test_peer_fin_half_closed_response(t: core::T&) {
     };
 }
 
-fn test_socket_options_tuning(t: core::T&) {
+fn test_socket_options_tuning(t: lit::T&) {
     t.run("Case 3: Live OS Socket Options (SO_LINGER, TCP_NODELAY, SO_REUSEADDR)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -595,7 +598,7 @@ fn test_socket_options_tuning(t: core::T&) {
 // 6. Zero-copy shared buffer (tcp_recv_shared) and direct slice (tcp_recv_slice).
 // 7. Abrupt TCP RST termination via tcp_abort propagating ECONNRESET to peer.
 
-fn test_nonblocking_empty_wouldblock(t: core::T&) {
+fn test_nonblocking_empty_wouldblock(t: lit::T&) {
     t.run("Case 1: Non-blocking Socket Empty Read Returns WouldBlock (-2)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -620,7 +623,7 @@ fn test_nonblocking_empty_wouldblock(t: core::T&) {
     };
 }
 
-fn test_nonblocking_data_exchange(t: core::T&) {
+fn test_nonblocking_data_exchange(t: lit::T&) {
     t.run("Case 2: Non-blocking Socket Data Reception & Return to WouldBlock") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -654,7 +657,7 @@ fn test_nonblocking_data_exchange(t: core::T&) {
     };
 }
 
-fn test_connect_refused_immediate_failure(t: core::T&) {
+fn test_connect_refused_immediate_failure(t: lit::T&) {
     t.run("Case 3: Connection Refusal on Closed Port Returns Immediate Error") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Temporary listener created");
@@ -692,7 +695,7 @@ fn execute_single_burst_exchange(listener: i64, port: u16) -> bool {
     return true;
 }
 
-fn test_rapid_connection_burst(t: core::T&) {
+fn test_rapid_connection_burst(t: lit::T&) {
     t.run("Case 4: Rapid Connection Burst Lifecycle & Zero Descriptor Leaks") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 32);
         sub.assert_gt(listener, 0, "Listener created");
@@ -706,7 +709,7 @@ fn test_rapid_connection_burst(t: core::T&) {
     };
 }
 
-fn test_vectored_send2_edge_cases(t: core::T&) {
+fn test_vectored_send2_edge_cases(t: lit::T&) {
     t.run("Case 5: Vectored I/O (tcp_send2) Edge Cases with Empty Slices") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -747,7 +750,7 @@ fn test_vectored_send2_edge_cases(t: core::T&) {
     };
 }
 
-fn test_shared_buffer_recv(t: core::T&) {
+fn test_shared_buffer_recv(t: lit::T&) {
     t.run("Case 6: Zero-Copy Shared Buffer Recv (tcp_recv_shared)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -771,7 +774,7 @@ fn test_shared_buffer_recv(t: core::T&) {
     };
 }
 
-fn test_direct_slice_recv(t: core::T&) {
+fn test_direct_slice_recv(t: lit::T&) {
     t.run("Case 7: Direct Destination Slice Recv (tcp_recv_slice)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -796,7 +799,7 @@ fn test_direct_slice_recv(t: core::T&) {
     };
 }
 
-fn test_peer_abort_propagation(t: core::T&) {
+fn test_peer_abort_propagation(t: lit::T&) {
     t.run("Case 8: Peer tcp_abort Discard & Immediate Reset Propagation") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -828,7 +831,7 @@ fn test_peer_abort_propagation(t: core::T&) {
 // - Profile and ClientProfile dispatch overloads
 // - Socket option summary formatting
 
-fn test_socket_p0f_profiles(t: core::T&) {
+fn test_socket_p0f_profiles(t: lit::T&) {
     t.run("Wing Authentic Zero-Heap NetStack Profile") { sub =>
         let wing_cfg = internal::p0f_socket_config(wing::Profile.Wing);
         sub.assert_eq(wing_cfg.ttl, 64, "Wing TTL is 64");
@@ -859,7 +862,7 @@ fn test_socket_p0f_profiles(t: core::T&) {
     };
 }
 
-fn test_socket_invariant_validation(t: core::T&) {
+fn test_socket_invariant_validation(t: lit::T&) {
     t.run("Invariant Boundary Checks") { sub =>
         var bad_cfg = internal::p0f_socket_config(wing::Profile.Wing);
 
@@ -902,7 +905,7 @@ fn test_socket_invariant_validation(t: core::T&) {
     };
 }
 
-fn test_live_socket_options(t: core::T&) {
+fn test_live_socket_options(t: lit::T&) {
     t.run("OS Socket Option Tuning & Telemetry") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener socket created");
@@ -968,7 +971,7 @@ fn test_live_socket_options(t: core::T&) {
 // - Ring compaction under slot pressure
 // - Real kernel TCP socket transmission via tcp_sendv
 
-fn test_iovec_lifecycle(t: core::T&) {
+fn test_iovec_lifecycle(t: lit::T&) {
     t.run("IoVecArray Lifecycle & Capacity") { sub =>
         var arr = core::new_iovec_array();
         sub.assert_true(core::iovec_is_empty(arr), "Initially empty");
@@ -1003,7 +1006,7 @@ fn test_iovec_lifecycle(t: core::T&) {
     };
 }
 
-fn test_iovec_flatten_and_copy(t: core::T&) {
+fn test_iovec_flatten_and_copy(t: lit::T&) {
     t.run("IoVecArray Flatten & Copy") { sub =>
         var arr = core::new_iovec_array();
         core::iovec_push(arr, "AAAA");
@@ -1029,7 +1032,7 @@ fn test_iovec_flatten_and_copy(t: core::T&) {
     };
 }
 
-fn test_iovec_consumption_and_compact(t: core::T&) {
+fn test_iovec_consumption_and_compact(t: lit::T&) {
     t.run("Partial Consumption & Compact") { sub =>
         var arr = core::new_iovec_array();
         core::iovec_push(arr, "0123456789"); // 10 bytes
@@ -1064,7 +1067,7 @@ fn test_iovec_consumption_and_compact(t: core::T&) {
     };
 }
 
-fn test_tcp_sendv_socket(t: core::T&) {
+fn test_tcp_sendv_socket(t: lit::T&) {
     t.run("Kernel TCP Transmission via tcp_sendv") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener bound");
@@ -1100,7 +1103,7 @@ fn test_tcp_sendv_socket(t: core::T&) {
 
 // RFC 7413 Section 5: TCP Fast Open Configuration
 // RFC 3168 Section 5: The ECN Field in IP
-fn test_tcp_fastopen_and_ecn(t: core::T&) {
+fn test_tcp_fastopen_and_ecn(t: lit::T&) {
     t.run("TCP-01: TCP Fast Open constants and option flags") { sub =>
         sub.assert_eq(wing::TCP_FASTOPEN_DEFAULT_QLEN, 512, "default TFO queue length is 512");
         sub.assert_eq(wing::MSG_FASTOPEN, 0x20000000, "MSG_FASTOPEN flag is 0x20000000");
@@ -1145,39 +1148,39 @@ fn test_tcp_fastopen_and_ecn(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("TCP Socket IO, Corking, Abort, and Half-Close Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("TCP Socket IO, Corking, Abort, and Half-Close Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Live TCP Loopback Request/Response Roundtrip", test_tcp_loopback_echo);
-    core::run_case(runner, "2. Uncork Backpressure FIFO Ordering", test_uncork_backpressure_fifo_ordering);
-    core::run_case(runner, "3. Empty Cork Backpressure Polling", test_uncork_empty_cork_with_backpressure);
-    core::run_case(runner, "4. Live TCP H1 Chunked Roundtrip", test_live_h1_roundtrip);
-    core::run_case(runner, "5. Live TCP CVE-2019-16276 Space-Before-Colon Rejection", test_live_h1_space_before_colon_rejected);
-    core::run_case(runner, "6. Live TCP Conflicting Content-Length Rejection", test_live_h1_conflicting_content_length);
-    core::run_case(runner, "7. Live TCP Abrupt Disconnect / EOF Handling", test_live_h1_abrupt_disconnect);
-    core::run_case(runner, "8. RFC 1122 §4.2.2.13 Abortive RST on Unread Receive Data", test_abrupt_rst_on_unread_receive_data);
-    core::run_case(runner, "9. Explicit Socket Abort RST Teardown", test_explicit_socket_abort);
-    core::run_case(runner, "10. TCP Keepalive Boundary Validation", test_keepalive_boundary_validation);
-    core::run_case(runner, "11. Backpressure Flow Control State Tracking", test_flow_control_state_tracking);
-    core::run_case(runner, "12. Deferred Shutdown on Active Backpressure", test_half_close_deferred_shutdown);
-    core::run_case(runner, "13. Peer FIN Half-Close Full-Duplex Ordering", test_peer_fin_half_closed_response);
-    core::run_case(runner, "14. Live Socket Options Tuning", test_socket_options_tuning);
-    core::run_case(runner, "15. Non-blocking Recv WouldBlock", test_nonblocking_empty_wouldblock);
-    core::run_case(runner, "16. Non-blocking Data Exchange", test_nonblocking_data_exchange);
-    core::run_case(runner, "17. Closed Port Connection Refusal", test_connect_refused_immediate_failure);
-    core::run_case(runner, "18. Rapid Connection Burst Lifecycle", test_rapid_connection_burst);
-    core::run_case(runner, "19. Vectored Send2 Edge Cases", test_vectored_send2_edge_cases);
-    core::run_case(runner, "20. Shared Buffer Recv Zero-Copy", test_shared_buffer_recv);
-    core::run_case(runner, "21. Direct Slice Recv Zero-Copy", test_direct_slice_recv);
-    core::run_case(runner, "22. Peer Abort RST Propagation", test_peer_abort_propagation);
-    core::run_case(runner, "23. Socket p0f Profiles", test_socket_p0f_profiles);
-    core::run_case(runner, "24. Socket Invariant Validation", test_socket_invariant_validation);
-    core::run_case(runner, "25. Live OS Socket Tuning & Telemetry", test_live_socket_options);
-    core::run_case(runner, "26. IoVec Lifecycle & Capacity", test_iovec_lifecycle);
-    core::run_case(runner, "27. IoVec Flatten & Copy", test_iovec_flatten_and_copy);
-    core::run_case(runner, "28. IoVec Consumption & Compact", test_iovec_consumption_and_compact);
-    core::run_case(runner, "29. Kernel TCP tcp_sendv", test_tcp_sendv_socket);
-    core::run_case(runner, "30. TCP Fast Open (RFC 7413) & ECN Options (RFC 3168)", test_tcp_fastopen_and_ecn);
+    lit::run_case(runner, "1. Live TCP Loopback Request/Response Roundtrip", test_tcp_loopback_echo);
+    lit::run_case(runner, "2. Uncork Backpressure FIFO Ordering", test_uncork_backpressure_fifo_ordering);
+    lit::run_case(runner, "3. Empty Cork Backpressure Polling", test_uncork_empty_cork_with_backpressure);
+    lit::run_case(runner, "4. Live TCP H1 Chunked Roundtrip", test_live_h1_roundtrip);
+    lit::run_case(runner, "5. Live TCP CVE-2019-16276 Space-Before-Colon Rejection", test_live_h1_space_before_colon_rejected);
+    lit::run_case(runner, "6. Live TCP Conflicting Content-Length Rejection", test_live_h1_conflicting_content_length);
+    lit::run_case(runner, "7. Live TCP Abrupt Disconnect / EOF Handling", test_live_h1_abrupt_disconnect);
+    lit::run_case(runner, "8. RFC 1122 §4.2.2.13 Abortive RST on Unread Receive Data", test_abrupt_rst_on_unread_receive_data);
+    lit::run_case(runner, "9. Explicit Socket Abort RST Teardown", test_explicit_socket_abort);
+    lit::run_case(runner, "10. TCP Keepalive Boundary Validation", test_keepalive_boundary_validation);
+    lit::run_case(runner, "11. Backpressure Flow Control State Tracking", test_flow_control_state_tracking);
+    lit::run_case(runner, "12. Deferred Shutdown on Active Backpressure", test_half_close_deferred_shutdown);
+    lit::run_case(runner, "13. Peer FIN Half-Close Full-Duplex Ordering", test_peer_fin_half_closed_response);
+    lit::run_case(runner, "14. Live Socket Options Tuning", test_socket_options_tuning);
+    lit::run_case(runner, "15. Non-blocking Recv WouldBlock", test_nonblocking_empty_wouldblock);
+    lit::run_case(runner, "16. Non-blocking Data Exchange", test_nonblocking_data_exchange);
+    lit::run_case(runner, "17. Closed Port Connection Refusal", test_connect_refused_immediate_failure);
+    lit::run_case(runner, "18. Rapid Connection Burst Lifecycle", test_rapid_connection_burst);
+    lit::run_case(runner, "19. Vectored Send2 Edge Cases", test_vectored_send2_edge_cases);
+    lit::run_case(runner, "20. Shared Buffer Recv Zero-Copy", test_shared_buffer_recv);
+    lit::run_case(runner, "21. Direct Slice Recv Zero-Copy", test_direct_slice_recv);
+    lit::run_case(runner, "22. Peer Abort RST Propagation", test_peer_abort_propagation);
+    lit::run_case(runner, "23. Socket p0f Profiles", test_socket_p0f_profiles);
+    lit::run_case(runner, "24. Socket Invariant Validation", test_socket_invariant_validation);
+    lit::run_case(runner, "25. Live OS Socket Tuning & Telemetry", test_live_socket_options);
+    lit::run_case(runner, "26. IoVec Lifecycle & Capacity", test_iovec_lifecycle);
+    lit::run_case(runner, "27. IoVec Flatten & Copy", test_iovec_flatten_and_copy);
+    lit::run_case(runner, "28. IoVec Consumption & Compact", test_iovec_consumption_and_compact);
+    lit::run_case(runner, "29. Kernel TCP tcp_sendv", test_tcp_sendv_socket);
+    lit::run_case(runner, "30. TCP Fast Open (RFC 7413) & ECN Options (RFC 3168)", test_tcp_fastopen_and_ecn);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

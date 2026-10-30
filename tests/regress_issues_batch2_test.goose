@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: regress_issues_batch06 ---
 // Phase 6 RED test suite based on .gemini issue trackers and RFC specifications.
@@ -22,7 +25,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. RFC 9113 §8.2.1: HTTP/2 Field Value CTL Characters
 // ----------------------------------------------------------------------------
-fn test_h2_field_value_ctl_rejection(t: core::T&) {
+fn test_h2_field_value_ctl_rejection(t: lit::T&) {
     t.run("Valid field value without control characters is accepted") { sub =>
         let ok = internal::validate_h2_field_syntax("custom-header", "valid-value-123");
         sub.assert_true(ok, "Standard printable ASCII value must be valid");
@@ -58,7 +61,7 @@ fn test_h2_field_value_ctl_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 9113 §8.3: Undefined Pseudo-Headers MUST Return PROTOCOL_ERROR
 // ----------------------------------------------------------------------------
-fn test_h2_undefined_pseudo_header_rejection(t: core::T&) {
+fn test_h2_undefined_pseudo_header_rejection(t: lit::T&) {
     t.run("Valid standard pseudo-headers accepted in order") { sub =>
         var list = internal::DecodedH2HeaderList { .. };
         let err1 = internal::validate_header_ordering_and_rules(list, ":method", "GET");
@@ -87,7 +90,7 @@ fn test_h2_undefined_pseudo_header_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 9114 §4.2 & RFC 9204 §4.1: HTTP/3 QPACK Uppercase Literal Field Names
 // ----------------------------------------------------------------------------
-fn test_qpack_uppercase_literal_field_name_rejection(t: core::T&) {
+fn test_qpack_uppercase_literal_field_name_rejection(t: lit::T&) {
     t.run("Lowercase literal field name is decoded successfully") { sub =>
         var tbl = internal::QpackTable { .. };
         var out_fields: internal::HeaderField[>..] = [];
@@ -129,7 +132,7 @@ fn test_qpack_uppercase_literal_field_name_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 9113 §6.6: Frame Header Rules for PUSH_PROMISE
 // ----------------------------------------------------------------------------
-fn test_h2_push_promise_frame_rules(t: core::T&) {
+fn test_h2_push_promise_frame_rules(t: lit::T&) {
     t.run("PUSH_PROMISE on stream 0 MUST return ERR_PROTOCOL_ERROR") { sub =>
         // RFC 9113 Section 6.6: "PUSH_PROMISE frames MUST be associated with an existing, peer-initiated stream.
         // If the stream identifier field specifies the value 0x00, a recipient MUST respond with a connection error of type PROTOCOL_ERROR."
@@ -171,7 +174,7 @@ fn test_h2_push_promise_frame_rules(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 9112 §7.1 & CVE-2023-45287 (Go #71988): Chunked FSM Bare LF in Chunk Size Rejection
 // ----------------------------------------------------------------------------
-fn test_chunked_fsm_bare_lf_rejection(t: core::T&) {
+fn test_chunked_fsm_bare_lf_rejection(t: lit::T&) {
     t.run("Chunk size terminated with bare LF MUST return Error") { sub =>
         // RFC 9112 Section 7.1 & Section 2.2: Bare LF on chunk size line is forbidden (HTTP Smuggling)
         var dec = internal::new_chunk_fsm_decoder();
@@ -191,7 +194,7 @@ fn test_chunked_fsm_bare_lf_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. RFC 9112 §7.1.1 & Go #82257: Chunked FSM BWS (Spaces/Tabs) Preceding Semicolon Acceptance
 // ----------------------------------------------------------------------------
-fn test_chunked_fsm_bws_preceding_semicolon(t: core::T&) {
+fn test_chunked_fsm_bws_preceding_semicolon(t: lit::T&) {
     t.run("Space preceding semicolon in chunk extension MUST be accepted") { sub =>
         // RFC 9112 Section 7.1.1: chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
         // BWS = *( SP / HTAB )
@@ -242,7 +245,7 @@ fn test_chunked_fsm_bws_preceding_semicolon(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 9110 §13.2.2: parse_field_names Bounded Capacity Overflow Protection
 // ----------------------------------------------------------------------------
-fn test_cache_control_field_names_overflow_protection(t: core::T&) {
+fn test_cache_control_field_names_overflow_protection(t: lit::T&) {
     t.run("Long header field name > 64 bytes in Cache-Control MUST NOT panic") { sub =>
         // Capacity of buf in parse_field_names is 64 bytes.
         // A header field name with 80 bytes would previously exceed capacity and panic.
@@ -280,7 +283,7 @@ fn test_cache_control_field_names_overflow_protection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Frame Stream ID Invariant
 // ----------------------------------------------------------------------------
-fn test_h2_goaway_stream_id_zero(t: core::T&) {
+fn test_h2_goaway_stream_id_zero(t: lit::T&) {
     t.run("GOAWAY frame on stream_id > 0 must return ERR_PROTOCOL_ERROR (RFC 9113 §6.8)") { sub =>
         // RFC 9113 Section 6.8:
         // "GOAWAY frames apply to the connection, not a specific stream, so the stream identifier
@@ -319,7 +322,7 @@ fn test_h2_goaway_stream_id_zero(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 6265bis §5.4 & Go #82389: Cookie Relative Path Attribute Ignored
 // ----------------------------------------------------------------------------
-fn test_cookie_relative_path_ignored(t: core::T&) {
+fn test_cookie_relative_path_ignored(t: lit::T&) {
     t.run("Cookie Path attribute without leading slash MUST be ignored (RFC 6265bis §5.4)") { sub =>
         // RFC 6265bis Section 5.4:
         // "If the attribute-value is empty or if the first character of the
@@ -348,7 +351,7 @@ fn test_cookie_relative_path_ignored(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 9110 §13.2.1: Cache-Control max-age Arithmetic Overflow Clamping
 // ----------------------------------------------------------------------------
-fn test_cache_control_max_age_overflow_clamping(t: core::T&) {
+fn test_cache_control_max_age_overflow_clamping(t: lit::T&) {
     t.run("Huge max-age delta-seconds (20+ digits) must saturate to MAX_DELTA_SECONDS without wrapping") { sub =>
         // RFC 9110 Section 13.2.1 & RFC 8941:
         // Delta-seconds directives with huge number of digits must saturate/clamp to MAX_DELTA_SECONDS
@@ -363,7 +366,7 @@ fn test_cache_control_max_age_overflow_clamping(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 9113 §8.5 & RFC 8441: HTTP/2 Standard CONNECT Request Rejection if :scheme or :path Present
 // ----------------------------------------------------------------------------
-fn test_h2_connect_scheme_path_rejection(t: core::T&) {
+fn test_h2_connect_scheme_path_rejection(t: lit::T&) {
     t.run("Standard CONNECT with :path present MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)") { sub =>
         // RFC 9113 Section 8.5:
         // "For CONNECT requests, the ':path' and ':scheme' pseudo-header fields MUST be omitted."
@@ -402,7 +405,7 @@ fn test_h2_connect_scheme_path_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 6455 §5.5 & Go #7825: WebSocket Empty Payload Ping / Pong Roundtrip
 // ----------------------------------------------------------------------------
-fn test_ws_empty_payload_ping_pong(t: core::T&) {
+fn test_ws_empty_payload_ping_pong(t: lit::T&) {
     t.run("WebSocket Ping with 0 payload is accepted and answered with 0-payload Pong") { sub =>
         // RFC 6455 §5.5.2 & §5.5.3 / Go #7825:
         // A Ping frame MAY carry an empty application data payload (0 bytes).
@@ -437,7 +440,7 @@ fn test_ws_empty_payload_ping_pong(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. CVE-2026-42507 & Go #79346: Control Character Sanitization in Diagnostic Error Messages
 // ----------------------------------------------------------------------------
-fn test_diagnostic_control_character_sanitization(t: core::T&) {
+fn test_diagnostic_control_character_sanitization(t: lit::T&) {
     t.run("Control characters in untrusted tokens MUST be escaped for safe logging") { sub =>
         // CVE-2026-42507 & Go #79346:
         // Untrusted header tokens containing CRLF or control bytes (< 0x20, > 0x7E)
@@ -461,7 +464,7 @@ fn test_diagnostic_control_character_sanitization(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 9110 §15.2 & Go #65035: Excessive 1xx Informational Response Limit Defense
 // ----------------------------------------------------------------------------
-fn test_informational_1xx_response_limit(t: core::T&) {
+fn test_informational_1xx_response_limit(t: lit::T&) {
     t.run("Consecutive 1xx responses exceeding limit MUST be rejected") { sub =>
         // RFC 9110 Section 15.2 & Go #65035:
         // Bound consecutive 1xx informational responses (default limit: 5) to prevent infinite loops.
@@ -475,7 +478,7 @@ fn test_informational_1xx_response_limit(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. RFC 9113 §8.3.1 & RFC 9110 §7.1: HTTP/2 Asterisk-form :path = "*" ONLY for OPTIONS
 // ----------------------------------------------------------------------------
-fn test_h2_asterisk_path_only_for_options(t: core::T&) {
+fn test_h2_asterisk_path_only_for_options(t: lit::T&) {
     t.run("Asterisk-form :path '*' is valid for OPTIONS method") { sub =>
         var headers = internal::DecodedH2HeaderList { .. };
         let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "OPTIONS");
@@ -500,7 +503,7 @@ fn test_h2_asterisk_path_only_for_options(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. RFC 9113 §8.3: Request and Response Pseudo-Header Segregation
 // ----------------------------------------------------------------------------
-fn test_h2_pseudo_header_request_response_segregation(t: core::T&) {
+fn test_h2_pseudo_header_request_response_segregation(t: lit::T&) {
     t.run("Response pseudo-header :status in Request header block MUST return ERR_PROTOCOL_ERROR") { sub =>
         var headers = internal::DecodedH2HeaderList { .. };
         let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
@@ -525,7 +528,7 @@ fn test_h2_pseudo_header_request_response_segregation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 10. RFC 9113 §8.3.1 & Go #78762: HTTP/2 :authority vs Host Consistency and Duplicates
 // ----------------------------------------------------------------------------
-fn test_h2_authority_host_consistency_and_duplicates(t: core::T&) {
+fn test_h2_authority_host_consistency_and_duplicates(t: lit::T&) {
     t.run("Matching :authority and Host headers are accepted") { sub =>
         var headers = internal::DecodedH2HeaderList { .. };
         let ok_auth = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com");
@@ -560,7 +563,7 @@ fn test_h2_authority_host_consistency_and_duplicates(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 11. CVE-2026-94441 & Go #81656: Scheme Isolation in Connection Pool Keys
 // ----------------------------------------------------------------------------
-fn test_h2c_vs_https_connection_pool_isolation(t: core::T&) {
+fn test_h2c_vs_https_connection_pool_isolation(t: lit::T&) {
     t.run("Connection pool key for H2c vs Https to same host:port MUST NOT match") { sub =>
         let dummy_proxy = wing::ProxyChain { .. };
         let dummy_part = wing::NetworkAnonymizationKey { .. };
@@ -592,7 +595,7 @@ fn test_h2c_vs_https_connection_pool_isolation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 12. RFC 9114 §6.2.1 & Go #78102: Duplicate HTTP/3 Control Stream Rejection
 // ----------------------------------------------------------------------------
-fn test_h3_duplicate_control_stream_rejection(t: core::T&) {
+fn test_h3_duplicate_control_stream_rejection(t: lit::T&) {
     t.run("Second H3_STREAM_CONTROL stream MUST be rejected with H3_ERR_STREAM_CREATION (0x0103)") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -615,7 +618,7 @@ fn test_h3_duplicate_control_stream_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 13. RFC 9112 §7.1.1 & Go #82257: Chunk Extension with Bad Whitespace Before Semicolon
 // ----------------------------------------------------------------------------
-fn test_chunked_bws_before_semicolon(t: core::T&) {
+fn test_chunked_bws_before_semicolon(t: lit::T&) {
     t.run("Chunk extension with space before semicolon parses cleanly (RFC 9112 §7.1.1)") { sub =>
         let wire = "5 ; ext=val\r\nhello\r\n0\r\n\r\n";
         var body: u8[>..] = [];
@@ -648,7 +651,7 @@ fn test_chunked_bws_before_semicolon(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Peer Role Invariant
 // ----------------------------------------------------------------------------
-fn test_h2_goaway_last_stream_id_peer_role(t: core::T&) {
+fn test_h2_goaway_last_stream_id_peer_role(t: lit::T&) {
     t.run("Client GOAWAY with odd stream ID sent to Server MUST be rejected with PROTOCOL_ERROR") { sub =>
         // RFC 9113 Section 6.8 & Go #80759:
         // "Since streams initiated by a client have odd stream identifiers and streams initiated
@@ -690,7 +693,7 @@ fn test_h2_goaway_last_stream_id_peer_role(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 9113 §6.8 & Go #82365: HTTP/2 Stream Ingestion Blocked After GOAWAY
 // ----------------------------------------------------------------------------
-fn test_h2_stream_blocked_after_goaway(t: core::T&) {
+fn test_h2_stream_blocked_after_goaway(t: lit::T&) {
     t.run("New stream headers frame on stream > last_stream_id after GOAWAY MUST return ERR_REFUSED_STREAM") { sub =>
         // RFC 9113 Section 6.8 & Go #82365:
         // After receiving a GOAWAY frame with Last-Stream-ID = N, any new stream with ID > N
@@ -726,7 +729,7 @@ fn test_h2_stream_blocked_after_goaway(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 9113 §8.3.1 & Go #77843: HTTP/2 :path Pseudo-Header Character Validation
 // ----------------------------------------------------------------------------
-fn test_h2_path_character_validation(t: core::T&) {
+fn test_h2_path_character_validation(t: lit::T&) {
     t.run("Path containing unescaped angle brackets (<>) MUST return ERR_PROTOCOL_ERROR (Go #77843)") { sub =>
         var headers = internal::DecodedH2HeaderList { .. };
         let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
@@ -754,7 +757,7 @@ fn test_h2_path_character_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 9113 §8.3 & Go #78775: HTTP/2 Trailer Section Forbidden Pseudo-Headers
 // ----------------------------------------------------------------------------
-fn test_h2_trailer_forbidden_pseudo_headers(t: core::T&) {
+fn test_h2_trailer_forbidden_pseudo_headers(t: lit::T&) {
     t.run("Pseudo-headers in HTTP/2 trailer block MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3)") { sub =>
         // RFC 9113 Section 8.3:
         // "Pseudo-header fields MUST NOT appear in trailer sections."
@@ -775,7 +778,7 @@ fn test_h2_trailer_forbidden_pseudo_headers(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 6455 §4.2.1: WebSocket Upgrade Handshake Missing Host Header Rejection
 // ----------------------------------------------------------------------------
-fn test_ws_handshake_missing_host_rejection(t: core::T&) {
+fn test_ws_handshake_missing_host_rejection(t: lit::T&) {
     t.run("WebSocket Upgrade handshake without Host header MUST be rejected with HTTP 400") { sub =>
         // RFC 6455 Section 4.2.1 item 2:
         // "The request MUST contain a |Host| header field."
@@ -806,7 +809,7 @@ fn test_ws_handshake_missing_host_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. RFC 6455 §4.2.2: WebSocket Subprotocol Agreement Verification
 // ----------------------------------------------------------------------------
-fn test_ws_subprotocol_agreement_verification(t: core::T&) {
+fn test_ws_subprotocol_agreement_verification(t: lit::T&) {
     t.run("Server selecting subprotocol NOT offered by client MUST NOT negotiate it (RFC 6455 §4.2.2)") { sub =>
         // RFC 6455 Section 4.2.2 item 5:
         // "If the server does include a |Sec-WebSocket-Protocol| header field in its response,
@@ -838,7 +841,7 @@ fn test_ws_subprotocol_agreement_verification(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 3986 §4.2 & Go #81292: Relative URL Double-Slash Path Authority Protection
 // ----------------------------------------------------------------------------
-fn test_relative_url_double_slash_path_protection(t: core::T&) {
+fn test_relative_url_double_slash_path_protection(t: lit::T&) {
     t.run("Relative path starting with encoded slashes MUST NOT be converted to authority (Go #81292)") { sub =>
         // Go #81292 / RFC 3986 Section 4.2:
         // Percent-encoded slashes in relative paths must not promote a path to a host.
@@ -868,7 +871,7 @@ fn test_relative_url_double_slash_path_protection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 9112 §7.2 / RFC 3986 §3.2.2 & uWebSockets #1949: HTTP/1.1 Host Validation
 // ----------------------------------------------------------------------------
-fn test_h1_host_header_validation_and_duplicates(t: core::T&) {
+fn test_h1_host_header_validation_and_duplicates(t: lit::T&) {
     t.run("Host header with path, query, fragment or userinfo MUST be rejected (uWS #1949)") { sub =>
         // RFC 9112 Section 7.2:
         // Host = uri-host [ ":" port ]
@@ -904,7 +907,7 @@ fn test_h1_host_header_validation_and_duplicates(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 9113 §8.3.1 & uWebSockets #1949: HTTP/2 :authority Forbidden Characters
 // ----------------------------------------------------------------------------
-fn test_h2_authority_character_validation(t: core::T&) {
+fn test_h2_authority_character_validation(t: lit::T&) {
     t.run(":authority with path, query, fragment or userinfo MUST return ERR_PROTOCOL_ERROR") { sub =>
         var headers = internal::DecodedH2HeaderList { .. };
         let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
@@ -931,7 +934,7 @@ fn test_h2_authority_character_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 9113 §8.1.2: HTTP/2 Trailer Section Disallowed Header Fields
 // ----------------------------------------------------------------------------
-fn test_h2_trailer_disallowed_fields(t: core::T&) {
+fn test_h2_trailer_disallowed_fields(t: lit::T&) {
     t.run("Disallowed headers in HTTP/2 trailers MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.1.2)") { sub =>
         var trailers = internal::DecodedH2HeaderList { is_trailer: true, .. };
 
@@ -958,7 +961,7 @@ fn test_h2_trailer_disallowed_fields(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 9114 §4.3: HTTP/3 / QPACK Duplicate Pseudo-Headers & Order Invariants
 // ----------------------------------------------------------------------------
-fn test_h3_pseudo_header_invariants(t: core::T&) {
+fn test_h3_pseudo_header_invariants(t: lit::T&) {
     t.run("Duplicate :status or pseudo-headers after regular headers MUST be rejected (RFC 9114 §4.3)") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -998,7 +1001,7 @@ fn test_h3_pseudo_header_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 9113 §6.5.2: HTTP/2 Client Rejection of SETTINGS_ENABLE_PUSH != 0
 // ----------------------------------------------------------------------------
-fn test_h2_client_settings_enable_push_rejection(t: core::T&) {
+fn test_h2_client_settings_enable_push_rejection(t: lit::T&) {
     t.run("Client receiving SETTINGS_ENABLE_PUSH != 0 MUST return PROTOCOL_ERROR (RFC 9113 §6.5.2)") { sub =>
         // Server receiving ENABLE_PUSH = 1 from client is VALID
         let ok_server = internal::validate_settings_parameter(internal::SETTING_ENABLE_PUSH, 1, false);
@@ -1017,7 +1020,7 @@ fn test_h2_client_settings_enable_push_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. RFC 3986 §3.2.2 & Go #77578 / CVE-2025-47912: URL Bracketed Host Validation
 // ----------------------------------------------------------------------------
-fn test_url_bracketed_host_validation(t: core::T&) {
+fn test_url_bracketed_host_validation(t: lit::T&) {
     t.run("IPv4 and non-IP hostnames in brackets MUST be rejected (CVE-2025-47912)") { sub =>
         let u1 = core::new_url("http://[127.0.0.1]/");
         sub.assert_false(u1.valid, "http://[127.0.0.1]/ MUST NOT be accepted as valid URL");
@@ -1041,7 +1044,7 @@ fn test_url_bracketed_host_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 9110 §15.4 & Go #73816 (CVE-2025-4673): Redirect Sensitive Header Stripping
 // ----------------------------------------------------------------------------
-fn test_redirect_sensitive_header_stripping(t: core::T&) {
+fn test_redirect_sensitive_header_stripping(t: lit::T&) {
     t.run("Proxy-Authorization and Authorization purged on cross-origin redirect (CVE-2025-4673)") { sub =>
         var headers: wing::HeaderItem[..32] = [];
         headers.push(wing::make_header("Authorization", "Bearer secret123"));
@@ -1087,7 +1090,7 @@ fn test_redirect_sensitive_header_stripping(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Path dot-segment desync on segment capacity overflow (core/url/parser.goose)
 // ----------------------------------------------------------------------------
-fn test_path_dot_segment_capacity_desync(t: core::T&) {
+fn test_path_dot_segment_capacity_desync(t: lit::T&) {
     t.run("Path dot-segment normalization MUST NOT desync when segments exceed 256") { sub =>
         // Construct a URL with 256 's' segments, followed by 'target' and '/..'
         // E.g.: http://example.com/s/s/.../s/target/..
@@ -1157,7 +1160,7 @@ fn test_path_dot_segment_capacity_desync(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. URL oversized input & scheme handling without runtime abort (core/url/parser.goose)
 // ----------------------------------------------------------------------------
-fn test_url_oversized_input_no_abort(t: core::T&) {
+fn test_url_oversized_input_no_abort(t: lit::T&) {
     t.run("URL with scheme > 64 bytes MUST be rejected gracefully without abort") { sub =>
         var long_scheme: u8[..128] = [];
         for i in 70 { long_scheme.push('a'); }
@@ -1180,7 +1183,7 @@ fn test_url_oversized_input_no_abort(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Query parameter smuggling & key truncation false match (core/url/query.goose)
 // ----------------------------------------------------------------------------
-fn test_query_parameter_smuggling_and_truncation(t: core::T&) {
+fn test_query_parameter_smuggling_and_truncation(t: lit::T&) {
     t.run("Fast query param lookup MUST NOT falsely match when key exceeds 64 bytes") { sub =>
         // Construct query: ?aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_evil=1
         // (64 'a's followed by '_evil')
@@ -1221,7 +1224,7 @@ fn test_query_parameter_smuggling_and_truncation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. MediaType parameter truncation smuggling & duplicate boundary (http/mime.goose)
 // ----------------------------------------------------------------------------
-fn test_mime_parameter_truncation_and_boundary(t: core::T&) {
+fn test_mime_parameter_truncation_and_boundary(t: lit::T&) {
     t.run("MediaType parameter count > 16 MUST fail parsing (no silent drop)") { sub =>
         // 16 dummy parameters followed by '; boundary=evil_boundary'
         var raw_mt: u8[..1024] = [];
@@ -1257,7 +1260,7 @@ fn test_mime_parameter_truncation_and_boundary(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Multipart oversized Content-Type header on part without abort (http/multipart.goose)
 // ----------------------------------------------------------------------------
-fn test_multipart_oversized_content_type_no_abort(t: core::T&) {
+fn test_multipart_oversized_content_type_no_abort(t: lit::T&) {
     t.run("Multipart part with Content-Type > 64 bytes MUST NOT abort") { sub =>
         var body: u8[..1024] = [];
         body.append("--myboundary\r\n");
@@ -1277,7 +1280,7 @@ fn test_multipart_oversized_content_type_no_abort(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. HPACK literal header with indexed name value > 16B abort (http2/hpack.goose)
 // ----------------------------------------------------------------------------
-fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: core::T&) {
+fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: lit::T&) {
     t.run("Literal header with indexed name pointing to dynamic table value > 16B MUST NOT abort") { sub =>
         var dt = internal::new_dynamic_table(4096);
         // Insert entry into dynamic table with name 'custom-header' and value '01234567890123456789' (20 bytes > 16)
@@ -1304,7 +1307,7 @@ fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. HTTP/2 :authority whitespace and comma rejection (http2/hpack.goose)
 // ----------------------------------------------------------------------------
-fn test_h2_authority_whitespace_rejection(t: core::T&) {
+fn test_h2_authority_whitespace_rejection(t: lit::T&) {
     t.run(":authority with interior space MUST return ERR_PROTOCOL_ERROR") { sub =>
         var headers = internal::DecodedH2HeaderList { .. };
         let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
@@ -1327,7 +1330,7 @@ fn test_h2_authority_whitespace_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. HTTP/3 unknown pseudo-header (:custom) & CTL character rejection (http3/connection.goose)
 // ----------------------------------------------------------------------------
-fn test_h3_pseudo_header_unknown_and_ctl(t: core::T&) {
+fn test_h3_pseudo_header_unknown_and_ctl(t: lit::T&) {
     t.run("HTTP/3 request with unknown pseudo-header :custom MUST return error") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -1374,7 +1377,7 @@ fn test_h3_pseudo_header_unknown_and_ctl(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. Router path capacity truncation smuggling (server/router.goose)
 // ----------------------------------------------------------------------------
-fn test_router_path_capacity_truncation_smuggling(t: core::T&) {
+fn test_router_path_capacity_truncation_smuggling(t: lit::T&) {
     t.run("Router MUST NOT truncate oversized path to match parent route") { sub =>
         var router = wing::new_radix_router();
         wing::add_route(router, "GET", "/admin", 1);
@@ -1397,7 +1400,7 @@ fn test_router_path_capacity_truncation_smuggling(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 10. Alt-Svc oversized proto/host/endpoint capacity safety (http/altsvc.goose)
 // ----------------------------------------------------------------------------
-fn test_altsvc_oversized_capacity_safety(t: core::T&) {
+fn test_altsvc_oversized_capacity_safety(t: lit::T&) {
     t.run("Alt-Svc with > 4 endpoints MUST NOT abort on fixed array overflow") { sub =>
         var endpoints: wing::AltSvcEndpoint[..4] = [];
         // Header with 5 endpoints
@@ -1416,53 +1419,53 @@ fn test_altsvc_oversized_capacity_safety(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Issue Regression Suite Batch 2 (Phases 6-10)", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Issue Regression Suite Batch 2 (Phases 6-10)", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. RFC 9113 §8.2.1: HTTP/2 Field Value CTL Characters", test_h2_field_value_ctl_rejection);
-    core::run_case(runner, "2. RFC 9113 §8.3: Undefined Pseudo-Headers Rejection", test_h2_undefined_pseudo_header_rejection);
-    core::run_case(runner, "3. RFC 9114 §4.2: QPACK Uppercase Literal Field Names", test_qpack_uppercase_literal_field_name_rejection);
-    core::run_case(runner, "4. RFC 9113 §6.6: Frame Rules for PUSH_PROMISE", test_h2_push_promise_frame_rules);
-    core::run_case(runner, "5. RFC 9112 §7.1: Chunked FSM Bare LF Rejection", test_chunked_fsm_bare_lf_rejection);
-    core::run_case(runner, "6. RFC 9112 §7.1.1: Chunked FSM BWS Before Semicolon", test_chunked_fsm_bws_preceding_semicolon);
-    core::run_case(runner, "7. RFC 9110 §13.2.2: Cache-Control Field Names Length Safety", test_cache_control_field_names_overflow_protection);
-    core::run_case(runner, "8. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Stream ID Invariant", test_h2_goaway_stream_id_zero);
-    core::run_case(runner, "9. RFC 6265bis §5.4 & Go #82389: Cookie Relative Path Attribute Ignored", test_cookie_relative_path_ignored);
-    core::run_case(runner, "10. RFC 9110 §13.2.1: Cache-Control max-age Arithmetic Overflow Clamping", test_cache_control_max_age_overflow_clamping);
-    core::run_case(runner, "11. RFC 9113 §8.5 & RFC 8441: HTTP/2 Standard CONNECT Request Rejection if :scheme or :path Present", test_h2_connect_scheme_path_rejection);
-    core::run_case(runner, "12. RFC 6455 §5.5 & Go #7825: WebSocket Empty Payload Ping / Pong Roundtrip", test_ws_empty_payload_ping_pong);
-    core::run_case(runner, "13. CVE-2026-42507 & Go #79346: Control Character Sanitization in Diagnostic Error Messages", test_diagnostic_control_character_sanitization);
-    core::run_case(runner, "14. RFC 9110 §15.2 & Go #65035: Excessive 1xx Informational Response Limit Defense", test_informational_1xx_response_limit);
-    core::run_case(runner, "15. RFC 9113 §8.3.1 & RFC 9110 §7.1: HTTP/2 Asterisk-form :path = '*' ONLY for OPTIONS", test_h2_asterisk_path_only_for_options);
-    core::run_case(runner, "16. RFC 9113 §8.3: Request and Response Pseudo-Header Segregation", test_h2_pseudo_header_request_response_segregation);
-    core::run_case(runner, "17. RFC 9113 §8.3.1 & Go #78762: HTTP/2 :authority vs Host Consistency and Duplicates", test_h2_authority_host_consistency_and_duplicates);
-    core::run_case(runner, "18. CVE-2026-94441 & Go #81656: Scheme Isolation in Connection Pool Keys", test_h2c_vs_https_connection_pool_isolation);
-    core::run_case(runner, "19. RFC 9114 §6.2.1 & Go #78102: Duplicate HTTP/3 Control Stream Rejection", test_h3_duplicate_control_stream_rejection);
-    core::run_case(runner, "20. RFC 9112 §7.1.1 & Go #82257: Chunk Extension with Bad Whitespace Before Semicolon", test_chunked_bws_before_semicolon);
-    core::run_case(runner, "21. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Peer Role Invariant", test_h2_goaway_last_stream_id_peer_role);
-    core::run_case(runner, "22. RFC 9113 §6.8 & Go #82365: HTTP/2 Inbound Stream Rejection After GOAWAY", test_h2_stream_blocked_after_goaway);
-    core::run_case(runner, "23. RFC 9113 §8.3.1 & Go #77843: HTTP/2 :path Pseudo-Header Character Validation", test_h2_path_character_validation);
-    core::run_case(runner, "24. RFC 9113 §8.3 & Go #78775: HTTP/2 Trailer Section Forbidden Pseudo-Headers", test_h2_trailer_forbidden_pseudo_headers);
-    core::run_case(runner, "25. RFC 6455 §4.2.1: WebSocket Upgrade Handshake Missing Host Header Rejection", test_ws_handshake_missing_host_rejection);
-    core::run_case(runner, "26. RFC 6455 §4.2.2: WebSocket Subprotocol Agreement Verification", test_ws_subprotocol_agreement_verification);
-    core::run_case(runner, "27. RFC 3986 §4.2 & Go #81292: Relative URL Double-Slash Path Authority Protection", test_relative_url_double_slash_path_protection);
-    core::run_case(runner, "28. RFC 9112 §7.2 / RFC 3986 §3.2.2 & uWS #1949: HTTP/1.1 Host Header Validation", test_h1_host_header_validation_and_duplicates);
-    core::run_case(runner, "29. RFC 9113 §8.3.1 & uWS #1949: HTTP/2 :authority Forbidden Characters", test_h2_authority_character_validation);
-    core::run_case(runner, "30. RFC 9113 §8.1.2: HTTP/2 Trailer Section Disallowed Header Fields", test_h2_trailer_disallowed_fields);
-    core::run_case(runner, "31. RFC 9114 §4.3: HTTP/3 / QPACK Duplicate Pseudo-Headers & Order Invariants", test_h3_pseudo_header_invariants);
-    core::run_case(runner, "32. RFC 9113 §6.5.2: HTTP/2 Client SETTINGS Frame Rejection of SETTINGS_ENABLE_PUSH != 0", test_h2_client_settings_enable_push_rejection);
-    core::run_case(runner, "33. RFC 3986 §3.2.2 & Go #77578 / CVE-2025-47912: URL Bracketed Host Validation", test_url_bracketed_host_validation);
-    core::run_case(runner, "34. RFC 9110 §15.4 & Go #73816 (CVE-2025-4673): Redirect Sensitive Header Stripping", test_redirect_sensitive_header_stripping);
-    core::run_case(runner, "35. Path dot-segment capacity desync (core/url/parser.goose)", test_path_dot_segment_capacity_desync);
-    core::run_case(runner, "36. URL oversized input handling without abort (core/url/parser.goose)", test_url_oversized_input_no_abort);
-    core::run_case(runner, "37. Query parameter smuggling & key truncation (core/url/query.goose)", test_query_parameter_smuggling_and_truncation);
-    core::run_case(runner, "38. MediaType parameter truncation & duplicate boundary (http/mime.goose)", test_mime_parameter_truncation_and_boundary);
-    core::run_case(runner, "39. Multipart oversized Content-Type header on part (http/multipart.goose)", test_multipart_oversized_content_type_no_abort);
-    core::run_case(runner, "40. HPACK literal header indexed name dynamic value overflow (http2/hpack.goose)", test_hpack_literal_indexed_name_dynamic_value_overflow);
-    core::run_case(runner, "41. HTTP/2 :authority whitespace and comma rejection (http2/hpack.goose)", test_h2_authority_whitespace_rejection);
-    core::run_case(runner, "42. HTTP/3 unknown pseudo-header & CTL character rejection (http3/connection.goose)", test_h3_pseudo_header_unknown_and_ctl);
-    core::run_case(runner, "43. Router path capacity truncation smuggling (server/router.goose)", test_router_path_capacity_truncation_smuggling);
-    core::run_case(runner, "44. Alt-Svc oversized proto/host/endpoints capacity safety (http/altsvc.goose)", test_altsvc_oversized_capacity_safety);
+    lit::run_case(runner, "1. RFC 9113 §8.2.1: HTTP/2 Field Value CTL Characters", test_h2_field_value_ctl_rejection);
+    lit::run_case(runner, "2. RFC 9113 §8.3: Undefined Pseudo-Headers Rejection", test_h2_undefined_pseudo_header_rejection);
+    lit::run_case(runner, "3. RFC 9114 §4.2: QPACK Uppercase Literal Field Names", test_qpack_uppercase_literal_field_name_rejection);
+    lit::run_case(runner, "4. RFC 9113 §6.6: Frame Rules for PUSH_PROMISE", test_h2_push_promise_frame_rules);
+    lit::run_case(runner, "5. RFC 9112 §7.1: Chunked FSM Bare LF Rejection", test_chunked_fsm_bare_lf_rejection);
+    lit::run_case(runner, "6. RFC 9112 §7.1.1: Chunked FSM BWS Before Semicolon", test_chunked_fsm_bws_preceding_semicolon);
+    lit::run_case(runner, "7. RFC 9110 §13.2.2: Cache-Control Field Names Length Safety", test_cache_control_field_names_overflow_protection);
+    lit::run_case(runner, "8. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Stream ID Invariant", test_h2_goaway_stream_id_zero);
+    lit::run_case(runner, "9. RFC 6265bis §5.4 & Go #82389: Cookie Relative Path Attribute Ignored", test_cookie_relative_path_ignored);
+    lit::run_case(runner, "10. RFC 9110 §13.2.1: Cache-Control max-age Arithmetic Overflow Clamping", test_cache_control_max_age_overflow_clamping);
+    lit::run_case(runner, "11. RFC 9113 §8.5 & RFC 8441: HTTP/2 Standard CONNECT Request Rejection if :scheme or :path Present", test_h2_connect_scheme_path_rejection);
+    lit::run_case(runner, "12. RFC 6455 §5.5 & Go #7825: WebSocket Empty Payload Ping / Pong Roundtrip", test_ws_empty_payload_ping_pong);
+    lit::run_case(runner, "13. CVE-2026-42507 & Go #79346: Control Character Sanitization in Diagnostic Error Messages", test_diagnostic_control_character_sanitization);
+    lit::run_case(runner, "14. RFC 9110 §15.2 & Go #65035: Excessive 1xx Informational Response Limit Defense", test_informational_1xx_response_limit);
+    lit::run_case(runner, "15. RFC 9113 §8.3.1 & RFC 9110 §7.1: HTTP/2 Asterisk-form :path = '*' ONLY for OPTIONS", test_h2_asterisk_path_only_for_options);
+    lit::run_case(runner, "16. RFC 9113 §8.3: Request and Response Pseudo-Header Segregation", test_h2_pseudo_header_request_response_segregation);
+    lit::run_case(runner, "17. RFC 9113 §8.3.1 & Go #78762: HTTP/2 :authority vs Host Consistency and Duplicates", test_h2_authority_host_consistency_and_duplicates);
+    lit::run_case(runner, "18. CVE-2026-94441 & Go #81656: Scheme Isolation in Connection Pool Keys", test_h2c_vs_https_connection_pool_isolation);
+    lit::run_case(runner, "19. RFC 9114 §6.2.1 & Go #78102: Duplicate HTTP/3 Control Stream Rejection", test_h3_duplicate_control_stream_rejection);
+    lit::run_case(runner, "20. RFC 9112 §7.1.1 & Go #82257: Chunk Extension with Bad Whitespace Before Semicolon", test_chunked_bws_before_semicolon);
+    lit::run_case(runner, "21. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Peer Role Invariant", test_h2_goaway_last_stream_id_peer_role);
+    lit::run_case(runner, "22. RFC 9113 §6.8 & Go #82365: HTTP/2 Inbound Stream Rejection After GOAWAY", test_h2_stream_blocked_after_goaway);
+    lit::run_case(runner, "23. RFC 9113 §8.3.1 & Go #77843: HTTP/2 :path Pseudo-Header Character Validation", test_h2_path_character_validation);
+    lit::run_case(runner, "24. RFC 9113 §8.3 & Go #78775: HTTP/2 Trailer Section Forbidden Pseudo-Headers", test_h2_trailer_forbidden_pseudo_headers);
+    lit::run_case(runner, "25. RFC 6455 §4.2.1: WebSocket Upgrade Handshake Missing Host Header Rejection", test_ws_handshake_missing_host_rejection);
+    lit::run_case(runner, "26. RFC 6455 §4.2.2: WebSocket Subprotocol Agreement Verification", test_ws_subprotocol_agreement_verification);
+    lit::run_case(runner, "27. RFC 3986 §4.2 & Go #81292: Relative URL Double-Slash Path Authority Protection", test_relative_url_double_slash_path_protection);
+    lit::run_case(runner, "28. RFC 9112 §7.2 / RFC 3986 §3.2.2 & uWS #1949: HTTP/1.1 Host Header Validation", test_h1_host_header_validation_and_duplicates);
+    lit::run_case(runner, "29. RFC 9113 §8.3.1 & uWS #1949: HTTP/2 :authority Forbidden Characters", test_h2_authority_character_validation);
+    lit::run_case(runner, "30. RFC 9113 §8.1.2: HTTP/2 Trailer Section Disallowed Header Fields", test_h2_trailer_disallowed_fields);
+    lit::run_case(runner, "31. RFC 9114 §4.3: HTTP/3 / QPACK Duplicate Pseudo-Headers & Order Invariants", test_h3_pseudo_header_invariants);
+    lit::run_case(runner, "32. RFC 9113 §6.5.2: HTTP/2 Client SETTINGS Frame Rejection of SETTINGS_ENABLE_PUSH != 0", test_h2_client_settings_enable_push_rejection);
+    lit::run_case(runner, "33. RFC 3986 §3.2.2 & Go #77578 / CVE-2025-47912: URL Bracketed Host Validation", test_url_bracketed_host_validation);
+    lit::run_case(runner, "34. RFC 9110 §15.4 & Go #73816 (CVE-2025-4673): Redirect Sensitive Header Stripping", test_redirect_sensitive_header_stripping);
+    lit::run_case(runner, "35. Path dot-segment capacity desync (core/url/parser.goose)", test_path_dot_segment_capacity_desync);
+    lit::run_case(runner, "36. URL oversized input handling without abort (core/url/parser.goose)", test_url_oversized_input_no_abort);
+    lit::run_case(runner, "37. Query parameter smuggling & key truncation (core/url/query.goose)", test_query_parameter_smuggling_and_truncation);
+    lit::run_case(runner, "38. MediaType parameter truncation & duplicate boundary (http/mime.goose)", test_mime_parameter_truncation_and_boundary);
+    lit::run_case(runner, "39. Multipart oversized Content-Type header on part (http/multipart.goose)", test_multipart_oversized_content_type_no_abort);
+    lit::run_case(runner, "40. HPACK literal header indexed name dynamic value overflow (http2/hpack.goose)", test_hpack_literal_indexed_name_dynamic_value_overflow);
+    lit::run_case(runner, "41. HTTP/2 :authority whitespace and comma rejection (http2/hpack.goose)", test_h2_authority_whitespace_rejection);
+    lit::run_case(runner, "42. HTTP/3 unknown pseudo-header & CTL character rejection (http3/connection.goose)", test_h3_pseudo_header_unknown_and_ctl);
+    lit::run_case(runner, "43. Router path capacity truncation smuggling (server/router.goose)", test_router_path_capacity_truncation_smuggling);
+    lit::run_case(runner, "44. Alt-Svc oversized proto/host/endpoints capacity safety (http/altsvc.goose)", test_altsvc_oversized_capacity_safety);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

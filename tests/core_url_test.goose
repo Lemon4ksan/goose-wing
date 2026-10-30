@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: core_url ---
 // Tests for URL parsing, IPv6 formatting, and path resolution.
@@ -12,7 +15,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. WHATWG URL Parser, IPv6 RFC 5952 Compression, and Origin
 // ----------------------------------------------------------------------------
-fn test_url_parser_and_origin(t: core::T&) {
+fn test_url_parser_and_origin(t: lit::T&) {
     t.run("Absolute URL Normalization & Default Port Stripping") { sub =>
         // Default port 80 for HTTP is stripped from authority
         let url_http = core::new_url("HTTP://Example.COM:80/path/to/resource?query=1#frag");
@@ -192,7 +195,7 @@ fn test_url_parser_and_origin(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. File URL & Path Manipulation
 // ----------------------------------------------------------------------------
-fn test_swift_style_file_and_path_api(t: core::T&) {
+fn test_swift_style_file_and_path_api(t: lit::T&) {
     t.run("new_file_url Cross-Platform Normalization") { sub =>
         // 1. Windows path with backslashes
         let url_win = core::new_file_url("C:\\Users\\admin\\Documents\\report.pdf");
@@ -326,7 +329,7 @@ fn test_swift_style_file_and_path_api(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. WHATWG URL Standard & Security Audit Verification
 // ----------------------------------------------------------------------------
-fn test_whatwg_audit_fixes(t: core::T&) {
+fn test_whatwg_audit_fixes(t: lit::T&) {
     t.run("1.1 & 1.2: Same-Site Isolation for data:, about: & blob: Origin") { sub =>
         // 1.1: data: and about: without registrable domain must NEVER match same-site
         let data1 = core::new_url("data:text/html,1");
@@ -504,7 +507,7 @@ fn test_whatwg_audit_fixes(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Canonical WPT & Edge Case Test Vectors (Categories 2 through 8)
 // ----------------------------------------------------------------------------
-fn test_canonical_wpt_and_edge_vectors(t: core::T&) {
+fn test_canonical_wpt_and_edge_vectors(t: lit::T&) {
     t.run("Category 2: Lexer, C0 Controls, Spaces & Scheme Parsing (LEX-01..09)") { sub =>
         // LEX-01: Trim C0 control characters and spaces (<= 0x20) around edges
         let url_lex01, err_lex01 = core::parse_url("\x00\x01\x1F https://example.com/path \x20\x09\x0A");
@@ -1057,7 +1060,7 @@ fn test_canonical_wpt_and_edge_vectors(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Dual-Mode URL Resolution: RFC 3986 Reference vs Backend Endpoint Joining
 // ----------------------------------------------------------------------------
-fn test_dual_mode_resolution_rfc_vs_endpoint(t: core::T&) {
+fn test_dual_mode_resolution_rfc_vs_endpoint(t: lit::T&) {
     t.run("Mode 1: Browser / RFC 3986 Reference Resolution (resolve_reference)") { sub =>
         // Base without trailing slash: "/api" is treated as a leaf file and replaced
         let base_no_slash = core::new_url("http://example.com/api");
@@ -1157,7 +1160,7 @@ fn test_dual_mode_resolution_rfc_vs_endpoint(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Case 6: Large & Dynamic URLs (UrlView and 2048-Byte Buffer)
 // ----------------------------------------------------------------------------
-fn test_dynamic_and_large_urls(t: core::T&) {
+fn test_dynamic_and_large_urls(t: lit::T&) {
     t.run("Case 6.1: 2048-Byte Buffer for Large URLs with JWT Query") { sub =>
         // Construct a 1200-byte URL with a large query token
         var large_input: u8[>..] = [];
@@ -1212,7 +1215,7 @@ fn test_dynamic_and_large_urls(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Case 7: RFC 3986 §5.2.4 & WHATWG §4.4 Standards Verification (Trailing Dots, Slashes, Windows Drives, Multicast Zone IDs)
 // ----------------------------------------------------------------------------
-fn test_rfc3986_whatwg_standards_edge_cases(t: core::T&) {
+fn test_rfc3986_whatwg_standards_edge_cases(t: lit::T&) {
     t.run("Case 7.1: WHATWG §4.4 Bare Windows Drive Trailing Slash & Boundary Normalization") { sub =>
         // Bare drive letters on file: URL MUST normalize with trailing slash
         let u_c = core::new_url("file:///C:");
@@ -1363,7 +1366,7 @@ fn test_rfc3986_whatwg_standards_edge_cases(t: core::T&) {
 // --- Component: core_url_security ---
 // Tests for URL and query string parsing edge cases.
 
-fn test_semicolon_query_splitting_defense(t: core::T&) {
+fn test_semicolon_query_splitting_defense(t: lit::T&) {
     t.run("QUERY-01: Semicolon is treated as literal content, NOT parameter separator (CVE-2021-31525)") { sub =>
         // In naive implementations, before 1.17, "a=1;b=2" was split into two parameters a=1 and b=2.
         // Under WHATWG URL, only '&' is a delimiter; ';' is literal data.
@@ -1403,7 +1406,7 @@ fn test_semicolon_query_splitting_defense(t: core::T&) {
     };
 }
 
-fn test_ipv6_host_security_bypasses(t: core::T&) {
+fn test_ipv6_host_security_bypasses(t: lit::T&) {
     t.run("IPV6-01: Bracketed IPv6 not at start of host rejection (CVE-2026-25679)") { sub =>
         // Host with prefix before bracket: bad[::1]
         let u1 = core::new_url("http://bad[::1]/");
@@ -1437,7 +1440,7 @@ fn test_ipv6_host_security_bypasses(t: core::T&) {
     };
 }
 
-fn test_port_number_boundaries_and_overflow(t: core::T&) {
+fn test_port_number_boundaries_and_overflow(t: lit::T&) {
     t.run("PORT-01: Port > 65535 rejection ") { sub =>
         // Boundary: 65536
         let u1 = core::new_url("http://example.com:65536/");
@@ -1472,7 +1475,7 @@ fn test_port_number_boundaries_and_overflow(t: core::T&) {
     };
 }
 
-fn test_path_traversal_and_userinfo(t: core::T&) {
+fn test_path_traversal_and_userinfo(t: lit::T&) {
     t.run("TRAV-01: Mixed percent-encoded dot segments sanitization ") { sub =>
         // .%2e ("..")
         let u1 = core::new_url("https://example.com/api/.%2e/admin");
@@ -1507,20 +1510,20 @@ fn test_path_traversal_and_userinfo(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Core URL Parser, Normalizer, and Security Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Core URL Parser, Normalizer, and Security Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. WHATWG URL Parser, IPv6 RFC 5952 Compression & Origin", test_url_parser_and_origin);
-    core::run_case(runner, "2. File URL & Path Manipulation", test_swift_style_file_and_path_api);
-    core::run_case(runner, "3. WHATWG URL Standard & Security Audit Verification", test_whatwg_audit_fixes);
-    core::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
-    core::run_case(runner, "5. Dual-Mode Resolution: RFC 3986 Reference vs Backend Endpoint", test_dual_mode_resolution_rfc_vs_endpoint);
-    core::run_case(runner, "6. Large & Dynamic URLs (UrlView and 2048-Byte Buffer)", test_dynamic_and_large_urls);
-    core::run_case(runner, "7. RFC 3986 & WHATWG Standards Edge Cases", test_rfc3986_whatwg_standards_edge_cases);
-    core::run_case(runner, "8. Semicolon Query Splitting Defense (CVE-2021-31525)", test_semicolon_query_splitting_defense);
-    core::run_case(runner, "9. IPv6 Host Security Bypasses (CVE-2026-25679 & CVE-2025-47912)", test_ipv6_host_security_bypasses);
-    core::run_case(runner, "10. Port Number Boundaries & Overflow Defense", test_port_number_boundaries_and_overflow);
-    core::run_case(runner, "11. Path Traversal & Userinfo Isolation", test_path_traversal_and_userinfo);
+    lit::run_case(runner, "1. WHATWG URL Parser, IPv6 RFC 5952 Compression & Origin", test_url_parser_and_origin);
+    lit::run_case(runner, "2. File URL & Path Manipulation", test_swift_style_file_and_path_api);
+    lit::run_case(runner, "3. WHATWG URL Standard & Security Audit Verification", test_whatwg_audit_fixes);
+    lit::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
+    lit::run_case(runner, "5. Dual-Mode Resolution: RFC 3986 Reference vs Backend Endpoint", test_dual_mode_resolution_rfc_vs_endpoint);
+    lit::run_case(runner, "6. Large & Dynamic URLs (UrlView and 2048-Byte Buffer)", test_dynamic_and_large_urls);
+    lit::run_case(runner, "7. RFC 3986 & WHATWG Standards Edge Cases", test_rfc3986_whatwg_standards_edge_cases);
+    lit::run_case(runner, "8. Semicolon Query Splitting Defense (CVE-2021-31525)", test_semicolon_query_splitting_defense);
+    lit::run_case(runner, "9. IPv6 Host Security Bypasses (CVE-2026-25679 & CVE-2025-47912)", test_ipv6_host_security_bypasses);
+    lit::run_case(runner, "10. Port Number Boundaries & Overflow Defense", test_port_number_boundaries_and_overflow);
+    lit::run_case(runner, "11. Path Traversal & Userinfo Isolation", test_path_traversal_and_userinfo);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

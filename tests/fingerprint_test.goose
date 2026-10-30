@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,10 +7,11 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // Verification Suite for FoxIO JA4 (TLS) / JA4H (HTTP) fingerprinting and Wing Profile System.
 
-fn test_ja4_tls_fingerprint(t: core::T&) {
+fn test_ja4_tls_fingerprint(t: lit::T&) {
     t.run("1. FoxIO JA4 Specification Conformance & Vector Verification") { sub =>
         let ciphers: u16[15] = [
             0x002f, 0x0035, 0x009c, 0x009d, 0x1301, 0x1302, 0x1303,
@@ -78,7 +81,7 @@ fn test_ja4_tls_fingerprint(t: core::T&) {
     };
 }
 
-fn test_ja4h_http_fingerprint(t: core::T&) {
+fn test_ja4h_http_fingerprint(t: lit::T&) {
     t.run("1. FoxIO JA4H HTTP Request Vector Verification") { sub =>
         let headers:       const u8[:][4] = ["Accept", "Accept-Encoding", "Accept-Language", "User-Agent"];
         let cookie_names:  const u8[:][2] = ["session_id", "csrf_token"];
@@ -127,7 +130,7 @@ fn test_ja4h_http_fingerprint(t: core::T&) {
     };
 }
 
-fn test_wing_profile_and_session(t: core::T&) {
+fn test_wing_profile_and_session(t: lit::T&) {
     t.run("1. Wing Authentic Default Profile Inspection") { sub =>
         let p = wing::wing_default_profile();
         sub.assert_eq(p.kind, wing::Profile.Wing, "Default profile kind is Wing");
@@ -206,7 +209,7 @@ fn test_wing_profile_and_session(t: core::T&) {
 // 6. Pseudo-header canonical ordering
 // 7. High-level BrowserProfile and Session integration
 
-fn test_akamai_presets_and_hashes(t: core::T&) {
+fn test_akamai_presets_and_hashes(t: lit::T&) {
     t.run("Verify standard Akamai fingerprint presets and MD5 hashes") { sub =>
         // 1. Chrome 124+ Preset
         let chrome_fp = wing::akamai_chrome_preset();
@@ -243,7 +246,7 @@ fn test_akamai_presets_and_hashes(t: core::T&) {
     };
 }
 
-fn test_akamai_parsing_and_roundtrip(t: core::T&) {
+fn test_akamai_parsing_and_roundtrip(t: lit::T&) {
     t.run("Parse raw Akamai string and verify round-trip serialization") { sub =>
         let raw = "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p";
         let fp, ok = wing::parse_akamai_fingerprint(raw);
@@ -306,7 +309,7 @@ fn test_akamai_parsing_and_roundtrip(t: core::T&) {
     };
 }
 
-fn test_akamai_matching_and_family(t: core::T&) {
+fn test_akamai_matching_and_family(t: lit::T&) {
     t.run("Verify Akamai matching logic and family classification") { sub =>
         let chrome1 = wing::akamai_chrome_preset();
         let chrome2 = wing::akamai_chrome_preset();
@@ -337,7 +340,7 @@ fn test_akamai_matching_and_family(t: core::T&) {
     };
 }
 
-fn test_akamai_anomaly_detection(t: core::T&) {
+fn test_akamai_anomaly_detection(t: lit::T&) {
     t.run("Passive anomaly detection: detect spoofed User-Agents and bot signatures") { sub =>
         let chrome_fp = wing::akamai_chrome_preset();
         let ff_fp = wing::akamai_firefox_preset();
@@ -373,7 +376,7 @@ fn test_akamai_anomaly_detection(t: core::T&) {
     };
 }
 
-fn test_akamai_wire_framing_roundtrip(t: core::T&) {
+fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
     t.run("HTTP/2 binary framing: serialize to wire bytes and parse back identically") { sub =>
         let chrome_fp = wing::akamai_chrome_preset();
 
@@ -404,7 +407,7 @@ fn test_akamai_wire_framing_roundtrip(t: core::T&) {
     };
 }
 
-fn test_akamai_pseudo_header_ordering(t: core::T&) {
+fn test_akamai_pseudo_header_ordering(t: lit::T&) {
     t.run("Order pseudo headers according to browser specification") { sub =>
         let chrome_fp = wing::akamai_chrome_preset();
         var chrome_ordered: wing::HeaderItem[..4] = [];
@@ -436,7 +439,7 @@ fn test_akamai_pseudo_header_ordering(t: core::T&) {
     };
 }
 
-fn test_akamai_browser_profiles(t: core::T&) {
+fn test_akamai_browser_profiles(t: lit::T&) {
     t.run("ClientProfile exports authentic Wing Akamai fingerprint") { sub =>
         let wp = wing::wing_default_profile();
         let fp_str4 = wing::akamai(wp);
@@ -453,7 +456,7 @@ fn test_akamai_browser_profiles(t: core::T&) {
 
 // Verification Suite for Passive OS Fingerprinting (p0f v3) TCP SYN Engine.
 
-fn test_wing_authentic_p0f(t: core::T&) {
+fn test_wing_authentic_p0f(t: lit::T&) {
     t.run("1. Wing Authentic TCP SYN Identity Spec") { sub =>
         let sig = wing::wing_p0f_signature();
 
@@ -516,7 +519,7 @@ fn test_wing_authentic_p0f(t: core::T&) {
     };
 }
 
-fn test_p0f_parser_and_roundtrip(t: core::T&) {
+fn test_p0f_parser_and_roundtrip(t: lit::T&) {
     t.run("1. Standard p0f v3 Signatures Roundtrip") { sub =>
         // Vector 1: Wing Authentic Profile
         let raw1 = "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0";
@@ -598,7 +601,7 @@ fn test_p0f_parser_and_roundtrip(t: core::T&) {
     };
 }
 
-fn test_p0f_pattern_matching(t: core::T&) {
+fn test_p0f_pattern_matching(t: lit::T&) {
     t.run("1. Exact and Self Matching") { sub =>
         let sig = wing::wing_p0f_signature();
         sub.assert_true(wing::match_p0f(sig, sig), "Signature matches itself");
@@ -675,22 +678,22 @@ fn test_p0f_pattern_matching(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Client Fingerprinting Verification Suite (JA4, Akamai, p0f)", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Client Fingerprinting Verification Suite (JA4, Akamai, p0f)", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. JA4: FoxIO JA4 TLS Client Fingerprint Engine", test_ja4_tls_fingerprint);
-    core::run_case(runner, "2. JA4: FoxIO JA4H HTTP Request Fingerprint Engine", test_ja4h_http_fingerprint);
-    core::run_case(runner, "3. JA4: Wing Authentic Profile & Custom User Control", test_wing_profile_and_session);
-    core::run_case(runner, "4. Akamai: Presets and MD5 Hash Generation", test_akamai_presets_and_hashes);
-    core::run_case(runner, "5. Akamai: Parsing and Round-trip Deserialization", test_akamai_parsing_and_roundtrip);
-    core::run_case(runner, "6. Akamai: Fingerprint Matching and Family Classification", test_akamai_matching_and_family);
-    core::run_case(runner, "7. Akamai: Passive Anomaly Detection", test_akamai_anomaly_detection);
-    core::run_case(runner, "8. Akamai: Binary HTTP/2 Wire Framing Round-trip", test_akamai_wire_framing_roundtrip);
-    core::run_case(runner, "9. Akamai: Pseudo-header Canonical Ordering", test_akamai_pseudo_header_ordering);
-    core::run_case(runner, "10. Akamai: BrowserProfile and Session Integration", test_akamai_browser_profiles);
-    core::run_case(runner, "11. p0f: Wing Authentic TCP SYN Identity", test_wing_authentic_p0f);
-    core::run_case(runner, "12. p0f: Standard p0f v3 Parser & Roundtrip", test_p0f_parser_and_roundtrip);
-    core::run_case(runner, "13. p0f: Pattern Matching & Discrimination", test_p0f_pattern_matching);
+    lit::run_case(runner, "1. JA4: FoxIO JA4 TLS Client Fingerprint Engine", test_ja4_tls_fingerprint);
+    lit::run_case(runner, "2. JA4: FoxIO JA4H HTTP Request Fingerprint Engine", test_ja4h_http_fingerprint);
+    lit::run_case(runner, "3. JA4: Wing Authentic Profile & Custom User Control", test_wing_profile_and_session);
+    lit::run_case(runner, "4. Akamai: Presets and MD5 Hash Generation", test_akamai_presets_and_hashes);
+    lit::run_case(runner, "5. Akamai: Parsing and Round-trip Deserialization", test_akamai_parsing_and_roundtrip);
+    lit::run_case(runner, "6. Akamai: Fingerprint Matching and Family Classification", test_akamai_matching_and_family);
+    lit::run_case(runner, "7. Akamai: Passive Anomaly Detection", test_akamai_anomaly_detection);
+    lit::run_case(runner, "8. Akamai: Binary HTTP/2 Wire Framing Round-trip", test_akamai_wire_framing_roundtrip);
+    lit::run_case(runner, "9. Akamai: Pseudo-header Canonical Ordering", test_akamai_pseudo_header_ordering);
+    lit::run_case(runner, "10. Akamai: BrowserProfile and Session Integration", test_akamai_browser_profiles);
+    lit::run_case(runner, "11. p0f: Wing Authentic TCP SYN Identity", test_wing_authentic_p0f);
+    lit::run_case(runner, "12. p0f: Standard p0f v3 Parser & Roundtrip", test_p0f_parser_and_roundtrip);
+    lit::run_case(runner, "13. p0f: Pattern Matching & Discrimination", test_p0f_pattern_matching);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

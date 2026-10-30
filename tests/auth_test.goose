@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,12 +7,13 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: auth ---
 // Verification suite for RFC 7616 Digest Access Authentication, RFC 7617 Basic Authentication,
 // and 401 Authenticator Replay Loop.
 
-fn test_rfc7616_official_ietf_vector(t: core::T&) {
+fn test_rfc7616_official_ietf_vector(t: lit::T&) {
     t.run("RFC 7616 Section 3.9.1 Official SHA-256 Test Vector") { sub =>
         let raw_challenge = "Digest realm=\"http-auth@example.org\", qop=\"auth, auth-int\", algorithm=SHA-256, nonce=\"7ypf/xlj9XXwfDPEoM4URrv/xwf94BcCAzFZH4GiTo0v\", opaque=\"FQhe/qaU925kual Rocco\"";
         let chal, ok_c = wing::parse_digest_challenge(raw_challenge);
@@ -75,7 +78,7 @@ fn test_rfc7616_official_ietf_vector(t: core::T&) {
     };
 }
 
-fn test_401_authenticator_loop(t: core::T&) {
+fn test_401_authenticator_loop(t: lit::T&) {
     t.run("Client Automatically Resolves 401 Challenge with RFC 7616 Digest") { sub =>
         var client = wing::new_client();
         wing::set_credentials(client, "Mufasa", "Circle of Life");
@@ -133,7 +136,7 @@ fn test_401_authenticator_loop(t: core::T&) {
     };
 }
 
-fn test_rfc7616_userhash_options(t: core::T&) {
+fn test_rfc7616_userhash_options(t: lit::T&) {
     t.run("RFC 7616 Section 3.4.4 userhash=true") { sub =>
         let raw_chal = "Digest realm=\"secure@example.com\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", userhash=true";
         let chal, ok_chal = wing::parse_digest_challenge(raw_chal);
@@ -191,7 +194,7 @@ fn test_rfc7616_userhash_options(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Symmetric HMAC JWS (HS256, HS384, HS512) Signing & Verification
 // ----------------------------------------------------------------------------
-fn test_symmetric_hmac_jwt(t: core::T&) {
+fn test_symmetric_hmac_jwt(t: lit::T&) {
     let secret = "super-secret-hmac-key-32byteslong!";
     let now_sec: i64 = 1770000000;
 
@@ -299,7 +302,7 @@ fn test_symmetric_hmac_jwt(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Asymmetric Ed25519 JWS (EdDSA / RFC 8037) Signing & Verification
 // ----------------------------------------------------------------------------
-fn test_asymmetric_eddsa_jwt(t: core::T&) {
+fn test_asymmetric_eddsa_jwt(t: lit::T&) {
     let seed: u8[32] = [
         0x9d, 0x61, 0xb1, 0x9c, 0xfa, 0xd6, 0x47, 0xba,
         0xaa, 0x3e, 0x9d, 0x10, 0xc6, 0x03, 0xac, 0x41,
@@ -355,7 +358,7 @@ fn test_asymmetric_eddsa_jwt(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 8725 BCP Security Defenses
 // ----------------------------------------------------------------------------
-fn test_jwt_security_defenses(t: core::T&) {
+fn test_jwt_security_defenses(t: lit::T&) {
     let secret = "secret-for-security-tests-123456";
     let now_sec: i64 = 1770000000;
 
@@ -488,7 +491,7 @@ fn test_jwt_security_defenses(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 7517 JWKS Serialization, Parsing, and Key Rotation
 // ----------------------------------------------------------------------------
-fn test_jwks_serialization_and_parsing(t: core::T&) {
+fn test_jwks_serialization_and_parsing(t: lit::T&) {
     t.run("JWKS serialize and parse roundtrip") { sub =>
         var jwks = wing::Jwks { .. };
 
@@ -579,7 +582,7 @@ fn test_jwks_serialization_and_parsing(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Integrated JWT Verification against JWKS Key Set
 // ----------------------------------------------------------------------------
-fn test_jwt_verification_against_jwks(t: core::T&) {
+fn test_jwt_verification_against_jwks(t: lit::T&) {
     let now_sec: i64 = 1770000000;
     let ed_seed: u8[32] = [
         0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
@@ -736,7 +739,7 @@ fn craft_raw_jwt<B>(header_json: const u8[:], claims_json: const u8[:], secret: 
     out_token.append(sig_b64[..]);
 }
 
-fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
+fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
     let secret = "audit-rfc7519-secret-key-32bytes";
     let now_sec: i64 = 1770000000;
 
@@ -880,7 +883,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 7515 §4.1.11 / RFC 8725 §3.8 Critical Headers & RFC 8725 §3.11 Explicit Typ
 // ----------------------------------------------------------------------------
-fn test_jwt_crit_and_typ_validation(t: core::T&) {
+fn test_jwt_crit_and_typ_validation(t: lit::T&) {
     let secret = "audit-crit-typ-secret-key-32byte";
     let now_sec: i64 = 1770000000;
 
@@ -1194,7 +1197,7 @@ fn test_jwt_crit_and_typ_validation(t: core::T&) {
 // - DPoP Proof verification against expected method, URI, access token, and nonce
 // - Request header attachment and response DPoP-Nonce extraction
 
-fn test_pkce_rfc7636(t: core::T&) {
+fn test_pkce_rfc7636(t: lit::T&) {
     t.run("PKCE Verifier Generation & Invariants") { sub =>
         var verifier: u8[..128] = [];
         let ok = wing::generate_code_verifier(verifier);
@@ -1337,7 +1340,7 @@ fn make_test_dpop_token<B>(
     out.append(sig_b64[..]);
 }
 
-fn test_dpop_rfc9449(t: core::T&) {
+fn test_dpop_rfc9449(t: lit::T&) {
     t.run("DPoP URI Normalization") { sub =>
         var norm: u8[..256] = [];
         let ok1 = wing::normalize_dpop_target_uri("https://API.Example.COM/resource/items?page=1&limit=10#section", norm);
@@ -1688,7 +1691,7 @@ fn test_dpop_rfc9449(t: core::T&) {
 // - Request header attachment and response 401 PrivateToken challenge detection
 // - RFC 9577 §6.2.1 GREASE token type verification
 
-fn test_token_challenge_roundtrip(t: core::T&) {
+fn test_token_challenge_roundtrip(t: lit::T&) {
     t.run("TokenChallenge with 32-byte Redemption Context") { sub =>
         var ch = wing::TokenChallenge {
             token_type: wing::TOKEN_TYPE_BLIND_RSA,
@@ -1739,7 +1742,7 @@ fn test_token_challenge_roundtrip(t: core::T&) {
     };
 }
 
-fn test_token_wire_roundtrip(t: core::T&) {
+fn test_token_wire_roundtrip(t: lit::T&) {
     t.run("Token Binary Wire Codec (RFC 9577 §2.2.1)") { sub =>
         var tok = wing::Token {
             token_type: wing::TOKEN_TYPE_BLIND_RSA,
@@ -1766,7 +1769,7 @@ fn test_token_wire_roundtrip(t: core::T&) {
     };
 }
 
-fn test_privacypass_headers_and_cache(t: core::T&) {
+fn test_privacypass_headers_and_cache(t: lit::T&) {
     t.run("WWW-Authenticate PrivateToken Challenge Parsing") { sub =>
         // Construct challenge wire and base64url
         var ch = wing::TokenChallenge {
@@ -1856,7 +1859,7 @@ fn test_privacypass_headers_and_cache(t: core::T&) {
 // tests/ed25519_test.goose
 // Verification test suite for Ed25519 (RFC 8032) and SHA-512 (FIPS 180-4).
 
-fn test_sha512_fips(t: core::T&) {
+fn test_sha512_fips(t: lit::T&) {
     t.run("SHA512-01: Empty string NIST vector") { sub =>
         let empty: u8[0] = [];
         let hash = core::sha512(empty[..]);
@@ -1894,7 +1897,7 @@ fn test_sha512_fips(t: core::T&) {
     };
 }
 
-fn test_ed25519_rfc8032(t: core::T&) {
+fn test_ed25519_rfc8032(t: lit::T&) {
     t.run("ED25519-01: RFC 8032 Section 7.1 Test Vector 1 (Empty Message)") { sub =>
         let seed: u8[32] = [
             0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60,
@@ -2092,7 +2095,7 @@ fn test_ed25519_rfc8032(t: core::T&) {
 // tests/hpke_test.goose
 // Verification test suite for Curve25519 (RFC 7748) and HPKE (RFC 9180).
 
-fn test_x25519_rfc7748(t: core::T&) {
+fn test_x25519_rfc7748(t: lit::T&) {
     t.run("X25519-01: RFC 7748 Alice/Bob Key Agreement & Test Vectors") { sub =>
         let alice_sk: u8[32] = [
             0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d,
@@ -2144,7 +2147,7 @@ fn test_x25519_rfc7748(t: core::T&) {
     };
 }
 
-fn test_hpke_rfc9180(t: core::T&) {
+fn test_hpke_rfc9180(t: lit::T&) {
     t.run("HPKE-01: RFC 9180 Section A.1.1 DHKEM(X25519, HKDF-SHA256) + AES-128-GCM") { sub =>
         let skEm: u8[32] = [
             0x52, 0xc4, 0xa7, 0x58, 0xa8, 0x02, 0xcd, 0x8b,
@@ -2298,7 +2301,7 @@ fn test_hpke_rfc9180(t: core::T&) {
 // 3. Parameter injection prevention in Authorization header serialization.
 // 4. CRLF injection prevention in Digest header parameters.
 
-fn test_digest_challenge_buffer_bounds(t: core::T&) {
+fn test_digest_challenge_buffer_bounds(t: lit::T&) {
     t.run("DIGEST-SEC-01: Algorithm Name Exceeding 32 Bytes Must Not Panic") { sub =>
         // 40-character algorithm string
         let long_algo = "Digest realm=\"api\", nonce=\"12345\", algorithm=SHA-256-SUPER-LONG-ALGORITHM-NAME-OVERFLOW";
@@ -2343,7 +2346,7 @@ fn test_has_substr(haystack: const u8[:], needle: const u8[:]) -> bool {
     return false;
 }
 
-fn test_digest_auth_serialization_security(t: core::T&) {
+fn test_digest_auth_serialization_security(t: lit::T&) {
     t.run("DIGEST-SEC-05: Injected Quotes in Nonce Must Be Escaped") { sub =>
         var out_hdr: u8[..512] = [];
         let ok = wing::serialize_digest_auth(
@@ -2371,7 +2374,7 @@ fn test_digest_auth_serialization_security(t: core::T&) {
 }
 
 // Invariant 13: Zero silent buffer drops - JWT header unknown keys capacity overflow
-fn test_jwt_header_capacity_rejection(t: core::T&) {
+fn test_jwt_header_capacity_rejection(t: lit::T&) {
     t.run("JWT header unknown key overflow triggers parsing error") { sub =>
         var bad_jwt: u8[>..] = "{\"alg\":\"none\",\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9}";
         var hdr = wing::JwtHeader { .. };
@@ -2381,31 +2384,31 @@ fn test_jwt_header_capacity_rejection(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. RFC 7616 Official IETF Test Vector & MD5 Fallback", test_rfc7616_official_ietf_vector);
-    core::run_case(runner, "2. 401 Authenticator Replay Loop (Digest & Basic)", test_401_authenticator_loop);
-    core::run_case(runner, "3. RFC 7616 Userhash Options", test_rfc7616_userhash_options);
-    core::run_case(runner, "4. Symmetric HMAC JWS (HS256, HS384, HS512)", test_symmetric_hmac_jwt);
-    core::run_case(runner, "5. Asymmetric Ed25519 JWS (EdDSA / RFC 8037)", test_asymmetric_eddsa_jwt);
-    core::run_case(runner, "6. RFC 8725 BCP Security Defenses", test_jwt_security_defenses);
-    core::run_case(runner, "7. RFC 7517 JWKS Serialization, Parsing & Key Rotation", test_jwks_serialization_and_parsing);
-    core::run_case(runner, "8. Integrated JWT Verification against JWKS Key Set", test_jwt_verification_against_jwks);
-    core::run_case(runner, "9. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints", test_jwt_rfc7519_claims_and_thumbprint);
-    core::run_case(runner, "10. RFC 7515 Crit Headers & RFC 8725 Explicit Typ Verification", test_jwt_crit_and_typ_validation);
-    core::run_case(runner, "11. OAuth 2.0 PKCE (RFC 7636)", test_pkce_rfc7636);
-    core::run_case(runner, "12. OAuth 2.0 DPoP (RFC 9449)", test_dpop_rfc9449);
-    core::run_case(runner, "13. TokenChallenge Wire Codec", test_token_challenge_roundtrip);
-    core::run_case(runner, "14. Token Binary Wire Codec", test_token_wire_roundtrip);
-    core::run_case(runner, "15. Privacy Pass Headers & Cache", test_privacypass_headers_and_cache);
-    core::run_case(runner, "16. SHA-512 (FIPS 180-4) Cryptographic Hash Vectors", test_sha512_fips);
-    core::run_case(runner, "17. Ed25519 (RFC 8032) Digital Signatures & Attacks", test_ed25519_rfc8032);
-    core::run_case(runner, "18. Curve25519 (RFC 7748) Test Vectors", test_x25519_rfc7748);
-    core::run_case(runner, "19. HPKE (RFC 9180) SetupBase, Seal & Open Vectors", test_hpke_rfc9180);
-    core::run_case(runner, "20. Digest Challenge Buffer Bounds & Syntax", test_digest_challenge_buffer_bounds);
-    core::run_case(runner, "21. Digest Authorization Serialization Defenses", test_digest_auth_serialization_security);
-    core::run_case(runner, "22. Invariant 13 JWT Header Capacity Rejection", test_jwt_header_capacity_rejection);
+    lit::run_case(runner, "1. RFC 7616 Official IETF Test Vector & MD5 Fallback", test_rfc7616_official_ietf_vector);
+    lit::run_case(runner, "2. 401 Authenticator Replay Loop (Digest & Basic)", test_401_authenticator_loop);
+    lit::run_case(runner, "3. RFC 7616 Userhash Options", test_rfc7616_userhash_options);
+    lit::run_case(runner, "4. Symmetric HMAC JWS (HS256, HS384, HS512)", test_symmetric_hmac_jwt);
+    lit::run_case(runner, "5. Asymmetric Ed25519 JWS (EdDSA / RFC 8037)", test_asymmetric_eddsa_jwt);
+    lit::run_case(runner, "6. RFC 8725 BCP Security Defenses", test_jwt_security_defenses);
+    lit::run_case(runner, "7. RFC 7517 JWKS Serialization, Parsing & Key Rotation", test_jwks_serialization_and_parsing);
+    lit::run_case(runner, "8. Integrated JWT Verification against JWKS Key Set", test_jwt_verification_against_jwks);
+    lit::run_case(runner, "9. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints", test_jwt_rfc7519_claims_and_thumbprint);
+    lit::run_case(runner, "10. RFC 7515 Crit Headers & RFC 8725 Explicit Typ Verification", test_jwt_crit_and_typ_validation);
+    lit::run_case(runner, "11. OAuth 2.0 PKCE (RFC 7636)", test_pkce_rfc7636);
+    lit::run_case(runner, "12. OAuth 2.0 DPoP (RFC 9449)", test_dpop_rfc9449);
+    lit::run_case(runner, "13. TokenChallenge Wire Codec", test_token_challenge_roundtrip);
+    lit::run_case(runner, "14. Token Binary Wire Codec", test_token_wire_roundtrip);
+    lit::run_case(runner, "15. Privacy Pass Headers & Cache", test_privacypass_headers_and_cache);
+    lit::run_case(runner, "16. SHA-512 (FIPS 180-4) Cryptographic Hash Vectors", test_sha512_fips);
+    lit::run_case(runner, "17. Ed25519 (RFC 8032) Digital Signatures & Attacks", test_ed25519_rfc8032);
+    lit::run_case(runner, "18. Curve25519 (RFC 7748) Test Vectors", test_x25519_rfc7748);
+    lit::run_case(runner, "19. HPKE (RFC 9180) SetupBase, Seal & Open Vectors", test_hpke_rfc9180);
+    lit::run_case(runner, "20. Digest Challenge Buffer Bounds & Syntax", test_digest_challenge_buffer_bounds);
+    lit::run_case(runner, "21. Digest Authorization Serialization Defenses", test_digest_auth_serialization_security);
+    lit::run_case(runner, "22. Invariant 13 JWT Header Capacity Rejection", test_jwt_header_capacity_rejection);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

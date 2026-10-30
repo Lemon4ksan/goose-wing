@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: server_router ---
 // Tests for radix tree routing, buffer pools, and server execution pipeline.
@@ -12,7 +15,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. Zero-Allocation Parameter Extraction & Byte Spans
 // ----------------------------------------------------------------------------
-fn test_zero_alloc_params(t: core::T&) {
+fn test_zero_alloc_params(t: lit::T&) {
     t.run("Span Slicing Without Heap Allocations") { sub =>
         var params = wing::ZeroAllocParams { .. };
         let req_path = "/users/alice99/settings";
@@ -37,7 +40,7 @@ fn test_zero_alloc_params(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Radix Trie: Static Precedence, Catch-All & Method Isolation
 // ----------------------------------------------------------------------------
-fn test_radix_trie_routing(t: core::T&) {
+fn test_radix_trie_routing(t: lit::T&) {
     t.run("Static Route Priority Over Parameter") { sub =>
         var tree = wing::new_radix_tree();
         wing::insert_route(tree, "/users/{id}", 101);
@@ -196,7 +199,7 @@ fn test_radix_trie_routing(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Tako v2 6-Mechanism Server Pool
 // ----------------------------------------------------------------------------
-fn test_tako_v2_pool_mechanisms(t: core::T&) {
+fn test_tako_v2_pool_mechanisms(t: lit::T&) {
     t.run("HeaderMapPool Acquisition and Clean Release") { sub =>
         var pool = internal::HeaderMapPool { .. };
         let s0 = internal::acquire_header_map(pool);
@@ -255,7 +258,7 @@ fn test_tako_v2_pool_mechanisms(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Unified Defense-in-Depth Pipeline Integration
 // ----------------------------------------------------------------------------
-fn test_unified_server_pipeline(t: core::T&) {
+fn test_unified_server_pipeline(t: lit::T&) {
     t.run("End-to-End Handled Request Lifecycle") { sub =>
         let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
@@ -386,7 +389,7 @@ fn test_unified_server_pipeline(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Standalone HTTP Server Wire Handling & Protocol Detection
 // ----------------------------------------------------------------------------
-fn test_standalone_http_server(t: core::T&) {
+fn test_standalone_http_server(t: lit::T&) {
     t.run("1. HTTP/1.1 Wire Request Parsing & Response Serializer") { sub =>
         let wire_req = "POST /api/echo HTTP/1.1\r\nHost: localhost:8080\r\nContent-Length: 11\r\nContent-Type: text/plain\r\n\r\nHello World";
         var req = wing::new_request("", "");
@@ -596,7 +599,7 @@ thread_fn serve_reactor_worker() {
     core::send_msg(served);
 }
 
-fn test_serve_connection_capping(t: core::T&) {
+fn test_serve_connection_capping(t: lit::T&) {
     t.run("Case 1: HttpServer.serve Clean Connection Capping (max_connections = 3)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -630,7 +633,7 @@ fn test_serve_connection_capping(t: core::T&) {
     };
 }
 
-fn test_serve_reactor_connection_capping(t: core::T&) {
+fn test_serve_reactor_connection_capping(t: lit::T&) {
     t.run("Case 2: HttpServer.serve_reactor Connection Capping & Epoll Shutdown") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -664,7 +667,7 @@ fn test_serve_reactor_connection_capping(t: core::T&) {
     };
 }
 
-fn test_topic_tree_live_broadcast_and_batch_drain(t: core::T&) {
+fn test_topic_tree_live_broadcast_and_batch_drain(t: lit::T&) {
     t.run("Case 3: TopicTree Live Socket Broadcast & Batch Drainage") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -731,7 +734,7 @@ fn test_topic_tree_live_broadcast_and_batch_drain(t: core::T&) {
 // 2. RFC 9112 Section 2.2 empty line tolerance & Section 3.1 leading whitespace ban.
 // 3. Request target and Host header structural security invariants.
 
-fn test_server_http1_pipelining(t: core::T&) {
+fn test_server_http1_pipelining(t: lit::T&) {
     let wire: const u8[:] = "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\nGET /second HTTP/1.1\r\nHost: example.com\r\n\r\n";
 
     var req1 = wing::Request { .. };
@@ -748,7 +751,7 @@ fn test_server_http1_pipelining(t: core::T&) {
     t.assert_eq(consumed1 + consumed2, wire.len, "entire pipelined stream consumed");
 }
 
-fn test_server_empty_line_and_whitespace_invariants(t: core::T&) {
+fn test_server_empty_line_and_whitespace_invariants(t: lit::T&) {
     // 1. RFC 9112 §2.2: Single empty line (\r\n) before request-line is tolerated
     let single_crlf: const u8[:] = "\r\nGET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
     var req1 = wing::Request { .. };
@@ -774,7 +777,7 @@ fn test_server_empty_line_and_whitespace_invariants(t: core::T&) {
     t.assert_false(ok4, "tab before method name must be rejected");
 }
 
-fn test_server_target_and_host_invariants(t: core::T&) {
+fn test_server_target_and_host_invariants(t: lit::T&) {
     // 1. Reject CTL character in request target
     let bad_ctl: const u8[:] = "GET /bad\x01path HTTP/1.1\r\nHost: example.com\r\n\r\n";
     var req1 = wing::Request { .. };
@@ -799,7 +802,7 @@ fn test_server_target_and_host_invariants(t: core::T&) {
     t.assert_true(ok4, "valid IPv6 literal host must succeed");
 }
 
-fn test_nginx_harmony_invariants(t: core::T&) {
+fn test_nginx_harmony_invariants(t: lit::T&) {
     t.run("1. X-Real-IP extraction with loopback and trust_proxy_headers") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         server.pipeline.enable_rate_limiter = true;
@@ -941,21 +944,21 @@ fn test_nginx_harmony_invariants(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
-    core::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
-    core::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
-    core::run_case(runner, "4. Unified Defense-in-Depth Pipeline Integration", test_unified_server_pipeline);
-    core::run_case(runner, "5. Standalone HTTP Server Wire Handling & Protocol Detection", test_standalone_http_server);
-    core::run_case(runner, "6. HttpServer.serve Connection Capping", test_serve_connection_capping);
-    core::run_case(runner, "7. HttpServer.serve_reactor Connection Capping", test_serve_reactor_connection_capping);
-    core::run_case(runner, "8. TopicTree Live Broadcast & Batch Drainage", test_topic_tree_live_broadcast_and_batch_drain);
-    core::run_case(runner, "9. HTTP/1.1 Pipelining", test_server_http1_pipelining);
-    core::run_case(runner, "10. Empty Line & Whitespace Invariants", test_server_empty_line_and_whitespace_invariants);
-    core::run_case(runner, "11. Target & Host Invariants", test_server_target_and_host_invariants);
-    core::run_case(runner, "12. NGINX Reverse Proxy Harmony (X-Real-IP, Connection Close, SSE)", test_nginx_harmony_invariants);
+    lit::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
+    lit::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
+    lit::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
+    lit::run_case(runner, "4. Unified Defense-in-Depth Pipeline Integration", test_unified_server_pipeline);
+    lit::run_case(runner, "5. Standalone HTTP Server Wire Handling & Protocol Detection", test_standalone_http_server);
+    lit::run_case(runner, "6. HttpServer.serve Connection Capping", test_serve_connection_capping);
+    lit::run_case(runner, "7. HttpServer.serve_reactor Connection Capping", test_serve_reactor_connection_capping);
+    lit::run_case(runner, "8. TopicTree Live Broadcast & Batch Drainage", test_topic_tree_live_broadcast_and_batch_drain);
+    lit::run_case(runner, "9. HTTP/1.1 Pipelining", test_server_http1_pipelining);
+    lit::run_case(runner, "10. Empty Line & Whitespace Invariants", test_server_empty_line_and_whitespace_invariants);
+    lit::run_case(runner, "11. Target & Host Invariants", test_server_target_and_host_invariants);
+    lit::run_case(runner, "12. NGINX Reverse Proxy Harmony (X-Real-IP, Connection Close, SSE)", test_nginx_harmony_invariants);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

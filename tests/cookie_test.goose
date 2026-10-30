@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: cookie_engine ---
 // Tests for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
@@ -19,8 +22,8 @@ struct PrefixVector {
 // ----------------------------------------------------------------------------
 // 1. Lexer, 4096B/1024B Limits, CTL Rejection & WPT Nameless
 // ----------------------------------------------------------------------------
-fn test_lexer_limits_and_ctl(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_lexer_limits_and_ctl(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("Size Limits: 4096B Name+Value and 1024B Attribute Cap (Issue #1340)") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -93,8 +96,8 @@ fn test_lexer_limits_and_ctl(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Date Tokenizer, 400-Day Cap & Expired Overwrite
 // ----------------------------------------------------------------------------
-fn test_dates_400d_cap_and_expired_overwrite(t: core::T&) {
-    var clock = core::new_mock_clock(1700000000000000);
+fn test_dates_400d_cap_and_expired_overwrite(t: lit::T&) {
+    var clock = lit::new_mock_clock(1700000000000000);
     var jar = wing::CanonicalCookieJar { .. };
 
     // 1. 400-day cap (kMinutesIn400Days = 576000)
@@ -115,8 +118,8 @@ fn test_dates_400d_cap_and_expired_overwrite(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Domain, Public Suffix List (PSL), IPv4/IPv6 & Path-Match
 // ----------------------------------------------------------------------------
-fn test_domain_psl_ip_and_path_matching(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_domain_psl_ip_and_path_matching(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     t.run("DOM-01: PSL Rejection for TLD and Effective Public Suffixes") { sub =>
@@ -158,8 +161,8 @@ fn test_domain_psl_ip_and_path_matching(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Layered Cookie Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)
 // ----------------------------------------------------------------------------
-fn test_layered_prefixes_table(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_layered_prefixes_table(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     let vectors = [
         PrefixVector { header: "__Secure-a=1; Secure", url: "https://example.com/", from_http: true, expect_ok: true },
         PrefixVector { header: "__Secure-a=1", url: "https://example.com/", from_http: true, expect_ok: false },
@@ -174,7 +177,7 @@ fn test_layered_prefixes_table(t: core::T&) {
         PrefixVector { header: "__HOST-HTTP-a=1; Secure; HttpOnly; Path=/", url: "https://example.com/", from_http: false, expect_ok: false },
     ];
 
-    core::run_table(t, "PrefixMatrix", vectors[..]) { sub, row, idx =>
+    lit::run_table(t, "PrefixMatrix", vectors[..]) { sub, row, idx =>
         var jar = wing::CanonicalCookieJar { .. };
         let u = wing::parse_canonical_cookie_url(row.url);
         var c = wing::parse_canonical_set_cookie(row.header, u.host[..], u.path[..], clock.now_us);
@@ -189,15 +192,15 @@ fn test_layered_prefixes_table(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. SameSite Lax+POST 120s Window & Origin-Bound Cookies (OBC)
 // ----------------------------------------------------------------------------
-fn test_samesite_lax_post_window_and_obc(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_samesite_lax_post_window_and_obc(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     // Default SameSite -> Lax-allowing-unsafe for 120 seconds
     t.require_true(wing::set_cookie_header(jar, "https://idp.example.com/login", "sso=token123; Secure", clock.now_us));
 
     // At t=119s cross-site top-level POST must include cookie
-    core::advance_sec(clock, 119);
+    lit::advance_sec(clock, 119);
     var out_119: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_119,
@@ -206,7 +209,7 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
     t.assert_eq(out_119.len, 1, "at t=119s Lax+POST window must allow cross-site top-level POST");
 
     // At t=121s cross-site POST is blocked, but GET is allowed
-    core::advance_sec(clock, 2);
+    lit::advance_sec(clock, 2);
     var out_121_post: wing::CanonicalCookie[>..] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_post,
@@ -229,8 +232,8 @@ fn test_samesite_lax_post_window_and_obc(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. 6-Round Domain GC Priority Quotas Asymmetry
 // ----------------------------------------------------------------------------
-fn test_gc_6_rounds_asymmetry_and_global_immunity(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_gc_6_rounds_asymmetry_and_global_immunity(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     // Populate example.com domain:
@@ -240,17 +243,17 @@ fn test_gc_6_rounds_asymmetry_and_global_immunity(t: core::T&) {
     for i in 30 {
         var h: u8[..64] = [];
         format(h, "low_sec_", i, "=1; Secure; Priority=Low");
-        wing::set_cookie_header(jar, "https://example.com/", h[..], core::advance_us(clock, 10));
+        wing::set_cookie_header(jar, "https://example.com/", h[..], lit::advance_us(clock, 10));
     }
     for i in 60 {
         var h: u8[..64] = [];
         format(h, "med_sec_", i, "=1; Secure; Priority=Medium");
-        wing::set_cookie_header(jar, "https://example.com/", h[..], core::advance_us(clock, 10));
+        wing::set_cookie_header(jar, "https://example.com/", h[..], lit::advance_us(clock, 10));
     }
     for i in 91 {
         var h: u8[..64] = [];
         format(h, "high_nonsec_", i, "=1; Priority=High");
-        wing::set_cookie_header(jar, "http://example.com/", h[..], core::advance_us(clock, 10));
+        wing::set_cookie_header(jar, "http://example.com/", h[..], lit::advance_us(clock, 10));
     }
 
     // 181 cookies inserted -> Domain GC triggered (181 -> 150 target, 31 evicted)
@@ -276,8 +279,8 @@ fn test_gc_6_rounds_asymmetry_and_global_immunity(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. Global Garbage Collection & 30-Day Purge Immunity
 // ----------------------------------------------------------------------------
-fn test_global_gc_and_30_day_immunity(t: core::T&) {
-    var clock = core::new_mock_clock(1700000000000000);
+fn test_global_gc_and_30_day_immunity(t: lit::T&) {
+    var clock = lit::new_mock_clock(1700000000000000);
     var jar = wing::CanonicalCookieJar { .. };
     jar.max_cookies_global = 20;
     jar.target_cookies_global = 10;
@@ -297,7 +300,7 @@ fn test_global_gc_and_30_day_immunity(t: core::T&) {
     t.assert_eq(jar.cookies.len, 21, "all cookies within 30-day window must be immune from global purge");
 
     // Advance clock past 30 days (e.g. 31 days)
-    core::advance_days(clock, 31);
+    lit::advance_days(clock, 31);
 
     // Now inserting 22nd cookie triggers global purge of non-immune cookies down to target (10)
     wing::set_cookie_header(jar, "https://d21.com/", "c=1; Secure", clock.now_us);
@@ -308,8 +311,8 @@ fn test_global_gc_and_30_day_immunity(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement
 // ----------------------------------------------------------------------------
-fn test_chips_and_10kb_quota(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_chips_and_10kb_quota(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     // 1. Partitioned cookie ingestion with valid top-level site
@@ -327,7 +330,7 @@ fn test_chips_and_10kb_quota(t: core::T&) {
     for i in 4 {
         var hdr: u8[..3200] = [];
         format(hdr, "chunk_", i, "=", big_val[..], "; Secure; Partitioned; SameSite=None");
-        wing::set_cookie_header(jar, "https://ad.service.com/", hdr[..], core::advance_sec(clock, 1), "https://publisher.com");
+        wing::set_cookie_header(jar, "https://ad.service.com/", hdr[..], lit::advance_sec(clock, 1), "https://publisher.com");
     }
 
     // 4 cookies * ~3010 bytes = 12040 bytes (> 10240 quota). CHIPS quota must have evicted oldest
@@ -338,17 +341,17 @@ fn test_chips_and_10kb_quota(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model
 // ----------------------------------------------------------------------------
-fn test_header_sorting_and_persistence_key(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_header_sorting_and_persistence_key(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     t.run("RFC 6265 Section 5.4 Cookie Header Sorting (Longest Path First, Earliest Creation First)") { sub =>
         // 1. Shorter path, earlier creation
-        wing::set_cookie_header(jar, "https://example.com/sub/page", "short_path=1; Path=/sub", core::advance_sec(clock, 1));
+        wing::set_cookie_header(jar, "https://example.com/sub/page", "short_path=1; Path=/sub", lit::advance_sec(clock, 1));
         // 2. Longer path, later creation
-        wing::set_cookie_header(jar, "https://example.com/sub/page", "long_path=2; Path=/sub/page", core::advance_sec(clock, 1));
+        wing::set_cookie_header(jar, "https://example.com/sub/page", "long_path=2; Path=/sub/page", lit::advance_sec(clock, 1));
         // 3. Same path as #1, later creation
-        wing::set_cookie_header(jar, "https://example.com/sub/page", "another_short=3; Path=/sub", core::advance_sec(clock, 1));
+        wing::set_cookie_header(jar, "https://example.com/sub/page", "another_short=3; Path=/sub", lit::advance_sec(clock, 1));
 
         var out_hdr: u8[..256] = [];
         wing::build_cookie_header(jar, "https://example.com/sub/page", out_hdr, clock.now_us);
@@ -397,7 +400,7 @@ struct IngestionVector {
 // ----------------------------------------------------------------------------
 // 1. Ingestion Matrix: Lexer, Omnomnom, Dates, PSL, IPv6 & OBC
 // ----------------------------------------------------------------------------
-fn run_ingestion_matrix(t: core::T&) {
+fn run_ingestion_matrix(t: lit::T&) {
     let now_us = 1700000000000000; // Epoch baseline
     let vectors = [
         // --- LEX & OMNOMNOM ---
@@ -623,7 +626,7 @@ fn run_ingestion_matrix(t: core::T&) {
         },
     ];
 
-    core::run_table(t, "IngestionVectors", vectors[..]) { sub, v, idx =>
+    lit::run_table(t, "IngestionVectors", vectors[..]) { sub, v, idx =>
         var jar = wing::CanonicalCookieJar { .. };
         let ok = wing::set_cookie_header(jar, v.url, v.set_cookie, now_us, v.from_http);
         sub.require_eq(ok, v.expect_accepted, v.id);
@@ -647,7 +650,7 @@ fn run_ingestion_matrix(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep
 // ----------------------------------------------------------------------------
-fn run_exhaustive_ctl_sweep(t: core::T&) {
+fn run_exhaustive_ctl_sweep(t: lit::T&) {
     let now_us = 1700000000000000;
     var jar = wing::CanonicalCookieJar { .. };
 
@@ -676,7 +679,7 @@ struct PathMatchVector {
     expect_match: bool,
 }
 
-fn run_path_matching_matrix(t: core::T&) {
+fn run_path_matching_matrix(t: lit::T&) {
     let path_vectors = [
         PathMatchVector { id: "PATH-EXACT", cookie_path: "/admin", request_path: "/admin", expect_match: true },
         PathMatchVector { id: "PATH-SUBDIR", cookie_path: "/admin", request_path: "/admin/users", expect_match: true },
@@ -688,7 +691,7 @@ fn run_path_matching_matrix(t: core::T&) {
         PathMatchVector { id: "PATH-ROOT", cookie_path: "/", request_path: "/any/deep/path", expect_match: true },
     ];
 
-    core::run_table(t, "PathMatchRFC6265", path_vectors[..]) { sub, v, idx =>
+    lit::run_table(t, "PathMatchRFC6265", path_vectors[..]) { sub, v, idx =>
         let got = wing::cookie_path_match(v.request_path, v.cookie_path);
         sub.assert_eq(got, v.expect_match, v.id);
     };
@@ -729,7 +732,7 @@ struct SameSiteVector {
     expect_send:      bool,
 }
 
-fn run_samesite_and_redirect_matrix(t: core::T&) {
+fn run_samesite_and_redirect_matrix(t: lit::T&) {
     let ss_vectors = [
         SameSiteVector { id: "SS-01 (Strict + same-site)", samesite_mode: wing::CookieSameSite.Strict, age_sec: 500, is_same_site: true, is_top_level_nav: false, is_safe_method: false, expect_send: true },
         SameSiteVector { id: "SS-02 (Strict + cross-site top-level GET)", samesite_mode: wing::CookieSameSite.Strict, age_sec: 10, is_same_site: false, is_top_level_nav: true, is_safe_method: true, expect_send: false },
@@ -742,7 +745,7 @@ fn run_samesite_and_redirect_matrix(t: core::T&) {
         SameSiteVector { id: "SS-10 (None + cross-site iframe POST)", samesite_mode: wing::CookieSameSite.None, age_sec: 500, is_same_site: false, is_top_level_nav: false, is_safe_method: false, expect_send: true },
     ];
 
-    core::run_table(t, "SameSiteDecisionMatrix", ss_vectors[..]) { sub, v, idx =>
+    lit::run_table(t, "SameSiteDecisionMatrix", ss_vectors[..]) { sub, v, idx =>
         let create_us = 1000000000000;
         let now_us = create_us + (v.age_sec * 1000000);
         var c = wing::new_canonical_cookie("sid", "val");
@@ -777,8 +780,8 @@ fn run_samesite_and_redirect_matrix(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. CHIPS Partition Isolation & 10,240B Byte Quota Enforcement
 // ----------------------------------------------------------------------------
-fn run_chips_partition_quota_and_isolation(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn run_chips_partition_quota_and_isolation(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     // CHIPS-02: Partitioned cookie without Secure is rejected
@@ -803,7 +806,7 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
         c.partition_key.append("https://news.com");
         c.source_scheme = wing::CookieSourceScheme.Secure;
         c.source_port = 443;
-        let step_time = core::advance_sec(clock, 10);
+        let step_time = lit::advance_sec(clock, 10);
         let src_opts = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
         t.require_true(wing::set_canonical_cookie(jar, c, src_opts, step_time));
     }
@@ -819,7 +822,7 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
     c_other_part.source_scheme = wing::CookieSourceScheme.Secure;
     c_other_part.source_port = 443;
     let src_opts_other = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
-    t.require_true(wing::set_canonical_cookie(jar, c_other_part, src_opts_other, core::advance_sec(clock, 10)));
+    t.require_true(wing::set_canonical_cookie(jar, c_other_part, src_opts_other, lit::advance_sec(clock, 10)));
     t.assert_eq(jar.cookies.len, 6, "other partition must have an independent 10,240 B quota");
 
     // Add 6th cookie into first partition "https://news.com" of size 500 B (10,000 + 500 = 10,500 > 10,240)
@@ -834,7 +837,7 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
     c_overflow.source_scheme = wing::CookieSourceScheme.Secure;
     c_overflow.source_port = 443;
     let src_opts_overflow = wing::CookieSourceOptions { is_http_api: true, url_is_secure: true };
-    t.require_true(wing::set_canonical_cookie(jar, c_overflow, src_opts_overflow, core::advance_sec(clock, 10)));
+    t.require_true(wing::set_canonical_cookie(jar, c_overflow, src_opts_overflow, lit::advance_sec(clock, 10)));
 
     // Oldest cookie "p00" from partition "https://news.com" must be evicted
     var p00_found = false;
@@ -850,8 +853,8 @@ fn run_chips_partition_quota_and_isolation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. GC OBC (Domain-before-Host) & Global 30-Day Purge Immunity
 // ----------------------------------------------------------------------------
-fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn run_gc_obc_domain_before_host_and_global_purge(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("GC-07: Domain cookies evicted BEFORE Host cookies despite newer LastAccessDate") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -860,14 +863,14 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
         for i in 175 {
             var h: u8[..64] = [];
             format(h, "host_", i, "=1; Priority=Low");
-            wing::set_cookie_header(jar, "http://example.com/", h[..], core::advance_us(clock, 10));
+            wing::set_cookie_header(jar, "http://example.com/", h[..], lit::advance_us(clock, 10));
         }
 
         // 2. Insert 6 Domain cookies (Domain=example.com) with FRESH access times
         for i in 6 {
             var h: u8[..64] = [];
             format(h, "dom_", i, "=1; Domain=example.com; Priority=Low");
-            wing::set_cookie_header(jar, "http://example.com/", h[..], core::advance_sec(clock, 100));
+            wing::set_cookie_header(jar, "http://example.com/", h[..], lit::advance_sec(clock, 100));
         }
 
         // Total 181 inserted -> GC evicted 31 cookies (150 remain)
@@ -892,11 +895,11 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
             format(url, "https://d", dom_id, ".com/");
             var hdr: u8[..64] = [];
             format(hdr, "old_", i, "=val; Max-Age=30000000");
-            wing::set_cookie_header(jar, url[..], hdr[..], core::advance_us(clock, 10));
+            wing::set_cookie_header(jar, url[..], hdr[..], lit::advance_us(clock, 10));
         }
 
         // Advance virtual clock by 31 days (beyond 30-day immunity window for first 400 cookies)
-        core::advance_days(clock, 31);
+        lit::advance_days(clock, 31);
 
         for i in 2901 {
             let dom_id = 4 + (i / 100);
@@ -904,7 +907,7 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
             format(url, "https://d", dom_id, ".com/");
             var hdr: u8[..64] = [];
             format(hdr, "recent_", i, "=val; Max-Age=30000000");
-            wing::set_cookie_header(jar, url[..], hdr[..], core::advance_us(clock, 10));
+            wing::set_cookie_header(jar, url[..], hdr[..], lit::advance_us(clock, 10));
         }
 
         // Inserting 3301st cookie triggers global GC down to target 3000
@@ -916,19 +919,19 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing
 // ----------------------------------------------------------------------------
-fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn run_serialization_server_first_win_and_sqlite_v24(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("SER-01 & SRV-01: RFC 6265 Section 5.4 Path-Length Ordering and Server First-Win Protection") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
 
         // Set 3 cookies named 'sid' with different paths and creation timestamps:
         // 1) path="/" (create = T+10)
-        wing::set_cookie_header(jar, "https://example.com/", "sid=root_guest; Path=/", core::advance_sec(clock, 10));
+        wing::set_cookie_header(jar, "https://example.com/", "sid=root_guest; Path=/", lit::advance_sec(clock, 10));
         // 2) path="/admin/panel" (create = T+30)
-        wing::set_cookie_header(jar, "https://example.com/", "sid=panel_late; Path=/admin/panel", core::advance_sec(clock, 20));
+        wing::set_cookie_header(jar, "https://example.com/", "sid=panel_late; Path=/admin/panel", lit::advance_sec(clock, 20));
         // 3) path="/admin" (create = T+40)
-        wing::set_cookie_header(jar, "https://example.com/", "sid=admin_mid; Path=/admin", core::advance_sec(clock, 10));
+        wing::set_cookie_header(jar, "https://example.com/", "sid=admin_mid; Path=/admin", lit::advance_sec(clock, 10));
 
         var cookie_hdr: u8[..256] = [];
         wing::build_request_cookie_header(jar, "https://example.com/admin/panel/settings", true, "", clock.now_us, cookie_hdr);
@@ -980,7 +983,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 8. Matrix 11: LastAccessDate Throttling, Monotonicity & Clock Skew
 // ----------------------------------------------------------------------------
-fn run_matrix_11_clock_skew_and_throttling(t: core::T&) {
+fn run_matrix_11_clock_skew_and_throttling(t: lit::T&) {
     t.run("CLK-01 & CLK-02: 60s LastAccessDate Throttling (kDefaultAccessUpdateThresholdSeconds)") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
         jar.access_update_threshold_us = 60000000; // 60 seconds
@@ -1046,7 +1049,7 @@ fn run_matrix_11_clock_skew_and_throttling(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 9. Matrix 13: SiteForCookies Ancestor Frame Hierarchy & Context
 // ----------------------------------------------------------------------------
-fn run_matrix_13_site_for_cookies_and_ancestors(t: core::T&) {
+fn run_matrix_13_site_for_cookies_and_ancestors(t: lit::T&) {
     t.run("CTX-01 & CTX-02: ABA Framing vs Homogeneous Ancestor Hierarchy") { sub =>
         // CTX-01: Top https://a.com -> iframe https://evil.com -> iframe https://a.com/inner
         let ancestors_aba: const u8[:][2] = ["https://a.com", "https://evil.com"];
@@ -1065,7 +1068,7 @@ fn run_matrix_13_site_for_cookies_and_ancestors(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 10. Matrix 14: Selective Deletion & Session Cleanup (DEL-01..DEL-05)
 // ----------------------------------------------------------------------------
-fn run_matrix_14_selective_deletion(t: core::T&) {
+fn run_matrix_14_selective_deletion(t: lit::T&) {
     t.run("DEL-01: TimeRange Selective Deletion [begin, end]") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
         wing::set_cookie_header(jar, "https://example.com/", "c1=1; Path=/", 100);
@@ -1102,7 +1105,7 @@ fn run_matrix_14_selective_deletion(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 11. Matrices 15 & 16: Cryptographic Integrity & Protocol Attacks
 // ----------------------------------------------------------------------------
-fn run_matrix_15_and_16_crypto_and_attacks(t: core::T&) {
+fn run_matrix_15_and_16_crypto_and_attacks(t: lit::T&) {
     t.run("CRY-02: Rejection of Tampered Record with Both Plaintext and Encrypted Values") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
 
@@ -1141,7 +1144,7 @@ fn run_matrix_15_and_16_crypto_and_attacks(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 12. GC-04: strict_secure_cookies Policy Priority Eviction
 // ----------------------------------------------------------------------------
-fn run_gc_strict_secure_policy(t: core::T&) {
+fn run_gc_strict_secure_policy(t: lit::T&) {
     let now_us = 1700000000000000;
     var jar = wing::CanonicalCookieJar { .. };
     jar.strict_secure_cookies = true;
@@ -1170,7 +1173,7 @@ fn run_gc_strict_secure_policy(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 13. Database Load Sanitization (CTL-08) & Nameless Cookie Import
 // ----------------------------------------------------------------------------
-fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
+fn run_ctl_sanitization_and_nameless_import(t: lit::T&) {
     let now_us = 1700000000000000;
     var jar = wing::CanonicalCookieJar { .. };
 
@@ -1204,18 +1207,18 @@ fn run_ctl_sanitization_and_nameless_import(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 14. Property-Based PRNG Fuzzing (600 Steps Invariant Check)
 // ----------------------------------------------------------------------------
-fn run_property_based_fuzzer(t: core::T&) {
-    var rng = core::new_fuzz_rng(0xCAFEBABE1337BEEF);
-    var clock = core::new_mock_clock();
+fn run_property_based_fuzzer(t: lit::T&) {
+    var rng = lit::new_fuzz_rng(0xCAFEBABE1337BEEF);
+    var clock = lit::new_mock_clock();
     var jar = wing::CanonicalCookieJar { .. };
 
     // Run 600 random insertion, overwrite, and expiration steps on a single domain
     for step in 600 {
-        let key_idx = core::next_range(rng, 0, 260);
-        let prio_idx = core::next_range(rng, 0, 3);
-        let is_sec = core::next_range(rng, 0, 2) == 1;
-        let is_host_only = core::next_range(rng, 0, 2) == 1;
-        let max_age = core::next_range(rng, -5, 50000);
+        let key_idx = lit::next_range(rng, 0, 260);
+        let prio_idx = lit::next_range(rng, 0, 3);
+        let is_sec = lit::next_range(rng, 0, 2) == 1;
+        let is_host_only = lit::next_range(rng, 0, 2) == 1;
+        let max_age = lit::next_range(rng, -5, 50000);
 
         var hdr: u8[..128] = [];
         format(hdr, "k_", key_idx, "=val_", step, "; Max-Age=", max_age);
@@ -1226,7 +1229,7 @@ fn run_property_based_fuzzer(t: core::T&) {
         if prio_idx == 2 { hdr.append("; Priority=High"); }
 
         let url = if is_sec { "https://sub.fuzz.example.com/a/b" } else { "http://sub.fuzz.example.com/a/b" };
-        wing::set_cookie_header(jar, url, hdr[..], core::advance_ms(clock, 50));
+        wing::set_cookie_header(jar, url, hdr[..], lit::advance_ms(clock, 50));
 
         // Invariant 1: cookie count in domain never exceeds kDomainMaxCookies (180)
         t.require_le(jar.cookies.len, 180, "Fuzz Invariant 1: domain cookie count must never exceed 180");
@@ -1249,7 +1252,7 @@ fn run_property_based_fuzzer(t: core::T&) {
 // Full verification suite for Mozilla Public Suffix List (PSL) Engine
 // and RFC 6265 Cookie Scoping (Normal, Wildcard, Exception, Private, and eTLD+1).
 
-fn test_psl_rule_types_and_precedence(t: core::T&) {
+fn test_psl_rule_types_and_precedence(t: lit::T&) {
     let db = wing::new_psl_database();
 
     t.run("Case 1: Normal ICANN Suffixes") { sub =>
@@ -1353,7 +1356,7 @@ fn test_psl_rule_types_and_precedence(t: core::T&) {
     };
 }
 
-fn test_psl_dynamic_update_and_scoping(t: core::T&) {
+fn test_psl_dynamic_update_and_scoping(t: lit::T&) {
     t.run("Case 1: Dynamic update_with_list parsing") { sub =>
         var db = wing::PslDatabase { rules: [] };
         let initial_count = db.rules.len;
@@ -1424,8 +1427,8 @@ fn test_psl_dynamic_update_and_scoping(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 6265bis Section 5.6: __Host- & __Secure- Cookie Prefix Enforcement
 // ----------------------------------------------------------------------------
-fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_host_and_secure_cookie_prefix_smuggling(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("HOST-01: __Host- cookie with Domain=127.0.0.1 literal must be rejected") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -1544,7 +1547,7 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. SSRF Filter Bypasses & IPv6 Zone ID / Scope ID Proxy Smuggling
 // ----------------------------------------------------------------------------
-fn test_ssrf_filter_bypasses(t: core::T&) {
+fn test_ssrf_filter_bypasses(t: lit::T&) {
     t.run("SSRF-01: NAT64 prefix to 0.0.0.0 (64:ff9b:: and 64:ff9b::0.0.0.0) must be blocked") { sub =>
         sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b::"), "NAT64 empty suffix (0.0.0.0) must be reserved");
         sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b::0.0.0.0"), "NAT64 0.0.0.0 must be reserved");
@@ -1639,7 +1642,7 @@ fn test_ssrf_filter_bypasses(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Dangerous Service Ports & Port 0 SSRF Bypass
 // ----------------------------------------------------------------------------
-fn test_dangerous_service_ports(t: core::T&) {
+fn test_dangerous_service_ports(t: lit::T&) {
     t.run("PORT-01: Dangerous service ports (Port 0, FTP 21, Telnet 23, MySQL 3306, Postgres 5432, MongoDB 27017)") { sub =>
         sub.assert_true(wing::is_dangerous_service_port(0), "Port 0 must be dangerous");
         sub.assert_true(wing::is_dangerous_service_port(21), "Port 21 (FTP) must be dangerous");
@@ -1688,8 +1691,8 @@ fn test_dangerous_service_ports(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Public Suffix Boundary Attacks & FQDN Edge Cases
 // ----------------------------------------------------------------------------
-fn test_public_suffix_boundary_attacks(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_public_suffix_boundary_attacks(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("PSL-01: Supercookie prevention on ICANN public suffixes") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -1764,7 +1767,7 @@ fn test_public_suffix_boundary_attacks(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Token Bucket & GCRA Burst / Concurrency Limits
 // ----------------------------------------------------------------------------
-fn test_rate_limiter_burst_and_concurrency(t: core::T&) {
+fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     t.run("RATE-01: Burst capacity boundary (1/s emission, burst=5 allows 6 requests)") { sub =>
         let quota = wing::new_gcra_quota(1, core::seconds(1), 5); // T=1s, tau=5s
         var cell = wing::GcraCell { tat_ns: 0 };
@@ -1870,7 +1873,7 @@ fn test_rate_limiter_burst_and_concurrency(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Singleflight Thundering Herd & Cache Stampede Defense
 // ----------------------------------------------------------------------------
-fn test_singleflight_thundering_herd(t: core::T&) {
+fn test_singleflight_thundering_herd(t: lit::T&) {
     t.run("FLIGHT-01: Duplicate call suppression (10 concurrent requests, exactly 1 leader)") { sub =>
         var g = core::SingleflightGroup { .. };
         let key = "cache:user:profile:42";
@@ -2002,8 +2005,8 @@ fn test_singleflight_thundering_herd(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 1: RFC 6265bis Section 5.6 Insecure Cookie Protection
 // ----------------------------------------------------------------------------
-fn test_rfc6265bis_sec56_shadowing_protection(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_rfc6265bis_sec56_shadowing_protection(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("SEC-01: Insecure subpath must not shadow root secure cookie") { sub =>
         var j = wing::CanonicalCookieJar { .. };
@@ -2035,8 +2038,8 @@ fn test_rfc6265bis_sec56_shadowing_protection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 2: Case-Insensitive Prefix Enforcement
 // ----------------------------------------------------------------------------
-fn test_case_insensitive_prefix_enforcement(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_case_insensitive_prefix_enforcement(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("PREFIX-01: Lowercase __secure- without Secure flag must be rejected") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -2086,8 +2089,8 @@ fn test_case_insensitive_prefix_enforcement(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 3: Max-Age Capping and Overflow Protection
 // ----------------------------------------------------------------------------
-fn test_max_age_overflow_and_capping(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_max_age_overflow_and_capping(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     let expected_cap_us = clock.now_us + internal::K_MAX_COOKIE_AGE_US;
 
     t.run("MAXAGE-01: Large Max-Age (10000000000000) must clamp to 400 days in jar") { sub =>
@@ -2139,8 +2142,8 @@ fn test_max_age_overflow_and_capping(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 4: RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection
 // ----------------------------------------------------------------------------
-fn test_httponly_script_overwrite_protection(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_httponly_script_overwrite_protection(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("HTTPONLY-01: Non-HTTP script API must not overwrite existing HttpOnly cookie (RFC 6265 Sec 5.3 Step 11.2)") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -2188,8 +2191,8 @@ fn test_httponly_script_overwrite_protection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 5: RFC 6265bis §5.5.7 SameSite=None and §5.1.3 Domain IP Invariants
 // ----------------------------------------------------------------------------
-fn test_rfc6265bis_samesite_and_domain_ip_rules(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_rfc6265bis_samesite_and_domain_ip_rules(t: lit::T&) {
+    var clock = lit::new_mock_clock();
 
     t.run("SAMESITE-01: parse_canonical_set_cookie rejects SameSite=None without Secure (RFC 6265bis §5.5.7)") { sub =>
         let cookie, cause, ok = wing::parse_canonical_set_cookie(
@@ -2236,8 +2239,8 @@ fn test_rfc6265bis_samesite_and_domain_ip_rules(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 6: RFC 6265 §5.3 Step 11.3 Creation-Time Preservation & §5.1.1 Date Lexer
 // ----------------------------------------------------------------------------
-fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
-    var clock = core::new_mock_clock();
+fn test_rfc6265_creation_time_and_date_lexing(t: lit::T&) {
+    var clock = lit::new_mock_clock();
     let t1 = clock.now_us;
     let t2 = clock.now_us + 10000000; // 10s later
 
@@ -2374,7 +2377,7 @@ fn test_rfc6265_creation_time_and_date_lexing(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 7: Cookie Hardening & Cross-Origin Single-Label Protection
 // ----------------------------------------------------------------------------
-fn test_cookie_hardening_invariants(t: core::T&) {
+fn test_cookie_hardening_invariants(t: lit::T&) {
     let now_us: i64 = 1700000000000000;
 
     t.run("SEC-07: Single-label cross-origin domain injection must be rejected") { sub =>
@@ -2444,47 +2447,47 @@ fn test_cookie_hardening_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 
 fn main() {
-    var runner = core::new_runner("Cookie Engine, PSL, and Security Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Cookie Engine, PSL, and Security Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Lexer, 4096B/1024B Quotas, CTL & WPT Nameless", test_lexer_limits_and_ctl);
-    core::run_case(runner, "2. Date Tokenizer, 400-Day Cap & Expired Overwrite", test_dates_400d_cap_and_expired_overwrite);
-    core::run_case(runner, "3. Domain, PSL, IPv4/IPv6 & Path-Match (RFC 6265 Section 5.1.3, Section 5.1.4)", test_domain_psl_ip_and_path_matching);
-    core::run_case(runner, "4. Layered Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)", test_layered_prefixes_table);
-    core::run_case(runner, "5. SameSite Lax+POST 120s Window & OBC IPv6 Port Upgrade", test_samesite_lax_post_window_and_obc);
-    core::run_case(runner, "6. 6-Round Domain GC Asymmetry (Round 4 vs Round 5)", test_gc_6_rounds_asymmetry_and_global_immunity);
-    core::run_case(runner, "7. Global Garbage Collection & 30-Day Purge Immunity", test_global_gc_and_30_day_immunity);
-    core::run_case(runner, "8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement", test_chips_and_10kb_quota);
-    core::run_case(runner, "9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model", test_header_sorting_and_persistence_key);
-    core::run_case(runner, "10. Exhaustive Ingestion Matrix (LEX, TIME, DOM, PSL, IPv6, OBC)", run_ingestion_matrix);
-    core::run_case(runner, "11. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep", run_exhaustive_ctl_sweep);
-    core::run_case(runner, "12. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules", run_path_matching_matrix);
-    core::run_case(runner, "13. SameSite, Lax+POST 120s & Schemeful Same-Site Matrix", run_samesite_and_redirect_matrix);
-    core::run_case(runner, "14. CHIPS Partition Isolation & 10,240B Byte Quota Enforcement", run_chips_partition_quota_and_isolation);
-    core::run_case(runner, "15. GC OBC (Domain-before-Host) & Global 30-Day Purge Immunity", run_gc_obc_domain_before_host_and_global_purge);
-    core::run_case(runner, "16. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing", run_serialization_server_first_win_and_sqlite_v24);
-    core::run_case(runner, "17. Matrix 11: LastAccessDate Throttling, Monotonicity & Clock Skew", run_matrix_11_clock_skew_and_throttling);
-    core::run_case(runner, "18. Matrix 13: SiteForCookies Ancestor Frame Hierarchy & Context", run_matrix_13_site_for_cookies_and_ancestors);
-    core::run_case(runner, "19. Matrix 14: Selective Deletion & Session Cleanup", run_matrix_14_selective_deletion);
-    core::run_case(runner, "20. Matrices 15 & 16: Cryptographic Integrity & Protocol Attacks", run_matrix_15_and_16_crypto_and_attacks);
-    core::run_case(runner, "21. GC-04: strict_secure_cookies Policy Priority Eviction", run_gc_strict_secure_policy);
-    core::run_case(runner, "22. Database Load Sanitization (CTL-08) & Nameless Cookie Import", run_ctl_sanitization_and_nameless_import);
-    core::run_case(runner, "23. Property-Based PRNG Fuzzing (600 Steps Invariant Check)", run_property_based_fuzzer);
-    core::run_case(runner, "24. PSL Rule Types and Precedence (Normal, Wildcard, Exception, Private)", test_psl_rule_types_and_precedence);
-    core::run_case(runner, "25. PSL Dynamic Update and RFC 6265 Scoping", test_psl_dynamic_update_and_scoping);
-    core::run_case(runner, "26. RFC 6265bis Section 5.6 (__Host- & __Secure- Prefix Invariants)", test_host_and_secure_cookie_prefix_smuggling);
-    core::run_case(runner, "27. SSRF Filter Bypasses & IPv6 Zone ID Proxy Smuggling (CVE-2025-22870)", test_ssrf_filter_bypasses);
-    core::run_case(runner, "28. Dangerous Service Ports & Port 0 SSRF Bypass", test_dangerous_service_ports);
-    core::run_case(runner, "29. Public Suffix Boundary Attacks & FQDN Edge Cases (Go PSL Bugs)", test_public_suffix_boundary_attacks);
-    core::run_case(runner, "30. Token Bucket & GCRA Burst / Concurrency Limits (Go Rate Limiter Bugs)", test_rate_limiter_burst_and_concurrency);
-    core::run_case(runner, "31. Singleflight Thundering Herd & Cache Stampede Defense (Go Singleflight Bugs)", test_singleflight_thundering_herd);
-    core::run_case(runner, "32. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
-    core::run_case(runner, "33. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
-    core::run_case(runner, "34. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
-    core::run_case(runner, "35. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection", test_httponly_script_overwrite_protection);
-    core::run_case(runner, "36. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants", test_rfc6265bis_samesite_and_domain_ip_rules);
-    core::run_case(runner, "37. RFC 6265 §5.3 Step 11.3 Creation-Time & §5.1.1 Date Lexer", test_rfc6265_creation_time_and_date_lexing);
-    core::run_case(runner, "38. Cookie Hardening & Cross-Origin Single-Label Protection", test_cookie_hardening_invariants);
+    lit::run_case(runner, "1. Lexer, 4096B/1024B Quotas, CTL & WPT Nameless", test_lexer_limits_and_ctl);
+    lit::run_case(runner, "2. Date Tokenizer, 400-Day Cap & Expired Overwrite", test_dates_400d_cap_and_expired_overwrite);
+    lit::run_case(runner, "3. Domain, PSL, IPv4/IPv6 & Path-Match (RFC 6265 Section 5.1.3, Section 5.1.4)", test_domain_psl_ip_and_path_matching);
+    lit::run_case(runner, "4. Layered Prefixes (__Secure-, __Host-, __Http-, __Host-Http-)", test_layered_prefixes_table);
+    lit::run_case(runner, "5. SameSite Lax+POST 120s Window & OBC IPv6 Port Upgrade", test_samesite_lax_post_window_and_obc);
+    lit::run_case(runner, "6. 6-Round Domain GC Asymmetry (Round 4 vs Round 5)", test_gc_6_rounds_asymmetry_and_global_immunity);
+    lit::run_case(runner, "7. Global Garbage Collection & 30-Day Purge Immunity", test_global_gc_and_30_day_immunity);
+    lit::run_case(runner, "8. CHIPS Partitioned Cookies & 10KB Memory Quota Enforcement", test_chips_and_10kb_quota);
+    lit::run_case(runner, "9. RFC 6265 Section 5.4 Header Sorting & Persistence Key Model", test_header_sorting_and_persistence_key);
+    lit::run_case(runner, "10. Exhaustive Ingestion Matrix (LEX, TIME, DOM, PSL, IPv6, OBC)", run_ingestion_matrix);
+    lit::run_case(runner, "11. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep", run_exhaustive_ctl_sweep);
+    lit::run_case(runner, "12. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules", run_path_matching_matrix);
+    lit::run_case(runner, "13. SameSite, Lax+POST 120s & Schemeful Same-Site Matrix", run_samesite_and_redirect_matrix);
+    lit::run_case(runner, "14. CHIPS Partition Isolation & 10,240B Byte Quota Enforcement", run_chips_partition_quota_and_isolation);
+    lit::run_case(runner, "15. GC OBC (Domain-before-Host) & Global 30-Day Purge Immunity", run_gc_obc_domain_before_host_and_global_purge);
+    lit::run_case(runner, "16. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing", run_serialization_server_first_win_and_sqlite_v24);
+    lit::run_case(runner, "17. Matrix 11: LastAccessDate Throttling, Monotonicity & Clock Skew", run_matrix_11_clock_skew_and_throttling);
+    lit::run_case(runner, "18. Matrix 13: SiteForCookies Ancestor Frame Hierarchy & Context", run_matrix_13_site_for_cookies_and_ancestors);
+    lit::run_case(runner, "19. Matrix 14: Selective Deletion & Session Cleanup", run_matrix_14_selective_deletion);
+    lit::run_case(runner, "20. Matrices 15 & 16: Cryptographic Integrity & Protocol Attacks", run_matrix_15_and_16_crypto_and_attacks);
+    lit::run_case(runner, "21. GC-04: strict_secure_cookies Policy Priority Eviction", run_gc_strict_secure_policy);
+    lit::run_case(runner, "22. Database Load Sanitization (CTL-08) & Nameless Cookie Import", run_ctl_sanitization_and_nameless_import);
+    lit::run_case(runner, "23. Property-Based PRNG Fuzzing (600 Steps Invariant Check)", run_property_based_fuzzer);
+    lit::run_case(runner, "24. PSL Rule Types and Precedence (Normal, Wildcard, Exception, Private)", test_psl_rule_types_and_precedence);
+    lit::run_case(runner, "25. PSL Dynamic Update and RFC 6265 Scoping", test_psl_dynamic_update_and_scoping);
+    lit::run_case(runner, "26. RFC 6265bis Section 5.6 (__Host- & __Secure- Prefix Invariants)", test_host_and_secure_cookie_prefix_smuggling);
+    lit::run_case(runner, "27. SSRF Filter Bypasses & IPv6 Zone ID Proxy Smuggling (CVE-2025-22870)", test_ssrf_filter_bypasses);
+    lit::run_case(runner, "28. Dangerous Service Ports & Port 0 SSRF Bypass", test_dangerous_service_ports);
+    lit::run_case(runner, "29. Public Suffix Boundary Attacks & FQDN Edge Cases (Go PSL Bugs)", test_public_suffix_boundary_attacks);
+    lit::run_case(runner, "30. Token Bucket & GCRA Burst / Concurrency Limits (Go Rate Limiter Bugs)", test_rate_limiter_burst_and_concurrency);
+    lit::run_case(runner, "31. Singleflight Thundering Herd & Cache Stampede Defense (Go Singleflight Bugs)", test_singleflight_thundering_herd);
+    lit::run_case(runner, "32. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
+    lit::run_case(runner, "33. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
+    lit::run_case(runner, "34. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);
+    lit::run_case(runner, "35. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection", test_httponly_script_overwrite_protection);
+    lit::run_case(runner, "36. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants", test_rfc6265bis_samesite_and_domain_ip_rules);
+    lit::run_case(runner, "37. RFC 6265 §5.3 Step 11.3 Creation-Time & §5.1.1 Date Lexer", test_rfc6265_creation_time_and_date_lexing);
+    lit::run_case(runner, "38. Cookie Hardening & Cross-Origin Single-Label Protection", test_cookie_hardening_invariants);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

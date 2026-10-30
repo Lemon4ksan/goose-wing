@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: tls_record_framing ---
 // tests/wireframer_round1_record_test.goose
@@ -17,7 +20,7 @@ import wing from "..";
 //   4. RFC 8446 §6 Standard Alert Code (47: illegal_parameter) Non-Recognition
 //   5. TLSCiphertext Truncated Payload (< 17 bytes) Framing DecodeError Bypass (RFC 8446 §5.2, §5.4)
 
-fn test_wireframer_cursor_and_builder_framing(t: core::T&) {
+fn test_wireframer_cursor_and_builder_framing(t: lit::T&) {
     t.run("ByteCursor length-prefixed underflow preserves cursor without desynchronization") { sub =>
         // Vector 1: Truncated u8 length-prefixed field
         // Header declares length 5, but only 2 payload bytes exist (total 3 bytes)
@@ -76,7 +79,7 @@ fn test_wireframer_cursor_and_builder_framing(t: core::T&) {
     };
 }
 
-fn test_wireframer_tls_record_invariants(t: core::T&) {
+fn test_wireframer_tls_record_invariants(t: lit::T&) {
     t.run("Sequence number 2^64 - 1 exhaustion yields unexpected_message (RFC 8446 §5.3)") { sub =>
         let key:     u8[16] = [0x01; 16];
         let iv:      u8[12] = [0x02; 12];
@@ -127,7 +130,7 @@ fn test_wireframer_tls_record_invariants(t: core::T&) {
 // 4. RFC 8446 §5.2: Outer TLSCiphertext ContentType restriction (only application_data 0x17 or CCS 0x14 allowed)
 // 5. OpenSSL #31533: Early data skipped volume integer overflow defense
 
-fn test_round2_padding_and_empty_record_invariants(t: core::T&) {
+fn test_round2_padding_and_empty_record_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.4: Empty records forbidden for handshake, alert, and CCS") { sub =>
         // Vector 1: Decrypted payload with 0 content bytes and inner type Handshake (0x16)
         // [0x16] -> content_len = 0, inner_type = 0x16
@@ -186,7 +189,7 @@ fn test_round2_padding_and_empty_record_invariants(t: core::T&) {
     };
 }
 
-fn test_round2_framing_and_dos_invariants(t: core::T&) {
+fn test_round2_framing_and_dos_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.2: TLSCiphertext header minimum size and outer type restrictions") { sub =>
         var out: u8[>..] = [];
 
@@ -253,7 +256,7 @@ fn test_round2_framing_and_dos_invariants(t: core::T&) {
 // 4. RFC 9000 §19.6: QUIC CRYPTO frame offset varint 2^62 - 1 maximum bounds overflow
 // 5. RFC 9001 §4 & RFC 9000 §19.6: QUIC CRYPTO gateway empty frame and buffer quota limits
 
-fn test_round3_ccs_and_protected_record_invariants(t: core::T&) {
+fn test_round3_ccs_and_protected_record_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.4 & Appendix D.4: Protected ChangeCipherSpec inner type strictly forbidden") { sub =>
         // Vector 1: Decrypted inner plaintext with ContentType = ChangeCipherSpec (0x14)
         // RFC 8446 Appendix D.4: "Implementations which receive a protected change_cipher_spec record
@@ -329,7 +332,7 @@ fn test_round3_ccs_and_protected_record_invariants(t: core::T&) {
     };
 }
 
-fn test_round3_quic_crypto_and_framing_invariants(t: core::T&) {
+fn test_round3_quic_crypto_and_framing_invariants(t: lit::T&) {
     t.run("RFC 9001 §5.4.2: QUIC Header Protection sample offset validation") { sub =>
         var pkt: u8[24] = [0; 24];
         for i in 24 { pkt[i] = i as u8; }
@@ -390,7 +393,7 @@ fn test_round3_quic_crypto_and_framing_invariants(t: core::T&) {
 // Verification test suite for DNS Engine, RFC 9460 HTTPS RR (Type 65), and Encrypted Client Hello (ECH).
 
 // 1. DNS Wire Format & RFC 9460 HTTPS/SVCB Resource Records (Type 65)
-fn test_dns_and_https_rr(t: core::T&) {
+fn test_dns_and_https_rr(t: lit::T&) {
     t.run("DNS-01: Query Encoding and Name Compression Decoding") { sub =>
         var query: u8[>..] = [];
         let ok_q = wing::build_dns_query("cloudflare.com", wing::DNS_QTYPE_HTTPS, 0x1234, query);
@@ -492,7 +495,7 @@ fn test_dns_and_https_rr(t: core::T&) {
 }
 
 // 2. Encrypted Client Hello (ECH) Wire Formats & HPKE Privacy Handshake
-fn test_ech_protocol(t: core::T&) {
+fn test_ech_protocol(t: lit::T&) {
     t.run("ECH-01: ECHConfig & ECHConfigList Parsing") { sub =>
         // Construct a realistic synthetic ECHConfig wire buffer:
         // version: 0xFE0D (draft-13)
@@ -673,7 +676,7 @@ fn test_ech_protocol(t: core::T&) {
 }
 
 // 3. DNS-over-HTTPS (RFC 8484) & Automated ECH Discovery (RFC 9460)
-fn test_doh_and_automated_ech_discovery(t: core::T&) {
+fn test_doh_and_automated_ech_discovery(t: lit::T&) {
     t.run("DoH-01: Wire Format Query Construction & URL Formatter") { sub =>
         // POST body
         var post_body: u8[>..] = [];
@@ -778,7 +781,7 @@ fn test_doh_and_automated_ech_discovery(t: core::T&) {
 // - Cryptographic signature verification via Ed25519 against transcript hash
 // - Strict rejection on signature tampering, wrong public key, or context tampering
 
-fn test_certificate_request_codec(t: core::T&) {
+fn test_certificate_request_codec(t: lit::T&) {
     t.run("CertificateRequest Encoding & Parsing (RFC 8446 §4.3.2)") { sub =>
         var req_buf: u8[>..] = [];
         let sig_algs: u16[3] = [
@@ -802,7 +805,7 @@ fn test_certificate_request_codec(t: core::T&) {
     };
 }
 
-fn test_empty_client_certificate(t: core::T&) {
+fn test_empty_client_certificate(t: lit::T&) {
     t.run("Empty Client Certificate Handling (RFC 8446 §4.4.2)") { sub =>
         // Client without certificate must send empty Certificate message
         var cert_buf: u8[>..] = [];
@@ -824,7 +827,7 @@ fn test_empty_client_certificate(t: core::T&) {
     };
 }
 
-fn test_client_certificate_verify_ed25519(t: core::T&) {
+fn test_client_certificate_verify_ed25519(t: lit::T&) {
     t.run("Client CertificateVerify Generation & Verification (Ed25519)") { sub =>
         // 1. Generate Ed25519 client keypair
         var seed: u8[32] = [0; 32];
@@ -901,7 +904,7 @@ fn test_client_certificate_verify_ed25519(t: core::T&) {
 // - 1120-byte hybrid ServerHello key share wire serialization and deserialization
 // - Hybrid shared secret derivation combiner (RFC 10024 §4)
 
-fn test_post_quantum_hybrid(t: core::T&) {
+fn test_post_quantum_hybrid(t: lit::T&) {
     t.run("IANA NamedGroup Recognition") { sub =>
         sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
         sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
@@ -1004,7 +1007,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
 // Verification Suite for RFC 8879 (TLS Certificate Compression via Zstandard),
 // TLS ClientHello Fragmentation, and DNS Cache with Stale-While-Revalidate.
 
-fn test_rfc8879_certificate_compression(t: core::T&) {
+fn test_rfc8879_certificate_compression(t: lit::T&) {
     t.run("1. RFC 8879 Extension & Handshake Message Codecs") { sub =>
         let algos: u16[2] = [wing::CERT_COMPRESS_ZSTD, wing::CERT_COMPRESS_BROTLI];
         var ext_wire: u8[>..] = [];
@@ -1039,7 +1042,7 @@ fn test_rfc8879_certificate_compression(t: core::T&) {
     };
 }
 
-fn test_tls_client_hello_fragmentation(t: core::T&) {
+fn test_tls_client_hello_fragmentation(t: lit::T&) {
     t.run("1. ClientHello Record Fragmentation for Anti-Censorship / DPI Evasion") { sub =>
         let dummy_ch = "ClientHelloPayloadContainingServerNameIndicationSNIAndCiphersAndExtensionsForTesting";
         var records: u8[>..] = [];
@@ -1070,7 +1073,7 @@ fn test_tls_client_hello_fragmentation(t: core::T&) {
     };
 }
 
-fn test_dns_cache_and_stale_revalidate(t: core::T&) {
+fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
     t.run("1. DNS Cache TTL and Stale-While-Revalidate Lifecycle") { sub =>
         var cache = wing::DnsCache { .. };
 
@@ -1117,7 +1120,7 @@ fn test_dns_cache_and_stale_revalidate(t: core::T&) {
 // 3. SAN dNSName validation (null bytes, label lengths, hyphen boundaries).
 // 4. ASN.1 UTCTime & GeneralizedTime strict DER canonical parsing.
 
-fn test_asn1_der_length_canonicality(t: core::T&) {
+fn test_asn1_der_length_canonicality(t: lit::T&) {
     t.run("ASN1-SEC-01: Short Form and Long Form Valid Lengths") { sub =>
         // Short form: 0x42 = 66
         let short_der: u8[1] = [0x42];
@@ -1169,7 +1172,7 @@ fn test_asn1_der_length_canonicality(t: core::T&) {
     };
 }
 
-fn test_asn1_der_integer_and_serial_invariants(t: core::T&) {
+fn test_asn1_der_integer_and_serial_invariants(t: lit::T&) {
     t.run("ASN1-SEC-05: Empty Integer and Redundant Zero Padding") { sub =>
         let empty_buf: u8[0] = [];
         sub.assert_false(wing::validate_asn1_integer(empty_buf[..], false), "empty integer is forbidden");
@@ -1212,7 +1215,7 @@ fn test_asn1_der_integer_and_serial_invariants(t: core::T&) {
     };
 }
 
-fn test_x509_san_dns_name_validation(t: core::T&) {
+fn test_x509_san_dns_name_validation(t: lit::T&) {
     t.run("ASN1-SEC-08: Valid DNS Names in SAN") { sub =>
         sub.assert_true(wing::validate_san_dns_name("example.com"), "standard domain name valid");
         sub.assert_true(wing::validate_san_dns_name("api.sub.domain.co.uk"), "multilevel domain valid");
@@ -1247,7 +1250,7 @@ fn test_x509_san_dns_name_validation(t: core::T&) {
     };
 }
 
-fn test_x509_asn1_time_parsing(t: core::T&) {
+fn test_x509_asn1_time_parsing(t: lit::T&) {
     t.run("ASN1-SEC-12: Valid UTCTime and GeneralizedTime Canonical DER") { sub =>
         // UTCTime: "261028120000Z" (2026-10-28 12:00:00 UTC)
         let utc_valid = "261028120000Z";
@@ -1316,7 +1319,7 @@ fn bytes_to_hex(bytes: const u8[:], out: u8[>..]&) {
 // ----------------------------------------------------------------------------
 // 1. Constant-Time Primitives & KeySlot Redaction
 // ----------------------------------------------------------------------------
-fn test_constant_time_primitives(t: core::T&) {
+fn test_constant_time_primitives(t: lit::T&) {
     t.run("Branchless Equality and Select") { sub =>
         sub.assert_eq(core::ct_eq_u8(0x42, 0x42), 1, "ct_eq_u8 match");
         sub.assert_eq(core::ct_eq_u8(0x42, 0x43), 0, "ct_eq_u8 mismatch");
@@ -1365,7 +1368,7 @@ fn test_constant_time_primitives(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Dudect Statistical Welch's t-test Simulation
 // ----------------------------------------------------------------------------
-fn test_dudect_context_and_filtering(t: core::T&) {
+fn test_dudect_context_and_filtering(t: lit::T&) {
     t.run("Outlier Cropping & Statistical Lockstep") { sub =>
         var ctx = core::new_dudect_context();
 
@@ -1389,7 +1392,7 @@ fn test_dudect_context_and_filtering(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. NIST / RFC Cryptographic Primitives
 // ----------------------------------------------------------------------------
-fn test_pure_goose_crypto_primitives(t: core::T&) {
+fn test_pure_goose_crypto_primitives(t: lit::T&) {
     t.run("SHA-256 NIST Vectors") { sub =>
         // Vector 1: Empty string
         let h_empty = core::sha256("");
@@ -1483,7 +1486,7 @@ fn test_pure_goose_crypto_primitives(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. AEAD Authenticated Encryption: XChaCha20-Poly1305 & AES-256-GCM
 // ----------------------------------------------------------------------------
-fn test_aead_ciphers(t: core::T&) {
+fn test_aead_ciphers(t: lit::T&) {
     t.run("XChaCha20-Poly1305 Round-Trip & Tamper Resistance") { sub =>
         var key:   u8[32] = [0x42; 32];
         var nonce: u8[24] = [0x19; 24];
@@ -1540,7 +1543,7 @@ fn test_aead_ciphers(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. CryptoJar Container: PrivateJar & SignedJar with Key Rotation
 // ----------------------------------------------------------------------------
-fn test_crypto_jar_container(t: core::T&) {
+fn test_crypto_jar_container(t: lit::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
         var store = wing::KeyStore { .. };
         var raw_key: u8[32] = [0x33; 32];
@@ -1653,34 +1656,34 @@ fn test_crypto_jar_container(t: core::T&) {
 // ----------------------------------------------------------------------------
 
 fn main() {
-    var runner = core::new_runner("TLS 1.3 Record Layer, ECH, mTLS, and PKI Extensions Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("TLS 1.3 Record Layer, ECH, mTLS, and PKI Extensions Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. ByteCursor & ByteBuilder Framing Invariants", test_wireframer_cursor_and_builder_framing);
-    core::run_case(runner, "2. TLS Record Layer Framing & Alert Invariants", test_wireframer_tls_record_invariants);
-    core::run_case(runner, "3. RFC 8446 Padding, All-Zero & InnerPlaintext Invariants", test_round2_padding_and_empty_record_invariants);
-    core::run_case(runner, "4. RFC 8446 Framing, Minimum Size & DoS Invariants", test_round2_framing_and_dos_invariants);
-    core::run_case(runner, "5. RFC 8446 CCS Invariants & Flood Protection", test_round3_ccs_and_protected_record_invariants);
-    core::run_case(runner, "6. RFC 9001 QUIC Crypto Gateway & Stream Bounds", test_round3_quic_crypto_and_framing_invariants);
-    core::run_case(runner, "7. DNS Wire Format & RFC 9460 HTTPS Resource Records", test_dns_and_https_rr);
-    core::run_case(runner, "8. Encrypted Client Hello (ECH) Wire & HPKE Handshake", test_ech_protocol);
-    core::run_case(runner, "9. DNS-over-HTTPS (DoH RFC 8484) & Automated ECH Discovery", test_doh_and_automated_ech_discovery);
-    core::run_case(runner, "10. CertificateRequest Codec", test_certificate_request_codec);
-    core::run_case(runner, "11. Empty Client Certificate", test_empty_client_certificate);
-    core::run_case(runner, "12. Client CertificateVerify Ed25519", test_client_certificate_verify_ed25519);
-    core::run_case(runner, "13. Post-Quantum TLS 1.3 Key Exchange", test_post_quantum_hybrid);
-    core::run_case(runner, "14. RFC 8879 TLS Certificate Compression via Zstandard", test_rfc8879_certificate_compression);
-    core::run_case(runner, "15. TLS ClientHello Fragmentation & DPI Evasion", test_tls_client_hello_fragmentation);
-    core::run_case(runner, "16. DNS Cache with Stale-While-Revalidate", test_dns_cache_and_stale_revalidate);
-    core::run_case(runner, "17. ASN.1 DER Length Canonicality & Bounds", test_asn1_der_length_canonicality);
-    core::run_case(runner, "18. ASN.1 INTEGER Canonical Rules & Serial Invariants", test_asn1_der_integer_and_serial_invariants);
-    core::run_case(runner, "19. X.509 SAN dNSName Hostname Validation", test_x509_san_dns_name_validation);
-    core::run_case(runner, "20. ASN.1 Time (UTCTime & GeneralizedTime) Canonical DER Parsing", test_x509_asn1_time_parsing);
-    core::run_case(runner, "21. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
-    core::run_case(runner, "22. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
-    core::run_case(runner, "23. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
-    core::run_case(runner, "24. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
-    core::run_case(runner, "25. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
+    lit::run_case(runner, "1. ByteCursor & ByteBuilder Framing Invariants", test_wireframer_cursor_and_builder_framing);
+    lit::run_case(runner, "2. TLS Record Layer Framing & Alert Invariants", test_wireframer_tls_record_invariants);
+    lit::run_case(runner, "3. RFC 8446 Padding, All-Zero & InnerPlaintext Invariants", test_round2_padding_and_empty_record_invariants);
+    lit::run_case(runner, "4. RFC 8446 Framing, Minimum Size & DoS Invariants", test_round2_framing_and_dos_invariants);
+    lit::run_case(runner, "5. RFC 8446 CCS Invariants & Flood Protection", test_round3_ccs_and_protected_record_invariants);
+    lit::run_case(runner, "6. RFC 9001 QUIC Crypto Gateway & Stream Bounds", test_round3_quic_crypto_and_framing_invariants);
+    lit::run_case(runner, "7. DNS Wire Format & RFC 9460 HTTPS Resource Records", test_dns_and_https_rr);
+    lit::run_case(runner, "8. Encrypted Client Hello (ECH) Wire & HPKE Handshake", test_ech_protocol);
+    lit::run_case(runner, "9. DNS-over-HTTPS (DoH RFC 8484) & Automated ECH Discovery", test_doh_and_automated_ech_discovery);
+    lit::run_case(runner, "10. CertificateRequest Codec", test_certificate_request_codec);
+    lit::run_case(runner, "11. Empty Client Certificate", test_empty_client_certificate);
+    lit::run_case(runner, "12. Client CertificateVerify Ed25519", test_client_certificate_verify_ed25519);
+    lit::run_case(runner, "13. Post-Quantum TLS 1.3 Key Exchange", test_post_quantum_hybrid);
+    lit::run_case(runner, "14. RFC 8879 TLS Certificate Compression via Zstandard", test_rfc8879_certificate_compression);
+    lit::run_case(runner, "15. TLS ClientHello Fragmentation & DPI Evasion", test_tls_client_hello_fragmentation);
+    lit::run_case(runner, "16. DNS Cache with Stale-While-Revalidate", test_dns_cache_and_stale_revalidate);
+    lit::run_case(runner, "17. ASN.1 DER Length Canonicality & Bounds", test_asn1_der_length_canonicality);
+    lit::run_case(runner, "18. ASN.1 INTEGER Canonical Rules & Serial Invariants", test_asn1_der_integer_and_serial_invariants);
+    lit::run_case(runner, "19. X.509 SAN dNSName Hostname Validation", test_x509_san_dns_name_validation);
+    lit::run_case(runner, "20. ASN.1 Time (UTCTime & GeneralizedTime) Canonical DER Parsing", test_x509_asn1_time_parsing);
+    lit::run_case(runner, "21. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
+    lit::run_case(runner, "22. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
+    lit::run_case(runner, "23. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
+    lit::run_case(runner, "24. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
+    lit::run_case(runner, "25. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

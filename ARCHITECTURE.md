@@ -17,7 +17,7 @@ Raw network bytes are validated once at the ingress boundary: the L4 socket driv
 - `core/compress/`: streaming codecs for Zstandard, Brotli (RFC 7932 and RFC 9842 dictionary compression), Gzip, Deflate, and Zlib.
 - `core/crypto/`: SHA-2, HMAC, HKDF, ChaCha20-Poly1305, XChaCha20-Poly1305, X25519, and Ed25519 primitives.
 - `core/url/`: RFC 3986 URI parser and percent-encoding normalizer.
-- `core/io/`, `core/sync/`, `core/ufcs/`, and `core/test/`: stream traits, atomic synchronization, fixed-buffer extension methods (`try_push`, `try_append`), and the test assertion runner.
+- `core/io/`, `core/sync/`, and `core/ufcs/`: stream traits, atomic synchronization, and fixed-buffer extension methods (`try_push`, `try_append`).
 
 `wing.goose` assembles the transport and application protocols:
 

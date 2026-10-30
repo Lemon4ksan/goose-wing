@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: regress_issues_batch16 ---
 // Phase 16 RED test suite: RFC Protocol Invariants, Authority/Host Smuggling Defenses,
@@ -21,7 +24,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. X.509 URI Name Constraints Evasion via @ in Path/Query & ?/# Suffix
 // ----------------------------------------------------------------------------
-fn test_x509_uri_name_constraints_evasion(t: core::T&) {
+fn test_x509_uri_name_constraints_evasion(t: lit::T&) {
     t.run("URI name constraints: reject @ in path/query smuggling permitted host") { sub =>
         // Attacker attempts to bypass name constraints by putting @ in the path:
         // Host is "evil.com", path contains "@permitted.example.com"
@@ -71,7 +74,7 @@ fn test_x509_uri_name_constraints_evasion(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. HTTP/1.1 Wire Response Parser 204/304/1xx Chunked Desync & Header Block Cap
 // ----------------------------------------------------------------------------
-fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
+fn test_http1_wire_response_204_304_1xx_framing(t: lit::T&) {
     t.run("parse_http1_wire_response: 204/304/1xx with Transfer-Encoding chunked must succeed without body") { sub =>
         // RFC 9112 §6.3 rule 1: 1xx, 204, and 304 responses NEVER have a message body,
         // even if Transfer-Encoding: chunked is sent by a broken/malicious upstream.
@@ -118,7 +121,7 @@ fn test_http1_wire_response_204_304_1xx_framing(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. HTTP/1.1 Response Serializer Empty-Status Chunked Bodyless Enforcement
 // ----------------------------------------------------------------------------
-fn test_http1_response_serialization_empty_status(t: core::T&) {
+fn test_http1_response_serialization_empty_status(t: lit::T&) {
     t.run("serialize_http1_response: 204/304 suppresses Transfer-Encoding and chunked body") { sub =>
         // 204 No Content with Transfer-Encoding or trailers requested
         var res_204 = wing::Response { .. };
@@ -166,7 +169,7 @@ fn test_http1_response_serialization_empty_status(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. HTTP/3 Stream Data Host vs :authority Conflict & Host Syntax
 // ----------------------------------------------------------------------------
-fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
+fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
     t.run("H3 request: reject conflicting :authority and host headers") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_server_connection(settings);
@@ -275,7 +278,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. HTTP/2 HPACK Host Syntax & Case-Insensitive Authority Equivalence
 // ----------------------------------------------------------------------------
-fn test_h2_hpack_host_authority_validation(t: core::T&) {
+fn test_h2_hpack_host_authority_validation(t: lit::T&) {
     t.run("HPACK: reject empty :authority and empty host") { sub =>
         var dt = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
@@ -366,7 +369,7 @@ fn test_h2_hpack_host_authority_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. HTTP/2 Connection Frame Coordinator Trailer END_STREAM Enforcement
 // ----------------------------------------------------------------------------
-fn test_h2_connection_trailers_end_stream_requirement(t: core::T&) {
+fn test_h2_connection_trailers_end_stream_requirement(t: lit::T&) {
     t.run("H2 ingress: second HEADERS frame on stream MUST have FLAG_END_STREAM") { sub =>
         var conn = internal::new_h2_connection(0);
 
@@ -428,7 +431,7 @@ fn test_h2_connection_trailers_end_stream_requirement(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing
 // ----------------------------------------------------------------------------
-fn test_cors_wildcard_origin_smuggling_and_csrf_userinfo(t: core::T&) {
+fn test_cors_wildcard_origin_smuggling_and_csrf_userinfo(t: lit::T&) {
     t.run("match_cors_origin_pattern: reject path/query/userinfo suffix confusion") { sub =>
         let pattern = "https://*.example.com";
 
@@ -491,7 +494,7 @@ fn test_cors_wildcard_origin_smuggling_and_csrf_userinfo(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. HTTP/3 DATA Frame Rejection on Bodyless Status Codes (204, 304, 1xx)
 // ----------------------------------------------------------------------------
-fn test_h3_bodyless_status_data_rejection(t: core::T&) {
+fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     t.run("H3: reject DATA frame on stream with 204 No Content") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -579,7 +582,7 @@ fn test_h3_bodyless_status_data_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. HTTP/3 Prohibited Trailer Framing Headers & QPACK NUL/CR/LF Injection
 // ----------------------------------------------------------------------------
-fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: core::T&) {
+fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
     t.run("H3: reject prohibited framing headers in trailers") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -680,7 +683,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. HTTP/2 :status Pseudo-Header Validation & 101 Prohibition
 // ----------------------------------------------------------------------------
-fn test_h2_status_pseudo_header_validation(t: core::T&) {
+fn test_h2_status_pseudo_header_validation(t: lit::T&) {
     t.run("HPACK: reject invalid :status values (out of range, non-3-digit, or 101)") { sub =>
         var dt = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
@@ -769,7 +772,7 @@ fn test_h2_status_pseudo_header_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. HTTP/2 DATA Frame Rejection on Streams with Trailers Received
 // ----------------------------------------------------------------------------
-fn test_h2_data_frame_after_trailers_rejection(t: core::T&) {
+fn test_h2_data_frame_after_trailers_rejection(t: lit::T&) {
     t.run("H2: reject DATA frame on stream where trailers were received") { sub =>
         var conn = internal::new_h2_connection(0);
 
@@ -807,7 +810,7 @@ fn test_h2_data_frame_after_trailers_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. X.509 DNS Name Constraints Wildcard & Empty/Leading Dot Validation
 // ----------------------------------------------------------------------------
-fn test_x509_dns_name_constraint_wildcard_and_empty_labels(t: core::T&) {
+fn test_x509_dns_name_constraint_wildcard_and_empty_labels(t: lit::T&) {
     t.run("DNS name constraints: reject empty labels and leading dots in candidate") { sub =>
         // Candidate with empty label: "..example.com"
         let res_empty = wing::match_dns_name_constraint("..example.com", ".example.com");
@@ -854,7 +857,7 @@ fn test_x509_dns_name_constraint_wildcard_and_empty_labels(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. X.509 ASN.1 Time Parsing Bounds & Overflow Defense
 // ----------------------------------------------------------------------------
-fn test_x509_asn1_time_parsing_bounds(t: core::T&) {
+fn test_x509_asn1_time_parsing_bounds(t: lit::T&) {
     t.run("parse_utc_time: reject out-of-bound calendar fields") { sub =>
         // Valid: "260101120000Z" (2026-01-01 12:00:00 UTC)
         let _, ok_valid = wing::parse_utc_time("260101120000Z");
@@ -940,7 +943,7 @@ fn test_x509_asn1_time_parsing_bounds(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. HTTP/3 Server Request Trailers Invariants (RFC 9114 §4.3)
 // ----------------------------------------------------------------------------
-fn test_h3_server_request_trailers_invariants(t: core::T&) {
+fn test_h3_server_request_trailers_invariants(t: lit::T&) {
     t.run("H3 Server: reject pseudo-headers in request trailers") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_server_connection(settings);
@@ -1070,7 +1073,7 @@ fn test_h3_server_request_trailers_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. HTTP/3 Empty DATA Frame Flooding Defense (CVE-2019-9518, RFC 9114 §10.5)
 // ----------------------------------------------------------------------------
-fn test_h3_empty_frame_flooding(t: core::T&) {
+fn test_h3_empty_frame_flooding(t: lit::T&) {
     t.run("H3: reject flood of empty DATA frames (> 32 streak)") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -1109,7 +1112,7 @@ fn test_h3_empty_frame_flooding(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. X.509 Basic Constraints Negative or Non-CA PathLen Defense (RFC 5280 §4.2.1.9)
 // ----------------------------------------------------------------------------
-fn test_x509_basic_constraints_negative_or_non_ca_pathlen(t: core::T&) {
+fn test_x509_basic_constraints_negative_or_non_ca_pathlen(t: lit::T&) {
     t.run("BasicConstraints: reject negative pathLenConstraint in CA cert") { sub =>
         // DER sequence: [BOOLEAN TRUE, INTEGER -1]
         // 30 06:
@@ -1140,7 +1143,7 @@ fn test_x509_basic_constraints_negative_or_non_ca_pathlen(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. X.509 Name Constraints Subtree Base dNSName Validation (RFC 5280 §4.2.1.10)
 // ----------------------------------------------------------------------------
-fn test_x509_name_constraints_subtree_dns_nul(t: core::T&) {
+fn test_x509_name_constraints_subtree_dns_nul(t: lit::T&) {
     t.run("NameConstraints: reject subtree base dNSName with embedded NUL") { sub =>
         var subtree_buf: u8[..32] = [];
         // [2] dNSName tag 0x82, length 12: "example\0.com"
@@ -1173,7 +1176,7 @@ fn test_x509_name_constraints_subtree_dns_nul(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Chunk Extension Length Overhead Defense (CVE-2023-39326, Go #64433)
 // ----------------------------------------------------------------------------
-fn test_chunk_fsm_extension_length_defense(t: core::T&) {
+fn test_chunk_fsm_extension_length_defense(t: lit::T&) {
     t.run("ChunkFsmDecoder rejects chunk extension exceeding 1024 bytes") { sub =>
         var dec = internal::new_chunk_fsm_decoder();
 
@@ -1202,7 +1205,7 @@ fn test_chunk_fsm_extension_length_defense(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Chunk Trailer Length & Memory Flood Defense (CVE-2023-39326, RFC 9112 §7.1.2)
 // ----------------------------------------------------------------------------
-fn test_chunk_fsm_trailer_flood_defense(t: core::T&) {
+fn test_chunk_fsm_trailer_flood_defense(t: lit::T&) {
     t.run("ChunkFsmDecoder rejects total trailer bytes exceeding 4096 bytes") { sub =>
         var dec = internal::new_chunk_fsm_decoder();
 
@@ -1230,7 +1233,7 @@ fn test_chunk_fsm_trailer_flood_defense(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. TLS 1.3 Cookie Extension Length Validation (RFC 8446 §4.2.2, OpenSSL #30868)
 // ----------------------------------------------------------------------------
-fn test_tls13_cookie_extension_validation(t: core::T&) {
+fn test_tls13_cookie_extension_validation(t: lit::T&) {
     t.run("Cookie extension with zero-length vector (empty) MUST be rejected") { sub =>
         // cookie<1..2^16-1>: vector length 0 is strictly forbidden by RFC 8446 Section 4.2.2
         let empty_cookie: u8[2] = [0x00, 0x00];
@@ -1269,7 +1272,7 @@ fn test_tls13_cookie_extension_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. TLS 1.3 CertificateRequest certificate_authorities Extension (RFC 8446 §4.2.4, OpenSSL #32211)
 // ----------------------------------------------------------------------------
-fn test_tls13_cert_authorities_extension_validation(t: core::T&) {
+fn test_tls13_cert_authorities_extension_validation(t: lit::T&) {
     t.run("certificate_authorities extension with empty vector (< 3 bytes) MUST be rejected") { sub =>
         // authorities<3..2^16-1>: length 0 is strictly forbidden by RFC 8446 Section 4.2.4
         let empty_ca: u8[2] = [0x00, 0x00];
@@ -1320,7 +1323,7 @@ fn test_tls13_cert_authorities_extension_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Cookie Ingestion Quota Enforcement in Netscape Import (Go #75672, CVE-2025-58186)
 // ----------------------------------------------------------------------------
-fn test_cookie_import_cap_defense(t: core::T&) {
+fn test_cookie_import_cap_defense(t: lit::T&) {
     t.run("import_netscape caps cookies at K_MAX_COOKIES to prevent memory/CPU exhaustion") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
 
@@ -1348,7 +1351,7 @@ fn test_cookie_import_cap_defense(t: core::T&) {
 // --- Component: regress_go_stress ---
 // Regression and stress tests for Go issue tracker / CVE vulnerabilities
 
-fn test_chunked_cve_2019_16276(t: core::T&) {
+fn test_chunked_cve_2019_16276(t: lit::T&) {
     // Space before colon in trailers must be rejected
     var wire: u8[..64] = [];
     wire.append("Content-Length : 100\r\n\r\n");
@@ -1366,7 +1369,7 @@ fn test_chunked_cve_2019_16276(t: core::T&) {
     t.assert_true(b_err != wing::ChunkedDecodeError.None, "Overflow chunk size FFFFFFFFFFFFFFFF must be rejected");
 }
 
-fn test_dns_name_length_overflow(t: core::T&) {
+fn test_dns_name_length_overflow(t: lit::T&) {
     // Malformed pointer chain pointing beyond end of packet
     let bad_dns: u8[12] = [
         0x00, 0x01, 0x81, 0x80,
@@ -1378,7 +1381,7 @@ fn test_dns_name_length_overflow(t: core::T&) {
     t.assert_false(ok, "Truncated DNS packet must return false without panic");
 }
 
-fn test_websocket_length_overflow(t: core::T&) {
+fn test_websocket_length_overflow(t: lit::T&) {
     // Header with extended payload length 0x7FFFFFFFFFFFFFFF
     let bad_ws_hdr: u8[10] = [
         0x81, 0x7F,
@@ -1400,14 +1403,14 @@ fn test_websocket_length_overflow(t: core::T&) {
     t.assert_true(ok2 && session2.is_closed && session2.close_code == wing::WS_STATUS_PROTOCOL_ERROR, "Close frame with 1-byte payload must trigger WS_STATUS_PROTOCOL_ERROR");
 }
 
-fn test_proxy_protocol_overflow(t: core::T&) {
+fn test_proxy_protocol_overflow(t: lit::T&) {
     // PROXY v1 with >8 space-separated tokens
     let bad_line: const u8[:] = "PROXY TCP4 1.1.1.1 2.2.2.2 80 80 EXTRA1 EXTRA2 EXTRA3 EXTRA4\r\n";
     let hdr, consumed, ok = wing::parse_proxy_v1(bad_line);
     t.assert_false(ok, "PROXY v1 with >8 tokens must fail safely without buffer overflow");
 }
 
-fn test_masque_address_capsule_bounds(t: core::T&) {
+fn test_masque_address_capsule_bounds(t: lit::T&) {
     // Address capsule with oversized IP bytes (>16 bytes) per RFC 9484 §4.7.2
     var payload: u8[..32] = [];
     payload.push(1);  // request_id = 1
@@ -1419,7 +1422,7 @@ fn test_masque_address_capsule_bounds(t: core::T&) {
     t.assert_false(ok, "Address request capsule with >16 IP bytes must fail without panic");
 }
 
-fn test_jwt_exp_overflow(t: core::T&) {
+fn test_jwt_exp_overflow(t: lit::T&) {
     var claims = wing::JwtClaims { .. };
     // Expiry near i64::MAX
     wing::set_expiry(claims, 9223372036854775800);
@@ -1430,7 +1433,7 @@ fn test_jwt_exp_overflow(t: core::T&) {
     t.assert_eq(err, wing::JwtError.None, "Far future exp must not overflow to expired");
 }
 
-fn test_quic_ack_underflow(t: core::T&) {
+fn test_quic_ack_underflow(t: lit::T&) {
     var ack = internal::AckFrame {};
     ack.largest_acked = 10;
     ack.first_ack_range = 10;
@@ -1446,7 +1449,7 @@ fn test_quic_ack_underflow(t: core::T&) {
     t.assert_false(ok, "Huge gap wrapping in gap + 2 must be safely rejected");
 }
 
-fn test_x509_san_tld_wildcard(t: core::T&) {
+fn test_x509_san_tld_wildcard(t: lit::T&) {
     // TLD wildcard *.com must NOT match evil.com (RFC 6125 §6.4.3)
     t.assert_false(wing::match_dns_san("*.com", "evil.com"), "*.com must not match evil.com");
     // Valid wildcard *.example.com must match sub.example.com
@@ -1455,7 +1458,7 @@ fn test_x509_san_tld_wildcard(t: core::T&) {
     t.assert_false(wing::match_dns_san("*.168.1.1", "192.168.1.1"), "Wildcard must not match IPv4 literal");
 }
 
-fn test_ipv6_mapped_ipv4_ssrf_cve_2024_24790(t: core::T&) {
+fn test_ipv6_mapped_ipv4_ssrf_cve_2024_24790(t: lit::T&) {
     // CVE-2024-24790: IPv4-mapped IPv6 loopback & private addresses must be detected
     t.assert_true(wing::is_private_or_reserved_ip("::ffff:127.0.0.1"), "::ffff:127.0.0.1 must be private");
     t.assert_true(wing::is_private_or_reserved_ip("0:0:0:0:0:ffff:10.0.0.1"), "0:0:0:0:0:ffff:10.0.0.1 must be private");
@@ -1465,14 +1468,14 @@ fn test_ipv6_mapped_ipv4_ssrf_cve_2024_24790(t: core::T&) {
     t.assert_false(wing::is_private_or_reserved_ip("::ffff:8.8.8.8"), "::ffff:8.8.8.8 is public");
 }
 
-fn test_connect_tunnel_rejection_cve_2026_56866(t: core::T&) {
+fn test_connect_tunnel_rejection_cve_2026_56866(t: lit::T&) {
     // CVE-2026-56866: Failed or rejected CONNECT responses must poison/close connection
     t.assert_true(wing::should_close_connection_on_connect_error(wing::ConnectTunnelError.ProxyAuthRequired), "407 must close");
     t.assert_true(wing::should_close_connection_on_connect_error(wing::ConnectTunnelError.ConnectFailed), "Failed connect must close");
     t.assert_false(wing::should_close_connection_on_connect_error(wing::ConnectTunnelError.None), "Success connect must not close");
 }
 
-fn test_http2_initial_window_flood_cve_2026_78669(t: core::T&) {
+fn test_http2_initial_window_flood_cve_2026_78669(t: lit::T&) {
     // CVE-2026-78669: Excessive SETTINGS INITIAL_WINDOW_SIZE changes must be throttled
     var conn = internal::new_h2_connection(1000);
     for i in 16 {
@@ -1483,7 +1486,7 @@ fn test_http2_initial_window_flood_cve_2026_78669(t: core::T&) {
     t.assert_eq(flood_err, internal::ERR_ENHANCE_YOUR_CALM, "17th window change must return ERR_ENHANCE_YOUR_CALM");
 }
 
-fn test_query_param_limit_cve_2026_39825(t: core::T&) {
+fn test_query_param_limit_cve_2026_39825(t: lit::T&) {
     // CVE-2026-39825: Query parameter count limiter
     let normal_query: const u8[:] = "user=alice&action=login&lang=en";
     t.assert_true(core::validate_query_param_count(normal_query, 5), "Normal query <= 5 passes");
@@ -1495,7 +1498,7 @@ fn test_query_param_limit_cve_2026_39825(t: core::T&) {
     t.assert_false(core::validate_query_param_count(flood_query[..], 5), "Flooded query > 5 must fail");
 }
 
-fn test_punycode_validation_cve_2026_39821_and_97044(t: core::T&) {
+fn test_punycode_validation_cve_2026_39821_and_97044(t: lit::T&) {
     // CVE-2026-39821: Pure ASCII Punycode label (e.g. xn--test-) must be rejected
     t.assert_false(wing::validate_punycode_label("xn--test-"), "Pure ASCII xn--test- must be rejected");
     t.assert_true(wing::validate_punycode_label("xn--fsqu00a"), "Valid Punycode label must pass");
@@ -1505,13 +1508,13 @@ fn test_punycode_validation_cve_2026_39821_and_97044(t: core::T&) {
     t.assert_false(wing::validate_idna_domain_bounds("xn--test-.com"), "Domain with pure ASCII Punycode rejected");
 }
 
-fn test_x509_uri_zone_id_cve_2024_45341(t: core::T&) {
+fn test_x509_uri_zone_id_cve_2024_45341(t: lit::T&) {
     // CVE-2024-45341: IPv6 zone IDs in URI SAN must not bypass name constraints
     t.assert_true(wing::match_uri_san("example.com", "example.com"), "Identical URI SAN matches");
     t.assert_false(wing::match_uri_san("fe80::1%eth0", "fe80::1%eth0"), "Zone ID in URI SAN must be rejected");
 }
 
-fn test_error_sanitization_cve_2026_42507(t: core::T&) {
+fn test_error_sanitization_cve_2026_42507(t: lit::T&) {
     // CVE-2026-42507: Unescaped inputs in errors must be sanitized against CRLF injection
     let untrusted: const u8[:] = "Bad\r\nSet-Cookie: evil\x00";
     var clean_buf: u8[..64] = [];
@@ -1522,46 +1525,46 @@ fn test_error_sanitization_cve_2026_42507(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Issue Regression Suite Batch 4 (Phases 16-19 & Stress)", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Issue Regression Suite Batch 4 (Phases 16-19 & Stress)", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. X.509 URI Name Constraints Evasion via @ in Path/Query & ?/# Suffix", test_x509_uri_name_constraints_evasion);
-    core::run_case(runner, "2. HTTP/1.1 Wire Response Parser 204/304/1xx Chunked Desync & Header Block Cap", test_http1_wire_response_204_304_1xx_framing);
-    core::run_case(runner, "3. HTTP/1.1 Response Serializer Empty-Status Chunked Bodyless Enforcement", test_http1_response_serialization_empty_status);
-    core::run_case(runner, "4. HTTP/3 Stream Data Host vs :authority Conflict & Host Syntax", test_h3_host_authority_conflict_and_syntax);
-    core::run_case(runner, "5. HTTP/2 HPACK Host Syntax & Case-Insensitive Authority Equivalence", test_h2_hpack_host_authority_validation);
-    core::run_case(runner, "6. HTTP/2 Connection Frame Coordinator Trailer END_STREAM Enforcement", test_h2_connection_trailers_end_stream_requirement);
-    core::run_case(runner, "7. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing", test_cors_wildcard_origin_smuggling_and_csrf_userinfo);
-    core::run_case(runner, "8. HTTP/3 DATA Frame Rejection on Bodyless Status Codes (204, 304, 1xx)", test_h3_bodyless_status_data_rejection);
-    core::run_case(runner, "9. HTTP/3 Prohibited Trailer Framing Headers & QPACK NUL/CR/LF Injection", test_h3_prohibited_trailers_and_qpack_nul_rejection);
-    core::run_case(runner, "10. HTTP/2 :status Pseudo-Header Validation & 101 Prohibition", test_h2_status_pseudo_header_validation);
-    core::run_case(runner, "11. HTTP/2 DATA Frame Rejection on Streams with Trailers Received", test_h2_data_frame_after_trailers_rejection);
-    core::run_case(runner, "12. X.509 DNS Name Constraints Wildcard & Empty/Leading Dot Validation", test_x509_dns_name_constraint_wildcard_and_empty_labels);
-    core::run_case(runner, "13. X.509 ASN.1 Time Parsing Bounds & Overflow Defense", test_x509_asn1_time_parsing_bounds);
-    core::run_case(runner, "14. HTTP/3 Server Request Trailers Invariants", test_h3_server_request_trailers_invariants);
-    core::run_case(runner, "15. HTTP/3 Empty DATA Frame Flooding Defense", test_h3_empty_frame_flooding);
-    core::run_case(runner, "16. X.509 Basic Constraints Negative or Non-CA PathLen Defense", test_x509_basic_constraints_negative_or_non_ca_pathlen);
-    core::run_case(runner, "17. X.509 Name Constraints Subtree Base dNSName Validation", test_x509_name_constraints_subtree_dns_nul);
-    core::run_case(runner, "18. Chunk Extension Length Overhead Defense", test_chunk_fsm_extension_length_defense);
-    core::run_case(runner, "19. Chunk Trailer Length Flood Defense", test_chunk_fsm_trailer_flood_defense);
-    core::run_case(runner, "20. TLS 1.3 Cookie Extension Length Validation", test_tls13_cookie_extension_validation);
-    core::run_case(runner, "21. TLS 1.3 CertificateRequest certificate_authorities Extension", test_tls13_cert_authorities_extension_validation);
-    core::run_case(runner, "22. Cookie Ingestion Quota Enforcement in Netscape Import", test_cookie_import_cap_defense);
-    core::run_case(runner, "23. CVE-2019-16276 Space-before-colon & Chunk Size Overflow", test_chunked_cve_2019_16276);
-    core::run_case(runner, "24. DNS Name Decoding Length Overflow", test_dns_name_length_overflow);
-    core::run_case(runner, "25. WebSocket Extended Length & Close Frame Invariants", test_websocket_length_overflow);
-    core::run_case(runner, "26. PROXY Protocol v1 Token Capacity Guard", test_proxy_protocol_overflow);
-    core::run_case(runner, "27. MASQUE Address Request Capsule Bounds", test_masque_address_capsule_bounds);
-    core::run_case(runner, "28. JWT Expiry Integer Overflow Defense", test_jwt_exp_overflow);
-    core::run_case(runner, "29. QUIC ACK Frame Gap Addition Overflow Defense", test_quic_ack_underflow);
-    core::run_case(runner, "30. X.509 DNS SAN TLD Wildcard & IP Literal Defense", test_x509_san_tld_wildcard);
-    core::run_case(runner, "31. CVE-2024-24790 IPv4-Mapped IPv6 SSRF Filter Defense", test_ipv6_mapped_ipv4_ssrf_cve_2024_24790);
-    core::run_case(runner, "32. CVE-2026-56866 Client CONNECT Tunnel Rejection Poisoning", test_connect_tunnel_rejection_cve_2026_56866);
-    core::run_case(runner, "33. CVE-2026-78669 HTTP/2 Initial Window Size Flood Defense", test_http2_initial_window_flood_cve_2026_78669);
-    core::run_case(runner, "34. CVE-2026-39825 URL Query Parameter Flooding Limit", test_query_param_limit_cve_2026_39825);
-    core::run_case(runner, "35. CVE-2026-39821 & CVE-2026-97044 Punycode & IDNA Bounds", test_punycode_validation_cve_2026_39821_and_97044);
-    core::run_case(runner, "36. CVE-2024-45341 X.509 URI SAN Zone ID Rejection", test_x509_uri_zone_id_cve_2024_45341);
-    core::run_case(runner, "37. CVE-2026-42507 Error Message Untrusted Input Sanitization", test_error_sanitization_cve_2026_42507);
+    lit::run_case(runner, "1. X.509 URI Name Constraints Evasion via @ in Path/Query & ?/# Suffix", test_x509_uri_name_constraints_evasion);
+    lit::run_case(runner, "2. HTTP/1.1 Wire Response Parser 204/304/1xx Chunked Desync & Header Block Cap", test_http1_wire_response_204_304_1xx_framing);
+    lit::run_case(runner, "3. HTTP/1.1 Response Serializer Empty-Status Chunked Bodyless Enforcement", test_http1_response_serialization_empty_status);
+    lit::run_case(runner, "4. HTTP/3 Stream Data Host vs :authority Conflict & Host Syntax", test_h3_host_authority_conflict_and_syntax);
+    lit::run_case(runner, "5. HTTP/2 HPACK Host Syntax & Case-Insensitive Authority Equivalence", test_h2_hpack_host_authority_validation);
+    lit::run_case(runner, "6. HTTP/2 Connection Frame Coordinator Trailer END_STREAM Enforcement", test_h2_connection_trailers_end_stream_requirement);
+    lit::run_case(runner, "7. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing", test_cors_wildcard_origin_smuggling_and_csrf_userinfo);
+    lit::run_case(runner, "8. HTTP/3 DATA Frame Rejection on Bodyless Status Codes (204, 304, 1xx)", test_h3_bodyless_status_data_rejection);
+    lit::run_case(runner, "9. HTTP/3 Prohibited Trailer Framing Headers & QPACK NUL/CR/LF Injection", test_h3_prohibited_trailers_and_qpack_nul_rejection);
+    lit::run_case(runner, "10. HTTP/2 :status Pseudo-Header Validation & 101 Prohibition", test_h2_status_pseudo_header_validation);
+    lit::run_case(runner, "11. HTTP/2 DATA Frame Rejection on Streams with Trailers Received", test_h2_data_frame_after_trailers_rejection);
+    lit::run_case(runner, "12. X.509 DNS Name Constraints Wildcard & Empty/Leading Dot Validation", test_x509_dns_name_constraint_wildcard_and_empty_labels);
+    lit::run_case(runner, "13. X.509 ASN.1 Time Parsing Bounds & Overflow Defense", test_x509_asn1_time_parsing_bounds);
+    lit::run_case(runner, "14. HTTP/3 Server Request Trailers Invariants", test_h3_server_request_trailers_invariants);
+    lit::run_case(runner, "15. HTTP/3 Empty DATA Frame Flooding Defense", test_h3_empty_frame_flooding);
+    lit::run_case(runner, "16. X.509 Basic Constraints Negative or Non-CA PathLen Defense", test_x509_basic_constraints_negative_or_non_ca_pathlen);
+    lit::run_case(runner, "17. X.509 Name Constraints Subtree Base dNSName Validation", test_x509_name_constraints_subtree_dns_nul);
+    lit::run_case(runner, "18. Chunk Extension Length Overhead Defense", test_chunk_fsm_extension_length_defense);
+    lit::run_case(runner, "19. Chunk Trailer Length Flood Defense", test_chunk_fsm_trailer_flood_defense);
+    lit::run_case(runner, "20. TLS 1.3 Cookie Extension Length Validation", test_tls13_cookie_extension_validation);
+    lit::run_case(runner, "21. TLS 1.3 CertificateRequest certificate_authorities Extension", test_tls13_cert_authorities_extension_validation);
+    lit::run_case(runner, "22. Cookie Ingestion Quota Enforcement in Netscape Import", test_cookie_import_cap_defense);
+    lit::run_case(runner, "23. CVE-2019-16276 Space-before-colon & Chunk Size Overflow", test_chunked_cve_2019_16276);
+    lit::run_case(runner, "24. DNS Name Decoding Length Overflow", test_dns_name_length_overflow);
+    lit::run_case(runner, "25. WebSocket Extended Length & Close Frame Invariants", test_websocket_length_overflow);
+    lit::run_case(runner, "26. PROXY Protocol v1 Token Capacity Guard", test_proxy_protocol_overflow);
+    lit::run_case(runner, "27. MASQUE Address Request Capsule Bounds", test_masque_address_capsule_bounds);
+    lit::run_case(runner, "28. JWT Expiry Integer Overflow Defense", test_jwt_exp_overflow);
+    lit::run_case(runner, "29. QUIC ACK Frame Gap Addition Overflow Defense", test_quic_ack_underflow);
+    lit::run_case(runner, "30. X.509 DNS SAN TLD Wildcard & IP Literal Defense", test_x509_san_tld_wildcard);
+    lit::run_case(runner, "31. CVE-2024-24790 IPv4-Mapped IPv6 SSRF Filter Defense", test_ipv6_mapped_ipv4_ssrf_cve_2024_24790);
+    lit::run_case(runner, "32. CVE-2026-56866 Client CONNECT Tunnel Rejection Poisoning", test_connect_tunnel_rejection_cve_2026_56866);
+    lit::run_case(runner, "33. CVE-2026-78669 HTTP/2 Initial Window Size Flood Defense", test_http2_initial_window_flood_cve_2026_78669);
+    lit::run_case(runner, "34. CVE-2026-39825 URL Query Parameter Flooding Limit", test_query_param_limit_cve_2026_39825);
+    lit::run_case(runner, "35. CVE-2026-39821 & CVE-2026-97044 Punycode & IDNA Bounds", test_punycode_validation_cve_2026_39821_and_97044);
+    lit::run_case(runner, "36. CVE-2024-45341 X.509 URI SAN Zone ID Rejection", test_x509_uri_zone_id_cve_2024_45341);
+    lit::run_case(runner, "37. CVE-2026-42507 Error Message Untrusted Input Sanitization", test_error_sanitization_cve_2026_42507);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

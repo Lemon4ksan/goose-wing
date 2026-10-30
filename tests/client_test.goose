@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: client ---
 // Tests for ClientSession, redirect policies, and cookie handling.
@@ -12,7 +15,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. Mozilla PSL Scoping & Tenant Isolation
 // ----------------------------------------------------------------------------
-fn test_psl_scoping_and_tenants(t: core::T&) {
+fn test_psl_scoping_and_tenants(t: lit::T&) {
     t.run("PSL Rule Types: Normal, Wildcard, Exception") { sub =>
         // 1. Normal ICANN rule: co.uk
         var s_couk: u8[..64] = [];
@@ -71,7 +74,7 @@ fn test_psl_scoping_and_tenants(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. SiteForCookies & RFC 6265bis Schemeful Same-Site Context
 // ----------------------------------------------------------------------------
-fn test_site_for_cookies_and_rfc6265bis(t: core::T&) {
+fn test_site_for_cookies_and_rfc6265bis(t: lit::T&) {
     t.run("SiteForCookies Creation & NetLog Formatting") { sub =>
         let sfc = wing::site_for_cookies_from_url("https://login.example.com/");
         sub.assert_false(sfc.is_null, "not null SFC");
@@ -133,7 +136,7 @@ fn test_site_for_cookies_and_rfc6265bis(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Redirect State Machine: Methods, Headers & Sensitive Sanitization
 // ----------------------------------------------------------------------------
-fn test_redirect_state_machine(t: core::T&) {
+fn test_redirect_state_machine(t: lit::T&) {
     t.run("HTTP 301, 302, 303 Method Mutation & Payload Stripping") { sub =>
         // 301 Moved Permanently: POST -> GET
         let info_301 = wing::compute_redirect_info(
@@ -286,7 +289,7 @@ fn test_redirect_state_machine(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration
 // ----------------------------------------------------------------------------
-fn test_oauth_flow(t: core::T&) {
+fn test_oauth_flow(t: lit::T&) {
     t.run("OAuth 2.0 Flow: 302 Set-Cookie Ingestion & Chain Hop Isolation") { sub =>
         var session = wing::new_session();
         wing::set_clock_us(session, 1700000000000000);
@@ -327,7 +330,7 @@ fn test_oauth_flow(t: core::T&) {
     };
 }
 
-fn test_redirect_loop_and_manual(t: core::T&) {
+fn test_redirect_loop_and_manual(t: lit::T&) {
     t.run("Redirect Loop Detection (TooManyRedirects)") { sub =>
         var session = wing::new_session();
         wing::set_max_redirects(session, 2);
@@ -366,7 +369,7 @@ fn test_redirect_loop_and_manual(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. BodyRewind, SSRF Guard, and DNS Rebinding Defense
 // ----------------------------------------------------------------------------
-fn test_body_rewind(t: core::T&) {
+fn test_body_rewind(t: lit::T&) {
     t.run("BodyRewind on 307 Temporary Redirect") { sub =>
         var session = wing::new_session();
 
@@ -400,7 +403,7 @@ fn test_body_rewind(t: core::T&) {
     };
 }
 
-fn test_ssrf_subnets(t: core::T&) {
+fn test_ssrf_subnets(t: lit::T&) {
     var session = wing::new_session();
     wing::enable_ssrf_guard(session, true);
 
@@ -421,7 +424,7 @@ fn test_ssrf_subnets(t: core::T&) {
     };
 }
 
-fn test_dns_rebinding(t: core::T&) {
+fn test_dns_rebinding(t: lit::T&) {
     var session = wing::new_session();
     wing::enable_ssrf_guard(session, true);
 
@@ -438,7 +441,7 @@ fn test_dns_rebinding(t: core::T&) {
     };
 }
 
-fn test_dangerous_ports(t: core::T&) {
+fn test_dangerous_ports(t: lit::T&) {
     var session = wing::new_session();
     wing::enable_ssrf_guard(session, true);
 
@@ -458,7 +461,7 @@ fn test_dangerous_ports(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Client Integrated RFC 9111 HTTP Cache Pipeline
 // ----------------------------------------------------------------------------
-fn test_client_cache_integration(t: core::T&) {
+fn test_client_cache_integration(t: lit::T&) {
     t.run("CLI-01: Client RFC 9111 Cache Hit and Age Header") { sub =>
         var client = wing::new_client(wing::ClientConfig {
             enable_cache: true,
@@ -521,7 +524,7 @@ fn test_client_cache_integration(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 11. Network Pipeline Edge Invariants & Multi-Module Audit
 // ----------------------------------------------------------------------------
-fn test_network_pipeline_edge_invariants(t: core::T&) {
+fn test_network_pipeline_edge_invariants(t: lit::T&) {
     t.run("SameSite Strict vs Lax Cookie Isolation on Cross-Site Hop") { sub =>
         var session = wing::new_session();
         wing::set_clock_us(session, 1700000000000000);
@@ -619,7 +622,7 @@ fn test_network_pipeline_edge_invariants(t: core::T&) {
 // 4. Retry Interceptor: Automatic Retry on 5xx Errors
 // 5. Dynamic Closure Chain: `do_intercepted`, `proceed`, Request/Response Rewrite & Short-Circuiting
 
-fn test_application_interceptors(t: core::T&) {
+fn test_application_interceptors(t: lit::T&) {
     t.run("Application Interceptors: Bearer Auth, Request-ID, Traceparent & App Header") { sub =>
         var client = wing::new_client();
         wing::add_app_bearer_auth(client, "secret_jwt_token_xyz");
@@ -671,7 +674,7 @@ fn test_application_interceptors(t: core::T&) {
     };
 }
 
-fn test_network_interceptors_and_metrics(t: core::T&) {
+fn test_network_interceptors_and_metrics(t: lit::T&) {
     t.run("Network Interceptor Observes Redirect Wire Hops & Wire Headers") { sub =>
         var client = wing::new_client();
         wing::add_network_metrics(client);
@@ -709,7 +712,7 @@ fn test_network_interceptors_and_metrics(t: core::T&) {
     };
 }
 
-fn test_cache_interceptor_boundary(t: core::T&) {
+fn test_cache_interceptor_boundary(t: lit::T&) {
     t.run("OkHttp Invariant: App Interceptors run on Cache Hit; Network Interceptors are bypassed") { sub =>
         var client = wing::new_client();
         client.enable_cache = true;
@@ -746,7 +749,7 @@ fn test_cache_interceptor_boundary(t: core::T&) {
     };
 }
 
-fn test_retry_policy_interceptor(t: core::T&) {
+fn test_retry_policy_interceptor(t: lit::T&) {
     t.run("Retry Interceptor Retries on 5xx Error Up To Max Retries") { sub =>
         var client = wing::new_client();
         wing::add_app_retry(client, 2, true);
@@ -765,7 +768,7 @@ fn test_retry_policy_interceptor(t: core::T&) {
     };
 }
 
-fn test_closure_chain_interceptor(t: core::T&) {
+fn test_closure_chain_interceptor(t: lit::T&) {
     t.run("Closure Chain: Mutate Request, Call Proceed & Mutate Response") { sub =>
         var client = wing::new_client();
         wing::mock_route(client, "GET", "https://site.com/resource", 200, "server-payload");
@@ -821,7 +824,7 @@ fn test_closure_chain_interceptor(t: core::T&) {
 // - Request and Response Ed25519 HTTP Message Signatures (RFC 9421)
 // - Server response zero-copy transmission via IoVecArray (send_http1_response_iov)
 
-fn test_request_priority_helper(t: core::T&) {
+fn test_request_priority_helper(t: lit::T&) {
     t.run("Request.set_priority") { sub =>
         var req = wing::Request { .. };
         wing::set_priority(req, 1, true);
@@ -841,7 +844,7 @@ fn test_request_priority_helper(t: core::T&) {
     };
 }
 
-fn test_ed25519_signatures_helpers(t: core::T&) {
+fn test_ed25519_signatures_helpers(t: lit::T&) {
     t.run("sign_request_ed25519 & verify_request_ed25519") { sub =>
         let seed: u8[32] = [
             0x9d, 0x61, 0xb1, 0x9c, 0x4f, 0x61, 0x97, 0xf8,
@@ -907,7 +910,7 @@ fn test_ed25519_signatures_helpers(t: core::T&) {
     };
 }
 
-fn test_send_http1_response_iov_helper(t: core::T&) {
+fn test_send_http1_response_iov_helper(t: lit::T&) {
     t.run("send_http1_response_iov empty descriptor check") { sub =>
         var res = wing::Response {
             status_code: 200,
@@ -926,7 +929,7 @@ fn test_send_http1_response_iov_helper(t: core::T&) {
 }
 
 // RFC 2104 Section 2: Definition of HMAC - HMAC-SHA256 request body signing verification
-fn test_hmac_signing(t: core::T&) {
+fn test_hmac_signing(t: lit::T&) {
     t.run("Empty body signs empty slice with HMAC-SHA256") { sub =>
         var req = wing::new_post("https://api.example.com/empty");
         wing::sign_hmac_sha256(req, "my_secret_key");
@@ -944,7 +947,7 @@ fn test_hmac_signing(t: core::T&) {
 }
 
 // Invariant 13: Zero silent buffer drops and strict capacity overflow rejection
-fn test_client_query_capacity_rejections(t: core::T&) {
+fn test_client_query_capacity_rejections(t: lit::T&) {
     t.run("Query parameter capacity overflow returns false") { sub =>
         var req = wing::new_get("https://example.com/search");
         // Push 16 items up to capacity
@@ -979,30 +982,30 @@ fn test_client_query_capacity_rejections(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Mozilla PSL Scoping & Tenant Isolation", test_psl_scoping_and_tenants);
-    core::run_case(runner, "2. SiteForCookies & RFC 6265bis Schemeful Same-Site", test_site_for_cookies_and_rfc6265bis);
-    core::run_case(runner, "3. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
-    core::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_oauth_flow);
-    core::run_case(runner, "5. ClientSession Redirect Loops & Manual Mode", test_redirect_loop_and_manual);
-    core::run_case(runner, "6. BodyRewind on 307/308 Redirects", test_body_rewind);
-    core::run_case(runner, "7. SSRF Guard 3-Tier Protection", test_ssrf_subnets);
-    core::run_case(runner, "8. DNS Rebinding Defense via Resolved IP Sweep", test_dns_rebinding);
-    core::run_case(runner, "9. Dangerous Service Port Blocking", test_dangerous_ports);
-    core::run_case(runner, "10. Client Integrated RFC 9111 HTTP Cache Pipeline", test_client_cache_integration);
-    core::run_case(runner, "11. Network Pipeline Edge Invariants & Multi-Module Audit", test_network_pipeline_edge_invariants);
-    core::run_case(runner, "12. Application Interceptors (Bearer, Request-ID, Traceparent, Headers, Logging)", test_application_interceptors);
-    core::run_case(runner, "13. Network Interceptors, Redirect Hops & Network Metrics", test_network_interceptors_and_metrics);
-    core::run_case(runner, "14. OkHttp Cache Boundary Invariant", test_cache_interceptor_boundary);
-    core::run_case(runner, "15. Retry Policy Interceptor", test_retry_policy_interceptor);
-    core::run_case(runner, "16. Closure-based Interceptor Chain & Short-Circuiting", test_closure_chain_interceptor);
-    core::run_case(runner, "17. Request.set_priority helper", test_request_priority_helper);
-    core::run_case(runner, "18. RFC 9421 Ed25519 Request & Response helpers", test_ed25519_signatures_helpers);
-    core::run_case(runner, "19. send_http1_response_iov helper", test_send_http1_response_iov_helper);
-    core::run_case(runner, "20. RFC 2104 / RFC 4231 HMAC-SHA256 Request Signing", test_hmac_signing);
-    core::run_case(runner, "21. Invariant 13 Query Parameter Capacity & Bounds", test_client_query_capacity_rejections);
+    lit::run_case(runner, "1. Mozilla PSL Scoping & Tenant Isolation", test_psl_scoping_and_tenants);
+    lit::run_case(runner, "2. SiteForCookies & RFC 6265bis Schemeful Same-Site", test_site_for_cookies_and_rfc6265bis);
+    lit::run_case(runner, "3. Redirect State Machine: Methods, Headers & Sensitive Sanitization", test_redirect_state_machine);
+    lit::run_case(runner, "4. ClientSession 6-Phase Pipeline & CanonicalCookieJar Integration", test_oauth_flow);
+    lit::run_case(runner, "5. ClientSession Redirect Loops & Manual Mode", test_redirect_loop_and_manual);
+    lit::run_case(runner, "6. BodyRewind on 307/308 Redirects", test_body_rewind);
+    lit::run_case(runner, "7. SSRF Guard 3-Tier Protection", test_ssrf_subnets);
+    lit::run_case(runner, "8. DNS Rebinding Defense via Resolved IP Sweep", test_dns_rebinding);
+    lit::run_case(runner, "9. Dangerous Service Port Blocking", test_dangerous_ports);
+    lit::run_case(runner, "10. Client Integrated RFC 9111 HTTP Cache Pipeline", test_client_cache_integration);
+    lit::run_case(runner, "11. Network Pipeline Edge Invariants & Multi-Module Audit", test_network_pipeline_edge_invariants);
+    lit::run_case(runner, "12. Application Interceptors (Bearer, Request-ID, Traceparent, Headers, Logging)", test_application_interceptors);
+    lit::run_case(runner, "13. Network Interceptors, Redirect Hops & Network Metrics", test_network_interceptors_and_metrics);
+    lit::run_case(runner, "14. OkHttp Cache Boundary Invariant", test_cache_interceptor_boundary);
+    lit::run_case(runner, "15. Retry Policy Interceptor", test_retry_policy_interceptor);
+    lit::run_case(runner, "16. Closure-based Interceptor Chain & Short-Circuiting", test_closure_chain_interceptor);
+    lit::run_case(runner, "17. Request.set_priority helper", test_request_priority_helper);
+    lit::run_case(runner, "18. RFC 9421 Ed25519 Request & Response helpers", test_ed25519_signatures_helpers);
+    lit::run_case(runner, "19. send_http1_response_iov helper", test_send_http1_response_iov_helper);
+    lit::run_case(runner, "20. RFC 2104 / RFC 4231 HMAC-SHA256 Request Signing", test_hmac_signing);
+    lit::run_case(runner, "21. Invariant 13 Query Parameter Capacity & Bounds", test_client_query_capacity_rejections);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

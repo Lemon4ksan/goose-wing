@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -7,9 +9,10 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // 1. ByteCursor, ByteBuilder, and Serialization Conformance
-fn test_byte_cursor_and_builder(t: core::T&) {
+fn test_byte_cursor_and_builder(t: lit::T&) {
     t.run("TLS-01: Zero-Copy ByteCursor Reading & Primitive Extraction") { sub =>
         let raw: u8[10] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0xAA, 0xBB];
         var c = wing::cursor_from(raw[..]);
@@ -86,7 +89,7 @@ fn test_byte_cursor_and_builder(t: core::T&) {
 }
 
 // 2. TLS Record Layer Framing, Nonce & DoS Defenses
-fn test_record_layer_and_dos(t: core::T&) {
+fn test_record_layer_and_dos(t: lit::T&) {
     t.run("TLS-04: Record Header Parsing & Overflow Defense") { sub =>
         // Valid Handshake record (0x16, TLS 1.2 legacy version 0x0303, len 100)
         let valid_hdr: u8[5] = [0x16, 0x03, 0x03, 0x00, 0x64];
@@ -392,7 +395,7 @@ fn test_record_layer_and_dos(t: core::T&) {
 }
 
 // 3. QUIC Crypto Gateway & Header Protection (RFC 9001)
-fn test_quic_crypto_gateway(t: core::T&) {
+fn test_quic_crypto_gateway(t: lit::T&) {
     t.run("TLS-08: QUIC ChangeCipherSpec Rejection & Level Checking") { sub =>
         var conn = wing::new_quic_crypto_conn();
         conn.read_level = wing::QuicEncryptionLevel.Handshake;
@@ -473,7 +476,7 @@ fn test_quic_crypto_gateway(t: core::T&) {
 }
 
 // 4. HKDF-Expand-Label & Key Schedule Derivations (RFC 8446 §7.1)
-fn test_key_schedule_and_derivations(t: core::T&) {
+fn test_key_schedule_and_derivations(t: lit::T&) {
     t.run("TLS-10: HKDF-Expand-Label Formatting & Derivation") { sub =>
         let prk: u8[32] = [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -714,7 +717,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
 }
 
 // 5. Anti-Replay Strike Register & PSK Binders
-fn test_anti_replay_and_psk(t: core::T&) {
+fn test_anti_replay_and_psk(t: lit::T&) {
     t.run("TLS-13: ZeroRttStrikeRegister Anti-Replay Detection & Epoch Rotation") { sub =>
         var reg = internal::strike_register_init(10000, 2000); // 10s epoch, 2s tolerance
         let ticket_a: u8[16] = [0x01; 16];
@@ -841,7 +844,7 @@ fn test_anti_replay_and_psk(t: core::T&) {
 }
 
 // 6. Handshake State Machine, HRR & Extension Parsers
-fn test_handshake_state_machine(t: core::T&) {
+fn test_handshake_state_machine(t: lit::T&) {
     t.run("TLS-16: Client & Server State Machine Transitions") { sub =>
         // Client transitions
         let st1, ok1 = wing::can_client_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_SERVER_HELLO);
@@ -964,7 +967,7 @@ fn test_handshake_state_machine(t: core::T&) {
 }
 
 // 7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify
-fn test_asn1_x509_and_verify(t: core::T&) {
+fn test_asn1_x509_and_verify(t: lit::T&) {
     t.run("TLS-20: Canonical ASN.1 DER Length & Integer Validation") { sub =>
         // Short form: tag 0x02, len 3, [0x01, 0x02, 0x03]
         let der_int: u8[5] = [0x02, 0x03, 0x01, 0x02, 0x03];
@@ -2435,7 +2438,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 }
 
 // 8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)
-fn test_post_quantum_hybrid_exchange(t: core::T&) {
+fn test_post_quantum_hybrid_exchange(t: lit::T&) {
     t.run("TLS-25: Hybrid Key Share Entry Framing & Smuggling Defense") { sub =>
         var client_share = internal::PostQuantumKeyShare {
             group: internal::GROUP_X25519_MLKEM768,
@@ -2683,7 +2686,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
 }
 
 // 8. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance
-fn test_handshake_and_ech_security(t: core::T&) {
+fn test_handshake_and_ech_security(t: lit::T&) {
     t.run("TLS-25: RFC 8446 §4.2 Duplicate Extension Rejection & Block Bounds") { sub =>
         // 1. Construct valid extensions block with distinct extension IDs
         var b_valid = wing::builder_init();
@@ -3081,7 +3084,7 @@ fn test_handshake_and_ech_security(t: core::T&) {
 }
 
 // 9. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM
-fn test_handshake_r2_invariants(t: core::T&) {
+fn test_handshake_r2_invariants(t: lit::T&) {
     t.run("TLS-31: RFC 8446 §4 State Machine Transition Desync & Finished Bypass Prevention") { sub =>
         // 1. Finished before Certificate/CertificateVerify in full handshake MUST BE REJECTED
         let st_bad, ok_bad = wing::validate_client_handshake_transition(
@@ -3454,7 +3457,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
     };
 }
 
-fn test_handshake_r3_invariants(t: core::T&) {
+fn test_handshake_r3_invariants(t: lit::T&) {
     // ------------------------------------------------------------------------
     // TLS-37: Post-Handshake NewSessionTicket (RFC 8446 §4.6.1 & §4.2.10)
     // ------------------------------------------------------------------------
@@ -3875,7 +3878,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
 }
 
 // RFC 8879 Section 3: Negotiating Certificate Compression - Brotli certificate decompression
-fn test_rfc8879_brotli_cert_compression(t: core::T&) {
+fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
     t.run("1. RFC 8879 Algorithm Identifiers & Models") { sub =>
         sub.assert_eq(internal::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
         sub.assert_eq(internal::CERT_COMPRESSION_ZSTD, 3, "Zstandard ID is 3 in specification (RFC 8879 §3)");
@@ -4014,21 +4017,21 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
 
 // Main TLS 1.3 & X.509 Conformance Runner
 fn main() {
-    var runner = core::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. ByteCursor, ByteBuilder, and Serialization Conformance", test_byte_cursor_and_builder);
-    core::run_case(runner, "2. TLS Record Layer Framing, Nonce & DoS Defenses", test_record_layer_and_dos);
-    core::run_case(runner, "3. QUIC Crypto Gateway & Header Protection (RFC 9001)", test_quic_crypto_gateway);
-    core::run_case(runner, "4. HKDF-Expand-Label & Key Schedule Derivations (RFC 8446)", test_key_schedule_and_derivations);
-    core::run_case(runner, "5. Anti-Replay Strike Register & PSK Binders", test_anti_replay_and_psk);
-    core::run_case(runner, "6. Handshake State Machine, HRR & Extension Parsers", test_handshake_state_machine);
-    core::run_case(runner, "7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify", test_asn1_x509_and_verify);
-    core::run_case(runner, "8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)", test_post_quantum_hybrid_exchange);
-    core::run_case(runner, "9. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance", test_handshake_and_ech_security);
-    core::run_case(runner, "10. State Machine Transitions, HRR Invariants, Downgrade & ECH FSM", test_handshake_r2_invariants);
-    core::run_case(runner, "11. NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp", test_handshake_r3_invariants);
-    core::run_case(runner, "12. RFC 8879 Brotli Certificate Decompression & Bomb Defenses", test_rfc8879_brotli_cert_compression);
+    lit::run_case(runner, "1. ByteCursor, ByteBuilder, and Serialization Conformance", test_byte_cursor_and_builder);
+    lit::run_case(runner, "2. TLS Record Layer Framing, Nonce & DoS Defenses", test_record_layer_and_dos);
+    lit::run_case(runner, "3. QUIC Crypto Gateway & Header Protection (RFC 9001)", test_quic_crypto_gateway);
+    lit::run_case(runner, "4. HKDF-Expand-Label & Key Schedule Derivations (RFC 8446)", test_key_schedule_and_derivations);
+    lit::run_case(runner, "5. Anti-Replay Strike Register & PSK Binders", test_anti_replay_and_psk);
+    lit::run_case(runner, "6. Handshake State Machine, HRR & Extension Parsers", test_handshake_state_machine);
+    lit::run_case(runner, "7. ASN.1 DER Parser, RFC 6125 SAN Matcher & CertificateVerify", test_asn1_x509_and_verify);
+    lit::run_case(runner, "8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)", test_post_quantum_hybrid_exchange);
+    lit::run_case(runner, "9. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance", test_handshake_and_ech_security);
+    lit::run_case(runner, "10. State Machine Transitions, HRR Invariants, Downgrade & ECH FSM", test_handshake_r2_invariants);
+    lit::run_case(runner, "11. NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp", test_handshake_r3_invariants);
+    lit::run_case(runner, "12. RFC 8879 Brotli Certificate Decompression & Bomb Defenses", test_rfc8879_brotli_cert_compression);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: compat_uweb_features_phase1 ---
 // Verification suite for uWebSockets Phase 1 features in goose-wing:
@@ -13,7 +16,7 @@ import wing from "..";
 // 3. Dynamic Backpressure Control & Drainage Notifications (drain pattern)
 // 4. Selective Per-Message Compression (compress flag)
 
-fn test_declarative_ws_routing(t: core::T&) {
+fn test_declarative_ws_routing(t: lit::T&) {
     t.run("1. Declarative add_ws_route & 101 Switching Protocols Handshake") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
 
@@ -74,7 +77,7 @@ fn test_declarative_ws_routing(t: core::T&) {
     };
 }
 
-fn test_per_socket_user_data(t: core::T&) {
+fn test_per_socket_user_data(t: lit::T&) {
     t.run("1. Zero-Alloc Inline UserData & UserTag") { sub =>
         var ws = wing::new_websocket_session(false);
 
@@ -95,7 +98,7 @@ fn test_per_socket_user_data(t: core::T&) {
     };
 }
 
-fn test_backpressure_and_drain(t: core::T&) {
+fn test_backpressure_and_drain(t: lit::T&) {
     t.run("1. Backpressure Watermark Tracking & Drain Event") { sub =>
         var ws = wing::new_websocket_session(false);
         ws.set_max_backpressure(500, false);
@@ -165,7 +168,7 @@ fn test_backpressure_and_drain(t: core::T&) {
     };
 }
 
-fn test_selective_compression(t: core::T&) {
+fn test_selective_compression(t: lit::T&) {
     t.run("1. Selective Compression Flag Toggle") { sub =>
         var ws = wing::new_websocket_session(false);
         wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
@@ -206,7 +209,7 @@ fn test_selective_compression(t: core::T&) {
 // 5. Cross-Thread EventLoop Task Dispatch (loop->defer pattern)
 // 6. Dedicated Sliding-Window Compression (DedicatedWsCompressor pattern)
 
-fn test_heartbeat_and_idle_sweeper(t: core::T&) {
+fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
     t.run("1. Auto-Ping Generation & Idle Timeout Reaper") { sub =>
         var wheel = wing::new_tick_timer_wheel(10);
         var ws = wing::new_websocket_session(false);
@@ -263,7 +266,7 @@ fn test_heartbeat_and_idle_sweeper(t: core::T&) {
     };
 }
 
-fn test_subscription_counts_and_topics(t: core::T&) {
+fn test_subscription_counts_and_topics(t: lit::T&) {
     t.run("1. Subscription Count Lifecycle (Room Creation / Destruction)") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         var old_cnt: i32 = -1;
@@ -315,7 +318,7 @@ fn test_subscription_counts_and_topics(t: core::T&) {
     };
 }
 
-fn test_async_upgrade_and_aborted(t: core::T&) {
+fn test_async_upgrade_and_aborted(t: lit::T&) {
     t.run("1. Asynchronous Upgrade with UserData & UserTag") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         var ws_cfg = wing::new_ws_behavior(50);
@@ -374,7 +377,7 @@ fn test_async_upgrade_and_aborted(t: core::T&) {
     };
 }
 
-fn test_loop_defer_and_dedicated_compressor(t: core::T&) {
+fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
     t.run("1. EventLoop Task Deferral (loop.defer)") { sub =>
         var cfg = internal::auto_transport_driver_config();
         cfg.active_kind = internal::TransportDriverKind.Standard;
@@ -424,7 +427,7 @@ fn test_loop_defer_and_dedicated_compressor(t: core::T&) {
 // 3. Zero-Copy WebSocket frame ingress (WsMessageView)
 // 4. Shared receive buffer and direct slice streaming
 
-fn test_header_bloom_filter(t: core::T&) {
+fn test_header_bloom_filter(t: lit::T&) {
     t.run("1. 256-bit Header BloomFilter Bitwise Rejection") { sub =>
         var bf = wing::HeaderBloomFilter { .. };
         wing::add_header(bf, "Content-Type");
@@ -462,7 +465,7 @@ fn test_header_bloom_filter(t: core::T&) {
     };
 }
 
-fn test_fast_serialization(t: core::T&) {
+fn test_fast_serialization(t: lit::T&) {
     t.run("1. Pre-formatted 200 OK Status Line & Content-Length 0") { sub =>
         var res = wing::Response { .. };
         res.status_code = 200;
@@ -477,7 +480,7 @@ fn test_fast_serialization(t: core::T&) {
     };
 }
 
-fn test_zero_copy_websocket_view(t: core::T&) {
+fn test_zero_copy_websocket_view(t: lit::T&) {
     t.run("1. Zero-Copy Ingress via WsMessageView") { sub =>
         var ws = wing::new_websocket_session(false); // server session
         let mask: u8[4] = [0x11, 0x22, 0x33, 0x44];
@@ -509,7 +512,7 @@ fn test_zero_copy_websocket_view(t: core::T&) {
     };
 }
 
-fn test_shared_tcp_buffer(t: core::T&) {
+fn test_shared_tcp_buffer(t: lit::T&) {
     t.run("1. Live TCP Direct Slice Recv") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -537,7 +540,7 @@ fn test_shared_tcp_buffer(t: core::T&) {
     };
 }
 
-fn test_topic_tree_pubsub(t: core::T&) {
+fn test_topic_tree_pubsub(t: lit::T&) {
     t.run("1. Exact and Wildcard MQTT Pattern Matching") { sub =>
         var tree = wing::TopicTree { .. };
 
@@ -610,7 +613,7 @@ fn test_topic_tree_pubsub(t: core::T&) {
     };
 }
 
-fn test_vectored_io(t: core::T&) {
+fn test_vectored_io(t: lit::T&) {
     t.run("1. Zero-Copy HTTP Response via Vectored I/O (tcp_send2)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -656,7 +659,7 @@ fn test_vectored_io(t: core::T&) {
     };
 }
 
-fn test_server_cork_buffer(t: core::T&) {
+fn test_server_cork_buffer(t: lit::T&) {
     t.run("1. 16 KB CorkBuffer Syscall Coalescing") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -692,7 +695,7 @@ fn test_server_cork_buffer(t: core::T&) {
     };
 }
 
-fn test_handshake_and_date_and_swar_utf8(t: core::T&) {
+fn test_handshake_and_date_and_swar_utf8(t: lit::T&) {
     t.run("1. Unrolled 2-Block WebSocket Handshake Accept Key") { sub =>
         let test_key = "dGhlIHNhbXBsZSBub25jZQ==";
         var accept_key: u8[..64] = [];
@@ -732,7 +735,7 @@ fn test_handshake_and_date_and_swar_utf8(t: core::T&) {
     };
 }
 
-fn test_fast_query_parser(t: core::T&) {
+fn test_fast_query_parser(t: lit::T&) {
     t.run("1. Zero-Allocation Targeted Query Parameter Lookup") { sub =>
         let query_str = "?filter=active&search=hello+world%21&debug&empty=&limit=50";
 
@@ -762,7 +765,7 @@ fn test_fast_query_parser(t: core::T&) {
     };
 }
 
-fn test_epoll_reactor_multiplexer(t: core::T&) {
+fn test_epoll_reactor_multiplexer(t: lit::T&) {
     t.run("1. Non-blocking Epoll Reactor Multiplexing Across Multiple Sockets") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -847,7 +850,7 @@ fn test_epoll_reactor_multiplexer(t: core::T&) {
     };
 }
 
-fn test_swar_ctl_scanner(t: core::T&) {
+fn test_swar_ctl_scanner(t: lit::T&) {
     t.run("1. SWAR hasLess 64-bit Parallel Control Character Scanning") { sub =>
         // Pure printable ASCII
         let clean = "Host: api.example.com:8080";
@@ -882,7 +885,7 @@ fn test_swar_ctl_scanner(t: core::T&) {
     };
 }
 
-fn test_fast_integer_ascii_serializers(t: core::T&) {
+fn test_fast_integer_ascii_serializers(t: lit::T&) {
     t.run("1. Fast u64toa and u32toa_hex") { sub =>
         var buf: u8[32] = [0; 32];
 
@@ -928,7 +931,7 @@ fn test_fast_integer_ascii_serializers(t: core::T&) {
     };
 }
 
-fn test_ws_unmask_shifted_header_overwrite(t: core::T&) {
+fn test_ws_unmask_shifted_header_overwrite(t: lit::T&) {
     t.run("1. In-Place Zero-Copy Unmasking with Header Overwrite") { sub =>
         let mask: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
         let original_msg = "Hello, zero-copy WebSocket world with shifted header overwrite!";
@@ -958,7 +961,7 @@ fn test_ws_unmask_shifted_header_overwrite(t: core::T&) {
     };
 }
 
-fn test_chunked_fsm_decoder(t: core::T&) {
+fn test_chunked_fsm_decoder(t: lit::T&) {
     t.run("1. 64-bit Register FSM Chunked Stream Decoding") { sub =>
         var dec = internal::new_chunk_fsm_decoder();
 
@@ -1006,7 +1009,7 @@ fn test_chunked_fsm_decoder(t: core::T&) {
     };
 }
 
-fn test_http_route_cache(t: core::T&) {
+fn test_http_route_cache(t: lit::T&) {
     t.run("1. Dual-Expiry Coalescing HTTP Route Cache") { sub =>
         var cache = wing::new_http_route_cache(1000, 5000);
 
@@ -1039,7 +1042,7 @@ fn test_http_route_cache(t: core::T&) {
     };
 }
 
-fn test_tick_timer_wheel(t: core::T&) {
+fn test_tick_timer_wheel(t: lit::T&) {
     t.run("1. 1-Byte Tick Wheel Low-Overhead Timeout Sweeper") { sub =>
         var wheel = wing::new_tick_timer_wheel(10); // 10s default
         sub.assert_eq(wheel.current_tick, 0, "Initial tick is 0");
@@ -1080,7 +1083,7 @@ fn test_tick_timer_wheel(t: core::T&) {
     };
 }
 
-fn test_buffer_fencing_margin(t: core::T&) {
+fn test_buffer_fencing_margin(t: lit::T&) {
     t.run("1. Wire Buffer Sentinel Fencing") { sub =>
         var wire_buf: u8[64] = [0; 64];
         let req_text = "GET /status HTTP/1.1";
@@ -1099,7 +1102,7 @@ fn test_buffer_fencing_margin(t: core::T&) {
     };
 }
 
-fn test_tcp_quickack_and_cork(t: core::T&) {
+fn test_tcp_quickack_and_cork(t: lit::T&) {
     t.run("1. TCP QuickACK and Cork Control") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
@@ -1137,7 +1140,7 @@ fn test_tcp_quickack_and_cork(t: core::T&) {
 // Red regression test suite based on uWebSockets & uSockets issue tracker.
 // Tracks verified fixes for vulnerabilities, RFC non-conformances, and edge cases.
 
-fn test_uweb_1951_non_ascii_url_rejection(t: core::T&) {
+fn test_uweb_1951_non_ascii_url_rejection(t: lit::T&) {
     // uWebSockets Issue #1951 / RFC 9112 Section 3.2:
     // Request target must only consist of visible ASCII characters (0x21..0x7E).
     // Raw UTF-8 bytes (e.g. 0xD1, 0x82) or raw binary bytes (>= 0x80) MUST be rejected with HTTP 400.
@@ -1156,7 +1159,7 @@ fn test_uweb_1951_non_ascii_url_rejection(t: core::T&) {
     t.assert_true(ok3, "Valid visible ASCII path must be accepted");
 }
 
-fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
+fn test_uweb_1855_head_content_length_duplicate(t: lit::T&) {
     // uWebSockets Issue #1855 / RFC 9110 Section 8.6:
     // When responding to HEAD or providing a manual Content-Length on empty body,
     // the server MUST NOT serialize two conflicting Content-Length headers (e.g. 0 and 1024).
@@ -1185,7 +1188,7 @@ fn test_uweb_1855_head_content_length_duplicate(t: core::T&) {
     t.assert_eq(count, 1, "Exactly one Content-Length header must be emitted");
 }
 
-fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: core::T&) {
+fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: lit::T&) {
     // uWebSockets Issue #1927 & #1948 / HAProxy PROXY Protocol Specification:
     // When accept_proxy_protocol is enabled, the connection MUST begin with a valid PROXY header.
     // If a client sends plain HTTP without PROXY, it MUST be rejected immediately (NO fallthrough!).
@@ -1201,7 +1204,7 @@ fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: core::T&) {
     t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must return 400 Bad Request on missing PROXY header");
 }
 
-fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
+fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
     // uWebSockets Issue #1407 / RFC 6455 Section 5.5:
     // Malformed control frames (payload > 125, fragmented control frame with FIN=0)
     // MUST trigger WS_STATUS_PROTOCOL_ERROR (1002) and close the WebSocket connection.
@@ -1236,7 +1239,7 @@ fn test_uweb_1407_control_frame_protocol_error(t: core::T&) {
     t.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 }
 
-fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
+fn test_uweb_1933_topictree_trailing_wildcard(t: lit::T&) {
     // uWebSockets Issue #1933 & OASIS MQTT v5.0 §4.7.1.3:
     // 'sport/+' MUST match 'sport/' (trailing slash level), but 'sport' MUST NOT match 'sport/'.
     t.assert_true(wing::match_topic("sport/+", "sport/"), "'sport/+' must match 'sport/' with trailing slash");
@@ -1279,7 +1282,7 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: core::T&) {
     t.assert_eq(tree.palette_len, 33, "Palette length must NOT be wiped by drain_subscriber mid-broadcast");
 }
 
-fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: core::T&) {
+fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener created with non-inheritable handle");
     let port = wing::tcp_getsockname_port(listener);
@@ -1304,7 +1307,7 @@ fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: core::T&) {
     wing::tcp_close(listener);
 }
 
-fn test_uweb_1949_host_header_validation(t: core::T&) {
+fn test_uweb_1949_host_header_validation(t: lit::T&) {
     // uWebSockets Issue #1949 / RFC 9112 Section 3.2:
     // 1. Missing Host header in HTTP/1.1 must be rejected with 400.
     // 2. Multiple Host headers must be rejected with 400.
@@ -1342,7 +1345,7 @@ fn test_uweb_1949_host_header_validation(t: core::T&) {
     t.assert_true(ok6, "Valid Host header must be accepted");
 }
 
-fn test_uweb_1370_204_no_content_length(t: core::T&) {
+fn test_uweb_1370_204_no_content_length(t: lit::T&) {
     // uWebSockets Issue #1370 / RFC 9110 Section 8.6:
     // A server MUST NOT send a Content-Length header field in any response
     // with status code 204 (No Content).
@@ -1357,7 +1360,7 @@ fn test_uweb_1370_204_no_content_length(t: core::T&) {
     t.assert_false(find(wire_str, "Content-Length") >= 0, "204 No Content response must NOT contain Content-Length header");
 }
 
-fn test_rfc_6455_1005_empty_close_payload(t: core::T&) {
+fn test_rfc_6455_1005_empty_close_payload(t: lit::T&) {
     // RFC 6455 Section 7.4.1 / Autobahn 7.1.x:
     // Status code 1005 (No Status Received) is designated for internal use
     // and MUST NOT be serialized onto the wire in a Close frame!
@@ -1373,7 +1376,7 @@ fn test_rfc_6455_1005_empty_close_payload(t: core::T&) {
     t.assert_eq(hdr.payload_len, 0, "1005 close frame payload length must be 0 bytes on wire");
 }
 
-fn test_uweb_1952_options_asterisk_and_get_asterisk_rejection(t: core::T&) {
+fn test_uweb_1952_options_asterisk_and_get_asterisk_rejection(t: lit::T&) {
     // uWebSockets Issue #1952 / RFC 9112 Section 3.2.4:
     // Asterisk-form ('*') request target is ONLY valid for OPTIONS.
     // GET *, POST *, or any non-OPTIONS method with '*' MUST be rejected with 400.
@@ -1393,7 +1396,7 @@ fn test_uweb_1952_options_asterisk_and_get_asterisk_rejection(t: core::T&) {
     t.assert_false(ok3, "POST * HTTP/1.1 must be rejected");
 }
 
-fn test_uweb_1932_ws_send_blocked_when_closed(t: core::T&) {
+fn test_uweb_1932_ws_send_blocked_when_closed(t: lit::T&) {
     // uWebSockets Issue #1932 / RFC 6455 Section 5.5.1:
     // Once a WebSocket session is closed (or closing after backpressure/close frame),
     // all subsequent sends (text, binary, ping) MUST be dropped without writing frames.
@@ -1413,7 +1416,7 @@ fn test_uweb_1932_ws_send_blocked_when_closed(t: core::T&) {
     t.assert_eq(wire_out.len, 0, "send_ping must emit 0 bytes after session is closed");
 }
 
-fn test_mqtt_invalid_multilevel_wildcard_rejection(t: core::T&) {
+fn test_mqtt_invalid_multilevel_wildcard_rejection(t: lit::T&) {
     // OASIS MQTT v5.0 §4.7.1.2 & TopicTree Validation:
     // Multi-level wildcard '#' MUST be the last character in the topic pattern,
     // and MUST be either alone ("#") or preceded by '/' ("sport/#").
@@ -1428,7 +1431,7 @@ fn test_mqtt_invalid_multilevel_wildcard_rejection(t: core::T&) {
     t.assert_true(wing::subscribe(tree, 10, "sport/+/tennis"), "Valid 'sport/+/tennis' must be accepted");
 }
 
-fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: core::T&) {
+fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: lit::T&) {
     // uWebSockets Issue #1090 / OASIS MQTT v5.0 §3.3.2.1:
     // "The Topic Name in the PUBLISH packet MUST NOT contain wildcard characters [MQTT-3.3.2-1]."
     // Publishing to wildcard topics ("sport/+", "sport/#", "+", "#") is illegal and MUST be rejected.
@@ -1454,7 +1457,7 @@ fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: core::T&) {
     t.assert_eq(count4, 0, "Publish to wildcard topic '#' MUST be rejected (0 subscribers)");
 }
 
-fn test_uweb_1944_query_lookup_encoded_and_valueless(t: core::T&) {
+fn test_uweb_1944_query_lookup_encoded_and_valueless(t: lit::T&) {
     // uWebSockets Issue #1944 / WHATWG URL:
     // Query parameter fast lookup must handle percent-encoded keys and valueless parameters.
     let query_str: const u8[:] = "?user%20id=42&flag&category%2Ftag=news";
@@ -1479,7 +1482,7 @@ fn test_uweb_1944_query_lookup_encoded_and_valueless(t: core::T&) {
     t.assert_eq(cat_val[..], "news", "Decoded value of 'category/tag' is 'news'");
 }
 
-fn test_uweb_1898_extra_bytes_connection_poisoning(t: core::T&) {
+fn test_uweb_1898_extra_bytes_connection_poisoning(t: lit::T&) {
     // uWebSockets Issue #1898 / RFC 9112 Section 9.3:
     // Extra bytes sent beyond Content-Length must not be ignored or allowed to poison keep-alive.
     // If a request stream contains unparseable trailing junk after a request, the connection handler
@@ -1496,7 +1499,7 @@ fn test_uweb_1898_extra_bytes_connection_poisoning(t: core::T&) {
     t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must serialize 400 Bad Request for poisoned connection");
 }
 
-fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
+fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
     // RFC 6455 §5.2 & Autobahn Cases 3.1, 3.2, 3.3, 3.4 / uWS #1407:
     // Non-minimal length encodings (e.g. 16-bit length < 126 or 64-bit length <= 65535)
     // and high-bit violations in 64-bit length MUST fail the connection with Protocol Error (1002).
@@ -1528,7 +1531,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: core::T&) {
     t.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
 }
 
-fn test_uweb_1658_max_header_size_rejection(t: core::T&) {
+fn test_uweb_1658_max_header_size_rejection(t: lit::T&) {
     // uWebSockets #1658 / RFC 9112 §2.1:
     // Total header block size must be bounded (e.g. 8192 bytes).
     // Incoming requests exceeding 8192 bytes of headers must be rejected.
@@ -1545,7 +1548,7 @@ fn test_uweb_1658_max_header_size_rejection(t: core::T&) {
     t.assert_false(ok, "Headers exceeding 8KB must be rejected per uWS #1658 / RFC 9112 §2.1");
 }
 
-fn test_usock_101_windows_exclusive_port_defense(t: core::T&) {
+fn test_usock_101_windows_exclusive_port_defense(t: lit::T&) {
     // uSockets Issue #101 / #167:
     // On Windows, listening sockets MUST set SO_EXCLUSIVEADDRUSE rather than SO_REUSEADDR.
     // SO_REUSEADDR on Windows permits rogue processes to forcibly bind to the same port and steal connections (port hijacking).
@@ -1565,7 +1568,7 @@ fn test_usock_101_windows_exclusive_port_defense(t: core::T&) {
     }
 }
 
-fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
+fn test_rfc_6455_sec_websocket_key_validation(t: lit::T&) {
     // RFC 6455 Section 4.2.1:
     // "The |Sec-WebSocket-Key| MUST be a base64-encoded value that, when decoded, is 16 bytes in length."
     // Handshake request with malformed, short, or non-base64 key MUST be rejected with HTTP 400.
@@ -1597,7 +1600,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: core::T&) {
     t.assert_eq(accept_val, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Correct RFC 6455 Sec-WebSocket-Accept header");
 }
 
-fn test_uweb_1948_proxy_v2_command_and_family_validation(t: core::T&) {
+fn test_uweb_1948_proxy_v2_command_and_family_validation(t: lit::T&) {
     // uWebSockets Issue #1948 / HAProxy PROXY Protocol v2 Specification §2.2:
     // 1. Only exact family/transport combinations 0x00, 0x11, 0x12, 0x21, 0x22, 0x31, 0x32 are valid.
     //    Unspecified combinations like 0x01 (UNSPEC+STREAM) or 0x10 (INET4+UNSPEC) MUST be rejected.
@@ -1643,7 +1646,7 @@ fn test_uweb_1948_proxy_v2_command_and_family_validation(t: core::T&) {
     t.assert_eq(hdr3.src_ip_str.len, 0, "LOCAL command MUST NOT expose proxied client IP");
 }
 
-fn test_usock_258_windows_connect_rst_immediate_failure(t: core::T&) {
+fn test_usock_258_windows_connect_rst_immediate_failure(t: lit::T&) {
     // uSockets Issue #258 / #259 & Winsock2 Specification:
     // On Windows, when a non-blocking connect fails (RST / ECONNREFUSED), Winsock2
     // signals the socket via exceptfds or writefds with SO_ERROR set.
@@ -1661,7 +1664,7 @@ fn test_usock_258_windows_connect_rst_immediate_failure(t: core::T&) {
     t.assert_true(dur_ms < 300, "Connect with 50ms timeout must return within bounded time");
 }
 
-fn test_uweb_1941_transfer_encoding_list_and_final_chunked(t: core::T&) {
+fn test_uweb_1941_transfer_encoding_list_and_final_chunked(t: lit::T&) {
     // uWebSockets Issue #1941 / PR #1943 & RFC 9112 Section 6.1 & 7:
     // Transfer-Encoding can be a comma-separated list of transfer codings (e.g. gzip, identity, br, deflate),
     // but MUST end with 'chunked' (case-insensitive) as the final transfer coding.
@@ -1696,7 +1699,7 @@ fn test_uweb_1941_transfer_encoding_list_and_final_chunked(t: core::T&) {
     t.assert_contains(wire_out[..], "200 OK", "Server responds 200 OK to valid chunked list form");
 }
 
-fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: core::T&) {
+fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: lit::T&) {
     // uWebSockets Issue #1936 / Http11Probe & RFC 9112 Section 7.1.1:
     // chunk = chunk-size [ chunk-ext ] CRLF
     // chunk-size = 1*HEXDIG
@@ -1758,7 +1761,7 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: core::T&) {
 }
 
 // --- Test 50: uWebSockets PreparedMessage & publishPrepared ---
-fn test_uweb_prepared_message(t: core::T&) {
+fn test_uweb_prepared_message(t: lit::T&) {
     var tree = wing::TopicTree { .. };
     wing::subscribe(tree, 101, "broadcast/tickers");
     wing::subscribe(tree, 102, "broadcast/+");
@@ -1802,7 +1805,7 @@ fn test_uweb_prepared_message(t: core::T&) {
 }
 
 // --- Test 51: uWebSockets WebSocket maxLifetime Session Timeout ---
-fn test_uweb_max_lifetime_sweeper(t: core::T&) {
+fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
     var wheel = wing::new_tick_timer_wheel(10);
     var ws = wing::new_websocket_session(false);
     ws.idle_timeout_s = 10;
@@ -1840,7 +1843,7 @@ fn test_uweb_max_lifetime_sweeper(t: core::T&) {
 }
 
 // --- Test 52: uWS #1347 Safari 15.0-15.3 Broken Compression Workaround ---
-fn test_uweb_safari_15_broken_compression(t: core::T&) {
+fn test_uweb_safari_15_broken_compression(t: lit::T&) {
     // Safari 15.0..15.3 should return true
     let ua_15_0 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15";
     t.assert_true(wing::ws_has_broken_compression(ua_15_0), "Safari 15.0 detected as broken");
@@ -1910,7 +1913,7 @@ fn test_missing_sni_fallback(hostname: const u8[:]) -> wing::SniCredentials {
 }
 
 // --- Test 53: uWebSockets endWithoutBody & HEAD/304 Content-Length Spoofing ---
-fn test_uweb_end_without_body(t: core::T&) {
+fn test_uweb_end_without_body(t: lit::T&) {
     var res = wing::Response { status_code: 200, .. };
     var wire: u8[..1024] = [];
 
@@ -1936,7 +1939,7 @@ fn test_uweb_end_without_body(t: core::T&) {
 }
 
 // --- Test 54: uWebSockets Streaming Ingress onData / onDataV2 ---
-fn test_uweb_streaming_on_data(t: core::T&) {
+fn test_uweb_streaming_on_data(t: lit::T&) {
     var req = wing::new_request("POST", "/upload/stream");
     var consumer = wing::HttpStreamConsumer { .. };
 
@@ -1974,7 +1977,7 @@ fn test_uweb_streaming_on_data(t: core::T&) {
 }
 
 // --- Test 55: uWebSockets Async Backpressure (onWritable) & Abort (onAborted) ---
-fn test_uweb_async_backpressure_and_aborted(t: core::T&) {
+fn test_uweb_async_backpressure_and_aborted(t: lit::T&) {
     var ctx = wing::HttpAsyncContext {
         sock_fd:          42,
         user_tag:         999,
@@ -2007,7 +2010,7 @@ fn test_uweb_async_backpressure_and_aborted(t: core::T&) {
 }
 
 // --- Test 56: uWebSockets Dynamic Runtime SNI Multi-Certificate Registry ---
-fn test_uweb_dynamic_sni_registry(t: core::T&) {
+fn test_uweb_dynamic_sni_registry(t: lit::T&) {
     var server = wing::new_http_server("test-sni");
 
     let cert_main: const u8[:] = "-----BEGIN CERTIFICATE-----\nMAIN\n-----END CERTIFICATE-----";
@@ -2086,7 +2089,7 @@ fn test_uweb_dynamic_sni_registry(t: core::T&) {
 }
 
 // --- Test 57: uWebSockets Unix Domain Sockets (AF_UNIX) & Socket Adoption ---
-fn test_uweb_unix_domain_sockets_and_adopt_socket(t: core::T&) {
+fn test_uweb_unix_domain_sockets_and_adopt_socket(t: lit::T&) {
     var server = wing::new_http_server("test-uds");
 
     // 1. Socket Adoption (us_adopt_accepted_socket)
@@ -2136,66 +2139,66 @@ fn test_uweb_unix_domain_sockets_and_adopt_socket(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("uWebSockets Behavioral Compatibility Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("uWebSockets Behavioral Compatibility Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Declarative WebSocket Route Registration", test_declarative_ws_routing);
-    core::run_case(runner, "2. Per-Socket Typed UserData / Inline State", test_per_socket_user_data);
-    core::run_case(runner, "3. Dynamic Backpressure Control & Drainage Notifications", test_backpressure_and_drain);
-    core::run_case(runner, "4. Selective Per-Message Compression", test_selective_compression);
-    core::run_case(runner, "5. Heartbeat Daemon & Idle Timeout Sweeper", test_heartbeat_and_idle_sweeper);
-    core::run_case(runner, "6. Pub/Sub Subscription Counts & Socket Topics", test_subscription_counts_and_topics);
-    core::run_case(runner, "7. Asynchronous WebSocket Upgrade & Abort Safety", test_async_upgrade_and_aborted);
-    core::run_case(runner, "8. EventLoop Defer & Dedicated Compressor", test_loop_defer_and_dedicated_compressor);
-    core::run_case(runner, "9. 256-bit Header BloomFilter", test_header_bloom_filter);
-    core::run_case(runner, "10. Fast HTTP/1.1 Response Serialization", test_fast_serialization);
-    core::run_case(runner, "11. Zero-Copy WebSocket Ingress View", test_zero_copy_websocket_view);
-    core::run_case(runner, "12. Shared TCP Buffer & Direct Slice Recv", test_shared_tcp_buffer);
-    core::run_case(runner, "13. Native Pub/Sub TopicTree Engine", test_topic_tree_pubsub);
-    core::run_case(runner, "14. Vectored I/O (tcp_send2 / WSASend)", test_vectored_io);
-    core::run_case(runner, "15. 16 KB CorkBuffer Syscall Coalescing", test_server_cork_buffer);
-    core::run_case(runner, "16. Unrolled Handshake, Cached Date & SWAR UTF-8", test_handshake_and_date_and_swar_utf8);
-    core::run_case(runner, "17. Fast In-Place Query Parser", test_fast_query_parser);
-    core::run_case(runner, "18. Share-Nothing Epoll Reactor & Non-blocking Multiplexing", test_epoll_reactor_multiplexer);
-    core::run_case(runner, "19. SWAR 64-bit Parallel Control Character Scanning", test_swar_ctl_scanner);
-    core::run_case(runner, "20. Fast Integer & Hex to ASCII Serializers", test_fast_integer_ascii_serializers);
-    core::run_case(runner, "21. In-Place WebSocket Unmasking with Header Overwrite", test_ws_unmask_shifted_header_overwrite);
-    core::run_case(runner, "22. 64-bit Register FSM Chunked Stream Decoder", test_chunked_fsm_decoder);
-    core::run_case(runner, "23. Dual-Expiry Coalescing HTTP Route Cache", test_http_route_cache);
-    core::run_case(runner, "24. 1-Byte Modular Tick Timer Wheel", test_tick_timer_wheel);
-    core::run_case(runner, "25. Wire Buffer Sentinel Fencing", test_buffer_fencing_margin);
-    core::run_case(runner, "26. TCP QuickACK and Cork Control", test_tcp_quickack_and_cork);
-    core::run_case(runner, "27. uWS #1951 Non-ASCII / UTF-8 Request Target Rejection", test_uweb_1951_non_ascii_url_rejection);
-    core::run_case(runner, "28. uWS #1855 Duplicate Content-Length in HEAD Responses", test_uweb_1855_head_content_length_duplicate);
-    core::run_case(runner, "29. uWS #1927 PROXY Protocol Enforcement Without Fallthrough", test_uweb_1927_proxy_enforcement_and_no_fallthrough);
-    core::run_case(runner, "30. uWS #1407 WebSocket Control Frame Protocol Error (1002)", test_uweb_1407_control_frame_protocol_error);
-    core::run_case(runner, "31. uWS #1933 TopicTree Trailing Wildcard & Safe Zero Publish", test_uweb_1933_topictree_trailing_wildcard);
-    core::run_case(runner, "32. uSockets #263 Socket Handle Lifecycle & Inheritance Defense", test_usock_263_socket_lifecycle_and_non_blocking_clean);
-    core::run_case(runner, "33. uWS #1949 Host Header Invariant Enforcement (RFC 9112 §3.2)", test_uweb_1949_host_header_validation);
-    core::run_case(runner, "34. uWS #1370 Status 204 No Content Strip Content-Length", test_uweb_1370_204_no_content_length);
-    core::run_case(runner, "35. RFC 6455 §7.4.1 Omit 1005 on Wire in Empty Close Frames", test_rfc_6455_1005_empty_close_payload);
-    core::run_case(runner, "36. uWS #1952 OPTIONS * Acceptance & GET/POST * Rejection", test_uweb_1952_options_asterisk_and_get_asterisk_rejection);
-    core::run_case(runner, "37. uWS #1932 Block Outbound WebSocket Sends After Close", test_uweb_1932_ws_send_blocked_when_closed);
-    core::run_case(runner, "38. MQTT §4.7.1.2 TopicTree Wildcard Syntax Validation", test_mqtt_invalid_multilevel_wildcard_rejection);
-    core::run_case(runner, "39. uWS #1090 TopicTree Wildcard Publish Rejection", test_uweb_1090_mqtt_wildcard_publish_rejection);
-    core::run_case(runner, "40. uWS #1944 Query Lookup with Encoded Keys & Valueless", test_uweb_1944_query_lookup_encoded_and_valueless);
-    core::run_case(runner, "41. uWS #1898 Extra Trailing Bytes Connection Poisoning Defense", test_uweb_1898_extra_bytes_connection_poisoning);
-    core::run_case(runner, "42. RFC 6455 §5.2 Non-Minimal WebSocket Length Protocol Error", test_rfc_6455_non_minimal_length_protocol_error);
-    core::run_case(runner, "43. uWS #1658 HTTP Header Block 8KB Limit Enforcement", test_uweb_1658_max_header_size_rejection);
-    core::run_case(runner, "44. uSockets #101 Windows SO_EXCLUSIVEADDRUSE Port Hijack Defense", test_usock_101_windows_exclusive_port_defense);
-    core::run_case(runner, "45. RFC 6455 §4.2.1 Sec-WebSocket-Key Nonce Validation", test_rfc_6455_sec_websocket_key_validation);
-    core::run_case(runner, "46. uWS #1948 PROXY v2 Family & LOCAL Command Address Validation", test_uweb_1948_proxy_v2_command_and_family_validation);
-    core::run_case(runner, "47. uSockets #258 Windows Connect RST Immediate Failure via exceptfds", test_usock_258_windows_connect_rst_immediate_failure);
-    core::run_case(runner, "48. uWS #1941 Transfer-Encoding List & Final Chunked Requirement", test_uweb_1941_transfer_encoding_list_and_final_chunked);
-    core::run_case(runner, "49. uWS #1936 Chunk Extension & Size Whitespace Validation (RFC 9112 §7.1.1)", test_uweb_1936_chunk_extension_and_size_whitespace_validation);
-    core::run_case(runner, "50. uWebSockets PreparedMessage & publishPrepared", test_uweb_prepared_message);
-    core::run_case(runner, "51. uWebSockets WebSocket maxLifetime Session Timeout", test_uweb_max_lifetime_sweeper);
-    core::run_case(runner, "52. uWS #1347 Safari 15.0-15.3 Broken Compression Workaround", test_uweb_safari_15_broken_compression);
-    core::run_case(runner, "53. uWebSockets endWithoutBody & HEAD/304 Content-Length Spoofing", test_uweb_end_without_body);
-    core::run_case(runner, "54. uWebSockets Streaming Ingress onData / onDataV2", test_uweb_streaming_on_data);
-    core::run_case(runner, "55. uWebSockets Async Backpressure (onWritable) & Abort (onAborted)", test_uweb_async_backpressure_and_aborted);
-    core::run_case(runner, "56. uWebSockets Dynamic Runtime SNI Multi-Certificate Registry", test_uweb_dynamic_sni_registry);
-    core::run_case(runner, "57. uWebSockets Unix Domain Sockets (AF_UNIX) & Socket Adoption", test_uweb_unix_domain_sockets_and_adopt_socket);
+    lit::run_case(runner, "1. Declarative WebSocket Route Registration", test_declarative_ws_routing);
+    lit::run_case(runner, "2. Per-Socket Typed UserData / Inline State", test_per_socket_user_data);
+    lit::run_case(runner, "3. Dynamic Backpressure Control & Drainage Notifications", test_backpressure_and_drain);
+    lit::run_case(runner, "4. Selective Per-Message Compression", test_selective_compression);
+    lit::run_case(runner, "5. Heartbeat Daemon & Idle Timeout Sweeper", test_heartbeat_and_idle_sweeper);
+    lit::run_case(runner, "6. Pub/Sub Subscription Counts & Socket Topics", test_subscription_counts_and_topics);
+    lit::run_case(runner, "7. Asynchronous WebSocket Upgrade & Abort Safety", test_async_upgrade_and_aborted);
+    lit::run_case(runner, "8. EventLoop Defer & Dedicated Compressor", test_loop_defer_and_dedicated_compressor);
+    lit::run_case(runner, "9. 256-bit Header BloomFilter", test_header_bloom_filter);
+    lit::run_case(runner, "10. Fast HTTP/1.1 Response Serialization", test_fast_serialization);
+    lit::run_case(runner, "11. Zero-Copy WebSocket Ingress View", test_zero_copy_websocket_view);
+    lit::run_case(runner, "12. Shared TCP Buffer & Direct Slice Recv", test_shared_tcp_buffer);
+    lit::run_case(runner, "13. Native Pub/Sub TopicTree Engine", test_topic_tree_pubsub);
+    lit::run_case(runner, "14. Vectored I/O (tcp_send2 / WSASend)", test_vectored_io);
+    lit::run_case(runner, "15. 16 KB CorkBuffer Syscall Coalescing", test_server_cork_buffer);
+    lit::run_case(runner, "16. Unrolled Handshake, Cached Date & SWAR UTF-8", test_handshake_and_date_and_swar_utf8);
+    lit::run_case(runner, "17. Fast In-Place Query Parser", test_fast_query_parser);
+    lit::run_case(runner, "18. Share-Nothing Epoll Reactor & Non-blocking Multiplexing", test_epoll_reactor_multiplexer);
+    lit::run_case(runner, "19. SWAR 64-bit Parallel Control Character Scanning", test_swar_ctl_scanner);
+    lit::run_case(runner, "20. Fast Integer & Hex to ASCII Serializers", test_fast_integer_ascii_serializers);
+    lit::run_case(runner, "21. In-Place WebSocket Unmasking with Header Overwrite", test_ws_unmask_shifted_header_overwrite);
+    lit::run_case(runner, "22. 64-bit Register FSM Chunked Stream Decoder", test_chunked_fsm_decoder);
+    lit::run_case(runner, "23. Dual-Expiry Coalescing HTTP Route Cache", test_http_route_cache);
+    lit::run_case(runner, "24. 1-Byte Modular Tick Timer Wheel", test_tick_timer_wheel);
+    lit::run_case(runner, "25. Wire Buffer Sentinel Fencing", test_buffer_fencing_margin);
+    lit::run_case(runner, "26. TCP QuickACK and Cork Control", test_tcp_quickack_and_cork);
+    lit::run_case(runner, "27. uWS #1951 Non-ASCII / UTF-8 Request Target Rejection", test_uweb_1951_non_ascii_url_rejection);
+    lit::run_case(runner, "28. uWS #1855 Duplicate Content-Length in HEAD Responses", test_uweb_1855_head_content_length_duplicate);
+    lit::run_case(runner, "29. uWS #1927 PROXY Protocol Enforcement Without Fallthrough", test_uweb_1927_proxy_enforcement_and_no_fallthrough);
+    lit::run_case(runner, "30. uWS #1407 WebSocket Control Frame Protocol Error (1002)", test_uweb_1407_control_frame_protocol_error);
+    lit::run_case(runner, "31. uWS #1933 TopicTree Trailing Wildcard & Safe Zero Publish", test_uweb_1933_topictree_trailing_wildcard);
+    lit::run_case(runner, "32. uSockets #263 Socket Handle Lifecycle & Inheritance Defense", test_usock_263_socket_lifecycle_and_non_blocking_clean);
+    lit::run_case(runner, "33. uWS #1949 Host Header Invariant Enforcement (RFC 9112 §3.2)", test_uweb_1949_host_header_validation);
+    lit::run_case(runner, "34. uWS #1370 Status 204 No Content Strip Content-Length", test_uweb_1370_204_no_content_length);
+    lit::run_case(runner, "35. RFC 6455 §7.4.1 Omit 1005 on Wire in Empty Close Frames", test_rfc_6455_1005_empty_close_payload);
+    lit::run_case(runner, "36. uWS #1952 OPTIONS * Acceptance & GET/POST * Rejection", test_uweb_1952_options_asterisk_and_get_asterisk_rejection);
+    lit::run_case(runner, "37. uWS #1932 Block Outbound WebSocket Sends After Close", test_uweb_1932_ws_send_blocked_when_closed);
+    lit::run_case(runner, "38. MQTT §4.7.1.2 TopicTree Wildcard Syntax Validation", test_mqtt_invalid_multilevel_wildcard_rejection);
+    lit::run_case(runner, "39. uWS #1090 TopicTree Wildcard Publish Rejection", test_uweb_1090_mqtt_wildcard_publish_rejection);
+    lit::run_case(runner, "40. uWS #1944 Query Lookup with Encoded Keys & Valueless", test_uweb_1944_query_lookup_encoded_and_valueless);
+    lit::run_case(runner, "41. uWS #1898 Extra Trailing Bytes Connection Poisoning Defense", test_uweb_1898_extra_bytes_connection_poisoning);
+    lit::run_case(runner, "42. RFC 6455 §5.2 Non-Minimal WebSocket Length Protocol Error", test_rfc_6455_non_minimal_length_protocol_error);
+    lit::run_case(runner, "43. uWS #1658 HTTP Header Block 8KB Limit Enforcement", test_uweb_1658_max_header_size_rejection);
+    lit::run_case(runner, "44. uSockets #101 Windows SO_EXCLUSIVEADDRUSE Port Hijack Defense", test_usock_101_windows_exclusive_port_defense);
+    lit::run_case(runner, "45. RFC 6455 §4.2.1 Sec-WebSocket-Key Nonce Validation", test_rfc_6455_sec_websocket_key_validation);
+    lit::run_case(runner, "46. uWS #1948 PROXY v2 Family & LOCAL Command Address Validation", test_uweb_1948_proxy_v2_command_and_family_validation);
+    lit::run_case(runner, "47. uSockets #258 Windows Connect RST Immediate Failure via exceptfds", test_usock_258_windows_connect_rst_immediate_failure);
+    lit::run_case(runner, "48. uWS #1941 Transfer-Encoding List & Final Chunked Requirement", test_uweb_1941_transfer_encoding_list_and_final_chunked);
+    lit::run_case(runner, "49. uWS #1936 Chunk Extension & Size Whitespace Validation (RFC 9112 §7.1.1)", test_uweb_1936_chunk_extension_and_size_whitespace_validation);
+    lit::run_case(runner, "50. uWebSockets PreparedMessage & publishPrepared", test_uweb_prepared_message);
+    lit::run_case(runner, "51. uWebSockets WebSocket maxLifetime Session Timeout", test_uweb_max_lifetime_sweeper);
+    lit::run_case(runner, "52. uWS #1347 Safari 15.0-15.3 Broken Compression Workaround", test_uweb_safari_15_broken_compression);
+    lit::run_case(runner, "53. uWebSockets endWithoutBody & HEAD/304 Content-Length Spoofing", test_uweb_end_without_body);
+    lit::run_case(runner, "54. uWebSockets Streaming Ingress onData / onDataV2", test_uweb_streaming_on_data);
+    lit::run_case(runner, "55. uWebSockets Async Backpressure (onWritable) & Abort (onAborted)", test_uweb_async_backpressure_and_aborted);
+    lit::run_case(runner, "56. uWebSockets Dynamic Runtime SNI Multi-Certificate Registry", test_uweb_dynamic_sni_registry);
+    lit::run_case(runner, "57. uWebSockets Unix Domain Sockets (AF_UNIX) & Socket Adoption", test_uweb_unix_domain_sockets_and_adopt_socket);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

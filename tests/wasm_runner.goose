@@ -4,6 +4,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 fn main() {
     print("goose-wing WebAssembly Production Scenarios\n");
@@ -51,7 +52,7 @@ fn main() {
     // ------------------------------------------------------------------------
     print("\n[3/11] RFC 6265bis Canonical Cookie Jar...\n");
     var jar = wing::CanonicalCookieJar { .. };
-    var clock = core::new_mock_clock();
+    var clock = lit::new_mock_clock();
 
     // 1. Host-only secure cookie
     let set1 = wing::set_cookie_header(jar, "https://api.exchange.io/", "sid=session_token_xyz; Path=/; Secure; HttpOnly; SameSite=Strict", clock.now_us);

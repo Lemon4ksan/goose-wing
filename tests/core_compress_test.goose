@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: core_compress ---
 // Test suite for Goose compression (`core::compress`).
@@ -17,7 +20,7 @@ import wing from "..";
 // 5. Extreme & Boundary Vectors (Empty, 1-byte, 35KB Sliding Window Wrap)
 // 6. Corrupt Bitstream & Tampering Defenses (Checksum/Size/Truncation detection)
 
-fn test_checksums(t: core::T&) {
+fn test_checksums(t: lit::T&) {
     t.run("CRC-32 Known Test Vectors") { sub =>
         let empty_buf: u8[0] = [];
         sub.assert_eq(core::crc32(empty_buf[..]), 0x00000000 as u32, "CRC-32 of empty buffer must be 0x00000000");
@@ -73,7 +76,7 @@ fn test_checksums(t: core::T&) {
     };
 }
 
-fn test_deflate_stored_and_fixed(t: core::T&) {
+fn test_deflate_stored_and_fixed(t: lit::T&) {
     t.run("Deflate Stored Blocks (Level 0)") { sub =>
         let msg = "Stored block mode test: no compression, verbatim payload framing.";
         var comp: u8[>..] = [];
@@ -122,7 +125,7 @@ fn test_deflate_stored_and_fixed(t: core::T&) {
     };
 }
 
-fn test_gzip_container(t: core::T&) {
+fn test_gzip_container(t: lit::T&) {
     t.run("Gzip Compression and Decompression Round-Trip") { sub =>
         let payload = "{\"status\":200,\"message\":\"Goose zero-heap compression is lightning fast!\",\"data\":[1,2,3,4,5]}";
         var gz: u8[>..] = [];
@@ -188,7 +191,7 @@ fn test_gzip_container(t: core::T&) {
     };
 }
 
-fn test_zlib_container(t: core::T&) {
+fn test_zlib_container(t: lit::T&) {
     t.run("Zlib Compression and Decompression Round-Trip") { sub =>
         let payload = "Zlib RFC 1950 container format verification with Big-Endian Adler-32.";
         var zb: u8[>..] = [];
@@ -238,7 +241,7 @@ fn test_zlib_container(t: core::T&) {
     };
 }
 
-fn test_boundary_and_large_buffers(t: core::T&) {
+fn test_boundary_and_large_buffers(t: lit::T&) {
     t.run("Single Byte Round-Trip") { sub =>
         let single: u8[1] = [0x5A];
         var gz: u8[>..] = [];
@@ -299,7 +302,7 @@ fn test_boundary_and_large_buffers(t: core::T&) {
     };
 }
 
-fn test_dynamic_huffman_and_btypes(t: core::T&) {
+fn test_dynamic_huffman_and_btypes(t: lit::T&) {
     t.run("BTYPE Bit Header Verification") { sub =>
         let payload = "Deflate block header specification requires bit 0 to be BFINAL, and bits 1-2 to be BTYPE. Level 0 produces stored blocks (BTYPE 00). Level 1-5 produces fixed Huffman (BTYPE 01). Level 6+ produces dynamic Huffman (BTYPE 10) with custom canonical prefix code trees. Deflate block header specification requires bit 0 to be BFINAL, and bits 1-2 to be BTYPE.";
 
@@ -346,7 +349,7 @@ fn test_dynamic_huffman_and_btypes(t: core::T&) {
     };
 }
 
-fn test_streaming_and_flush_modes(t: core::T&) {
+fn test_streaming_and_flush_modes(t: lit::T&) {
     t.run("ZStream SyncFlush WebSockets Framing") { sub =>
         var stream = core::new_zstream_compressor(core::ContainerFormat.Raw, 6);
         var wire: u8[>..] = [];
@@ -406,7 +409,7 @@ fn test_streaming_and_flush_modes(t: core::T&) {
     };
 }
 
-fn test_preset_dictionary_and_fdict(t: core::T&) {
+fn test_preset_dictionary_and_fdict(t: lit::T&) {
     t.run("RFC 1950 FDICT Zlib Compression & Verification") { sub =>
         let dict = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
         let payload = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 CustomRequestData/2.0";
@@ -463,7 +466,7 @@ fn test_preset_dictionary_and_fdict(t: core::T&) {
     };
 }
 
-fn test_universal_autodetect(t: core::T&) {
+fn test_universal_autodetect(t: lit::T&) {
     t.run("Auto-Detect Gzip, Zlib, and Raw Deflate") { sub =>
         let original = "Universal automatic decompressor test for Wing stdlib candidate.";
 
@@ -502,7 +505,7 @@ fn test_universal_autodetect(t: core::T&) {
     };
 }
 
-fn test_lazy_matching_and_stored_cost_selection(t: core::T&) {
+fn test_lazy_matching_and_stored_cost_selection(t: lit::T&) {
     t.run("Lazy Matching Ratio Advantage") { sub =>
         var src: u8[>..] = [];
         let pattern = "The quick brown fox jumps over the lazy dog repeatedly in structured sequences. ";
@@ -547,7 +550,7 @@ fn test_lazy_matching_and_stored_cost_selection(t: core::T&) {
     };
 }
 
-fn test_concatenated_gzip_and_fhcrc(t: core::T&) {
+fn test_concatenated_gzip_and_fhcrc(t: lit::T&) {
     t.run("Concatenated Gzip Members (RFC 1952 multi-member)") { sub =>
         let part1 = "First concatenated gzip archive member. ";
         let part2 = "Second concatenated gzip archive member with independent payload.";
@@ -598,7 +601,7 @@ fn test_concatenated_gzip_and_fhcrc(t: core::T&) {
     };
 }
 
-fn test_zipbomb_quota_guards(t: core::T&) {
+fn test_zipbomb_quota_guards(t: lit::T&) {
     t.run("Deflate Quota Overflow Cutoff") { sub =>
         var bomb: u8[>..] = [];
         for i in 15000 {
@@ -648,7 +651,7 @@ fn test_zipbomb_quota_guards(t: core::T&) {
     };
 }
 
-fn test_resumable_streaming_chunk_by_chunk(t: core::T&) {
+fn test_resumable_streaming_chunk_by_chunk(t: lit::T&) {
     t.run("ZStream 1-Byte Slices Feeding") { sub =>
         let message = "Resumable streaming decompressor feeding arbitrary tiny byte slices across network boundaries.";
         var wire: u8[>..] = [];
@@ -724,7 +727,7 @@ const ZSTD_REF_FOX_PANGRAM: u8[63] = [
     0x9A, 0xAA, 0x0C,
 ];
 
-fn test_zstandard_rfc8878(t: core::T&) {
+fn test_zstandard_rfc8878(t: lit::T&) {
     t.run("Reference Zstd Empty Frame") { sub =>
         var decomp: u8[>..] = [];
         let ok, err = core::zstd_decompress(ZSTD_REF_EMPTY[..], decomp);
@@ -1073,7 +1076,7 @@ fn test_zstandard_rfc8878(t: core::T&) {
     };
 }
 
-fn test_rfc1951_bounds_and_error_handling(t: core::T&) {
+fn test_rfc1951_bounds_and_error_handling(t: lit::T&) {
     t.run("Stored Block LEN/NLEN Mismatch Rejection") { sub =>
         // BFINAL=1, BTYPE=00 (stored), 5 zero padding bits -> byte 0 = 0x01
         // LEN = 4 (0x04, 0x00), Corrupted NLEN = 4 (0x04, 0x00) != ~4 (0xFB, 0xFF)
@@ -1486,7 +1489,7 @@ const VEC_REPEAT_COMP: const u8[20] = [
 
 // ---- Test Cases -------------------------------------------------------------
 
-fn test_brotli_empty_and_uncompressed(t: core::T&) {
+fn test_brotli_empty_and_uncompressed(t: lit::T&) {
     t.run("Empty stream and Google Brotli uncompressed vectors") { sub =>
         // 1. Empty stream: Google Brotli vector [59]
         var dec_empty: u8[>..] = [];
@@ -1513,7 +1516,7 @@ fn test_brotli_empty_and_uncompressed(t: core::T&) {
     };
 }
 
-fn test_brotli_level0_roundtrip(t: core::T&) {
+fn test_brotli_level0_roundtrip(t: lit::T&) {
     t.run("Level 0 uncompressed encoder and decoder round-trip") { sub =>
         // 1. Short text roundtrip
         let text = "Brotli zero-heap compression running natively inside Goose-Wing!";
@@ -1541,7 +1544,7 @@ fn test_brotli_level0_roundtrip(t: core::T&) {
     };
 }
 
-fn test_brotli_compressed_meta_blocks(t: core::T&) {
+fn test_brotli_compressed_meta_blocks(t: lit::T&) {
     t.run("Google Brotli LZ77 compressed meta-block decoding") { sub =>
         // VEC_REPEAT_COMP compresses 100 'A's into 20 bytes
         var decomp: u8[>..] = [];
@@ -1561,7 +1564,7 @@ fn test_brotli_compressed_meta_blocks(t: core::T&) {
     };
 }
 
-fn test_brotli_static_dictionary_transforms(t: core::T&) {
+fn test_brotli_static_dictionary_transforms(t: lit::T&) {
     t.run("Static built-in dictionary and word transformations") { sub =>
         // 1. Verify static dictionary is present and non-empty
         sub.assert_eq(core::BROTLI_DICTIONARY.len, 122784, "Dictionary size is exactly 122,784 bytes");
@@ -1607,7 +1610,7 @@ fn test_brotli_static_dictionary_transforms(t: core::T&) {
     };
 }
 
-fn test_brotli_quota_and_error_handling(t: core::T&) {
+fn test_brotli_quota_and_error_handling(t: lit::T&) {
     t.run("Decompression bomb protection and corrupted streams") { sub =>
         // 1. Quota limit exceeded guard
         var out_limited: u8[>..] = [];
@@ -1656,7 +1659,7 @@ fn test_brotli_quota_and_error_handling(t: core::T&) {
     };
 }
 
-fn test_brotli_http_client_integration(t: core::T&) {
+fn test_brotli_http_client_integration(t: lit::T&) {
     t.run("HTTP Client Response auto-decompression for Content-Encoding: br") { sub =>
         // 1. Compress payload with Level 0 Brotli
         let original_body = "{\"user\":\"admin\",\"authenticated\":true,\"stack\":\"wing-brotli\"}";
@@ -1686,7 +1689,7 @@ fn test_brotli_http_client_integration(t: core::T&) {
 // - Client automatic dictionary discovery, Available-Dictionary injection & transparent dcz decompression
 // - Origin scoping, pattern matching, TTL expiration, and insecure HTTP rejection
 
-fn test_dictionary_header_parsing_and_matching(t: core::T&) {
+fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
     t.run("Use-As-Dictionary Parser: match, id, ttl") { sub =>
         let raw = "match=\"/assets/*\", id=\"v1\", ttl=3600, type=\"raw\"";
         let p, ok = wing::parse_use_as_dictionary_header(raw);
@@ -1719,7 +1722,7 @@ fn test_dictionary_header_parsing_and_matching(t: core::T&) {
     };
 }
 
-fn test_dcz_frame_codec(t: core::T&) {
+fn test_dcz_frame_codec(t: lit::T&) {
     t.run("DCZ Magic, 32-Byte Hash & Payload Codec") { sub =>
         let dict_data = "dictionary_shared_context_v1";
         let hash = core::sha256(dict_data);
@@ -1751,7 +1754,7 @@ fn test_dcz_frame_codec(t: core::T&) {
     };
 }
 
-fn test_client_dictionary_lifecycle(t: core::T&) {
+fn test_client_dictionary_lifecycle(t: lit::T&) {
     t.run("Request 1 Learns Dictionary, Request 2 Sends Available-Dictionary & Decodes dcz") { sub =>
         var client = wing::new_client();
         wing::set_clock_us(client, 1700000000000000); // t0
@@ -1843,33 +1846,33 @@ fn test_client_dictionary_lifecycle(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Core Compression Engine (Deflate, Brotli, Dictionaries) Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Core Compression Engine (Deflate, Brotli, Dictionaries) Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. IEEE 802.3 CRC-32 & RFC 1950 Adler-32 Checksums", test_checksums);
-    core::run_case(runner, "2. RFC 1951 Deflate & Inflate (Stored and LZ77 + Fixed)", test_deflate_stored_and_fixed);
-    core::run_case(runner, "3. RFC 1952 Gzip Container & Verification", test_gzip_container);
-    core::run_case(runner, "4. RFC 1950 Zlib Container & Verification", test_zlib_container);
-    core::run_case(runner, "5. Boundary & Sliding Window Wrap Vectors", test_boundary_and_large_buffers);
-    core::run_case(runner, "6. Dynamic Huffman Coding & BTYPE Invariants", test_dynamic_huffman_and_btypes);
-    core::run_case(runner, "7. Streaming State Machine & Flush Modes (ZStream)", test_streaming_and_flush_modes);
-    core::run_case(runner, "8. Preset Dictionaries & RFC 1950 FDICT Handling", test_preset_dictionary_and_fdict);
-    core::run_case(runner, "9. Universal Container Auto-Detection", test_universal_autodetect);
-    core::run_case(runner, "10. Lazy Matching & Stored Block Cost Selection", test_lazy_matching_and_stored_cost_selection);
-    core::run_case(runner, "11. Concatenated Gzip Members & FHCRC", test_concatenated_gzip_and_fhcrc);
-    core::run_case(runner, "12. Decompression Bomb Quota Guards", test_zipbomb_quota_guards);
-    core::run_case(runner, "13. Resumable Arbitrary-Chunk Streaming", test_resumable_streaming_chunk_by_chunk);
-    core::run_case(runner, "14. RFC 8878 Zstandard Frame Decompression & Test Vectors", test_zstandard_rfc8878);
-    core::run_case(runner, "15. RFC 1951 Stored Blocks & Huffman Header Bounds", test_rfc1951_bounds_and_error_handling);
-    core::run_case(runner, "16. Empty Stream and Google Brotli Vectors", test_brotli_empty_and_uncompressed);
-    core::run_case(runner, "17. Level 0 Uncompressed Round-Trip", test_brotli_level0_roundtrip);
-    core::run_case(runner, "18. Compressed Meta-Block Decoding", test_brotli_compressed_meta_blocks);
-    core::run_case(runner, "19. Static Built-in Dictionary and Word Transforms", test_brotli_static_dictionary_transforms);
-    core::run_case(runner, "20. Decompression Bomb Quota Protection & Errors", test_brotli_quota_and_error_handling);
-    core::run_case(runner, "21. HTTP Client Response Content-Encoding: br", test_brotli_http_client_integration);
-    core::run_case(runner, "22. Dictionary Header Parsing & Pattern Matching", test_dictionary_header_parsing_and_matching);
-    core::run_case(runner, "23. DCZ Wire Format Codec & Decompression", test_dcz_frame_codec);
-    core::run_case(runner, "24. Client Dictionary Lifecycle & dcz Decompression", test_client_dictionary_lifecycle);
+    lit::run_case(runner, "1. IEEE 802.3 CRC-32 & RFC 1950 Adler-32 Checksums", test_checksums);
+    lit::run_case(runner, "2. RFC 1951 Deflate & Inflate (Stored and LZ77 + Fixed)", test_deflate_stored_and_fixed);
+    lit::run_case(runner, "3. RFC 1952 Gzip Container & Verification", test_gzip_container);
+    lit::run_case(runner, "4. RFC 1950 Zlib Container & Verification", test_zlib_container);
+    lit::run_case(runner, "5. Boundary & Sliding Window Wrap Vectors", test_boundary_and_large_buffers);
+    lit::run_case(runner, "6. Dynamic Huffman Coding & BTYPE Invariants", test_dynamic_huffman_and_btypes);
+    lit::run_case(runner, "7. Streaming State Machine & Flush Modes (ZStream)", test_streaming_and_flush_modes);
+    lit::run_case(runner, "8. Preset Dictionaries & RFC 1950 FDICT Handling", test_preset_dictionary_and_fdict);
+    lit::run_case(runner, "9. Universal Container Auto-Detection", test_universal_autodetect);
+    lit::run_case(runner, "10. Lazy Matching & Stored Block Cost Selection", test_lazy_matching_and_stored_cost_selection);
+    lit::run_case(runner, "11. Concatenated Gzip Members & FHCRC", test_concatenated_gzip_and_fhcrc);
+    lit::run_case(runner, "12. Decompression Bomb Quota Guards", test_zipbomb_quota_guards);
+    lit::run_case(runner, "13. Resumable Arbitrary-Chunk Streaming", test_resumable_streaming_chunk_by_chunk);
+    lit::run_case(runner, "14. RFC 8878 Zstandard Frame Decompression & Test Vectors", test_zstandard_rfc8878);
+    lit::run_case(runner, "15. RFC 1951 Stored Blocks & Huffman Header Bounds", test_rfc1951_bounds_and_error_handling);
+    lit::run_case(runner, "16. Empty Stream and Google Brotli Vectors", test_brotli_empty_and_uncompressed);
+    lit::run_case(runner, "17. Level 0 Uncompressed Round-Trip", test_brotli_level0_roundtrip);
+    lit::run_case(runner, "18. Compressed Meta-Block Decoding", test_brotli_compressed_meta_blocks);
+    lit::run_case(runner, "19. Static Built-in Dictionary and Word Transforms", test_brotli_static_dictionary_transforms);
+    lit::run_case(runner, "20. Decompression Bomb Quota Protection & Errors", test_brotli_quota_and_error_handling);
+    lit::run_case(runner, "21. HTTP Client Response Content-Encoding: br", test_brotli_http_client_integration);
+    lit::run_case(runner, "22. Dictionary Header Parsing & Pattern Matching", test_dictionary_header_parsing_and_matching);
+    lit::run_case(runner, "23. DCZ Wire Format Codec & Decompression", test_dcz_frame_codec);
+    lit::run_case(runner, "24. Client Dictionary Lifecycle & dcz Decompression", test_client_dictionary_lifecycle);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

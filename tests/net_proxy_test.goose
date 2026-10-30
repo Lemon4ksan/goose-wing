@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,13 +7,14 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: net_proxy ---
 // Verification suite for net/proxy: SOCKS5/SOCKS5h (RFC 1928 & RFC 1929),
 // HTTP CONNECT tunneling, credential isolation, and 4-tier Slowloris defenses.
 // CVE-2026-94439, CVE-2026-56866, CVE-2025-4673, and CVE-2021-33197 defenses.
 
-fn test_socks5_greeting_and_rfc1929(t: core::T&) {
+fn test_socks5_greeting_and_rfc1929(t: lit::T&) {
     t.run("SOCKS5 Phase 1 Greeting and Negotiation") { sub =>
         var greeting_buf: u8[..16] = [];
         wing::build_socks5_greeting(wing::Socks5GreetingOptions { has_credentials: true, enable_gssapi: true }, greeting_buf);
@@ -113,7 +116,7 @@ fn test_socks5_greeting_and_rfc1929(t: core::T&) {
     };
 }
 
-fn test_socks5_command_and_reply_parsing(t: core::T&) {
+fn test_socks5_command_and_reply_parsing(t: lit::T&) {
     t.run("socks5h vs socks5 ATYP and Port Serialization") { sub =>
         // socks5h:// MUST use ATYP = 0x03 to delegate DNS resolution to proxy node
         var req_socks5h: u8[..300] = [];
@@ -235,7 +238,7 @@ fn test_socks5_command_and_reply_parsing(t: core::T&) {
     };
 }
 
-fn test_http_connect_tunnel_and_buffer_hygiene(t: core::T&) {
+fn test_http_connect_tunnel_and_buffer_hygiene(t: lit::T&) {
     t.run("CONNECT Header Construction & Credential Isolation (CVE-2025-4673)") { sub =>
         var req_buf: u8[..1024] = [];
         wing::build_http_connect_request("secure.bank.com", 443, "Basic dXNlcjpwYXNz", "goose-wing/1.0", req_buf);
@@ -321,7 +324,7 @@ fn test_http_connect_tunnel_and_buffer_hygiene(t: core::T&) {
     };
 }
 
-fn test_slowloris_tarpit_defenses(t: core::T&) {
+fn test_slowloris_tarpit_defenses(t: lit::T&) {
     t.run("4-Tier Slowloris Defense Enforcement") { sub =>
         let cfg = wing::SlowlorisDefenseConfig { .. };
         var reader = wing::new_header_reader(cfg, 0);
@@ -370,7 +373,7 @@ fn test_slowloris_tarpit_defenses(t: core::T&) {
 // Verification test suite for HAProxy PROXY Protocol v1 (text) and v2 (binary).
 
 // 1. PROXY Protocol v1 (Text) Conformance
-fn test_proxy_v1_conformance(t: core::T&) {
+fn test_proxy_v1_conformance(t: lit::T&) {
     t.run("PROXY-v1-01: Valid TCP4 line parsing") { sub =>
         let raw = "PROXY TCP4 192.168.0.1 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
         let hdr, consumed, ok = wing::parse_proxy_v1(raw);
@@ -472,7 +475,7 @@ fn test_proxy_v1_conformance(t: core::T&) {
 }
 
 // 2. PROXY Protocol v2 (Binary) Conformance
-fn test_proxy_v2_conformance(t: core::T&) {
+fn test_proxy_v2_conformance(t: lit::T&) {
     t.run("PROXY-v2-01: IPv4 TCP binary header parsing") { sub =>
         // Preamble (12) + 0x21 (v2, PROXY) + 0x11 (INET4, STREAM) + len 12 (0x000C)
         var wire: u8[..64] = [];
@@ -562,7 +565,7 @@ fn test_proxy_v2_conformance(t: core::T&) {
 }
 
 // 3. PROXY Protocol v2 TLV (Type-Length-Value) Metadata
-fn test_proxy_v2_tlvs(t: core::T&) {
+fn test_proxy_v2_tlvs(t: lit::T&) {
     t.run("PROXY-v2-TLV-01: ALPN, Authority, and Unique ID") { sub =>
         var hdr = wing::ProxyHeader {
             version:   wing::ProxyProtocolVersion.V2,
@@ -635,7 +638,7 @@ fn test_proxy_v2_tlvs(t: core::T&) {
 }
 
 // 4. Stream Stripping & Server Pipeline Integration
-fn test_proxy_server_integration(t: core::T&) {
+fn test_proxy_server_integration(t: lit::T&) {
     t.run("Auto-Detection and Stream Stripping") { sub =>
         let stream = "PROXY TCP4 203.0.113.195 10.0.0.1 54321 80\r\nGET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
         var proxy_hdr = wing::ProxyHeader { .. };
@@ -676,7 +679,7 @@ fn test_proxy_server_integration(t: core::T&) {
 // Active background health check probing, state machine transitions (UP, DOWN, PROBING),
 // consecutive success/failure thresholds, and circuit breaker interlock.
 
-fn test_health_state_transitions(t: core::T&) {
+fn test_health_state_transitions(t: lit::T&) {
     t.run("Up -> Down on Consecutive Failures") { sub =>
         let cfg = wing::new_health_check_config(5000, 2000, 2, 3);
         var health = wing::UpstreamHealth { .. };
@@ -732,7 +735,7 @@ fn test_health_state_transitions(t: core::T&) {
     };
 }
 
-fn test_probe_wire_and_response_parsing(t: core::T&) {
+fn test_probe_wire_and_response_parsing(t: lit::T&) {
     t.run("Format Health Probe HTTP/1.1 Request") { sub =>
         var wire: u8[>..] = [];
         wing::format_health_probe_request("api.internal:8080", "/healthz", wire);
@@ -764,7 +767,7 @@ fn test_probe_wire_and_response_parsing(t: core::T&) {
     };
 }
 
-fn test_cluster_health_checker_integration(t: core::T&) {
+fn test_cluster_health_checker_integration(t: lit::T&) {
     t.run("Cluster Active Health Check Engine") { sub =>
         var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
         wing::add_upstream_target(cluster, "10.0.0.1", 8080);
@@ -835,7 +838,7 @@ fn test_cluster_health_checker_integration(t: core::T&) {
     };
 }
 
-fn test_reverse_proxy_hardening(t: core::T&) {
+fn test_reverse_proxy_hardening(t: lit::T&) {
     t.run("Connection Leak Defense and Lifecycle") { sub =>
         var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
         wing::add_upstream_target(proxy.cluster, "upstream.local:8080", 8080);
@@ -1037,7 +1040,7 @@ fn test_reverse_proxy_hardening(t: core::T&) {
 // burst tolerance (tau), emission interval (T), TAT tracking,
 // clock drift protection, and bounded GatewayRateLimiter.
 
-fn test_gcra_core_algorithm(t: core::T&) {
+fn test_gcra_core_algorithm(t: lit::T&) {
     t.run("GCRA Quota and Single-Cell Conformance") { sub =>
         // 10 rps -> T = 100ms (100,000,000 ns), burst = 2 -> tau = 200ms (200,000,000 ns)
         let cfg = wing::new_gcra_config(10, 2);
@@ -1125,7 +1128,7 @@ fn test_gcra_core_algorithm(t: core::T&) {
     };
 }
 
-fn test_gateway_rate_limiter(t: core::T&) {
+fn test_gateway_rate_limiter(t: lit::T&) {
     t.run("Multi-Client Isolation and Limiting") { sub =>
         var limiter = wing::new_gateway_rate_limiter(10, 2);
         let client_a: u8[..16] = "192.168.1.100";
@@ -1176,7 +1179,7 @@ fn test_gateway_rate_limiter(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Mathematical GCRA TAT Scheduling & Burst Tolerance
 // ----------------------------------------------------------------------------
-fn test_gcra_tat_and_burst(t: core::T&) {
+fn test_gcra_tat_and_burst(t: lit::T&) {
     t.run("Single-Cell Ingress & Burst Tolerance Exhaustion") { sub =>
         // Limit: 10 req/s (T = 100 ms), Burst: 2 (tau = 200 ms)
         let quota = wing::new_gcra_quota(10, core::secs(1), 2);
@@ -1222,7 +1225,7 @@ fn test_gcra_tat_and_burst(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Anti-Starvation Multi-Cell Priority Reservation (governor #16 Fix)
 // ----------------------------------------------------------------------------
-fn test_anti_starvation_reservation(t: core::T&) {
+fn test_anti_starvation_reservation(t: lit::T&) {
     t.run("Priority Reservation Preempts Small Subsequent Requests") { sub =>
         // Limit: 1 req/sec (T = 1s), Burst: 0 (tau = 0)
         let quota = wing::new_gcra_quota(1, core::secs(1), 0);
@@ -1258,7 +1261,7 @@ fn test_anti_starvation_reservation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. 256-Micro-Shard Table & Per-Key Isolation
 // ----------------------------------------------------------------------------
-fn test_sharded_gcra_limiter(t: core::T&) {
+fn test_sharded_gcra_limiter(t: lit::T&) {
     t.run("Independent Client Quotas Across Shards") { sub =>
         // Limit: 2 req/s, Burst: 1 (allows 2 immediate requests at t0, 3rd rejected)
         let quota = wing::new_gcra_quota(2, core::secs(1), 1);
@@ -1310,7 +1313,7 @@ fn test_sharded_gcra_limiter(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Extreme DDoS Probabilistic Sampling (5%)
 // ----------------------------------------------------------------------------
-fn test_probabilistic_ddos_mitigation(t: core::T&) {
+fn test_probabilistic_ddos_mitigation(t: lit::T&) {
     t.run("5% Statistical Sampling Under Extreme Load") { sub =>
         let quota = wing::new_gcra_quota(1000, core::secs(1), 100);
         var pgcra = wing::new_probabilistic_gcra(quota, 20); // 1-in-20 = 5%
@@ -1339,7 +1342,7 @@ fn test_probabilistic_ddos_mitigation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. IETF RateLimit-* Header Synthesis
 // ----------------------------------------------------------------------------
-fn test_ietf_rate_limit_headers(t: core::T&) {
+fn test_ietf_rate_limit_headers(t: lit::T&) {
     t.run("IETF Headers on Allowed Request") { sub =>
         let quota = wing::new_gcra_quota(100, core::secs(1), 10);
         let dec: wing::RateLimitDecision = wing::RateLimitDecision.Allowed {
@@ -1381,7 +1384,7 @@ fn test_ietf_rate_limit_headers(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. GCRA Arithmetic, Overflow & Zero Emission Invariants
 // ----------------------------------------------------------------------------
-fn test_gcra_arithmetic_and_overflow(t: core::T&) {
+fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     t.run("Zero Emission Interval Handling & Division by Zero") { sub =>
         // Limit 2,000,000 req per 1 ms (p_ns = 1,000,000, l = 2,000,000 -> p_ns / l = 0)
         let quota = wing::new_gcra_quota(2000000, core::Duration { nanos: 1000000 }, 10);
@@ -1464,7 +1467,7 @@ fn test_gcra_arithmetic_and_overflow(t: core::T&) {
 // - RFC 9484: Proxying IP in HTTP (CONNECT-IP)
 // - RFC 9221: An Unreliable Datagram Extension to QUIC
 
-fn test_rfc9297_capsules_and_datagrams(t: core::T&) {
+fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     t.run("Capsule Protocol Framing & Zero-Copy Decode") { sub =>
         var wire: u8[>..] = [];
         let raw_payload = "test_capsule_payload_bytes";
@@ -1517,7 +1520,7 @@ fn test_rfc9297_capsules_and_datagrams(t: core::T&) {
     };
 }
 
-fn test_rfc9298_connect_udp(t: core::T&) {
+fn test_rfc9298_connect_udp(t: lit::T&) {
     t.run("URI Template Formatting and Parsing") { sub =>
         var path_buf: u8[..256] = [];
         wing::format_connect_udp_path(path_buf, "1.1.1.1", 53);
@@ -1561,7 +1564,7 @@ fn test_rfc9298_connect_udp(t: core::T&) {
     };
 }
 
-fn test_rfc9484_connect_ip(t: core::T&) {
+fn test_rfc9484_connect_ip(t: lit::T&) {
     t.run("ADDRESS_REQUEST & ADDRESS_ASSIGN Capsules") { sub =>
         // 1. Client creates Address Request
         var req = wing::IpAddressRequest {
@@ -1637,7 +1640,7 @@ fn test_rfc9484_connect_ip(t: core::T&) {
     };
 }
 
-fn test_masque_client_sessions_and_tunneling(t: core::T&) {
+fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
     t.run("CONNECT-UDP Handshake & End-to-End Tunneling via Client") { sub =>
         var client = wing::new_client();
 
@@ -1716,7 +1719,7 @@ fn test_masque_client_sessions_and_tunneling(t: core::T&) {
 // --- Component: net_masque_dns_invariants ---
 // Security invariant tests for MASQUE (RFC 9297, RFC 9298, RFC 9484) and DNS (RFC 1035, RFC 9460).
 
-fn test_masque_connect_udp_path_parsing(t: core::T&) {
+fn test_masque_connect_udp_path_parsing(t: lit::T&) {
     // 1. Valid RFC 9298 paths
     let h1, p1, ok1 = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/53/");
     t.assert_true(ok1, "valid template with trailing slash should pass");
@@ -1750,7 +1753,7 @@ fn test_masque_connect_udp_path_parsing(t: core::T&) {
     t.assert_false(ok_extra, "extra segments after port must be rejected");
 }
 
-fn test_masque_capsule_codecs(t: core::T&) {
+fn test_masque_capsule_codecs(t: lit::T&) {
     // 1. DATAGRAM capsule encode & decode
     var cap_out: u8[..128] = [];
     let enc_ok = wing::encode_connect_udp_datagram_capsule(cap_out, 0, "ping");
@@ -1799,7 +1802,7 @@ fn test_masque_capsule_codecs(t: core::T&) {
     t.assert_false(bad_len_ok, "IPv4 address with rdlength != 4 must be rejected");
 }
 
-fn test_dns_pointer_security(t: core::T&) {
+fn test_dns_pointer_security(t: lit::T&) {
     // Valid backward pointer response
     // Header 12B, Question 17B (example.com A IN), Answer 16B (pointer 0xC00C -> example.com)
     let valid_wire: const u8[45] = [
@@ -1833,7 +1836,7 @@ fn test_dns_pointer_security(t: core::T&) {
     t.assert_false(ok3, "pointer into header must be rejected");
 }
 
-fn test_dns_record_bounds_and_https_target(t: core::T&) {
+fn test_dns_record_bounds_and_https_target(t: lit::T&) {
     // Malformed A record: rdlength != 4
     let bad_a_wire: const u8[44] = [
         0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -1873,7 +1876,7 @@ fn test_dns_record_bounds_and_https_target(t: core::T&) {
 // 9. RFC 7838 Section 2.1 security invariant: Alt-Svc ignored on unencrypted HTTP.
 // 10. Max-age (TTL) expiration.
 
-fn test_altsvc_learning_and_h3_promotion(t: core::T&) {
+fn test_altsvc_learning_and_h3_promotion(t: lit::T&) {
     t.run("Cold Request Learns Alt-Svc and Next Request Upgrades to HTTP/3") { sub =>
         var client = wing::new_client();
         wing::set_clock_us(client, 1700000000000000); // t = 1700000000s
@@ -1904,7 +1907,7 @@ fn test_altsvc_learning_and_h3_promotion(t: core::T&) {
     };
 }
 
-fn test_chromium_protocol_racing_and_udp_fallback(t: core::T&) {
+fn test_chromium_protocol_racing_and_udp_fallback(t: lit::T&) {
     t.run("UDP Firewall Block: TCP Wins Race, Zero Error, Backoff Recorded") { sub =>
         var client = wing::new_client();
         wing::set_clock_us(client, 1700000000000000); // t0 = 1700000000s (sec)
@@ -1981,7 +1984,7 @@ fn test_chromium_protocol_racing_and_udp_fallback(t: core::T&) {
     };
 }
 
-fn test_altsvc_clear_and_ttl_expiration(t: core::T&) {
+fn test_altsvc_clear_and_ttl_expiration(t: lit::T&) {
     t.run("Alt-Svc: clear Purges Origin from Cache Immediately") { sub =>
         var client = wing::new_client();
         wing::set_clock_us(client, 1700000000000000);
@@ -2022,7 +2025,7 @@ fn test_altsvc_clear_and_ttl_expiration(t: core::T&) {
     };
 }
 
-fn test_rfc7838_security_and_options(t: core::T&) {
+fn test_rfc7838_security_and_options(t: lit::T&) {
     t.run("RFC 7838 Section 2.1: Alt-Svc MUST be Ignored on Insecure HTTP") { sub =>
         var client = wing::new_client();
         wing::set_clock_us(client, 1700000000000000);
@@ -2054,41 +2057,41 @@ fn test_rfc7838_security_and_options(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. SOCKS5 Greeting & RFC 1929", test_socks5_greeting_and_rfc1929);
-    core::run_case(runner, "2. SOCKS5 Command & Reply", test_socks5_command_and_reply_parsing);
-    core::run_case(runner, "3. HTTP CONNECT Tunnel & Buffer Hygiene", test_http_connect_tunnel_and_buffer_hygiene);
-    core::run_case(runner, "4. Slowloris Tarpit Defenses", test_slowloris_tarpit_defenses);
-    core::run_case(runner, "5. PROXY Protocol v1 (Text) Conformance", test_proxy_v1_conformance);
-    core::run_case(runner, "6. PROXY Protocol v2 (Binary) Conformance", test_proxy_v2_conformance);
-    core::run_case(runner, "7. PROXY Protocol v2 TLV Metadata", test_proxy_v2_tlvs);
-    core::run_case(runner, "8. Stream Stripping & Server Integration", test_proxy_server_integration);
-    core::run_case(runner, "9. Health State Machine Transitions", test_health_state_transitions);
-    core::run_case(runner, "10. Probe Wire Formatting and Response Evaluation", test_probe_wire_and_response_parsing);
-    core::run_case(runner, "11. Cluster Health Checker Engine", test_cluster_health_checker_integration);
-    core::run_case(runner, "12. Reverse Proxy Hardening & Backpressure", test_reverse_proxy_hardening);
-    core::run_case(runner, "13. GCRA Core Algorithm & Conformance", test_gcra_core_algorithm);
-    core::run_case(runner, "14. Gateway Multi-Client Rate Limiter", test_gateway_rate_limiter);
-    core::run_case(runner, "15. Mathematical GCRA TAT Scheduling & Burst Tolerance", test_gcra_tat_and_burst);
-    core::run_case(runner, "16. Anti-Starvation Multi-Cell Priority Reservation", test_anti_starvation_reservation);
-    core::run_case(runner, "17. 256-Micro-Shard Table & Per-Key Isolation", test_sharded_gcra_limiter);
-    core::run_case(runner, "18. Extreme DDoS Probabilistic Sampling (5%)", test_probabilistic_ddos_mitigation);
-    core::run_case(runner, "19. IETF RateLimit-* Header Synthesis", test_ietf_rate_limit_headers);
-    core::run_case(runner, "20. GCRA Arithmetic, Overflow & Zero Emission Invariants", test_gcra_arithmetic_and_overflow);
-    core::run_case(runner, "21. RFC 9297 Capsules & HTTP Datagrams", test_rfc9297_capsules_and_datagrams);
-    core::run_case(runner, "22. RFC 9298 MASQUE CONNECT-UDP", test_rfc9298_connect_udp);
-    core::run_case(runner, "23. RFC 9484 MASQUE CONNECT-IP", test_rfc9484_connect_ip);
-    core::run_case(runner, "24. MASQUE Client Sessions & Tunneling", test_masque_client_sessions_and_tunneling);
-    core::run_case(runner, "25. MASQUE CONNECT-UDP Path Parsing", test_masque_connect_udp_path_parsing);
-    core::run_case(runner, "26. MASQUE Capsule Codecs", test_masque_capsule_codecs);
-    core::run_case(runner, "27. DNS Pointer Security", test_dns_pointer_security);
-    core::run_case(runner, "28. DNS Record Bounds & HTTPS Target", test_dns_record_bounds_and_https_target);
-    core::run_case(runner, "29. Alt-Svc Learning & HTTP/3 Promotion", test_altsvc_learning_and_h3_promotion);
-    core::run_case(runner, "30. Protocol Racing & UDP Firewall Fallback", test_chromium_protocol_racing_and_udp_fallback);
-    core::run_case(runner, "31. Alt-Svc Clear Directive & TTL Expiration", test_altsvc_clear_and_ttl_expiration);
-    core::run_case(runner, "32. RFC 7838 Insecure Transport Security & Toggles", test_rfc7838_security_and_options);
+    lit::run_case(runner, "1. SOCKS5 Greeting & RFC 1929", test_socks5_greeting_and_rfc1929);
+    lit::run_case(runner, "2. SOCKS5 Command & Reply", test_socks5_command_and_reply_parsing);
+    lit::run_case(runner, "3. HTTP CONNECT Tunnel & Buffer Hygiene", test_http_connect_tunnel_and_buffer_hygiene);
+    lit::run_case(runner, "4. Slowloris Tarpit Defenses", test_slowloris_tarpit_defenses);
+    lit::run_case(runner, "5. PROXY Protocol v1 (Text) Conformance", test_proxy_v1_conformance);
+    lit::run_case(runner, "6. PROXY Protocol v2 (Binary) Conformance", test_proxy_v2_conformance);
+    lit::run_case(runner, "7. PROXY Protocol v2 TLV Metadata", test_proxy_v2_tlvs);
+    lit::run_case(runner, "8. Stream Stripping & Server Integration", test_proxy_server_integration);
+    lit::run_case(runner, "9. Health State Machine Transitions", test_health_state_transitions);
+    lit::run_case(runner, "10. Probe Wire Formatting and Response Evaluation", test_probe_wire_and_response_parsing);
+    lit::run_case(runner, "11. Cluster Health Checker Engine", test_cluster_health_checker_integration);
+    lit::run_case(runner, "12. Reverse Proxy Hardening & Backpressure", test_reverse_proxy_hardening);
+    lit::run_case(runner, "13. GCRA Core Algorithm & Conformance", test_gcra_core_algorithm);
+    lit::run_case(runner, "14. Gateway Multi-Client Rate Limiter", test_gateway_rate_limiter);
+    lit::run_case(runner, "15. Mathematical GCRA TAT Scheduling & Burst Tolerance", test_gcra_tat_and_burst);
+    lit::run_case(runner, "16. Anti-Starvation Multi-Cell Priority Reservation", test_anti_starvation_reservation);
+    lit::run_case(runner, "17. 256-Micro-Shard Table & Per-Key Isolation", test_sharded_gcra_limiter);
+    lit::run_case(runner, "18. Extreme DDoS Probabilistic Sampling (5%)", test_probabilistic_ddos_mitigation);
+    lit::run_case(runner, "19. IETF RateLimit-* Header Synthesis", test_ietf_rate_limit_headers);
+    lit::run_case(runner, "20. GCRA Arithmetic, Overflow & Zero Emission Invariants", test_gcra_arithmetic_and_overflow);
+    lit::run_case(runner, "21. RFC 9297 Capsules & HTTP Datagrams", test_rfc9297_capsules_and_datagrams);
+    lit::run_case(runner, "22. RFC 9298 MASQUE CONNECT-UDP", test_rfc9298_connect_udp);
+    lit::run_case(runner, "23. RFC 9484 MASQUE CONNECT-IP", test_rfc9484_connect_ip);
+    lit::run_case(runner, "24. MASQUE Client Sessions & Tunneling", test_masque_client_sessions_and_tunneling);
+    lit::run_case(runner, "25. MASQUE CONNECT-UDP Path Parsing", test_masque_connect_udp_path_parsing);
+    lit::run_case(runner, "26. MASQUE Capsule Codecs", test_masque_capsule_codecs);
+    lit::run_case(runner, "27. DNS Pointer Security", test_dns_pointer_security);
+    lit::run_case(runner, "28. DNS Record Bounds & HTTPS Target", test_dns_record_bounds_and_https_target);
+    lit::run_case(runner, "29. Alt-Svc Learning & HTTP/3 Promotion", test_altsvc_learning_and_h3_promotion);
+    lit::run_case(runner, "30. Protocol Racing & UDP Firewall Fallback", test_chromium_protocol_racing_and_udp_fallback);
+    lit::run_case(runner, "31. Alt-Svc Clear Directive & TTL Expiration", test_altsvc_clear_and_ttl_expiration);
+    lit::run_case(runner, "32. RFC 7838 Insecure Transport Security & Toggles", test_rfc7838_security_and_options);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

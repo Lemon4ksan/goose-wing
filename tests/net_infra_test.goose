@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: net_transport_driver ---
 // Verification suite for Layer 4 Transport Driver Architecture (net/driver.goose):
@@ -16,7 +19,7 @@ import wing from "..";
 // - macOS / Darwin kqueue event multiplexing (struct kevent, byte-accurate accounting, EOF detection)
 // - Diagnostic summary string formatting
 
-fn test_driver_probing(t: core::T&) {
+fn test_driver_probing(t: lit::T&) {
     t.run("Standard Driver Probing (Universal)") { sub =>
         let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Standard, internal::TargetPlatform.Windows);
         sub.assert_true(p_win.available, "Standard available on Windows");
@@ -130,7 +133,7 @@ fn test_driver_probing(t: core::T&) {
     };
 }
 
-fn test_driver_fallback_and_selection(t: core::T&) {
+fn test_driver_fallback_and_selection(t: lit::T&) {
     t.run("Standard Selection Everywhere") { sub =>
         var cfg = internal::TransportDriverConfig {
             preferred_kind: internal::TransportDriverKind.Standard,
@@ -202,7 +205,7 @@ fn test_driver_fallback_and_selection(t: core::T&) {
     };
 }
 
-fn test_rio_buffer_lifecycle(t: core::T&) {
+fn test_rio_buffer_lifecycle(t: lit::T&) {
     t.run("RIO Buffer Registration and Slicing") { sub =>
         var buf = internal::new_rio_buffer(1001, 65536);
         sub.assert_eq(buf.buffer_id, 1001, "Buffer ID matches");
@@ -243,7 +246,7 @@ fn test_rio_buffer_lifecycle(t: core::T&) {
     };
 }
 
-fn test_uring_sqe_cqe_batch(t: core::T&) {
+fn test_uring_sqe_cqe_batch(t: lit::T&) {
     t.run("io_uring SQE Preparation") { sub =>
         var sqe_send = internal::UringSqe { .. };
         internal::uring_prep_send(sqe_send, 42, 0x1000, 2048, 999, true);
@@ -295,7 +298,7 @@ fn test_uring_sqe_cqe_batch(t: core::T&) {
     };
 }
 
-fn test_kqueue_event_lifecycle(t: core::T&) {
+fn test_kqueue_event_lifecycle(t: lit::T&) {
     t.run("kqueue Kevent Preparation and Buffer Metrics") { sub =>
         var ev_read = internal::Kevent { .. };
         internal::kevent_prep_read(ev_read, 12, 501, true);
@@ -327,7 +330,7 @@ fn test_kqueue_event_lifecycle(t: core::T&) {
     };
 }
 
-fn test_driver_summary_formatter(t: core::T&) {
+fn test_driver_summary_formatter(t: lit::T&) {
     t.run("Summary String Formatting") { sub =>
         var cfg_rio = internal::TransportDriverConfig {
             preferred_kind:         internal::TransportDriverKind.WindowsRIO,
@@ -370,7 +373,7 @@ fn test_driver_summary_formatter(t: core::T&) {
     };
 }
 
-fn test_af_xdp_and_dpdk_kernel_bypass(t: core::T&) {
+fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
     t.run("AF_XDP UMEM Descriptor Lifecycle") { sub =>
         var umem = internal::AfXdpUmem {
             addr:          0x10000000,
@@ -421,7 +424,7 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: core::T&) {
     };
 }
 
-fn test_smartnic_ktls_offload(t: core::T&) {
+fn test_smartnic_ktls_offload(t: lit::T&) {
     t.run("SmartNIC Hardware Model Identification") { sub =>
         sub.assert_contains(internal::smartnic_model_name(internal::SmartNicModel.MellanoxConnectX6Dx), "Mellanox ConnectX-6", "Identified CX-6 Dx");
         sub.assert_contains(internal::smartnic_model_name(internal::SmartNicModel.NvidiaBlueField3), "NVIDIA BlueField-3", "Identified BlueField-3 DPU");
@@ -477,7 +480,7 @@ fn test_smartnic_ktls_offload(t: core::T&) {
 // two-slice WantQueue, liveness health checks, HTTP/2 IP coalescing, soft-cap quotas,
 // CVE-2026-94441, CVE-2026-56866, and Go #23427 / #49377 defenses.
 
-fn test_pool_key_dimensions_and_isolation(t: core::T&) {
+fn test_pool_key_dimensions_and_isolation(t: lit::T&) {
     t.run("5-Dimensional PoolKey Exact Match and Partition Isolation") { sub =>
         let nak1 = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
         let nak2 = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
@@ -567,7 +570,7 @@ fn test_pool_key_dimensions_and_isolation(t: core::T&) {
     };
 }
 
-fn test_want_queue_dual_slice(t: core::T&) {
+fn test_want_queue_dual_slice(t: lit::T&) {
     t.run("FIFO Operations and Reallocation-Free Promotion") { sub =>
         var q = wing::WantQueue { .. };
         sub.assert_true(wing::is_queue_empty(q), "Initial queue is empty");
@@ -646,7 +649,7 @@ fn test_want_queue_dual_slice(t: core::T&) {
     };
 }
 
-fn test_connection_liveness_and_extensive_checks(t: core::T&) {
+fn test_connection_liveness_and_extensive_checks(t: lit::T&) {
     t.run("OkHttp isHealthy and Non-Blocking FIN Detection") { sub =>
         let nak = wing::new_network_anonymization_key("https://example.com");
         let key = wing::new_pool_key(wing::PoolScheme.Https, "example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
@@ -716,7 +719,7 @@ fn test_connection_liveness_and_extensive_checks(t: core::T&) {
     };
 }
 
-fn test_http2_ip_coalescing_and_san_matching(t: core::T&) {
+fn test_http2_ip_coalescing_and_san_matching(t: lit::T&) {
     t.run("Chromium H2 IP Coalescing with Wildcard SAN & Security Boundaries") { sub =>
         let nak = wing::new_network_anonymization_key("https://example.com");
         let nak_other = wing::new_network_anonymization_key("https://other-site.com");
@@ -786,7 +789,7 @@ fn test_http2_ip_coalescing_and_san_matching(t: core::T&) {
     };
 }
 
-fn test_stream_pool_quotas_and_eviction(t: core::T&) {
+fn test_stream_pool_quotas_and_eviction(t: lit::T&) {
     t.run("Soft-Cap LRU Eviction and Priority Reuse") { sub =>
         var pool = wing::new_stream_pool(6, 32, 2); // Soft-cap of 2 connections
         let nak = wing::new_network_anonymization_key("https://service.net");
@@ -840,7 +843,7 @@ fn test_stream_pool_quotas_and_eviction(t: core::T&) {
     };
 }
 
-fn test_cve_2026_56866_connect_rejection_pool_safety(t: core::T&) {
+fn test_cve_2026_56866_connect_rejection_pool_safety(t: lit::T&) {
     t.run("CVE-2026-56866: Rejected CONNECT Sockets Must Never Be Returned to Pool") { sub =>
         let nak = wing::new_network_anonymization_key("https://proxy-target.com");
         let key = wing::new_pool_key(wing::PoolScheme.Https, "proxy-target.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
@@ -880,7 +883,7 @@ fn test_cve_2026_56866_connect_rejection_pool_safety(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Poller Creation & Lifecycle across L4 Driver Backends
 // ----------------------------------------------------------------------------
-fn test_poller_creation_and_lifecycle(t: core::T&) {
+fn test_poller_creation_and_lifecycle(t: lit::T&) {
     t.run("Standard Driver Poller Lifecycle") { sub =>
         var cfg = internal::auto_transport_driver_config();
         cfg.active_kind = internal::TransportDriverKind.Standard;
@@ -913,7 +916,7 @@ fn test_poller_creation_and_lifecycle(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Socket Registration & Readiness Multiplexing
 // ----------------------------------------------------------------------------
-fn test_poller_registration_and_readiness(t: core::T&) {
+fn test_poller_registration_and_readiness(t: lit::T&) {
     var cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
@@ -997,7 +1000,7 @@ fn test_poller_registration_and_readiness(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. High-Resolution Timer Wheel
 // ----------------------------------------------------------------------------
-fn test_poller_timer_wheel(t: core::T&) {
+fn test_poller_timer_wheel(t: lit::T&) {
     var cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
@@ -1079,7 +1082,7 @@ fn dummy_event_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::Even
     }
 }
 
-fn test_event_loop_io(t: core::T&) {
+fn test_event_loop_io(t: lit::T&) {
     var cfg = internal::auto_transport_driver_config();
     var el = wing::new_event_loop(cfg);
 
@@ -1141,7 +1144,7 @@ fn bidi_network_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::Eve
     }
 }
 
-fn test_bidi_client_server_cycle(t: core::T&) {
+fn test_bidi_client_server_cycle(t: lit::T&) {
     var cfg = internal::auto_transport_driver_config();
     var el = wing::new_event_loop(cfg);
 
@@ -1182,7 +1185,7 @@ fn test_bidi_client_server_cycle(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. 15-bit / 4-second Coarse Socket Timeouts (uWebSockets Pattern)
 // ----------------------------------------------------------------------------
-fn test_coarse_socket_timeouts(t: core::T&) {
+fn test_coarse_socket_timeouts(t: lit::T&) {
     var cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
@@ -1255,7 +1258,7 @@ fn test_coarse_socket_timeouts(t: core::T&) {
 // CAD calculations, 50 ms Resolution Delay, candidate interleaving, and AttemptManager coordination.
 // Defenses for Go #59494 / #35122 (Windows leaked dial timers) and RFC 8305 congestion collapse.
 
-fn test_cad_calculation_and_absolute_floor(t: core::T&) {
+fn test_cad_calculation_and_absolute_floor(t: lit::T&) {
     t.run("CAD Clamping and Strict Absolute Floor >= 10 ms") { sub =>
         // Default when RTT is unknown: 250 ms
         let cad_default = wing::compute_effective_cad_ms(0, false);
@@ -1294,7 +1297,7 @@ fn test_cad_calculation_and_absolute_floor(t: core::T&) {
     };
 }
 
-fn test_rfc6724_and_hev3_interleaving(t: core::T&) {
+fn test_rfc6724_and_hev3_interleaving(t: lit::T&) {
     t.run("First Address Family Count = 1 Interleaving Matrix") { sub =>
         var ipv6_list: wing::DnsCandidate[..8] = [];
         ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
@@ -1391,7 +1394,7 @@ fn test_rfc6724_and_hev3_interleaving(t: core::T&) {
     };
 }
 
-fn test_dns_race_and_resolution_delay(t: core::T&) {
+fn test_dns_race_and_resolution_delay(t: lit::T&) {
     t.run("Asymmetric Priority: AAAA First Cancels Delay") { sub =>
         var task = wing::new_dns_race_task();
         let ip6: const u8[:][1] = ["2001:db8::1"];
@@ -1446,7 +1449,7 @@ fn test_dns_race_and_resolution_delay(t: core::T&) {
     };
 }
 
-fn test_attempt_manager_racing_and_winner(t: core::T&) {
+fn test_attempt_manager_racing_and_winner(t: lit::T&) {
     t.run("Staggered Connection Racing, Winner Binding & Loser Cancellation (Go #59494)") { sub =>
         var mgr = wing::new_attempt_manager(250); // CAD = 250 ms
 
@@ -1548,7 +1551,7 @@ fn test_attempt_manager_racing_and_winner(t: core::T&) {
 // RFC 9110 Retry-After parser, circuit breaker, Google SRE adaptive retry budget,
 // and Go #81671 (idempotent QUERY method).
 
-fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
+fn test_tier1_stale_socket_and_quic_fallback(t: lit::T&) {
     t.run("Tier 1 4-Condition Invariant Evaluation") { sub =>
         // 1. Standard idempotent GET on reused Keep-Alive connection before headers
         var req_get = wing::new_request("GET", "https://api.io/items");
@@ -1644,7 +1647,7 @@ fn test_tier1_stale_socket_and_quic_fallback(t: core::T&) {
     };
 }
 
-fn test_tier2_exponential_backoff_and_jitter(t: core::T&) {
+fn test_tier2_exponential_backoff_and_jitter(t: lit::T&) {
     t.run("Deterministic Backoff and 3 Jitter Strategies") { sub =>
         var seed:       u64 = 123456789;
         var prev_sleep: i64 = 0;
@@ -1695,7 +1698,7 @@ fn test_tier2_exponential_backoff_and_jitter(t: core::T&) {
     };
 }
 
-fn test_rfc9110_retry_after_parser(t: core::T&) {
+fn test_rfc9110_retry_after_parser(t: lit::T&) {
     t.run("delay-seconds (1*DIGIT) Parsing") { sub =>
         let now_ms: i64 = 1700000000000;
 
@@ -1769,7 +1772,7 @@ fn test_rfc9110_retry_after_parser(t: core::T&) {
     };
 }
 
-fn test_circuit_breaker_and_adaptive_retry_budget(t: core::T&) {
+fn test_circuit_breaker_and_adaptive_retry_budget(t: lit::T&) {
     t.run("Host Circuit Breaker on Excessive Retry-After") { sub =>
         var breaker = wing::new_host_circuit_breaker(60000); // 60s max wait
 
@@ -1822,7 +1825,7 @@ fn test_circuit_breaker_and_adaptive_retry_budget(t: core::T&) {
 // Verification Suite for RFC 9460 (HTTPS/SVCB DNS Resource Records),
 // Encrypted Client Hello (ECH) parameter extraction, and DNS Cache Lifecycle.
 
-fn test_rfc9460_svcb_https_rdata(t: core::T&) {
+fn test_rfc9460_svcb_https_rdata(t: lit::T&) {
     t.run("1. Multi-ALPN, Port, and Dual-Stack IP Hints") { sub =>
         // Parameter wire block:
         // Key 1 (ALPN, len 6): "h3" (len 2) + "h2" (len 2) -> 02 68 33 02 68 32
@@ -1908,7 +1911,7 @@ fn test_rfc9460_svcb_https_rdata(t: core::T&) {
     };
 }
 
-fn test_doh_query_generation(t: core::T&) {
+fn test_doh_query_generation(t: lit::T&) {
     t.run("1. DoH POST Body and GET URL Construction") { sub =>
         var post_body: u8[>..] = [];
         let ok_post = wing::build_doh_post_body("cloudflare.com", wing::DNS_QTYPE_HTTPS, 0x1234, post_body);
@@ -1927,7 +1930,7 @@ fn test_doh_query_generation(t: core::T&) {
     };
 }
 
-fn test_dns_cache_lifecycle(t: core::T&) {
+fn test_dns_cache_lifecycle(t: lit::T&) {
     t.run("1. Freshness, Stale-While-Revalidate Window, and Expiration") { sub =>
         var cache = wing::DnsCache { .. };
 
@@ -1974,40 +1977,40 @@ fn test_dns_cache_lifecycle(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Network Transport Drivers, Connection Pool, and Poller Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Network Transport Drivers, Connection Pool, and Poller Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Transport Driver Probing", test_driver_probing);
-    core::run_case(runner, "2. Driver Fallback and Auto-Selection", test_driver_fallback_and_selection);
-    core::run_case(runner, "3. Windows RIO Buffer Lifecycle", test_rio_buffer_lifecycle);
-    core::run_case(runner, "4. io_uring SQE/CQE Batch Submissions", test_uring_sqe_cqe_batch);
-    core::run_case(runner, "5. macOS kqueue Event Lifecycle", test_kqueue_event_lifecycle);
-    core::run_case(runner, "6. Driver Summary Formatter", test_driver_summary_formatter);
-    core::run_case(runner, "7. AF_XDP & DPDK Kernel-Bypass Architecture", test_af_xdp_and_dpdk_kernel_bypass);
-    core::run_case(runner, "8. SmartNIC & Hardware kTLS Crypto Offload", test_smartnic_ktls_offload);
-    core::run_case(runner, "9. PoolKey Dimensions & Isolation", test_pool_key_dimensions_and_isolation);
-    core::run_case(runner, "10. WantQueue Dual-Slice FIFO", test_want_queue_dual_slice);
-    core::run_case(runner, "11. Connection Liveness & Extensive Checks", test_connection_liveness_and_extensive_checks);
-    core::run_case(runner, "12. HTTP/2 IP Coalescing & SAN Matching", test_http2_ip_coalescing_and_san_matching);
-    core::run_case(runner, "13. StreamPool Quotas & Eviction", test_stream_pool_quotas_and_eviction);
-    core::run_case(runner, "14. CVE-2026-56866 CONNECT Rejection Pool Safety", test_cve_2026_56866_connect_rejection_pool_safety);
-    core::run_case(runner, "15. Poller Creation & Lifecycle across L4 Driver Backends", test_poller_creation_and_lifecycle);
-    core::run_case(runner, "16. Socket Registration & Readiness Multiplexing", test_poller_registration_and_readiness);
-    core::run_case(runner, "17. High-Resolution Timer Wheel", test_poller_timer_wheel);
-    core::run_case(runner, "18. Non-blocking EventLoop I/O", test_event_loop_io);
-    core::run_case(runner, "19. Bidirectional Client-Server Mock Cycle", test_bidi_client_server_cycle);
-    core::run_case(runner, "20. 15-bit Coarse Socket Timeouts", test_coarse_socket_timeouts);
-    core::run_case(runner, "21. CAD Calculation & Absolute Floor", test_cad_calculation_and_absolute_floor);
-    core::run_case(runner, "22. RFC 6724 & HEv3 Interleaving", test_rfc6724_and_hev3_interleaving);
-    core::run_case(runner, "23. DNS Race & Resolution Delay", test_dns_race_and_resolution_delay);
-    core::run_case(runner, "24. AttemptManager Racing & Winner", test_attempt_manager_racing_and_winner);
-    core::run_case(runner, "25. Tier 1 Stale Socket & QUIC Fallback", test_tier1_stale_socket_and_quic_fallback);
-    core::run_case(runner, "26. Tier 2 Backoff & Jitter Strategies", test_tier2_exponential_backoff_and_jitter);
-    core::run_case(runner, "27. RFC 9110 Retry-After Parser", test_rfc9110_retry_after_parser);
-    core::run_case(runner, "28. Circuit Breaker & Adaptive Retry Budget", test_circuit_breaker_and_adaptive_retry_budget);
-    core::run_case(runner, "29. RFC 9460 HTTPS/SVCB Parameter Parsing", test_rfc9460_svcb_https_rdata);
-    core::run_case(runner, "30. DoH Query Serialization", test_doh_query_generation);
-    core::run_case(runner, "31. DNS Cache Lifecycle & Stale-While-Revalidate", test_dns_cache_lifecycle);
+    lit::run_case(runner, "1. Transport Driver Probing", test_driver_probing);
+    lit::run_case(runner, "2. Driver Fallback and Auto-Selection", test_driver_fallback_and_selection);
+    lit::run_case(runner, "3. Windows RIO Buffer Lifecycle", test_rio_buffer_lifecycle);
+    lit::run_case(runner, "4. io_uring SQE/CQE Batch Submissions", test_uring_sqe_cqe_batch);
+    lit::run_case(runner, "5. macOS kqueue Event Lifecycle", test_kqueue_event_lifecycle);
+    lit::run_case(runner, "6. Driver Summary Formatter", test_driver_summary_formatter);
+    lit::run_case(runner, "7. AF_XDP & DPDK Kernel-Bypass Architecture", test_af_xdp_and_dpdk_kernel_bypass);
+    lit::run_case(runner, "8. SmartNIC & Hardware kTLS Crypto Offload", test_smartnic_ktls_offload);
+    lit::run_case(runner, "9. PoolKey Dimensions & Isolation", test_pool_key_dimensions_and_isolation);
+    lit::run_case(runner, "10. WantQueue Dual-Slice FIFO", test_want_queue_dual_slice);
+    lit::run_case(runner, "11. Connection Liveness & Extensive Checks", test_connection_liveness_and_extensive_checks);
+    lit::run_case(runner, "12. HTTP/2 IP Coalescing & SAN Matching", test_http2_ip_coalescing_and_san_matching);
+    lit::run_case(runner, "13. StreamPool Quotas & Eviction", test_stream_pool_quotas_and_eviction);
+    lit::run_case(runner, "14. CVE-2026-56866 CONNECT Rejection Pool Safety", test_cve_2026_56866_connect_rejection_pool_safety);
+    lit::run_case(runner, "15. Poller Creation & Lifecycle across L4 Driver Backends", test_poller_creation_and_lifecycle);
+    lit::run_case(runner, "16. Socket Registration & Readiness Multiplexing", test_poller_registration_and_readiness);
+    lit::run_case(runner, "17. High-Resolution Timer Wheel", test_poller_timer_wheel);
+    lit::run_case(runner, "18. Non-blocking EventLoop I/O", test_event_loop_io);
+    lit::run_case(runner, "19. Bidirectional Client-Server Mock Cycle", test_bidi_client_server_cycle);
+    lit::run_case(runner, "20. 15-bit Coarse Socket Timeouts", test_coarse_socket_timeouts);
+    lit::run_case(runner, "21. CAD Calculation & Absolute Floor", test_cad_calculation_and_absolute_floor);
+    lit::run_case(runner, "22. RFC 6724 & HEv3 Interleaving", test_rfc6724_and_hev3_interleaving);
+    lit::run_case(runner, "23. DNS Race & Resolution Delay", test_dns_race_and_resolution_delay);
+    lit::run_case(runner, "24. AttemptManager Racing & Winner", test_attempt_manager_racing_and_winner);
+    lit::run_case(runner, "25. Tier 1 Stale Socket & QUIC Fallback", test_tier1_stale_socket_and_quic_fallback);
+    lit::run_case(runner, "26. Tier 2 Backoff & Jitter Strategies", test_tier2_exponential_backoff_and_jitter);
+    lit::run_case(runner, "27. RFC 9110 Retry-After Parser", test_rfc9110_retry_after_parser);
+    lit::run_case(runner, "28. Circuit Breaker & Adaptive Retry Budget", test_circuit_breaker_and_adaptive_retry_budget);
+    lit::run_case(runner, "29. RFC 9460 HTTPS/SVCB Parameter Parsing", test_rfc9460_svcb_https_rdata);
+    lit::run_case(runner, "30. DoH Query Serialization", test_doh_query_generation);
+    lit::run_case(runner, "31. DNS Cache Lifecycle & Stale-While-Revalidate", test_dns_cache_lifecycle);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

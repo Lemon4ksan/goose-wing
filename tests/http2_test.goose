@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: http2_suite ---
 // HTTP/2 Echelon 6 Conformance & Reference Suite (RFC 7541, RFC 9113, RFC 9218).
@@ -12,7 +15,7 @@ import wing from "..";
 // Two-Level Signed Flow Control, RFC 9218 Write Scheduler, and Anti-DoS Defenses.
 
 // 1. HPACK Huffman FSM & RFC 7541 Integer Codec Tests
-fn test_hpack_huffman_and_integer_codec(t: core::T&) {
+fn test_hpack_huffman_and_integer_codec(t: lit::T&) {
     t.run("HPACK-01: RFC 7541 Appendix C.2 Huffman Decode Vectors") { sub =>
         // Vector 1: "www.example.com"
         let enc_www: u8[12] = [
@@ -103,7 +106,7 @@ fn test_hpack_huffman_and_integer_codec(t: core::T&) {
 }
 
 // 2. HPACK Dynamic Table & Header Block Conformance Tests
-fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
+fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
     t.run("DYN-01: Insertion, LIFO Indexing & FIFO Eviction") { sub =>
         var dt = internal::new_dynamic_table(256); // small capacity for quick eviction
 
@@ -279,7 +282,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
 }
 
 // 3. Binary Framing & RFC 9218 Structured Field Prioritization Tests
-fn test_binary_framing_and_rfc9218(t: core::T&) {
+fn test_binary_framing_and_rfc9218(t: lit::T&) {
     t.run("FRAME-01: 9-Byte Frame Header Codec Roundtrip") { sub =>
         let orig_hdr = internal::FrameHeader {
             length:     16384,
@@ -380,7 +383,7 @@ fn test_binary_framing_and_rfc9218(t: core::T&) {
 }
 
 // 4. Two-Level Signed Flow Control & Negative Window Invariant Tests
-fn test_flow_control_and_session_state(t: core::T&) {
+fn test_flow_control_and_session_state(t: lit::T&) {
     t.run("FLOW-01: Signed Window Deltas & Negative Window State (RFC 9113 Section 6.9.2)") { sub =>
         var sess = internal::new_session_state();
 
@@ -433,7 +436,7 @@ fn test_flow_control_and_session_state(t: core::T&) {
 }
 
 // 5. RFC 9218 Extensible Write Scheduler Tests
-fn test_rfc9218_write_scheduler(t: core::T&) {
+fn test_rfc9218_write_scheduler(t: lit::T&) {
     t.run("SCHED-01: Urgency 0..7 Priority Ordering") { sub =>
         var sess = internal::new_session_state();
 
@@ -538,7 +541,7 @@ fn test_rfc9218_write_scheduler(t: core::T&) {
 }
 
 // 6. Anti-DoS Engine & Resource Quota Tests
-fn test_anti_dos_mitigations(t: core::T&) {
+fn test_anti_dos_mitigations(t: lit::T&) {
     t.run("DOS-01: Rapid Reset Token Bucket Defense (CVE-2023-44487)") { sub =>
         // Session with small reset burst = 5
         var sess = internal::SessionState {
@@ -788,7 +791,7 @@ fn encode_client_trailers<B>(
 }
 
 // 1. Connection Preface, Handshake & Settings Negotiation
-fn test_h2_handshake_and_settings(t: core::T&) {
+fn test_h2_handshake_and_settings(t: lit::T&) {
     t.run("H2-01: Preface & Initial Server SETTINGS emission") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -905,7 +908,7 @@ fn test_h2_handshake_and_settings(t: core::T&) {
 }
 
 // 2. Stream Multiplexing, Request Dispatching & HPACK Response Generation
-fn test_h2_request_dispatch(t: core::T&) {
+fn test_h2_request_dispatch(t: lit::T&) {
     t.run("H2-03: Single GET Request through Server Pipeline") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -1019,7 +1022,7 @@ fn test_h2_request_dispatch(t: core::T&) {
 }
 
 // 3. End-to-End HttpServer Integration with HTTP/2 Preface Detection
-fn test_h2_server_wire_integration(t: core::T&) {
+fn test_h2_server_wire_integration(t: lit::T&) {
     t.run("HttpServer.handle_connection_wire auto-detects H2 and serves requests") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         wing::add_get_route(server, "/ping", 999);
@@ -1041,7 +1044,7 @@ fn test_h2_server_wire_integration(t: core::T&) {
 }
 
 // 4. CONTINUATION Assembly, Anti-DoS & Rapid Reset Defense
-fn test_h2_continuation_and_anti_dos(t: core::T&) {
+fn test_h2_continuation_and_anti_dos(t: lit::T&) {
     t.run("H2-06: Multi-Frame CONTINUATION Header Assembly") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -1175,7 +1178,7 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
 }
 
 // 5. RFC 9113 Protocol Invariants & Zero-Allocation Ingress
-fn test_h2_protocol_invariants(t: core::T&) {
+fn test_h2_protocol_invariants(t: lit::T&) {
     t.run("H2-09: Client Request Trailers Accepted (RFC 9113 §8.1.2)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
@@ -1934,7 +1937,7 @@ fn test_h2_protocol_invariants(t: core::T&) {
 // --- Component: http2_security ---
 // Tests for HTTP/2 framer validation and frame limits (RFC 9113).
 
-fn test_continuation_flood_and_interleaving(t: core::T&) {
+fn test_continuation_flood_and_interleaving(t: lit::T&) {
     t.run("H2-01: CONTINUATION Flood Exceeding Frame Cap Rejection (CVE-2024-27983)") { sub =>
         var framer = internal::H2SecurityFramer { .. };
 
@@ -2074,7 +2077,7 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
     };
 }
 
-fn test_rapid_reset_and_dos_floods(t: core::T&) {
+fn test_rapid_reset_and_dos_floods(t: lit::T&) {
     t.run("RESET-01: Rapid Reset Flood Defense (CVE-2023-44487)") { sub =>
         var framer = internal::H2SecurityFramer { .. };
 
@@ -2135,7 +2138,7 @@ fn test_rapid_reset_and_dos_floods(t: core::T&) {
     };
 }
 
-fn test_settings_and_stream_id_invariants(t: core::T&) {
+fn test_settings_and_stream_id_invariants(t: lit::T&) {
     t.run("SETTING-01: SETTINGS_MAX_FRAME_SIZE=0 Infinite Loop Defense ") { sub =>
         // Setting 0 must trigger ProtocolError
         let err0 = internal::validate_h2_setting(0x5, 0);
@@ -2196,7 +2199,7 @@ fn test_settings_and_stream_id_invariants(t: core::T&) {
     };
 }
 
-fn test_h2_wire_framing_and_types(t: core::T&) {
+fn test_h2_wire_framing_and_types(t: lit::T&) {
     t.run("WIRE-01: Frame Type Mapping and Extension Handling (RFC 9113 Sec 6)") { sub =>
         sub.assert_eq(internal::byte_to_frame_type(0x0), internal::H2FrameType.Data, "0x0 is Data");
         sub.assert_eq(internal::byte_to_frame_type(0x1), internal::H2FrameType.Headers, "0x1 is Headers");
@@ -2253,7 +2256,7 @@ fn test_h2_wire_framing_and_types(t: core::T&) {
 // 2. Flow control window arithmetic, 31-bit overflow guards, and zero-increment bans.
 // 3. CONTINUATION flood defense (CVE-2024-27983) and illegal frame interleaving bans.
 
-fn test_h2_settings_and_ping_invariants(t: core::T&) {
+fn test_h2_settings_and_ping_invariants(t: lit::T&) {
     t.run("H2-SEC-01: SETTINGS ACK with Non-Zero Length must trigger FRAME_SIZE_ERROR") { sub =>
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
@@ -2315,7 +2318,7 @@ fn test_h2_settings_and_ping_invariants(t: core::T&) {
     };
 }
 
-fn test_h2_window_update_and_flow_control(t: core::T&) {
+fn test_h2_window_update_and_flow_control(t: lit::T&) {
     t.run("H2-SEC-05: WINDOW_UPDATE Increment 0 is Forbidden (RFC 9113 §6.9)") { sub =>
         var conn = internal::new_h2_connection(0);
         let err_conn = internal::apply_window_update(conn, 0, 0);
@@ -2347,7 +2350,7 @@ fn test_h2_window_update_and_flow_control(t: core::T&) {
     };
 }
 
-fn test_h2_continuation_flood_and_interleaving(t: core::T&) {
+fn test_h2_continuation_flood_and_interleaving(t: lit::T&) {
     t.run("H2-SEC-08: Interleaved Frame During Continuation Sequence Forbidden (RFC 9113 §4.3)") { sub =>
         var conn = internal::new_h2_connection(0);
 
@@ -2414,7 +2417,7 @@ fn test_h2_continuation_flood_and_interleaving(t: core::T&) {
 // 3. Dynamic table size update placement & bounds enforcement.
 // 4. RFC 9113 pseudo-header ordering, duplicate checks, and connection header bans.
 
-fn test_hpack_integer_codec_overflows(t: core::T&) {
+fn test_hpack_integer_codec_overflows(t: lit::T&) {
     t.run("HPACK-SEC-01: Prefix bits out of range and empty slice bounds") { sub =>
         let empty_buf: u8[0] = [];
         let _, _, ok_empty = internal::hpack_decode_int(empty_buf[..], 0, 7);
@@ -2466,7 +2469,7 @@ fn test_hpack_integer_codec_overflows(t: core::T&) {
     };
 }
 
-fn test_hpack_dynamic_table_invariants(t: core::T&) {
+fn test_hpack_dynamic_table_invariants(t: lit::T&) {
     t.run("HPACK-SEC-05: Index 0 is strictly forbidden (RFC 7541 §6.1)") { sub =>
         let dt = internal::new_dynamic_table(4096);
         let _, _, ok_zero = internal::get_indexed_header_slices(dt, 0);
@@ -2522,7 +2525,7 @@ fn test_hpack_dynamic_table_invariants(t: core::T&) {
     };
 }
 
-fn test_hpack_rfc9113_header_block_rules(t: core::T&) {
+fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-08: Dynamic Table Size Update in middle of Block Rejected") { sub =>
         var dt = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
@@ -2603,7 +2606,7 @@ fn test_hpack_rfc9113_header_block_rules(t: core::T&) {
 // - Server-side upgrade producing 200 OK and subprotocol negotiation
 // - Zero-allocation stream encapsulation of masked (client) and unmasked (server) WS frames
 
-fn test_extended_connect_detection(t: core::T&) {
+fn test_extended_connect_detection(t: lit::T&) {
     t.run("Extended CONNECT vs Classic Tunnel Detection") { sub =>
         // 1. Classic TCP tunnel CONNECT (RFC 9114 §4.4)
         var tunnel_req = wing::new_request("CONNECT", "example.com:443");
@@ -2626,7 +2629,7 @@ fn test_extended_connect_detection(t: core::T&) {
     };
 }
 
-fn test_h3_websocket_formatting(t: core::T&) {
+fn test_h3_websocket_formatting(t: lit::T&) {
     t.run("HTTP/3 Request Formatting & Protocol Validation (RFC 9220 §3)") { sub =>
         var req = wing::new_request("GET", "/");
         wing::format_h3_websocket_request(req, "/v2/feed", "h3.example.com", "https", "json-stream");
@@ -2655,7 +2658,7 @@ fn test_h3_websocket_formatting(t: core::T&) {
     };
 }
 
-fn test_h3_server_upgrade(t: core::T&) {
+fn test_h3_server_upgrade(t: lit::T&) {
     t.run("Server-Side HTTP/3 WebSocket Upgrade (200 OK)") { sub =>
         var req = wing::new_request("GET", "/");
         wing::format_h3_websocket_request(req, "/ws", "h3.example.com", "https", "v1.proto, v2.proto");
@@ -2670,7 +2673,7 @@ fn test_h3_server_upgrade(t: core::T&) {
     };
 }
 
-fn test_stream_frame_encapsulation(t: core::T&) {
+fn test_stream_frame_encapsulation(t: lit::T&) {
     t.run("Stream Encapsulation of Masked and Unmasked Frames") { sub =>
         // 1. Client frame (MUST be masked)
         var client_data: u8[>..] = [];
@@ -2701,7 +2704,7 @@ fn test_stream_frame_encapsulation(t: core::T&) {
 // - HTTP/2 PRIORITY_UPDATE frame encoding, decoding, and validation
 // - HTTP/3 PRIORITY_UPDATE frame processing and connection state update
 
-fn test_priority_parsing(t: core::T&) {
+fn test_priority_parsing(t: lit::T&) {
     t.run("Priority Header Parsing (RFC 9218 §4)") { sub =>
         // 1. High urgency with incremental
         let p1, ok1 = wing::parse_http_priority("u=0, i");
@@ -2741,7 +2744,7 @@ fn test_priority_parsing(t: core::T&) {
     };
 }
 
-fn test_priority_serialization(t: core::T&) {
+fn test_priority_serialization(t: lit::T&) {
     t.run("Priority Header Serialization") { sub =>
         var out: u8[>..] = [];
 
@@ -2756,7 +2759,7 @@ fn test_priority_serialization(t: core::T&) {
     };
 }
 
-fn test_h2_priority_update_frame(t: core::T&) {
+fn test_h2_priority_update_frame(t: lit::T&) {
     t.run("HTTP/2 PRIORITY_UPDATE Frame (RFC 9218 §7.1)") { sub =>
         var frame_buf: u8[>..] = [];
         let prio = wing::HttpPriority { urgency: 1, incremental: true };
@@ -2782,7 +2785,7 @@ fn test_h2_priority_update_frame(t: core::T&) {
     };
 }
 
-fn test_h3_priority_update_integration(t: core::T&) {
+fn test_h3_priority_update_integration(t: lit::T&) {
     t.run("HTTP/3 PRIORITY_UPDATE Control Frame (RFC 9218 §7.2)") { sub =>
         // Create an H3Connection with a request stream
         var conn = internal::H3Connection { .. };
@@ -2826,7 +2829,7 @@ fn test_h3_priority_update_integration(t: core::T&) {
 
 // RFC 8336 Section 2: The ORIGIN HTTP/2 Frame
 // RFC 7838 Section 4: The ALTSVC HTTP/2 Frame
-fn test_h2_extension_frames(t: core::T&) {
+fn test_h2_extension_frames(t: lit::T&) {
     t.run("ORIGIN-01: FRAME_ORIGIN serialization and multi-origin parsing") { sub =>
         var origins: const u8[:][..16] = [];
         origins.push("https://example.com");
@@ -2932,39 +2935,39 @@ fn test_h2_extension_frames(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("HTTP/2 Protocol, Multiplexing, HPACK, and RFC Invariants Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP/2 Protocol, Multiplexing, HPACK, and RFC Invariants Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. HPACK Huffman FSM & RFC 7541 Integer Codec", test_hpack_huffman_and_integer_codec);
-    core::run_case(runner, "2. HPACK Dynamic Table & Header Block Conformance", test_hpack_dynamic_table_and_header_blocks);
-    core::run_case(runner, "3. Binary Framing & RFC 9218 Extensible Prioritization", test_binary_framing_and_rfc9218);
-    core::run_case(runner, "4. Two-Level Signed Flow Control & Negative Windows", test_flow_control_and_session_state);
-    core::run_case(runner, "5. RFC 9218 Extensible Write Scheduler", test_rfc9218_write_scheduler);
-    core::run_case(runner, "6. Anti-DoS Engine & Resource Quota Protections", test_anti_dos_mitigations);
-    core::run_case(runner, "7. Preface, Handshake & Settings Negotiation", test_h2_handshake_and_settings);
-    core::run_case(runner, "8. Stream Multiplexing & Pipeline Dispatch", test_h2_request_dispatch);
-    core::run_case(runner, "9. HttpServer End-to-End HTTP/2 Integration", test_h2_server_wire_integration);
-    core::run_case(runner, "10. CONTINUATION Assembly, Anti-DoS & Rapid Reset", test_h2_continuation_and_anti_dos);
-    core::run_case(runner, "11. RFC 9113 Protocol Invariants & Zero-Allocation Ingress", test_h2_protocol_invariants);
-    core::run_case(runner, "12. CONTINUATION Flood & Interleaving Guard (CVE-2024-27983)", test_continuation_flood_and_interleaving);
-    core::run_case(runner, "13. Rapid Reset & Resource DoS Floods (CVE-2023-44487 & CVE-2019-9512)", test_rapid_reset_and_dos_floods);
-    core::run_case(runner, "14. SETTINGS & Stream ID Invariants", test_settings_and_stream_id_invariants);
-    core::run_case(runner, "15. Frame Header Parsing & Type Mapping (RFC 9113)", test_h2_wire_framing_and_types);
-    core::run_case(runner, "16. SETTINGS & PING Frame Wire Invariants (RFC 9113 §6.5/§6.7)", test_h2_settings_and_ping_invariants);
-    core::run_case(runner, "17. Flow Control Window Arithmetic & Overflow Guards (RFC 9113 §6.9)", test_h2_window_update_and_flow_control);
-    core::run_case(runner, "18. CONTINUATION Flood & Interleaving Defenses (RFC 9113 §4.3/§6.10)", test_h2_continuation_flood_and_interleaving);
-    core::run_case(runner, "19. HPACK Variable-Length Integer Codec Overflows (FIND-401)", test_hpack_integer_codec_overflows);
-    core::run_case(runner, "20. HPACK Dynamic Table Invariants, Eviction & Wrap-Around", test_hpack_dynamic_table_invariants);
-    core::run_case(runner, "21. RFC 9113 Header Block Security Rules & Invariants", test_hpack_rfc9113_header_block_rules);
-    core::run_case(runner, "22. Extended CONNECT Detection", test_extended_connect_detection);
-    core::run_case(runner, "23. H3 WebSocket Formatting & Validation", test_h3_websocket_formatting);
-    core::run_case(runner, "24. H3 Server Upgrade (200 OK)", test_h3_server_upgrade);
-    core::run_case(runner, "25. Stream Frame Encapsulation", test_stream_frame_encapsulation);
-    core::run_case(runner, "26. Priority Parsing", test_priority_parsing);
-    core::run_case(runner, "27. Priority Serialization", test_priority_serialization);
-    core::run_case(runner, "28. H2 Priority Update Frame", test_h2_priority_update_frame);
-    core::run_case(runner, "29. H3 Priority Update Integration", test_h3_priority_update_integration);
-    core::run_case(runner, "30. HTTP/2 FRAME_ORIGIN & FRAME_ALTSVC (RFC 8336 & RFC 7838)", test_h2_extension_frames);
+    lit::run_case(runner, "1. HPACK Huffman FSM & RFC 7541 Integer Codec", test_hpack_huffman_and_integer_codec);
+    lit::run_case(runner, "2. HPACK Dynamic Table & Header Block Conformance", test_hpack_dynamic_table_and_header_blocks);
+    lit::run_case(runner, "3. Binary Framing & RFC 9218 Extensible Prioritization", test_binary_framing_and_rfc9218);
+    lit::run_case(runner, "4. Two-Level Signed Flow Control & Negative Windows", test_flow_control_and_session_state);
+    lit::run_case(runner, "5. RFC 9218 Extensible Write Scheduler", test_rfc9218_write_scheduler);
+    lit::run_case(runner, "6. Anti-DoS Engine & Resource Quota Protections", test_anti_dos_mitigations);
+    lit::run_case(runner, "7. Preface, Handshake & Settings Negotiation", test_h2_handshake_and_settings);
+    lit::run_case(runner, "8. Stream Multiplexing & Pipeline Dispatch", test_h2_request_dispatch);
+    lit::run_case(runner, "9. HttpServer End-to-End HTTP/2 Integration", test_h2_server_wire_integration);
+    lit::run_case(runner, "10. CONTINUATION Assembly, Anti-DoS & Rapid Reset", test_h2_continuation_and_anti_dos);
+    lit::run_case(runner, "11. RFC 9113 Protocol Invariants & Zero-Allocation Ingress", test_h2_protocol_invariants);
+    lit::run_case(runner, "12. CONTINUATION Flood & Interleaving Guard (CVE-2024-27983)", test_continuation_flood_and_interleaving);
+    lit::run_case(runner, "13. Rapid Reset & Resource DoS Floods (CVE-2023-44487 & CVE-2019-9512)", test_rapid_reset_and_dos_floods);
+    lit::run_case(runner, "14. SETTINGS & Stream ID Invariants", test_settings_and_stream_id_invariants);
+    lit::run_case(runner, "15. Frame Header Parsing & Type Mapping (RFC 9113)", test_h2_wire_framing_and_types);
+    lit::run_case(runner, "16. SETTINGS & PING Frame Wire Invariants (RFC 9113 §6.5/§6.7)", test_h2_settings_and_ping_invariants);
+    lit::run_case(runner, "17. Flow Control Window Arithmetic & Overflow Guards (RFC 9113 §6.9)", test_h2_window_update_and_flow_control);
+    lit::run_case(runner, "18. CONTINUATION Flood & Interleaving Defenses (RFC 9113 §4.3/§6.10)", test_h2_continuation_flood_and_interleaving);
+    lit::run_case(runner, "19. HPACK Variable-Length Integer Codec Overflows (FIND-401)", test_hpack_integer_codec_overflows);
+    lit::run_case(runner, "20. HPACK Dynamic Table Invariants, Eviction & Wrap-Around", test_hpack_dynamic_table_invariants);
+    lit::run_case(runner, "21. RFC 9113 Header Block Security Rules & Invariants", test_hpack_rfc9113_header_block_rules);
+    lit::run_case(runner, "22. Extended CONNECT Detection", test_extended_connect_detection);
+    lit::run_case(runner, "23. H3 WebSocket Formatting & Validation", test_h3_websocket_formatting);
+    lit::run_case(runner, "24. H3 Server Upgrade (200 OK)", test_h3_server_upgrade);
+    lit::run_case(runner, "25. Stream Frame Encapsulation", test_stream_frame_encapsulation);
+    lit::run_case(runner, "26. Priority Parsing", test_priority_parsing);
+    lit::run_case(runner, "27. Priority Serialization", test_priority_serialization);
+    lit::run_case(runner, "28. H2 Priority Update Frame", test_h2_priority_update_frame);
+    lit::run_case(runner, "29. H3 Priority Update Integration", test_h3_priority_update_integration);
+    lit::run_case(runner, "30. HTTP/2 FRAME_ORIGIN & FRAME_ALTSVC (RFC 8336 & RFC 7838)", test_h2_extension_frames);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

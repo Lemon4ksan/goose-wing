@@ -82,44 +82,49 @@ if ! command -v "$LIT_BIN" >/dev/null 2>&1; then
     fi
 fi
 
-if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
-    echo "[pre-commit] Enforcing G-CRAP complexity gate (ceiling: 25)..."
-    for file in $STAGED_FILES; do
-        # Enforce gate on production source files (excluding tests/ and examples/)
-        case "$file" in
-            tests/*|examples/*|bench/*)
-                continue
-                ;;
-            *)
-                if [ -f "$file" ]; then
-                    $LIT_BIN gate "$file" 25 --cov 0.85 >/dev/null 2>&1
-                    RC=$?
-                    if [ $RC -ne 0 ]; then
-                        # If file is grandfathered in baseline, ratchet enforces delta below
-                        if [ -f "scripts/gcrap_baseline.txt" ] && grep -F -i "$file" scripts/gcrap_baseline.txt >/dev/null 2>&1; then
-                            echo "[pre-commit] INFO: $file contains grandfathered baseline entries; ratchet will enforce zero regression."
-                        else
-                            $LIT_BIN gate "$file" 25 --cov 0.85
-                            echo "[pre-commit] GATE REJECTED: $file exceeds G-CRAP ceiling or contains bounds safety violations."
-                            exit 1
+    BASELINE_FILE=".lit/baseline"
+    if [ ! -f "$BASELINE_FILE" ] && [ -f "scripts/gcrap_baseline.txt" ]; then
+        BASELINE_FILE="scripts/gcrap_baseline.txt"
+    fi
+
+    if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
+        echo "[pre-commit] Enforcing G-CRAP complexity gate (ceiling: 25)..."
+        for file in $STAGED_FILES; do
+            # Enforce gate on production source files (excluding tests/ and examples/)
+            case "$file" in
+                tests/*|examples/*|bench/*)
+                    continue
+                    ;;
+                *)
+                    if [ -f "$file" ]; then
+                        $LIT_BIN gate "$file" 25 --cov 0.85 >/dev/null 2>&1
+                        RC=$?
+                        if [ $RC -ne 0 ]; then
+                            # If file is grandfathered in baseline, ratchet enforces delta below
+                            if [ -f "$BASELINE_FILE" ] && grep -F -i "$file" "$BASELINE_FILE" >/dev/null 2>&1; then
+                                echo "[pre-commit] INFO: $file contains grandfathered baseline entries; ratchet will enforce zero regression."
+                            else
+                                $LIT_BIN gate "$file" 25 --cov 0.85
+                                echo "[pre-commit] GATE REJECTED: $file exceeds G-CRAP ceiling or contains bounds safety violations."
+                                exit 1
+                            fi
                         fi
                     fi
-                fi
-                ;;
-        esac
-    done
+                    ;;
+            esac
+        done
 
-    if [ -f "scripts/gcrap_baseline.txt" ]; then
-        echo "[pre-commit] Evaluating G-CRAP ratchet against baseline..."
-        $LIT_BIN crap . --baseline scripts/gcrap_baseline.txt --cov 0.85 --delta 5.0 >/dev/null 2>&1
-        RC=$?
-        if [ $RC -ne 0 ]; then
-            echo "[pre-commit] RATCHET GATE REJECTED: Safety regressions or unproven bce:keep detected."
-            $LIT_BIN crap . --baseline scripts/gcrap_baseline.txt --cov 0.85 --delta 5.0
-            exit 1
+        if [ -f "$BASELINE_FILE" ]; then
+            echo "[pre-commit] Evaluating G-CRAP ratchet against baseline..."
+            $LIT_BIN crap . --baseline "$BASELINE_FILE" --cov 0.85 --delta 5.0 >/dev/null 2>&1
+            RC=$?
+            if [ $RC -ne 0 ]; then
+                echo "[pre-commit] RATCHET GATE REJECTED: Safety regressions or unproven bce:keep detected."
+                $LIT_BIN crap . --baseline "$BASELINE_FILE" --cov 0.85 --delta 5.0
+                exit 1
+            fi
         fi
     fi
-fi
 
 echo "[pre-commit] All invariants and complexity gates passed."
 exit 0

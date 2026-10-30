@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: http_cache_engine ---
 // Verification suite for RFC 9111 HTTP caching engine.
@@ -14,7 +17,7 @@ import wing from "..";
 
 // ---- 1. Cache-Control Parsing & Delta-Seconds Clamping ----------------------
 
-fn test_cache_control_parsing_and_overflow(t: core::T&) {
+fn test_cache_control_parsing_and_overflow(t: lit::T&) {
     t.run("Standard Boolean Directives & Bitmask Compression") { sub =>
         var cc = wing::CacheControl { .. };
         let raw = "no-store, no-cache, must-revalidate, proxy-revalidate, must-understand, public, immutable, only-if-cached, no-transform";
@@ -129,7 +132,7 @@ fn test_cache_control_parsing_and_overflow(t: core::T&) {
 
 // ---- 2. Mathematical Freshness Model & Clock Skew ---------------------------
 
-fn test_freshness_math_and_clock_skew(t: core::T&) {
+fn test_freshness_math_and_clock_skew(t: lit::T&) {
     t.run("RFC 9111 §4.2.3 Age Calculations") { sub =>
         // Time points: request at t=100, response at t=102 (2s delay), date header t=100
         let req_time = core::unix(100, 0);
@@ -235,7 +238,7 @@ fn test_freshness_math_and_clock_skew(t: core::T&) {
 
 // ---- 3. EntityTag (ETag) Validators -----------------------------------------
 
-fn test_etag_validators(t: core::T&) {
+fn test_etag_validators(t: lit::T&) {
     t.run("ETag Parsing and Weak/Strong Comparisons") { sub =>
         let tag_strong = wing::parse_etag("\"strong-123\"");
         sub.assert_true(tag_strong.valid, "Strong ETag parsed valid");
@@ -284,7 +287,7 @@ fn test_etag_validators(t: core::T&) {
 
 // ---- 4. Vary Normalization & CVE-2026-93750 Defense -------------------------
 
-fn test_vary_normalization_and_cve_2026_93750(t: core::T&) {
+fn test_vary_normalization_and_cve_2026_93750(t: lit::T&) {
     t.run("CVE-2026-93750: Vary: * Unconditional Hard Rejection") { sub =>
         var req_hdrs = wing::HeaderMap { .. };
         wing::append_header(req_hdrs, "Accept-Encoding", "gzip");
@@ -327,7 +330,7 @@ fn test_vary_normalization_and_cve_2026_93750(t: core::T&) {
 
 // ---- 5. CVE-2026-93748 Defense & Security Zeroing --------------------------
 
-fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
+fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
     t.run("CVE-2026-93748: Blocking max-stale on must-revalidate / s-maxage / security-zeroed") { sub =>
         let t_req = core::unix(100, 0);
         let t_resp = core::unix(100, 0);
@@ -385,7 +388,7 @@ fn test_cve_2026_93748_max_stale_guards(t: core::T&) {
 
 // ---- 6. Cache Transaction Lifecycle, 304 Merge & Sanitization ---------------
 
-fn test_cache_transaction_and_304_merge(t: core::T&) {
+fn test_cache_transaction_and_304_merge(t: lit::T&) {
     t.run("Lookup Miss -> Store -> Hit Lifecycle with Age Header") { sub =>
         var cache = wing::new_http_cache();
         let t0 = core::unix(1000, 0);
@@ -509,7 +512,7 @@ fn test_cache_transaction_and_304_merge(t: core::T&) {
 
 // ---- 7. RFC 9111 Special Behaviors & Cascade Invalidation -------------------
 
-fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
+fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
     t.run("only-if-cached Returns 504 on Cache Miss and Stale") { sub =>
         var cache = wing::new_http_cache();
         let t0 = core::unix(1000, 0);
@@ -737,7 +740,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: core::T&) {
 
 // ---- 8. Single-Flight / Request Collapsing ---------------------------------
 
-fn test_request_collapsing(t: core::T&) {
+fn test_request_collapsing(t: lit::T&) {
     t.run("Single-Flight Writers Collapsing Concurrent Requests") { sub =>
         var writers = wing::CacheWriters { .. };
         let key = "GET https://example.com/resource";
@@ -789,7 +792,7 @@ fn test_request_collapsing(t: core::T&) {
     };
 }
 
-fn test_rfc5861_stale_extensions(t: core::T&) {
+fn test_rfc5861_stale_extensions(t: lit::T&) {
     t.run("1. RFC 5861 Section 3: stale-while-revalidate Cache Decision") { sub =>
         var cache = wing::new_http_cache();
         var ts = wing::CacheTimestamps {
@@ -888,7 +891,7 @@ fn test_rfc5861_stale_extensions(t: core::T&) {
 // - Structured Dictionaries and fast accessors
 // - Zero-allocation serialization into output buffers
 
-fn test_sfv_primitives(t: core::T&) {
+fn test_sfv_primitives(t: lit::T&) {
     t.run("SFV Primitives Parsing (RFC 8941 §3.1-§3.3)") { sub =>
         // 1. Boolean
         let item_bool_t, ok_b1 = wing::parse_sf_item("?1");
@@ -943,7 +946,7 @@ fn test_sfv_primitives(t: core::T&) {
     };
 }
 
-fn test_sfv_parameters(t: core::T&) {
+fn test_sfv_parameters(t: lit::T&) {
     t.run("SFV Parameters on Items (RFC 8941 §3.1.2)") { sub =>
         let p_item, ok = wing::parse_sf_item("text/html;charset=utf-8;q=0.8");
         sub.assert_true(ok, "Parsed parameterized item");
@@ -961,7 +964,7 @@ fn test_sfv_parameters(t: core::T&) {
     };
 }
 
-fn test_sfv_lists_and_dicts(t: core::T&) {
+fn test_sfv_lists_and_dicts(t: lit::T&) {
     t.run("SFV Lists and Dictionaries (RFC 8941 §3.1-§3.2)") { sub =>
         // 1. Lists
         var list_items: wing::SfParameterizedItem[..16] = [];
@@ -1010,7 +1013,7 @@ fn test_sfv_lists_and_dicts(t: core::T&) {
     };
 }
 
-fn test_sfv_serialization(t: core::T&) {
+fn test_sfv_serialization(t: lit::T&) {
     t.run("SFV Serialization (RFC 8941 §4.1)") { sub =>
         var out: u8[>..] = [];
 
@@ -1054,7 +1057,7 @@ fn test_sfv_serialization(t: core::T&) {
 // - Tampered payload rejection
 // - Strict PKCE plain transformation rejection
 
-fn test_rfc9530_content_digest(t: core::T&) {
+fn test_rfc9530_content_digest(t: lit::T&) {
     t.run("Content-Digest sha-256 Generation & Verification") { sub =>
         var req = wing::Request {
             method: "POST",
@@ -1133,7 +1136,7 @@ fn test_rfc9530_content_digest(t: core::T&) {
     };
 }
 
-fn test_rfc9530_with_rfc9421_signatures(t: core::T&) {
+fn test_rfc9530_with_rfc9421_signatures(t: lit::T&) {
     t.run("RFC 9421 Signature covering Content-Digest") { sub =>
         let seed: u8[32] = [
             0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
@@ -1182,7 +1185,7 @@ fn test_rfc9530_with_rfc9421_signatures(t: core::T&) {
     };
 }
 
-fn test_oauth21_strict_pkce(t: core::T&) {
+fn test_oauth21_strict_pkce(t: lit::T&) {
     t.run("OAuth 2.1 & RFC 9700 Strict PKCE Enforcement") { sub =>
         let verifier: const u8[:] = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
@@ -1210,7 +1213,7 @@ fn test_oauth21_strict_pkce(t: core::T&) {
 // - End-to-end request signing and cryptographic verification (HMAC-SHA256)
 // - Rejection on tampered headers, modified method, or expired signatures
 
-fn test_http_signatures(t: core::T&) {
+fn test_http_signatures(t: lit::T&) {
     t.run("Canonical Signature Base Construction (RFC 9421 §2.5)") { sub =>
         var req = wing::Request {
             method: "POST",
@@ -1350,7 +1353,7 @@ fn test_http_signatures(t: core::T&) {
     };
 }
 
-fn test_ed25519_signatures(t: core::T&) {
+fn test_ed25519_signatures(t: lit::T&) {
     t.run("Ed25519 Asymmetric HTTP Signatures (RFC 9421 Section 3.3.6: EdDSA Using Curve edwards25519 - Signature verification)") { sub =>
         var seed: u8[32] = [0; 32];
         for i in 32 { seed[i] = (i + 17) as u8; }
@@ -1398,7 +1401,7 @@ fn test_ed25519_signatures(t: core::T&) {
     };
 }
 
-fn test_response_signatures(t: core::T&) {
+fn test_response_signatures(t: lit::T&) {
     t.run("HTTP Response Signatures with @status & ;req component chaining") { sub =>
         var req = wing::Request {
             method: "GET",
@@ -1448,7 +1451,7 @@ fn test_response_signatures(t: core::T&) {
 // 3. StreamReader for incremental body consumption & progress tracking
 // 4. download_stream with real-time progress callbacks
 
-fn test_chunked_framing_codec(t: core::T&) {
+fn test_chunked_framing_codec(t: lit::T&) {
     t.run("Encode Chunks, Trailers & Terminal 0-Chunk") { sub =>
         var wire: u8[>..] = [];
         wing::encode_chunk("Hello ", wire);
@@ -1468,7 +1471,7 @@ fn test_chunked_framing_codec(t: core::T&) {
     };
 }
 
-fn test_chunked_upload_writer(t: core::T&) {
+fn test_chunked_upload_writer(t: lit::T&) {
     t.run("post_chunked with ChunkWriter & Trailers") { sub =>
         var client = wing::new_client();
 
@@ -1495,7 +1498,7 @@ fn test_chunked_upload_writer(t: core::T&) {
     };
 }
 
-fn test_incremental_stream_reader(t: core::T&) {
+fn test_incremental_stream_reader(t: lit::T&) {
     t.run("StreamReader reads in chunks and computes progress") { sub =>
         var resp = wing::Response {
             status_code: 200,
@@ -1576,7 +1579,7 @@ fn test_incremental_stream_reader(t: core::T&) {
     };
 }
 
-fn test_download_stream_with_progress(t: core::T&) {
+fn test_download_stream_with_progress(t: lit::T&) {
     t.run("download_stream streams in 16-byte chunks with progress callback") { sub =>
         var client = wing::new_client();
         let payload = "0123456789abcdef0123456789abcdef0123456789abcdef"; // 48 bytes
@@ -1603,7 +1606,7 @@ fn test_download_stream_with_progress(t: core::T&) {
 // --- Component: http_trace_context ---
 // Verification Suite for W3C Trace Context (RFC 9239).
 
-fn test_w3c_traceparent(t: core::T&) {
+fn test_w3c_traceparent(t: lit::T&) {
     t.run("1. Standard W3C traceparent Vector Parsing & Formatting") { sub =>
         let raw = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
         let tp, ok = wing::parse_traceparent(raw);
@@ -1658,7 +1661,7 @@ fn test_w3c_traceparent(t: core::T&) {
     };
 }
 
-fn test_w3c_tracestate(t: core::T&) {
+fn test_w3c_tracestate(t: lit::T&) {
     t.run("1. Multi-Vendor Tracestate Parsing & Formatting") { sub =>
         let raw = "rojo=1,congo=t61rcWkgMzE";
         let ts, ok = wing::parse_tracestate(raw);
@@ -1700,34 +1703,34 @@ fn test_w3c_tracestate(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("HTTP Caching (RFC 9111), Structured Fields, and Metadata Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP Caching (RFC 9111), Structured Fields, and Metadata Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Cache-Control Parsing & Delta-Seconds Clamping", test_cache_control_parsing_and_overflow);
-    core::run_case(runner, "2. Mathematical Freshness Model & Clock Skew", test_freshness_math_and_clock_skew);
-    core::run_case(runner, "3. EntityTag (ETag) Validators", test_etag_validators);
-    core::run_case(runner, "4. Vary Normalization & CVE-2026-93750 Defense", test_vary_normalization_and_cve_2026_93750);
-    core::run_case(runner, "5. CVE-2026-93748 Defense & Security Zeroing", test_cve_2026_93748_max_stale_guards);
-    core::run_case(runner, "6. Cache Transaction Lifecycle, 304 Merge & Sanitization", test_cache_transaction_and_304_merge);
-    core::run_case(runner, "7. RFC 9111 Special Behaviors & Cascade Invalidation", test_rfc9111_special_behaviors_and_invalidation);
-    core::run_case(runner, "8. Single-Flight Writers Request Collapsing", test_request_collapsing);
-    core::run_case(runner, "9. RFC 5861 stale-while-revalidate & stale-if-error", test_rfc5861_stale_extensions);
-    core::run_case(runner, "10. SFV Primitives", test_sfv_primitives);
-    core::run_case(runner, "11. SFV Parameters", test_sfv_parameters);
-    core::run_case(runner, "12. SFV Lists & Dicts", test_sfv_lists_and_dicts);
-    core::run_case(runner, "13. SFV Serialization", test_sfv_serialization);
-    core::run_case(runner, "14. RFC 9530 Content-Digest & Repr-Digest", test_rfc9530_content_digest);
-    core::run_case(runner, "15. RFC 9530 Binding to RFC 9421 Signatures", test_rfc9530_with_rfc9421_signatures);
-    core::run_case(runner, "16. OAuth 2.1 Strict PKCE", test_oauth21_strict_pkce);
-    core::run_case(runner, "17. HTTP Message Signatures", test_http_signatures);
-    core::run_case(runner, "18. Ed25519 Signatures", test_ed25519_signatures);
-    core::run_case(runner, "19. Response Signatures", test_response_signatures);
-    core::run_case(runner, "20. RFC 9112 Chunk Framing Codec", test_chunked_framing_codec);
-    core::run_case(runner, "21. ChunkWriter for Dynamic Uploads", test_chunked_upload_writer);
-    core::run_case(runner, "22. StreamReader & Progress Tracking", test_incremental_stream_reader);
-    core::run_case(runner, "23. download_stream Incremental Pipeline", test_download_stream_with_progress);
-    core::run_case(runner, "24. W3C traceparent Conformance & Invariants", test_w3c_traceparent);
-    core::run_case(runner, "25. W3C tracestate Multi-Vendor Management", test_w3c_tracestate);
+    lit::run_case(runner, "1. Cache-Control Parsing & Delta-Seconds Clamping", test_cache_control_parsing_and_overflow);
+    lit::run_case(runner, "2. Mathematical Freshness Model & Clock Skew", test_freshness_math_and_clock_skew);
+    lit::run_case(runner, "3. EntityTag (ETag) Validators", test_etag_validators);
+    lit::run_case(runner, "4. Vary Normalization & CVE-2026-93750 Defense", test_vary_normalization_and_cve_2026_93750);
+    lit::run_case(runner, "5. CVE-2026-93748 Defense & Security Zeroing", test_cve_2026_93748_max_stale_guards);
+    lit::run_case(runner, "6. Cache Transaction Lifecycle, 304 Merge & Sanitization", test_cache_transaction_and_304_merge);
+    lit::run_case(runner, "7. RFC 9111 Special Behaviors & Cascade Invalidation", test_rfc9111_special_behaviors_and_invalidation);
+    lit::run_case(runner, "8. Single-Flight Writers Request Collapsing", test_request_collapsing);
+    lit::run_case(runner, "9. RFC 5861 stale-while-revalidate & stale-if-error", test_rfc5861_stale_extensions);
+    lit::run_case(runner, "10. SFV Primitives", test_sfv_primitives);
+    lit::run_case(runner, "11. SFV Parameters", test_sfv_parameters);
+    lit::run_case(runner, "12. SFV Lists & Dicts", test_sfv_lists_and_dicts);
+    lit::run_case(runner, "13. SFV Serialization", test_sfv_serialization);
+    lit::run_case(runner, "14. RFC 9530 Content-Digest & Repr-Digest", test_rfc9530_content_digest);
+    lit::run_case(runner, "15. RFC 9530 Binding to RFC 9421 Signatures", test_rfc9530_with_rfc9421_signatures);
+    lit::run_case(runner, "16. OAuth 2.1 Strict PKCE", test_oauth21_strict_pkce);
+    lit::run_case(runner, "17. HTTP Message Signatures", test_http_signatures);
+    lit::run_case(runner, "18. Ed25519 Signatures", test_ed25519_signatures);
+    lit::run_case(runner, "19. Response Signatures", test_response_signatures);
+    lit::run_case(runner, "20. RFC 9112 Chunk Framing Codec", test_chunked_framing_codec);
+    lit::run_case(runner, "21. ChunkWriter for Dynamic Uploads", test_chunked_upload_writer);
+    lit::run_case(runner, "22. StreamReader & Progress Tracking", test_incremental_stream_reader);
+    lit::run_case(runner, "23. download_stream Incremental Pipeline", test_download_stream_with_progress);
+    lit::run_case(runner, "24. W3C traceparent Conformance & Invariants", test_w3c_traceparent);
+    lit::run_case(runner, "25. W3C tracestate Multi-Vendor Management", test_w3c_tracestate);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: regress_issues_batch01 ---
 // Red test suite verifying uncovered edge cases and vulnerabilities from:
@@ -18,7 +21,7 @@ import wing from "..";
 // ----------------------------------------------------------------------------
 // 1. Go #78948 / CVE-2026-39825: Query Parameter Truncation & Smuggling
 // ----------------------------------------------------------------------------
-fn test_query_param_truncation_smuggling(t: core::T&) {
+fn test_query_param_truncation_smuggling(t: lit::T&) {
     t.run("Parameters exceeding 32 must not be silently dropped without indication") { sub =>
         // Ensure wing native symbols are linked
         var dummy: u8[..4] = "test";
@@ -50,7 +53,7 @@ fn test_query_param_truncation_smuggling(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Go #82350: Host Header Leakage Across Cross-Origin Redirects
 // ----------------------------------------------------------------------------
-fn test_redirect_stale_host_header_leakage(t: core::T&) {
+fn test_redirect_stale_host_header_leakage(t: lit::T&) {
     t.run("Outbound Host header must not be retained on cross-origin redirect") { sub =>
         // When a request has an explicit custom Host header, redirecting to a different origin
         // MUST strip or update the Host header to match the new destination authority (Go #82350).
@@ -81,7 +84,7 @@ fn test_redirect_stale_host_header_leakage(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Go #82343: RFC 2231 Extended Multipart Boundary & Boundary Validation
 // ----------------------------------------------------------------------------
-fn test_multipart_boundary_rfc2231_and_validation(t: core::T&) {
+fn test_multipart_boundary_rfc2231_and_validation(t: lit::T&) {
     t.run("boundary* extended parameter must be rejected or not override boundary (Go #82343)") { sub =>
         // In RFC 2231 / Go #82343: Content-Type with boundary*=utf-8''injected%0D%0A
         // An intermediary WAF sees boundary=normal, but a server honoring boundary* parses injected parts.
@@ -113,7 +116,7 @@ fn test_multipart_boundary_rfc2231_and_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Go #78760 / CVE-2026-39821: Pure ASCII Punycode URL Host Rejection
 // ----------------------------------------------------------------------------
-fn test_pure_ascii_punycode_url_host_rejection(t: core::T&) {
+fn test_pure_ascii_punycode_url_host_rejection(t: lit::T&) {
     t.run("URL with pure ASCII Punycode host xn--test-.com must be rejected (Go #78760)") { sub =>
         // Punycode label "xn--test-" contains no non-ASCII delta.
         // Per UTS 46 Revision 33 & Go #78760, accepting pure ASCII Punycode allows domain validation bypasses.
@@ -125,7 +128,7 @@ fn test_pure_ascii_punycode_url_host_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. uWebSockets #1949 / RFC 9112 §3.2: Host Header Query or Fragment Rejection in HTTP/1.0
 // ----------------------------------------------------------------------------
-fn test_host_header_query_fragment_rejection(t: core::T&) {
+fn test_host_header_query_fragment_rejection(t: lit::T&) {
     t.run("HTTP/1.0 request with query in Host header must be rejected") { sub =>
         // RFC 9112 §3.2 & uWebSockets #1949: If a Host header is provided, the authority
         // MUST NOT contain query '?' or fragment '#', even if protocol is HTTP/1.0.
@@ -149,7 +152,7 @@ fn test_host_header_query_fragment_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Go #77108 / CVE-2025-61726: Query Parameter DoS Guard Against Oversized Tokens
 // ----------------------------------------------------------------------------
-fn test_query_param_oversized_token_dos_guard(t: core::T&) {
+fn test_query_param_oversized_token_dos_guard(t: lit::T&) {
     t.run("validate_query_param_count must reject query strings with tokens > 256 bytes") { sub =>
         // To prevent fixed-capacity array crashes in parse_query_params (u8[..256] cap),
         // query validation before parsing MUST check individual parameter lengths (Go #77108).
@@ -181,7 +184,7 @@ fn test_query_param_oversized_token_dos_guard(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 9110 §8.6 / uWS #1370 / Go #81642: Status 204/304 Body Leakage on Wire
 // ----------------------------------------------------------------------------
-fn test_status_204_body_suppression_on_wire(t: core::T&) {
+fn test_status_204_body_suppression_on_wire(t: lit::T&) {
     t.run("Status 204 No Content must not serialize message body to wire") { sub =>
         // RFC 9110 Section 8.6 & Section 6.4.1:
         // A 204 (No Content) response MUST NOT include a message body.
@@ -203,7 +206,7 @@ fn test_status_204_body_suppression_on_wire(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed IP-Literal Host
 // ----------------------------------------------------------------------------
-fn test_malformed_ip_literal_host_rejection(t: core::T&) {
+fn test_malformed_ip_literal_host_rejection(t: lit::T&) {
     t.run("Empty IP-literal Host '[]' must be rejected with 400 Bad Request") { sub =>
         // RFC 9112 §3.2 & RFC 3986 §3.2.2: Host header with empty brackets "[]"
         // is structurally invalid and must be rejected by the server parser.
@@ -231,7 +234,7 @@ fn test_malformed_ip_literal_host_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Go #80282 & RFC 3986 §5.2.4: Deep Path Dot-Segment Collapse Truncation
 // ----------------------------------------------------------------------------
-fn test_deep_path_dot_segment_collapse(t: core::T&) {
+fn test_deep_path_dot_segment_collapse(t: lit::T&) {
     t.run("Paths deeper than 64 segments must correctly pop with '..'") { sub =>
         // In core/url/parser.goose:925, seg_starts has fixed capacity 64:
         //   var seg_starts: i32[..64] = [];
@@ -257,7 +260,7 @@ fn test_deep_path_dot_segment_collapse(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 9110 §7.6.1 & Go #82065: Connection Header 16-Token Truncation Leak
 // ----------------------------------------------------------------------------
-fn test_connection_header_hop_by_hop_token_capacity(t: core::T&) {
+fn test_connection_header_hop_by_hop_token_capacity(t: lit::T&) {
     t.run("Custom hop-by-hop headers past index 16 must not leak across intermediary") { sub =>
         // In http/headers.goose:1455 (collect_connection_tokens), out_tokens has cap 16:
         //   out_tokens: u8[..64][..16]&
@@ -277,7 +280,7 @@ fn test_connection_header_hop_by_hop_token_capacity(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 9449 §4.3: DPoP Proof URI Substring Prefix Collision Bypass
 // ----------------------------------------------------------------------------
-fn test_dpop_proof_uri_prefix_collision(t: core::T&) {
+fn test_dpop_proof_uri_prefix_collision(t: lit::T&) {
     t.run("DPoP proof minted for subpath must not authorize parent URI via substring match") { sub =>
         // RFC 9449 §4.3: The 'htu' claim MUST match the target URI exactly after normalization.
         // In auth/dpop.goose:261, verify_dpop_uri uses core::contains(claims_json, norm_expected_uri),
@@ -300,7 +303,7 @@ fn test_dpop_proof_uri_prefix_collision(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Go #62235 & RFC 6874 §2: Scoped IPv6 Link-Local URL Zone ID %25 Acceptance
 // ----------------------------------------------------------------------------
-fn test_scoped_ipv6_link_local_url_acceptance(t: core::T&) {
+fn test_scoped_ipv6_link_local_url_acceptance(t: lit::T&) {
     t.run("URL with RFC 6874 percent-encoded Zone ID [fe80::1%25eth0] must be valid") { sub =>
         // RFC 6874 Section 2:
         //   IP-literal = "[" IPv6address "%25" ZoneID "]"
@@ -328,7 +331,7 @@ fn test_scoped_ipv6_link_local_url_acceptance(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. Go #81508 & RFC 9110 §14.1.2: Unsupported Range Unit Must Return 200 OK
 // ----------------------------------------------------------------------------
-fn test_unsupported_range_unit_ignored(t: core::T&) {
+fn test_unsupported_range_unit_ignored(t: lit::T&) {
     t.run("Unrecognized Range unit (e.g. items=0-10) must be ignored and return 200 OK") { sub =>
         var out_status: i32 = 0;
         var out_headers = wing::HeaderMap { .. };
@@ -359,7 +362,7 @@ fn test_unsupported_range_unit_ignored(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Go #21096 & RFC 9110 §7.6.1 / RFC 9113: Forwarding 'TE: trailers' for gRPC
 // ----------------------------------------------------------------------------
-fn test_grpc_te_trailers_preserved(t: core::T&) {
+fn test_grpc_te_trailers_preserved(t: lit::T&) {
     t.run("TE: trailers header must NOT be stripped by strip_hop_by_hop_headers") { sub =>
         var src = wing::HeaderMap { .. };
         wing::append_header(src, "TE", "trailers");
@@ -391,7 +394,7 @@ fn test_grpc_te_trailers_preserved(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 6455 §8.1 / §7.4.1 / Autobahn 6.4.1: Close Frame Invalid UTF-8 (1007)
 // ----------------------------------------------------------------------------
-fn test_close_frame_invalid_utf8_status_1007(t: core::T&) {
+fn test_close_frame_invalid_utf8_status_1007(t: lit::T&) {
     t.run("Close frame with invalid UTF-8 payload must fail with 1007 (not 1002)") { sub =>
         var ws = wing::new_websocket_session(false);
 
@@ -415,7 +418,7 @@ fn test_close_frame_invalid_utf8_status_1007(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 7692 §5.1 / uWS #1164: RSV1 Set on Continuation Frame Must Fail (1002)
 // ----------------------------------------------------------------------------
-fn test_continuation_rsv1_rejected(t: core::T&) {
+fn test_continuation_rsv1_rejected(t: lit::T&) {
     t.run("Continuation frame with RSV1 set must be rejected with protocol error 1002") { sub =>
         var ws = wing::new_websocket_session(false);
         wing::enable_permessage_deflate(ws);
@@ -448,7 +451,7 @@ fn test_continuation_rsv1_rejected(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Go #76635 & RFC 6455 §4.1: Empty Path in WebSocket Handshake Must Default to '/'
 // ----------------------------------------------------------------------------
-fn test_ws_handshake_empty_path_defaults_to_slash(t: core::T&) {
+fn test_ws_handshake_empty_path_defaults_to_slash(t: lit::T&) {
     t.run("build_handshake_request with empty path must serialize 'GET / HTTP/1.1'") { sub =>
         var ws = wing::new_websocket_session(true);
         var wire_out: u8[..512] = [];
@@ -466,7 +469,7 @@ fn test_ws_handshake_empty_path_defaults_to_slash(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. Go #78569 & CVE-2026-25679 follow-up: parse_url_view Trailing Garbage on IPv6 Brackets
 // ----------------------------------------------------------------------------
-fn test_parse_url_view_ipv6_bracket_trailing_garbage(t: core::T&) {
+fn test_parse_url_view_ipv6_bracket_trailing_garbage(t: lit::T&) {
     t.run("parse_url_view must reject trailing host garbage after closing bracket [::1]evil.com") { sub =>
         let view, err = core::parse_url_view("http://[::1]evil.com/api");
         sub.assert_false(view.valid, "parse_url_view MUST reject host with trailing garbage after bracket [::1]evil.com (Go #78569)");
@@ -477,7 +480,7 @@ fn test_parse_url_view_ipv6_bracket_trailing_garbage(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 9112 Section 4: Status Line - HTTP Wire Response Status Line Whitespace & 4-Digit Smuggling (uWS #1949)
 // ----------------------------------------------------------------------------
-fn test_http1_wire_response_status_line_validation(t: core::T&) {
+fn test_http1_wire_response_status_line_validation(t: lit::T&) {
     t.run("parse_http1_wire_response must reject 4-digit status code 'HTTP/1.1 2000 OK'") { sub =>
         var res = wing::Response { .. };
         let wire: const u8[:] = "HTTP/1.1 2000 OK\r\nContent-Length: 0\r\n\r\n";
@@ -508,7 +511,7 @@ fn test_http1_wire_response_status_line_validation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 9110 §6.5.1 & Go #81143: Disallow Content-Type and Content-Encoding in Trailers
 // ----------------------------------------------------------------------------
-fn test_forbidden_trailer_fields(t: core::T&) {
+fn test_forbidden_trailer_fields(t: lit::T&) {
     t.run("Content-Type in chunked trailer must be rejected as DisallowedTrailer") { sub =>
         // RFC 9110 Section 6.5.1:
         // "A sender MUST NOT generate a trailer that contains any of the following fields:
@@ -535,7 +538,7 @@ fn test_forbidden_trailer_fields(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 9110 §14.1.2 & Go #81858 (CVE-2026-78667): Exceeded Ranges Must Return 200 OK
 // ----------------------------------------------------------------------------
-fn test_exceeded_max_ranges_returns_200(t: core::T&) {
+fn test_exceeded_max_ranges_returns_200(t: lit::T&) {
     t.run("Range request with > 16 ranges must be ignored and served with 200 OK") { sub =>
         // RFC 9110 Section 14.1.2 & Go #81858 (CVE-2026-78667):
         // "An origin server MAY ignore a Range header field containing more than one range,
@@ -574,7 +577,7 @@ fn test_exceeded_max_ranges_returns_200(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 9112 §6.1 & RFC 7230 §3.3.3: Invalid Response Transfer-Encoding Rejection
 // ----------------------------------------------------------------------------
-fn test_response_invalid_transfer_encoding_rejected(t: core::T&) {
+fn test_response_invalid_transfer_encoding_rejected(t: lit::T&) {
     t.run("Response with invalid Transfer-Encoding and Content-Length must NOT fall through") { sub =>
         // RFC 9112 Section 6.1:
         // "If a Transfer-Encoding header field is present in a response and the chunked transfer
@@ -600,7 +603,7 @@ fn test_response_invalid_transfer_encoding_rejected(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. RFC 3986 §3.2.2 & Go #75678 (CVE-2025-47912): parse_url_view Non-IPv6 Bracket Rejection
 // ----------------------------------------------------------------------------
-fn test_parse_url_view_non_ipv6_bracketed_host(t: core::T&) {
+fn test_parse_url_view_non_ipv6_bracketed_host(t: lit::T&) {
     t.run("parse_url_view must reject bracketed domain name [google.com]") { sub =>
         // RFC 3986 Section 3.2.2:
         // IP-literal = "[" ( IPv6address / IPvFuture ) "]"
@@ -621,7 +624,7 @@ fn test_parse_url_view_non_ipv6_bracketed_host(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 3986 §2 / RFC 9112 §3.2 & CVE-2023-26159: CRLF in URL View Host and Path
 // ----------------------------------------------------------------------------
-fn test_parse_url_view_crlf_rejection(t: core::T&) {
+fn test_parse_url_view_crlf_rejection(t: lit::T&) {
     t.run("parse_url_view must reject unencoded CRLF in host") { sub =>
         // Unencoded CRLF in URL host enables HTTP request smuggling and host header injection.
         let view, err = core::parse_url_view("http://evil\r\n.com/path");
@@ -640,7 +643,7 @@ fn test_parse_url_view_crlf_rejection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. RFC 6455 §5.5 & uWS #1407: WebSocket Control Frame Encoding Clamps to <= 125
 // ----------------------------------------------------------------------------
-fn test_ws_control_frame_encoding_size_limit(t: core::T&) {
+fn test_ws_control_frame_encoding_size_limit(t: lit::T&) {
     t.run("send_ping with payload > 125 must NEVER serialize extended length (126/127)") { sub =>
         // RFC 6455 Section 5.5:
         // "All control frames MUST have a payload length of 125 bytes or less and MUST NOT be fragmented."
@@ -681,7 +684,7 @@ fn test_ws_control_frame_encoding_size_limit(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. RFC 9112 §3.2.3 & §9.3.6: CONNECT Request-Target Authority-Form Enforcement
 // ----------------------------------------------------------------------------
-fn test_connect_authority_form_enforcement(t: core::T&) {
+fn test_connect_authority_form_enforcement(t: lit::T&) {
     t.run("CONNECT with valid authority-form host:port MUST be accepted") { sub =>
         // RFC 9112 Section 3.2.3: "The authority-form of request-target is only used for CONNECT requests"
         // E.g.: CONNECT example.com:443 HTTP/1.1
@@ -713,7 +716,7 @@ fn test_connect_authority_form_enforcement(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. RFC 9112 §7.2, §9.5 & RFC 7230 §5.4: Multiple / Comma-Separated Values in Host Header
 // ----------------------------------------------------------------------------
-fn test_host_header_comma_separated_values_rejected(t: core::T&) {
+fn test_host_header_comma_separated_values_rejected(t: lit::T&) {
     t.run("Host header with comma-separated hosts (folded duplicate) MUST be rejected") { sub =>
         // RFC 9112 Section 9.5: "A server MUST respond with a 400 (Bad Request) status code to any
         // HTTP/1.1 request message that contains more than one Host header field or a Host header field
@@ -735,7 +738,7 @@ fn test_host_header_comma_separated_values_rejected(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. RFC 1035 §2.3.4 & §4.1.4: DNS Wire Decoding Label Length <= 63 and Reserved Bits
 // ----------------------------------------------------------------------------
-fn test_dns_decode_label_length_and_reserved_bits(t: core::T&) {
+fn test_dns_decode_label_length_and_reserved_bits(t: lit::T&) {
     t.run("DNS wire decode MUST reject label length > 63") { sub =>
         // RFC 1035 Section 2.3.4: "labels: 63 octets or less"
         // Construct DNS wire name with an illegal label length byte of 64 (0x40) or 70.
@@ -766,7 +769,7 @@ fn test_dns_decode_label_length_and_reserved_bits(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. HAProxy PROXY Protocol v2 §2.2 & uWS #1927 / #1948: PROXY v2 Malformed TLVs
 // ----------------------------------------------------------------------------
-fn test_proxy_v2_truncated_tlv_and_trailing_bytes(t: core::T&) {
+fn test_proxy_v2_truncated_tlv_and_trailing_bytes(t: lit::T&) {
     t.run("PROXY v2 with 2 leftover trailing bytes after TLVs MUST be rejected") { sub =>
         // Preamble (12B) + ver_cmd (0x21: PROXY) + fam_trans (0x11: TCP4) + len (12B addr + 2B trailing = 14B)
         var wire: u8[..64] = [];
@@ -793,7 +796,7 @@ fn test_proxy_v2_truncated_tlv_and_trailing_bytes(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. RFC 6455 §5.5, §5.5.1 & uWS #1407: WebSocket Close Frame Reason Payload <= 123 Bytes
 // ----------------------------------------------------------------------------
-fn test_ws_close_frame_reason_clamped(t: core::T&) {
+fn test_ws_close_frame_reason_clamped(t: lit::T&) {
     t.run("close with 130-byte reason MUST be clamped to <= 123 bytes reason (<= 125 total payload)") { sub =>
         // RFC 6455 Section 5.5: "All control frames MUST have a payload length of 125 bytes or less"
         // RFC 6455 Section 5.5.1: Close frame status code is 2 bytes, so reason can be at most 123 bytes.
@@ -818,7 +821,7 @@ fn test_ws_close_frame_reason_clamped(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 6. CVE-2025-61726 & CVE-2026-39825: Query Parameter Key Overflow Defense
 // ----------------------------------------------------------------------------
-fn test_query_param_key_overflow_defense(t: core::T&) {
+fn test_query_param_key_overflow_defense(t: lit::T&) {
     t.run("parse_query_params with key > 64 bytes MUST safely truncate or handle without buffer overflow") { sub =>
         // QueryParamItem.key capacity is 64 bytes.
         // A key with 75 characters: "very_long_param_key_exceeding_sixty_four_bytes_boundary_1234567890_abcdef=val"
@@ -841,7 +844,7 @@ fn test_query_param_key_overflow_defense(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 7. RFC 6265bis §5.1.4: Cookie URL Fallback Path Parsing with Fragment and Default Slash
 // ----------------------------------------------------------------------------
-fn test_cookie_url_fallback_path_fragment(t: core::T&) {
+fn test_cookie_url_fallback_path_fragment(t: lit::T&) {
     t.run("URL with fragment in fallback path MUST exclude fragment from host and default path to '/'") { sub =>
         // In fallback path (e.g. invalid port or scheme-less format like "http://example.com#section"):
         let u = wing::parse_canonical_cookie_url("http://example.com#section");
@@ -851,41 +854,41 @@ fn test_cookie_url_fallback_path_fragment(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("Issue Regression Suite Batch 1 (Phases 1-5)", core::Verbosity.Verbose);
+    var runner = lit::new_runner("Issue Regression Suite Batch 1 (Phases 1-5)", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Go #78948 (CVE-2026-39825) Query Parameter Truncation & Smuggling", test_query_param_truncation_smuggling);
-    core::run_case(runner, "2. Go #82350 Stale Host Header Leakage Across Redirects", test_redirect_stale_host_header_leakage);
-    core::run_case(runner, "3. Go #82343 RFC 2231 Extended Multipart Boundary & Validation", test_multipart_boundary_rfc2231_and_validation);
-    core::run_case(runner, "4. Go #78760 (CVE-2026-39821) Pure ASCII Punycode URL Host Rejection", test_pure_ascii_punycode_url_host_rejection);
-    core::run_case(runner, "5. uWebSockets #1949 / RFC 9112 §3.2 Host Header Query & Fragment Rejection", test_host_header_query_fragment_rejection);
-    core::run_case(runner, "6. Go #77108 (CVE-2025-61726) Query Param Oversized Token DoS Guard", test_query_param_oversized_token_dos_guard);
-    core::run_case(runner, "7. RFC 9110 §8.6 / uWS #1370 / Go #81642: Status 204 Body Leakage", test_status_204_body_suppression_on_wire);
-    core::run_case(runner, "8. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed Host", test_malformed_ip_literal_host_rejection);
-    core::run_case(runner, "9. Go #80282 & RFC 3986 §5.2.4: Deep Path Collapse Truncation", test_deep_path_dot_segment_collapse);
-    core::run_case(runner, "10. RFC 9110 §7.6.1 & Go #82065: Connection Hop-by-Hop Truncation", test_connection_header_hop_by_hop_token_capacity);
-    core::run_case(runner, "11. RFC 9449 §4.3: DPoP Proof URI Substring Bypass", test_dpop_proof_uri_prefix_collision);
-    core::run_case(runner, "12. Go #62235 & RFC 6874 §2: Scoped IPv6 Link-Local URL Zone ID", test_scoped_ipv6_link_local_url_acceptance);
-    core::run_case(runner, "13. Go #81508 & RFC 9110 §14.1.2: Unsupported Range Unit Must Return 200 OK", test_unsupported_range_unit_ignored);
-    core::run_case(runner, "14. Go #21096 & RFC 9110 §7.6.1: Forwarding TE: trailers for gRPC", test_grpc_te_trailers_preserved);
-    core::run_case(runner, "15. RFC 6455 §8.1 / §7.4.1 / Autobahn 6.4.1: Close Invalid UTF-8 Status 1007", test_close_frame_invalid_utf8_status_1007);
-    core::run_case(runner, "16. RFC 7692 §5.1 / uWS #1164: RSV1 on Continuation Frame Rejection", test_continuation_rsv1_rejected);
-    core::run_case(runner, "17. Go #76635 & RFC 6455 §4.1: Empty Path in WS Handshake Defaults to '/'", test_ws_handshake_empty_path_defaults_to_slash);
-    core::run_case(runner, "18. Go #78569 & CVE-2026-25679 follow-up: parse_url_view [::1]evil.com Rejection", test_parse_url_view_ipv6_bracket_trailing_garbage);
-    core::run_case(runner, "19. RFC 9112 Section 4: Status Line - HTTP Wire Response Status Line Validation (uWS #1949)", test_http1_wire_response_status_line_validation);
-    core::run_case(runner, "20. RFC 9110 §6.5.1 & Go #81143: Disallow Content-Type and Content-Encoding in Trailers", test_forbidden_trailer_fields);
-    core::run_case(runner, "21. RFC 9110 §14.1.2 & Go #81858: Range Requests Exceeding Max Ranges Return 200 OK", test_exceeded_max_ranges_returns_200);
-    core::run_case(runner, "22. RFC 9112 §6.1 & RFC 7230 §3.3.3: Invalid Response Transfer-Encoding Rejection", test_response_invalid_transfer_encoding_rejected);
-    core::run_case(runner, "23. RFC 3986 §3.2.2 & Go #75678: parse_url_view Non-IPv6 Bracket Rejection", test_parse_url_view_non_ipv6_bracketed_host);
-    core::run_case(runner, "24. RFC 3986 §2 / RFC 9112 §3.2 & CVE-2023-26159: CRLF in URL View Host and Path", test_parse_url_view_crlf_rejection);
-    core::run_case(runner, "25. RFC 6455 §5.5 & uWS #1407: WebSocket Control Frame Encoding Clamps to <= 125", test_ws_control_frame_encoding_size_limit);
-    core::run_case(runner, "26. RFC 9112 §3.2.3 & §9.3.6: CONNECT Authority-Form Enforcement", test_connect_authority_form_enforcement);
-    core::run_case(runner, "27. RFC 9112 §7.2 & §9.5: Host Header Multiple Values Rejection", test_host_header_comma_separated_values_rejected);
-    core::run_case(runner, "28. RFC 1035 §2.3.4 & §4.1.4: DNS Wire Decoding Label Bounds", test_dns_decode_label_length_and_reserved_bits);
-    core::run_case(runner, "29. HAProxy PROXY Protocol v2 §2.2: Truncated TLVs & Trailing Bytes", test_proxy_v2_truncated_tlv_and_trailing_bytes);
-    core::run_case(runner, "30. RFC 6455 §5.5 & §5.5.1: WebSocket Close Reason Clamped to <= 123", test_ws_close_frame_reason_clamped);
-    core::run_case(runner, "31. CVE-2025-61726 & CVE-2026-39825: Query Parameter Bounds Guard", test_query_param_key_overflow_defense);
-    core::run_case(runner, "32. RFC 6265bis §5.1.4: Cookie URL Fallback Path and Fragment", test_cookie_url_fallback_path_fragment);
+    lit::run_case(runner, "1. Go #78948 (CVE-2026-39825) Query Parameter Truncation & Smuggling", test_query_param_truncation_smuggling);
+    lit::run_case(runner, "2. Go #82350 Stale Host Header Leakage Across Redirects", test_redirect_stale_host_header_leakage);
+    lit::run_case(runner, "3. Go #82343 RFC 2231 Extended Multipart Boundary & Validation", test_multipart_boundary_rfc2231_and_validation);
+    lit::run_case(runner, "4. Go #78760 (CVE-2026-39821) Pure ASCII Punycode URL Host Rejection", test_pure_ascii_punycode_url_host_rejection);
+    lit::run_case(runner, "5. uWebSockets #1949 / RFC 9112 §3.2 Host Header Query & Fragment Rejection", test_host_header_query_fragment_rejection);
+    lit::run_case(runner, "6. Go #77108 (CVE-2025-61726) Query Param Oversized Token DoS Guard", test_query_param_oversized_token_dos_guard);
+    lit::run_case(runner, "7. RFC 9110 §8.6 / uWS #1370 / Go #81642: Status 204 Body Leakage", test_status_204_body_suppression_on_wire);
+    lit::run_case(runner, "8. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed Host", test_malformed_ip_literal_host_rejection);
+    lit::run_case(runner, "9. Go #80282 & RFC 3986 §5.2.4: Deep Path Collapse Truncation", test_deep_path_dot_segment_collapse);
+    lit::run_case(runner, "10. RFC 9110 §7.6.1 & Go #82065: Connection Hop-by-Hop Truncation", test_connection_header_hop_by_hop_token_capacity);
+    lit::run_case(runner, "11. RFC 9449 §4.3: DPoP Proof URI Substring Bypass", test_dpop_proof_uri_prefix_collision);
+    lit::run_case(runner, "12. Go #62235 & RFC 6874 §2: Scoped IPv6 Link-Local URL Zone ID", test_scoped_ipv6_link_local_url_acceptance);
+    lit::run_case(runner, "13. Go #81508 & RFC 9110 §14.1.2: Unsupported Range Unit Must Return 200 OK", test_unsupported_range_unit_ignored);
+    lit::run_case(runner, "14. Go #21096 & RFC 9110 §7.6.1: Forwarding TE: trailers for gRPC", test_grpc_te_trailers_preserved);
+    lit::run_case(runner, "15. RFC 6455 §8.1 / §7.4.1 / Autobahn 6.4.1: Close Invalid UTF-8 Status 1007", test_close_frame_invalid_utf8_status_1007);
+    lit::run_case(runner, "16. RFC 7692 §5.1 / uWS #1164: RSV1 on Continuation Frame Rejection", test_continuation_rsv1_rejected);
+    lit::run_case(runner, "17. Go #76635 & RFC 6455 §4.1: Empty Path in WS Handshake Defaults to '/'", test_ws_handshake_empty_path_defaults_to_slash);
+    lit::run_case(runner, "18. Go #78569 & CVE-2026-25679 follow-up: parse_url_view [::1]evil.com Rejection", test_parse_url_view_ipv6_bracket_trailing_garbage);
+    lit::run_case(runner, "19. RFC 9112 Section 4: Status Line - HTTP Wire Response Status Line Validation (uWS #1949)", test_http1_wire_response_status_line_validation);
+    lit::run_case(runner, "20. RFC 9110 §6.5.1 & Go #81143: Disallow Content-Type and Content-Encoding in Trailers", test_forbidden_trailer_fields);
+    lit::run_case(runner, "21. RFC 9110 §14.1.2 & Go #81858: Range Requests Exceeding Max Ranges Return 200 OK", test_exceeded_max_ranges_returns_200);
+    lit::run_case(runner, "22. RFC 9112 §6.1 & RFC 7230 §3.3.3: Invalid Response Transfer-Encoding Rejection", test_response_invalid_transfer_encoding_rejected);
+    lit::run_case(runner, "23. RFC 3986 §3.2.2 & Go #75678: parse_url_view Non-IPv6 Bracket Rejection", test_parse_url_view_non_ipv6_bracketed_host);
+    lit::run_case(runner, "24. RFC 3986 §2 / RFC 9112 §3.2 & CVE-2023-26159: CRLF in URL View Host and Path", test_parse_url_view_crlf_rejection);
+    lit::run_case(runner, "25. RFC 6455 §5.5 & uWS #1407: WebSocket Control Frame Encoding Clamps to <= 125", test_ws_control_frame_encoding_size_limit);
+    lit::run_case(runner, "26. RFC 9112 §3.2.3 & §9.3.6: CONNECT Authority-Form Enforcement", test_connect_authority_form_enforcement);
+    lit::run_case(runner, "27. RFC 9112 §7.2 & §9.5: Host Header Multiple Values Rejection", test_host_header_comma_separated_values_rejected);
+    lit::run_case(runner, "28. RFC 1035 §2.3.4 & §4.1.4: DNS Wire Decoding Label Bounds", test_dns_decode_label_length_and_reserved_bits);
+    lit::run_case(runner, "29. HAProxy PROXY Protocol v2 §2.2: Truncated TLVs & Trailing Bytes", test_proxy_v2_truncated_tlv_and_trailing_bytes);
+    lit::run_case(runner, "30. RFC 6455 §5.5 & §5.5.1: WebSocket Close Reason Clamped to <= 123", test_ws_close_frame_reason_clamped);
+    lit::run_case(runner, "31. CVE-2025-61726 & CVE-2026-39825: Query Parameter Bounds Guard", test_query_param_key_overflow_defense);
+    lit::run_case(runner, "32. RFC 6265bis §5.1.4: Cookie URL Fallback Path and Fragment", test_cookie_url_fallback_path_fragment);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

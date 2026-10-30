@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,13 +7,14 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: http3 ---
 // tests/http3_test.goose
 // Conformance and Security Defense Suite for HTTP/3 (RFC 9114) and QPACK (RFC 9204).
 
 // 1. Frame Header Encoding, Decoding & GREASE Conformance
-fn test_h3_framing_and_grease(t: core::T&) {
+fn test_h3_framing_and_grease(t: lit::T&) {
     t.run("H3-01: Frame Header VarInt Encoding & Decoding") { sub =>
         var buf: u8[..64] = [];
 
@@ -61,7 +64,7 @@ fn test_h3_framing_and_grease(t: core::T&) {
 }
 
 // 2. SETTINGS Frame Conformance & Protocol Defenses
-fn test_h3_settings_conformance(t: core::T&) {
+fn test_h3_settings_conformance(t: lit::T&) {
     t.run("H3-03: SETTINGS Frame Encoding & Parsing") { sub =>
         var set_out = wing::H3Settings {
             qpack_max_table_capacity: 4096,
@@ -122,7 +125,7 @@ fn test_h3_settings_conformance(t: core::T&) {
 }
 
 // 3. Unidirectional Control and QPACK Streams
-fn test_h3_unidirectional_streams(t: core::T&) {
+fn test_h3_unidirectional_streams(t: lit::T&) {
     t.run("H3-06: Client Preambles for Control and QPACK Streams") { sub =>
         let settings = wing::H3Settings {
             qpack_max_table_capacity: 4096,
@@ -241,7 +244,7 @@ fn test_h3_unidirectional_streams(t: core::T&) {
 }
 
 // 4. Request Stream Lifecycle & Full Request-Response Multiplexing
-fn test_h3_request_streams(t: core::T&) {
+fn test_h3_request_streams(t: lit::T&) {
     t.run("H3-09: Client Request Header & Data Frame Generation") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
@@ -366,7 +369,7 @@ fn test_h3_request_streams(t: core::T&) {
 }
 
 // 5. QPACK Table Lifecycle, String Decoding & Stream Instructions (RFC 9204)
-fn test_qpack_table_and_codec(t: core::T&) {
+fn test_qpack_table_and_codec(t: lit::T&) {
     t.run("QPACK-01: Table Capacity and Entry Management") { sub =>
         var tbl = internal::new_qpack_table(4096, 16);
         sub.assert_eq(tbl.capacity_bytes, 4096, "capacity is 4096");
@@ -545,7 +548,7 @@ fn test_qpack_table_and_codec(t: core::T&) {
 }
 
 // 6. HTTP/3 Extended Frames & Stream Edge-Cases
-fn test_h3_extended_frames(t: core::T&) {
+fn test_h3_extended_frames(t: lit::T&) {
     t.run("H3-13: Extended Frame Encoding & Inbound Ingestion") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_server_connection(settings);
@@ -630,7 +633,7 @@ fn test_h3_extended_frames(t: core::T&) {
 }
 
 // 7. Team QPackStrike Protocol Hardening Suite (RFC 9114, RFC 9204, RFC 9000)
-fn test_round1_qpackstrike_suite(t: core::T&) {
+fn test_round1_qpackstrike_suite(t: lit::T&) {
     t.run("QPACK-R1-01: 62-bit Integer Decoding and Overflow Rejection (RFC 9204 Section 4.1.1)") { sub =>
         // 62-bit integer: 0x3FFFFFFFFFFFFFFF
         // With 7-bit prefix: prefix byte 0x7F, followed by 9 continuation octets
@@ -752,7 +755,7 @@ fn test_round1_qpackstrike_suite(t: core::T&) {
 }
 
 // 8. Team QPackStrike Round 2 Protocol Audit Suite (RFC 9114, RFC 9204, RFC 9000)
-fn test_round2_qpackstrike_suite(t: core::T&) {
+fn test_round2_qpackstrike_suite(t: lit::T&) {
     t.run("H3-R2-01: Control Stream Frame Sequence & Missing SETTINGS Precedence (RFC 9114 §6.2.1, §7.2.4)") { sub =>
         let settings = wing::H3Settings { .. };
 
@@ -979,7 +982,7 @@ fn test_round2_qpackstrike_suite(t: core::T&) {
 }
 
 // 9. Team QPackStrike Round 3 Championship Audit Suite (RFC 9204, RFC 9000, RFC 9114)
-fn test_round3_qpackstrike_suite(t: core::T&) {
+fn test_round3_qpackstrike_suite(t: lit::T&) {
     t.run("QPACK-R3-01: Huffman Padding Bounds and All-1s Validation (RFC 9204 §4.1.2, RFC 7541 §5.2)") { sub =>
         // Test A: Non-empty input with only padding (0xFF) MUST fail (8 bits of padding > 7 bits)
         var bad_huff1: u8[..4]  = [0xFF];
@@ -1226,7 +1229,7 @@ fn test_round3_qpackstrike_suite(t: core::T&) {
 // - HTTP/3 error code translation with GREASE skipping
 // - WebTransport capsule codecs (close, drain, reset_stream, stop_sending)
 
-fn test_webtransport_session_and_datagrams(t: core::T&) {
+fn test_webtransport_session_and_datagrams(t: lit::T&) {
     t.run("Extended CONNECT Initiation (draft-16)") { sub =>
         var req = wing::Request { .. };
         wing::format_webtransport_connect_request(req, "https://chat.example.com/wt-feed");
@@ -1301,7 +1304,7 @@ fn test_webtransport_session_and_datagrams(t: core::T&) {
     };
 }
 
-fn test_webtransport_stream_framing(t: core::T&) {
+fn test_webtransport_stream_framing(t: lit::T&) {
     t.run("Unidirectional Stream Framing (Type 0x54)") { sub =>
         let session_id: u64 = 256;
         var wire: u8[..32] = [];
@@ -1351,7 +1354,7 @@ fn test_webtransport_stream_framing(t: core::T&) {
     };
 }
 
-fn test_webtransport_error_mapping(t: core::T&) {
+fn test_webtransport_error_mapping(t: lit::T&) {
     t.run("Application Error Translation to HTTP/3 and Back") { sub =>
         let test_codes: u32[7] = [0, 1, 29, 30, 31, 1000, 0xFFFFFFFF];
         for i in 7 {
@@ -1379,7 +1382,7 @@ fn test_webtransport_error_mapping(t: core::T&) {
     };
 }
 
-fn test_webtransport_capsules(t: core::T&) {
+fn test_webtransport_capsules(t: lit::T&) {
     t.run("CLOSE_WEBTRANSPORT_SESSION Capsule") { sub =>
         let err_code: u32 = 404;
         let reason = "RESOURCE_NOT_FOUND_ON_STREAM";
@@ -1437,7 +1440,7 @@ fn test_webtransport_capsules(t: core::T&) {
     };
 }
 
-fn test_webtransport_session_lifecycle(t: core::T&) {
+fn test_webtransport_session_lifecycle(t: lit::T&) {
     t.run("Session Transitions: Active -> Draining -> Closed") { sub =>
         var session = wing::WebTransportSession { session_id: 88, is_active: true, .. };
         sub.assert_true(wing::is_webtransport_session_open(session), "Session is initially open");
@@ -1455,7 +1458,7 @@ fn test_webtransport_session_lifecycle(t: core::T&) {
     };
 }
 
-fn test_webtransport_stream_demuxing(t: core::T&) {
+fn test_webtransport_stream_demuxing(t: lit::T&) {
     t.run("1. Bidirectional Stream Wire Demuxing (Signal 0x41 & Direct Session ID)") { sub =>
         // Case A: draft-ietf-webtrans-http3 Section 4.2 with 0x41 signal
         // Wire: 0x40, 0x41 (signal 65) || 0x1A (session ID 26) || payload "TELEMETRY"
@@ -1579,24 +1582,24 @@ fn test_webtransport_stream_demuxing(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("HTTP/3 Framing, QPACK, and WebTransport Verification Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP/3 Framing, QPACK, and WebTransport Verification Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Frame Header Encoding, Decoding & GREASE Conformance", test_h3_framing_and_grease);
-    core::run_case(runner, "2. SETTINGS Frame Conformance & Protocol Defenses", test_h3_settings_conformance);
-    core::run_case(runner, "3. Unidirectional Control and QPACK Streams", test_h3_unidirectional_streams);
-    core::run_case(runner, "4. Request Stream Lifecycle & Full Request-Response Multiplexing", test_h3_request_streams);
-    core::run_case(runner, "5. QPACK Table Lifecycle, String Decoding & Stream Instructions", test_qpack_table_and_codec);
-    core::run_case(runner, "6. HTTP/3 Extended Frames & Stream Edge-Cases", test_h3_extended_frames);
-    core::run_case(runner, "7. Team QPackStrike Protocol Hardening Suite", test_round1_qpackstrike_suite);
-    core::run_case(runner, "8. Team QPackStrike Round 2 Hardening Suite", test_round2_qpackstrike_suite);
-    core::run_case(runner, "9. Team QPackStrike Round 3 Championship Suite", test_round3_qpackstrike_suite);
-    core::run_case(runner, "10. WebTransport Session & Datagrams", test_webtransport_session_and_datagrams);
-    core::run_case(runner, "11. WebTransport Stream Framing", test_webtransport_stream_framing);
-    core::run_case(runner, "12. WebTransport Error Code Mapping", test_webtransport_error_mapping);
-    core::run_case(runner, "13. WebTransport Capsule Codecs", test_webtransport_capsules);
-    core::run_case(runner, "14. WebTransport Session Lifecycle", test_webtransport_session_lifecycle);
-    core::run_case(runner, "15. WebTransport Stream Demuxing & Session Routing", test_webtransport_stream_demuxing);
+    lit::run_case(runner, "1. Frame Header Encoding, Decoding & GREASE Conformance", test_h3_framing_and_grease);
+    lit::run_case(runner, "2. SETTINGS Frame Conformance & Protocol Defenses", test_h3_settings_conformance);
+    lit::run_case(runner, "3. Unidirectional Control and QPACK Streams", test_h3_unidirectional_streams);
+    lit::run_case(runner, "4. Request Stream Lifecycle & Full Request-Response Multiplexing", test_h3_request_streams);
+    lit::run_case(runner, "5. QPACK Table Lifecycle, String Decoding & Stream Instructions", test_qpack_table_and_codec);
+    lit::run_case(runner, "6. HTTP/3 Extended Frames & Stream Edge-Cases", test_h3_extended_frames);
+    lit::run_case(runner, "7. Team QPackStrike Protocol Hardening Suite", test_round1_qpackstrike_suite);
+    lit::run_case(runner, "8. Team QPackStrike Round 2 Hardening Suite", test_round2_qpackstrike_suite);
+    lit::run_case(runner, "9. Team QPackStrike Round 3 Championship Suite", test_round3_qpackstrike_suite);
+    lit::run_case(runner, "10. WebTransport Session & Datagrams", test_webtransport_session_and_datagrams);
+    lit::run_case(runner, "11. WebTransport Stream Framing", test_webtransport_stream_framing);
+    lit::run_case(runner, "12. WebTransport Error Code Mapping", test_webtransport_error_mapping);
+    lit::run_case(runner, "13. WebTransport Capsule Codecs", test_webtransport_capsules);
+    lit::run_case(runner, "14. WebTransport Session Lifecycle", test_webtransport_session_lifecycle);
+    lit::run_case(runner, "15. WebTransport Stream Demuxing & Session Routing", test_webtransport_stream_demuxing);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

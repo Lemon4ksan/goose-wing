@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -7,6 +9,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // Dummy handler router for test suites
 fn test_unary_handler(
@@ -42,7 +45,7 @@ fn test_unary_handler(
 // ----------------------------------------------------------------------------
 // 1. Unary RPC over HTTP/2
 // ----------------------------------------------------------------------------
-fn test_grpc_server_unary_http2(t: core::T&) {
+fn test_grpc_server_unary_http2(t: lit::T&) {
     var dispatcher = wing::new_grpc_server_dispatcher();
     wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
 
@@ -136,7 +139,7 @@ fn test_grpc_server_unary_http2(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Unary RPC over gRPC-Web (Binary & Base64 Text)
 // ----------------------------------------------------------------------------
-fn test_grpc_server_unary_web(t: core::T&) {
+fn test_grpc_server_unary_web(t: lit::T&) {
     var dispatcher = wing::new_grpc_server_dispatcher();
     wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
 
@@ -220,7 +223,7 @@ fn test_server_streaming_handler(
     }
 }
 
-fn test_grpc_server_streaming(t: core::T&) {
+fn test_grpc_server_streaming(t: lit::T&) {
     var dispatcher = wing::new_grpc_server_dispatcher();
     wing::register_server_streaming(dispatcher, "event.FeedService", "Subscribe", 2);
 
@@ -288,7 +291,7 @@ fn test_client_streaming_handler(
     }
 }
 
-fn test_grpc_client_streaming(t: core::T&) {
+fn test_grpc_client_streaming(t: lit::T&) {
     var dispatcher = wing::new_grpc_server_dispatcher();
     wing::register_client_streaming(dispatcher, "metric.Collector", "UploadBatch", 3);
 
@@ -323,7 +326,7 @@ fn test_grpc_client_streaming(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 5. Error Handling & RFC Protocol Invariants
 // ----------------------------------------------------------------------------
-fn test_grpc_server_rfc_invariants(t: core::T&) {
+fn test_grpc_server_rfc_invariants(t: lit::T&) {
     var dispatcher = wing::new_grpc_server_dispatcher(64); // Max message size = 64 bytes
     wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
     wing::register_unary(dispatcher, "secure.Vault", "Access", 99);
@@ -510,14 +513,14 @@ fn test_grpc_server_rfc_invariants(t: core::T&) {
 // Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = core::new_runner("gRPC Server Dispatcher Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("gRPC Server Dispatcher Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Unary RPC over HTTP/2", test_grpc_server_unary_http2);
-    core::run_case(runner, "2. Unary RPC over gRPC-Web (Binary & Base64 Text)", test_grpc_server_unary_web);
-    core::run_case(runner, "3. Server-Streaming RPC Dispatch", test_grpc_server_streaming);
-    core::run_case(runner, "4. Client-Streaming RPC Dispatch", test_grpc_client_streaming);
-    core::run_case(runner, "5. Error Handling & RFC Invariants", test_grpc_server_rfc_invariants);
+    lit::run_case(runner, "1. Unary RPC over HTTP/2", test_grpc_server_unary_http2);
+    lit::run_case(runner, "2. Unary RPC over gRPC-Web (Binary & Base64 Text)", test_grpc_server_unary_web);
+    lit::run_case(runner, "3. Server-Streaming RPC Dispatch", test_grpc_server_streaming);
+    lit::run_case(runner, "4. Client-Streaming RPC Dispatch", test_grpc_client_streaming);
+    lit::run_case(runner, "5. Error Handling & RFC Invariants", test_grpc_server_rfc_invariants);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

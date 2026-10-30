@@ -1,0 +1,9 @@
+# goose-lit configuration
+baseline = .lit/baseline
+ceiling = 25.0
+cov = 0.85
+delta = 5.0
+format = table
+prefix = CHECK
+tests_dir = tests
+cc = tools/gcc_stack.bat

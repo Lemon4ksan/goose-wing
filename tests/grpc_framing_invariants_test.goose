@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -9,8 +11,9 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
-fn test_grpc_lpm_integer_overflows(t: core::T&) {
+fn test_grpc_lpm_integer_overflows(t: lit::T&) {
     t.run("GRPC-SEC-01: 32-bit Integer Overflow in decode_grpc_lpm_slice") { sub =>
         // 0xFFFFFFFF (4294967295) length
         let ovf_hdr: u8[5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
@@ -57,7 +60,7 @@ fn test_grpc_lpm_integer_overflows(t: core::T&) {
     };
 }
 
-fn test_grpc_web_trailers_parsing(t: core::T&) {
+fn test_grpc_web_trailers_parsing(t: lit::T&) {
     t.run("GRPC-SEC-05: Valid gRPC-Web Trailers Parsing") { sub =>
         let trailer_raw = "grpc-status: 0\r\ngrpc-message: OK\r\n";
         var status = wing::GrpcStatusCode.Internal;
@@ -78,11 +81,11 @@ fn test_grpc_web_trailers_parsing(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("gRPC Binary Framing & Length Overflow Security Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("gRPC Binary Framing & Length Overflow Security Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. 32-bit LPM Length Overflows & Flag Invariants", test_grpc_lpm_integer_overflows);
-    core::run_case(runner, "2. gRPC-Web Trailers Status Parsing", test_grpc_web_trailers_parsing);
+    lit::run_case(runner, "1. 32-bit LPM Length Overflows & Flag Invariants", test_grpc_lpm_integer_overflows);
+    lit::run_case(runner, "2. gRPC-Web Trailers Status Parsing", test_grpc_web_trailers_parsing);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

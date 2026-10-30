@@ -88,7 +88,7 @@ def main() -> int:
     baseline_file = (
         Path(args.baseline_file)
         if args.baseline_file
-        else Path(__file__).resolve().parent / "gcrap_baseline.txt"
+        else root / ".lit" / "baseline"
     )
 
     if args.save:

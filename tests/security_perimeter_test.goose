@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -5,6 +7,7 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: security_cross_origin ---
 // Verification suite for W3C Cross-Origin Isolation (COOP, COEP, CORP):
@@ -12,7 +15,7 @@ import wing from "..";
 // - W3C HTML5 §7.2 crossOriginIsolated state computation
 // - Subresource embedding permission enforcement under require-corp sandbox
 
-fn test_cross_origin_isolation(t: core::T&) {
+fn test_cross_origin_isolation(t: lit::T&) {
     t.run("Policy Header Parsing") { sub =>
         sub.assert_true(wing::parse_coop("same-origin") == wing::CoopPolicy.SameOrigin, "COOP same-origin");
         sub.assert_true(wing::parse_coop("same-origin-allow-popups") == wing::CoopPolicy.SameOriginAllowPopups, "COOP allow-popups");
@@ -112,7 +115,7 @@ fn test_cross_origin_isolation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 1. W3C Fetch Metadata 9-Row Decision Matrix
 // ----------------------------------------------------------------------------
-fn test_fetch_metadata_decision_matrix(t: core::T&) {
+fn test_fetch_metadata_decision_matrix(t: lit::T&) {
     t.run("Row 1: Direct User Navigation (Sec-Fetch-Site: none)") { sub =>
         let guard_cfg = wing::CrossOriginGuard { .. };
         var ctx = wing::FetchContext {
@@ -428,7 +431,7 @@ fn test_fetch_metadata_decision_matrix(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 2. Response Isolation Headers (Vary & HSTS)
 // ----------------------------------------------------------------------------
-fn test_isolation_headers_injection(t: core::T&) {
+fn test_isolation_headers_injection(t: lit::T&) {
     t.run("Mandatory Vary and HSTS Headers") { sub =>
         var res = wing::Response { .. };
         wing::apply_isolation_headers(res);
@@ -445,7 +448,7 @@ fn test_isolation_headers_injection(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 3. Protocol-Specific CORS Matching & Credentials Security
 // ----------------------------------------------------------------------------
-fn test_cors_policy_and_matching(t: core::T&) {
+fn test_cors_policy_and_matching(t: lit::T&) {
     t.run("Protocol-Specific Subdomain Wildcard Matching") { sub =>
         let pattern = "https://*.example.com";
 
@@ -545,7 +548,7 @@ fn test_cors_policy_and_matching(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 4. Constant-Time CSRF Token Validation & OTP Mask Verification
 // ----------------------------------------------------------------------------
-fn test_csrf_constant_time_tokens(t: core::T&) {
+fn test_csrf_constant_time_tokens(t: lit::T&) {
     t.run("Double-Submit Token Validation (subtle_equal)") { sub =>
         let tok1 = "3b9a1f4c7e2d8a0b5c4f3e2d1a0b9c8d";
         let tok2 = "3b9a1f4c7e2d8a0b5c4f3e2d1a0b9c8d";
@@ -619,7 +622,7 @@ thread_fn test_worker(id: i64) {
     core::send_msg(WorkerCompletion { worker_id: id });
 }
 
-fn test_wait_group_capacity_and_completion(t: core::T&) {
+fn test_wait_group_capacity_and_completion(t: lit::T&) {
     t.run("ASYNC-01: WaitGroup must track and wait for >64 workers") { sub =>
         let total_workers: i64 = 72;
         var wg = core::WaitGroup { .. };
@@ -670,7 +673,7 @@ thread_fn negative_limit_worker() {
     core::set_channel_limit<QueueTestItem>(-5);
 }
 
-fn test_queue_bounds_and_timeout(t: core::T&) {
+fn test_queue_bounds_and_timeout(t: lit::T&) {
     t.run("ASYNC-02: Non-positive queue limits must not abort process") { sub =>
         // Test limit = 0
         let tid0 = thread_spawn_contained(zero_limit_worker);
@@ -711,7 +714,7 @@ thread_fn normal_contained_worker() {
     // Normal worker: terminates successfully without aborting
 }
 
-fn test_crash_diagnostics_and_supervision(t: core::T&) {
+fn test_crash_diagnostics_and_supervision(t: lit::T&) {
     t.run("ASYNC-03 Case 1: WaitGroup must preserve crash diagnostics and track failed workers") { sub =>
         var wg = core::WaitGroup { .. };
 
@@ -755,7 +758,7 @@ fn test_crash_diagnostics_and_supervision(t: core::T&) {
 // --- Component: security_edge_filter ---
 // Test Suite for Goose-Wing Programmable L7 Edge Filter Engine.
 
-fn test_edge_filter_lifecycle_and_evaluation(t: core::T&) {
+fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
     t.run("Case 1: Edge Filter Rule Registration and Path Filtering") { sub =>
         var filter = wing::EdgeFilter { .. };
         sub.assert_true(filter.enabled, "Filter enabled by default");
@@ -824,7 +827,7 @@ fn test_edge_filter_lifecycle_and_evaluation(t: core::T&) {
 // 5. Deletion of Known HSTS Host (`max-age=0`)
 // 6. RFC 6797 Section 8.1 Security Invariant: Rejection of HSTS over insecure HTTP
 
-fn test_hsts_header_parsing(t: core::T&) {
+fn test_hsts_header_parsing(t: lit::T&) {
     t.run("Parse max-age, includeSubDomains, and preload") { sub =>
         let raw = "max-age=31536000; includeSubDomains; preload";
         let d, ok = wing::parse_hsts_header(raw);
@@ -843,7 +846,7 @@ fn test_hsts_header_parsing(t: core::T&) {
     };
 }
 
-fn test_hsts_preload_list_auto_upgrade(t: core::T&) {
+fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
     t.run("Chromium Preload List: Google, GitHub & .dev/.app TLDs Auto-Upgraded to HTTPS") { sub =>
         var client = wing::new_client();
 
@@ -871,7 +874,7 @@ fn test_hsts_preload_list_auto_upgrade(t: core::T&) {
     };
 }
 
-fn test_dynamic_hsts_cache_lifecycle(t: core::T&) {
+fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
     t.run("Dynamic Learning: Response Header Upgrades Subsequent Cleartext Requests") { sub =>
         var client = wing::new_client();
         wing::set_clock_us(client, 1700000000000000); // t0
@@ -938,7 +941,7 @@ fn test_dynamic_hsts_cache_lifecycle(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 1: IPv4-Mapped IPv6 SSRF Defense
 // ----------------------------------------------------------------------------
-fn test_ipv4_mapped_ipv6_ssrf(t: core::T&) {
+fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
     t.run("IPv4-Mapped IPv6 Loopback and Private Address SSRF Blocking") { sub =>
         var session = wing::new_session();
         wing::enable_ssrf_guard(session, true);
@@ -1004,7 +1007,7 @@ fn test_ipv4_mapped_ipv6_ssrf(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 2: Scheme Downgrade Header Sanitization
 // ----------------------------------------------------------------------------
-fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
+fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
     t.run("sanitize_headers_on_redirect: Scheme Downgrade to Trusted Host Strips Sensitive Headers") { sub =>
         var req = wing::new_get("https://example.com/secure");
         wing::set_header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
@@ -1097,7 +1100,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: core::T&) {
 // ----------------------------------------------------------------------------
 // Round 3: File URL Windows Drive Compliance
 // ----------------------------------------------------------------------------
-fn test_file_url_windows_drive_compliance(t: core::T&) {
+fn test_file_url_windows_drive_compliance(t: lit::T&) {
     t.run("WHATWG URL Section 4.4: Windows Drive Letter Pipe Normalization (| to :)") { sub =>
         // 1. file:///C|/... must normalize to file:///C:/...
         let u_pipe, err_pipe = core::parse_url("file:///C|/Users/admin/report.pdf");
@@ -1154,7 +1157,7 @@ fn test_file_url_windows_drive_compliance(t: core::T&) {
 // --- Component: security_txt ---
 // Verification Suite for RFC 9116 (A File Format to Aid in Security Vulnerability Disclosure - security.txt).
 
-fn test_security_txt_valid_matrix(t: core::T&) {
+fn test_security_txt_valid_matrix(t: lit::T&) {
     t.run("1. Valid security.txt Parsing with Comments and PGP Armor") { sub =>
         let valid_payload = "# RFC 9116 security.txt disclosure policy\n-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nContact: mailto:security@example.com\nContact: https://example.com/security\nExpires: 2030-12-31T23:59:59Z\nEncryption: https://example.com/pgp-key.txt\nCanonical: https://example.com/.well-known/security.txt\nAcknowledgments: https://example.com/hall-of-fame\nPolicy: https://example.com/disclosure-policy\nHiring: https://example.com/security-jobs\nPreferred-Languages: en, ru, de\n\n-----BEGIN PGP SIGNATURE-----\nVersion: OpenPrivacy\n...\n";
 
@@ -1252,7 +1255,7 @@ fn test_security_txt_valid_matrix(t: core::T&) {
 // - HAR 1.2 Telemetry & Microsecond Waterfall Timing
 // - Network Isolation Keys (NIK) State Partitioning
 
-fn test_altsvc_and_h3_promotion(t: core::T&) {
+fn test_altsvc_and_h3_promotion(t: lit::T&) {
     t.run("1. RFC 7838 Alt-Svc Parsing & Format") { sub =>
         let raw = "h3=\":443\"; ma=86400; persist=1, h2=\"alt.example.com:8443\"; ma=3600";
         var endpoints: wing::AltSvcEndpoint[..4] = [];
@@ -1316,7 +1319,7 @@ fn test_altsvc_and_h3_promotion(t: core::T&) {
     };
 }
 
-fn test_early_hints_and_replay_guard(t: core::T&) {
+fn test_early_hints_and_replay_guard(t: lit::T&) {
     t.run("1. RFC 8297 103 Early Hints Link Preload / Preconnect") { sub =>
         let link_hdr = "</style.css>; rel=preload; as=style, <https://cdn.example.com>; rel=preconnect";
         let hints, ok = wing::parse_early_hints(103, link_hdr);
@@ -1357,7 +1360,7 @@ fn test_early_hints_and_replay_guard(t: core::T&) {
     };
 }
 
-fn test_no_vary_search_cache(t: core::T&) {
+fn test_no_vary_search_cache(t: lit::T&) {
     t.run("1. W3C No-Vary-Search Header Parser") { sub =>
         let raw = "params, except=(\"id\" \"page\"), key-order";
         let nvs, ok = wing::parse_no_vary_search(raw);
@@ -1390,7 +1393,7 @@ fn test_no_vary_search_cache(t: core::T&) {
     };
 }
 
-fn test_masque_capsules_and_datagrams(t: core::T&) {
+fn test_masque_capsules_and_datagrams(t: lit::T&) {
     t.run("1. RFC 9297 Capsule Codec") { sub =>
         var wire: u8[>..] = [];
         let payload = "capsule_data_payload";
@@ -1426,7 +1429,7 @@ fn test_masque_capsules_and_datagrams(t: core::T&) {
     };
 }
 
-fn test_har_telemetry_and_isolation(t: core::T&) {
+fn test_har_telemetry_and_isolation(t: lit::T&) {
     t.run("1. HAR 1.2 Telemetry & Timing Waterfall Serializer") { sub =>
         let timings = wing::RequestTimings {
             blocked_us: 100,
@@ -1486,7 +1489,7 @@ fn test_har_telemetry_and_isolation(t: core::T&) {
 // ----------------------------------------------------------------------------
 // 22. Hardened Security Layer Invariants (Audit Findings)
 // ----------------------------------------------------------------------------
-fn test_hardened_security_invariants(t: core::T&) {
+fn test_hardened_security_invariants(t: lit::T&) {
     t.run("Sharded GCRA Limiter Saturated Shard Fail-Closed Rejection") { sub =>
         let quota = wing::new_gcra_quota(1, core::seconds(1), 1);
         var limiter = wing::new_sharded_limiter(quota);
@@ -1584,35 +1587,35 @@ fn test_hardened_security_invariants(t: core::T&) {
 
 fn main() {
     let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
-    var runner = core::new_runner(title, core::Verbosity.Verbose);
+    var runner = lit::new_runner(title, lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. Cross-Origin Isolation & Subresource Policies", test_cross_origin_isolation);
-    core::run_case(runner, "2. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
-    core::run_case(runner, "3. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
-    core::run_case(runner, "4. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
-    core::run_case(runner, "5. Constant-Time CSRF Token Validation & OTP Mask Verification",
+    lit::run_case(runner, "1. Cross-Origin Isolation & Subresource Policies", test_cross_origin_isolation);
+    lit::run_case(runner, "2. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
+    lit::run_case(runner, "3. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
+    lit::run_case(runner, "4. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
+    lit::run_case(runner, "5. Constant-Time CSRF Token Validation & OTP Mask Verification",
         test_csrf_constant_time_tokens);
-    core::run_case(runner, "6. WaitGroup Capacity Limit", test_wait_group_capacity_and_completion);
-    core::run_case(runner, "7. Queue Bounds & Timeout Handling", test_queue_bounds_and_timeout);
-    core::run_case(runner, "8. Crash Diagnostics & Supervisor Pattern", test_crash_diagnostics_and_supervision);
-    core::run_case(runner, "9. Edge Filter Lifecycle and Evaluation", test_edge_filter_lifecycle_and_evaluation);
-    core::run_case(runner, "10. HSTS Header Directive Parsing", test_hsts_header_parsing);
-    core::run_case(runner, "11. Chromium Static Preload List & .dev/.app Auto-Upgrade",
+    lit::run_case(runner, "6. WaitGroup Capacity Limit", test_wait_group_capacity_and_completion);
+    lit::run_case(runner, "7. Queue Bounds & Timeout Handling", test_queue_bounds_and_timeout);
+    lit::run_case(runner, "8. Crash Diagnostics & Supervisor Pattern", test_crash_diagnostics_and_supervision);
+    lit::run_case(runner, "9. Edge Filter Lifecycle and Evaluation", test_edge_filter_lifecycle_and_evaluation);
+    lit::run_case(runner, "10. HSTS Header Directive Parsing", test_hsts_header_parsing);
+    lit::run_case(runner, "11. Chromium Static Preload List & .dev/.app Auto-Upgrade",
         test_hsts_preload_list_auto_upgrade);
-    core::run_case(runner, "12. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants",
+    lit::run_case(runner, "12. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants",
         test_dynamic_hsts_cache_lifecycle);
-    core::run_case(runner, "13. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
-    core::run_case(runner, "14. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
-    core::run_case(runner, "15. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
-    core::run_case(runner, "16. RFC 9116 security.txt Validation Matrix", test_security_txt_valid_matrix);
-    core::run_case(runner, "17. RFC 7838 Alt-Svc & H3 Promotion Engine", test_altsvc_and_h3_promotion);
-    core::run_case(runner, "18. RFC 8297 Early Hints & RFC 8470 0-RTT Anti-Replay", test_early_hints_and_replay_guard);
-    core::run_case(runner, "19. W3C No-Vary-Search Cache Normalization", test_no_vary_search_cache);
-    core::run_case(runner, "20. RFC 9297 HTTP Capsules & MASQUE CONNECT-UDP", test_masque_capsules_and_datagrams);
-    core::run_case(runner, "21. HAR 1.2 Telemetry Waterfall & Network Isolation Keys",
+    lit::run_case(runner, "13. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
+    lit::run_case(runner, "14. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
+    lit::run_case(runner, "15. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
+    lit::run_case(runner, "16. RFC 9116 security.txt Validation Matrix", test_security_txt_valid_matrix);
+    lit::run_case(runner, "17. RFC 7838 Alt-Svc & H3 Promotion Engine", test_altsvc_and_h3_promotion);
+    lit::run_case(runner, "18. RFC 8297 Early Hints & RFC 8470 0-RTT Anti-Replay", test_early_hints_and_replay_guard);
+    lit::run_case(runner, "19. W3C No-Vary-Search Cache Normalization", test_no_vary_search_cache);
+    lit::run_case(runner, "20. RFC 9297 HTTP Capsules & MASQUE CONNECT-UDP", test_masque_capsules_and_datagrams);
+    lit::run_case(runner, "21. HAR 1.2 Telemetry Waterfall & Network Isolation Keys",
         test_har_telemetry_and_isolation);
-    core::run_case(runner, "22. Hardened Security Layer Invariants", test_hardened_security_invariants);
+    lit::run_case(runner, "22. Hardened Security Layer Invariants", test_hardened_security_invariants);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }

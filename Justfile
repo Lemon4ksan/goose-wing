@@ -10,13 +10,13 @@ default:
 check:
     python tools/test_runner.py --check-only
 
-# Run test suites matching a pattern (defaults to all)
-test pattern="*":
-    python tools/test_runner.py --pattern "{{pattern}}"
+# Run test suites matching a pattern (defaults to all tests) via goose-lit
+test pattern="tests":
+    goose-lit "{{pattern}}"
 
 # Run native Goose LIT test suites matching a pattern
-lit pattern="*":
-    python scripts/test_lit.py "{{pattern}}"
+lit pattern="tests":
+    goose-lit "{{pattern}}"
 
 # Enforce hardware complexity gate on a file
 gate target max_gcrap="25":

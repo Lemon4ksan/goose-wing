@@ -1,3 +1,5 @@
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -6,8 +8,9 @@
 import std;
 import core from "..";
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
-fn test_grpc_lpm_framing(t: core::T&) {
+fn test_grpc_lpm_framing(t: lit::T&) {
     t.run("1. Uncompressed 5-Byte LPM Frame Encoding & Decoding") { sub =>
         let msg = "Hello gRPC Zero-Heap World!";
         var wire: u8[>..] = [];
@@ -124,7 +127,7 @@ fn test_grpc_lpm_framing(t: core::T&) {
     };
 }
 
-fn test_grpc_streaming_parser(t: core::T&) {
+fn test_grpc_streaming_parser(t: lit::T&) {
     t.run("1. Piecewise Fragmented Ingestion Across DATA Frame Chunks") { sub =>
         var parser = wing::new_grpc_stream_parser();
 
@@ -186,7 +189,7 @@ fn test_grpc_streaming_parser(t: core::T&) {
     };
 }
 
-fn test_grpc_status_and_metadata(t: core::T&) {
+fn test_grpc_status_and_metadata(t: lit::T&) {
     t.run("1. Canonical Status Code Mapping (0..16)") { sub =>
         sub.assert_eq(wing::grpc_status_to_code(wing::GrpcStatusCode.Ok), 0, "OK code 0");
         sub.assert_eq(wing::grpc_status_to_code(wing::GrpcStatusCode.Cancelled), 1, "Cancelled code 1");
@@ -302,7 +305,7 @@ fn test_grpc_status_and_metadata(t: core::T&) {
     };
 }
 
-fn test_grpc_web_framing(t: core::T&) {
+fn test_grpc_web_framing(t: lit::T&) {
     t.run("1. Trailers-in-Body Encoding with Flag 0x80") { sub =>
         var web_trailers: u8[>..] = [];
         wing::encode_grpc_web_trailers(wing::GrpcStatusCode.InvalidArgument, "invalid argument provided", web_trailers);
@@ -383,7 +386,7 @@ fn test_grpc_web_framing(t: core::T&) {
     };
 }
 
-fn test_grpc_client_rpc_exchange(t: core::T&) {
+fn test_grpc_client_rpc_exchange(t: lit::T&) {
     t.run("1. Request Header & Pseudo-Header Construction") { sub =>
         var cfg = wing::new_grpc_call_config("helloworld.Greeter", "SayHello");
         cfg.timeout_ms = 5000;
@@ -494,14 +497,14 @@ fn test_grpc_client_rpc_exchange(t: core::T&) {
 }
 
 fn main() {
-    var runner = core::new_runner("gRPC over HTTP/2, HTTP/3 & gRPC-Web Test Suite", core::Verbosity.Verbose);
+    var runner = lit::new_runner("gRPC over HTTP/2, HTTP/3 & gRPC-Web Test Suite", lit::Verbosity.Verbose);
 
-    core::run_case(runner, "1. gRPC LPM Binary Framing & Codec", test_grpc_lpm_framing);
-    core::run_case(runner, "2. gRPC Incremental Streaming Stream Parser", test_grpc_streaming_parser);
-    core::run_case(runner, "3. gRPC Status Codes, Timeout & Percent-Encoded Messages", test_grpc_status_and_metadata);
-    core::run_case(runner, "4. gRPC-Web Binary & Base64 Text Framing", test_grpc_web_framing);
-    core::run_case(runner, "5. gRPC Client Unary & Streaming RPC Exchange", test_grpc_client_rpc_exchange);
+    lit::run_case(runner, "1. gRPC LPM Binary Framing & Codec", test_grpc_lpm_framing);
+    lit::run_case(runner, "2. gRPC Incremental Streaming Stream Parser", test_grpc_streaming_parser);
+    lit::run_case(runner, "3. gRPC Status Codes, Timeout & Percent-Encoded Messages", test_grpc_status_and_metadata);
+    lit::run_case(runner, "4. gRPC-Web Binary & Base64 Text Framing", test_grpc_web_framing);
+    lit::run_case(runner, "5. gRPC Client Unary & Streaming RPC Exchange", test_grpc_client_rpc_exchange);
 
-    let ok = core::finish(runner);
+    let ok = lit::finish(runner);
     assert(ok);
 }
