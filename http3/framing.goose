@@ -3,7 +3,7 @@
 
 // Deterministic zero-allocation HTTP/3 Frame Codec and Stream Invariant Enforcer.
 // Conforms to RFC 9114 Section 7 (HTTP/3 Framing) and RFC 9204 Section 5.
-namespace wing;
+namespace internal;
 
 import std;
 
@@ -244,10 +244,10 @@ fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
 // ---- 6. RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
 
 // Encodes a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2, Type 0xF0700).
-fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const PriorityParam&) -> bool {
+fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, stream_id) else { return false; }
-    write_priority_param_rfc9218(prio, payload);
+    wing::write_priority_param_rfc9218(prio, payload);
     guard encode_h3_frame_header(out, H3_FRAME_PRIORITY_UPDATE_REQUEST, payload.len as u64) else { return false; }
     out.append(payload[..]);
     return true;
@@ -255,33 +255,47 @@ fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const Pri
 
 // Parses a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2).
 // Returns (prioritized_stream_id, PriorityParam, ok).
-fn parse_h3_priority_update_request(payload: const u8[:], default_incremental: bool = false) -> u64, PriorityParam, bool {
-    var prio = PriorityParam { urgency: 3, incremental: default_incremental };
+//
+// Example:
+//   payload = [0x04, 'u', '=', '3']
+//   returns: stream_id = 4, prio = { urgency: 3, incremental: false }, ok = true
+fn parse_h3_priority_update_request(
+    payload: const u8[:],
+    default_incremental: bool = false,
+) -> u64, wing::PriorityParam, bool {
+    var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len > 0 else { return 0, prio, false; }
     let stream_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
-    let parsed, _ = parse_priority_param_rfc9218(field_value, default_incremental);
+    let parsed, _ = wing::parse_priority_param_rfc9218(field_value, default_incremental);
     return stream_id, parsed, true;
 }
 
 // Encodes a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2, Type 0xF0701).
-fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const PriorityParam&) -> bool {
+fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::PriorityParam&) -> bool {
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, push_id) else { return false; }
-    write_priority_param_rfc9218(prio, payload);
+    wing::write_priority_param_rfc9218(prio, payload);
     guard encode_h3_frame_header(out, H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
     out.append(payload[..]);
     return true;
 }
 
 // Parses a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2).
-fn parse_h3_priority_update_push(payload: const u8[:], default_incremental: bool = false) -> u64, PriorityParam, bool {
-    var prio = PriorityParam { urgency: 3, incremental: default_incremental };
+//
+// Example:
+//   payload = [0x01, 'u', '=', '5']
+//   returns: push_id = 1, prio = { urgency: 5, incremental: false }, ok = true
+fn parse_h3_priority_update_push(
+    payload: const u8[:],
+    default_incremental: bool = false,
+) -> u64, wing::PriorityParam, bool {
+    var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len > 0 else { return 0, prio, false; }
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
-    let parsed, _ = parse_priority_param_rfc9218(field_value, default_incremental);
+    let parsed, _ = wing::parse_priority_param_rfc9218(field_value, default_incremental);
     return push_id, parsed, true;
 }

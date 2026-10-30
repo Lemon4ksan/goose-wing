@@ -4,7 +4,7 @@
 // QUIC Transport Framing, Packet Headers, Header Protection & Stream Reassembly (RFC 9000, RFC 9001).
 // Implements VarInt codecs, Long/Short header parsers, AES/ChaCha Header Protection,
 // packet number reconstruction, path anti-amplification 3x limits, and zero-heap reassembler.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

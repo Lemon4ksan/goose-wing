@@ -13,8 +13,8 @@ import wing from "../..";
 import wire_kit from ".";
 
 fn wing_verify_h2_preface(buf: const u8[:]) -> i32 {
-    guard buf.len >= wing::H2_CLIENT_PREFACE.len else { return 0; }
-    if buf[..wing::H2_CLIENT_PREFACE.len] == wing::H2_CLIENT_PREFACE {
+    guard buf.len >= internal::H2_CLIENT_PREFACE.len else { return 0; }
+    if buf[..internal::H2_CLIENT_PREFACE.len] == internal::H2_CLIENT_PREFACE {
         return 1;
     }
     return 0;
@@ -22,15 +22,15 @@ fn wing_verify_h2_preface(buf: const u8[:]) -> i32 {
 
 fn wing_parse_and_validate_h2_frame(buf: const u8[:], is_client: bool) -> i32 {
     guard buf.len >= 9 else { return -1; }
-    let hdr, err_hdr = wing::parse_frame_header(buf);
-    guard err_hdr == wing::ERR_NO_ERROR else { return err_hdr as! i32; }
+    let hdr, err_hdr = internal::parse_frame_header(buf);
+    guard err_hdr == internal::ERR_NO_ERROR else { return err_hdr as! i32; }
 
-    let err_rules = wing::validate_frame_header_rules(hdr);
-    guard err_rules == wing::ERR_NO_ERROR else { return err_rules as! i32; }
+    let err_rules = internal::validate_frame_header_rules(hdr);
+    guard err_rules == internal::ERR_NO_ERROR else { return err_rules as! i32; }
 
     // Client-initiated streams must be odd-numbered (RFC 9113 Section 5.1.1)
     if is_client && hdr.stream_id > 0 && (hdr.stream_id & 1) == 0 {
-        return wing::ERR_PROTOCOL_ERROR as! i32;
+        return internal::ERR_PROTOCOL_ERROR as! i32;
     }
 
     return 0;
@@ -39,7 +39,7 @@ fn wing_parse_and_validate_h2_frame(buf: const u8[:], is_client: bool) -> i32 {
 fn main() {
     let preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     assert(wing_verify_h2_preface(preface) == 1);
-    assert(wing_verify_h2_preface(wing::H2_CLIENT_PREFACE) == 1);
+    assert(wing_verify_h2_preface(internal::H2_CLIENT_PREFACE) == 1);
     print("H2_PREFACE: OK");
 
     var vSet: u8[>..] = []; wire_kit::parse_hex("000006040000000000", vSet);

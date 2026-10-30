@@ -12,32 +12,32 @@ import core from "../..";
 import wing from "../..";
 import wire_kit from ".";
 
-// Wire adapter for verify_split_stream and fuzzing using wing::hpack_decode_int (5-bit prefix)
+// Wire adapter for verify_split_stream and fuzzing using internal::hpack_decode_int (5-bit prefix)
 fn wing_decode_varint_5(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let val, new_off, ok = wing::hpack_decode_int(buf, 0, 5);
+    let val, new_off, ok = internal::hpack_decode_int(buf, 0, 5);
     if ok { return val as! i64; }
     if new_off == 0 { return -1; }
     return -2;
 }
 
-// Wire adapter for verify_split_stream and fuzzing using wing::hpack_decode_int (7-bit prefix)
+// Wire adapter for verify_split_stream and fuzzing using internal::hpack_decode_int (7-bit prefix)
 fn wing_decode_varint_7(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let val, new_off, ok = wing::hpack_decode_int(buf, 0, 7);
+    let val, new_off, ok = internal::hpack_decode_int(buf, 0, 7);
     if ok { return val as! i64; }
     if new_off == 0 { return -1; }
     return -2;
 }
 
-// Wire adapter for verify_split_stream and fuzzing using wing::decode_hpack_string
+// Wire adapter for verify_split_stream and fuzzing using internal::decode_hpack_string
 fn wing_parse_hpack_string_frame(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
     var out: u8[..4096] = [];
-    let next_off, ok = wing::decode_hpack_string(buf, 0, out);
+    let next_off, ok = internal::decode_hpack_string(buf, 0, out);
     if ok {
         let is_huff = (buf[0] & 0x80) != 0;
-        let str_len, _, _ = wing::hpack_decode_int(buf, 0, 7);
+        let str_len, _, _ = internal::hpack_decode_int(buf, 0, 7);
         return if is_huff { 0 - (str_len as i64) } else { str_len as i64 };
     }
     return -1;

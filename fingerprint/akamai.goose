@@ -548,29 +548,29 @@ fn extract_akamai_from_wire(
 
     var offset: i64 = 0;
     // Skip 24-byte client connection preface if present
-    if wire_bytes.len >= 24 && bytes_eq(wire_bytes[0..24], H2_CLIENT_PREFACE[..]) {
+    if wire_bytes.len >= 24 && bytes_eq(wire_bytes[0..24], internal::H2_CLIENT_PREFACE[..]) {
         offset = 24;
     }
 
     var found_settings = false;
 
     while (wire_bytes.len - offset) >= 9 {
-        let hdr, err = parse_frame_header(wire_bytes[offset..wire_bytes.len]);
-        if err != ERR_NO_ERROR {
+        let hdr, err = internal::parse_frame_header(wire_bytes[offset..wire_bytes.len]);
+        if err != internal::ERR_NO_ERROR {
             break;
         }
         let frame_total_len = 9 + (hdr.length as i64);
         guard (wire_bytes.len - offset) >= frame_total_len else { break; }
 
         // Connection handshake phase ends on first HEADERS or DATA frame
-        if hdr.frame_type == FRAME_HEADERS || hdr.frame_type == FRAME_DATA {
+        if hdr.frame_type == internal::FRAME_HEADERS || hdr.frame_type == internal::FRAME_DATA {
             break;
         }
 
         let payload = wire_bytes[(offset + 9)..(offset + frame_total_len)];
 
         // SETTINGS Frame (Type 0x04) on Stream 0 (non-ACK)
-        if hdr.frame_type == FRAME_SETTINGS && hdr.stream_id == 0 && (hdr.flags & FLAG_ACK) == 0 {
+        if hdr.frame_type == internal::FRAME_SETTINGS && hdr.stream_id == 0 && (hdr.flags & internal::FLAG_ACK) == 0 {
             guard (hdr.length % 6) == 0 else { return fp, false; }
             found_settings = true;
             let num_settings = (hdr.length / 6) as i64;
@@ -588,7 +588,7 @@ fn extract_akamai_from_wire(
         }
 
         // WINDOW_UPDATE Frame (Type 0x08) on Stream 0
-        if hdr.frame_type == FRAME_WINDOW_UPDATE && hdr.stream_id == 0 && hdr.length == 4 {
+        if hdr.frame_type == internal::FRAME_WINDOW_UPDATE && hdr.stream_id == 0 && hdr.length == 4 {
             let inc = (((payload[0] & 0x7F) as u32) << 24) |
                       ((payload[1] as u32) << 16) |
                       ((payload[2] as u32) << 8) |
@@ -597,7 +597,7 @@ fn extract_akamai_from_wire(
         }
 
         // PRIORITY Frame (Type 0x02)
-        if hdr.frame_type == FRAME_PRIORITY && hdr.length == 5 {
+        if hdr.frame_type == internal::FRAME_PRIORITY && hdr.length == 5 {
             let exclusive = (payload[0] >> 7) & 1;
             let dep_id = (((payload[0] & 0x7F) as u32) << 24) |
                          ((payload[1] as u32) << 16) |
@@ -638,13 +638,13 @@ fn extract_akamai_from_wire(
 fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
     // 1. SETTINGS Frame (Stream 0)
     let settings_payload_len = (fp.settings.len * 6) as u32;
-    var settings_hdr = FrameHeader {
+    var settings_hdr = internal::FrameHeader {
         length: settings_payload_len,
-        frame_type: FRAME_SETTINGS,
+        frame_type: internal::FRAME_SETTINGS,
         flags: 0,
         stream_id: 0,
     };
-    encode_frame_header_to(settings_hdr, out);
+    internal::encode_frame_header_to(settings_hdr, out);
 
     for &s in fp.settings {
         out.push(((s.id >> 8) & 0xFF) as u8);
@@ -658,13 +658,13 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
 
     // 2. WINDOW_UPDATE Frame (Stream 0) if increment > 0
     if fp.window_update > 0 {
-        var wu_hdr = FrameHeader {
+        var wu_hdr = internal::FrameHeader {
             length: 4,
-            frame_type: FRAME_WINDOW_UPDATE,
+            frame_type: internal::FRAME_WINDOW_UPDATE,
             flags: 0,
             stream_id: 0,
         };
-        encode_frame_header_to(wu_hdr, out);
+        internal::encode_frame_header_to(wu_hdr, out);
 
         let inc = fp.window_update & 0x7FFFFFFF;
         out.push(((inc >> 24) & 0x7F) as u8);
@@ -675,13 +675,13 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
 
     // 3. PRIORITY Frames (if declared)
     for &p in fp.priority_frames {
-        var p_hdr = FrameHeader {
+        var p_hdr = internal::FrameHeader {
             length: 5,
-            frame_type: FRAME_PRIORITY,
+            frame_type: internal::FRAME_PRIORITY,
             flags: 0,
             stream_id: p.stream_id,
         };
-        encode_frame_header_to(p_hdr, out);
+        internal::encode_frame_header_to(p_hdr, out);
 
         let excl_bit = ((p.exclusive & 1) as u32) << 31;
         let dep = (p.dep_stream_id & 0x7FFFFFFF) | excl_bit;

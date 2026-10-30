@@ -903,15 +903,15 @@ fn test_client_certificate_verify_ed25519(t: core::T&) {
 
 fn test_post_quantum_hybrid(t: core::T&) {
     t.run("IANA NamedGroup Recognition") { sub =>
-        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
-        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
-        sub.assert_false(wing::is_post_quantum_group(0x001D), "0x001D (X25519 classical) is NOT PQ group");
-        sub.assert_false(wing::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
+        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
+        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
+        sub.assert_false(internal::is_post_quantum_group(0x001D), "0x001D (X25519 classical) is NOT PQ group");
+        sub.assert_false(internal::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
     };
 
     t.run("Hybrid 1184-Byte Client Key Share Wire Codec") { sub =>
-        var share = wing::PostQuantumKeyShare {
-            group: wing::GROUP_X25519_MLKEM768,
+        var share = internal::PostQuantumKeyShare {
+            group: internal::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { share.x25519_public[i] = (i + 1) as u8; }
@@ -922,10 +922,10 @@ fn test_post_quantum_hybrid(t: core::T&) {
         // group (2) + len (2) + 1184 = 1188 bytes total
         sub.assert_eq(wire.len, 1188, "Wire length is exactly 1188 bytes");
 
-        var parsed = wing::PostQuantumKeyShare { .. };
+        var parsed = internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Hybrid key share parsed via UFCS");
-        sub.assert_eq(parsed.group, wing::GROUP_X25519_MLKEM768, "Group is 0x11EC");
+        sub.assert_eq(parsed.group, internal::GROUP_X25519_MLKEM768, "Group is 0x11EC");
         sub.assert_bytes_eq(parsed.x25519_public[..], share.x25519_public[..], "X25519 component matches");
 
         var mlkem_match = true;
@@ -938,7 +938,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
         sub.assert_true(mlkem_match, "ML-KEM-768 1152-byte component matches verbatim");
 
         // Edge cases
-        var bad_parsed = wing::PostQuantumKeyShare { .. };
+        var bad_parsed = internal::PostQuantumKeyShare { .. };
         sub.assert_false(bad_parsed.parse_hybrid_key_share(wire[..10]), "Truncated wire fails");
 
         var corrupt_wire: u8[>..] = [];
@@ -949,8 +949,8 @@ fn test_post_quantum_hybrid(t: core::T&) {
     };
 
     t.run("Hybrid 1120-Byte Server Key Share Wire Codec") { sub =>
-        var server_share = wing::PostQuantumServerShare {
-            group: wing::GROUP_X25519_MLKEM768,
+        var server_share = internal::PostQuantumServerShare {
+            group: internal::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { server_share.x25519_public[i] = (i + 5) as u8; }
@@ -961,10 +961,10 @@ fn test_post_quantum_hybrid(t: core::T&) {
         // group (2) + len (2) + 1120 = 1124 bytes total
         sub.assert_eq(wire.len, 1124, "Server wire length is exactly 1124 bytes");
 
-        var parsed_server = wing::PostQuantumServerShare { .. };
+        var parsed_server = internal::PostQuantumServerShare { .. };
         let ok_parse = parsed_server.parse_hybrid_server_key_share(wire[..]);
         sub.assert_true(ok_parse, "Server hybrid key share parsed via UFCS");
-        sub.assert_eq(parsed_server.group, wing::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
+        sub.assert_eq(parsed_server.group, internal::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
         sub.assert_bytes_eq(parsed_server.x25519_public[..], server_share.x25519_public[..], "Server X25519 component matches");
 
         var ct_match = true;
@@ -977,7 +977,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
         sub.assert_true(ct_match, "ML-KEM-768 1088-byte ciphertext matches verbatim");
 
         // Edge case
-        var bad_parsed = wing::PostQuantumServerShare { .. };
+        var bad_parsed = internal::PostQuantumServerShare { .. };
         sub.assert_false(bad_parsed.parse_hybrid_server_key_share(wire[..500]), "Truncated server wire fails");
     };
 
@@ -991,7 +991,7 @@ fn test_post_quantum_hybrid(t: core::T&) {
             49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
         ];
 
-        let combined_secret = wing::derive_hybrid_shared_secret(classical_ss, pq_ss);
+        let combined_secret = internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
         var zero_cnt = 0;
         for b in combined_secret {
             if b == 0 { zero_cnt += 1; }

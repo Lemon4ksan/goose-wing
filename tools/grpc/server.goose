@@ -70,7 +70,7 @@ fn grpc_test_unary_handler(
 }
 
 fn emit_grpc_h2_headers<B>(
-    hpack_enc: wing::DynamicTable&,
+    hpack_enc: internal::DynamicTable&,
     stream_id: u32,
     res: const wing::Response&,
     end_stream: bool,
@@ -78,14 +78,14 @@ fn emit_grpc_h2_headers<B>(
 ) {
     var hpack_block: u8[..4096] = [];
     var status_buf: u8[..16] = "200";
-    wing::encode_hpack_field(hpack_enc, hpack_block, ":status", status_buf[..], true, false);
-    wing::encode_hpack_field(hpack_enc, hpack_block, "content-type", "application/grpc", true, false);
+    internal::encode_hpack_field(hpack_enc, hpack_block, ":status", status_buf[..], true, false);
+    internal::encode_hpack_field(hpack_enc, hpack_block, "content-type", "application/grpc", true, false);
 
     for &hdr in res.headers {
         let n = hdr.name[..];
         let v = hdr.value[..];
         if !core::eq_ascii_fold(n, "content-type") && !core::starts_with_fold(n, ":") {
-            wing::encode_hpack_field(hpack_enc, hpack_block, n, v, true, false);
+            internal::encode_hpack_field(hpack_enc, hpack_block, n, v, true, false);
         }
     }
 
@@ -94,13 +94,13 @@ fn emit_grpc_h2_headers<B>(
         flags = flags | 1; // FLAG_END_STREAM
     }
 
-    let hdr = wing::FrameHeader {
+    let hdr = internal::FrameHeader {
         length: hpack_block.len as u32,
         frame_type: 1, // HEADERS
         flags: flags,
         stream_id: stream_id,
     };
-    wing::encode_frame_header_to(hdr, out);
+    internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
 }
 
@@ -116,35 +116,35 @@ fn emit_grpc_h2_data<B>(
         flags = flags | 1;
     }
 
-    let hdr = wing::FrameHeader {
+    let hdr = internal::FrameHeader {
         length: body.len as u32,
         frame_type: 0, // DATA
         flags: flags,
         stream_id: stream_id,
     };
-    wing::encode_frame_header_to(hdr, out);
+    internal::encode_frame_header_to(hdr, out);
     out.append(body);
 }
 
 fn emit_grpc_h2_trailers<B>(
-    hpack_enc: wing::DynamicTable&,
+    hpack_enc: internal::DynamicTable&,
     stream_id: u32,
     trailers: const wing::HeaderItem[..16]&,
     out: B&,
 ) {
     var hpack_block: u8[..4096] = [];
     for &t in trailers {
-        wing::encode_hpack_field(hpack_enc, hpack_block, t.name[..], t.value[..], true, false);
+        internal::encode_hpack_field(hpack_enc, hpack_block, t.name[..], t.value[..], true, false);
     }
 
     let flags: u8 = 4 | 1; // FLAG_END_HEADERS | FLAG_END_STREAM
-    let hdr = wing::FrameHeader {
+    let hdr = internal::FrameHeader {
         length: hpack_block.len as u32,
         frame_type: 1, // HEADERS
         flags: flags,
         stream_id: stream_id,
     };
-    wing::encode_frame_header_to(hdr, out);
+    internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
 }
 
@@ -158,8 +158,8 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
     ];
     wing::tcp_send(conn, server_settings_wire[..]);
 
-    var hpack_dec = wing::new_dynamic_table(4096);
-    var hpack_enc = wing::new_dynamic_table(4096);
+    var hpack_dec = internal::new_dynamic_table(4096);
+    var hpack_enc = internal::new_dynamic_table(4096);
 
     var in_buf: u8[>..] = [];
     if initial_buf.len > 24 {
@@ -193,7 +193,7 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
                     wing::tcp_send(conn, pong[..]);
                 }
             } else if frame_type == 1 { // HEADERS
-                var dec_list = wing::DecodedH2HeaderList { .. };
+                var dec_list = internal::DecodedH2HeaderList { .. };
                 var pad_offset: i64 = 0;
                 var pay_end: i64 = payload.len;
                 if (flags & 8) != 0 && payload.len > 0 {
@@ -207,7 +207,7 @@ fn handle_grpc_h2_session(conn: i64, initial_buf: const u8[:], dispatcher: wing:
 
                 if pad_offset <= pay_end {
                     let frag = payload[pad_offset..pay_end];
-                    wing::decode_hpack_header_block(hpack_dec, frag, dec_list);
+                    internal::decode_hpack_header_block(hpack_dec, frag, dec_list);
                 }
 
                 var req = wing::new_request("POST", "");

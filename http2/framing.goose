@@ -3,7 +3,7 @@
 
 // HTTP/2 binary framing layer and RFC 9218 extensible prioritization (RFC 9113, RFC 9218).
 // Zero-allocation frame header parsing, stream ID validation, and Structured Field priority codecs.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";
@@ -303,8 +303,8 @@ fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool
 fn parse_priority_update_payload(
     payload: const u8[:],
     default_incremental: bool = false,
-) -> u32, PriorityParam, u32 {
-    var p = priority_default(default_incremental);
+) -> u32, wing::PriorityParam, u32 {
+    var p = wing::priority_default(default_incremental);
     guard payload.len >= 4 else {
         return 0, p, ERR_FRAME_SIZE_ERROR;
     }
@@ -319,12 +319,12 @@ fn parse_priority_update_payload(
     }
 
     let field_value = payload[4..];
-    let parsed, _ = parse_http_priority(field_value, default_incremental);
+    let parsed, _ = wing::parse_http_priority(field_value, default_incremental);
     return prioritized_stream_id, parsed, ERR_NO_ERROR;
 }
 
 // Encodes PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
-fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const PriorityParam&, out: B&) {
+fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const wing::PriorityParam&, out: B&) {
     let id_bytes: u8[4] = [
         ((prioritized_stream_id >> 24) & 0x7F) as u8,
         ((prioritized_stream_id >> 16) & 0xFF) as u8,
@@ -332,5 +332,5 @@ fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const Pri
         (prioritized_stream_id & 0xFF) as u8,
     ];
     out.append(id_bytes[..]);
-    serialize_http_priority(prio, out);
+    wing::serialize_http_priority(prio, out);
 }

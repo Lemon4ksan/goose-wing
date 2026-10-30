@@ -15,7 +15,7 @@ import wire_kit from ".";
 // Wire adapter for verify_split_stream and fuzzing using wing's real hpack_decode_int
 fn wing_decode_hpack_int_5(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let val, new_off, ok = wing::hpack_decode_int(buf, 0, 5);
+    let val, new_off, ok = internal::hpack_decode_int(buf, 0, 5);
     if ok {
         return val as! i64;
     }

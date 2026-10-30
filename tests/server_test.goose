@@ -397,7 +397,7 @@ fn test_standalone_http_server(t: core::T&) {
 
         // Client sends RFC 9113 24-byte preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
         var wire_h2: u8[>..] = [];
-        wire_h2.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_h2.append(internal::H2_CLIENT_PREFACE[..]);
 
         var server_h2_resp: u8[>..] = [];
         let outcome_h2, ok_h2 = wing::handle_connection_wire(server, "127.0.0.1", wire_h2[..], 1000000000, server_h2_resp);
@@ -405,7 +405,7 @@ fn test_standalone_http_server(t: core::T&) {
         sub.assert_true(ok_h2, "HTTP/2 preface detected");
         sub.assert_eq(outcome_h2, wing::PipelineOutcome.Handled, "Handled");
         sub.assert_eq(server_h2_resp.len, 33, "Server responded with 33-byte HTTP/2 SETTINGS frame");
-        sub.assert_eq(server_h2_resp[3], wing::FRAME_SETTINGS, "Frame type is SETTINGS (0x04)");
+        sub.assert_eq(server_h2_resp[3], internal::FRAME_SETTINGS, "Frame type is SETTINGS (0x04)");
     };
 
     t.run("4. Incremental PipeBuffer Sans-IO Stream Parsing & Monotonicity") { sub =>

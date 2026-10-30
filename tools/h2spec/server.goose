@@ -8,7 +8,7 @@ import core from "../..";
 import wing from "../..";
 
 fn handle_h2_session(conn: i64, initial_buf: const u8[:]) {
-    var sess = wing::new_h2_server_session("goose-h2spec/1.0", 1000);
+    var sess = internal::new_h2_server_session("goose-h2spec/1.0", 1000);
     var pipeline = wing::new_default_server_pipeline_config("127.0.0.1");
     var timer = internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/", 100);
@@ -22,7 +22,7 @@ fn handle_h2_session(conn: i64, initial_buf: const u8[:]) {
     var now_ms: u64 = 1000;
     while true {
         var out_wire: u8[>..] = [];
-        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h2_in[..], now_ms, out_wire);
+        let consumed, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h2_in[..], now_ms, out_wire);
 
         if out_wire.len > 0 {
             wing::tcp_send(conn, out_wire[..]);

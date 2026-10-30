@@ -381,7 +381,7 @@ fn test_akamai_wire_framing_roundtrip(t: core::T&) {
         // 1. Serialize wire frames
         var wire_buf: u8[>..] = [];
         // Add HTTP/2 preface first
-        wire_buf.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_buf.append(internal::H2_CLIENT_PREFACE[..]);
         // Encode handshake frames: SETTINGS + WINDOW_UPDATE
         wing::encode_akamai_handshake_frames(chrome_fp, wire_buf);
 

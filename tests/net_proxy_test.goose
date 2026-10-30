@@ -1508,10 +1508,10 @@ fn test_rfc9297_capsules_and_datagrams(t: core::T&) {
 
         // QUIC DATAGRAM frame (RFC 9221 Type 0x31 with length)
         var quic_frame_wire: u8[>..] = [];
-        let frame_ok = wing::encode_quic_datagram_frame(quic_frame_wire, dgram_wire[..], true);
+        let frame_ok = internal::encode_quic_datagram_frame(quic_frame_wire, dgram_wire[..], true);
         sub.assert_true(frame_ok, "encode_quic_datagram_frame ok");
 
-        let parsed_dgram, end_off, frame_dec_ok = wing::decode_quic_datagram_frame(quic_frame_wire[..], 0);
+        let parsed_dgram, end_off, frame_dec_ok = internal::decode_quic_datagram_frame(quic_frame_wire[..], 0);
         sub.assert_true(frame_dec_ok, "decode_quic_datagram_frame ok");
         sub.assert_bytes_eq(parsed_dgram, dgram_wire[..], "Datagram bytes match inside QUIC frame");
     };

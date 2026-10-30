@@ -36,7 +36,7 @@ fn parse_quic_stream_header(
     var cur = offset;
     guard cur < limit else { return 0, 0, 0, false, false, offset, false; }
 
-    let ftype, next_cur, ok_type = wing::quic_decode_varint(src, cur);
+    let ftype, next_cur, ok_type = internal::quic_decode_varint(src, cur);
     guard ok_type && ftype >= 0x08 && ftype <= 0x0F else {
         return 0, 0, 0, false, false, offset, false;
     }
@@ -46,13 +46,13 @@ fn parse_quic_stream_header(
     let has_len = (ftype & 0x02) != 0;
     let is_fin = (ftype & 0x01) != 0;
 
-    let stream_id, cur_sid, ok_sid = wing::quic_decode_varint(src, cur);
+    let stream_id, cur_sid, ok_sid = internal::quic_decode_varint(src, cur);
     guard ok_sid else { return 0, 0, 0, false, false, offset, false; }
     cur = cur_sid;
 
     var stream_off: u64 = 0;
     if has_off {
-        let off_val, cur_off, ok_off = wing::quic_decode_varint(src, cur);
+        let off_val, cur_off, ok_off = internal::quic_decode_varint(src, cur);
         guard ok_off else { return 0, 0, 0, false, false, offset, false; }
         stream_off = off_val;
         cur = cur_off;
@@ -60,7 +60,7 @@ fn parse_quic_stream_header(
 
     var data_len: u64 = 0;
     if has_len {
-        let len_val, cur_len, ok_len = wing::quic_decode_varint(src, cur);
+        let len_val, cur_len, ok_len = internal::quic_decode_varint(src, cur);
         guard ok_len else { return 0, 0, 0, false, false, offset, false; }
         data_len = len_val;
         cur = cur_len;
@@ -120,13 +120,13 @@ fn encode_quic_stream_frame<B>(
     payload: const u8[:],
 ) -> bool {
     let ftype: u64 = 0x08 | ((flags & 0x07) as u64);
-    guard wing::quic_encode_varint(out, ftype) else { return false; }
-    guard wing::quic_encode_varint(out, stream_id) else { return false; }
+    guard internal::quic_encode_varint(out, ftype) else { return false; }
+    guard internal::quic_encode_varint(out, stream_id) else { return false; }
     if (flags & 0x04) != 0 {
-        guard wing::quic_encode_varint(out, offset) else { return false; }
+        guard internal::quic_encode_varint(out, offset) else { return false; }
     }
     if (flags & 0x02) != 0 {
-        guard wing::quic_encode_varint(out, payload.len as u64) else { return false; }
+        guard internal::quic_encode_varint(out, payload.len as u64) else { return false; }
     }
     out.append(payload);
     return true;
@@ -149,56 +149,56 @@ fn test_quic_varint_pathological() {
     // 1. Minimum and Maximum RFC 9000 VarInt values across all 4 encodings
     // 1-byte: 0, 63
     var buf1: u8[>..] = [];
-    assert(wing::quic_encode_varint(buf1, 0));
-    assert(wing::quic_encode_varint(buf1, 63));
+    assert(internal::quic_encode_varint(buf1, 0));
+    assert(internal::quic_encode_varint(buf1, 63));
     assert(buf1.len == 2);
-    let v0, o1, ok0 = wing::quic_decode_varint(buf1[..], 0);
-    let v63, o2, ok63 = wing::quic_decode_varint(buf1[..], o1);
+    let v0, o1, ok0 = internal::quic_decode_varint(buf1[..], 0);
+    let v63, o2, ok63 = internal::quic_decode_varint(buf1[..], o1);
     assert(ok0 && v0 == 0 && ok63 && v63 == 63 && o2 == 2);
 
     // 2-byte: 64, 16383
     var buf2: u8[>..] = [];
-    assert(wing::quic_encode_varint(buf2, 64));
-    assert(wing::quic_encode_varint(buf2, 16383));
+    assert(internal::quic_encode_varint(buf2, 64));
+    assert(internal::quic_encode_varint(buf2, 16383));
     assert(buf2.len == 4);
-    let v64, o3, ok64 = wing::quic_decode_varint(buf2[..], 0);
-    let v16k, o4, ok16k = wing::quic_decode_varint(buf2[..], o3);
+    let v64, o3, ok64 = internal::quic_decode_varint(buf2[..], 0);
+    let v16k, o4, ok16k = internal::quic_decode_varint(buf2[..], o3);
     assert(ok64 && v64 == 64 && ok16k && v16k == 16383 && o4 == 4);
 
     // 4-byte: 16384, 1073741823
     var buf4: u8[>..] = [];
-    assert(wing::quic_encode_varint(buf4, 16384));
-    assert(wing::quic_encode_varint(buf4, 1073741823));
+    assert(internal::quic_encode_varint(buf4, 16384));
+    assert(internal::quic_encode_varint(buf4, 1073741823));
     assert(buf4.len == 8);
-    let v164, o5, ok164 = wing::quic_decode_varint(buf4[..], 0);
-    let v1g, o6, ok1g = wing::quic_decode_varint(buf4[..], o5);
+    let v164, o5, ok164 = internal::quic_decode_varint(buf4[..], 0);
+    let v1g, o6, ok1g = internal::quic_decode_varint(buf4[..], o5);
     assert(ok164 && v164 == 16384 && ok1g && v1g == 1073741823 && o6 == 8);
 
     // 8-byte: 1073741824, 0x3FFFFFFFFFFFFFFF (2^62 - 1)
     var buf8: u8[>..] = [];
-    assert(wing::quic_encode_varint(buf8, 1073741824));
-    assert(wing::quic_encode_varint(buf8, 0x3FFFFFFFFFFFFFFF));
+    assert(internal::quic_encode_varint(buf8, 1073741824));
+    assert(internal::quic_encode_varint(buf8, 0x3FFFFFFFFFFFFFFF));
     assert(buf8.len == 16);
-    let v1g1, o7, ok1g1 = wing::quic_decode_varint(buf8[..], 0);
-    let vmax, o8, okmax = wing::quic_decode_varint(buf8[..], o7);
+    let v1g1, o7, ok1g1 = internal::quic_decode_varint(buf8[..], 0);
+    let vmax, o8, okmax = internal::quic_decode_varint(buf8[..], o7);
     assert(ok1g1 && v1g1 == 1073741824 && okmax && vmax == 0x3FFFFFFFFFFFFFFF && o8 == 16);
 
     // 2. Reject integer exceeding 62-bit RFC 9000 limit
     var buf_ovf: u8[>..] = [];
-    let ok_ovf = wing::quic_encode_varint(buf_ovf, 0x4000000000000000);
+    let ok_ovf = internal::quic_encode_varint(buf_ovf, 0x4000000000000000);
     assert(!ok_ovf);
 
     // 3. Truncated VarInt byte streams (Buffer underrun defense)
     let trunc_2byte: const u8[1] = [0x40];
-    let _, _, ok_tr2 = wing::quic_decode_varint(trunc_2byte[..], 0);
+    let _, _, ok_tr2 = internal::quic_decode_varint(trunc_2byte[..], 0);
     assert(!ok_tr2);
 
     let trunc_4byte: const u8[2] = [0x80, 0x01];
-    let _, _, ok_tr4 = wing::quic_decode_varint(trunc_4byte[..], 0);
+    let _, _, ok_tr4 = internal::quic_decode_varint(trunc_4byte[..], 0);
     assert(!ok_tr4);
 
     let trunc_8byte: const u8[5] = [0xC0, 0x01, 0x02, 0x03, 0x04];
-    let _, _, ok_tr8 = wing::quic_decode_varint(trunc_8byte[..], 0);
+    let _, _, ok_tr8 = internal::quic_decode_varint(trunc_8byte[..], 0);
     assert(!ok_tr8);
 
     print("VARINT_BOUNDS: OK max_62bit=4611686018427387903 trunc_rejected=true");
@@ -264,10 +264,10 @@ fn test_quic_stream_zero_length() {
     assert(f_off_fin.is_fin);
 
     // 4. Stream ID Classification (RFC 9000 §2.1)
-    let s0_bidi_c = wing::quic_is_client_stream(0) && wing::quic_is_bidi_stream(0);
-    let s1_bidi_s = wing::quic_is_server_stream(1) && wing::quic_is_bidi_stream(1);
-    let s2_uni_c = wing::quic_is_client_stream(2) && wing::quic_is_uni_stream(2);
-    let s3_uni_s = wing::quic_is_server_stream(3) && wing::quic_is_uni_stream(3);
+    let s0_bidi_c = internal::quic_is_client_stream(0) && internal::quic_is_bidi_stream(0);
+    let s1_bidi_s = internal::quic_is_server_stream(1) && internal::quic_is_bidi_stream(1);
+    let s2_uni_c = internal::quic_is_client_stream(2) && internal::quic_is_uni_stream(2);
+    let s3_uni_s = internal::quic_is_server_stream(3) && internal::quic_is_uni_stream(3);
     assert(s0_bidi_c && s1_bidi_s && s2_uni_c && s3_uni_s);
 
     print("STREAM_ZERO_LENGTH: empty_ok=", ok_empty, " fin_ok=", ok_fin, " off_fin_ok=", ok_off_fin, " stream_ids_ok=true");
@@ -279,19 +279,19 @@ fn test_quic_stream_zero_length() {
 fn test_quic_stream_truncation_attacks() {
     // 1. Truncation attack: Length field claims 100 bytes, but wire only holds 10 bytes
     var wire_trunc: u8[>..] = [];
-    assert(wing::quic_encode_varint(wire_trunc, 0x0A));
-    assert(wing::quic_encode_varint(wire_trunc, 4));
-    assert(wing::quic_encode_varint(wire_trunc, 100));
+    assert(internal::quic_encode_varint(wire_trunc, 0x0A));
+    assert(internal::quic_encode_varint(wire_trunc, 4));
+    assert(internal::quic_encode_varint(wire_trunc, 100));
     wire_trunc.append("0123456789");
     let _, _, ok_trunc = parse_quic_stream_frame(wire_trunc[..], 0);
     assert(!ok_trunc);
 
     // 2. Stream offset + length overflow (> 2^62 - 1)
     var wire_ovf: u8[>..] = [];
-    assert(wing::quic_encode_varint(wire_ovf, 0x0E));
-    assert(wing::quic_encode_varint(wire_ovf, 4));
-    assert(wing::quic_encode_varint(wire_ovf, 0x3FFFFFFFFFFFFFF0));
-    assert(wing::quic_encode_varint(wire_ovf, 32));
+    assert(internal::quic_encode_varint(wire_ovf, 0x0E));
+    assert(internal::quic_encode_varint(wire_ovf, 4));
+    assert(internal::quic_encode_varint(wire_ovf, 0x3FFFFFFFFFFFFFF0));
+    assert(internal::quic_encode_varint(wire_ovf, 32));
     wire_ovf.resize((wire_ovf.len + 32) as i64, 0);
     let _, _, ok_ovf = parse_quic_stream_frame(wire_ovf[..], 0);
     assert(!ok_ovf);
@@ -310,51 +310,51 @@ fn test_quic_stream_truncation_attacks() {
 
 // crap:trusted-bounds
 fn test_quic_stream_reassembly_chaos() {
-    var r_buf = wing::new_reassembly_buffer(1048576);
+    var r_buf = internal::new_reassembly_buffer(1048576);
 
     // 1. In-order arrival: [0, 5) -> "HELLO"
-    let ok1 = wing::insert_fragment(r_buf, 0, "HELLO", false);
+    let ok1 = internal::insert_fragment(r_buf, 0, "HELLO", false);
     assert(ok1);
 
     // 2. Out-of-order gap: [10, 15) -> "QUIC!" with FIN
-    let ok2 = wing::insert_fragment(r_buf, 10, "QUIC!", true);
+    let ok2 = internal::insert_fragment(r_buf, 10, "QUIC!", true);
     assert(ok2);
     assert(r_buf.fin_received);
     assert(r_buf.final_size == 15);
 
     // 3. Contiguous read from head: should only yield first 5 bytes due to gap at [5, 10)
     var out1: u8[>..] = [];
-    let r1 = wing::read_contiguous(r_buf, out1);
+    let r1 = internal::read_contiguous(r_buf, out1);
     assert(r1 == 5);
     assert(out1 == "HELLO");
     assert(r_buf.consumed_offset == 5);
 
     // 4. Final Size Violation attack 1: Inject data exceeding established final size 15
-    let ok_bad_data = wing::insert_fragment(r_buf, 12, "OVERFLOW_AFTER_FIN", false);
+    let ok_bad_data = internal::insert_fragment(r_buf, 12, "OVERFLOW_AFTER_FIN", false);
     assert(!ok_bad_data);
 
     // 5. Final Size Violation attack 2: Re-declare differing FIN at offset 20 != 15
-    let ok_diff_fin = wing::insert_fragment(r_buf, 10, "DIFFERENT_FINAL_SZ", true);
+    let ok_diff_fin = internal::insert_fragment(r_buf, 10, "DIFFERENT_FINAL_SZ", true);
     assert(!ok_diff_fin);
 
     // 6. Fill the missing gap: [5, 10) -> " RFC "
-    let ok3 = wing::insert_fragment(r_buf, 5, " RFC ", false);
+    let ok3 = internal::insert_fragment(r_buf, 5, " RFC ", false);
     assert(ok3);
 
     // 7. Contiguous read tail: reads remaining 10 bytes up to final size 15
     var out2: u8[>..] = [];
-    let r2 = wing::read_contiguous(r_buf, out2);
+    let r2 = internal::read_contiguous(r_buf, out2);
     assert(r2 == 10);
     assert(out2 == " RFC QUIC!");
     assert(r_buf.consumed_offset == 15);
 
     // 8. Reassembly interval overlap and duplicates
-    var r_buf2 = wing::new_reassembly_buffer(1048576);
-    assert(wing::insert_fragment(r_buf2, 0, "ABCDEF", false));
-    assert(wing::insert_fragment(r_buf2, 3, "DEFGHI", false));
-    assert(wing::insert_fragment(r_buf2, 0, "ABC", false));
+    var r_buf2 = internal::new_reassembly_buffer(1048576);
+    assert(internal::insert_fragment(r_buf2, 0, "ABCDEF", false));
+    assert(internal::insert_fragment(r_buf2, 3, "DEFGHI", false));
+    assert(internal::insert_fragment(r_buf2, 0, "ABC", false));
     var out_ovl: u8[>..] = [];
-    let r_ovl = wing::read_contiguous(r_buf2, out_ovl);
+    let r_ovl = internal::read_contiguous(r_buf2, out_ovl);
     assert(r_ovl == 9);
     assert(out_ovl == "ABCDEFGHI");
 
@@ -365,20 +365,20 @@ fn test_quic_stream_reassembly_chaos() {
 
 // crap:trusted-bounds
 fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool {
-    if ftype == wing::QUIC_FRAME_RESET_STREAM {
-        let _, cur1, ok1 = wing::quic_decode_varint(src, cur);
+    if ftype == internal::QUIC_FRAME_RESET_STREAM {
+        let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
-        let _, cur2, ok2 = wing::quic_decode_varint(src, cur1);
+        let _, cur2, ok2 = internal::quic_decode_varint(src, cur1);
         guard ok2 else { return cur, false; }
-        let _, cur3, ok3 = wing::quic_decode_varint(src, cur2);
+        let _, cur3, ok3 = internal::quic_decode_varint(src, cur2);
         guard ok3 else { return cur, false; }
         return cur3, true;
     }
 
-    if ftype == wing::QUIC_FRAME_STOP_SENDING {
-        let _, cur1, ok1 = wing::quic_decode_varint(src, cur);
+    if ftype == internal::QUIC_FRAME_STOP_SENDING {
+        let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
-        let _, cur2, ok2 = wing::quic_decode_varint(src, cur1);
+        let _, cur2, ok2 = internal::quic_decode_varint(src, cur1);
         guard ok2 else { return cur, false; }
         return cur2, true;
     }
@@ -388,16 +388,16 @@ fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool 
 
 // crap:trusted-bounds
 fn demux_flow_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool {
-    if ftype == wing::QUIC_FRAME_MAX_DATA {
-        let _, cur1, ok1 = wing::quic_decode_varint(src, cur);
+    if ftype == internal::QUIC_FRAME_MAX_DATA {
+        let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
         return cur1, true;
     }
 
-    if ftype == wing::QUIC_FRAME_MAX_STREAM_DATA {
-        let _, cur1, ok1 = wing::quic_decode_varint(src, cur);
+    if ftype == internal::QUIC_FRAME_MAX_STREAM_DATA {
+        let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
-        let _, cur2, ok2 = wing::quic_decode_varint(src, cur1);
+        let _, cur2, ok2 = internal::quic_decode_varint(src, cur1);
         guard ok2 else { return cur, false; }
         return cur2, true;
     }
@@ -411,15 +411,15 @@ fn demux_control_frame(src: const u8[:], offset: u64) -> u64, u64, bool {
     var cur = offset;
     guard cur < (src.len as u64) else { return 0, offset, false; }
 
-    let ftype, next_cur, ok_type = wing::quic_decode_varint(src, cur);
+    let ftype, next_cur, ok_type = internal::quic_decode_varint(src, cur);
     guard ok_type else { return 0, offset, false; }
     cur = next_cur;
 
-    if ftype == wing::QUIC_FRAME_PADDING {
+    if ftype == internal::QUIC_FRAME_PADDING {
         return ftype, cur, true;
     }
 
-    if ftype == wing::QUIC_FRAME_PING {
+    if ftype == internal::QUIC_FRAME_PING {
         return ftype, cur, true;
     }
 
@@ -443,24 +443,24 @@ fn test_quic_control_frames_demux() {
     packet.push(0x01);
 
     // 3. RESET_STREAM (0x04, stream_id=12, err=0x42, final_size=1024)
-    assert(wing::quic_encode_varint(packet, wing::QUIC_FRAME_RESET_STREAM));
-    assert(wing::quic_encode_varint(packet, 12));
-    assert(wing::quic_encode_varint(packet, 0x42));
-    assert(wing::quic_encode_varint(packet, 1024));
+    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_RESET_STREAM));
+    assert(internal::quic_encode_varint(packet, 12));
+    assert(internal::quic_encode_varint(packet, 0x42));
+    assert(internal::quic_encode_varint(packet, 1024));
 
     // 4. STOP_SENDING (0x05, stream_id=12, err=0x19)
-    assert(wing::quic_encode_varint(packet, wing::QUIC_FRAME_STOP_SENDING));
-    assert(wing::quic_encode_varint(packet, 12));
-    assert(wing::quic_encode_varint(packet, 0x19));
+    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_STOP_SENDING));
+    assert(internal::quic_encode_varint(packet, 12));
+    assert(internal::quic_encode_varint(packet, 0x19));
 
     // 5. MAX_DATA (0x10, max_data=65536)
-    assert(wing::quic_encode_varint(packet, wing::QUIC_FRAME_MAX_DATA));
-    assert(wing::quic_encode_varint(packet, 65536));
+    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_MAX_DATA));
+    assert(internal::quic_encode_varint(packet, 65536));
 
     // 6. MAX_STREAM_DATA (0x11, stream_id=12, max_data=32768)
-    assert(wing::quic_encode_varint(packet, wing::QUIC_FRAME_MAX_STREAM_DATA));
-    assert(wing::quic_encode_varint(packet, 12));
-    assert(wing::quic_encode_varint(packet, 32768));
+    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_MAX_STREAM_DATA));
+    assert(internal::quic_encode_varint(packet, 12));
+    assert(internal::quic_encode_varint(packet, 32768));
 
     // Demux the multi-frame packet
     var cur_off: u64 = 0;

@@ -3,7 +3,7 @@
 
 // Deterministic zero-allocation HTTP/3 Connection Coordinator and Stream Multiplexer.
 // Conforms to RFC 9114 (HTTP/3), RFC 9204 (QPACK), and RFC 9000 (QUIC Streams).
-namespace wing;
+namespace internal;
 
 import std;
 import http.headers;
@@ -45,7 +45,7 @@ struct H3StreamEntry {
     status_code: i32 = 0,
     body_received_len: u64 = 0,
     content_length: i64 = -1,
-    priority: PriorityParam = PriorityParam { urgency: 3, incremental: false },
+    priority: wing::PriorityParam = wing::PriorityParam { urgency: 3, incremental: false },
     received_body: u8[..4096] = [],
 }
 
@@ -85,13 +85,13 @@ struct H3Connection {
     max_push_id_received: u64 = 0,
     empty_frame_streak: u32 = 0,
     error_code: u64 = H3_ERR_NO_ERROR,
-    local_settings: H3Settings = H3Settings { .. },
-    peer_settings: H3Settings = H3Settings { .. },
+    local_settings: wing::H3Settings = wing::H3Settings { .. },
+    peer_settings: wing::H3Settings = wing::H3Settings { .. },
     streams: H3StreamEntry[..32] = [],
     qpack_table: QpackTable = QpackTable { .. }, // Resizable array must be final field
 }
 
-fn new_h3_client_connection(settings: const H3Settings&) -> H3Connection {
+fn new_h3_client_connection(settings: const wing::H3Settings&) -> H3Connection {
     return H3Connection {
         role: H3ConnRole.Client,
         local_settings: settings,
@@ -100,7 +100,7 @@ fn new_h3_client_connection(settings: const H3Settings&) -> H3Connection {
     };
 }
 
-fn new_h3_server_connection(settings: const H3Settings&) -> H3Connection {
+fn new_h3_server_connection(settings: const wing::H3Settings&) -> H3Connection {
     return H3Connection {
         role: H3ConnRole.Server,
         local_settings: settings,
@@ -209,7 +209,7 @@ fn send_request_headers<B>(
     scheme: const u8[:],
     authority: const u8[:],
     path: const u8[:],
-    extra_headers: const HeaderMap&,
+    extra_headers: const wing::HeaderMap&,
     end_stream: bool,
     out: B&,
 ) -> bool {
@@ -940,21 +940,17 @@ fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
     return false;
 }
 
-fn apply_h3_stream_priority(conn: H3Connection&, stream_id: u64, prio: const PriorityParam&) -> bool {
+fn apply_h3_stream_priority(conn: H3Connection&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found && s_idx >= 0 && s_idx < conn.streams.len else { return false; }
     conn.streams[s_idx].priority = prio;
     return true;
 }
 
-fn get_stream_priority(conn: const H3Connection&, stream_id: u64) -> PriorityParam, bool {
+fn get_stream_priority(conn: const H3Connection&, stream_id: u64) -> wing::PriorityParam, bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found && s_idx >= 0 && s_idx < conn.streams.len else {
-        return priority_default(false), false;
+        return wing::priority_default(false), false;
     }
     return conn.streams[s_idx].priority, true;
-}
-
-fn h3_send_priority_update<B>(conn: H3Connection&, stream_id: u64, prio: const PriorityParam&, out: B&) -> bool {
-    return encode_h3_priority_update_request(out, stream_id, prio);
 }

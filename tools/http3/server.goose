@@ -74,7 +74,7 @@ fn main() {
         if datagram.len >= 12 && datagram[..12] == "H3_SET_TEST:" {
             let payload = datagram[12..];
             var set_in = wing::H3Settings { .. };
-            let err = wing::parse_h3_settings_frame(payload, set_in);
+            let err = internal::parse_h3_settings_frame(payload, set_in);
 
             var resp: u8[>..] = [];
             resp.append("ERR:");
@@ -88,8 +88,8 @@ fn main() {
             let h3_payload = datagram[7..];
 
             // Parse incoming HEADERS frame
-            let hdr, ok_hdr = wing::parse_h3_frame_header(h3_payload, 0);
-            if ok_hdr && hdr.frame_type == wing::H3_FRAME_HEADERS {
+            let hdr, ok_hdr = internal::parse_h3_frame_header(h3_payload, 0);
+            if ok_hdr && hdr.frame_type == internal::H3_FRAME_HEADERS {
                 // Construct HTTP/3 Response:
                 // HEADERS frame with status 200 (QPACK indexed field 25)
                 var qpack_res: u8[..128] = [];
@@ -101,11 +101,11 @@ fn main() {
                 qpack_res.push(0xD9);
 
                 var resp_frames: u8[>..] = [];
-                wing::encode_h3_headers_frame(resp_frames, qpack_res[..]);
+                internal::encode_h3_headers_frame(resp_frames, qpack_res[..]);
 
                 // DATA frame with body
                 let body_text: const u8[:] = "Hello from goose-wing HTTP/3!";
-                wing::encode_h3_data_frame(resp_frames, body_text);
+                internal::encode_h3_data_frame(resp_frames, body_text);
 
                 native_udp_sendto_ip4(sock, resp_frames[..], peer_ip, peer_port);
             }
@@ -113,15 +113,15 @@ fn main() {
         }
 
         // 4. QUIC Datagram Ingestion (RFC 9000)
-        let quic_hdr, ok_qhdr = wing::parse_quic_header(datagram);
+        let quic_hdr, ok_qhdr = internal::parse_quic_header(datagram);
         if ok_qhdr {
             // Case A: Unsupported QUIC Version -> Version Negotiation (RFC 9000 §17.2.1)
-            if quic_hdr.version != wing::QUIC_VERSION_1 && quic_hdr.version != wing::QUIC_VERSION_NEGOTIATION {
+            if quic_hdr.version != internal::QUIC_VERSION_1 && quic_hdr.version != internal::QUIC_VERSION_NEGOTIATION {
                 var vn_pkt: u8[>..] = [];
                 // First byte: Long Header (0x80) + Random/Unused bits
                 vn_pkt.push(0xC0);
                 // Version 0x00000000 indicates Version Negotiation
-                core::append_u32_be(vn_pkt, wing::QUIC_VERSION_NEGOTIATION);
+                core::append_u32_be(vn_pkt, internal::QUIC_VERSION_NEGOTIATION);
                 // Destination Connection ID (echo client's SCID)
                 vn_pkt.push(quic_hdr.scid.len as u8);
                 vn_pkt.append(quic_hdr.scid[..]);
@@ -129,19 +129,19 @@ fn main() {
                 vn_pkt.push(quic_hdr.dcid.len as u8);
                 vn_pkt.append(quic_hdr.dcid[..]);
                 // Supported versions list (Supported: QUIC_VERSION_1)
-                core::append_u32_be(vn_pkt, wing::QUIC_VERSION_1);
+                core::append_u32_be(vn_pkt, internal::QUIC_VERSION_1);
 
                 native_udp_sendto_ip4(sock, vn_pkt[..], peer_ip, peer_port);
                 continue;
             }
 
             // Case B: QUIC Initial Packet (Version 1)
-            if quic_hdr.header_type == wing::QuicHeaderType.Initial {
+            if quic_hdr.header_type == internal::QuicHeaderType.Initial {
                 // Build QUIC Initial Response Packet
                 var resp_pkt: u8[>..] = [];
                 // Long header: Type Initial (0), 2-byte packet number length (0x01)
                 resp_pkt.push(0xC1);
-                core::append_u32_be(resp_pkt, wing::QUIC_VERSION_1);
+                core::append_u32_be(resp_pkt, internal::QUIC_VERSION_1);
                 // DCID (client SCID)
                 resp_pkt.push(quic_hdr.scid.len as u8);
                 resp_pkt.append(quic_hdr.scid[..]);
@@ -154,21 +154,21 @@ fn main() {
 
                 // Build H3 Control Stream Payload (Stream Type 0x00 + SETTINGS Frame)
                 var h3_ctrl: u8[..128] = [];
-                wing::quic_encode_varint(h3_ctrl, wing::H3_STREAM_CONTROL);
+                internal::quic_encode_varint(h3_ctrl, internal::H3_STREAM_CONTROL);
                 let settings = wing::H3Settings {
                     qpack_max_table_capacity: 4096,
                     max_field_section_size: 65536,
                     qpack_blocked_streams: 16,
                     enable_connect_protocol: 1,
                 };
-                wing::encode_h3_settings_frame(h3_ctrl, settings);
+                internal::encode_h3_settings_frame(h3_ctrl, settings);
 
                 // Add GREASE frame (RFC 9114 §7.2.8)
-                wing::encode_h3_frame_header(h3_ctrl, 0x21, 0);
+                internal::encode_h3_frame_header(h3_ctrl, 0x21, 0);
 
                 // Payload length varint
                 let payload_len = (2 + h3_ctrl.len) as u64; // 2 bytes PN + h3_ctrl
-                wing::quic_encode_varint(resp_pkt, payload_len);
+                internal::quic_encode_varint(resp_pkt, payload_len);
 
                 // Packet number (2 bytes)
                 core::append_u16_be(resp_pkt, 1);

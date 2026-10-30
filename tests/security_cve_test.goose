@@ -604,25 +604,25 @@ fn test_rfc9110_proxy_hop_by_hop_sanitization(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9113_http2_path_pseudo_header_validation(t: core::T&) {
     t.run("HTTP/2 :path with absolute URL MUST be rejected (RFC 9113 Section 8.3.1 & Go #78762)") { sub =>
-        var dt_enc = wing::new_dynamic_table(4096);
+        var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", false, false);
 
-        var dt_dec = wing::new_dynamic_table(4096);
-        var out_list = wing::DecodedH2HeaderList { .. };
-        let err = wing::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
+        var dt_dec = internal::new_dynamic_table(4096);
+        var out_list = internal::DecodedH2HeaderList { .. };
+        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
     };
 
     t.run("HTTP/2 :path empty MUST be rejected") { sub =>
-        var dt_enc = wing::new_dynamic_table(4096);
+        var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":path", "", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", false, false);
 
-        var dt_dec = wing::new_dynamic_table(4096);
-        var out_list = wing::DecodedH2HeaderList { .. };
-        let err = wing::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
+        var dt_dec = internal::new_dynamic_table(4096);
+        var out_list = internal::DecodedH2HeaderList { .. };
+        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
     };
 }
 

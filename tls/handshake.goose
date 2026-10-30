@@ -889,10 +889,10 @@ fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Unified decompressor
 fn decompress_incoming_certificate<B>(payload: const u8[:], out_cert: B&) -> bool {
-    var comp_msg = CompressedCertificate { .. };
-    guard parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
+    var comp_msg = internal::CompressedCertificate { .. };
+    guard internal::parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
     guard comp_msg.uncompressed_length <= MAX_UNCOMPRESSED_CERT_LEN else { return false; }
-    return decompress_certificate_payload(
+    return internal::decompress_certificate_payload(
         comp_msg.compressed_certificate_message,
         comp_msg.algorithm,
         comp_msg.uncompressed_length,

@@ -1422,15 +1422,15 @@ fn test_http3_priority_update(t: core::T&) {
     t.run("1. HTTP/3 PRIORITY_UPDATE Frame Codec (RFC 9218 Section 7.2)") { sub =>
         let prio = wing::PriorityParam { urgency: 1, incremental: true };
         var wire: u8[>..] = [];
-        sub.assert_true(wing::encode_h3_priority_update_request(wire, 8, prio), "encode H3 priority update request");
+        sub.assert_true(internal::encode_h3_priority_update_request(wire, 8, prio), "encode H3 priority update request");
 
-        let hdr, ok_hdr = wing::parse_h3_frame_header(wire[..], 0);
+        let hdr, ok_hdr = internal::parse_h3_frame_header(wire[..], 0);
         sub.assert_true(ok_hdr, "parse H3 frame header");
-        sub.assert_eq(hdr.frame_type, wing::H3_FRAME_PRIORITY_UPDATE_REQUEST, "Frame type is 0xF0700");
+        sub.assert_eq(hdr.frame_type, internal::H3_FRAME_PRIORITY_UPDATE_REQUEST, "Frame type is 0xF0700");
 
         let h3_payload_start = hdr.header_len as i64;
         let payload = wire[h3_payload_start..];
-        let stream_id, parsed_prio, ok_prio = wing::parse_h3_priority_update_request(payload);
+        let stream_id, parsed_prio, ok_prio = internal::parse_h3_priority_update_request(payload);
         sub.assert_true(ok_prio, "parse H3 priority update payload");
         sub.assert_eq(stream_id, 8, "Prioritized stream ID is 8");
         sub.assert_eq(parsed_prio.urgency as i64, 1, "Urgency is 1");
@@ -1438,13 +1438,13 @@ fn test_http3_priority_update(t: core::T&) {
 
         // Push stream priority update
         var push_wire: u8[>..] = [];
-        sub.assert_true(wing::encode_h3_priority_update_push(push_wire, 42, prio), "encode H3 priority update push");
-        let push_hdr, ok_push_hdr = wing::parse_h3_frame_header(push_wire[..], 0);
+        sub.assert_true(internal::encode_h3_priority_update_push(push_wire, 42, prio), "encode H3 priority update push");
+        let push_hdr, ok_push_hdr = internal::parse_h3_frame_header(push_wire[..], 0);
         sub.assert_true(ok_push_hdr, "parse push header");
-        sub.assert_eq(push_hdr.frame_type, wing::H3_FRAME_PRIORITY_UPDATE_PUSH, "Frame type is 0xF0701");
+        sub.assert_eq(push_hdr.frame_type, internal::H3_FRAME_PRIORITY_UPDATE_PUSH, "Frame type is 0xF0701");
 
         let push_start = push_hdr.header_len as i64;
-        let push_id, parsed_push_prio, ok_push = wing::parse_h3_priority_update_push(push_wire[push_start..]);
+        let push_id, parsed_push_prio, ok_push = internal::parse_h3_priority_update_push(push_wire[push_start..]);
         sub.assert_true(ok_push, "parse push payload");
         sub.assert_eq(push_id, 42, "Push ID is 42");
         sub.assert_eq(parsed_push_prio.urgency as i64, 1, "Push urgency is 1");

@@ -4,7 +4,7 @@
 // QUIC Stream State Machine & Flow Control Invariants (RFC 9000 Section 3 & 4).
 // Implements Sending and Receiving stream state machines, final size enforcement,
 // stream directionality / role validation, and zero-allocation stream table.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

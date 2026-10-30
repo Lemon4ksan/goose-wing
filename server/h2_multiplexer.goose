@@ -4,7 +4,7 @@
 // Deterministic zero-allocation HTTP/2 Server Frame Multiplexer (RFC 9113 & RFC 7541).
 // Manages server connection sessions, stream demultiplexing, HPACK decoding/encoding,
 // flow control updates, anti-DoS barriers, and dispatching to the Wing Server Pipeline.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";
@@ -25,8 +25,8 @@ struct H2ServerStream {
     path: u8[..2048] = [],
     scheme: u8[..16] = [],
     authority: u8[..128] = [],
-    headers: HeaderItem[..32] = [],
-    trailers: HeaderItem[..16] = [],
+    headers: wing::HeaderItem[..32] = [],
+    trailers: wing::HeaderItem[..16] = [],
     body: u8[..8192] = [],
 }
 
@@ -218,7 +218,7 @@ fn emit_goaway<B>(last_stream_id: u32, error_code: u32, out: B&) {
 fn emit_response_headers<B>(
     sess: H2ServerSession&,
     stream_id: u32,
-    res: const Response&,
+    res: const wing::Response&,
     end_stream: bool,
     out: B&,
 ) {
@@ -308,7 +308,7 @@ fn emit_response_data<B>(
 fn emit_response_trailers<B>(
     sess: H2ServerSession&,
     stream_id: u32,
-    trailers: const HeaderItem[..16]&,
+    trailers: const wing::HeaderItem[..16]&,
     out: B&,
 ) {
     guard trailers.len > 0 else { return; }
@@ -325,7 +325,7 @@ fn emit_response_trailers<B>(
            !eq_ascii_fold(name_slice, "proxy-connection") &&
            !eq_ascii_fold(name_slice, "transfer-encoding") &&
            !eq_ascii_fold(name_slice, "upgrade") &&
-           !is_disallowed_trailer_field(name_slice) {
+           !wing::is_disallowed_trailer_field(name_slice) {
             var lower_name: u8[..64] = [];
             for c in name_slice {
                 let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
@@ -372,7 +372,7 @@ fn apply_decoded_headers_to_stream(st: H2ServerStream&, dec_list: const DecodedH
             }
         } else {
             if st.headers.len < st.headers.cap {
-                st.headers.push(make_header(n, v));
+                st.headers.push(wing::make_header(n, v));
             }
         }
     }
@@ -384,7 +384,7 @@ fn apply_decoded_trailers_to_stream(st: H2ServerStream&, dec_list: const Decoded
         let n = entry.name[..];
         let v = entry.value[..];
         if st.trailers.len < st.trailers.cap {
-            st.trailers.push(make_header(n, v));
+            st.trailers.push(wing::make_header(n, v));
         }
     }
     st.body_received = true;
@@ -400,7 +400,7 @@ inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) 
 // Returns (total_bytes_consumed, success)
 fn handle_h2_server_ingress<B>(
     sess: H2ServerSession&,
-    pipeline: ServerPipelineConfig&,
+    pipeline: wing::ServerPipelineConfig&,
     timer: internal::ConnectionTimer&,
     client_ip: const u8[:],
     wire: const u8[:],
@@ -967,11 +967,11 @@ fn handle_h2_server_ingress<B>(
             let target_stream_id = sess.streams[i].stream_id;
 
             // Construct Request
-            var req = new_request(sess.streams[i].method[..], sess.streams[i].path[..]);
+            var req = wing::new_request(sess.streams[i].method[..], sess.streams[i].path[..]);
             for &hdr_item in sess.streams[i].headers {
                 guard req.headers.len < 32 else { break; }
                 req.headers.push(hdr_item);
-                add_header(req.bloom_filter, hdr_item.name[..]);
+                wing::add_header(req.bloom_filter, hdr_item.name[..]);
             }
             for &tr_item in sess.streams[i].trailers {
                 if req.trailers.len < 16 {
@@ -981,10 +981,10 @@ fn handle_h2_server_ingress<B>(
             req.body.append(sess.streams[i].body[..]);
 
             // Execute pipeline
-            var res = Response { .. };
+            var res = wing::Response { .. };
             var future = internal::new_inline_handler_future(0);
             let now_ns = (now_ms as u64) * 1000000;
-            execute_pipeline(pipeline, timer, client_ip, req, now_ns, res, future);
+            wing::execute_pipeline(pipeline, timer, client_ip, req, now_ns, res, future);
 
             let is_grpc = starts_with_fold(res.header("content-type"), "application/grpc");
 

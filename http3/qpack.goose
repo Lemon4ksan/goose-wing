@@ -4,7 +4,7 @@
 // HTTP/3 and QPACK Field Compression Engine (RFC 9204, RFC 9114).
 // Implements RFC 9204 static table (99 entries), zero-allocation dynamic table ring,
 // modular RIC prefix codec, blocked streams manager, and Header Accordion DoS mitigations.
-namespace wing;
+namespace internal;
 
 import std;
 
@@ -628,7 +628,7 @@ fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B
 
     let raw_slice = src[noff..noff + slen];
     if is_huff {
-        let ok_huff = huff_decode_bytes(raw_slice, out);
+        let ok_huff = internal::huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
     } else {
         guard out.len + raw_slice.len <= out.cap else { return offset, false; }
@@ -985,30 +985,30 @@ fn encode_qpack_field<B>(
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {
         // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
-        hpack_encode_int(out, s_idx, 6, 0xC0);
+        internal::hpack_encode_int(out, s_idx, 6, 0xC0);
         return;
     }
 
     if s_idx < QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx as i64].name {
         // Literal with Static Name: 0101xxxx (4-bit prefix)
-        hpack_encode_int(out, s_idx, 4, 0x50);
-        encode_hpack_string_literal(out, val, use_huffman);
+        internal::hpack_encode_int(out, s_idx, 4, 0x50);
+        internal::encode_hpack_string_literal(out, val, use_huffman);
         return;
     }
 
     // Literal Name + Literal Value: 001NHxxx (3-bit prefix name)
     if use_huffman {
-        let huff_len = huff_encoded_byte_len(name);
+        let huff_len = internal::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            hpack_encode_int(out, huff_len, 3, 0x28); // 0x20 | 0x08 (H bit)
-            huff_encode_bytes(name, out);
+            internal::hpack_encode_int(out, huff_len, 3, 0x28); // 0x20 | 0x08 (H bit)
+            internal::huff_encode_bytes(name, out);
         } else {
-            hpack_encode_int(out, name.len as u64, 3, 0x20);
+            internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
             out.append(name);
         }
     } else {
-        hpack_encode_int(out, name.len as u64, 3, 0x20);
+        internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
         out.append(name);
     }
-    encode_hpack_string_literal(out, val, use_huffman);
+    internal::encode_hpack_string_literal(out, val, use_huffman);
 }

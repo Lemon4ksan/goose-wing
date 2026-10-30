@@ -2437,8 +2437,8 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 // 8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)
 fn test_post_quantum_hybrid_exchange(t: core::T&) {
     t.run("TLS-25: Hybrid Key Share Entry Framing & Smuggling Defense") { sub =>
-        var client_share = wing::PostQuantumKeyShare {
-            group: wing::GROUP_X25519_MLKEM768,
+        var client_share = internal::PostQuantumKeyShare {
+            group: internal::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
@@ -2448,15 +2448,15 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         client_share.format_hybrid_key_share(wire);
         sub.assert_eq(wire.len, 1188, "Client KeyShareEntry wire length is 1188 bytes");
 
-        var parsed = wing::PostQuantumKeyShare { .. };
+        var parsed = internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Client hybrid key share parsed");
         sub.assert_bytes_eq(wire[4..1156], client_share.mlkem768_public[..], "0x11EC wire starts with ML-KEM-768 public key (PQ || Classical)");
         sub.assert_bytes_eq(wire[1156..1188], client_share.x25519_public[..], "0x11EC wire ends with X25519 public key");
 
         // Draft 0x6399 (Classical || PQ) ordering verification
-        var draft_share = wing::PostQuantumKeyShare {
-            group: wing::GROUP_X25519_KYBER768_DRAFT00,
+        var draft_share = internal::PostQuantumKeyShare {
+            group: internal::GROUP_X25519_KYBER768_DRAFT00,
             ..
         };
         for i in 32 { draft_share.x25519_public[i] = (i + 1) as u8; }
@@ -2466,21 +2466,21 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         sub.assert_eq(draft_wire.len, 1188, "Draft 0x6399 wire length 1188");
         sub.assert_bytes_eq(draft_wire[4..36], draft_share.x25519_public[..], "0x6399 starts with X25519 (Classical || PQ)");
         sub.assert_bytes_eq(draft_wire[36..1188], draft_share.mlkem768_public[..], "0x6399 ends with PQ key");
-        var parsed_draft = wing::PostQuantumKeyShare { .. };
+        var parsed_draft = internal::PostQuantumKeyShare { .. };
         sub.assert_true(parsed_draft.parse_hybrid_key_share(draft_wire[..]), "Draft share parsed");
-        sub.assert_eq(parsed_draft.group, wing::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
+        sub.assert_eq(parsed_draft.group, internal::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
         sub.assert_bytes_eq(parsed_draft.x25519_public[..], draft_share.x25519_public[..], "Draft x25519 matches");
 
         // Smuggling attempt: Appending trailing unparsed bytes to KeyShareEntry must fail
         var smuggled_wire: u8[>..] = [];
         smuggled_wire.append(wire[..]);
         smuggled_wire.push(0xCC); // 1 extra byte
-        var bad_client = wing::PostQuantumKeyShare { .. };
+        var bad_client = internal::PostQuantumKeyShare { .. };
         sub.assert_false(bad_client.parse_hybrid_key_share(smuggled_wire[..]), "rejects KeyShareEntry with trailing smuggled bytes");
 
         // Server Share framing test
-        var server_share = wing::PostQuantumServerShare {
-            group: wing::GROUP_X25519_MLKEM768,
+        var server_share = internal::PostQuantumServerShare {
+            group: internal::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { server_share.x25519_public[i] = (i + 7) as u8; }
@@ -2490,7 +2490,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         server_share.format_hybrid_server_key_share(server_wire);
         sub.assert_eq(server_wire.len, 1124, "Server KeyShareEntry wire length is 1124 bytes");
 
-        var parsed_server = wing::PostQuantumServerShare { .. };
+        var parsed_server = internal::PostQuantumServerShare { .. };
         sub.assert_true(parsed_server.parse_hybrid_server_key_share(server_wire[..]), "Server share parsed");
         sub.assert_bytes_eq(server_wire[4..1092], server_share.mlkem768_ciphertext[..], "0x11EC server wire starts with ML-KEM-768 ciphertext (PQ || Classical)");
         sub.assert_bytes_eq(server_wire[1092..1124], server_share.x25519_public[..], "0x11EC server wire ends with X25519 public key");
@@ -2498,7 +2498,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         var smuggled_server: u8[>..] = [];
         smuggled_server.append(server_wire[..]);
         smuggled_server.push(0xDD);
-        var bad_server = wing::PostQuantumServerShare { .. };
+        var bad_server = internal::PostQuantumServerShare { .. };
         sub.assert_false(bad_server.parse_hybrid_server_key_share(smuggled_server[..]), "rejects server share with trailing smuggled bytes");
     };
 
@@ -2508,32 +2508,32 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         var out_secret: u8[32] = [0; 32];
 
         // Valid derivation succeeds
-        let ok_comb = wing::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
+        let ok_comb = internal::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
         sub.assert_true(ok_comb, "valid hybrid shared secret derived");
 
         var out_x25519_mlkem: u8[32] = [0; 32];
-        let ok_mlkem_comb = wing::derive_x25519_mlkem768_shared_secret_checked(classical_ss[..], pq_ss[..], out_x25519_mlkem[..]);
+        let ok_mlkem_comb = internal::derive_x25519_mlkem768_shared_secret_checked(classical_ss[..], pq_ss[..], out_x25519_mlkem[..]);
         sub.assert_true(ok_mlkem_comb, "valid x25519_mlkem768 shared secret derived (PQ || Classical)");
-        let direct_sec = wing::derive_x25519_mlkem768_shared_secret(classical_ss, pq_ss);
+        let direct_sec = internal::derive_x25519_mlkem768_shared_secret(classical_ss, pq_ss);
         sub.assert_bytes_eq(out_x25519_mlkem[..], direct_sec[..], "direct derivation matches checked");
 
         // Contributory attack defense: all-zero classical X25519 secret rejected (RFC 7748 §6.1)
         let zero_classical: u8[32] = [0x00; 32];
-        let ok_bad_classical = wing::derive_hybrid_shared_secret_checked(zero_classical[..], pq_ss[..], out_secret[..]);
+        let ok_bad_classical = internal::derive_hybrid_shared_secret_checked(zero_classical[..], pq_ss[..], out_secret[..]);
         sub.assert_false(ok_bad_classical, "rejects all-zero classical ECDH shared secret");
 
         // Degenerate ML-KEM secret: all-zero PQ secret rejected
         let zero_pq: u8[32] = [0x00; 32];
-        let ok_bad_pq = wing::derive_hybrid_shared_secret_checked(classical_ss[..], zero_pq[..], out_secret[..]);
+        let ok_bad_pq = internal::derive_hybrid_shared_secret_checked(classical_ss[..], zero_pq[..], out_secret[..]);
         sub.assert_false(ok_bad_pq, "rejects all-zero post-quantum shared secret");
 
         // Short classical or PQ slice rejected
-        let ok_short = wing::derive_hybrid_shared_secret_checked(classical_ss[..16], pq_ss[..], out_secret[..]);
+        let ok_short = internal::derive_hybrid_shared_secret_checked(classical_ss[..16], pq_ss[..], out_secret[..]);
         sub.assert_false(ok_short, "rejects truncated classical shared secret slice");
     };
 
     t.run("TLS-35: Post-Quantum ML-KEM-768 Decapsulation & FIPS 203 Implicit Rejection") { sub =>
-        var sk = wing::MLKEM768PrivateKey { .. };
+        var sk = internal::MLKEM768PrivateKey { .. };
         // Implicit rejection seed z (32 bytes)
         for i in 32 { sk.z[i] = (i + 0x41) as u8; }
         // Private key (mock 1152 bytes)
@@ -2543,7 +2543,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         // 1. Valid ciphertext decapsulation
         var valid_ct: u8[1088] = [0xAA; 1088];
         var ss_valid: u8[32] = [0; 32];
-        let is_rej_valid, ok_valid = wing::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
+        let is_rej_valid, ok_valid = internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
         sub.assert_true(ok_valid, "valid ciphertext decapsulation succeeds");
         sub.assert_false(is_rej_valid, "valid ciphertext does NOT trigger implicit rejection");
 
@@ -2557,26 +2557,26 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         // 2. All-zero ciphertext (1088 bytes) MUST trigger deterministic implicit rejection (FIPS 203 §7.2)
         var zero_ct: u8[1088] = [0x00; 1088];
         var ss_zero: u8[32] = [0; 32];
-        let is_rej_zero, ok_zero = wing::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
+        let is_rej_zero, ok_zero = internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
         sub.assert_true(ok_zero, "all-zero ciphertext decapsulation succeeds via implicit rejection");
         sub.assert_true(is_rej_zero, "all-zero ciphertext triggers implicit rejection");
 
         // Verify that the implicit rejection key matches K_bar = HMAC-SHA256(z, c)
         var expected_k_bar: u8[32] = [0; 32];
-        let ok_k_bar = wing::mlkem768_compute_implicit_rejection(sk.z, zero_ct[..], expected_k_bar[..]);
+        let ok_k_bar = internal::mlkem768_compute_implicit_rejection(sk.z, zero_ct[..], expected_k_bar[..]);
         sub.assert_true(ok_k_bar, "expected k_bar computed");
         sub.assert_bytes_eq(ss_zero[..], expected_k_bar[..], "implicit rejection key matches FIPS 203 derivation from seed z");
 
         // Determinism: decapsulating with same corrupt ciphertext produces identical shared key
         var ss_zero_again: u8[32] = [0; 32];
-        wing::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero_again[..]);
+        internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero_again[..]);
         sub.assert_bytes_eq(ss_zero[..], ss_zero_again[..], "implicit rejection is deterministic");
 
         // 3. Different rejection seed z produces different implicit rejection key
         var sk2 = sk;
         sk2.z[0] ^= 0xFF;
         var ss_diff_z: u8[32] = [0; 32];
-        wing::mlkem768_decapsulate_with_implicit_rejection(sk2, zero_ct[..], ss_diff_z[..]);
+        internal::mlkem768_decapsulate_with_implicit_rejection(sk2, zero_ct[..], ss_diff_z[..]);
         var diff_z_matches = true;
         for i in 32 {
             if ss_diff_z[i] != ss_zero[i] { diff_z_matches = false; break; }
@@ -2586,81 +2586,81 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         // 4. Truncated ciphertext (< 1088 bytes) rejected safely without panic or hang
         let short_ct: u8[500] = [0xAA; 500];
         var ss_short: u8[32] = [0; 32];
-        let _, ok_short = wing::mlkem768_decapsulate_with_implicit_rejection(sk, short_ct[..], ss_short[..]);
+        let _, ok_short = internal::mlkem768_decapsulate_with_implicit_rejection(sk, short_ct[..], ss_short[..]);
         sub.assert_false(ok_short, "truncated ciphertext fails safely");
 
         // 5. Short destination buffer (< 32 bytes) rejected safely
         var ss_tiny: u8[16] = [0; 16];
-        let _, ok_tiny = wing::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
+        let _, ok_tiny = internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
         sub.assert_false(ok_tiny, "short output buffer fails safely");
     };
 
     t.run("TLS-42: RFC 10024 Traditional Post-Quantum Hybrids (SecP256r1MLKEM768 & SecP384r1MLKEM1024)") { sub =>
         // RFC 10024 Section 4: Negotiated Groups - Post-Quantum Traditional Hybrid NamedGroup Identifiers
-        sub.assert_eq(wing::GROUP_SECP256R1_MLKEM768, 0x11EB, "SecP256r1MLKEM768 is 0x11EB");
-        sub.assert_eq(wing::GROUP_X25519_MLKEM768, 0x11EC, "X25519MLKEM768 is 0x11EC");
-        sub.assert_eq(wing::GROUP_SECP384R1_MLKEM1024, 0x11ED, "SecP384r1MLKEM1024 is 0x11ED");
+        sub.assert_eq(internal::GROUP_SECP256R1_MLKEM768, 0x11EB, "SecP256r1MLKEM768 is 0x11EB");
+        sub.assert_eq(internal::GROUP_X25519_MLKEM768, 0x11EC, "X25519MLKEM768 is 0x11EC");
+        sub.assert_eq(internal::GROUP_SECP384R1_MLKEM1024, 0x11ED, "SecP384r1MLKEM1024 is 0x11ED");
 
         // NamedGroup recognition
-        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
-        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
-        sub.assert_true(wing::is_post_quantum_group(wing::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
-        sub.assert_false(wing::is_post_quantum_group(0x0017), "0x0017 (secp256r1 classical) is not PQ");
-        sub.assert_false(wing::is_post_quantum_group(0x0018), "0x0018 (secp384r1 classical) is not PQ");
-        sub.assert_false(wing::is_post_quantum_group(0x001D), "0x001D (x25519 classical) is not PQ");
+        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
+        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
+        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
+        sub.assert_false(internal::is_post_quantum_group(0x0017), "0x0017 (secp256r1 classical) is not PQ");
+        sub.assert_false(internal::is_post_quantum_group(0x0018), "0x0018 (secp384r1 classical) is not PQ");
+        sub.assert_false(internal::is_post_quantum_group(0x001D), "0x001D (x25519 classical) is not PQ");
 
         // Key share wire lengths (RFC 10024 Section 3)
-        sub.assert_eq(wing::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
-        sub.assert_eq(wing::SECP384R1_POINT_LEN, 97, "P-384 uncompressed point is 97 bytes");
-        sub.assert_eq(wing::MLKEM768_PUBLIC_LEN, 1152, "ML-KEM-768 public key is 1152 bytes");
-        sub.assert_eq(wing::MLKEM768_CIPHERTEXT_LEN, 1088, "ML-KEM-768 ciphertext is 1088 bytes");
-        sub.assert_eq(wing::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
-        sub.assert_eq(wing::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
+        sub.assert_eq(internal::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
+        sub.assert_eq(internal::SECP384R1_POINT_LEN, 97, "P-384 uncompressed point is 97 bytes");
+        sub.assert_eq(internal::MLKEM768_PUBLIC_LEN, 1152, "ML-KEM-768 public key is 1152 bytes");
+        sub.assert_eq(internal::MLKEM768_CIPHERTEXT_LEN, 1088, "ML-KEM-768 ciphertext is 1088 bytes");
+        sub.assert_eq(internal::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
+        sub.assert_eq(internal::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
 
-        sub.assert_eq(wing::pq_hybrid_client_share_len(0x11EB), 1217, "SecP256r1+ML-KEM-768 client share 1217B");
-        sub.assert_eq(wing::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
-        sub.assert_eq(wing::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
-        sub.assert_eq(wing::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
+        sub.assert_eq(internal::pq_hybrid_client_share_len(0x11EB), 1217, "SecP256r1+ML-KEM-768 client share 1217B");
+        sub.assert_eq(internal::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
+        sub.assert_eq(internal::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
+        sub.assert_eq(internal::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
 
         // SecP256r1MLKEM768 (0x11EB) Codecs
-        var client_share = wing::SecP256r1MLKEM768KeyShare { .. };
+        var client_share = internal::SecP256r1MLKEM768KeyShare { .. };
         client_share.secp256r1_public[0] = 0x04;
         for i in 64 { client_share.secp256r1_public[1 + i] = ((i * 5 + 3) & 0xFF) as u8; }
         for i in 1152 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0xFF) as u8; }
 
         var wire: u8[>..] = [];
-        wing::format_secp256r1_mlkem768_key_share(client_share, wire);
+        internal::format_secp256r1_mlkem768_key_share(client_share, wire);
         sub.assert_eq(wire.len, 4 + 1217, "Client key share wire length is exactly 1221 bytes");
 
-        var parsed_client = wing::SecP256r1MLKEM768KeyShare { .. };
-        let ok_parse = wing::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
+        var parsed_client = internal::SecP256r1MLKEM768KeyShare { .. };
+        let ok_parse = internal::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
         sub.assert_true(ok_parse, "Client key share parsed successfully");
-        sub.assert_eq(parsed_client.group, wing::GROUP_SECP256R1_MLKEM768, "Group is 0x11EB");
+        sub.assert_eq(parsed_client.group, internal::GROUP_SECP256R1_MLKEM768, "Group is 0x11EB");
         sub.assert_bytes_eq(parsed_client.secp256r1_public[..], client_share.secp256r1_public[..], "P-256 point matches");
 
-        var bad_client = wing::SecP256r1MLKEM768KeyShare { .. };
-        sub.assert_false(wing::parse_secp256r1_mlkem768_key_share(bad_client, wire[..1000]), "Truncated client share fails");
+        var bad_client = internal::SecP256r1MLKEM768KeyShare { .. };
+        sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, wire[..1000]), "Truncated client share fails");
 
         // SecP384r1MLKEM1024 (0x11ED) Codecs
-        var client_384 = wing::SecP384r1MLKEM1024KeyShare { .. };
+        var client_384 = internal::SecP384r1MLKEM1024KeyShare { .. };
         client_384.secp384r1_public[0] = 0x04;
         for i in 96 { client_384.secp384r1_public[1 + i] = ((i * 3 + 7) & 0xFF) as u8; }
         for i in 1568 { client_384.mlkem1024_public[i] = ((i * 11 + 3) & 0xFF) as u8; }
 
         var wire_384: u8[>..] = [];
-        wing::format_secp384r1_mlkem1024_key_share(client_384, wire_384);
+        internal::format_secp384r1_mlkem1024_key_share(client_384, wire_384);
         sub.assert_eq(wire_384.len, 4 + 1665, "SecP384r1 client wire length is 1669 bytes");
 
-        var parsed_384 = wing::SecP384r1MLKEM1024KeyShare { .. };
-        let ok_p384 = wing::parse_secp384r1_mlkem1024_key_share(parsed_384, wire_384[..]);
+        var parsed_384 = internal::SecP384r1MLKEM1024KeyShare { .. };
+        let ok_p384 = internal::parse_secp384r1_mlkem1024_key_share(parsed_384, wire_384[..]);
         sub.assert_true(ok_p384, "SecP384r1 client share parsed");
-        sub.assert_eq(parsed_384.group, wing::GROUP_SECP384R1_MLKEM1024, "Group is 0x11ED");
+        sub.assert_eq(parsed_384.group, internal::GROUP_SECP384R1_MLKEM1024, "Group is 0x11ED");
 
         // Extension wiring & secret combiners
         let groups: u16[3] = [
-            wing::GROUP_SECP256R1_MLKEM768,
-            wing::GROUP_X25519_MLKEM768,
-            wing::GROUP_SECP384R1_MLKEM1024,
+            internal::GROUP_SECP256R1_MLKEM768,
+            internal::GROUP_X25519_MLKEM768,
+            internal::GROUP_SECP384R1_MLKEM1024,
         ];
         var ext_wire: u8[>..] = [];
         wing::encode_supported_groups_extension(ext_wire, groups[..]);
@@ -2675,7 +2675,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
         for i in 32 { ecdh256[i] = (i + 1) as u8; }
         var pq_ss: u8[32] = [0; 32];
         for i in 32 { pq_ss[i] = (i + 33) as u8; }
-        let ss256 = wing::derive_secp256r1_mlkem768_shared_secret(ecdh256, pq_ss);
+        let ss256 = internal::derive_secp256r1_mlkem768_shared_secret(ecdh256, pq_ss);
         var nz_cnt = 0;
         for b in ss256 { if b != 0 { nz_cnt += 1; } }
         sub.assert_gt(nz_cnt, 28, "Combined SecP256r1 shared secret has high entropy");
@@ -3877,16 +3877,16 @@ fn test_handshake_r3_invariants(t: core::T&) {
 // RFC 8879 Section 3: Negotiating Certificate Compression - Brotli certificate decompression
 fn test_rfc8879_brotli_cert_compression(t: core::T&) {
     t.run("1. RFC 8879 Algorithm Identifiers & Models") { sub =>
-        sub.assert_eq(wing::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
-        sub.assert_eq(wing::CERT_COMPRESSION_ZSTD, 1, "Zstandard ID is 1 in specification");
-        sub.assert_eq(wing::CERT_COMPRESSION_ZSTD_IANA, 3, "Zstandard IANA official ID is 3");
-        sub.assert_eq(wing::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
+        sub.assert_eq(internal::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
+        sub.assert_eq(internal::CERT_COMPRESSION_ZSTD, 1, "Zstandard ID is 1 in specification");
+        sub.assert_eq(internal::CERT_COMPRESSION_ZSTD_IANA, 3, "Zstandard IANA official ID is 3");
+        sub.assert_eq(internal::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
 
-        sub.assert_true(wing::is_valid_compression_algorithm(wing::CERT_COMPRESSION_BROTLI), "Brotli valid");
-        sub.assert_true(wing::is_valid_compression_algorithm(wing::CERT_COMPRESSION_ZSTD), "Zstd 1 valid");
-        sub.assert_true(wing::is_valid_compression_algorithm(wing::CERT_COMPRESSION_ZSTD_IANA), "Zstd 3 valid");
-        sub.assert_false(wing::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
-        sub.assert_false(wing::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
+        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_BROTLI), "Brotli valid");
+        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD), "Zstd 1 valid");
+        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD_IANA), "Zstd 3 valid");
+        sub.assert_false(internal::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
+        sub.assert_false(internal::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
     };
 
     t.run("2. Brotli CompressedCertificate Serialization and Roundtrip") { sub =>
@@ -3899,35 +3899,35 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         var decomp_zlib: u8[>..] = [];
         var decomp_zstd: u8[>..] = [];
 
-        var test_cert_msg = wing::CompressedCertificate {
-            algorithm: wing::CERT_COMPRESSION_BROTLI,
+        var test_cert_msg = internal::CompressedCertificate {
+            algorithm: internal::CERT_COMPRESSION_BROTLI,
             uncompressed_length: cert_plaintext.len as u32,
             compressed_certificate_message: compressed_data[..],
         };
 
         var wire: u8[>..] = [];
-        let ok_enc = wing::encode_compressed_certificate(test_cert_msg, wire);
+        let ok_enc = internal::encode_compressed_certificate(test_cert_msg, wire);
         sub.assert_true(ok_enc, "CompressedCertificate encoded");
         sub.assert_eq(wire.len, 5 + compressed_data.len, "Wire length matches 5 + compressed len");
         sub.assert_eq(wire[0], 0, "Algorithm high byte is 0");
         sub.assert_eq(wire[1], 2, "Algorithm low byte is 2 (Brotli)");
 
         {
-            var parsed = wing::CompressedCertificate { .. };
-            let ok_dec = wing::parse_compressed_certificate_msg(wire[..], parsed);
+            var parsed = internal::CompressedCertificate { .. };
+            let ok_dec = internal::parse_compressed_certificate_msg(wire[..], parsed);
             sub.assert_true(ok_dec, "CompressedCertificate parsed");
-            sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
+            sub.assert_eq(parsed.algorithm, internal::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
             sub.assert_eq(parsed.uncompressed_length, cert_plaintext.len as u32, "Parsed length matches plaintext");
             sub.assert_true(parsed.compressed_certificate_message == compressed_data[..], "Compressed bytes match");
 
             // Safe decompression via handler interface
             var decompressed: u8[>..] = [];
-            let ok_decomp = wing::decompress_certificate_message(parsed, 10000, decompressed);
+            let ok_decomp = internal::decompress_certificate_message(parsed, 10000, decompressed);
             sub.assert_true(ok_decomp, "Safe decompression succeeds");
             sub.assert_bytes_eq(decompressed[..], cert_plaintext, "Decompressed certificate matches original exactly");
         }
 
-        let ok_brotli = wing::decompress_certificate_brotli(compressed_data[..], cert_plaintext.len as u32, decomp2);
+        let ok_brotli = internal::decompress_certificate_brotli(compressed_data[..], cert_plaintext.len as u32, decomp2);
         sub.assert_true(ok_brotli, "decompress_certificate_brotli succeeds");
         sub.assert_bytes_eq(decomp2[..], cert_plaintext, "decomp2 matches original exactly");
 
@@ -3943,12 +3943,12 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         let ok_zcomp = core::zlib_compress(cert_plaintext, zlib_comp);
         sub.assert_true(ok_zcomp, "zlib compression succeeds");
 
-        var zlib_msg = wing::CompressedCertificate {
-            algorithm: wing::CERT_COMPRESSION_ZLIB,
+        var zlib_msg = internal::CompressedCertificate {
+            algorithm: internal::CERT_COMPRESSION_ZLIB,
             uncompressed_length: cert_plaintext.len as u32,
             compressed_certificate_message: zlib_comp[..],
         };
-        let ok_zdecomp = wing::decompress_certificate_message(zlib_msg, 10000, decomp_zlib);
+        let ok_zdecomp = internal::decompress_certificate_message(zlib_msg, 10000, decomp_zlib);
         sub.assert_true(ok_zdecomp, "zlib certificate decompression succeeds");
         sub.assert_bytes_eq(decomp_zlib[..], cert_plaintext, "decompressed zlib matches plaintext");
 
@@ -3956,35 +3956,35 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         var zstd_comp: u8[>..] = [];
         let ok_zstd_comp = core::zstd_compress(cert_plaintext, zstd_comp);
         sub.assert_true(ok_zstd_comp, "zstd compression succeeds");
-        var zstd_msg = wing::CompressedCertificate {
-            algorithm: wing::CERT_COMPRESSION_ZSTD_IANA,
+        var zstd_msg = internal::CompressedCertificate {
+            algorithm: internal::CERT_COMPRESSION_ZSTD_IANA,
             uncompressed_length: cert_plaintext.len as u32,
             compressed_certificate_message: zstd_comp[..],
         };
-        let ok_zstd_decomp = wing::decompress_certificate_message(zstd_msg, 10000, decomp_zstd);
+        let ok_zstd_decomp = internal::decompress_certificate_message(zstd_msg, 10000, decomp_zstd);
         sub.assert_true(ok_zstd_decomp, "zstd certificate decompression succeeds");
         sub.assert_bytes_eq(decomp_zstd[..], cert_plaintext, "decompressed zstd matches plaintext");
     };
 
     t.run("3. Enterprise Decompression Bomb and Boundary Protection") { sub =>
         // 1. Decompression bomb: uncompressed_length exceeds caller's max buffer ceiling
-        var bomb_msg = wing::CompressedCertificate {
-            algorithm: wing::CERT_COMPRESSION_BROTLI,
+        var bomb_msg = internal::CompressedCertificate {
+            algorithm: internal::CERT_COMPRESSION_BROTLI,
             uncompressed_length: 50000,
             compressed_certificate_message: "abc",
         };
         var out_sink: u8[>..] = [];
-        let ok_b1 = wing::decompress_certificate_message(bomb_msg, 1024, out_sink);
+        let ok_b1 = internal::decompress_certificate_message(bomb_msg, 1024, out_sink);
         sub.assert_false(ok_b1, "Decompression bomb exceeding max_allowed_len rejected");
 
         // 2. Uncompressed length exceeding global MAX_UNCOMPRESSED_CERT_SIZE (65536)
         bomb_msg.uncompressed_length = 70000;
-        let ok_b2 = wing::decompress_certificate_message(bomb_msg, 100000, out_sink);
+        let ok_b2 = internal::decompress_certificate_message(bomb_msg, 100000, out_sink);
         sub.assert_false(ok_b2, "Length exceeding 64KB ceiling rejected");
 
         // 3. Zero uncompressed length rejected
         bomb_msg.uncompressed_length = 0;
-        let ok_b3 = wing::decompress_certificate_message(bomb_msg, 100000, out_sink);
+        let ok_b3 = internal::decompress_certificate_message(bomb_msg, 100000, out_sink);
         sub.assert_false(ok_b3, "Zero uncompressed length rejected");
 
         // 4. Decompression bomb ratio sanity check (> 1024x expansion ratio)
@@ -3994,19 +3994,19 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
             0x00, 0xFA, 0x00,       // uncompressed_length: 64000 (ratio = 32000x > 1024x)
             tiny_comp[0], tiny_comp[1],
         ];
-        var parsed_bad = wing::CompressedCertificate { .. };
-        let ok_ratio = wing::parse_compressed_certificate_msg(bad_ratio_wire[..], parsed_bad);
+        var parsed_bad = internal::CompressedCertificate { .. };
+        let ok_ratio = internal::parse_compressed_certificate_msg(bad_ratio_wire[..], parsed_bad);
         sub.assert_false(ok_ratio, "Insane expansion ratio (>1024x) rejected by wire parser");
 
         // 5. Corrupted compressed payload
         let corrupt_payload: u8[10] = [0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66];
-        var corrupt_msg = wing::CompressedCertificate {
-            algorithm: wing::CERT_COMPRESSION_BROTLI,
+        var corrupt_msg = internal::CompressedCertificate {
+            algorithm: internal::CERT_COMPRESSION_BROTLI,
             uncompressed_length: 10,
             compressed_certificate_message: corrupt_payload[..],
         };
         var out_corrupt: u8[>..] = [];
-        let ok_c_fail = wing::decompress_certificate_message(corrupt_msg, 1024, out_corrupt);
+        let ok_c_fail = internal::decompress_certificate_message(corrupt_msg, 1024, out_corrupt);
         sub.assert_false(ok_c_fail, "Corrupted Brotli payload fails gracefully without crash");
     };
 }

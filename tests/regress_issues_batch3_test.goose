@@ -587,13 +587,13 @@ fn test_http_extensions_signatures_hsts_trace(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
     t.run("H2 server ingress rejects invalid SETTINGS_MAX_FRAME_SIZE < 16384") { sub =>
-        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // Client preface + SETTINGS frame with MAX_FRAME_SIZE = 0
         var wire_in: u8[..64] = [];
-        wire_in.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
 
         // Frame header: len=6, type=4 (SETTINGS), flags=0, stream_id=0
         wire_in.push(0x00); wire_in.push(0x00); wire_in.push(0x06);
@@ -605,75 +605,75 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
         wire_in.push(0x00); wire_in.push(0x00); wire_in.push(0x00); wire_in.push(0x00);
 
         var out_wire: u8[..512] = [];
-        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
+        let consumed, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
         sub.assert_false(ok, "Invalid SETTINGS_MAX_FRAME_SIZE MUST return ok == false and emit GOAWAY");
     };
 
     t.run("validate_h2_stream_association rejects Priority and PushPromise on stream 0") { sub =>
-        let hdr_prio = wing::H2FrameHeader {
-            frame_type: wing::H2FrameType.Priority,
+        let hdr_prio = internal::H2FrameHeader {
+            frame_type: internal::H2FrameType.Priority,
             flags: 0,
             stream_id: 0,
             payload_len: 5,
         };
-        sub.assert_true(wing::validate_h2_stream_association(hdr_prio) == wing::H2ErrorCode.ProtocolError, "Priority on stream 0 is ProtocolError");
+        sub.assert_true(internal::validate_h2_stream_association(hdr_prio) == internal::H2ErrorCode.ProtocolError, "Priority on stream 0 is ProtocolError");
 
-        let hdr_push = wing::H2FrameHeader {
-            frame_type: wing::H2FrameType.PushPromise,
+        let hdr_push = internal::H2FrameHeader {
+            frame_type: internal::H2FrameType.PushPromise,
             flags: 0,
             stream_id: 0,
             payload_len: 4,
         };
-        sub.assert_true(wing::validate_h2_stream_association(hdr_push) == wing::H2ErrorCode.ProtocolError, "PushPromise on stream 0 is ProtocolError");
+        sub.assert_true(internal::validate_h2_stream_association(hdr_push) == internal::H2ErrorCode.ProtocolError, "PushPromise on stream 0 is ProtocolError");
 
-        let hdr_ga = wing::H2FrameHeader {
-            frame_type: wing::H2FrameType.GoAway,
+        let hdr_ga = internal::H2FrameHeader {
+            frame_type: internal::H2FrameType.GoAway,
             flags: 0,
             stream_id: 1,
             payload_len: 8,
         };
-        sub.assert_true(wing::validate_h2_stream_association(hdr_ga) == wing::H2ErrorCode.ProtocolError, "GoAway on stream 1 is ProtocolError");
+        sub.assert_true(internal::validate_h2_stream_association(hdr_ga) == internal::H2ErrorCode.ProtocolError, "GoAway on stream 1 is ProtocolError");
     };
 
     t.run("H2SecurityFramer enforces settings flood and single headers frame bounds") { sub =>
-        var framer = wing::H2SecurityFramer { .. };
+        var framer = internal::H2SecurityFramer { .. };
 
         // 1. Single HEADERS frame exceeding max_header_block_bytes (8192) must trigger EnhanceYourCalm
-        let big_hdr = wing::H2FrameHeader {
+        let big_hdr = internal::H2FrameHeader {
             payload_len: 12000,
-            frame_type: wing::H2FrameType.Headers,
+            frame_type: internal::H2FrameType.Headers,
             raw_type: 0x1,
-            flags: wing::H2_FLAG_END_HEADERS,
+            flags: internal::H2_FLAG_END_HEADERS,
             stream_id: 1,
             valid: true,
         };
-        let err_big = wing::process_incoming_frame(framer, big_hdr);
-        sub.assert_eq(err_big, wing::H2ErrorCode.EnhanceYourCalm, "Single HEADERS > 8KB triggers EnhanceYourCalm");
-        sub.assert_true(framer.state == wing::H2ConnState.Closed);
+        let err_big = internal::process_incoming_frame(framer, big_hdr);
+        sub.assert_eq(err_big, internal::H2ErrorCode.EnhanceYourCalm, "Single HEADERS > 8KB triggers EnhanceYourCalm");
+        sub.assert_true(framer.state == internal::H2ConnState.Closed);
 
         // 2. SETTINGS flood defense (CVE-2019-9515)
-        var framer_set = wing::H2SecurityFramer { .. };
+        var framer_set = internal::H2SecurityFramer { .. };
         for _ in 10 {
-            let sf = wing::H2FrameHeader {
+            let sf = internal::H2FrameHeader {
                 payload_len: 6,
-                frame_type: wing::H2FrameType.Settings,
+                frame_type: internal::H2FrameType.Settings,
                 raw_type: 0x4,
                 flags: 0x0,
                 stream_id: 0,
                 valid: true,
             };
-            sub.assert_eq(wing::process_incoming_frame(framer_set, sf), wing::H2ErrorCode.NoError);
+            sub.assert_eq(internal::process_incoming_frame(framer_set, sf), internal::H2ErrorCode.NoError);
         }
-        let sf_11 = wing::H2FrameHeader {
+        let sf_11 = internal::H2FrameHeader {
             payload_len: 6,
-            frame_type: wing::H2FrameType.Settings,
+            frame_type: internal::H2FrameType.Settings,
             raw_type: 0x4,
             flags: 0x0,
             stream_id: 0,
             valid: true,
         };
-        sub.assert_eq(wing::process_incoming_frame(framer_set, sf_11), wing::H2ErrorCode.EnhanceYourCalm, "11th SETTINGS triggers EnhanceYourCalm");
-        sub.assert_true(framer_set.state == wing::H2ConnState.Closed);
+        sub.assert_eq(internal::process_incoming_frame(framer_set, sf_11), internal::H2ErrorCode.EnhanceYourCalm, "11th SETTINGS triggers EnhanceYourCalm");
+        sub.assert_true(framer_set.state == internal::H2ConnState.Closed);
     };
 }
 
@@ -683,54 +683,54 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: core::T&) {
 fn test_h3_and_qpack_rfc9114_rfc9204(t: core::T&) {
     t.run("H3 request stream accepts 103 Early Hints followed by 200 final response (Go #80687)") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = wing::new_h3_client_connection(settings);
-        let sid, _ = wing::open_request_stream(conn);
+        var conn = internal::new_h3_client_connection(settings);
+        let sid, _ = internal::open_request_stream(conn);
 
         // 1. Ingest 103 Early Hints HEADERS frame
         var qpack_103: u8[..64] = [];
         qpack_103.push(0x00); qpack_103.push(0x00);
-        wing::encode_qpack_field(qpack_103, ":status", "103", true);
+        internal::encode_qpack_field(qpack_103, ":status", "103", true);
 
         var frame_103: u8[..128] = [];
-        wing::encode_h3_headers_frame(frame_103, qpack_103[..]);
-        let err1 = wing::handle_stream_data(conn, sid, true, frame_103[..], false);
-        sub.assert_eq(err1, wing::H3_ERR_NO_ERROR, "103 Early Hints HEADERS accepted");
+        internal::encode_h3_headers_frame(frame_103, qpack_103[..]);
+        let err1 = internal::handle_stream_data(conn, sid, true, frame_103[..], false);
+        sub.assert_eq(err1, internal::H3_ERR_NO_ERROR, "103 Early Hints HEADERS accepted");
 
         // 2. Ingest 200 OK final response HEADERS frame
         var qpack_200: u8[..64] = [];
         qpack_200.push(0x00); qpack_200.push(0x00);
-        wing::encode_qpack_field(qpack_200, ":status", "200", true);
+        internal::encode_qpack_field(qpack_200, ":status", "200", true);
 
         var frame_200: u8[..128] = [];
-        wing::encode_h3_headers_frame(frame_200, qpack_200[..]);
-        let err2 = wing::handle_stream_data(conn, sid, true, frame_200[..], true);
-        sub.assert_eq(err2, wing::H3_ERR_NO_ERROR, "200 OK HEADERS after 103 Early Hints accepted");
+        internal::encode_h3_headers_frame(frame_200, qpack_200[..]);
+        let err2 = internal::handle_stream_data(conn, sid, true, frame_200[..], true);
+        sub.assert_eq(err2, internal::H3_ERR_NO_ERROR, "200 OK HEADERS after 103 Early Hints accepted");
 
-        let status, ok_s = wing::get_status_code(conn, sid);
+        let status, ok_s = internal::get_status_code(conn, sid);
         sub.assert_true(ok_s, "Status code available");
         sub.assert_eq(status, 200, "Final status code is 200");
     };
 
     t.run("H3 rejects :status 101 Switching Protocols (RFC 9114 §4.3.2)") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = wing::new_h3_client_connection(settings);
-        let sid, _ = wing::open_request_stream(conn);
+        var conn = internal::new_h3_client_connection(settings);
+        let sid, _ = internal::open_request_stream(conn);
 
         var qpack_101: u8[..64] = [];
         qpack_101.push(0x00); qpack_101.push(0x00);
-        wing::encode_qpack_field(qpack_101, ":status", "101", true);
+        internal::encode_qpack_field(qpack_101, ":status", "101", true);
 
         var frame_101: u8[..128] = [];
-        wing::encode_h3_headers_frame(frame_101, qpack_101[..]);
-        let err = wing::handle_stream_data(conn, sid, true, frame_101[..], false);
-        sub.assert_eq(err, wing::H3_ERR_GENERAL_PROTOCOL, ":status 101 MUST return H3_ERR_GENERAL_PROTOCOL");
+        internal::encode_h3_headers_frame(frame_101, qpack_101[..]);
+        let err = internal::handle_stream_data(conn, sid, true, frame_101[..], false);
+        sub.assert_eq(err, internal::H3_ERR_GENERAL_PROTOCOL, ":status 101 MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("QPACK emit_field_checked rejects field names with invalid token chars") { sub =>
-        var fields: wing::HeaderField[>..] = [];
+        var fields: internal::HeaderField[>..] = [];
         var budget: u64 = 4096;
-        let err = wing::emit_field_checked(fields, budget, "bad name", "value", false);
-        sub.assert_true(err == wing::QpackError.DecompressionFailed, "QPACK field name with space MUST fail");
+        let err = internal::emit_field_checked(fields, budget, "bad name", "value", false);
+        sub.assert_true(err == internal::QpackError.DecompressionFailed, "QPACK field name with space MUST fail");
     };
 }
 
@@ -875,83 +875,83 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: core::T&) {
 // 1. HTTP/2 Server Multiplexer (server/h2_multiplexer.goose, http2/*)
 // ----------------------------------------------------------------------------
 fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
-    var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+    var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
 
     t.run("H2 ingress rejects Content-Length > 0 on HEADERS frame with END_STREAM") { sub =>
-        sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wire_in: u8[>..] = [];
-        wire_in.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
 
         // HEADERS frame on stream 1 with END_STREAM set, but Content-Length: 10!
         var hpack_block: u8[>..] = [];
-        var dt = wing::new_dynamic_table(4096);
-        wing::encode_hpack_field(dt, hpack_block, ":method", "POST", true, false);
-        wing::encode_hpack_field(dt, hpack_block, ":scheme", "https", true, false);
-        wing::encode_hpack_field(dt, hpack_block, ":path", "/api", true, false);
-        wing::encode_hpack_field(dt, hpack_block, "content-length", "10", true, false);
+        var dt = internal::new_dynamic_table(4096);
+        internal::encode_hpack_field(dt, hpack_block, ":method", "POST", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":scheme", "https", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":path", "/api", true, false);
+        internal::encode_hpack_field(dt, hpack_block, "content-length", "10", true, false);
 
-        let flags = wing::FLAG_END_HEADERS | wing::FLAG_END_STREAM;
-        let hdr = wing::FrameHeader {
+        let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
+        let hdr = internal::FrameHeader {
             length: hpack_block.len as u32,
-            frame_type: wing::FRAME_HEADERS,
+            frame_type: internal::FRAME_HEADERS,
             flags: flags,
             stream_id: 1,
         };
-        wing::encode_frame_header_to(hdr, wire_in);
+        internal::encode_frame_header_to(hdr, wire_in);
         wire_in.append(hpack_block[..]);
 
         var out_wire: u8[>..] = [];
-        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
+        let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
 
         // Under RFC 9113 §8.1.1, Content-Length mismatch on END_STREAM MUST be rejected
         sub.assert_false(ok, "Content-Length: 10 with 0 DATA bytes must be rejected as protocol error");
     };
 
     t.run("H2 ingress rejects PADDED frame when pad_len >= frame_payload.len") { sub =>
-        sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wire_in: u8[>..] = [];
-        wire_in.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
 
         // PADDED frame with payload length 5, but pad_len byte = 10 (pad_len >= payload_len)
-        let hdr = wing::FrameHeader {
+        let hdr = internal::FrameHeader {
             length: 5,
-            frame_type: wing::FRAME_DATA,
-            flags: wing::FLAG_PADDED,
+            frame_type: internal::FRAME_DATA,
+            flags: internal::FLAG_PADDED,
             stream_id: 1,
         };
-        wing::encode_frame_header_to(hdr, wire_in);
+        internal::encode_frame_header_to(hdr, wire_in);
         wire_in.push(10); // pad_len byte = 10
         wire_in.push(0); wire_in.push(0); wire_in.push(0); wire_in.push(0);
 
         var out_wire: u8[>..] = [];
-        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
+        let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
         sub.assert_false(ok, "Padding length >= frame payload length MUST emit GOAWAY(PROTOCOL_ERROR)");
     };
 
     t.run("H2 ingress rejects request missing mandatory pseudo-headers") { sub =>
-        sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wire_in: u8[>..] = [];
-        wire_in.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
 
         // HEADERS frame missing :path and :scheme
         var hpack_block: u8[>..] = [];
-        var dt = wing::new_dynamic_table(4096);
-        wing::encode_hpack_field(dt, hpack_block, ":method", "GET", true, false);
+        var dt = internal::new_dynamic_table(4096);
+        internal::encode_hpack_field(dt, hpack_block, ":method", "GET", true, false);
 
-        let flags = wing::FLAG_END_HEADERS | wing::FLAG_END_STREAM;
-        let hdr = wing::FrameHeader {
+        let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
+        let hdr = internal::FrameHeader {
             length: hpack_block.len as u32,
-            frame_type: wing::FRAME_HEADERS,
+            frame_type: internal::FRAME_HEADERS,
             flags: flags,
             stream_id: 1,
         };
-        wing::encode_frame_header_to(hdr, wire_in);
+        internal::encode_frame_header_to(hdr, wire_in);
         wire_in.append(hpack_block[..]);
 
         var out_wire: u8[>..] = [];
-        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
+        let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
         sub.assert_false(ok, "Request missing :scheme and :path MUST be rejected");
     };
 }
@@ -1152,7 +1152,7 @@ fn test_pool_and_proxy_san_invariants(t: core::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_multiplexer_trailers(t: core::T&) {
     t.run("emit_response_trailers filters pseudo-headers, hop-by-hop, and disallowed fields") { sub =>
-        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var trailers: wing::HeaderItem[..16] = [];
 
         // Valid trailers
@@ -1167,22 +1167,22 @@ fn test_h2_multiplexer_trailers(t: core::T&) {
         trailers.push(wing::make_header("host", "example.com"));
 
         var out_wire: u8[>..] = [];
-        wing::emit_response_trailers(sess, 1, trailers, out_wire);
+        internal::emit_response_trailers(sess, 1, trailers, out_wire);
 
         sub.assert_gt(out_wire.len, 9, "Trailers frame emitted");
 
         // Parse frame header
-        let hdr, ok_hdr = wing::parse_frame_header(out_wire[..9], 16384);
-        sub.assert_eq(ok_hdr, wing::ERR_NO_ERROR, "Frame header valid");
-        sub.assert_eq(hdr.frame_type, wing::FRAME_HEADERS, "Type is HEADERS");
+        let hdr, ok_hdr = internal::parse_frame_header(out_wire[..9], 16384);
+        sub.assert_eq(ok_hdr, internal::ERR_NO_ERROR, "Frame header valid");
+        sub.assert_eq(hdr.frame_type, internal::FRAME_HEADERS, "Type is HEADERS");
         sub.assert_eq(hdr.stream_id, 1, "Stream ID is 1");
-        sub.assert_true((hdr.flags & wing::FLAG_END_HEADERS) != 0, "FLAG_END_HEADERS set");
-        sub.assert_true((hdr.flags & wing::FLAG_END_STREAM) != 0, "FLAG_END_STREAM set");
+        sub.assert_true((hdr.flags & internal::FLAG_END_HEADERS) != 0, "FLAG_END_HEADERS set");
+        sub.assert_true((hdr.flags & internal::FLAG_END_STREAM) != 0, "FLAG_END_STREAM set");
 
         // Decode HPACK payload
-        var dec_list = wing::DecodedH2HeaderList { .. };
-        let dec_err = wing::decode_hpack_header_block(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_list);
-        sub.assert_eq(dec_err, wing::ERR_NO_ERROR, "HPACK block decoded");
+        var dec_list = internal::DecodedH2HeaderList { .. };
+        let dec_err = internal::decode_hpack_header_block(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_list);
+        sub.assert_eq(dec_err, internal::ERR_NO_ERROR, "HPACK block decoded");
 
         // Exactly 2 valid trailer headers should survive
         sub.assert_eq(dec_list.fields.len, 2, "Only 2 valid trailers encoded");
@@ -1193,31 +1193,31 @@ fn test_h2_multiplexer_trailers(t: core::T&) {
     };
 
     t.run("handle_h2_server_ingress emits response with body and trailers") { sub =>
-        var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_in: u8[>..] = [];
-        wire_in.append(wing::H2_CLIENT_PREFACE[..]);
+        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
 
         // Client request on stream 1
         var hpack_block: u8[>..] = [];
-        var dt = wing::new_dynamic_table(4096);
-        wing::encode_hpack_field(dt, hpack_block, ":method", "GET", true, false);
-        wing::encode_hpack_field(dt, hpack_block, ":scheme", "https", true, false);
-        wing::encode_hpack_field(dt, hpack_block, ":path", "/test", true, false);
+        var dt = internal::new_dynamic_table(4096);
+        internal::encode_hpack_field(dt, hpack_block, ":method", "GET", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":scheme", "https", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":path", "/test", true, false);
 
-        let req_hdr = wing::FrameHeader {
+        let req_hdr = internal::FrameHeader {
             length: hpack_block.len as u32,
-            frame_type: wing::FRAME_HEADERS,
-            flags: wing::FLAG_END_HEADERS | wing::FLAG_END_STREAM,
+            frame_type: internal::FRAME_HEADERS,
+            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
             stream_id: 1,
         };
-        wing::encode_frame_header_to(req_hdr, wire_in);
+        internal::encode_frame_header_to(req_hdr, wire_in);
         wire_in.append(hpack_block[..]);
 
         var out_wire: u8[>..] = [];
-        let consumed, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
+        let consumed, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, out_wire);
         sub.assert_true(ok, "Ingress handled cleanly");
         sub.assert_gt(consumed, 0, "Ingress bytes consumed");
         sub.assert_gt(out_wire.len, 0, "Server produced response");
@@ -1528,7 +1528,7 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
             0x01, 0x02, 0x03, 0x04,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        let _, ok_s = wing::parse_quic_header(bad_short[..], 4);
+        let _, ok_s = internal::parse_quic_header(bad_short[..], 4);
         sub.assert_false(ok_s, "Short header with fixed bit 0 rejected");
 
         // 2. Short header with dcid_len_short > 20 MUST fail
@@ -1538,44 +1538,44 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
             0x2A, // packet number
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        let _, ok_dcid_lg = wing::parse_quic_header(valid_short[..], 21);
+        let _, ok_dcid_lg = internal::parse_quic_header(valid_short[..], 21);
         sub.assert_false(ok_dcid_lg, "Short header with dcid > 20 rejected");
 
-        let hdr_s, ok_s_valid = wing::parse_quic_header(valid_short[..], 4);
+        let hdr_s, ok_s_valid = internal::parse_quic_header(valid_short[..], 4);
         sub.assert_true(ok_s_valid, "Valid short header accepted");
-        sub.assert_eq(hdr_s.header_type, wing::QuicHeaderType.OneRtt, "Header type is OneRtt");
+        sub.assert_eq(hdr_s.header_type, internal::QuicHeaderType.OneRtt, "Header type is OneRtt");
         sub.assert_eq(hdr_s.pn_length, 1, "PN length is 1");
 
         // 3. Long header with fixed bit cleared MUST fail per RFC 9000 §17.2
         var bad_long: u8[..64] = [];
         bad_long.push(0x80); // Long header, but fixed bit 0x40 NOT set!
-        core::append_u32_be(bad_long, wing::QUIC_VERSION_1);
+        core::append_u32_be(bad_long, internal::QUIC_VERSION_1);
         bad_long.push(4); // DCID len
         bad_long.append([1, 2, 3, 4]);
         bad_long.push(4); // SCID len
         bad_long.append([5, 6, 7, 8]);
-        wing::quic_encode_varint(bad_long, 10); // plen
+        internal::quic_encode_varint(bad_long, 10); // plen
         bad_long.push(1); // pn
-        let _, ok_l_fix = wing::parse_quic_header(bad_long[..], 0);
+        let _, ok_l_fix = internal::parse_quic_header(bad_long[..], 0);
         sub.assert_false(ok_l_fix, "Long header with fixed bit 0 rejected");
 
         // 4. Long header with plen < pn_len MUST fail per RFC 9000 §17.2
         var bad_plen: u8[..64] = [];
         bad_plen.push(0xC1); // Long header, Initial, pn_len = 2 (bits 0..1 = 1)
-        core::append_u32_be(bad_plen, wing::QUIC_VERSION_1);
+        core::append_u32_be(bad_plen, internal::QUIC_VERSION_1);
         bad_plen.push(0); // DCID len 0
         bad_plen.push(0); // SCID len 0
-        wing::quic_encode_varint(bad_plen, 0); // token len 0
-        wing::quic_encode_varint(bad_plen, 1); // plen = 1, but pn_len = 2!
+        internal::quic_encode_varint(bad_plen, 0); // token len 0
+        internal::quic_encode_varint(bad_plen, 1); // plen = 1, but pn_len = 2!
         bad_plen.append([0x00, 0x2A]); // 2 bytes PN
-        let _, ok_plen = wing::parse_quic_header(bad_plen[..], 0);
+        let _, ok_plen = internal::parse_quic_header(bad_plen[..], 0);
         sub.assert_false(ok_plen, "Long header with plen < pn_len rejected");
     };
 
     t.run("encode_quic_header enforces pn_len bounds and 20-byte CID") { sub =>
-        var hdr = wing::QuicHeader {
-            header_type: wing::QuicHeaderType.Initial,
-            version: wing::QUIC_VERSION_1,
+        var hdr = internal::QuicHeader {
+            header_type: internal::QuicHeaderType.Initial,
+            version: internal::QUIC_VERSION_1,
             payload_length: 64,
             packet_number: 1,
             ..
@@ -1584,13 +1584,13 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
         for i in 20 { hdr.dcid.push(i as u8); }
 
         var out: u8[..128] = [];
-        let ok_valid = wing::encode_quic_header(out, hdr, 1);
+        let ok_valid = internal::encode_quic_header(out, hdr, 1);
         sub.assert_true(ok_valid, "encode with DCID == 20 accepted");
 
         // Invalid pn_len 0 or 5
         out.clear();
-        sub.assert_false(wing::encode_quic_header(out, hdr, 0), "pn_len 0 rejected");
-        sub.assert_false(wing::encode_quic_header(out, hdr, 5), "pn_len 5 rejected");
+        sub.assert_false(internal::encode_quic_header(out, hdr, 0), "pn_len 0 rejected");
+        sub.assert_false(internal::encode_quic_header(out, hdr, 5), "pn_len 5 rejected");
     };
 
     t.run("apply and remove header protection with truncated buffers") { sub =>
@@ -1598,17 +1598,17 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
 
         // Empty buffer
         var empty_buf: u8[..4] = [];
-        wing::apply_header_protection(empty_buf[..], 0, 1, hp_mask);
-        let pn_len_e, pn_e = wing::remove_header_protection(empty_buf[..], 0, hp_mask);
+        internal::apply_header_protection(empty_buf[..], 0, 1, hp_mask);
+        let pn_len_e, pn_e = internal::remove_header_protection(empty_buf[..], 0, hp_mask);
         sub.assert_eq(pn_len_e, 0, "remove on empty returns 0");
         sub.assert_eq(pn_e, 0, "pn on empty returns 0");
 
         // Truncated buffer where pn_offset + pn_len > pkt.len
         var trunc_buf: u8[4] = [0xC0, 0x00, 0x00, 0x00];
-        wing::apply_header_protection(trunc_buf[..], 10, 2, hp_mask); // offset 10 > len 4: safe no-op
+        internal::apply_header_protection(trunc_buf[..], 10, 2, hp_mask); // offset 10 > len 4: safe no-op
         sub.assert_eq(trunc_buf[0], 0xC0, "first byte untouched when out of bounds");
 
-        let pn_len_tr, _ = wing::remove_header_protection(trunc_buf[..], 10, hp_mask);
+        let pn_len_tr, _ = internal::remove_header_protection(trunc_buf[..], 10, hp_mask);
         sub.assert_eq(pn_len_tr, 0, "remove out of bounds returns 0");
         sub.assert_eq(trunc_buf[0], 0xC0, "first byte restored on out-of-bounds");
 
@@ -1618,78 +1618,78 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
         let orig_pn0 = valid_pkt[4];
         let orig_pn1 = valid_pkt[5];
 
-        wing::apply_header_protection(valid_pkt[..], 4, 2, hp_mask);
+        internal::apply_header_protection(valid_pkt[..], 4, 2, hp_mask);
         sub.assert_ne(valid_pkt[0], orig_first, "first byte masked");
 
-        let dec_pn_len, dec_pn = wing::remove_header_protection(valid_pkt[..], 4, hp_mask);
+        let dec_pn_len, dec_pn = internal::remove_header_protection(valid_pkt[..], 4, hp_mask);
         sub.assert_eq(dec_pn_len, 1, "pn_len unmasked is (first & 3) + 1");
         sub.assert_eq(valid_pkt[0], orig_first, "first byte restored");
     };
 
     t.run("decode_packet_number bounds checking and epoch shifts") { sub =>
         // Out of bounds pn_len
-        let pn_raw = wing::decode_packet_number(100, 42, 0);
+        let pn_raw = internal::decode_packet_number(100, 42, 0);
         sub.assert_eq(pn_raw, 42, "pn_len 0 returns truncated");
-        let pn_lg = wing::decode_packet_number(100, 42, 5);
+        let pn_lg = internal::decode_packet_number(100, 42, 5);
         sub.assert_eq(pn_lg, 42, "pn_len 5 returns truncated");
 
         // 1-byte PN decoding near wrap-around
-        let pn1 = wing::decode_packet_number(0xA8252, 0x9B, 1);
+        let pn1 = internal::decode_packet_number(0xA8252, 0x9B, 1);
         sub.assert_eq(pn1, 0xA829B, "RFC 9000 Appendix A.3 1-byte decode vector");
 
         // 2-byte PN decoding
-        let pn2 = wing::decode_packet_number(0xA8252, 0x9B3F, 2);
+        let pn2 = internal::decode_packet_number(0xA8252, 0x9B3F, 2);
         sub.assert_eq(pn2, 0xA9B3F, "RFC 9000 Appendix A.3 2-byte decode vector");
     };
 
     t.run("can_send_on_path anti-amplification overflow protection") { sub =>
         let ip: u8[16] = [0; 16];
-        var path = wing::new_path_state(ip, 443, false);
+        var path = internal::new_path_state(ip, 443, false);
 
         // Path received 1000 bytes -> can send up to 3000 bytes
-        wing::on_path_bytes_received(path, 1000);
-        sub.assert_true(wing::can_send_on_path(path, 3000), "3000 <= 3 * 1000 allowed");
-        sub.assert_false(wing::can_send_on_path(path, 3001), "3001 > 3 * 1000 blocked");
+        internal::on_path_bytes_received(path, 1000);
+        sub.assert_true(internal::can_send_on_path(path, 3000), "3000 <= 3 * 1000 allowed");
+        sub.assert_false(internal::can_send_on_path(path, 3001), "3001 > 3 * 1000 blocked");
 
         // Test with massive numbers that would overflow 3 * received or sent + packet
-        var path_huge = wing::new_path_state(ip, 443, false);
+        var path_huge = internal::new_path_state(ip, 443, false);
         path_huge.bytes_received = 0x7FFFFFFFFFFFFFFF; // 3 * bytes_received overflows u64
         path_huge.bytes_sent = 0xFFFFFFFFFFFFFFF0;
-        sub.assert_false(wing::can_send_on_path(path_huge, 32), "sent + packet overflow safely blocked");
+        sub.assert_false(internal::can_send_on_path(path_huge, 32), "sent + packet overflow safely blocked");
 
         // Validated path ignores limit
-        wing::validate_path(path);
-        sub.assert_true(wing::can_send_on_path(path, 1000000), "validated path allows send");
+        internal::validate_path(path);
+        sub.assert_true(internal::can_send_on_path(path, 1000000), "validated path allows send");
     };
 
     t.run("decode_quic_datagram_frame respects packet_end boundary") { sub =>
         var wire: u8[..32] = [];
         // DATAGRAM with Length (0x31)
-        sub.assert_true(wing::encode_quic_datagram_frame(wire, "hello", true), "encode datagram len");
+        sub.assert_true(internal::encode_quic_datagram_frame(wire, "hello", true), "encode datagram len");
 
         // Normal decode without packet_end
-        let payload1, end1, ok1 = wing::decode_quic_datagram_frame(wire[..], 0, 0);
+        let payload1, end1, ok1 = internal::decode_quic_datagram_frame(wire[..], 0, 0);
         sub.assert_true(ok1, "decode ok without packet_end");
         sub.assert_bytes_eq(payload1, "hello", "payload matches");
 
         // Decode with packet_end cutting into datagram length
-        let _, _, ok_trunc = wing::decode_quic_datagram_frame(wire[..], 0, end1 - 1);
+        let _, _, ok_trunc = internal::decode_quic_datagram_frame(wire[..], 0, end1 - 1);
         sub.assert_false(ok_trunc, "datagram exceeding packet_end rejected");
     };
 
     t.run("merge_reassembly_interval enforces 64 intervals capacity") { sub =>
-        var r_buf = wing::new_reassembly_buffer(65536);
+        var r_buf = internal::new_reassembly_buffer(65536);
 
         // Insert 64 disjunct intervals [0, 1), [2, 3), [4, 5), ...
         for i in 64 {
             let s = (i as u64) * 2;
-            let ok = wing::insert_fragment(r_buf, s, "X", false);
+            let ok = internal::insert_fragment(r_buf, s, "X", false);
             sub.assert_true(ok, "insert interval");
         }
         sub.assert_eq(r_buf.intervals.len, 64, "intervals array full at cap 64");
 
         // 65th disjunct interval cannot be added
-        let ok_65 = wing::insert_fragment(r_buf, 200, "Y", false);
+        let ok_65 = internal::insert_fragment(r_buf, 200, "Y", false);
         sub.assert_false(ok_65, "65th disjunct interval safely rejected on capacity exhaustion");
     };
 }
@@ -1700,44 +1700,44 @@ fn test_quic_packet_and_reassembly(t: core::T&) {
 fn test_qpack_invariants_and_token_defenses(t: core::T&) {
     t.run("decode_base integer overflow and underflow protection") { sub =>
         // Sign bit 0: Base = ric + delta_base. Test overflow on ric + delta_base
-        let _, err_ov = wing::decode_base(0, 10, 0xFFFFFFFFFFFFFFFF);
-        sub.assert_eq(err_ov, wing::QpackError.DecompressionFailed, "overflow in base addition rejected");
+        let _, err_ov = internal::decode_base(0, 10, 0xFFFFFFFFFFFFFFFF);
+        sub.assert_eq(err_ov, internal::QpackError.DecompressionFailed, "overflow in base addition rejected");
 
         // Sign bit 1: Base = ric - delta_base - 1. Test underflow when ric <= delta_base
-        let _, err_un = wing::decode_base(1, 5, 5);
-        sub.assert_eq(err_un, wing::QpackError.DecompressionFailed, "underflow in base subtraction rejected");
+        let _, err_un = internal::decode_base(1, 5, 5);
+        sub.assert_eq(err_un, internal::QpackError.DecompressionFailed, "underflow in base subtraction rejected");
 
-        let base_ok, err_ok = wing::decode_base(0, 5, 10);
-        sub.assert_eq(err_ok, wing::QpackError.None, "valid base decoded");
+        let base_ok, err_ok = internal::decode_base(0, 5, 10);
+        sub.assert_eq(err_ok, internal::QpackError.None, "valid base decoded");
         sub.assert_eq(base_ok, 15, "base is 15");
     };
 
     t.run("emit_field_checked rejects bare colon and non-token characters") { sub =>
-        var fields: wing::HeaderField[>..] = [];
+        var fields: internal::HeaderField[>..] = [];
         var budget: u64 = 4096;
 
         // Bare colon ":" must be rejected
-        let err_colon = wing::emit_field_checked(fields, budget, ":", "val", false);
-        sub.assert_eq(err_colon, wing::QpackError.DecompressionFailed, "bare colon rejected");
+        let err_colon = internal::emit_field_checked(fields, budget, ":", "val", false);
+        sub.assert_eq(err_colon, internal::QpackError.DecompressionFailed, "bare colon rejected");
 
         // Empty field name
-        let err_empty = wing::emit_field_checked(fields, budget, "", "val", false);
-        sub.assert_eq(err_empty, wing::QpackError.DecompressionFailed, "empty name rejected");
+        let err_empty = internal::emit_field_checked(fields, budget, "", "val", false);
+        sub.assert_eq(err_empty, internal::QpackError.DecompressionFailed, "empty name rejected");
 
         // Disallowed control char in name
-        let err_ctl = wing::emit_field_checked(fields, budget, "bad\nheader", "val", false);
-        sub.assert_eq(err_ctl, wing::QpackError.DecompressionFailed, "newline in name rejected");
+        let err_ctl = internal::emit_field_checked(fields, budget, "bad\nheader", "val", false);
+        sub.assert_eq(err_ctl, internal::QpackError.DecompressionFailed, "newline in name rejected");
 
         // Valid pseudo header
-        let err_valid = wing::emit_field_checked(fields, budget, ":status", "200", false);
-        sub.assert_eq(err_valid, wing::QpackError.None, "valid :status accepted");
+        let err_valid = internal::emit_field_checked(fields, budget, ":status", "200", false);
+        sub.assert_eq(err_valid, internal::QpackError.None, "valid :status accepted");
         sub.assert_eq(fields.len, 1, "field emitted");
     };
 
     t.run("decode_qpack_section enforces RFC 9204 Post-Base index bounds abs_idx < ric") { sub =>
-        var tbl = wing::new_qpack_table(4096, 16);
+        var tbl = internal::new_qpack_table(4096, 16);
         // Insert one dynamic entry: "x-foo" = "bar" -> abs_idx = 0
-        wing::qpack_insert_literal(tbl, "x-foo", "bar");
+        internal::qpack_insert_literal(tbl, "x-foo", "bar");
         sub.assert_eq(tbl.insert_count, 1, "dynamic table insert_count is 1");
 
         // Construct section with RIC = 1, Base = 0 (S=1, DeltaBase=0 -> Base = 1 - 0 - 1 = 0)
@@ -1745,37 +1745,37 @@ fn test_qpack_invariants_and_token_defenses(t: core::T&) {
         // Per RFC 9204 §4.5.3, abs_idx >= ric MUST be treated as decompression error!
         var sec: u8[..32] = [];
         // 1. EncodedInsertCount = 1 (enc_ric for ric=1 is 2 when max_entries = 4096/32 = 128)
-        let enc_ric = wing::encode_ric(1, 4096);
-        wing::hpack_encode_int(sec, enc_ric, 8, 0x00);
+        let enc_ric = internal::encode_ric(1, 4096);
+        internal::hpack_encode_int(sec, enc_ric, 8, 0x00);
         // 2. Sign=1, DeltaBase=0 -> 0x80 | 0 = 0x80
         sec.push(0x80);
         // 3. Post-Base Indexed Field Line: 0001xxxx with post_idx = 1 -> 0x11
         sec.push(0x11);
 
-        var out_fields: wing::HeaderField[>..] = [];
-        let err = wing::decode_qpack_section(tbl, sec[..], out_fields, 4096);
-        sub.assert_eq(err, wing::QpackError.DecompressionFailed, "post_idx resulting in abs_idx >= ric rejected");
+        var out_fields: internal::HeaderField[>..] = [];
+        let err = internal::decode_qpack_section(tbl, sec[..], out_fields, 4096);
+        sub.assert_eq(err, internal::QpackError.DecompressionFailed, "post_idx resulting in abs_idx >= ric rejected");
     };
 
     t.run("decode_qpack_section accepts valid RIC >= max_dyn_abs_used + 1 per RFC 9204 §4.5.1") { sub =>
-        var tbl = wing::new_qpack_table(4096, 16);
+        var tbl = internal::new_qpack_table(4096, 16);
         // Insert two entries: abs_idx 0 ("x-first"), abs_idx 1 ("x-second")
-        wing::qpack_insert_literal(tbl, "x-first", "v1");
-        wing::qpack_insert_literal(tbl, "x-second", "v2");
+        internal::qpack_insert_literal(tbl, "x-first", "v1");
+        internal::qpack_insert_literal(tbl, "x-second", "v2");
         sub.assert_eq(tbl.insert_count, 2, "dynamic table insert_count is 2");
 
         // Section references ONLY static :status 200 (index 0)
         // Encoder signals RIC = 2 (TotalNumberOfInserts), Base = 2 (S=0, DeltaBase=0)
         // Per RFC 9204 §4.5.1, encoder MAY set RIC > 0 even if no dynamic entries referenced
         var sec: u8[..32] = [];
-        let enc_ric = wing::encode_ric(2, 4096);
-        wing::hpack_encode_int(sec, enc_ric, 8, 0x00);
+        let enc_ric = internal::encode_ric(2, 4096);
+        internal::hpack_encode_int(sec, enc_ric, 8, 0x00);
         sec.push(0x00); // S=0, DeltaBase=0 -> Base = 2
         sec.push(0xD9); // Static index 25 (:status 200)
 
-        var out_fields: wing::HeaderField[>..] = [];
-        let err = wing::decode_qpack_section(tbl, sec[..], out_fields, 4096);
-        sub.assert_eq(err, wing::QpackError.None, "RIC > 0 with static-only fields accepted per RFC 9204 §4.5.1");
+        var out_fields: internal::HeaderField[>..] = [];
+        let err = internal::decode_qpack_section(tbl, sec[..], out_fields, 4096);
+        sub.assert_eq(err, internal::QpackError.None, "RIC > 0 with static-only fields accepted per RFC 9204 §4.5.1");
         sub.assert_eq(out_fields.len, 1, "1 field decoded");
         sub.assert_bytes_eq(out_fields[0].name[..], ":status", "name is :status");
         sub.assert_bytes_eq(out_fields[0].value[..], "200", "value is 200");
@@ -1789,32 +1789,32 @@ fn test_h3_framing_and_settings_invariants(t: core::T&) {
     t.run("parse_h3_settings_frame rejects reserved setting 0x00 and duplicates") { sub =>
         // 1. Reserved setting 0x00 (from HTTP/2) MUST cause H3_SETTINGS_ERROR (RFC 9114 §7.2.4.1)
         var payload_00: u8[..16] = [];
-        wing::quic_encode_varint(payload_00, 0x00); // Reserved identifier 0x00
-        wing::quic_encode_varint(payload_00, 100);
+        internal::quic_encode_varint(payload_00, 0x00); // Reserved identifier 0x00
+        internal::quic_encode_varint(payload_00, 100);
 
         var st1 = wing::H3Settings { .. };
-        let err_00 = wing::parse_h3_settings_frame(payload_00[..], st1);
-        sub.assert_eq(err_00, wing::H3_ERR_SETTINGS_ERROR, "Reserved setting 0x00 rejected with H3_SETTINGS_ERROR");
+        let err_00 = internal::parse_h3_settings_frame(payload_00[..], st1);
+        sub.assert_eq(err_00, internal::H3_ERR_SETTINGS_ERROR, "Reserved setting 0x00 rejected with H3_SETTINGS_ERROR");
 
         // 2. Duplicate QPACK_MAX_TABLE_CAPACITY setting MUST cause H3_SETTINGS_ERROR
         var payload_dup: u8[..32] = [];
-        wing::quic_encode_varint(payload_dup, wing::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
-        wing::quic_encode_varint(payload_dup, 4096);
-        wing::quic_encode_varint(payload_dup, wing::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
-        wing::quic_encode_varint(payload_dup, 8192);
+        internal::quic_encode_varint(payload_dup, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(payload_dup, 4096);
+        internal::quic_encode_varint(payload_dup, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(payload_dup, 8192);
 
         var st2 = wing::H3Settings { .. };
-        let err_dup = wing::parse_h3_settings_frame(payload_dup[..], st2);
-        sub.assert_eq(err_dup, wing::H3_ERR_SETTINGS_ERROR, "Duplicate setting rejected with H3_SETTINGS_ERROR");
+        let err_dup = internal::parse_h3_settings_frame(payload_dup[..], st2);
+        sub.assert_eq(err_dup, internal::H3_ERR_SETTINGS_ERROR, "Duplicate setting rejected with H3_SETTINGS_ERROR");
 
         // 3. Invalid ENABLE_CONNECT_PROTOCOL value (must be 0 or 1)
         var payload_conn: u8[..16] = [];
-        wing::quic_encode_varint(payload_conn, wing::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
-        wing::quic_encode_varint(payload_conn, 2); // Invalid: only 0 or 1 allowed
+        internal::quic_encode_varint(payload_conn, internal::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
+        internal::quic_encode_varint(payload_conn, 2); // Invalid: only 0 or 1 allowed
 
         var st3 = wing::H3Settings { .. };
-        let err_conn = wing::parse_h3_settings_frame(payload_conn[..], st3);
-        sub.assert_eq(err_conn, wing::H3_ERR_SETTINGS_ERROR, "Invalid connect protocol val rejected with H3_SETTINGS_ERROR");
+        let err_conn = internal::parse_h3_settings_frame(payload_conn[..], st3);
+        sub.assert_eq(err_conn, internal::H3_ERR_SETTINGS_ERROR, "Invalid connect protocol val rejected with H3_SETTINGS_ERROR");
     };
 }
 
@@ -1824,54 +1824,54 @@ fn test_h3_framing_and_settings_invariants(t: core::T&) {
 fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
     t.run("handle_stream_data dispatches QPACK encoder stream instructions and catches errors") { sub =>
         let settings = wing::H3Settings { qpack_max_table_capacity: 4096, .. };
-        var conn = wing::new_h3_client_connection(settings);
+        var conn = internal::new_h3_client_connection(settings);
 
         // 1. Establish control stream first (Stream 2)
         var ctrl_wire: u8[..64] = [];
-        wing::quic_encode_varint(ctrl_wire, wing::H3_STREAM_CONTROL);
-        wing::encode_h3_settings_frame(ctrl_wire, settings);
+        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
         let err_c = conn.handle_stream_data(2, false, ctrl_wire[..], false);
-        sub.assert_eq(err_c, wing::H3_ERR_NO_ERROR, "control stream established");
+        sub.assert_eq(err_c, internal::H3_ERR_NO_ERROR, "control stream established");
 
         // 2. Open QPACK encoder stream (Stream 6) with valid Set Dynamic Table Capacity instruction (0x20 | 5-bit cap)
         var enc_wire: u8[..64] = [];
-        wing::quic_encode_varint(enc_wire, wing::H3_STREAM_QPACK_ENCODER);
-        wing::hpack_encode_int(enc_wire, 2048, 5, 0x20); // Capacity 2048
+        internal::quic_encode_varint(enc_wire, internal::H3_STREAM_QPACK_ENCODER);
+        internal::hpack_encode_int(enc_wire, 2048, 5, 0x20); // Capacity 2048
         let err_enc = conn.handle_stream_data(6, false, enc_wire[..], false);
-        sub.assert_eq(err_enc, wing::H3_ERR_NO_ERROR, "encoder stream capacity instruction processed");
+        sub.assert_eq(err_enc, internal::H3_ERR_NO_ERROR, "encoder stream capacity instruction processed");
         sub.assert_eq(conn.qpack_table.capacity_bytes, 2048, "dynamic table capacity updated to 2048");
 
         // 3. Send malformed instruction on encoder stream -> returns H3_ERR_QPACK_ENCODER_STREAM_ERROR
         var bad_enc_wire: u8[..16] = [];
         // Capacity larger than max_capacity_bytes (4096)
-        wing::hpack_encode_int(bad_enc_wire, 999999, 5, 0x20);
+        internal::hpack_encode_int(bad_enc_wire, 999999, 5, 0x20);
         let err_bad_enc = conn.handle_stream_data(6, false, bad_enc_wire[..], false);
-        sub.assert_eq(err_bad_enc, wing::H3_ERR_QPACK_ENCODER_STREAM_ERROR, "invalid encoder instruction closed connection");
-        sub.assert_eq(conn.state, wing::H3ConnState.Closed, "conn state is Closed");
+        sub.assert_eq(err_bad_enc, internal::H3_ERR_QPACK_ENCODER_STREAM_ERROR, "invalid encoder instruction closed connection");
+        sub.assert_eq(conn.state, internal::H3ConnState.Closed, "conn state is Closed");
     };
 
     t.run("handle_stream_data rejects second trailer section and DATA after trailers") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = wing::new_h3_client_connection(settings);
+        var conn = internal::new_h3_client_connection(settings);
 
         // Setup control stream
         var ctrl_wire: u8[..64] = [];
-        wing::quic_encode_varint(ctrl_wire, wing::H3_STREAM_CONTROL);
-        wing::encode_h3_settings_frame(ctrl_wire, settings);
+        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
         // Stream 0: Initial response headers (200 OK)
         var resp_hdrs: u8[..64] = [];
         var sec1: u8[..16] = [0x00, 0x00, 0xD9]; // RIC 0, Base 0, :status 200
-        wing::encode_h3_headers_frame(resp_hdrs, sec1[..]);
+        internal::encode_h3_headers_frame(resp_hdrs, sec1[..]);
         let err_h1 = conn.handle_stream_data(0, true, resp_hdrs[..], false);
-        sub.assert_eq(err_h1, wing::H3_ERR_NO_ERROR, "initial 200 OK headers accepted");
+        sub.assert_eq(err_h1, internal::H3_ERR_NO_ERROR, "initial 200 OK headers accepted");
 
         // Stream 0: DATA frame
         var data_frame: u8[..32] = [];
-        wing::encode_h3_data_frame(data_frame, "hello");
+        internal::encode_h3_data_frame(data_frame, "hello");
         let err_d1 = conn.handle_stream_data(0, true, data_frame[..], false);
-        sub.assert_eq(err_d1, wing::H3_ERR_NO_ERROR, "data frame accepted");
+        sub.assert_eq(err_d1, internal::H3_ERR_NO_ERROR, "data frame accepted");
 
         // Stream 0: First trailer section (x-checksum: abc)
         var trailer1_frame: u8[..64] = [];
@@ -1881,18 +1881,18 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
         sec_tr1.append("x-chk");
         sec_tr1.push(0x01);
         sec_tr1.append("1");
-        wing::encode_h3_headers_frame(trailer1_frame, sec_tr1[..]);
+        internal::encode_h3_headers_frame(trailer1_frame, sec_tr1[..]);
         let err_tr1 = conn.handle_stream_data(0, true, trailer1_frame[..], false);
-        sub.assert_eq(err_tr1, wing::H3_ERR_NO_ERROR, "first trailer section accepted");
+        sub.assert_eq(err_tr1, internal::H3_ERR_NO_ERROR, "first trailer section accepted");
 
         // 1. DATA frame AFTER trailers MUST cause H3_FRAME_UNEXPECTED (RFC 9114 §4.1)
         var post_tr_data: u8[..32] = [];
-        wing::encode_h3_data_frame(post_tr_data, "illegal");
+        internal::encode_h3_data_frame(post_tr_data, "illegal");
         let err_post_d = conn.handle_stream_data(0, true, post_tr_data[..], false);
-        sub.assert_eq(err_post_d, wing::H3_ERR_FRAME_UNEXPECTED, "DATA after trailers rejected with H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err_post_d, internal::H3_ERR_FRAME_UNEXPECTED, "DATA after trailers rejected with H3_FRAME_UNEXPECTED");
 
         // Reset and test second trailer section rejection
-        var conn2 = wing::new_h3_client_connection(settings);
+        var conn2 = internal::new_h3_client_connection(settings);
         conn2.handle_stream_data(2, false, ctrl_wire[..], false);
         conn2.handle_stream_data(0, true, resp_hdrs[..], false);
         conn2.handle_stream_data(0, true, data_frame[..], false);
@@ -1900,37 +1900,37 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
 
         // 2. Second trailer section MUST cause H3_FRAME_UNEXPECTED (RFC 9114 §4.1)
         let err_tr2 = conn2.handle_stream_data(0, true, trailer1_frame[..], false);
-        sub.assert_eq(err_tr2, wing::H3_ERR_FRAME_UNEXPECTED, "second trailer section rejected with H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err_tr2, internal::H3_ERR_FRAME_UNEXPECTED, "second trailer section rejected with H3_FRAME_UNEXPECTED");
     };
 
     t.run("handle_stream_data validates 3-digit status code and trailer disallowed headers") { sub =>
         let settings = wing::H3Settings { .. };
-        var conn = wing::new_h3_client_connection(settings);
+        var conn = internal::new_h3_client_connection(settings);
 
         // Setup control stream
         var ctrl_wire: u8[..64] = [];
-        wing::quic_encode_varint(ctrl_wire, wing::H3_STREAM_CONTROL);
-        wing::encode_h3_settings_frame(ctrl_wire, settings);
+        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
         // 1. Status code with 4 digits e.g. "0200" MUST fail
         var sec_bad_st: u8[..32] = [0x00, 0x00];
         // Literal with static name index 24 (:status) encoded with 4-bit prefix
-        wing::hpack_encode_int(sec_bad_st, 24, 4, 0x50);
+        internal::hpack_encode_int(sec_bad_st, 24, 4, 0x50);
         sec_bad_st.push(4); // len 4
         sec_bad_st.append("0200");
 
         var bad_st_frame: u8[..64] = [];
-        wing::encode_h3_headers_frame(bad_st_frame, sec_bad_st[..]);
+        internal::encode_h3_headers_frame(bad_st_frame, sec_bad_st[..]);
         let err_st = conn.handle_stream_data(0, true, bad_st_frame[..], false);
-        sub.assert_eq(err_st, wing::H3_ERR_GENERAL_PROTOCOL, "4-digit status code rejected");
+        sub.assert_eq(err_st, internal::H3_ERR_GENERAL_PROTOCOL, "4-digit status code rejected");
 
         // 2. Disallowed content-length in trailer section MUST fail
-        var conn3 = wing::new_h3_client_connection(settings);
+        var conn3 = internal::new_h3_client_connection(settings);
         conn3.handle_stream_data(2, false, ctrl_wire[..], false);
         var sec_ok: u8[..16] = [0x00, 0x00, 0xD9]; // :status 200
         var ok_hdrs: u8[..32] = [];
-        wing::encode_h3_headers_frame(ok_hdrs, sec_ok[..]);
+        internal::encode_h3_headers_frame(ok_hdrs, sec_ok[..]);
         conn3.handle_stream_data(0, true, ok_hdrs[..], false);
 
         var sec_cl_tr: u8[..32] = [0x00, 0x00];
@@ -1940,9 +1940,9 @@ fn test_h3_multiplexer_and_stream_defenses(t: core::T&) {
         sec_cl_tr.append("10");
 
         var cl_tr_frame: u8[..64] = [];
-        wing::encode_h3_headers_frame(cl_tr_frame, sec_cl_tr[..]);
+        internal::encode_h3_headers_frame(cl_tr_frame, sec_cl_tr[..]);
         let err_cl_tr = conn3.handle_stream_data(0, true, cl_tr_frame[..], false);
-        sub.assert_eq(err_cl_tr, wing::H3_ERR_GENERAL_PROTOCOL, "content-length in trailer rejected");
+        sub.assert_eq(err_cl_tr, internal::H3_ERR_GENERAL_PROTOCOL, "content-length in trailer rejected");
     };
 }
 

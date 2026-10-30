@@ -13,26 +13,26 @@ import wing from "../..";
 
 fn test_h2_stream_progression() {
     print("=== H2_STREAM_PROGRESSION ===");
-    var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+    var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
     // Client preface + empty settings
     var init_wire: u8[>..] = [];
-    init_wire.append(wing::H2_CLIENT_PREFACE);
+    init_wire.append(internal::H2_CLIENT_PREFACE);
     init_wire.append([0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
+    internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // Open Stream 1, 3, 5 sequentially
     var stream_ids: const u32[3] = [1, 3, 5];
-    var dt = wing::new_dynamic_table(4096);
+    var dt = internal::new_dynamic_table(4096);
 
     for sid in stream_ids {
         var hdr_block: u8[>..] = [];
-        wing::encode_hpack_field(dt, hdr_block, ":method", "GET", true, false);
-        wing::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
-        wing::encode_hpack_field(dt, hdr_block, ":path", "/", true, false);
+        internal::encode_hpack_field(dt, hdr_block, ":method", "GET", true, false);
+        internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
+        internal::encode_hpack_field(dt, hdr_block, ":path", "/", true, false);
 
         var h_frame: u8[>..] = [];
         let h_len = hdr_block.len as u32;
@@ -47,7 +47,7 @@ fn test_h2_stream_progression() {
         h_frame.push((sid & 0xFF) as u8);
         h_frame.append(hdr_block[..]);
 
-        let _, ok = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h_frame[..], 1000, wire_out);
+        let _, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h_frame[..], 1000, wire_out);
         assert(ok);
         print("H2_OPEN sid=", sid, " status=active type=client_bidi");
     }

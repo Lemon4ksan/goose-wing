@@ -2,7 +2,7 @@
 // RFC 8336 (ORIGIN Frame), RFC 7838 (ALTSVC Frame)
 // Zero-allocation, wire-bounded codecs for HTTP/2 extension frames.
 
-namespace wing;
+namespace internal;
 
 import core from "..";
 import .framing;

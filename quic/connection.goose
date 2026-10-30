@@ -3,7 +3,7 @@
 
 // Deterministic QUIC Connection Engine, Packet Number Spaces,
 // Loss Recovery Coordinator, and Path Validation Reactor (RFC 9000, RFC 9002).
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

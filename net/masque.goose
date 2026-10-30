@@ -43,10 +43,10 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
     var c = HttpCapsule { payload: src[..0], .. };
     guard src.len > 0 else { return c, false; }
 
-    let ctype, off1, ok1 = quic_decode_varint(src, 0);
+    let ctype, off1, ok1 = internal::quic_decode_varint(src, 0);
     guard ok1 else { return c, false; }
 
-    let clen, off2, ok2 = quic_decode_varint(src, off1);
+    let clen, off2, ok2 = internal::quic_decode_varint(src, off1);
     guard ok2 else { return c, false; }
 
     // Prevent u64 addition overflow
@@ -63,8 +63,8 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
 
 // Encodes an HTTP Capsule into buffer: Type (VarInt) || Length (VarInt) || Value
 fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> bool {
-    guard quic_encode_varint(out, capsule_type) else { return false; }
-    guard quic_encode_varint(out, payload.len as u64) else { return false; }
+    guard internal::quic_encode_varint(out, capsule_type) else { return false; }
+    guard internal::quic_encode_varint(out, payload.len as u64) else { return false; }
     out.append(payload);
     return true;
 }
@@ -98,8 +98,8 @@ fn has_capsule_protocol(headers: const HeaderItem[:]) -> bool {
 // Encodes an HTTP Datagram payload for QUIC DATAGRAM frame (RFC 9297 Section 2.1):
 // Format: Quarter Stream ID (VarInt) || Context ID (VarInt) || HTTP Datagram Payload
 fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, payload: const u8[:]) -> bool {
-    guard quic_encode_varint(out, quarter_stream_id) else { return false; }
-    guard quic_encode_varint(out, context_id) else { return false; }
+    guard internal::quic_encode_varint(out, quarter_stream_id) else { return false; }
+    guard internal::quic_encode_varint(out, context_id) else { return false; }
     out.append(payload);
     return true;
 }
@@ -108,9 +108,9 @@ fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, pay
 // Returns (Quarter Stream ID, Context ID, Payload, Ok)
 fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool {
     guard wire.len > 0 else { return 0, 0, wire[..0], false; }
-    let q_id, off1, ok1 = quic_decode_varint(wire, 0);
+    let q_id, off1, ok1 = internal::quic_decode_varint(wire, 0);
     guard ok1 else { return 0, 0, wire[..0], false; }
-    let ctx_id, off2, ok2 = quic_decode_varint(wire, off1);
+    let ctx_id, off2, ok2 = internal::quic_decode_varint(wire, off1);
     guard ok2 else { return 0, 0, wire[..0], false; }
     let payload = wire[(off2 as i64)..];
     return q_id, ctx_id, payload, true;
@@ -165,7 +165,7 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
 // Format: Context ID (VarInt = 0) || UDP Payload
 fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: const u8[:]) -> bool {
     var datagram_body: u8[..2048] = [];
-    guard quic_encode_varint(datagram_body, context_id) else { return false; }
+    guard internal::quic_encode_varint(datagram_body, context_id) else { return false; }
     datagram_body.append(udp_packet);
     return encode_http_capsule(out, CAPSULE_DATAGRAM, datagram_body[..]);
 }
@@ -173,7 +173,7 @@ fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: 
 // Parses a DATAGRAM capsule payload into (context_id, udp_packet, ok)
 fn parse_connect_udp_datagram(capsule_payload: const u8[:]) -> u64, const u8[:], bool {
     guard capsule_payload.len > 0 else { return 0, capsule_payload[..0], false; }
-    let context_id, off, ok = quic_decode_varint(capsule_payload, 0);
+    let context_id, off, ok = internal::quic_decode_varint(capsule_payload, 0);
     guard ok else { return 0, capsule_payload[..0], false; }
     let start_idx = off as i64;
     let packet = capsule_payload[start_idx..];
@@ -206,7 +206,7 @@ struct RouteAdvertisement {
 // Format: Request ID (VarInt) || IP Version (u8) || Prefix Len (u8) || IP bytes (optional)
 fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> bool {
     var body: u8[..128] = [];
-    guard quic_encode_varint(body, req.request_id) else { return false; }
+    guard internal::quic_encode_varint(body, req.request_id) else { return false; }
     body.push(req.ip_version);
     body.push(req.prefix_len);
     body.append(req.requested_ip[..]);
@@ -217,7 +217,7 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
 fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, bool {
     var req = IpAddressRequest { .. };
     guard payload.len >= 2 else { return req, false; }
-    let req_id, off, ok = quic_decode_varint(payload, 0);
+    let req_id, off, ok = internal::quic_decode_varint(payload, 0);
     guard ok && (payload.len as u64) >= (off + 2) else { return req, false; }
 
     req.request_id = req_id;
@@ -245,7 +245,7 @@ fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, boo
 // Format: Request ID (VarInt) || IP Version (u8) || Prefix Len (u8) || Assigned IP (4 or 16 bytes)
 fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> bool {
     var body: u8[..128] = [];
-    guard quic_encode_varint(body, assign.request_id) else { return false; }
+    guard internal::quic_encode_varint(body, assign.request_id) else { return false; }
     body.push(assign.ip_version);
     body.push(assign.prefix_len);
     body.append(assign.assigned_ip[..]);
@@ -256,7 +256,7 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
 fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool {
     var assign = IpAddressAssign { .. };
     guard payload.len >= 2 else { return assign, false; }
-    let req_id, off, ok = quic_decode_varint(payload, 0);
+    let req_id, off, ok = internal::quic_decode_varint(payload, 0);
     guard ok && (payload.len as u64) >= (off + 2) else { return assign, false; }
 
     assign.request_id = req_id;
@@ -419,7 +419,7 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
     if tunnel.config.use_quic_datagrams {
         var dgram_body: u8[..2048] = [];
         guard encode_http_datagram(dgram_body, tunnel.quarter_stream_id, 0, packet) else { return false; }
-        ok = encode_quic_datagram_frame(out_wire, dgram_body[..], true);
+        ok = internal::encode_quic_datagram_frame(out_wire, dgram_body[..], true);
     } else {
         ok = encode_connect_udp_datagram_capsule(out_wire, 0, packet);
     }

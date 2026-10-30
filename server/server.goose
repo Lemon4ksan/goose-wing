@@ -941,14 +941,14 @@ fn complete_ws_upgrade<B>(
 }
 
 fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
-    return raw_stream.len >= 24 && raw_stream[..24] == H2_CLIENT_PREFACE[..];
+    return raw_stream.len >= 24 && raw_stream[..24] == internal::H2_CLIENT_PREFACE[..];
 }
 
 // True while a short read is still a strict prefix of the 24-byte H2 preface.
 // The preface contains "\r\n\r\n" at offset 14, so a sliced first TCP segment
 // must not fall through to the HTTP/1.1 parser (found by Toxiproxy SlicerToxic).
 fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
-    return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == H2_CLIENT_PREFACE[..raw_stream.len];
+    return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == internal::H2_CLIENT_PREFACE[..raw_stream.len];
 }
 
 const MAX_SERVER_BODY_LIMIT: i64 = 10 * 1024 * 1024; // 10 MB payload limit
@@ -1062,8 +1062,10 @@ fn handle_connection_wire<B>(
 
     if is_h2_client_preface(raw_stream) {
         let now_ms = (now_ns / 1000000) as u64;
-        var sess = new_h2_server_session(server.server_name[..], now_ms);
-        let _, ok_h2 = handle_h2_server_ingress(sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out);
+        var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
+        let _, ok_h2 = internal::handle_h2_server_ingress(
+            sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out,
+        );
         if ok_h2 {
             server.requests_processed++;
             return PipelineOutcome.Handled, true;
@@ -1295,13 +1297,13 @@ inline fn handle_h2_pipe_ingress<B>(
     server: HttpServer&,
     client_ip: const u8[:],
     pipe: core::PipeBuffer&,
-    h2_sess: H2ServerSession&,
+    h2_sess: internal::H2ServerSession&,
     now_ms: u64,
     unread_len: i64,
     wire_out: B&,
 ) -> i64, bool {
     let stream = core::readable_slice(pipe);
-    let consumed_h2, ok_h2 = handle_h2_server_ingress(
+    let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         h2_sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out,
     );
     if ok_h2 {
@@ -1323,7 +1325,7 @@ fn handle_connection_pipe<B>(
     pipe: core::PipeBuffer&,
     now_ns: u64,
     wire_out: B&,
-    h2_sess: H2ServerSession&,
+    h2_sess: internal::H2ServerSession&,
 ) -> i64, bool {
     let unread_len = pipe.readable_len();
     guard unread_len > 0 else { return 0, true; }
@@ -1414,7 +1416,7 @@ fn handle_connection_pipe<B>(
     now_ns: u64,
     wire_out: B&,
 ) -> i64, bool {
-    var dummy_sess = new_h2_server_session(server.server_name[..]);
+    var dummy_sess = internal::new_h2_server_session(server.server_name[..]);
     return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, dummy_sess);
 }
 
@@ -1435,7 +1437,7 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 
         pipe.pipe_reset();
         cork.cork_reset();
-        var h2_sess = new_h2_server_session(server.server_name[..]);
+        var h2_sess = internal::new_h2_server_session(server.server_name[..]);
 
         while true {
             let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);

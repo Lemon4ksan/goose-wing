@@ -4,7 +4,7 @@
 // QUIC Transport Frames Codec, Demuxer & RFC 9000 Section 19 Frame Types.
 // Implements zero-allocation parsing and serialization for STREAM, CRYPTO,
 // RESET_STREAM, STOP_SENDING, MAX_DATA, MAX_STREAM_DATA, PING, and PADDING.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

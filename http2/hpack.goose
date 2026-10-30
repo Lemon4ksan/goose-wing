@@ -4,7 +4,7 @@
 // HTTP/2 HPACK Header Compression and 256-State Huffman FSM (RFC 7541, RFC 9113 Section 8.2).
 // Implements 16 KiB L1-cache Huffman decoding FSM, zero-allocation ring-buffer dynamic table,
 // integer shift overflow protection (Trail of Bits FIND-401), and RFC 9113 header field validation.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";
@@ -1262,7 +1262,7 @@ fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
     while i < name.len {
         let c = name[i];
         // Rejects uppercase 'A'..'Z' and non-tchar characters (RFC 9113 §8.2.1 & RFC 9110 §5.6.2)
-        if (c >= 'A' && c <= 'Z') || !is_tchar(c) {
+        if (c >= 'A' && c <= 'Z') || !wing::is_tchar(c) {
             return false;
         }
         i++;

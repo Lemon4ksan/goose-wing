@@ -12,28 +12,28 @@ import core from "../..";
 import wing from "../..";
 
 fn test_h2_padded_data_and_overflow() {
-    var sess = wing::new_h2_server_session("goose-wing/1.0", 1000);
+    var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
     // 1. Client preface + SETTINGS
     var init_wire: u8[>..] = [];
-    init_wire.append(wing::H2_CLIENT_PREFACE);
+    init_wire.append(internal::H2_CLIENT_PREFACE);
     // Empty SETTINGS frame (type 4, flags 0, stream 0)
     init_wire.append([0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-    let _, ok_init = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
+    let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
     print("H2_INIT: ", if ok_init { "OK" } else { "FAIL" });
 
     // 2. Stream 1: HEADERS with :method=POST, :scheme=https, :path=/echo, content-length=5
     // Encode via HPACK
-    var dt = wing::new_dynamic_table(4096);
+    var dt = internal::new_dynamic_table(4096);
     var hdr_block: u8[>..] = [];
-    wing::encode_hpack_field(dt, hdr_block, ":method", "POST", true, false);
-    wing::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
-    wing::encode_hpack_field(dt, hdr_block, ":path", "/echo", true, false);
-    wing::encode_hpack_field(dt, hdr_block, "content-length", "5", true, false);
+    internal::encode_hpack_field(dt, hdr_block, ":method", "POST", true, false);
+    internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
+    internal::encode_hpack_field(dt, hdr_block, ":path", "/echo", true, false);
+    internal::encode_hpack_field(dt, hdr_block, "content-length", "5", true, false);
 
     // Frame header for HEADERS on stream 1 with END_HEADERS (flags 0x04)
     var h1_frame: u8[>..] = [];
@@ -46,7 +46,7 @@ fn test_h2_padded_data_and_overflow() {
     h1_frame.push(0x00); h1_frame.push(0x00); h1_frame.push(0x00); h1_frame.push(0x01); // Stream 1
     h1_frame.append(hdr_block[..]);
 
-    let _, ok_h1 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h1_frame[..], 1000, wire_out);
+    let _, ok_h1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h1_frame[..], 1000, wire_out);
     print("H2_STREAM_1_HEADERS: ", if ok_h1 { "OK" } else { "FAIL" });
 
     // 3. Stream 1: PADDED DATA frame (flags 0x08 | 0x01 = 0x09: FLAG_PADDED | FLAG_END_STREAM)
@@ -62,15 +62,15 @@ fn test_h2_padded_data_and_overflow() {
     d1_frame.push(0x00); d1_frame.push(0x00); d1_frame.push(0x00); // 3 padding bytes
 
     wire_out.clear();
-    let _, ok_d1 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d1_frame[..], 1000, wire_out);
+    let _, ok_d1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d1_frame[..], 1000, wire_out);
     print("H2_STREAM_1_PADDED_DATA: ", if ok_d1 { "OK" } else { "FAIL" });
 
     // 4. Stream 3: Content-length overflow isolation test (RFC 9113 §8.1.2)
     var h3_block: u8[>..] = [];
-    wing::encode_hpack_field(dt, h3_block, ":method", "POST", true, false);
-    wing::encode_hpack_field(dt, h3_block, ":scheme", "https", true, false);
-    wing::encode_hpack_field(dt, h3_block, ":path", "/test", true, false);
-    wing::encode_hpack_field(dt, h3_block, "content-length", "4", true, false);
+    internal::encode_hpack_field(dt, h3_block, ":method", "POST", true, false);
+    internal::encode_hpack_field(dt, h3_block, ":scheme", "https", true, false);
+    internal::encode_hpack_field(dt, h3_block, ":path", "/test", true, false);
+    internal::encode_hpack_field(dt, h3_block, "content-length", "4", true, false);
 
     var h3_frame: u8[>..] = [];
     let h3_len = h3_block.len as u32;
@@ -82,7 +82,7 @@ fn test_h2_padded_data_and_overflow() {
     h3_frame.push(0x00); h3_frame.push(0x00); h3_frame.push(0x00); h3_frame.push(0x03); // Stream 3
     h3_frame.append(h3_block[..]);
 
-    wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h3_frame[..], 1000, wire_out);
+    internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h3_frame[..], 1000, wire_out);
 
     // Send DATA frame on Stream 3 with 5 bytes ("12345"), exceeding declared content-length 4!
     var d3_frame: u8[>..] = [];
@@ -93,7 +93,7 @@ fn test_h2_padded_data_and_overflow() {
     d3_frame.append("12345");
 
     wire_out.clear();
-    let _, ok_d3 = wing::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d3_frame[..], 1000, wire_out);
+    let _, ok_d3 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d3_frame[..], 1000, wire_out);
     // Connection must remain alive (ok_d3 is true) while stream 3 receives RST_STREAM
     var has_rst_3 = false;
     var has_goaway = false;

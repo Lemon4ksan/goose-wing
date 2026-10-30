@@ -15,20 +15,20 @@ import wire_kit from ".";
 // Wire adapter for verify_split_stream and fuzzing using wing's real decode_ack_frame
 fn wing_validate_quic_ack_wire(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let ack, consumed, ok = wing::decode_ack_frame(buf, 0);
+    let ack, consumed, ok = internal::decode_ack_frame(buf, 0);
     if ok {
         return (ack.largest_acked - ack.first_ack_range) as! i64;
     }
     let ftype = buf[0];
     guard ftype == 2 || ftype == 3 else { return -2; }
     if buf.len >= 5 {
-        let largest, off1, ok1 = wing::quic_decode_varint(buf, 1);
+        let largest, off1, ok1 = internal::quic_decode_varint(buf, 1);
         if ok1 {
-            let _, off2, ok2 = wing::quic_decode_varint(buf, off1);
+            let _, off2, ok2 = internal::quic_decode_varint(buf, off1);
             if ok2 {
-                let _, off3, ok3 = wing::quic_decode_varint(buf, off2);
+                let _, off3, ok3 = internal::quic_decode_varint(buf, off2);
                 if ok3 {
-                    let first_r, _, ok4 = wing::quic_decode_varint(buf, off3);
+                    let first_r, _, ok4 = internal::quic_decode_varint(buf, off3);
                     if ok4 && largest < first_r {
                         return -3;
                     }

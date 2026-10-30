@@ -6,7 +6,7 @@
 // SecP384r1MLKEM1024 (0x11ED), and Chrome draft X25519Kyber768 (0x6399).
 // Formats hybrid ClientHello key shares, parses server encapsulation shares,
 // and derives combined post-quantum shared secrets.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

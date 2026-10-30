@@ -3,7 +3,7 @@
 
 // RFC 8879 TLS Certificate Compression Engine.
 // Supports Brotli and Zstandard decompression of X.509 Certificate chains in TLS 1.3.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";

@@ -3,7 +3,7 @@
 
 // HTTP/2 connection session coordinator, RFC 9218 write scheduler,
 // two-level credit-based flow control, and defense-in-depth Anti-DoS mitigations (RFC 9113, RFC 9218).
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";
@@ -82,7 +82,7 @@ struct H2Stream {
     state: H2StreamState = H2StreamState.Idle,
     send_window: i64 = 65535, // Signed 64-bit integer to support negative deltas
     recv_window: i64 = 65535,
-    priority: PriorityParam = PriorityParam { .. },
+    priority: wing::PriorityParam = wing::PriorityParam { .. },
     pending_send_bytes: u32 = 0,
     declared_content_length: i64 = -1,
     received_data_bytes: i64 = 0,
@@ -186,7 +186,7 @@ inline fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32
 
 // Opens a new stream descriptor with default RFC 9218 priority.
 fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
-    var def_prio = PriorityParam {
+    var def_prio = wing::PriorityParam {
         urgency: 3,
         // Go 1.27 #75500: default to incremental=true before first client priority signal
         incremental: if s.is_behind_proxy { true } else { !s.client_sent_priority },
@@ -609,7 +609,7 @@ fn ack_control_frame_flushed(s: H2Connection&) {
 // ---- 7. rfc 9218 extensible write scheduler ---------------------------------
 
 // Applies dynamic priority update (from PRIORITY_UPDATE frame or Priority header).
-fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: PriorityParam) -> u32 {
+fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
     s.client_sent_priority = true;
     let s_idx, found = find_session_stream_idx(s, prioritized_stream_id);
     guard found else { return ERR_NO_ERROR; }

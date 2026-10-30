@@ -271,7 +271,7 @@ fn encode_quic_datagram_frame<B>(
     datagram_payload: const u8[:],
     out: B&,
 ) {
-    write_varint(out, QUIC_FRAME_DATAGRAM_LEN);
+    write_varint(out, internal::QUIC_FRAME_DATAGRAM_LEN);
     write_varint(out, datagram_payload.len as u64);
     out.append(datagram_payload);
 }
@@ -286,13 +286,13 @@ fn decode_quic_datagram_frame(
     let frame_type, ok_t = read_varint(wire, idx);
     guard ok_t else { return false; }
 
-    if frame_type == QUIC_FRAME_DATAGRAM {
+    if frame_type == internal::QUIC_FRAME_DATAGRAM {
         // Unbounded to end of wire
         for i in (wire.len - idx) {
             out_payload.push(wire[idx + i]);
         }
         return true;
-    } else if frame_type == QUIC_FRAME_DATAGRAM_LEN {
+    } else if frame_type == internal::QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
         guard ok_l && idx <= wire.len && len <= ((wire.len - idx) as u64) else { return false; }
         for i in (len as i64) {

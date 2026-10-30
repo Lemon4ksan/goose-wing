@@ -12,9 +12,9 @@ import wire_kit from ".";
 // Wire bridge to HTTP/2 frame header decoder and rule validator
 fn decode_h2_header(buf: const u8[:]) -> i64 {
     if buf.len < 9 { return -1; }
-    let hdr, err = wing::parse_frame_header(buf, 16384);
-    if err != wing::ERR_NO_ERROR { return -2; }
-    if wing::validate_frame_header_rules(hdr) != wing::ERR_NO_ERROR { return -2; }
+    let hdr, err = internal::parse_frame_header(buf, 16384);
+    if err != internal::ERR_NO_ERROR { return -2; }
+    if internal::validate_frame_header_rules(hdr) != internal::ERR_NO_ERROR { return -2; }
     return hdr.length;
 }
 
@@ -51,19 +51,19 @@ fn main() {
     assert(wire_kit::fuzz_payload(ws_pkt[..], 100, validate_ws_frame));
     print("EDGE_WS_FRAME: OK");
 
-    var hdr_orig = wing::FrameHeader {
+    var hdr_orig = internal::FrameHeader {
         length: 8,
-        frame_type: wing::FRAME_HEADERS,
-        flags: wing::FLAG_END_STREAM | wing::FLAG_END_HEADERS,
+        frame_type: internal::FRAME_HEADERS,
+        flags: internal::FLAG_END_STREAM | internal::FLAG_END_HEADERS,
         stream_id: 3,
     };
     var enc_hdr: u8[9] = [0; 9];
-    wing::encode_frame_header(hdr_orig, enc_hdr);
-    let hdr_dec, err = wing::parse_frame_header(enc_hdr[..]);
-    assert(err == wing::ERR_NO_ERROR);
+    internal::encode_frame_header(hdr_orig, enc_hdr);
+    let hdr_dec, err = internal::parse_frame_header(enc_hdr[..]);
+    assert(err == internal::ERR_NO_ERROR);
     assert(hdr_dec.length == 8);
-    assert(hdr_dec.frame_type == wing::FRAME_HEADERS);
-    assert(hdr_dec.flags == (wing::FLAG_END_STREAM | wing::FLAG_END_HEADERS));
+    assert(hdr_dec.frame_type == internal::FRAME_HEADERS);
+    assert(hdr_dec.flags == (internal::FLAG_END_STREAM | internal::FLAG_END_HEADERS));
     assert(hdr_dec.stream_id == 3);
     print("EDGE_ROUNDTRIP: OK");
 }

@@ -38,8 +38,8 @@ fn parse_wire_h2_step(buf: const u8[:]) -> i64 {
     if buf.len < 9 {
         return 0;
     }
-    let hdr, err = wing::parse_h2_frame_header(buf);
-    if err != wing::H2ErrorCode.NoError {
+    let hdr, err = internal::parse_h2_frame_header(buf);
+    if err != internal::H2ErrorCode.NoError {
         return 1;
     }
     if !hdr.valid {
@@ -208,265 +208,265 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
 }
 
 fn test_h2_continuation_flood_and_interleaving() {
-    var framer = wing::H2SecurityFramer { .. };
+    var framer = internal::H2SecurityFramer { .. };
 
     // 1. Initial HEADERS frame on stream 1 without END_HEADERS
-    let h_hdr = wing::H2FrameHeader {
+    let h_hdr = internal::H2FrameHeader {
         payload_len: 128,
-        frame_type: wing::H2FrameType.Headers,
+        frame_type: internal::H2FrameType.Headers,
         raw_type: 0x1,
         flags: 0x0,
         stream_id: 1,
         valid: true,
     };
-    let err0 = wing::process_incoming_frame(framer, h_hdr);
-    assert(err0 == wing::H2ErrorCode.NoError);
-    assert(framer.state == wing::H2ConnState.ExpectContinuation);
+    let err0 = internal::process_incoming_frame(framer, h_hdr);
+    assert(err0 == internal::H2ErrorCode.NoError);
+    assert(framer.state == internal::H2ConnState.ExpectContinuation);
     assert(framer.continuation_stream_id == 1);
     print("H2_EXPECT_CONTINUATION_STATE: OK");
 
     // 2. Interleaved PING frame on stream 0 -> ProtocolError
-    let ping_hdr = wing::H2FrameHeader {
+    let ping_hdr = internal::H2FrameHeader {
         payload_len: 8,
-        frame_type: wing::H2FrameType.Ping,
+        frame_type: internal::H2FrameType.Ping,
         raw_type: 0x6,
         flags: 0x0,
         stream_id: 0,
         valid: true,
     };
-    let err_ping = wing::process_incoming_frame(framer, ping_hdr);
-    assert(err_ping == wing::H2ErrorCode.ProtocolError);
-    assert(framer.state == wing::H2ConnState.Closed);
+    let err_ping = internal::process_incoming_frame(framer, ping_hdr);
+    assert(err_ping == internal::H2ErrorCode.ProtocolError);
+    assert(framer.state == internal::H2ConnState.Closed);
     print("H2_INTERLEAVED_PING_BAN: PROTOCOL_ERROR");
 
     // 3. Reset framer: Interleaved DATA frame on stream 1 -> ProtocolError
-    var framer_data = wing::H2SecurityFramer { .. };
-    wing::process_incoming_frame(framer_data, h_hdr);
-    let data_hdr = wing::H2FrameHeader {
+    var framer_data = internal::H2SecurityFramer { .. };
+    internal::process_incoming_frame(framer_data, h_hdr);
+    let data_hdr = internal::H2FrameHeader {
         payload_len: 64,
-        frame_type: wing::H2FrameType.Data,
+        frame_type: internal::H2FrameType.Data,
         raw_type: 0x0,
         flags: 0x0,
         stream_id: 1,
         valid: true,
     };
-    let err_data = wing::process_incoming_frame(framer_data, data_hdr);
-    assert(err_data == wing::H2ErrorCode.ProtocolError);
-    assert(framer_data.state == wing::H2ConnState.Closed);
+    let err_data = internal::process_incoming_frame(framer_data, data_hdr);
+    assert(err_data == internal::H2ErrorCode.ProtocolError);
+    assert(framer_data.state == internal::H2ConnState.Closed);
     print("H2_INTERLEAVED_DATA_BAN: PROTOCOL_ERROR");
 
     // 4. Reset framer: CONTINUATION on wrong stream ID (stream 3 instead of 1) -> ProtocolError
-    var framer_mismatch = wing::H2SecurityFramer { .. };
-    wing::process_incoming_frame(framer_mismatch, h_hdr);
-    let cont_bad_sid = wing::H2FrameHeader {
+    var framer_mismatch = internal::H2SecurityFramer { .. };
+    internal::process_incoming_frame(framer_mismatch, h_hdr);
+    let cont_bad_sid = internal::H2FrameHeader {
         payload_len: 64,
-        frame_type: wing::H2FrameType.Continuation,
+        frame_type: internal::H2FrameType.Continuation,
         raw_type: 0x9,
         flags: 0x0,
         stream_id: 3,
         valid: true,
     };
-    let err_bad_sid = wing::process_incoming_frame(framer_mismatch, cont_bad_sid);
-    assert(err_bad_sid == wing::H2ErrorCode.ProtocolError);
-    assert(framer_mismatch.state == wing::H2ConnState.Closed);
+    let err_bad_sid = internal::process_incoming_frame(framer_mismatch, cont_bad_sid);
+    assert(err_bad_sid == internal::H2ErrorCode.ProtocolError);
+    assert(framer_mismatch.state == internal::H2ConnState.Closed);
     print("H2_MISMATCHED_STREAM_BAN: PROTOCOL_ERROR");
 
     // 5. Unsolicited CONTINUATION frame when state is Idle -> ProtocolError
-    var framer_idle = wing::H2SecurityFramer { .. };
-    let cont_unsolicited = wing::H2FrameHeader {
+    var framer_idle = internal::H2SecurityFramer { .. };
+    let cont_unsolicited = internal::H2FrameHeader {
         payload_len: 64,
-        frame_type: wing::H2FrameType.Continuation,
+        frame_type: internal::H2FrameType.Continuation,
         raw_type: 0x9,
-        flags: wing::H2_FLAG_END_HEADERS,
+        flags: internal::H2_FLAG_END_HEADERS,
         stream_id: 1,
         valid: true,
     };
-    let err_unsolicited = wing::process_incoming_frame(framer_idle, cont_unsolicited);
-    assert(err_unsolicited == wing::H2ErrorCode.ProtocolError);
+    let err_unsolicited = internal::process_incoming_frame(framer_idle, cont_unsolicited);
+    assert(err_unsolicited == internal::H2ErrorCode.ProtocolError);
     print("H2_UNSOLICITED_CONTINUATION_BAN: PROTOCOL_ERROR");
 
     // 6. CONTINUATION flood DoS (CVE-2024-27983): Send 5 allowed, 6th triggers EnhanceYourCalm
-    var framer_flood = wing::H2SecurityFramer { .. };
-    wing::process_incoming_frame(framer_flood, h_hdr);
+    var framer_flood = internal::H2SecurityFramer { .. };
+    internal::process_incoming_frame(framer_flood, h_hdr);
     for _ in 5 {
-        let cont_ok = wing::H2FrameHeader {
+        let cont_ok = internal::H2FrameHeader {
             payload_len: 10,
-            frame_type: wing::H2FrameType.Continuation,
+            frame_type: internal::H2FrameType.Continuation,
             raw_type: 0x9,
             flags: 0x0,
             stream_id: 1,
             valid: true,
         };
-        let st_ok = wing::process_incoming_frame(framer_flood, cont_ok);
-        assert(st_ok == wing::H2ErrorCode.NoError);
+        let st_ok = internal::process_incoming_frame(framer_flood, cont_ok);
+        assert(st_ok == internal::H2ErrorCode.NoError);
     }
-    let cont_6th = wing::H2FrameHeader {
+    let cont_6th = internal::H2FrameHeader {
         payload_len: 10,
-        frame_type: wing::H2FrameType.Continuation,
+        frame_type: internal::H2FrameType.Continuation,
         raw_type: 0x9,
         flags: 0x0,
         stream_id: 1,
         valid: true,
     };
-    let err_flood = wing::process_incoming_frame(framer_flood, cont_6th);
-    assert(err_flood == wing::H2ErrorCode.EnhanceYourCalm);
-    assert(framer_flood.state == wing::H2ConnState.Closed);
+    let err_flood = internal::process_incoming_frame(framer_flood, cont_6th);
+    assert(err_flood == internal::H2ErrorCode.EnhanceYourCalm);
+    assert(framer_flood.state == internal::H2ConnState.Closed);
     print("H2_CONTINUATION_FLOOD_LIMIT: ENHANCE_YOUR_CALM");
 
     // 7. Cumulative header block size DoS limit (> 8192 bytes)
-    var framer_size = wing::H2SecurityFramer { .. };
-    let big_h_hdr = wing::H2FrameHeader {
+    var framer_size = internal::H2SecurityFramer { .. };
+    let big_h_hdr = internal::H2FrameHeader {
         payload_len: 8000,
-        frame_type: wing::H2FrameType.Headers,
+        frame_type: internal::H2FrameType.Headers,
         raw_type: 0x1,
         flags: 0x0,
         stream_id: 1,
         valid: true,
     };
-    wing::process_incoming_frame(framer_size, big_h_hdr);
-    let big_cont_hdr = wing::H2FrameHeader {
+    internal::process_incoming_frame(framer_size, big_h_hdr);
+    let big_cont_hdr = internal::H2FrameHeader {
         payload_len: 500,
-        frame_type: wing::H2FrameType.Continuation,
+        frame_type: internal::H2FrameType.Continuation,
         raw_type: 0x9,
         flags: 0x0,
         stream_id: 1,
         valid: true,
     };
-    let err_size = wing::process_incoming_frame(framer_size, big_cont_hdr);
-    assert(err_size == wing::H2ErrorCode.EnhanceYourCalm);
-    assert(framer_size.state == wing::H2ConnState.Closed);
+    let err_size = internal::process_incoming_frame(framer_size, big_cont_hdr);
+    assert(err_size == internal::H2ErrorCode.EnhanceYourCalm);
+    assert(framer_size.state == internal::H2ConnState.Closed);
     print("H2_CUMULATIVE_BLOCK_SIZE_LIMIT: ENHANCE_YOUR_CALM");
 }
 
 fn test_h2_dos_and_stream_parity() {
     // 1. Rapid Reset DoS (CVE-2023-44487): 100 allowed, 101st triggers EnhanceYourCalm
-    var framer_rr = wing::H2SecurityFramer { .. };
+    var framer_rr = internal::H2SecurityFramer { .. };
     for _ in 100 {
-        let rst_hdr = wing::H2FrameHeader {
+        let rst_hdr = internal::H2FrameHeader {
             payload_len: 4,
-            frame_type: wing::H2FrameType.RstStream,
+            frame_type: internal::H2FrameType.RstStream,
             raw_type: 0x3,
             flags: 0x0,
             stream_id: 1,
             valid: true,
         };
-        let st_rst = wing::process_incoming_frame(framer_rr, rst_hdr);
-        assert(st_rst == wing::H2ErrorCode.NoError);
+        let st_rst = internal::process_incoming_frame(framer_rr, rst_hdr);
+        assert(st_rst == internal::H2ErrorCode.NoError);
     }
-    let rst_101 = wing::H2FrameHeader {
+    let rst_101 = internal::H2FrameHeader {
         payload_len: 4,
-        frame_type: wing::H2FrameType.RstStream,
+        frame_type: internal::H2FrameType.RstStream,
         raw_type: 0x3,
         flags: 0x0,
         stream_id: 1,
         valid: true,
     };
-    let err_rr = wing::process_incoming_frame(framer_rr, rst_101);
-    assert(err_rr == wing::H2ErrorCode.EnhanceYourCalm);
-    assert(framer_rr.state == wing::H2ConnState.Closed);
+    let err_rr = internal::process_incoming_frame(framer_rr, rst_101);
+    assert(err_rr == internal::H2ErrorCode.EnhanceYourCalm);
+    assert(framer_rr.state == internal::H2ConnState.Closed);
     print("H2_RAPID_RESET_DEFENSE: ENHANCE_YOUR_CALM");
 
     // 2. Ping flood DoS: 10 allowed, 11th triggers EnhanceYourCalm
-    var framer_ping = wing::H2SecurityFramer { .. };
+    var framer_ping = internal::H2SecurityFramer { .. };
     for _ in 10 {
-        let ping_hdr = wing::H2FrameHeader {
+        let ping_hdr = internal::H2FrameHeader {
             payload_len: 8,
-            frame_type: wing::H2FrameType.Ping,
+            frame_type: internal::H2FrameType.Ping,
             raw_type: 0x6,
             flags: 0x0,
             stream_id: 0,
             valid: true,
         };
-        let st_p = wing::process_incoming_frame(framer_ping, ping_hdr);
-        assert(st_p == wing::H2ErrorCode.NoError);
+        let st_p = internal::process_incoming_frame(framer_ping, ping_hdr);
+        assert(st_p == internal::H2ErrorCode.NoError);
     }
-    let ping_11 = wing::H2FrameHeader {
+    let ping_11 = internal::H2FrameHeader {
         payload_len: 8,
-        frame_type: wing::H2FrameType.Ping,
+        frame_type: internal::H2FrameType.Ping,
         raw_type: 0x6,
         flags: 0x0,
         stream_id: 0,
         valid: true,
     };
-    let err_ping_flood = wing::process_incoming_frame(framer_ping, ping_11);
-    assert(err_ping_flood == wing::H2ErrorCode.EnhanceYourCalm);
+    let err_ping_flood = internal::process_incoming_frame(framer_ping, ping_11);
+    assert(err_ping_flood == internal::H2ErrorCode.EnhanceYourCalm);
     print("H2_PING_FLOOD_DEFENSE: ENHANCE_YOUR_CALM");
 
     // 3. Client stream parity: Client HEADERS on even stream ID (stream 2) -> ProtocolError
-    var framer_parity = wing::H2SecurityFramer { .. };
-    let even_hdr = wing::H2FrameHeader {
+    var framer_parity = internal::H2SecurityFramer { .. };
+    let even_hdr = internal::H2FrameHeader {
         payload_len: 32,
-        frame_type: wing::H2FrameType.Headers,
+        frame_type: internal::H2FrameType.Headers,
         raw_type: 0x1,
-        flags: wing::H2_FLAG_END_HEADERS,
+        flags: internal::H2_FLAG_END_HEADERS,
         stream_id: 2,
         valid: true,
     };
-    let err_parity = wing::process_incoming_frame(framer_parity, even_hdr);
-    assert(err_parity == wing::H2ErrorCode.ProtocolError);
+    let err_parity = internal::process_incoming_frame(framer_parity, even_hdr);
+    assert(err_parity == internal::H2ErrorCode.ProtocolError);
     print("H2_EVEN_STREAM_ID_BAN: PROTOCOL_ERROR");
 }
 
 fn test_h2_pseudo_header_invariants() {
     // 1. Pseudo-header after regular header (RFC 9113 §8.3)
-    var list1 = wing::DecodedH2HeaderList { .. };
+    var list1 = internal::DecodedH2HeaderList { .. };
     list1.has_regular_header = true;
-    let err_order = wing::validate_header_ordering_and_rules(list1, ":method", "GET");
-    assert(err_order == wing::ERR_PROTOCOL_ERROR);
+    let err_order = internal::validate_header_ordering_and_rules(list1, ":method", "GET");
+    assert(err_order == internal::ERR_PROTOCOL_ERROR);
     print("H2_PSEUDO_ORDERING_INVARIANT: PROTOCOL_ERROR");
 
     // 2. Duplicate pseudo-header
-    var list2 = wing::DecodedH2HeaderList { .. };
-    let _ = wing::validate_header_ordering_and_rules(list2, ":method", "GET");
-    list2.fields.push(wing::DecodedH2Header { name: ":method", value: "GET", .. });
-    let err_dup = wing::validate_header_ordering_and_rules(list2, ":method", "POST");
-    assert(err_dup == wing::ERR_PROTOCOL_ERROR);
+    var list2 = internal::DecodedH2HeaderList { .. };
+    let _ = internal::validate_header_ordering_and_rules(list2, ":method", "GET");
+    list2.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
+    let err_dup = internal::validate_header_ordering_and_rules(list2, ":method", "POST");
+    assert(err_dup == internal::ERR_PROTOCOL_ERROR);
     print("H2_DUPLICATE_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 3. Undefined pseudo-header
-    var list3 = wing::DecodedH2HeaderList { .. };
-    let err_undef = wing::validate_header_ordering_and_rules(list3, ":custom", "val");
-    assert(err_undef == wing::ERR_PROTOCOL_ERROR);
+    var list3 = internal::DecodedH2HeaderList { .. };
+    let err_undef = internal::validate_header_ordering_and_rules(list3, ":custom", "val");
+    assert(err_undef == internal::ERR_PROTOCOL_ERROR);
     print("H2_UNDEFINED_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 4. Forbidden connection-specific headers in HTTP/2 (RFC 9113 §8.2.2)
-    var list4 = wing::DecodedH2HeaderList { .. };
-    let err_conn = wing::validate_header_ordering_and_rules(list4, "connection", "close");
-    assert(err_conn == wing::ERR_PROTOCOL_ERROR);
-    let err_te = wing::validate_header_ordering_and_rules(list4, "transfer-encoding", "chunked");
-    assert(err_te == wing::ERR_PROTOCOL_ERROR);
-    let err_upg = wing::validate_header_ordering_and_rules(list4, "upgrade", "websocket");
-    assert(err_upg == wing::ERR_PROTOCOL_ERROR);
-    let err_ka = wing::validate_header_ordering_and_rules(list4, "keep-alive", "timeout=5");
-    assert(err_ka == wing::ERR_PROTOCOL_ERROR);
+    var list4 = internal::DecodedH2HeaderList { .. };
+    let err_conn = internal::validate_header_ordering_and_rules(list4, "connection", "close");
+    assert(err_conn == internal::ERR_PROTOCOL_ERROR);
+    let err_te = internal::validate_header_ordering_and_rules(list4, "transfer-encoding", "chunked");
+    assert(err_te == internal::ERR_PROTOCOL_ERROR);
+    let err_upg = internal::validate_header_ordering_and_rules(list4, "upgrade", "websocket");
+    assert(err_upg == internal::ERR_PROTOCOL_ERROR);
+    let err_ka = internal::validate_header_ordering_and_rules(list4, "keep-alive", "timeout=5");
+    assert(err_ka == internal::ERR_PROTOCOL_ERROR);
     print("H2_FORBIDDEN_CONNECTION_HEADERS: PROTOCOL_ERROR");
 
     // 5. TE header with disallowed value
-    var list5 = wing::DecodedH2HeaderList { .. };
-    let err_te_val = wing::validate_header_ordering_and_rules(list5, "te", "gzip");
-    assert(err_te_val == wing::ERR_PROTOCOL_ERROR);
+    var list5 = internal::DecodedH2HeaderList { .. };
+    let err_te_val = internal::validate_header_ordering_and_rules(list5, "te", "gzip");
+    assert(err_te_val == internal::ERR_PROTOCOL_ERROR);
     print("H2_DISALLOWED_TE_VALUE: PROTOCOL_ERROR");
 
     // 6. TE header with allowed 'trailers'
-    var list6 = wing::DecodedH2HeaderList { .. };
-    let ok_te_val = wing::validate_header_ordering_and_rules(list6, "te", "trailers");
-    assert(ok_te_val == wing::ERR_NO_ERROR);
+    var list6 = internal::DecodedH2HeaderList { .. };
+    let ok_te_val = internal::validate_header_ordering_and_rules(list6, "te", "trailers");
+    assert(ok_te_val == internal::ERR_NO_ERROR);
     print("H2_ALLOWED_TE_TRAILERS: OK");
 
     // 7. :authority forbidden characters (@ and /)
-    var list7 = wing::DecodedH2HeaderList { .. };
-    let err_auth_at = wing::validate_header_ordering_and_rules(list7, ":authority", "admin@example.com");
-    assert(err_auth_at == wing::ERR_PROTOCOL_ERROR);
-    let err_auth_slash = wing::validate_header_ordering_and_rules(list7, ":authority", "example.com/api");
-    assert(err_auth_slash == wing::ERR_PROTOCOL_ERROR);
+    var list7 = internal::DecodedH2HeaderList { .. };
+    let err_auth_at = internal::validate_header_ordering_and_rules(list7, ":authority", "admin@example.com");
+    assert(err_auth_at == internal::ERR_PROTOCOL_ERROR);
+    let err_auth_slash = internal::validate_header_ordering_and_rules(list7, ":authority", "example.com/api");
+    assert(err_auth_slash == internal::ERR_PROTOCOL_ERROR);
     print("H2_AUTHORITY_FORBIDDEN_CHARS: PROTOCOL_ERROR");
 
     // 8. :authority vs Host mismatch
-    var list8 = wing::DecodedH2HeaderList { .. };
-    let _ = wing::validate_header_ordering_and_rules(list8, ":authority", "example.com");
-    list8.fields.push(wing::DecodedH2Header { name: ":authority", value: "example.com", .. });
-    let err_mismatch = wing::validate_header_ordering_and_rules(list8, "host", "attacker.com");
-    assert(err_mismatch == wing::ERR_PROTOCOL_ERROR);
+    var list8 = internal::DecodedH2HeaderList { .. };
+    let _ = internal::validate_header_ordering_and_rules(list8, ":authority", "example.com");
+    list8.fields.push(internal::DecodedH2Header { name: ":authority", value: "example.com", .. });
+    let err_mismatch = internal::validate_header_ordering_and_rules(list8, "host", "attacker.com");
+    assert(err_mismatch == internal::ERR_PROTOCOL_ERROR);
     print("H2_AUTHORITY_HOST_MISMATCH: PROTOCOL_ERROR");
 }
 

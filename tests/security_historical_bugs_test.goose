@@ -65,31 +65,31 @@ fn test_go_75557_content_disposition_crlf_injection(t: core::T&) {
 
 fn test_http2_content_length_overflow_defense(t: core::T&) {
     t.run("RFC 9113 & Go #81115: HTTP/2 Content-Length > 19 digits MUST be rejected as PROTOCOL_ERROR") { sub =>
-        var dt_enc = wing::new_dynamic_table(4096);
+        var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", false, false);
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", false, false);
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", false, false);
-        wing::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", false, false);
 
-        var dt_dec = wing::new_dynamic_table(4096);
-        var out_list = wing::DecodedH2HeaderList { .. };
-        let err = wing::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, wing::ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
+        var dt_dec = internal::new_dynamic_table(4096);
+        var out_list = internal::DecodedH2HeaderList { .. };
+        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
     };
 
     t.run("Valid Content-Length in HTTP/2 is parsed correctly") { sub =>
-        var dt_enc = wing::new_dynamic_table(4096);
+        var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", false, false);
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", false, false);
-        wing::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", false, false);
-        wing::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", false, false);
 
-        var dt_dec = wing::new_dynamic_table(4096);
-        var out_list = wing::DecodedH2HeaderList { .. };
-        let err = wing::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, wing::ERR_NO_ERROR, "Valid Content-Length must succeed");
+        var dt_dec = internal::new_dynamic_table(4096);
+        var out_list = internal::DecodedH2HeaderList { .. };
+        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        sub.assert_eq(err, internal::ERR_NO_ERROR, "Valid Content-Length must succeed");
         sub.assert_true(out_list.has_content_length, "has_content_length set");
         sub.assert_eq(out_list.content_length_val, 1048576, "parsed content-length matches");
     };
@@ -340,28 +340,28 @@ fn test_cve_2026_42507_diagnostic_log_injection_defense(t: core::T&) {
 
 fn test_h2_window_update_and_settings_cpu_limits(t: core::T&) {
     t.run("RFC 9113 В§6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
-        var conn = wing::new_h2_connection(0, 8192, false);
+        var conn = internal::new_h2_connection(0, 8192, false);
 
         // Increment > 2^31 - 1 is a PROTOCOL_ERROR
-        let err_proto = wing::apply_window_update(conn, 0, (wing::MAX_INITIAL_WINDOW_SIZE as u32) + 1);
-        sub.assert_eq(err_proto, wing::ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
+        let err_proto = internal::apply_window_update(conn, 0, (internal::MAX_INITIAL_WINDOW_SIZE as u32) + 1);
+        sub.assert_eq(err_proto, internal::ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
 
         // Increment pushing window past 2^31 - 1 is a FLOW_CONTROL_ERROR
-        let err_flow = wing::apply_window_update(conn, 0, wing::MAX_INITIAL_WINDOW_SIZE as u32);
-        sub.assert_eq(err_flow, wing::ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
+        let err_flow = internal::apply_window_update(conn, 0, internal::MAX_INITIAL_WINDOW_SIZE as u32);
+        sub.assert_eq(err_flow, internal::ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
     };
 
     t.run("CVE-2026-78669 & Go #81742: Excessive repeated INITIAL_WINDOW_SIZE changes throttled") { sub =>
-        var conn = wing::new_h2_connection(0, 8192, false);
+        var conn = internal::new_h2_connection(0, 8192, false);
 
         for i in 16 {
-            let res = wing::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
-            sub.assert_eq(res, wing::ERR_NO_ERROR, "First 16 window updates succeed");
+            let res = internal::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
+            sub.assert_eq(res, internal::ERR_NO_ERROR, "First 16 window updates succeed");
         }
 
         // 17th update triggers ENHANCE_YOUR_CALM defense
-        let res_17 = wing::apply_peer_initial_window_size_delta(conn, 65535);
-        sub.assert_eq(res_17, wing::ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
+        let res_17 = internal::apply_peer_initial_window_size_delta(conn, 65535);
+        sub.assert_eq(res_17, internal::ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
     };
 }
 
@@ -449,22 +449,22 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
 // 15. RFC 9113 Section 6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity Invariants
 fn test_rfc9113_goaway_last_stream_id_parity(t: core::T&) {
     t.run("Client GOAWAY peer stream parity (can only acknowledge server streams: even or 0)") { sub =>
-        sub.assert_true(wing::validate_goaway_last_stream_id(0, true), "Client GOAWAY with 0 is valid");
-        sub.assert_true(wing::validate_goaway_last_stream_id(2, true), "Client GOAWAY with even stream 2 is valid");
-        sub.assert_true(wing::validate_goaway_last_stream_id(100, true), "Client GOAWAY with even stream 100 is valid");
-        sub.assert_false(wing::validate_goaway_last_stream_id(1, true), "Client GOAWAY with client-initiated stream 1 MUST be rejected");
-        sub.assert_false(wing::validate_goaway_last_stream_id(3, true), "Client GOAWAY with client-initiated stream 3 MUST be rejected");
-        sub.assert_false(wing::validate_goaway_last_stream_id(99, true), "Client GOAWAY with client-initiated stream 99 MUST be rejected");
+        sub.assert_true(internal::validate_goaway_last_stream_id(0, true), "Client GOAWAY with 0 is valid");
+        sub.assert_true(internal::validate_goaway_last_stream_id(2, true), "Client GOAWAY with even stream 2 is valid");
+        sub.assert_true(internal::validate_goaway_last_stream_id(100, true), "Client GOAWAY with even stream 100 is valid");
+        sub.assert_false(internal::validate_goaway_last_stream_id(1, true), "Client GOAWAY with client-initiated stream 1 MUST be rejected");
+        sub.assert_false(internal::validate_goaway_last_stream_id(3, true), "Client GOAWAY with client-initiated stream 3 MUST be rejected");
+        sub.assert_false(internal::validate_goaway_last_stream_id(99, true), "Client GOAWAY with client-initiated stream 99 MUST be rejected");
     };
 
     t.run("Server GOAWAY peer stream parity (can only acknowledge client streams: odd, 0, or max)") { sub =>
-        sub.assert_true(wing::validate_goaway_last_stream_id(0, false), "Server GOAWAY with 0 is valid");
-        sub.assert_true(wing::validate_goaway_last_stream_id(1, false), "Server GOAWAY with odd stream 1 is valid");
-        sub.assert_true(wing::validate_goaway_last_stream_id(101, false), "Server GOAWAY with odd stream 101 is valid");
-        sub.assert_true(wing::validate_goaway_last_stream_id(0x7FFFFFFF, false), "Server GOAWAY with 2^31 - 1 is valid");
-        sub.assert_false(wing::validate_goaway_last_stream_id(2, false), "Server GOAWAY with server-initiated stream 2 MUST be rejected");
-        sub.assert_false(wing::validate_goaway_last_stream_id(4, false), "Server GOAWAY with server-initiated stream 4 MUST be rejected");
-        sub.assert_false(wing::validate_goaway_last_stream_id(102, false), "Server GOAWAY with server-initiated stream 102 MUST be rejected");
+        sub.assert_true(internal::validate_goaway_last_stream_id(0, false), "Server GOAWAY with 0 is valid");
+        sub.assert_true(internal::validate_goaway_last_stream_id(1, false), "Server GOAWAY with odd stream 1 is valid");
+        sub.assert_true(internal::validate_goaway_last_stream_id(101, false), "Server GOAWAY with odd stream 101 is valid");
+        sub.assert_true(internal::validate_goaway_last_stream_id(0x7FFFFFFF, false), "Server GOAWAY with 2^31 - 1 is valid");
+        sub.assert_false(internal::validate_goaway_last_stream_id(2, false), "Server GOAWAY with server-initiated stream 2 MUST be rejected");
+        sub.assert_false(internal::validate_goaway_last_stream_id(4, false), "Server GOAWAY with server-initiated stream 4 MUST be rejected");
+        sub.assert_false(internal::validate_goaway_last_stream_id(102, false), "Server GOAWAY with server-initiated stream 102 MUST be rejected");
     };
 }
 
@@ -568,7 +568,7 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: core::T&) {
         }
 
         var out_small: u8[..256] = [];
-        let _, ok = wing::decode_hpack_string(raw_lit[..], 0, out_small);
+        let _, ok = internal::decode_hpack_string(raw_lit[..], 0, out_small);
         sub.assert_false(ok, "Literal HPACK string of 300 bytes into 256-cap buffer MUST return false without abort");
     };
 
@@ -580,10 +580,10 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: core::T&) {
         }
 
         var huff_encoded: u8[..400] = [];
-        wing::huff_encode_bytes(uncomp[..], huff_encoded);
+        internal::huff_encode_bytes(uncomp[..], huff_encoded);
 
         var out_small: u8[..64] = [];
-        let ok = wing::huff_decode_bytes(huff_encoded[..], out_small);
+        let ok = internal::huff_decode_bytes(huff_encoded[..], out_small);
         sub.assert_false(ok, "Huffman decode exceeding buffer capacity MUST return false without abort");
     };
 
@@ -602,10 +602,10 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: core::T&) {
         raw_block.push(5);
         raw_block.append("value");
 
-        var dt = wing::new_dynamic_table(4096);
-        var out_list = wing::DecodedH2HeaderList { .. };
-        let err = wing::decode_hpack_header_block(dt, raw_block[..], out_list, 8192, false);
-        sub.assert_ne(err, wing::ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
+        var dt = internal::new_dynamic_table(4096);
+        var out_list = internal::DecodedH2HeaderList { .. };
+        let err = internal::decode_hpack_header_block(dt, raw_block[..], out_list, 8192, false);
+        sub.assert_ne(err, internal::ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
     };
 }
 
@@ -1223,75 +1223,75 @@ fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: core::T&) {
 
 fn test_h2_rst_stream_data_flow_control_invariants(t: core::T&) {
     t.run("RFC 9113 §5.1 & §6.9: DATA frame on stream closed via RST_STREAM accounts for connection flow control") { sub =>
-        var conn = wing::new_h2_connection(0);
+        var conn = internal::new_h2_connection(0);
         // Initial conn_recv_window = 65535
         sub.assert_eq(conn.conn_recv_window, 65535, "Initial connection receive window is 65535");
 
         // 1. Open stream 1 via HEADERS
-        let h_hdr = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
-        let err_h = wing::on_ingress_frame_header(conn, h_hdr, 0);
-        sub.assert_eq(err_h, wing::ERR_NO_ERROR, "HEADERS on stream 1 accepted");
+        let h_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let err_h = internal::on_ingress_frame_header(conn, h_hdr, 0);
+        sub.assert_eq(err_h, internal::ERR_NO_ERROR, "HEADERS on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 1, "1 active stream");
 
         // 2. Client cancels stream 1 via RST_STREAM
-        let rst_hdr = wing::FrameHeader { length: 4, frame_type: wing::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
-        let err_rst = wing::on_ingress_frame_header(conn, rst_hdr, 0);
-        sub.assert_eq(err_rst, wing::ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
+        let rst_hdr = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let err_rst = internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        sub.assert_eq(err_rst, internal::ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 0, "Active stream count decremented to 0");
 
         // 3. In-flight DATA frame arrives on stream 1 (length = 1000)
-        let data_hdr = wing::FrameHeader { length: 1000, frame_type: wing::FRAME_DATA, flags: 0, stream_id: 1 };
-        let err_data = wing::on_data_frame_received(conn, data_hdr, 1000);
+        let data_hdr = internal::FrameHeader { length: 1000, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = internal::on_data_frame_received(conn, data_hdr, 1000);
         // Must return ERR_STREAM_CLOSED (stream error) rather than connection error
-        sub.assert_eq(err_data, wing::ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
+        sub.assert_eq(err_data, internal::ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
         // BUT connection receive window MUST be accounted (decremented by 1000) per RFC 9113 §5.1 / §6.9
         sub.assert_eq(conn.conn_recv_window, 64535, "Connection receive window accounted: 65535 - 1000 = 64535");
     };
 
     t.run("RFC 9113 §6.9: Oversized DATA frame exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR") { sub =>
-        var conn = wing::new_h2_connection(0);
+        var conn = internal::new_h2_connection(0);
         // Set connection receive window to 500 bytes
         conn.conn_recv_window = 500;
 
         // Open stream 1
-        let h_hdr = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 1 };
-        wing::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 1
-        let rst_hdr = wing::FrameHeader { length: 4, frame_type: wing::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
-        wing::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        internal::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends DATA frame of 600 bytes on closed stream 1 (exceeding conn_recv_window = 500)
-        let data_hdr = wing::FrameHeader { length: 600, frame_type: wing::FRAME_DATA, flags: 0, stream_id: 1 };
-        let err_data = wing::on_data_frame_received(conn, data_hdr, 600);
+        let data_hdr = internal::FrameHeader { length: 600, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = internal::on_data_frame_received(conn, data_hdr, 600);
         // RFC 9113 §6.9: Connection flow control violation MUST trigger FLOW_CONTROL_ERROR, NOT STREAM_CLOSED!
-        sub.assert_eq(err_data, wing::ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
+        sub.assert_eq(err_data, internal::ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
         sub.assert_true(conn.conn_recv_window < 0, "Connection receive window underflowed to negative value");
     };
 
     t.run("RFC 9113 §5.1 & §6.9: Multiple in-flight DATA frames after RST_STREAM prevent window lockup") { sub =>
-        var conn = wing::new_h2_connection(0);
+        var conn = internal::new_h2_connection(0);
 
         // Open stream 3
-        let h_hdr = wing::FrameHeader { length: 0, frame_type: wing::FRAME_HEADERS, flags: wing::FLAG_END_HEADERS, stream_id: 3 };
-        wing::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 3 };
+        internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 3
-        let rst_hdr = wing::FrameHeader { length: 4, frame_type: wing::FRAME_RST_STREAM, flags: 0, stream_id: 3 };
-        wing::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 3 };
+        internal::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends 4 in-flight DATA chunks of 10000 bytes each
         for i in 4 {
-            let data_chunk = wing::FrameHeader { length: 10000, frame_type: wing::FRAME_DATA, flags: 0, stream_id: 3 };
-            let err_c = wing::on_data_frame_received(conn, data_chunk, 10000);
-            sub.assert_eq(err_c, wing::ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
+            let data_chunk = internal::FrameHeader { length: 10000, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 3 };
+            let err_c = internal::on_data_frame_received(conn, data_chunk, 10000);
+            sub.assert_eq(err_c, internal::ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
         }
         // Total connection window consumed: 40000
         sub.assert_eq(conn.conn_recv_window, 25535, "Connection receive window accounted: 65535 - 40000 = 25535");
 
         // Replenish connection window via WINDOW_UPDATE (+40000)
-        let err_win = wing::apply_window_update(conn, 0, 40000);
-        sub.assert_eq(err_win, wing::ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
+        let err_win = internal::apply_window_update(conn, 0, 40000);
+        sub.assert_eq(err_win, internal::ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
         sub.assert_eq(conn.conn_send_window, 105535, "Connection send window replenished without lockup");
     };
 }
@@ -1503,62 +1503,62 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: core::T&) {
 fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: core::T&) {
     t.run("RFC 9204 §4.5.1.2: decode_base strictly enforces Base == 0 when RIC == 0") { sub =>
         // 1. Valid: ric == 0, sign == 0, delta_base == 0 => Base == 0
-        let base0, err0 = wing::decode_base(0, 0, 0);
-        sub.assert_eq(err0, wing::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
+        let base0, err0 = internal::decode_base(0, 0, 0);
+        sub.assert_eq(err0, internal::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
         sub.assert_eq(base0, 0, "Base must be 0 when RIC is 0");
 
         // 2. Invalid: ric == 0 with delta_base > 0 MUST fail with DecompressionFailed
-        let _, err_delta = wing::decode_base(0, 1, 0);
-        sub.assert_eq(err_delta, wing::QpackError.DecompressionFailed, "ric=0 with delta_base=1 MUST fail");
+        let _, err_delta = internal::decode_base(0, 1, 0);
+        sub.assert_eq(err_delta, internal::QpackError.DecompressionFailed, "ric=0 with delta_base=1 MUST fail");
 
-        let _, err_delta5 = wing::decode_base(0, 5, 0);
-        sub.assert_eq(err_delta5, wing::QpackError.DecompressionFailed, "ric=0 with delta_base=5 MUST fail");
+        let _, err_delta5 = internal::decode_base(0, 5, 0);
+        sub.assert_eq(err_delta5, internal::QpackError.DecompressionFailed, "ric=0 with delta_base=5 MUST fail");
 
         // 3. Invalid: ric == 0 with sign == 1 MUST fail with DecompressionFailed
-        let _, err_sign = wing::decode_base(1, 0, 0);
-        sub.assert_eq(err_sign, wing::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
+        let _, err_sign = internal::decode_base(1, 0, 0);
+        sub.assert_eq(err_sign, internal::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
 
-        let _, err_sign_delta = wing::decode_base(1, 10, 0);
-        sub.assert_eq(err_sign_delta, wing::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
+        let _, err_sign_delta = internal::decode_base(1, 10, 0);
+        sub.assert_eq(err_sign_delta, internal::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
 
         // 4. Invalid: sign_bit > 1 MUST fail with DecompressionFailed
-        let _, err_bad_sign = wing::decode_base(2, 0, 0);
-        sub.assert_eq(err_bad_sign, wing::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
+        let _, err_bad_sign = internal::decode_base(2, 0, 0);
+        sub.assert_eq(err_bad_sign, internal::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
     };
 
     t.run("RFC 9204 §4.5.1.2: decode_qpack_section rejects wire header blocks with RIC == 0 and DeltaBase > 0") { sub =>
-        var tbl = wing::new_qpack_table(4096, 16);
-        var out_fields: wing::HeaderField[>..] = [];
+        var tbl = internal::new_qpack_table(4096, 16);
+        var out_fields: internal::HeaderField[>..] = [];
 
         // Malicious header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 5 (0x05), Static :path="/" (0xC1)
         let malformed_block: u8[3] = [0x00, 0x05, 0xC1];
-        let err_mal = wing::decode_qpack_section(tbl, malformed_block[..], out_fields, 4096);
-        sub.assert_eq(err_mal, wing::QpackError.DecompressionFailed, "Header block with RIC=0 and DeltaBase=5 MUST trigger DecompressionFailed");
+        let err_mal = internal::decode_qpack_section(tbl, malformed_block[..], out_fields, 4096);
+        sub.assert_eq(err_mal, internal::QpackError.DecompressionFailed, "Header block with RIC=0 and DeltaBase=5 MUST trigger DecompressionFailed");
 
         // Malicious header block: enc_ric = 0 (0x00), Sign = 1 & DeltaBase = 0 (0x80), Static :path="/" (0xC1)
         let malformed_sign_block: u8[3] = [0x00, 0x80, 0xC1];
-        let err_sign = wing::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
-        sub.assert_eq(err_sign, wing::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
+        let err_sign = internal::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
+        sub.assert_eq(err_sign, internal::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
 
         // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 0 (0x00), Static :path="/" (0xC1)
         let valid_block: u8[3] = [0x00, 0x00, 0xC1];
-        let err_val = wing::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
-        sub.assert_eq(err_val, wing::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
+        let err_val = internal::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
+        sub.assert_eq(err_val, internal::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
         sub.assert_eq(out_fields.len, 1, "One field decoded");
         sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
         sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
     };
 
     t.run("RFC 9204 §4.5.1.1: decode_qpack_section uses MaxTableCapacity for RIC calculation after capacity shrinkage") { sub =>
-        var tbl = wing::new_qpack_table(4096, 16);
+        var tbl = internal::new_qpack_table(4096, 16);
         // Insert a dynamic table entry (abs_idx = 0, cost = 51 bytes)
-        let ok_ins = wing::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
+        let ok_ins = internal::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
         sub.assert_true(ok_ins, "Inserted dynamic entry into QPACK table");
         sub.assert_eq(tbl.insert_count, 1, "insert_count is 1");
 
         // Encoder shrinks current capacity to 2048 via Set Dynamic Table Capacity instruction.
         // Entry remains cached (51 <= 2048), but capacity_bytes (2048) != max_capacity_bytes (4096).
-        let ok_cap = wing::qpack_set_capacity(tbl, 2048);
+        let ok_cap = internal::qpack_set_capacity(tbl, 2048);
         sub.assert_true(ok_cap, "Set capacity to 2048 succeeds");
         sub.assert_eq(tbl.capacity_bytes, 2048, "Current capacity_bytes is 2048");
         sub.assert_eq(tbl.max_capacity_bytes, 4096, "Decoder max_capacity_bytes remains 4096");
@@ -1570,9 +1570,9 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: core::T&) {
         // Indexed field line, dynamic (T=0): 10xxxxxx => 0x80 | 0 = 0x80.
         let sec_wire: u8[3] = [0x02, 0x00, 0x80];
 
-        var out_fields: wing::HeaderField[>..] = [];
-        let err_dec = wing::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
-        sub.assert_eq(err_dec, wing::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
+        var out_fields: internal::HeaderField[>..] = [];
+        let err_dec = internal::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
+        sub.assert_eq(err_dec, internal::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
         sub.assert_eq(out_fields.len, 1, "One dynamic field decoded");
         if out_fields.len > 0 {
             sub.assert_eq(out_fields[0].name[..], "x-trace-id", "Dynamic field name matches");

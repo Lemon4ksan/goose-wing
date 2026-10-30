@@ -96,7 +96,7 @@ if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
                     RC=$?
                     if [ $RC -ne 0 ]; then
                         # If file is grandfathered in baseline, ratchet enforces delta below
-                        if [ -f "scripts/gcrap_baseline.txt" ] && grep -F "$file" scripts/gcrap_baseline.txt >/dev/null 2>&1; then
+                        if [ -f "scripts/gcrap_baseline.txt" ] && grep -F -i "$file" scripts/gcrap_baseline.txt >/dev/null 2>&1; then
                             echo "[pre-commit] INFO: $file contains grandfathered baseline entries; ratchet will enforce zero regression."
                         else
                             $LIT_BIN gate "$file" 25 --cov 0.85

@@ -4,7 +4,7 @@
 // QUIC Connection Migration and Path Validation FSM (RFC 9000 Section 9 & Section 8.2).
 // Implements zero-allocation path validation state machine, unpredictable challenge token generation,
 // constant-time response verification, anti-amplification limits, and address migration.
-namespace wing;
+namespace internal;
 
 import std;
 import core from "..";
