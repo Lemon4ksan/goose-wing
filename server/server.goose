@@ -1986,11 +1986,13 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
     return total_served;
 }
 
+const REACTOR_LEFTOVER_CAP: i64 = 1024;
+
 struct ReactorConnSlot {
     fd: i64 = -1,
     leftover_len: i64 = 0,
     timeout_tick: u8 = 255,
-    leftover: u8[4096] = [0; 4096],
+    leftover: u8[1024] = [0; 1024],
 }
 
 // Cleans up a connection slot, removes from epoll, closes fd, and returns slot to free stack.
@@ -2016,10 +2018,10 @@ fn reactor_sweep_timeouts(
     active_slots: ReactorConnSlot[:],
     free_slots: FreeSlotStack&,
     timer_wheel: TickTimerWheel&,
+    now_sec: i64,
     last_sweep_sec: i64&,
     total_served: i64&,
 ) {
-    let now_sec = (core::as_nanos(core::monotonic_now()) / 1000000000) as i64;
     guard now_sec > last_sweep_sec else { return; }
     let elapsed = if last_sweep_sec == 0 { 1 } else { (now_sec - last_sweep_sec) as u32 };
     last_sweep_sec = now_sec;
@@ -2105,7 +2107,7 @@ fn reactor_read_bounded_turns(conn: i64, chunk: u8[..65536]&) -> bool, bool {
 // Restores buffered leftover bytes into active chunk.
 fn reactor_load_leftover(slot: ReactorConnSlot&, chunk: u8[..65536]&) {
     let prev_len = slot.leftover_len;
-    guard prev_len > 0 && prev_len <= 4096 else { return; }
+    guard prev_len > 0 && prev_len <= REACTOR_LEFTOVER_CAP else { return; }
     for p in prev_len {
         chunk.push(slot.leftover[p]);
     }
@@ -2114,7 +2116,7 @@ fn reactor_load_leftover(slot: ReactorConnSlot&, chunk: u8[..65536]&) {
 
 // Copies leftover bytes into slot preservation buffer.
 fn reactor_save_leftover(slot: ReactorConnSlot&, rem: const u8[:]) -> bool {
-    guard rem.len <= 4096 else { return false; }
+    guard rem.len <= REACTOR_LEFTOVER_CAP else { return false; }
     slot.leftover_len = rem.len;
     for m in rem.len {
         slot.leftover[m] = rem[m];
@@ -2130,6 +2132,7 @@ fn reactor_handle_ingress(
     slot: i64,
     free_slots: FreeSlotStack&,
     timer_wheel: TickTimerWheel&,
+    now_ns: u64,
     chunk: u8[..65536]&,
     cork_wire: u8[..16384]&,
     total_served: i64&,
@@ -2152,7 +2155,6 @@ fn reactor_handle_ingress(
     }
 
     cork_wire.clear();
-    let now_ns = core::as_nanos(core::monotonic_now());
     let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
         server, "127.0.0.1", chunk[..], now_ns, cork_wire,
     );
@@ -2192,13 +2194,13 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
     defer epoll_close(epfd);
     epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
 
-    var ready_fds: i64[128] = [0; 128];
-    var ready_udata: u64[128] = [0; 128];
+    var ready_fds: i64[256] = [0; 256];
+    var ready_udata: u64[256] = [0; 256];
     var cork_wire: u8[..16384] = [];
     var chunk: u8[..65536] = [];
     var total_served: i64 = 0;
 
-    var active_slots: ReactorConnSlot[128] = [ReactorConnSlot { .. }; 128];
+    var active_slots: ReactorConnSlot[256] = [ReactorConnSlot { .. }; 256];
     var free_slots = FreeSlotStack { .. };
     init_free_slots(free_slots, active_slots.len);
     var timer_wheel = new_tick_timer_wheel(15);
@@ -2207,7 +2209,13 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
     while max_connections == 0 || total_served < max_connections {
         let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], 1000);
 
-        reactor_sweep_timeouts(epfd, active_slots[..], free_slots, timer_wheel, last_sweep_sec, total_served);
+        let now_mono = core::monotonic_now();
+        let now_ns = core::as_nanos(now_mono);
+        let now_sec = (now_ns / 1000000000) as i64;
+
+        reactor_sweep_timeouts(
+            epfd, active_slots[..], free_slots, timer_wheel, now_sec, last_sweep_sec, total_served,
+        );
 
         if n <= 0 { continue; }
 
@@ -2224,7 +2232,7 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
             }
 
             reactor_handle_ingress(
-                server, epfd, active_slots[..], slot, free_slots, timer_wheel, chunk, cork_wire, total_served,
+                server, epfd, active_slots[..], slot, free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served,
             );
         }
     }
