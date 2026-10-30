@@ -193,6 +193,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     // Parse protocol version
     let proto_slice = rest[(sp2_rel + 1)..];
     guard proto_slice == "HTTP/1.1" || proto_slice == "HTTP/1.0" else { return false, 0; }
+    out_req.is_http10 = (proto_slice == "HTTP/1.0");
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
@@ -763,6 +764,7 @@ struct HttpServer {
     is_running: bool = false,
     requests_processed: u64 = 0,
     accept_proxy_protocol: bool = false,
+    trust_proxy_headers: bool = false,
     fast_path: bool = false,
     topic_tree: TopicTree = TopicTree { .. },
     ws_routes: WsRouteEntry[..16] = [WsRouteEntry { .. }; 16],
@@ -1052,6 +1054,27 @@ fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res
     };
 }
 
+// Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
+// Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
+//
+// Example:
+//   req header "connection: close"
+//   returns: true (res has "Connection: close")
+fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
+    guard res.status_code != 101 else { return false; }
+    let req_conn = header(req, "connection");
+    let res_conn = header(res, "connection");
+    let wants_close = req.method[..] == "CONNECT" ||
+        core::contains_fold(req_conn, "close") ||
+        (req.is_http10 && !core::contains_fold(req_conn, "keep-alive")) ||
+        core::contains_fold(res_conn, "close");
+    if wants_close {
+        set_header(res, "Connection", "close");
+        return true;
+    }
+    return false;
+}
+
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline, and serializing the wire response.
 fn handle_connection_wire<B>(
@@ -1101,6 +1124,7 @@ fn handle_connection_wire<B>(
 
         var res = Response { .. };
         dispatch_fast_path_route(server.pipeline.router, req, res);
+        check_and_apply_connection_close(req, res);
 
         serialize_http1_response(res, server.server_name[..], wire_out);
         server.requests_processed++;
@@ -1181,16 +1205,15 @@ fn handle_connection_wire<B>(
         }
     }
 
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+
     var res = Response { .. };
     var future = internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
 
-    // RFC 9110 & CVE-2026-94439: HTTP/1 server connection desynchronization defense.
-    // If request method is CONNECT, force Connection: close so the server never treats
-    // an established tunnel or subsequent bytes as pipelined HTTP requests.
-    if req.method[..] == "CONNECT" {
-        set_header(res, "Connection", "close");
-    }
+    check_and_apply_connection_close(req, res);
 
     serialize_http1_response(res, server.server_name[..], wire_out);
     server.requests_processed++;
@@ -1303,6 +1326,9 @@ fn handle_connection_wire_pipelined_stream<B>(
     now_ns: u64,
     wire_out: B&,
 ) -> i64, i64, bool {
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
     wire_out.clear();
     var stream = wire_in;
     var total_handled: i64 = 0;
@@ -1368,18 +1394,20 @@ fn handle_connection_wire_pipelined_stream<B>(
             let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
         }
 
-        if req.method[..] == "CONNECT" {
-            set_header(res, "Connection", "close");
-        }
+        let wants_close = check_and_apply_connection_close(req, res);
 
         serialize_http1_response(res, server.server_name[..], wire_out);
         server.requests_processed++;
         total_handled++;
         total_consumed += consumed;
 
-        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
+        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT or Connection: close
         if req.method[..] == "CONNECT" {
             total_consumed = wire_in.len;
+            break;
+        }
+
+        if wants_close {
             break;
         }
 
@@ -1436,6 +1464,9 @@ fn handle_connection_pipe<B>(
     wire_out: B&,
     h2_sess: internal::H2ServerSession&,
 ) -> i64, bool {
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
     let unread_len = pipe.readable_len();
     guard unread_len > 0 else { return 0, true; }
 
@@ -1489,9 +1520,7 @@ fn handle_connection_pipe<B>(
             let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
         }
 
-        if req.method[..] == "CONNECT" {
-            set_header(res, "Connection", "close");
-        }
+        let wants_close = check_and_apply_connection_close(req, res);
 
         serialize_http1_response(res, server.server_name[..], wire_out);
         server.requests_processed++;
@@ -1499,8 +1528,8 @@ fn handle_connection_pipe<B>(
 
         core::advance_to(pipe, consumed, consumed);
 
-        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT
-        if req.method[..] == "CONNECT" {
+        // RFC 9112 §9.3.6 & CVE-2026-94439: Stop pipelined HTTP processing upon CONNECT or Connection: close
+        if req.method[..] == "CONNECT" || wants_close {
             core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
             break;
         }
@@ -1547,6 +1576,7 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 
             let now_ns = core::as_nanos(core::monotonic_now());
             let count, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork, h2_sess);
+            let should_close = !ok || core::contains_fold(core::cork_as_slice(cork), "connection: close");
             if !ok {
                 if cork.cork_pending() > 0 {
                     tcp_flush_cork(conn, cork);
@@ -1556,9 +1586,11 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 
             if cork.cork_pending() > 0 {
                 let sent = tcp_flush_cork(conn, cork);
-                if sent <= 0 {
+                if sent <= 0 || should_close {
                     break;
                 }
+            } else if should_close {
+                break;
             }
         }
         total_served++;
@@ -1701,11 +1733,14 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
 
             cork_wire.clear();
             let now_ns = core::as_nanos(core::monotonic_now());
-            let count, consumed, ok = handle_connection_wire_pipelined_stream(server, "127.0.0.1", chunk[..], now_ns, cork_wire);
+            let count, consumed, ok = handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", chunk[..], now_ns, cork_wire,
+            );
 
+            let should_close = !ok || core::contains_fold(cork_wire[..], "connection: close");
             if cork_wire.len > 0 {
                 let sent = tcp_send(conn, cork_wire[..]);
-                if sent <= 0 || !ok {
+                if sent <= 0 || should_close {
                     epoll_del(epfd, conn);
                     tcp_close(conn);
                     active_slots[slot].fd = -1;
@@ -1716,7 +1751,7 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
                     continue;
                 }
             }
-            if !ok {
+            if should_close {
                 epoll_del(epfd, conn);
                 tcp_close(conn);
                 active_slots[slot].fd = -1;

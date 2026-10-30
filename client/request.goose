@@ -37,6 +37,7 @@ struct Request {
     site_for_cookies: SiteForCookies = SiteForCookies { .. },
     has_site_for_cookies: bool = false,
     first_party_policy: FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+    is_http10: bool = false,
     body: u8[>..] = [],
 }
 

@@ -23,6 +23,7 @@ struct ServerPipelineConfig {
     enable_csrf_guard: bool = true,
     enable_cors: bool = true,
     enable_slowloris_timer: bool = true,
+    trust_proxy_headers: bool = false,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
@@ -36,6 +37,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         ext_pool: internal::ExtensionsPool { .. },
         target_host: [],
         deadline_ns: 30000000000,
+        trust_proxy_headers: false,
     };
     cfg.target_host.append(target_host);
     return cfg;
@@ -198,6 +200,39 @@ fn dispatch_matched_route(
     };
 }
 
+// Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
+// Prefers X-Real-IP, falling back to the first IP in X-Forwarded-For.
+//
+// Example:
+//   trust = true, client_ip = "127.0.0.1", req header "x-real-ip: 203.0.113.195"
+//   returns: "203.0.113.195"
+fn extract_effective_client_ip(
+    trust_proxy_headers: bool,
+    client_ip: const u8[:],
+    req: const Request&,
+) -> const u8[:] {
+    if !trust_proxy_headers && client_ip != "127.0.0.1" && client_ip != "::1" {
+        return client_ip;
+    }
+    let real_ip = core::trim_lws(header(req, "x-real-ip"));
+    if real_ip.len > 0 {
+        return real_ip;
+    }
+    let xff = header(req, "x-forwarded-for");
+    if xff.len > 0 {
+        let comma_idx = core::index_of_byte(xff, ',');
+        let first_ip = if comma_idx >= 0 {
+            core::trim_lws(xff[..comma_idx])
+        } else {
+            core::trim_lws(xff)
+        };
+        if first_ip.len > 0 {
+            return first_ip;
+        }
+    }
+    return client_ip;
+}
+
 // Executes an incoming request through the configured pipeline stages.
 //
 // Pipeline stages:
@@ -216,6 +251,8 @@ fn execute_pipeline(
     res: Response&,
     out_future: internal::InlineHandlerFuture&,
 ) -> PipelineOutcome {
+    let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
+
     if cfg.enable_slowloris_timer {
         internal::notify_request_start(conn_timer);
 
@@ -236,7 +273,7 @@ fn execute_pipeline(
 
     // Stage 3: Rate limiter check
     if cfg.enable_rate_limiter {
-        let rl_decision = check_rate_limit(cfg.limiter, client_ip, 1, now_ns);
+        let rl_decision = check_rate_limit(cfg.limiter, eff_ip, 1, now_ns);
         apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
         if !is_allowed(rl_decision) {
             if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
@@ -261,7 +298,7 @@ fn execute_pipeline(
         return PipelineOutcome.RateLimited;
     }
     let e_idx = ext_slot_idx as i64;
-    cfg.ext_pool.slots[e_idx].peer_ip.append(client_ip);
+    cfg.ext_pool.slots[e_idx].peer_ip.append(eff_ip);
     cfg.ext_pool.slots[e_idx].canon_url.clear();
 
     let match_res = match_route(

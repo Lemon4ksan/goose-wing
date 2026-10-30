@@ -755,6 +755,122 @@ fn test_server_target_and_host_invariants(t: core::T&) {
     t.assert_true(ok4, "valid IPv6 literal host must succeed");
 }
 
+fn test_nginx_harmony_invariants(t: core::T&) {
+    t.run("1. X-Real-IP extraction with loopback and trust_proxy_headers") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        server.pipeline.enable_rate_limiter = true;
+        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, core::secs(1), 0));
+        wing::add_route(server.pipeline.router, "GET", "/ip-check", 1, 0);
+
+        var req1: u8[..256] = [];
+        req1.append("GET /ip-check HTTP/1.1\r\nHost: localhost\r\nX-Real-IP: 203.0.113.195\r\n\r\n");
+
+        var out1: u8[..1024] = [];
+        let outcome1, ok1 = wing::handle_connection_wire(server, "127.0.0.1", req1[..], 1000000000, out1);
+        sub.assert_true(ok1, "first request from 203.0.113.195 succeeds");
+        sub.assert_true(outcome1 == wing::PipelineOutcome.Handled, "first request handled");
+
+        var req2: u8[..256] = [];
+        req2.append("GET /ip-check HTTP/1.1\r\nHost: localhost\r\nX-Real-IP: 198.51.100.5\r\n\r\n");
+        var out2: u8[..1024] = [];
+        let outcome2, ok2 = wing::handle_connection_wire(server, "127.0.0.1", req2[..], 1000000000, out2);
+        sub.assert_true(ok2, "request from distinct client IP 198.51.100.5 succeeds despite burst limit on previous IP");
+        sub.assert_true(outcome2 == wing::PipelineOutcome.Handled, "distinct IP request handled");
+
+        var req3: u8[..256] = [];
+        req3.append("GET /ip-check HTTP/1.1\r\nHost: localhost\r\nX-Real-IP: 203.0.113.195\r\n\r\n");
+        var out3: u8[..1024] = [];
+        let outcome3, _ = wing::handle_connection_wire(server, "127.0.0.1", req3[..], 1000000000, out3);
+        sub.assert_true(outcome3 == wing::PipelineOutcome.RateLimited, "second request from 203.0.113.195 is rate-limited");
+        sub.assert_true(core::contains(out3[..], "429 Too Many Requests"), "response contains 429 status line");
+    };
+
+    t.run("2. X-Forwarded-For comma-separated list extraction") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        server.pipeline.enable_rate_limiter = true;
+        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, core::secs(1), 0));
+        wing::add_route(server.pipeline.router, "GET", "/xff-check", 1, 0);
+
+        var req1: u8[..256] = [];
+        req1.append("GET /xff-check HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 203.0.113.50, 10.0.0.1\r\n\r\n");
+        var out1: u8[..1024] = [];
+        let outcome1, _ = wing::handle_connection_wire(server, "127.0.0.1", req1[..], 1000000000, out1);
+        sub.assert_true(outcome1 == wing::PipelineOutcome.Handled, "first request handled");
+
+        var req2: u8[..256] = [];
+        req2.append("GET /xff-check HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 203.0.113.50, 10.0.0.2\r\n\r\n");
+        var out2: u8[..1024] = [];
+        let outcome2, _ = wing::handle_connection_wire(server, "127.0.0.1", req2[..], 1000000000, out2);
+        sub.assert_true(outcome2 == wing::PipelineOutcome.RateLimited, "same original client IP in XFF is rate limited");
+    };
+
+    t.run("3. Untrusted remote IP ignores proxy headers when trust_proxy_headers is false") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        server.pipeline.enable_rate_limiter = true;
+        server.pipeline.trust_proxy_headers = false;
+        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, core::secs(1), 0));
+        wing::add_route(server.pipeline.router, "GET", "/untrusted", 1, 0);
+
+        var req1: u8[..256] = [];
+        req1.append("GET /untrusted HTTP/1.1\r\nHost: localhost\r\nX-Real-IP: 1.1.1.1\r\n\r\n");
+        var out1: u8[..1024] = [];
+        let outcome1, _ = wing::handle_connection_wire(server, "198.51.100.1", req1[..], 1000000000, out1);
+        sub.assert_true(outcome1 == wing::PipelineOutcome.Handled, "first request handled");
+
+        var req2: u8[..256] = [];
+        req2.append("GET /untrusted HTTP/1.1\r\nHost: localhost\r\nX-Real-IP: 2.2.2.2\r\n\r\n");
+        var out2: u8[..1024] = [];
+        let outcome2, _ = wing::handle_connection_wire(server, "198.51.100.1", req2[..], 1000000000, out2);
+        sub.assert_true(outcome2 == wing::PipelineOutcome.RateLimited, "second request from same peer is rate limited, spoofed X-Real-IP ignored");
+    };
+
+    t.run("4. HTTP/1.1 with Connection: close echoes Connection: close") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_route(server.pipeline.router, "GET", "/close-test", 1, 0);
+
+        var req: u8[..256] = [];
+        req.append("GET /close-test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        var out: u8[..1024] = [];
+        let _, ok = wing::handle_connection_wire(server, "127.0.0.1", req[..], 1000000000, out);
+        sub.assert_true(ok, "request processed");
+        sub.assert_true(core::contains(out[..], "Connection: close\r\n") || core::contains(out[..], "connection: close\r\n"), "response must contain Connection: close");
+        sub.assert_false(core::contains(out[..], "Connection: keep-alive\r\n"), "response must NOT contain Connection: keep-alive");
+    };
+
+    t.run("5. HTTP/1.0 without keep-alive echoes Connection: close") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_route(server.pipeline.router, "GET", "/h10-close", 1, 0);
+
+        var req: u8[..256] = [];
+        req.append("GET /h10-close HTTP/1.0\r\nHost: localhost\r\n\r\n");
+        var out: u8[..1024] = [];
+        let _, ok = wing::handle_connection_wire(server, "127.0.0.1", req[..], 1000000000, out);
+        sub.assert_true(ok, "request processed");
+        sub.assert_true(core::contains(out[..], "Connection: close\r\n") || core::contains(out[..], "connection: close\r\n"), "HTTP/1.0 response must contain Connection: close");
+        sub.assert_false(core::contains(out[..], "Connection: keep-alive\r\n"), "HTTP/1.0 response must NOT contain Connection: keep-alive");
+    };
+
+    t.run("6. HTTP/1.0 with Connection: keep-alive maintains keep-alive") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_route(server.pipeline.router, "GET", "/h10-keepalive", 1, 0);
+
+        var req: u8[..256] = [];
+        req.append("GET /h10-keepalive HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n");
+        var out: u8[..1024] = [];
+        let _, ok = wing::handle_connection_wire(server, "127.0.0.1", req[..], 1000000000, out);
+        sub.assert_true(ok, "request processed");
+        sub.assert_true(core::contains(out[..], "Connection: keep-alive\r\n"), "explicit keep-alive preserved in HTTP/1.0");
+    };
+
+    t.run("7. SSE init_response sets X-Accel-Buffering: no") { sub =>
+        var res = wing::Response { .. };
+        wing::init_response(res);
+        sub.assert_eq(res.status_code, 200, "status code 200");
+        sub.assert_eq(wing::header(res, "Content-Type"), "text/event-stream", "Content-Type is text/event-stream");
+        sub.assert_eq(wing::header(res, "X-Accel-Buffering"), "no", "X-Accel-Buffering is no");
+    };
+}
+
 fn main() {
     var runner = core::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", core::Verbosity.Verbose);
 
@@ -769,6 +885,7 @@ fn main() {
     core::run_case(runner, "9. HTTP/1.1 Pipelining", test_server_http1_pipelining);
     core::run_case(runner, "10. Empty Line & Whitespace Invariants", test_server_empty_line_and_whitespace_invariants);
     core::run_case(runner, "11. Target & Host Invariants", test_server_target_and_host_invariants);
+    core::run_case(runner, "12. NGINX Reverse Proxy Harmony (X-Real-IP, Connection Close, SSE)", test_nginx_harmony_invariants);
 
     let ok = core::finish(runner);
     assert(ok);

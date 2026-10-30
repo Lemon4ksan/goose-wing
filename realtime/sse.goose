@@ -319,4 +319,5 @@ fn init_response(res: Response&) {
     set_header(res, "Content-Type", "text/event-stream");
     set_header(res, "Cache-Control", "no-cache");
     set_header(res, "Connection", "keep-alive");
+    set_header(res, "X-Accel-Buffering", "no");
 }
