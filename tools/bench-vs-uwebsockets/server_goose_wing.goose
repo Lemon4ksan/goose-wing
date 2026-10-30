@@ -126,10 +126,10 @@ fn flush_cork_batch(
     guard total_sent < cork_len else { return true; }
     let unsent = cork_buf[total_sent..cork_len];
     guard slot.bp_idx == -1 && bp_free_top > 0 else { return false; }
-    bp_free_top--;
-    let bp_i = bp_free[bp_free_top];
+    let bp_i = bp_free[bp_free_top - 1];
     let buffered = wing::buffer_backpressure(bp_pool[bp_i], unsent);
     guard buffered else { return false; }
+    bp_free_top--;
     slot.bp_idx = bp_i as i16;
     wing::epoll_mod(epfd, conn, wing::EPOLL_WRITE, slot_idx as u64);
     return true;
@@ -153,7 +153,7 @@ fn sweep_expired_slots(
 }
 
 // Drains active backpressure bytes on socket if previously registered for EPOLLOUT.
-// Returns true if backpressure is completely drained (or inactive), false if still congested.
+// Returns 1 if fully drained/inactive, 0 if still congested, -1 on fatal socket error.
 fn check_drain_backpressure(
     epfd: i64,
     conn: i64,
@@ -162,19 +162,22 @@ fn check_drain_backpressure(
     bp_pool: wing::BackpressureSlot[:],
     bp_free: i64[:],
     bp_free_top: i64&,
-) -> bool {
-    guard slot.bp_idx >= 0 else { return true; }
+) -> i32 {
+    guard slot.bp_idx >= 0 else { return 1; }
     let bp_i = slot.bp_idx as i64;
-    guard bp_i >= 0 && bp_i < bp_pool.len else { return true; }
+    guard bp_i >= 0 && bp_i < bp_pool.len else { return 1; }
     let drained, ok = wing::drain_backpressure(bp_pool[bp_i], conn);
-    guard ok else { return false; }
+    if drained < 0 {
+        return -1;
+    }
+    guard ok else { return 0; }
     if bp_free_top < bp_free.len {
         bp_free[bp_free_top] = bp_i;
         bp_free_top++;
     }
     slot.bp_idx = -1;
     wing::epoll_mod(epfd, conn, wing::EPOLL_READ, slot_idx as u64);
-    return true;
+    return 1;
 }
 
 // Processes incoming WebSocket wire frames (RFC 6455).
@@ -354,8 +357,15 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
 
             // Drain active backpressure if registered for EPOLLOUT
             if slots[slot_idx].bp_idx >= 0 {
-                let drained = check_drain_backpressure(epfd, conn, slots[slot_idx], slot_idx, bp_pool[..], bp_free[..], bp_free_top);
-                if !drained {
+                let drain_status = check_drain_backpressure(
+                    epfd, conn, slots[slot_idx], slot_idx,
+                    bp_pool[..], bp_free[..], bp_free_top,
+                );
+                if drain_status < 0 {
+                    cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
+                    continue;
+                }
+                if drain_status == 0 {
                     // TX buffer still congested; skip reading new requests
                     continue;
                 }
@@ -530,6 +540,10 @@ fn run_reactor(port: u16, worker_id: i64 = 0) {
                             for r in rem_len {
                                 slots[slot_idx].leftover[r] = in_buf[cursor + r];
                             }
+                        } else if rem_len > 232 {
+                            cleanup_slot(epfd, slots[slot_idx], slot_idx, free_slots, bp_free[..], bp_free_top);
+                            client_alive = false;
+                            break;
                         }
                     }
                     active_len = 0;
