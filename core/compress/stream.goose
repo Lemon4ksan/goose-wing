@@ -56,34 +56,34 @@ fn detect_container_format(src: const u8[:]) -> ContainerFormat {
 // ---- zstream compressor ----------------------------------------------------
 
 struct ZStreamCompressor {
-    format: ContainerFormat = ContainerFormat.Raw,
-    level: i32 = 6,
-    w: BitWriter = BitWriter { bit_buf: 0, bit_count: 0 },
-    window: u8[32768] = [0; 32768],
-    window_len: i32 = 0,
-    dict: const u8[:] = "",
-    total_in: u64 = 0,
-    total_out: u64 = 0,
-    adler: u32 = 1,
-    crc: u32 = 0,
-    header_written: bool = false,
-    is_finished: bool = false,
+    format:         ContainerFormat = ContainerFormat.Raw,
+    level:          i32             = 6,
+    w:              BitWriter       = BitWriter { bit_buf: 0, bit_count: 0 },
+    window:         u8[32768]       = [0; 32768],
+    window_len:     i32             = 0,
+    dict:           const u8[:]     = "",
+    total_in:       u64             = 0,
+    total_out:      u64             = 0,
+    adler:          u32             = 1,
+    crc:            u32             = 0,
+    header_written: bool            = false,
+    is_finished:    bool            = false,
 }
 
 fn new_zstream_compressor(format: ContainerFormat = ContainerFormat.Raw, level: i32 = 6) -> ZStreamCompressor {
     return ZStreamCompressor {
-        format: format,
-        level: level,
-        w: BitWriter { bit_buf: 0, bit_count: 0 },
-        window: [0; 32768],
-        window_len: 0,
-        dict: "",
-        total_in: 0,
-        total_out: 0,
-        adler: 1,
-        crc: 0,
+        format:         format,
+        level:          level,
+        w:              BitWriter { bit_buf: 0, bit_count: 0 },
+        window:         [0; 32768],
+        window_len:     0,
+        dict:           "",
+        total_in:       0,
+        total_out:      0,
+        adler:          1,
+        crc:            0,
         header_written: false,
-        is_finished: false,
+        is_finished:    false,
     };
 }
 
@@ -237,34 +237,37 @@ fn zstream_finish<B>(s: ZStreamCompressor&, out: B&) -> bool {
 // ---- zstream decompressor --------------------------------------------------
 
 struct ZStreamDecompressor {
-    format: ContainerFormat = ContainerFormat.Auto,
-    dict: const u8[:] = "",
-    window: u8[32768] = [0; 32768],
-    window_len: i32 = 0,
-    total_in: u64 = 0,
-    total_out: u64 = 0,
-    adler: u32 = 1,
-    crc: u32 = 0,
-    header_parsed: bool = false,
-    deflate_finished: bool = false,
-    is_finished: bool = false,
-    in_buf: u8[>..] = [],
+    format:           ContainerFormat = ContainerFormat.Auto,
+    dict:             const u8[:]     = "",
+    window:           u8[32768]       = [0; 32768],
+    window_len:       i32             = 0,
+    total_in:         u64             = 0,
+    total_out:        u64             = 0,
+    adler:            u32             = 1,
+    crc:              u32             = 0,
+    header_parsed:    bool            = false,
+    deflate_finished: bool            = false,
+    is_finished:      bool            = false,
+    in_buf:           u8[>..]         = [],
 }
 
-fn new_zstream_decompressor(format: ContainerFormat = ContainerFormat.Auto, dict: const u8[:] = "") -> ZStreamDecompressor {
+fn new_zstream_decompressor(
+    format: ContainerFormat = ContainerFormat.Auto,
+    dict:   const u8[:]     = "",
+) -> ZStreamDecompressor {
     return ZStreamDecompressor {
-        format: format,
-        dict: dict,
-        window: [0; 32768],
-        window_len: 0,
-        total_in: 0,
-        total_out: 0,
-        adler: 1,
-        crc: 0,
-        header_parsed: false,
+        format:           format,
+        dict:             dict,
+        window:           [0; 32768],
+        window_len:       0,
+        total_in:         0,
+        total_out:        0,
+        adler:            1,
+        crc:              0,
+        header_parsed:    false,
         deflate_finished: false,
-        is_finished: false,
-        in_buf: [],
+        is_finished:      false,
+        in_buf:           [],
     };
 }
 
@@ -285,12 +288,96 @@ fn drain_in_buf(d: ZStreamDecompressor&, consumed: i64) {
     }
 }
 
+// Updates the internal 32KB sliding dictionary window with newly decompressed bytes.
+fn update_sliding_window(d: ZStreamDecompressor&, temp_out: const u8[:]) {
+    if temp_out.len >= 32768 {
+        let start = temp_out.len - 32768;
+        for i in 32768 {
+            d.window[i] = temp_out[start + (i as i64)];
+        }
+        d.window_len = 32768;
+        return;
+    }
+    guard temp_out.len > 0 else { return; }
+    let nlen = temp_out.len as i32;
+    let to_keep = if d.window_len + nlen > 32768 { 32768 - nlen } else { d.window_len };
+    let shift = d.window_len - to_keep;
+    if shift > 0 {
+        for i in to_keep {
+            d.window[i] = d.window[shift + i];
+        }
+    }
+    for i in temp_out.len {
+        d.window[(to_keep as i64) + i] = temp_out[i];
+    }
+    d.window_len = to_keep + nlen;
+}
+
+// Parses container header for streaming decompression.
+//
+// Example:
+//   d.format = ContainerFormat.Auto, d.in_buf = [0x1F, 0x8B, ...]
+//   returns: CompressError.None
+fn parse_stream_header(d: ZStreamDecompressor&) -> CompressError {
+    if d.format == ContainerFormat.Auto {
+        if d.in_buf.len < 4 {
+            return CompressError.None;
+        }
+        d.format = detect_container_format(d.in_buf[..]);
+        if d.format == ContainerFormat.Auto || (d.format == ContainerFormat.Raw && d.in_buf.len < 10) {
+            return CompressError.None;
+        }
+    }
+
+    if d.format == ContainerFormat.Zstd {
+        d.header_parsed = true;
+        return CompressError.None;
+    }
+    if d.format == ContainerFormat.Gzip {
+        let offset, err = parse_gzip_header_offset(d.in_buf[..], 0);
+        if err == CompressError.InputBufferTruncated {
+            return CompressError.None;
+        }
+        guard err == CompressError.None else { return err; }
+        drain_in_buf(d, offset);
+        d.header_parsed = true;
+        return CompressError.None;
+    }
+    if d.format == ContainerFormat.Zlib {
+        if d.in_buf.len < 2 {
+            return CompressError.None;
+        }
+        let cmf: u32 = d.in_buf[0];
+        let flg: u32 = d.in_buf[1];
+        guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 && (cmf >> 4) <= 7 else {
+            return CompressError.InvalidHeader;
+        }
+        var hdr_len: i64 = 2;
+        if ((flg >> 5) & 1) != 0 {
+            if d.in_buf.len < 6 {
+                return CompressError.None;
+            }
+            guard d.dict.len > 0 else { return CompressError.NeedDictionary; }
+            guard adler32(d.dict) == read_be_u32(d.in_buf[..], 2) else {
+                return CompressError.DictionaryMismatch;
+            }
+            hdr_len = 6;
+        }
+        drain_in_buf(d, hdr_len);
+        d.header_parsed = true;
+        return CompressError.None;
+    }
+
+    d.header_parsed = true;
+    return CompressError.None;
+}
+
 // Resumable streaming decompression feeding arbitrary byte chunks (from 1 byte to multi-KB TCP slices).
 // Buffers incoming data, rolls back partial blocks on truncation, and enforces output quota guard.
 fn zstream_decompress_write_limit<B>(
-    d: ZStreamDecompressor&,
-    chunk: const u8[:],
-    out: B&,
+    d:                ZStreamDecompressor&,
+    chunk:            const u8[:],
+    out:              B&,
     max_output_bytes: i64 = 0,
 ) -> CompressError {
     if d.is_finished {
@@ -302,51 +389,9 @@ fn zstream_decompress_write_limit<B>(
 
     // Phase 1: Parse container header
     if !d.header_parsed {
-        if d.format == ContainerFormat.Auto {
-            if d.in_buf.len < 4 {
-                return CompressError.None;
-            }
-            d.format = detect_container_format(d.in_buf[..]);
-            if d.format == ContainerFormat.Auto || (d.format == ContainerFormat.Raw && d.in_buf.len < 10) {
-                return CompressError.None;
-            }
-        }
-
-        if d.format == ContainerFormat.Zstd {
-            d.header_parsed = true;
-        } else if d.format == ContainerFormat.Gzip {
-            let offset, err = parse_gzip_header_offset(d.in_buf[..], 0);
-            if err == CompressError.InputBufferTruncated {
-                return CompressError.None;
-            }
-            guard err == CompressError.None else { return err; }
-            drain_in_buf(d, offset);
-            d.header_parsed = true;
-        } else if d.format == ContainerFormat.Zlib {
-            if d.in_buf.len < 2 {
-                return CompressError.None;
-            }
-            let cmf: u32 = d.in_buf[0];
-            let flg: u32 = d.in_buf[1];
-            guard (cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8 && (cmf >> 4) <= 7 else {
-                return CompressError.InvalidHeader;
-            }
-            var hdr_len: i64 = 2;
-            if ((flg >> 5) & 1) != 0 {
-                if d.in_buf.len < 6 {
-                    return CompressError.None;
-                }
-                guard d.dict.len > 0 else { return CompressError.NeedDictionary; }
-                guard adler32(d.dict) == read_be_u32(d.in_buf[..], 2) else {
-                    return CompressError.DictionaryMismatch;
-                }
-                hdr_len = 6;
-            }
-            drain_in_buf(d, hdr_len);
-            d.header_parsed = true;
-        } else {
-            d.header_parsed = true;
-        }
+        let hdr_err = parse_stream_header(d);
+        guard hdr_err == CompressError.None else { return hdr_err; }
+        guard d.header_parsed else { return CompressError.None; }
     }
 
     // Phase 1.5: Zstandard Frame Streaming
@@ -395,27 +440,7 @@ fn zstream_decompress_write_limit<B>(
             d.crc = crc32_update(d.crc, temp_out[..]);
         }
 
-        if temp_out.len >= 32768 {
-            let start = temp_out.len - 32768;
-            for i in 32768 {
-                d.window[i] = temp_out[start + (i as i64)];
-            }
-            d.window_len = 32768;
-        } else if temp_out.len > 0 {
-            let nlen = temp_out.len as i32;
-            let to_keep = if d.window_len + nlen > 32768 { 32768 - nlen } else { d.window_len };
-            let shift = d.window_len - to_keep;
-            if shift > 0 {
-                for i in to_keep {
-                    d.window[i] = d.window[shift + i];
-                }
-            }
-            for i in temp_out.len {
-                d.window[(to_keep as i64) + i] = temp_out[i];
-            }
-            d.window_len = to_keep + nlen;
-        }
-
+        update_sliding_window(d, temp_out[..]);
         drain_in_buf(d, consumed);
         d.deflate_finished = true;
     }

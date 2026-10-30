@@ -8,24 +8,24 @@ import std;
 import core.compress.checksum;
 import core.compress.deflate;
 
-const GZIP_ID1: u8 = 0x1F;
-const GZIP_ID2: u8 = 0x8B;
+const GZIP_ID1:        u8 = 0x1F;
+const GZIP_ID2:        u8 = 0x8B;
 const GZIP_CM_DEFLATE: u8 = 8;
 
-const GZIP_FLG_FTEXT: u8 = 0x01;
-const GZIP_FLG_FHCRC: u8 = 0x02;
-const GZIP_FLG_FEXTRA: u8 = 0x04;
-const GZIP_FLG_FNAME: u8 = 0x08;
+const GZIP_FLG_FTEXT:    u8 = 0x01;
+const GZIP_FLG_FHCRC:    u8 = 0x02;
+const GZIP_FLG_FEXTRA:   u8 = 0x04;
+const GZIP_FLG_FNAME:    u8 = 0x08;
 const GZIP_FLG_FCOMMENT: u8 = 0x10;
 
 // Compresses src into out using RFC 1952 Gzip format with full metadata (filename, comment, FHCRC).
 fn gzip_compress_with_header<B>(
-    src: const u8[:],
-    out: B&,
-    level: i32 = 6,
-    filename: const u8[:] = "",
-    comment: const u8[:] = "",
-    include_fhcrc: bool = false,
+    src:           const u8[:],
+    out:           B&,
+    level:         i32         = 6,
+    filename:      const u8[:] = "",
+    comment:       const u8[:] = "",
+    include_fhcrc: bool        = false,
 ) -> bool {
     let out_start = out.len;
     var flg: u8 = 0;
@@ -60,7 +60,10 @@ fn gzip_compress_with_header<B>(
         write_le_u16(out, h_crc);
     }
 
-    guard deflate(src, out, level) else { return false; }
+    guard deflate(src, out, level) else {
+        out.clear();
+        return false;
+    }
 
     write_le_u32(out, crc32(src));
     write_le_u32(out, ((src.len as u64) & 0xFFFFFFFF) as u32);
@@ -74,6 +77,10 @@ fn gzip_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
 }
 
 // Advances offset past a null-terminated header string in src.
+//
+// Example:
+//   src = "name.txt\x00data", offset = 0
+//   returns: 9, true
 fn skip_gzip_cstring(src: const u8[:], offset: i64) -> i64, bool {
     guard offset >= 0 else { return offset, false; }
     var pos = offset;
@@ -86,6 +93,10 @@ fn skip_gzip_cstring(src: const u8[:], offset: i64) -> i64, bool {
 
 // Validates the RFC 1952 Gzip header and returns the payload start offset.
 // Supports FEXTRA, FNAME, FCOMMENT, and FHCRC (validating the 16-bit header CRC32).
+//
+// Example:
+//   src = [0x1F, 0x8B, 0x08, 0x00, ...], start = 0
+//   returns: 10, CompressError.None
 fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError {
     guard start >= 0 && start + 10 <= src.len else { return start, CompressError.InputBufferTruncated; }
     guard src[start] == GZIP_ID1 && src[start + 1] == GZIP_ID2 && src[start + 2] == GZIP_CM_DEFLATE else {

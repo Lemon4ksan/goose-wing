@@ -31,7 +31,10 @@ fn zlib_compress_with_dict<B>(src: const u8[:], out: B&, level: i32 = 6, dict: c
     }
 
     // Deflate compressed payload
-    guard deflate_with_dict(src, out, level, dict) else { return false; }
+    guard deflate_with_dict(src, out, level, dict) else {
+        out.clear();
+        return false;
+    }
 
     // 4-byte Adler-32 in Big-Endian
     write_be_u32(out, adler32(src));
@@ -47,10 +50,10 @@ fn zlib_compress<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
 // Decompresses RFC 1950 Zlib stream from src into out with optional preset dictionary and quota guard.
 // Validates headers, FCHECK, DICTID, and Adler-32 checksum.
 fn zlib_decompress_with_dict_limit<B>(
-    src: const u8[:],
-    out: B&,
-    dict: const u8[:] = "",
-    max_output_bytes: i64 = 0,
+    src:              const u8[:],
+    out:              B&,
+    dict:             const u8[:] = "",
+    max_output_bytes: i64         = 0,
 ) -> CompressError {
     guard src.len >= 6 else { return CompressError.InputBufferTruncated; }
 
