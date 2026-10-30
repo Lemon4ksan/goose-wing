@@ -21,9 +21,10 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
 
-from bench_core import get_process_rss_mb, run_http_benchmark, run_websocket_benchmark
+from bench_core import get_process_rss_mb
 
 GW_PORT = int(os.environ.get("GW_PORT", "3001"))
 UWS_PORT = int(os.environ.get("UWS_PORT", "3002"))
@@ -327,124 +328,6 @@ def run_suite_burst(name, threads=6, conns=384, pipeline=64, duration=4):
     return gw, uws
 
 
-def run_suite_python(name, scenario, duration=3.0, concurrency=32, pipeline_depth=32):
-    print("=" * 93)
-    print(
-        f" SUITE: {name} (Python Core: Concurrency={concurrency}, Dur={duration}s, Pipe={pipeline_depth})"
-    )
-    print("=" * 93)
-    print(f"| {'Metric':<28} | {'goose-wing':>18} | {'uWebSockets':>18} | {'Delta':>16} |")
-    print("|" + "-" * 30 + "|" + "-" * 20 + "|" + "-" * 20 + "|" + "-" * 18 + "|")
-
-    if scenario == "ws_echo":
-        gw = run_websocket_benchmark(
-            GW_PORT,
-            "/ws",
-            concurrency=concurrency,
-            duration_sec=duration,
-            label="goose-wing",
-        )
-        uws = run_websocket_benchmark(
-            UWS_PORT,
-            "/ws",
-            concurrency=concurrency,
-            duration_sec=duration,
-            label="uWebSockets",
-        )
-    else:
-        path = "/json" if scenario == "json" else "/plaintext"
-        p_depth = pipeline_depth if scenario == "pipelined" else 1
-        gw = run_http_benchmark(
-            GW_PORT,
-            path,
-            concurrency=concurrency,
-            duration_sec=duration,
-            pipeline_depth=p_depth,
-            label="goose-wing",
-        )
-        uws = run_http_benchmark(
-            UWS_PORT,
-            path,
-            concurrency=concurrency,
-            duration_sec=duration,
-            pipeline_depth=p_depth,
-            label="uWebSockets",
-        )
-
-    rps_diff = ((gw["rps"] - uws["rps"]) / max(uws["rps"], 1)) * 100
-    print(
-        format_row(
-            "Throughput (req/s)",
-            f"{int(gw['rps']):,}",
-            f"{int(uws['rps']):,}",
-            f"{rps_diff:+.1f}%",
-        )
-    )
-
-    p50_diff = (
-        (gw["latency_us"]["p50"] - uws["latency_us"]["p50"]) / max(uws["latency_us"]["p50"], 0.001)
-    ) * 100
-    p90_diff = (
-        (gw["latency_us"]["p90"] - uws["latency_us"]["p90"]) / max(uws["latency_us"]["p90"], 0.001)
-    ) * 100
-    p99_diff = (
-        (gw["latency_us"]["p99"] - uws["latency_us"]["p99"]) / max(uws["latency_us"]["p99"], 0.001)
-    ) * 100
-    p999_diff = (
-        (gw["latency_us"]["p999"] - uws["latency_us"]["p999"])
-        / max(uws["latency_us"]["p999"], 0.001)
-    ) * 100
-
-    print(
-        format_row(
-            "Latency p50 (Median)",
-            f"{gw['latency_us']['p50']:.2f}",
-            f"{uws['latency_us']['p50']:.2f}",
-            f"{p50_diff:+.1f}%",
-            "us",
-        )
-    )
-    print(
-        format_row(
-            "Latency p90",
-            f"{gw['latency_us']['p90']:.2f}",
-            f"{uws['latency_us']['p90']:.2f}",
-            f"{p90_diff:+.1f}%",
-            "us",
-        )
-    )
-    print(
-        format_row(
-            "Latency p99 (Tail)",
-            f"{gw['latency_us']['p99']:.2f}",
-            f"{uws['latency_us']['p99']:.2f}",
-            f"{p99_diff:+.1f}%",
-            "us",
-        )
-    )
-    print(
-        format_row(
-            "Latency p99.9",
-            f"{gw['latency_us']['p999']:.2f}",
-            f"{uws['latency_us']['p999']:.2f}",
-            f"{p999_diff:+.1f}%",
-            "us",
-        )
-    )
-    print(
-        format_row(
-            "Latency Max",
-            f"{gw['latency_us']['max']:.2f}",
-            f"{uws['latency_us']['max']:.2f}",
-            "",
-            "us",
-        )
-    )
-    print(format_row("Heap Allocations", "0 B", "Dynamic", "0 mallocs"))
-    print("=" * 93 + "\n")
-    return gw, uws
-
-
 def emit_result_json(
     scenario,
     label,
@@ -520,7 +403,6 @@ def main():
             "pipelined",
             "plaintext",
             "json",
-            "ws_echo",
         ],
     )
     parser.add_argument("--duration", type=float, default=None)
@@ -601,23 +483,18 @@ def main():
         p_gw, p_uws = None, None
         if can_restart:
             p_gw, p_uws = start_servers(workers=1)
-        if WRK_BIN and os.path.exists(PIPELINE_LUA):
-            gw, uws = run_suite_wrk(
-                "HTTP/1.1 32x Pipelined Batch (wrk C Native)",
-                path="/plaintext",
-                script=PIPELINE_LUA,
-                threads=4,
-                conns=64,
-                duration=f"{dur}s",
-            )
-        else:
-            gw, uws = run_suite_python(
-                "HTTP/1.1 Pipelined Batch (Python Core)",
-                "pipelined",
-                duration=float(dur),
-                concurrency=32,
-                pipeline_depth=32,
-            )
+        if not WRK_BIN:
+            sys.exit("[error] Scenario 'pipelined' requires native 'wrk' binary in PATH.")
+        if not os.path.exists(PIPELINE_LUA):
+            sys.exit(f"[error] Missing pipeline script: {PIPELINE_LUA}")
+        gw, uws = run_suite_wrk(
+            "HTTP/1.1 32x Pipelined Batch (wrk C Native)",
+            path="/plaintext",
+            script=PIPELINE_LUA,
+            threads=4,
+            conns=64,
+            duration=f"{dur}s",
+        )
         if args.json:
             emit_result_json(
                 "pipelined",
@@ -636,22 +513,15 @@ def main():
         p_gw, p_uws = None, None
         if can_restart:
             p_gw, p_uws = start_servers(workers=1)
-        if WRK_BIN:
-            gw, uws = run_suite_wrk(
-                "HTTP/1.1 Standard Ping-Pong (wrk C Native)",
-                path="/plaintext",
-                threads=4,
-                conns=64,
-                duration=f"{dur}s",
-            )
-        else:
-            gw, uws = run_suite_python(
-                "HTTP/1.1 Plaintext Ping-Pong (Python Core)",
-                "plaintext",
-                duration=float(dur),
-                concurrency=16,
-                pipeline_depth=1,
-            )
+        if not WRK_BIN:
+            sys.exit("[error] Scenario 'plaintext' requires native 'wrk' binary in PATH.")
+        gw, uws = run_suite_wrk(
+            "HTTP/1.1 Standard Ping-Pong (wrk C Native)",
+            path="/plaintext",
+            threads=4,
+            conns=64,
+            duration=f"{dur}s",
+        )
         if args.json:
             emit_result_json(
                 "plaintext",
@@ -670,41 +540,19 @@ def main():
         p_gw, p_uws = None, None
         if can_restart:
             p_gw, p_uws = start_servers(workers=1)
-        gw, uws = run_suite_python(
-            "HTTP/1.1 JSON Serialization (Python Core)",
-            "json",
-            duration=float(dur),
-            concurrency=32,
-            pipeline_depth=16,
+        if not WRK_BIN:
+            sys.exit("[error] Scenario 'json' requires native 'wrk' binary in PATH.")
+        gw, uws = run_suite_wrk(
+            "HTTP/1.1 JSON Serialization (wrk C Native)",
+            path="/json",
+            threads=4,
+            conns=64,
+            duration=f"{dur}s",
         )
         if args.json:
             emit_result_json("json", "HTTP/1.1 JSON Serialization", gw, uws, p_gw, p_uws, 2.1, 17.2)
         return
 
-    # 6. Target: ws_echo
-    if args.scenario == "ws_echo":
-        p_gw, p_uws = None, None
-        if can_restart:
-            p_gw, p_uws = start_servers(workers=1)
-        gw, uws = run_suite_python(
-            "WebSocket Echo (RFC 6455 64-bit Masking)",
-            "ws_echo",
-            duration=float(dur),
-            concurrency=16,
-            pipeline_depth=1,
-        )
-        if args.json:
-            emit_result_json(
-                "ws_echo",
-                "WebSocket Echo (RFC 6455 64-bit Masking)",
-                gw,
-                uws,
-                p_gw,
-                p_uws,
-                2.2,
-                18.1,
-            )
-        return
 
     # PHASE 1: Single-Worker (1 Core Baseline)
     gw_pipe_6, uws_pipe_6 = None, None
@@ -734,42 +582,6 @@ def main():
             duration="4s",
         )
 
-    # 1.3 Python Latency Pipelined Batch (Detailed percentiles)
-    run_suite_python(
-        "HTTP/1.1 Pipelined Batch (Python Core)",
-        "pipelined",
-        duration=3.0,
-        concurrency=32,
-        pipeline_depth=32,
-    )
-
-    # 1.4 Python Plaintext Ping-Pong
-    run_suite_python(
-        "HTTP/1.1 Plaintext Ping-Pong (Python Core)",
-        "plaintext",
-        duration=3.0,
-        concurrency=16,
-        pipeline_depth=1,
-    )
-
-    # 1.5 Python JSON Serialization
-    run_suite_python(
-        "HTTP/1.1 JSON Serialization (Python Core)",
-        "json",
-        duration=3.0,
-        concurrency=32,
-        pipeline_depth=16,
-    )
-
-    # 1.6 WebSocket Echo (RFC 6455 64-bit Masking)
-    run_suite_python(
-        "WebSocket Echo (RFC 6455 64-bit Masking)",
-        "ws_echo",
-        duration=3.0,
-        concurrency=16,
-        pipeline_depth=1,
-    )
-
     # PHASE 2: Multi-Worker Scale-Out (4 Workers / SO_REUSEPORT)
     if can_restart:
         print("\n" + "=" * 84)
@@ -797,15 +609,6 @@ def main():
                     duration="4s",
                     client_cpus="1,3,5,7",
                 )
-
-        # 2.2 Multi-Worker WebSocket Echo
-        run_suite_python(
-            "Multi-Worker WebSocket Echo (RFC 6455, 4 Workers)",
-            "ws_echo",
-            duration=3.0,
-            concurrency=32,
-            pipeline_depth=1,
-        )
 
         # PHASE 3: Dedicated 6-Worker Balanced Scale-Out (6 Workers + 6 wrk Threads = 12 Cores)
         print("\n" + "=" * 84)

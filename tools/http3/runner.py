@@ -11,6 +11,7 @@ against the native server running over live UDP datagrams.
 
 import argparse
 import io
+import os
 import socket
 import struct
 import subprocess
@@ -51,8 +52,15 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
         return SERVER_EXE
 
     print(f"[*] Building native HTTP/3 server: {SERVER_SRC} -> {SERVER_EXE}...")
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        gcc_wrapper = ROOT_DIR / "tools" / "gcc_noavx.cmd"
+        if gcc_wrapper.is_file():
+            env["GOOSE_CC"] = str(gcc_wrapper)
     cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
-    res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True)
+    res = subprocess.run(
+        cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env
+    )
     if res.returncode != 0:
         print("[!] Failed to build HTTP/3 server:", file=sys.stderr)
         if res.stdout:
@@ -212,18 +220,28 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
 
     # 6. RFC 9114 §7.2.4 Rejection of Forbidden HTTP/2 Settings Identifiers
     # Setting 0x02 (SETTINGS_ENABLE_PUSH) is strictly forbidden in HTTP/3
-    s.sendto(b"H3_SET_TEST:\x02\x01", (host, port))
+    # Binary H3 SETTINGS frame: Type 0x04, length 2, identifier 0x02, value 0x01
+    forbidden_settings_frame = bytes([0x04, 0x02, 0x02, 0x01])
+    s.sendto(forbidden_settings_frame, (host, port))
     set_err_res, _ = s.recvfrom(1024)
+    # RFC 9000 §19.19 Application CONNECTION_CLOSE Frame: Type 0x1D, VarInt Error Code 265 (0x0109)
+    # 265 in 2-byte varint has 2 MSB bits = 01 -> 0x4109
+    is_settings_error = (
+        len(set_err_res) >= 3
+        and set_err_res[0] == 0x1D
+        and (struct.unpack(">H", set_err_res[1:3])[0] & 0x3FFF) == 265
+    )
     record(
-        set_err_res == b"ERR:265",
-        "Rejection of Forbidden HTTP/2 Setting (H3_ERR_SETTINGS_ERROR = 0x0109)",
+        is_settings_error,
+        "RFC 9114 Rejection of Forbidden HTTP/2 Setting (H3_ERR_SETTINGS_ERROR = 0x0109 via CONNECTION_CLOSE 0x1D)",
     )
 
     # 7. RFC 9114 HTTP/3 HEADERS & DATA Request/Response Roundtrip
-    # HEADERS frame: type 0x01, len 4, QPACK payload [0x00, 0x00, 0xd1, 0xd9]
-    qpack_req = b"\x00\x00\xd1\xd9"
+    # HEADERS frame: type 0x01, len 5, QPACK payload: RIC=0 (0x00), Base=0 (0x00),
+    # :method GET (0xd1), :scheme https (0xd7), :path / (0xc1) per RFC 9204 §4.5.2 & RFC 9114 §4.3.1
+    qpack_req = b"\x00\x00\xd1\xd7\xc1"
     h3_frame = bytearray([0x01, len(qpack_req)]) + qpack_req
-    s.sendto(b"H3_REQ:" + h3_frame, (host, port))
+    s.sendto(h3_frame, (host, port))
     h3_res, _ = s.recvfrom(2048)
 
     # Validate HEADERS frame (0x01) + DATA frame (0x00) with body text

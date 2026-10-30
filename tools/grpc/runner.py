@@ -12,6 +12,7 @@ LPM framing, and error statuses against the native Goose server.
 import argparse
 import base64
 import io
+import os
 import socket
 import struct
 import subprocess
@@ -54,8 +55,15 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
         return SERVER_EXE
 
     print(f"[*] Building native gRPC server: {SERVER_SRC} -> {SERVER_EXE}...")
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        gcc_wrapper = ROOT_DIR / "tools" / "gcc_noavx.cmd"
+        if gcc_wrapper.is_file():
+            env["GOOSE_CC"] = str(gcc_wrapper)
     cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
-    res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True)
+    res = subprocess.run(
+        cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env
+    )
     if res.returncode != 0:
         print("[!] Failed to build gRPC server:", file=sys.stderr)
         if res.stdout:

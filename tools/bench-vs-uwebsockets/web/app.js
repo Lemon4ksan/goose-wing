@@ -28,11 +28,6 @@ const REFERENCE_DATA = {
     gw: { rps: 1145200, min: 0.26, avg: 0.56, p50: 0.51, p90: 0.72, p99: 0.86, p999: 1.25, max: 5.10, allocs: "0 B (0 mallocs)", rss: 2.1 },
     uws: { rps: 921000, min: 0.45, avg: 1.02, p50: 0.94, p90: 1.45, p99: 1.95, p999: 3.80, max: 21.40, allocs: "Dynamic (glibc)", rss: 17.2 }
   },
-  ws_echo: {
-    label: "WebSocket Echo (RFC 6455 64-bit Masking)",
-    gw: { rps: 842100, min: 0.38, avg: 0.74, p50: 0.68, p90: 0.98, p99: 1.15, p999: 1.60, max: 6.20, allocs: "0 B (0 mallocs)", rss: 2.2 },
-    uws: { rps: 694000, min: 0.62, avg: 1.38, p50: 1.25, p90: 1.92, p99: 2.45, p999: 4.50, max: 24.80, allocs: "Dynamic (glibc)", rss: 18.1 }
-  },
   high_concurrency: {
     label: "High Concurrency (1,000 Connections Keep-Alive)",
     gw: { rps: 948000, min: 0.32, avg: 0.68, p50: 0.61, p90: 0.89, p99: 1.05, p999: 1.48, max: 7.10, allocs: "0 B (0 mallocs)", rss: 3.4 },
